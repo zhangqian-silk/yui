@@ -19,8 +19,10 @@ import {
   CapabilityRegistry, type CapabilityDescriptor, type CapabilityImplementation,
 } from "./capabilityRegistry.js";
 import type { CapabilitySchema } from "./capabilitySchema.js";
-import { createProjectResources, type ArtifactInput, type EnvironmentPlan } from "../resources/projectResourceService.js";
-import { artifactSummary } from "../resources/projectResource.js";
+import { createProjectResources, type EnvironmentPlan } from "../resources/projectResourceService.js";
+import {
+  saveArtifactCapability, readArtifactCapability, listArtifactsCapability
+} from "../artifacts/artifactCapability.js";
 import { createPluginService } from "../plugins/pluginService.js";
 
 const text: CapabilitySchema = { type: "string", minLength: 1 };
@@ -30,7 +32,6 @@ const object = (properties: Record<string, CapabilitySchema>, required = Object.
 });
 const taskInput = object({ taskId: text });
 const recordOutput: CapabilitySchema = { type: "object" };
-const artifactBase = { displayName: text, provenance: text, mediaType: text };
 const taskOutput: CapabilitySchema = { type: "object", required: ["id", "status", "title"], properties: {
   id: text, status: text, title: text
 } };
@@ -64,26 +65,21 @@ const definitions: readonly Omit<CapabilityDescriptor, "contractVersion" | "prov
     outputSchema: { type: "object", required: ["ref", "value", "coreCursor"] }
   },
   {
-    name: "artifact.save", summary: "Save immutable text, external version evidence, a Job receipt, or reference material.",
-    effect: "local-mutation", requiredPermissions: ["task:read"], source: "ProjectResources.saveArtifact",
-    inputSchema: object({ taskId: text, artifact: { anyOf: [
-      object({ ...artifactBase, kind: { const: "content" }, content: { type: "string" } }, ["kind", "displayName", "provenance", "content"]),
-      object({ ...artifactBase, kind: { const: "external-version" }, resourceId: text, version: text, verification: text },
-        ["kind", "displayName", "provenance", "resourceId", "version", "verification"]),
-      object({ ...artifactBase, kind: { const: "receipt" }, jobId: text, receiptRef: text },
-        ["kind", "displayName", "provenance", "jobId", "receiptRef"]),
-      object({ ...artifactBase, kind: { const: "reference" }, locator: text, observedAt: text },
-        ["kind", "displayName", "provenance", "locator", "observedAt"])
-    ] } }), outputSchema: recordOutput
+    name: "artifact.save", summary: "Save a file artifact by relativePath into the Task's local Git repository; returns a commit-pinned reference.",
+    effect: "local-mutation", requiredPermissions: ["task:read"], source: "artifacts.saveArtifactCapability",
+    inputSchema: object({ taskId: text, relativePath: text, content: { type: "string" }, message: text, expectedHead: text },
+      ["taskId", "relativePath", "content"]),
+    outputSchema: { type: "object", required: ["taskId", "commit", "relativePath"] }
   },
   {
-    name: "artifact.read", summary: "Read saved results without starting the original Runtime or plugin.",
-    effect: "query", requiredPermissions: ["task:read"], source: "TaskStore.getArtifact",
-    inputSchema: object({ taskId: text, artifactId: text }), outputSchema: recordOutput
+    name: "artifact.read", summary: "Read a file artifact at HEAD, or at a pinned commit for frozen evidence, without starting a Runtime or plugin.",
+    effect: "query", requiredPermissions: ["task:read"], source: "artifacts.readArtifactCapability",
+    inputSchema: object({ taskId: text, relativePath: text, commit: text }, ["taskId", "relativePath"]),
+    outputSchema: { type: "object", required: ["taskId", "relativePath", "commit", "content"] }
   },
   {
-    name: "artifact.list", summary: "List this Task's saved results and references.",
-    effect: "query", requiredPermissions: ["task:read"], source: "TaskStore.listArtifacts",
+    name: "artifact.list", summary: "List this Task's tracked file artifacts at HEAD.",
+    effect: "query", requiredPermissions: ["task:read"], source: "artifacts.listArtifactsCapability",
     inputSchema: taskInput, outputSchema: { type: "array", items: recordOutput }
   },
   {
@@ -297,13 +293,20 @@ export function createBuiltinCapabilities(
       if (name === "context.inspect") return inspectTaskContext(store, taskId, {
         store: params.store as string, refId: params.refId as string, digest: params.digest as string | undefined
       }, callerEnvironment(caller));
-      if (name === "artifact.save") return resources.saveArtifact(taskId, params.artifact as ArtifactInput);
-      if (name === "artifact.read") {
-        const artifact = store.getArtifact(taskId, params.artifactId as string);
-        if (!artifact) throw new Error("Artifact not found in this Task.");
-        return artifact;
-      }
-      if (name === "artifact.list") return store.listArtifacts(taskId).map(artifactSummary);
+      // File/directory artifacts live in the Task's local Git repository, not
+      // the DB. Save commits exactly one path and returns a self-certifying
+      // commit-pinned reference; read/list are ordinary current reads. These
+      // are the async Git path (the capability layer awaits invoke()).
+      if (name === "artifact.save") return saveArtifactCapability(store.rootDirectory(), taskId, {
+        relativePath: params.relativePath as string, content: params.content as string,
+        ...(params.message === undefined ? {} : { message: params.message as string }),
+        ...(params.expectedHead === undefined ? {} : { expectedHead: params.expectedHead as string })
+      });
+      if (name === "artifact.read") return readArtifactCapability(store.rootDirectory(), taskId, {
+        relativePath: params.relativePath as string,
+        ...(params.commit === undefined ? {} : { commit: params.commit as string })
+      });
+      if (name === "artifact.list") return listArtifactsCapability(store.rootDirectory(), taskId);
       if (name === "environment.prepare") return resources.prepare(taskId, params.plan as EnvironmentPlan);
       if (name === "environment.adopt") return resources.adopt(taskId, params.preparationId as string);
       if (name === "environment.bind") {
