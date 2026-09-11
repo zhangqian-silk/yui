@@ -1163,6 +1163,15 @@ UPDATE review_rounds SET payload = json_set(payload, '$.executionGroup.lanes', j
     // deterministic submit-intent backfill (events + id_sequences only) is the
     // final step inside that same transaction. This `sql` is intentionally a
     // no-op: dropping the table here would destroy the rows before they move.
+    //
+    // The 18->19 contract also DECLARES three optional `messages.payload` fields
+    // added by Requirement A — `intent` (record|discuss|develop), an optional
+    // client idempotency `submissionKey`, and a frozen `submissionReceipt`
+    // disposition. They add no column and no table and are only ever written
+    // going forward (absent `intent` reads as discuss; absent key is keyless;
+    // absent receipt is a pre-19 message), so NO historical row is rewritten and
+    // no key or receipt is ever fabricated for old data — declaring them here
+    // satisfies "optional still requires a migration declaration".
     sql: "SELECT 1; -- artifacts move to per-Task local Git; see migrateArtifactsToGit",
     migrateData: migrateArtifactsToGit
   }
@@ -1468,6 +1477,20 @@ export type SqliteSchemaMigrationOptions = Readonly<{
    * authoritative database.
    */
   mode: SqliteSchemaMigrationMode;
+  /**
+   * Inclusive upper bound on the version to apply, defaulting to
+   * `CURRENT_STORAGE_VERSION`. Production callers never set it, so behavior is
+   * unchanged: a fresh or pending database advances to head as one commit.
+   *
+   * It exists ONLY to reconstruct a genuine older on-disk version from the REAL,
+   * checksum-validated migration definitions (e.g. an upgrade regression that
+   * must start at v18 and then drive the real upgrade to v19), rather than
+   * hand-crafting the older schema. It is honored only in `apply` mode, never
+   * downgrades, never skips an intermediate version, and defers head-shape
+   * validation until head is actually reached. A later migration that introduces
+   * a new required table is therefore not validated before it is applied.
+   */
+  throughVersion?: number;
 }>;
 
 /** Inspect a recognized migration prefix without changing it. */
@@ -1538,8 +1561,13 @@ export function migrateSqliteSchema(
         "admission"
       );
     }
+    // Production callers omit `throughVersion`, so the effective target is head
+    // and behavior is unchanged; a partial target is honored only in apply mode.
+    const effectiveTarget = options.mode === "apply" && options.throughVersion !== undefined
+      ? options.throughVersion
+      : CURRENT_STORAGE_VERSION;
     const pending = MIGRATIONS.filter(
-      (migration) => !applied.versions.has(migration.version)
+      (migration) => !applied.versions.has(migration.version) && migration.version <= effectiveTarget
     );
     if (!ledgerWasCreated && pending.length > 0 && options.mode === "validate") {
       throw new SqliteSchemaMigrationError(
@@ -1564,7 +1592,10 @@ export function migrateSqliteSchema(
       );
       newlyApplied.push(migration.version);
     }
-    validateSchemaObjects(db);
+    // The table/index inventory describes the HEAD shape; only assert it once the
+    // migration has actually advanced to head (a deliberate partial target stops
+    // earlier and is validated when the real upgrade later completes it).
+    if (effectiveTarget >= CURRENT_STORAGE_VERSION) validateSchemaObjects(db);
     return newlyApplied;
   };
   const newlyApplied = options.mode === "apply" && !db.inTransaction
