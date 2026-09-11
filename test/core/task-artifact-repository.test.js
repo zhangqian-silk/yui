@@ -8,6 +8,7 @@ import test from "node:test";
 
 import {
   ArtifactHeadConflictError,
+  ArtifactManagedConfigViolationError,
   ArtifactRemoteViolationError,
   openTaskArtifactRepository
 } from "../../dist/artifacts/taskArtifactRepository.js";
@@ -16,7 +17,11 @@ import {
   resolveContainedArtifactPath,
   taskArtifactRepoPath
 } from "../../dist/artifacts/artifactPaths.js";
-import { ManagedGitError, managedGit } from "../../dist/artifacts/managedGit.js";
+import {
+  ManagedGitError,
+  externalProgramConfigViolations,
+  managedGit
+} from "../../dist/artifacts/managedGit.js";
 
 function makeHome() {
   return mkdtempSync(join(tmpdir(), "yui-artifacts-home-"));
@@ -293,4 +298,139 @@ test("managed git: transport is blocked even when a remote exists", async () => 
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
+});
+
+test("artifact paths: glob metacharacters in a relativePath are rejected", () => {
+  // A pathspec is only safe as a literal identity; a glob char could otherwise
+  // be interpreted by Git as a pattern that matches OTHER paths.
+  for (const bad of ["a*.md", "a?.md", "a[bc].md", "notes:1.md", "sub/*.md"]) {
+    assert.throws(
+      () => safeRelativeArtifactPath(bad),
+      /glob|wildcard|metacharacter/i,
+      `expected rejection for ${JSON.stringify(bad)}`
+    );
+  }
+});
+
+test("artifact repo: a wildcard-named file commits only itself, never undeclared dirty siblings", async () => {
+  const home = makeHome();
+  try {
+    const repo = openTaskArtifactRepository(home, TASK_ID);
+    await repo.ensure();
+
+    // Track two real markdown files in an initial save.
+    await repo.save({
+      files: [
+        { relativePath: "a.md", bytes: Buffer.from("a\n") },
+        { relativePath: "b.md", bytes: Buffer.from("b\n") }
+      ],
+      message: "seed"
+    });
+
+    // Create a file whose NAME literally contains a glob metacharacter, and make
+    // undeclared modifications to the two tracked md files. The pathspec `*.md`
+    // WOULD, under glob semantics, match a.md and b.md and sweep those dirty
+    // edits into the commit. Under the managed runner's literal pathspec, `*.md`
+    // names exactly the one file called `*.md`.
+    const wildcard = "*.md";
+    writeFileSync(join(repo.repoPath, wildcard), "only me\n");
+    writeFileSync(join(repo.repoPath, "a.md"), "a DIRTY\n");
+    writeFileSync(join(repo.repoPath, "b.md"), "b DIRTY\n");
+
+    await managedGit(repo.repoPath, ["add", "--", wildcard]);
+    await managedGit(repo.repoPath, ["commit", "--only", "-m", "add literal *.md", "--", wildcard]);
+
+    // The undeclared dirty md files must remain UNcommitted WIP — not swept in.
+    const wip = await repo.workingChanges();
+    assert.ok(wip.includes("a.md"), `a.md must stay WIP, got ${JSON.stringify(wip)}`);
+    assert.ok(wip.includes("b.md"), `b.md must stay WIP, got ${JSON.stringify(wip)}`);
+
+    // The committed HEAD content of a.md is still the seeded bytes (not "a DIRTY").
+    const head = await repo.head();
+    const a = await repo.read("a.md", head ?? "");
+    assert.equal(a.bytes.toString("utf8"), "a\n");
+    // The literally-named `*.md` IS tracked (the safe-path guard rejects it as an
+    // identity, so read it via a direct object lookup, which is literal too).
+    const tracked = (await repo.list(head ?? "")).map((entry) => entry.relativePath);
+    assert.ok(tracked.includes("*.md"), `*.md must be tracked, got ${JSON.stringify(tracked)}`);
+    const committed = await managedGit(repo.repoPath, ["cat-file", "blob", `${head}:*.md`]);
+    assert.equal(committed, "only me\n");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("artifact repo: reading a directory object fails as not-a-file (no tree listing as bytes)", async () => {
+  const home = makeHome();
+  try {
+    const repo = openTaskArtifactRepository(home, TASK_ID);
+    await repo.ensure();
+    await repo.save({
+      files: [{ relativePath: "design/plan.md", bytes: Buffer.from("plan\n") }],
+      message: "seed"
+    });
+    // `design` resolves to a TREE object at HEAD; a read must reject it rather
+    // than return the tree listing as if it were file bytes.
+    await assert.rejects(repo.read("design"), /not a file|unavailable/i);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("managed git: repo-local external-program config is detected and stops managed writes", async () => {
+  const home = makeHome();
+  try {
+    const repo = openTaskArtifactRepository(home, TASK_ID);
+    await repo.ensure();
+
+    // Configure a repo-local content filter plus a matching .gitattributes, the
+    // classic vector: `git add` would otherwise run the filter's clean command.
+    // Use a HARMLESS SENTINEL that writes a marker file, so we can prove whether
+    // it ran. Managed writes must refuse to proceed BEFORE the filter can fire.
+    const marker = join(home, "filter-ran.marker");
+    execFileSync("git", [
+      "-C", repo.repoPath, "config", "--local", "filter.evil.clean",
+      // A portable no-network command that leaves proof if ever executed.
+      `sh -c 'echo ran > ${marker}'`
+    ]);
+    writeFileSync(join(repo.repoPath, ".gitattributes"), "*.md filter=evil\n");
+
+    await assert.rejects(
+      repo.save({ files: [{ relativePath: "doc.md", bytes: Buffer.from("hello\n") }], message: "blocked" }),
+      (error) =>
+        error instanceof ArtifactManagedConfigViolationError &&
+        error.keys.includes("filter.evil.clean")
+    );
+
+    // The filter command was never executed (fail-closed BEFORE `git add`).
+    assert.equal(existsSync(marker), false);
+    // The config is NOT silently removed — reported and left for manual cleanup.
+    const still = execFileSync(
+      "git", ["-C", repo.repoPath, "config", "--local", "--get", "filter.evil.clean"],
+      { encoding: "utf8" }
+    );
+    assert.ok(still.includes(marker));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("managed git: externalProgramConfigViolations flags program keys and ignores benign ones", () => {
+  // PURE classifier proof with a deterministic `--list -z` sample (key\nvalue\0).
+  const sample = [
+    "filter.lfs.clean\ngit-lfs clean",     // external program: flagged
+    "diff.external\n/usr/bin/x",           // external program: flagged
+    "core.pager\nless",                    // external program surface: flagged
+    "alias.st\nstatus",                    // alias can run a shell: flagged
+    "core.autocrlf\nfalse",                // benign: ignored
+    "user.name\nYui",                      // benign: ignored
+    "branch.main.remote\norigin"           // benign here (remote is a separate check): ignored
+  ].join("\0") + "\0";
+  const flagged = externalProgramConfigViolations(sample);
+  assert.deepEqual(
+    flagged,
+    ["alias.st", "core.pager", "diff.external", "filter.lfs.clean"]
+  );
+  // Empty config is within the boundary.
+  assert.deepEqual(externalProgramConfigViolations(""), []);
 });
