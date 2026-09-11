@@ -112,6 +112,11 @@ function managedGitEnvironment(): NodeJS.ProcessEnv {
     GIT_SSH_COMMAND: "false",
     GIT_PROTOCOL_FROM_USER: "0",
     GIT_OPTIONAL_LOCKS: "0",
+    // Every pathspec is a literal path, never a glob. A file legitimately named
+    // `*.md` or `a?.md` must commit exactly itself and never sweep in undeclared
+    // sibling changes; this makes `add`/`diff`/`commit --only` scope uniformly
+    // and can never re-enable transport or run a program.
+    GIT_LITERAL_PATHSPECS: "1",
     GIT_PAGER: "cat",
     GIT_EDITOR: "false",
     // Fixed identity as a second guarantee alongside the -c flags.
@@ -213,6 +218,72 @@ export function requireCommitId(value: string): string {
     throw new Error("Managed git returned an invalid commit id.");
   }
   return commit;
+}
+
+/**
+ * Repo-local config keys that can make Git execute an EXTERNAL PROGRAM during an
+ * ordinary `add`/`diff`/`commit`/`show` — the vector env-scrubbing does not close.
+ *
+ * Disabling global/system config (see {@link managedGitEnvironment}) stops
+ * ambient filters/hooks, but a repository's OWN `.git/config` is always read, and
+ * a `[filter "x"] clean = <cmd>` there (paired with a worktree `.gitattributes`
+ * `* filter=x`) runs `<cmd>` on `git add`. Some keys (`core.pager`, hooks, signing)
+ * are already forced to safe values by the `-c` {@link HARDENING_FLAGS}, but an
+ * arbitrarily NAMED filter/alias/tool driver cannot be overridden by a fixed `-c`.
+ *
+ * Yui configures NONE of these on a managed artifact repository, so any that
+ * appear in repo-local config are external tampering. We DETECT and STOP (like an
+ * unexpected remote); we never silently delete the config or try to out-configure
+ * an arbitrary command. Keys are matched case-insensitively (Git config is).
+ */
+const EXTERNAL_PROGRAM_CONFIG_SUFFIXES: readonly string[] = Object.freeze([
+  ".clean", ".smudge", ".process", // filter.<name>.*
+  ".command", ".textconv", ".cmd", // diff/difftool/mergetool.<name>.*
+  ".driver", // merge.<name>.driver
+  ".helper" // credential[.<url>].helper
+]);
+const EXTERNAL_PROGRAM_CONFIG_PREFIXES: readonly string[] = Object.freeze([
+  "filter.", "alias.", "difftool.", "mergetool.", "pager.",
+  "sendemail.", "instaweb.", "guitool.", "credential.", "url.",
+  "browser.", "man.", "hooks."
+]);
+const EXTERNAL_PROGRAM_CONFIG_KEYS: ReadonlySet<string> = new Set([
+  "diff.external",
+  "core.pager", "core.editor", "core.sshcommand", "core.askpass",
+  "core.gitproxy", "core.fsmonitor", "core.hookspath", "core.alternaterefscommand",
+  "gpg.program", "gpg.openpgp.program", "gpg.x509.program", "gpg.ssh.program",
+  "sequence.editor", "uploadpack.packobjectshook",
+  "web.browser", "help.browser"
+]);
+
+function isExternalProgramConfigKey(key: string): boolean {
+  if (EXTERNAL_PROGRAM_CONFIG_KEYS.has(key)) return true;
+  for (const prefix of EXTERNAL_PROGRAM_CONFIG_PREFIXES) if (key.startsWith(prefix)) return true;
+  for (const suffix of EXTERNAL_PROGRAM_CONFIG_SUFFIXES) if (key.endsWith(suffix)) return true;
+  return false;
+}
+
+/**
+ * Given the raw stdout of `git config --local --list -z` (records of the form
+ * `key\nvalue\0`, keys already lower-cased by Git), return the sorted, de-duped
+ * list of repo-local keys that can execute an external program. Empty means the
+ * repository's own config is within the managed boundary.
+ *
+ * PURE: no I/O. Callers (sync migration and async runtime) read the config with
+ * their own managed runner and pass the bytes here, so the security policy lives
+ * in exactly one testable place. Reading `--local` deliberately excludes the
+ * command-line `-c` hardening flags (which are safe and not persisted) and the
+ * null-device'd global/system config; it sees only what is written in the repo.
+ */
+export function externalProgramConfigViolations(localConfigListZ: string): string[] {
+  const offending = new Set<string>();
+  for (const record of localConfigListZ.split("\0")) {
+    if (record.length === 0) continue;
+    const newline = record.indexOf("\n");
+    const key = (newline < 0 ? record : record.slice(0, newline)).toLowerCase();
+    if (isExternalProgramConfigKey(key)) offending.add(key);
+  }
+  return [...offending].sort();
 }
 
 /**

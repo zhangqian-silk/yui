@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 
 import {
   ManagedGitError,
+  externalProgramConfigViolations,
   managedGit,
   managedGitBuffer,
   managedGitSucceeds,
@@ -62,6 +63,27 @@ export class ArtifactRemoteViolationError extends Error {
     this.name = "ArtifactRemoteViolationError";
     this.taskId = taskId;
     this.remotes = [...remotes];
+  }
+}
+
+/**
+ * Raised when an artifact repository's OWN config declares a filter/alias/tool
+ * that would run an external program during add/diff/commit. Env-scrubbing hides
+ * ambient config, but a repo's `.git/config` is always read; Yui configures none
+ * of these, so any that appear are external tampering. Like a remote: report and
+ * STOP managed writes, never silently delete the config.
+ */
+export class ArtifactManagedConfigViolationError extends Error {
+  readonly taskId: string;
+  readonly keys: readonly string[];
+  constructor(taskId: string, keys: readonly string[]) {
+    super(
+      `Artifact repository for ${taskId} has repo-local Git config that can run external ` +
+        `programs (${keys.join(", ")}); managed writes are stopped. Remove it manually to resume.`
+    );
+    this.name = "ArtifactManagedConfigViolationError";
+    this.taskId = taskId;
+    this.keys = [...keys];
   }
 }
 
@@ -235,10 +257,26 @@ export function openTaskArtifactRepository(home: string, taskId: string): TaskAr
   const read = async (relativePath: string, commit?: string): Promise<ArtifactContent> => {
     const safeRelative = safeRelativeArtifactPath(relativePath);
     // A pinned commit reads frozen evidence; otherwise read the current HEAD.
-    // Both go through `git show <commit>:<path>` so a read never depends on the
-    // working tree (which may hold unrelated WIP) and never follows a symlink.
+    // Both resolve `<commit>:<path>`, an OBJECT spec (never the working tree, so
+    // a read never follows a symlink or sees unrelated WIP).
     const pinned = commit === undefined ? await currentHead(repoPath) : requireCommitId(commit);
-    const bytes = await managedGitBuffer(repoPath, ["show", `${pinned}:${safeRelative}`], {
+    const objectSpec = `${pinned}:${safeRelative}`;
+    // `<commit>:<path>` for a DIRECTORY resolves to a tree, and `git show` would
+    // print a tree listing rather than fail — silently returning directory
+    // metadata as if it were file bytes. Verify the object is a blob first, so a
+    // read only ever yields real file content.
+    const objectType = (
+      await managedGit(repoPath, ["cat-file", "-t", objectSpec]).catch((error) => {
+        if (error instanceof ManagedGitError) {
+          throw new Error(`Artifact ${safeRelative} is unavailable at ${pinned}.`, { cause: error });
+        }
+        throw error;
+      })
+    ).trim();
+    if (objectType !== "blob") {
+      throw new Error(`Artifact ${safeRelative} at ${pinned} is not a file (${objectType}).`);
+    }
+    const bytes = await managedGitBuffer(repoPath, ["cat-file", "blob", objectSpec], {
       maxBuffer: MAX_ARTIFACT_BYTES + 4096
     }).catch((error) => {
       if (error instanceof ManagedGitError) {
@@ -296,14 +334,24 @@ async function currentHead(repoPath: string): Promise<string> {
 }
 
 /**
- * Verify the repository has NO remote configured. A remote is an external
- * violation (someone configured sync); we report and stop, never remove it.
+ * Verify the repository is within the managed boundary before a write: NO remote
+ * (network or file sync) AND no repo-local config that can execute an external
+ * program on add/diff/commit. Both are external violations — we report and stop,
+ * never silently remove them.
  */
 async function assertNoRemote(taskId: string, repoPath: string): Promise<void> {
   const output = await managedGit(repoPath, ["remote"]);
   const remotes = output.split("\n").map((line) => line.trim()).filter(Boolean);
   if (remotes.length > 0) {
     throw new ArtifactRemoteViolationError(taskId, remotes);
+  }
+  // A repo's own `.git/config` is read even with global/system config disabled,
+  // so a committed `.gitattributes` filter paired with a repo-local
+  // `filter.<n>.clean = <cmd>` would run `<cmd>` on `git add`. Detect and stop.
+  const configListZ = await managedGit(repoPath, ["config", "--local", "--list", "-z"]);
+  const violations = externalProgramConfigViolations(configListZ);
+  if (violations.length > 0) {
+    throw new ArtifactManagedConfigViolationError(taskId, violations);
   }
 }
 
