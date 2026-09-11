@@ -16,6 +16,12 @@ import {
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
+import {
+  isLinuxProcessLive,
+  listOwnedProcessTree,
+  type SessionOwnerIdentity
+} from "../../runtime/sessionOwnerIdentity.js";
+
 /**
  * Storage 18 -> 19: unify every Yui self-managed path under a single canonical
  * YUI_HOME.
@@ -112,45 +118,25 @@ type RecoveryManifest = {
  */
 export function migrateUnifyHomeLayout(db: Database.Database): void {
   const home = resolve(dirname(db.name));
-  const defaultWorkspace = readDefaultWorkspace(db);
-
-  // `relocations` are physically copied (durable content only). `rewrites` is
-  // the pointer prefix map and additionally covers the regenerable views and
-  // disposable runtimes, whose pointers move even though their trees do not.
-  const relocations: PathRewrite[] = [];
-  const rewrites: PathRewrite[] = [];
-
-  if (defaultWorkspace !== undefined) {
-    const oldWorktree = join(defaultWorkspace, "worktree");
-    const newWorktree = join(home, "workspaces", "worktree");
-    const oldTasks = join(defaultWorkspace, "tasks");
-    const newTasks = join(home, "workspaces", "tasks");
-    if (oldWorktree !== newWorktree) {
-      // The Git clones/worktrees hold durable committed AND uncommitted content;
-      // they are the only subtree copied on disk.
-      relocations.push({ from: oldWorktree, to: newWorktree });
-      rewrites.push({ from: oldWorktree, to: newWorktree });
-      // The per-Task view directories are regenerable symlink trees: pointer
-      // rewrite only, rebuilt by `ensureWorkspaceView` on next launch.
-      rewrites.push({ from: oldTasks, to: newTasks });
-    }
-  }
-
-  // Provider runtime roots (data/cache/tmp + planning cwd) are disposable and
-  // recreated at launch: pointer rewrite only, never copied.
-  const oldRuntime = `${home}.task-runtimes`;
-  const newRuntime = join(home, "runtime", "task-runtimes");
-  if (oldRuntime !== newRuntime) {
-    rewrites.push({ from: oldRuntime, to: newRuntime });
-  }
+  const { relocations, rewrites } = planUnifyHomeRewrites(home, readDefaultWorkspace(db));
 
   if (rewrites.length === 0) return;
 
-  // Precheck — no filesystem or row mutation happens before this passes. The
-  // Controller is quiesced for the upgrade, but a durable Job step runs in a
-  // detached process that outlives it. Refuse before touching any pointer bound
-  // to a tree a live Job is cwd'd under, rather than migrating it mid-flight.
-  assertNoInFlightJobUnderRoots(db, rewrites.map((move) => move.from));
+  // Precheck — no filesystem or row mutation happens before this passes. Two
+  // independent in-flight signals must both be clear, because the upgrade fence
+  // (Controller quiesce) stops only in-process scheduling, NOT the detached
+  // execution processes and durable Job runners that outlive it:
+  //   1. A physically LIVE Agent execution whose process tree is cwd'd or holds
+  //      an open write handle under a tree about to be copied — it would keep
+  //      writing the OLD tree after the verified copy, silently diverging from
+  //      the relocated pointers. Proven from the enumerable session-owner
+  //      registry (OS process custody, PID-reuse-safe), fail-closed when a live
+  //      owner cannot be introspected.
+  //   2. A queued/running durable Job bound under a relocating root (its
+  //      detached runner survives the fence).
+  const oldRoots = rewrites.map((move) => move.from);
+  assertNoLiveExecutionUnderRoots(home, oldRoots);
+  assertNoInFlightJobUnderRoots(db, oldRoots);
 
   // Physically relocate the durable tree(s) under a fail-closed recovery
   // manifest. Only touch the manifest when there is real work: a tree exists to
@@ -178,8 +164,119 @@ export function migrateUnifyHomeLayout(db: Database.Database): void {
   rewriteTaskCwd(db, rewrites);
 }
 
+/**
+ * One planned relocation blocker discovered by a READ-ONLY preflight. `reason`
+ * is a stable machine tag; `detail` is the same operator-facing text the execute
+ * path would throw. The preflight runs the identical checks execute runs first
+ * (in-flight execution, in-flight Job, target conflict, corrupt manifest), so a
+ * clean preflight is a genuine — not merely schema-level — readiness signal.
+ */
+export type UnifyHomePreflightBlocker = Readonly<{
+  reason:
+    | "live-execution"
+    | "in-flight-job"
+    | "target-conflict"
+    | "recovery-manifest"
+    | "registry-unreadable";
+  detail: string;
+}>;
+
+export type UnifyHomePreflight = Readonly<{
+  /** True when the Home is already unified (no relocation/rewrite is pending). */
+  noop: boolean;
+  /** Number of on-disk trees this migration would physically copy. */
+  plannedRelocations: number;
+  /** Number of persisted pointer prefixes this migration would rewrite. */
+  plannedRewrites: number;
+  blockers: readonly UnifyHomePreflightBlocker[];
+}>;
+
+/**
+ * Read-only counterpart to {@link migrateUnifyHomeLayout}: derive the SAME plan
+ * and evaluate the SAME blocking conditions WITHOUT mutating the database or the
+ * filesystem. This is what lets `yui upgrade --dry-run` and the updater's
+ * `--update-preflight` report a trustworthy verdict — target conflicts and
+ * in-flight risk are surfaced before the Controller is stopped, not discovered
+ * only inside the apply transaction.
+ *
+ * Every branch collects rather than throws, so one run reports all independent
+ * blockers. The checks mirror execute exactly, keeping the two in lockstep.
+ */
+export function preflightUnifyHomeLayout(db: Database.Database): UnifyHomePreflight {
+  const home = resolve(dirname(db.name));
+  const { relocations, rewrites } = planUnifyHomeRewrites(home, readDefaultWorkspace(db));
+  if (rewrites.length === 0) {
+    return Object.freeze({ noop: true, plannedRelocations: 0, plannedRewrites: 0, blockers: [] });
+  }
+
+  const blockers: UnifyHomePreflightBlocker[] = [];
+  const oldRoots = rewrites.map((move) => move.from);
+  for (const detail of collectLiveExecutionBlockers(home, oldRoots)) {
+    blockers.push({ reason: detail.reason, detail: detail.detail });
+  }
+  for (const detail of collectInFlightJobBlockers(db, oldRoots)) {
+    blockers.push({ reason: "in-flight-job", detail });
+  }
+  // Target-conflict and recovery-manifest checks read the same filesystem state
+  // relocateTree/loadOrStartManifest act on, without copying or writing anything.
+  for (const detail of collectRelocationConflicts(home, relocations)) {
+    blockers.push(detail);
+  }
+
+  return Object.freeze({
+    noop: false,
+    plannedRelocations: relocations.length,
+    plannedRewrites: rewrites.length,
+    blockers: Object.freeze(blockers)
+  });
+}
+
+/**
+ * Derive the relocation (physically copied) and rewrite (pointer-prefix) plans
+ * from the canonical Home and the configured out-of-Home workspace. Pure: no IO,
+ * no DB. Shared by the execute path and the read-only preflight so the two can
+ * never diverge on what would move.
+ */
+function planUnifyHomeRewrites(
+  home: string,
+  defaultWorkspace: string | undefined
+): Readonly<{ relocations: PathRewrite[]; rewrites: PathRewrite[] }> {
+  const relocations: PathRewrite[] = [];
+  const rewrites: PathRewrite[] = [];
+
+  if (defaultWorkspace !== undefined) {
+    const oldWorktree = join(defaultWorkspace, "worktree");
+    const newWorktree = join(home, "workspaces", "worktree");
+    const oldTasks = join(defaultWorkspace, "tasks");
+    const newTasks = join(home, "workspaces", "tasks");
+    if (oldWorktree !== newWorktree) {
+      // The Git clones/worktrees hold durable committed AND uncommitted content;
+      // they are the only subtree copied on disk.
+      relocations.push({ from: oldWorktree, to: newWorktree });
+      rewrites.push({ from: oldWorktree, to: newWorktree });
+      // The per-Task view directories are regenerable symlink trees: pointer
+      // rewrite only, rebuilt by `ensureWorkspaceView` on next launch.
+      rewrites.push({ from: oldTasks, to: newTasks });
+    }
+  }
+
+  // Provider runtime roots (data/cache/tmp + planning cwd) are disposable and
+  // recreated at launch: pointer rewrite only, never copied.
+  const oldRuntime = `${home}.task-runtimes`;
+  const newRuntime = join(home, "runtime", "task-runtimes");
+  if (oldRuntime !== newRuntime) {
+    rewrites.push({ from: oldRuntime, to: newRuntime });
+  }
+
+  return { relocations, rewrites };
+}
+
 /** The configured out-of-Home workspace root, if any Project was ever set up. */
 function readDefaultWorkspace(db: Database.Database): string | undefined {
+  // The read-only preflight may open a Home still at an older schema version in
+  // which `config` predates its current shape — but the table itself has existed
+  // since the first version, so a missing table only means "no configuration yet".
+  if (!tableExists(db, "config")) return undefined;
   const row = db.prepare("SELECT payload FROM config WHERE id = 1").get() as
     | { payload: string }
     | undefined;
@@ -194,6 +291,16 @@ function readDefaultWorkspace(db: Database.Database): string | undefined {
   }
 }
 
+/** True when a table currently exists, so a read-only preflight against an older
+ * schema version never throws on a table introduced by a later migration. */
+function tableExists(db: Database.Database, name: string): boolean {
+  return (
+    db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get(name) !== undefined
+  );
+}
+
 /**
  * Refuse to migrate a pointer a non-terminal Job is bound to. `active_turns` is
  * NOT consulted: it holds durable, steady-state run pointers for every active
@@ -206,12 +313,27 @@ function assertNoInFlightJobUnderRoots(
   db: Database.Database,
   roots: readonly string[]
 ): void {
+  const blockers = collectInFlightJobBlockers(db, roots);
+  if (blockers.length > 0) throw new Error(blockers[0]);
+}
+
+/**
+ * Read-only enumeration of the queued/running durable Jobs bound under a
+ * relocating root. Returns one operator-facing message per offending Job (the
+ * execute path throws the first). No DB mutation.
+ */
+function collectInFlightJobBlockers(
+  db: Database.Database,
+  roots: readonly string[]
+): readonly string[] {
+  if (!tableExists(db, "durable_jobs")) return [];
   const placeholders = NON_TERMINAL_JOB_STATUSES.map(() => "?").join(", ");
   const rows = db
     .prepare(`SELECT payload FROM durable_jobs WHERE status IN (${placeholders})`)
     .all(...NON_TERMINAL_JOB_STATUSES) as Array<{ payload: string }>;
+  const blockers: string[] = [];
   for (const row of rows) {
-    let job: { workspace?: unknown; steps?: Array<{ cwd?: unknown }> };
+    let job: { id?: unknown; workspace?: unknown; steps?: Array<{ cwd?: unknown }> };
     try {
       job = JSON.parse(row.payload);
     } catch {
@@ -226,23 +348,353 @@ function assertNoInFlightJobUnderRoots(
     }
     for (const candidate of candidates) {
       if (isUnderAnyRoot(resolve(candidate), roots)) {
-        throw new Error(
-          "Refusing to unify YUI_HOME layout: a queued or running durable Job is bound to a "
-            + "managed workspace under relocation. Let it drain or cancel it "
-            + "(`yui job ...`), then retry the upgrade."
+        blockers.push(
+          "Refusing to unify YUI_HOME layout: a queued or running durable Job"
+            + `${typeof job.id === "string" ? ` (${job.id})` : ""} is bound to a managed workspace `
+            + `under relocation (${candidate}). Let it drain or cancel it (\`yui job ...\`), then `
+            + "retry the upgrade."
         );
+        break;
       }
     }
+  }
+  return blockers;
+}
+
+/**
+ * Read-only detection of the filesystem conditions that would make the relocate
+ * step REFUSE: a corrupt/foreign recovery manifest, or a relocation target that
+ * already exists with content that does not match its source (a foreign
+ * conflict). Mirrors `loadOrStartManifest` and `relocateTree`'s refusal branches
+ * WITHOUT copying, staging, or writing anything, so a dry-run/preflight verdict
+ * reflects the same decisions execute would make. An interrupted-publish target
+ * (digest matches) is NOT a blocker — execute would adopt it.
+ */
+function collectRelocationConflicts(
+  home: string,
+  relocations: readonly PathRewrite[]
+): readonly UnifyHomePreflightBlocker[] {
+  const blockers: UnifyHomePreflightBlocker[] = [];
+
+  // Manifest gate (fail-closed): only meaningful when there is work to do.
+  const manifestPath = join(home, "backups", RECOVERY_MANIFEST);
+  const hasTreesToMove = relocations.some((move) => existsSync(move.from));
+  if ((hasTreesToMove || existsSync(manifestPath)) && existsSync(manifestPath)) {
+    let prior: unknown;
+    let parseError: string | undefined;
+    try {
+      prior = JSON.parse(readFileSync(manifestPath, "utf8"));
+    } catch (error) {
+      parseError = error instanceof Error ? error.message : String(error);
+    }
+    if (parseError !== undefined) {
+      blockers.push({
+        reason: "recovery-manifest",
+        detail: `the recovery manifest at ${manifestPath} is not valid JSON (${parseError}); `
+          + "inspect and remove it once you have confirmed no partial relocation is in progress"
+      });
+    } else if (!isRecoveryManifest(prior)) {
+      blockers.push({
+        reason: "recovery-manifest",
+        detail: `the recovery manifest at ${manifestPath} is not a recognised storage-19 record; `
+          + "inspect and remove it once you have confirmed no partial relocation is in progress"
+      });
+    } else {
+      const identityMismatch = manifestIdentityMismatch(prior, home, relocations);
+      if (identityMismatch !== undefined) {
+        blockers.push({
+          reason: "recovery-manifest",
+          detail: `the recovery manifest at ${manifestPath} does not match the migration now `
+            + `planned (${identityMismatch}); inspect and remove it once you have confirmed no `
+            + "partial relocation is in progress"
+        });
+      }
+    }
+  }
+
+  // Target-conflict gate: a target present with DURABLE content differing from
+  // its preserved source is a foreign directory execute would refuse to
+  // overwrite. The comparison is repair-invariant — identical to the digest
+  // `relocateTree` uses to adopt an interrupted publish and to re-verify a
+  // completed relocation — so a target git has already relinked (its `.git`
+  // stub and `worktrees/<name>/gitdir` back-pointer repointed to the new
+  // location) is NOT falsely flagged. Using the plain inventory digest here
+  // would diverge from execute: it would block a published/relinked target
+  // that execute would cleanly adopt or skip.
+  for (const move of relocations) {
+    if (!existsSync(move.to) || !existsSync(move.from)) continue;
+    let matches: boolean;
+    try {
+      matches = repairInvariantDigest(move.to) === repairInvariantDigest(move.from);
+    } catch (error) {
+      blockers.push({
+        reason: "target-conflict",
+        detail: `the relocation target ${move.to} could not be compared with its source `
+          + `(${error instanceof Error ? error.message : String(error)}); resolve access to both `
+          + "trees before retrying"
+      });
+      continue;
+    }
+    if (!matches) {
+      blockers.push({
+        reason: "target-conflict",
+        detail: `the relocation target ${move.to} already exists and does not match the source `
+          + `content at ${move.from}; move or remove the conflicting directory before upgrading`
+      });
+    }
+  }
+  return blockers;
+}
+
+/**
+ * Refuse to relocate a tree a physically LIVE Agent execution is still writing.
+ *
+ * The upgrade fence quiesces the Controller, but a Provider/Agent Host process
+ * runs DETACHED and outlives that quiesce (it is not one of the in-process loops
+ * `shutdownAndDrain` awaits). If such a process is cwd'd under, or holds an open
+ * writable handle into, a tree we are about to copy-and-repoint, it would keep
+ * writing the OLD location after the verified copy — a silent in-flight move
+ * (criterion 2). We therefore consult the durable, enumerable session-owner
+ * registry (`<home>/runtime/session-owners/`), which records concrete OS process
+ * custody and survives Controller restarts, and prove each owner ABSENT before
+ * proceeding.
+ *
+ * This uses only existing precise run facts — it never stops another session and
+ * never equates a durable active Run pointer with a live process. It is
+ * FAIL-CLOSED: a live owner whose write-safety cannot be positively established
+ * (its process tree, cwd, or descriptors are unreadable) is treated as a
+ * blocker, with actionable diagnostics, rather than assumed idle.
+ */
+function assertNoLiveExecutionUnderRoots(
+  home: string,
+  roots: readonly string[]
+): void {
+  const blockers = collectLiveExecutionBlockers(home, roots);
+  if (blockers.length > 0) {
+    throw new Error(
+      "Refusing to unify YUI_HOME layout: a live Agent execution is still bound to a managed "
+        + "tree under relocation, so copying it now would silently strand its writes at the old "
+        + `location. Blockers: ${blockers.map((blocker) => blocker.detail).join("; ")}. Quiesce these `
+        + "executions (let them finish or stop them from their own sessions), confirm with "
+        + "`yui doctor`, then retry the upgrade."
+    );
   }
 }
 
 /**
- * Load the recovery manifest, FAIL-CLOSED on corruption. A manifest that exists
- * but cannot be parsed as this migration's own record is NOT silently rebuilt
- * from the current plan — doing so would erase the record of what a prior
- * interrupted run had already published and could mask a target conflict. The
- * operator must inspect or remove it, then retry.
+ * Read-only enumeration of live-execution write-safety blockers. Never throws:
+ * a registry/record that cannot be read is itself reported as a blocker (reason
+ * `registry-unreadable`), so the read-only preflight and the throwing execute
+ * path reach the identical verdict. No filesystem mutation.
  */
+function collectLiveExecutionBlockers(
+  home: string,
+  roots: readonly string[]
+): readonly UnifyHomePreflightBlocker[] {
+  const enumeration = listSessionOwnerRecords(home);
+  if (enumeration.unreadable !== undefined) {
+    return [{ reason: "registry-unreadable", detail: enumeration.unreadable }];
+  }
+  const blockers: UnifyHomePreflightBlocker[] = [];
+  for (const record of enumeration.records) {
+    if (record.malformed !== undefined) {
+      blockers.push({ reason: "registry-unreadable", detail: record.malformed });
+      continue;
+    }
+    const owner = record.owner!;
+    const { pid, startIdentity } = owner.providerRoot;
+    // A dead Provider root cannot write; its record is stale (reconciliation
+    // prunes it). Liveness is proven from /proc with a PID-reuse-safe identity
+    // check, exactly as live-reference GC does.
+    if (!isLinuxProcessLive(pid, startIdentity)) continue;
+
+    // The owner is live. Establish, POSITIVELY, that neither it nor any process
+    // in its owned tree is writing under a relocating root. Any gap in that
+    // proof is a blocker, not a pass.
+    const overlap = liveOwnerWriteOverlap(owner, roots);
+    if (overlap !== undefined) {
+      blockers.push({
+        reason: "live-execution",
+        detail: `session owner pid ${pid} (${describeOwner(owner)}) ${overlap}`
+      });
+    }
+  }
+  return blockers;
+}
+
+type SessionOwnerRecordRead = Readonly<{
+  owner?: SessionOwnerIdentity;
+  malformed?: string;
+}>;
+
+type SessionOwnerEnumeration = Readonly<{
+  records: readonly SessionOwnerRecordRead[];
+  /** Set when the directory itself could not be enumerated (fail-closed). */
+  unreadable?: string;
+}>;
+
+/**
+ * Enumerate session-owner custody records without throwing. A directory that
+ * cannot be read yields `unreadable`; an individual record that cannot be parsed
+ * yields a per-record `malformed` note. Both are fail-closed signals the callers
+ * surface as blockers — never as "no live writer".
+ */
+function listSessionOwnerRecords(home: string): SessionOwnerEnumeration {
+  const directory = join(home, "runtime", "session-owners");
+  let entries: string[];
+  try {
+    entries = readdirSync(directory);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { records: [] };
+    }
+    return {
+      records: [],
+      unreadable:
+        `the session-owner registry at ${directory} is unreadable `
+        + `(${error instanceof Error ? error.message : String(error)}), so live executions cannot `
+        + "be ruled out; resolve the permission/IO problem, confirm no execution is running, then retry"
+    };
+  }
+  const records: SessionOwnerRecordRead[] = [];
+  for (const entry of entries) {
+    if (!entry.endsWith(".json")) continue;
+    const path = join(directory, entry);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(path, "utf8"));
+    } catch (error) {
+      records.push({
+        malformed:
+          `the session-owner record at ${path} is unreadable `
+          + `(${error instanceof Error ? error.message : String(error)}); inspect it once you have `
+          + "confirmed no execution is running, remove it, then retry"
+      });
+      continue;
+    }
+    const record = parsed as {
+      providerRoot?: { pid?: unknown; startIdentity?: unknown; processGroupId?: unknown };
+      owner?: { scope?: unknown; taskId?: unknown; roleName?: unknown };
+      runtimeRoot?: unknown;
+    };
+    const pid = record.providerRoot?.pid;
+    const startIdentity = record.providerRoot?.startIdentity;
+    if (typeof pid !== "number" || pid <= 0 || typeof startIdentity !== "string") {
+      records.push({
+        malformed:
+          `the session-owner record at ${path} has no valid provider-root identity, so a live `
+          + "execution cannot be ruled out; inspect and remove it once you have confirmed no "
+          + "execution is running, then retry"
+      });
+      continue;
+    }
+    records.push({ owner: record as unknown as SessionOwnerIdentity });
+  }
+  return { records };
+}
+
+/**
+ * Positively establish whether a LIVE owner overlaps any relocating root. Returns
+ * a human-readable reason when it does OR when write-safety cannot be proven
+ * (fail-closed), and `undefined` only when the owner is provably clear.
+ */
+function liveOwnerWriteOverlap(
+  owner: SessionOwnerIdentity,
+  roots: readonly string[]
+): string | undefined {
+  // 1. A recorded runtimeRoot under a relocating root is itself an overlap — the
+  //    execution's disposable roots would move under it. (Runtime roots are
+  //    pointer-rewritten, but a LIVE writer there is still an in-flight move.)
+  if (
+    typeof owner.runtimeRoot === "string"
+    && owner.runtimeRoot.length > 0
+    && isUnderAnyRoot(resolve(owner.runtimeRoot), roots)
+  ) {
+    return `has a live runtime root under ${owner.runtimeRoot}`;
+  }
+
+  // 2. Inspect the owned process tree's actual cwds and open writable handles.
+  //    listOwnedProcessTree proves ownership by process-group / ancestry, never
+  //    by name or shared cwd, so we do not implicate unrelated processes.
+  const tree = listOwnedProcessTree(
+    owner.providerRoot.pid,
+    owner.providerRoot.processGroupId
+  );
+  if (tree.length === 0) {
+    // The root is live (checked by the caller) yet we cannot enumerate its tree.
+    // We cannot prove it is clear, so fail closed.
+    return "is live but its process tree could not be read to prove write-safety";
+  }
+  for (const process of tree) {
+    const cwd = readProcessCwd(process.pid);
+    if (cwd === undefined) {
+      // A live owned process whose cwd we cannot read is an unprovable writer.
+      return `includes pid ${process.pid} whose working directory could not be read`;
+    }
+    if (isUnderAnyRoot(resolve(cwd), roots)) {
+      return `includes pid ${process.pid} working under ${cwd}`;
+    }
+    const writtenPath = firstWriteHandleUnderRoots(process.pid, roots);
+    if (writtenPath !== undefined) {
+      return `includes pid ${process.pid} holding an open handle under ${writtenPath}`;
+    }
+  }
+  return undefined;
+}
+
+/** A live process's cwd via /proc, or undefined when it cannot be read. */
+function readProcessCwd(pid: number): string | undefined {
+  try {
+    return readlinkSync(`/proc/${pid}/cwd`);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The first open regular-file descriptor a process holds under any relocating
+ * root, or undefined when it holds none. Sockets/pipes/anon inodes are ignored;
+ * an unreadable fd directory returns undefined (the cwd check above already
+ * fails closed for a live process we cannot introspect).
+ */
+function firstWriteHandleUnderRoots(
+  pid: number,
+  roots: readonly string[]
+): string | undefined {
+  let fds: string[];
+  try {
+    fds = readdirSync(`/proc/${pid}/fd`);
+  } catch {
+    return undefined;
+  }
+  for (const fd of fds) {
+    let target: string;
+    try {
+      target = readlinkSync(`/proc/${pid}/fd/${fd}`);
+    } catch {
+      continue;
+    }
+    if (
+      target.startsWith("socket:")
+      || target.startsWith("pipe:")
+      || target.startsWith("anon_inode:")
+    ) {
+      continue;
+    }
+    if (isUnderAnyRoot(resolve(target), roots)) return target;
+  }
+  return undefined;
+}
+
+/** Compact owner description for a blocker diagnostic. */
+function describeOwner(owner: SessionOwnerIdentity): string {
+  const scope = owner.owner.scope === "task" && owner.owner.taskId !== undefined
+    ? `task ${owner.owner.taskId}`
+    : "global";
+  return `${scope}/${owner.owner.roleName}`;
+}
+
+
 function loadOrStartManifest(
   manifestPath: string,
   home: string,
@@ -266,6 +718,19 @@ function loadOrStartManifest(
           + `partial relocation is in progress, then retry.`
       );
     }
+    // Structural validity is not enough: the record must describe THIS migration.
+    // A manifest for a different Home, or one whose planned moves do not match the
+    // relocations we just derived, would let `relocateTree` honour a `completed`
+    // state (skipping a copy) for a move it never actually performed. Bind the
+    // record's identity to the current plan before trusting any completion flag.
+    const identityMismatch = manifestIdentityMismatch(prior, home, relocations);
+    if (identityMismatch !== undefined) {
+      throw new Error(
+        `Refusing to unify YUI_HOME layout: the recovery manifest at ${manifestPath} does not `
+          + `match the migration now planned (${identityMismatch}). Inspect and remove it once you `
+          + `have confirmed no partial relocation is in progress, then retry.`
+      );
+    }
     return prior;
   }
   const manifest: RecoveryManifest = {
@@ -277,6 +742,41 @@ function loadOrStartManifest(
   mkdirSync(dirname(manifestPath), { recursive: true, mode: 0o700 });
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
   return manifest;
+}
+
+/**
+ * Verify a structurally-valid manifest describes the migration currently planned:
+ * the same canonical Home, and a move set that covers exactly the planned
+ * relocations (each planned `from`→`to` present; no extra moves for a foreign
+ * plan). Returns a human-readable reason on mismatch, or undefined when the
+ * manifest's identity is bound to this plan. A `completed` flag is only ever
+ * trusted after this passes, so a stale/foreign manifest can never authorize
+ * skipping a copy that was never performed for this Home.
+ */
+function manifestIdentityMismatch(
+  manifest: RecoveryManifest,
+  home: string,
+  relocations: readonly PathRewrite[]
+): string | undefined {
+  if (resolve(manifest.home) !== resolve(home)) {
+    return `it records Home ${manifest.home}, not ${home}`;
+  }
+  const recorded = new Map(manifest.moves.map((move) => [move.to, move.from]));
+  for (const move of relocations) {
+    const recordedFrom = recorded.get(move.to);
+    if (recordedFrom === undefined) {
+      return `it does not record the planned relocation to ${move.to}`;
+    }
+    if (resolve(recordedFrom) !== resolve(move.from)) {
+      return `it maps ${move.to} from ${recordedFrom}, not the planned ${move.from}`;
+    }
+    recorded.delete(move.to);
+  }
+  const [extraTo] = recorded.keys();
+  if (extraTo !== undefined) {
+    return `it records an unplanned relocation to ${extraTo}`;
+  }
+  return undefined;
 }
 
 /** Structural guard for a persisted recovery manifest (fail-closed on anything else). */
@@ -352,6 +852,66 @@ function treeInventoryDigest(root: string): string {
 }
 
 /**
+ * True when a relative path is a Git worktree cross-reference pointer that
+ * `git worktree repair` legitimately rewrites when a worktree tree is relocated:
+ * a linked worktree's `.git` stub FILE, or a main clone's
+ * `.git/worktrees/<name>/gitdir` back-pointer. Determined empirically: these two
+ * file kinds are the ONLY ones repair mutates in a relocated tree (every durable
+ * object, ref, index, and working-tree file is untouched). A `.git` DIRECTORY
+ * (a main clone's real repository) is NOT a pointer and is never excluded.
+ */
+function isRepairVariantPointer(relPath: string, isFile: boolean): boolean {
+  const parts = relPath.split("/");
+  const base = parts[parts.length - 1];
+  if (base === ".git" && isFile) return true;
+  if (base === "gitdir" && parts.length >= 3 && parts[parts.length - 3] === "worktrees") {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Content digest of a tree that is INVARIANT under `git worktree repair`: it is
+ * identical to {@link treeInventoryDigest} except it omits the repair-variant Git
+ * pointer files ({@link isRepairVariantPointer}). Two trees with an equal
+ * repair-invariant digest hold byte-for-byte identical DURABLE content (committed
+ * objects, refs, index, and every tracked/untracked working file) even after one
+ * has had its worktree links repaired to a new location. This is what lets the
+ * idempotent completed-skip verify that a relocated tree still faithfully mirrors
+ * its preserved source without falsely flagging the relink git performed on it.
+ */
+function repairInvariantDigest(root: string): string {
+  const hash = createHash("sha256");
+  const walk = (dir: string, rel: string): void => {
+    const entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
+      a.name < b.name ? -1 : a.name > b.name ? 1 : 0
+    );
+    for (const entry of entries) {
+      const abs = join(dir, entry.name);
+      const relPath = rel === "" ? entry.name : `${rel}/${entry.name}`;
+      const stat = lstatSync(abs);
+      if (stat.isSymbolicLink()) {
+        hash.update(`L ${relPath}\0${readlinkSync(abs)}\0`);
+      } else if (stat.isDirectory()) {
+        hash.update(`D ${relPath}\0`);
+        walk(abs, relPath);
+      } else if (stat.isFile()) {
+        // Skip the repair-variant pointer files entirely — their content is a
+        // location detail git rewrites on relocate, not durable user content.
+        if (isRepairVariantPointer(relPath, true)) continue;
+        hash.update(`F ${relPath}\0${stat.size}\0`);
+        hash.update(readFileSync(abs));
+        hash.update("\0");
+      } else {
+        hash.update(`O ${relPath}\0`);
+      }
+    }
+  };
+  walk(root, "");
+  return hash.digest("hex");
+}
+
+/**
  * Copy one managed subtree into Home, tolerant of interruption and NON-
  * DESTRUCTIVE to the source. The source is copied (never renamed away) to a
  * same-filesystem staging directory, the replica's content digest is verified
@@ -359,11 +919,16 @@ function treeInventoryDigest(root: string): string {
  * place. The original is PRESERVED as the rollback anchor; its removal is a
  * later, authorized cleanup step, never part of this transaction.
  *
- * Idempotent and identity-checked: a target already recorded completed is left
- * alone; a target present but not yet recorded is adopted only when its digest
- * matches the source (an interrupted publish), and is otherwise refused as a
- * foreign conflict. Failing before the atomic rename leaves the source intact
- * and nothing published, so a retry re-copies cleanly.
+ * Idempotent and identity-checked: a target already recorded completed is
+ * re-verified against the preserved source (repair-invariant, since git will have
+ * relinked the published copy) and then left alone; a target present but not yet
+ * recorded is adopted only when its durable content matches the source (an
+ * interrupted publish), and is otherwise refused as a foreign conflict. When the
+ * source has been removed by an authorized post-success cleanup, a present target
+ * is trusted ONLY because the manifest records this exact move completed — a
+ * source-less target with no such record is refused, never heuristically adopted.
+ * Failing before the atomic rename leaves the source intact and nothing
+ * published, so a retry re-copies cleanly.
  */
 function relocateTree(
   from: string,
@@ -373,22 +938,48 @@ function relocateTree(
 ): void {
   const staging = `${to}.incoming`;
   const targetExists = existsSync(to);
+  const sourceExists = existsSync(from);
+
   if (isCompleted(manifest, to) && targetExists) {
-    // A prior run copied, verified, published, and recorded this move. The
-    // source is intentionally preserved; do not touch either tree.
+    // A prior run copied, verified, published, and recorded this move. Do not
+    // trust the manifest blindly: re-verify the published tree still faithfully
+    // mirrors the preserved source, tolerant of the worktree relink git performed
+    // on the copy after publication. (When the source was removed by an
+    // authorized cleanup there is nothing left to compare against; the manifest
+    // identity was already validated on load, so the target is authoritative.)
+    if (sourceExists && repairInvariantDigest(to) !== repairInvariantDigest(from)) {
+      throw new Error(
+        `Refusing to unify YUI_HOME layout: the relocated tree at ${to} is recorded complete but `
+          + `its durable content no longer matches the preserved source at ${from}. Do not delete `
+          + `either tree; inspect both and restore the fenced backup to recover.`
+      );
+    }
     return;
   }
-  if (!existsSync(from)) {
-    // No source: the tree was never created, or was removed by an authorized
-    // cleanup after a prior successful run. A present target is authoritative.
-    if (targetExists) markMoveCompleted(manifest, manifestPath, { from, to });
+
+  if (!sourceExists) {
+    // No source. A present target is trusted only via the completed-manifest path
+    // above; without that proof we cannot establish the target is our relocated
+    // tree, so we refuse rather than heuristically adopt a foreign directory.
+    if (targetExists) {
+      throw new Error(
+        `Refusing to unify YUI_HOME layout: the source tree ${from} is missing and the target `
+          + `${to} is not recorded as a completed relocation, so it cannot be verified as Yui's. `
+          + `Inspect it and, once you have confirmed it is safe, remove it or restore the fenced `
+          + `backup, then retry.`
+      );
+    }
+    // Neither source nor target exists: the tree was never created. Nothing to do.
     return;
   }
+
   const sourceDigest = treeInventoryDigest(from);
   if (targetExists) {
     // Publish happened but completion was not recorded (crash between rename and
-    // manifest write), OR the target is a foreign directory. Identity decides.
-    if (treeInventoryDigest(to) === sourceDigest) {
+    // manifest write), OR the target is a foreign directory. Durable-content
+    // identity decides — repair-invariant, because a crash AFTER the relink step
+    // would leave the published copy already repointed.
+    if (repairInvariantDigest(to) === repairInvariantDigest(from)) {
       markMoveCompleted(manifest, manifestPath, { from, to });
       return;
     }
@@ -419,13 +1010,28 @@ function relocateTree(
 
 /**
  * After the worktree subtree is copied into Home, the copies' absolute Git
- * pointers are stale. `git worktree repair`, run from each main clone (grouped
- * by Task + Project) at its NEW path, fixes both the main repository's
- * per-worktree gitdir records and each linked worktree's `.git` file, preserving
- * committed and uncommitted content. A repair FAILURE IS FATAL: it aborts the
- * migration so the transaction rolls back and the fenced backup is restored,
- * rather than advancing the version over unrepaired worktrees. The new paths are
- * derived from the registry entries as they will be rewritten.
+ * pointers still reference the OLD source location. They are corrected in TWO
+ * steps, in this order:
+ *
+ *   1. Deterministically REWRITE, in the NEW copy only, the two worktree cross-
+ *      reference pointer files (a linked worktree's `.git` stub and each main
+ *      clone's `.git/worktrees/<name>/gitdir`) from the OLD prefix to the NEW
+ *      prefix. This is the crucial step for preserved-source independence: it
+ *      makes the copy self-referential BEFORE any native git command runs, so
+ *      git never follows a stale absolute pointer back into the OLD tree and
+ *      mutates it. (Empirically, `git worktree repair` invoked on a verbatim copy
+ *      whose pointers still address the source WILL rewrite the OLD source's
+ *      `.git` files — corrupting the rollback anchor. Pre-rewriting prevents it.)
+ *   2. Run `git worktree repair` from each main clone at its NEW path as a
+ *      belt-and-braces reconciliation (it also fixes any pointer we did not model,
+ *      e.g. an unexpected nesting), now guaranteed to operate only within the NEW
+ *      tree because step 1 already repointed every cross-reference into it.
+ *
+ * Committed and uncommitted content is preserved throughout. A repair FAILURE IS
+ * FATAL: it aborts the migration so the transaction rolls back and the fenced
+ * backup is restored, rather than advancing the version over unrepaired
+ * worktrees. The new paths are derived from the registry entries as they will be
+ * rewritten.
  */
 function repairRelocatedWorktrees(
   db: Database.Database,
@@ -466,11 +1072,80 @@ function repairRelocatedWorktrees(
     // repair is a real integrity failure and is allowed to throw.
     if (main === undefined || !existsSync(main)) continue;
     const linked = [...group.linked].filter((path) => existsSync(path));
+    // Step 1: repoint the copy's cross-reference pointer files into the NEW tree
+    // BEFORE git runs, so no native command can chase a stale pointer into — and
+    // rewrite — the preserved OLD source.
+    relinkWorktreePointers(main, linked, rewrites);
+    // Step 2: reconcile with git as a safety net (now confined to the NEW tree).
     execFileSync("git", ["-C", main, "worktree", "repair", ...linked], {
       stdio: "ignore",
       timeout: 60_000
     });
   }
+}
+
+/**
+ * Rewrite, in place and in the NEW copy only, the worktree cross-reference
+ * pointer files so every path they contain that fell under a relocating OLD root
+ * is repointed to its NEW location. Two file kinds carry such absolute paths (see
+ * {@link isRepairVariantPointer}):
+ *
+ *   - each linked worktree's `.git` stub file: `gitdir: <main>/.git/worktrees/<n>`
+ *   - each main clone's `.git/worktrees/<name>/gitdir`: `<linked>/.git`
+ *
+ * Only the OLD→NEW prefixes are substituted (via {@link applyPrefix} on the exact
+ * path token), so a pointer already addressing the NEW tree, or one outside every
+ * relocating root, is left untouched. A missing or malformed pointer file is left
+ * for the subsequent `git worktree repair` to reconstruct. Nothing outside the
+ * NEW copy is read or written, so the preserved OLD source is never touched.
+ */
+function relinkWorktreePointers(
+  main: string,
+  linked: readonly string[],
+  rewrites: readonly PathRewrite[]
+): void {
+  // Main clone's back-pointers: .git/worktrees/<name>/gitdir -> <linked>/.git
+  const worktreesDir = join(main, ".git", "worktrees");
+  if (existsSync(worktreesDir)) {
+    let names: string[];
+    try {
+      names = readdirSync(worktreesDir);
+    } catch {
+      names = [];
+    }
+    for (const name of names) {
+      relinkPointerFile(join(worktreesDir, name, "gitdir"), rewrites);
+    }
+  }
+  // Each linked worktree's stub: .git file -> gitdir: <main>/.git/worktrees/<name>
+  for (const worktree of linked) {
+    relinkPointerFile(join(worktree, ".git"), rewrites);
+  }
+}
+
+/**
+ * Rewrite a single Git pointer file's stored path with the OLD→NEW prefix map,
+ * preserving any `gitdir: ` prefix and trailing newline. A file that is absent,
+ * unreadable, a directory (a real repository, never a pointer), or whose path is
+ * not under any relocating root is left exactly as-is.
+ */
+function relinkPointerFile(pointerPath: string, rewrites: readonly PathRewrite[]): void {
+  let raw: string;
+  try {
+    if (lstatSync(pointerPath).isDirectory()) return;
+    raw = readFileSync(pointerPath, "utf8");
+  } catch {
+    return;
+  }
+  const trailing = raw.endsWith("\n") ? "\n" : "";
+  const body = trailing === "\n" ? raw.slice(0, -1) : raw;
+  const marker = "gitdir: ";
+  const hasMarker = body.startsWith(marker);
+  const pathToken = hasMarker ? body.slice(marker.length) : body;
+  const rewritten = applyPrefix(pathToken.trim(), rewrites);
+  if (rewritten === undefined || rewritten === pathToken.trim()) return;
+  const next = `${hasMarker ? marker : ""}${rewritten}${trailing}`;
+  writeFileSync(pointerPath, next);
 }
 
 /**

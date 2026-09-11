@@ -12,6 +12,7 @@ import type { AgentAdapterId } from "../agent/adapterCatalog.js";
 import { assertRoleRuntimeMutationAllowed } from "../commands/roleRuntimeGuard.js";
 import { resolveTmuxBin } from "../config/yuiConfig.js";
 import { usageError } from "../errors/cliError.js";
+import { managedGlobalRoleWorkspace } from "../storage/homeLayout.js";
 import {
   createGlobalRole,
   createRoleAgentBinding,
@@ -105,14 +106,22 @@ export async function runSetupCommand(
       [],
       new Date()
     );
-    const workspace = resolveWorkspace(
-      store.getConfig().defaultWorkspace ?? join(dirname(resolve(home)), "workspace"),
-      home
-    );
+    // The built-in Global Operator/Leader run under a Home-internal working
+    // directory. Yui never auto-invents an external scratch root here: a user
+    // who wants an external project-input root configures `default-workspace`
+    // explicitly (kept outside Home by its own guard). An already-configured one
+    // is carried forward and normalized; none is fabricated.
+    const configuredWorkspace = store.getConfig().defaultWorkspace;
+    const externalWorkspace = configuredWorkspace === undefined
+      ? undefined
+      : resolveWorkspace(configuredWorkspace, home);
+    const roleWorkspace = managedGlobalRoleWorkspace(home);
+    mkdirSync(roleWorkspace, { recursive: true, mode: 0o700 });
     const roleStatus = saveMinimumConfiguration(
       store,
       agent,
-      workspace,
+      roleWorkspace,
+      externalWorkspace,
       new Set(choices.map(({ id }) => id))
     );
 
@@ -121,7 +130,10 @@ export async function runSetupCommand(
       `Yui home: ${home}.`,
       `Operator Agent: ${agent.id}.`,
       `Leader Agent: ${roleStatus.leaderAgentId}.`,
-      `Default workspace: ${workspace}.`,
+      `Global Role workspace: ${roleWorkspace}.`,
+      ...(externalWorkspace === undefined
+        ? []
+        : [`Default workspace: ${externalWorkspace}.`]),
       `Operator configuration: ${roleStatus.operator}.`,
       `Leader configuration: ${roleStatus.leader}.`,
       `Tmux: ${tmuxBin}.`,
@@ -197,7 +209,8 @@ async function selectOperatorAgent(
 function saveMinimumConfiguration(
   store: TaskStore,
   agent: ConfiguredAgent,
-  workspace: string,
+  roleWorkspace: string,
+  externalWorkspace: string | undefined,
   usableAgentIds: ReadonlySet<string>
 ): Readonly<{
   operator: "created" | "preserved" | "updated";
@@ -210,7 +223,11 @@ function saveMinimumConfiguration(
     tx.saveConfig({
       ...config,
       defaultAgent: config.defaultAgent ?? agent.id,
-      defaultWorkspace: config.defaultWorkspace ?? workspace
+      // Only persist a default workspace the user actually configured; setup no
+      // longer fabricates an external Home-sibling root.
+      ...(externalWorkspace === undefined
+        ? {}
+        : { defaultWorkspace: config.defaultWorkspace ?? externalWorkspace })
     });
 
     const now = new Date();
@@ -227,7 +244,7 @@ function saveMinimumConfiguration(
         SYSTEM_LEADER_ROLE,
         [createRoleAgentBinding(definition)],
         agent.id,
-        workspace,
+        roleWorkspace,
         now
       ));
       leaderStatus = "created";
@@ -265,7 +282,7 @@ function saveMinimumConfiguration(
         SYSTEM_OPERATOR_ROLE,
         [binding],
         agent.id,
-        workspace,
+        roleWorkspace,
         now
       ));
       return {
