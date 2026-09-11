@@ -35,15 +35,12 @@ export function createWebTaskSurface(
     } else options.runtime?.notifyStateChanged(taskId);
   };
   return {
-    message: (taskId: string, body: string, intent?: TaskSubmissionIntent) => {
-      // The Web surface is a default/old client for intent purposes: with no
-      // explicit intent it submits `discuss` (task-32 §2.5), exactly like every
-      // other surface, through the one shared submission service. The structured
-      // §2.5 feedback is returned verbatim so the Web client can render each facet
-      // — saved, phase, planning, activation, delivery, next step — separately and
-      // never collapse them into a single "started".
+    message: (taskId: string, body: string, intent?: TaskSubmissionIntent, requestId?: string) => {
+      // With no explicit intent the Web surface submits `discuss` like every other
+      // client (§2.5), through the one shared service; the requestId is threaded as
+      // the submission key (§2.3) and the structured feedback is returned verbatim.
       const { message, task, queuedForLeader, feedback } = webLocalMutation(store, (tx) =>
-        sendTaskMessageCommand(tx, taskId, body, undefined, commandOptions, undefined, intent));
+        sendTaskMessageCommand(tx, taskId, body, undefined, commandOptions, undefined, intent, requestId));
       notify(taskId, queuedForLeader);
       return { record: message, revision: message.createdAt,
         disposition: queuedForLeader ? "queued" : "saved",

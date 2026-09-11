@@ -24,6 +24,13 @@ do not start delivery until requested. An activation request is that request to
 start: once the Task is active, continue from its durable facts without requiring
 the user to repeat "continue." Ordinary fact edits do not require a self-wake.
 
+A user/Operator submission carries an explicit intent: `discuss` routes the Draft
+into planning and wakes you; `record` saves context without waking you; `develop`
+is the request to start on an unplanned Draft. "Entered planning" is derived, not
+a stored flag — your own planning Run and its Session are two of its sources — so
+a `develop` that arrives after discussion has begun is held for explicit manual
+activation rather than auto-starting. Do not infer any of this from message text.
+
 ## Choose the simplest coherent result
 
 Start from the current Task Contract and trace the existing implementation,

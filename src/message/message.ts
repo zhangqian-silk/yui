@@ -62,6 +62,13 @@ export type TaskMessage = {
    * after the fact, independent of the Task's current phase.
    */
   intent?: TaskSubmissionIntent;
+  /**
+   * The client-chosen idempotency key for a user/operator submission (task-32
+   * §2.3): the narrow persistent fact that lets a retry replay its original
+   * outcome. Absent on role-result/system Messages and on keyless submissions, so
+   * an old client keeps its existing non-idempotent behaviour.
+   */
+  submissionKey?: string;
   runId?: string;
   resultRef?: Readonly<{ type: "agent-run-result"; runId: string }>;
   workItemId?: string;
@@ -80,6 +87,7 @@ export type TaskMessageContext = Readonly<{
   workItemId?: string;
   wakePolicy?: "leader" | "none";
   intent?: TaskSubmissionIntent;
+  submissionKey?: string;
   recipient?: TaskMessageRecipient;
 }>;
 
@@ -111,6 +119,9 @@ export function createTaskMessage(
     ...(context.intent === undefined
       ? {}
       : { intent: context.intent }),
+    ...(context.submissionKey === undefined
+      ? {}
+      : { submissionKey: requireText(context.submissionKey, "Message submission key") }),
     ...(context.runId === undefined
       ? {}
       : { runId: requireSafeIdentity(context.runId, "Message AgentRun id") }),
@@ -189,6 +200,12 @@ export function validateTaskMessage(message: TaskMessage): void {
     && message.kind !== "user"
     && message.kind !== "operator") {
     throw new Error("Message intent is only valid for user/operator messages.");
+  }
+  if (message.submissionKey !== undefined) {
+    requireText(message.submissionKey, "Message submission key");
+    if (message.kind !== "user" && message.kind !== "operator") {
+      throw new Error("Message submission key is only valid for user/operator messages.");
+    }
   }
   if (message.runId !== undefined) requireSafeIdentity(message.runId, "Message AgentRun id");
   if (message.recipient !== undefined) {

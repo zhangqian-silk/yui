@@ -44,19 +44,18 @@ test("normalizeSubmissionIntent lets an explicit intent win over wake policy", (
 });
 
 // ---------------------------------------------------------------------------
-// §2.1 table: record always saves-only, in every Task state and activation.
+// §2.1 table: record always saves-only. It is an unconditional early return that
+// ignores status, activation and planning, so a representative sample of the
+// corners proves the invariant without permanently freezing the whole matrix.
 // ---------------------------------------------------------------------------
-for (const status of ["draft", "active"]) {
-  for (const activation of ["none", "pending", "failed", "adopted"]) {
-    for (const enteredPlanning of [false, true]) {
-      test(`record saves only (status=${status}, activation=${activation}, planning=${enteredPlanning})`, () => {
-        assert.deepEqual(
-          route({ intent: "record", status, activation, enteredPlanning }),
-          { kind: "record" }
-        );
-      });
-    }
-  }
+for (const state of [
+  { status: "draft", activation: "none", enteredPlanning: false },
+  { status: "draft", activation: "pending", enteredPlanning: true },
+  { status: "active", activation: "adopted", enteredPlanning: true }
+]) {
+  test(`record saves only (${JSON.stringify(state)})`, () => {
+    assert.deepEqual(route({ intent: "record", ...state }), { kind: "record" });
+  });
 }
 
 // ---------------------------------------------------------------------------

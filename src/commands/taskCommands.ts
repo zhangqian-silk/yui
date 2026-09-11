@@ -94,6 +94,7 @@ import {
   recordTaskActivationRequestInTransaction,
   taskActivationOperationRef
 } from "../task/taskActivationService.js";
+import { TASK_ACTIVATION_EVENT } from "../task/taskActivation.js";
 import type {
   TaskRetirementProof,
   WorkItemIntegrationProof
@@ -204,6 +205,7 @@ import {
   type CompletionBlocker
 } from "../task/completionReadiness.js";
 import type { TaskStore } from "../storage/taskStore.js";
+import { StorageConflictError } from "../storage/taskStore.js";
 import type { AgentProfile } from "../profile/agentProfile.js";
 import {
   requireResolvedAgentProfileRuntime,
@@ -1131,16 +1133,30 @@ function routeUserSubmission(
   actor: SubmissionActor,
   body: string,
   intent: TaskSubmissionIntent,
-  now: Date
+  now: Date,
+  submissionKey?: string
 ): UserSubmissionResult {
-  // Save the message first, with its intent recorded, so the "saved" facet holds
-  // no matter how the routing then resolves (§2.5). The intent is stored as
-  // context, never re-derived from the body.
   const kind: TaskMessageKind = actor;
   const author: TaskMessageAuthor = actor === "operator"
     ? { type: "operator" }
     : { type: "user" };
-  const message = appendMessage(tx, task.id, body, kind, author, now, { intent });
+
+  // §2.3 keyed idempotency: the narrow persistent fact is the saved Message's own
+  // key, so a retry is detected by reading an existing fact, not a new dedup
+  // ledger. A matching key replays; differing input under it conflicts.
+  if (submissionKey !== undefined) {
+    const prior = tx.listMessages(task.id).find(
+      (message) => message.submissionKey === submissionKey
+    );
+    if (prior !== undefined) return replayKeyedSubmission(tx, task, prior, kind, body, intent);
+  }
+
+  // Save first, recording intent and key, so the "saved" facet holds regardless of
+  // how routing then resolves (§2.5). Intent is stored, never re-read from the body.
+  const message = appendMessage(tx, task.id, body, kind, author, now, {
+    intent,
+    ...(submissionKey === undefined ? {} : { submissionKey })
+  });
 
   // Re-read phase and activation inside this same transaction: this is the point
   // the race is decided at (§2.3).
@@ -1196,10 +1212,9 @@ function routeUserSubmission(
       queuedForLeader = true;
       break;
     case "activate": {
-      // Reuse the existing activation record logic inside this transaction, then
-      // queue only activation processing. The requestId is derived from the
-      // message so a retried submission cannot create a second request, and the
-      // identity is byte-identical to the explicit boundary for this actor.
+      // Record the activation in-transaction, then queue only activation
+      // processing. The requestId is derived from the message so a retried
+      // submission cannot mint a second request.
       const identity = nonLeaderActivationIdentity(tx, actor);
       recordTaskActivationRequestInTransaction(tx, {
         taskId: task.id,
@@ -1230,6 +1245,83 @@ function routeUserSubmission(
     ...(activationFailure === undefined ? {} : { activationFailure })
   });
   return { task, message, routing, feedback, queuedForLeader };
+}
+
+/**
+ * Reproduce a keyed submission's outcome with zero writes (task-32 §2.3), so no
+ * routing matrix is persisted. The receipt is rebuilt from facts that already
+ * exist: an `activate` from its `submit-<id>` activation-requested event, an
+ * `enter-planning` from the planning-entered event naming this Message; every
+ * other route left no per-Message effect and is re-derived from current
+ * phase/activation. Differing normalized input under the same key is a conflict.
+ */
+function replayKeyedSubmission(
+  tx: TaskWorkflowStore,
+  task: Task,
+  prior: TaskMessage,
+  kind: TaskMessageKind,
+  body: string,
+  intent: TaskSubmissionIntent
+): UserSubmissionResult {
+  // Same key, different normalized input is a conflict, never a silent overwrite.
+  if (prior.kind !== kind
+    || prior.body !== body
+    || normalizeSubmissionIntent(prior.intent) !== intent) {
+    throw new StorageConflictError(
+      `Submission key ${prior.submissionKey} was already used for a different submission on ${task.id}/${prior.id}.`
+    );
+  }
+
+  const events = tx.listEvents(task.id);
+  const activatedByThis = events.some(
+    (event) => event.type === TASK_ACTIVATION_EVENT.requested
+      && event.payload.requestId === `submit-${prior.id}`
+  );
+  const enteredByThis = events.some(
+    (event) => event.type === TASK_PLANNING_ENTERED_EVENT
+      && event.payload.messageId === prior.id
+  );
+  const enteredPlanning = draftHasEnteredPlanning(tx, task);
+  const activation = draftActivationState(task.activationRequest);
+
+  let routing: SubmissionRouting;
+  let activationRef: string | undefined;
+  let activationFailure: string | undefined;
+  if (activatedByThis) {
+    // Point back at the very request this submission created, not a fresh derivation.
+    routing = { kind: "activate", environmentPlan: { kind: "empty" } };
+    activationRef = taskActivationOperationRef(task.id, `submit-${prior.id}`);
+  } else if (enteredByThis) {
+    routing = { kind: "enter-planning" };
+  } else {
+    routing = decideSubmissionRouting({
+      intent,
+      status: task.status,
+      enteredPlanning,
+      activation,
+      executionEnabled: task.executionGate.state === "enabled",
+      developEnvironmentPlan: { kind: "empty" }
+    });
+    if (routing.kind === "await-activation") {
+      activationRef = task.activationRequest === undefined
+        ? undefined
+        : taskActivationOperationRef(task.id, task.activationRequest.operation.requestId);
+      if (routing.state === "failed") activationFailure = task.activationRequest?.outcome;
+    }
+  }
+
+  const feedback = describeSubmissionFeedback({
+    taskId: task.id,
+    messageId: prior.id,
+    status: task.status,
+    enteredPlanning,
+    activationState: activation,
+    routing,
+    ...(activationRef === undefined ? {} : { activationRef }),
+    ...(activationFailure === undefined ? {} : { activationFailure })
+  });
+  // The replay queues nothing: any Leader wake the original made already happened.
+  return { task, message: prior, routing, feedback, queuedForLeader: false };
 }
 
 /** The mailbox reason a submission wake carries, preserving the existing
@@ -1315,7 +1407,8 @@ export function submitOperatorMessage(
   taskId: string | undefined,
   store: TaskWorkflowStore,
   options: TaskCommandOptions = {},
-  intent?: TaskSubmissionIntent
+  intent?: TaskSubmissionIntent,
+  submissionKey?: string
 ): string {
   const now = clock(options);
   const effectiveIntent = normalizeSubmissionIntent(intent);
@@ -1323,14 +1416,22 @@ export function submitOperatorMessage(
     if (taskId !== undefined) {
       const task = requireTask(tx, taskId);
       assertTaskOpen(task);
-      const routed = routeUserSubmission(tx, task, "operator", body, effectiveIntent, now);
+      const routed = routeUserSubmission(tx, task, "operator", body, effectiveIntent, now, submissionKey);
       return { ...routed, created: false } as const;
     }
-    // A fresh Draft is unplanned with no activation, so the shared service routes
-    // the first submission exactly as the table prescribes for that state:
-    // discuss enters planning, develop records an activation, record saves only.
+    // A task-less keyed submit must also be idempotent across the create boundary:
+    // look the key up in existing Messages before creating, so a retry replays the
+    // original Draft rather than minting a second (§2.3).
+    if (submissionKey !== undefined) {
+      const priorTaskId = findSubmissionKeyTask(tx, submissionKey);
+      if (priorTaskId !== undefined) {
+        const task = requireTask(tx, priorTaskId);
+        const routed = routeUserSubmission(tx, task, "operator", body, effectiveIntent, now, submissionKey);
+        return { ...routed, created: false } as const;
+      }
+    }
     const createdAgg = createTaskAggregate(tx, titleFrom(body), {}, now);
-    const routed = routeUserSubmission(tx, createdAgg.task, "operator", body, effectiveIntent, now);
+    const routed = routeUserSubmission(tx, createdAgg.task, "operator", body, effectiveIntent, now, submissionKey);
     return { ...routed, task: createdAgg.task, created: true } as const;
   });
   notifyMailbox(
@@ -1342,6 +1443,23 @@ export function submitOperatorMessage(
     ? `Created Draft task ${result.task.id}: ${result.task.title}\n`
     : "";
   return `${header}${renderSubmissionFeedback(result.feedback)}`;
+}
+
+/**
+ * The Task whose Messages already carry this submission key, if any. Used only by
+ * the task-less operator create path, where the key must dedup across the create
+ * boundary; addressed paths dedup within their own Task.
+ */
+function findSubmissionKeyTask(
+  store: TaskWorkflowStore,
+  submissionKey: string
+): string | undefined {
+  for (const task of store.listTasks()) {
+    if (store.listMessages(task.id).some((message) => message.submissionKey === submissionKey)) {
+      return task.id;
+    }
+  }
+  return undefined;
 }
 
 function createTaskCommand(
@@ -2314,10 +2432,10 @@ function taskMessageCommand(
     return { kind: "output", output: `${JSON.stringify(expanded, null, 2)}\n`, data: expanded };
   }
   if (command === "send") {
-    const usage = "Task message send usage: yui task message send <id> (<body>|--body-file <path|->) [--intent record|discuss|develop] [--wake-policy leader|none] [--to <role> --work-item <id>|--review-round <id>].";
+    const usage = "Task message send usage: yui task message send <id> (<body>|--body-file <path|->) [--intent record|discuss|develop] [--request-id <key>] [--wake-policy leader|none] [--to <role> --work-item <id>|--review-round <id>].";
     const parsed = parseTail(
       rest,
-      new Set(["--body-file", "--intent", "--wake-policy", "--to", "--work-item", "--review-round"]),
+      new Set(["--body-file", "--intent", "--request-id", "--wake-policy", "--to", "--work-item", "--review-round"]),
       usage
     );
     if (parsed.positionals.length < 1 || parsed.positionals.length > 2) throw usageError(usage);
@@ -2337,13 +2455,17 @@ function taskMessageCommand(
       throw usageError(`--wake-policy must be 'leader' or 'none': ${wakePolicyRaw}.`);
     }
     const intent = parseSubmissionIntentOption(parsed.options.get("--intent"), usage);
+    const submissionKey = parsed.options.get("--request-id");
+    if (submissionKey !== undefined && submissionKey.trim().length === 0) {
+      throw usageError("--request-id is required.", usage);
+    }
     const recipientRole = parsed.options.get("--to");
     const workItemId = parsed.options.get("--work-item");
     const reviewRoundId = parsed.options.get("--review-round");
     if (recipientRole === undefined && (workItemId !== undefined || reviewRoundId !== undefined)) throw usageError("--to is required for scoped Message delivery.");
     const result = sendTaskMessageCommand(store, parsed.positionals[0], body, wakePolicy, options,
       recipientRole === undefined ? undefined : { roleName: recipientRole, workItemId, reviewRoundId },
-      intent);
+      intent, submissionKey);
     // A user/operator submission returns the unified §2.5 feedback; render each
     // facet on its own line and expose the structure to non-text callers.
     if (result.feedback !== undefined) {
@@ -2435,7 +2557,8 @@ export function sendTaskMessageCommand(
   store: TaskWorkflowStore, taskId: string, body: string,
   wakePolicy: "leader" | "none" | undefined, options: TaskCommandOptions = {},
   recipient?: Readonly<{ roleName: string; workItemId?: string; reviewRoundId?: string }>,
-  intent?: TaskSubmissionIntent
+  intent?: TaskSubmissionIntent,
+  submissionKey?: string
 ) {
   if (!body.trim()) throw usageError("Message body is required.");
   if (recipient !== undefined && wakePolicy !== undefined) {
@@ -2443,6 +2566,9 @@ export function sendTaskMessageCommand(
   }
   if (recipient !== undefined && intent !== undefined) {
     throw usageError("A submission intent applies only to unaddressed Leader Messages; an owner-directed Message uses its exact continuation boundary.");
+  }
+  if (recipient !== undefined && submissionKey !== undefined) {
+    throw usageError("A submission key applies only to unaddressed Leader Messages; an owner-directed Message uses its exact continuation boundary.");
   }
   const now = clock(options);
   const result = store.transaction((tx): Readonly<{
@@ -2469,7 +2595,7 @@ export function sendTaskMessageCommand(
     // gain develop authority (task-32 §2.5).
     if (recipient === undefined && (actor === "user" || actor === "operator")) {
       const effectiveIntent = normalizeSubmissionIntent(intent, wakePolicy);
-      const routed = routeUserSubmission(tx, task, actor, body, effectiveIntent, now);
+      const routed = routeUserSubmission(tx, task, actor, body, effectiveIntent, now, submissionKey);
       return {
         task: routed.task, message: routed.message, actor,
         queuedForLeader: routed.queuedForLeader, feedback: routed.feedback

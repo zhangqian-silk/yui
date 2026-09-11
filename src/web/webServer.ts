@@ -245,7 +245,8 @@ async function handleHttpRequest(
           || !("requestId" in body) || typeof body.requestId !== "string" || !body.requestId.trim()
           || !("body" in body) || typeof body.body !== "string") throw new WebRequestRejected("Expected body, requestId and optional intent.");
         const intent = webSubmissionIntent(body);
-        value = { ...dependencies.surface.message(taskId, body.body, intent), requestId: body.requestId };
+        // requestId is threaded as the submission key (§2.3) and echoed back on the receipt.
+        value = { ...dependencies.surface.message(taskId, body.body, intent, body.requestId), requestId: body.requestId };
       } else if (method === "POST" && action === "metadata") {
         const body = await readMutationBody(request);
         if (typeof body !== "object" || body === null || Array.isArray(body)
