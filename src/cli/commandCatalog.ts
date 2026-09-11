@@ -467,12 +467,12 @@ const taskChildren: readonly NodeInput[] = [
   { name: "show", summary: "Show a Task.", usage: "yui task show <id>" },
   {
     name: "artifact",
-    summary: "Save fixed Task results and read history without the original Runtime.",
-    sections: [{ id: "manage", title: "Commands", entries: ["list", "show", "save"] }],
+    summary: "Save Task files in local Git and read current or commit-pinned content.",
+    sections: [{ id: "manage", title: "Commands", entries: ["list", "read", "save"] }],
     children: [
       { name: "list", summary: "List saved Task artifacts.", usage: "yui task artifact list <task>" },
-      { name: "show", summary: "Read one saved artifact.", usage: "yui task artifact show <task> <artifact-id>" },
-      { name: "save", summary: "Save content, a version, receipt, or reference.", usage: "yui task artifact save <task> <artifact-json>" }
+      { name: "read", summary: "Read a file at HEAD or an exact commit.", usage: "yui task artifact read <task> <relative-path> [<commit>]" },
+      { name: "save", summary: "Save and locally commit one file.", usage: "yui task artifact save <task> <relative-path> <content> [--message <text>] [--expected-head <commit>]", options: ["--message", "--expected-head"] }
     ]
   },
   {
