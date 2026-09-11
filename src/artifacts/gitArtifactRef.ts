@@ -113,7 +113,37 @@ export async function resolveGitArtifact(home: string, ref: GitArtifactRef): Pro
   return content;
 }
 
-/** Ordinary read: current bytes of `relativePath` at HEAD (ASYNC, not frozen). */
+/**
+ * Save one file artifact and return its frozen pinned reference (ASYNC).
+ *
+ * This is the primitive behind the `artifact.save` capability: write `bytes`
+ * to `relativePath` in the Task's local repository, commit exactly that path
+ * (one meaningful update = one commit), and return the commit-pinned reference
+ * for the resulting state. The returned reference is self-certifying, so a
+ * caller can record it directly as frozen evidence.
+ */
+export async function saveArtifactFile(
+  home: string,
+  taskId: string,
+  input: Readonly<{ relativePath: string; bytes: Buffer; message?: string; expectedHead?: string }>
+): Promise<GitArtifactRef> {
+  const repo = openTaskArtifactRepository(home, taskId);
+  const relativePath = safeRelativeArtifactPath(input.relativePath);
+  const result = await repo.save({
+    files: [{ relativePath, bytes: input.bytes }],
+    message: input.message ?? `save ${relativePath}`,
+    ...(input.expectedHead === undefined ? {} : { expectedHead: input.expectedHead })
+  });
+  // Read back at the resulting commit to record the exact frozen digest.
+  const content = await repo.read(relativePath, result.commit);
+  return validateGitArtifactRef({
+    taskId,
+    commit: result.commit,
+    relativePath: content.relativePath,
+    digest: content.digest
+  });
+}
+
 export async function readCurrentArtifact(
   home: string,
   taskId: string,

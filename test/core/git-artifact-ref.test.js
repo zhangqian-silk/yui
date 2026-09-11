@@ -13,6 +13,7 @@ import {
   pinCurrentArtifacts,
   readCurrentArtifact,
   resolveGitArtifact,
+  saveArtifactFile,
   validateGitArtifactRef
 } from "../../dist/artifacts/gitArtifactRef.js";
 
@@ -126,6 +127,70 @@ test("git artifact ref: ordinary read/list work at HEAD (unfrozen)", async () =>
     assert.deepEqual(list.map((entry) => entry.relativePath), ["a.md"]);
     // A Task with no repo lists as empty (not an error).
     assert.deepEqual(await listCurrentArtifacts(home, "task-none"), []);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("git artifact ref: saveArtifactFile writes, commits, and returns a self-certifying ref", async () => {
+  const home = makeHome();
+  try {
+    // No pre-existing repo: the primitive must ensure() it on first save.
+    const ref = await saveArtifactFile(home, TASK_ID, {
+      relativePath: "design/plan.md",
+      bytes: Buffer.from("plan v1\n"),
+      message: "author plan"
+    });
+    assert.equal(ref.taskId, TASK_ID);
+    assert.equal(ref.relativePath, "design/plan.md");
+    assert.match(ref.commit, /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/);
+    // The returned ref records the real digest and resolves to the exact bytes.
+    assert.match(ref.digest ?? "", /^[a-f0-9]{64}$/);
+    const resolved = await resolveGitArtifact(home, ref);
+    assert.equal(resolved.bytes.toString("utf8"), "plan v1\n");
+    assert.equal(resolved.digest, ref.digest);
+
+    // A second save advances HEAD and pins the new commit; the first ref stays
+    // frozen (self-certifying across the later save).
+    const next = await saveArtifactFile(home, TASK_ID, {
+      relativePath: "design/plan.md",
+      bytes: Buffer.from("plan v2\n"),
+      message: "revise plan"
+    });
+    assert.notEqual(next.commit, ref.commit);
+    assert.equal((await resolveGitArtifact(home, ref)).bytes.toString("utf8"), "plan v1\n");
+    assert.equal((await resolveGitArtifact(home, next)).bytes.toString("utf8"), "plan v2\n");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("git artifact ref: saveArtifactFile honors an expected-HEAD guard", async () => {
+  const home = makeHome();
+  try {
+    const first = await saveArtifactFile(home, TASK_ID, {
+      relativePath: "report.md",
+      bytes: Buffer.from("r1\n"),
+      message: "r1"
+    });
+    // A stale expected-head (the empty-root commit before `first`) must be rejected.
+    await assert.rejects(
+      saveArtifactFile(home, TASK_ID, {
+        relativePath: "report.md",
+        bytes: Buffer.from("r2\n"),
+        message: "r2",
+        expectedHead: "0".repeat(40)
+      }),
+      /advanced|expected/
+    );
+    // Saving against the true HEAD succeeds.
+    const second = await saveArtifactFile(home, TASK_ID, {
+      relativePath: "report.md",
+      bytes: Buffer.from("r2\n"),
+      message: "r2",
+      expectedHead: first.commit
+    });
+    assert.notEqual(second.commit, first.commit);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
