@@ -89,6 +89,7 @@ managed root from Home:
 |---|---|---|
 | Managed worktrees | `<home>/workspaces/worktree/<project>/<worktree>` | Task/WorkItem/Review/Integration Git clones and linked worktrees (durable, committed **and** uncommitted content). |
 | Managed task views | `<home>/workspaces/tasks/<taskId>/…` | Regenerable per-Task symlink views (rebuilt at launch from the registry). |
+| Global Role workspace | `<home>/workspaces/global` | Default cwd for Yui-auto-created Global Roles (the `yui setup` Operator/Leader and ad-hoc Global Roles added without an explicit `--workspace`). A plain cwd, not a managed Git workspace. |
 | Task provider runtimes | `<home>/runtime/task-runtimes` | Task provider data/cache/tmp; also the planning cwd at `…/planning/<taskId>`. |
 | Integration runtimes | `<home>/runtime/integration-runtimes` | The integration check's provider data/cache/tmp (a separate partition from Task runtimes). |
 | Update staging | `<home>/runtime/update-staging` | `yui update`'s side-by-side package install (an upgrade artifact). |
@@ -101,13 +102,21 @@ runtime root overlapping any other part of Home (the database, `workspaces/`,
 `projects/`) is still rejected by `assertTaskRuntimeIsolationPreflight`, so
 unifying the root does not weaken control-data or cross-owner isolation.
 
-`defaultWorkspace` is a user-facing cwd for global/ad-hoc Roles and external
-Project input only; it is **not** a second authority for internal managed paths,
-and is intentionally not an input to `homeLayout.ts`. The "planning/global cwd"
-that criterion 1 places under Home is the *disposable runtime cwd Yui
-materializes itself* — the Draft planning cwd (`planningRuntimeCwd`, now under
-`runtime/task-runtimes/planning`) — not the operator's own working directory for
-an ad-hoc global Role, which stays external by design.
+`defaultWorkspace` is a user-facing cwd for external Project input only; it is
+**not** a second authority for internal managed paths, and is intentionally not
+an input to `homeLayout.ts`. A Yui-auto-created Global Role that carries no
+user-chosen cwd no longer falls back to it (or to `process.cwd()`): `yui setup`'s
+built-in Operator/Leader and `yui role add` without `--workspace` now default to
+the Home-internal `managedGlobalRoleWorkspace(home)` (`<home>/workspaces/global`),
+and `setup` no longer fabricates an external Home-sibling `workspace/` — a
+`default-workspace` is persisted only if the user configured one. A user who
+*names* an external directory (explicit `--workspace`, or a configured
+`default-workspace`) keeps external-resource semantics; the outside-Home guard
+still applies to it. The "planning/global cwd" that criterion 1 places under Home
+is thus both the *disposable runtime cwd Yui materializes itself* — the Draft
+planning cwd (`planningRuntimeCwd`, under `runtime/task-runtimes/planning`) — and
+the auto-created Global Role cwd above; only an operator's *explicitly named*
+external directory stays outside by design.
 
 Only genuine short-path IPC socket ENDPOINTS remain outside Home, and only
 because a Unix-domain `sockaddr_un` path has a small fixed length budget that a
@@ -186,16 +195,37 @@ external, user-owned checkout.
 
 The migration is **fail-closed and pre-checkable**:
 
-- It **refuses** up front if a queued or running `durable_jobs` step is bound to
-  a tree about to relocate — its detached runner survives the Controller quiesce
-  fence, so moving that tree would be an in-flight silent move. Let the Job drain
-  or cancel it, then retry. (`active_turns` is steady state, not an in-flight
-  signal, and is deliberately not consulted.)
+- It **refuses** up front if any live Agent execution is still bound to a tree
+  about to relocate. The Controller quiesce fence stops only in-process loops; a
+  Provider/Agent Host and a detached execution child run in their own process
+  group and survive it, so "no queued/running Job" alone does not prove the tree
+  is quiescent. `assertNoLiveExecutionUnderRoots` consults the durable,
+  enumerable **session-owner registry** (`<home>/runtime/session-owners/*.json`)
+  and must prove every owner ABSENT from the relocating roots: a record whose
+  process is dead/zombie/PID-reused (checked against `/proc` PID-reuse-safely) is
+  stale and skipped; a **live** owner must have its recorded `runtimeRoot` and
+  every owned-tree process's cwd and open regular-file descriptors all outside
+  every relocating root. Ownership is proven by process-group/ancestry only, so
+  unrelated sessions are never implicated, and it never stops another session.
+- It **refuses** if a queued or running `durable_jobs` step is bound to a tree
+  about to relocate — its detached runner survives the Controller quiesce fence,
+  so moving that tree would be an in-flight silent move. Let the Job drain or
+  cancel it, then retry. (`active_turns` is steady state, not an in-flight
+  signal, and is deliberately not consulted; live-execution custody is proven via
+  the session-owner registry above, not by the presence of an active Run
+  pointer.)
 - It **refuses** if a relocation target already exists and its content digest
-  does not match the source — a foreign directory in the way. It also refuses if
-  the recovery manifest exists but is unparseable or is not a recognised
-  storage-19 record, rather than silently rebuilding it. Resolve the conflict,
-  then retry.
+  does not match the source — a foreign directory in the way. The digest is
+  **repair-invariant** (tolerant of the `.git` stub / `worktrees/<name>/gitdir`
+  relink a published worktree performs), so a target Yui already published and
+  relinked is adopted, not falsely flagged. It also refuses if the recovery
+  manifest exists but is unparseable or is not a recognised storage-19 record,
+  rather than silently rebuilding it. Resolve the conflict, then retry.
+- Every refusal is surfaced as a **collected, read-only pre-check**: `yui
+  upgrade --dry-run` and the updater's `--update-preflight` run the same plan and
+  the same blocking conditions execute would throw on, opening the DB read-only
+  and reporting each independent blocker as `{reason, detail}` (blocked outcome)
+  without mutating the Home — a genuine pre-check, not a best-effort guess.
 - A Home already in the unified layout (or a fresh Home with nothing to relocate)
   is a **no-op** and writes no recovery manifest.
 
@@ -216,13 +246,33 @@ replica is atomically in place. The worktree relocation is
    filesystem);
 4. the original source tree is left in place as the rollback anchor.
 
-Relocation is **idempotent and identity-checked**: a re-run treats a target
-already recorded `completed` as done, adopts a target whose digest matches the
-source (a publish that crashed before the manifest was flipped), and refuses a
-target whose digest differs. After the copy, the worktrees are reconnected with
-`git worktree repair` run from each main clone at its new path; **a repair
-failure is fatal** — it aborts the migration so the transaction rolls back rather
-than advancing the version over unrepaired worktrees.
+Relocation is **idempotent and identity-checked**. A re-run treats a target
+already recorded `completed` as done — but only after the recovery manifest is
+bound to THIS plan (same `home`; its move set covers exactly the planned
+`from`→`to` with no foreign or extra move), and only after the completed target's
+durable content is **re-verified** against the preserved source, so a stale or
+foreign manifest can never authorize skipping a copy that never happened. It
+adopts a target whose digest matches the source (a publish that crashed before
+the manifest was flipped) and refuses a target whose digest differs; a
+**source-less** target is refused unless the bound completed-manifest path proved
+it is Yui's — it is never heuristically adopted. All of these comparisons use a
+**repair-invariant** digest, identical to the one the pre-check uses, so preflight
+and execute stay in lockstep.
+
+After the copy, the worktrees are reconnected. `git worktree repair` chases the
+absolute pointer files inside a worktree, so running it on a verbatim copy whose
+pointers still address the OLD source would rewrite the OLD source's `.git`
+files and corrupt the rollback anchor. The migration therefore **relinks first**:
+it deterministically repoints, in the NEW copy only, the two cross-reference
+pointer files (a linked worktree's `.git` stub and each
+`main/.git/worktrees/<name>/gitdir`) from OLD to NEW, and only THEN runs `git
+worktree repair` from each main clone at its new path as a belt-and-braces
+reconciliation now confined to the new tree. This keeps the preserved source a
+fully independent, working Git: its `.git` is byte-for-byte unchanged and it
+still resolves HEAD/index/status after the migration (verified empirically on a
+private disposable Home). **A repair failure is fatal** — it aborts the migration
+so the transaction rolls back rather than advancing the version over unrepaired
+worktrees.
 
 Because the data step runs inside the upgrade transaction, any throw rolls the
 schema back to 18; the fenced upgrade orchestrator additionally takes a

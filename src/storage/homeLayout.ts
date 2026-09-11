@@ -101,6 +101,22 @@ export function storageBackupRoot(home: string): string {
   return join(homeRoot(home), "backups");
 }
 
+/**
+ * Default working directory for Yui-owned Roles that carry no user-chosen,
+ * external cwd: the built-in Global Operator/Leader created by `yui setup` and
+ * ad-hoc Global Roles added without an explicit `--workspace`. Historically
+ * these fell back to a Home-sibling `workspace/` directory (or `process.cwd()`),
+ * which leaked Yui-managed scratch outside the canonical Home. A user who names
+ * an external directory keeps external-resource semantics; only the auto-created
+ * default lands here, under Home: `<home>/workspaces/global`.
+ *
+ * This is a plain cwd, NOT a managed Git workspace, so it is deliberately a
+ * sibling of `worktree/`+`tasks/` under `workspaces/`, never inside them.
+ */
+export function managedGlobalRoleWorkspace(home: string): string {
+  return join(managedWorkspacesRoot(home), "global");
+}
+
 /** True when `child` is strictly inside `parent` (shared with isolation checks). */
 export function isWithinManagedRoot(parent: string, child: string): boolean {
   const nested = relative(resolve(parent), resolve(child));
