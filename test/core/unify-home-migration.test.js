@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -32,11 +31,6 @@ import {
   MIN_SUPPORTED_STORAGE_VERSION
 } from "../../dist/storage/storageVersions.js";
 import { runStorageUpgrade } from "../../dist/storage/upgrade/upgradeOrchestrator.js";
-import { preflightUnifyHomeLayout } from "../../dist/storage/migrations/unifyHomeLayout.js";
-import {
-  createSessionOwnerIdentity,
-  readLinuxProcessIdentity
-} from "../../dist/runtime/sessionOwnerIdentity.js";
 import { activateTask, createTask } from "../../dist/task/task.js";
 import { createRole, createRoleAgentBinding } from "../../dist/role/role.js";
 import { createManagedWorkspace } from "../../dist/worktree/managedWorkspace.js";
@@ -438,25 +432,13 @@ test("unify-home relocates managed trees into Home and rewrites live pointers", 
     .get();
   assert.equal(snapshotRow.payload, snapshotPayload);
 
-  // Recovery manifest finalized with the single worktree relocation completed.
-  // Only the durable worktree tree is a physical move; the runtime and task
-  // views are pointer-only and are not manifest entries.
-  const manifestPath = join(storageBackupRoot(home), "unify-home-migration.json");
-  assert.equal(existsSync(manifestPath), true);
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-  assert.equal(manifest.version, CURRENT_STORAGE_VERSION);
+  // The offline migration keeps no recovery manifest / state machine: rollback
+  // is the fenced DB backup plus the preserved on-disk source, not a manifest.
   assert.equal(
-    manifest.moves.every((move) => move.state === "completed"),
-    true,
-    "all planned moves recorded completed"
+    existsSync(join(storageBackupRoot(home), "unify-home-migration.json")),
+    false,
+    "offline migration writes no recovery manifest"
   );
-  assert.equal(manifest.moves.length, 1, "only the durable worktree tree is a physical move");
-  assert.equal(
-    manifest.moves[0].from,
-    join(workspace, "worktree"),
-    "manifest records the worktree tree as the sole relocation source"
-  );
-  assert.equal(manifest.moves[0].to, newWorktreeRoot);
 
   // Ledger advanced to head.
   const ledgerHead = db
@@ -525,51 +507,6 @@ test("unify-home refuses when a non-terminal durable Job is under a relocating r
     false,
     "no recovery manifest written on up-front refusal"
   );
-});
-
-test("unify-home is idempotent across a repeated upgrade", (t) => {
-  const { home, db } = openPriorVersionHome(t, "yui-unify-idempotent-");
-  const workspace = mkdtempSync(join(tmpdir(), "yui-unify-external-ws-"));
-  t.after(() => rmSync(workspace, { recursive: true, force: true }));
-  setDefaultWorkspace(db, workspace);
-
-  const taskId = "task-1";
-  seedTask(db, taskId);
-  const { mainPath } = seedWorktrees(workspace, "app", "main-abcd", "linked-efgh");
-  insertManagedWorkspace(
-    db,
-    "task",
-    `task:${taskId}`,
-    taskId,
-    managedWorkspacePayload(
-      { type: "task", taskId },
-      join(workspace, "tasks", taskId, "main"),
-      [projectEntry("app", mainPath, "app")]
-    )
-  );
-
-  runMigration(db);
-  const afterFirst = db
-    .prepare("SELECT path, payload FROM managed_workspaces WHERE owner_kind = 'task'")
-    .get();
-  const newMain = join(managedWorktreeRoot(home), "app", "main-abcd");
-  assert.equal(JSON.parse(afterFirst.payload).entries[0].path, newMain);
-
-  // Simulate a re-run of the same forward migration (as a fenced retry would):
-  // drop the ledger row and invoke the data step again. It must be a no-op that
-  // neither throws nor corrupts already-migrated pointers.
-  db.prepare("DELETE FROM schema_migrations WHERE version = ?").run(CURRENT_STORAGE_VERSION);
-  const second = runMigration(db);
-  assert.deepEqual(second.applied, [CURRENT_STORAGE_VERSION]);
-  const afterSecond = db
-    .prepare("SELECT path, payload FROM managed_workspaces WHERE owner_kind = 'task'")
-    .get();
-  assert.deepEqual(
-    JSON.parse(afterSecond.payload),
-    JSON.parse(afterFirst.payload),
-    "second run leaves the already-rewritten registry unchanged"
-  );
-  assert.equal(existsSync(newMain), true, "relocated tree still present after re-run");
 });
 
 test("unify-home is a no-op on an already-unified Home and writes no manifest", (t) => {
@@ -723,13 +660,14 @@ test("real upgrade path: active run effective+workspace move together and pass t
 });
 
 // ---------------------------------------------------------------------------
-// Fault injection: the relocation is copy-verify-preserve (Gap 1) behind a
-// fail-closed recovery boundary (Gap 2). These drive real, deterministic faults
-// — a foreign directory sitting at the target, an interrupted publish, a fatal
-// `git worktree repair`, and a corrupt recovery manifest — and assert the
-// migration refuses or rolls back WITHOUT destroying the preserved source or
-// heuristically repairing over the damage. No real models or shared resources
-// are touched: every fixture is a private disposable Home + local Git remote.
+// Fault injection: the relocation is copy-verify-preserve behind a fail-closed
+// boundary. These drive real, deterministic faults — a pre-existing directory
+// sitting at the target, a stale `.incoming` staging dir, and a fatal `git
+// worktree repair` — and assert the migration refuses or rolls back WITHOUT
+// destroying the preserved source. On failure the operator clears the obstacle
+// and re-runs (no automatic idempotent recovery). No real models or shared
+// resources are touched: every fixture is a private disposable Home + local Git
+// remote.
 // ---------------------------------------------------------------------------
 
 /** The single durable worktree tree the migration copies, old + new roots. */
@@ -759,17 +697,18 @@ test("target conflict: a foreign directory at the relocation target is refused, 
     ])
   );
 
-  // Plant a FOREIGN directory exactly at the relocation target. It is not a
-  // completed manifest entry and its content differs from the source, so the
-  // migration must refuse rather than overwrite or adopt it.
+  // Plant a FOREIGN directory exactly at the relocation target. In the offline
+  // model ANY pre-existing target is refused outright — it is either a foreign
+  // directory or residue from a failed prior run, and the migration never adopts
+  // it. The operator clears it and re-runs.
   const { oldWorktreeRoot, newWorktreeRoot } = worktreeRoots(workspace, home);
   mkdirSync(newWorktreeRoot, { recursive: true });
   writeFileSync(join(newWorktreeRoot, "SOMEONE-ELSES-FILE.txt"), "not ours\n");
 
   assert.throws(
     () => runMigration(db),
-    /relocation target already exists and does not match the source content/u,
-    "refuses to publish over a foreign directory at the target"
+    /relocation target .* already exists/u,
+    "refuses to publish over a pre-existing directory at the target"
   );
 
   // Source preserved byte-for-byte; foreign target left exactly as planted.
@@ -793,62 +732,6 @@ test("target conflict: a foreign directory at the relocation target is refused, 
     .prepare("SELECT path FROM managed_workspaces WHERE owner_kind = 'task'")
     .get();
   assert.equal(row.path, join(workspace, "tasks", taskId, "main"), "registry pointer unchanged");
-});
-
-test("interrupted publish: an identical target left by a crash is adopted, not re-copied or refused", (t) => {
-  const { home, db } = openPriorVersionHome(t, "yui-unify-adopt-");
-  const workspace = mkdtempSync(join(tmpdir(), "yui-unify-external-ws-"));
-  t.after(() => rmSync(workspace, { recursive: true, force: true }));
-  setDefaultWorkspace(db, workspace);
-
-  const taskId = "task-1";
-  seedTask(db, taskId);
-  const { mainPath } = seedWorktrees(workspace, "app", "main-abcd", "linked-efgh");
-  insertManagedWorkspace(
-    db,
-    "task",
-    `task:${taskId}`,
-    taskId,
-    managedWorkspacePayload({ type: "task", taskId }, join(workspace, "tasks", taskId, "main"), [
-      projectEntry("app", mainPath, "app")
-    ])
-  );
-
-  // Simulate a crash AFTER the atomic publish but BEFORE the manifest recorded
-  // completion: an identical copy of the source tree is already at the target,
-  // and no recovery manifest exists. The migration must recognise the byte-for
-  // -byte match by digest and ADOPT it (idempotent), never re-copy or refuse.
-  const { oldWorktreeRoot, newWorktreeRoot } = worktreeRoots(workspace, home);
-  mkdirSync(dirname(newWorktreeRoot), { recursive: true });
-  cpSync(oldWorktreeRoot, newWorktreeRoot, { recursive: true, verbatimSymlinks: true });
-  assert.equal(
-    existsSync(join(home, "backups", "unify-home-migration.json")),
-    false,
-    "precondition: no manifest yet (crash before the record)"
-  );
-
-  const result = runMigration(db);
-  assert.deepEqual(result.applied, [CURRENT_STORAGE_VERSION], "adopts the identical target and completes");
-
-  // No `.incoming` staging left behind: an adoption does not re-copy.
-  assert.equal(existsSync(`${newWorktreeRoot}.incoming`), false, "no staging dir: target adopted, not re-copied");
-  assert.equal(existsSync(join(newWorktreeRoot, "app", "main-abcd")), true, "adopted target present");
-  assert.equal(existsSync(join(oldWorktreeRoot, "app", "main-abcd")), true, "source still preserved");
-  // Manifest finalized recording the adopted move as completed.
-  const manifest = JSON.parse(
-    readFileSync(join(home, "backups", "unify-home-migration.json"), "utf8")
-  );
-  assert.equal(manifest.moves.length, 1);
-  assert.equal(manifest.moves[0].state, "completed", "adopted move recorded completed");
-  // Pointer rewritten to the adopted target.
-  const row = db
-    .prepare("SELECT payload FROM managed_workspaces WHERE owner_kind = 'task'")
-    .get();
-  assert.equal(
-    JSON.parse(row.payload).entries[0].path,
-    join(newWorktreeRoot, "app", "main-abcd"),
-    "pointer rewritten to the adopted target"
-  );
 });
 
 test("interrupted copy: a stale .incoming staging dir is discarded and re-copied cleanly", (t) => {
@@ -944,264 +827,12 @@ test("fatal repair: an unrepairable worktree aborts the migration and rolls the 
   );
 });
 
-test("corrupt manifest: an unparseable recovery record is refused fail-closed", (t) => {
-  const { home, db } = openPriorVersionHome(t, "yui-unify-badmanifest-");
-  const workspace = mkdtempSync(join(tmpdir(), "yui-unify-external-ws-"));
-  t.after(() => rmSync(workspace, { recursive: true, force: true }));
-  setDefaultWorkspace(db, workspace);
-
-  const taskId = "task-1";
-  seedTask(db, taskId);
-  const { mainPath } = seedWorktrees(workspace, "app", "main-abcd", "linked-efgh");
-  insertManagedWorkspace(
-    db,
-    "task",
-    `task:${taskId}`,
-    taskId,
-    managedWorkspacePayload({ type: "task", taskId }, join(workspace, "tasks", taskId, "main"), [
-      projectEntry("app", mainPath, "app")
-    ])
-  );
-
-  // A recovery manifest already on disk that is not valid JSON: the migration
-  // must refuse rather than guess at what a prior interrupted run did.
-  const manifestPath = join(home, "backups", "unify-home-migration.json");
-  mkdirSync(dirname(manifestPath), { recursive: true });
-  writeFileSync(manifestPath, "{ this is not valid json");
-
-  assert.throws(
-    () => runMigration(db),
-    /recovery manifest at .* is not valid JSON/u,
-    "unparseable manifest is refused fail-closed"
-  );
-  // Nothing published, ledger unchanged, source intact.
-  const { newWorktreeRoot } = worktreeRoots(workspace, home);
-  assert.equal(existsSync(join(newWorktreeRoot, "app", "main-abcd")), false, "nothing published");
-  const ledgerHead = db
-    .prepare("SELECT MAX(version) AS version FROM schema_migrations")
-    .get();
-  assert.equal(ledgerHead.version, PRIOR_VERSION, "ledger stays at prior version");
-
-  // A structurally wrong manifest (valid JSON, wrong shape) is likewise refused.
-  writeFileSync(manifestPath, JSON.stringify({ version: 7, moves: "nope" }));
-  assert.throws(
-    () => runMigration(db),
-    /recovery manifest at .* is not a recognised storage-19 record/u,
-    "wrong-shape manifest is refused fail-closed"
-  );
-});
-
-// ---------------------------------------------------------------------------
-// P1 — in-flight execution write-safety. The upgrade fence quiesces the
-// Controller's in-process loops, but a Provider/Agent Host runs DETACHED and
-// survives that fence. Before copying a durable tree, the migration proves from
-// the enumerable session-owner registry (concrete OS process custody) that no
-// LIVE execution is bound under a relocating root; a live owner whose
-// write-safety cannot be positively established is a fail-closed blocker.
-//
-// These fixtures use ONLY this test process's own /proc identity — never a real
-// Agent, model, or shared resource. `process.pid` with its genuine start
-// identity is unambiguously live; the same pid with a mismatched start identity
-// exercises the PID-reuse-safe "not live" branch without racing a real spawn.
-// ---------------------------------------------------------------------------
-
-/** Absolute path of the session-owner custody directory inside a Home. */
-function sessionOwnerDir(home) {
-  return join(home, "runtime", "session-owners");
-}
-
-/** Persist one session-owner custody record exactly as the runtime writes it. */
-function writeSessionOwnerRecord(home, record) {
-  const dir = sessionOwnerDir(home);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const name = `${record.providerRoot.pid}-${record.providerRoot.startIdentity}.json`;
-  writeFileSync(join(dir, name), `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
-  return join(dir, name);
-}
-
-/**
- * A validated session-owner record for this very test process, whose
- * `runtimeRoot` is placed under the OLD provider-runtime sibling that the
- * migration relocates. Because the pid is genuinely live and its runtime root
- * overlaps a relocating root, the migration must refuse.
- */
-function liveSelfOwnerUnderOldRuntime(home, runtimeRoot) {
-  const identity = readLinuxProcessIdentity(process.pid);
-  assert.ok(identity !== undefined, "this platform exposes /proc for the test process");
-  return createSessionOwnerIdentity({
-    owner: { scope: "task", taskId: "task-1", roleName: "worker" },
-    agentId: "codex",
-    adapterId: "codex",
-    tmux: {
-      serverName: "yui",
-      socketPath: "/tmp/yui.sock",
-      sessionName: "s",
-      windowName: "w"
-    },
-    providerRoot: {
-      pid: process.pid,
-      startIdentity: identity.startIdentity,
-      ...(identity.processGroupId === undefined ? {} : { processGroupId: identity.processGroupId }),
-      attribution: "pane-pid"
-    },
-    runtimeRoot,
-    recordedAt: new Date()
-  });
-}
-
-test("P1: a live execution with a runtime root under a relocating root refuses the migration", (t) => {
-  const { home, db } = openPriorVersionHome(t, "yui-unify-p1-live-");
-  const workspace = mkdtempSync(join(tmpdir(), "yui-unify-external-ws-"));
-  t.after(() => rmSync(workspace, { recursive: true, force: true }));
-  setDefaultWorkspace(db, workspace);
-
-  const taskId = "task-1";
-  seedTask(db, taskId);
-  const { mainPath } = seedWorktrees(workspace, "app", "main-abcd", "linked-efgh");
-  insertManagedWorkspace(
-    db,
-    "task",
-    `task:${taskId}`,
-    taskId,
-    managedWorkspacePayload({ type: "task", taskId }, join(workspace, "tasks", taskId, "main"), [
-      projectEntry("app", mainPath, "app")
-    ])
-  );
-
-  // A LIVE owner (this process) whose runtime root sits under the OLD provider
-  // runtime sibling that the migration rewrites: an in-flight write overlap.
-  const oldRuntime = `${home}.task-runtimes`;
-  writeSessionOwnerRecord(
-    home,
-    liveSelfOwnerUnderOldRuntime(home, join(oldRuntime, "task-1", "data"))
-  );
-
-  // The read-only preflight reports the blocker with the stable machine tag...
-  const preflight = preflightUnifyHomeLayout(db);
-  assert.equal(preflight.noop, false);
-  const liveBlockers = preflight.blockers.filter((b) => b.reason === "live-execution");
-  assert.equal(liveBlockers.length, 1, "exactly one live-execution blocker surfaced");
-  assert.match(
-    liveBlockers[0].detail,
-    new RegExp(`pid ${process.pid}`, "u"),
-    "blocker names the offending live pid"
-  );
-  assert.match(liveBlockers[0].detail, /live runtime root/u);
-
-  // ...and execute refuses fail-closed with the operator-facing message.
-  assert.throws(
-    () => runMigration(db),
-    /a live Agent execution is still bound to a managed tree under relocation/u,
-    "execute refuses while a live execution overlaps a relocating root"
-  );
-
-  // Nothing moved, ledger unchanged, pointer intact.
-  assert.equal(existsSync(managedWorktreeRoot(home)), false, "no relocation on refusal");
-  const ledgerHead = db
-    .prepare("SELECT MAX(version) AS version FROM schema_migrations")
-    .get();
-  assert.equal(ledgerHead.version, PRIOR_VERSION, "ledger stays at prior version");
-  const row = db
-    .prepare("SELECT path FROM managed_workspaces WHERE owner_kind = 'task'")
-    .get();
-  assert.equal(row.path, join(workspace, "tasks", taskId, "main"), "pointer unchanged");
-});
-
-test("P1: a dead/PID-reused owner record does not block the migration", (t) => {
-  const { home, db } = openPriorVersionHome(t, "yui-unify-p1-dead-");
-  const workspace = mkdtempSync(join(tmpdir(), "yui-unify-external-ws-"));
-  t.after(() => rmSync(workspace, { recursive: true, force: true }));
-  setDefaultWorkspace(db, workspace);
-
-  const taskId = "task-1";
-  seedTask(db, taskId);
-  const { mainPath } = seedWorktrees(workspace, "app", "main-abcd", "linked-efgh");
-  insertManagedWorkspace(
-    db,
-    "task",
-    `task:${taskId}`,
-    taskId,
-    managedWorkspacePayload({ type: "task", taskId }, join(workspace, "tasks", taskId, "main"), [
-      projectEntry("app", mainPath, "app")
-    ])
-  );
-
-  // A record for THIS pid but a deliberately wrong start identity: the
-  // PID-reuse-safe liveness check reads /proc, sees the identity mismatch, and
-  // treats the recorded process as ABSENT (its record is stale). Even though its
-  // runtimeRoot overlaps a relocating root, a dead owner cannot write, so it is
-  // not a blocker.
-  const identity = readLinuxProcessIdentity(process.pid);
-  assert.ok(identity !== undefined);
-  const staleStart = String((Number(identity.startIdentity) || 1) + 1);
-  const oldRuntime = `${home}.task-runtimes`;
-  writeSessionOwnerRecord(home, createSessionOwnerIdentity({
-    owner: { scope: "global", roleName: "leader" },
-    agentId: "codex",
-    adapterId: "codex",
-    tmux: { serverName: "yui", socketPath: "/tmp/yui.sock", sessionName: "s", windowName: "w" },
-    providerRoot: { pid: process.pid, startIdentity: staleStart, attribution: "pane-pid" },
-    runtimeRoot: join(oldRuntime, "planning", taskId),
-    recordedAt: new Date()
-  }));
-
-  const preflight = preflightUnifyHomeLayout(db);
-  assert.equal(
-    preflight.blockers.filter((b) => b.reason === "live-execution").length,
-    0,
-    "a dead/reused-pid owner is not a live-execution blocker"
-  );
-
-  const result = runMigration(db);
-  assert.deepEqual(result.applied, [CURRENT_STORAGE_VERSION], "migration proceeds past a stale owner");
-  assert.equal(existsSync(managedWorktreeRoot(home)), true, "relocation completed");
-});
-
-test("P1: a malformed session-owner record is a fail-closed registry-unreadable blocker", (t) => {
-  const { home, db } = openPriorVersionHome(t, "yui-unify-p1-malformed-");
-  const workspace = mkdtempSync(join(tmpdir(), "yui-unify-external-ws-"));
-  t.after(() => rmSync(workspace, { recursive: true, force: true }));
-  setDefaultWorkspace(db, workspace);
-
-  const taskId = "task-1";
-  seedTask(db, taskId);
-  const { mainPath } = seedWorktrees(workspace, "app", "main-abcd", "linked-efgh");
-  insertManagedWorkspace(
-    db,
-    "task",
-    `task:${taskId}`,
-    taskId,
-    managedWorkspacePayload({ type: "task", taskId }, join(workspace, "tasks", taskId, "main"), [
-      projectEntry("app", mainPath, "app")
-    ])
-  );
-
-  // A record whose provider-root identity is absent cannot rule a live execution
-  // in or out: it must be treated as an unreadable custody signal (fail-closed),
-  // never silently as "no live writer".
-  const dir = sessionOwnerDir(home);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  writeFileSync(join(dir, "broken.json"), JSON.stringify({ providerRoot: { pid: "nope" } }));
-
-  const preflight = preflightUnifyHomeLayout(db);
-  const unreadable = preflight.blockers.filter((b) => b.reason === "registry-unreadable");
-  assert.equal(unreadable.length, 1, "one registry-unreadable blocker");
-  assert.match(unreadable[0].detail, /no valid provider-root identity/u);
-
-  assert.throws(
-    () => runMigration(db),
-    /a live Agent execution is still bound to a managed tree under relocation/u,
-    "execute refuses fail-closed on an unreadable custody record"
-  );
-  assert.equal(existsSync(managedWorktreeRoot(home)), false, "no relocation on fail-closed refusal");
-});
-
 // ---------------------------------------------------------------------------
 // P2 — a genuine, pre-checkable readiness signal. `yui upgrade --dry-run` and
 // the updater's `--update-preflight` must reflect the SAME decisions the apply
-// transaction would make (in-flight risk, target conflicts, corrupt manifest),
-// not merely list schema steps. These drive the ACTUAL orchestrator entry point
-// through both modes and assert the updater-facing contract shape.
+// transaction would make (in-flight Job risk, target conflicts), not merely list
+// schema steps. These drive the ACTUAL orchestrator entry point through both
+// modes and assert the updater-facing contract shape.
 // ---------------------------------------------------------------------------
 
 test("P2: a clean migrating Home reports migration-ready with the unify step (update-preflight)", async (t) => {
@@ -1445,269 +1076,3 @@ test("P4: the preserved source keeps an independent, working Git after the migra
     "OLD linked worktree still reports its uncommitted edit"
   );
 });
-
-// ---------------------------------------------------------------------------
-// P5 — trustworthy recovery/adoption verification. A `completed` manifest flag
-// is only ever honoured after the record's identity is bound to the current plan
-// AND the published tree is re-verified against the preserved source; a
-// source-less target is refused rather than heuristically adopted. These drive
-// the ACTUAL failure paths with private disposable fixtures.
-//
-// The recovery manifest version is FROZEN at 19 (the storage-19 migration), so
-// these hand-authored manifests use the literal the migration recognises.
-// ---------------------------------------------------------------------------
-
-const RECOVERY_MANIFEST_VERSION = 19;
-
-/** Write a recovery manifest at the canonical path inside a Home. */
-function writeRecoveryManifest(home, manifest) {
-  const manifestPath = join(home, "backups", "unify-home-migration.json");
-  mkdirSync(dirname(manifestPath), { recursive: true });
-  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
-  return manifestPath;
-}
-
-test("P5: a completed target whose durable content diverged from the source is refused", (t) => {
-  const { home, db } = openPriorVersionHome(t, "yui-unify-p5-diverged-");
-  const workspace = mkdtempSync(join(tmpdir(), "yui-unify-external-ws-"));
-  t.after(() => rmSync(workspace, { recursive: true, force: true }));
-  setDefaultWorkspace(db, workspace);
-
-  const taskId = "task-1";
-  seedTask(db, taskId);
-  const { mainPath } = seedWorktrees(workspace, "app", "main-abcd", "linked-efgh");
-  insertManagedWorkspace(
-    db,
-    "task",
-    `task:${taskId}`,
-    taskId,
-    managedWorkspacePayload({ type: "task", taskId }, join(workspace, "tasks", taskId, "main"), [
-      projectEntry("app", mainPath, "app")
-    ])
-  );
-
-  // Publish a copy at the target, then corrupt a DURABLE (non-pointer) file so
-  // its repair-invariant digest no longer matches the preserved source.
-  const { oldWorktreeRoot, newWorktreeRoot } = worktreeRoots(workspace, home);
-  mkdirSync(dirname(newWorktreeRoot), { recursive: true });
-  cpSync(oldWorktreeRoot, newWorktreeRoot, { recursive: true, verbatimSymlinks: true });
-  writeFileSync(
-    join(newWorktreeRoot, "app", "main-abcd", "README.md"),
-    "# tampered durable content\n"
-  );
-
-  // A manifest that correctly identifies this migration and records the move
-  // COMPLETED: identity passes, so the completed-skip re-verification runs and
-  // must catch the durable-content divergence.
-  writeRecoveryManifest(home, {
-    version: RECOVERY_MANIFEST_VERSION,
-    startedAt: "2026-09-01T00:00:00.000Z",
-    home,
-    moves: [{ from: oldWorktreeRoot, to: newWorktreeRoot, state: "completed" }]
-  });
-
-  assert.throws(
-    () => runMigration(db),
-    /recorded complete but its durable content no longer matches the preserved source/u,
-    "a completed target that diverged from the source is refused, not blindly skipped"
-  );
-  const ledgerHead = db
-    .prepare("SELECT MAX(version) AS version FROM schema_migrations")
-    .get();
-  assert.equal(ledgerHead.version, PRIOR_VERSION, "ledger stays at prior version");
-});
-
-test("P5: a source-less target with no completed record is refused, never heuristically adopted", (t) => {
-  const { home, db } = openPriorVersionHome(t, "yui-unify-p5-sourceless-");
-  const workspace = mkdtempSync(join(tmpdir(), "yui-unify-external-ws-"));
-  t.after(() => rmSync(workspace, { recursive: true, force: true }));
-  // Point config at a workspace whose worktree tree does NOT exist (source-less).
-  setDefaultWorkspace(db, workspace);
-
-  const taskId = "task-1";
-  seedTask(db, taskId);
-  insertManagedWorkspace(
-    db,
-    "task",
-    `task:${taskId}`,
-    taskId,
-    managedWorkspacePayload({ type: "task", taskId }, join(workspace, "tasks", taskId, "main"), [
-      projectEntry("app", join(workspace, "worktree", "app", "main-abcd"), "app")
-    ])
-  );
-
-  // A target directory exists at the relocation destination, but the source was
-  // removed and NO manifest records this move completed. The migration cannot
-  // prove the target is Yui's, so it must refuse rather than adopt it.
-  const { oldWorktreeRoot, newWorktreeRoot } = worktreeRoots(workspace, home);
-  assert.equal(existsSync(oldWorktreeRoot), false, "precondition: no source tree");
-  mkdirSync(join(newWorktreeRoot, "app", "main-abcd"), { recursive: true });
-  writeFileSync(join(newWorktreeRoot, "app", "main-abcd", "content.txt"), "unknown provenance\n");
-
-  // A valid, plan-matching manifest that records the move as PLANNED (not
-  // completed) is present so the relocation branch runs at all.
-  writeRecoveryManifest(home, {
-    version: RECOVERY_MANIFEST_VERSION,
-    startedAt: "2026-09-01T00:00:00.000Z",
-    home,
-    moves: [{ from: oldWorktreeRoot, to: newWorktreeRoot, state: "planned" }]
-  });
-
-  assert.throws(
-    () => runMigration(db),
-    /the source tree .* is missing and the target .* is not recorded as a completed relocation/u,
-    "a source-less, non-completed target is refused"
-  );
-  assert.equal(
-    readFileSync(join(newWorktreeRoot, "app", "main-abcd", "content.txt"), "utf8"),
-    "unknown provenance\n",
-    "the unverifiable target is left untouched"
-  );
-});
-
-test("P5: a recovery manifest for a different Home is refused as an identity mismatch", (t) => {
-  const { home, db } = openPriorVersionHome(t, "yui-unify-p5-identity-");
-  const workspace = mkdtempSync(join(tmpdir(), "yui-unify-external-ws-"));
-  t.after(() => rmSync(workspace, { recursive: true, force: true }));
-  setDefaultWorkspace(db, workspace);
-
-  const taskId = "task-1";
-  seedTask(db, taskId);
-  const { mainPath } = seedWorktrees(workspace, "app", "main-abcd", "linked-efgh");
-  insertManagedWorkspace(
-    db,
-    "task",
-    `task:${taskId}`,
-    taskId,
-    managedWorkspacePayload({ type: "task", taskId }, join(workspace, "tasks", taskId, "main"), [
-      projectEntry("app", mainPath, "app")
-    ])
-  );
-
-  const { oldWorktreeRoot, newWorktreeRoot } = worktreeRoots(workspace, home);
-
-  // (a) Wrong Home: a structurally valid manifest that records a DIFFERENT home.
-  writeRecoveryManifest(home, {
-    version: RECOVERY_MANIFEST_VERSION,
-    startedAt: "2026-09-01T00:00:00.000Z",
-    home: "/some/other/home",
-    moves: [{ from: oldWorktreeRoot, to: newWorktreeRoot, state: "completed" }]
-  });
-  assert.throws(
-    () => runMigration(db),
-    /does not match the migration now planned \(it records Home \/some\/other\/home/u,
-    "a manifest for a different Home is refused"
-  );
-
-  // (b) Extra unplanned relocation: identity binding rejects a foreign move set.
-  writeRecoveryManifest(home, {
-    version: RECOVERY_MANIFEST_VERSION,
-    startedAt: "2026-09-01T00:00:00.000Z",
-    home,
-    moves: [
-      { from: oldWorktreeRoot, to: newWorktreeRoot, state: "completed" },
-      { from: "/foreign/src", to: "/foreign/dst", state: "completed" }
-    ]
-  });
-  assert.throws(
-    () => runMigration(db),
-    /does not match the migration now planned \(it records an unplanned relocation to \/foreign\/dst/u,
-    "a manifest with an unplanned relocation is refused"
-  );
-
-  // (c) Wrong source for the planned target: the mapping is rejected.
-  writeRecoveryManifest(home, {
-    version: RECOVERY_MANIFEST_VERSION,
-    startedAt: "2026-09-01T00:00:00.000Z",
-    home,
-    moves: [{ from: "/wrong/source", to: newWorktreeRoot, state: "completed" }]
-  });
-  assert.throws(
-    () => runMigration(db),
-    /does not match the migration now planned \(it maps .* from \/wrong\/source/u,
-    "a manifest mapping the target from the wrong source is refused"
-  );
-
-  // Fail-closed throughout: nothing published, ledger unchanged.
-  assert.equal(existsSync(join(newWorktreeRoot, "app", "main-abcd")), false, "nothing published");
-  const ledgerHead = db
-    .prepare("SELECT MAX(version) AS version FROM schema_migrations")
-    .get();
-  assert.equal(ledgerHead.version, PRIOR_VERSION, "ledger stays at prior version");
-});
-
-// ---------------------------------------------------------------------------
-// Preflight/execute lockstep: a published target that git has already RELINKED
-// (its `.git` stub and `worktrees/<name>/gitdir` back-pointer repointed to the
-// new location by an interrupted publish's repair) holds identical DURABLE
-// content but different pointer bytes. Execute adopts it via the repair-invariant
-// digest; the read-only preflight must reach the SAME verdict — reporting NO
-// target-conflict — or a dry-run/update-preflight would falsely block a Home the
-// apply transaction would cleanly complete. This guards the run-4 reconciliation
-// that switched collectRelocationConflicts to the repair-invariant digest.
-// ---------------------------------------------------------------------------
-
-test("preflight adopts a relinked interrupted-publish target (no false target-conflict)", (t) => {
-  const { home, db } = openPriorVersionHome(t, "yui-unify-relink-lockstep-");
-  const workspace = mkdtempSync(join(tmpdir(), "yui-unify-external-ws-"));
-  t.after(() => rmSync(workspace, { recursive: true, force: true }));
-  setDefaultWorkspace(db, workspace);
-
-  const taskId = "task-1";
-  seedTask(db, taskId);
-  const { mainPath, linkedPath } = seedWorktrees(workspace, "app", "main-abcd", "work-item-1-efgh");
-  insertManagedWorkspace(
-    db,
-    "task",
-    `task:${taskId}`,
-    taskId,
-    managedWorkspacePayload({ type: "task", taskId }, join(workspace, "tasks", taskId, "main"), [
-      projectEntry("app", mainPath, "app")
-    ])
-  );
-  insertManagedWorkspace(
-    db,
-    "work-item",
-    `work-item:${taskId}:work-item-1`,
-    taskId,
-    managedWorkspacePayload(
-      { type: "work-item", taskId, workItemId: "work-item-1" },
-      join(workspace, "tasks", taskId, "work-items", "work-item-1"),
-      [projectEntry("app", linkedPath, "app")]
-    )
-  );
-
-  // Simulate an interrupted publish whose repair already ran: copy the tree to
-  // the target, then run `git worktree repair` there so its pointer files are
-  // repointed to the NEW location. The durable content is byte-identical to the
-  // source; only the repair-variant pointer files differ.
-  const { newWorktreeRoot } = worktreeRoots(workspace, home);
-  mkdirSync(dirname(newWorktreeRoot), { recursive: true });
-  cpSync(join(workspace, "worktree"), newWorktreeRoot, { recursive: true, verbatimSymlinks: true });
-  const newMain = join(newWorktreeRoot, "app", "main-abcd");
-  const newLinked = join(newWorktreeRoot, "app", "work-item-1-efgh");
-  git(["-C", newMain, "worktree", "repair", newLinked]);
-
-  // A plain inventory comparison WOULD differ now (pointer bytes changed), but
-  // the repair-invariant preflight must report no target conflict.
-  const preflight = preflightUnifyHomeLayout(db);
-  assert.equal(
-    preflight.blockers.filter((b) => b.reason === "target-conflict").length,
-    0,
-    "a relinked but durable-identical target is not a target-conflict"
-  );
-
-  // And execute completes by adopting it (the lockstep the preflight promised).
-  const result = runMigration(db);
-  assert.deepEqual(result.applied, [CURRENT_STORAGE_VERSION], "execute adopts the relinked target");
-  assert.equal(existsSync(`${newWorktreeRoot}.incoming`), false, "adopted, not re-copied");
-  const row = db
-    .prepare("SELECT payload FROM managed_workspaces WHERE owner_kind = 'task'")
-    .get();
-  assert.equal(JSON.parse(row.payload).entries[0].path, newMain, "pointer rewritten to adopted target");
-});
-
-
-
-
-
