@@ -231,13 +231,14 @@ export async function runStorageUpgrade(options: RunStorageUpgradeOptions): Prom
   // unify-home data migration (18->19) physically relocates on-disk trees and
   // rewrites live launch pointers, so before any mode proceeds we run its READ-
   // ONLY preflight and refuse up front on the same conditions the migration would
-  // throw on inside the apply transaction: a physically live execution or a
-  // queued/running Job bound under a relocating root, a conflicting relocation
-  // target, or a corrupt/foreign recovery manifest. Surfacing them here — before
-  // the Controller is stopped or a backup is taken — is what makes `--dry-run`
-  // and the updater's `--update-preflight` a genuine readiness signal rather than
-  // a mere list of schema steps, while the in-transaction checks remain the
-  // authoritative guard against anything that starts after this point.
+  // throw on inside the apply transaction: a queued/running Job bound under a
+  // relocating root, or a conflicting relocation target. The migration is applied
+  // offline (after the operator has stopped this Home's writers), so the preflight
+  // does not scan for live processes. Surfacing these here — before the Controller
+  // is stopped or a backup is taken — is what makes `--dry-run` and the updater's
+  // `--update-preflight` a genuine readiness signal rather than a mere list of
+  // schema steps, while the in-transaction checks remain the authoritative guard
+  // against anything that starts after this point.
   const migrationBlocked = preflightMigrationBlockers(options.home, plan, classification);
   if (migrationBlocked !== null) return migrationBlocked;
 
@@ -545,8 +546,8 @@ function preflightMigrationBlockers(
         classification,
         "in-flight",
         `The storage migration readiness check could not be completed: ${messageOf(error)}`,
-        "Resolve the reported problem, confirm no Agent execution or Job is running against a "
-          + "managed workspace, then rerun the upgrade."
+        "Resolve the reported problem, confirm no Job is queued or running against a managed "
+          + "workspace, then rerun the upgrade."
       )
     };
   }
@@ -559,9 +560,10 @@ function preflightMigrationBlockers(
       "Refusing to migrate: the Home is not safe to relocate under a unified layout yet. "
       + blockers.map((entry) => entry.detail).join("; ") + ".",
     action:
-      "Resolve the reported condition(s) — let live executions or Jobs finish (or stop them "
-      + "from their own sessions), and clear any conflicting relocation target or stale recovery "
-      + "manifest — then rerun the upgrade. The authoritative Home is unchanged.",
+      "Resolve the reported condition(s) — let a queued/running Job finish or cancel it, and "
+      + "clear any conflicting relocation target — then rerun the upgrade. The migration is applied "
+      + "offline, so first confirm the Controller and any execution writers for this Home are "
+      + "stopped. The authoritative Home is unchanged.",
     blockers: blockers.map((entry) => ({ reason: entry.reason, detail: entry.detail })),
     classification,
     sceneUnchanged: true

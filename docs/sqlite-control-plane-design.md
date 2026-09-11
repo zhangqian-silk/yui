@@ -94,7 +94,7 @@ managed root from Home:
 | Integration runtimes | `<home>/runtime/integration-runtimes` | The integration check's provider data/cache/tmp (a separate partition from Task runtimes). |
 | Update staging | `<home>/runtime/update-staging` | `yui update`'s side-by-side package install (an upgrade artifact). |
 | Release workflow scratch | `<home>/runtime/release-workflow` | The release workflow's smoke-install dir and verified publish-snapshot tarball (release artifacts). |
-| Storage backups | `<home>/backups` | Pre-upgrade DB backups and the migration recovery manifest. |
+| Storage backups | `<home>/backups` | Pre-upgrade DB backups (the fenced upgrade's rollback anchor). |
 
 Both runtime partitions (`runtime/task-runtimes`, `runtime/integration-runtimes`)
 are the ONLY Home subtrees a provider runtime root is allowed to overlap; a
@@ -193,71 +193,56 @@ execution lanes, terminal `durable_jobs`, `events`, and reports are frozen
 history. `resource_registry` is re-discovered from disk; `projects.path` is an
 external, user-owned checkout.
 
-The migration is **fail-closed and pre-checkable**:
+The migration is applied **offline** and is **fail-closed and pre-checkable**.
+It is run by the standalone `yui upgrade` boundary AFTER the operator has stopped
+this Home's Controller, Agent Host, and any execution/Job writers; it does not
+orchestrate that shutdown, coordinate an online write-stop, or migrate a live
+Session. It keeps only the minimal preconditions it can implement directly:
 
-- It **refuses** up front if any live Agent execution is still bound to a tree
-  about to relocate. The Controller quiesce fence stops only in-process loops; a
-  Provider/Agent Host and a detached execution child run in their own process
-  group and survive it, so "no queued/running Job" alone does not prove the tree
-  is quiescent. `assertNoLiveExecutionUnderRoots` consults the durable,
-  enumerable **session-owner registry** (`<home>/runtime/session-owners/*.json`)
-  and must prove every owner ABSENT from the relocating roots: a record whose
-  process is dead/zombie/PID-reused (checked against `/proc` PID-reuse-safely) is
-  stale and skipped; a **live** owner must have its recorded `runtimeRoot` and
-  every owned-tree process's cwd and open regular-file descriptors all outside
-  every relocating root. Ownership is proven by process-group/ancestry only, so
-  unrelated sessions are never implicated, and it never stops another session.
 - It **refuses** if a queued or running `durable_jobs` step is bound to a tree
-  about to relocate — its detached runner survives the Controller quiesce fence,
-  so moving that tree would be an in-flight silent move. Let the Job drain or
-  cancel it, then retry. (`active_turns` is steady state, not an in-flight
-  signal, and is deliberately not consulted; live-execution custody is proven via
-  the session-owner registry above, not by the presence of an active Run
-  pointer.)
-- It **refuses** if a relocation target already exists and its content digest
-  does not match the source — a foreign directory in the way. The digest is
-  **repair-invariant** (tolerant of the `.git` stub / `worktrees/<name>/gitdir`
-  relink a published worktree performs), so a target Yui already published and
-  relinked is adopted, not falsely flagged. It also refuses if the recovery
-  manifest exists but is unparseable or is not a recognised storage-19 record,
-  rather than silently rebuilding it. Resolve the conflict, then retry.
+  about to relocate. A durable Job's runner is detached and could outlive an
+  incompletely stopped Controller, so moving that tree would risk an in-flight
+  silent move; this is the one residual runtime signal the offline migration
+  still guards. Let the Job drain or cancel it, then re-run the upgrade.
+  (`active_turns` is steady state, not an in-flight signal, and is deliberately
+  not consulted.)
+- It **refuses** if a relocation target already exists at all — it is either a
+  foreign directory or residue from a failed prior run, and the offline migration
+  never adopts a pre-existing target. Confirm the source is intact, then move or
+  remove the target and re-run the upgrade.
 - Every refusal is surfaced as a **collected, read-only pre-check**: `yui
   upgrade --dry-run` and the updater's `--update-preflight` run the same plan and
   the same blocking conditions execute would throw on, opening the DB read-only
   and reporting each independent blocker as `{reason, detail}` (blocked outcome)
   without mutating the Home — a genuine pre-check, not a best-effort guess.
 - A Home already in the unified layout (or a fresh Home with nothing to relocate)
-  is a **no-op** and writes no recovery manifest.
+  is a **no-op**.
 
 ### Recovery and rollback
 
-Before any move the migration writes a recovery manifest at
-`<home>/backups/unify-home-migration.json` (mode `0600`) recording each planned
-relocation, and flips an entry to `completed` only after that tree's verified
-replica is atomically in place. The worktree relocation is
-**copy → digest-verify → atomic-publish → preserve-source**:
+The migration keeps **no recovery manifest and no resumable state machine** — it
+is a one-time offline transform, not an interruptible online orchestration. The
+worktree relocation is **copy → digest-verify → atomic-publish → preserve-source**:
 
-1. the source is copied into a same-filesystem staging dir (`<to>.incoming`),
+1. the relocation target must not already exist; a pre-existing target is refused
+   up front (foreign directory or failed-run residue — never adopted);
+2. the source is copied into a same-filesystem staging dir (`<to>.incoming`),
    never renamed away;
-2. a content-addressed inventory digest of the replica is compared to the source
+3. a content-addressed inventory digest of the replica is compared to the source
    — a mismatch deletes the staging copy and aborts (nothing published, source
    intact);
-3. only a verified replica is `rename`d into the final target (atomic on one
+4. only a verified replica is `rename`d into the final target (atomic on one
    filesystem);
-4. the original source tree is left in place as the rollback anchor.
+5. the original source tree is left in place as the rollback anchor.
 
-Relocation is **idempotent and identity-checked**. A re-run treats a target
-already recorded `completed` as done — but only after the recovery manifest is
-bound to THIS plan (same `home`; its move set covers exactly the planned
-`from`→`to` with no foreign or extra move), and only after the completed target's
-durable content is **re-verified** against the preserved source, so a stale or
-foreign manifest can never authorize skipping a copy that never happened. It
-adopts a target whose digest matches the source (a publish that crashed before
-the manifest was flipped) and refuses a target whose digest differs; a
-**source-less** target is refused unless the bound completed-manifest path proved
-it is Yui's — it is never heuristically adopted. All of these comparisons use a
-**repair-invariant** digest, identical to the one the pre-check uses, so preflight
-and execute stay in lockstep.
+There is **no automatic idempotent recovery**. Because a pre-existing target is
+always refused, a run interrupted after a partial publish does not silently
+resume or adopt the partial tree on the next attempt: the operator inspects the
+preserved source, removes the incomplete target (and any `<to>.incoming`
+staging), and re-runs the upgrade from a clean state. The `--dry-run` /
+`--update-preflight` pre-check surfaces exactly this `target-conflict` before the
+apply transaction is entered, so the residue is reported, not discovered
+mid-migration.
 
 After the copy, the worktrees are reconnected. `git worktree repair` chases the
 absolute pointer files inside a worktree, so running it on a verbatim copy whose
@@ -276,10 +261,12 @@ worktrees.
 
 Because the data step runs inside the upgrade transaction, any throw rolls the
 schema back to 18; the fenced upgrade orchestrator additionally takes a
-`database.backup()` and restores it on failure. A retried upgrade replays the
-manifest and re-copies to finish an interrupted move set, and — because the
-source is never removed and the copy is digest-verified — no retry can lose or
-corrupt the original content.
+`database.backup()` and restores it on failure. Recovery from a failed run is
+**manual, not automatic**: because the source is never removed and the copy is
+digest-verified before publish, the preserved source is always intact, so the
+operator clears any partial target and re-runs the upgrade. No re-run can lose or
+corrupt the original content, but the tool does not itself resume an interrupted
+move set.
 
 **Old-source cleanup** is intentionally deferred and out of band: after a
 successful upgrade the old external `worktree`, `tasks`, and `<home>.task-runtimes`
