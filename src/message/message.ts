@@ -1,5 +1,6 @@
 import { validateTaskRecordReference } from "../task/taskRecordReference.js";
 import type { AgentRun } from "../agentRun/agentRun.js";
+import type { SubmissionReceipt } from "../task/taskSubmission.js";
 
 export const TASK_MESSAGE_KINDS = ["user", "operator", "role-result", "system"] as const;
 
@@ -69,6 +70,16 @@ export type TaskMessage = {
    * an old client keeps its existing non-idempotent behaviour.
    */
   submissionKey?: string;
+  /**
+   * The receipt a keyed submission received, frozen at decision time (task-32
+   * §2.3): the routing it actually got, the §2.5 feedback it actually returned,
+   * and the target its key was bound to. A retry under the same key replays this
+   * verbatim instead of recomputing from the Task's current phase or activation,
+   * so a later gate change or cancelled request can never fabricate a different
+   * outcome. Recorded on every keyed submission and absent only on keyless ones,
+   * so an old client keeps its existing non-idempotent behaviour.
+   */
+  submissionReceipt?: SubmissionReceipt;
   runId?: string;
   resultRef?: Readonly<{ type: "agent-run-result"; runId: string }>;
   workItemId?: string;
@@ -176,6 +187,28 @@ export function updateDraftTaskMessage(
   return updated;
 }
 
+/**
+ * Attach the §2.3 receipt a keyed submission earned, in the same transaction that
+ * saved and routed the Message. The receipt is a write-once fact: it is only set
+ * on a keyed Message that has none yet, so a replay (which never re-routes) can
+ * never overwrite the disposition the original submission recorded.
+ */
+export function withSubmissionReceipt(
+  message: TaskMessage,
+  receipt: SubmissionReceipt
+): TaskMessage {
+  validateTaskMessage(message);
+  if (message.submissionKey === undefined) {
+    throw new Error(`A submission receipt requires a submission key: ${message.id}.`);
+  }
+  if (message.submissionReceipt !== undefined) {
+    throw new Error(`Submission receipt is already recorded: ${message.id}.`);
+  }
+  const updated: TaskMessage = { ...message, submissionReceipt: receipt };
+  validateTaskMessage(updated);
+  return updated;
+}
+
 export function validateTaskMessage(message: TaskMessage): void {
   if (message.schemaVersion !== 3) throw new Error("Task Message must use schemaVersion 3.");
   validateTaskRecordReference({ taskId: message.taskId, localId: message.id }, "message");
@@ -206,6 +239,9 @@ export function validateTaskMessage(message: TaskMessage): void {
     if (message.kind !== "user" && message.kind !== "operator") {
       throw new Error("Message submission key is only valid for user/operator messages.");
     }
+  }
+  if (message.submissionReceipt !== undefined && message.submissionKey === undefined) {
+    throw new Error("Message submission receipt requires a submission key.");
   }
   if (message.runId !== undefined) requireSafeIdentity(message.runId, "Message AgentRun id");
   if (message.recipient !== undefined) {

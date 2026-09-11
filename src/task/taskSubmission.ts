@@ -258,6 +258,54 @@ export type SubmissionNextStep =
   | Readonly<{ kind: "resolve-failed-activation"; activationRef: string; failure: string }>;
 
 /**
+ * What the first input under a submission key was aimed at (task-32 §2.3).
+ *
+ * The key is bound to this target, so a later retry under the same key replays
+ * only when it aims at the same target: a task-less create-new-Task retry finds
+ * the Task the original created, while a key first used on an existing Task and
+ * then reused to create a new one is a different target and conflicts. `create`
+ * is a distinct target kind even after it resolves to a Task, so addressing that
+ * resolved Task by id under the same key is still a different target.
+ */
+export type SubmissionTarget =
+  | Readonly<{ kind: "task"; taskId: string }>
+  | Readonly<{ kind: "create" }>;
+
+/**
+ * The durable receipt a keyed submission leaves, so a retry reproduces its
+ * original outcome without recomputing from current state (task-32 §2.3).
+ *
+ * This is the minimal persistent fact §2.3 authorizes: the disposition the
+ * submission actually received (`routing`, the effect) and the §2.5 feedback it
+ * actually returned (`feedback`, the receipt), frozen at decision time and read
+ * back verbatim on replay. Recomputing routing from the Task's *current* phase
+ * or activation would fabricate a receipt for an effect that never happened (an
+ * enabled gate or a cancelled request after the fact), so replay never calls
+ * {@link decideSubmissionRouting} again. `target` binds the key to its first
+ * input so the create-vs-existing scope is unambiguous.
+ */
+export type SubmissionReceipt = Readonly<{
+  target: SubmissionTarget;
+  routing: SubmissionRouting;
+  feedback: SubmissionFeedback;
+}>;
+
+/**
+ * Whether a retry aims at the same target the key was first bound to (§2.3). An
+ * absent prior target (a keyed Message from before receipts existed) never
+ * matches, so such a Message is treated as a conflict rather than replayed from
+ * a fabricated disposition.
+ */
+export function sameSubmissionTarget(
+  prior: SubmissionTarget | undefined,
+  next: SubmissionTarget
+): boolean {
+  if (prior === undefined || prior.kind !== next.kind) return false;
+  if (prior.kind === "task" && next.kind === "task") return prior.taskId === next.taskId;
+  return true;
+}
+
+/**
  * Derive the §2.5 feedback for one committed submission from its routing and the
  * facts read in the save transaction.
  *

@@ -73,7 +73,7 @@ export function renderTaskSurface(container, data, t, locale, actions) {
       // Message and routing rather than a second submission (task-32 §2.3).
       const receipt = await actions.sendMessage(task.id, message.value, requestId, intent);
       sent.textContent = say("Saved · ", "已保存 · ") + receipt.record.id;
-      renderSubmissionFacets(facets, receipt.submission, receipt, say);
+      renderSubmissionFacets(facets, receipt.submission, say);
       message.value = "";
       chat.dataset.unsent = "false";
       send.disabled = false;
@@ -375,14 +375,15 @@ export function renderTaskSurface(container, data, t, locale, actions) {
 }
 
 // Render each task-32 §2.5 submission facet on its own line, never collapsed into
-// a single "started". An old server that returns no submission block falls back to
-// the flat disposition so nothing regresses.
-function renderSubmissionFacets(container, submission, receipt, say) {
+// a single "started". This repo has one current server contract: every submission
+// returns its faceted receipt, so there is no old-server flat-disposition path to
+// fall back to. A missing facet block is a contract violation, reported as a
+// limited diagnostic rather than reinterpreted as a plausible flat result.
+function renderSubmissionFacets(container, submission, say) {
   clear(container);
   if (!submission) {
-    container.append(node("p", "muted", receipt.disposition === "queued"
-      ? say("Queued for Leader; not proof of execution.", "已为 Leader 排队，不代表已执行。")
-      : say("Saved to Task context.", "已保存到 Task 上下文。")));
+    container.append(node("p", "muted",
+      say("Submission receipt is missing its §2.5 facets.", "提交回执缺少 §2.5 分面字段。")));
     return;
   }
   const phaseText = {

@@ -68,6 +68,7 @@ import {
   expandTaskMessageResult,
   taskMessageAuthorLabel,
   updateDraftTaskMessage,
+  withSubmissionReceipt,
   TASK_SUBMISSION_INTENTS,
   type TaskMessage,
   type TaskMessageAuthor,
@@ -86,15 +87,17 @@ import {
   draftActivationState,
   draftHasEnteredPlanning,
   normalizeSubmissionIntent,
+  sameSubmissionTarget,
   type SubmissionFeedback,
   type SubmissionNextStep,
-  type SubmissionRouting
+  type SubmissionReceipt,
+  type SubmissionRouting,
+  type SubmissionTarget
 } from "../task/taskSubmission.js";
 import {
   recordTaskActivationRequestInTransaction,
   taskActivationOperationRef
 } from "../task/taskActivationService.js";
-import { TASK_ACTIVATION_EVENT } from "../task/taskActivation.js";
 import type {
   TaskRetirementProof,
   WorkItemIntegrationProof
@@ -1134,21 +1137,25 @@ function routeUserSubmission(
   body: string,
   intent: TaskSubmissionIntent,
   now: Date,
-  submissionKey?: string
+  submissionKey?: string,
+  target?: SubmissionTarget
 ): UserSubmissionResult {
   const kind: TaskMessageKind = actor;
   const author: TaskMessageAuthor = actor === "operator"
     ? { type: "operator" }
     : { type: "user" };
 
-  // §2.3 keyed idempotency: the narrow persistent fact is the saved Message's own
-  // key, so a retry is detected by reading an existing fact, not a new dedup
-  // ledger. A matching key replays; differing input under it conflicts.
+  // §2.3 keyed idempotency: a retry is detected by reading an existing keyed
+  // Message, and its original disposition is reproduced from the receipt that
+  // Message carries — never recomputed from current state. A matching key with
+  // matching input and target replays; any mismatch conflicts.
   if (submissionKey !== undefined) {
     const prior = tx.listMessages(task.id).find(
       (message) => message.submissionKey === submissionKey
     );
-    if (prior !== undefined) return replayKeyedSubmission(tx, task, prior, kind, body, intent);
+    if (prior !== undefined) {
+      return replayKeyedSubmission(task, prior, kind, body, intent, target);
+    }
   }
 
   // Save first, recording intent and key, so the "saved" facet holds regardless of
@@ -1244,84 +1251,61 @@ function routeUserSubmission(
     ...(activationRef === undefined ? {} : { activationRef }),
     ...(activationFailure === undefined ? {} : { activationFailure })
   });
+
+  // §2.3 receipt: a keyed submission records the disposition it actually received
+  // (routing + feedback) and the target its key bound to, in this same
+  // transaction, so a later retry reproduces exactly this outcome rather than
+  // re-deriving one from a phase or activation that has since changed.
+  if (submissionKey !== undefined && target !== undefined) {
+    const receipted = withSubmissionReceipt(message, { target, routing, feedback });
+    tx.updateMessage(task.id, receipted);
+    return { task, message: receipted, routing, feedback, queuedForLeader };
+  }
   return { task, message, routing, feedback, queuedForLeader };
 }
 
 /**
- * Reproduce a keyed submission's outcome with zero writes (task-32 §2.3), so no
- * routing matrix is persisted. The receipt is rebuilt from facts that already
- * exist: an `activate` from its `submit-<id>` activation-requested event, an
- * `enter-planning` from the planning-entered event naming this Message; every
- * other route left no per-Message effect and is re-derived from current
- * phase/activation. Differing normalized input under the same key is a conflict.
+ * Reproduce a keyed submission's original outcome from the receipt it recorded
+ * (task-32 §2.3), never by recomputing from the Task's current state. The prior
+ * Message's frozen {@link SubmissionReceipt} names the routing it received and the
+ * §2.5 feedback it returned, so a gate enabled or an activation cancelled after
+ * the fact can no longer fabricate a different disposition. The replay writes
+ * nothing — any Leader wake or activation request the original made already
+ * exists — and preserves the original Task/Message/routing/request references
+ * exactly.
+ *
+ * Same key with a different normalized input (kind, body or intent) or a
+ * different target is a conflict, never a silent overwrite or a cross-target
+ * replay. A prior keyed Message that carries no receipt (an old client, before
+ * receipts existed) also conflicts rather than being replayed from a rebuilt
+ * disposition.
  */
 function replayKeyedSubmission(
-  tx: TaskWorkflowStore,
   task: Task,
   prior: TaskMessage,
   kind: TaskMessageKind,
   body: string,
-  intent: TaskSubmissionIntent
+  intent: TaskSubmissionIntent,
+  target?: SubmissionTarget
 ): UserSubmissionResult {
-  // Same key, different normalized input is a conflict, never a silent overwrite.
+  const receipt = prior.submissionReceipt;
   if (prior.kind !== kind
     || prior.body !== body
-    || normalizeSubmissionIntent(prior.intent) !== intent) {
+    || normalizeSubmissionIntent(prior.intent) !== intent
+    || receipt === undefined
+    || (target !== undefined && !sameSubmissionTarget(receipt.target, target))) {
     throw new StorageConflictError(
       `Submission key ${prior.submissionKey} was already used for a different submission on ${task.id}/${prior.id}.`
     );
   }
-
-  const events = tx.listEvents(task.id);
-  const activatedByThis = events.some(
-    (event) => event.type === TASK_ACTIVATION_EVENT.requested
-      && event.payload.requestId === `submit-${prior.id}`
-  );
-  const enteredByThis = events.some(
-    (event) => event.type === TASK_PLANNING_ENTERED_EVENT
-      && event.payload.messageId === prior.id
-  );
-  const enteredPlanning = draftHasEnteredPlanning(tx, task);
-  const activation = draftActivationState(task.activationRequest);
-
-  let routing: SubmissionRouting;
-  let activationRef: string | undefined;
-  let activationFailure: string | undefined;
-  if (activatedByThis) {
-    // Point back at the very request this submission created, not a fresh derivation.
-    routing = { kind: "activate", environmentPlan: { kind: "empty" } };
-    activationRef = taskActivationOperationRef(task.id, `submit-${prior.id}`);
-  } else if (enteredByThis) {
-    routing = { kind: "enter-planning" };
-  } else {
-    routing = decideSubmissionRouting({
-      intent,
-      status: task.status,
-      enteredPlanning,
-      activation,
-      executionEnabled: task.executionGate.state === "enabled",
-      developEnvironmentPlan: { kind: "empty" }
-    });
-    if (routing.kind === "await-activation") {
-      activationRef = task.activationRequest === undefined
-        ? undefined
-        : taskActivationOperationRef(task.id, task.activationRequest.operation.requestId);
-      if (routing.state === "failed") activationFailure = task.activationRequest?.outcome;
-    }
-  }
-
-  const feedback = describeSubmissionFeedback({
-    taskId: task.id,
-    messageId: prior.id,
-    status: task.status,
-    enteredPlanning,
-    activationState: activation,
-    routing,
-    ...(activationRef === undefined ? {} : { activationRef }),
-    ...(activationFailure === undefined ? {} : { activationFailure })
-  });
-  // The replay queues nothing: any Leader wake the original made already happened.
-  return { task, message: prior, routing, feedback, queuedForLeader: false };
+  // Reproduce the recorded disposition verbatim; a retry acts on nothing itself.
+  return {
+    task,
+    message: prior,
+    routing: receipt.routing,
+    feedback: receipt.feedback,
+    queuedForLeader: false
+  };
 }
 
 /** The mailbox reason a submission wake carries, preserving the existing
@@ -1414,24 +1398,35 @@ export function submitOperatorMessage(
   const effectiveIntent = normalizeSubmissionIntent(intent);
   const result = store.transaction((tx) => {
     if (taskId !== undefined) {
+      // Addressed submit: the key is scoped to this Task and dedups within it, so
+      // no other Task is read (§2.3). Its target is this Task.
       const task = requireTask(tx, taskId);
       assertTaskOpen(task);
-      const routed = routeUserSubmission(tx, task, "operator", body, effectiveIntent, now, submissionKey);
+      const routed = routeUserSubmission(tx, task, "operator", body, effectiveIntent,
+        now, submissionKey, { kind: "task", taskId: task.id });
       return { ...routed, created: false } as const;
     }
-    // A task-less keyed submit must also be idempotent across the create boundary:
-    // look the key up in existing Messages before creating, so a retry replays the
-    // original Draft rather than minting a second (§2.3).
+    // Task-less submit: the key is scoped to "create a new Task". A retry must
+    // locate the Draft the original create produced — not any same-key Message on
+    // an addressed Task — and a key already bound to a specific Task cannot be
+    // reused to create (§2.3 "同 key 不同目标冲突").
     if (submissionKey !== undefined) {
-      const priorTaskId = findSubmissionKeyTask(tx, submissionKey);
-      if (priorTaskId !== undefined) {
-        const task = requireTask(tx, priorTaskId);
-        const routed = routeUserSubmission(tx, task, "operator", body, effectiveIntent, now, submissionKey);
+      const lookup = findSubmissionKeyCreate(tx, submissionKey);
+      if (lookup.kind === "create") {
+        const task = requireTask(tx, lookup.taskId);
+        const routed = routeUserSubmission(tx, task, "operator", body, effectiveIntent,
+          now, submissionKey, { kind: "create" });
         return { ...routed, created: false } as const;
+      }
+      if (lookup.kind === "other-target") {
+        throw new StorageConflictError(
+          `Submission key ${submissionKey} is already bound to a specific Task; a task-less create cannot reuse it.`
+        );
       }
     }
     const createdAgg = createTaskAggregate(tx, titleFrom(body), {}, now);
-    const routed = routeUserSubmission(tx, createdAgg.task, "operator", body, effectiveIntent, now, submissionKey);
+    const routed = routeUserSubmission(tx, createdAgg.task, "operator", body, effectiveIntent,
+      now, submissionKey, { kind: "create" });
     return { ...routed, task: createdAgg.task, created: true } as const;
   });
   notifyMailbox(
@@ -1446,20 +1441,36 @@ export function submitOperatorMessage(
 }
 
 /**
- * The Task whose Messages already carry this submission key, if any. Used only by
- * the task-less operator create path, where the key must dedup across the create
- * boundary; addressed paths dedup within their own Task.
+ * Resolve a submission key for the task-less operator-create path (task-32 §2.3).
+ * This is the one place a key is looked up across Tasks, mirroring the store's own
+ * external-key lookups; the addressed path never scans beyond its own Task.
+ *
+ *  - `create`: a prior task-less create under this key exists (at most one, since a
+ *    second create conflicts before it can save), so its Draft is the retry target.
+ *  - `other-target`: the key exists only on Messages bound to a specific Task, so a
+ *    task-less create would be reusing it for a different target — a conflict.
+ *  - `unused`: the key is free, so a fresh Draft may be created under it.
  */
-function findSubmissionKeyTask(
+type SubmissionKeyResolution =
+  | Readonly<{ kind: "create"; taskId: string }>
+  | Readonly<{ kind: "other-target" }>
+  | Readonly<{ kind: "unused" }>;
+
+function findSubmissionKeyCreate(
   store: TaskWorkflowStore,
   submissionKey: string
-): string | undefined {
+): SubmissionKeyResolution {
+  let otherTarget = false;
   for (const task of store.listTasks()) {
-    if (store.listMessages(task.id).some((message) => message.submissionKey === submissionKey)) {
-      return task.id;
+    for (const message of store.listMessages(task.id)) {
+      if (message.submissionKey !== submissionKey) continue;
+      if (message.submissionReceipt?.target.kind === "create") {
+        return { kind: "create", taskId: task.id };
+      }
+      otherTarget = true;
     }
   }
-  return undefined;
+  return otherTarget ? { kind: "other-target" } : { kind: "unused" };
 }
 
 function createTaskCommand(
@@ -2595,7 +2606,8 @@ export function sendTaskMessageCommand(
     // gain develop authority (task-32 §2.5).
     if (recipient === undefined && (actor === "user" || actor === "operator")) {
       const effectiveIntent = normalizeSubmissionIntent(intent, wakePolicy);
-      const routed = routeUserSubmission(tx, task, actor, body, effectiveIntent, now, submissionKey);
+      const routed = routeUserSubmission(tx, task, actor, body, effectiveIntent,
+        now, submissionKey, { kind: "task", taskId: task.id });
       return {
         task: routed.task, message: routed.message, actor,
         queuedForLeader: routed.queuedForLeader, feedback: routed.feedback

@@ -8,9 +8,24 @@ import { createTaskEvent } from "../../event/taskEvent.js";
  * This helper is INDEPENDENT, deterministic and idempotent. The unified 18 -> 19
  * migration owned by the artifacts WorkItem REGISTERS it (as its `migrateData`)
  * and bumps `CURRENT_STORAGE_VERSION`; this module neither registers a second
- * migration nor changes any schema. The new Message `intent` field is optional
- * JSON inside `messages.payload`, and an absent value already reads as `discuss`
- * (never `develop`), so historical Messages need no rewrite.
+ * migration nor changes any schema.
+ *
+ * Requirement A adds three optional fields inside `messages.payload`, all part of
+ * this same 18 -> 19 contract even though each is optional — "optional" governs a
+ * single record's shape, not the Home compatibility line, so the version
+ * transition is still declared here and carried by the unified migration:
+ *
+ *  - `intent` (record | discuss | develop): an absent value already reads as
+ *    `discuss` (never `develop`), so historical Messages need no rewrite.
+ *  - `submissionKey`: the client-chosen idempotency key. Only ever set going
+ *    forward; NO historical key is fabricated (task-32 §2.3, message review), so
+ *    old Messages stay keyless and non-idempotent exactly as before.
+ *  - `submissionReceipt`: the frozen disposition a keyed submission replays from.
+ *    Written only alongside a new `submissionKey`, so it too never appears on
+ *    historical data.
+ *
+ * Because none of the three needs a value backfilled onto old rows, the only data
+ * step this migration performs is the planning-entered reconstruction below.
  *
  * The one fact old data cannot express is "this Draft already entered planning".
  * Before Requirement A a Leader-waking user/operator submission on a Draft WAS
