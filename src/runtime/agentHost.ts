@@ -220,6 +220,76 @@ export type AgentHostControlResult = Readonly<{
   cancellation?: AgentEndpointCancellation;
 }>;
 
+/**
+ * decision-3 §7 live acceptance layer for a steer edge. The static resolver
+ * (`resolveInputControl`) is the pre-flight gate proven from durable state; this
+ * is the *actual* acceptance the live Endpoint reported, which is a distinct
+ * fact and must not be assumed to be success. `accepted` is the only proven
+ * delivery of the exact Turn. `pending` is delivery-unknown — the Host holds the
+ * steer but has not yet proven the Provider took it; the durable settlement fold
+ * resolves it later. `rejected`/`busy`/anything else did not deliver. This only
+ * *reports*: there is no retarget, no queue, and no interrupt fallback.
+ */
+export type SteerLiveReceipt = Readonly<{
+  state: "steered" | "steer-unknown" | "steer-rejected" | "steer-unavailable";
+  outcome: AgentHostControlOutcome;
+  detail?: string;
+}>;
+
+export function foldSteerLiveReceipt(control: AgentHostControlResult): SteerLiveReceipt {
+  const detail = control.failure?.detail ?? control.snapshot.detail;
+  const withDetail = detail === undefined ? {} : { detail };
+  switch (control.outcome) {
+    case "accepted":
+      // The only ok state. A live-accepted steer keeps `not-steered` (static,
+      // pre-flight) and this live disposition strictly separate phases.
+      return { state: "steered", outcome: "accepted" };
+    case "pending":
+      return { state: "steer-unknown", outcome: "pending", ...withDetail };
+    case "rejected":
+      return { state: "steer-rejected", outcome: "rejected", ...withDetail };
+    default:
+      // A steer edge only ever answers accepted/pending/rejected; `busy`,
+      // `status`, or `cancel-requested` here means the Host could not run the
+      // steer. Report it faithfully rather than flattening to success.
+      return { state: "steer-unavailable", outcome: control.outcome, ...withDetail };
+  }
+}
+
+/**
+ * decision-3 §7 live acceptance layer for an interrupt (native cancel) edge. The
+ * Host answers `cancel-requested`, but the *proof* is `cancellation.status`: only
+ * `requested` (a stop was actually asked of an active Turn) is the ok state.
+ * `not-active` means there was no active Turn to stop; `unknown` means the stop
+ * could not be proven. The stop-proof (`control.cancellation`) is preserved on
+ * the receipt rather than discarded. A then-handoff, if any, was already claimed
+ * durably by Core independent of this outcome and is delivered once by the
+ * ordinary continuation path after a proven terminal — never re-driven here.
+ */
+export type InterruptLiveReceipt = Readonly<{
+  state: "interrupted" | "interrupt-not-active" | "interrupt-unknown" | "interrupt-unavailable";
+  outcome: AgentHostControlOutcome;
+  cancellation?: AgentEndpointCancellation;
+  detail?: string;
+}>;
+
+export function foldInterruptLiveReceipt(control: AgentHostControlResult): InterruptLiveReceipt {
+  const cancellation = control.cancellation;
+  const withCancellation = cancellation === undefined ? {} : { cancellation };
+  if (control.outcome !== "cancel-requested") {
+    const detail = control.failure?.detail ?? control.snapshot.detail;
+    return { state: "interrupt-unavailable", outcome: control.outcome,
+      ...withCancellation, ...(detail === undefined ? {} : { detail }) };
+  }
+  // A Host that predates the additive `cancellation` field omits it; treat a bare
+  // `cancel-requested` as the stop-requested case, matching the outcome's meaning
+  // and the codebase's forward-compatible handling of optional Host fields.
+  const state = cancellation?.status === "not-active" ? "interrupt-not-active"
+    : cancellation?.status === "unknown" ? "interrupt-unknown"
+    : "interrupted";
+  return { state, outcome: "cancel-requested", ...withCancellation };
+}
+
 export function serializeAgentHostLaunchControl(control: AgentHostLaunchControl): string {
   return JSON.stringify(validateControl(control));
 }

@@ -224,6 +224,8 @@ export async function publishStructuredProviderInputSettlement(input: Readonly<{
   const adapterId = requireIdentity(input.environment.YUI_ADAPTER_ID, "Agent adapter id");
   const driver = builtinAgentDriverRegistry().requireByAdapterId(adapterId);
   const fence = describeHostIdentity(input.environment, adapterId, input.nativeSessionId);
+  // The Host reports the exact Session/turn/attempt, including input with no
+  // AgentRun. Only the Controller resolves a current Run from durable state.
   const entry = observation({
     kind: input.status === "accepted" ? "input.accepted"
       : input.status === "rejected" ? "input.rejected" : "input.delivery-unknown",

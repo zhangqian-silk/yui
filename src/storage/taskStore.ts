@@ -50,7 +50,7 @@ import {
   type RoleAgentSession,
   type TaskRoleSessionSet
 } from "../executor/agentExecutor.js";
-import type { TaskMessage } from "../message/message.js";
+import type { TaskMessage, GlobalRoleMessage } from "../message/message.js";
 import type { Milestone } from "../milestone/milestone.js";
 import type { AgentRun } from "../agentRun/agentRun.js";
 import type { RuntimeOwner } from "../runtime/runtimeOwner.js";
@@ -278,6 +278,14 @@ export type TaskStore = {
   getGlobalRoleSessionSet(name: string): GlobalRoleSessionSet | null;
   listGlobalRoleSessionSets(): GlobalRoleSessionSet[];
   saveGlobalRoleSessionSet(sessions: GlobalRoleSessionSet): void;
+  /** The Global-owned Message store (decision-3 §9/§11): explicit Global owner,
+   * ids minted from global_sequences, never a fabricated Task or private queue. */
+  nextGlobalRoleMessageId(): string;
+  saveGlobalRoleMessage(message: GlobalRoleMessage): void;
+  /** Persist a delivery/interrupt-then mutation of an existing durable Global
+   * Message in place (decision-3 §4/§9), keeping its minted id and seq. */
+  updateGlobalRoleMessage(message: GlobalRoleMessage): void;
+  listGlobalRoleMessages(roleName: string): GlobalRoleMessage[];
   nextTaskId(): string;
   saveTask(task: Task): void;
   listTasks(): Task[];

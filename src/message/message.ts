@@ -22,6 +22,120 @@ export type TaskMessageKind = typeof TASK_MESSAGE_KINDS[number];
 export const TASK_SUBMISSION_INTENTS = ["record", "discuss", "develop"] as const;
 
 export type TaskSubmissionIntent = typeof TASK_SUBMISSION_INTENTS[number];
+/** The two durable input actions an authorized caller can choose (decision-3).
+ * `interrupt` is a control operation, not a persisted Message action, so it is
+ * absent here. */
+export const TASK_MESSAGE_INPUT_ACTIONS = ["queue", "steer"] as const;
+
+export type TaskMessageInputAction = typeof TASK_MESSAGE_INPUT_ACTIONS[number];
+
+/** The recordable outcomes of a steer's one live control attempt (message-5 gap
+ * D). `not-submitted` is not here: it is the absence of a record, not a value. */
+export const TASK_MESSAGE_INPUT_CONTROL_OUTCOMES = ["pending", "accepted", "rejected", "delivery-unknown"] as const;
+
+/**
+ * The durable business input action and its stable idempotency key.
+ *
+ * Absent on historical Messages and on the compatible `send` entry, which keep
+ * queue semantics. `queue` is delivered at the recipient's next legal execution
+ * opportunity. `steer` targets only the exact current native Turn: it is saved
+ * but is never auto-delivered as a queued continuation, so an unsupported steer
+ * cannot silently become a queue.
+ *
+ * `expectedTarget` durably binds a steer to the exact Turn it named
+ * (decision-3 §6): a replay under the same requestId that names a different
+ * target is a conflicting reuse. This record stays frozen at send time; the
+ * *observed* disposition of the live attempt is recorded separately on the
+ * Message's sibling {@link TaskMessageControlOutcome} (decision-3 §3/§8, message-5
+ * gap D), so the intent is immutable while a later reader still learns whether
+ * the steer was submitted (pending) / accepted / rejected / delivery-unknown —
+ * and an unknown steer is never silently retried through a new requestId.
+ */
+export type TaskMessageInputControl = Readonly<{
+  action: TaskMessageInputAction;
+  requestId: string;
+  /** The Leader's exact expected current Turn for a steer; absent for queue. */
+  expectedTarget?: string;
+}>;
+
+/**
+ * The observed durable disposition of a steer's one live control attempt
+ * (decision-3 §3/§8, message-5 gap D). It is the "independent control attempt":
+ * a control op distinct from the frozen business {@link TaskMessageInputControl}
+ * intent, so the intent stays immutable while the attempt's outcome is recorded
+ * as it becomes known. `pending` is the live attempt made, its acceptance not
+ * yet proven; the three terminals are read from the Host's own control result,
+ * never guessed. The absence of any outcome is the fourth visible state,
+ * `not-submitted` — the input was saved but no live attempt landed (see
+ * {@link taskMessageInputControlState}).
+ */
+export type TaskMessageInputControlOutcome =
+  | "pending"
+  | "accepted"
+  | "rejected"
+  | "delivery-unknown";
+
+/** The four visible states a later reader distinguishes for a steer input: the
+ * three recorded outcomes plus `not-submitted`, which is the absence of any
+ * recorded live attempt (message-5 gap D). */
+export type TaskMessageInputControlState =
+  | "not-submitted"
+  | TaskMessageInputControlOutcome;
+
+/**
+ * The durable control op for a steer Message: its stable idempotency key, the
+ * messageRef the live edge and the Host settlement both name, and the observed
+ * outcome. `requestId` matches the Message's own input identity (its live
+ * `inputControl.requestId`, or the `interruptThen.reusedInput.requestId` a
+ * handoff preserved) so a replay never forks a second control op; `receiptId`
+ * is the exact `steer:<taskId>/<messageId>` fence the live edge names, so the
+ * outcome binds to this exact Message and never to another (message-5 gap D).
+ * Terminals are monotonic — a proven outcome is never downgraded back to
+ * `pending` or overwritten by a weaker terminal (decision-3 §8).
+ */
+export type TaskMessageControlOutcome = Readonly<{
+  requestId: string;
+  receiptId: string;
+  outcome: TaskMessageInputControlOutcome;
+  observedAt: string;
+}>;
+
+/**
+ * A claimed "stop the exact old Turn, then deliver this Message once" handoff
+ * (decision-3 §4). The claim is registered before the interrupt's cancel, and
+ * the Message is delivered exactly once in the same Session after the target
+ * native Turn reaches a proven terminal, without the prior queue preempting it.
+ * Only one claim may reference a given target Turn.
+ */
+export type TaskMessageInterruptThen = Readonly<{
+  /** Stable requestId of the interrupt that owns this continuation claim. */
+  requestId: string;
+  /**
+   * The exact interrupted native Turn's local input attempt id — the identity
+   * `resolveTaskInputControl` surfaced for the current Turn (decision-3 §3/§4).
+   * The handoff's terminal is proven from the Role's own ProviderTurn keyed by
+   * this attemptId, so a no-Run Leader turn (a native turn with no owning
+   * AgentRun) can still claim and release a continuation.
+   */
+  targetAttemptId: string;
+  /**
+   * The owning AgentRun of the interrupted Turn, when one exists. A Worker/
+   * Reviewer turn is owned by an AgentRun whose `delivery-unknown` terminal makes
+   * the cancel outcome unprovable; a no-Run Leader turn carries none, and its
+   * terminal is proven from the native ProviderTurn alone. Present so the terminal
+   * gate can additionally reject an unprovable AgentRun terminal (decision-3 §8).
+   */
+  targetRunId?: string;
+  /**
+   * The saved input this handoff reuses, kept as provenance (decision-3 §3).
+   * The claim is a new op that references the original input rather than erasing
+   * it: preserving the original requestId here keeps a replay of that requestId
+   * resolving to this same Message, so a reused input never becomes a second
+   * input. Absent when the interrupt named a Message that carried no input
+   * action of its own.
+   */
+  reusedInput?: TaskMessageInputControl;
+}>;
 
 export type TaskMessageAuthor =
   | Readonly<{ type: "user" }>
@@ -80,6 +194,27 @@ export type TaskMessage = {
    * so an old client keeps its existing non-idempotent behaviour.
    */
   submissionReceipt?: SubmissionReceipt;
+  /**
+   * The durable input action and stable requestId chosen by the authorized
+   * caller (Issue task-30). Absent on historical Messages and on the compatible
+   * `send` entry, which keep queue semantics. Frozen at send time and immutable
+   * for a given requestId.
+   */
+  inputControl?: TaskMessageInputControl;
+  /**
+   * A claimed interrupt-then handoff that delivers this Message once after the
+   * exact target AgentRun terminates (decision-3 §4). Set atomically before the
+   * interrupt's cancel; never a second queue.
+   */
+  interruptThen?: TaskMessageInterruptThen;
+  /**
+   * The observed disposition of a steer's one live control attempt (decision-3
+   * §3/§8, message-5 gap D). Absent until a live attempt is made; a later reader
+   * distinguishes the four visible states via {@link taskMessageInputControlState}.
+   * It is the independent control op, never the frozen business intent, so
+   * recording an outcome never mutates {@link TaskMessageInputControl}.
+   */
+  control?: TaskMessageControlOutcome;
   runId?: string;
   resultRef?: Readonly<{ type: "agent-run-result"; runId: string }>;
   workItemId?: string;
@@ -100,6 +235,8 @@ export type TaskMessageContext = Readonly<{
   intent?: TaskSubmissionIntent;
   submissionKey?: string;
   recipient?: TaskMessageRecipient;
+  inputControl?: TaskMessageInputControl;
+  interruptThen?: TaskMessageInterruptThen;
 }>;
 
 export type TaskMessageDraftUpdate = Readonly<{
@@ -133,6 +270,26 @@ export function createTaskMessage(
     ...(context.submissionKey === undefined
       ? {}
       : { submissionKey: requireText(context.submissionKey, "Message submission key") }),
+    ...(context.inputControl === undefined
+      ? {}
+      : { inputControl: {
+          action: context.inputControl.action,
+          requestId: requireSafeIdentity(context.inputControl.requestId, "Message input requestId"),
+          ...(context.inputControl.expectedTarget === undefined
+            ? {} : { expectedTarget: requireText(context.inputControl.expectedTarget, "Message input expectedTarget") })
+        } }),
+    ...(context.interruptThen === undefined
+      ? {}
+      : { interruptThen: {
+          requestId: requireSafeIdentity(context.interruptThen.requestId, "Message interrupt requestId"),
+          targetAttemptId: requireSafeIdentity(context.interruptThen.targetAttemptId, "Message interrupt targetAttemptId"),
+          ...(context.interruptThen.targetRunId === undefined
+            ? {} : { targetRunId: context.interruptThen.targetRunId }),
+          ...(context.interruptThen.reusedInput === undefined ? {} : { reusedInput: {
+            action: context.interruptThen.reusedInput.action,
+            requestId: requireSafeIdentity(context.interruptThen.reusedInput.requestId, "Reused input requestId")
+          } })
+        } }),
     ...(context.runId === undefined
       ? {}
       : { runId: requireSafeIdentity(context.runId, "Message AgentRun id") }),
@@ -150,6 +307,82 @@ export function createTaskMessage(
 
 export function taskMessageAuthorLabel(author: TaskMessageAuthor): string {
   return author.type === "role" ? author.roleName : author.type;
+}
+
+/** Rank of a control outcome for the monotonic guard in {@link
+ * recordTaskMessageControlOutcome}. A live attempt starts at `pending`; the
+ * three terminals are equally final and mutually exclusive, so once any terminal
+ * is recorded a later `pending` (a stale or replayed live edge) never rewinds
+ * it, and a terminal is never silently replaced by a different terminal. */
+const CONTROL_OUTCOME_RANK: Readonly<Record<TaskMessageInputControlOutcome, number>> = {
+  pending: 0, accepted: 1, rejected: 1, "delivery-unknown": 1
+};
+
+/**
+ * The four visible states a later reader distinguishes for a steer input
+ * (message-5 gap D): the absence of any live attempt is `not-submitted`, and a
+ * recorded attempt reports its own observed outcome. A non-steer Message has no
+ * control state and returns `undefined`. This is the single reader other CLI
+ * invocations, the Web surface, and the Leader's Context read all use, so no
+ * consumer reconstructs the state from raw fields.
+ */
+export function taskMessageInputControlState(
+  message: TaskMessage
+): TaskMessageInputControlState | undefined {
+  const wasSteer = message.inputControl?.action === "steer"
+    || message.interruptThen?.reusedInput?.action === "steer";
+  if (!wasSteer) return undefined;
+  return message.control?.outcome ?? "not-submitted";
+}
+
+/**
+ * Record the observed disposition of a steer's one live control attempt as an
+ * independent, idempotent, monotonic control op (decision-3 §3/§8, message-5 gap
+ * D). The op is keyed by the exact `receiptId` fence and the steer's own
+ * `requestId`; a record naming a different Message's receipt or a different
+ * input identity is refused, so an outcome can never be folded onto the wrong
+ * Message or fork a second op. Terminals never rewind to `pending` and never
+ * overwrite a different terminal — a repeated or out-of-order live/Host record
+ * is absorbed, never a conflicting second write. The frozen business
+ * {@link TaskMessageInputControl} intent is left untouched.
+ */
+export function recordTaskMessageControlOutcome(
+  message: TaskMessage,
+  record: Readonly<{ requestId: string; receiptId: string; outcome: TaskMessageInputControlOutcome; observedAt: Date }>
+): TaskMessage {
+  const inputRequestId = message.inputControl?.requestId ?? message.interruptThen?.reusedInput?.requestId;
+  const wasSteer = message.inputControl?.action === "steer"
+    || message.interruptThen?.reusedInput?.action === "steer";
+  if (!wasSteer || inputRequestId === undefined) {
+    throw new Error("Only a steer input Message records a live control outcome.");
+  }
+  if (record.requestId !== inputRequestId) {
+    throw new Error("Control outcome requestId must match the steer input identity.");
+  }
+  const existing = message.control;
+  if (existing !== undefined && existing.receiptId !== record.receiptId) {
+    throw new Error("Control outcome receiptId cannot name another control op.");
+  }
+  // Monotonic freeze (decision-3 §8, message-5 gap D). Once any terminal is
+  // proven it is final: a later `pending` never rewinds it and a different
+  // terminal never overwrites it — the first proven terminal wins. While still
+  // `pending`, an identical repeat is idempotent. Each frozen/absorbed case
+  // returns the Message unchanged so a fold can persist without a second write.
+  if (existing !== undefined) {
+    if (CONTROL_OUTCOME_RANK[existing.outcome] === 1) return message;
+    if (record.outcome === "pending") return message;
+  }
+  const updated: TaskMessage = {
+    ...message,
+    control: {
+      requestId: requireSafeIdentity(record.requestId, "Message control requestId"),
+      receiptId: requireText(record.receiptId, "Message control receiptId"),
+      outcome: record.outcome,
+      observedAt: record.observedAt.toISOString()
+    }
+  };
+  validateTaskMessage(updated);
+  return updated;
 }
 
 /** A role-result reference never duplicates the execution's report body. */
@@ -243,6 +476,62 @@ export function validateTaskMessage(message: TaskMessage): void {
   if (message.submissionReceipt !== undefined && message.submissionKey === undefined) {
     throw new Error("Message submission receipt requires a submission key.");
   }
+  if (message.inputControl !== undefined) {
+    if (!TASK_MESSAGE_INPUT_ACTIONS.includes(message.inputControl.action)) {
+      throw new Error(`Message input action is invalid: ${String(message.inputControl.action)}.`);
+    }
+    requireSafeIdentity(message.inputControl.requestId, "Message input requestId");
+    if (message.inputControl.expectedTarget !== undefined) {
+      requireText(message.inputControl.expectedTarget, "Message input expectedTarget");
+      if (message.inputControl.action !== "steer") {
+        throw new Error("Only a steer input binds an expectedTarget.");
+      }
+    }
+  }
+  if (message.interruptThen !== undefined) {
+    requireSafeIdentity(message.interruptThen.requestId, "Message interrupt requestId");
+    requireSafeIdentity(message.interruptThen.targetAttemptId, "Message interrupt targetAttemptId");
+    if (message.interruptThen.targetRunId !== undefined) {
+      validateTaskRecordReference(
+        { taskId: message.taskId, localId: message.interruptThen.targetRunId }, "run");
+    }
+    if (message.interruptThen.reusedInput !== undefined) {
+      if (!TASK_MESSAGE_INPUT_ACTIONS.includes(message.interruptThen.reusedInput.action)) {
+        throw new Error(`Reused input action is invalid: ${String(message.interruptThen.reusedInput.action)}.`);
+      }
+      requireSafeIdentity(message.interruptThen.reusedInput.requestId, "Reused input requestId");
+    }
+    // A then-handoff is an explicit deliverable Message, never an auto-queued
+    // steer: the two intents are mutually exclusive by construction. The prior
+    // steer identity, when one existed, is preserved as reusedInput provenance
+    // rather than left live on inputControl.
+    if (message.inputControl?.action === "steer") {
+      throw new Error("An interrupt-then handoff cannot also be a steer input.");
+    }
+  }
+  if (message.control !== undefined) {
+    requireSafeIdentity(message.control.requestId, "Message control requestId");
+    requireText(message.control.receiptId, "Message control receiptId");
+    if (!TASK_MESSAGE_INPUT_CONTROL_OUTCOMES.includes(message.control.outcome)) {
+      throw new Error(`Message control outcome is invalid: ${String(message.control.outcome)}.`);
+    }
+    if (typeof message.control.observedAt !== "string" || Number.isNaN(Date.parse(message.control.observedAt))) {
+      throw new Error("Message control observedAt is invalid.");
+    }
+    // A recorded control outcome is the disposition of a live steer attempt; it
+    // only exists for a steer input, or for the reused-steer provenance a
+    // handoff preserved. It is never fabricated on a plain queue or a Message
+    // that never carried a steer (decision-3 §3, message-5 gap D).
+    const inputRequestId = message.inputControl?.requestId ?? message.interruptThen?.reusedInput?.requestId;
+    const wasSteer = message.inputControl?.action === "steer"
+      || message.interruptThen?.reusedInput?.action === "steer";
+    if (!wasSteer || inputRequestId === undefined) {
+      throw new Error("Only a steer input Message records a live control outcome.");
+    }
+    if (message.control.requestId !== inputRequestId) {
+      throw new Error("Message control requestId must match the steer input identity.");
+    }
+  }
   if (message.runId !== undefined) requireSafeIdentity(message.runId, "Message AgentRun id");
   if (message.recipient !== undefined) {
     requireSafeIdentity(message.recipient.roleName, "Recipient Role");
@@ -293,6 +582,260 @@ export function validateTaskMessage(message: TaskMessage): void {
   }
   if (typeof message.createdAt !== "string" || Number.isNaN(Date.parse(message.createdAt))) {
     throw new Error("Message createdAt is invalid.");
+  }
+}
+
+/**
+ * The author kinds a Global Role input can carry. A Global Role has no Task
+ * Assignment, so a `role-result` (which references a Task AgentRun) is not one
+ * of them; user/operator/system inputs are (decision-3 §9/§11).
+ */
+export const GLOBAL_ROLE_MESSAGE_KINDS = ["user", "operator", "system"] as const;
+
+export type GlobalRoleMessageKind = typeof GLOBAL_ROLE_MESSAGE_KINDS[number];
+
+export type GlobalRoleMessageAuthor =
+  | Readonly<{ type: "user" }>
+  | Readonly<{ type: "operator" }>
+  | Readonly<{ type: "system" }>;
+
+/**
+ * A durable Global Role input. Its explicit owner is the Global Role name
+ * (decision-3 §11: "Global Role 消息的明确 owner 和可授权引用"), never a
+ * fabricated Task (decision-3 §9): this is how a Global input becomes
+ * authorizable and referenceable without reusing Task permissions or Task
+ * record shapes. It extends the Message store to a Global owner exactly as the
+ * Role store already parallels Task and Global Roles — persisted in the
+ * Global-owned message store and dispatched through the existing
+ * global-role-runtime mailbox, not a new private queue.
+ */
+export type GlobalRoleMessage = {
+  schemaVersion: 1;
+  id: string;
+  /** The explicit Global owner; a Global Role name, never a Task id. */
+  roleName: string;
+  kind: GlobalRoleMessageKind;
+  author: GlobalRoleMessageAuthor;
+  body: string;
+  /**
+   * The scope-generic durable input action and stable requestId, reused from
+   * the Task shape so a Global queue/steer is immutable and idempotent per
+   * requestId exactly like a Task input (decision-3 §6). `queue` is delivered
+   * at the Role's next legal execution opportunity; `steer` is saved but never
+   * auto-delivered as a queued continuation.
+   */
+  inputControl?: TaskMessageInputControl;
+  /**
+   * The one durable delivery fact for a Global queue action (decision-3 §9). A
+   * Global Role launches unmanaged (fileRoleLaunchPlanner keys managedControl on
+   * the Task scope), so there is no managed push edge: its "next legal
+   * opportunity" is the Role's own authorized Session reading its own Context to
+   * act. This records that consumption exactly once. Absent means still pending;
+   * a second self-read is idempotent and never re-delivers. It is never set by an
+   * external inspection read, which observes the pending Message without consuming
+   * it, so delivery is the Role actually taking the input — not merely a read.
+   */
+  delivery?: Readonly<{ deliveredAt: string; via: "context-read" }>;
+  /**
+   * A claimed interrupt-then handoff (decision-3 §4). Set atomically before the
+   * live cancel by `yui role interrupt --then-message`, it binds this already
+   * saved durable Global Message as the single continuation of an exact
+   * interrupted native Turn, keyed by the interrupt's own stable requestId and
+   * the target's attemptId. It is never a fourth action and never a second queue.
+   */
+  interruptThen?: GlobalRoleMessageInterruptThen;
+  createdAt: string;
+};
+
+/**
+ * The Global twin of {@link TaskMessageInterruptThen}. A Global Role has no
+ * owning AgentRun, so the interrupted target is proven by the exact native Turn's
+ * attemptId under the Role's own writer fence, never by a fabricated Task Run.
+ */
+export type GlobalRoleMessageInterruptThen = Readonly<{
+  /** Stable requestId of the interrupt that owns this continuation claim. */
+  requestId: string;
+  /** The exact interrupted native Turn's local input attempt id. */
+  targetAttemptId: string;
+  /** The saved input this handoff reuses, kept as provenance (decision-3 §3). */
+  reusedInput?: TaskMessageInputControl;
+}>;
+
+export type GlobalRoleMessageContext = Readonly<{
+  inputControl?: TaskMessageInputControl;
+}>;
+
+export function createGlobalRoleMessage(
+  id: string,
+  roleName: string,
+  body: string,
+  kind: GlobalRoleMessageKind,
+  author: GlobalRoleMessageAuthor,
+  now: Date,
+  context: GlobalRoleMessageContext = {}
+): GlobalRoleMessage {
+  validateGlobalKindAndAuthor(kind, author);
+  const message: GlobalRoleMessage = {
+    schemaVersion: 1,
+    id: validateGlobalRoleMessageId(id),
+    roleName: requireSafeIdentity(roleName, "Global message Role name"),
+    kind,
+    author: { type: author.type },
+    body: requireBody(body),
+    ...(context.inputControl === undefined
+      ? {}
+      : { inputControl: {
+          action: context.inputControl.action,
+          requestId: requireSafeIdentity(context.inputControl.requestId, "Message input requestId"),
+          ...(context.inputControl.expectedTarget === undefined
+            ? {} : { expectedTarget: requireText(context.inputControl.expectedTarget, "Message input expectedTarget") })
+        } }),
+    createdAt: now.toISOString()
+  };
+  validateGlobalRoleMessage(message);
+  return message;
+}
+
+export function validateGlobalRoleMessage(message: GlobalRoleMessage): void {
+  if (message.schemaVersion !== 1) throw new Error("Global Role Message must use schemaVersion 1.");
+  validateGlobalRoleMessageId(message.id);
+  requireSafeIdentity(message.roleName, "Global message Role name");
+  requireBody(message.body);
+  validateGlobalKindAndAuthor(message.kind, message.author);
+  if (message.inputControl !== undefined) {
+    if (!TASK_MESSAGE_INPUT_ACTIONS.includes(message.inputControl.action)) {
+      throw new Error(`Message input action is invalid: ${String(message.inputControl.action)}.`);
+    }
+    requireSafeIdentity(message.inputControl.requestId, "Message input requestId");
+    if (message.inputControl.expectedTarget !== undefined) {
+      requireText(message.inputControl.expectedTarget, "Message input expectedTarget");
+      if (message.inputControl.action !== "steer") {
+        throw new Error("Only a steer input binds an expectedTarget.");
+      }
+    }
+  }
+  if (message.delivery !== undefined) {
+    if (message.delivery.via !== "context-read") {
+      throw new Error(`Global message delivery via is invalid: ${String(message.delivery.via)}.`);
+    }
+    if (typeof message.delivery.deliveredAt !== "string"
+      || Number.isNaN(Date.parse(message.delivery.deliveredAt))) {
+      throw new Error("Global message delivery deliveredAt is invalid.");
+    }
+    // A delivery records that a durable Global Message was taken at a legal pull
+    // opportunity: an ordinary queue entry, or an interrupt-then handoff released
+    // after its target Turn's proven terminal (decision-3 §4/§9). A live steer,
+    // which targets the exact current Turn, is never delivered this way.
+    if (message.inputControl?.action !== "queue" && message.interruptThen === undefined) {
+      throw new Error("Only a queued or interrupt-then Global message records a context-read delivery.");
+    }
+  }
+  if (message.interruptThen !== undefined) {
+    requireSafeIdentity(message.interruptThen.requestId, "Global message interrupt requestId");
+    requireSafeIdentity(message.interruptThen.targetAttemptId, "Global message interrupt targetAttemptId");
+    if (message.interruptThen.reusedInput !== undefined) {
+      if (!TASK_MESSAGE_INPUT_ACTIONS.includes(message.interruptThen.reusedInput.action)) {
+        throw new Error(`Reused input action is invalid: ${String(message.interruptThen.reusedInput.action)}.`);
+      }
+      requireSafeIdentity(message.interruptThen.reusedInput.requestId, "Reused input requestId");
+    }
+  }
+  if (typeof message.createdAt !== "string" || Number.isNaN(Date.parse(message.createdAt))) {
+    throw new Error("Message createdAt is invalid.");
+  }
+}
+
+/** A Global message local id is `global-message-<n>`; it carries no Task id. */
+export function validateGlobalRoleMessageId(localId: string): string {
+  const normalized = requireSafeIdentity(localId, "Global message id");
+  if (!/^global-message-[1-9]\d*$/.test(normalized)) {
+    throw new Error(`Global message id is invalid: ${localId}.`);
+  }
+  return normalized;
+}
+
+/**
+ * Return a copy of a queued Global Message marked delivered at its next legal
+ * opportunity — the Role's own authorized Context read (decision-3 §9). Only a
+ * `queue` input may be consumed this way and only once: a Message that already
+ * carries a delivery is returned unchanged, so a repeated self-read is
+ * idempotent and never re-delivers. A steer/interrupt Message, which targets the
+ * exact current Turn rather than a queued next opportunity, is never delivered
+ * here.
+ */
+export function markGlobalRoleMessageDelivered(
+  message: GlobalRoleMessage, now: Date
+): GlobalRoleMessage {
+  if (message.inputControl?.action !== "queue") {
+    throw new Error("Only a queued Global message is delivered by a Context read.");
+  }
+  if (message.delivery !== undefined) return message;
+  const delivered: GlobalRoleMessage = {
+    ...message,
+    delivery: { deliveredAt: now.toISOString(), via: "context-read" }
+  };
+  validateGlobalRoleMessage(delivered);
+  return delivered;
+}
+
+/**
+ * Return a copy of an already-saved durable Global Message that claims the single
+ * interrupt-then continuation of an exact interrupted native Turn (decision-3
+ * §4). The original input identity, when the Message carried one, is preserved as
+ * `reusedInput` provenance rather than erased, so a replay of that requestId
+ * keeps resolving to this same Message and never creates a second input.
+ */
+export function claimGlobalRoleMessageInterruptThen(
+  message: GlobalRoleMessage,
+  claim: Readonly<{ requestId: string; targetAttemptId: string }>
+): GlobalRoleMessage {
+  const { inputControl, ...rest } = message;
+  const claimed: GlobalRoleMessage = {
+    ...rest,
+    interruptThen: {
+      requestId: requireSafeIdentity(claim.requestId, "Global message interrupt requestId"),
+      targetAttemptId: requireSafeIdentity(claim.targetAttemptId, "Global message interrupt targetAttemptId"),
+      ...(inputControl === undefined ? {} : { reusedInput: inputControl })
+    }
+  };
+  validateGlobalRoleMessage(claimed);
+  return claimed;
+}
+
+/**
+ * Return a copy of a claimed interrupt-then Global Message marked delivered at the
+ * handoff release opportunity (decision-3 §4). Unlike {@link
+ * markGlobalRoleMessageDelivered}, which consumes an ordinary queue entry, this
+ * releases the single continuation of an interrupted Turn and so requires an
+ * `interruptThen` claim rather than a live `queue` input. It is idempotent — a
+ * Message already carrying a delivery is returned unchanged — and the caller,
+ * never this helper, is responsible for having proven the target Turn's terminal
+ * first, so a handoff is never released across an unproven cancel boundary.
+ */
+export function releaseGlobalRoleMessageInterruptThen(
+  message: GlobalRoleMessage, now: Date
+): GlobalRoleMessage {
+  if (message.interruptThen === undefined) {
+    throw new Error("Only an interrupt-then Global message is released by a handoff.");
+  }
+  if (message.delivery !== undefined) return message;
+  const released: GlobalRoleMessage = {
+    ...message,
+    delivery: { deliveredAt: now.toISOString(), via: "context-read" }
+  };
+  validateGlobalRoleMessage(released);
+  return released;
+}
+
+function validateGlobalKindAndAuthor(
+  kind: GlobalRoleMessageKind,
+  author: GlobalRoleMessageAuthor
+): void {
+  if (!GLOBAL_ROLE_MESSAGE_KINDS.includes(kind)) {
+    throw new Error(`Global message kind is invalid: ${String(kind)}.`);
+  }
+  if (author?.type !== kind) {
+    throw new Error(`Global message kind ${kind} requires a ${kind} author.`);
   }
 }
 

@@ -3460,7 +3460,7 @@ test("Controller begin-handover accepts a null fromReleaseId", async (t) => {
 
 test("production storage exposes one current version and one migration floor", () => {
   assert.equal(MIN_SUPPORTED_STORAGE_VERSION, 1);
-  assert.equal(CURRENT_STORAGE_VERSION, 22);
+  assert.equal(CURRENT_STORAGE_VERSION, 23);
   for (const retiredExport of [
     "FileTaskStore",
     "STORAGE_STATE_FILE",

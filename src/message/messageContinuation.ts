@@ -91,13 +91,72 @@ export function messageContinuationBlocker(store: TaskStore, message: TaskMessag
   return undefined;
 }
 
+/**
+ * The one gate that decides when a claimed interrupt-then handoff may be
+ * delivered (decision-3 §4). It is keyed on the exact interrupted native Turn —
+ * not on the recipient's owner Assignment and not on a Run's business status —
+ * so the terminal proof is about the Turn that was actually cancelled:
+ * - `ready`   — the native Turn stopped and its cancel outcome is knowable; the
+ *               handoff may deliver.
+ * - `waiting` — the native Turn is still in flight; hold silently until it stops.
+ * - `unknown` — the cancel outcome is unprovable (delivery-unknown); the handoff
+ *               is never released or replayed across that boundary.
+ * - `missing` — the target can never prove its terminal.
+ * A plain queued Message (no claim) is always `ready` here; its own delivery
+ * gates live in messageContinuationBlocker.
+ *
+ * The proof is composite by necessity (message-5 gap C). Native execution
+ * termination is read from the live ProviderTurn, re-verified by attemptId,
+ * because a Run's business status can flip to failed while its native Turn is
+ * still running — the old AgentRun-only gate could release across a Turn that had
+ * not actually stopped. The cancel's *outcome* (clean vs delivery-unknown) lives
+ * on the owning AgentRun's failureReason when a Run owns the Turn, because a
+ * settled ProviderTurn preserves only completed/failed/cancelled and cannot
+ * itself carry delivery-unknown.
+ */
+function interruptThenTerminalState(
+  store: TaskStore, message: TaskMessage
+): "ready" | "waiting" | "unknown" | "missing" {
+  const claim = message.interruptThen;
+  if (claim === undefined) return "ready";
+  const roleName = message.recipient?.roleName;
+  const turn = roleName === undefined ? null
+    : store.getTaskRoleSessionSet(message.taskId, roleName)?.providerBinding?.run ?? null;
+  const owner = claim.targetRunId === undefined ? null : store.getRun(message.taskId, claim.targetRunId);
+  if (claim.targetRunId !== undefined && owner === null) return "missing";
+  // Primary proof: the exact interrupted native Turn, identity re-verified by
+  // attemptId. While it is still present — in flight (submitting/accepted) or its
+  // own acceptance unproven (delivery-unknown) — the native execution has not
+  // stopped, so the handoff waits no matter what the Run's status claims.
+  if (turn !== null && turn.attemptId === claim.targetAttemptId) {
+    if (["submitting", "accepted", "delivery-unknown"].includes(turn.status)) return "waiting";
+    // The native Turn stopped. Its cancel outcome may still be unprovable; that
+    // is recorded on the owning AgentRun, never on the settled ProviderTurn.
+    return owner?.result?.failureReason === "delivery-unknown" ? "unknown" : "ready";
+  }
+  // The live native Turn is no longer the target (a later Turn replaced it, which
+  // itself proves the target ended) or the Session binding is gone. Fall back to
+  // the durable AgentRun terminal record when a Run owns the Turn.
+  if (owner !== null) {
+    if (owner.status === "active") return "waiting";
+    return owner.result?.failureReason === "delivery-unknown" ? "unknown" : "ready";
+  }
+  // No owning Run and the native Turn identity cannot be re-verified: the claim's
+  // target can never prove its terminal.
+  return "missing";
+}
+
 /** Called in the Controller's ordinary reconciliation transaction. Messages
  * remain the pending authority; Mailbox is only the existing scheduling hint.
  * Reserving inputs and creating the next Run is one atomic effect. */
 export function prepareMessageContinuations(store: TaskStore, taskId: string, now: Date, roleName: string): void {
   const pending = store.listMessages(taskId).filter((message) =>
     message.recipient?.roleName === roleName && message.recipient.ownerRunId !== undefined
-    && message.continuation?.runId === undefined);
+    && message.continuation?.runId === undefined
+    // A steer targets the exact current native turn, never a queued next Run.
+    // If its live attempt did not submit, the message stays saved for the
+    // Leader to re-choose (§1/§8); Core never silently turns it into a queue.
+    && message.inputControl?.action !== "steer");
   for (const message of pending) {
     const recipient = message.recipient!;
     const blocker = messageContinuationBlocker(store, message);
@@ -133,8 +192,33 @@ export function prepareMessageContinuations(store: TaskStore, taskId: string, no
         ? "owner-session-unobserved" : "owner-session-changed");
       continue;
     }
-    const batch = pending.filter((entry) => isDeepStrictEqual(entry.recipient, recipient)
-      && messageContinuationBlocker(store, entry) === undefined).slice(0, 16);
+    // decision-3 §4 ordering. Split this recipient's deliverable Messages into
+    // the explicit interrupt-then handoffs and the ordinary queue. A handoff is
+    // released only after its exact interrupted AgentRun reaches a proven
+    // terminal, and the ordinary queue must never preempt a live handoff.
+    const recipientPending = pending.filter((entry) => isDeepStrictEqual(entry.recipient, recipient)
+      && messageContinuationBlocker(store, entry) === undefined);
+    const thenClaims = recipientPending.filter((entry) => entry.interruptThen !== undefined);
+    let handoffWaiting = false;
+    const readyThen: TaskMessage[] = [];
+    for (const claim of thenClaims) {
+      const state = interruptThenTerminalState(store, claim);
+      if (state === "ready") readyThen.push(claim);
+      else if (state === "waiting") handoffWaiting = true;
+      // A claim whose target can never prove its terminal fails visibly and
+      // stops holding the queue; it is never released or replayed.
+      else markNotDelivered(store, claim, state === "unknown"
+        ? "interrupt-then-target-delivery-unknown" : "interrupt-then-target-missing");
+    }
+    // Hold the entire recipient — including the ordinary queue — while any
+    // handoff still awaits its interrupted Turn's proven terminal.
+    if (handoffWaiting) continue;
+    // A ready handoff delivers in its own round ahead of the ordinary queue, so
+    // the old queue only follows once the handoff has been delivered.
+    const batch = (readyThen.length > 0
+      ? readyThen
+      : recipientPending.filter((entry) => entry.interruptThen === undefined)).slice(0, 16);
+    if (batch.length === 0) continue;
     const previous = store.listRuns(taskId).filter((run) => run.roleName === owner.roleName
       && run.workItemId === owner.workItemId && run.reviewRoundId === owner.reviewRoundId).at(-1)!;
     const baselineRef = previous.inputs[0]?.input.contextSnapshotRef;

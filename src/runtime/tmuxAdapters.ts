@@ -882,8 +882,8 @@ export class AgentHostPromptPushAdapter implements ActivePromptPushPort {
     try {
       const result = await sendAgentHostSteerControl({
         home: this.home,
-        scope: "task",
-        taskId: request.owner.taskId,
+        scope: request.owner.scope,
+        ...(request.owner.scope === "task" ? { taskId: request.owner.taskId } : {}),
         roleName: request.owner.roleName,
         control: {
           protocol: AGENT_HOST_CONTROL_PROTOCOL,

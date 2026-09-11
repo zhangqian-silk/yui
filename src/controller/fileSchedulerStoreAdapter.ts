@@ -77,6 +77,7 @@ import {
 } from "../agentRun/agentRun.js";
 import { transportAgentResult } from "../domain/agentResultTransport.js";
 import { createRunInput } from "../context/runInputContract.js";
+import { recordTaskMessageControlOutcome } from "../message/message.js";
 import {
   classifyRuntimeProcessExit,
   validateRuntimeProcessExitObservation
@@ -316,12 +317,18 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         const run = input.fence.runId === undefined ? null : store.getRun(taskId, input.fence.runId);
         const sessions = store.getTaskRoleSessionSet(taskId, input.fence.roleName);
         const native = sessions?.providerBinding?.run;
-        if (run === null || run.roleName !== input.fence.roleName
-          || run.effective.agentId !== input.fence.agentId || native?.runId !== run.id
-          || native.nativeTurnId !== input.fence.nativeTurnId
-          || sessions?.sessions[input.fence.agentId]?.nativeSessionId !== input.fence.nativeSessionId) return "obsolete";
-        if (!hasPersistedRuntimeObservation(store.listEvents(taskId), input) && run.status === "active") {
-          const updated = appendRunInput(run, createRunInput({
+        const isSteer = input.fence.receiptId!.startsWith("steer:");
+        // A Worker/Reviewer steer's accepted input is folded onto the owning
+        // AgentRun. A no-Run Leader steer (decision-3 §9) has no run to append to,
+        // but its accepted disposition is still a real fact that gap D records on
+        // the Message; only the Worker append requires the exact Run/Turn fence.
+        const runFolded = run !== null && run.roleName === input.fence.roleName
+          && run.effective.agentId === input.fence.agentId && native?.runId === run.id
+          && native.nativeTurnId === input.fence.nativeTurnId
+          && sessions?.sessions[input.fence.agentId]?.nativeSessionId === input.fence.nativeSessionId;
+        if (!runFolded && !(isSteer && input.fence.runId === undefined)) return "obsolete";
+        if (runFolded && !hasPersistedRuntimeObservation(store.listEvents(taskId), input) && run!.status === "active") {
+          const updated = appendRunInput(run!, createRunInput({
             source: input.fence.receiptId!.startsWith("native-input:")
               ? { type: "provider", channel: "visible-input" }
               : { type: "yui", channel: "input-response" },
@@ -329,6 +336,30 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
           }), now);
           store.saveRun(updated);
           store.saveActiveRun(updated);
+        }
+        // decision-3 §3/§8, message-5 gap D: promote the Message's independent
+        // control op to its proven terminal from the Host's own settlement, keyed
+        // by this exact steer receipt. Monotonic and idempotent — never a rewind
+        // of an already-proven outcome, and a replayed observation is absorbed.
+        if (isSteer) this.recordSteerControlOutcome(store, input.fence.receiptId!, "accepted", now);
+        this.persistRuntimeObservation(input, now);
+        return "applied";
+      });
+    }
+    // A steer's rejected/delivery-unknown disposition is the Host's proven
+    // terminal for the one live control attempt (message-5 gap D). It carries no
+    // AgentRun append — a rejected input changed no execution — so it is recorded
+    // only on the Message's control op, for a Worker/Reviewer or a no-Run Leader
+    // steer alike, keyed by the exact steer receipt.
+    if ((input.kind === "input.rejected" || input.kind === "input.delivery-unknown")
+      && input.fence.receiptId?.startsWith("steer:") === true) {
+      return this.store.transaction((store) => {
+        if (hasPersistedRuntimeObservation(store.listEvents(taskId), input)) return "applied";
+        const recorded = this.recordSteerControlOutcome(store, input.fence.receiptId!,
+          input.kind === "input.rejected" ? "rejected" : "delivery-unknown", now);
+        if (!recorded) {
+          recordCanonicalObservationObsolete(store, input, "steer-message-not-found", now);
+          return "obsolete";
         }
         this.persistRuntimeObservation(input, now);
         return "applied";
@@ -418,6 +449,39 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       this.persistRuntimeObservation(input, now);
     }
     return outcome;
+  }
+
+  /**
+   * Promote a steer Message's independent control op to a proven outcome from the
+   * Host's own settlement (decision-3 §3/§8, message-5 gap D). The `steer:` fence
+   * names the exact `steer:<taskId>/<messageId>` receipt, so the outcome binds to
+   * that one Message and never another; the requestId is read from the Message's
+   * own steer identity (its live input, or the reused-steer provenance a handoff
+   * preserved) so the recorded op matches the same idempotency key the live edge
+   * used. Returns false when the receipt names no such steer Message, so the
+   * caller can mark the observation obsolete rather than silently drop it. The
+   * record is monotonic and idempotent inside {@link recordTaskMessageControlOutcome}.
+   */
+  private recordSteerControlOutcome(
+    store: TaskStore, receiptId: string,
+    outcome: "accepted" | "rejected" | "delivery-unknown", now: Date
+  ): boolean {
+    const parsed = /^steer:([^/]+)\/(.+)$/.exec(receiptId);
+    if (parsed === null) return false;
+    const [, taskId, messageId] = parsed;
+    const message = store.listMessages(taskId).find((entry) => entry.id === messageId);
+    const requestId = message?.inputControl?.requestId ?? message?.interruptThen?.reusedInput?.requestId;
+    const wasSteer = message?.inputControl?.action === "steer"
+      || message?.interruptThen?.reusedInput?.action === "steer";
+    if (message === undefined || requestId === undefined || !wasSteer) return false;
+    const recorded = recordTaskMessageControlOutcome(message, {
+      requestId, receiptId, outcome, observedAt: now
+    });
+    // The monotonic guard returns the same Message when the record is absorbed
+    // (an idempotent repeat, or a stale outcome that must not rewind a proven
+    // terminal); only persist a real change.
+    if (recorded !== message) store.updateMessage(taskId, recorded);
+    return true;
   }
 
   /** A delayed steer receipt settles only its original claimed mailbox batch. */

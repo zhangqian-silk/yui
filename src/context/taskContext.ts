@@ -259,17 +259,53 @@ function authorizeContext(store: TaskStore, taskId: string, environment: NodeJS.
     allow = new Set(pack.authority.readableRefs.map((ref) => `${ref.store}:${ref.refId}`));
     allow.add(`role:${caller.roleName}`);
     allow.add(`turn:${caller.currentRunId}`);
+    // A steer targets exactly one Role's current native Turn and is never shared
+    // Task intent (decision-3 §9). A Leader steer in particular stores as an
+    // untargeted `user` Message (no recipient/WorkItem/Run scope, since a Leader
+    // holds no Assignment), so recognize it explicitly: the shared block below
+    // must never leak it, and the steer-delta block authorizes it only to its own
+    // recipient. `interruptThen.reusedInput` is the interrupt-then composition
+    // whose carried input can itself be a steer.
+    const isSteerMessage = (message: TaskMessage) =>
+      message.inputControl?.action === "steer"
+      || message.interruptThen?.reusedInput?.action === "steer";
     // A frozen Assignment is not a cutoff for the Task's current user intent.
     // Untargeted human/Operator messages are shared Task requirements; scoped
-    // messages and other Roles' results still require the Assignment's refs.
+    // messages, other Roles' results, and steers still require an explicit grant.
     const sharedMessageIds = new Set(store.listMessages(taskId)
       .filter(message => (message.kind === "user" || message.kind === "operator")
         && message.recipient === undefined && message.workItemId === undefined
-        && message.runId === undefined)
+        && message.runId === undefined && !isSteerMessage(message))
       .map(message => message.id));
     for (const id of sharedMessageIds) allow.add(`task-message:${id}`);
     for (const event of store.listEvents(taskId)) {
       if (event.type.startsWith("message.") && sharedMessageIds.has(event.payload.messageId)) {
+        allow.add(`task-event:${event.id}`);
+      }
+    }
+    // A steer targets this Role's exact current native Turn (decision-3 §9,
+    // message-5 gap E). Unlike a queued or addressed Message — which reaches the
+    // Role through a new AgentRun's frozen Context pack — a steer is pushed into
+    // the *current* turn and is never captured by any frozen snapshot. So the
+    // steer header directs the recipient to reconcile the input "through your
+    // authorized Context read path"; that path must therefore resolve the exact
+    // steer Message it names. Authorize the steers addressed to this caller's
+    // exact current Assignment scope as a live delta — the same way untargeted
+    // user intent is layered on — WITHOUT expanding the frozen Assignment's
+    // readableRefs. Scope is the tightest signal a steer carries (it never gains
+    // a continuation runId), so a steer for a different WorkItem/Round is not
+    // authorized, and only genuine steers gain this read (an ordinary addressed
+    // Message still requires its own frozen delta).
+    const run = store.getRun(taskId, caller.currentRunId);
+    const steerMessageIds = new Set(store.listMessages(taskId)
+      .filter(message => isSteerMessage(message)
+        && message.recipient?.roleName === caller.roleName
+        && message.recipient.workItemId === run?.workItemId
+        && message.recipient.reviewRoundId === run?.reviewRoundId)
+      .map(message => message.id));
+    for (const id of steerMessageIds) allow.add(`task-message:${id}`);
+    for (const event of store.listEvents(taskId)) {
+      if (event.type.startsWith("message.") && steerMessageIds.has(event.payload.messageId)) {
         allow.add(`task-event:${event.id}`);
       }
     }

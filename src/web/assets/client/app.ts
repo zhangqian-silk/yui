@@ -131,6 +131,8 @@ function detailActions() {
     sendMessage: (taskId, body, requestId, intent) => submitMutation(taskId + "/messages",
       "/api/tasks/" + encodeURIComponent(taskId) + "/messages",
       { body, requestId, ...(intent === undefined ? {} : { intent }) }),
+    controlInput: (taskId, payload, requestId) => submitMutation(taskId + "/control/" + requestId,
+      "/api/tasks/" + encodeURIComponent(taskId) + "/control", payload),
     updateTask: (taskId, patch, requestId) => submitMutation(taskId + "/metadata",
       "/api/tasks/" + encodeURIComponent(taskId) + "/metadata", { patch, requestId }),
     panels: (taskId) => requestJson("/api/tasks/" + encodeURIComponent(taskId) + "/panels",

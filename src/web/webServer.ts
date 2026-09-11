@@ -9,7 +9,7 @@ import type { Duplex } from "node:stream";
 import WebSocket, { WebSocketServer } from "ws";
 
 import { usageError } from "../errors/cliError.js";
-import type { WebTaskSurface } from "./webTaskSurface.js";
+import type { WebTaskSurface, WebControlInput } from "./webTaskSurface.js";
 import { WebRequestRejected } from "./webMutation.js";
 import { TASK_SUBMISSION_INTENTS, type TaskSubmissionIntent } from "../message/message.js";
 import type { SurfaceContributionRef, SurfacePanelContribution } from "../surface/surfaceContributions.js";
@@ -217,7 +217,7 @@ async function handleHttpRequest(
     }
     return;
   }
-  const surfaceTarget = /^\/api\/tasks\/([^/]+)\/(context|delta|inspect|metadata|messages)$/.exec(pathname);
+  const surfaceTarget = /^\/api\/tasks\/([^/]+)\/(context|delta|inspect|metadata|messages|control)$/.exec(pathname);
   if (surfaceTarget && dependencies.surface) {
     try {
       let taskId: string;
@@ -247,6 +247,9 @@ async function handleHttpRequest(
         const intent = webSubmissionIntent(body);
         // requestId is threaded as the submission key (§2.3) and echoed back on the receipt.
         value = { ...dependencies.surface.message(taskId, body.body, intent, body.requestId), requestId: body.requestId };
+      } else if (method === "POST" && action === "control") {
+        const body = await readMutationBody(request);
+        value = { ...await dependencies.surface.control(taskId, parseWebControlInput(body)), requestId: parseWebControlRequestId(body) };
       } else if (method === "POST" && action === "metadata") {
         const body = await readMutationBody(request);
         if (typeof body !== "object" || body === null || Array.isArray(body)
@@ -527,6 +530,89 @@ function parseAnswerPath(pathname: string): Readonly<{
   } catch {
     return null;
   }
+}
+
+/** The three-action control body is validated to the exact CLI-equivalent
+ * shape before it reaches the surface, so an unknown or malformed field is a
+ * visible not-submitted rejection rather than a silent default. `requestId` is
+ * the caller-supplied idempotency key common to all three actions. */
+function parseWebControlRequestId(value: unknown): string {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new WebRequestRejected("Control input must be an object.");
+  }
+  const requestId = (value as Record<string, unknown>).requestId;
+  if (typeof requestId !== "string" || !requestId.trim()) {
+    throw new WebRequestRejected("A non-empty requestId is required.");
+  }
+  return requestId;
+}
+
+function requiredControlString(input: Record<string, unknown>, key: string): string {
+  const value = input[key];
+  if (typeof value !== "string" || !value.trim()) {
+    throw new WebRequestRejected(`${key} is required.`);
+  }
+  return value;
+}
+
+function optionalControlString(input: Record<string, unknown>, key: string): string | undefined {
+  if (!(key in input) || input[key] === undefined) return undefined;
+  const value = input[key];
+  if (typeof value !== "string" || !value.trim()) {
+    throw new WebRequestRejected(`${key} must be a non-empty string when provided.`);
+  }
+  return value;
+}
+
+function parseWebControlInput(value: unknown): WebControlInput {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new WebRequestRejected("Control input must be an object.");
+  }
+  const input = value as Record<string, unknown>;
+  const action = input.action;
+  if (action === "queue") {
+    for (const key of Object.keys(input)) {
+      if (!["action", "body", "requestId", "to", "workItem", "reviewRound"].includes(key)) {
+        throw new WebRequestRejected(`Unexpected field for queue: ${key}.`);
+      }
+    }
+    if (input.workItem !== undefined && input.reviewRound !== undefined) {
+      throw new WebRequestRejected("A queue takes at most one of workItem or reviewRound.");
+    }
+    return { action: "queue", body: requiredControlString(input, "body"),
+      requestId: requiredControlString(input, "requestId"),
+      ...(optionalControlString(input, "to") === undefined ? {} : { to: optionalControlString(input, "to") }),
+      ...(optionalControlString(input, "workItem") === undefined ? {} : { workItem: optionalControlString(input, "workItem") }),
+      ...(optionalControlString(input, "reviewRound") === undefined ? {} : { reviewRound: optionalControlString(input, "reviewRound") }) };
+  }
+  if (action === "steer") {
+    for (const key of Object.keys(input)) {
+      if (!["action", "body", "requestId", "expectedTarget", "to", "workItem", "reviewRound"].includes(key)) {
+        throw new WebRequestRejected(`Unexpected field for steer: ${key}.`);
+      }
+    }
+    if (input.workItem !== undefined && input.reviewRound !== undefined) {
+      throw new WebRequestRejected("A steer takes at most one of workItem or reviewRound.");
+    }
+    return { action: "steer", body: requiredControlString(input, "body"),
+      requestId: requiredControlString(input, "requestId"),
+      expectedTarget: requiredControlString(input, "expectedTarget"),
+      to: requiredControlString(input, "to"),
+      ...(optionalControlString(input, "workItem") === undefined ? {} : { workItem: optionalControlString(input, "workItem") }),
+      ...(optionalControlString(input, "reviewRound") === undefined ? {} : { reviewRound: optionalControlString(input, "reviewRound") }) };
+  }
+  if (action === "interrupt") {
+    for (const key of Object.keys(input)) {
+      if (!["action", "requestId", "expectedTarget", "role", "thenMessage"].includes(key)) {
+        throw new WebRequestRejected(`Unexpected field for interrupt: ${key}.`);
+      }
+    }
+    return { action: "interrupt", requestId: requiredControlString(input, "requestId"),
+      expectedTarget: requiredControlString(input, "expectedTarget"),
+      role: requiredControlString(input, "role"),
+      ...(optionalControlString(input, "thenMessage") === undefined ? {} : { thenMessage: optionalControlString(input, "thenMessage") }) };
+  }
+  throw new WebRequestRejected("action must be one of queue, steer, or interrupt.");
 }
 
 function parseWebInputAnswer(value: unknown): WebInputAnswer {

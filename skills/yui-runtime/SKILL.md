@@ -91,6 +91,20 @@ Global context grants no Task implementation workspace. Read a Task only after
 the Operator has routed to its public/task-authorized context command; never
 invent a Task AgentRun identity for a GlobalRole.
 
+A GlobalRole's durable input uses the same three actions as a Task Role,
+addressed by the Role's own name instead of a Task: `yui role message
+queue|steer <global-role>` and `yui role interrupt <global-role>`. Each persists
+to the GlobalRole's own durable Message store with an explicit owner and a
+stable request id, and reads that Role's own Session; none fabricates a Task or
+runId to reuse Task-scoped delivery. `queue` delivers at the Role's next legal
+opportunity and is idempotent by request id. `steer` and `interrupt` affect only
+the exact current native Turn — a stale `--expected-target`, an incapable plan,
+or an unproven delivery leaves the Message saved and reports the reason, and
+`interrupt` stops only through the Provider's native cancel with an optional
+`--then-message` naming one already-saved GlobalRole Message. When the Role holds
+no live managed Turn, a steer or interrupt is `NO_ACTIVE_TURN` and never falls
+back to another action.
+
 ## Preserve intent and authority
 
 An analysis, diagnosis, or review request is read-only unless the user also

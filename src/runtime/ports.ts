@@ -194,7 +194,13 @@ export type ActivePromptPushRequest = Readonly<{
 }>;
 
 export type ActivePromptSteerRequest = Readonly<{
-  owner: Extract<RuntimeOwner, { scope: "task" }>;
+  /**
+   * The exact Session owner. A steer is valid for a Global owner as well as a
+   * Task owner, so the port carries the full RuntimeOwner rather than assuming a
+   * Task and reconstructing a taskId. A Global steer never invents a taskId or
+   * runId to satisfy a Task-shaped call (decision-3 §9).
+   */
+  owner: RuntimeOwner;
   agentId: string;
   adapterId: string;
   nativeSessionId: string;
