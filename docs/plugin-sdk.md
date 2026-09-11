@@ -91,8 +91,10 @@ the Operator or self-issuing a grant.
 
 On validation failure the Agent preserves the original error and judges the fix;
 an unknown or partial effect must not be auto-rerun. After using a new capability
-to obtain a real business result, save independent content through
-`artifact.save` and keep a reference in the Task result. `artifact.read` does not
+to obtain a real business result, save independent content as a file artifact
+through `artifact.save` (it commits the `relativePath` into the Task's local Git
+repository) and keep the returned `commit + relativePath` reference in the Task
+result. `artifact.read` does not
 depend on the plugin staying active. A successful load or a retained plugin source
 is not evidence that the business loop is complete. Protocol fixtures can validate
 the engineering boundary but cannot prove that a real Agent autonomously chose,

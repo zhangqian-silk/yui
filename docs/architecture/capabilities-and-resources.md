@@ -64,9 +64,13 @@ chooses the next action.
 
 ## Artifacts and environments
 
-- `artifact.save/read/list` stores immutable content, external-version evidence,
-  a Job receipt or reference material. A reference is not a fixed delivery result;
-  a final result cannot select a missing or cross-Task Artifact.
+- `artifact.save/read/list` maintains file/directory deliverables — complete
+  plans, prototypes, charts, reports — in the Task's own local-only Git
+  repository. `save` writes a `relativePath` and commits exactly that path,
+  returning a self-certifying `commit + relativePath` reference; `read` resolves
+  HEAD or a pinned commit for frozen evidence; `list` is an ordinary current
+  read. A reference is not a fixed delivery result; a final result cannot select
+  a missing or cross-Task artifact.
 - `environment.prepare` prepares an empty, scratch or authorized local directory
   without adopting it automatically.
 - `environment.adopt` rechecks identity, resource intent, permissions and

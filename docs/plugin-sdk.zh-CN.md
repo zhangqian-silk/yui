@@ -69,8 +69,9 @@ Task-local 管理权限不等于执行信任：可执行包仍逐阶段核对下
 报告具体缺口，不冒充 Operator 或自己签发 grant。
 
 验证失败由 Agent 保存原错误并判断修复；不可把 unknown／部分效果自动重跑。
-使用新增能力取得实际业务结果后，通过 `artifact.save` 保存独立内容，并在
-Task 结果中保留引用。`artifact.read` 不依赖插件仍活跃。加载成功或保留插件
+使用新增能力取得实际业务结果后，通过 `artifact.save` 将独立内容保存为文件产物
+（把 `relativePath` 提交进 Task 本地 Git 仓库），并在 Task 结果中保留返回的
+`commit + relativePath` 引用。`artifact.read` 不依赖插件仍活跃。加载成功或保留插件
 源码不是业务闭环完成证据。协议夹具能验证工程边界，但不能证明真实 Agent
 自主选择、编写和修复成功；真实场景验证遵循项目的资源授权边界。
 
