@@ -1,9 +1,10 @@
 import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
-import { mkdirSync, rmSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import {
+  externalProgramConfigViolations,
   managedGitSync,
   managedGitSyncSucceeds,
   requireCommitId
@@ -177,19 +178,74 @@ function buildTaskRepository(
   managedGitSync(staging, ["commit", "--allow-empty", "-m", "init artifact repo"], {
     commitDates: { author: rootDate, committer: rootDate }
   });
-  assertNoRemote(taskId, staging);
+  assertManagedBoundary(taskId, staging);
 
   for (const artifact of artifacts) {
     const ref = commitArtifact(staging, artifact);
     migrated.set(refKey(taskId, artifact.id), ref);
   }
+  const builtHead = requireCommitId(managedGitSync(staging, ["rev-parse", "HEAD^{commit}"]));
 
-  // Atomically adopt the freshly built repository. A leftover from a rolled-back
-  // attempt is byte-identical, so replacing it is safe and keeps ids stable.
+  // Adopt the freshly built repository WITHOUT ever destroying unknown data.
   const finalPath = taskArtifactRepoPath(home, taskId);
-  rmSync(finalPath, { recursive: true, force: true });
-  renameSync(staging, finalPath);
-  assertNoRemote(taskId, finalPath);
+  adoptBuiltRepository(taskId, staging, finalPath, builtHead);
+}
+
+/**
+ * Move the freshly built repository into place WITHOUT ever clearing an unknown
+ * existing directory (fail-closed; no auto-repair).
+ *
+ * - No existing dir: atomic rename — there is nothing to lose.
+ * - Existing dir that is PROVABLY this exact build: a remnant of a previously
+ *   rolled-back attempt. Keep it and discard the redundant staging build. Proof
+ *   is its HEAD commit id (a hash over the whole tree AND commit history,
+ *   reproducible only by this deterministic builder from this exact data), plus
+ *   a clean working tree and the managed boundary (no remote / no
+ *   external-program config) — so a dir with extra or modified files is NOT a
+ *   remnant even if HEAD coincides.
+ * - Anything else: STOP. Preserve the existing directory and the staging build
+ *   untouched and throw, so the outer transaction rolls the DB back and an
+ *   operator can inspect. Never overwrite, clear, or auto-repair.
+ */
+function adoptBuiltRepository(taskId: string, staging: string, finalPath: string, builtHead: string): void {
+  if (!existsSync(finalPath)) {
+    renameSync(staging, finalPath);
+    assertManagedBoundary(taskId, finalPath);
+    return;
+  }
+  if (isProvenIdenticalRemnant(finalPath, builtHead)) {
+    // The existing repo already IS the intended, verified result; drop the build.
+    rmSync(staging, { recursive: true, force: true });
+    return;
+  }
+  throw new Error(
+    `Refusing to overwrite existing artifact directory for ${taskId} at ${finalPath}: it is not a ` +
+      `proven byte-identical remnant of this migration (different HEAD, working-tree changes, or an ` +
+      `external remote/config). No data was modified; resolve it manually and re-run the upgrade.`
+  );
+}
+
+/**
+ * True ONLY if `finalPath` is a managed Git repo whose HEAD equals `builtHead`,
+ * whose working tree is clean, and which is within the managed boundary. Any
+ * failure (not a repo, differing HEAD, dirty tree, remote/external config) means
+ * "not a remnant", so the caller fails closed rather than deleting it. Read-only.
+ */
+function isProvenIdenticalRemnant(finalPath: string, builtHead: string): boolean {
+  if (!managedGitSyncSucceeds(finalPath, ["rev-parse", "--is-inside-work-tree"])) return false;
+  let head: string;
+  try {
+    head = requireCommitId(managedGitSync(finalPath, ["rev-parse", "HEAD^{commit}"]));
+  } catch {
+    return false;
+  }
+  // A matching HEAD proves the entire committed history; a clean tree proves
+  // nothing was added or modified on top of that history.
+  if (head !== builtHead) return false;
+  if (managedGitSync(finalPath, ["status", "--porcelain=v1", "--untracked-files=all", "-z"]).length > 0) {
+    return false;
+  }
+  return isWithinManagedBoundary(finalPath);
 }
 
 /** Write one Artifact's files, commit exactly them, and return its frozen reference. */
@@ -232,16 +288,34 @@ function commitArtifact(repoPath: string, artifact: StoredArtifact): MigratedRef
     : { commit, relativePath: target, ...(digest === undefined ? {} : { digest }) };
 }
 
-/** Verify no remote is configured on a freshly built repository. */
-function assertNoRemote(taskId: string, repoPath: string): void {
+/** Verify a freshly built repository is within the managed boundary; throw otherwise. */
+function assertManagedBoundary(taskId: string, repoPath: string): void {
   const remotes = managedGitSync(repoPath, ["remote"]).split("\n").map((line) => line.trim()).filter(Boolean);
   if (remotes.length > 0) {
     throw new Error(`Migrated artifact repository for ${taskId} unexpectedly has a remote: ${remotes.join(", ")}.`);
+  }
+  const configViolations = externalProgramConfigViolations(
+    managedGitSync(repoPath, ["config", "--local", "--list", "-z"])
+  );
+  if (configViolations.length > 0) {
+    throw new Error(
+      `Migrated artifact repository for ${taskId} has repo-local config that can run external ` +
+        `programs: ${configViolations.join(", ")}.`
+    );
   }
   // A managed repo must respond to a trivial plumbing query; fail closed otherwise.
   if (!managedGitSyncSucceeds(repoPath, ["rev-parse", "--is-inside-work-tree"])) {
     throw new Error(`Migrated artifact repository for ${taskId} did not initialize correctly.`);
   }
+}
+
+/** Read-only managed-boundary predicate (no remote, no external-program config). Never throws. */
+function isWithinManagedBoundary(repoPath: string): boolean {
+  const remotes = managedGitSync(repoPath, ["remote"]).split("\n").map((line) => line.trim()).filter(Boolean);
+  if (remotes.length > 0) return false;
+  return externalProgramConfigViolations(
+    managedGitSync(repoPath, ["config", "--local", "--list", "-z"])
+  ).length === 0;
 }
 
 /** An upgradable Candidate reference resolved to its exact commit and path. */
