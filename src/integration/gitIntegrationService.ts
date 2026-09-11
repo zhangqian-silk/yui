@@ -57,6 +57,7 @@ import {
   type TaskRuntimeIsolationPreparation
 } from "../runtime/taskRuntimeIsolation.js";
 import type { TaskStore } from "../storage/taskStore.js";
+import { managedIntegrationRuntimeRoot } from "../storage/homeLayout.js";
 import { advanceTaskProjectCommit } from "../task/task.js";
 import { yuiTmuxServerName } from "../tmux/tmuxManager.js";
 import {
@@ -165,7 +166,7 @@ export class GitIntegrationService {
     readonly jobPort?: IntegrationJobPort
   ) {
     this.home = resolve(home);
-    this.worktreeRoot = resolveWorktreeRoot(home, store.getConfig().defaultWorkspace);
+    this.worktreeRoot = resolveWorktreeRoot(home);
     this.environment = { ...environment };
     this.runtimeIsolation = runtimeIsolation;
   }
@@ -482,7 +483,7 @@ export class GitIntegrationService {
       }
     }
     this.runtimeIsolation.activate(runtime);
-    const baseEnvironment = await integrationCheckEnvironment(this.environment, runtime);
+    const baseEnvironment = await integrationCheckEnvironment(this.environment, runtime, this.home);
     const environment = Object.freeze({
       ...baseEnvironment,
       ...(releaseId === null ? {} : { [INTEGRATION_RUNTIME_RELEASE_ENV]: releaseId })
@@ -643,7 +644,7 @@ export class GitIntegrationService {
     this.runtimeIsolation.activate(runtime);
     let cleanupReason: "completion" | "failure" = "failure";
     try {
-      const environment = await integrationCheckEnvironment(this.environment, runtime);
+      const environment = await integrationCheckEnvironment(this.environment, runtime, this.home);
       const checks = await runChecks(
         path,
         attempt.checkCommands,
@@ -739,7 +740,7 @@ export class GitIntegrationService {
     this.runtimeIsolation.activate(runtime);
     let cleanupReason: "completion" | "failure" = "failure";
     try {
-      const environment = await integrationCheckEnvironment(this.environment, runtime);
+      const environment = await integrationCheckEnvironment(this.environment, runtime, this.home);
       const steps = [
         ...planBootstrapJobSteps(gate.plan),
         ...planL2JobSteps(gate.plan)
@@ -1430,26 +1431,35 @@ async function spawnCheck(
 
 async function integrationCheckEnvironment(
   source: NodeJS.ProcessEnv,
-  runtime: TaskRuntimeIsolationPreparation
+  runtime: TaskRuntimeIsolationPreparation,
+  home: string
 ): Promise<Readonly<Record<string, string>>> {
-  const home = join(runtime.descriptor.roots.data, "home");
+  const homeDirectory = join(runtime.descriptor.roots.data, "home");
   try {
-    await mkdir(home, { mode: 0o700 });
+    await mkdir(homeDirectory, { mode: 0o700 });
   } catch (error) {
     if (!isNodeCode(error, "EEXIST")) throw error;
   }
-  const homeMetadata = await lstat(home);
+  const homeMetadata = await lstat(homeDirectory);
   if (!homeMetadata.isDirectory() || homeMetadata.isSymbolicLink()) {
     throw new Error("Integration runtime HOME is not an owned directory.");
+  }
+  // The tmux socket endpoint is the one approved short-path IPC exception; every
+  // other temp consumer (TMPDIR/TMP/TEMP) stays on the Home-side runtime tmp.
+  const tmuxSocketRoot = integrationTmuxSocketRoot(home);
+  try {
+    await mkdir(tmuxSocketRoot, { mode: 0o700 });
+  } catch (error) {
+    if (!isNodeCode(error, "EEXIST")) throw error;
   }
   return Object.freeze({
     ...selectEnvironment(source, INTEGRATION_OPERATIONAL_ENVIRONMENT_NAMES),
     PATH: source.PATH || `${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`,
-    HOME: home,
+    HOME: homeDirectory,
     TMPDIR: runtime.descriptor.roots.temporary,
     TMP: runtime.descriptor.roots.temporary,
     TEMP: runtime.descriptor.roots.temporary,
-    TMUX_TMPDIR: runtime.descriptor.roots.temporary,
+    TMUX_TMPDIR: tmuxSocketRoot,
     ...runtime.environment
   });
 }
@@ -1466,11 +1476,18 @@ function defaultIntegrationRuntimeIsolation(
   homeId: string
 ): TaskRuntimeIsolationPort {
   const controlHome = resolve(home);
+  const runtimeRoot = managedIntegrationRuntimeRoot(controlHome);
   return new FileTaskRuntimeIsolation({
-    runtimeRoot: integrationRuntimeRoot(controlHome),
+    // The integration check's provider data/cache/tmp live in a dedicated Home
+    // partition — the same isolation contract every Task runtime obeys — not in
+    // a system-wide `/tmp` root. Only the tmux socket ENDPOINT stays a short
+    // `/tmp` path (see `integrationCheckEnvironment`) for the `sockaddr_un`
+    // budget; ordinary runtime state is now Yui-managed under Home.
+    runtimeRoot,
     pathLayout: "compact",
     controlPlane: {
       yuiHome: controlHome,
+      managedRuntimeRoot: runtimeRoot,
       controllerSocketPath: controllerSocketPath(homeId),
       tmuxNamespace: yuiTmuxServerName(controlHome),
       globalInstallPaths: [process.execPath]
@@ -1478,7 +1495,14 @@ function defaultIntegrationRuntimeIsolation(
   });
 }
 
-function integrationRuntimeRoot(home: string): string {
+/**
+ * Short `/tmp` directory that holds ONLY the integration check's tmux socket
+ * endpoint. tmux uses a `sockaddr_un` path whose length budget cannot absorb a
+ * deep Home path, so this single IPC endpoint is the one approved exception to
+ * the unified-Home contract. All other integration runtime state (data, cache,
+ * ordinary temp) lives in the Home partition from `managedIntegrationRuntimeRoot`.
+ */
+function integrationTmuxSocketRoot(home: string): string {
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   const homeDigest = createHash("sha256").update(resolve(home)).digest("hex").slice(0, 16);
   return join("/tmp", `yi-${uid.toString(36)}-${homeDigest}`);

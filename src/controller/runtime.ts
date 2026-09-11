@@ -49,6 +49,7 @@ import {
 import { FileRoleLaunchPlanner } from "../executor/fileRoleLaunchPlanner.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import { openCurrentTaskStore } from "../storage/currentTaskStore.js";
+import { managedRuntimeRoot } from "../storage/homeLayout.js";
 import { SqliteTaskStore } from "../storage/sqliteStore.js";
 import {
   AsyncTaskStoreClient,
@@ -319,11 +320,14 @@ export async function startFileTaskControllerRuntime(
       ?? new AgentHostPromptPushAdapter(home);
     const runtimeIsolation = options.runtimeIsolation
       ?? new FileTaskRuntimeIsolation({
-        // A sibling of the exact control Home keeps provider data/cache/tmp out
-        // of both the shared control plane and every managed Git workspace.
-        runtimeRoot: `${resolve(home)}.task-runtimes`,
+        // Provider data/cache/tmp live in a dedicated Home partition. The
+        // control boundary permits runtime roots to overlap only this exact
+        // subtree, keeping them out of the database, managed Git workspaces and
+        // every other part of the control plane.
+        runtimeRoot: managedRuntimeRoot(home),
         controlPlane: {
           yuiHome: home,
+          managedRuntimeRoot: managedRuntimeRoot(home),
           controllerSocketPath: controllerSocketPath(homeId),
           tmuxNamespace: yuiTmuxServerName(home),
           globalInstallPaths: [process.execPath]

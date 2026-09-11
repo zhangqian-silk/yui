@@ -1,6 +1,4 @@
 import {
-  basename,
-  dirname,
   join
 } from "node:path";
 import {
@@ -29,6 +27,7 @@ import { validateRun } from "../../agentRun/agentRun.js";
 import { validateDurableJob } from "../../job/durableJob.js";
 import { validateWorkItem } from "../../workItem/workItem.js";
 import { SqliteTaskStore } from "../sqliteStore.js";
+import { storageBackupRoot } from "../homeLayout.js";
 import {
   migrateSqliteSchema,
   storageMigrationPlan,
@@ -370,7 +369,10 @@ async function createDatabaseBackup(
 ): Promise<string> {
   const source = join(home, CURRENT_DATABASE_FILENAME);
   if (!existsSync(source)) throw new Error("The authoritative yui.db is missing.");
-  const backupDirectory = join(dirname(home), `${basename(home)}-backups`);
+  // Backups live inside Home so a single canonical root contains every
+  // self-managed artifact; the upgrade fence still protects them from the
+  // live database because they are a distinct partition from yui.db.
+  const backupDirectory = storageBackupRoot(home);
   mkdirSync(backupDirectory, { recursive: true, mode: 0o700 });
   const timestamp = now.toISOString().replaceAll(":", "-");
   const backupPath = join(
