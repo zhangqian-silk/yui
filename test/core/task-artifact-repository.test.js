@@ -434,3 +434,72 @@ test("managed git: externalProgramConfigViolations flags program keys and ignore
   // Empty config is within the boundary.
   assert.deepEqual(externalProgramConfigViolations(""), []);
 });
+
+test("managed git: a filter hidden behind include.path is refused before it can run", async () => {
+  const home = makeHome();
+  try {
+    const repo = openTaskArtifactRepository(home, TASK_ID);
+    await repo.ensure();
+
+    // The vector message-18 flagged: a `filter.*.clean` lives in an INCLUDED
+    // file, not directly in .git/config. `git config --local --list -z` lists
+    // only `include.path` (it does NOT expand the include), so a scan that keys
+    // solely off `filter.*` would miss it — yet a real `git add`/`status` follows
+    // the include and would run the hidden clean command. A managed repo never
+    // needs an include, so the include entry point itself must be refused.
+    const marker = join(home, "include-filter-ran.marker");
+    const includedConfig = join(home, "hidden.cfg");
+    writeFileSync(
+      includedConfig,
+      `[filter "sneaky"]\n\tclean = sh -c 'echo ran > ${marker}'\n`
+    );
+    execFileSync("git", [
+      "-C", repo.repoPath, "config", "--local", "include.path", includedConfig
+    ]);
+    writeFileSync(join(repo.repoPath, ".gitattributes"), "*.md filter=sneaky\n");
+
+    // Prove the include really is live for an ordinary read (defensive: confirms
+    // the vector exists so the test cannot silently pass on a no-op include).
+    const expanded = execFileSync(
+      "git", ["-C", repo.repoPath, "config", "--list"], { encoding: "utf8" }
+    );
+    assert.ok(expanded.includes("filter.sneaky.clean"), "include should expand for ordinary git reads");
+
+    await assert.rejects(
+      repo.save({ files: [{ relativePath: "doc.md", bytes: Buffer.from("hello\n") }], message: "blocked" }),
+      (error) =>
+        error instanceof ArtifactManagedConfigViolationError &&
+        error.keys.includes("include.path")
+    );
+
+    // The hidden clean command never executed (fail-closed before `git add`).
+    assert.equal(existsSync(marker), false);
+    // Neither the include pointer nor the included file is deleted (reported, not repaired).
+    const stillIncluded = execFileSync(
+      "git", ["-C", repo.repoPath, "config", "--local", "--get", "include.path"],
+      { encoding: "utf8" }
+    );
+    assert.ok(stillIncluded.includes(includedConfig));
+    assert.equal(existsSync(includedConfig), true);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("managed git: externalProgramConfigViolations rejects config-inclusion entry points", () => {
+  // `git config --local --list -z` lists include/worktree entry points without
+  // expanding them, so a filter can hide in an included file. The classifier
+  // rejects the entry points themselves rather than parsing included files.
+  const sample = [
+    "include.path\t/etc/evil.cfg".replace("\t", "\n"),
+    "includeif.gitdir:/x/.path\n/etc/evil.cfg",
+    "extensions.worktreeconfig\ntrue",
+    "core.autocrlf\nfalse",                // benign: ignored
+    "user.name\nYui"                       // benign: ignored
+  ].join("\0") + "\0";
+  const flagged = externalProgramConfigViolations(sample);
+  assert.deepEqual(
+    flagged,
+    ["extensions.worktreeconfig", "include.path", "includeif.gitdir:/x/.path"]
+  );
+});

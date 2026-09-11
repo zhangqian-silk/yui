@@ -235,6 +235,11 @@ export function requireCommitId(value: string): string {
  * appear in repo-local config are external tampering. We DETECT and STOP (like an
  * unexpected remote); we never silently delete the config or try to out-configure
  * an arbitrary command. Keys are matched case-insensitively (Git config is).
+ *
+ * The direct scan sees only repo-local keys, so it also rejects the config
+ * INCLUSION entry points (`include.*`, `includeIf.*`, `extensions.worktreeConfig`)
+ * that could otherwise hide any of the below in a file this scan never opens —
+ * see {@link isExternalProgramConfigKey}.
  */
 const EXTERNAL_PROGRAM_CONFIG_SUFFIXES: readonly string[] = Object.freeze([
   ".clean", ".smudge", ".process", // filter.<name>.*
@@ -256,10 +261,33 @@ const EXTERNAL_PROGRAM_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "web.browser", "help.browser"
 ]);
 
+/**
+ * Config keys that IMPORT or ENABLE another config scope. `git config --local
+ * --list -z` lists these keys but does NOT expand them, so a `filter.*.clean`
+ * hidden inside an included file (or the per-worktree config) is invisible to
+ * the direct external-program scan above — yet an ordinary `git add`/`status`
+ * DOES follow includes and would run that hidden filter. A managed artifact
+ * repository never needs an include or a per-worktree config, so we reject the
+ * ENTRY POINT itself rather than parsing the (arbitrary, possibly nested)
+ * included files: `include.path`, any `includeIf.<condition>.path`, and the
+ * `extensions.worktreeConfig` switch that activates `.git/config.worktree`.
+ * Keys are already lower-cased by Git config.
+ */
+const CONFIG_INCLUSION_CONFIG_PREFIXES: readonly string[] = Object.freeze([
+  "include.", "includeif."
+]);
+const CONFIG_INCLUSION_CONFIG_KEYS: ReadonlySet<string> = new Set([
+  "extensions.worktreeconfig"
+]);
+
 function isExternalProgramConfigKey(key: string): boolean {
   if (EXTERNAL_PROGRAM_CONFIG_KEYS.has(key)) return true;
   for (const prefix of EXTERNAL_PROGRAM_CONFIG_PREFIXES) if (key.startsWith(prefix)) return true;
   for (const suffix of EXTERNAL_PROGRAM_CONFIG_SUFFIXES) if (key.endsWith(suffix)) return true;
+  // A config-inclusion / alternate-scope entry point can smuggle any of the
+  // above in a file this direct scan never opens; reject the entry point itself.
+  if (CONFIG_INCLUSION_CONFIG_KEYS.has(key)) return true;
+  for (const prefix of CONFIG_INCLUSION_CONFIG_PREFIXES) if (key.startsWith(prefix)) return true;
   return false;
 }
 
