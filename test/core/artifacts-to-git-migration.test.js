@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,6 +8,7 @@ import Database from "better-sqlite3";
 
 import { migrateArtifactsToGit } from "../../dist/storage/migrations/artifactsToGit.js";
 import { openTaskArtifactRepository } from "../../dist/artifacts/taskArtifactRepository.js";
+import { taskArtifactRepoPath } from "../../dist/artifacts/artifactPaths.js";
 import { parseGitArtifactRef, isGitArtifactRefString } from "../../dist/artifacts/gitArtifactRef.js";
 
 /**
@@ -250,6 +251,50 @@ test("18->19 migration: re-running after a rolled-back attempt rebuilds identica
 
     const content = await openTaskArtifactRepository(home, TASK).read("migrated/artifact-a/content");
     assert.equal(content.digest, digestA);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("18->19 migration: fails closed on an UNKNOWN existing directory without overwriting it", () => {
+  const home = mkdtempSync(join(tmpdir(), "yui-mig-failclosed-"));
+  try {
+    const db = seedV18Database(home);
+    seedOneTask(db);
+
+    // A foreign, non-remnant directory already occupies the Task's repo path:
+    // not a Git repo at all, holding a file the migration did not create. This
+    // models an operator mistake or a stale unrelated directory — NOT a proven
+    // byte-identical remnant of a rolled-back attempt.
+    const finalPath = taskArtifactRepoPath(home, TASK);
+    mkdirSync(finalPath, { recursive: true });
+    const foreignFile = join(finalPath, "IMPORTANT.txt");
+    const foreignBytes = "do not delete me\n";
+    writeFileSync(foreignFile, foreignBytes);
+
+    // The migration must STOP rather than clear the unknown directory, and it
+    // must not have half-applied: the throw rolls back the DB in production, so
+    // here we assert the DB is untouched (artifacts table still present).
+    assert.throws(
+      () => migrateArtifactsToGit(db),
+      /Refusing to overwrite existing artifact directory/i
+    );
+
+    // Fail-closed: the foreign directory and its file are preserved byte-for-byte.
+    assert.equal(existsSync(foreignFile), true);
+    assert.equal(readFileSync(foreignFile, "utf8"), foreignBytes);
+
+    // No auto-repair: the unknown directory was never turned into a Git repo.
+    assert.equal(existsSync(join(finalPath, ".git")), false);
+
+    // The DB authority is intact: the migration did not drop the table or rewrite
+    // any ref before failing (the outer transaction would roll back regardless,
+    // but the function itself must not have reached the drop).
+    const artifactsTable = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='artifacts'")
+      .all();
+    assert.equal(artifactsTable.length, 1);
+    db.close();
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
