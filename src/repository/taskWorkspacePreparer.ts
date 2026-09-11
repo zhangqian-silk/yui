@@ -98,6 +98,7 @@ import {
   recordTaskBaseProvenanceEvents,
   type TaskBaseProvenance
 } from "./taskBaseFreshness.js";
+import { managedTaskRoot, managedWorktreeRoot } from "../storage/homeLayout.js";
 
 const MAIN_WORKTREE = "main";
 const LEADER_ROLE = "leader";
@@ -2594,7 +2595,7 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
   }
 
   #projectContainer(projectName: string): string {
-    return join(resolveWorktreeRoot(this.home, this.store.getConfig().defaultWorkspace),
+    return join(resolveWorktreeRoot(this.home),
       safePathSegment(projectName));
   }
 
@@ -2609,17 +2610,17 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
   }
 
   #taskWorkspaceRoot(taskId: string): string {
-    return join(resolveTaskRoot(this.home, this.store.getConfig().defaultWorkspace),
+    return join(resolveTaskRoot(this.home),
       safePathSegment(taskId), "main");
   }
 
   #workItemWorkspaceRoot(taskId: string, workItemId: string): string {
-    return join(resolveTaskRoot(this.home, this.store.getConfig().defaultWorkspace),
+    return join(resolveTaskRoot(this.home),
       safePathSegment(taskId), "work-items", safePathSegment(workItemId));
   }
 
   #reviewRoundWorkspaceRoot(taskId: string, round: ReviewRound): string {
-    return join(resolveTaskRoot(this.home, this.store.getConfig().defaultWorkspace),
+    return join(resolveTaskRoot(this.home),
       safePathSegment(taskId), "reviews", safePathSegment(this.#reviewWorktreeName(round)));
   }
 
@@ -2631,7 +2632,7 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
 
   #executionLaneWorkspaceRoot(taskId: string, groupId: string, laneId: string): string {
     return join(
-      resolveTaskRoot(this.home, this.store.getConfig().defaultWorkspace),
+      resolveTaskRoot(this.home),
       safePathSegment(taskId),
       "execution-lanes",
       safePathSegment(groupId),
@@ -3174,25 +3175,12 @@ function sameCommit(left: string, right: string): boolean {
   return left.toLowerCase() === right.toLowerCase();
 }
 
-export function resolveWorktreeRoot(home: string, workspace: string | undefined): string {
-  return join(resolveWorkspaceRoot(home, workspace), "worktree");
+export function resolveWorktreeRoot(home: string): string {
+  return managedWorktreeRoot(home);
 }
 
-export function resolveTaskRoot(home: string, workspace: string | undefined): string {
-  return join(resolveWorkspaceRoot(home, workspace), "tasks");
-}
-
-function resolveWorkspaceRoot(home: string, workspace: string | undefined): string {
-  if (workspace === undefined) {
-    throw new Error("Project workspace is not configured; run yui setup.");
-  }
-  const homeRoot = resolve(home);
-  const workspaceRoot = resolve(workspace);
-  const fromHome = relative(homeRoot, workspaceRoot);
-  if (fromHome === "" || (!fromHome.startsWith("..") && !isAbsolute(fromHome))) {
-    throw new Error("Project workspace must be outside YUI_HOME.");
-  }
-  return workspaceRoot;
+export function resolveTaskRoot(home: string): string {
+  return managedTaskRoot(home);
 }
 
 function errorCode(error: unknown): string | undefined {

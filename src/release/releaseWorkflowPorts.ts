@@ -1,8 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
+import { releaseWorkflowScratchRoot } from "../storage/homeLayout.js";
 import { runUpdate, type StagedPackage, type UpdatePorts, type UpdateResult } from "../cli/updateOrchestrator.js";
 import { activatedControllerEntrypoint } from "../cli/updatePorts.js";
 import {
@@ -694,7 +694,7 @@ export function createReleaseWorkflowPorts(
           // publish` read THIS snapshot, so a TOCTOU replacement of the
           // original path after the integrity check cannot change what is
           // published. The snapshot is removed once publish completes.
-          const snapshot = await writeVerifiedTarballSnapshot(bytes);
+          const snapshot = await writeVerifiedTarballSnapshot(deps.home, bytes);
           try {
             // Inspect the tarball manifest before publishing: the actual
             // package name/version must match the frozen declaration, not
@@ -842,8 +842,12 @@ export function createReleaseWorkflowPorts(
           // P2-2 (rr19): Install in a fresh temp directory with an isolated
           // npm cache, so npx cannot reuse a local node_modules binary. Then
           // run the installed binary directly and verify the output matches
-          // the pinned version.
-          const smokeDir = await mkdtemp(join(tmpdir(), "yui-smoke-"));
+          // the pinned version. The smoke directory is a Yui-authored release
+          // artifact, so it lands under the Home release-workflow scratch root,
+          // never a shared system temp root.
+          const scratch = releaseWorkflowScratchRoot(deps.home);
+          await mkdir(scratch, { recursive: true, mode: 0o700 });
+          const smokeDir = await mkdtemp(join(scratch, "yui-smoke-"));
           const smokeCache = join(smokeDir, "npm-cache");
           try {
             const install = await run("npm", [
@@ -1819,10 +1823,14 @@ async function queryControllerLifecycle(
  * random name and read-only permissions (P1-3, rr22). The manifest
  * inspection and `npm publish` both read this snapshot, so replacing the
  * original path after the integrity check cannot change what is published.
- * The caller removes the snapshot once publish completes.
+ * The caller removes the snapshot once publish completes. The snapshot is a
+ * Yui-authored release artifact, so it lands under the Home release-workflow
+ * scratch root, never a shared system temp root.
  */
-async function writeVerifiedTarballSnapshot(bytes: Buffer): Promise<string> {
-  const snapshot = join(tmpdir(), `yui-release-snapshot-${randomBytes(12).toString("hex")}.tgz`);
+async function writeVerifiedTarballSnapshot(home: string, bytes: Buffer): Promise<string> {
+  const scratch = releaseWorkflowScratchRoot(home);
+  await mkdir(scratch, { recursive: true, mode: 0o700 });
+  const snapshot = join(scratch, `yui-release-snapshot-${randomBytes(12).toString("hex")}.tgz`);
   // "wx" fails if the random name already exists, so a pre-existing file
   // (or symlink) can never be overwritten or followed.
   await writeFile(snapshot, bytes, { flag: "wx" });

@@ -29,6 +29,10 @@ import {
 import { migrateAgentRunContract } from "./migrations/agentRunContract.js";
 import { migrateArtifactsToGit } from "./migrations/artifactsToGit.js";
 import { migrateIntegrationContinuation } from "./migrations/integrationContinuation.js";
+import {
+  UNIFY_HOME_LAYOUT_SQL,
+  migrateUnifyHomeLayout
+} from "./migrations/unifyHomeLayout.js";
 
 import {
   CURRENT_STORAGE_VERSION,
@@ -1186,6 +1190,29 @@ UPDATE review_rounds SET payload = json_set(payload, '$.executionGroup.lanes', j
     // Frozen Context and events are never rewritten.
     sql: "SELECT 1; -- Integration Git progress and exact check admission",
     migrateData: migrateIntegrationContinuation
+  },
+  {
+    version: 21,
+    name: "unify-home-layout",
+    introducedIn: "0.15.9",
+    // Unify every Yui self-managed path under a single canonical YUI_HOME. The
+    // managed Git worktrees move from the out-of-Home `defaultWorkspace` into
+    // `<home>/workspaces/{worktree,tasks}` and the provider runtimes from the
+    // `<home>.task-runtimes` sibling into `<home>/runtime/task-runtimes`. Only
+    // the durable Git worktree tree is physically relocated, by COPY (never
+    // rename-away): its replica is digest-verified against the source and
+    // atomically published while the original is PRESERVED as the rollback
+    // anchor; the regenerable task views and disposable runtimes are pointer
+    // rewrites only. The copied worktrees are then repaired, and only the
+    // persisted pointers the runtime trusts as live are rewritten. Frozen
+    // evidence (Context snapshots, terminal Run Git evidence, candidate
+    // snapshots, terminal Jobs, reports) and self-healing/self-rediscovered
+    // records (Task cwd, active Role workspaces, views, resource registry) are
+    // left intact; a queued/running Job bound under a relocating root is refused
+    // rather than silently moved. The data/filesystem transform is the
+    // substantive step; the SQL is inert.
+    sql: UNIFY_HOME_LAYOUT_SQL,
+    migrateData: migrateUnifyHomeLayout
   }
 ]);
 

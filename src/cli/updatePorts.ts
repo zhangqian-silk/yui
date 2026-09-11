@@ -30,12 +30,12 @@ import {
   accessSync,
   constants,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync
 } from "node:fs";
-import { tmpdir } from "node:os";
 import {
   delimiter,
   dirname,
@@ -49,6 +49,8 @@ import { runtimeError } from "../errors/cliError.js";
 import { isConcreteVersion } from "../domain/validation.js";
 import { STORAGE_DOCTOR_CHECK_NAMES } from "../doctor/doctor.js";
 import { acquireHandoverLock } from "../release/runtimeRelease.js";
+import { updateStagingRoot } from "../storage/homeLayout.js";
+import { resolveYuiHome } from "../storage/taskStore.js";
 import type {
   StagedPackage,
   ControllerIdentity,
@@ -100,7 +102,7 @@ export type UpdateSpawner = (
 export function createUpdatePorts(
   environment: NodeJS.ProcessEnv,
   spawn: UpdateSpawner = spawnSync,
-  stagingRoot: string = tmpdir()
+  stagingRoot: string = updateStagingRoot(resolveYuiHome(environment))
 ): UpdatePorts {
   // The production adapter must not let a later PATH change select a
   // different npm during staging, activation, or recovery. Test doubles are
@@ -145,6 +147,9 @@ export function createUpdatePorts(
             + "major.minor.patch version can be pinned for an update."
         );
       }
+      // The Home staging parent may not exist yet on a Home that has never
+      // run an update; create it (private) before minting a throwaway prefix.
+      mkdirSync(stagingRoot, { recursive: true, mode: 0o700 });
       const stagingPath = mkdtempSync(join(stagingRoot, "yui-update-stage-"));
       let ownsStaging = true;
       try {

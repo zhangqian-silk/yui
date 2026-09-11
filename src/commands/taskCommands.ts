@@ -209,6 +209,7 @@ import {
 } from "../task/completionReadiness.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import { StorageConflictError } from "../storage/taskStore.js";
+import { planningRuntimeCwd } from "../storage/homeLayout.js";
 import type { AgentProfile } from "../profile/agentProfile.js";
 import {
   requireResolvedAgentProfileRuntime,
@@ -7718,7 +7719,7 @@ function createTaskRole(
   sourceGlobalRoleName?: string
 ): Role {
   const workspace = task.status === "draft"
-    ? join(`${store.rootDirectory()}.task-runtimes`, "planning", task.id)
+    ? planningRuntimeCwd(store.rootDirectory(), task.id)
     : task.cwd ?? store.getConfig().defaultWorkspace ?? process.cwd();
   if (explicitAgentId === undefined) {
     const sourceRoleName = sourceGlobalRoleName
@@ -7755,7 +7756,7 @@ function createTaskRoleFromAgentBinding(
   now: Date
 ): Role {
   const workspace = task.status === "draft"
-    ? join(`${store.rootDirectory()}.task-runtimes`, "planning", task.id)
+    ? planningRuntimeCwd(store.rootDirectory(), task.id)
     : task.cwd ?? store.getConfig().defaultWorkspace ?? process.cwd();
   return createRole(
     task.id,
