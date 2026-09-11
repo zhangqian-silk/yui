@@ -53,7 +53,11 @@ determine Task identity. They also do not determine WorkItem count. Let
 isolated workspaces and Integration handle independent Git changes.
 
 Keep the Task title concise and put detailed intent, constraints, and evidence
-in its description or routed Message:
+in its description or routed Message. The examples below are separate
+operations, not an automatic create/submit/activate sequence. For creation-only
+intent, save the Task without starting planning. Discussion does not authorize
+delivery; follow the Leader's [planning and activation boundary](../yui-leader/references/planning.md)
+before activation. Do not reopen terminal Tasks merely because new input arrives.
 
 ```sh
 yui operator submit "<related request and delta>" --task <task-id> --intent discuss
