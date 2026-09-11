@@ -297,8 +297,12 @@ import {
 } from "./roleRuntimeGuard.js";
 import { runTaskContextCommand } from "./taskContextCommand.js";
 import { listContextMessages } from "../context/taskContext.js";
-import { createProjectResources, validateArtifactInput, type ArtifactInput, type EnvironmentPlan } from "../resources/projectResourceService.js";
-import { artifactSummary, type ArtifactRef } from "../resources/projectResource.js";
+import { createProjectResources, type EnvironmentPlan } from "../resources/projectResourceService.js";
+import {
+  isGitArtifactRefString,
+  parseGitArtifactRef,
+  type GitArtifactRef
+} from "../artifacts/gitArtifactRef.js";
 import { runTaskNextActionCommand } from "./taskNextActionCommand.js";
 import {
   runDeliveryGuardPreflight,
@@ -765,33 +769,6 @@ export function runTaskCommand(
     assertTaskDeliveryAuthority(store, options.environment, options.environment.YUI_TASK_ID);
   }
   switch (command) {
-    case "artifact": {
-      const [action, taskId, value] = rest;
-      if (!taskId || !["list", "show", "save"].includes(action)
-        || rest.length !== (action === "list" ? 2 : 3)) {
-        throw usageError("Usage: yui task artifact list <task> | show <task> <artifact-id> | save <task> <artifact-json>");
-      }
-      if (options.environment?.YUI_SESSION_SCOPE === "task" && options.environment.YUI_TASK_ID !== taskId) {
-        throw usageError("Artifact is outside the managed Task scope.");
-      }
-      requireTask(store, taskId);
-      let data: unknown;
-      if (action === "list") data = store.listArtifacts(taskId).map(artifactSummary);
-      else if (action === "show") {
-        data = store.getArtifact(taskId, value);
-        if (data === null) throw usageError("Artifact not found in this Task.");
-      } else {
-        taskActor(store, options, taskId);
-        let parsed: unknown;
-        try { parsed = JSON.parse(value); }
-        catch { throw usageError("Artifact input must be JSON."); }
-        let input: ArtifactInput;
-        try { input = validateArtifactInput(parsed); }
-        catch (error) { throw usageError(`Artifact input is invalid: ${error instanceof Error ? error.message : String(error)}`); }
-        data = createProjectResources(store).saveArtifact(taskId, input);
-      }
-      return output(JSON.stringify(data, null, 2), data);
-    }
     case "create": return createTaskCommand(rest, store, options);
     case "update": return output(updateTaskCommand(rest, store, options));
     case "list": return listTaskCommand(rest, store);
@@ -1821,15 +1798,15 @@ function completeTaskCommand(
     }
 
     for (const ref of request.artifactRefs) {
-      if (ref.startsWith("artifact-")) {
-        fixedArtifactRefs(tx, task.id, [ref]);
+      if (isGitArtifactRefString(ref)) {
+        fixedArtifactRefs(task.id, [ref]);
       } else if (ref.startsWith("turn:")) {
         const run = tx.getRun(task.id, ref.slice("turn:".length));
         if (run === null || run.result === undefined) {
           throw usageError(`Task completion result ref is not readable: ${ref}.`);
         }
       } else if (!/^https?:\/\/[^\s]+$/u.test(ref)) {
-        throw usageError("Completion --artifact-ref must be a saved artifact id, turn:<local-turn-id>, or an explicit HTTP(S) reference URL.");
+        throw usageError("Completion --artifact-ref must be a commit-pinned git:<commit>:<relativePath> reference, turn:<local-turn-id>, or an explicit HTTP(S) reference URL.");
       }
     }
     const completed = completeTask(task, now, { by: actor, summary, artifactRefs: request.artifactRefs });
@@ -3787,7 +3764,7 @@ function updateWork(
   store: TaskWorkflowStore,
   options: TaskCommandOptions
 ): TaskCommandExecution {
-  const usage = "Task work update usage: yui task work update <task>/<work> <todo|running|done|failed> [--summary <text>] [--artifact-ref <artifact-id> ...].";
+  const usage = "Task work update usage: yui task work update <task>/<work> <todo|running|done|failed> [--summary <text>] [--artifact-ref git:<commit>:<relative-path> ...].";
   const parsed = parseMultiValueTail(args, new Set(["--summary"]), new Set(["--artifact-ref"]), usage);
   exactPositionals(parsed.positionals, 2, usage);
   const requested = parsed.positionals[1];
@@ -3806,7 +3783,7 @@ function updateWork(
     const current = requireWorkItem(tx, parsed.positionals[0], options);
     const task = requireTask(tx, current.taskId);
     assertTaskOpen(task);
-    const artifactRefs = artifactIds.length === 0 ? undefined : fixedArtifactRefs(tx, task.id, artifactIds);
+    const artifactRefs = artifactIds.length === 0 ? undefined : fixedArtifactRefs(task.id, artifactIds);
     if (current.assignee === undefined) {
       taskActor(tx, options, task.id);
       if (status === "running") {
@@ -4310,10 +4287,11 @@ function acceptWork(
     const candidate = candidateId === undefined ? requireWorkItemCandidate(item)
       : item.candidates.find(({ id }) => id === candidateId);
     if (candidate === undefined) throw usageError(`Work Item Candidate not found: ${candidateId}.`);
-    if (candidate.artifactRefs !== undefined && !isDeepStrictEqual(
-      fixedArtifactRefs(tx, task.id, candidate.artifactRefs.map((ref) => ref.artifactId)),
-      candidate.artifactRefs
-    )) throw usageError("Candidate Artifact references no longer match their saved immutable results.");
+    // A Candidate's artifact references are commit-pinned (git:<commit>:<path>):
+    // the commit self-certifies the frozen bytes, so they cannot drift and are
+    // re-validated for shape whenever the Candidate is loaded. Their bytes are
+    // resolved lazily on the async read/context path, never re-derived from a DB
+    // mirror here.
     const taskFinalContract = taskFinalReviewContractForMutation(tx, task.id, options);
     const latestReview = reviewRoundsByIdentity(tx.listReviewRounds(item.taskId)
       .filter((round) => round.workItemId === item.id
@@ -7682,10 +7660,22 @@ function requireWorkItemCandidate(item: WorkItem): WorkItemCandidate {
   return candidate;
 }
 
-function fixedArtifactRefs(store: TaskWorkflowStore, taskId: string, ids: readonly string[]): readonly ArtifactRef[] {
-  if (new Set(ids).size !== ids.length) throw usageError("Artifact references must be unique.");
-  try { return createProjectResources(store).resultRefs(taskId, ids); }
-  catch (error) { throw usageError(`Result Artifact is unavailable: ${messageOf(error)}`); }
+/**
+ * Parse `--artifact-ref git:<commit>:<relativePath>` selectors into canonical
+ * commit-pinned references for the given Task. This is a PURE shape check with
+ * no Git or DB I/O: the commit self-certifies the frozen bytes, so a valid
+ * pinned reference is complete evidence. The bytes are proven to exist lazily
+ * when they are resolved on the async read/context path.
+ */
+function fixedArtifactRefs(taskId: string, refs: readonly string[]): readonly GitArtifactRef[] {
+  if (new Set(refs).size !== refs.length) throw usageError("Artifact references must be unique.");
+  return refs.map((ref) => {
+    if (!isGitArtifactRefString(ref)) {
+      throw usageError("Artifact reference must be a commit-pinned git:<commit>:<relativePath> reference.");
+    }
+    try { return parseGitArtifactRef(ref, taskId); }
+    catch (error) { throw usageError(`Artifact reference is invalid: ${messageOf(error)}`); }
+  });
 }
 
 /** ReviewRound ids are the durable Task-local creation order; wall time is not causal. */

@@ -3458,7 +3458,7 @@ test("Controller begin-handover accepts a null fromReleaseId", async (t) => {
 
 test("production storage exposes one current version and one migration floor", () => {
   assert.equal(MIN_SUPPORTED_STORAGE_VERSION, 1);
-  assert.equal(CURRENT_STORAGE_VERSION, 18);
+  assert.equal(CURRENT_STORAGE_VERSION, 19);
   for (const retiredExport of [
     "FileTaskStore",
     "STORAGE_STATE_FILE",
@@ -3482,6 +3482,18 @@ test("a new current Home initializes its SQLite authority exactly once", (t) => 
     assert.deepEqual(
       database.prepare("SELECT version FROM schema_migrations ORDER BY version").all(),
       Array.from({ length: CURRENT_STORAGE_VERSION }, (_, index) => ({ version: index + 1 }))
+    );
+    // The storage 18->19 migration retires the DB-owned immutable Artifact
+    // table: file/directory artifacts now live in each Task's local Git repo.
+    // A fresh Home runs v5 (which creates `artifacts`) and then v19 (which drops
+    // it), so the initialized authority must NOT expose the retired table. This
+    // locks the "no dual DB-Artifact/Git read/write surface" contract end-to-end
+    // through the real runner, not only through the direct migration regression.
+    assert.deepEqual(
+      database.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='artifacts'"
+      ).all(),
+      []
     );
     assert.deepEqual(
       database.prepare("PRAGMA table_info(schema_migrations)").all().map(({ name }) => name),

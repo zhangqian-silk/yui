@@ -41,8 +41,8 @@ import Database from "better-sqlite3";
 import { validatePluginValidation, type PluginValidation } from "../plugins/pluginPackage.js";
 import { validatePluginIntent, validatePluginIntentFailure, type PluginIntent, type PluginIntentFailure } from "../plugins/pluginIntent.js";
 import {
-  validateArtifact, validateLocalResource, validateEnvironmentPreparation,
-  type Artifact, type LocalResource, type EnvironmentPreparation
+  validateLocalResource, validateEnvironmentPreparation,
+  type LocalResource, type EnvironmentPreparation
 } from "../resources/projectResource.js";
 import { validateConfiguredAgent, type ConfiguredAgent } from "../agent/agent.js";
 import { validateTaskBrief, type TaskBrief } from "../brief/taskBrief.js";
@@ -828,28 +828,6 @@ export class SqliteTaskStore implements TaskStore {
   }
 
   // -- projects ---------------------------------------------------------------
-
-  saveArtifact(artifact: Artifact): void {
-    validateArtifact(artifact);
-    this.#mutate(() => {
-      const previous = this.getArtifact(artifact.taskId, artifact.id);
-      if (previous !== null) {
-        if (!isDeepStrictEqual(previous, artifact)) throw new StorageRecordError("Artifacts are immutable.");
-        return;
-      }
-      this.#db.prepare("INSERT INTO artifacts (task_id, id, payload) VALUES (?, ?, ?)")
-        .run(artifact.taskId, artifact.id, this.#json(artifact));
-    });
-  }
-
-  getArtifact(taskId: string, artifactId: string): Artifact | null {
-    const artifact = this.#getPayload<Artifact>("artifacts", "task_id = ? AND id = ?", [taskId, artifactId]);
-    return artifact === null ? null : validateArtifact(artifact);
-  }
-
-  listArtifacts(taskId: string): Artifact[] {
-    return this.#listPayload<Artifact>("artifacts", "task_id = ?", [taskId]).map(validateArtifact);
-  }
 
   savePluginValidation(validation: PluginValidation): void {
     validatePluginValidation(validation);

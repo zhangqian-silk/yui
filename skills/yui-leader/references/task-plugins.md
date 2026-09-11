@@ -27,7 +27,11 @@ external effect does not authorize rerunning the action chain. After activation,
 query the directory again and use the new capability through the same bridge
 and native Session; no native tool-schema change or Controller restart is needed.
 
-Save the actual business result through `artifact.save` and retain the reference
-in Task results. Plugin source or successful loading alone is not delivery.
-Historical Artifacts remain readable after disable or restart; saved enable
-intent does not automatically execute code on restart.
+Save the actual business result as a file artifact with `artifact.save`
+(`relativePath` plus `content`): it commits exactly that path into the Task's
+local Git repository and returns a self-certifying `commit + relativePath`
+reference to retain in Task results. Plugin source or successful loading alone
+is not delivery. Committed artifacts remain readable after disable or restart
+through `artifact.read` at HEAD or a pinned commit; saved enable intent does not
+automatically execute code on restart, and an artifact's script or HTML is data,
+not a program to run under Yui authority.

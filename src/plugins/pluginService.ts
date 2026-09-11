@@ -333,9 +333,16 @@ export function createPluginService(store: TaskStore, host: InstanceHost, regist
       if (previous) {
         const retired = previous;
         void host.detach(retired.ref).catch((error: unknown) => {
-          resources.saveArtifact(taskId, { kind: "content", displayName: "Plugin instance cleanup failure",
-            provenance: `PluginService.dispose ${retired.ref.id}/${retired.ref.generation}`,
-            content: error instanceof Error ? error.message : String(error) });
+          // A post-publication detach failure is plugin operational telemetry,
+          // recorded on the plugin's own failure channel — not a Task product
+          // artifact (product artifacts are files in the Task's Git repository).
+          try {
+            store.recordPluginIntentFailure(taskId, retired.ref.id, intent.revision, {
+              message: `Plugin instance cleanup failed for ${retired.ref.id}/${retired.ref.generation}: `
+                + (error instanceof Error ? error.message : String(error)),
+              occurredAt: new Date().toISOString()
+            });
+          } catch { /* best-effort telemetry; never mask the successful activation */ }
         });
       }
       return { provider: ref, validationId, digest: pkg.digest, capabilities: entries.map((entry) => entry.name),

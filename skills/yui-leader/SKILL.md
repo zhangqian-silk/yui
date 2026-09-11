@@ -123,6 +123,14 @@ Maintain only context that changes future decisions:
 - Record a Decision when a material product or technical choice changes future
   work.
 - Add a Milestone for an independently meaningful phase result.
+- Save a complete plan, prototype, chart, report, or other multi-file
+  deliverable as a file artifact with `artifact.save` (`relativePath` plus
+  `content`, optionally `--message`/`--expected-head`): it commits exactly that
+  path into the Task's local Git repository and returns a self-certifying
+  `commit + relativePath` reference. One meaningful update is one commit; keep a
+  lightweight Brief or Decision for the choice itself, not a copy of the
+  document. A saved artifact's script or HTML is data, never auto-run or
+  previewed with Yui authority.
 - Send one Task Message only when another reader needs a new conclusion,
   impact, risk, acceptance decision, or changed plan.
 - Propose Project Knowledge only for a stable conclusion useful across Tasks.
