@@ -11,6 +11,7 @@ import WebSocket, { WebSocketServer } from "ws";
 import { usageError } from "../errors/cliError.js";
 import type { WebTaskSurface } from "./webTaskSurface.js";
 import { WebRequestRejected } from "./webMutation.js";
+import { TASK_SUBMISSION_INTENTS, type TaskSubmissionIntent } from "../message/message.js";
 import type { SurfaceContributionRef, SurfacePanelContribution } from "../surface/surfaceContributions.js";
 import type { CapabilityResult } from "../kernel/capabilityRegistry.js";
 import { DASHBOARD_HTML, findWebAsset, type WebAsset } from "./assets/assetManifest.js";
@@ -240,10 +241,11 @@ async function handleHttpRequest(
       } else if (method === "POST" && action === "messages") {
         const body = await readMutationBody(request);
         if (typeof body !== "object" || body === null || Array.isArray(body)
-          || Object.keys(body).some((key) => !["body", "requestId"].includes(key))
+          || Object.keys(body).some((key) => !["body", "requestId", "intent"].includes(key))
           || !("requestId" in body) || typeof body.requestId !== "string" || !body.requestId.trim()
-          || !("body" in body) || typeof body.body !== "string") throw new WebRequestRejected("Expected body and requestId only.");
-        value = { ...dependencies.surface.message(taskId, body.body), requestId: body.requestId };
+          || !("body" in body) || typeof body.body !== "string") throw new WebRequestRejected("Expected body, requestId and optional intent.");
+        const intent = webSubmissionIntent(body);
+        value = { ...dependencies.surface.message(taskId, body.body, intent), requestId: body.requestId };
       } else if (method === "POST" && action === "metadata") {
         const body = await readMutationBody(request);
         if (typeof body !== "object" || body === null || Array.isArray(body)
@@ -546,6 +548,18 @@ function parseWebInputAnswer(value: unknown): WebInputAnswer {
 async function readMutationBody(request: IncomingMessage): Promise<unknown> {
   try { return await readJsonBody(request); }
   catch (error) { throw new WebRequestRejected(error instanceof Error ? error.message : "Invalid request body."); }
+}
+
+/** Validate an optional submission intent from a Web message body. Absent leaves
+ *  it undefined so the shared service applies the discuss default (task-32 §2.5).
+ *  A present-but-invalid value is rejected rather than silently downgraded. */
+function webSubmissionIntent(body: Record<string, unknown>): TaskSubmissionIntent | undefined {
+  if (!("intent" in body) || body.intent === undefined) return undefined;
+  if (typeof body.intent === "string"
+    && (TASK_SUBMISSION_INTENTS as readonly string[]).includes(body.intent)) {
+    return body.intent as TaskSubmissionIntent;
+  }
+  throw new WebRequestRejected(`intent must be one of ${TASK_SUBMISSION_INTENTS.join(", ")}.`);
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {

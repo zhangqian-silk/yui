@@ -68,15 +68,32 @@ import {
   expandTaskMessageResult,
   taskMessageAuthorLabel,
   updateDraftTaskMessage,
+  TASK_SUBMISSION_INTENTS,
   type TaskMessage,
   type TaskMessageAuthor,
   type TaskMessageContext,
-  type TaskMessageKind
+  type TaskMessageKind,
+  type TaskSubmissionIntent
 } from "../message/message.js";
 import {
   assertDraftTaskExecutionFree,
   validateDraftWorkItemEdit
 } from "../task/draftPlan.js";
+import {
+  TASK_PLANNING_ENTERED_EVENT,
+  decideSubmissionRouting,
+  describeSubmissionFeedback,
+  draftActivationState,
+  draftHasEnteredPlanning,
+  normalizeSubmissionIntent,
+  type SubmissionFeedback,
+  type SubmissionNextStep,
+  type SubmissionRouting
+} from "../task/taskSubmission.js";
+import {
+  recordTaskActivationRequestInTransaction,
+  taskActivationOperationRef
+} from "../task/taskActivationService.js";
 import type {
   TaskRetirementProof,
   WorkItemIntegrationProof
@@ -136,7 +153,7 @@ import { createTaskBrief, updateTaskBrief } from "../brief/taskBrief.js";
 import { createDecision, supersedeDecision } from "../decision/decision.js";
 import { createMilestone } from "../milestone/milestone.js";
 import { runPublicationCommand } from "./taskPublicationCommands.js";
-import { runTaskActivationCommand } from "./taskActivationCommands.js";
+import { runTaskActivationCommand, nonLeaderActivationIdentity } from "./taskActivationCommands.js";
 import {
   assertTaskRemoteDeliveryProof,
   type TaskRemoteDeliveryProof,
@@ -275,7 +292,7 @@ import {
 } from "./roleRuntimeGuard.js";
 import { runTaskContextCommand } from "./taskContextCommand.js";
 import { listContextMessages } from "../context/taskContext.js";
-import { createProjectResources, validateArtifactInput, type ArtifactInput } from "../resources/projectResourceService.js";
+import { createProjectResources, validateArtifactInput, type ArtifactInput, type EnvironmentPlan } from "../resources/projectResourceService.js";
 import { artifactSummary, type ArtifactRef } from "../resources/projectResource.js";
 import { runTaskNextActionCommand } from "./taskNextActionCommand.js";
 import {
@@ -1076,38 +1093,255 @@ export function updateTaskMetadataCommand(
   return result;
 }
 
+/**
+ * The single user/operator submission service (task-32 §2.3).
+ *
+ * CLI `yui task message send`, `yui operator submit`, the Web surface and the
+ * `message.send` capability all route their user/operator submissions through
+ * this one routine, so intent (record | discuss | develop) means exactly the
+ * same thing everywhere and no surface owns a private notion of "submitting".
+ *
+ * It runs inside the caller's open transaction so the message, the phase read,
+ * the planning-entered fact, and any develop activation request all commit
+ * together. That single boundary is what decides a race: two concurrent
+ * submissions each open `BEGIN IMMEDIATE`, so the second reads the phase and
+ * activation the first already wrote and routes against them — the winner is
+ * whoever commits first, with no separate lock.
+ *
+ * It never pre-enqueues a Draft Leader for a develop route and never invents a
+ * second activation queue: it reuses {@link recordTaskActivationRequestInTransaction}
+ * and enqueues only activation processing, leaving adoption at the existing
+ * single boundary. Body text is never parsed to infer intent or authority.
+ */
+type SubmissionActor = "user" | "operator";
+
+type UserSubmissionResult = Readonly<{
+  task: Task;
+  message: TaskMessage;
+  routing: SubmissionRouting;
+  feedback: SubmissionFeedback;
+  /** True when this submission woke the Leader (planning entry/continuation or
+   *  active-Task delivery); drives the post-commit mailbox notification. */
+  queuedForLeader: boolean;
+}>;
+
+function routeUserSubmission(
+  tx: TaskWorkflowStore,
+  task: Task,
+  actor: SubmissionActor,
+  body: string,
+  intent: TaskSubmissionIntent,
+  now: Date
+): UserSubmissionResult {
+  // Save the message first, with its intent recorded, so the "saved" facet holds
+  // no matter how the routing then resolves (§2.5). The intent is stored as
+  // context, never re-derived from the body.
+  const kind: TaskMessageKind = actor;
+  const author: TaskMessageAuthor = actor === "operator"
+    ? { type: "operator" }
+    : { type: "user" };
+  const message = appendMessage(tx, task.id, body, kind, author, now, { intent });
+
+  // Re-read phase and activation inside this same transaction: this is the point
+  // the race is decided at (§2.3).
+  const enteredPlanning = draftHasEnteredPlanning(tx, task);
+  const activation = draftActivationState(task.activationRequest);
+  const routing = decideSubmissionRouting({
+    intent,
+    status: task.status,
+    enteredPlanning,
+    activation,
+    executionEnabled: task.executionGate.state === "enabled",
+    // develop adopts no extra resource by guessing: the workspace is still built
+    // from the Task's own Project bindings when it activates (§2.3).
+    developEnvironmentPlan: { kind: "empty" }
+  });
+
+  let queuedForLeader = false;
+  let activationRef: string | undefined;
+  let activationFailure: string | undefined;
+  switch (routing.kind) {
+    case "record":
+    case "planned-needs-manual-activation":
+    case "activation-blocked-execution-stopped":
+      // Save only. No Leader wake, no planning, no activation.
+      break;
+    case "await-activation":
+      // The submission is a post-activation input or a report against an existing
+      // request; it acts on nothing itself but surfaces the exact reference.
+      activationRef = task.activationRequest === undefined
+        ? undefined
+        : taskActivationOperationRef(task.id, task.activationRequest.operation.requestId);
+      if (routing.state === "failed") {
+        activationFailure = task.activationRequest?.outcome;
+      }
+      break;
+    case "enter-planning":
+      // The one place the shared service itself writes the planning-entered fact,
+      // in the same transaction as the message (§2.2 derivation source (a)).
+      recordTaskEvent(tx, task.id, TASK_PLANNING_ENTERED_EVENT, {
+        messageId: message.id,
+        intent
+      }, now);
+      enqueueWork(tx, leaderMailbox(task.id), submissionEnqueueReason(actor), now,
+        [messageRef(task.id, message.id)],
+        { source: actor, dedupeKey: `message:${task.id}:${message.id}` });
+      queuedForLeader = true;
+      break;
+    case "continue-planning":
+    case "active-context":
+      enqueueWork(tx, leaderMailbox(task.id), submissionEnqueueReason(actor), now,
+        [messageRef(task.id, message.id)],
+        { source: actor, dedupeKey: `message:${task.id}:${message.id}` });
+      queuedForLeader = true;
+      break;
+    case "activate": {
+      // Reuse the existing activation record logic inside this transaction, then
+      // queue only activation processing. The requestId is derived from the
+      // message so a retried submission cannot create a second request, and the
+      // identity is byte-identical to the explicit boundary for this actor.
+      const identity = nonLeaderActivationIdentity(tx, actor);
+      recordTaskActivationRequestInTransaction(tx, {
+        taskId: task.id,
+        requestId: `submit-${message.id}`,
+        actorId: identity.actorId,
+        authorityRef: identity.authorityRef,
+        environmentPlan: routing.environmentPlan,
+        origin: "submit-develop"
+      }, now);
+      activationRef = taskActivationOperationRef(task.id, `submit-${message.id}`);
+      enqueueWork(tx, taskMailbox(task.id), "activation-requested", now, [taskRef(task.id)]);
+      break;
+    }
+    default: {
+      const exhaustive: never = routing;
+      throw new Error(`Unhandled submission routing: ${JSON.stringify(exhaustive)}`);
+    }
+  }
+
+  const feedback = describeSubmissionFeedback({
+    taskId: task.id,
+    messageId: message.id,
+    status: task.status,
+    enteredPlanning,
+    activationState: activation,
+    routing,
+    ...(activationRef === undefined ? {} : { activationRef }),
+    ...(activationFailure === undefined ? {} : { activationFailure })
+  });
+  return { task, message, routing, feedback, queuedForLeader };
+}
+
+/** The mailbox reason a submission wake carries, preserving the existing
+ *  operator-input / user-message vocabulary the Controller already understands. */
+function submissionEnqueueReason(actor: SubmissionActor): string {
+  return actor === "operator" ? "operator-input" : "user-message";
+}
+
+/**
+ * Render the §2.5 feedback as CLI text, one facet per line, so the user always
+ * sees the save, the phase, planning, activation, delivery and next step as
+ * separate statements — never a single "started". Web and capability callers
+ * return {@link SubmissionFeedback} structurally instead of this text.
+ */
+function renderSubmissionFeedback(feedback: SubmissionFeedback): string {
+  const lines: string[] = [
+    `Saved message ${feedback.saved.messageId} to ${feedback.saved.taskId}.`,
+    `Phase: ${SUBMISSION_PHASE_LABEL[feedback.phase]}.`
+  ];
+  if (feedback.planning !== "none") {
+    lines.push(`Planning: ${feedback.planning === "entered"
+      ? "started; the Leader is queued to plan"
+      : "continued; the Leader is queued"}.`);
+  }
+  if (feedback.activation !== "none") {
+    lines.push(`Activation: ${SUBMISSION_ACTIVATION_LABEL[feedback.activation]}.`);
+  }
+  if (feedback.delivery === "queued" && feedback.planning === "none") {
+    lines.push("Delivery: queued to the Leader.");
+  }
+  const nextStep = feedback.nextStep;
+  if (nextStep !== undefined) lines.push(`Next: ${renderSubmissionNextStep(nextStep)}`);
+  return `${lines.join("\n")}\n`;
+}
+
+const SUBMISSION_PHASE_LABEL: Record<SubmissionFeedback["phase"], string> = {
+  active: "active",
+  "draft-planning": "Draft, in planning",
+  "draft-unplanned": "Draft, not yet in planning"
+};
+
+const SUBMISSION_ACTIVATION_LABEL: Record<SubmissionFeedback["activation"], string> = {
+  none: "none",
+  requested: "requested; activation is queued",
+  pending: "already pending; this input waits for it",
+  failed: "the previous request failed",
+  "manual-required": "already planned; activate explicitly to develop",
+  "execution-stopped": "not requested; execution is stopped"
+};
+
+function renderSubmissionNextStep(step: SubmissionNextStep): string {
+  switch (step.kind) {
+    case "activate-manually":
+      return `activate it explicitly with "yui task activate ${step.taskId}".`;
+    case "start-execution":
+      return `start execution with "yui task execution start ${step.taskId}", then submit develop again.`;
+    case "await-pending-activation":
+      return `wait for the pending activation ${step.activationRef}.`;
+    case "resolve-failed-activation":
+      return `retry with a new activation request or cancel ${step.activationRef} (failure: ${step.failure}).`;
+    default: {
+      const exhaustive: never = step;
+      throw new Error(`Unhandled submission next step: ${JSON.stringify(exhaustive)}`);
+    }
+  }
+}
+
+/** Parse and validate the CLI `--intent` option. Absent leaves it undefined so
+ *  the shared service applies the discuss default (task-32 §2.5). */
+function parseSubmissionIntentOption(
+  raw: string | undefined,
+  usage: string
+): TaskSubmissionIntent | undefined {
+  if (raw === undefined) return undefined;
+  if ((TASK_SUBMISSION_INTENTS as readonly string[]).includes(raw)) {
+    return raw as TaskSubmissionIntent;
+  }
+  throw usageError(`--intent must be one of ${TASK_SUBMISSION_INTENTS.join(", ")}: ${raw}.`, usage);
+}
+
 export function submitOperatorMessage(
   body: string,
   taskId: string | undefined,
   store: TaskWorkflowStore,
-  options: TaskCommandOptions = {}
+  options: TaskCommandOptions = {},
+  intent?: TaskSubmissionIntent
 ): string {
   const now = clock(options);
+  const effectiveIntent = normalizeSubmissionIntent(intent);
   const result = store.transaction((tx) => {
     if (taskId !== undefined) {
       const task = requireTask(tx, taskId);
       assertTaskOpen(task);
-      const message = appendMessage(tx, task.id, body, "operator", { type: "operator" }, now);
-      if (leaderWakingTaskStatus(task.status)) {
-        enqueueWork(tx, leaderMailbox(task.id), "operator-input", now, [messageRef(task.id, message.id)]);
-      }
-      return { task, message, created: false } as const;
+      const routed = routeUserSubmission(tx, task, "operator", body, effectiveIntent, now);
+      return { ...routed, created: false } as const;
     }
-
-    const created = createTaskAggregate(tx, titleFrom(body), {}, now);
-    const message = appendMessage(tx, created.task.id, body, "operator", { type: "operator" }, now);
-    enqueueWork(tx, leaderMailbox(created.task.id), "operator-input", now,
-      [messageRef(created.task.id, message.id)]);
-    return { ...created, message, created: true } as const;
+    // A fresh Draft is unplanned with no activation, so the shared service routes
+    // the first submission exactly as the table prescribes for that state:
+    // discuss enters planning, develop records an activation, record saves only.
+    const createdAgg = createTaskAggregate(tx, titleFrom(body), {}, now);
+    const routed = routeUserSubmission(tx, createdAgg.task, "operator", body, effectiveIntent, now);
+    return { ...routed, task: createdAgg.task, created: true } as const;
   });
   notifyMailbox(
     options.runtime,
-    leaderWakingTaskStatus(result.task.status) ? leaderMailbox(result.task.id) : taskMailbox(result.task.id),
+    result.queuedForLeader ? leaderMailbox(result.task.id) : taskMailbox(result.task.id),
     result.task.id
   );
-  return result.created
-    ? `Created Draft task ${result.task.id}: ${result.task.title}\nSubmitted message ${result.message.id}\n`
-    : `Submitted message ${result.message.id} to ${result.task.id}\n`;
+  const header = result.created
+    ? `Created Draft task ${result.task.id}: ${result.task.title}\n`
+    : "";
+  return `${header}${renderSubmissionFeedback(result.feedback)}`;
 }
 
 function createTaskCommand(
@@ -2080,10 +2314,10 @@ function taskMessageCommand(
     return { kind: "output", output: `${JSON.stringify(expanded, null, 2)}\n`, data: expanded };
   }
   if (command === "send") {
-    const usage = "Task message send usage: yui task message send <id> (<body>|--body-file <path|->) [--wake-policy leader|none] [--to <role> --work-item <id>|--review-round <id>].";
+    const usage = "Task message send usage: yui task message send <id> (<body>|--body-file <path|->) [--intent record|discuss|develop] [--wake-policy leader|none] [--to <role> --work-item <id>|--review-round <id>].";
     const parsed = parseTail(
       rest,
-      new Set(["--body-file", "--wake-policy", "--to", "--work-item", "--review-round"]),
+      new Set(["--body-file", "--intent", "--wake-policy", "--to", "--work-item", "--review-round"]),
       usage
     );
     if (parsed.positionals.length < 1 || parsed.positionals.length > 2) throw usageError(usage);
@@ -2102,15 +2336,23 @@ function taskMessageCommand(
     } else {
       throw usageError(`--wake-policy must be 'leader' or 'none': ${wakePolicyRaw}.`);
     }
+    const intent = parseSubmissionIntentOption(parsed.options.get("--intent"), usage);
     const recipientRole = parsed.options.get("--to");
     const workItemId = parsed.options.get("--work-item");
     const reviewRoundId = parsed.options.get("--review-round");
     if (recipientRole === undefined && (workItemId !== undefined || reviewRoundId !== undefined)) throw usageError("--to is required for scoped Message delivery.");
     const result = sendTaskMessageCommand(store, parsed.positionals[0], body, wakePolicy, options,
-      recipientRole === undefined ? undefined : { roleName: recipientRole, workItemId, reviewRoundId });
+      recipientRole === undefined ? undefined : { roleName: recipientRole, workItemId, reviewRoundId },
+      intent);
+    // A user/operator submission returns the unified §2.5 feedback; render each
+    // facet on its own line and expose the structure to non-text callers.
+    if (result.feedback !== undefined) {
+      return output(renderSubmissionFeedback(result.feedback),
+        { taskId: result.task.id, message: result.message, submission: result.feedback });
+    }
     const reason = result.message.continuation?.notDeliveredReason;
     const delivery = reason !== undefined ? { state: "not-delivered", reason }
-      : recipientRole !== undefined || result.actor !== "leader" && wakePolicy !== "none"
+      : recipientRole !== undefined || result.queuedForLeader
         ? { state: "queued" } : { state: "saved" };
     return output(`Saved message ${result.message.id} to ${result.task.id} (${delivery.state}${reason === undefined ? "" : `: ${reason}`}).\n`,
       { taskId: result.task.id, message: result.message, delivery });
@@ -2192,14 +2434,21 @@ function taskMessageCommand(
 export function sendTaskMessageCommand(
   store: TaskWorkflowStore, taskId: string, body: string,
   wakePolicy: "leader" | "none" | undefined, options: TaskCommandOptions = {},
-  recipient?: Readonly<{ roleName: string; workItemId?: string; reviewRoundId?: string }>
+  recipient?: Readonly<{ roleName: string; workItemId?: string; reviewRoundId?: string }>,
+  intent?: TaskSubmissionIntent
 ) {
   if (!body.trim()) throw usageError("Message body is required.");
   if (recipient !== undefined && wakePolicy !== undefined) {
     throw usageError("--wake-policy applies only to unaddressed Leader Messages; an owner-directed Message uses its exact continuation boundary.");
   }
+  if (recipient !== undefined && intent !== undefined) {
+    throw usageError("A submission intent applies only to unaddressed Leader Messages; an owner-directed Message uses its exact continuation boundary.");
+  }
   const now = clock(options);
-  const result = store.transaction((tx) => {
+  const result = store.transaction((tx): Readonly<{
+    task: Task; message: TaskMessage; actor: string;
+    queuedForLeader: boolean; feedback: SubmissionFeedback | undefined;
+  }> => {
     const task = requireTask(tx, taskId);
     if (recipient === undefined) assertTaskOpen(task);
     const caller = currentManagedRuntime(tx, options.environment, task.id);
@@ -2212,6 +2461,23 @@ export function sendTaskMessageCommand(
       }
     }
     const actor = roleCaller === undefined ? taskActor(tx, options, task.id) : "role";
+    // A user/operator Message with no explicit recipient is the single path that
+    // carries submission intent (record | discuss | develop). It routes through
+    // the one shared submission service so intent means exactly the same thing
+    // here as on every other surface. Internal role/leader result messages and
+    // owner-directed continuations keep their exact existing boundary and never
+    // gain develop authority (task-32 §2.5).
+    if (recipient === undefined && (actor === "user" || actor === "operator")) {
+      const effectiveIntent = normalizeSubmissionIntent(intent, wakePolicy);
+      const routed = routeUserSubmission(tx, task, actor, body, effectiveIntent, now);
+      return {
+        task: routed.task, message: routed.message, actor,
+        queuedForLeader: routed.queuedForLeader, feedback: routed.feedback
+      };
+    }
+    if (intent !== undefined) {
+      throw usageError("Submission intent applies only to an unaddressed user or Operator Message.");
+    }
     if (recipient !== undefined && actor === "leader") assertTaskDeliveryAuthority(tx, options.environment, task.id);
     const target: TaskMessageContext["recipient"] = recipient === undefined ? undefined
       : recipient.roleName === "leader" && roleCaller !== undefined ? {
@@ -2221,7 +2487,6 @@ export function sendTaskMessageCommand(
         ...(recipient.workItemId === undefined ? {} : { workItemId: recipient.workItemId }),
         ...(recipient.reviewRoundId === undefined ? {} : { reviewRoundId: recipient.reviewRoundId }) });
     const context: TaskMessageContext = {
-      ...(wakePolicy === undefined || actor === "leader" || actor === "role" ? {} : { wakePolicy }),
       ...(target === undefined ? {} : { recipient: target }),
       ...(recipient?.workItemId === undefined ? {} : { workItemId: recipient.workItemId })
     };
@@ -2232,8 +2497,13 @@ export function sendTaskMessageCommand(
       : actor === "operator"
         ? appendMessage(tx, task.id, body, "operator", { type: "operator" }, now, context)
         : appendMessage(tx, task.id, body, "user", { type: "user" }, now, context);
+    // Reached only by addressed Messages and by an unaddressed Leader result now:
+    // unaddressed user/operator submissions are handled above by the shared
+    // service. A Worker/Reviewer message addressed to its Leader still wakes the
+    // Leader exactly as before; an owner-directed continuation posts to the Task
+    // mailbox for its exact owner Run.
     const queuedForLeader = target?.ownerRunId === undefined
-      && leaderWakingTaskStatus(task.status) && actor !== "leader" && wakePolicy !== "none";
+      && leaderWakingTaskStatus(task.status) && actor !== "leader";
     if (target?.ownerRunId !== undefined) {
       const reason = messageContinuationBlocker(tx, message);
       if (reason !== undefined) {
@@ -2246,7 +2516,7 @@ export function sendTaskMessageCommand(
       enqueueWork(tx, leaderMailbox(task.id), actor === "operator" ? "operator-input" : "user-message",
         now, [messageRef(task.id, message.id)], { source: actor, dedupeKey: `message:${task.id}:${message.id}` });
     }
-    return { task, message, actor, queuedForLeader };
+    return { task, message, actor, queuedForLeader, feedback: undefined };
   });
   if (recipient !== undefined) {
     notifyMailbox(options.runtime, taskMailbox(result.task.id), result.task.id);

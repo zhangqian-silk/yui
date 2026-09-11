@@ -16,6 +16,7 @@ import {
   TASK_ACTIVATION_EVENT,
   type SettledActivationRequestFact,
   type TaskActivationRequest,
+  type TaskActivationOrigin,
   type TaskActivationStartMode
 } from "./taskActivation.js";
 import { setTaskActivationRequest, recordTaskActivationRequestEvidence, type Task } from "./task.js";
@@ -52,6 +53,12 @@ export type RequestTaskActivationInput = Readonly<{
   actorId: string;
   authorityRef: string;
   environmentPlan: EnvironmentPlan;
+  /**
+   * The provable source of this request (task-32 §2.4). The explicit activation
+   * boundary passes `explicit`; the shared submission transaction passes
+   * `submit-develop`. Absent only for callers that predate the field.
+   */
+  origin?: TaskActivationOrigin;
   /**
    * Turn the caller is running inside, when it is this Task's planning Turn.
    * Supplying it is what makes the request deferred instead of immediate; the
@@ -92,92 +99,113 @@ export function requestTaskActivation(
   input: RequestTaskActivationInput,
   now: Date
 ): RequestTaskActivationResult {
-  return store.transaction((tx) => {
-    const task = requireOpenDraft(tx, input.taskId);
-    const plan = canonicalEnvironmentPlan(input.environmentPlan);
-    const planningRun = resolveCallerPlanningRun(tx, task.id, input.callerRunId);
-    const startMode: TaskActivationStartMode = planningRun === undefined
-      ? "immediate"
-      : "after-planning-turn";
-    const existing = task.activationRequest;
-    // A requestId whose outcome was already decided is never re-opened, whether
-    // it still holds the slot or a later request displaced it. Cancelling A,
-    // requesting B and then retrying A must not resurrect A: the withdrawal is
-    // explicit authority, and adoption is exactly the effect it withdrew. An
-    // adopted id is equally final — its environment and status change happened.
-    // Only `failed` stays replayable, which is its documented contract.
-    //
-    // The authority is the durable activation event ledger, not the bounded
-    // display payload: the payload trims its oldest entries once it overflows,
-    // but the terminal events are never compacted, so an evicted cancellation is
-    // still refused with its original outcome instead of silently resurrecting.
-    const settled = settledActivationRequest(tx, task, input.requestId);
-    if (settled !== undefined) {
-      throw new Error(
-        `Activation request ${input.requestId} was already ${settled.disposition} for ${task.id}`
-        + `${settled.outcome === undefined ? "" : ` (${settled.outcome})`}. `
-        + "Use a new requestId."
-      );
-    }
-    if (existing?.operation.requestId === input.requestId) {
-      const digest = taskActivationInputDigest(task.id, {
-        startMode,
-        ...(planningRun === undefined ? {} : { afterPlanningRun: planningRun }),
-        environmentPlan: plan
-      });
-      if (existing.operation.inputDigest !== digest) {
-        throw new Error(
-          `Activation requestId ${input.requestId} was already used for different inputs.`
-        );
-      }
-      return {
-        operationRef: taskActivationOperationRef(task.id, existing.operation.requestId),
-        request: existing,
-        startMode: existing.startMode,
-        created: false,
-        ...(existing.afterPlanningRun === undefined
-          ? {}
-          : { afterPlanningRun: existing.afterPlanningRun })
-      };
-    }
-    if (existing?.disposition === "pending") {
-      throw new Error(
-        `Task already has a pending activation request: ${task.id}/${existing.operation.requestId}. `
-        + "Cancel it before requesting different inputs."
-      );
-    }
-    const request = createTaskActivationRequest(task.id, {
-      requestId: input.requestId,
-      actorId: input.actorId,
-      authorityRef: input.authorityRef,
+  return store.transaction((tx) => recordTaskActivationRequestInTransaction(tx, input, now));
+}
+
+/**
+ * The transactional core of {@link requestTaskActivation}, callable from inside
+ * a caller's own open transaction.
+ *
+ * The shared submission service (task-32 §2.3) records a develop route's
+ * activation request in the very transaction that saves the message, so the
+ * message and its activation intent commit together and no "submit then
+ * activate" two-command window exists. It reuses this exact logic rather than a
+ * second activation queue: the same idempotency, settled-id refusal and
+ * pending-collision rules apply whether the request arrives from the explicit
+ * boundary or from a develop submission. The caller owns transaction lifetime
+ * and any post-commit mailbox notification.
+ */
+export function recordTaskActivationRequestInTransaction(
+  tx: TaskStore,
+  input: RequestTaskActivationInput,
+  now: Date
+): RequestTaskActivationResult {
+  const task = requireOpenDraft(tx, input.taskId);
+  const plan = canonicalEnvironmentPlan(input.environmentPlan);
+  const planningRun = resolveCallerPlanningRun(tx, task.id, input.callerRunId);
+  const startMode: TaskActivationStartMode = planningRun === undefined
+    ? "immediate"
+    : "after-planning-turn";
+  const existing = task.activationRequest;
+  // A requestId whose outcome was already decided is never re-opened, whether
+  // it still holds the slot or a later request displaced it. Cancelling A,
+  // requesting B and then retrying A must not resurrect A: the withdrawal is
+  // explicit authority, and adoption is exactly the effect it withdrew. An
+  // adopted id is equally final — its environment and status change happened.
+  // Only `failed` stays replayable, which is its documented contract.
+  //
+  // The authority is the durable activation event ledger, not the bounded
+  // display payload: the payload trims its oldest entries once it overflows,
+  // but the terminal events are never compacted, so an evicted cancellation is
+  // still refused with its original outcome instead of silently resurrecting.
+  const settled = settledActivationRequest(tx, task, input.requestId);
+  if (settled !== undefined) {
+    throw new Error(
+      `Activation request ${input.requestId} was already ${settled.disposition} for ${task.id}`
+      + `${settled.outcome === undefined ? "" : ` (${settled.outcome})`}. `
+      + "Use a new requestId."
+    );
+  }
+  if (existing?.operation.requestId === input.requestId) {
+    const digest = taskActivationInputDigest(task.id, {
       startMode,
       ...(planningRun === undefined ? {} : { afterPlanningRun: planningRun }),
       environmentPlan: plan
-    }, now);
-    tx.saveTask(setTaskActivationRequest(task, request, now));
-    tx.saveEvent(task.id, createTaskEvent(
-      tx.nextEventId(task.id),
-      task.id,
-      TASK_ACTIVATION_EVENT.requested,
-      {
-        requestId: request.operation.requestId,
-        startMode: request.startMode,
-        environmentPlan: describeEnvironmentPlan(request.environmentPlan),
-        actor: request.operation.actorId,
-        ...(request.afterPlanningRun === undefined
-          ? {}
-          : { afterPlanningRun: request.afterPlanningRun })
-      },
-      now
-    ));
+    });
+    if (existing.operation.inputDigest !== digest) {
+      throw new Error(
+        `Activation requestId ${input.requestId} was already used for different inputs.`
+      );
+    }
     return {
-      operationRef: taskActivationOperationRef(task.id, request.operation.requestId),
-      request,
-      startMode,
-      created: true,
-      ...(planningRun === undefined ? {} : { afterPlanningRun: planningRun })
+      operationRef: taskActivationOperationRef(task.id, existing.operation.requestId),
+      request: existing,
+      startMode: existing.startMode,
+      created: false,
+      ...(existing.afterPlanningRun === undefined
+        ? {}
+        : { afterPlanningRun: existing.afterPlanningRun })
     };
-  });
+  }
+  if (existing?.disposition === "pending") {
+    throw new Error(
+      `Task already has a pending activation request: ${task.id}/${existing.operation.requestId}. `
+      + "Cancel it before requesting different inputs."
+    );
+  }
+  const request = createTaskActivationRequest(task.id, {
+    requestId: input.requestId,
+    actorId: input.actorId,
+    authorityRef: input.authorityRef,
+    startMode,
+    ...(input.origin === undefined ? {} : { origin: input.origin }),
+    ...(planningRun === undefined ? {} : { afterPlanningRun: planningRun }),
+    environmentPlan: plan
+  }, now);
+  tx.saveTask(setTaskActivationRequest(task, request, now));
+  tx.saveEvent(task.id, createTaskEvent(
+    tx.nextEventId(task.id),
+    task.id,
+    TASK_ACTIVATION_EVENT.requested,
+    {
+      requestId: request.operation.requestId,
+      startMode: request.startMode,
+      environmentPlan: describeEnvironmentPlan(request.environmentPlan),
+      actor: request.operation.actorId,
+      ...(request.origin === undefined ? {} : { origin: request.origin }),
+      ...(request.afterPlanningRun === undefined
+        ? {}
+        : { afterPlanningRun: request.afterPlanningRun })
+    },
+    now
+  ));
+  return {
+    operationRef: taskActivationOperationRef(task.id, request.operation.requestId),
+    request,
+    startMode,
+    created: true,
+    ...(planningRun === undefined ? {} : { afterPlanningRun: planningRun })
+  };
 }
 
 /** Explicit user or Operator cancellation. A cancelled request never adopts. */

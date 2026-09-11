@@ -1,5 +1,6 @@
 import { updateTaskMetadataCommand, sendTaskMessageCommand } from "../commands/taskCommands.js";
 import { runConfigCommand } from "../commands/configCommands.js";
+import type { TaskSubmissionIntent } from "../message/message.js";
 import {
   readTaskContext, readTaskContextDelta, inspectTaskContext, withContextObservations,
   type ContextObservationProvider
@@ -42,6 +43,7 @@ const definitions: readonly Omit<CapabilityDescriptor, "contractVersion" | "prov
     name: "message.send", summary: "Save collaboration for Leader or continue the same dispatched work owner.",
     effect: "local-mutation", requiredPermissions: ["task:read"], source: "sendTaskMessageCommand",
     inputSchema: object({ taskId: text, body: text,
+      intent: { enum: ["record", "discuss", "develop"] },
       wakePolicy: { enum: ["leader", "none"] },
       recipient: object({ roleName: text, workItemId: text, reviewRoundId: text }, ["roleName"])
     }, ["taskId", "body"]), outputSchema: recordOutput
@@ -271,9 +273,14 @@ export function createBuiltinCapabilities(
       }
       const taskId = invocation.context.targetId;
       if (name === "message.send") {
+        // A managed Task Session resolves to Leader/role authority and never
+        // gains develop from an intent argument; only a global Operator Session
+        // (user-authority) may carry one. sendTaskMessageCommand enforces this,
+        // so the capability just forwards the optional intent unchanged.
         const result = sendTaskMessageCommand(store, taskId, params.body as string,
           params.wakePolicy as "leader" | "none" | undefined, { environment: callerEnvironment(caller) },
-          params.recipient as { roleName: string; workItemId?: string; reviewRoundId?: string } | undefined);
+          params.recipient as { roleName: string; workItemId?: string; reviewRoundId?: string } | undefined,
+          params.intent as TaskSubmissionIntent | undefined);
         signal(taskId);
         return result.message;
       }

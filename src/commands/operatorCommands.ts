@@ -13,6 +13,7 @@ import {
 import { defaultTableWidth, renderTable } from "../output/table.js";
 import { formatRelativeTimestamp } from "../output/timePresentation.js";
 import { updateGlobalRole, type GlobalRole } from "../role/role.js";
+import { TASK_SUBMISSION_INTENTS, type TaskSubmissionIntent } from "../message/message.js";
 import {
   submitOperatorMessage,
   type TaskCommandExecution,
@@ -118,10 +119,11 @@ function submit(
   store: TaskWorkflowStore,
   options: TaskCommandOptions
 ): TaskCommandExecution {
-  const usage = "Operator submit usage: yui operator submit (<body>|--body-file <path|->) [--task <id>].";
+  const usage = "Operator submit usage: yui operator submit (<body>|--body-file <path|->) [--task <id>] [--intent record|discuss|develop].";
   const positionals: string[] = [];
   let taskId: string | undefined;
   let bodyFile: string | undefined;
+  let intentRaw: string | undefined;
   for (let index = 0; index < rest.length; index += 1) {
     const value = rest[index];
     if (value === "--body-file") {
@@ -129,6 +131,14 @@ function submit(
       const candidate = rest[index + 1];
       if (candidate === undefined || candidate.startsWith("--")) throw usageError("--body-file is required.", usage);
       bodyFile = candidate;
+      index += 1;
+      continue;
+    }
+    if (value === "--intent") {
+      if (intentRaw !== undefined) throw usageError("Option may only be specified once: --intent.", usage);
+      const candidate = rest[index + 1];
+      if (candidate === undefined || candidate.startsWith("--")) throw usageError("--intent is required.", usage);
+      intentRaw = candidate.trim();
       index += 1;
       continue;
     }
@@ -146,10 +156,15 @@ function submit(
     index += 1;
   }
   if (positionals.length > 1) throw usageError(usage);
+  const intent = intentRaw === undefined
+    ? undefined
+    : (TASK_SUBMISSION_INTENTS as readonly string[]).includes(intentRaw)
+      ? (intentRaw as TaskSubmissionIntent)
+      : (() => { throw usageError(`--intent must be one of ${TASK_SUBMISSION_INTENTS.join(", ")}: ${intentRaw}.`, usage); })();
   const body = readCommandText(positionals[0], bodyFile, "--body", usage);
   return {
     kind: "output",
-    output: submitOperatorMessage(body, taskId, store, options)
+    output: submitOperatorMessage(body, taskId, store, options, intent)
   };
 }
 

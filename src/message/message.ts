@@ -5,6 +5,23 @@ export const TASK_MESSAGE_KINDS = ["user", "operator", "role-result", "system"] 
 
 export type TaskMessageKind = typeof TASK_MESSAGE_KINDS[number];
 
+/**
+ * How a user/operator submission asks its Task to react (task-32 Requirement A).
+ *
+ * - `record`: save only. No Leader wake, no planning, no activation.
+ * - `discuss`: save and route to planning (the default when a submission omits
+ *   an intent, so an old client keeps its existing Leader-waking behaviour).
+ * - `develop`: save the requirement and its activation intent; an unplanned
+ *   Draft records an activation request and queues only activation processing.
+ *
+ * The intent is never inferred from body text and is only meaningful on a
+ * user/operator submission: a role-result or system Message can never carry one,
+ * so an internal Agent report cannot acquire develop authority.
+ */
+export const TASK_SUBMISSION_INTENTS = ["record", "discuss", "develop"] as const;
+
+export type TaskSubmissionIntent = typeof TASK_SUBMISSION_INTENTS[number];
+
 export type TaskMessageAuthor =
   | Readonly<{ type: "user" }>
   | Readonly<{ type: "operator" }>
@@ -37,6 +54,14 @@ export type TaskMessage = {
    * their existing routing.
    */
   wakePolicy?: "leader" | "none";
+  /**
+   * The submission intent this user/operator Message carried (task-32 A). Absent
+   * on role-result/system Messages, and on historical Messages saved before the
+   * intent existed — a reader treats that absence as `discuss`, never as
+   * `develop`. Persisted so the routing a submission received stays auditable
+   * after the fact, independent of the Task's current phase.
+   */
+  intent?: TaskSubmissionIntent;
   runId?: string;
   resultRef?: Readonly<{ type: "agent-run-result"; runId: string }>;
   workItemId?: string;
@@ -54,6 +79,7 @@ export type TaskMessageContext = Readonly<{
   resultRef?: Readonly<{ type: "agent-run-result"; runId: string }>;
   workItemId?: string;
   wakePolicy?: "leader" | "none";
+  intent?: TaskSubmissionIntent;
   recipient?: TaskMessageRecipient;
 }>;
 
@@ -82,6 +108,9 @@ export function createTaskMessage(
     ...(context.wakePolicy === undefined
       ? {}
       : { wakePolicy: context.wakePolicy }),
+    ...(context.intent === undefined
+      ? {}
+      : { intent: context.intent }),
     ...(context.runId === undefined
       ? {}
       : { runId: requireSafeIdentity(context.runId, "Message AgentRun id") }),
@@ -151,6 +180,15 @@ export function validateTaskMessage(message: TaskMessage): void {
     && message.kind !== "user"
     && message.kind !== "operator") {
     throw new Error("Message wakePolicy is only valid for user/operator messages.");
+  }
+  if (message.intent !== undefined
+    && !TASK_SUBMISSION_INTENTS.includes(message.intent)) {
+    throw new Error(`Message intent is invalid: ${String(message.intent)}.`);
+  }
+  if (message.intent !== undefined
+    && message.kind !== "user"
+    && message.kind !== "operator") {
+    throw new Error("Message intent is only valid for user/operator messages.");
   }
   if (message.runId !== undefined) requireSafeIdentity(message.runId, "Message AgentRun id");
   if (message.recipient !== undefined) {
