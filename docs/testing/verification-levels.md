@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="./verification-levels.zh-CN.md">简体中文</a></p>
+
 # Verification policy
 
 Yui is a single-user local product. Permanent verification protects essential

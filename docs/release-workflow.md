@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="./release-workflow.zh-CN.md">简体中文</a></p>
+
 # Authorized release operations
 
 A release workflow is an explicitly chosen, authorized sequence of

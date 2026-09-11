@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="./CONTRIBUTING.zh-CN.md">简体中文</a></p>
+
 # Contributing to Yui
 
 Thanks for your interest in improving Yui! This guide covers the local
@@ -55,9 +57,10 @@ server, and state stay isolated. Always call it by absolute path; re-run
   workers (see [AGENTS.md](AGENTS.md)).
 - Any change to a persistent schema or payload must add one migration through
   the centralized version chain — never repair runtime state heuristically.
-- Keep the two README versions in sync ([README.md](README.md) and
-  [i18n/README.zh-CN.md](i18n/README.zh-CN.md)), and update the relevant contract
-  docs when behavior changes.
+- Keep bilingual docs in sync. The two READMEs ([README.md](README.md) and
+  [i18n/README.zh-CN.md](i18n/README.zh-CN.md)) and every page under `docs/`
+  (`X.md` plus its `X.zh-CN.md` counterpart) must be updated together when
+  behavior changes.
 
 ## Validation and real resources
 

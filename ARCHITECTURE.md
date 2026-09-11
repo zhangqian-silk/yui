@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="./ARCHITECTURE.zh-CN.md">简体中文</a></p>
+
 # Yui architecture
 
 Yui is a local control plane and context API for intelligent Agents. Agents own

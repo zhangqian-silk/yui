@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="./sqlite-control-plane-design.zh-CN.md">简体中文</a></p>
+
 # SQLite control-plane storage
 
 Yui has one authoritative product Store: `YUI_HOME/yui.db` in WAL mode. The

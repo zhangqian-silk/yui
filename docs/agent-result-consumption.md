@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="./agent-result-consumption.zh-CN.md">简体中文</a></p>
+
 # Agent result consumption
 
 Every explicitly dispatched AgentRun produces one durable original result.

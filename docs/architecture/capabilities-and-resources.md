@@ -1,79 +1,114 @@
-# 能力、资源与 Surface
+<p align="right"><strong>English</strong> | <a href="./capabilities-and-resources.zh-CN.md">简体中文</a></p>
 
-## 唯一入口与原始事实
+# Capabilities, resources and Surfaces
 
-Controller 承载 CapabilityRegistry 和 InstanceHost。`capability search`、
-`describe`、`call` 使用同一认证入口，先解析当前 Session 身份和 Task 范围，
-再检查能力与资源权限。输入中的 actor 或自称的 user scope 不能授予权限。
+## One ingress, original facts
 
-描述符包含名称、合同版本、Provider、scope、输入输出 schema、effect 和
-requiredPermissions。查询只展示获授权的目录；同名 Provider 或版本有歧义时，
-调用者明确选择，不按加载顺序决定。Schema 是有界方言，未知关键词拒绝。
+The Controller hosts the CapabilityRegistry and InstanceHost. `capability
+search`, `describe` and `call` use one authenticated ingress: it first resolves
+the current Session identity and Task scope, then checks capability and resource
+permissions. An actor supplied in the input, or a self-declared user scope,
+cannot grant permission.
 
-当前目录覆盖 context、message、artifact、environment、resource、project、
-plugin 和部分 task/job 操作。Task 生命周期与部分 CLI/Web 写入直接共享
-领域命令；这些不是另一份业务状态，也不假称已经通过 Registry 执行。
+A descriptor carries its name, contract version, Provider, scope, input/output
+schema, effect and requiredPermissions. A query shows only the authorized
+catalog; when a Provider or version is ambiguous, the caller selects explicitly
+rather than relying on load order. The schema is a bounded dialect, and unknown
+keywords are rejected.
 
-## 效果与操作事实
+The current catalog covers context, message, artifact, environment, resource,
+project, plugin and selected task/job operations. Task lifecycle and some CLI/Web
+writes share domain commands directly; these are not a second business state and
+do not pretend to have run through the Registry.
 
-能力返回值与真实效果分开。一次调用即使输出校验失败，也可能已产生确认的
-子操作；返回结果必须保留原 owner 的 operationRef 和 receipt。Unknown
-不能解释为未执行，不进行自动 fallback。
+## Effects and operation facts
 
-嵌套调用重新检查当前权限，不能扩大父调用声明的权限与效果。requestId 标识
-调用，不自动提供所有业务的通用幂等性；Job 等 owner 执行自己的精确幂等合同。
-错误后先读取原操作事实再决定下一步。
+A capability's return value is separate from its real effect. A call can produce
+a confirmed sub-operation even when its output validation fails, so the returned
+result must preserve the original owner's operationRef and receipt. Unknown must
+not be read as "did not run," and there is no automatic fallback.
 
-## 实现实例
+A nested call rechecks current permissions and cannot widen the permissions or
+effect the parent call declared. A requestId identifies the call; it does not
+supply universal idempotency for every downstream operation — an owner such as a
+Job runs its own exact idempotency contract. After an error, read the original
+operation facts before deciding the next step.
 
-InstanceHost 管理 attach、acquire、release、detach 与实际引用。替换发布后，
-新调用选择新实现；已有引用继续绑定原实现，排空后才能 dispose。查询是观察，
-不启动或恢复代码。清理失败保留诊断，不把新发布反转为失败，也不伪造排空。
+## Implementation instances
 
-Session 的长引用由实际 AgentHost 固定到所加载实现。Controller 传递已有 pin，
-不把活 Session 静默搬到另一份代码。结束客户端与共享 Provider 物理静止分别判断。
+InstanceHost manages attach, acquire, release, detach and the actual references.
+After a replacement is published, new calls select the new implementation while
+existing references stay bound to the original one and can be disposed only once
+drained. A query is an observation; it does not start or recover code. A cleanup
+failure keeps its diagnosis, does not reverse a new publication into a failure,
+and does not fake a drain.
 
-## Project 与工作区
+A Session's long-lived reference is pinned by the actual AgentHost to the
+implementation it loaded. The Controller carries an existing pin forward and does
+not silently move a live Session onto different code. Ending a client and the
+shared Provider's physical quiescence are judged separately.
 
-Project 保存参考 checkout、Knowledge 与资源引用。稳定 checkout 只读；Task
-交付发生在受管 worktree。多 Project Task 使用独立 Git 根和明确写范围。
-工作区 owner 属于 Task、WorkItem、ReviewRound 或 IntegrationAttempt。
-Role 仅选择执行配置，不独立拥有另一份工作区状态。
+## Projects and workspaces
 
-Git 集成捕获精确 ChangeSet，在候选 worktree 检查后 CAS 推进目标。
-冲突、检查失败、目标移动与拒绝都不更新目标，Agent 决定下一次操作。
+A Project stores its reference checkout, Knowledge and resource references. The
+stable checkout is read-only; Task delivery happens in a managed worktree. A
+multi-Project Task uses independent Git roots and explicit write scopes. A
+workspace owner is a Task, WorkItem, ReviewRound or IntegrationAttempt. A Role
+only selects execution configuration; it does not independently own a separate
+workspace state.
 
-## Artifact 与环境
+Git integration captures an exact ChangeSet and advances the target by
+compare-and-swap after its checks pass in a candidate worktree. A conflict,
+failed check, moved target or rejection never advances the target, and the Agent
+chooses the next action.
 
-- `artifact.save/read/list` 保存不可变内容、外部版本证据、Job 回执或引用资料。
-  Reference 不等于固定交付成果；最终结果不能选择缺失或跨 Task Artifact。
-- `environment.prepare` 准备 empty、scratch 或获授权 local 目录，不自动采用。
-- `environment.adopt` 复核身份、资源意图、权限与冲突后保存所有权。
-- `environment.bind` 选择 Role 下一次原生执行环境；`null` 返回 managed workspace。
-- `environment.release` 检查真实引用和静止证据，不删除用户目录。
+## Artifacts and environments
 
-Adopted native launch 保留目录身份、access、isolation 与 preparation 引用，
-在 launch、resume 和 Yui 输入边界复核。撤权不能靠新 grant 静默重新采用旧环境。
-Read-only 环境的支持取决于实现；不能将目录 access 标签视为通用 OS 沙箱。
+- `artifact.save/read/list` stores immutable content, external-version evidence,
+  a Job receipt or reference material. A reference is not a fixed delivery result;
+  a final result cannot select a missing or cross-Task Artifact.
+- `environment.prepare` prepares an empty, scratch or authorized local directory
+  without adopting it automatically.
+- `environment.adopt` rechecks identity, resource intent, permissions and
+  conflicts, then records ownership.
+- `environment.bind` selects a Role's next native execution environment; `null`
+  returns to the managed workspace.
+- `environment.release` checks the real references and quiescence evidence and
+  never deletes a user directory.
 
-## 插件与自扩展
+An adopted native launch retains the directory's identity, access, isolation and
+preparation reference, and rechecks them at launch, resume and the Yui input
+boundary. Revoking a grant cannot silently re-adopt an old environment on the
+strength of a new grant. Read-only environment support depends on the adapter; a
+directory access label is not a general OS sandbox.
 
-Task Leader 或 global Operator 可以管理该 Task 的插件；Worker/Reviewer 不能
-自行管理或授信。声明式插件不执行任意代码；trusted-local 插件执行还需要精确
-源码或产物摘要、环境和阶段的 grant。
+## Plugins and self-extension
 
-Store 保存 enabled 意图及验证产物，Host 保存实际实例。重启后 enabled 仍可读，
-actual 可以为空，必须显式激活。原 Task 可以发现并调用新能力，不必修改自身
-原生工具 schema。业务结果应保存为 Artifact，而不是依赖插件继续存活。
+A Task Leader or the global Operator can manage that Task's plugins; a
+Worker/Reviewer cannot self-manage or self-trust them. A declarative plugin runs
+no arbitrary code; executing a trusted-local plugin additionally requires a grant
+scoped to the exact source or artifact digest, environment and phase.
 
-完整作者、授权及失败合同见[插件 SDK](../plugin-sdk.md)。
+The Store keeps the enabled intent and validation artifacts, and the Host keeps
+the actual instances. After a restart the enabled selection is still readable,
+the actual instance can be empty, and activation must be explicit. The original
+Task can discover and call the new capability without rewriting its own native
+tool schema. A business result should be saved as an Artifact rather than
+depending on the plugin staying alive.
 
-## CLI 与 Web
+See the [Plugin SDK](../plugin-sdk.md) for the full authoring, authorization and
+failure contract.
 
-Surface contribution 由 Registry 当前获授权目录派生，没有第二份目录或 Host。
-CLI contribution 使用能力原名称。Web panel 只接受受控 text、HTTP(S) link 或
-JSON query 描述，不接受作者脚本或任意 HTML。
+## CLI and Web
 
-Web listener 由 Controller 启停，仅允许 loopback。浏览器写入通过现有领域
-事务，错误区分确定未提交与提交结果未知。查询面板不能借浏览器身份执行 mutation
-或插件管理。终端连接只 attach 客户端，不接管原生对话的持久所有权。
+A Surface contribution is derived from the Registry's currently authorized
+catalog; there is no second catalog or Host. A CLI contribution uses the
+capability's original name. A Web panel accepts only controlled text, an HTTP(S)
+link or a JSON query description — not author scripts or arbitrary HTML.
+
+The Web listener is started and stopped by the Controller and allows loopback
+only. A browser write goes through an existing domain transaction, and its error
+distinguishes a definite non-commit from a committed-but-unknown result. A query
+panel cannot use the browser's identity to run a mutation or manage plugins. A
+terminal connection only attaches a client; it does not take over durable
+ownership of the native conversation.

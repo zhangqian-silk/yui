@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="./task-delivery.zh-CN.md">简体中文</a></p>
+
 # Task delivery and resource lifecycle
 
 ## Lifecycle and planning

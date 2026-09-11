@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="./task-local-identity.zh-CN.md">简体中文</a></p>
+
 # Task-local identity
 
 Yui treats a Task as the aggregate boundary for durable workflow records. Each

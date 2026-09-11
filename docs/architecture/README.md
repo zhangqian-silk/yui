@@ -1,38 +1,50 @@
-# 当前架构与文档导航
+<p align="right"><strong>English</strong> | <a href="./README.zh-CN.md">简体中文</a></p>
 
-以下文档描述当前源码合同。能力边界不等于所有真实 Provider 场景已经验证。
+# Architecture and documentation map
 
-## 阅读入口
+These documents describe the current source contracts. A capability boundary is
+not a claim that every real Provider scenario has been validated.
 
-- [README](../../README.md)：安装、配置和日常使用。
-- [中文 README](../../i18n/README.zh-CN.md)：同一产品入口的中文说明。
-- [总体架构](../../ARCHITECTURE.md)：职责、权威和端到端流程。
-- [能力、资源与 Surface](capabilities-and-resources.md)：扩展入口、实例所有权和资源效果。
+## Start here
 
-## 领域合同
+- [README](../../README.md): install, configure and everyday use.
+- [Chinese README](../../i18n/README.zh-CN.md): the same product entry in
+  Simplified Chinese.
+- [Architecture overview](../../ARCHITECTURE.md): responsibilities, authority and
+  the end-to-end flow.
+- [Capabilities, resources and Surfaces](capabilities-and-resources.md): the
+  extension ingress, instance ownership and resource effects.
 
-| 问题 | 当前文档 |
+## Domain contracts
+
+| Question | Current document |
 | --- | --- |
-| Session、AgentRun、消息和激活如何配合？ | [执行与会话](../managed-turn-and-session-runtime.md) |
-| 谁消费结果、综合与审查？ | [结果消费](../agent-result-consumption.md) |
-| WorkItem 依赖何时满足？ | [Task 依赖](../task-dag-semantics.md) |
-| Task 内记录如何引用？ | [局部身份](../task-local-identity.md) |
-| Role、Profile 与运行配置如何生效？ | [角色与配置](../roles-and-configuration.md) |
-| 怎样交付、集成和归档？ | [交付生命周期](../task-delivery.md) |
-| Provider、ACP 与配置事实如何接入？ | [Provider Runtime](../provider-runtime.md) |
-| 运行观察和错误由谁解释？ | [Agent Drivers](../agent-runtime-drivers.md) |
-| 如何创建、验证与采用插件？ | [插件 SDK](../plugin-sdk.md) |
-| 数据、升级与并发的边界是什么？ | [SQLite Store](../sqlite-control-plane-design.md) |
-| 如何执行获授权的发布操作？ | [发布流程](../release-workflow.md) |
-| 如何查看当前运行证据？ | [可观察性](../observability/README.md) |
-| 哪些验证应长期保留？ | [验证策略](../testing/verification-levels.md) |
+| How do Session, AgentRun, messages and activation fit together? | [Session and AgentRun runtime](../managed-turn-and-session-runtime.md) |
+| Who consumes results, synthesis and review? | [Result consumption](../agent-result-consumption.md) |
+| When is a WorkItem dependency satisfied? | [Task dependencies](../task-dag-semantics.md) |
+| How are records referenced inside a Task? | [Task-local identity](../task-local-identity.md) |
+| How do Roles, Profiles and run configuration take effect? | [Roles and configuration](../roles-and-configuration.md) |
+| How do delivery, integration and archive work? | [Task delivery](../task-delivery.md) |
+| How do Provider, ACP and configuration facts connect? | [Provider runtime](../provider-runtime.md) |
+| Who interprets runtime observations and errors? | [Agent Drivers](../agent-runtime-drivers.md) |
+| How are plugins created, validated and adopted? | [Plugin SDK](../plugin-sdk.md) |
+| What are the data, upgrade and concurrency boundaries? | [SQLite control plane](../sqlite-control-plane-design.md) |
+| How do authorized release operations run? | [Release workflow](../release-workflow.md) |
+| How do I read current runtime evidence? | [Observability](../observability/README.md) |
+| Which checks should be kept permanently? | [Verification policy](../testing/verification-levels.md) |
 
-## 维护约定
+## Maintenance conventions
 
-行为变更同步修改所属合同和必要的入口说明。具体 CLI 参数以
-`src/cli/commandCatalog.ts` 和命令处理器为准；公开领域类型以运行源码为准，
-不另外维护一套目标模型或生成的离线副本。
+When behavior changes, update the owning contract and any entry-point text in the
+same change. The exact CLI flags are defined by `src/cli/commandCatalog.ts` and
+the command handlers; public domain types follow the running source. We do not
+maintain a separate target model or a generated offline copy.
 
-Project Skill 管理 Yui 的开发与验证规则；通用 Role Skills 管理 Agent 使用
-Yui 的职责。仓库文档不替代 `YUI_HOME` 中维护的 Project Knowledge，也不授予
-共享环境、真实模型或外部系统的执行权限。
+Each document is bilingual: `X.md` is the English version and `X.zh-CN.md` is the
+Simplified Chinese one. When behavior changes, update both language versions
+together so they stay in sync.
+
+The Project Skill owns Yui's development and validation rules; the generic Role
+Skills own how an Agent uses Yui. Repository documents do not replace the Project
+Knowledge maintained under `YUI_HOME`, and they do not grant execution access to
+shared environments, real models or external systems.
