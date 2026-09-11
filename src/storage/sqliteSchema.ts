@@ -27,6 +27,7 @@ import {
   removeRuntimeGenerationRecords
 } from "./migrations/removeRuntimeGeneration.js";
 import { migrateAgentRunContract } from "./migrations/agentRunContract.js";
+import { migrateArtifactsToGit } from "./migrations/artifactsToGit.js";
 
 import {
   CURRENT_STORAGE_VERSION,
@@ -1148,6 +1149,22 @@ UPDATE review_rounds SET payload = json_set(payload, '$.executionGroup.lanes', j
     // now retain explicit replacement intent; OS owner records may identify
     // the dedicated execution child, independently of a disposable Host.
     sql: "SELECT 1; -- Replacement intent, independent retained native control evidence/process custody, and optional fixed TaskWake refs"
+  },
+  {
+    version: 19,
+    name: "task-artifacts-local-git",
+    introducedIn: "0.16.0",
+    // Retire the DB-owned immutable Artifact store: file/directory artifacts now
+    // live in a per-Task local Git repository, referenced by a self-certifying
+    // `commit + relativePath`. The whole rewrite is payload work that must READ
+    // the `artifacts` table before it is dropped, so it runs entirely in
+    // `migrateData` (which executes after this `sql`) — the table is dropped
+    // there, last, once its rows have been moved. Requirement A's independent,
+    // deterministic submit-intent backfill (events + id_sequences only) is the
+    // final step inside that same transaction. This `sql` is intentionally a
+    // no-op: dropping the table here would destroy the rows before they move.
+    sql: "SELECT 1; -- artifacts move to per-Task local Git; see migrateArtifactsToGit",
+    migrateData: migrateArtifactsToGit
   }
 ]);
 
@@ -1560,7 +1577,6 @@ export function migrateSqliteSchema(
 export const SQLITE_SCHEMA_TABLES: readonly string[] = [
   "plugin_intents",
   "plugin_validations",
-  "artifacts",
   "local_resources",
   "environment_preparations",
   "schema_migrations",

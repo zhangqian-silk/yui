@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 
 const executeFile = promisify(execFile);
@@ -82,6 +82,14 @@ export type ManagedGitOptions = Readonly<{
   maxBuffer?: number;
   /** Kill the process after this many milliseconds. Defaults to 30s. */
   timeoutMs?: number;
+  /**
+   * Sync-migration only: pin the author and committer dates so a rebuild of the
+   * same historical data produces the same commit hashes. These env vars affect
+   * only commit metadata — they can never re-enable transport, run a hook, or
+   * execute a program — so applying them keeps the trust boundary intact. Only
+   * honored by the synchronous runner; the async production runner ignores it.
+   */
+  commitDates?: Readonly<{ author: string; committer: string }>;
 }>;
 
 /** Build the scrubbed environment for a managed Git process. Never inherits ambient Git config. */
@@ -205,4 +213,78 @@ export function requireCommitId(value: string): string {
     throw new Error("Managed git returned an invalid commit id.");
   }
   return commit;
+}
+
+/**
+ * SYNCHRONOUS managed invocation, used ONLY where an async runner is
+ * structurally impossible: a storage `migrateData(db)` step runs inside
+ * `db.transaction(...)`, which better-sqlite3 requires to be synchronous, yet
+ * the 18->19 migration must build per-Task artifact repositories on disk. This
+ * shares the SAME hardening as {@link spawnManagedGit} — identical argument
+ * refusal, identical scrubbed environment, identical prepended flags — so the
+ * synchronous path never weakens the trust boundary. It is not exported for
+ * ordinary runtime use; the async runner remains the only production write path.
+ */
+function spawnManagedGitSync(
+  repoPath: string,
+  args: readonly string[],
+  options?: ManagedGitOptions
+): { stdout: Buffer; stderr: Buffer } {
+  assertSafeArguments(args);
+  const env = managedGitEnvironment();
+  if (options?.commitDates !== undefined) {
+    // Deterministic history: fixed author/committer dates make a rebuild of the
+    // same source data reproduce the same commit ids. This only sets metadata.
+    env.GIT_AUTHOR_DATE = options.commitDates.author;
+    env.GIT_COMMITTER_DATE = options.commitDates.committer;
+  }
+  try {
+    const stdout = execFileSync(
+      "git",
+      [...HARDENING_FLAGS, "-C", repoPath, ...args],
+      {
+        encoding: "buffer",
+        env,
+        maxBuffer: options?.maxBuffer ?? 16 * 1024 * 1024,
+        timeout: options?.timeoutMs ?? 30_000,
+        windowsHide: true
+      }
+    );
+    return { stdout: stdout as Buffer, stderr: Buffer.alloc(0) };
+  } catch (error) {
+    throw new ManagedGitError([...args], readErrorStream(error), error);
+  }
+}
+
+/** Synchronous counterpart to {@link managedGit}; returns trimmed UTF-8 stdout. */
+export function managedGitSync(
+  repoPath: string,
+  args: readonly string[],
+  options?: ManagedGitOptions
+): string {
+  return spawnManagedGitSync(repoPath, args, options).stdout.toString("utf8");
+}
+
+/** Synchronous counterpart to {@link managedGitBuffer}; returns raw stdout bytes. */
+export function managedGitSyncBuffer(
+  repoPath: string,
+  args: readonly string[],
+  options?: ManagedGitOptions
+): Buffer {
+  return spawnManagedGitSync(repoPath, args, options).stdout;
+}
+
+/** Synchronous counterpart to {@link managedGitSucceeds}; never throws on non-zero exit. */
+export function managedGitSyncSucceeds(
+  repoPath: string,
+  args: readonly string[],
+  options?: ManagedGitOptions
+): boolean {
+  try {
+    spawnManagedGitSync(repoPath, args, options);
+    return true;
+  } catch (error) {
+    if (error instanceof ManagedGitError) return false;
+    throw error;
+  }
 }

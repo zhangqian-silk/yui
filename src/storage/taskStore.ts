@@ -76,7 +76,7 @@ import type { LeaderFailure } from "../scheduler/leaderFailure.js";
 import type { PendingWakeup } from "../scheduler/pendingWakeup.js";
 import type { TaskWake } from "../scheduler/taskWake.js";
 import type { Task } from "../task/task.js";
-import type { Artifact, LocalResource, EnvironmentPreparation } from "../resources/projectResource.js";
+import type { LocalResource, EnvironmentPreparation } from "../resources/projectResource.js";
 import type { PluginValidation } from "../plugins/pluginPackage.js";
 import type { PluginIntent, PluginIntentFailure } from "../plugins/pluginIntent.js";
 import type { NextActionFacts } from "../task/nextAction.js";
@@ -221,9 +221,6 @@ export type TaskStore = {
   recordPluginIntentFailure(taskId: string, pluginId: string, revision: number, failure: PluginIntentFailure): boolean;
   savePluginValidation(validation: PluginValidation): void;
   getPluginValidation(taskId: string, id: string): PluginValidation | null;
-  saveArtifact(artifact: Artifact): void;
-  getArtifact(taskId: string, artifactId: string): Artifact | null;
-  listArtifacts(taskId: string): Artifact[];
   saveLocalResource(resource: LocalResource): void;
   getLocalResource(resourceId: string): LocalResource | null;
   listLocalResources(): LocalResource[];
