@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="./SECURITY.zh-CN.md">简体中文</a></p>
+
 # Security Policy
 
 ## Trust model

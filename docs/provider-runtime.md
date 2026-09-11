@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="./provider-runtime.zh-CN.md">简体中文</a></p>
+
 # Provider runtime
 
 Native conversations belong to the user and Provider. Yui adds its Role Skill
