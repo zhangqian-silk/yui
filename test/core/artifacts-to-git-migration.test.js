@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, readFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -295,6 +296,69 @@ test("18->19 migration: fails closed on an UNKNOWN existing directory without ov
       .all();
     assert.equal(artifactsTable.length, 1);
     db.close();
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("18->19 migration: a filter smuggled into a leftover repo never runs during the remnant probe", () => {
+  const home = mkdtempSync(join(tmpdir(), "yui-mig-remnant-filter-"));
+  try {
+    // First attempt: build a real, valid remnant, then simulate a rolled-back DB
+    // by discarding only the connection (the on-disk repo survives, as in the
+    // idempotent-rebuild test above).
+    const db1 = seedV18Database(home);
+    seedOneTask(db1);
+    migrateArtifactsToGit(db1);
+    db1.close();
+    rmSync(join(home, "yui.db"), { force: true });
+
+    // Tamper with the leftover repo so that a `git status` — the working-tree
+    // inspection inside the remnant probe — WOULD execute an external program:
+    //   1. a repo-local clean filter that drops a sentinel marker when it runs,
+    //   2. a .gitattributes binding a tracked file to that filter,
+    //   3. that tracked file modified in place to the SAME byte length with a
+    //      future mtime, so git cannot short-circuit on size or the stat cache
+    //      and must re-hash it (running the clean filter) to compare it.
+    // With the safe-config/boundary check ordered BEFORE any working-tree Git
+    // command, the probe rejects the repo on the filter config alone and never
+    // reaches `git status`, so the marker is never written.
+    const finalPath = taskArtifactRepoPath(home, TASK);
+    const marker = join(home, "SENTINEL_RAN");
+    const cleanCmd = `sh -c 'touch ${marker}; cat'`;
+    execFileSync("git", ["-C", finalPath, "config", "--local", "filter.sneaky.clean", cleanCmd]);
+    writeFileSync(join(finalPath, ".gitattributes"), "migrated/artifact-a/content filter=sneaky\n");
+    const contentPath = join(finalPath, "migrated", "artifact-a", "content");
+    const original = readFileSync(contentPath);
+    const tampered = Buffer.alloc(original.length, 0x5a); // same size => no size short-circuit
+    writeFileSync(contentPath, tampered);
+    const future = new Date("2030-01-01T00:00:00Z");
+    utimesSync(contentPath, future, future); // stale stat cache => git cannot skip the re-hash
+
+    // Second attempt against the tampered leftover: it is no longer a proven
+    // remnant (external-program config), so the migration must fail closed.
+    const db2 = seedV18Database(home);
+    seedOneTask(db2);
+    assert.throws(
+      () => migrateArtifactsToGit(db2),
+      /Refusing to overwrite existing artifact directory/i
+    );
+    db2.close();
+
+    // The clean filter NEVER ran: the boundary check rejected the repo before any
+    // working-tree inspection could invoke it.
+    assert.equal(existsSync(marker), false);
+
+    // Nothing was deleted or auto-repaired: the offending config, the attribute
+    // file, and the tampered content all remain exactly as they were left.
+    const storedFilter = execFileSync(
+      "git",
+      ["-C", finalPath, "config", "--local", "--get", "filter.sneaky.clean"],
+      { encoding: "utf8" }
+    ).trim();
+    assert.equal(storedFilter, cleanCmd);
+    assert.equal(existsSync(join(finalPath, ".gitattributes")), true);
+    assert.deepEqual(readFileSync(contentPath), tampered);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

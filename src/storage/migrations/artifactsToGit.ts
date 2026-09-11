@@ -230,9 +230,20 @@ function adoptBuiltRepository(taskId: string, staging: string, finalPath: string
  * whose working tree is clean, and which is within the managed boundary. Any
  * failure (not a repo, differing HEAD, dirty tree, remote/external config) means
  * "not a remnant", so the caller fails closed rather than deleting it. Read-only.
+ *
+ * ORDER MATTERS: the managed-boundary check (remote + config scan — reads that
+ * never run a filter) runs BEFORE `git status`. `git status` re-hashes a
+ * same-size modified file through a `clean` filter to decide if it really
+ * differs, so running status first on a tampered repo could execute an external
+ * program before we ever reject it. The boundary scan also rejects config
+ * INCLUSION entry points, so a filter hidden behind `include.*` is refused here
+ * too — before status can follow the include.
  */
 function isProvenIdenticalRemnant(finalPath: string, builtHead: string): boolean {
   if (!managedGitSyncSucceeds(finalPath, ["rev-parse", "--is-inside-work-tree"])) return false;
+  // Fail closed on any remote or external-program/inclusion config BEFORE the
+  // first working-tree inspection, so no `clean`/`smudge` filter can run.
+  if (!isWithinManagedBoundary(finalPath)) return false;
   let head: string;
   try {
     head = requireCommitId(managedGitSync(finalPath, ["rev-parse", "HEAD^{commit}"]));
@@ -240,12 +251,13 @@ function isProvenIdenticalRemnant(finalPath: string, builtHead: string): boolean
     return false;
   }
   // A matching HEAD proves the entire committed history; a clean tree proves
-  // nothing was added or modified on top of that history.
+  // nothing was added or modified on top of that history. Only now that the
+  // boundary is proven is it safe to let `git status` touch the working tree.
   if (head !== builtHead) return false;
   if (managedGitSync(finalPath, ["status", "--porcelain=v1", "--untracked-files=all", "-z"]).length > 0) {
     return false;
   }
-  return isWithinManagedBoundary(finalPath);
+  return true;
 }
 
 /** Write one Artifact's files, commit exactly them, and return its frozen reference. */
