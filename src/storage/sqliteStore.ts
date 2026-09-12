@@ -61,6 +61,7 @@ import type { TaskEvent } from "../event/taskEvent.js";
 import type { InputRequest } from "../input/inputRequest.js";
 import type { GlobalRoleSessionSet, RoleAgentSession, TaskRoleSessionSet } from "../executor/agentExecutor.js";
 import type { TaskMessage } from "../message/message.js";
+import { validateGlobalRoleMessage, type GlobalRoleMessage } from "../message/message.js";
 import type { Milestone } from "../milestone/milestone.js";
 import { runPurposeAdmitsTaskState, type AgentRun } from "../agentRun/agentRun.js";
 import type { RuntimeOwner } from "../runtime/runtimeOwner.js";
@@ -744,6 +745,7 @@ export class SqliteTaskStore implements TaskStore {
     if (table === "configured_agents") validateConfiguredAgent(record as ConfiguredAgent);
     if (table === "task_roles") validateTaskRole(record as TaskRole);
     if (table === "global_roles") validateGlobalRole(record as GlobalRole);
+    if (table === "global_role_messages") validateGlobalRoleMessage(record as GlobalRoleMessage);
     return record;
   }
 
@@ -1121,6 +1123,54 @@ export class SqliteTaskStore implements TaskStore {
       ).run(sessions.owner.roleName, this.#json(sessions), this.#now());
       this.#saveRuntimeSessionCandidate(sessions);
     });
+  }
+
+  // -- global role messages ---------------------------------------------------
+
+  nextGlobalRoleMessageId(): string { return this.#nextGlobalId("global-message"); }
+
+  saveGlobalRoleMessage(message: GlobalRoleMessage): void {
+    validateGlobalRoleMessage(message);
+    this.#requireGlobalRole(message.roleName);
+    this.#mutate(() => {
+      const seq = this.#globalMessageSequence(message.id);
+      this.#db.prepare(
+        `INSERT INTO global_role_messages (name, message_id, seq, payload, created_at) VALUES (?, ?, ?, ?, ?)`
+      ).run(message.roleName, message.id, seq, this.#json(message), message.createdAt);
+    });
+  }
+
+  listGlobalRoleMessages(roleName: string): GlobalRoleMessage[] {
+    return this.#sortById(
+      this.#listPayload<GlobalRoleMessage>("global_role_messages", "name = ?", [roleName]),
+      (message) => message.id
+    );
+  }
+
+  updateGlobalRoleMessage(message: GlobalRoleMessage): void {
+    validateGlobalRoleMessage(message);
+    this.#requireGlobalRole(message.roleName);
+    this.#mutate(() => {
+      const seq = this.#globalMessageSequence(message.id);
+      const result = this.#db.prepare(
+        `UPDATE global_role_messages SET seq = ?, payload = ? WHERE name = ? AND message_id = ?`
+      ).run(seq, this.#json(message), message.roleName, message.id);
+      if (result.changes === 0) {
+        throw new StorageRecordError(`Global message not found: ${message.roleName}/${message.id}`);
+      }
+    });
+  }
+
+  #requireGlobalRole(name: string): void {
+    const row = this.#db.prepare("SELECT 1 FROM global_roles WHERE name = ?").get(name);
+    if (row === undefined) throw new StorageRecordError(`Global Role not found: ${name}`);
+  }
+
+  /** A Global message id is `global-message-<n>`; its numeric tail is its seq. */
+  #globalMessageSequence(id: string): number {
+    const match = /^global-message-([1-9]\d*)$/.exec(id);
+    if (match === null) throw new StorageRecordError(`Global message id is invalid: ${id}`);
+    return Number(match[1]);
   }
 
   // -- tasks ------------------------------------------------------------------

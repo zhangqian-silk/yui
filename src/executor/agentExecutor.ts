@@ -71,6 +71,19 @@ export type GlobalRoleSessionSet = RoleSessionSetBase<GlobalRoleSessionOwner> & 
   schemaVersion: 5;
   /** Immutable terminal native Sessions keyed by an opaque Yui reference. */
   history?: Record<string, RoleAgentSession>;
+  /**
+   * Provider-native conversation and Turn observations for a Global Role's own
+   * Session, matching the Task Role shape (decision-3 §6/§9). It is optional and
+   * absent on older Global sets, as declared by the centralized v19 migration.
+   * A Global control reads this binding to target the exact
+   * current native Turn; it never fabricates a Task Role binding to do so.
+   */
+  providerBinding?: ProviderRuntimeBinding | null;
+  /** Native control evidence, not input intent or an execution queue. */
+  interrupts?: Record<string, {
+    fingerprint: string; attemptId: string; nativeSessionId: string; receiptId: string;
+    receipt?: import("../runtime/agentHost.js").InterruptLiveReceipt;
+  }>;
 };
 
 export type TaskRoleSessionSet = RoleSessionSetBase<TaskRoleSessionOwner> & {
@@ -537,6 +550,51 @@ export function updateTaskRoleProviderRuntime(
 }
 
 /**
+ * Bind a Global Role's Provider Runtime evidence, mirroring the Task Role
+ * writer (decision-3 §6/§9). Create-only: an existing distinct binding is a
+ * conflict, an identical one is idempotent. The Global set stays schemaVersion
+ * 5; only the optional providerBinding is added.
+ */
+export function bindGlobalRoleProviderRuntime(
+  set: GlobalRoleSessionSet,
+  binding: ProviderRuntimeBinding,
+  updatedAt: Date
+): GlobalRoleSessionSet {
+  validateRoleSessionSet(set);
+  const normalized = validateProviderRuntimeBinding(binding);
+  if (set.providerBinding != null) {
+    if (JSON.stringify(set.providerBinding) === JSON.stringify(normalized)) return set;
+    throw new Error("Global Role already has a Provider Runtime Binding.");
+  }
+  return validateRoleSessionSet({
+    ...set,
+    providerBinding: normalized,
+    updatedAt: requireDate(updatedAt, "Provider Runtime Binding timestamp")
+  });
+}
+
+/** In-place update of a Global Role's Provider Runtime binding; namespace and
+ * account scope are immutable, exactly as for a Task Role. */
+export function updateGlobalRoleProviderRuntime(
+  set: GlobalRoleSessionSet,
+  binding: ProviderRuntimeBinding,
+  updatedAt: Date
+): GlobalRoleSessionSet {
+  validateRoleSessionSet(set);
+  const normalized = validateProviderRuntimeBinding(binding);
+  if (set.providerBinding == null
+    || normalized.providerNamespace !== set.providerBinding.providerNamespace
+    || normalized.accountScope !== set.providerBinding.accountScope) {
+    throw new Error("Provider Runtime Binding identity cannot change in place.");
+  }
+  return validateRoleSessionSet({
+    ...set,
+    providerBinding: normalized,
+    updatedAt: requireDate(updatedAt, "Provider Runtime Binding timestamp")
+  });
+}
+
+/**
  * Detaches a confirmed-dead local Host without ending its resumable native
  * Session. Host connections are disposable execution
  * facts; the native Session remains the durable continuation identity.
@@ -617,7 +675,7 @@ export function recordTaskRoleNativeTurnBoundary(
 export function validateRoleSessionSet<TSet extends RoleSessionSet>(set: TSet): TSet {
   const ownerScope = (set as unknown as { owner?: { scope?: unknown } }).owner?.scope;
   rejectUnknownFields(set as unknown as Record<string, unknown>, ownerScope === "global"
-    ? ["schemaVersion", "owner", "activeAgentId", "sessions", "updatedAt", "history"]
+    ? ["schemaVersion", "owner", "activeAgentId", "sessions", "updatedAt", "history", "providerBinding", "interrupts"]
     : [
         "schemaVersion",
         "owner",
@@ -636,14 +694,18 @@ export function validateRoleSessionSet<TSet extends RoleSessionSet>(set: TSet): 
     if (set.schemaVersion !== 5) {
       throw new Error("Global Role session set schema version is invalid.");
     }
-    if (
-      Object.hasOwn(set, "providerBinding")
-    ) {
-      throw new Error(
-        "Global Role session set must not contain Task Role lifecycle fields."
-      );
+    const globalSet = set as GlobalRoleSessionSet;
+    for (const [requestId, control] of Object.entries(globalSet.interrupts ?? {})) {
+      requireSafeIdentity(requestId, "Global interrupt request");
+      requireText(control.fingerprint, "Global interrupt fingerprint");
+      requireText(control.attemptId, "Global interrupt attempt");
+      requireText(control.nativeSessionId, "Global interrupt Session");
+      requireText(control.receiptId, "Global interrupt receipt");
+      if (control.receipt !== undefined
+        && !["interrupt-requested", "interrupt-not-active", "interrupt-unknown", "interrupt-unavailable"]
+          .includes(control.receipt.state)) throw new Error("Global interrupt receipt is invalid.");
     }
-    const history = (set as GlobalRoleSessionSet).history;
+    const history = globalSet.history;
     if (history !== undefined) {
       for (const [ref, session] of Object.entries(history)) {
         requireSafeIdentity(ref, "Operator session ref");
@@ -651,6 +713,21 @@ export function validateRoleSessionSet<TSet extends RoleSessionSet>(set: TSet): 
         if (session.status !== "ended") {
           throw new Error(`Operator history session must be stopped: ${ref}.`);
         }
+      }
+    }
+    // A Global Role now carries the same optional Provider Runtime Binding shape
+    // as a Task Role (decision-3 §6/§9). It stays absent on every legacy set;
+    // when present, it is the exact native control evidence a Global steer or
+    // interrupt targets, validated identically to the Task branch. A fabricated
+    // Task binding is never accepted here, and its presence never upgrades the
+    // schemaVersion these raw-JSON sets are read at.
+    if (Object.hasOwn(globalSet, "providerBinding") && globalSet.providerBinding != null) {
+      const providerBinding = validateProviderRuntimeBinding(globalSet.providerBinding);
+      const conversationId = currentProviderConversation(providerBinding).conversationId;
+      const session = [...Object.values(globalSet.sessions), ...Object.values(globalSet.history ?? {})]
+        .find(entry => entry.agentId === providerBinding.accountScope && entry.nativeSessionId === conversationId);
+      if (session !== undefined && providerBinding.providerNamespace !== builtinDriverIdForAdapter(session.adapterId)) {
+        throw new Error("Provider Runtime Binding namespace does not match the Agent adapter.");
       }
     }
   } else {

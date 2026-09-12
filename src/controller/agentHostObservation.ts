@@ -34,8 +34,8 @@ export function resolveAgentHostObservation(
   let driver;
   try { driver = builtinAgentDriverRegistry().requireByAdapterId(host.adapterId); }
   catch { throw new RuntimeHookRunFenceError("Agent Host adapter is unsupported."); }
-  if (fence.taskId === undefined || event.taskId !== fence.taskId
-    || event.scope !== "task" || fence.runId !== undefined
+  if (event.taskId !== fence.taskId
+    || event.scope !== (fence.taskId === undefined ? "global" : "task") || fence.runId !== undefined
     || fence.nativeSessionId === undefined
     || driver.id !== fence.driverId
     || (host.connection !== undefined && kind !== "host.observed")) {
@@ -51,6 +51,32 @@ export function resolveAgentHostObservation(
     || fence.receiptId?.startsWith("steer:")
   );
   const terminal = ["turn.completed", "turn.failed", "turn.cancelled", "session.ended", "session.failed"].includes(kind);
+  if (fence.taskId === undefined) {
+    if (host.startupRunId !== undefined) throw new RuntimeHookRunFenceError("Global Host cannot carry a startup Run.");
+    const sessions = store.getGlobalRoleSessionSet(fence.roleName);
+    const session = sessions?.sessions[fence.agentId];
+    if (sessionStartup && (session === undefined || session.status === "ended")) {
+      const role = store.getGlobalRole(fence.roleName);
+      if (role?.activeAgentId === fence.agentId && role.workspace === host.workspace) {
+        throw new AgentHostObservationDeferred("Awaiting exact Global Session adoption.");
+      }
+    }
+    const resolved = resolveRuntimeHookRunFence({
+      YUI_SESSION_SCOPE: "global", YUI_ROLE: fence.roleName, YUI_AGENT_ID: fence.agentId,
+      YUI_ADAPTER_ID: host.adapterId, YUI_WORKSPACE: host.workspace
+    }, host.adapterId, fence.nativeSessionId, {
+      ...(sessionFact || directStart ? { sessionOnly: true } : {
+        exactInput: true,
+        ...(fence.nativeTurnId === undefined ? {} : { nativeTurnId: fence.nativeTurnId }),
+        ...(fence.receiptId === undefined || additionalInput ? {} : { attemptId: fence.receiptId })
+      })
+    }, store);
+    return createRuntimeObservation({
+      ...input, fence: { ...fence,
+        ...(fence.receiptId === undefined && resolved.receiptId !== undefined
+          ? { receiptId: resolved.receiptId } : {}) }
+    });
+  }
   const sessions = store.getTaskRoleSessionSet(fence.taskId, fence.roleName);
   const session = sessions?.sessions[fence.agentId];
   if (kind === "host.observed" && host.startupRunId === undefined
@@ -112,7 +138,8 @@ export function recordAgentHostConnection(
   const fence = input.fence;
   const owner = connection.processOwner;
   if (owner !== undefined) {
-    if (owner.owner.scope !== "task" || owner.owner.taskId !== fence.taskId
+    if (owner.owner.scope !== (fence.taskId === undefined ? "global" : "task")
+      || (owner.owner.scope === "task" && owner.owner.taskId !== fence.taskId)
       || owner.owner.roleName !== fence.roleName || owner.agentId !== fence.agentId
       || owner.adapterId !== host.adapterId || owner.nativeSessionId !== fence.nativeSessionId
       || owner.providerRoot.attribution !== "owned-child") {
@@ -122,6 +149,9 @@ export function recordAgentHostConnection(
   }
   if (connection.account !== undefined) {
     if (host.adapterId !== "codex") throw new RuntimeHookRunFenceError("Native account evidence requires Codex.");
+    // Global Roles have no Task event stream. Process custody above is still
+    // recorded under the exact Global owner; Task account history stays Task-scoped.
+    if (fence.taskId === undefined) return;
     const exists = store.listEvents(fence.taskId!).some(e => e.type === "runtime.native-connection-bound"
       && e.payload.roleName === fence.roleName && e.payload.agentId === fence.agentId
       && e.payload.nativeSessionId === fence.nativeSessionId);

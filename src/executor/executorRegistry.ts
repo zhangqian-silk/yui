@@ -107,6 +107,7 @@ export type ExecutorRuntimePorts = Readonly<{
   sessionHost: SessionHostPort;
   promptPush: ActivePromptPushPort;
   launchCoordinator?: RuntimeLaunchPreparationPort;
+  notifyOperatorInputOnce?: NonNullable<TmuxDeliveryPort["notifyOperatorInputOnce"]>;
   /** One advisory resource sample produced alongside the full Role inventory. */
   roleResourceInventory?: (
     panes: readonly TmuxRolePaneState[],
@@ -353,6 +354,9 @@ export class ExecutorRegistry implements TmuxDeliveryPort {
     receiptId: string;
     text: string;
   }>): Promise<"sent" | "already-sent" | "unavailable" | "not-ready"> {
+    if (this.runtimePorts?.notifyOperatorInputOnce !== undefined) {
+      return this.runtimePorts.notifyOperatorInputOnce(input);
+    }
     const probe = this.readiness(input.adapterId, "operator");
     return this.tmux.sendRoleInputOnceIfReadyAsync === undefined
       ? this.tmux.sendRoleInputOnceIfReady(

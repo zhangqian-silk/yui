@@ -78,6 +78,34 @@ export function assertTaskDeliveryAuthority(
 }
 
 /**
+ * Authority for a live steer/interrupt of an exact current native Turn
+ * (decision-3 §1/§9, message-5 gap B). The legal evidence is the native
+ * Turn/Session, not planning→delivery elevation and not an AgentRun's existence:
+ * the resolution proves a present Turn under the caller's own current Session, so
+ * a planning (Draft) Leader may legally control its own management/planning Turn.
+ *
+ * Delivery authority is required only when a managed Leader redirects INTO a
+ * Worker/Reviewer execution Assignment (targetRole other than the Leader itself),
+ * which is the same boundary the addressed-Message send path enforces — a
+ * planning Session must not start or redirect execution work. A user or operator
+ * caller, and a Leader controlling its own Turn, need only be the current
+ * Session; an incomplete managed identity is refused by {@link taskLocalActor}.
+ */
+export function assertTaskInputControlAuthority(
+  store: ManagedCallerStore, environment: NodeJS.ProcessEnv | undefined,
+  taskId: string, targetRole: string
+): TaskCompletedBy {
+  const actor = taskLocalActor(store, environment, taskId);
+  if (actor !== "leader" || targetRole === LEADER_ROLE) return actor;
+  const caller = currentManagedRuntime(store, environment, taskId, LEADER_ROLE);
+  if (caller?.executionAuthority !== "delivery") {
+    throw usageError("This native Session has planning authority, not delivery authority. "
+      + "Redirecting a Worker or Reviewer Assignment requires a delivery Session.");
+  }
+  return actor;
+}
+
+/**
  * Resolve the caller identity for Project-scoped authority. Project Knowledge
  * is an Operator-level authority: a managed Task Session (Leader/Reviewer/
  * Worker) may propose candidates but must not write the authoritative

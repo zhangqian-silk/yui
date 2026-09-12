@@ -522,7 +522,7 @@ const taskChildren: readonly NodeInput[] = [
   {
     name: "message",
     summary: "Manage durable Task messages.",
-    sections: [{ id: "manage", title: "Commands", entries: ["send", "handoff", "list", "show", "update", "retire"] }],
+    sections: [{ id: "manage", title: "Commands", entries: ["send", "queue", "steer", "handoff", "list", "show", "update", "retire"] }],
     children: [
       {
         name: "handoff",
@@ -539,6 +539,20 @@ const taskChildren: readonly NodeInput[] = [
           "--intent": ["record", "discuss", "develop"],
           "--wake-policy": ["leader", "none"]
         },
+        fileOptions: ["--body-file"]
+      },
+      {
+        name: "queue",
+        summary: "Queue an input for delivery at the recipient's next legal opportunity (idempotent by request id).",
+        usage: "yui task message queue <id> (<body>|--body-file <path|->) --request-id <id> [--to <role> --work-item <id>|--review-round <id>]",
+        options: ["--body-file", "--request-id", "--to", "--work-item", "--review-round"],
+        fileOptions: ["--body-file"]
+      },
+      {
+        name: "steer",
+        summary: "Steer only a Role's exact current native Turn; saved and reported without fallback when unsupported.",
+        usage: "yui task message steer <id> (<body>|--body-file <path|->) --request-id <id> --expected-target <turn> --to <role> [--work-item <id>|--review-round <id>]",
+        options: ["--body-file", "--request-id", "--expected-target", "--to", "--work-item", "--review-round"],
         fileOptions: ["--body-file"]
       },
       {
@@ -709,7 +723,7 @@ const taskChildren: readonly NodeInput[] = [
     summary: "Manage Roles within a Task.",
     sections: [{ id: "manage", title: "Commands", entries: [
       "add", "list", "status", "show", "update", "remove", "bind", "unbind",
-      "session", "view", "takeover", "release"
+      "session", "interrupt", "view", "takeover", "release"
     ] }],
     children: [
       {
@@ -766,6 +780,12 @@ const taskChildren: readonly NodeInput[] = [
         name: "view",
         summary: "Attach read-only to an independent Provider presentation surface.",
         usage: "yui task role view <task> <role>"
+      },
+      {
+        name: "interrupt",
+        summary: "Interrupt a Role's exact current native Turn via native cancel; optionally deliver a saved Message once after a proven terminal.",
+        usage: "yui task role interrupt <task> <role> --expected-target <turn> [--then-message <task/message>] [--request-id <id>]",
+        options: ["--expected-target", "--then-message", "--request-id"]
       },
       {
         name: "takeover",

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { prepareMessageContinuations } from "../message/messageContinuation.js";
+import { prepareMessageContinuations, interruptThenTerminalState } from "../message/messageContinuation.js";
 import { freezeRunContextSnapshot } from "../context/runContextPack.js";
 import { contextSnapshotRef } from "../context/contextSnapshot.js";
 import { isDeepStrictEqual } from "node:util";
@@ -18,6 +18,7 @@ import {
 import {
   activeLiveRoleAgentSession,
   bindTaskRoleProviderRuntime,
+  bindGlobalRoleProviderRuntime,
   createRoleSessionSet,
   recordRoleAgentSession,
   replaceTaskRoleAgentSession,
@@ -26,6 +27,7 @@ import {
   detachRoleAgentSessionHost,
   updateRoleAgentSessionStatus,
   updateTaskRoleProviderRuntime,
+  updateGlobalRoleProviderRuntime,
   selectNewTaskRoleSession,
   taskRoleControlTarget,
   type AgentSessionStatus,
@@ -77,6 +79,7 @@ import {
 } from "../agentRun/agentRun.js";
 import { transportAgentResult } from "../domain/agentResultTransport.js";
 import { createRunInput } from "../context/runInputContract.js";
+import { recordTaskMessageControlOutcome, markGlobalRoleMessageDelivered, markGlobalRoleMessageNotDelivered } from "../message/message.js";
 import {
   classifyRuntimeProcessExit,
   validateRuntimeProcessExitObservation
@@ -237,8 +240,8 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
   private foldAgentHostObservation(event: RuntimeObservationInboxEvent, now: Date): ProviderLifecycleObservation {
     const raw = createRuntimeObservation(event.observation);
     const task = raw.fence.taskId === undefined ? null : this.store.getTask(raw.fence.taskId);
-    if (task === null) return "obsolete";
-    if (task.status === "archived") {
+    if (raw.fence.taskId !== undefined && task === null) return "obsolete";
+    if (task?.status === "archived") {
       this.observeObsoleteRuntimeEvent({
         eventId: event.id, eventType: event.type, taskId: task.id,
         roleName: raw.fence.roleName, agentId: raw.fence.agentId,
@@ -256,7 +259,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         return this.store.transaction(store => {
           const connection = resolveAgentHostObservation(store, event);
           recordAgentHostConnection(store, event, connection, now);
-          this.persistRuntimeObservation(connection, now);
+          if (connection.fence.taskId !== undefined) this.persistRuntimeObservation(connection, now);
           return "applied";
         });
       }
@@ -298,7 +301,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
   ): ProviderLifecycleObservation {
     const input = createRuntimeObservation(raw);
     const taskId = input.fence.taskId;
-    if (taskId === undefined) return "obsolete";
+    if (taskId === undefined) return this.observeGlobalProviderObservation(input, now);
     if (this.store.getTask(taskId)?.status === "archived") {
       return this.recordObsoleteCanonicalObservation(input, "task-archived", now);
     }
@@ -316,12 +319,18 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         const run = input.fence.runId === undefined ? null : store.getRun(taskId, input.fence.runId);
         const sessions = store.getTaskRoleSessionSet(taskId, input.fence.roleName);
         const native = sessions?.providerBinding?.run;
-        if (run === null || run.roleName !== input.fence.roleName
-          || run.effective.agentId !== input.fence.agentId || native?.runId !== run.id
-          || native.nativeTurnId !== input.fence.nativeTurnId
-          || sessions?.sessions[input.fence.agentId]?.nativeSessionId !== input.fence.nativeSessionId) return "obsolete";
-        if (!hasPersistedRuntimeObservation(store.listEvents(taskId), input) && run.status === "active") {
-          const updated = appendRunInput(run, createRunInput({
+        const isSteer = input.fence.receiptId!.startsWith("steer:");
+        // A Worker/Reviewer steer's accepted input is folded onto the owning
+        // AgentRun. A no-Run Leader steer (decision-3 §9) has no run to append to,
+        // but its accepted disposition is still a real fact that gap D records on
+        // the Message; only the Worker append requires the exact Run/Turn fence.
+        const runFolded = run !== null && run.roleName === input.fence.roleName
+          && run.effective.agentId === input.fence.agentId && native?.runId === run.id
+          && native.nativeTurnId === input.fence.nativeTurnId
+          && sessions?.sessions[input.fence.agentId]?.nativeSessionId === input.fence.nativeSessionId;
+        if (!runFolded && !(isSteer && input.fence.runId === undefined)) return "obsolete";
+        if (runFolded && !hasPersistedRuntimeObservation(store.listEvents(taskId), input) && run!.status === "active") {
+          const updated = appendRunInput(run!, createRunInput({
             source: input.fence.receiptId!.startsWith("native-input:")
               ? { type: "provider", channel: "visible-input" }
               : { type: "yui", channel: "input-response" },
@@ -329,6 +338,30 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
           }), now);
           store.saveRun(updated);
           store.saveActiveRun(updated);
+        }
+        // decision-3 §3/§8, message-5 gap D: promote the Message's independent
+        // control op to its proven terminal from the Host's own settlement, keyed
+        // by this exact steer receipt. Monotonic and idempotent — never a rewind
+        // of an already-proven outcome, and a replayed observation is absorbed.
+        if (isSteer) this.recordSteerControlOutcome(store, input.fence.receiptId!, "accepted", now);
+        this.persistRuntimeObservation(input, now);
+        return "applied";
+      });
+    }
+    // A steer's rejected/delivery-unknown disposition is the Host's proven
+    // terminal for the one live control attempt (message-5 gap D). It carries no
+    // AgentRun append — a rejected input changed no execution — so it is recorded
+    // only on the Message's control op, for a Worker/Reviewer or a no-Run Leader
+    // steer alike, keyed by the exact steer receipt.
+    if ((input.kind === "input.rejected" || input.kind === "input.delivery-unknown")
+      && input.fence.receiptId?.startsWith("steer:") === true) {
+      return this.store.transaction((store) => {
+        if (hasPersistedRuntimeObservation(store.listEvents(taskId), input)) return "applied";
+        const recorded = this.recordSteerControlOutcome(store, input.fence.receiptId!,
+          input.kind === "input.rejected" ? "rejected" : "delivery-unknown", now);
+        if (!recorded) {
+          recordCanonicalObservationObsolete(store, input, "steer-message-not-found", now);
+          return "obsolete";
         }
         this.persistRuntimeObservation(input, now);
         return "applied";
@@ -420,6 +453,39 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
     return outcome;
   }
 
+  /**
+   * Promote a steer Message's independent control op to a proven outcome from the
+   * Host's own settlement (decision-3 §3/§8, message-5 gap D). The `steer:` fence
+   * names the exact `steer:<taskId>/<messageId>` receipt, so the outcome binds to
+   * that one Message and never another; the requestId is read from the Message's
+   * own steer identity (its live input, or the reused-steer provenance a handoff
+   * preserved) so the recorded op matches the same idempotency key the live edge
+   * used. Returns false when the receipt names no such steer Message, so the
+   * caller can mark the observation obsolete rather than silently drop it. The
+   * record is monotonic and idempotent inside {@link recordTaskMessageControlOutcome}.
+   */
+  private recordSteerControlOutcome(
+    store: TaskStore, receiptId: string,
+    outcome: "accepted" | "rejected" | "delivery-unknown", now: Date
+  ): boolean {
+    const parsed = /^steer:([^/]+)\/(.+)$/.exec(receiptId);
+    if (parsed === null) return false;
+    const [, taskId, messageId] = parsed;
+    const message = store.listMessages(taskId).find((entry) => entry.id === messageId);
+    const requestId = message?.inputControl?.requestId ?? message?.interruptThen?.reusedInput?.requestId;
+    const wasSteer = message?.inputControl?.action === "steer"
+      || message?.interruptThen?.reusedInput?.action === "steer";
+    if (message === undefined || requestId === undefined || !wasSteer) return false;
+    const recorded = recordTaskMessageControlOutcome(message, {
+      requestId, receiptId, outcome, observedAt: now
+    });
+    // The monotonic guard returns the same Message when the record is absorbed
+    // (an idempotent repeat, or a stale outcome that must not rewind a proven
+    // terminal); only persist a real change.
+    if (recorded !== message) store.updateMessage(taskId, recorded);
+    return true;
+  }
+
   /** A delayed steer receipt settles only its original claimed mailbox batch. */
   private observeLeaderSteerReceipt(
     input: RuntimeObservation,
@@ -483,6 +549,87 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         }, now);
       }
       this.persistRuntimeObservation(input, now);
+      return "applied";
+    });
+  }
+
+  private observeGlobalProviderObservation(input: RuntimeObservation, now: Date): ProviderLifecycleObservation {
+    return this.store.transaction((store) => {
+      const fence = input.fence;
+      let sessions = store.getGlobalRoleSessionSet(fence.roleName);
+      const session = sessions?.sessions[fence.agentId];
+      let binding = sessions?.providerBinding;
+      if (sessions == null || session == null || binding == null || fence.runId !== undefined
+        || sessions.activeAgentId !== fence.agentId
+        || session.nativeSessionId !== fence.nativeSessionId
+        || this.drivers.requireByAdapterId(session.adapterId).id !== fence.driverId
+        || currentProviderConversation(binding).conversationId !== fence.nativeSessionId
+        || Date.parse(input.receivedAt) > now.getTime()) return "obsolete";
+      const at = input.observedAt ?? input.receivedAt;
+      const receipt = fence.receiptId;
+      const matches = receipt !== undefined && binding.run?.attemptId === receipt
+        && (fence.nativeTurnId === undefined || binding.run.nativeTurnId === undefined
+          || binding.run.nativeTurnId === fence.nativeTurnId);
+      if (input.kind === "turn.accepted") {
+        if (input.authority === "transport" && matches) {
+          const message = store.listGlobalRoleMessages(fence.roleName).find(entry =>
+            receipt === `global-input:${fence.roleName}/${entry.id}`);
+          if (message !== undefined) store.updateGlobalRoleMessage(
+            markGlobalRoleMessageDelivered(message, new Date(at), "transport"));
+          return "applied";
+        }
+        if (input.authority !== "provider-structured") return "applied";
+        if (!matches) {
+          if (receipt?.startsWith("direct:") !== true || binding.run != null
+            && ["submitting", "accepted", "delivery-unknown"].includes(binding.run.status)) return "obsolete";
+          binding = beginProviderTurn(binding, { attemptId: receipt,
+            authorityEpoch: binding.authority.epoch, submittedAt: at });
+        }
+        if (binding.run?.status === "submitting" || binding.run?.status === "delivery-unknown") {
+          binding = acceptProviderTurn(binding, { attemptId: receipt!,
+            nativeTurnId: fence.nativeTurnId, acceptedAt: at });
+        } else if (binding.run?.status !== "accepted") return "applied";
+        const message = store.listGlobalRoleMessages(fence.roleName).find(entry =>
+          receipt === `global-input:${fence.roleName}/${entry.id}`);
+        if (message !== undefined) store.updateGlobalRoleMessage(markGlobalRoleMessageDelivered(message, new Date(at)));
+      } else if (["turn.completed", "turn.cancelled", "turn.failed"].includes(input.kind)) {
+        if (!matches || input.authority !== "provider-structured") return "obsolete";
+        // A provider final result proves this exact submitted input ran (Claude
+        // may emit its result without an earlier assistant acceptance event).
+        // Process exit/failure alone must not turn unconfirmed input into proof.
+        if (input.kind === "turn.completed" && binding.run != null
+          && ["submitting", "delivery-unknown"].includes(binding.run.status)) {
+          binding = acceptProviderTurn(binding, { attemptId: receipt!, nativeTurnId: fence.nativeTurnId, acceptedAt: at });
+          const message = store.listGlobalRoleMessages(fence.roleName).find(entry =>
+            receipt === `global-input:${fence.roleName}/${entry.id}`);
+          if (message !== undefined) store.updateGlobalRoleMessage(markGlobalRoleMessageDelivered(message, new Date(at)));
+        }
+        if (binding.run?.status !== "accepted") return binding.run != null
+          && ["completed", "cancelled", "failed"].includes(binding.run.status) ? "applied" : "obsolete";
+        binding = settleProviderTurn(binding, { attemptId: receipt, nativeTurnId: fence.nativeTurnId,
+          status: input.kind === "turn.completed" ? "completed" : input.kind === "turn.cancelled" ? "cancelled" : "failed",
+          settledAt: at });
+        if (fence.nativeTurnId !== undefined) sessions = rememberRoleAgentCompletedTurn(
+          sessions, fence.agentId, fence.nativeSessionId!, fence.nativeTurnId, new Date(at));
+      } else if (["input.accepted", "input.rejected", "input.delivery-unknown"].includes(input.kind)) {
+        if (input.authority !== "provider-structured" || binding.run?.nativeTurnId !== fence.nativeTurnId
+          || binding.run?.status !== "accepted") return "obsolete";
+        const message = store.listGlobalRoleMessages(fence.roleName).find(entry =>
+          receipt === `steer:${fence.roleName}/${entry.id}`);
+        if (message !== undefined && message.inputControl !== undefined) {
+          const outcome = input.kind === "input.accepted" ? "accepted"
+            : input.kind === "input.rejected" ? "rejected" : "delivery-unknown";
+          if (message.control?.outcome !== "accepted" && message.control?.outcome !== "rejected") {
+            const updated = { ...message, control: { requestId: message.inputControl.requestId,
+              receiptId: receipt!, outcome, observedAt: at } } as typeof message;
+            store.updateGlobalRoleMessage(outcome === "accepted"
+              ? markGlobalRoleMessageDelivered(updated, new Date(at)) : updated);
+          }
+        }
+      } else if (input.kind === "conversation.observed" && input.payload.recoverability !== undefined) {
+        binding = updateProviderConversationRecoverability(binding, input.payload.recoverability);
+      }
+      store.saveGlobalRoleSessionSet(updateGlobalRoleProviderRuntime(sessions, binding, now));
       return "applied";
     });
   }
@@ -1316,7 +1463,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
   }
 
   beginAgentHostProviderTurn(input: Readonly<{
-    taskId: string;
+    taskId?: string;
     roleName: string;
     runId?: string;
     agentId: string;
@@ -1326,6 +1473,75 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
     authorityOwner: "controller" | "human";
     holderId: string;
     now: Date;
+  }>): void {
+    if (input.taskId === undefined) {
+      this.store.transaction((store) => {
+        if (input.runId !== undefined || hasRuntimeCleanupObligation(store.getWorkMailbox(
+          runtimeLifecycleTarget({ scope: "global", roleName: input.roleName })))) {
+          throw new AgentHostProviderTurnFenceError("Global Session admission is stopped.");
+        }
+        const sessions = store.getGlobalRoleSessionSet(input.roleName);
+        const binding = sessions?.providerBinding;
+        const session = sessions?.sessions[input.agentId];
+        if (sessions === null || binding == null || session === undefined
+          || sessions.activeAgentId !== input.agentId || session.status !== "active"
+          || session.nativeSessionId !== input.nativeSessionId
+          || currentProviderConversation(binding).conversationId !== input.nativeSessionId
+          || binding.authority.owner !== input.authorityOwner
+          || binding.authority.epoch !== input.authorityEpoch
+          || binding.authority.holderId !== input.holderId) {
+          throw new AgentHostProviderTurnFenceError("Global input carries a stale Session or writer fence.");
+        }
+        const turn = binding.run;
+        if (turn?.attemptId === input.attemptId && turn.status === "submitting") return;
+        if (turn != null && ["submitting", "accepted", "delivery-unknown"].includes(turn.status)) {
+          throw new AgentHostProviderSessionBusyError("Global Conversation has an unsettled input.");
+        }
+        const message = store.listGlobalRoleMessages(input.roleName).find(entry =>
+          input.attemptId === `global-input:${input.roleName}/${entry.id}`);
+        const reserved = store.listGlobalRoleMessages(input.roleName).find(entry =>
+          entry.delivery === undefined && entry.notDelivered === undefined
+          && entry.interruptThen?.targetNativeSessionId === input.nativeSessionId
+          && entry.interruptThen.targetAgentId === input.agentId
+          && entry.interruptThen.targetAuthorityEpoch === input.authorityEpoch
+          && entry.interruptThen.targetAuthorityHolderId === input.holderId);
+        if (reserved !== undefined && reserved.id !== message?.id) {
+          throw new AgentHostProviderSessionBusyError("The next Global input belongs to an explicit then handoff.");
+        }
+        if (message !== undefined) {
+          if (message.delivery !== undefined || message.notDelivered !== undefined
+            || message.control !== undefined && message.control.outcome !== "rejected"
+            || message.deliveryTarget?.agentId !== input.agentId
+            || message.deliveryTarget?.nativeSessionId !== input.nativeSessionId) {
+            throw new AgentHostProviderTurnFenceError("Global Message is settled, unconfirmed, or bound to another Session.");
+          }
+          const claim = message.interruptThen;
+          if (claim !== undefined && (claim.targetAgentId !== input.agentId
+            || claim.targetNativeSessionId !== input.nativeSessionId
+            || claim.targetAuthorityEpoch !== input.authorityEpoch
+            || claim.targetAuthorityHolderId !== input.holderId
+            || turn?.attemptId !== claim.targetAttemptId
+            || !["completed", "failed", "cancelled"].includes(turn.status))) {
+            throw new AgentHostProviderTurnFenceError("Global then target no longer has exact terminal proof.");
+          }
+          store.updateGlobalRoleMessage({ ...message, control: {
+            requestId: message.inputControl?.requestId ?? message.interruptThen!.requestId,
+            receiptId: input.attemptId, outcome: "pending", observedAt: input.now.toISOString()
+          } });
+        }
+        store.saveGlobalRoleSessionSet(updateGlobalRoleProviderRuntime(sessions,
+          beginProviderTurn(binding, { attemptId: input.attemptId,
+            authorityEpoch: input.authorityEpoch, submittedAt: input.now.toISOString() }), input.now));
+      });
+      return;
+    }
+    this.beginTaskAgentHostProviderTurn({ ...input, taskId: input.taskId });
+  }
+
+  private beginTaskAgentHostProviderTurn(input: Readonly<{
+    taskId: string; roleName: string; runId?: string; agentId: string;
+    nativeSessionId: string; attemptId: string; authorityEpoch: number;
+    authorityOwner: "controller" | "human"; holderId: string; now: Date;
   }>): void {
     this.store.transaction((store) => {
       const task = store.getTask(input.taskId);
@@ -1368,6 +1584,34 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
           "Provider Conversation already has an unsettled AgentRun."
         );
       }
+      if (!exactReplay) {
+        const claims = store.listMessages(input.taskId).filter(message =>
+          message.interruptThen?.targetRoleName === input.roleName
+          && message.interruptThen.targetNativeSessionId === input.nativeSessionId
+          && message.interruptThen.targetAgentId === input.agentId
+          && message.interruptThen.targetAuthorityEpoch === input.authorityEpoch
+          && message.interruptThen.targetAuthorityHolderId === input.holderId
+          && message.interruptThen.notDeliveredReason === undefined
+          && message.continuation?.notDeliveredReason === undefined);
+        for (const message of claims) {
+          if (input.roleName === "leader") {
+            const wakes = store.listTaskWakes(input.taskId).filter(wake =>
+              wake.refs?.some(ref => ref.type === "message" && ref.id === message.id));
+            if (wakes.some(wake => wake.status === "consumed")) continue;
+            const mailbox = store.getWorkMailbox({ kind: "role", taskId: input.taskId, roleName: "leader" });
+            const selected = wakes.some(wake => mailbox?.processing?.owner === `leader-notification:${wake.id}`
+              && mailbox.processing.batchId === input.attemptId);
+            if (!selected) throw new AgentHostProviderSessionBusyError("The next Leader input belongs to an explicit then handoff.");
+          } else {
+            const continuationId = message.continuation?.runId;
+            const continuation = continuationId === undefined ? null : store.getRun(input.taskId, continuationId);
+            if (continuation !== null && (continuation.status !== "active" || currentRun?.runId === continuation.id)) continue;
+            if (input.runId !== continuationId || continuationId === undefined) {
+              throw new AgentHostProviderSessionBusyError("The next execution input belongs to an explicit then handoff.");
+            }
+          }
+        }
+      }
       store.saveTaskRoleSessionSet(updateTaskRoleProviderRuntime(
         sessions,
         beginProviderTurn(binding, {
@@ -1382,7 +1626,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
   }
 
   resolveAgentHostProviderTurnSubmission(input: Readonly<{
-    taskId: string;
+    taskId?: string;
     roleName: string;
     runId?: string;
     attemptId: string;
@@ -1390,6 +1634,37 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
     reason: string;
     raw: string;
     now: Date;
+  }>): void {
+    if (input.taskId === undefined) {
+      this.store.transaction((store) => {
+        const sessions = store.getGlobalRoleSessionSet(input.roleName);
+        const binding = sessions?.providerBinding;
+        if (input.runId !== undefined || sessions == null || binding?.run?.attemptId !== input.attemptId) {
+          throw new Error("Global input submission is no longer current.");
+        }
+        store.saveGlobalRoleSessionSet(updateGlobalRoleProviderRuntime(sessions,
+          settleProviderTurnSubmission(binding, { attemptId: input.attemptId, status: input.status,
+            reason: input.reason, resolvedAt: input.now.toISOString() }), input.now));
+        const message = store.listGlobalRoleMessages(input.roleName).find(entry =>
+          input.attemptId === `global-input:${input.roleName}/${entry.id}`);
+        if (message !== undefined && message.delivery?.via !== "provider") {
+          const outcome = input.status === "delivery-unknown" ? "delivery-unknown" : "rejected";
+          const updated = { ...message, control: {
+            requestId: message.inputControl?.requestId ?? message.interruptThen!.requestId,
+            receiptId: input.attemptId, outcome, observedAt: input.now.toISOString()
+          } } as typeof message;
+          store.updateGlobalRoleMessage(input.status === "rejected" && updated.delivery === undefined
+            ? markGlobalRoleMessageNotDelivered(updated, input.reason, input.now) : updated);
+        }
+      });
+      return;
+    }
+    this.resolveTaskAgentHostProviderTurnSubmission({ ...input, taskId: input.taskId });
+  }
+
+  private resolveTaskAgentHostProviderTurnSubmission(input: Readonly<{
+    taskId: string; roleName: string; runId?: string; attemptId: string;
+    status: "rejected" | "deferred" | "delivery-unknown"; reason: string; raw: string; now: Date;
   }>): void {
     this.store.transaction((store) => {
       const sessions = store.getTaskRoleSessionSet(input.taskId, input.roleName);
@@ -2092,11 +2367,47 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       }
       if (mailbox.pending === null || (provider !== null && provider !== undefined
         && ["submitting", "accepted", "delivery-unknown"].includes(provider.status))) return null;
+      const pending = mailbox.pending;
+      const pendingMessageIds = new Set(pending.refs.filter((ref) => ref.type === "message").map((ref) => ref.id));
+      const claimedMessages = store.listMessages(taskId).filter((message) =>
+        pendingMessageIds.has(message.id) && message.interruptThen?.targetRoleName === "leader");
+      const sessions = store.getTaskRoleSessionSet(taskId, "leader");
+      const session = sessions?.sessions[sessions.activeAgentId];
+      const obsoleteIds = new Set<string>();
+      for (const message of claimedMessages) {
+        const claim = message.interruptThen!;
+        if (claim.notDeliveredReason !== undefined
+          || session?.nativeSessionId !== claim.targetNativeSessionId
+          || session.agentId !== claim.targetAgentId
+          || session.adapterId !== claim.targetAdapterId
+          || (sessions?.providerBinding != null && (
+            sessions.providerBinding.authority.epoch !== claim.targetAuthorityEpoch
+            || sessions.providerBinding.authority.holderId !== claim.targetAuthorityHolderId))) {
+          obsoleteIds.add(message.id);
+          if (claim.notDeliveredReason === undefined) store.updateMessage(taskId, {
+            ...message, interruptThen: { ...claim, notDeliveredReason: "target-session-or-authority-changed" }
+          });
+        }
+      }
+      const availableRefs = pending.refs.filter(ref => !(ref.type === "message" && obsoleteIds.has(ref.id)));
+      const handoffs = claimedMessages.filter(message => !obsoleteIds.has(message.id));
+      // A quiet/new Session is not evidence that the claimed old Turn stopped.
+      // Keep the exact pending intent until the original fence is provable.
+      if (handoffs.some((message) => interruptThenTerminalState(store, message) !== "ready")) return null;
+      const handoffIds = new Set(handoffs.map((message) => message.id));
+      if (availableRefs.length === 0 && obsoleteIds.size > 0) {
+        store.saveWorkMailbox(consumePendingBatch(mailbox, pending));
+        return null;
+      }
+      const selectedRefs = handoffs.length === 0 ? availableRefs
+        : availableRefs.filter((ref) => ref.type === "message" && handoffIds.has(ref.id));
+      const remainingRefs = handoffs.length === 0 ? []
+        : availableRefs.filter((ref) => !(ref.type === "message" && handoffIds.has(ref.id)));
       const latest = latestTaskWake(store.listTaskWakes(taskId));
       const wakeId = store.nextTaskWakeId(taskId);
       const wake = createTaskWake({
         id: wakeId, taskId, reasons: mailbox.pending.reasons,
-        refs: mailbox.pending.refs,
+        refs: selectedRefs,
         fromCursor: latest?.toCursor ?? task.createdAt,
         toCursor: new Date(Math.max(now.getTime(), Date.parse(mailbox.pending.lastQueuedAt))).toISOString(), now
       });
@@ -2105,6 +2416,10 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         owner: `leader-notification:${wakeId}`, startedAt: now.toISOString() });
       store.saveTaskWake(taskId, wake);
       store.saveWorkMailbox(mailbox);
+      // The mailbox is only a hint. Carry ordinary refs into its next pending
+      // batch, rather than delivering them with the chosen immediate successor.
+      if (remainingRefs.length > 0) enqueueWork(store, target, "user-message", now, remainingRefs,
+        { source: "controller", dedupeKey: `then-remainder:${wakeId}` });
       return { wakeId, attemptId, disposition: "submit" };
     });
   }
@@ -2292,7 +2607,29 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
             nativeSessionId: input.nativeSessionId,
             effective: input.effective
           }, now);
-      if (input.owner.scope === "task") {
+      if (input.owner.scope === "global") {
+        let sessions = store.getGlobalRoleSessionSet(input.owner.roleName)!;
+        let binding = sessions.providerBinding;
+        if (binding == null) {
+          sessions = bindGlobalRoleProviderRuntime(sessions, createProviderRuntimeBinding({
+            providerNamespace: this.drivers.requireByAdapterId(input.adapterId).id,
+            accountScope: input.agentId, conversationId: input.nativeSessionId,
+            startedAt: now.toISOString()
+          }), now);
+        } else {
+          if (currentProviderConversation(binding).conversationId !== input.nativeSessionId) {
+            binding = supersedeProviderConversation(binding, {
+              conversationId: input.nativeSessionId, switchedAt: now.toISOString(), basis: "terminal-session"
+            });
+          }
+          if (binding.authority.owner === "none") binding = transferProviderAuthority(binding, {
+            expectedEpoch: binding.authority.epoch, expectedOwner: "none",
+            owner: "controller", holderId: "controller", changedAt: now.toISOString()
+          });
+          sessions = updateGlobalRoleProviderRuntime(sessions, binding, now);
+        }
+        store.saveGlobalRoleSessionSet(sessions);
+      } else {
         let sessions = store.getTaskRoleSessionSet(input.owner.taskId, input.owner.roleName);
         if (sessions !== null && sessions.providerBinding === null) {
           sessions = bindTaskRoleProviderRuntime(sessions, createProviderRuntimeBinding({
@@ -3157,6 +3494,14 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         input.nativeTurnId,
         now
       );
+      // decision-3 §9: when a controller-owned native Turn is actually bound for
+      // this Global Role, settle it to the observed terminal so the scope-generic
+      // resolver and the interrupt-then gate see the real stop on the live binding
+      // — the same edge Task settles via settleStructuredProviderTurn. This is a
+      // strict guarded no-op for an older unmanaged Session or a
+      // binding holding a different/already-terminal Turn, and the
+      // durable native terminal recorded just above remains the proof of record.
+      current = settleGlobalRoleRuntimeTurn(current, input.nativeTurnId, input.providerStatus, now);
       store.saveGlobalRoleSessionSet(current);
       if (
         input.roleName === SYSTEM_OPERATOR_ROLE
@@ -4210,6 +4555,35 @@ function settleStructuredProviderTurn(
   return updateTaskRoleProviderRuntime(sessions, settleProviderTurn(binding, {
     nativeTurnId: runId,
     ...(attemptId === undefined ? {} : { attemptId }),
+    status,
+    settledAt: now.toISOString()
+  }), now);
+}
+
+/**
+ * The Global twin of {@link settleStructuredProviderTurn}: settle a Global Role's
+ * own live Provider Turn to the observed native terminal, keyed by the exact
+ * native Turn id the real Provider Stop/StopFailure hook carries (decision-3 §9).
+ * It is a strict guarded no-op unless a controller-owned Turn with that exact
+ * native id is bound and still in flight (`accepted`) — an absent binding, a
+ * different/only-submitting Turn, or an already-terminal one is left untouched, so
+ * an older unmanaged Session without a controlled binding settles nothing
+ * and the durable `recentCompletedTurnIds` terminal remains the proof of record.
+ */
+function settleGlobalRoleRuntimeTurn(
+  sessions: GlobalRoleSessionSet,
+  nativeTurnId: string,
+  status: "completed" | "failed" | "cancelled",
+  now: Date
+): GlobalRoleSessionSet {
+  const binding = sessions.providerBinding;
+  if (binding === null || binding === undefined || binding.run === null
+    || binding.run.nativeTurnId !== nativeTurnId
+    || binding.run.status !== "accepted") {
+    return sessions;
+  }
+  return updateGlobalRoleProviderRuntime(sessions, settleProviderTurn(binding, {
+    nativeTurnId,
     status,
     settledAt: now.toISOString()
   }), now);

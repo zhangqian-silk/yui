@@ -5,6 +5,20 @@ import {
   type GlobalRoleSessionSet
 } from "../executor/agentExecutor.js";
 import { resolveEffectiveLaunch } from "../executor/effectiveLaunch.js";
+import {
+  createGlobalRoleMessage,
+  claimGlobalRoleMessageInterruptThen,
+  type GlobalRoleMessage,
+  type GlobalRoleMessageKind,
+  type GlobalRoleMessageAuthor,
+  type TaskMessageInputAction
+} from "../message/message.js";
+import {
+  resolveGlobalInputControl,
+  type InputControlResolution,
+  type ResolvedInputTarget
+} from "../message/inputControlResolution.js";
+import { readCommandText } from "./textInput.js";
 import { defaultTableWidth, renderTable } from "../output/table.js";
 import { activeRoleSummary, renderRoleDetails } from "../output/rolePresentation.js";
 import {
@@ -55,16 +69,23 @@ type GlobalRoleTransactionStore = AgentCommandTransactionStore & RoleRuntimeGuar
   removeGlobalRole(name: string): boolean;
   getGlobalRoleSessionSet(name: string): GlobalRoleSessionSet | null;
   saveGlobalRoleSessionSet(sessionSet: GlobalRoleSessionSet): void;
+  nextGlobalRoleMessageId(): string;
+  saveGlobalRoleMessage(message: GlobalRoleMessage): void;
+  updateGlobalRoleMessage(message: GlobalRoleMessage): void;
+  listGlobalRoleMessages(roleName: string): GlobalRoleMessage[];
 }>;
 
 type GlobalRoleStore = GlobalRoleTransactionStore & Readonly<{
   transaction<T>(execute: (store: GlobalRoleTransactionStore) => T): T;
 }>;
 
+export type GlobalInputFailure = Readonly<{ code: string; detail: string; data: unknown }>;
+
 export type GlobalRoleCommandOptions = Readonly<{
   yuiHome?: string;
   env?: NodeJS.ProcessEnv;
   jsonOutput?: boolean;
+  onInputFailure?: (failure: GlobalInputFailure) => void;
 }>;
 
 export type GlobalRoleEnterControl = Readonly<{
@@ -72,7 +93,44 @@ export type GlobalRoleEnterControl = Readonly<{
   role: GlobalRole;
 }>;
 
-export type GlobalRoleCommandResult = string | GlobalRoleEnterControl;
+/**
+ * A resolved live steer against a Global Role's exact current native Turn. The
+ * durable Global Message is already persisted and the target, capability, and
+ * writer fence proven from durable state (decision-3 §9); the CLI performs the
+ * one Agent Host steer call with scope "global" and never re-decides target or
+ * fallback. The controlled Host supplies the exact native binding.
+ */
+export type GlobalRoleInputSteer = Readonly<{
+  kind: "input-steer";
+  roleName: string;
+  messageId: string;
+  target: ResolvedInputTarget;
+  receiptId: string;
+  text: string;
+  output: string;
+}>;
+
+/**
+ * A resolved live interrupt of a Global Role's exact current native Turn,
+ * delivered only through the Provider's native cancel (never kill/restart/
+ * detach). A bare interrupt persists no Message; an explicit `--then-message`
+ * names an already-persisted durable Global Message to deliver once after a
+ * proven terminal (decision-3 §4), the ordered composition, not a fourth action.
+ */
+export type GlobalRoleInputInterrupt = Readonly<{
+  kind: "input-interrupt";
+  roleName: string;
+  target: ResolvedInputTarget;
+  receiptId: string;
+  thenMessageId?: string;
+  output: string;
+}>;
+
+export type GlobalRoleCommandResult =
+  | string
+  | GlobalRoleEnterControl
+  | GlobalRoleInputSteer
+  | GlobalRoleInputInterrupt;
 
 export function runGlobalRoleCommand(
   args: string[],
@@ -80,6 +138,27 @@ export function runGlobalRoleCommand(
   options: GlobalRoleCommandOptions = {}
 ): GlobalRoleCommandResult {
   const [command, ...rest] = args;
+  if (command === "message" || command === "interrupt") {
+    const env = options.env ?? process.env;
+    const target = command === "message" ? rest[1] : rest[0];
+    if (env.YUI_SESSION_SCOPE !== undefined && env.YUI_SESSION_SCOPE !== "global"
+      || env.YUI_SESSION_SCOPE === "global" && env.YUI_ROLE !== "operator"
+        && env.YUI_ROLE !== target) {
+      throw usageError("Global input mutation is outside the exact Session authority.");
+    }
+    if (env.YUI_SESSION_SCOPE === "global") {
+      const caller = store.getGlobalRoleSessionSet(env.YUI_ROLE ?? "");
+      const session = caller?.sessions[caller.activeAgentId];
+      if (session === undefined || session.status !== "active" || env.YUI_AGENT_ID !== session.agentId
+        || env.YUI_ADAPTER_ID !== session.adapterId
+        || (env.CODEX_THREAD_ID ?? env.YUI_NATIVE_SESSION_ID) !== session.nativeSessionId) {
+        throw usageError("Global input mutation requires the current native caller Session.");
+      }
+    } else if (env.YUI_ROLE !== undefined || env.YUI_AGENT_ID !== undefined
+      || env.YUI_NATIVE_SESSION_ID !== undefined) {
+      throw usageError("Incomplete managed identity cannot acquire user authority.");
+    }
+  }
   switch (command) {
     case "add": return addRole(rest, store, options);
     case "list": return listRoles(rest, store);
@@ -91,6 +170,8 @@ export function runGlobalRoleCommand(
     case "unbind": return unbindRole(rest, store);
     case "enter": return enterRole(rest, store);
     case "session": return roleSession(rest, store, options);
+    case "message": return globalRoleMessage(rest, store, options);
+    case "interrupt": return globalRoleInterrupt(rest, store, options);
     default:
       throw usageError(command === undefined
         ? "Role command is required."
@@ -107,7 +188,9 @@ function roleContext(
   const name = roleName(rawName);
   assertNoArguments(rest, "Session context usage: yui session context <role>");
   const environment = options.env ?? process.env;
-  if (environment.YUI_SESSION_SCOPE !== undefined) {
+  // Context reads expose durable input and runtime facts without delivering it.
+  const selfRead = environment.YUI_SESSION_SCOPE !== undefined;
+  if (selfRead) {
     if (environment.YUI_SESSION_SCOPE !== "global" || environment.YUI_ROLE !== name) {
       throw usageError("Managed GlobalRole context is outside the exact Session authority.");
     }
@@ -120,6 +203,19 @@ function roleContext(
   const effective = resolveEffectiveLaunch({ role, purpose: "execution" });
   const sessions = store.getGlobalRoleSessionSet(name);
   const session = sessions?.sessions[role.activeAgentId];
+  // Only the controlled Endpoint's accepted receipt consumes a queued Message.
+  const queued = store.listGlobalRoleMessages(name).filter((message) => message.delivery === undefined
+        && message.notDelivered === undefined
+        && (message.interruptThen !== undefined || message.inputControl?.action === "queue"));
+  const pendingQueue = queued.map((message) => ({
+    id: message.id,
+    requestId: message.interruptThen?.requestId ?? message.inputControl?.requestId,
+    body: message.body,
+    ...(message.control === undefined ? {} : { control: message.control }),
+    ...(message.deliveryTarget === undefined ? {} : { deliveryTarget: message.deliveryTarget }),
+    ...(message.interruptThen === undefined ? {} : { interruptThen: true }),
+    ...(message.delivery === undefined ? {} : { deliveredAt: message.delivery.deliveredAt })
+  }));
   const context = Object.freeze({
     schemaVersion: 1,
     protocol: "yui-managed-context/v1",
@@ -154,6 +250,11 @@ function roleContext(
         ? ["route-request", "inspect-catalog", "answer-user-boundary"]
         : ["perform-global-role-request"]
     },
+    // Reading pending input is neither delivery nor implementation.
+    pendingMessages: pendingQueue,
+    messages: store.listGlobalRoleMessages(name),
+    nativeTurn: sessions?.providerBinding?.run ?? null,
+    interrupts: sessions?.interrupts ?? {},
     sessionManifestPath: environment.YUI_SESSION_MANIFEST,
     cliCommand: "yui"
   });
@@ -166,6 +267,8 @@ function roleContext(
     `Effective revision: ${role.launchRevision}`,
     `Skills: ${context.profile.skillIds.join(", ") || "none"}`,
     `Authority: ${context.authority.view}; Task implementation: no`,
+    `Pending messages: ${pendingQueue.length === 0 ? "none"
+      : pendingQueue.map((message) => message.id).join(", ")}`,
     ""
   ].join("\n");
 }
@@ -529,6 +632,300 @@ function assertSessionProvenance(
   if (binding.adapterId === "codex" && environment.CODEX_THREAD_ID?.trim() !== nativeSessionId) {
     throw usageError("Native session id does not match CODEX_THREAD_ID.");
   }
+}
+
+/**
+ * The shared application-layer primitive for a durable Global Role input
+ * (decision-3 §7: CLI and Web/API share one entry, not per-surface fallbacks).
+ * It persists the Global-owned Message with an explicit owner (the Role name)
+ * and a stable requestId, idempotent exactly like a Task input: an exact repeat
+ * of the same requestId returns the original Message, and any different body,
+ * action, or expectedTarget under the same id is a conflicting reuse, never a
+ * silent second input (decision-3 §6). It never fabricates a Task or a native
+ * Turn; it only records intent.
+ */
+export function sendGlobalRoleMessageCommand(
+  store: GlobalRoleTransactionStore,
+  roleName: string,
+  body: string,
+  author: GlobalRoleMessageAuthor,
+  inputControl: Readonly<{ action: TaskMessageInputAction; requestId: string; expectedTarget?: string }>,
+  now: Date
+): Readonly<{ message: GlobalRoleMessage; idempotentReplay: boolean }> {
+  if (!body.trim()) throw usageError("Message body is required.");
+  const existing = store.listGlobalRoleMessages(roleName).find(
+    (entry) => (entry.inputControl ?? entry.interruptThen?.reusedInput)?.requestId === inputControl.requestId);
+  if (existing !== undefined) {
+    const original = existing.inputControl ?? existing.interruptThen?.reusedInput;
+    if (original?.action !== inputControl.action
+      || existing.body !== body
+      || original.expectedTarget !== inputControl.expectedTarget) {
+      throw usageError(
+        `Input requestId ${inputControl.requestId} was already used with different content or target; use a new requestId for a new input.`);
+    }
+    return { message: existing, idempotentReplay: true };
+  }
+  const kind: GlobalRoleMessageKind = author.type;
+  let message = createGlobalRoleMessage(
+    store.nextGlobalRoleMessageId(), roleName, body, kind, author, now, { inputControl });
+  const sessions = store.getGlobalRoleSessionSet(roleName);
+  const session = sessions?.sessions[sessions.activeAgentId];
+  if (session !== undefined) message = { ...message,
+    deliveryTarget: { agentId: session.agentId, nativeSessionId: session.nativeSessionId } };
+  store.saveGlobalRoleMessage(message);
+  return { message, idempotentReplay: false };
+}
+
+/**
+ * `yui role message queue|steer <role> ...` — the durable Global input actions.
+ * `queue` persists and returns queued (delivered at the Role's next legal
+ * execution opportunity by the existing global-role-runtime mailbox, never a new
+ * private queue). `steer` persists then resolves the exact current native Turn
+ * from durable state; on a ready resolution it returns a structured live intent
+ * the CLI performs against the Agent Host with scope "global", and on any
+ * explicit failure it returns the saved Message plus the exact code and never
+ * falls back to interrupt or queue (decision-3 §1/§5).
+ */
+function globalRoleMessage(
+  args: string[],
+  store: GlobalRoleStore,
+  options: GlobalRoleCommandOptions
+): GlobalRoleCommandResult {
+  const [action, rawName, ...tail] = args;
+  if (action !== "queue" && action !== "steer") {
+    throw usageError("Role message usage: yui role message queue|steer <role> (<body>|--body-file <path|->) --request-id <id> [--expected-target <turn>].");
+  }
+  const usage = action === "queue"
+    ? "Role message queue usage: yui role message queue <role> (<body>|--body-file <path|->) --request-id <id>."
+    : "Role message steer usage: yui role message steer <role> (<body>|--body-file <path|->) --request-id <id> --expected-target <turn>.";
+  const name = roleName(rawName);
+  // A leading positional before the flags is the inline body; the rest are flags.
+  const positionalBody = tail.length > 0 && !tail[0].startsWith("--") ? tail[0] : undefined;
+  const flags = positionalBody === undefined ? tail : tail.slice(1);
+  const parsed = parseOptions(flags, new Map<string, OptionKind>([
+    ["--body-file", false],
+    ["--request-id", false],
+    ...(action === "steer" ? [["--expected-target", false] as const] : [])
+  ]));
+  const body = readCommandText(positionalBody, parsed.one("--body-file"), "--body", usage);
+  const requestId = required(parsed.one("--request-id"), "--request-id");
+  const expectedTarget = action === "steer"
+    ? required(parsed.one("--expected-target"), "--expected-target")
+    : undefined;
+  const now = new Date();
+  // The durable Global input is authored as an operator input: a Global Role has
+  // no Task Leader, and the operator is the human authority over Global Roles.
+  const environment = options.env ?? process.env;
+  const author: GlobalRoleMessageAuthor = { type: environment.YUI_SESSION_SCOPE === "global"
+    ? environment.YUI_ROLE === "operator" ? "operator" : "agent" : "user" };
+  const persisted = store.transaction((tx) => {
+    requireRole(name, tx);
+    return sendGlobalRoleMessageCommand(tx, name, body,
+      author, { action, requestId, ...(expectedTarget === undefined ? {} : { expectedTarget }) }, now);
+  });
+  if (action === "queue") {
+    const state = persisted.idempotentReplay ? "idempotent-replay" : "queued";
+    return jsonOrText(options, `Queued Global message ${persisted.message.id} to ${name} (${state}).\n`,
+      { roleName: name, message: persisted.message, delivery: { state } });
+  }
+  if (persisted.idempotentReplay) {
+    return jsonOrText(options, `Steer Global message ${persisted.message.id} already recorded (idempotent-replay).\n`,
+      { roleName: name, message: persisted.message, steer: { state: "idempotent-replay" } });
+  }
+  const resolution = resolveGlobalInputControl(store, name, "steer", expectedTarget!);
+  if (resolution.outcome !== "ready") {
+    return jsonOrText(options,
+      `Steer Global message ${persisted.message.id} saved but not delivered (${resolution.code}: ${resolution.detail}).\n`,
+      { roleName: name, message: persisted.message,
+        steer: { state: "not-steered", code: resolution.code, detail: resolution.detail } });
+  }
+  store.updateGlobalRoleMessage({ ...persisted.message, control: {
+    requestId, receiptId: `steer:${name}/${persisted.message.id}`,
+    outcome: "pending", observedAt: now.toISOString()
+  } });
+  return {
+    kind: "input-steer",
+    roleName: name,
+    messageId: persisted.message.id,
+    target: resolution.target,
+    receiptId: `steer:${name}/${persisted.message.id}`,
+    text: body,
+    output: `Steering ${name} at Turn ${resolution.target.nativeTurnId ?? resolution.target.attemptId} with message ${persisted.message.id}.\n`
+  };
+}
+
+/**
+ * `yui role interrupt <role> --expected-target <turn> [--then-message <ref>]` —
+ * a live interrupt of a Global Role's exact current native Turn. A bare
+ * interrupt persists no Message (it is pure control); a `--then-message` names
+ * an already-persisted durable Global Message to deliver once after a proven
+ * terminal — the ordered composition of interrupt and an existing queue, not a
+ * fourth action and not an auto-fallback (decision-3 §4).
+ */
+function globalRoleInterrupt(
+  args: string[],
+  store: GlobalRoleStore,
+  options: GlobalRoleCommandOptions
+): GlobalRoleCommandResult {
+  const usage = "Role interrupt usage: yui role interrupt <role> --expected-target <turn> [--then-message <global-message-id>] [--request-id <id>].";
+  const [rawName, ...tail] = args;
+  const name = roleName(rawName);
+  const parsed = parseOptions(tail, new Map<string, OptionKind>([
+    ["--expected-target", false],
+    ["--then-message", false],
+    ["--request-id", false]
+  ]));
+  const expectedTarget = required(parsed.one("--expected-target"), "--expected-target");
+  const thenMessageId = trimmed(parsed.one("--then-message"));
+  const requestId = trimmed(parsed.one("--request-id")) ?? `cancel:${encodeURIComponent(expectedTarget)}`;
+  const fingerprint = JSON.stringify({ expectedTarget, thenMessageId });
+  const prior = store.getGlobalRoleSessionSet(name)?.interrupts?.[requestId];
+  if (prior !== undefined) {
+    if (prior.fingerprint !== fingerprint) throw usageError("Interrupt requestId already names another control.");
+    return jsonOrText(options, `Interrupt ${requestId} already recorded; no native control repeated.\n`,
+      { roleName: name, interrupt: prior.receipt ?? { state: "interrupt-unknown" }, idempotentReplay: true });
+  }
+  const resolved = store.transaction((tx): InputControlResolution | Readonly<{
+    outcome: "then-conflict"; code: "TARGET_CHANGED"; detail: string }> => {
+    requireRole(name, tx);
+    const resolution = resolveGlobalInputControl(tx, name, "interrupt", expectedTarget);
+    if (resolution.outcome !== "ready") return resolution;
+    const sessions = tx.getGlobalRoleSessionSet(name)!;
+    if (Object.values(sessions.interrupts ?? {}).some(entry =>
+      entry.attemptId === resolution.target.attemptId
+      && entry.nativeSessionId === resolution.target.nativeSessionId
+      && !(entry.receipt?.state === "interrupt-unavailable" && entry.receipt.outcome === "rejected"))) {
+      return { outcome: "then-conflict", code: "TARGET_CHANGED",
+        detail: "This exact native Turn already has a recorded cancel request; inspect it instead of repeating the control." };
+    }
+    // decision-3 §4: before the live cancel, register the continuation claim on
+    // the already-persisted durable Global Message in one short transaction, so
+    // the handoff relationship, its target Turn, and its stable requestId are
+    // durable independent of the cancel outcome. An explicit then-Message must be
+    // an already-persisted durable Global Message owned by this exact Role; it is
+    // never created here and never a Task record (decision-3 §4/§9).
+    if (thenMessageId !== undefined) {
+      const claim = registerGlobalInterruptThen(
+        tx, name, thenMessageId, resolution.target.attemptId,
+        resolution.target.nativeTurnId, requestId, resolution.target);
+      if (claim !== "claimed") return { outcome: "then-conflict", ...claim };
+    }
+    tx.saveGlobalRoleSessionSet({ ...sessions, interrupts: { ...sessions.interrupts,
+      [requestId]: { fingerprint, attemptId: resolution.target.attemptId,
+        nativeSessionId: resolution.target.nativeSessionId,
+        receiptId: `interrupt:${name}/${requestId}` }
+    } });
+    return resolution;
+  });
+  if (resolved.outcome === "then-conflict") {
+    return jsonOrText(options,
+      `Interrupt not delivered (${resolved.code}: ${resolved.detail}).\n`,
+      { roleName: name, interrupt: { state: "not-interrupted", code: resolved.code, detail: resolved.detail } });
+  }
+  if (resolved.outcome !== "ready") {
+    return jsonOrText(options,
+      `Interrupt not delivered (${resolved.code}: ${resolved.detail}).\n`,
+      { roleName: name, interrupt: { state: "not-interrupted", code: resolved.code, detail: resolved.detail } });
+  }
+  return {
+    kind: "input-interrupt",
+    roleName: name,
+    target: resolved.target,
+    receiptId: `interrupt:${name}/${requestId}`,
+    ...(thenMessageId === undefined ? {} : { thenMessageId }),
+    output: `Interrupting ${name} at Turn ${resolved.target.nativeTurnId ?? resolved.target.attemptId}`
+      + `${thenMessageId === undefined ? "" : `, then delivering ${thenMessageId} once after a proven terminal`}.\n`
+  };
+}
+
+/**
+ * Bind a saved durable Global Message as the single interrupt-then continuation
+ * of an exact interrupted native Turn (decision-3 §4). The Global twin of the
+ * Task `registerInterruptThen`: a Global Role has no AgentRun, so the
+ * target is proven by the exact native Turn's attemptId under the Role's own
+ * writer fence, never by a fabricated Task Run. Idempotent per interrupt
+ * requestId; only one continuation may claim a given target Turn; a Message that
+ * was already delivered or already claims another target is refused, never
+ * silently dropped or duplicated.
+ */
+function registerGlobalInterruptThen(
+  store: GlobalRoleTransactionStore, roleName: string, thenMessageId: string,
+  targetAttemptId: string, targetNativeTurnId: string | undefined,
+  requestId: string | undefined,
+  target: ResolvedInputTarget
+): "claimed" | Readonly<{ code: "TARGET_CHANGED"; detail: string }> {
+  const message = store.listGlobalRoleMessages(roleName).find((entry) => entry.id === thenMessageId);
+  if (message === undefined) {
+    throw usageError(`Then-Message ${thenMessageId} is not a durable Global Message owned by ${roleName}.`);
+  }
+  if (message.notDelivered !== undefined) {
+    return { code: "TARGET_CHANGED", detail: `The saved input is already settled not-delivered (${message.notDelivered.reason}).` };
+  }
+  if (message.control !== undefined && message.control.outcome !== "rejected") {
+    return { code: "TARGET_CHANGED", detail: "The saved input is already accepted or its delivery remains unconfirmed." };
+  }
+  if (message.deliveryTarget !== undefined
+    && (message.deliveryTarget.nativeSessionId !== target.nativeSessionId
+      || message.deliveryTarget.agentId !== target.agentId)) {
+    return { code: "TARGET_CHANGED", detail: "The saved input belongs to another native Session." };
+  }
+  // A synthesized fallback id is an opaque idempotency key (compared only for
+  // equality, never parsed), so it must satisfy the same safe-identity rule as a
+  // caller-supplied requestId: no path separators. Use `:` as the field joiner —
+  // the receiptId carries the `/`-shaped human receipt, this key stays slash-free.
+  const claimRequestId = requestId ?? `interrupt:${roleName}:${encodeURIComponent(targetAttemptId)}`;
+  // Idempotent per interrupt requestId: an exact repeat of the same claim is a
+  // no-op that still authorizes the live cancel.
+  if (message.interruptThen !== undefined) {
+    const claim = message.interruptThen;
+    const prior = store.getGlobalRoleSessionSet(roleName)?.interrupts?.[claim.requestId];
+    const canReferenceClaim = claim.requestId === claimRequestId
+      || (prior?.receipt?.state === "interrupt-unavailable" && prior.receipt.outcome === "rejected");
+    if (canReferenceClaim && message.delivery === undefined && message.notDelivered === undefined
+      && claim.targetAttemptId === targetAttemptId
+      && claim.targetAgentId === target.agentId && claim.targetNativeSessionId === target.nativeSessionId
+      && claim.targetAuthorityEpoch === target.authority.epoch
+      && claim.targetAuthorityHolderId === target.authority.holderId) return "claimed";
+    return { code: "TARGET_CHANGED",
+      detail: `Message ${thenMessageId} already claims a continuation of Turn ${message.interruptThen.targetAttemptId}.` };
+  }
+  // A Message that already delivered is a settled fact, not a fresh input to
+  // reuse; reusing it would replay a consumed queue entry.
+  if (message.delivery !== undefined) {
+    return { code: "TARGET_CHANGED",
+      detail: `Message ${thenMessageId} was already delivered at ${message.delivery.deliveredAt}.` };
+  }
+  // Only one continuation may claim a given target Turn.
+  const existing = store.listGlobalRoleMessages(roleName).find((entry) =>
+    entry.interruptThen?.targetAttemptId === targetAttemptId && entry.id !== message.id);
+  if (existing !== undefined) {
+    return { code: "TARGET_CHANGED",
+      detail: `Turn ${targetAttemptId} is already the terminal target of Message ${existing.id}.` };
+  }
+  store.updateGlobalRoleMessage(
+    claimGlobalRoleMessageInterruptThen(message, {
+      requestId: claimRequestId, targetAttemptId,
+      targetNativeSessionId: target.nativeSessionId, targetAgentId: target.agentId,
+      targetAuthorityEpoch: target.authority.epoch,
+      targetAuthorityHolderId: target.authority.holderId,
+      ...(targetNativeTurnId === undefined ? {} : { targetNativeTurnId })
+    }));
+  return "claimed";
+}
+
+/** Emit a plain string or, under --json, a JSON envelope, matching the Global
+ * Role command surface's existing string/JSON split. */
+function jsonOrText(
+  options: GlobalRoleCommandOptions,
+  text: string,
+  data: unknown
+): string {
+  const record = data as { steer?: { code?: string; detail?: string }; interrupt?: { code?: string; detail?: string } };
+  const failure = record.steer?.code === undefined ? record.interrupt : record.steer;
+  if (failure?.code !== undefined) options.onInputFailure?.({
+    code: failure.code, detail: failure.detail ?? failure.code, data
+  });
+  return options.jsonOutput === true ? JSON.stringify(data) : text;
 }
 
 type OptionKind = boolean | "flag";

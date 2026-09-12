@@ -10,6 +10,7 @@ import { createTaskEvent } from "../event/taskEvent.js";
 import { validateExactRunReviewRound } from "../lifecycle/exactRunTerminalization.js";
 import { sourceRunContextValue } from "../context/sourceRunContext.js";
 import { requireManagedTaskCaller } from "../runtime/managedCaller.js";
+import { runtimeObservationFromTaskEvent } from "../runtime/runtimeObservation.js";
 
 export function resolveMessageRecipient(
   store: TaskStore, taskId: string, roleName: string,
@@ -91,13 +92,104 @@ export function messageContinuationBlocker(store: TaskStore, message: TaskMessag
   return undefined;
 }
 
+/**
+ * The one gate that decides when a claimed interrupt-then handoff may be
+ * delivered (decision-3 §4). It is keyed on the exact interrupted native Turn —
+ * not on the recipient's owner Assignment and not on a Run's business status —
+ * so the terminal proof is about the Turn that was actually cancelled:
+ * - `ready`   — the native Turn stopped and its cancel outcome is knowable; the
+ *               handoff may deliver.
+ * - `waiting` — the native Turn is still in flight; hold silently until it stops.
+ * - `unknown` — the cancel outcome is unprovable (delivery-unknown); the handoff
+ *               is never released or replayed across that boundary.
+ * - `missing` — the target can never prove its terminal.
+ * A plain queued Message (no claim) is always `ready` here; its own delivery
+ * gates live in messageContinuationBlocker.
+ *
+ * The proof is composite by necessity (message-5 gap C). Native execution
+ * termination is read from the live ProviderTurn, re-verified by attemptId,
+ * because a Run's business status can flip to failed while its native Turn is
+ * still running — the old AgentRun-only gate could release across a Turn that had
+ * not actually stopped. When the live binding no longer holds that exact Turn, the
+ * proof falls back to the durable native terminal observation keyed by the target
+ * attemptId — never to the AgentRun's business status and never to a replacement
+ * Turn's existence, both of which can be true while the target's native execution
+ * has not stopped (decision-3 §4/§8, "requested != stopped"). The cancel's
+ * *outcome* (clean vs delivery-unknown) lives on the owning AgentRun's
+ * failureReason when a Run owns the Turn, because a settled ProviderTurn — or a
+ * durable native terminal — preserves only completed/failed/cancelled and cannot
+ * itself carry delivery-unknown.
+ */
+export function interruptThenTerminalState(
+  store: TaskStore, message: TaskMessage
+): "ready" | "waiting" | "unknown" | "missing" {
+  const claim = message.interruptThen;
+  if (claim === undefined) return "ready";
+  const roleName = claim.targetRoleName;
+  const sessions = store.getTaskRoleSessionSet(message.taskId, roleName);
+  const session = sessions?.sessions[sessions.activeAgentId];
+  const binding = sessions?.providerBinding;
+  if (session?.status !== "active" || session.nativeSessionId !== claim.targetNativeSessionId
+    || session.agentId !== claim.targetAgentId || session.adapterId !== claim.targetAdapterId
+    || binding?.authority.owner !== "controller"
+    || binding.authority.epoch !== claim.targetAuthorityEpoch
+    || binding.authority.holderId !== claim.targetAuthorityHolderId) return "missing";
+  const turn = binding.run;
+  const owner = claim.targetRunId === undefined ? null : store.getRun(message.taskId, claim.targetRunId);
+  if (claim.targetRunId !== undefined && owner === null) return "missing";
+  // Primary proof: the exact interrupted native Turn, identity re-verified by
+  // attemptId. While it is still present — in flight (submitting/accepted) or its
+  // own acceptance unproven (delivery-unknown) — the native execution has not
+  // stopped, so the handoff waits no matter what the Run's status claims.
+  if (turn !== null && turn.attemptId === claim.targetAttemptId) {
+    if (["submitting", "accepted", "delivery-unknown"].includes(turn.status)) return "waiting";
+    // The native Turn stopped. Its cancel outcome may still be unprovable; that
+    // is recorded on the owning AgentRun, never on the settled ProviderTurn.
+    return ["completed", "failed", "cancelled"].includes(turn.status)
+      && owner?.result?.failureReason !== "delivery-unknown" ? "ready" : "unknown";
+  }
+  // The live binding no longer holds the target native Turn — a later Turn
+  // occupies it, or the binding's run pointer is gone. decision-3 §4/§8: a
+  // replacement Turn's mere existence is NOT proof the target's native execution
+  // stopped ("requested != stopped"; native quiescence is never inferred from a
+  // new Turn's existence, and never from the owning AgentRun's business status).
+  // The only protocol-proven stop is the durable, immutable native terminal
+  // observation keyed by the exact target attemptId, written when the Provider
+  // Host observed the Turn actually terminate.
+  const nativeStopped = store.listEvents(message.taskId)
+    .map(runtimeObservationFromTaskEvent)
+    .some((observation) => observation !== null
+      && (observation.kind === "turn.completed" || observation.kind === "turn.failed"
+        || observation.kind === "turn.cancelled")
+      && observation.fence.roleName === roleName
+      && observation.fence.nativeSessionId === claim.targetNativeSessionId
+      && (claim.targetNativeTurnId === undefined || observation.fence.nativeTurnId === claim.targetNativeTurnId)
+      && observation.fence.receiptId === claim.targetAttemptId);
+  if (nativeStopped) {
+    // Proven stopped. Its cancel outcome (clean vs delivery-unknown) is recorded on
+    // the owning AgentRun, never on the settled native terminal itself — the same
+    // composite the primary path reads once native termination is proven.
+    return owner?.result?.failureReason === "delivery-unknown" ? "unknown" : "ready";
+  }
+  // No durable proof the target native Turn stopped. Hold silently while an owning
+  // Run could still produce that terminal; a later business-terminal or a
+  // replacement Turn must never release it. With nothing owning the Turn and no
+  // durable terminal, its stop is unobservable and the claim can never prove a
+  // safe boundary — never released or replayed either way.
+  return owner !== null ? "waiting" : "missing";
+}
+
 /** Called in the Controller's ordinary reconciliation transaction. Messages
  * remain the pending authority; Mailbox is only the existing scheduling hint.
  * Reserving inputs and creating the next Run is one atomic effect. */
 export function prepareMessageContinuations(store: TaskStore, taskId: string, now: Date, roleName: string): void {
   const pending = store.listMessages(taskId).filter((message) =>
     message.recipient?.roleName === roleName && message.recipient.ownerRunId !== undefined
-    && message.continuation?.runId === undefined);
+    && message.continuation?.runId === undefined
+    // A steer targets the exact current native turn, never a queued next Run.
+    // If its live attempt did not submit, the message stays saved for the
+    // Leader to re-choose (§1/§8); Core never silently turns it into a queue.
+    && message.inputControl?.action !== "steer");
   for (const message of pending) {
     const recipient = message.recipient!;
     const blocker = messageContinuationBlocker(store, message);
@@ -133,8 +225,33 @@ export function prepareMessageContinuations(store: TaskStore, taskId: string, no
         ? "owner-session-unobserved" : "owner-session-changed");
       continue;
     }
-    const batch = pending.filter((entry) => isDeepStrictEqual(entry.recipient, recipient)
-      && messageContinuationBlocker(store, entry) === undefined).slice(0, 16);
+    // decision-3 §4 ordering. Split this recipient's deliverable Messages into
+    // the explicit interrupt-then handoffs and the ordinary queue. A handoff is
+    // released only after its exact interrupted AgentRun reaches a proven
+    // terminal, and the ordinary queue must never preempt a live handoff.
+    const recipientPending = pending.filter((entry) => isDeepStrictEqual(entry.recipient, recipient)
+      && messageContinuationBlocker(store, entry) === undefined);
+    const thenClaims = recipientPending.filter((entry) => entry.interruptThen !== undefined);
+    let handoffWaiting = false;
+    const readyThen: TaskMessage[] = [];
+    for (const claim of thenClaims) {
+      const state = interruptThenTerminalState(store, claim);
+      if (state === "ready") readyThen.push(claim);
+      else if (state === "waiting") handoffWaiting = true;
+      // A claim whose target can never prove its terminal fails visibly and
+      // stops holding the queue; it is never released or replayed.
+      else markNotDelivered(store, claim, state === "unknown"
+        ? "interrupt-then-target-delivery-unknown" : "interrupt-then-target-missing");
+    }
+    // Hold the entire recipient — including the ordinary queue — while any
+    // handoff still awaits its interrupted Turn's proven terminal.
+    if (handoffWaiting) continue;
+    // A ready handoff delivers in its own round ahead of the ordinary queue, so
+    // the old queue only follows once the handoff has been delivered.
+    const batch = (readyThen.length > 0
+      ? readyThen
+      : recipientPending.filter((entry) => entry.interruptThen === undefined)).slice(0, 16);
+    if (batch.length === 0) continue;
     const previous = store.listRuns(taskId).filter((run) => run.roleName === owner.roleName
       && run.workItemId === owner.workItemId && run.reviewRoundId === owner.reviewRoundId).at(-1)!;
     const baselineRef = previous.inputs[0]?.input.contextSnapshotRef;

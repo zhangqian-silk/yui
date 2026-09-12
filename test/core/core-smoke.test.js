@@ -638,12 +638,11 @@ test("Global Codex Sessions use the shared daemon and retain a process-independe
     adapterId: agent.adapterId,
     mode: "new",
   });
-  assert.ok(planned.launch.args.includes("--remote"));
-  assert.ok(planned.launch.args.includes("unix://"));
-  assert.ok(planned.launch.args.some((argument) => (
-    argument.includes("shell_environment_policy.set=")
-    && argument.includes("YUI_SESSION_MANIFEST")
-  )));
+  assert.equal(planned.launch.providerControl.kind, "start");
+  assert.equal(planned.launch.providerControl.transport, "codex-app-server-proxy");
+  assert.equal(planned.launch.providerControl.sessionOnly, true);
+  assert.ok(!planned.launch.args.includes("--remote"));
+  assert.ok(planned.launch.env.YUI_SESSION_MANIFEST);
   assert.doesNotMatch(bootstrap.manifest.contextProtocol.loadCommand, /\$YUI_/u);
   assert.doesNotMatch(bootstrap.manifest.contextProtocol.loadCommand, /--yui-control/u);
   assert.match(bootstrap.manifest.contextProtocol.loadCommand, /session context 'operator' --json/u);
@@ -3460,7 +3459,7 @@ test("Controller begin-handover accepts a null fromReleaseId", async (t) => {
 
 test("production storage exposes one current version and one migration floor", () => {
   assert.equal(MIN_SUPPORTED_STORAGE_VERSION, 1);
-  assert.equal(CURRENT_STORAGE_VERSION, 22);
+  assert.equal(CURRENT_STORAGE_VERSION, 23);
   for (const retiredExport of [
     "FileTaskStore",
     "STORAGE_STATE_FILE",

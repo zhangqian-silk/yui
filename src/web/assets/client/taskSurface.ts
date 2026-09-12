@@ -91,6 +91,112 @@ export function renderTaskSurface(container, data, t, locale, actions) {
     }
   });
   summary.append(chat);
+  // decision-3 three-action input control (queue / steer / interrupt). This is
+  // the same application-layer path the CLI drives; the Web surface adds no
+  // fourth action and no auto-fallback. Steer/interrupt name an exact current
+  // Turn (expected-target); a mismatch or missing Turn is a visible failure
+  // receipt, never a silent downgrade to a queue.
+  const control = node("details", "record-card");
+  control.append(node("summary", "", say("Redirect a running Role (queue / steer / interrupt)",
+    "改向运行中的 Role（排队／即时插话／打断）")));
+  const controlForm = node("form", "record-block");
+  const actionLabel = node("label", "", say("Action", "动作"));
+  const action = node("select", "");
+  for (const [val, en, cn] of [["queue", "Queue (deliver at next opportunity)", "排队（下次机会送达）"],
+    ["steer", "Steer (inject into the exact current Turn)", "即时插话（注入当前 Turn）"],
+    ["interrupt", "Interrupt (native cancel of the current Turn)", "打断（原生取消当前 Turn）"]]) {
+    const opt = node("option", "", say(en, cn));
+    opt.value = val;
+    action.append(opt);
+  }
+  actionLabel.append(action);
+  const roleLabel = node("label", "", say("Target Role", "目标 Role"));
+  const role = node("input", "");
+  role.placeholder = say("e.g. worker (blank = Leader for queue)", "如 worker（排队留空 = Leader）");
+  roleLabel.append(role);
+  const bodyLabel = node("label", "", say("Message", "消息内容"));
+  const body = node("textarea", "");
+  body.maxLength = 8000;
+  bodyLabel.append(body);
+  const targetLabel = node("label", "", say("Expected current Turn", "预期当前 Turn"));
+  const expectedTarget = node("input", "");
+  expectedTarget.placeholder = say("exact current Turn id (attempt/native)", "当前 Turn 的精确标识");
+  targetLabel.append(expectedTarget);
+  const workItemLabel = node("label", "", say("Work Item (optional)", "Work Item（可选）"));
+  const workItem = node("input", "");
+  workItemLabel.append(workItem);
+  const thenLabel = node("label", "", say("Then-message ref (optional)", "打断后续消息引用（可选）"));
+  const thenMessage = node("input", "");
+  thenMessage.placeholder = say("task/message id already saved", "已保存的 task/message 引用");
+  thenLabel.append(thenMessage);
+  const controlSend = node("button", "record-open", say("Submit control", "提交控制"));
+  controlSend.type = "submit";
+  controlSend.disabled = !["active", "draft"].includes(task.status);
+  const controlSent = node("p", "muted", say("Not submitted", "未提交"));
+  controlSent.setAttribute("role", "status");
+  // Field visibility follows the selected action so the form can only submit a
+  // legal shape: interrupt carries no body; queue needs no expected-target;
+  // then-message is an interrupt-only continuation.
+  const applyAction = () => {
+    const kind = action.value;
+    bodyLabel.hidden = kind === "interrupt";
+    targetLabel.hidden = kind === "queue";
+    thenLabel.hidden = kind !== "interrupt";
+    roleLabel.hidden = false;
+    role.required = kind !== "queue";
+    body.required = kind !== "interrupt";
+    expectedTarget.required = kind !== "queue";
+  };
+  action.addEventListener("change", applyAction);
+  applyAction();
+  controlForm.addEventListener("input", () => { controlForm.dataset.unsent = "true"; });
+  controlForm.append(actionLabel, roleLabel, bodyLabel, targetLabel, workItemLabel, thenLabel, controlSend, controlSent);
+  controlForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (controlSend.disabled) return;
+    controlSend.disabled = true;
+    controlForm.dataset.unsent = "true";
+    const requestId = crypto.randomUUID();
+    const kind = action.value;
+    const payload = { action: kind, requestId };
+    if (kind === "interrupt") {
+      payload.role = role.value.trim();
+      payload.expectedTarget = expectedTarget.value.trim();
+      if (thenMessage.value.trim()) payload.thenMessage = thenMessage.value.trim();
+    } else {
+      payload.body = body.value;
+      if (kind === "steer") { payload.to = role.value.trim(); payload.expectedTarget = expectedTarget.value.trim(); }
+      else if (role.value.trim()) payload.to = role.value.trim();
+      if (workItem.value.trim()) payload.workItem = workItem.value.trim();
+    }
+    controlSent.textContent = say("Waiting for receipt · ", "等待回执 · ") + requestId;
+    try {
+      const receipt = await actions.controlInput(task.id, payload, requestId);
+      // The receipt states exactly what settled: a live steer/interrupt names its
+      // Host outcome; a queue or a not-delivered/idempotent result names its own
+      // state. None of these implies the Provider executed the input.
+      const settled = receipt.steer || receipt.interrupt || receipt.delivery
+        || { state: receipt.disposition };
+      const outcome = settled.outcome ? " · outcome " + settled.outcome : "";
+      const detail = settled.detail ? " · " + settled.detail : "";
+      controlSent.textContent = say("Receipt: ", "回执：") + receipt.action + " · " + settled.state
+        + outcome + detail + (receipt.record ? " · " + receipt.record.id : "");
+      controlForm.dataset.unsent = "false";
+      controlSend.disabled = false;
+    } catch (error) {
+      if (error.disposition === "not-submitted") {
+        controlSent.textContent = say("Not submitted: ", "未提交：") + error.message;
+        controlSend.disabled = false;
+        return;
+      }
+      // A committed input whose live edge is delivery-unknown must not be
+      // blindly re-sent under a new requestId or a different action.
+      controlSent.textContent = say("Unknown outcome. Re-read the Session before acting; do not resend · ",
+        "结果未知。请先重新读取 Session，不要盲目重发 · ") + requestId;
+    }
+  });
+  control.append(controlForm);
+  summary.append(control);
   // A Draft's Leader conversation IS its planning Turn, so this entry point does
   // reach a Leader. Report the real planning facts the snapshot carries — Turn,
   // Session, environment and the time they were observed — instead of asserting

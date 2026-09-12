@@ -345,6 +345,20 @@ test("Host saves exact provider facts before any Controller/storage compatibilit
   assert.equal(terminal.observation.fence.receiptId, "original-attempt");
   assert.equal(terminal.observation.fence.runId, undefined, "Only Controller resolves the durable Run.");
   assert.equal(terminal.host.startupRunId, undefined, "A late terminal must not borrow the launch identity.");
+  const { YUI_TASK_ID, ...globalEnvironment } = environment;
+  await publishStructuredProviderConnection({
+    home, environment: { ...globalEnvironment, YUI_SESSION_SCOPE: "global" },
+    nativeSessionId: identity.nativeSessionId,
+    connection: { account: { home, codexHome: join(home, ".codex") } }
+  });
+  await publishStructuredProviderTerminal({
+    home, environment: { ...globalEnvironment, YUI_SESSION_SCOPE: "global" },
+    terminal: { ...identity, clientOwned: true, status: "completed", output: "Global original report" }
+  });
+  const globalEvents = new FileRuntimeEventInbox(home).list().filter(event => event.scope === "global");
+  assert.equal(globalEvents.length, 2, "Global Host must also enqueue against an unreadable future store.");
+  assert.ok(globalEvents.every(event => event.host && event.observation.fence.taskId === undefined
+    && event.observation.fence.runId === undefined));
 });
 
 test("Controller resolves Host facts, retains ACK-loss replay and rejects wrong/old identities", async t => {

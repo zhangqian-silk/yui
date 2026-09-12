@@ -15,6 +15,18 @@ body{background:var(--ambient),var(--bg);background-attachment:fixed;color:var(-
 .skip-link:focus{top:14px}
 button{font:inherit;cursor:pointer}
 input:focus-visible,select:focus-visible,button:focus-visible,.task:focus-visible,.tab:focus-visible,.overview-row:focus-visible{outline:none;box-shadow:0 0 0 2px var(--bg),0 0 0 4px var(--accent)}
+.global-input-dialog{width:min(34rem,calc(100vw - 2rem));max-height:85vh;overflow:auto;color:var(--text);background:var(--bg-1);border:1px solid var(--border-strong);border-radius:var(--radius-lg);padding:var(--page-space)}
+.global-input-dialog::backdrop{background:color-mix(in srgb,var(--bg) 75%,transparent)}
+.global-input-dialog form,.global-input-dialog label{display:grid;gap:8px}
+.global-input-dialog form{gap:14px}
+.global-input-dialog p{overflow-wrap:anywhere}
+.global-input-dialog form,.global-input-dialog label{min-width:0}
+.global-input-dialog input,.global-input-dialog select,.global-input-dialog textarea{width:100%;box-sizing:border-box;padding:10px;color:var(--text);background:var(--bg);border:1px solid var(--border-strong);border-radius:var(--radius)}
+.global-input-dialog textarea{min-height:100px}
+.global-input-dialog .record-actions{display:flex;flex-wrap:wrap;gap:8px}
+.global-input-dialog button{min-height:44px}
+.global-input-state{white-space:pre-wrap;overflow-wrap:anywhere;font:12px var(--font-mono)}
+.global-input-dialog [hidden]{display:none}
 /* Sidebar */
 .sidebar{border-right:1px solid var(--border);background:color-mix(in srgb,var(--bg-1) 84%,transparent);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
 .brand-mark{width:40px;height:40px;flex:none;display:grid;place-items:center;font-family:var(--font-display);font-size:21px;font-weight:600;color:var(--on-accent);border-radius:11px;background:linear-gradient(140deg,var(--accent),var(--accent-2));box-shadow:var(--glow)}
