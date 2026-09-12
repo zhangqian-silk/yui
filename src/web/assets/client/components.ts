@@ -108,6 +108,7 @@ const EXEC_STATUS_TONE = {
   "attention": "is-danger",
   "progressing-with-attention": "is-warning",
   "blocked": "is-danger",
+  "conflicted": "is-warning",
   "working": "is-active",
   "completed": "is-muted",
   "retired": "is-muted",

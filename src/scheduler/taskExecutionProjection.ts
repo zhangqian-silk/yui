@@ -72,6 +72,7 @@ export type TaskExecutionAction =
   | "inspect-attention"
   | "recover-leader"
   | "resolve-blocker"
+  | "resolve-integration-conflicts"
   | "start-execution"
   | "complete-task"
   | "none";
@@ -449,10 +450,12 @@ export function projectTaskExecution(
     && runs.filter((run) => run.workItemId === item.id).at(-1)?.status === "failed");
   const candidateReady = workItems.some((item) => (item.status === "open" && item.currentCandidateId !== undefined));
   const blockedIntegration = integrations.some((attempt) => attempt.status === "blocked");
+  const conflictedIntegration = integrations.find((attempt) => attempt.status === "conflicted");
   const unresolvedIntegration = integrations.some((attempt) => (
     attempt.status === "running"
     || attempt.status === "validating"
     || attempt.status === "blocked"
+    || attempt.status === "conflicted"
   ));
   const hasLeaderMismatch = attention.some((item) => item.kind === "identity-mismatch");
 
@@ -519,6 +522,15 @@ export function projectTaskExecution(
   }
   if (attention.length > 0) {
     return renderAttention();
+  }
+  if (conflictedIntegration !== undefined) {
+    return render({
+      task, status: "needs-leader-action", owner: "leader",
+      action: "resolve-integration-conflicts",
+      summary: `Integration ${conflictedIntegration.id} has Git conflicts; resolve its workspace and continue.`,
+      reason: "integration-conflicted", monitoring, failClosed: false,
+      activeRuns: activeRunViews, attention, blockers, pendingWakeup
+    });
   }
   if (blockedIntegration || failedWork || hasLeaderMismatch) {
     return render({

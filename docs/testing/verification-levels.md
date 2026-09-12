@@ -53,12 +53,18 @@ regressions, and fast regressions do not establish real-model behavior.
     authentication helpers, rewritten approval records, or secrets forwarded
     to unrelated adapters; native authentication selection stays with Claude. Environment refresh
     removes revoked keys and keeps values out of durable Task/Role records.
+15. ordinary Integration conflicts continue without a decision gate; exact Git
+    receipts and an admitted Job resume interrupted delivery without replay.
+    The storage transition classifies old conflicts without inventing success.
 
 Keep the test phase seconds-scale; measure TypeScript build separately. Record
 incremental runtime when adding a critical regression. The seven recovery boundary
 cases initially add about 0.4 seconds of test bodies (about 0.6 seconds standalone,
 including module startup) on the development host. Avoid sleep-based checks or
 mandatory model/daemon launches in the permanent suite.
+The three Integration continuation regressions add about 1.5 seconds of test
+bodies (about 1.7 seconds standalone) on the development host, using disposable
+Git repositories, SQLite and fake Jobs, without a provider or shared Home.
 
 ## Skill and instruction changes
 

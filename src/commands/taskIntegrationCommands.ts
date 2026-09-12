@@ -226,6 +226,7 @@ async function continueIntegration(
   if (
     integration.status !== "validating"
     && integration.status !== "running"
+    && integration.status !== "conflicted"
     && (
       integration.status !== "blocked"
       || integration.resolution?.action !== "manual-resolution"
@@ -256,11 +257,13 @@ async function runIntegration(
     ? `Integrated ${integrationSourceLabel(result.attempt)} into ${
         result.attempt.targetRef
       } with CAS (${result.attempt.id})\n`
+    : result.status === "conflicted"
+      ? `Integration ${result.attempt.id} is conflicted in ${result.workspace.path}; resolve files, then run 'yui task integration continue ${result.attempt.taskId}/${result.attempt.id}' (no prior resolve required)\n`
     : result.status === "blocked"
-      ? `Integration ${result.attempt.id} requires a Task Agent resolution decision in ${result.workspace.path}\n`
+      ? `Integration ${result.attempt.id} needs Leader attention in ${result.workspace.path}: ${result.attempt.summary ?? result.attempt.conflict?.summary ?? "Inspect the current attempt"}\n`
       : result.status === "checks-running"
         ? `Integration ${result.attempt.id} checks are running as DurableJob ${result.job.id}; run 'yui task integration continue ${result.attempt.taskId}/${result.attempt.id}' when the job finishes\n`
-        : `Integration ${result.attempt.id} failed; target ref was not advanced\n`;
+        : `Integration ${result.attempt.id} failed; inspect its target and preserved evidence\n`;
   return { output, data: result };
 }
 
@@ -309,15 +312,24 @@ async function abortIntegration(
   const integration = requireIntegration(store, parsed.positionals[0], options.environment);
   requireActiveIntegrationTask(store, integration);
   taskLocalActor(store, options.environment, integration.taskId);
-  if (integration.status !== "running" && integration.status !== "blocked") {
+  if (integration.status !== "running" && integration.status !== "blocked" && integration.status !== "conflicted") {
     throw usageError(
       `Integration cannot be aborted from ${integration.status}: ${integration.id}.`
     );
   }
   const reason = parsed.one.get("--reason");
   if (reason === undefined) throw usageError(usage);
-  if (integration.jobId !== undefined && options.jobPort !== undefined) {
-    await options.jobPort.cancelJob(integration.taskId, integration.jobId);
+  const ownedJobs = store.listDurableJobs(integration.taskId).filter(job =>
+    job.owner.kind === "integration-attempt" && job.owner.integrationAttemptId === integration.id);
+  if (integration.jobId !== undefined && !ownedJobs.some(job => job.id === integration.jobId)) {
+    throw usageError("Integration Job binding does not match its owner; inspect the exact records before abort.");
+  }
+  if (options.jobPort !== undefined) {
+    for (const job of ownedJobs) {
+      if (job.status === "queued" || job.status === "running") {
+        await options.jobPort.cancelJob(integration.taskId, job.id);
+      }
+    }
   }
   return store.transaction((tx) => {
     // Re-read inside the transaction: a concurrent `continue` can advance the
@@ -330,7 +342,7 @@ async function abortIntegration(
         `Integration Attempt not found: ${integration.taskId}/${integration.id}.`
       );
     }
-    if (current.status !== "running" && current.status !== "blocked") {
+    if (current.status !== "running" && current.status !== "blocked" && current.status !== "conflicted") {
       throw usageError(
         `Integration cannot be aborted from ${current.status}: ${current.id}.`
       );
@@ -345,7 +357,7 @@ async function abortIntegration(
     }, now);
     tx.saveIntegrationAttempt(aborted.taskId, aborted);
     return {
-      output: `Aborted Integration ${aborted.id}; start a new Integration Attempt to retry\n`,
+      output: `Aborted Integration ${aborted.id}; candidate, workspace and history are preserved. This is not Git abort or proof of Job quiescence. Choose an authorized replacement delivery path.\n`,
       data: { integration: aborted }
     };
   });

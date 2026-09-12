@@ -1000,7 +1000,7 @@ export class SqliteTaskStore implements TaskStore {
         if (run.status === "active") activeRunRefs.push(`${task.id}/${run.id}`);
       }
       for (const attempt of this.listIntegrationAttempts(task.id)) {
-        if (attempt.status === "running" || attempt.status === "blocked") {
+        if (["running", "blocked", "conflicted", "validating"].includes(attempt.status)) {
           unresolvedIntegrationRefs.push(`${task.id}/${attempt.id}`);
         }
       }

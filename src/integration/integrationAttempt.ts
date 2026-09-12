@@ -13,6 +13,7 @@ import {
 
 export type IntegrationAttemptStatus =
   | "running"
+  | "conflicted"
   | "blocked"
   | "validating"
   | "committed"
@@ -70,6 +71,22 @@ export type IntegrationAttempt = Readonly<{
   summary?: string;
   checkCommands: readonly string[];
   candidateCommit?: string;
+  /** Git application cursor. The active action is written before Git and its
+   * unique reflog marker proves a completed ref update after an interrupted save.
+   * This belongs to the attempt, not a background recovery protocol. */
+  sourceProgress?: Readonly<{
+    workspace: string;
+    branch: string;
+    sourceDigest: string;
+    completedSteps: number;
+    head: string;
+    activeAction?: string;
+    /** Before cherry-pick --skip: the selected resolution equals the input
+     * tree. This proves the intentional no-op even when no ref changed. */
+    emptyResolution?: true;
+  }>;
+  /** Exact non-secret DurableJob specification digest admitted before start. */
+  checkInputDigest?: string;
   /**
    * The VerificationPlan digests captured when the gate job started.
    * On resume, the artifact is recorded under this identity (not the
@@ -172,6 +189,19 @@ export function requireResolutionDecision(
   });
 }
 
+export function recordIntegrationConflict(
+  attempt: IntegrationAttempt,
+  report: ConflictReport,
+  now: Date
+): IntegrationAttempt {
+  if (attempt.status !== "running" && attempt.status !== "conflicted") {
+    throw new Error(`Integration cannot record Git conflicts from ${attempt.status}.`);
+  }
+  return updateIntegrationAttempt(attempt, {
+    status: "conflicted", conflict: normalizeConflictReport(report)
+  }, now);
+}
+
 export function recordResolutionDecision(
   attempt: IntegrationAttempt,
   decision: Omit<ResolutionDecision, "decidedBy" | "decidedAt">,
@@ -179,7 +209,7 @@ export function recordResolutionDecision(
   now: Date
 ): IntegrationAttempt {
   validateIntegrationAttempt(attempt);
-  if (attempt.status !== "blocked" || attempt.conflict === undefined) {
+  if (!["blocked", "conflicted"].includes(attempt.status) || attempt.conflict === undefined) {
     throw new Error("Integration has no pending semantic decision.");
   }
   if (decision.action !== "manual-resolution" && decision.action !== "reject") {
@@ -188,7 +218,7 @@ export function recordResolutionDecision(
   const timestamp = now.toISOString();
   return validateIntegrationAttempt({
     ...attempt,
-    status: decision.action === "reject" ? "failed" : "blocked",
+    status: decision.action === "reject" ? "failed" : attempt.status,
     resolution: {
       action: decision.action,
       rationale: requireText(decision.rationale, "Resolution rationale"),
@@ -215,6 +245,7 @@ export function updateIntegrationAttempt(
     IntegrationAttempt,
     "candidateCommit" | "status" | "conflict" | "checks"
     | "gatePlanDigest" | "gateToolchainDigest" | "afterCommit" | "summary"
+    | "sourceProgress" | "checkInputDigest"
   >>>,
   now: Date
 ): IntegrationAttempt {
@@ -280,6 +311,23 @@ export function validateIntegrationAttempt(attempt: IntegrationAttempt): Integra
   if (attempt.candidateCommit !== undefined) {
     requireCommit(attempt.candidateCommit, "Integration candidate commit");
   }
+  if (attempt.checkInputDigest !== undefined && !/^[a-f0-9]{64}$/u.test(attempt.checkInputDigest)) {
+    throw new Error("Integration check input digest is invalid.");
+  }
+  if (attempt.sourceProgress !== undefined) {
+    const progress = attempt.sourceProgress;
+    requireText(progress.workspace, "Integration source workspace");
+    requireText(progress.branch, "Integration source branch");
+    requireCommit(progress.head, "Integration source head");
+    if (!/^[a-f0-9]{64}$/u.test(progress.sourceDigest)
+      || !Number.isSafeInteger(progress.completedSteps) || progress.completedSteps < 0
+      || (progress.activeAction !== undefined
+        && !/^yui-integration-[a-f0-9]{32}$/u.test(progress.activeAction))
+      || (progress.emptyResolution !== undefined
+        && (progress.emptyResolution !== true || progress.activeAction === undefined))) {
+      throw new Error("Integration source progress is invalid.");
+    }
+  }
   if (attempt.afterCommit !== undefined) {
     requireCommit(attempt.afterCommit, "Integration after commit");
   }
@@ -304,6 +352,7 @@ export function validateIntegrationAttempt(attempt: IntegrationAttempt): Integra
   }
   if (![
     "running",
+    "conflicted",
     "blocked",
     "validating",
     "committed",
@@ -313,8 +362,8 @@ export function validateIntegrationAttempt(attempt: IntegrationAttempt): Integra
     throw new Error(`Integration status is invalid: ${String(attempt.status)}.`);
   }
   if (attempt.conflict !== undefined) normalizeConflictReport(attempt.conflict);
-  if (attempt.status === "blocked" && attempt.conflict === undefined) {
-    throw new Error("A blocked Integration needs a ConflictReport.");
+  if ((attempt.status === "blocked" || attempt.status === "conflicted") && attempt.conflict === undefined) {
+    throw new Error("A paused Integration needs a ConflictReport.");
   }
   if (attempt.resolution !== undefined) {
     if (
