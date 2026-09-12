@@ -33,6 +33,7 @@ import { controllerSocketPath } from "../core/controllerEndpoint.js";
 import { readHomeFilesystemId } from "../core/homeFilesystemIdentity.js";
 import {
   buildControllerResourceInventory,
+  runtimeRoleProtectsDomain,
   type ControllerDiscoveryFact,
   type ControllerInventoryScope,
   type ControllerResourceInventory,
@@ -712,13 +713,7 @@ function inspectRuntimeDomain(
     };
   }
 
-  const activeRole = roles.some((role) => (
-    (role.ownerKind === "task-role" && role.taskStatus === "active")
-    // Global Roles have no Task status. Only a live native Session is a
-    // durable liveness fact for that scope; stopped/broken history must not
-    // protect an expired disposable domain merely because it has an ID.
-    || (role.ownerKind === "global-role" && role.nativeSessionId !== undefined)
-  ));
+  const activeRole = roles.some(runtimeRoleProtectsDomain);
   if (!storageSafe) {
     return {
       kind: "ephemeral-test",

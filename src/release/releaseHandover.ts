@@ -219,6 +219,25 @@ async function activateLocked(
   }
   void beginResult;
 
+  try { ports.runPreflight(releaseDir, home); }
+  catch (error) {
+    try { await ports.call(home, "controller.rollback-handover", { handoverId }); }
+    catch (rollbackError) {
+      return {
+        outcome: "aborted", phase: "preflight",
+        message: `Host compatibility failed: ${messageOf(error)}; rollback failed: ${messageOf(rollbackError)}`,
+        action: "No candidate was started and the release pointer is unchanged. Preserve the fence and inspect the old Controller.",
+        recoverable: true
+      };
+    }
+    return {
+      outcome: "aborted", phase: "preflight",
+      message: `Fenced compatibility preflight failed: ${messageOf(error)}`,
+      action: "The old Controller is serving again; the active release and Home are unchanged.",
+      recoverable: true
+    };
+  }
+
   // 5) Start the candidate and wait for its identity read-back.
   ports.spawnCandidate(home, releaseDir, handoverId);
   const candidateReady = await waitForCandidateReady(

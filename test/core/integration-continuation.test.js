@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
 import { migrateSqliteSchema } from "../../dist/storage/sqliteSchema.js";
+import { CURRENT_STORAGE_VERSION } from "../../dist/storage/storageVersions.js";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { createProject } from "../../dist/repository/project.js";
 import { createTask, activateTask, bindTaskWorkspaceIdentity } from "../../dist/task/task.js";

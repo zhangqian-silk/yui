@@ -14,6 +14,7 @@ import {
 export type WorkMailboxQueueStore = Readonly<{
   getWorkMailbox(target: MailboxTarget): WorkMailbox | null;
   saveWorkMailbox(mailbox: WorkMailbox): void;
+  getTask?(taskId: string): Readonly<{ status: string }> | null;
 }>;
 
 export type RoleRunDispatchIdentity = Readonly<{
@@ -53,6 +54,10 @@ export function enqueueWork(
   metadata: Omit<WorkSignal, "reason" | "refs" | "occurredAt"> = {}
 ): WorkMailbox {
   const mailbox = store.getWorkMailbox(target) ?? createWorkMailbox(target);
+  // Archive is an admission boundary, not an acknowledgement of old input.
+  // Runtime cleanup mailboxes remain usable for exact-owner recovery.
+  if ((target.kind === "task" || target.kind === "role")
+    && store.getTask?.(target.taskId)?.status === "archived") return mailbox;
   const queued = enqueueSignal(mailbox, {
     reason,
     refs,

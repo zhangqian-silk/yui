@@ -46,6 +46,7 @@ export type RuntimeRunEventObserver = Readonly<{
   /** Batch multiple inbox folds into one authoritative aggregate commit. */
   withRuntimeEventTransaction?<T>(execute: () => T): T;
   getTask(taskId: string): SchedulerTask | null;
+  observeAgentHostObservation?(input: RuntimeObservationInboxEvent, now?: Date): ProviderLifecycleObservation;
   /** Applies one provider-neutral runtime state/activity observation. */
   observeRuntimeObservation?(
     input: RuntimeObservation,
@@ -75,6 +76,7 @@ export type RuntimeRunEventObserver = Readonly<{
       runId?: string;
       nativeSessionId: string;
       reason: string;
+      originalEvent?: RuntimeLifecycleEvent;
     }>,
     now?: Date
   ): unknown;
@@ -307,11 +309,17 @@ export class FileRuntimeEventProcessor implements RuntimeEventProcessorPort {
     event: RuntimeObservationInboxEvent,
     now: Date
   ): "applied" | "deferred" | "obsolete" {
+    if (event.host !== undefined) {
+      return this.observer.observeAgentHostObservation?.(event, now) ?? "deferred";
+    }
     const taskId = event.observation.fence.taskId;
     if (taskId !== undefined) {
       const task = this.observer.getTask(taskId);
+      if (task?.status === "archived") {
+        this.recordObsolete(event, "task-archived", now);
+        return "obsolete";
+      }
       if (task === null
-        || task.status === "archived"
         || (!["turn.completed", "turn.failed", "turn.cancelled"].includes(event.observation.kind)
           && (task.status !== "active" || task.executionGate.state !== "enabled"))) return "obsolete";
     }
@@ -423,7 +431,8 @@ export class FileRuntimeEventProcessor implements RuntimeEventProcessorPort {
         agentId: fence.agentId,
         ...(fence.runId === undefined ? {} : { runId: fence.runId }),
         nativeSessionId: fence.nativeSessionId,
-        reason
+        reason,
+        ...(reason === "task-archived" ? { originalEvent: event } : {})
       }, now);
       return;
     }
@@ -438,7 +447,8 @@ export class FileRuntimeEventProcessor implements RuntimeEventProcessorPort {
       agentId: event.agentId,
       ...(event.runId === undefined ? {} : { runId: event.runId }),
       nativeSessionId: event.nativeSessionId,
-      reason
+      reason,
+      ...(reason === "task-archived" ? { originalEvent: event } : {})
     }, now);
   }
 
@@ -581,6 +591,9 @@ function progressStreamKey(event: RuntimeObservationInboxEvent): string {
     fence.driverId,
     fence.nativeSessionId ?? null,
     fence.runId ?? null,
+    fence.receiptId ?? null,
+    fence.nativeTurnId ?? null,
+    event.host ?? null,
     payload.activity,
     isRuntimeTokenEvidence(event.observation) ? "usage" : "signal"
   ]);
@@ -721,6 +734,7 @@ function nonEmptyString(value: unknown): string | undefined {
  */
 export type AsyncRuntimeRunEventObserver = Readonly<{
   getTask(taskId: string): Promise<SchedulerTask | null>;
+  observeAgentHostObservation?(input: RuntimeObservationInboxEvent, now?: Date): Promise<ProviderLifecycleObservation>;
   observeRuntimeObservation?(
     input: RuntimeObservation,
     now?: Date
@@ -749,6 +763,7 @@ export type AsyncRuntimeRunEventObserver = Readonly<{
       runId?: string;
       nativeSessionId: string;
       reason: string;
+      originalEvent?: RuntimeLifecycleEvent;
     }>,
     now?: Date
   ): Promise<unknown>;
@@ -769,6 +784,8 @@ export function createAsyncRuntimeObserver(invoke: AsyncObserverInvoker): AsyncR
     now === undefined ? call(method, [input]) : call(method, [input, now]);
   return {
     getTask: (taskId) => call("getTask", [taskId]) as Promise<SchedulerTask | null>,
+    observeAgentHostObservation: (input, now) =>
+      withNow("observeAgentHostObservation", input, now) as Promise<ProviderLifecycleObservation>,
     observeRuntimeObservation: (input, now) =>
       withNow("observeRuntimeObservation", input, now) as Promise<ProviderLifecycleObservation>,
     observeRuntimeRunTerminal: (input, now) => withNow("observeRuntimeRunTerminal", input, now),
@@ -883,11 +900,17 @@ export class AsyncRuntimeEventProcessor {
     event: RuntimeObservationInboxEvent,
     now: Date
   ): Promise<"applied" | "deferred" | "obsolete"> {
+    if (event.host !== undefined) {
+      return this.observer.observeAgentHostObservation?.(event, now) ?? "deferred";
+    }
     const taskId = event.observation.fence.taskId;
     if (taskId !== undefined) {
       const task = await this.observer.getTask(taskId);
+      if (task?.status === "archived") {
+        await this.recordObsolete(event, "task-archived", now);
+        return "obsolete";
+      }
       if (task === null
-        || task.status === "archived"
         || (!["turn.completed", "turn.failed", "turn.cancelled"].includes(event.observation.kind)
           && (task.status !== "active" || task.executionGate.state !== "enabled"))) return "obsolete";
     }
@@ -967,7 +990,8 @@ export class AsyncRuntimeEventProcessor {
         agentId: fence.agentId,
         ...(fence.runId === undefined ? {} : { runId: fence.runId }),
         nativeSessionId: fence.nativeSessionId,
-        reason
+        reason,
+        ...(reason === "task-archived" ? { originalEvent: event } : {})
       }, now);
       return;
     }
@@ -979,7 +1003,8 @@ export class AsyncRuntimeEventProcessor {
       agentId: event.agentId,
       ...(event.runId === undefined ? {} : { runId: event.runId }),
       nativeSessionId: event.nativeSessionId,
-      reason
+      reason,
+      ...(reason === "task-archived" ? { originalEvent: event } : {})
     }, now);
   }
 

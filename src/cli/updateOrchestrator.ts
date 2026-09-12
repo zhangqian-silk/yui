@@ -212,7 +212,28 @@ function runStagedUpdate(
   try {
     const captured = captureControllerLifecycle(ports, staged.version, home);
     if ("outcome" in captured) return captured;
-    return activateAndVerify(ports, staged, home, captured.lifecycle, preflight);
+    // An older Controller can finish a launch between preflight and drain.
+    // Recheck after its exact stop, before changing the install or storage.
+    let fencedPreflight: UpdatePreflight;
+    try { fencedPreflight = ports.preflight(staged, home); }
+    catch (error) {
+      return restoreControllerOrReport(ports, home, captured.lifecycle, {
+        outcome: "aborted", phase: "preflight",
+        message: `Quiesced compatibility preflight failed: ${messageOf(error)}`,
+        action: "The install and storage are unchanged; inspect the compatibility failure before retrying.",
+        recoverable: true, version: staged.version
+      });
+    }
+    if (fencedPreflight.status === "blocked") {
+      return restoreControllerOrReport(ports, home, captured.lifecycle, {
+        outcome: "aborted", phase: "preflight",
+        message: fencedPreflight.message, action: fencedPreflight.action,
+        recoverable: true, version: staged.version,
+        ...(fencedPreflight.blockers === undefined ? {} : { blockers: fencedPreflight.blockers }),
+        ...(fencedPreflight.sceneUnchanged === true ? { sceneUnchanged: true } : {})
+      });
+    }
+    return activateAndVerify(ports, staged, home, captured.lifecycle, fencedPreflight);
   } finally {
     releaseHandover?.();
   }

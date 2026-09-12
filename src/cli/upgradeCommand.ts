@@ -5,8 +5,12 @@ import {
 } from "../storage/upgrade/upgradeOrchestrator.js";
 import {
   ensureFileTaskController,
+  ensureFileTaskControllerIdentity,
+  type ControllerRuntimeProcessIdentity,
   stopFileTaskController
 } from "../controller/clientRuntime.js";
+import { callController, ControllerClientError } from "../core/controllerClient.js";
+import { spawn } from "node:child_process";
 import { runtimeError, usageError } from "../errors/cliError.js";
 import {
   acquireHandoverLock,
@@ -72,12 +76,29 @@ async function runInteractiveUpgrade(
   const handover = acquireHandoverLock(home);
   let controllerWasRunning = false;
   try {
+    const previous = await captureUpgradeController(home);
     const stopped = await stopFileTaskController(home, {
       environment,
-      handoverOwnerPid: process.pid
+      handoverOwnerPid: process.pid,
+      ...(previous === undefined ? {} : { expectedPid: previous.pid })
     });
     controllerWasRunning = stopped.stopped;
     const result = await runStorageUpgrade({ home, mode: "execute" });
+    if (controllerWasRunning && result.outcome === "blocked") {
+      if (previous === undefined) {
+        throw runtimeError("Upgrade was blocked without changing storage; the stopped Controller identity is unknown. Keep the Home quiesced.");
+      }
+      await ensureFileTaskControllerIdentity(home, previous.identity, {
+        environment, handoverOwnerPid: process.pid,
+        spawnController: (_home, launchEnvironment) => {
+          const child = spawn(previous.identity.executablePath, [...previous.identity.args], {
+            env: launchEnvironment, detached: true, stdio: "ignore"
+          });
+          child.unref();
+          return child.pid;
+        }
+      });
+    }
     if (
       controllerWasRunning
       && (result.outcome === "upgraded" || result.outcome === "already-current")
@@ -100,6 +121,27 @@ async function runInteractiveUpgrade(
   } finally {
     handover.release();
   }
+}
+
+async function captureUpgradeController(home: string): Promise<Readonly<{
+  pid: number; identity: ControllerRuntimeProcessIdentity;
+}> | undefined> {
+  let value;
+  try { value = await callController(home, "controller.identity", {}); }
+  catch (error) {
+    if (error instanceof ControllerClientError && error.code === "CONTROLLER_NOT_RUNNING") return undefined;
+    throw error;
+  }
+  const identity = value as { pid?: number; executablePath?: string; args?: string[]; version?: string };
+  if (!Number.isSafeInteger(identity.pid) || identity.pid! < 1
+    || typeof identity.executablePath !== "string" || !identity.executablePath
+    || !Array.isArray(identity.args) || identity.args.some(arg => typeof arg !== "string")
+    || typeof identity.version !== "string" || !identity.version) {
+    throw runtimeError("Cannot capture the exact Controller for a reversible upgrade preflight.");
+  }
+  return { pid: identity.pid!, identity: {
+    executablePath: identity.executablePath, args: identity.args, version: identity.version
+  } };
 }
 
 async function runUpdateOwnedUpgrade(

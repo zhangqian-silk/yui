@@ -58,6 +58,21 @@ regressions, and fast regressions do not establish real-model behavior.
     Validation settlement distinguishes current check conditions from an
     already-applied CAS. Migration preserves provable old bound FF Jobs and
     classifies old conflicts without inventing successful checks.
+16. explicit force archive commits before cleanup and preserves uncertain
+    delivery/runtime evidence; partial cleanup and late results remain traceable,
+    while archived runtime resources never become automatically safe to delete.
+17. Host facts reach the existing Inbox even when its compiled store cannot
+    read the Home; Controller-side fencing, ACK-loss replay, and legacy-Host
+    upgrade refusal preserve the original execution. A frozen independent v1
+    protocol producer remains the same process across a real 19→22 migration,
+    authenticates RPCs to both Controllers through refreshed discovery, and
+    retains facts during the disconnected window. Production launch planning
+    also preserves scoped startup evidence before native Session adoption
+    without exporting a Run ID into the Session environment.
+    This fixture is the minimum supported new wire contract, not a claim that
+    pre-fix released Hosts can be hot-patched.
+    Archive racing Host ingress retains the complete source envelope without
+    reopening the Task or settling original uncertain input.
 
 Keep the test phase seconds-scale; measure TypeScript build separately. Record
 incremental runtime when adding a critical regression. The seven recovery boundary

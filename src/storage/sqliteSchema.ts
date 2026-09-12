@@ -1197,6 +1197,28 @@ UPDATE review_rounds SET payload = json_set(payload, '$.executionGroup.lanes', j
   },
   {
     version: 21,
+    name: "force-archive-independent-cleanup",
+    introducedIn: "0.16.0",
+    // Declare optional task.archived force/cleanup/warnings/retainedResources
+    // audit fields and task.archive-cleanup resource/status/detail/paths events;
+    // runtime.event-obsolete may retain the full originalEvent as source evidence.
+    // Archived Tasks may retain exact runtime/workspace/mailbox ownership.
+    // Existing archive, completion and Publication history is unchanged.
+    sql: "SELECT 1; -- archive intent and cleanup evidence remain separate facts"
+  },
+  {
+    version: 22,
+    name: "controller-owned-agent-host-ingress",
+    introducedIn: "0.16.0",
+    // Add optional `host` source metadata to the stable Inbox v1 observation
+    // envelope. Such facts contain no resolved Run: current Controller alone
+    // validates ownership and commits observations, process custody and native
+    // account locations. Existing Inbox facts and domain history stay intact.
+    // Host status capabilities/transport diagnostics are live, not stored.
+    sql: "SELECT 1; -- Controller-owned Host ingress; no historical data rewrite"
+  },
+  {
+    version: 23,
     name: "unify-home-layout",
     introducedIn: "0.15.9",
     // Unify every Yui self-managed path under a single canonical YUI_HOME. The
@@ -1219,7 +1241,7 @@ UPDATE review_rounds SET payload = json_set(payload, '$.executionGroup.lanes', j
     migrateData: migrateUnifyHomeLayout
   },
   {
-    version: 22,
+    version: 24,
     name: "collapse-worktree-layout",
     introducedIn: "0.15.9",
     // Collapse the two-layer managed workspace layout into a single layer of real

@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { lstat } from "node:fs/promises";
 
 import {
   createWorkItemChangeSet,
@@ -125,15 +126,27 @@ export class WorkItemChangeSetManager {
     const git = new NodeGitWorkspace();
     const projects: ProjectIntegrationProof[] = [];
     for (const entry of writableEntries(workspace)) {
-      if (!await git.isClean(entry.path)) {
+      const path = await lstat(entry.path).catch(error => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      if (path?.isSymbolicLink()) throw new Error(`WorkItem path is a symbolic link: ${entry.path}.`);
+      if (path !== null && !await git.isClean(entry.path)) {
         throw new Error(
           `WorkItem Project workspace is not clean: ${item.id}/${entry.projectId}.`
         );
       }
-      const workspaceHeadCommit = (await git.inspect(entry.path, "HEAD")).baseCommit;
       const resultCommit = candidate?.gitSnapshot?.projects.find(
         ({ projectId }) => projectId === entry.projectId
       )?.commit;
+      // Absence is a filesystem fact, not proof of integration or Git cleanup.
+      // Check any retained branch against the same frozen Candidate; the
+      // cleanup primitive separately removes its exact Git registration.
+      const repository = this.store.getTaskWorkspace(taskId)?.entries.find(e => e.projectId === entry.projectId);
+      const workspaceHeadCommit = path !== null ? (await git.inspect(entry.path, "HEAD")).baseCommit
+        : repository !== undefined && await git.refExists(repository.path, entry.branch)
+          ? (await git.inspect(repository.path, entry.branch)).baseCommit
+          : resultCommit;
       if (candidate?.workspace === undefined
         || !isDeepStrictEqual(candidate.workspace, workspace)
         || resultCommit === undefined

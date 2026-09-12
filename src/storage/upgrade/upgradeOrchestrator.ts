@@ -9,6 +9,9 @@ import {
 } from "node:fs";
 
 import Database from "better-sqlite3";
+import {
+  inspectAgentHostCompatibility, describeAgentHostUpgradeBlockers, type AgentHostUpgradeBlocker
+} from "../../runtime/agentHostCompatibility.js";
 
 import {
   RUNTIME_OBSERVATION_TASK_EVENT,
@@ -83,7 +86,7 @@ export type StorageUpgradeReport = Readonly<{
   backupPath?: string;
 }>;
 
-export type UpgradeBlockerStage = "uninitialized" | "unsupported" | "corruption" | "in-flight";
+export type UpgradeBlockerStage = "uninitialized" | "unsupported" | "corruption" | "in-flight" | "host-compatibility";
 
 /**
  * A structured pre-migration blocker surfaced through the `blocked` result. Its
@@ -124,6 +127,7 @@ export type UpgradeResult = Readonly<
       blockers?: readonly UpgradePreflightBlocker[];
       classification: HomeClassification;
       sceneUnchanged: true;
+      hosts?: readonly AgentHostUpgradeBlocker[];
     }
   | {
       outcome: "failed";
@@ -181,6 +185,21 @@ export async function runStorageUpgrade(options: RunStorageUpgradeOptions): Prom
         ? classification.classification.blocker.action
         : "Use a compatible Yui release."
     );
+  }
+
+  const incompatibleHosts = await inspectAgentHostCompatibility(options.home);
+  if (incompatibleHosts.length > 0) {
+    return {
+      ...blocked(
+        state.status === "current" ? currentClassification() : migratableClassification(state.currentVersion),
+        "host-compatibility",
+        `Existing Agent Hosts cannot safely use the target Controller/storage:\n${describeAgentHostUpgradeBlockers(incompatibleHosts)}`,
+        "Keep the current Controller, Home and Host processes unchanged. Inspect the named Sessions and original pending "
+          + "inputs/results; let current work settle, then use explicitly authorized Session replacement/cleanup at a safe "
+          + "boundary before retrying the upgrade. This target cannot hot-patch legacy Host memory."
+      ),
+      hosts: incompatibleHosts
+    };
   }
 
   if (state.status === "current") {

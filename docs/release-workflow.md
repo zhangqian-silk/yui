@@ -74,6 +74,45 @@ Candidate and Task-final ReviewRound records must all carry that one contract.
 Conflicting records fail closed; there is no rebind event, recovery command, or
 second contract state machine.
 
+## Persistent Agent Host compatibility
+
+A running Host keeps its original Endpoint implementation. It records exact
+Session/attempt/native-Turn facts in the existing durable Inbox before contacting
+the Controller; only the current Controller resolves Run ownership, validates
+authority/workspace/lifecycle/history, and commits the result. An Inbox file is
+not acceptance. Files are consumed only after commit, so downtime or a lost ACK
+does not replay user input or model work.
+
+Startup facts use the exact Run identity from the redeemed launch payload, not
+the long-lived Session environment. This preserves pre-adoption evidence even
+when the frozen Run workspace differs from the Role's default; later activity
+and terminal facts still resolve solely by their own native input identities.
+
+The supported Host boundary is control `yui-agent-host/v5`, event source
+`yui-agent-host-events/v1`, and Controller RPC version 4. Hosts advertising
+`storage=controller-owned` do not open the Home database, including for process
+custody, native account locations, or execution-environment checks. Home 22
+declares the additive Inbox source envelope; valid older Inbox v1 facts and
+domain history remain readable. Future changes must retain this wire boundary
+or reject incompatible live producers before changing storage. CLI wrapper
+refresh and a successful new `doctor` are not Host compatibility proofs.
+
+`upgrade`, the staged target's `update` preflight, and release activation inspect
+live Host capabilities independently. An old Host without this capability,
+including an idle Host or one whose response is unconfirmed, blocks adoption.
+Checks are repeated at the existing fenced/quiesced handover boundary before
+migration or promotion. No Host is killed, replaced, or reloaded by these checks.
+Let existing work settle and preserve original pending input/result evidence;
+then an authorized Operator can select a safe Session replacement/cleanup before
+retrying. Installing this change cannot repair already-loaded legacy Host code
+or collect a terminal that that code never durably emitted.
+
+`task role status`, `task role list`, and `task role session inspect` expose Host
+reporting alongside durable Run state. Pending native results or known reporting
+failures require attention; they do not mean the Provider failed, the Run ended,
+or the work was accepted. The Host's live diagnostics inspect only its own event
+file identities and never parse or quarantine another producer's newer payload.
+
 ## CLI and Controller release boundary
 
 The global `yui` command is the stable user and managed-Session interface. It

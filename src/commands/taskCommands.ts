@@ -1,6 +1,7 @@
 import type { ConfiguredAgent } from "../agent/agent.js";
 import { roleLaunchEventPayload, saveTaskRoleUpdate } from "../role/taskRoleUpdate.js";
 import { randomUUID } from "node:crypto";
+import { archiveDeliveryWarnings, archiveRetainedResources, renderArchiveDiagnostics, taskArchiveDiagnostics } from "../task/archiveDiagnostics.js";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { createRunInput } from "../context/runInputContract.js";
@@ -316,7 +317,10 @@ import {
   taskRoleLastRunLabel,
   taskRoleNativeSessionLabel,
   taskRoleOpenInputLabel,
-  taskRoleTmuxLabel
+  taskRoleTmuxLabel,
+  withTaskRoleHostObservation,
+  taskRoleHostDiagnostic,
+  type TaskRoleHostObservation
 } from "./taskRoleRuntimeStatus.js";
 import {
   assertNoOpenInputRequests,
@@ -531,6 +535,7 @@ export type TaskCommandOptions = Readonly<{
    * expectation, and this states what the Agent answered about it.
    */
   liveRunConfiguration?: AgentRunConfigurationObservation;
+  liveHostObservations?: Readonly<Record<string, TaskRoleHostObservation>>;
   /** CLI-prepared capability validation; throws before a Role mutation persists. */
   validateAgentConfiguration?: (
     input: Readonly<{
@@ -797,7 +802,7 @@ export function runTaskCommand(
     case "activation": return runTaskActivationCommand(rest, store, options);
     case "complete": return completeTaskCommand(rest, store, options);
     case "reopen": return output(reopenTaskCommand(rest, store, options));
-    case "archive": return output(archiveTaskCommand(rest, store, options));
+    case "archive": return archiveTaskCommand(rest, store, options);
     case "retire": return retireTaskCommand(rest, store, options);
     case "cancel": return cancelTaskCommand(rest, store, options);
     case "reconcile": return output(reconcileTaskCommand(rest, store, options));
@@ -1602,6 +1607,7 @@ function showTaskCommand(
     task,
     currentTaskCandidate
   );
+  const archive = task.status === "archived" ? taskArchiveDiagnostics(store, task) : undefined;
   const verifiedMergedPublications = publications.filter((reference) => (
     reference.state === "merged" && reference.verification === "verified"
   )).length;
@@ -1663,6 +1669,7 @@ function showTaskCommand(
     `Integration Attempts: ${counts.integrations}`,
     `Publication references: ${counts.publications} (${verifiedMergedPublications} verified merged)`,
     renderTaskRemoteDelivery(remoteDelivery).trimEnd(),
+    ...(archive === undefined ? [] : [renderArchiveDiagnostics(archive).trimEnd()]),
     `Open inputs: ${counts.openInputs}`,
     `Created: ${presentTime(task.createdAt, timeZone)}`,
     `Updated: ${presentTime(task.updatedAt, timeZone)}`
@@ -1671,7 +1678,8 @@ function showTaskCommand(
     task,
     counts,
     hasBrief: brief !== null,
-    remoteDelivery
+    remoteDelivery,
+    ...(archive === undefined ? {} : { archive })
   });
 }
 
@@ -1958,7 +1966,7 @@ function archiveTaskCommand(
   args: string[],
   store: TaskWorkflowStore,
   options: TaskCommandOptions
-): string {
+): TaskCommandExecution {
   const request = validateTaskArchiveRequest(args, store, options);
   const now = clock(options);
   const result = store.transaction((tx) => {
@@ -1969,68 +1977,75 @@ function archiveTaskCommand(
       && task.status !== "cancelled") {
       throw usageError(`Task ${task.id} must be completed or retired before it can be archived.`);
     }
-    const remoteDelivery = request.disposition === "integrated"
+    const remoteDelivery = request.force
+      ? projectTaskRemoteDeliveryFromStore(tx, task)
+      : request.disposition === "integrated"
       ? assertTaskRemoteDeliveryProof(
         tx,
         task,
-        options.archiveRemoteDeliveryProof,
-        { forceUnverified: request.forceUnverified }
+        options.archiveRemoteDeliveryProof
       )
       : undefined;
-    assertNoOpenInputRequests(tx, task.id, "archiving the Task");
-    const unsettledWork = tx.listWorkItems(task.id).find((item) => item.status === "open");
-    if (unsettledWork !== undefined) {
-      throw usageError(`Work Item ${unsettledWork.id} must be accepted or explicitly retired before archive.`);
+    if (!request.force) {
+      assertNoOpenInputRequests(tx, task.id, "archiving the Task");
+      const unsettledWork = tx.listWorkItems(task.id).find((item) => item.status === "open");
+      if (unsettledWork !== undefined) {
+        throw usageError(`Work Item ${unsettledWork.id} must be accepted or explicitly retired before archive.`);
+      }
+      const unresolvedIntegration = tx.listIntegrationAttempts(task.id).find((integration) => (
+        integration.status === "running"
+        || integration.status === "blocked"
+        || integration.status === "conflicted"
+        || integration.status === "validating"
+      ));
+      if (unresolvedIntegration !== undefined) {
+        throw usageError(
+          `Task ${task.id} has an unresolved Integration Attempt: ${unresolvedIntegration.id}.`
+        );
+      }
+      const activeArchiveJob = tx.listDurableJobs(task.id).find((job) => (
+        job.status === "queued"
+        || job.status === "running"
+        || (job.status === "unknown-needs-attention" && job.acknowledgedAt === undefined)
+      ));
+      if (activeArchiveJob !== undefined) {
+        throw usageError(
+          `Task ${task.id} has an active DurableJob: ${activeArchiveJob.id}/${activeArchiveJob.status}.`
+        );
+      }
+      if (task.cwd !== undefined || tx.listManagedWorkspaces(task.id).length > 0) {
+        throw usageError(`Task ${task.id} still has managed worktrees; clean them before archiving.`);
+      }
+      const activeRole = tx.listRoles(task.id)
+        .find((role) => tx.getActiveRun(task.id, role.name) !== null);
+      if (activeRole !== undefined) {
+        throw usageError(
+          `Task ${task.id} still has an active AgentRun for Role ${activeRole.name}; `
+          + "stop its runtime before archiving."
+        );
+      }
+      const liveSessionRole = tx.listRoles(task.id).find((role) => {
+        const sessions = tx.getTaskRoleSessionSet(task.id, role.name);
+        const session = sessions?.sessions[sessions.activeAgentId];
+        return session !== undefined && session.status !== "ended";
+      });
+      if (liveSessionRole !== undefined) {
+        throw usageError(
+          `Task ${task.id} still has a live Session for Role ${liveSessionRole.name}; `
+          + "stop that Session before archiving."
+        );
+      }
     }
-    const unresolvedIntegration = tx.listIntegrationAttempts(task.id).find((integration) => (
-      integration.status === "running"
-      || integration.status === "blocked"
-      || integration.status === "conflicted"
-      || integration.status === "validating"
-    ));
-    if (unresolvedIntegration !== undefined) {
-      throw usageError(
-        `Task ${task.id} has an unresolved Integration Attempt: ${unresolvedIntegration.id}.`
-      );
-    }
-    const activeArchiveJob = tx.listDurableJobs(task.id).find((job) => (
-      job.status === "queued"
-      || job.status === "running"
-      || (job.status === "unknown-needs-attention" && job.acknowledgedAt === undefined)
-    ));
-    if (activeArchiveJob !== undefined) {
-      throw usageError(
-        `Task ${task.id} has an active DurableJob: ${activeArchiveJob.id}/${activeArchiveJob.status}.`
-      );
-    }
-    if (task.cwd !== undefined || tx.listManagedWorkspaces(task.id).length > 0) {
-      throw usageError(`Task ${task.id} still has managed worktrees; clean them before archiving.`);
-    }
-    const activeRole = tx.listRoles(task.id)
-      .find((role) => tx.getActiveRun(task.id, role.name) !== null);
-    if (activeRole !== undefined) {
-      throw usageError(
-        `Task ${task.id} still has an active AgentRun for Role ${activeRole.name}; `
-        + "stop its runtime before archiving."
-      );
-    }
-    const liveSessionRole = tx.listRoles(task.id).find((role) => {
-      const sessions = tx.getTaskRoleSessionSet(task.id, role.name);
-      const session = sessions?.sessions[sessions.activeAgentId];
-      return session !== undefined && session.status !== "ended";
-    });
-    if (liveSessionRole !== undefined) {
-      throw usageError(
-        `Task ${task.id} still has a live Session for Role ${liveSessionRole.name}; `
-        + "stop that Session before archiving."
-      );
-    }
-    const archived = archiveTask(task, now, { by: actor });
+    const retainedResources = request.force ? archiveRetainedResources(tx, task) : [];
+    const warnings = request.force && remoteDelivery !== undefined ? archiveDeliveryWarnings(remoteDelivery) : [];
+    const archived = { ...archiveTask(task, now, { by: actor }), executionGate: { state: "stopped" as const } };
     tx.saveTask(archived);
-    tx.clearPendingWakeup(task.id);
     tx.clearLeaderFailure(task.id);
-    for (const role of tx.listRoles(task.id)) {
-      tx.removeWorkMailbox(roleMailbox(task.id, role.name));
+    if (!request.force) {
+      tx.clearPendingWakeup(task.id);
+      for (const role of tx.listRoles(task.id)) {
+        tx.removeWorkMailbox(roleMailbox(task.id, role.name));
+      }
     }
     const remoteProjectHeads = remoteDelivery === undefined
       ? undefined
@@ -2051,26 +2066,29 @@ function archiveTaskCommand(
     recordTaskEvent(tx, task.id, "task.archived", {
       by: actor,
       workspaceDisposition: request.disposition,
+      ...(request.force ? {
+        force: "true", cleanup: "pending",
+        warnings: JSON.stringify(warnings),
+        retainedResources: JSON.stringify(retainedResources)
+      } : {}),
       ...(remoteDelivery === undefined
         ? {}
         : {
             mergeCoverage: remoteDelivery.status,
             allMerged: String(remoteDelivery.allMerged),
-            allVerified: String(remoteDelivery.allVerified),
-            ...(request.forceUnverified && !remoteDelivery.allVerified
-              ? { verificationOverride: "true" }
-              : {})
+            allVerified: String(remoteDelivery.allVerified)
           }),
       ...(remoteProjectHeads === undefined ? {} : { projectHeads: remoteProjectHeads }),
       ...(remoteProjectBases === undefined ? {} : { projectBases: remoteProjectBases })
     }, now);
-    enqueueWork(tx, taskMailbox(task.id), "task-archived", now, [taskRef(task.id)]);
     return { task: archived, changed: true } as const;
   });
-  if (result.changed) notifyMailbox(options.runtime, taskMailbox(result.task.id), result.task.id);
-  return result.changed
+  if (result.changed && !request.force) options.runtime?.notifyStateChanged(result.task.id);
+  const diagnostics = taskArchiveDiagnostics(store, result.task);
+  return output((result.changed
     ? `Archived task ${result.task.id}\n`
-    : `Task ${result.task.id} is already archived\n`;
+    : `Task ${result.task.id} is already archived\n`) + renderArchiveDiagnostics(diagnostics),
+  { task: result.task, changed: result.changed, ...diagnostics });
 }
 
 function cancelTaskCommand(
@@ -2290,10 +2308,10 @@ export function parseTaskArchiveArguments(
 ): Readonly<{
   taskId: string;
   disposition: "integrated" | "abandoned";
-  forceUnverified: boolean;
+  force: boolean;
 }> {
   const usage = "Task archive usage: "
-    + "yui task archive <id> (--integrated [--force]|--abandon).";
+    + "yui task archive <id> (--integrated|--abandon) [--force].";
   const taskId = args[0]?.trim();
   const flags = args.slice(1);
   if (taskId === undefined
@@ -2306,14 +2324,14 @@ export function parseTaskArchiveArguments(
   }
   const integrated = flags.includes("--integrated");
   const abandoned = flags.includes("--abandon");
-  const forceUnverified = flags.includes("--force");
-  if (integrated === abandoned || (forceUnverified && !integrated)) {
+  const force = flags.includes("--force");
+  if (integrated === abandoned) {
     throw usageError(usage);
   }
   return {
     taskId,
     disposition: integrated ? "integrated" : "abandoned",
-    forceUnverified
+    force
   };
 }
 
@@ -2342,7 +2360,7 @@ export function validateTaskArchiveRequest(
     && task.status !== "cancelled") {
     throw usageError(`Task ${task.id} must be completed or retired before it can be archived.`);
   }
-  if (task.status !== "archived") {
+  if (task.status !== "archived" && !request.force) {
     assertNoOpenInputRequests(store, task.id, "archiving the Task");
     const unresolvedIntegration = store.listIntegrationAttempts(task.id).find((integration) => (
       integration.status === "running"
@@ -2859,6 +2877,7 @@ function taskRoleSessionCommand(
     // means there was nothing an Agent reported, and the one-line label above
     // still states which of the "no value" cases applies.
     const runConfiguration = active === null ? undefined : options.liveRunConfiguration;
+    const host = options.liveHostObservations?.[role.name];
     const runConfigurationDetail = renderAgentRunConfiguration(runConfiguration);
     return output(
       active === null
@@ -2873,6 +2892,7 @@ function taskRoleSessionCommand(
             `Native id: ${active.nativeSessionId}`,
             `Session: ${active.status}${active.endReason === undefined ? "" : `/${active.endReason}`}`,
             `AgentRun: ${binding?.run?.status ?? "none"}`,
+            ...(host === undefined ? [] : [`Host reporting: ${taskRoleHostDiagnostic(host)}`]),
             `Run configuration: ${agentRunConfigurationLabel(runConfiguration)}`
           ].join("\n") + "\n"
           + `\n${renderRoleLaunchComparison(role, active.effective)}\n`
@@ -2882,6 +2902,7 @@ function taskRoleSessionCommand(
         role,
         session: active,
         providerBinding: binding,
+        ...(host === undefined ? {} : { host }),
         ...(runConfiguration === undefined ? {} : { runConfiguration })
       }
     );
@@ -2924,12 +2945,6 @@ function taskRoleSessionCommand(
     const now = clock(options);
     const request = store.transaction((tx) => {
       const task = requireTask(tx, parsed.positionals[0]);
-      if (!["draft", "active", "completed", "cancelled"].includes(task.status)) {
-        throw usageError(
-          `Task Role Session stop is unavailable for an archived Task: ${task.id}.`,
-          usage
-        );
-      }
       const actor = taskActor(tx, options, task.id);
       const role = requireRole(tx, task.id, parsed.positionals[1]);
       if (actor === "leader" && role.name === LEADER_ROLE) {
@@ -3073,7 +3088,7 @@ function listTaskRoles(
     store,
     options.runtime?.inspectTaskRolePanes?.(task.id) ?? [],
     options.now?.() ?? new Date()
-  );
+  ).map(status => withTaskRoleHostObservation(status, options.liveHostObservations?.[status.roleName]));
   if (statuses.length === 0) return output("No roles assigned.\n", { roles: statuses });
   return output(`${renderTable(
     `Task roles: ${task.id}`,
@@ -3117,7 +3132,8 @@ function taskRoleStatus(
     options.now?.() ?? new Date()
   );
   if (status === undefined) throw roleNotFound(role.name);
-  return output(renderTaskRoleRuntimeStatus(status), { role: status });
+  const observed = withTaskRoleHostObservation(status, options.liveHostObservations?.[role.name]);
+  return output(renderTaskRoleRuntimeStatus(observed), { role: observed });
 }
 
 function showTaskRole(args: string[], store: TaskWorkflowStore): TaskCommandExecution {

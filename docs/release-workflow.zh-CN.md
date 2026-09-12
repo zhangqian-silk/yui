@@ -59,6 +59,35 @@ Session 使用普通的 `yui` 命令，兼容性由协议和存储身份检查�
 Task-final 的 ReviewRound 记录必须全部携带那唯一的合同。冲突的记录 fail closed；
 不存在重新绑定事件、恢复命令或第二套合同状态机。
 
+## 常驻 Agent Host 升级兼容
+
+存活 Host 保持原 Endpoint 实现，先把准确的 Session/attempt/nativeTurn 事实写入现有
+持久 Inbox，再联系 Controller。只有当前 Controller 解析 Run 归属、校验权限、工作区、
+生命周期与历史关联并提交结果。Inbox 文件不代表接受；提交后才确认消费，断线或丢失
+ACK 不会重放用户输入或模型工作。
+
+启动事实从已兑现的 launch payload 取得准确 Run 身份，不把 Run 固定到长期 Session
+环境。即使冻结的 Run 工作区不同于 Role 默认值，登记前的证据也能保留；后续活动和
+终态仍只按各自的原生输入身份解析归属。
+
+支持边界为控制协议 `yui-agent-host/v5`、事件来源协议 `yui-agent-host-events/v1`、
+Controller RPC 版本 4。声明 `storage=controller-owned` 的 Host 不打开 Home 数据库，
+包括进程归属、原生账号位置和执行环境校验。Home 22 声明 Inbox 的新增来源字段，
+不改写有效历史事实与业务记录。后续版本要么保留该线协议，要么在修改存储前拒绝不兼容
+的存活生产者。刷新 Session CLI wrapper 或新 `doctor` 成功都不能证明旧 Host 兼容。
+
+`upgrade`、`update` 的目标版本预检及 release activation 独立检查存活 Host。
+没有此能力的 legacy Host（包括 idle）以及兼容响应不确定的 Host 都阻止采用；
+在既有隔离/静默交接边界再次检查，先于迁移或发布切换。检查不会 kill、替换或 reload
+Host。先让原有工作结束并保留原始未决输入/结果证据，再由获授权的 Operator 在安全
+边界选择 Session 替换或清理，之后重试。安装新代码不能修改已加载的 legacy Host 内存，
+也不能回收它从未持久投递过的终态。
+
+`task role status`、`task role list` 和 `task role session inspect` 在持久 Run 状态旁
+显示 Host 上报观测。原生结果待落库或已知上报故障需要关注，但不代表 Provider 失败、
+Run 已结束或业务已验收。Host 诊断只检查自己已投递文件的身份是否存在，不解析或隔离
+其他生产者的新格式事件。
+
 ## CLI 与 Controller 发布边界
 
 全局 `yui` 命令是稳定的用户与受管 Session 接口。对普通命令，它不跟随

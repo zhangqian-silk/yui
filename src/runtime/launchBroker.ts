@@ -25,6 +25,8 @@ export type AgentHostLaunchPayload = Readonly<{
   args: readonly string[];
   environment: Readonly<Record<string, string>>;
   cwd: string;
+  /** Exact launch only; never exported into the long-lived Provider environment. */
+  startupRunId?: string;
   executionEnvironment?: ExecutionEnvironmentSnapshot;
   childLifecycle: "persistent" | "per-turn";
   startMode: "provider" | "idle";
@@ -143,6 +145,12 @@ function validatePayload(payload: AgentHostLaunchPayload): AgentHostLaunchPayloa
   if (payload.schemaVersion !== 2) throw new Error("Agent Host launch payload version is invalid.");
   text(payload.command, "command");
   text(payload.cwd, "cwd");
+  if (payload.startupRunId !== undefined) {
+    text(payload.startupRunId, "startup Run id");
+    if (payload.environment?.YUI_SESSION_SCOPE !== "task") {
+      throw new Error("Only a Task launch may carry a startup Run identity.");
+    }
+  }
   if (!Array.isArray(payload.args)) throw new Error("Agent Host launch args must be an array.");
   payload.args.forEach((value) => text(value, "argument"));
   if (payload.environment === null || typeof payload.environment !== "object") {

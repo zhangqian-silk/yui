@@ -32,7 +32,7 @@
 - Keep Yui CLI primitives project-neutral. Put project-specific planning, build, test, migration, release, review, and recovery judgment in Project Skills, Knowledge, and Task context instead of generic CLI Roles or core branches.
 - Treat stable Project checkouts as read-only reference workspaces. Perform Task and WorkItem changes in managed worktrees.
 - A Draft Task stores planning facts and Project bindings without a delivery workspace. Activation prepares resources and atomically adopts the Task's main workspace; a planning Session does not gain delivery authority just because the Task becomes active. During execution, the Leader may create an isolated WorkItem worktree directly when concurrent work warrants it; do not introduce an approval workflow.
-- Archive only after active work is settled, results are integrated or deliberately abandoned, and managed worktrees are clean and removable. Worktree cleanup must not delete the Task record.
+- Ordinary archive requires settled work, integrated or deliberately abandoned results, and clean removable worktrees. Explicit user/Operator force authorization may archive an eligible terminal Task while preserving unresolved evidence and unsafe resources; it never proves delivery, quiescence or permission to discard data. Worktree cleanup must not delete the Task record.
 
 ## Do not solicit real-resource validation
 

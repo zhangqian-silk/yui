@@ -12,6 +12,9 @@ import { currentProviderConversation, managedProviderTurnId } from "../runtime/p
 import type { TaskEvent } from "../event/taskEvent.js";
 import { taskRoleRuntimeIdentity } from "../runtime/managedCaller.js";
 import { runPurposeAdmitsTaskState } from "../agentRun/agentRun.js";
+import type { TaskStore } from "../storage/taskStore.js";
+
+export class RuntimeHookRunFenceError extends Error {}
 
 export type RuntimeHookRunFence = Readonly<{
   taskId: string;
@@ -34,6 +37,9 @@ export type RuntimeHookRunFenceOptions = Readonly<{
   /** Session lifecycle observations remain valid while no AgentRun is active. */
   sessionOnly?: boolean;
   continuationId?: string;
+  /** Host facts must never fall back from an unknown old input to the active Run. */
+  exactInput?: boolean;
+  startupRunId?: string;
 }>;
 
 /**
@@ -44,25 +50,30 @@ export function resolveRuntimeHookRunFence(
   environment: NodeJS.ProcessEnv,
   adapterId: string,
   payloadNativeSessionId: string,
-  options: RuntimeHookRunFenceOptions = {}
+  options: RuntimeHookRunFenceOptions = {},
+  currentStore?: TaskStore
 ): RuntimeHookRunFence {
   if (environment.YUI_SESSION_SCOPE !== "task") {
-    throw new Error("Runtime observation Hook requires a Task session scope.");
+    throw new RuntimeHookRunFenceError("Runtime observation Hook requires a Task session scope.");
   }
   if (environment.YUI_ADAPTER_ID !== adapterId) {
-    throw new Error(`Runtime observation Hook requires the ${adapterId} adapter.`);
+    throw new RuntimeHookRunFenceError(`Runtime observation Hook requires the ${adapterId} adapter.`);
   }
-  const home = requireIdentity(environment.YUI_HOME, "YUI_HOME");
+  if (currentStore === undefined) {
+    const store = openCurrentTaskStore(requireIdentity(environment.YUI_HOME, "YUI_HOME"));
+    try { return resolveRuntimeHookRunFence(environment, adapterId, payloadNativeSessionId, options, store); }
+    finally { store.close(); }
+  }
   const taskId = requireIdentity(environment.YUI_TASK_ID, "Task id");
   const roleName = requireIdentity(environment.YUI_ROLE, "Role name");
   const agentId = requireIdentity(environment.YUI_AGENT_ID, "Agent id");
   const workspace = requireIdentity(environment.YUI_WORKSPACE, "YUI workspace");
   const nativeSessionId = requireIdentity(payloadNativeSessionId, "Provider session id");
 
-  const store = openCurrentTaskStore(home);
+  const store = currentStore;
   const task = store.getTask(taskId);
   if (task === null) {
-    throw new Error("Runtime observation Hook Task does not accept this lifecycle boundary.");
+    throw new RuntimeHookRunFenceError("Runtime observation Hook Task does not accept this lifecycle boundary.");
   }
   const role = store.getRole(taskId, roleName);
   const sessions = store.getTaskRoleSessionSet(taskId, roleName);
@@ -102,6 +113,14 @@ export function resolveRuntimeHookRunFence(
       }
     )
   );
+  if (options.exactInput && acceptedBinding === null && !matchesProviderTurn) {
+    throw new RuntimeHookRunFenceError("Runtime observation Hook input has no exact accepted execution binding.");
+  }
+  if (options.startupRunId !== undefined && options.startupRunId !== activeRun?.id) {
+    // A historical Session can report terminal evidence, but its old startup
+    // must not bind a new Session under a successor's active Run.
+    throw new RuntimeHookRunFenceError("Runtime observation Hook startup does not match its exact launch Run.");
+  }
   // Collection of an exactly accepted terminal fact is not a new action by
   // the Role. A successor's active Agent or revoked execution permission
   // cannot erase the original AgentRun's evidence.
@@ -116,17 +135,26 @@ export function resolveRuntimeHookRunFence(
     && activeRun.purpose === "planning"
     && activeRun.roleName === roleName
     && runPurposeAdmitsTaskState(activeRun.purpose, task);
+  // Restoring the Draft Leader's existing planning Session needs no new Run.
+  // Admit its Session facts; the shared identity/workspace fence below still
+  // requires the exact current Session and never grants delivery authority.
+  const planningSessionObservation = options.sessionOnly === true
+    && task.status === "draft" && roleName === "leader"
+    && runPurposeAdmitsTaskState("planning", task)
+    && session?.status === "active"
+    && session.effective.executionAuthority === "planning";
   if (!(task.status === "active" && task.executionGate.state === "enabled")
     && !(task.status === "completed" && options.sessionOnly === true)
     && !planningObservation
+    && !planningSessionObservation
     && !existingExecutionObservation) {
-    throw new Error("Runtime observation Hook Task does not accept this lifecycle boundary.");
+    throw new RuntimeHookRunFenceError("Runtime observation Hook Task does not accept this lifecycle boundary.");
   }
   const runtimeIdentity = role === null ? null : taskRoleRuntimeIdentity(role, activeRun);
   if (!existingExecutionObservation && (runtimeIdentity === null || runtimeIdentity.agentId !== agentId
     || runtimeIdentity.adapterId !== adapterId
     || (sessions !== null && sessions.activeAgentId !== agentId))) {
-    throw new Error("Runtime observation Hook Role or Agent is not current.");
+    throw new RuntimeHookRunFenceError("Runtime observation Hook Role or Agent is not current.");
   }
   const lifecycleMailbox = store.getWorkMailbox(runtimeLifecycleTarget({
     scope: "task",
@@ -143,7 +171,7 @@ export function resolveRuntimeHookRunFence(
       || observedSession.adapterId !== adapterId
       || observedSession.nativeSessionId !== nativeSessionId
       || observedSession.effective.workspace.root !== workspace) {
-      throw new Error("Runtime observation Hook Session does not match durable state.");
+      throw new RuntimeHookRunFenceError("Runtime observation Hook Session does not match durable state.");
     }
     return {
       taskId,
@@ -192,7 +220,7 @@ export function resolveRuntimeHookRunFence(
     ? managedProviderTurnId(providerTurn) ?? undefined
     : undefined;
   if (options.terminal === true && acceptedBinding === null && registeredRunId === undefined) {
-    throw new Error("Runtime observation Hook terminal has no exact accepted execution binding.");
+    throw new RuntimeHookRunFenceError("Runtime observation Hook terminal has no exact accepted execution binding.");
   }
   const terminalRun = acceptedBinding !== null
     ? store.getRun(taskId, acceptedBinding.fence.runId!)
@@ -212,7 +240,7 @@ export function resolveRuntimeHookRunFence(
     && !exactTerminal
     && registeredRunId === undefined
     && acceptedBinding === null) {
-    throw new Error("Runtime observation Hook has no matching durable in-flight AgentRun.");
+    throw new RuntimeHookRunFenceError("Runtime observation Hook has no matching durable in-flight AgentRun.");
   }
   const runId = acceptedBinding?.fence.runId
     ?? registeredRunId
@@ -227,20 +255,20 @@ export function resolveRuntimeHookRunFence(
     || run.roleName !== roleName
     || run.effective.agentId !== agentId
     || run.effective.adapterId !== adapterId) {
-    throw new Error("Runtime observation Hook AgentRun does not match durable active state.");
+    throw new RuntimeHookRunFenceError("Runtime observation Hook AgentRun does not match durable active state.");
   }
   if (run.effective.workspace.root !== workspace) {
-    throw new Error("Runtime observation Hook workspace does not match the durable AgentRun snapshot.");
+    throw new RuntimeHookRunFenceError("Runtime observation Hook workspace does not match the durable AgentRun snapshot.");
   }
   if (session !== undefined && acceptedBinding === null && !matchesProviderTurn && !replacementStartup && !resumedStartup) {
     if (session.adapterId !== adapterId
       || session.nativeSessionId !== nativeSessionId
       || session.effective.workspace.root !== workspace) {
-      throw new Error("Runtime observation Hook Session does not match durable state.");
+      throw new RuntimeHookRunFenceError("Runtime observation Hook Session does not match durable state.");
     }
   } else if (acceptedBinding === null && !matchesProviderTurn && (session === undefined || replacementStartup)) {
     if (!discoveredStartup && !preallocatedStartup) {
-      throw new Error("Runtime observation Hook has no matching new-Session intent.");
+      throw new RuntimeHookRunFenceError("Runtime observation Hook has no matching new-Session intent.");
     }
   }
   return {
@@ -286,7 +314,7 @@ function knownContinuationBinding(
   if (binding === null) return null;
   if (matches.some((candidate) => candidate.fence.runId !== binding.fence.runId
     || candidate.fence.receiptId !== binding.fence.receiptId)) {
-    throw new Error("Runtime observation Hook continuation has conflicting durable AgentRun bindings.");
+    throw new RuntimeHookRunFenceError("Runtime observation Hook continuation has conflicting durable AgentRun bindings.");
   }
   return binding;
 }
@@ -330,18 +358,18 @@ function acceptedRunBinding(
       && candidate.fence.nativeTurnId !== expected.nativeTurnId)
     || candidate.fence.runId !== binding.fence.runId
     || candidate.fence.receiptId !== binding.fence.receiptId))) {
-    throw new Error("Runtime observation Hook native Turn has conflicting durable AgentRun bindings.");
+    throw new RuntimeHookRunFenceError("Runtime observation Hook native Turn has conflicting durable AgentRun bindings.");
   }
   return binding;
 }
 
 function requireIdentity(value: unknown, label: string): string {
   if (typeof value !== "string" || value.includes("\0")) {
-    throw new Error(`${label} is required.`);
+    throw new RuntimeHookRunFenceError(`${label} is required.`);
   }
   const normalized = value.trim();
   if (normalized.length === 0 || normalized.length > 1_024) {
-    throw new Error(`${label} is invalid.`);
+    throw new RuntimeHookRunFenceError(`${label} is invalid.`);
   }
   return normalized;
 }

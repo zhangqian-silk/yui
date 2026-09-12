@@ -91,6 +91,14 @@ export type RuntimeRoleFact = Readonly<{
   runId?: string;
 }>;
 
+/** Archiving may retain execution; a Task lifecycle label is not exit proof. */
+export function runtimeRoleProtectsDomain(role: RuntimeRoleFact): boolean {
+  return (role.ownerKind === "task-role"
+    && (role.taskStatus === "active" || role.taskStatus === "archived"))
+    // Global Roles have no Task lifecycle; require a current native Session.
+    || (role.ownerKind === "global-role" && role.nativeSessionId !== undefined);
+}
+
 export type RuntimeArtifactFact = Readonly<{
   artifactKind: "controller-discovery" | "controller-socket" | "tmux-socket" | "domain-identity";
   path: string;
@@ -372,8 +380,7 @@ export function buildControllerResourceInventory(
         : processTree(processes, pane.pid);
       for (const process of paneProcesses) claimed.add(process.pid);
       const role = findRole(homeFact.roles, pane);
-      const terminalIsolation = (role?.taskStatus === "cancelled" && role.taskRetirementIsolated === true)
-        || role?.taskStatus === "archived";
+      const terminalIsolation = role?.taskStatus === "cancelled" && role.taskRetirementIsolated === true;
       resources.push(processResource({
         kind: "agent-session",
         state: pane.dead ? "dead" : role === undefined ? "orphaned" : "running",
@@ -382,7 +389,8 @@ export function buildControllerResourceInventory(
           : terminalIsolation ? "safe" : "protected",
         reasonCode: role === undefined
           ? pane.dead ? "dead-orphan-pane" : "orphan-pane"
-          : terminalIsolation ? (role.taskStatus === "cancelled" ? "retired-task-pane" : "archived-task-pane") : "owned-role-pane",
+          : terminalIsolation ? "retired-task-pane"
+            : role.taskStatus === "archived" ? "archived-task-pane" : "owned-role-pane",
         yuiHome,
         owner: role === undefined ? { kind: "none" } : roleOwner(role),
         processes: paneProcesses,
@@ -677,7 +685,9 @@ function domainDisposition(
   domain: RuntimeDomainFact | undefined,
   target?: string
 ): CleanupDisposition {
-  if (reason === "retired-task-pane" || reason === "archived-task-pane") {
+  // Even an expired test domain cannot authorize deleting retained execution.
+  if (reason === "archived-task-pane") return "protected";
+  if (reason === "retired-task-pane") {
     return "safe";
   }
   if (domain === undefined) return base;
