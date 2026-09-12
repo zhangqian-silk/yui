@@ -33,6 +33,10 @@ import {
   type UnifyHomePreflightBlocker
 } from "../migrations/unifyHomeLayout.js";
 import {
+  preflightCollapseWorktreeLayout,
+  type CollapseWorktreePreflightBlocker
+} from "../migrations/collapseWorktreeLayout.js";
+import {
   migrateSqliteSchema,
   storageMigrationPlan,
   type StorageMigrationStep
@@ -511,13 +515,19 @@ function blocked(
 }
 
 /**
- * Run the data migration's READ-ONLY preflight against the current (pre-upgrade)
- * database and, when it finds a blocker, return a `blocked` result the caller
- * surfaces before touching the Controller or the Home. Returns `null` when the
- * plan carries no path-unifying data migration, or when the preflight is clear.
+ * Run each path-relocating data migration's READ-ONLY preflight against the
+ * current (pre-upgrade) database and, when any finds a blocker, return a
+ * `blocked` result the caller surfaces before touching the Controller or the
+ * Home. Returns `null` when the plan carries no path-relocating data migration,
+ * or when every preflight is clear.
  *
- * The database is opened read-only so the check cannot mutate the authoritative
- * store, and the handle is always closed. An unexpected failure to evaluate the
+ * Both the 18->19 unify and the 19->20 collapse migrations physically relocate
+ * managed worktrees and share the same blocker shape (in-flight Job, conflicting
+ * relocation target). When a Home is upgraded across both in one run, their
+ * blockers are aggregated so the operator sees every readiness problem at once.
+ *
+ * The database is opened read-only so the checks cannot mutate the authoritative
+ * store, and the handle is always closed. An unexpected failure to evaluate a
  * preflight is itself a fail-closed blocker: we must not advance to an
  * irreversible migration on an unverifiable readiness signal.
  */
@@ -526,17 +536,22 @@ function preflightMigrationBlockers(
   plan: readonly StorageMigrationStep[],
   classification: HomeClassification
 ): Extract<UpgradeResult, { outcome: "blocked" }> | null {
-  // Only meaningful when the plan actually includes the path-unifying migration.
-  if (!plan.some((step) => step.name === "unify-home-layout")) return null;
+  const relocatesUnify = plan.some((step) => step.name === "unify-home-layout");
+  const relocatesCollapse = plan.some((step) => step.name === "collapse-worktree-layout");
+  // Only meaningful when the plan actually includes a path-relocating migration.
+  if (!relocatesUnify && !relocatesCollapse) return null;
 
-  let blockers: readonly UnifyHomePreflightBlocker[];
+  type MigrationBlocker = UnifyHomePreflightBlocker | CollapseWorktreePreflightBlocker;
+  let blockers: MigrationBlocker[];
   try {
     const database = new Database(join(home, CURRENT_DATABASE_FILENAME), {
       readonly: true,
       fileMustExist: true
     });
     try {
-      blockers = preflightUnifyHomeLayout(database).blockers;
+      blockers = [];
+      if (relocatesUnify) blockers.push(...preflightUnifyHomeLayout(database).blockers);
+      if (relocatesCollapse) blockers.push(...preflightCollapseWorktreeLayout(database).blockers);
     } finally {
       database.close();
     }
@@ -557,7 +572,7 @@ function preflightMigrationBlockers(
     outcome: "blocked",
     stage: "in-flight",
     message:
-      "Refusing to migrate: the Home is not safe to relocate under a unified layout yet. "
+      "Refusing to migrate: the Home is not safe to relocate under the current layout yet. "
       + blockers.map((entry) => entry.detail).join("; ") + ".",
     action:
       "Resolve the reported condition(s) — let a queued/running Job finish or cancel it, and "

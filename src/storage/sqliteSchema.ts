@@ -31,6 +31,10 @@ import {
   UNIFY_HOME_LAYOUT_SQL,
   migrateUnifyHomeLayout
 } from "./migrations/unifyHomeLayout.js";
+import {
+  COLLAPSE_WORKTREE_LAYOUT_SQL,
+  migrateCollapseWorktreeLayout
+} from "./migrations/collapseWorktreeLayout.js";
 
 import {
   CURRENT_STORAGE_VERSION,
@@ -1175,6 +1179,31 @@ UPDATE review_rounds SET payload = json_set(payload, '$.executionGroup.lanes', j
     // substantive step; the SQL is inert.
     sql: UNIFY_HOME_LAYOUT_SQL,
     migrateData: migrateUnifyHomeLayout
+  },
+  {
+    version: 20,
+    name: "collapse-worktree-layout",
+    introducedIn: "0.15.9",
+    // Collapse the two-layer managed workspace layout into a single layer of real
+    // Git worktrees addressed by Task/owner and Project. Each managed worktree
+    // moves from its per-Project physical root
+    // (`<home>/workspaces/worktree/<projectName>/<taskKey>/<roleKey>`) to the
+    // location the v19 symlink view used to point at
+    // (`<home>/workspaces/tasks/<taskId>/<owner>/<projectDirectory>`), so the
+    // logical entry path and the physical worktree become the same directory and
+    // the symlink-view indirection is gone; an integration attempt moves under a
+    // new `tasks/<taskId>/integrations/<id>/` owner root, addressed by the bound
+    // Project directory rather than the Project name. Only the durable Git
+    // worktrees are physically relocated, by COPY (never rename-away): each
+    // replica is digest-verified against the source and atomically published over
+    // the regenerable view symlink while the original is PRESERVED as the
+    // rollback anchor. The copied worktrees are then repaired, and only the
+    // persisted pointers the runtime trusts as live are rewritten. Frozen
+    // evidence and self-healing records are left intact; a queued/running Job
+    // bound under a relocating worktree is refused rather than silently moved.
+    // The data/filesystem transform is the substantive step; the SQL is inert.
+    sql: COLLAPSE_WORKTREE_LAYOUT_SQL,
+    migrateData: migrateCollapseWorktreeLayout
   }
 ]);
 
@@ -1478,6 +1507,16 @@ export type SqliteSchemaMigrationOptions = Readonly<{
    * authoritative database.
    */
   mode: SqliteSchemaMigrationMode;
+  /**
+   * Highest version to advance to in `apply` mode. Defaults to
+   * {@link CURRENT_STORAGE_VERSION} and is clamped to it, so every production
+   * caller (Store open, `yui upgrade`) migrates to head exactly as before. Its
+   * only use is a per-step test seam: a migration test can drive a bounded run
+   * (e.g. only the 18->19 step) so each migration keeps its own isolated
+   * intermediate-state assertions as later steps are appended to the chain. It
+   * NEVER lets an ordinary open partially migrate — that path uses `validate`.
+   */
+  throughVersion?: number;
 }>;
 
 /** Inspect a recognized migration prefix without changing it. */
@@ -1527,7 +1566,7 @@ export function migrateSqliteSchema(
   db: Database.Database,
   options: SqliteSchemaMigrationOptions
 ): MigrationResult {
-  const migrate = (): number[] => {
+  const migrate = (): { newlyApplied: number[]; head: number } => {
     const ledgerWasCreated = ensureMigrationLedger(db, options.mode);
     // Validate the complete ledger before touching any pending migration. This
     // prevents a manually altered or partially recorded ledger from silently
@@ -1558,8 +1597,17 @@ export function migrateSqliteSchema(
         "admission"
       );
     }
+    // Bound the applied steps to `throughVersion` (default and clamp: head), so a
+    // migration test can stop at one step's intermediate state while production
+    // always advances to head. The validate-mode guard above still fires on the
+    // FULL pending set — the bound never lets an ordinary open partially migrate.
+    const targetVersion = Math.min(
+      options.throughVersion ?? CURRENT_STORAGE_VERSION,
+      CURRENT_STORAGE_VERSION
+    );
+    const toApply = pending.filter((migration) => migration.version <= targetVersion);
     const newlyApplied: number[] = [];
-    for (const migration of pending) {
+    for (const migration of toApply) {
       db.exec(migration.sql);
       migration.migrateData?.(db);
       const appliedAt = new Date().toISOString();
@@ -1575,12 +1623,16 @@ export function migrateSqliteSchema(
       newlyApplied.push(migration.version);
     }
     validateSchemaObjects(db);
-    return newlyApplied;
+    // The true head reached: the highest already-applied version or, when this
+    // run advanced the ledger, the last step it committed. Bounded runs report
+    // the intermediate head; an unbounded run reports CURRENT_STORAGE_VERSION.
+    const head = newlyApplied.at(-1) ?? applied.currentVersion;
+    return { newlyApplied, head };
   };
-  const newlyApplied = options.mode === "apply" && !db.inTransaction
+  const outcome = options.mode === "apply" && !db.inTransaction
     ? db.transaction(migrate)()
     : migrate();
-  return { applied: newlyApplied, version: CURRENT_STORAGE_VERSION };
+  return { applied: outcome.newlyApplied, version: outcome.head };
 }
 
 /** The names of every table the schema creates (for tests/introspection). */

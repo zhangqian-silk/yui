@@ -39,7 +39,14 @@ import { createRun, validateRun } from "../../dist/agentRun/agentRun.js";
 import { createRunInput } from "../../dist/context/runInputContract.js";
 import { sanitizedTestEnv } from "../helpers/sanitizedEnv.mjs";
 
-const PRIOR_VERSION = CURRENT_STORAGE_VERSION - 1;
+// This file exercises the 18->19 unify-home migration IN ISOLATION. Once storage
+// grew a 19->20 step (collapse-worktree-layout), "prior version" is no longer
+// `head - 1`, so both bounds are pinned explicitly: the migration under test
+// takes a v18 Home to v19 and its intermediate state (managed worktrees copied
+// under `<home>/workspaces/worktree/`) is what these direct-runner tests assert.
+// The orchestrator tests below deliberately drive the FULL chain to head.
+const PRIOR_VERSION = 18;
+const UNIFY_TARGET_VERSION = 19;
 
 const gitEnv = sanitizedTestEnv({
   GIT_AUTHOR_NAME: "Yui Test",
@@ -157,14 +164,23 @@ function projectEntry(projectId, path, directory) {
   };
 }
 
-/** Run the real 18->19 migration through the transaction-wrapping runner. */
+/**
+ * Run the real 18->19 migration through the transaction-wrapping runner, BOUNDED
+ * to stop at v19 so this file keeps asserting the unify migration's own
+ * intermediate state (worktrees copied under `<home>/workspaces/worktree/`)
+ * rather than the further-collapsed v20 layout. The `throughVersion` seam is a
+ * test-only bound; production always migrates to head.
+ */
 function runMigration(db) {
-  return migrateSqliteSchema(db, { mode: "apply" });
+  return migrateSqliteSchema(db, { mode: "apply", throughVersion: UNIFY_TARGET_VERSION });
 }
 
 test("storage floor and head bracket the unify-home migration", () => {
   assert.equal(MIN_SUPPORTED_STORAGE_VERSION, 1);
-  assert.equal(PRIOR_VERSION + 1, CURRENT_STORAGE_VERSION);
+  // The unify migration is a single forward step from the pinned prior version.
+  assert.equal(PRIOR_VERSION + 1, UNIFY_TARGET_VERSION);
+  // The unify step is at or below head; later steps (collapse) extend the chain.
+  assert.ok(UNIFY_TARGET_VERSION <= CURRENT_STORAGE_VERSION);
 });
 
 test("unify-home relocates managed trees into Home and rewrites live pointers", (t) => {
@@ -318,7 +334,7 @@ test("unify-home relocates managed trees into Home and rewrites live pointers", 
   writeFileSync(join(oldRuntime, "cache.bin"), "cache\n");
 
   const result = runMigration(db);
-  assert.deepEqual(result.applied, [CURRENT_STORAGE_VERSION]);
+  assert.deepEqual(result.applied, [UNIFY_TARGET_VERSION]);
 
   // (1) The durable worktree tree is COPIED into Home; the original is PRESERVED
   // as the rollback anchor. The disposable runtime and the regenerable task views
@@ -440,11 +456,11 @@ test("unify-home relocates managed trees into Home and rewrites live pointers", 
     "offline migration writes no recovery manifest"
   );
 
-  // Ledger advanced to head.
+  // Ledger advanced to the unify step (not head: later steps extend the chain).
   const ledgerHead = db
     .prepare("SELECT MAX(version) AS version FROM schema_migrations")
     .get();
-  assert.equal(ledgerHead.version, CURRENT_STORAGE_VERSION);
+  assert.equal(ledgerHead.version, UNIFY_TARGET_VERSION);
 });
 
 test("unify-home refuses when a non-terminal durable Job is under a relocating root", (t) => {
@@ -515,7 +531,7 @@ test("unify-home is a no-op on an already-unified Home and writes no manifest", 
   // relocate. (The runtime relocation pair still differs by name, so the guard
   // must key off on-disk presence, not the pair list.)
   const result = runMigration(db);
-  assert.deepEqual(result.applied, [CURRENT_STORAGE_VERSION]);
+  assert.deepEqual(result.applied, [UNIFY_TARGET_VERSION]);
   assert.equal(
     existsSync(join(storageBackupRoot(home), "unify-home-migration.json")),
     false,
@@ -524,7 +540,7 @@ test("unify-home is a no-op on an already-unified Home and writes no manifest", 
   const ledgerHead = db
     .prepare("SELECT MAX(version) AS version FROM schema_migrations")
     .get();
-  assert.equal(ledgerHead.version, CURRENT_STORAGE_VERSION);
+  assert.equal(ledgerHead.version, UNIFY_TARGET_VERSION);
 });
 
 // ---------------------------------------------------------------------------
@@ -621,9 +637,9 @@ test("real upgrade path: active run effective+workspace move together and pass t
   const oldTaskRoot = join(workspaceRoot, "tasks", taskId, "main");
   seedActiveRunAtOldWorkspace(store, taskId, oldTaskRoot, mainPath);
 
-  // Rewind so the real orchestrator sees exactly the 18->19 step pending, then
-  // drive the ACTUAL upgrade (backup + migrate + gate). Close our handle first
-  // so the orchestrator opens the database cleanly.
+  // Rewind so the real orchestrator sees the full pending chain (18->19->20),
+  // then drive the ACTUAL upgrade (backup + migrate + gate). Close our handle
+  // first so the orchestrator opens the database cleanly.
   rewindLedgerToPriorVersion(store);
   store.close();
 
@@ -636,11 +652,14 @@ test("real upgrade path: active run effective+workspace move together and pass t
 
   // Reopen and confirm the persisted run advanced BOTH launch pointers to the new
   // Home path, still mutually consistent (the exact invariant the gate enforces).
+  // The full chain lands the run's task-main worktree at its single-layer v20
+  // location: the owner root `tasks/<taskId>/main` is unchanged from v19, and the
+  // write entry collapses from `worktree/app/main-abcd` to `<root>/<directory>`.
   const reopened = new SqliteTaskStore(home);
   t.after(() => reopened.close());
   const migrated = reopened.getRun(taskId, "run-1");
   const newTaskRoot = join(managedTaskRoot(home), taskId, "main");
-  const newMain = join(managedWorktreeRoot(home), "app", "main-abcd");
+  const newMain = join(newTaskRoot, "app");
   assert.equal(migrated.effective.workspace.root, newTaskRoot, "effective.workspace root rewritten");
   assert.equal(migrated.workspace.root, newTaskRoot, "workspace root rewritten");
   assert.equal(migrated.effective.workspace.entries[0].path, newMain);
@@ -763,7 +782,7 @@ test("interrupted copy: a stale .incoming staging dir is discarded and re-copied
   writeFileSync(join(staging, "PARTIAL-GARBAGE.txt"), "half a copy\n");
 
   const result = runMigration(db);
-  assert.deepEqual(result.applied, [CURRENT_STORAGE_VERSION], "recovers by re-copying from source");
+  assert.deepEqual(result.applied, [UNIFY_TARGET_VERSION], "recovers by re-copying from source");
 
   assert.equal(existsSync(staging), false, "stale staging discarded");
   assert.equal(
@@ -854,9 +873,14 @@ test("P2: a clean migrating Home reports migration-ready with the unify step (up
   assert.equal(preflight.stepCount, preflight.steps.length, "stepCount matches steps length");
   const unifyStep = preflight.steps.find((s) => s.name === "unify-home-layout");
   assert.ok(unifyStep !== undefined, "the unify-home-layout step is planned");
-  assert.equal(unifyStep.toVersion, CURRENT_STORAGE_VERSION);
+  assert.equal(unifyStep.toVersion, UNIFY_TARGET_VERSION);
   assert.equal(unifyStep.fromVersion, PRIOR_VERSION);
   assert.equal(unifyStep.toVersion, unifyStep.fromVersion + 1, "single forward step");
+  // The chain now also plans the follow-on collapse step (19->20).
+  const collapseStep = preflight.steps.find((s) => s.name === "collapse-worktree-layout");
+  assert.ok(collapseStep !== undefined, "the collapse-worktree-layout step is planned");
+  assert.equal(collapseStep.fromVersion, UNIFY_TARGET_VERSION);
+  assert.equal(collapseStep.toVersion, CURRENT_STORAGE_VERSION);
 });
 
 test("P2: dry-run and update-preflight surface the same blockers as execute {reason,detail}", async (t) => {
@@ -1027,7 +1051,7 @@ test("P4: the preserved source keeps an independent, working Git after the migra
   const beforeHead = git(["-C", mainPath, "rev-parse", "HEAD"]);
 
   const result = runMigration(db);
-  assert.deepEqual(result.applied, [CURRENT_STORAGE_VERSION]);
+  assert.deepEqual(result.applied, [UNIFY_TARGET_VERSION]);
 
   // The NEW copy exists and is a valid, repaired worktree pair.
   const newMain = join(managedWorktreeRoot(home), "app", "main-abcd");

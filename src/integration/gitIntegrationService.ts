@@ -48,7 +48,7 @@ import {
   type GitWorkspacePort
 } from "../repository/gitWorkspace.js";
 import type { GitWorkspaceRemoval } from "../repository/gitWorkspace.js";
-import { resolveWorktreeRoot } from "../repository/taskWorkspacePreparer.js";
+import { integrationWorkspaceRoot } from "../repository/taskWorkspacePreparer.js";
 import { acquireProjectMaintenanceLocks } from "../repository/projectMaintenanceLock.js";
 import { taskWorkspaceRefSegment } from "../repository/taskWorkspaceIdentity.js";
 import {
@@ -148,7 +148,6 @@ export type IntegrationWorkspace = Readonly<{
 
 export class GitIntegrationService {
   readonly home: string;
-  readonly worktreeRoot: string;
   readonly environment: NodeJS.ProcessEnv;
   readonly runtimeIsolation: TaskRuntimeIsolationPort;
   #resourceRegistrarValue: ResourceRegistrar | undefined;
@@ -166,7 +165,6 @@ export class GitIntegrationService {
     readonly jobPort?: IntegrationJobPort
   ) {
     this.home = resolve(home);
-    this.worktreeRoot = resolveWorktreeRoot(home);
     this.environment = { ...environment };
     this.runtimeIsolation = runtimeIsolation;
   }
@@ -199,11 +197,13 @@ export class GitIntegrationService {
     const project = this.store.getProject(initial.projectId);
     if (project === null) throw new Error(`Project not found: ${initial.projectId}.`);
     const taskWorkspace = this.store.getTaskWorkspace(task.id);
-    const taskRepository = taskWorkspace?.entries.find(
+    const taskEntry = taskWorkspace?.entries.find(
       ({ projectId }) => projectId === project.id
-    )?.path;
+    );
+    const taskRepository = taskEntry?.path;
     if (taskWorkspace === null
       || taskWorkspace.owner.type !== "task"
+      || taskEntry === undefined
       || taskRepository === undefined) {
       throw new Error(`Integration Task clone is unavailable: ${task.id}/${project.id}.`);
     }
@@ -217,7 +217,8 @@ export class GitIntegrationService {
     try {
       prepared = await this.git.ensureIntegrationWorktree({
         repositoryPath: taskRepository,
-        container: join(this.worktreeRoot, project.name),
+        container: integrationWorkspaceRoot(this.home, task.id, initial.id),
+        directory: taskEntry.directory,
         taskSegment: taskWorkspaceRefSegment(task),
         integrationId: initial.id,
         baseRef: initial.beforeCommit
@@ -238,7 +239,7 @@ export class GitIntegrationService {
         root: prepared.path,
         entries: [{
           projectId: project.id,
-          directory: project.name,
+          directory: taskEntry.directory,
           access: "write",
           path: prepared.path,
           branch: prepared.branch,
@@ -397,9 +398,20 @@ export class GitIntegrationService {
           integration.status === "committed" ? "completion" : "failure"
         );
       }
+      const recorded = managedWorkspace?.entries[0];
+      const directory = recorded?.directory
+        ?? task.projectBindings.find(
+          ({ projectId }) => projectId === integration.projectId
+        )?.directory;
+      if (directory === undefined) {
+        throw new Error(`Integration Project binding is unavailable: ${task.id}/${project.id}.`);
+      }
       const result = await this.git.removeIntegrationWorktree({
         repositoryPath: taskRepository,
-        container: join(this.worktreeRoot, project.name),
+        container: recorded !== undefined
+          ? dirname(recorded.path)
+          : integrationWorkspaceRoot(this.home, task.id, integration.id),
+        directory,
         taskSegment: taskWorkspaceRefSegment(task),
         integrationId: integration.id,
         discardChanges: integration.status === "failed"

@@ -10,7 +10,10 @@ import { isAbsolute, join, relative, resolve } from "node:path";
  * (`${home}.task-runtimes`, `${home}-backups`). Both are unified here so that a
  * single canonical YUI_HOME contains all self-managed data, with only the
  * approved short-path IPC sockets (Controller, tmux, Agent Host, integration
- * runtime) remaining outside it for the `sockaddr_un` length budget.
+ * runtime) remaining outside it for the `sockaddr_un` length budget. Within the
+ * managed workspace root, storage v20 further collapses the former
+ * physical-worktree/symlink-view split into a single layer of real worktrees
+ * under `tasks/` (see {@link managedTaskRoot}).
  *
  * `defaultWorkspace` is intentionally NOT an input to this module: it remains a
  * user-facing cwd for ad-hoc/global Roles and the origin for external Project
@@ -27,20 +30,37 @@ function homeRoot(home: string): string {
 }
 
 /**
- * Root that contains every managed Git workspace (both the physical worktrees
- * and the per-Task symlink views). A single parent keeps the two families
- * adjacent and lets the storage migration relocate them as one subtree.
+ * Root that contains every managed Git workspace. Since storage v20 this holds a
+ * single layer of real worktrees under `tasks/` (plus the legacy `worktree/`
+ * root, preserved by the 19->20 migration as its rollback anchor). A single
+ * parent keeps the managed families adjacent and lets the storage migrations
+ * relocate them as one subtree.
  */
 export function managedWorkspacesRoot(home: string): string {
   return join(homeRoot(home), "workspaces");
 }
 
-/** Physical managed clones and linked worktrees: `<home>/workspaces/worktree`. */
+/**
+ * LEGACY physical worktree root: `<home>/workspaces/worktree`. Before storage
+ * v20 every managed clone/linked worktree lived here under a per-Project subtree,
+ * surfaced to each Task through a symlink view under `tasks/`. The 19->20
+ * migration collapses those into real worktrees under `tasks/` and PRESERVES this
+ * tree as the rollback anchor, so this path survives only for that migration's
+ * inline layout and for post-upgrade cleanup — no current runtime code derives a
+ * live worktree path from it.
+ */
 export function managedWorktreeRoot(home: string): string {
   return join(managedWorkspacesRoot(home), "worktree");
 }
 
-/** Per-Task symlink views over the worktrees: `<home>/workspaces/tasks`. */
+/**
+ * Managed Git worktrees, one real worktree per Task owner and Project at
+ * `<home>/workspaces/tasks/<taskId>/<owner>/<projectDirectory>` (owner being
+ * `main`, `work-items/<id>`, `reviews/<name>`, `integrations/<id>`, or
+ * `execution-lanes/<g>/<l>`). Before storage v20 these were symlink views over
+ * the physical `worktree/` root; the 19->20 migration makes them the worktrees
+ * themselves, so the logical entry path and the physical Git worktree coincide.
+ */
 export function managedTaskRoot(home: string): string {
   return join(managedWorkspacesRoot(home), "tasks");
 }

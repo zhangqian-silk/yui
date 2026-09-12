@@ -37,7 +37,7 @@ import {
   type ProjectOwnership,
   type ProjectReferenceSummary
 } from "../repository/project.js";
-import { managedWorktreeRoot } from "../storage/homeLayout.js";
+import { managedWorkspacesRoot } from "../storage/homeLayout.js";
 import { projectActor } from "./taskActor.js";
 import type { Decision } from "../decision/decision.js";
 import type { Milestone } from "../milestone/milestone.js";
@@ -1334,7 +1334,7 @@ function assertOutsideManagedWorktrees(
   path: string,
   home: string
 ): void {
-  const managedRoot = managedWorktreeRoot(home);
+  const managedRoot = managedWorkspacesRoot(home);
   const candidate = resolve(path);
   const fromManagedRoot = relative(managedRoot, candidate);
   const toManagedRoot = relative(candidate, managedRoot);
