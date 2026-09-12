@@ -231,6 +231,39 @@ test("late events retain complete source evidence without replaying or acknowled
   assert.equal(store.getTask(task.id).status, "archived");
 });
 
+test("archive racing Host ingress retains the complete envelope without settling unknown input", async t => {
+  const { store, home, task, target, command } = fixture(t);
+  const originalMailbox = store.getWorkMailbox(target);
+  const inbox = new FileRuntimeEventInbox(home, () => now);
+  const event = inbox.enqueueObservation({
+    schemaVersion: 4, eventId: "late-host-result", semanticKey: "late-host-result",
+    kind: "turn.completed", authority: "provider-structured", receivedAt: now.toISOString(),
+    sequence: 1, ordinal: 0,
+    fence: { taskId: task.id, roleName: "leader", agentId: "codex", driverId: "openai/codex",
+      nativeSessionId: "original-session", nativeTurnId: "original-turn", receiptId: "unknown-original" },
+    payload: { output: "Original Host result\nRetained without acceptance." }
+  }, { protocol: "yui-agent-host-events/v1", adapterId: "codex", workspace: task.cwd }).event;
+  const transaction = store.transaction;
+  store.transaction = function (fn, options) {
+    store.transaction = transaction;
+    command(["archive", task.id, "--integrated", "--force"]);
+    return transaction.call(this, fn, options);
+  };
+  const scheduler = new FileSchedulerStoreAdapter(store);
+  assert.equal(scheduler.observeAgentHostObservation(event, now), "obsolete");
+  const evidence = store.listEvents(task.id).find(e => e.payload.eventId === event.id);
+  assert.ok(evidence, "The complete Host envelope must survive even if archive wins the first write.");
+  assert.deepEqual(JSON.parse(evidence.payload.originalEvent), event);
+  assert.equal(evidence.payload.reason, "task-archived");
+  const replay = await new AsyncRuntimeEventProcessor(inbox, scheduler).drainAsync(now);
+  assert.deepEqual(replay.failed, []);
+  assert.equal(inbox.list().length, 0);
+  assert.equal(store.listEvents(task.id).filter(e => e.payload.eventId === event.id).length, 1);
+  assert.deepEqual(store.getWorkMailbox(target), originalMailbox);
+  assert.deepEqual(store.listRuns(task.id), []);
+  assert.equal(store.getTask(task.id).status, "archived");
+});
+
 test("force retains active Runs and queued Jobs, while plain settled archive still succeeds", async t => {
   const { home, store, task, command } = fixture(t);
   store.saveTask(activateTask(createTask(task.id, task.title, now, {

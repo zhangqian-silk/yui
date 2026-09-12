@@ -577,6 +577,7 @@ export class TmuxSessionHost implements SessionHostPort {
     }
     const reservation = broker.reserve(Object.freeze({
       schemaVersion: 2,
+      ...(request.runId === undefined ? {} : { startupRunId: request.runId }),
       command: planned.launch.command,
       args: [...planned.launch.args],
       environment: { ...planned.launch.env },

@@ -246,7 +246,7 @@ test("durably queued native results survive a Controller outage without failing 
   // Controller accepts a connection but never acknowledges this observation.
   let received = false;
   const controller = await startControllerServer(home, method => {
-    if (method === "runtime.observation-apply") {
+    if (method === "runtime.host-observation-apply") {
       received = true;
       return new Promise(() => {});
     }

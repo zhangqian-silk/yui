@@ -28,6 +28,10 @@ import {
   boundedRunFailureDiagnostic,
   transportAgentResult
 } from "../domain/agentResultTransport.js";
+import {
+  readAgentHostObservationSource,
+  type AgentHostObservationSource
+} from "../runtime/agentHostProtocol.js";
 
 export const MAX_RUNTIME_EVENT_FILE_BYTES = 16 * 1024 * 1024;
 
@@ -43,6 +47,8 @@ export type RuntimeObservationInboxEvent = Readonly<{
   scope: "task" | "global";
   taskId?: string;
   observation: RuntimeObservation;
+  /** v1 Host wire facts are resolved by the current Controller, never the producer. */
+  host?: AgentHostObservationSource;
 }>;
 
 export type RuntimeRunTerminalOutcome =
@@ -130,7 +136,8 @@ export class FileRuntimeEventInbox {
   }
 
   enqueueObservation(
-    input: RuntimeObservation
+    input: RuntimeObservation,
+    host?: AgentHostObservationSource
   ): RuntimeEventEnqueueResult<RuntimeObservationInboxEvent> {
     const observation = createRuntimeObservation(input);
     const scope = observation.fence.taskId === undefined ? "global" : "task";
@@ -143,7 +150,8 @@ export class FileRuntimeEventInbox {
       ...(observation.fence.taskId === undefined
         ? {}
         : { taskId: observation.fence.taskId }),
-      observation
+      observation,
+      ...(host === undefined ? {} : { host: readAgentHostObservationSource(host) })
     });
     return this.publish(event);
   }
@@ -226,6 +234,17 @@ export class FileRuntimeEventInbox {
       throw invalidEvent(`Runtime event identity is invalid: ${id}`);
     }
     return event;
+  }
+
+  /** Producer-local delivery diagnostics need only existence, never a read of
+   * another version's payload or permission to quarantine another producer. */
+  has(id: string): boolean {
+    assertEventId(id);
+    try { lstatSync(this.eventPath(id)); return true; }
+    catch (error) {
+      if (isNodeError(error, "ENOENT")) return false;
+      throw error;
+    }
   }
 
   acknowledge(id: string): boolean {
@@ -543,6 +562,7 @@ function parseRuntimeObservationEvent(
 ): RuntimeObservationInboxEvent {
   const expected = [
     "schemaVersion", "id", "type", "receivedAt", "scope", "observation",
+    ...(value.host === undefined ? [] : ["host"]),
     ...(value.taskId === undefined ? [] : ["taskId"])
   ];
   if (value.schemaVersion !== 1 || !hasExactKeys(value, expected)) throw invalidEvent();
@@ -560,8 +580,14 @@ function parseRuntimeObservationEvent(
     receivedAt: observation.receivedAt,
     scope,
     ...(scope === "task" ? { taskId: observation.fence.taskId! } : {}),
-    observation
+    observation,
+    ...(value.host === undefined ? {} : { host: parseHostSource(value.host) })
   });
+}
+
+function parseHostSource(value: unknown): AgentHostObservationSource {
+  try { return readAgentHostObservationSource(value); }
+  catch (error) { throw invalidEvent(error instanceof Error ? error.message : String(error)); }
 }
 
 function parseDurableJobTerminalEvent(
@@ -663,6 +689,8 @@ function assertEventId(id: string): void {
 }
 
 function hasSameIdentity(left: RuntimeLifecycleEvent, right: RuntimeLifecycleEvent): boolean {
+  if (left.type === "runtime-observation" && right.type === "runtime-observation"
+    && !isDeepStrictEqual(left.host, right.host)) return false;
   if (left.type === "runtime-observation" && right.type === "runtime-observation"
     && ["turn.completed", "turn.failed", "turn.cancelled"].includes(left.observation.kind)) {
     return left.id === right.id

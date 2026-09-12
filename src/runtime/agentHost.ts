@@ -4,7 +4,6 @@ import { tmpdir, homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createConnection, createServer, type Server } from "node:net";
 import { createInterface } from "node:readline";
-import { assertAgentExecutionEnvironment } from "./executionEnvironment.js";
 import { withSessionContextPointer } from "../context/sessionBootstrapManifest.js";
 
 import { builtinAgentDriverRegistry } from "./builtinAgentDrivers.js";
@@ -16,7 +15,6 @@ import {
 } from "../core/controllerClient.js";
 import { readHomeFilesystemId } from "../core/homeFilesystemIdentity.js";
 import type { AgentAdapterId } from "../agent/adapterCatalog.js";
-import { callFileTaskController } from "../controller/clientRuntime.js";
 import { isForeignHandoverLockHeld } from "../release/runtimeRelease.js";
 import {
   publishStructuredProviderAccepted,
@@ -28,7 +26,9 @@ import {
   publishStructuredConversationRecoverability,
   publishStructuredProviderOpened,
   publishStructuredProviderStarted,
-  publishStructuredProviderTerminal
+  publishStructuredProviderTerminal,
+  publishStructuredProviderConnection,
+  structuredProviderEventDelivery
 } from "../controller/structuredProviderObservation.js";
 import {
   validateAgentHostLaunchPayload,
@@ -91,13 +91,14 @@ import {
 } from "./agentRunConfiguration.js";
 import type { ImplementationRef } from "../kernel/instanceHost.js";
 import type { PromptPushOutcome } from "./ports.js";
-import { openCurrentTaskStore } from "../storage/currentTaskStore.js";
 import { createSessionOwnerIdentity, readLinuxProcessIdentity } from "./sessionOwnerIdentity.js";
 import { yuiTmuxServerName, yuiTmuxSessionName } from "../tmux/tmuxManager.js";
 import { tmuxSocketDirectory } from "../tmux/tmuxSocketEndpoint.js";
-import { createTaskEvent } from "../event/taskEvent.js";
+import { AGENT_HOST_CONTROL_PROTOCOL, AGENT_HOST_EVENT_PROTOCOL } from "./agentHostProtocol.js";
+import type { AgentHostCompatibility, AgentHostEventDelivery } from "./agentHostProtocol.js";
+import { FILE_TASK_CONTROLLER_PROTOCOL_VERSION } from "../core/protocol.js";
+export { AGENT_HOST_CONTROL_PROTOCOL } from "./agentHostProtocol.js";
 
-export const AGENT_HOST_CONTROL_PROTOCOL = "yui-agent-host/v5" as const;
 const HOST_CONTROL_MAX_BYTES = 32 * 1024;
 const CODEX_CLIENT_STABLE_MS = 5_000;
 const MAX_CONSECUTIVE_CODEX_DISCONNECTS = 3;
@@ -182,6 +183,11 @@ export type AgentHostSnapshot = Readonly<{
   endpointImplementation?: ImplementationRef;
   /** Live-only status reading, rebuilt on each query and never persisted. */
   runConfiguration?: AgentRunConfigurationObservation;
+  /** Live capabilities describe this pinned process, not the installed CLI. */
+  compatibility?: AgentHostCompatibility;
+  hostProcess?: Readonly<{ pid: number; startIdentity: string }>;
+  owner?: Readonly<{ scope: string; taskId?: string; roleName: string }>;
+  eventDelivery?: AgentHostEventDelivery;
   detail?: string;
   updatedAt: string;
 }>;
@@ -499,7 +505,7 @@ export async function runAgentHost(input: Readonly<{
       if (delayMs !== 0) await delay(delayMs);
       if (hostStopRequested) return;
       try {
-        assertAgentExecutionEnvironment(input.home, reconnectPayload);
+        await assertHostExecutionEnvironment(input.home, reconnectPayload, disconnectedSession.nativeSessionId);
         // Reattaching a dropped client continues the same Session on the same
         // pinned generation; it never re-selects an implementation.
         if (endpointLease === undefined) {
@@ -735,7 +741,8 @@ export async function runAgentHost(input: Readonly<{
           activeRunAttemptId = providerControl.ownedTurn.attemptId;
           activeNativeTurnId = providerControl.ownedTurn.turnId;
         }
-        assertAgentExecutionEnvironment(input.home, next);
+        // The Controller revalidates the adopted execution environment while
+        // redeeming this launch; a persistent Host must not reopen its schema.
         // Pin before opening: the Session holds this exact generation for every
         // later Turn. A pinned reference naming code this process is not running
         // fails here, rather than silently starting on a different generation.
@@ -745,8 +752,7 @@ export async function runAgentHost(input: Readonly<{
           ? endpointLease.open(next) : endpointLease.resume(next));
         session = started.session;
         sessionPayload = next;
-        recordOwnedProviderProcess(input.home, next.environment, started.session);
-        recordNativeConnection(input.home, next, started.session);
+        await recordProviderConnection(input.home, next, started.session);
         lastTerminalPayload = undefined;
         lastTerminal = undefined;
         // Recoverable means a later process can rebind this Conversation by
@@ -789,6 +795,7 @@ export async function runAgentHost(input: Readonly<{
       if (!providerControl.sessionOnly) await publishStructuredProviderOpened({
         home: input.home,
         environment: next.environment,
+        startupRunId: next.startupRunId,
         conversationId: session.conversationId,
         nativeSessionId: session.nativeSessionId,
         recoverability: conversationRecoverability,
@@ -985,7 +992,8 @@ export async function runAgentHost(input: Readonly<{
     let providerAccepted = false;
     let transportAccepted = false;
     try {
-      assertAgentExecutionEnvironment(input.home, activeRunPayload);
+      // beginDurableProviderTurn validated current execution-environment,
+      // authority and Session identity before this native write.
       const receipt = endpointReceipt(await session.submit({
         ...request.run,
         boundedText: withSessionContextPointer(request.run.boundedText, activeRunPayload.environment),
@@ -1116,7 +1124,7 @@ export async function runAgentHost(input: Readonly<{
       throw new Error("Agent Host rejected a stale Provider writer fence.");
     }
     try {
-      assertAgentExecutionEnvironment(input.home, sessionPayload);
+      await assertHostExecutionEnvironment(input.home, sessionPayload, session.nativeSessionId);
       const receipt = endpointReceipt(await session.steer({
         ...request.run,
         boundedText: withSessionContextPointer(request.run.boundedText, sessionPayload.environment),
@@ -1425,15 +1433,20 @@ export async function runAgentHost(input: Readonly<{
 }
 
 /** Host-restart-independent OS custody. No secret or launch payload is stored. */
-function recordOwnedProviderProcess(home: string, environment: NodeJS.ProcessEnv, endpoint: AgentEndpoint): void {
-  if (endpoint.ownedProcessId === undefined || environment.YUI_SESSION_SCOPE !== "task") return;
-  const identity = readLinuxProcessIdentity(endpoint.ownedProcessId);
-  if (identity === undefined) throw new Error("Dedicated Provider process identity was lost before registration.");
+async function recordProviderConnection(home: string, payload: AgentHostLaunchPayload, endpoint: AgentEndpoint): Promise<void> {
+  const environment = payload.environment;
+  if (environment.YUI_SESSION_SCOPE !== "task") return;
+  const identity = endpoint.ownedProcessId === undefined ? undefined : readLinuxProcessIdentity(endpoint.ownedProcessId);
+  if (endpoint.ownedProcessId !== undefined && identity === undefined) {
+    throw new Error("Dedicated Provider process identity was lost before registration.");
+  }
   const taskId = environment.YUI_TASK_ID!;
   const roleName = environment.YUI_ROLE!;
-  const store = openCurrentTaskStore(home);
-  try {
-    store.saveSessionOwner(createSessionOwnerIdentity({
+  const userHome = resolve(payload.cwd, environment.HOME ?? homedir());
+  await publishStructuredProviderConnection({
+    home, environment, nativeSessionId: endpoint.nativeSessionId, startupRunId: payload.startupRunId,
+    connection: {
+      ...(identity === undefined ? {} : { processOwner: createSessionOwnerIdentity({
       owner: { scope: "task", taskId, roleName },
       agentId: environment.YUI_AGENT_ID!, adapterId: endpoint.adapterId,
       nativeSessionId: endpoint.nativeSessionId,
@@ -1446,28 +1459,16 @@ function recordOwnedProviderProcess(home: string, environment: NodeJS.ProcessEnv
         processGroupId: identity.processGroupId, processSessionId: identity.processSessionId,
         attribution: "owned-child" },
       recordedAt: new Date()
-    }));
-  } finally { store.close(); }
-}
-
-function recordNativeConnection(home: string, payload: AgentHostLaunchPayload, endpoint: AgentEndpoint): void {
-  if (endpoint.adapterId !== "codex" || payload.environment.YUI_SESSION_SCOPE !== "task") return;
-  const taskId = payload.environment.YUI_TASK_ID!;
-  const store = openCurrentTaskStore(home);
-  try {
-    if (store.listEvents(taskId).some(event => event.type === "runtime.native-connection-bound"
-      && event.payload.nativeSessionId === endpoint.nativeSessionId)) return;
-    const userHome = resolve(payload.cwd, payload.environment.HOME ?? homedir());
-    store.saveEvent(taskId, createTaskEvent(store.nextEventId(taskId), taskId, "runtime.native-connection-bound", {
-      roleName: payload.environment.YUI_ROLE!, agentId: payload.environment.YUI_AGENT_ID!,
-      nativeSessionId: endpoint.nativeSessionId,
+      }) }),
+      ...(endpoint.adapterId !== "codex" ? {} : { account: {
       // Account location is needed after Controller/Host loss. Never retain
       // resolved credentials or duplicate the full process environment.
       home: userHome,
-      codexHome: resolve(payload.cwd, payload.environment.CODEX_HOME ?? join(userHome, ".codex")),
+      codexHome: resolve(payload.cwd, environment.CODEX_HOME ?? join(userHome, ".codex")),
       ...(endpoint.nativeAccountHome === undefined ? {} : { nativeAccountHome: endpoint.nativeAccountHome })
-    }, new Date()));
-  } finally { store.close(); }
+      } })
+    }
+  });
 }
 
 export function agentHostControlSocketPath(input: Readonly<{
@@ -1606,13 +1607,26 @@ async function sendAgentHostControl(input: Readonly<{
   control: AgentHostControl;
 }>): Promise<AgentHostControlResult> {
   const path = agentHostControlSocketPath(input);
+  return exchangeAgentHostControl(path, input.control, AGENT_HOST_CONTROL_TIMEOUT_MS);
+}
+
+/** Read-only upgrade/diagnostic probe of a Home-fenced socket. Never launches a Host. */
+export async function inspectAgentHostSocket(path: string, timeoutMs = 250): Promise<AgentHostSnapshot> {
+  return (await exchangeAgentHostControl(path, {
+    protocol: AGENT_HOST_CONTROL_PROTOCOL, type: "status"
+  }, timeoutMs)).snapshot;
+}
+
+async function exchangeAgentHostControl(
+  path: string, control: AgentHostControl, timeoutMs: number
+): Promise<AgentHostControlResult> {
   return await new Promise((resolvePromise, reject) => {
     const client = createConnection(path);
     let response = "";
     const timer = setTimeout(() => {
       client.destroy();
       reject(new Error("Agent Host control request timed out."));
-    }, AGENT_HOST_CONTROL_TIMEOUT_MS);
+    }, timeoutMs);
     let settled = false;
     const settle = <T>(callback: (value: T) => void, value: T): void => {
       if (settled) return;
@@ -1621,7 +1635,7 @@ async function sendAgentHostControl(input: Readonly<{
       callback(value);
     };
     client.setEncoding("utf8");
-    client.once("connect", () => client.end(`${JSON.stringify(validateControl(input.control))}\n`));
+    client.once("connect", () => client.end(`${JSON.stringify(validateControl(control))}\n`));
     client.on("data", (chunk) => {
       response += chunk;
       if (Buffer.byteLength(response, "utf8") > HOST_CONTROL_MAX_BYTES) {
@@ -1645,6 +1659,19 @@ async function redeem(home: string, ticket: string): Promise<AgentHostLaunchPayl
     hostPid: process.pid
   });
   return validateAgentHostLaunchPayload(result);
+}
+
+async function assertHostExecutionEnvironment(
+  home: string, payload: AgentHostLaunchPayload, nativeSessionId: string
+): Promise<void> {
+  if (payload.executionEnvironment === undefined) return;
+  await callController(home, "runtime.execution-environment-check", {
+    taskId: payload.environment.YUI_TASK_ID!,
+    roleName: payload.environment.YUI_ROLE!,
+    agentId: payload.environment.YUI_AGENT_ID!,
+    workspace: payload.cwd,
+    nativeSessionId
+  });
 }
 
 async function persistAndSubmitExit(home: string, observation: RuntimeProcessExitObservation): Promise<void> {
@@ -1720,7 +1747,26 @@ export async function openAgentHostControl(
       void (async () => {
         try {
           const request = validateControl(JSON.parse(body.trim()) as AgentHostControl);
-          socket.end(`${JSON.stringify(boundControlResponse(await dispatch(request)))}\n`);
+          const result = await dispatch(request);
+          socket.end(`${JSON.stringify(boundControlResponse({
+            ...result,
+            snapshot: {
+              ...result.snapshot,
+              compatibility: {
+                control: AGENT_HOST_CONTROL_PROTOCOL, events: AGENT_HOST_EVENT_PROTOCOL,
+                rpc: FILE_TASK_CONTROLLER_PROTOCOL_VERSION, storage: "controller-owned"
+              },
+              hostProcess: { pid: process.pid, startIdentity: readLinuxProcessIdentity(process.pid)!.startIdentity },
+              owner: {
+                scope: payload.environment.YUI_SESSION_SCOPE ?? "task",
+                ...(payload.environment.YUI_TASK_ID === undefined ? {} : { taskId: payload.environment.YUI_TASK_ID }),
+                roleName: payload.environment.YUI_ROLE ?? "unknown-role"
+              },
+              ...(payload.environment.YUI_SESSION_SCOPE !== "task" ? {} : {
+                eventDelivery: structuredProviderEventDelivery(home, payload.environment, result.snapshot.nativeSessionId)
+              })
+            }
+          }))}\n`);
         } catch (caught) {
           const error = caught instanceof AgentHostOperationError ? caught.cause : caught;
           const current = caught instanceof AgentHostOperationError ? caught.snapshot : snapshot();
@@ -2248,7 +2294,11 @@ async function callAgentController(
       throw error;
     }
   }
-  await callFileTaskController(home, method, params);
+  const deadline = Date.now() + AGENT_HOST_CONTROL_TIMEOUT_MS;
+  while (isForeignHandoverLockHeld(home) && Date.now() < deadline) await delay(50);
+  // The pinned Host can rediscover a replacement, but must never start a
+  // Controller using its own old implementation or open the Home's database.
+  await callController(home, method, params);
 }
 
 function isControllerUnavailable(error: unknown): boolean {

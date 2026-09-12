@@ -460,6 +460,20 @@ export function createReleaseActivatePorts(
           `Release preflight storage compatibility checks failed: ${failed.join(", ")}.`
         );
       }
+      // Doctor proves the target's storage, not the pinned code in existing
+      // Hosts. Ask the target's upgrade boundary for its independent Host
+      // protocol proof as well; release activation itself still never migrates.
+      const hostCheck = spawnSync(process.execPath, [cli, "--json", "upgrade", "--update-preflight"], {
+        env: { ...process.env, YUI_HOME: home, NO_COLOR: "1" },
+        encoding: "utf8", timeout: 60_000
+      });
+      let preflight: { outcome?: string; status?: string; message?: string; action?: string };
+      try { preflight = JSON.parse(hostCheck.stdout).data; }
+      catch { throw new Error(`Release Host preflight produced no JSON: ${hostCheck.stderr.trim()}`); }
+      if (hostCheck.status !== 0 || preflight?.outcome !== "update-preflight"
+        || preflight.status !== "already-current") {
+        throw new Error(`Release Host compatibility preflight failed: ${preflight?.message ?? preflight?.status ?? "unknown"}. ${preflight?.action ?? ""}`);
+      }
     }),
     killOwnedProcess: overrides.killOwnedProcess ?? ((owner: HandoverOwner) => {
       if (readLinuxProcessStartIdentity(owner.pid) !== owner.processStartIdentity) return;
