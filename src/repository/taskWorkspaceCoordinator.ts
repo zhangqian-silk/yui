@@ -1,4 +1,8 @@
 import { isDeepStrictEqual } from "node:util";
+import { lstat } from "node:fs/promises";
+import { isArchivePersistenceFailure, recordArchiveCleanup, type ArchiveDiagnostic } from "../task/archiveDiagnostics.js";
+import { projectTaskRemoteDeliveryFromStore } from "../commands/taskRemoteDeliveryCommand.js";
+import { WorkItemChangeSetManager } from "../workspace/workItemChangeSetManager.js";
 
 import {
   hasRuntimeLifecycleWork,
@@ -410,6 +414,132 @@ export class TaskWorkspaceCoordinator {
     } finally {
       releaseMaintenance?.();
     }
+  }
+
+  /** Best-effort cleanup only after explicit force admission has committed.
+   * This is one foreground attempt, not a retry worker. Each independent result
+   * is durable before continuing, and a failed audit write really fails.
+   */
+  async cleanupArchivedTask(taskId: string, disposition: WorkItemWorkspaceDisposition): Promise<void> {
+    const task = this.store.getTask(taskId);
+    if (task?.status !== "archived"
+      || !this.store.listEvents(taskId).some(e => e.type === "task.archived" && e.payload.force === "true")) {
+      throw new Error(`Force archive must commit before cleanup: ${taskId}.`);
+    }
+    const attempt = async (
+      diagnostic: ArchiveDiagnostic,
+      action: () => Promise<"removed" | "missing" | "released" | "dirty">
+    ): Promise<boolean> => {
+      recordArchiveCleanup(this.store, taskId, diagnostic, "started");
+      let status: "removed" | "missing" | "released" | "retained";
+      let detail = diagnostic.detail;
+      try {
+        const result = await action();
+        status = result === "dirty" ? "retained" : result;
+        if (result === "dirty") detail = "Dirty workspace retained; force archive does not discard local changes.";
+      } catch (error) {
+        if (isArchivePersistenceFailure(error)) throw error;
+        status = "retained";
+        detail = error instanceof Error ? error.message : String(error);
+      }
+      recordArchiveCleanup(this.store, taskId, { ...diagnostic, detail }, status);
+      return status !== "retained";
+    };
+    let runtimeReleased = true;
+    for (const role of this.store.listRoles(taskId)) {
+      const released = await attempt({ resource: `role:${taskId}/${role.name}`,
+        detail: "Exact Role runtime stop." }, async () => {
+        const provider = this.store.getTaskRoleSessionSet(taskId, role.name)?.providerBinding;
+        const mailbox = this.store.getWorkMailbox({ kind: "role", taskId, roleName: role.name });
+        if (mailbox?.processing != null && (provider?.run == null
+          || !["completed", "failed", "cancelled"].includes(provider.run.status))) {
+          throw new Error(`Original mailbox claim ${mailbox.processing.batchId} retained; execution outcome is not known.`);
+        }
+        if (provider?.run != null && !["completed", "failed", "cancelled"].includes(provider.run.status)) {
+          throw new Error(`Provider input ${provider.run.attemptId}/${provider.run.status} retained; establish exact quiescence before resolving it.`);
+        }
+        await this.#stopLiveRoles(taskId, [role.name]);
+        return "released";
+      });
+      runtimeReleased &&= released;
+    }
+    const physicalReleased = await attempt({ resource: `runtime:${taskId}`,
+      detail: "Verify exact physical resource release before workspace deletion." }, async () => {
+      const activeRun = this.store.listRuns(taskId).find(r => r.status === "active");
+      const job = this.store.listDurableJobs(taskId).find(j =>
+        ["queued", "running", "unknown-needs-attention"].includes(j.status));
+      if (activeRun !== undefined || job !== undefined) {
+        throw new Error(`Execution resources retained: ${activeRun?.id ?? job?.id}; archive is not proof of quiescence.`);
+      }
+      if (!runtimeReleased) throw new Error("One or more Role runtimes could not be safely released.");
+      if (this.runtime.assertTaskPhysicalResourcesReleased === undefined) {
+        throw new Error("Physical resource release inspection is unavailable; workspace references retained.");
+      }
+      await this.runtime.assertTaskPhysicalResourcesReleased(taskId);
+      return "released";
+    });
+    if (physicalReleased) {
+      // Task main owns the Git objects of its dependent worktrees, so it is
+      // always last and remains when any dependent cleanup is unresolved.
+      const workspaces = this.store.listManagedWorkspaces(taskId).sort((a, b) =>
+        Number(a.owner.type === "task") - Number(b.owner.type === "task"));
+      for (const workspace of workspaces) {
+        await attempt({ resource: managedWorkspaceKey(workspace.owner),
+          detail: "Remove only clean, exactly owned workspace resources.",
+          paths: [workspace.root, ...workspace.entries.filter(e => e.access === "write").map(e => e.path)]
+        }, async () => {
+          const release = acquireProjectMaintenanceLocks(this.preparer.home,
+            workspace.entries.map(e => e.projectId));
+          try {
+            if (!isDeepStrictEqual(this.store.getManagedWorkspace(workspace.owner), workspace)) {
+              throw new Error("Workspace ownership changed; retained.");
+            }
+            const owner = workspace.owner;
+            switch (owner.type) {
+              case "work-item": {
+                const item = this.store.getWorkItem(taskId, owner.workItemId);
+                if (item?.status === "accepted" && disposition === "integrated") {
+                  await new WorkItemChangeSetManager(this.store).assertIntegrated(taskId, item.id);
+                }
+                return this.preparer.cleanupWorkItemWorkspace(taskId, owner.workItemId,
+                  item?.status === "retired" ? "abandoned" : disposition);
+              }
+              case "review-round":
+                return this.preparer.cleanupReviewRoundWorkspace(taskId, owner.reviewRoundId);
+              case "execution-lane":
+                return this.preparer.cleanupExecutionLaneWorkspace(taskId, owner.executionGroupId, owner.executionLaneId);
+              case "integration-attempt":
+                if (await this.preparer.inspectIntegrationWorkspace(taskId, owner.integrationAttemptId) === "dirty") return "dirty";
+                return this.preparer.cleanupIntegrationWorkspace(taskId, owner.integrationAttemptId);
+              case "task": {
+                const current = this.store.getTask(taskId)!;
+                const delivery = projectTaskRemoteDeliveryFromStore(this.store, current);
+                if (!delivery.allMerged || !delivery.allVerified) {
+                  throw new Error("Task main retained: local commits are not covered by verified remote delivery. Force does not discard them.");
+                }
+                for (const entry of workspace.entries.filter(e => e.access === "write")) {
+                  const expected = delivery.projects.find(p => p.projectId === entry.projectId)?.expectedLocalCommit;
+                  const path = await lstat(entry.path).catch(error => {
+                    if (error.code === "ENOENT") return null;
+                    throw error;
+                  });
+                  if (expected !== null && expected !== undefined
+                    && path !== null) {
+                    const actual = await this.preparer.git.inspect(entry.path, "HEAD");
+                    if (actual.baseCommit !== expected) throw new Error(`Task main HEAD changed: ${entry.path}; retained.`);
+                  }
+                }
+                const result = await this.preparer.cleanupTaskForArchive(taskId);
+                if (result.status !== "removed") throw new Error(result.error ?? "Task main or dependent workspace retained.");
+                return "removed";
+              }
+            }
+          } finally { release(); }
+        });
+      }
+    }
+    recordArchiveCleanup(this.store, taskId, { resource: `task:${taskId}`,
+      detail: "Foreground cleanup attempt finished; inspect retained resource references and warnings." }, "finished");
   }
 
   #assertTaskArchiveSnapshot(snapshot: TaskArchiveSnapshot): void {

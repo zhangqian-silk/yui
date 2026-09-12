@@ -495,8 +495,8 @@ const taskChildren: readonly NodeInput[] = [
   },
   {
     name: "archive",
-    summary: "Archive a Task after confirming the main worktree outcome.",
-    usage: "yui task archive <id> (--integrated [--force]|--abandon)",
+    summary: "Archive a terminal Task; explicit --force commits despite delivery/cleanup warnings, retaining unsafe resources.",
+    usage: "yui task archive <id> (--integrated|--abandon) [--force]",
     options: ["--integrated", "--abandon", "--force"]
   },
   { name: "reconcile", summary: "Run one immediate Controller reconciliation.", usage: "yui task reconcile <id>" },

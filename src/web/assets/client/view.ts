@@ -53,7 +53,7 @@ export function renderFilters(container, state, t, onFilter) {
         dot.classList.add(status);
         btn.append(dot);
       }
-      btn.append(node("span", "filter-label", translatedStatus(t, "status", status)));
+      btn.append(node("span", "filter-label", status === "all" ? t("filter.unarchived") : translatedStatus(t, "status", status)));
       const badge = node("span", "filter-count");
       btn.append(badge);
       btn.addEventListener("click", function () { onFilter(status); });
@@ -66,8 +66,10 @@ export function renderFilters(container, state, t, onFilter) {
     if (!btn) return;
     btn.classList.toggle("is-active", state.filter === status);
     const label = btn.querySelector(".filter-label");
-    if (label) label.textContent = translatedStatus(t, "status", status);
-    const count = status === "all" ? counts.total : counts[status];
+    if (label) label.textContent = status === "all" ? t("filter.unarchived") : translatedStatus(t, "status", status);
+    const count = status === "all"
+      ? (counts.total === undefined ? undefined : counts.total - (counts.archived || 0))
+      : counts[status];
     const badge = btn.querySelector(".filter-count");
     if (badge) {
       if (count !== undefined && count !== null) {
@@ -105,6 +107,7 @@ export function renderTasks(container, state, t, locale, onSelect) {
   const attentionIds = new Set((state.attention || []).map(function (item) { return item.taskId; }));
   const groups = { attention: [], active: [], draft: [], finished: [], cancelled: [], archived: [] };
   (state.tasks || []).forEach(function (task) {
+    if (state.filter === "all" && task.status === "archived") return;
     if (state.filter !== "all" && task.status !== state.filter) return;
     if (!taskMatchesQuery(task, query, locale)) return;
     groups[taskGroupOf(task, attentionIds)].push(task);
@@ -215,7 +218,7 @@ export function renderOverview(detail, state, t, locale, onSelect) {
   if (activeTasks.length) {
     duo.append(overviewBlock(t("overview.activeNow"), activeTasks, t, locale, onSelect));
   }
-  const recentTasks = (state.tasks || []).slice().sort(byNewest).slice(0, 8);
+  const recentTasks = (state.tasks || []).filter(function (task) { return task.status !== "archived"; }).sort(byNewest).slice(0, 8);
   if (recentTasks.length) {
     duo.append(overviewBlock(t("overview.recent"), recentTasks, t, locale, onSelect));
   }

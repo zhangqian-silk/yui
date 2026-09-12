@@ -442,7 +442,7 @@ export interface SchedulerStorePort {
   getPendingWakeup(taskId: string): PendingWakeup | null;
   listPendingWakeups(): readonly PendingWakeup[];
   /** Atomically appends one Leader signal without a read/merge/write race. */
-  enqueueLeaderWakeup?(taskId: string, reason: string, now: Date): PendingWakeup;
+  enqueueLeaderWakeup?(taskId: string, reason: string, now: Date): PendingWakeup | null;
   /**
    * Atomically releases a stranded Leader execution and appends its recovery
    * signal. This prevents a concurrent signal from being lost between those

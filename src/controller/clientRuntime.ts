@@ -787,7 +787,7 @@ export class FileTaskWorkflowRuntime implements TaskWorkflowRuntimePort {
       "physical-resource-live",
       `task:${taskId}`,
       true,
-      `Task archive blocked: ${blockers.length} owned physical resource(s) still live: `
+      `Task workspace cleanup blocked: ${blockers.length} owned physical resource(s) live or unverified: `
         + blockers.map((entry) => (
           `${entry.owner.roleName}/${entry.nativeSessionId ?? "unknown-session"}`
             + ` (pid ${entry.physical?.alive === true ? entry.physical.pid : "?"})`

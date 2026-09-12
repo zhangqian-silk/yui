@@ -324,8 +324,11 @@ External delivery and Task completion remain separate facts.
 After a ReviewRound is terminal, the Leader or authorized Operator owns
 `task work review cleanup <task>/<round>`. Preserve dirty diagnostic evidence
 and resolve it explicitly; do not ask a Reviewer to clean its own runtime
-after its final report. Cleanup can remain advisory at completion, but all
-required resources must be settled before user-authorized archive.
+after its final report. Cleanup can remain advisory at completion. Ordinary
+archive requires settled resources; explicitly authorized force archive preserves
+unresolved resources and diagnostics under the shared
+[archive contract](../../yui-runtime/references/publication.md). The Leader
+does not gain independent archive authorization.
 
 Complete only when the Task outcome is satisfied, required checks and review
 contracts are settled, WorkItems are accepted or deliberately retired, latest

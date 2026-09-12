@@ -101,6 +101,7 @@ import {
   createTaskRemoteDeliveryProof,
   type TaskRemoteDeliveryProof
 } from "./commands/taskRemoteDeliveryCommand.js";
+import { renderArchiveDiagnostics, taskArchiveDiagnostics } from "./task/archiveDiagnostics.js";
 import { runTaskPublicationVerifyCommand } from "./commands/taskPublicationVerifyCommand.js";
 import { createGitHubCliPublicationVerifier } from "./external/githubPublicationVerifier.js";
 import { createGitLabCliPublicationVerifier } from "./external/gitlabPublicationVerifier.js";
@@ -1418,7 +1419,7 @@ export async function main(): Promise<void> {
     let archiveRemoteDeliveryProof: TaskRemoteDeliveryProof | undefined;
     let archiveTaskReviewCandidate: TaskReviewCandidate | undefined;
     if (resolved[1] === "archive") {
-      const { taskId, disposition, forceUnverified } = validateTaskArchiveRequest(
+      const { taskId, disposition, force } = validateTaskArchiveRequest(
         resolved.slice(2),
         store,
         {
@@ -1429,7 +1430,23 @@ export async function main(): Promise<void> {
       );
       const task = store.getTask(taskId);
       if (task === null) throw new Error(`Task disappeared after archive validation: ${taskId}.`);
-      if (task.status !== "archived") {
+      if (force || task.status === "archived") {
+        // Archive admission and mandatory audit commit before any fallible
+        // filesystem/provider work. Repeats report facts, never replay cleanup.
+        const admitted = runTaskCommand(resolved.slice(1), store, {
+          runtime, environment: process.env, yuiHome: home
+        });
+        if (force && admitted.kind === "output"
+          && (admitted.data as { changed: boolean }).changed) {
+          await workspaceCoordinator.cleanupArchivedTask(taskId, disposition);
+        }
+        const current = store.getTask(taskId)!;
+        const archive = taskArchiveDiagnostics(store, current);
+        emit(`Archived task ${taskId}\n${renderArchiveDiagnostics(archive)}`, false,
+          { task: current, ...archive });
+        return;
+      }
+      {
         if (disposition === "integrated") {
           archiveTaskReviewCandidate = await actualTaskReviewCandidateForTaskCommand(
             resolved,
@@ -1442,10 +1459,7 @@ export async function main(): Promise<void> {
             task,
             archiveTaskReviewCandidate ?? null
           );
-          assertTaskRemoteDeliveryIntegrated(
-            archiveRemoteDeliveryProof.delivery,
-            { forceUnverified }
-          );
+          assertTaskRemoteDeliveryIntegrated(archiveRemoteDeliveryProof.delivery);
         }
         const workItemIds = store.listManagedWorkspaces(task.id)
           .flatMap(({ owner }) => owner.type === "work-item" ? [owner.workItemId] : []);
