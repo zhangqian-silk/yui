@@ -85,6 +85,7 @@ import {
 } from "./commands/profileCommands.js";
 import {
   assertWorkItemDependenciesCompletedForCommand,
+  requireWorkItemAssignee,
   dispatchPreparedReviewRound,
   failPendingReviewRound,
   preserveReviewRoundWorkspace,
@@ -104,6 +105,9 @@ import { runTaskPublicationVerifyCommand } from "./commands/taskPublicationVerif
 import { createGitHubCliPublicationVerifier } from "./external/githubPublicationVerifier.js";
 import { createGitLabCliPublicationVerifier } from "./external/gitlabPublicationVerifier.js";
 import { taskLocalActor, assertTaskDeliveryAuthority } from "./commands/taskActor.js";
+import {
+  saveArtifactCapability, readArtifactCapability, listArtifactsCapability
+} from "./artifacts/artifactCapability.js";
 import {
   parseTaskExecutionStartRequest,
   parseTaskExecutionStopRequest,
@@ -193,6 +197,7 @@ import {
   FileTaskWorkspacePreparer,
   type TaskWorkspaceActivation
 } from "./repository/taskWorkspacePreparer.js";
+import { snapshotWorkItemCandidate } from "./repository/workItemCandidateSnapshot.js";
 import { inspectStorageSchema } from "./storage/storageSchema.js";
 import {
   collectRuntimeBuildIdentity,
@@ -1050,6 +1055,58 @@ export async function main(): Promise<void> {
     return;
   }
   if (resolved[0] === "task") {
+    if (resolved[1] === "artifact") {
+      // File/directory artifacts live in the Task's local Git repository, so
+      // their save/read/list are asynchronous and handled here rather than in
+      // the synchronous runTaskCommand chain. Save commits exactly one path and
+      // returns a self-certifying commit-pinned reference; read pins to a commit
+      // for frozen evidence; list is an ordinary current read.
+      const action = resolved[2];
+      const taskId = resolved[3];
+      const usage = "Usage: yui task artifact list <task> | read <task> <relative-path> [<commit>] | "
+        + "save <task> <relative-path> <content> [--message <text>] [--expected-head <commit>]";
+      if (taskId === undefined || action === undefined || !["list", "read", "save"].includes(action)) {
+        throw usageError(usage);
+      }
+      if (process.env.YUI_SESSION_SCOPE === "task" && process.env.YUI_TASK_ID !== taskId) {
+        throw usageError("Artifact is outside the managed Task scope.");
+      }
+      if (store.getTask(taskId) === null) throw usageError(`Task not found: ${taskId}.`);
+      let data: unknown;
+      if (action === "list") {
+        if (resolved.length !== 4) throw usageError(usage);
+        data = await listArtifactsCapability(home, taskId);
+      } else if (action === "read") {
+        const relativePath = resolved[4];
+        const commit = resolved[5];
+        if (relativePath === undefined || resolved.length > 6) throw usageError(usage);
+        data = await readArtifactCapability(home, taskId, {
+          relativePath, ...(commit === undefined ? {} : { commit })
+        });
+      } else {
+        // save: a delivery-authoritative action; a managed Task caller must be the current Leader.
+        taskLocalActor(store, process.env, taskId);
+        const relativePath = resolved[4];
+        const content = resolved[5];
+        if (relativePath === undefined || content === undefined) throw usageError(usage);
+        const rest = resolved.slice(6);
+        let message: string | undefined;
+        let expectedHead: string | undefined;
+        for (let index = 0; index < rest.length; index += 1) {
+          const value = rest[index + 1];
+          if (rest[index] === "--message" && value !== undefined) { message = value; index += 1; continue; }
+          if (rest[index] === "--expected-head" && value !== undefined) { expectedHead = value; index += 1; continue; }
+          throw usageError(usage);
+        }
+        data = await saveArtifactCapability(home, taskId, {
+          relativePath, content,
+          ...(message === undefined ? {} : { message }),
+          ...(expectedHead === undefined ? {} : { expectedHead })
+        });
+      }
+      emit(JSON.stringify(data, null, 2), false, data);
+      return;
+    }
     if (resolved[1] === "execution") {
       if (resolved[2] === "stop") {
         const request = parseTaskExecutionStopRequest(resolved.slice(3));
@@ -1455,9 +1512,8 @@ export async function main(): Promise<void> {
         // Authority and pure Lane-shape checks precede every physical or
         // durable workspace preparation performed for dispatch.
         assertTaskDeliveryAuthority(store, process.env, task.id);
-        if (item.assignee !== undefined) {
-          workItemDispatchLanePlan(resolved, store, item);
-        }
+        requireWorkItemAssignee(item);
+        workItemDispatchLanePlan(resolved, store, item);
       }
       // A rejected Candidate starts a new execution iteration. Release every
       // terminal Lane Role runtime before preparing the new Lane workspaces;
@@ -1601,14 +1657,7 @@ export async function main(): Promise<void> {
         laneDispatchRelease = preparedLanes.release;
         laneDispatchProjectPaths = preparedLanes.projectPaths;
       }
-      const candidateGitSnapshot = await candidateSnapshotForTaskCommand(
-        resolved,
-        store,
-        workspacePreparer,
-        process.env,
-        taskFinalReviewContract
-      );
-      const directTaskMainSnapshot = await directTaskMainSnapshotForTaskCommand(
+      const candidateSnapshots = await candidateSnapshotForTaskCommand(
         resolved,
         store,
         workspacePreparer,
@@ -1665,11 +1714,10 @@ export async function main(): Promise<void> {
             ? {}
             : { completionPublishedTreeProof }),
           ...(workItemIntegrationProof === undefined ? {} : { workItemIntegrationProof }),
-          ...(candidateGitSnapshot === undefined ? {} : { candidateGitSnapshot }),
+          ...candidateSnapshots,
           ...(executionLaneWorkspaces === undefined ? {} : { executionLaneWorkspaces }),
           ...(taskWorkspaceActivation === undefined ? {} : { taskWorkspaceActivation }),
           ...(laneDispatchProjectPaths === undefined ? {} : { laneDispatchProjectPaths }),
-          ...(directTaskMainSnapshot === undefined ? {} : { directTaskMainSnapshot }),
           ...(actualTaskReviewCandidate === undefined
             ? {}
             : { actualTaskReviewCandidate }),
@@ -2257,38 +2305,12 @@ async function candidateSnapshotForTaskCommand(
   environment: NodeJS.ProcessEnv,
   taskFinalReviewContract?: TaskFinalReviewContract
 ) {
-  if (args[0] !== "task") return undefined;
-  const reviewableCandidateCommand = (
-    args[1] === "work" && args[2] === "update"
-    && args[3] !== undefined && args[4] === "done"
-  ) || (
-    args[1] === "work" && args[2] === "group" && args[3] === "resolve"
-    && args[4] !== undefined
+  if (args[0] !== "task" || args[1] !== "work" || args[2] !== "update"
+    || args[3] === undefined || args[4] !== "done") return {};
+  const reference = cliWorkItemReference(args[3], environment);
+  return snapshotWorkItemCandidate(
+    store, preparer, reference.taskId, reference.localId, taskFinalReviewContract
   );
-  // Explicit Task-final review requests must remain independent of the
-  // mutable global review trigger. Candidate snapshots are a delivery
-  // boundary for every writable WorkItem, not only review-configured Tasks.
-  const groupResolve = args[1] === "work" && args[2] === "group" && args[3] === "resolve";
-  if (!reviewableCandidateCommand
-    || (groupResolve && args.includes("--decision") && args[args.indexOf("--decision") + 1] !== "accept")) {
-    return undefined;
-  }
-  if (args[1] === "work" && args[2] === "update"
-    && args[3] !== undefined && args[4] === "done") {
-    const reference = cliWorkItemReference(args[3], environment);
-    const workspace = store.getWorkItemWorkspace(reference.taskId, reference.localId);
-    if (workspace === null) {
-      // The exact Task-final contract intentionally supports a Leader-direct,
-      // metadata-only Project Candidate. The command layer performs the full
-      // Task/WorkItem/source/contract validation before any aggregate write.
-      if (taskFinalReviewContract !== undefined) return undefined;
-      throw usageError(
-        `Reviewable direct WorkItem has no managed Candidate workspace: ${reference.localId}.`
-      );
-    }
-    return preparer.snapshotCandidateWorkspace(workspace);
-  }
-  return undefined;
 }
 
 async function prepareExecutionLaneWorkspacesForCommand(
@@ -2411,42 +2433,6 @@ async function prepareReviewLaneWorkspaces(
     throw error;
   }
   return map;
-}
-
-async function directTaskMainSnapshotForTaskCommand(
-  args: readonly string[],
-  store: TaskStore,
-  preparer: FileTaskWorkspacePreparer,
-  environment: NodeJS.ProcessEnv,
-  taskFinalReviewContract?: TaskFinalReviewContract
-) {
-  if (taskFinalReviewContract === undefined
-    || args[0] !== "task"
-    || args[1] !== "work"
-    || args[2] !== "update"
-    || args[3] === undefined
-    || args[4] !== "done") {
-    return undefined;
-  }
-  const reference = cliWorkItemReference(args[3], environment);
-  const item = store.getWorkItem(reference.taskId, reference.localId);
-  if (item === null || item.writeProjectIds.length === 0
-    || store.getWorkItemWorkspace(reference.taskId, reference.localId) !== null) {
-    return undefined;
-  }
-  const workspace = store.getTaskWorkspace(reference.taskId);
-  // Exact Task-final Candidates may intentionally be metadata-only when no
-  // Task main exists. They remain review anchors, but are not eligible for the
-  // direct ChangeSet capture path.
-  if (workspace === null) return undefined;
-  if (workspace.owner.type !== "task") {
-    throw usageError(`Task has no authoritative main workspace: ${reference.taskId}.`);
-  }
-  try {
-    return await preparer.snapshotDirectTaskMain(workspace, item.writeProjectIds);
-  } catch (error) {
-    throw usageError(error instanceof Error ? error.message : String(error));
-  }
 }
 
 async function actualTaskReviewCandidateForTaskCommand(

@@ -340,11 +340,15 @@ function validateJobTarget(store: TaskStore, params: Omit<DurableJobStartParams,
         `Integration Attempt not found: ${params.taskId}/${params.owner.integrationAttemptId}.`
       );
     }
-    if (attempt.status === "committed" || attempt.status === "failed") {
+    if (attempt.status !== "running") {
       throw jobDomainError(
-        `DurableJob owner Integration Attempt is terminal: `
+        `DurableJob owner Integration Attempt must be running: `
         + `${params.taskId}/${params.owner.integrationAttemptId} is ${attempt.status}.`
       );
+    }
+    if (attempt.candidateCommit !== params.head || attempt.checkInputDigest === undefined
+      || attempt.checkInputDigest !== durableJobIdempotencyKey(params)) {
+      throw jobDomainError("Integration Job has no matching admitted candidate/check specification.");
     }
   }
 

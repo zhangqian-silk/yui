@@ -128,18 +128,13 @@ export async function runSetupCommand(
     return `${[
       "Yui setup complete.",
       `Yui home: ${home}.`,
-      `Operator Agent: ${agent.id}.`,
-      `Leader Agent: ${roleStatus.leaderAgentId}.`,
+      `Operator: ${agent.id} (${roleStatus.operator}).`,
+      `Leader: ${roleStatus.leaderAgentId} (${roleStatus.leader}).`,
       `Global Role workspace: ${roleWorkspace}.`,
       ...(externalWorkspace === undefined
         ? []
         : [`Default workspace: ${externalWorkspace}.`]),
-      `Operator configuration: ${roleStatus.operator}.`,
-      `Leader configuration: ${roleStatus.leader}.`,
-      `Tmux: ${tmuxBin}.`,
-      "Setup did not configure Review, Worker, Profiles, or shell completion.",
-      "Provider login and native key/initialization confirmations remain with the Provider; setup did not call a model.",
-      "Run `yui operator enter` to continue, or `yui config show` to inspect configuration."
+      "Run `yui config show` to inspect configuration, or `yui operator enter` to start an Operator session for configuration changes or development tasks."
     ].join("\n")}\n`;
   } finally {
     readline.close();

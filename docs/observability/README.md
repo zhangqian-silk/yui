@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="./README.zh-CN.md">简体中文</a></p>
+
 # Runtime observations and diagnostics
 
 Read-only projections help an Agent distinguish durable intent, actual runtime

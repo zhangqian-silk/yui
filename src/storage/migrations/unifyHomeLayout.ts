@@ -17,7 +17,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 /**
- * Storage 18 -> 19: unify every Yui self-managed path under a single canonical
+ * Storage 20 -> 21: unify every Yui self-managed path under a single canonical
  * YUI_HOME.
  *
  * Before this migration the managed Git worktrees lived under the user-facing
@@ -83,7 +83,7 @@ import { isDeepStrictEqual } from "node:util";
  * shutdown, coordinate an online write-stop, or migrate a live Session. Its only
  * runtime precondition is the minimal in-flight-Job conflict check above; a
  * writer the operator failed to stop is out of its contract. On any failure it
- * throws, the upgrade transaction rolls the schema back to 18, and the preserved
+ * throws, the upgrade transaction rolls back to its starting version, and the preserved
  * source plus the fenced DB backup are the recovery pair for a manual re-run — it
  * does NOT claim automatic idempotent recovery or take over partial residue with
  * a manifest state machine.
@@ -107,7 +107,7 @@ type PathRewrite = Readonly<{ from: string; to: string }>;
  * Copy the one durable managed tree into Home (verifying the replica and
  * preserving the original), repair the copied Git worktrees, then rewrite only
  * the persisted pointers the runtime trusts as live. Runs inside the upgrade
- * transaction: any throw rolls the schema back to 18, and because the source is
+ * transaction: any throw rolls back to its starting version, and because the source is
  * copied (never renamed away) and the copy is content-verified before publish, a
  * failed run leaves the original content intact for a manual re-run.
  */

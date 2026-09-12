@@ -132,7 +132,8 @@ export function integrationAttemptRequiresSettlement(
 ): boolean {
   return attempt.status === "running"
     || attempt.status === "validating"
-    || attempt.status === "blocked";
+    || attempt.status === "blocked"
+    || attempt.status === "conflicted";
 }
 
 function candidateProjectHead(

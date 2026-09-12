@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="./verification-levels.zh-CN.md">简体中文</a></p>
+
 # Verification policy
 
 Yui is a single-user local product. Permanent verification protects essential
@@ -51,12 +53,21 @@ regressions, and fast regressions do not establish real-model behavior.
     authentication helpers, rewritten approval records, or secrets forwarded
     to unrelated adapters; native authentication selection stays with Claude. Environment refresh
     removes revoked keys and keeps values out of durable Task/Role records.
+15. ordinary Integration conflicts continue without a decision gate; exact Git
+    receipts and an admitted Job resume interrupted delivery without replay.
+    Validation settlement distinguishes current check conditions from an
+    already-applied CAS. Migration preserves provable old bound FF Jobs and
+    classifies old conflicts without inventing successful checks.
 
 Keep the test phase seconds-scale; measure TypeScript build separately. Record
 incremental runtime when adding a critical regression. The seven recovery boundary
 cases initially add about 0.4 seconds of test bodies (about 0.6 seconds standalone,
 including module startup) on the development host. Avoid sleep-based checks or
 mandatory model/daemon launches in the permanent suite.
+The Integration continuation regressions use disposable Git repositories,
+SQLite and fake Jobs, without a provider or shared Home. Their test bodies
+take about 3 seconds on the development host; validation settlement adds
+about 1.4 seconds to the initial 1.5-second coverage.
 
 ## Skill and instruction changes
 

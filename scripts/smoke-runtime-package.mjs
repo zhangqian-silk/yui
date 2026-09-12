@@ -124,8 +124,8 @@ try {
   );
   if (
     !setup.includes("Yui setup complete.")
-    || !setup.includes("Operator configuration: created.")
-    || !setup.includes("Leader configuration: created.")
+    || !/^Operator: .+ \(created\)\.$/mu.test(setup)
+    || !/^Leader: .+ \(created\)\.$/mu.test(setup)
   ) {
     throw new Error("Installed CLI setup did not create the minimum task-ready runtime.");
   }

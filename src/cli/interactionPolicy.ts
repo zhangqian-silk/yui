@@ -640,9 +640,9 @@ export const INTERACTION_POLICIES: readonly InteractionPolicy[] = Object.freeze(
       entity: "integration-attempt",
       provider: "integration-attempts",
       actionTarget: true,
-      ...(command === "continue" ? { statuses: ["blocked", "validating"] } : {}),
-      ...(command === "resolve" ? { statuses: ["blocked"] } : {}),
-      ...(command === "abort" ? { statuses: ["running", "blocked"] } : {})
+      ...(command === "continue" ? { statuses: ["running", "conflicted", "blocked", "validating"] } : {}),
+      ...(command === "resolve" ? { statuses: ["blocked", "conflicted"] } : {}),
+      ...(command === "abort" ? { statuses: ["running", "conflicted", "blocked", "validating"] } : {})
     }],
     ...(command === "resolve"
         ? { trailingOptions: { "--option": "value" as const, "--rationale": "value" as const } }

@@ -187,6 +187,7 @@ export class WorkItemChangeSetManager {
     const unresolved = this.store.listIntegrationAttempts(task.id).find((attempt) => (
       attempt.status === "running"
       || attempt.status === "blocked"
+      || attempt.status === "conflicted"
       || attempt.status === "validating"
     ));
     if (unresolved !== undefined) {

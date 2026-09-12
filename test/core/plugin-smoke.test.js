@@ -66,15 +66,19 @@ test("a Leader uses a Task-local declarative plugin and preserves its result", a
     assert.equal(discovered.capabilities.length, 1);
     const result = await call("demo.echo", { text: "hello" });
     assert.deepEqual(result, { text: "hello" });
-    const artifact = await call("artifact.save", { taskId: task.id, artifact: {
-      kind: "content", displayName: "Plugin result", provenance: `demo@${report.package.digest}`,
-      content: result.text
-    } });
+    // Artifacts are now files in the Task's local Git repo. Save commits exactly
+    // one relativePath and returns a self-certifying commit-pinned reference.
+    const artifact = await call("artifact.save", { taskId: task.id,
+      relativePath: "validation/plugin-result.txt", content: result.text, message: "record plugin result" });
+    assert.match(artifact.commit, /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/);
+    assert.equal(artifact.relativePath, "validation/plugin-result.txt");
     const current = await call("plugin.inspect", { id: "demo" });
     assert.equal(current.desired.validationId, report.id);
     assert.equal(current.actual.validationId, report.id);
     assert.equal((await call("plugin.disable", { id: "demo" })).drained, true);
-    assert.equal((await call("artifact.read", { taskId: task.id, artifactId: artifact.id })).content, "hello");
+    // Read the file back at its pinned commit (frozen evidence survives plugin disable).
+    assert.equal((await call("artifact.read", { taskId: task.id,
+      relativePath: "validation/plugin-result.txt", commit: artifact.commit })).content, "hello");
     await host.close();
     store.close();
     const reopened = new SqliteTaskStore(home);

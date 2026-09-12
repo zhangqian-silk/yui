@@ -50,6 +50,7 @@ import {
  */
 
 export type NextActionKind =
+  | "resolve-integration-conflicts"
   | "advance-task"
   | "implement-current-work-item"
   | "accept-or-reject-candidate"
@@ -252,6 +253,16 @@ export function projectNextAction(facts: NextActionFacts): NextAction {
     });
   }
 
+  const conflictedIntegration = facts.integrations.find(attempt => attempt.status === "conflicted");
+  if (conflictedIntegration !== undefined) {
+    return buildAction(facts, {
+      kind: "resolve-integration-conflicts",
+      reason: `Integration ${conflictedIntegration.id} has Git conflicts; the Leader resolves its workspace and continues without prior resolve or user approval.`,
+      refs: [ref("integration", conflictedIntegration.id)],
+      preconditions: [{ fact: "Git conflict resolution belongs to the Leader", satisfied: true }],
+      recommendedCommand: `yui task integration continue ${task.id}/${conflictedIntegration.id}`
+    });
+  }
   const checkingIntegration = facts.integrations.find(attempt =>
     attempt.status === "running" && attempt.jobId !== undefined);
   if (checkingIntegration !== undefined) {
@@ -279,6 +290,22 @@ export function projectNextAction(facts: NextActionFacts): NextAction {
     });
   }
 
+  const unfinishedIntegration = facts.integrations.find(attempt =>
+    attempt.status === "running" || attempt.status === "validating");
+  if (unfinishedIntegration !== undefined) {
+    return buildAction(facts, {
+      kind: "integrate-work-item",
+      reason: `Integration ${unfinishedIntegration.id} is unfinished. ${unfinishedIntegration.summary ?? "Continue from its persisted source and check evidence."}`,
+      refs: [ref("integration", unfinishedIntegration.id)],
+      preconditions: [{ fact: "Inspect exact Integration evidence before any retry", satisfied: true }],
+      recommendedCommand: `yui task integration continue ${task.id}/${unfinishedIntegration.id}`,
+      alternatives: [{
+        kind: "inspect-integration",
+        reason: "If completion cannot be proved, preserve evidence and choose formal abort and an authorized alternative.",
+        recommendedCommand: `yui task integration show ${task.id}/${unfinishedIntegration.id}`
+      }]
+    });
+  }
   const candidateReady = facts.workItems
     .find((item) => (item.status === "open" && item.currentCandidateId !== undefined));
   if (candidateReady !== undefined) {
@@ -466,28 +493,35 @@ export function projectNextAction(facts: NextActionFacts): NextAction {
       return synthesisSelectionAction(facts, "work", item.id);
     }
     const refs = [ref("work-item", item.id)];
+    const direct = item.assignee === undefined;
     return buildAction(facts, {
       kind: "implement-current-work-item",
-      reason: `Work Item ${item.id} is ${item.status}; dispatch or continue its implementation.`,
+      reason: direct
+        ? `Work Item ${item.id} has no managed assignee; the Leader can execute it directly.`
+        : `Work Item ${item.id} is assigned to ${item.assignee}; dispatch or continue that assignment.`,
       refs,
       preconditions: [
         { fact: `Work Item is ${item.status}`, satisfied: true, ref: refs[0] }
       ],
-      recommendedCommand: `yui task work dispatch ${task.id}/${item.id}`,
-      alternatives: [
-        {
-          kind: "execute-directly",
-          reason: "Execute the bounded Work Item directly when the Leader's current context and authority are sufficient.",
+      recommendedCommand: direct
+        ? `yui task work update ${task.id}/${item.id} running`
+        : `yui task work dispatch ${task.id}/${item.id}`,
+      alternatives: direct ? [
+        ...(item.writeProjectIds.length === 0 ? [] : [{
+          kind: "isolate-work-item",
+          reason: "Prepare and inspect the WorkItem-owned code workspace before direct implementation.",
+          recommendedCommand: `yui task work isolate ${task.id}/${item.id}`,
           refs
-        },
+        }]),
         {
           kind: "native-subagent",
-          reason: "Use native implementer subagents when bounded work benefits from specialist attention or parallel fan-out inside the Leader Session.",
+          reason: "Use a bounded native child only when authorized and useful within the Leader's current scope.",
           refs
         }
-      ],
-      judgmentRequired:
-        "Leader must choose the execution path: direct execution, a native subagent, or managed Task Role dispatch."
+      ] : [],
+      judgmentRequired: direct
+        ? "Honor explicit execution preferences. For code, use the WorkItem-owned workspace and integrate its Candidate before acceptance; no self-dispatch is needed."
+        : "Preserve the current managed Assignment and original results; do not switch ownership merely to follow a different default."
     });
   }
 

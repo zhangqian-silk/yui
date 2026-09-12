@@ -5,7 +5,10 @@ import { TASK_COMPLETION_PUBLISHED_TREE_AUTHORIZED_EVENT } from "../task/publica
 import { RUN_INPUT_MAX_DELTAS } from "./runInputContract.js";
 import { assertWorkItemDependenciesCompleted } from "../workItem/dependencyGate.js";
 import { governingWorkItemCandidate, workItemExecutionGroupById, type WorkItem } from "../workItem/workItem.js";
-import { stableArtifactRef } from "../resources/projectResource.js";
+import {
+  formatGitArtifactRef,
+  validateGitArtifactRef
+} from "../artifacts/gitArtifactRef.js";
 import { managedWorkspaceKey } from "../worktree/managedWorkspace.js";
 import {
   contextContentDigest,
@@ -206,13 +209,13 @@ export function freezeWorkItemExecutionAssignmentContextSnapshot(
     materialize("L2", "task", task.id, task),
     materialize("L3", "work-item", workItem.id, workItem)
   ];
-  materialized.push(...candidateArtifacts(store, task.id, workItem.candidates));
+  materialized.push(...candidateArtifacts(task.id, workItem.candidates));
   assertWorkItemDependenciesCompleted(store, workItem);
   for (const dependencyId of workItem.dependsOn) {
     const dependency = store.getWorkItem(task.id, dependencyId);
     if (dependency === null) throw new Error(`WorkItem dependency disappeared: ${dependencyId}.`);
     materialized.push(materialize("L3", "accepted-work-item", dependency.id, dependency));
-    materialized.push(...candidateArtifacts(store, task.id, dependency.candidates));
+    materialized.push(...candidateArtifacts(task.id, dependency.candidates));
   }
   for (const binding of task.projectBindings) {
     const project = store.getProject(binding.projectId);
@@ -529,14 +532,14 @@ function collectAuthorizedContext(
     const item = store.getWorkItem(task.id, run.workItemId);
     if (item === null) throw new Error(`AgentRun WorkItem not found: ${run.workItemId}.`);
     result.push(materialize("L3", "work-item", item.id, item));
-    result.push(...candidateArtifacts(store, task.id, item.candidates));
+    result.push(...candidateArtifacts(task.id, item.candidates));
     if (view === "worker") {
       assertWorkItemDependenciesCompleted(store, item);
       for (const dependencyId of item.dependsOn) {
         const dependency = store.getWorkItem(task.id, dependencyId);
         if (dependency === null) throw new Error(`WorkItem dependency disappeared: ${dependencyId}.`);
         result.push(materialize("L3", "accepted-work-item", dependency.id, dependency));
-        result.push(...candidateArtifacts(store, task.id, dependency.candidates));
+        result.push(...candidateArtifacts(task.id, dependency.candidates));
       }
     }
   }
@@ -549,7 +552,7 @@ function collectAuthorizedContext(
         const candidate = governingWorkItemCandidate(item);
         if (candidate === undefined) continue;
         result.push(materialize("L3", "candidate", `${item.id}/${candidate.id}`, candidate));
-        result.push(...candidateArtifacts(store, task.id, [candidate]));
+        result.push(...candidateArtifacts(task.id, [candidate]));
       }
     }
     if (round.deltaRecheck !== undefined) {
@@ -593,9 +596,12 @@ function collectAuthorizedContext(
     }
   }
   if (view === "leader") {
-    for (const artifact of store.listArtifacts(task.id)) {
-      result.push(materialize("L3", "artifact", artifact.id, artifact));
-    }
+    // File artifacts are NOT enumerated into the synchronous context pack: the
+    // core cursor does not cover file edits, and an ambient directory listing
+    // here would be exactly the forbidden update-time mirror (§3.7). The Leader
+    // reads current artifacts on demand via the async `artifact.list` /
+    // `artifact.read` capabilities; frozen Candidate artifacts still enter the
+    // pack as commit-pinned pointers through candidateArtifacts().
     for (const preparation of store.listEnvironmentPreparations(task.id)) {
       result.push(materialize("L3", "environment-preparation", preparation.id, preparation));
     }
@@ -654,18 +660,27 @@ function collectAuthorizedContext(
 }
 
 /** Only artifacts attached to already-authorized candidates enter a bounded
- * Worker/Reviewer snapshot. Their immutable Home content survives cleanup of
+ * Worker/Reviewer snapshot. Each is a commit-pinned pointer: the commit
+ * self-certifies the frozen bytes, so the pointer is carried as pure data with
+ * NO build-time Git read. The bytes are resolved lazily on the async expand
+ * path (`artifact.read` at the pinned commit); the pointer survives cleanup of
  * the producing workspace and Session. */
 function candidateArtifacts(
-  store: TaskStore, taskId: string, candidates: WorkItem["candidates"]
+  taskId: string, candidates: WorkItem["candidates"]
 ): MaterializedRef[] {
   return candidates.flatMap((candidate) => (candidate.artifactRefs ?? []).map((ref) => {
-    const artifact = ref.taskId === taskId ? store.getArtifact(taskId, ref.artifactId) : null;
-    const actual = artifact === null ? null : stableArtifactRef(artifact);
-    if (artifact === null || actual?.kind !== ref.kind || actual.digest !== ref.digest) {
-      throw new Error(`Candidate Artifact is unavailable or drifted: ${ref.artifactId}.`);
+    const pinned = validateGitArtifactRef(ref);
+    if (pinned.taskId !== taskId) {
+      throw new Error(`Candidate Artifact belongs to another Task: ${pinned.taskId}.`);
     }
-    return materialize("L3", "artifact", artifact.id, artifact);
+    // The refId is the self-certifying string form; the value is the pure
+    // pointer, never the bytes. inspectValue reconstructs the same pointer.
+    return materialize("L3", "artifact", formatGitArtifactRef(pinned), {
+      taskId: pinned.taskId,
+      commit: pinned.commit,
+      relativePath: pinned.relativePath,
+      ...(pinned.digest === undefined ? {} : { digest: pinned.digest })
+    });
   }));
 }
 

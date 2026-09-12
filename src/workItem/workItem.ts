@@ -1,4 +1,4 @@
-import type { ArtifactRef } from "../resources/projectResource.js";
+import { validateGitArtifactRef, type GitArtifactRef } from "../artifacts/gitArtifactRef.js";
 import {
   normalizedUniqueIdentities,
   normalizedUniqueText,
@@ -102,8 +102,13 @@ export type WorkItemCandidate = Readonly<{
   gitSnapshot?: CandidateGitSnapshot;
   /** Exact base/head boundary for a metadata-only Task-main Candidate. */
   taskMainSnapshot?: DirectTaskMainSnapshot;
-  /** Fixed T05 artifacts, owned by the same Task and selected at submission. */
-  artifactRefs?: readonly ArtifactRef[];
+  /**
+   * File artifacts selected at submission, each pinned to an exact commit in
+   * the Task's local artifact repository (§3.7 frozen Candidate evidence). The
+   * commit self-certifies the bytes, so this is the whole freeze — no DB
+   * artifact record is consulted.
+   */
+  artifactRefs?: readonly GitArtifactRef[];
   createdAt: string;
 }>;
 
@@ -266,7 +271,7 @@ export function submitWorkItemCandidate(
     workspace?: ManagedWorkspace;
     gitSnapshot?: CandidateGitSnapshot;
     taskMainSnapshot?: DirectTaskMainSnapshot;
-    artifactRefs?: readonly ArtifactRef[];
+    artifactRefs?: readonly GitArtifactRef[];
   }>,
   now: Date
 ): WorkItem {
@@ -302,7 +307,7 @@ export function submitWorkItemCandidate(
     ...(input.taskMainSnapshot === undefined
       ? {}
       : { taskMainSnapshot: input.taskMainSnapshot }),
-    ...(input.artifactRefs === undefined ? {} : { artifactRefs: input.artifactRefs.map((ref) => ({ ...ref })) }),
+    ...(input.artifactRefs === undefined ? {} : { artifactRefs: input.artifactRefs.map((ref) => validateGitArtifactRef(ref)) }),
     createdAt: now.toISOString()
   });
   const { outcome: _outcome, endedAt: _endedAt, ...base } = workItem;
@@ -745,16 +750,20 @@ export function validateWorkItemCandidate(
   requireText(candidate.summary, "Work Item candidate summary");
   if (candidate.artifactRefs !== undefined) {
     if (!Array.isArray(candidate.artifactRefs)) throw new Error("Candidate Artifact refs must be an array.");
-    const ids = new Set<string>();
+    const identities = new Set<string>();
     for (const ref of candidate.artifactRefs) {
-      requireIdentity(ref.artifactId, "Candidate Artifact id");
-      if (ref.taskId !== candidate.taskId || !["content", "external-version", "receipt"].includes(ref.kind)
-        || ids.has(ref.artifactId)) throw new Error("Candidate Artifact scope, kind or identity is invalid.");
-      if ((ref.kind !== "external-version" || ref.digest !== undefined)
-        && (typeof ref.digest !== "string" || !/^[a-f0-9]{64}$/u.test(ref.digest))) {
-        throw new Error("Candidate Artifact digest is invalid.");
+      // Pure, no-I/O shape check: the commit self-certifies the frozen bytes,
+      // so a valid pinned reference is complete evidence on its own. Existence
+      // is proven lazily when the bytes are resolved on the async read path.
+      const valid = validateGitArtifactRef(ref);
+      if (valid.taskId !== candidate.taskId) {
+        throw new Error("Candidate Artifact scope, commit or path is invalid.");
       }
-      ids.add(ref.artifactId);
+      const identity = `${valid.commit}:${valid.relativePath}`;
+      if (identities.has(identity)) {
+        throw new Error("Candidate Artifact scope, commit or path is invalid.");
+      }
+      identities.add(identity);
     }
   }
   if (typeof candidate.source !== "object" || candidate.source === null) {

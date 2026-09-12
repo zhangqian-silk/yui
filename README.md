@@ -2,20 +2,42 @@
 
 # Yui
 
+[![Core CI](https://github.com/zhangqian-silk/yui/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/zhangqian-silk/yui/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Node](https://img.shields.io/badge/node-20%20%7C%2022%20%7C%2024-brightgreen.svg)
+![Platform](https://img.shields.io/badge/platform-Linux%20x64%20%28glibc%29-blue.svg)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
+
 Give your Agents work to carry forward, not just another chat to answer.
 
-Yui helps you turn requests into organized tasks and coordinate Agents to solve
-them. Describe what you want in conversation: an Agent identifies the relevant
-Project, distinguishes new work from a follow-up, and keeps related requirements
-together. Each Task has a Leader that plans the work, uses other configured
-Agents when useful, and brings results and decisions back to you.
+Yui is a local control plane for coding Agents. Describe what you want to an
+Operator in plain language: it identifies the relevant Project, tells new work
+from a follow-up, and turns each request into a Task owned by a Leader that
+plans, delegates and brings results and decisions back. Intent, progress and
+results live outside any single conversation, so work continues from the Task —
+not from terminal windows you juggle or details you have to remember.
 
-You do not need to manually create a ticket for every step, carry context between
-terminal windows, or remember which Agent was working on which requirement.
-Yui keeps the intent, progress and results outside any one conversation, so
-continuing work starts from the Task rather than from your memory.
+**Highlights**
 
-[Quick start](#quick-start) · [Working through conversation](#working-through-conversation) · [Core design](#core-design)
+- **Durable by design** — Tasks, decisions and results live in one local SQLite
+  store, so work survives crashes and restarts and continues from the Task, not
+  a chat log.
+- **One conversation, many Tasks** — the Operator turns plain-language requests
+  into new Tasks or follow-ups; no ticket IDs or terminal-window juggling.
+- **A Leader owns each outcome** — it plans, splits work into WorkItems,
+  delegates to Workers and Reviewers, and closes the loop; you can talk to it
+  directly anytime.
+- **Bring your own Agent** — Codex CLI, Claude Code CLI and ACP peers run behind
+  one boundary and stay replaceable without losing the Task.
+- **Local-first and private** — everything runs on your machine for one trusted
+  user; the Web view is loopback and read-only.
+- **Isolated by default** — repository work happens in managed Git worktrees;
+  the stable checkout stays read-only.
+
+> **Status:** pre-1.0 (0.15.x). CLI surfaces and configuration may still change
+> between releases; each upgrade migrates valid existing Homes.
+
+[Quick start](#quick-start) · [Working through conversation](#working-through-conversation) · [Architecture](#architecture) · [Design principles](#design-principles)
 
 ## Quick start
 
@@ -117,7 +139,161 @@ submission is not silently repeated.
 For a visual overview, run `yui web` in another terminal. The local Web view
 shows the same tasks and pending questions; it is not a separate task system.
 
-## Core design
+## Architecture
+
+Under the hood, Yui keeps every durable fact in one local SQLite store and lets
+Agents act on it through small, explicit operations. Here is the same system
+from a few different angles:
+
+- [Product structure](#product-structure) — the durable objects you work with
+- [How work flows](#how-work-flows) — the closed loop around a Task
+- [User message flow](#user-message-flow) — what happens when you send a message
+- [Core modules](#core-modules) — the long-lived runtime pieces
+- [Layered design](#layered-design) — responsibilities, top to bottom
+- [Lifecycle](#lifecycle) — states a Task and WorkItem move through
+
+### Product structure
+
+What Yui organizes for you — durable objects, not processes:
+
+```text
+  Global
+   ├─ Operator ── the Agent you converse with; spans all Projects & Tasks
+   └─ Projects
+       └─ Project ── a managed codebase + its Project Knowledge
+           └─ Task ── one bounded outcome you asked for
+               ├─ Brief ......... objective · boundaries · approach
+               ├─ Roles ......... Leader (owns it) · Workers · Reviewers
+               ├─ WorkItems ..... independently acceptable requirements
+               │     └─ AgentRun .. one requested execution ─▶ Result
+               ├─ Messages ...... durable conversation + Decisions
+               └─ Review / Integration ─▶ accepted delivery
+```
+
+### How work flows
+
+```text
+  You
+   │  describe work · answer questions · refine scope
+   ▼
+  Operator ── reads your intent, then either:
+   │            • opens a NEW Task, or
+   │            • APPENDS to an existing Task (a follow-up)
+   ▼
+  Task ── owned by one Leader, who runs the closed loop:
+   │
+   │   plan ─▶ split into WorkItems ─▶ deliver ─▶ review ─▶ close
+   │
+   │   each WorkItem is advanced by the Leader itself, or delegated:
+   │     ├──▶ Worker     another Agent implements it
+   │     └──▶ Reviewer   checks the result before it is accepted
+   │
+   ▼
+  Results and decisions come back to you — and you can talk to the Leader
+  directly about a task's details anytime.
+```
+
+### User message flow
+
+What happens when you send one message — the Controller only wakes Agents; the
+durable record always lives in the store:
+
+```text
+  ── Inbound ────────────────────────────────────────────────────────────────
+  You ─▶ Operator ─▶ records a Task (new, or a follow-up) + a Message ─▶ yui.db
+                                                                           │
+                                                       Controller wakes the Leader
+                                                                           ▼
+  ── Work ───────────────────────────────────────────────────────────────────
+  Leader reads Context ─▶ acts itself, or delegates to Workers / Reviewers
+                       ─▶ writes results · decisions · messages ─▶ yui.db
+                                                                           │
+                                                    Controller wakes the Operator
+                                                                           ▼
+  ── Outbound ───────────────────────────────────────────────────────────────
+  yui.db ─▶ Operator reads the updates ─▶ replies to You
+```
+
+### Core modules
+
+The long-lived runtime pieces. You only ever talk to the Operator; Agents and
+the Controller are what touch the store:
+
+```text
+  You
+   │  natural-language conversation with the Operator
+   │  (you never drive the Controller or the store yourself)
+   ▼
+  Agent sessions · in tmux
+   │  Operator ── the Agent you talk to; routes requests into Tasks
+   │  Leader · Workers · Reviewers ── plan, deliver and review the work
+   │  each drives a native Agent via AgentHost / AgentEndpoint / Driver:
+   │    Codex CLI (App Server) · Claude Code CLI (stream-json) · ACP peers
+   │
+   │  Agents read Context and make atomic changes (yui operations)
+   ▼
+  ┌─ yui.db — SQLite (WAL) · single source of truth · one txn per change
+  │  Tasks · WorkItems · AgentRuns · Messages · Decisions · Results
+  └─ Project Knowledge · configuration
+   ▲
+   │  reads & records runtime facts; wakes and delivers work to the sessions
+   │
+  Controller · one per Home
+     delivery · Scheduler · jobs · capability host · Web listener
+     it moves work and records facts — it never judges an answer
+
+  Agents work in Projects: read-only checkout + isolated worktrees.
+  Web view (yui web): a loopback, read-only projection of the store.
+```
+
+### Layered design
+
+Each layer owns one responsibility and exposes small, explicit capabilities —
+never a fixed workflow:
+
+```text
+  Experience   —  how you interact
+    CLI (Operator) · Web (loopback, read-only) · native Agent sessions
+    collect input · show facts · confirm actions · invoke capabilities
+        ▼
+  Intelligence —  who decides
+    Operator: recognize requests, split Tasks
+    Leader:   plan · delegate · judge · complete one Task
+    Workers · Reviewers   (behavior comes from Roles & Skills)
+        ▼
+  Capability   —  the atomic operations Yui exposes
+    deliver:  Task · WorkItem · Decision · Candidate · Review
+    context:  Context · Message · InputRequest · Project Knowledge
+    config:   Roles · Agent config · Project · Plugin
+    execute:  dispatch · inspect · stop · resources · Artifact
+        ▼
+  Execution    —  how work actually runs
+    AgentHost / AgentEndpoint / Driver, each in a tmux session
+    Codex CLI (App Server) · Claude Code CLI (stream-json) · ACP peers
+    managed Git worktrees · adopted environments
+        ▼
+  Kernel       —  durable authority: yui.db (SQLite, WAL)
+    storage · identity · permissions · operation facts · instance host
+
+  ▲ plugins extend the Capability layer through the Capability Registry
+```
+
+### Lifecycle
+
+Status is one authority per object; execution and waiting are runtime facts, not
+extra states:
+
+```text
+  Task      draft ─▶ active ─▶ completed ─▶ archived
+                        └────▶ cancelled ─▶ archived
+
+  WorkItem  open ─▶ accepted ─▶ retired
+
+  Draft holds planning only; activation adopts a delivery workspace.
+  Archive needs settled work and clean worktrees; it cannot reopen.
+```
+
+## Design principles
 
 ### Agents make decisions; Yui makes work durable
 
@@ -161,6 +337,17 @@ Yui is designed for one trusted local user. It is not an OS sandbox or a remote
 multi-user service. Publishing, granting new access and other external effects
 still require the corresponding authority.
 
+## How Yui compares
+
+|  | Chat-only agent | Agent CLI + tmux, by hand | Yui |
+| --- | --- | --- | --- |
+| Work survives the session | no | your own notes | durable Tasks in one store |
+| New request vs. follow-up | you decide | you decide | the Operator routes it |
+| Multi-step delegation | manual | manual | Leader → WorkItems → Workers/Reviewers |
+| Swap model/agent mid-task | context lost | manual re-setup | replaceable behind one boundary |
+| Parallel work isolation | — | you manage branches | managed Git worktrees |
+| Where the truth lives | the chat log | scattered | one SQLite source of truth |
+
 ## Learn more
 
 The [architecture overview](ARCHITECTURE.md) explains the end-to-end design.
@@ -174,7 +361,9 @@ before moving between builds or updating an existing Home.
 
 ## Contributing
 
-In a source checkout, start with `npm ci` and `npm test`. Read
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow, and please
+follow our [Code of Conduct](CODE_OF_CONDUCT.md). In short: in a source
+checkout, run `npm ci` and `npm test`. Read
 `.agents/skills/develop-yui/SKILL.md` and the
 [verification policy](docs/testing/verification-levels.md).
 Source builds also need a Linux C compiler and static libc development libraries
@@ -186,6 +375,14 @@ To exercise your checkout, run `make install-local`, then use the absolute
 that checkout; run its `setup` before stateful use. Do not use the global `yui`
 or `make link` to validate local changes. Live-model, paid or shared-resource
 tests require an explicit request for those resources.
+
+## Community and support
+
+- Questions, bugs and feature requests: open a
+  [GitHub issue](https://github.com/zhangqian-silk/yui/issues).
+- Security: see the [security policy](SECURITY.md). Yui targets one trusted
+  local user and is not an OS sandbox or a remote service; please report
+  sensitive issues privately instead of opening a public issue.
 
 ## License
 

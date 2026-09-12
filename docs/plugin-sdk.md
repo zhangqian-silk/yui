@@ -1,46 +1,61 @@
-# 独立插件 SDK
+<p align="right"><strong>English</strong> | <a href="./plugin-sdk.zh-CN.md">简体中文</a></p>
 
-独立目录可以通过现有 `capability` 入口贡献 Task-local 能力，无需修改 Yui
-安装目录。当前受认证的 Leader 可以管理自己 Task 的插件，global Operator
-仍可管理指定 Task 的插件；Worker／Reviewer 保持调用和读取权限，不获得管理
-或自行授信权限。本 SDK 不实现 Endpoint 注册或自动升级。
+# Standalone plugin SDK
 
-Store 持久保存用户希望启用/停用的选择，以及对应的确切验证产物引用；
-Host 是实际实例和引用生命周期的唯一权威。Controller 重启后仍能读取选择及
-报告，但必须显式重新激活。不存在独立的可写 `active=true` 账本、自动执行
-作者代码、市场、签名平台或恢复 worker。
+A standalone directory can contribute Task-local capabilities through the
+existing `capability` ingress without modifying the Yui installation. The
+currently authenticated Leader can manage its own Task's plugins, and the global
+Operator can still manage a named Task's plugins; a Worker/Reviewer keeps call
+and read access but gains no management or self-trust authority. This SDK does
+not implement Endpoint registration or automatic upgrades.
 
-## 入口与环境
+The Store persists the user's enable/disable selection and the exact
+validation-artifact reference it points to; the Host is the sole authority for
+the live instances and reference lifecycle. After a Controller restart the
+selection and reports are still readable, but activation must be explicit. There
+is no separate writable `active=true` ledger, no automatic execution of author
+code, and no marketplace, signing platform or recovery worker.
 
-所有管理操作复用原 Controller、CapabilityRegistry、InstanceHost 和身份入口。
-在已认证 managed Leader／Operator Session 中使用以下能力；普通终端不能靠声明
-`scope:user` 获权。开发 checkout 必须使用其绝对 `output/dev/bin/yui`，
-并明确选择自己的隔离 Home，不能用全局安装验证。
+## Ingress and environment
 
-| 能力 | 输入（Task 由 `--task` 绑定） | 可观察结果 |
+All management operations reuse the original Controller, CapabilityRegistry,
+InstanceHost and identity ingress. Use the capabilities below inside an
+authenticated managed Leader/Operator Session; an ordinary terminal cannot gain
+authority by declaring `scope:user`. A development checkout must use its absolute
+`output/dev/bin/yui` and explicitly select its own isolated Home; the global
+installation cannot validate it.
+
+| Capability | Input (Task bound by `--task`) | Observable result |
 | --- | --- | --- |
-| `plugin.create` | `preparationId, id, kind` | 新目录、manifest、示例；不执行作者代码 |
-| `plugin.scan` | `preparationId, directory` | 数据型扫描的 manifest、文件名、SHA-256 |
-| `plugin.validate` | `preparationId, directory` | 不可变 validation ID、源码/产物摘要、环境和已执行检查 |
-| `plugin.validation` | `validationId` | 报告摘要，不启动代码；本 Task 的 `task:read` 调用者可读 |
-| `plugin.inspect` | `id` | 本 Task 的期望选择、实际选择、Host 引用及最近管理失败；不加载代码 |
-| `plugin.list` | `{}` | 本 Task 全部显式选择的当前视图，含已停用选择 |
-| `plugin.activate` | `validationId` | 通过准入后保存启用选择，准备并发布实例，返回当前视图 |
-| `plugin.disable` | `id` | 保存停用选择，停止新调用，等待实际引用排空和 dispose |
+| `plugin.create` | `preparationId, id, kind` | New directory, manifest and sample; no author code runs |
+| `plugin.scan` | `preparationId, directory` | Data-only scan: manifest, file names, SHA-256 |
+| `plugin.validate` | `preparationId, directory` | Immutable validation ID, source/artifact digests, environment and executed checks |
+| `plugin.validation` | `validationId` | Report summary without starting code; readable by a `task:read` caller in this Task |
+| `plugin.inspect` | `id` | This Task's desired selection, actual selection, Host references and most recent management failure; loads no code |
+| `plugin.list` | `{}` | Current view of every explicit selection in this Task, including disabled ones |
+| `plugin.activate` | `validationId` | On admission, saves the enabled selection, prepares and publishes the instance, and returns the current view |
+| `plugin.disable` | `id` | Saves the disabled selection, stops new calls, and waits for actual references to drain and dispose |
 
-`directory` 可以是环境内的相对路径或绝对规范路径，但不能是环境根、外部
-路径或经 symlink 到达的目录。先通过 `environment.prepare/adopt`
-明确采用一个 writable 环境。scratch 是独立目录所有权，**不是 OS 沙箱**；
-用户目录还需要具体 Resource grant。每次新动作复核采用记录、Task
-当前状态、目录 identity、资源意图及现行 Resource grant。
-环境复核与主线原生执行使用同一 `resolveExecutionEnvironment`，要求现行 grant
-包含该 preparation 的采用记录。撤权后仅签发一个新 grant 不会隐式重新采用旧环境。
+`directory` may be a relative path inside the environment or an absolute
+canonical path, but not the environment root, an external path, or a directory
+reached through a symlink. First adopt a writable environment explicitly through
+`environment.prepare/adopt`. Scratch is independent directory ownership, **not an
+OS sandbox**; a user directory still needs a specific Resource grant. Every new
+action rechecks the adoption record, the Task's current status, the directory
+identity, the resource intent and the current Resource grant. Environment
+rechecks and mainline native execution share one `resolveExecutionEnvironment`,
+which requires the current grant to include that preparation's adoption record.
+Issuing a single new grant after revocation does not implicitly re-adopt an old
+environment.
 
-SDK 的实际构建、候选和活实例引用会阻止公开 `environment.release`。
-先停用并排空；环境释放不会删除用户目录，也不会强删非空 scratch。
-插件停用不删除源码或验证证据，不提供自动卸载/GC。
+The SDK's actual build, candidate and live instance references block a public
+`environment.release`. Disable and drain first; releasing an environment never
+deletes a user directory and never force-removes a non-empty scratch. Disabling a
+plugin does not delete source or validation evidence, and there is no automatic
+uninstall/GC.
 
-示例（`T`、`P`、`V` 分别替换为实际 Task、adopted preparation、validation ID）：
+Example (replace `T`, `P` and `V` with the actual Task, adopted preparation and
+validation IDs):
 
 ```text
 <checkout>/output/dev/bin/yui capability call plugin.create --task T --request-id create-1 --input '{"preparationId":"P","id":"demo","kind":"declarative"}'
@@ -51,70 +66,108 @@ SDK 的实际构建、候选和活实例引用会阻止公开 `environment.relea
 <checkout>/output/dev/bin/yui capability call plugin.disable --task T --request-id disable-1 --input '{"id":"demo"}'
 ```
 
-`requestId` 对有副作用的能力必填，但 SDK 不另建通用幂等账本。验证重做生成新
-报告，激活重做采用新 generation；发生通信错误后先查当前事实再决定是否重试。
+`requestId` is required for capabilities with side effects, but the SDK builds no
+general idempotency ledger. Re-validating produces a new report and re-activating
+adopts a new generation; after a communication error, read the current facts
+before deciding whether to retry.
 
-## 原 Task 中的自扩展
+## Self-extension inside the original Task
 
-Leader 先通过稳定 `capability search/describe` 读取当前目录和契约，判断复用、
-组合或临时脚本是否足够；不强制另建插件开发 Task，也不要求注册所有脚本。
-选择插件时，沿上述入口创建、验证、修复、激活。下一次桥调用即可发现并调用
-新增能力，不需要热改原生工具 schema、替换自身 Endpoint 或重启 Controller。
+The Leader first reads the current catalog and contracts through the stable
+`capability search/describe` to judge whether reuse, composition or an ad-hoc
+script is enough; it is not forced to create a separate plugin-development Task or
+to register every script. When it chooses a plugin, it creates, validates,
+repairs and activates it through the ingress above. The next bridge call can
+discover and invoke the new capability without hot-patching the native tool
+schema, replacing its own Endpoint or restarting the Controller.
 
-Task-local 管理权限不等于执行信任：可执行包仍逐阶段核对下面定义的精确
-`plugin.execute` grant，源码改变后不会继承旧摘要授权。资源、网络、全局
-配置及核心 namespace 的边界不变；已有授权充分时不重复批准，缺少新权限则
-报告具体缺口，不冒充 Operator 或自己签发 grant。
+Task-local management authority is not execution trust: an executable package
+still checks the exact `plugin.execute` grant defined below phase by phase, and a
+changed source does not inherit an old digest's authorization. The boundaries
+around resources, network, global configuration and the core namespace are
+unchanged; when existing authority is sufficient it is not re-approved, and when a
+new permission is missing the specific gap is reported rather than impersonating
+the Operator or self-issuing a grant.
 
-验证失败由 Agent 保存原错误并判断修复；不可把 unknown／部分效果自动重跑。
-使用新增能力取得实际业务结果后，通过 `artifact.save` 保存独立内容，并在
-Task 结果中保留引用。`artifact.read` 不依赖插件仍活跃。加载成功或保留插件
-源码不是业务闭环完成证据。协议夹具能验证工程边界，但不能证明真实 Agent
-自主选择、编写和修复成功；真实场景验证遵循项目的资源授权边界。
+On validation failure the Agent preserves the original error and judges the fix;
+an unknown or partial effect must not be auto-rerun. After using a new capability
+to obtain a real business result, save independent content as a file artifact
+through `artifact.save` (it commits the `relativePath` into the Task's local Git
+repository) and keep the returned `commit + relativePath` reference in the Task
+result. `artifact.read` does not
+depend on the plugin staying active. A successful load or a retained plugin source
+is not evidence that the business loop is complete. Protocol fixtures can validate
+the engineering boundary but cannot prove that a real Agent autonomously chose,
+wrote and repaired it; real-scenario validation follows the project's
+resource-authorization boundary.
 
-## 期望选择与实际实例
+## Desired selection and actual instance
 
-`plugin.inspect/list` 属于 `task:read`，不 acquire、初始化或恢复插件，也不消费
-grant 或写入 Store。当前视图中：
+`plugin.inspect/list` are `task:read`: they do not acquire, initialize or recover
+a plugin, and they consume no grant and write no Store. In the current view:
 
-- `desired` 是持久选择，包含 enabled、固定 validationId、内部 revision、
-  选择时间及可选 lastFailure。version/digest 从不可变验证报告派生，不重复保存。
-- `actual` 是当前 Controller 为新调用选中的 Host 实现及其验证引用；没有选择
-  或不能 acquire 时为 null。它不是子进程健康检查，也不证明当前 grant 仍有效。
-- `instances` 来自 Host 的未完成释放实例观察：确切 implementation、实际引用数、
-  是否接受新 acquire。停用后 actual 可以为 null，但这里仍有排空中的旧引用。
-- `needsActivation` 只比较期望启用选择与实际选择，不是独立工作状态或自动任务。
+- `desired` is the persistent selection — enabled, the pinned validationId, an
+  internal revision, the selection time and an optional lastFailure. Version and
+  digest are derived from the immutable validation report, not stored again.
+- `actual` is the Host implementation the current Controller selects for new
+  calls and its validation reference; it is null when there is no selection or it
+  cannot be acquired. It is not a child-process health check and does not prove
+  the current grant is still valid.
+- `instances` come from the Host's observation of not-yet-released instances: the
+  exact implementation, the actual reference count and whether it still accepts
+  new acquires. After disable, `actual` can be null while a draining old
+  reference is still listed here.
+- `needsActivation` only compares the desired enabled selection with the actual
+  selection; it is not an independent work state or an automatic task.
 
-首次查询一个未配置插件得到 `desired: null`。停用未知插件也保存明确的 disabled
-选择，但没有 validationId；停用已配置插件保留原验证引用。所有 scope 均为 Task，
-查询其他 Task 不泄漏本 Task 的选择。
+The first query of an unconfigured plugin returns `desired: null`. Disabling an
+unknown plugin still saves an explicit disabled selection but with no
+validationId; disabling a configured plugin keeps the original validation
+reference. Every scope is the Task, and querying another Task never leaks this
+Task's selection.
 
-激活先检查输入、验证记录归属、当前源码/环境、契约/依赖和权限；未通过准入的
-请求不创建或更改意图。可执行 grant 的消费和启用选择在同一事务提交；事务失败
-不执行作者代码、不发布实例，grant 消费也回滚。之后初始化或发布失败，则保留
-已合法接受的期望 B、失败原因以及原实际 A，让 Agent 决定重试、更换或停用。
+Activation first checks the input, the validation record's ownership, the current
+source/environment, the contract/dependencies and permissions; a request that
+fails admission neither creates nor changes intent. The executable grant's
+consumption and the enabled selection commit in one transaction; if the
+transaction fails, no author code runs, no instance is published, and the grant
+consumption rolls back. If initialization or publication fails afterward, the
+legally accepted desired B, the failure reason and the original actual A are
+retained, letting the Agent decide to retry, replace or disable.
 
-失败的 activate/disable 仍返回 `kind: failed`，不是伪装成功；在能够读取状态时，
-其 `value` 附带上述当前视图。最近的管理失败按原意图 revision 记录，迟到结果
-不能覆盖新的选择。revision 由内部事务递增，调用者不需要携带 expected token。
-每次新的明确选择清除上次管理失败；已有 AgentRun/报告与业务 receipt 不受影响。
+A failed activate/disable still returns `kind: failed` rather than faking
+success; when state can be read, its `value` carries the current view above. The
+most recent management failure is recorded against the intended revision, and a
+late result cannot overwrite a newer selection. The revision is incremented by
+the internal transaction, so the caller carries no expected token. Each new
+explicit selection clears the previous management failure; existing
+AgentRun/reports and business receipts are unaffected.
 
-停用先提交 disabled，再同步移除新调用入口，等待原引用排空；清理失败不反转
-disabled。若持久提交失败，原实例仍保持可用，不能宣称已停用。发布成功后的
-诊断读取失败也不能卸载已经发布的新实例。错误后应查询当前事实，而不是自动重试。
-同一插件有并发管理动作时，操作结果中的精确 provider 指该次操作的实例，
-附带的当前视图则可能已经反映更晚的显式选择。
+Disable commits `disabled` first, then synchronously removes the entry point for
+new calls and waits for the original references to drain; a cleanup failure does
+not reverse `disabled`. If the durable commit fails, the original instance stays
+available and cannot be claimed as disabled. A diagnostic read that fails after a
+successful publication also cannot unload the newly published instance. After an
+error, query the current facts instead of retrying automatically. When a plugin
+has concurrent management actions, the exact provider in an operation result
+refers to that operation's instance, while the attached current view may already
+reflect a later explicit selection.
 
-重启只保留选择和已有失败诊断，不从旧报告猜测过去是否启用，不自动重放操作，
-也不伪称历史实际实例仍运行。原来期望 B 但运行 A 的情形重启后表现为
-desired=B、actual=null；再次显式激活 B 必须重新通过现行授权和环境检查。
+A restart keeps only the selection and existing failure diagnosis: it does not
+guess from an old report whether the plugin used to be enabled, does not replay
+operations automatically, and does not pretend a historical actual instance is
+still running. A case that desired B but ran A appears after restart as
+desired=B, actual=null; activating B again must re-pass the current authorization
+and environment checks.
 
-## 包合同
+## Package contract
 
-目录扫描仅解析数据，不 import 作者代码。当前包最多 256 个 UTF-8 文件、
-合计 4 MiB；拒绝 symlink、特殊文件和二进制依赖。所有文件都进入摘要及
-验证产物，包括依赖，因此应提供小型、自包含、非秘密的目录，而不是包含
-凭据、用户资料或整个开发环境的树。
+A directory scan only parses data; it does not import author code. The current
+package allows at most 256 UTF-8 files totaling 4 MiB; it rejects symlinks,
+special files and binary dependencies. Every file, including dependencies, enters
+the digest and validation artifact, so provide a small, self-contained,
+non-secret directory rather than a tree that contains credentials, user data or a
+whole development environment.
 
 ```json
 {
@@ -138,40 +191,52 @@ desired=B、actual=null；再次显式激活 B 必须重新通过现行授权和
 }
 ```
 
-`id` 为小写字母开头、仅小写字母/数字/连字符的单段名字。能力名使用 Registry
-的点分名字；核心 namespace（包括 `context`）和 Provider 身份不能覆盖。
-Provider ID 由可信根按 Task + plugin ID 产生。不同 Provider 的同名能力保留
-原 Registry 歧义规则，不按加载顺序覆盖；调用时可明确 `--provider/--version`。
+`id` is a single segment that starts with a lowercase letter and uses only
+lowercase letters, digits and hyphens. A capability name uses the Registry's
+dotted name; the core namespace (including `context`) and Provider identity
+cannot be overridden. The Provider ID is produced by a trusted root from the Task
+plus plugin ID. Same-named capabilities from different Providers keep the
+Registry's ambiguity rule and are not overridden by load order; a call can
+specify `--provider/--version` explicitly.
 
-`required` 是准确的 `{name, contractVersion}` 依赖，不是版本求解器。依赖缺失、
-不可用、歧义或成环时拒绝激活。schema 使用 Registry 现有有界方言，未知关键词
-拒绝。每项 `requiredPermissions` 必须属于 manifest `permissions`；scope 只是
-可见性，权限仍来自当前调用者。Task-local 插件不能声明 `plugin:manage`。
+`required` is an exact `{name, contractVersion}` dependency list, not a version
+solver. A missing, unavailable, ambiguous or cyclic dependency rejects
+activation. The schema uses the Registry's existing bounded dialect, and unknown
+keywords are rejected. Every `requiredPermissions` entry must belong to the
+manifest `permissions`; scope is only visibility, and permission still comes from
+the current caller. A Task-local plugin cannot declare `plugin:manage`.
 
-声明式 `entry.json` 必须完整且仅包含 manifest 声明的能力：
+A declarative `entry.json` must be complete and contain only the capabilities the
+manifest declares:
 
 ```json
 { "demo.echo": { "type": "echo" } }
 ```
 
-支持 `echo`、`constant + value`，以及
-`call + name + contractVersion + 可选 providerId`。`call` 将原输入与 requestId
-交给一个明确依赖，返回其 value，保留原 operations/effect；它不是多步流程引擎。
-声明式包不能声明 build，也不会执行任意 JavaScript。
+It supports `echo`, `constant + value`, and
+`call + name + contractVersion + optional providerId`. `call` hands the original
+input and requestId to one explicit dependency, returns its value, and preserves
+the original operations/effect; it is not a multi-step flow engine. A declarative
+package cannot declare a build and never runs arbitrary JavaScript.
 
-## 可执行合同与授信
+## Executable contract and trust
 
-`kind: trusted-local`、`entry: entry.mjs` 的包在独立 Node 子进程中执行，不进入
-Controller。子进程使用明确采用的环境目录为 cwd，重新构造最小环境变量，
-不继承 Yui Session、凭据、`NODE_OPTIONS` 或 `NODE_PATH`。
+A `kind: trusted-local`, `entry: entry.mjs` package runs in a separate Node child
+process, not inside the Controller. The child process uses the explicitly adopted
+environment directory as cwd, reconstructs a minimal set of environment
+variables, and does not inherit the Yui Session, credentials, `NODE_OPTIONS` or
+`NODE_PATH`.
 
-运行模块通过 `SourceTextModule` 从已捕获的字节加载，只支持包内相对模块依赖，
-不支持裸包名、`node:` 或动态 import；需要的纯 JS 依赖应先打包。此加载器
-限定代码来源，**不是恶意代码安全沙箱**。不能据此承诺宿主文件、网络、进程或
-秘密绝不可访问。未经具体授信的自动生成代码应使用声明式路径或另选真正受限
-环境；当前 SDK 不提供那种环境。
+The running module is loaded from the captured bytes through `SourceTextModule`;
+it supports only in-package relative module dependencies, not bare package names,
+`node:` or dynamic import — a needed pure-JS dependency must be bundled first.
+This loader bounds where the code comes from; it is **not a malicious-code
+security sandbox**. It cannot promise the host filesystem, network, processes or
+secrets are unreachable. Auto-generated code without specific trust should use the
+declarative path or a genuinely restricted environment instead; this SDK does not
+provide that environment.
 
-作者 entry 导出：
+The author entry exports:
 
 ```javascript
 const echo = input => input;
@@ -186,105 +251,143 @@ export function selfTest() {
 }
 ```
 
-### 作者模块的运行环境
+### The author module's runtime environment
 
-Node 子进程是宿主，不代表作者模块运行在完整的 Node 全局环境中。
-当前模块使用独立 vm context，仅依赖 ECMAScript 内建值和下述 SDK 端口：
+The Node child process is the host; that does not mean the author module runs in
+a full Node global environment. The current module uses a separate vm context and
+relies only on ECMAScript built-ins and the SDK ports below:
 
-| 类别 | 当前可用性 |
+| Category | Current availability |
 | --- | --- |
-| ECMAScript 内建值，例如 `Promise`、`JSON`、`Math`、`Date` | 可用；支持 `async/await`、`Promise.resolve()` |
-| `console` | 可见，但不是 SDK 日志或回执端口；子进程 stdout/stderr 不向调用者转发 |
-| `setTimeout`、`setInterval`、`queueMicrotask` | 不提供；不要使用普通 Node 定时器写异步流程 |
-| `structuredClone`、`process`、`Buffer` | 不提供 |
-| `fetch`、`URL`、`TextEncoder`、`AbortController`、`crypto` | 不提供 |
-| 业务 I/O 与下游工具 | 使用 handler 的 `api.call`，服从原调用者的权限与效果上限 |
+| ECMAScript built-ins such as `Promise`, `JSON`, `Math`, `Date` | Available; `async/await` and `Promise.resolve()` work |
+| `console` | Visible, but not an SDK log or receipt port; child stdout/stderr is not forwarded to the caller |
+| `setTimeout`, `setInterval`, `queueMicrotask` | Not provided; do not use ordinary Node timers to drive async flow |
+| `structuredClone`, `process`, `Buffer` | Not provided |
+| `fetch`, `URL`, `TextEncoder`, `AbortController`, `crypto` | Not provided |
+| Business I/O and downstream tools | Use the handler's `api.call`, bounded by the original caller's permissions and effect |
 
-因此 `await Promise.resolve()` 可用，`await new Promise(r => setTimeout(r, 50))`
-不可用。一个永不 settle 的 handler 会触发下面的 30 秒子进程请求超时。
-表格描述正常作者 API，不是安全隔离声明；不能根据某个全局变量不存在推导
-恶意 trusted-local 代码无法触碰宿主。build 脚本是另一条已授信 Node 执行路径，
-不受这张作者模块全局表的约束。
+So `await Promise.resolve()` works while `await new Promise(r => setTimeout(r, 50))`
+does not. A handler that never settles triggers the 30-second child request
+timeout below. The table describes the normal author API, not a security-isolation
+claim; the absence of some global does not prove malicious trusted-local code
+cannot reach the host. A build script is another trusted Node execution path and
+is not bound by this author-module global table.
 
-初始化只能准备完整注册，不得发送、发布、修改业务资料或启动后台服务。
-它得不到任何业务调用端口；初始化失败仅关闭候选子进程。trusted-local 作者
-仍必须遵守这个合同，缺少端口不是对任意恶意代码直接宿主访问的隔离保证。
-`selfTest()` 在验证时实际执行且必须返回 `true`，报告不把作者测试等同于安全认证。
+Initialization may only prepare the complete registration; it must not send,
+publish or modify business data or start a background service. It receives no
+business call port, and a failed initialization only closes the candidate child
+process. A trusted-local author must still honor this contract, and a missing
+port is not an isolation guarantee against arbitrary malicious code with direct
+host access. `selfTest()` actually runs during validation and must return `true`;
+the report does not treat an author test as a security certification.
 
-handler 的 `api` 只包含原 `context` 的无凭据身份、`requestId` 与
-`call({name,input,contractVersion?,providerId?,requestId?})`。没有 Store、Host、
-Registry、鉴权器、可选 actor 或 `observe` 端口。每个嵌套调用重新检查原调用者
-和当前执行 grant，权限不得超过父 descriptor 声明，效果不得超过父 effect。
-对已完成的子动作，即使父输出 schema 错误、抛错或无法 JSON 序列化，也保留
-原 operations、effect 和 receipt locator；真正的证据仍属于原 Job 等业务 owner。
+The handler's `api` contains only the original `context`'s credential-free
+identity, its `requestId`, and
+`call({name,input,contractVersion?,providerId?,requestId?})`. There is no Store,
+Host, Registry, authorizer, optional actor or `observe` port. Every nested call
+rechecks the original caller and the current execution grant; permission cannot
+exceed the parent descriptor's declaration, and effect cannot exceed the parent
+effect. For a completed sub-action, even if the parent output schema is wrong,
+throws, or cannot be JSON-serialized, the original operations, effect and receipt
+locator are preserved; the real evidence still belongs to the original business
+owner, such as a Job.
 
-可信代码应只使用这些受控端口产生业务效果。直接绕过端口的 trusted-local
-宿主操作无法由 SDK 推导真实回执或效果范围，不在上述证据保证内。
-默认单次子进程请求上限 30 秒；超时或异常结束返回失败并关闭自有子进程，不重试。
-dispose 必须只释放自己的资源，不管理共享 daemon。任意作者派生进程或崩溃后的
-宿主残留不被伪称为已回收，当前 SDK 不提供跨 Controller 进程恢复/清扫协议。
+Trusted code should produce business effects only through these controlled ports.
+A trusted-local host operation that bypasses the ports directly cannot have its
+real receipt or effect scope derived by the SDK and is not covered by the
+evidence guarantees above. The default single child request limit is 30 seconds;
+a timeout or abnormal exit returns a failure and closes the owned child process
+without retry. `dispose` must release only its own resources and not manage a
+shared daemon. Any author-spawned process or host residue after a crash is not
+falsely claimed as reclaimed, and this SDK provides no cross-Controller-process
+recovery/sweep protocol.
 
-### 执行授权
+### Execution authorization
 
-Adopted 目录不授予执行作者代码。每次实际 `build`、`validate`、`activate`
-或 `call` 尝试还需要现行 `plugin.execute` grant，同时明确限定全部五个参数：
+An adopted directory does not grant execution of author code. Every actual
+`build`, `validate`, `activate` or `call` attempt additionally requires a current
+`plugin.execute` grant that pins all five parameters:
 
-| 参数 | 值 |
+| Parameter | Value |
 | --- | --- |
 | `pluginId` | manifest id |
-| `digest` | build/validate 使用 `plugin.scan` 的源码摘要；activate/call 使用报告的产物摘要 |
+| `digest` | build/validate use the `plugin.scan` source digest; activate/call use the report's artifact digest |
 | `environmentRef` | `Task/preparation` |
 | `trust` | `trusted-local` |
-| `phase` | 明确选择的 `build,validate,activate,call` 子集 |
+| `phase` | an explicitly chosen subset of `build, validate, activate, call` |
 
-使用 Task scope；可附加精确环境路径的 home scope，不接受 Project/repository/
-package scope 替代资源授信。因 trusted-local 不约束直接宿主效果，此 grant
-必须允许 `irreversibilityCeiling: irreversible`：这是能力上限，不表示每次调用
-实际产生不可逆效果。`none/reversible` 不得解释为无限本机执行权。
+Use Task scope; a home scope with an exact environment path may be added, but a
+Project/repository/package scope is not accepted as a resource-trust substitute.
+Because trusted-local does not bound direct host effects, this grant must allow
+`irreversibilityCeiling: irreversible`: that is the capability ceiling, not a
+statement that every call actually produces an irreversible effect. `none` or
+`reversible` must not be read as unlimited local execution authority.
 
-由获用户明确授权的 Operator 使用原 grant 入口，例如只允许一次验证：
+An Operator explicitly authorized by the user uses the original grant ingress,
+for example to allow a single validation:
 
 ```text
 <checkout>/output/dev/bin/yui task grant issue T --action plugin.execute --param pluginId=demo --param digest=SOURCE_SHA256 --param environmentRef=T/P --param trust=trusted-local --param phase=validate --max-uses 1 --irreversibility-ceiling irreversible
 ```
 
-grant 不由 SDK 自签发。次数按真实执行尝试消费，失败也不回退；一次 validate
-包含 initialize/selfTest/dispose。build 是另一次执行。
-`call` 是不可从持久步骤恢复的短调用，只增加 usesUsed，不追加永久 reservation；
-其准入由当前调用的绑定闭包持有，不能导出、伪造或用于进程重启后的继续执行。
-build/validate/activate 使用持久 reservation；已有 key 不截断或清理。
-已消费额度的当前调用可以继续复核，但撤销/到期仍阻止后续受控动作，
-额度耗尽则不允许新调用。长期使用不会因每次 call 再新增一条永久 key。
-尚未提交的启用意图事务失败不算已执行尝试，其消费随事务回滚。
-普通 disable 不撤销已在执行的原调用，撤权也不抹除意图或已发生效果。
+A grant is not self-issued by the SDK. Uses are consumed per real execution
+attempt and are not refunded on failure; one validate includes
+initialize/selfTest/dispose. A build is another execution. `call` is a short
+invocation that cannot resume from a persistent step; it only increments usesUsed
+and adds no permanent reservation. Its admission is held by the current call's
+bound closure and cannot be exported, forged or used to continue execution after a
+process restart. build/validate/activate use a persistent reservation; an
+existing key is not truncated or cleaned up. A current call that has already
+consumed its quota can keep rechecking, but revocation/expiry still blocks
+subsequent controlled actions, and an exhausted quota allows no new call.
+Long-term use does not add a new permanent key per call. A not-yet-committed
+enable-intent transaction that fails is not a completed execution attempt, and
+its consumption rolls back with the transaction. An ordinary disable does not
+revoke an original call already executing, and revocation erases neither the
+intent nor an effect that already happened.
 
-### 构建与产物
+### Build and artifacts
 
-可执行 manifest 可增加 `"build": ["build.mjs", "arg"]`。这是明确的 Node 脚本
-及参数，不是 shell 字符串。build 脚本必须在捕获的源码包内；它在采用环境内
-新建的自有临时副本中执行，可使用 Node API，因而同样需要 trusted-local 授信。
-构建器不得依赖未声明的用户秘密或残留后台进程。
+An executable manifest may add `"build": ["build.mjs", "arg"]`. This is an
+explicit Node script and arguments, not a shell string. The build script must
+live inside the captured source package; it runs in its own new temporary copy
+inside the adopted environment and may use Node APIs, so it likewise requires
+trusted-local trust. The builder must not depend on undeclared user secrets or
+leave a background process behind.
 
-验证保存实际构建产物全部字节及摘要，记录源码摘要、Node 版本、环境 identity、
-实际构建 cwd/argv 与执行检查。构建不能改变 manifest/权限；无 build 时直接
-执行首次捕获的字节，不二次读取后再执行。构建不覆盖作者源码。验证结束复核
-源目录，已变化则拒绝保存成功报告。
+Validation saves all bytes and the digest of the actual build artifact and
+records the source digest, the Node version, the environment identity, the actual
+build cwd/argv and the executed checks. A build cannot change the
+manifest/permissions; with no build, the first captured bytes execute directly,
+without a second read before execution. A build does not overwrite the author
+source. Validation rechecks the source directory at the end and refuses to save a
+success report if it has changed.
 
-激活重新核对源目录摘要、环境及当前授权，然后只从报告中的产物字节初始化，
-不会重建或改用同版本的另一个目录。构建后的验证授权针对已明确授信源码所产生
-的产物，正式激活/调用则另用该实际产物摘要授权。
+Activation rechecks the source-directory digest, the environment and the current
+authorization, then initializes only from the artifact bytes in the report; it
+does not rebuild or switch to another directory of the same version. A post-build
+validation authorization applies to the artifact produced from the explicitly
+trusted source, while a formal activate/call is authorized separately against that
+actual artifact digest.
 
-发布前再次检查完整贡献、依赖和权限。失败不改变现有目录；竞争 activate/disable
-会使迟到候选拒绝发布。成功发布后旧 generation 只服务已有引用，排空才 dispose；
-清理失败保留诊断 Artifact，不回滚新 Provider 或伪称当前实例仍未发布。
+Publication rechecks the complete contribution, dependencies and permissions
+again. A failure does not change the existing directory; a competing
+activate/disable makes a late candidate refuse to publish. After a successful
+publication, the old generation only serves existing references and is disposed
+once drained; a cleanup failure keeps a diagnostic Artifact and neither rolls
+back the new Provider nor pretends the current instance is still unpublished.
 
-## 存储与其他入口
+## Storage and other ingress
 
-验证产物和启用意图属于唯一 Home 存储合同，持久结构变更走显式
-upgrade/update 与备份机制。读取报告不会推测或恢复实例，采用新源码不等于
-授权升级共享 Home、重启 Controller 或执行插件。
+Validation artifacts and enable intent belong to the single Home storage
+contract, and a persistent structural change follows the explicit upgrade/update
+and backup mechanism. Reading a report does not infer or recover an instance, and
+adopting new source does not authorize upgrading the shared Home, restarting the
+Controller or executing the plugin.
 
-同一个 Registry 将能力投影为命令和受控查询面板，不复制 SDK Host；
-Web 查询身份不获得 `plugin:manage`。原生 Session 与插件共享环境 owner，
-释放前同时检查原生执行引用与插件引用。插件不提供 Project/global scope
-提升或原生 Endpoint 注册。
+One Registry projects capabilities into commands and controlled query panels
+without duplicating the SDK Host; a Web query identity does not gain
+`plugin:manage`. A native Session and a plugin share the environment owner, and
+both native execution references and plugin references are checked before release.
+A plugin provides no Project/global scope elevation and no native Endpoint
+registration.

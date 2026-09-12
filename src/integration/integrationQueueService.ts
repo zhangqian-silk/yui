@@ -637,11 +637,11 @@ export async function processIntegrationQueue(
       let entry = claimed.entry;
       if (result.status === "committed") {
         entry = markIntegrationQueueCommitted(entry, committedTargetAfter(result.attempt), now());
-      } else if (result.status === "blocked") {
+      } else if (result.status === "blocked" || result.status === "conflicted") {
         entry = markIntegrationQueueBlocked(
           entry,
           result.attempt.conflict?.summary
-            ?? "Integration blocked without a conflict report.",
+            ?? result.attempt.summary ?? "Inspect the unfinished Integration.",
           now()
         );
       } else {
@@ -796,7 +796,7 @@ function resolveBlockedAttempt(
 ): void {
   if (entry.integrationAttemptId === undefined) return;
   const attempt = store.getIntegrationAttempt(taskId, entry.integrationAttemptId);
-  if (attempt === null || attempt.status !== "blocked") return;
+  if (attempt === null || (attempt.status !== "blocked" && attempt.status !== "conflicted")) return;
   const rejected = recordResolutionDecision(attempt, {
     action: "reject",
     rationale: `Integration Attempt rejected by queue ${decision}.`
@@ -820,7 +820,7 @@ function assertRecoverableAttempt(
   if (entry.integrationAttemptId === undefined) return;
   const attempt = store.getIntegrationAttempt(taskId, entry.integrationAttemptId);
   if (attempt === null) return;
-  if (attempt.status !== "blocked" && attempt.status !== "failed") {
+  if (attempt.status !== "blocked" && attempt.status !== "conflicted" && attempt.status !== "failed") {
     throw new Error(
       `Integration queue entry ${entry.id} is backed by ${attempt.status} `
       + `Integration Attempt ${attempt.id}; reconcile the queue entry instead `
@@ -935,8 +935,8 @@ async function reconcileTerminalAttempts(
     // Attempt's own diagnosis, after which requeue or supersede can recover
     // it.  An Attempt still running or validating is genuinely in flight.
     if (entry.status !== "running") continue;
-    if (attempt.status !== "failed" && attempt.status !== "blocked") continue;
-    const diagnosis = attempt.status === "blocked"
+    if (attempt.status !== "failed" && attempt.status !== "blocked" && attempt.status !== "conflicted") continue;
+    const diagnosis = attempt.status === "blocked" || attempt.status === "conflicted"
       ? attempt.conflict?.summary ?? "Integration blocked without a conflict report."
       : gateFailureSummary(attempt);
     store.saveIntegrationQueueEntry(
@@ -1002,7 +1002,7 @@ function committedTargetAfter(attempt: IntegrationAttempt): string {
 function gateFailureSummary(attempt: IntegrationAttempt): string {
   const failed = (attempt.checks ?? []).find((check) => check.outcome === "failed");
   return failed === undefined
-    ? "Integration failed before the target ref advanced."
+    ? attempt.summary ?? "Inspect the Integration target and preserved evidence."
     : `gate failed: ${failed.name}${failed.details === undefined ? "" : `: ${failed.details}`}`;
 }
 

@@ -33,27 +33,47 @@ export function renderTaskSurface(container, data, t, locale, actions) {
   message.required = true;
   message.maxLength = 8000;
   chatLabel.append(message);
+  // Submission intent is an explicit user choice, never inferred from the body
+  // (task-32 §2.5); discuss is the default so the control matches the service.
+  const intentLabel = node("label", "", say("Intent", "提交意图"));
+  const intentSelect = node("select", "");
+  const intentOptions = [
+    ["discuss", say("Discuss — route to planning", "讨论 — 进入规划")],
+    ["record", say("Record — save only", "记录 — 仅保存")],
+    ["develop", say("Develop — request activation", "开发 — 请求激活")]
+  ];
+  for (const [value, text] of intentOptions) {
+    const option = node("option", "", text);
+    option.value = value;
+    intentSelect.append(option);
+  }
+  intentSelect.value = "discuss";
+  intentLabel.append(intentSelect);
   chat.addEventListener("input", () => { chat.dataset.unsent = message.value ? "true" : "false"; });
   const send = node("button", "record-open", say("Send", "发送"));
   send.type = "submit";
   send.disabled = !["active", "draft"].includes(task.status);
   const sent = node("p", "muted", say("Not submitted", "未提交"));
   sent.setAttribute("role", "status");
-  chat.append(chatLabel, send, sent);
+  // §2.5 facets render here, one per line; cleared and repopulated on every submit.
+  const facets = node("div", "section-body");
+  facets.dataset.submissionFacets = "";
+  chat.append(chatLabel, intentLabel, send, sent, facets);
   chat.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (send.disabled) return;
     send.disabled = true;
     chat.dataset.unsent = "true";
     const requestId = crypto.randomUUID();
+    const intent = intentSelect.value;
+    clear(facets);
     sent.textContent = say("Waiting for receipt · ", "等待回执 · ") + requestId;
     try {
-      const receipt = await actions.sendMessage(task.id, message.value, requestId);
-      sent.textContent = (receipt.disposition === "queued"
-        ? say("Queued for Leader; not proof of execution · ", "已为 Leader 排队，不代表已执行 · ")
-        : say("Saved to Task context; this Task's Leader is not waking · ",
-          "已保存到 Task 上下文；该 Task 的 Leader 不会被唤醒 · "))
-        + receipt.record.id;
+      // requestId is the submission key: the same key retried returns the original
+      // Message and routing rather than a second submission (task-32 §2.3).
+      const receipt = await actions.sendMessage(task.id, message.value, requestId, intent);
+      sent.textContent = say("Saved · ", "已保存 · ") + receipt.record.id;
+      renderSubmissionFacets(facets, receipt.submission, say);
       message.value = "";
       chat.dataset.unsent = "false";
       send.disabled = false;
@@ -63,6 +83,9 @@ export function renderTaskSurface(container, data, t, locale, actions) {
         send.disabled = false;
         return;
       }
+      // A lost response must never auto-replay a write; the same requestId is safe
+      // to resend by hand because the server dedups on it (§2.3), but the user
+      // reloads and inspects first rather than blindly resending.
       sent.textContent = say("Unknown submission outcome. Reload and inspect saved messages before sending again · ",
         "提交结果未知。请重新加载并检查已保存消息，不要盲目重发 · ") + requestId;
     }
@@ -349,5 +372,71 @@ export function renderTaskSurface(container, data, t, locale, actions) {
   });
   scaffold.append(panels);
   container.append(scaffold);
+}
+
+// Render each task-32 §2.5 submission facet on its own line, never collapsed into
+// a single "started". This repo has one current server contract: every submission
+// returns its faceted receipt, so there is no old-server flat-disposition path to
+// fall back to. A missing facet block is a contract violation, reported as a
+// limited diagnostic rather than reinterpreted as a plausible flat result.
+function renderSubmissionFacets(container, submission, say) {
+  clear(container);
+  if (!submission) {
+    container.append(node("p", "muted",
+      say("Submission receipt is missing its §2.5 facets.", "提交回执缺少 §2.5 分面字段。")));
+    return;
+  }
+  const phaseText = {
+    "active": say("Active — delivery context", "进行中 — 交付上下文"),
+    "draft-planning": say("Draft, in planning", "草稿，规划中"),
+    "draft-unplanned": say("Draft, not yet planned", "草稿，尚未规划")
+  };
+  const planningText = {
+    "entered": say("Entered planning", "已进入规划"),
+    "continued": say("Continued planning", "继续规划"),
+    "none": say("No planning change", "规划无变化")
+  };
+  const activationText = {
+    "requested": say("Activation requested", "已请求激活"),
+    "pending": say("Activation pending", "激活待处理"),
+    "failed": say("Activation failed", "激活失败"),
+    "manual-required": say("Manual activation required", "需手动激活"),
+    "execution-stopped": say("Execution stopped; not activated", "执行已停止；未激活"),
+    "none": say("No activation", "无激活")
+  };
+  const deliveryText = {
+    "queued": say("Leader queued to act now", "已为 Leader 排队处理"),
+    "none": say("Leader not woken", "未唤醒 Leader")
+  };
+  const facts = [
+    [say("Phase", "阶段"), phaseText[submission.phase] ?? submission.phase],
+    [say("Planning", "规划"), planningText[submission.planning] ?? submission.planning],
+    [say("Activation", "激活"), activationText[submission.activation] ?? submission.activation],
+    [say("Delivery", "投递"), deliveryText[submission.delivery] ?? submission.delivery]
+  ];
+  for (const [label, value] of facts) {
+    container.append(node("p", "muted", label + ": " + value));
+  }
+  const step = submission.nextStep;
+  if (step) {
+    const nextText = step.kind === "activate-manually"
+      ? say("Next: activate this Task explicitly (yui task activate " + step.taskId + ").",
+        "下一步：显式激活该 Task（yui task activate " + step.taskId + "）。")
+      : step.kind === "start-execution"
+      ? say("Next: start execution first, then activate (" + step.taskId + ").",
+        "下一步：先启动执行，再激活（" + step.taskId + "）。")
+      : step.kind === "await-pending-activation"
+      ? say("Next: waiting on the pending activation " + step.activationRef + ".",
+        "下一步：等待待处理的激活 " + step.activationRef + "。")
+      : step.kind === "resolve-failed-activation"
+      ? say("Next: the prior activation failed (" + step.failure + "); retry with a new request or cancel " + step.activationRef + ".",
+        "下一步：之前的激活失败（" + step.failure + "）；请用新请求重试或取消 " + step.activationRef + "。")
+      : "";
+    if (nextText) {
+      const next = node("p", "", nextText);
+      next.dataset.nextStep = step.kind;
+      container.append(next);
+    }
+  }
 }
 `;

@@ -1,3 +1,5 @@
+<p align="right"><strong>English</strong> | <a href="./roles-and-configuration.zh-CN.md">简体中文</a></p>
+
 # Roles, Profiles and execution configuration
 
 ## Responsibilities

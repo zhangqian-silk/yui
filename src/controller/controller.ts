@@ -60,6 +60,7 @@ import {
 import { hasRuntimeCleanupObligation, type RuntimeLifecycleTarget, type RuntimeRoleOwner } from "../runtime/lifecycleReservation.js";
 import type { SessionHostPort } from "../runtime/ports.js";
 import { formatTaskRecordReference } from "../task/taskRecordReference.js";
+import { activationRequestIsControllerAdoptable } from "../task/taskActivation.js";
 import type {
   AsyncRuntimeEventProcessorPort,
   RuntimeEventDrainMetrics,
@@ -860,8 +861,13 @@ async function adoptReleasedTaskActivations(
     if (task?.status !== "draft" || task.executionGate.state !== "enabled") continue;
     const request = task.activationRequest;
     if (request?.disposition !== "pending") continue;
-    if (request.startMode !== "after-planning-turn"
-      && request.operation.actorId !== `task:${taskId}/role:leader`) continue;
+    // Continue only requests with a provable source: a released deferral, or an
+    // immediate request carrying a recognised origin (explicit action, or a
+    // develop submission accepted while unplanned). This admits legal
+    // Operator/user immediate requests the old actor filter dropped, while
+    // still refusing origin-less historical requests, which stay behind the
+    // explicit `yui task activate` boundary.
+    if (!activationRequestIsControllerAdoptable(request)) continue;
     // Later Draft discussion is a Session notification, not another AgentRun.
     // Its durable activation intent is sufficient once the exact native input
     // is settled. Never create a synthetic Run merely to release that intent.

@@ -27,6 +27,8 @@ import {
   removeRuntimeGenerationRecords
 } from "./migrations/removeRuntimeGeneration.js";
 import { migrateAgentRunContract } from "./migrations/agentRunContract.js";
+import { migrateArtifactsToGit } from "./migrations/artifactsToGit.js";
+import { migrateIntegrationContinuation } from "./migrations/integrationContinuation.js";
 import {
   UNIFY_HOME_LAYOUT_SQL,
   migrateUnifyHomeLayout
@@ -1159,6 +1161,42 @@ UPDATE review_rounds SET payload = json_set(payload, '$.executionGroup.lanes', j
   },
   {
     version: 19,
+    name: "task-artifacts-local-git",
+    introducedIn: "0.16.0",
+    // Retire the DB-owned immutable Artifact store: file/directory artifacts now
+    // live in a per-Task local Git repository, referenced by a self-certifying
+    // `commit + relativePath`. The whole rewrite is payload work that must READ
+    // the `artifacts` table before it is dropped, so it runs entirely in
+    // `migrateData` (which executes after this `sql`) — the table is dropped
+    // there, last, once its rows have been moved. Requirement A's independent,
+    // deterministic submit-intent backfill (events + id_sequences only) is the
+    // final step inside that same transaction. This `sql` is intentionally a
+    // no-op: dropping the table here would destroy the rows before they move.
+    //
+    // The 18->19 contract also DECLARES three optional `messages.payload` fields
+    // added by Requirement A — `intent` (record|discuss|develop), an optional
+    // client idempotency `submissionKey`, and a frozen `submissionReceipt`
+    // disposition. They add no column and no table and are only ever written
+    // going forward (absent `intent` reads as discuss; absent key is keyless;
+    // absent receipt is a pre-19 message), so NO historical row is rewritten and
+    // no key or receipt is ever fabricated for old data — declaring them here
+    // satisfies "optional still requires a migration declaration".
+    sql: "SELECT 1; -- artifacts move to per-Task local Git; see migrateArtifactsToGit",
+    migrateData: migrateArtifactsToGit
+  },
+  {
+    version: 20,
+    name: "integration-conflict-continuation",
+    introducedIn: "0.16.0",
+    // Widen Integration status with conflicted; declare optional sourceProgress
+    // (Git cursor/reflog action) and checkInputDigest. Exact old bound FF Job
+    // receipts supply these facts; unprovable history remains unchanged.
+    // Frozen Context and events are never rewritten.
+    sql: "SELECT 1; -- Integration Git progress and exact check admission",
+    migrateData: migrateIntegrationContinuation
+  },
+  {
+    version: 21,
     name: "unify-home-layout",
     introducedIn: "0.15.9",
     // Unify every Yui self-managed path under a single canonical YUI_HOME. The
@@ -1181,7 +1219,7 @@ UPDATE review_rounds SET payload = json_set(payload, '$.executionGroup.lanes', j
     migrateData: migrateUnifyHomeLayout
   },
   {
-    version: 20,
+    version: 22,
     name: "collapse-worktree-layout",
     introducedIn: "0.15.9",
     // Collapse the two-layer managed workspace layout into a single layer of real
@@ -1508,13 +1546,17 @@ export type SqliteSchemaMigrationOptions = Readonly<{
    */
   mode: SqliteSchemaMigrationMode;
   /**
-   * Highest version to advance to in `apply` mode. Defaults to
-   * {@link CURRENT_STORAGE_VERSION} and is clamped to it, so every production
-   * caller (Store open, `yui upgrade`) migrates to head exactly as before. Its
-   * only use is a per-step test seam: a migration test can drive a bounded run
-   * (e.g. only the 18->19 step) so each migration keeps its own isolated
-   * intermediate-state assertions as later steps are appended to the chain. It
-   * NEVER lets an ordinary open partially migrate — that path uses `validate`.
+   * Inclusive upper bound on the version to apply, defaulting to
+   * `CURRENT_STORAGE_VERSION`. Production callers never set it, so behavior is
+   * unchanged: a fresh or pending database advances to head as one commit.
+   *
+   * It exists ONLY to reconstruct a genuine older on-disk version from the REAL,
+   * checksum-validated migration definitions (e.g. an upgrade regression that
+   * must start at v18 and then drive the real upgrade to v19), rather than
+   * hand-crafting the older schema. It is honored only in `apply` mode, never
+   * downgrades, never skips an intermediate version, and defers head-shape
+   * validation until head is actually reached. A later migration that introduces
+   * a new required table is therefore not validated before it is applied.
    */
   throughVersion?: number;
 }>;
@@ -1587,8 +1629,13 @@ export function migrateSqliteSchema(
         "admission"
       );
     }
+    // Production callers omit `throughVersion`, so the effective target is head
+    // and behavior is unchanged; a partial target is honored only in apply mode.
+    const effectiveTarget = options.mode === "apply" && options.throughVersion !== undefined
+      ? options.throughVersion
+      : CURRENT_STORAGE_VERSION;
     const pending = MIGRATIONS.filter(
-      (migration) => !applied.versions.has(migration.version)
+      (migration) => !applied.versions.has(migration.version) && migration.version <= effectiveTarget
     );
     if (!ledgerWasCreated && pending.length > 0 && options.mode === "validate") {
       throw new SqliteSchemaMigrationError(
@@ -1622,7 +1669,10 @@ export function migrateSqliteSchema(
       );
       newlyApplied.push(migration.version);
     }
-    validateSchemaObjects(db);
+    // The table/index inventory describes the HEAD shape; only assert it once the
+    // migration has actually advanced to head (a deliberate partial target stops
+    // earlier and is validated when the real upgrade later completes it).
+    if (effectiveTarget >= CURRENT_STORAGE_VERSION) validateSchemaObjects(db);
     // The true head reached: the highest already-applied version or, when this
     // run advanced the ledger, the last step it committed. Bounded runs report
     // the intermediate head; an unbounded run reports CURRENT_STORAGE_VERSION.
@@ -1639,7 +1689,6 @@ export function migrateSqliteSchema(
 export const SQLITE_SCHEMA_TABLES: readonly string[] = [
   "plugin_intents",
   "plugin_validations",
-  "artifacts",
   "local_resources",
   "environment_preparations",
   "schema_migrations",
