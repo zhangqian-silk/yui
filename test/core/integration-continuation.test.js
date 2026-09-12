@@ -286,7 +286,7 @@ test("storage 20 classifies old Git conflicts without fabricating recovery evide
       .run(job.id, task.id, job.idempotencyKey, job.status, JSON.stringify(job), job.createdAt, job.updatedAt);
     insert.run(task.id, ff.id, ff.status, JSON.stringify(ff), ff.updatedAt);
     const result = migrateSqliteSchema(db, { mode: "apply" });
-    assert.deepEqual(result.applied, [20]);
+    assert.deepEqual(result.applied, [20, 21]);
     const rows = db.prepare("SELECT status, payload FROM integration_attempts ORDER BY integration_id").all();
     assert.deepEqual(rows.map(row => row.status), ["conflicted", "blocked", "blocked", "running"]);
     assert.deepEqual(rows.slice(0, 3).map(row => JSON.parse(row.payload)), [

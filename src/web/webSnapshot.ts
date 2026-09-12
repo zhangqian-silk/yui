@@ -107,14 +107,14 @@ export function buildWebDashboardSnapshot(
       statusCounts[task.status] += 1;
       const taskOpenInputs = reader.listInputRequests(task.id)
         .filter((request) => request.status === "open").length;
-      openInputs += taskOpenInputs;
+      if (task.status !== "archived") openInputs += taskOpenInputs;
       const taskOpen = reader.listInputRequests(task.id)
         .filter((request) => request.status === "open");
-      for (const request of taskOpen) {
+      for (const request of task.status === "archived" ? [] : taskOpen) {
         attention.push({ taskId: task.id, taskTitle: task.title, request });
       }
       const events = reader.listEvents?.(task.id) ?? [];
-      const needsAttentionCount = reader.listRuns(task.id)
+      const needsAttentionCount = task.status === "archived" ? 0 : reader.listRuns(task.id)
         .filter((run) => run.status === "active" && isRoleRunStalled(events, run.id))
         .length;
       const execution = buildTaskExecutionProjection(reader, task.id, task, now);

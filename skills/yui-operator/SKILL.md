@@ -192,7 +192,12 @@ yui task input cancel <task> <input> --reason "<Leader-owned decision>"
 After an authorized PR/MR operation or before archive, read
 [publication and archive boundaries](../yui-runtime/references/publication.md).
 Record confirmed delivery facts promptly. Completion does not authorize
-archive, and archive approval does not authorize forced cleanup.
+archive, and ordinary archive approval does not authorize `--force`.
+When the user explicitly authorizes force archive for an eligible terminal
+Task, archive even if delivery proof or cleanup is incomplete. Report the
+warnings and retained resources without claiming merge verification or physical
+quiescence. Force archive is not permission to delete dirty/uncertain resources,
+kill unrelated execution, abandon delivery or rewrite historical evidence.
 
 ## Recover from evidence, not from imagined states
 

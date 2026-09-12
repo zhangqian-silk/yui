@@ -15,6 +15,7 @@ import {
   resolve
 } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { recordArchiveCleanup } from "../task/archiveDiagnostics.js";
 
 import {
   retireTaskRoleSessionsForWorkspace,
@@ -1598,6 +1599,7 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
         deleteBranch: true
       });
       if (result === "dirty") return "dirty";
+      this.#recordArchivePathRemoval(task, entry.path, result);
       removed ||= result === "removed";
     }
     await removeWorkspaceView(workspace.root);
@@ -2352,6 +2354,7 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
       if (result === "dirty") {
         throw new Error(`Review workspace changed after cleanup preflight: ${round.id}.`);
       }
+      this.#recordArchivePathRemoval(task, entry.path, result);
       removed ||= result === "removed";
     }
     await removeWorkspaceView(workspace.root);
@@ -2429,6 +2432,7 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
       if (result === "dirty") {
         throw new Error(`WorkItem workspace changed after cleanup preflight: ${item.id}.`);
       }
+      this.#recordArchivePathRemoval(task, entry.path, result);
       removed ||= result === "removed";
     }
     await removeWorkspaceView(workspace.root);
@@ -2443,7 +2447,7 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
       throw new Error(
         `WorkItem worktree was removed but durable cleanup was not recorded; retry cleanup: ${
           error instanceof Error ? error.message : String(error)
-        }`
+        }`, { cause: error }
       );
     }
     return removed ? "removed" : "missing";
@@ -2494,9 +2498,12 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
       container: this.#projectContainer(project.name),
       taskSegment: this.#taskSegment(task),
       integrationId: attempt.id,
-      discardChanges: attempt.status === "failed"
+      discardChanges: task.status !== "archived" && attempt.status === "failed"
     });
     if (result !== "dirty") {
+      for (const entry of workspace?.entries ?? []) {
+        this.#recordArchivePathRemoval(task, entry.path, result);
+      }
       if (workspace !== null) this.#resourceRegistrar().markWorkspaceDeleted(workspace);
       await rm(join(
         this.home,
@@ -2556,10 +2563,15 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
       }
       for (const entry of main.entries) {
         assertTaskArchiveState(requireTask(this.store, task.id), task);
-        const result = await this.git.removeStrandedWorktree(entry.path);
+        const project = requireProject(this.store, entry.projectId);
+        const result = await this.git.removeTaskClone({
+          path: entry.path, container: this.#projectContainer(project.name),
+          taskSegment: this.#taskSegment(task), branch: entry.branch
+        });
         if (result === "dirty") {
           throw new Error(`Task workspace changed after cleanup preflight: ${task.id}.`);
         }
+        this.#recordArchivePathRemoval(task, entry.path, result);
       }
       assertTaskArchiveState(requireTask(this.store, task.id), task);
       await removeWorkspaceView(main.root);
@@ -2569,6 +2581,16 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
     }
     this.#clearTaskWorkspace(task, this.#fallbackWorkspace());
     return { taskId, status: "removed" };
+  }
+
+  #recordArchivePathRemoval(task: Task, path: string, status: "removed" | "missing"): void {
+    if (task.status !== "archived") return;
+    recordArchiveCleanup(this.store, task.id, {
+      resource: `path:${path}`, paths: [path],
+      detail: status === "missing"
+        ? "Directory absent; exact Git cleanup completed where applicable."
+        : "Exact owned path removed."
+    }, status, this.now());
   }
 
   async #inspectEntries(
@@ -2800,7 +2822,7 @@ function requireTask(store: TaskStore, taskId: string): Task {
 }
 
 function assertTaskArchiveState(current: Task, expected: Task): void {
-  if ((current.status !== "completed" && current.status !== "cancelled")
+  if ((current.status !== "completed" && current.status !== "cancelled" && current.status !== "archived")
     || !isDeepStrictEqual(current, expected)) {
     throw new WorkspaceCleanupBlockedError(
       "task-changed",

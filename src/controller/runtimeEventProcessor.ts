@@ -75,6 +75,7 @@ export type RuntimeRunEventObserver = Readonly<{
       runId?: string;
       nativeSessionId: string;
       reason: string;
+      originalEvent?: RuntimeLifecycleEvent;
     }>,
     now?: Date
   ): unknown;
@@ -310,8 +311,11 @@ export class FileRuntimeEventProcessor implements RuntimeEventProcessorPort {
     const taskId = event.observation.fence.taskId;
     if (taskId !== undefined) {
       const task = this.observer.getTask(taskId);
+      if (task?.status === "archived") {
+        this.recordObsolete(event, "task-archived", now);
+        return "obsolete";
+      }
       if (task === null
-        || task.status === "archived"
         || (!["turn.completed", "turn.failed", "turn.cancelled"].includes(event.observation.kind)
           && (task.status !== "active" || task.executionGate.state !== "enabled"))) return "obsolete";
     }
@@ -423,7 +427,8 @@ export class FileRuntimeEventProcessor implements RuntimeEventProcessorPort {
         agentId: fence.agentId,
         ...(fence.runId === undefined ? {} : { runId: fence.runId }),
         nativeSessionId: fence.nativeSessionId,
-        reason
+        reason,
+        ...(reason === "task-archived" ? { originalEvent: event } : {})
       }, now);
       return;
     }
@@ -438,7 +443,8 @@ export class FileRuntimeEventProcessor implements RuntimeEventProcessorPort {
       agentId: event.agentId,
       ...(event.runId === undefined ? {} : { runId: event.runId }),
       nativeSessionId: event.nativeSessionId,
-      reason
+      reason,
+      ...(reason === "task-archived" ? { originalEvent: event } : {})
     }, now);
   }
 
@@ -749,6 +755,7 @@ export type AsyncRuntimeRunEventObserver = Readonly<{
       runId?: string;
       nativeSessionId: string;
       reason: string;
+      originalEvent?: RuntimeLifecycleEvent;
     }>,
     now?: Date
   ): Promise<unknown>;
@@ -886,8 +893,11 @@ export class AsyncRuntimeEventProcessor {
     const taskId = event.observation.fence.taskId;
     if (taskId !== undefined) {
       const task = await this.observer.getTask(taskId);
+      if (task?.status === "archived") {
+        await this.recordObsolete(event, "task-archived", now);
+        return "obsolete";
+      }
       if (task === null
-        || task.status === "archived"
         || (!["turn.completed", "turn.failed", "turn.cancelled"].includes(event.observation.kind)
           && (task.status !== "active" || task.executionGate.state !== "enabled"))) return "obsolete";
     }
@@ -967,7 +977,8 @@ export class AsyncRuntimeEventProcessor {
         agentId: fence.agentId,
         ...(fence.runId === undefined ? {} : { runId: fence.runId }),
         nativeSessionId: fence.nativeSessionId,
-        reason
+        reason,
+        ...(reason === "task-archived" ? { originalEvent: event } : {})
       }, now);
       return;
     }
@@ -979,7 +990,8 @@ export class AsyncRuntimeEventProcessor {
       agentId: event.agentId,
       ...(event.runId === undefined ? {} : { runId: event.runId }),
       nativeSessionId: event.nativeSessionId,
-      reason
+      reason,
+      ...(reason === "task-archived" ? { originalEvent: event } : {})
     }, now);
   }
 

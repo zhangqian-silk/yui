@@ -1186,6 +1186,17 @@ UPDATE review_rounds SET payload = json_set(payload, '$.executionGroup.lanes', j
     // Frozen Context and events are never rewritten.
     sql: "SELECT 1; -- Integration Git progress and exact check admission",
     migrateData: migrateIntegrationContinuation
+  },
+  {
+    version: 21,
+    name: "force-archive-independent-cleanup",
+    introducedIn: "0.16.0",
+    // Declare optional task.archived force/cleanup/warnings/retainedResources
+    // audit fields and task.archive-cleanup resource/status/detail/paths events;
+    // runtime.event-obsolete may retain the full originalEvent as source evidence.
+    // Archived Tasks may retain exact runtime/workspace/mailbox ownership.
+    // Existing archive, completion and Publication history is unchanged.
+    sql: "SELECT 1; -- archive intent and cleanup evidence remain separate facts"
   }
 ]);
 

@@ -58,6 +58,9 @@ regressions, and fast regressions do not establish real-model behavior.
     Validation settlement distinguishes current check conditions from an
     already-applied CAS. Migration preserves provable old bound FF Jobs and
     classifies old conflicts without inventing successful checks.
+16. explicit force archive commits before cleanup and preserves uncertain
+    delivery/runtime evidence; partial cleanup and late results remain traceable,
+    while archived runtime resources never become automatically safe to delete.
 
 Keep the test phase seconds-scale; measure TypeScript build separately. Record
 incremental runtime when adding a critical regression. The seven recovery boundary

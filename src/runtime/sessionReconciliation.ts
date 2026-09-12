@@ -81,8 +81,8 @@ export type SessionReconciliationInput = Readonly<{
  * live Session can always be re-attributed and reported.
  *
  * Pure: all I/O is injected. Unknown owners are reported, never cleaned.
- * An entry is archive-blocking when its durable state is terminal but the
- * physical Provider root is still live, and the Task is terminal/archived.
+ * An entry blocks ordinary archive / workspace cleanup when a terminal Task
+ * still owns a live or unverified physical root, regardless of Session status.
  */
 export function reconcileSessionOwners(
   input: SessionReconciliationInput
@@ -139,8 +139,8 @@ function reconcileOne(
   const terminalTask = taskStatus === "completed"
     || taskStatus === "cancelled"
     || taskStatus === "archived";
-  const archiveBlocked = mismatch === "durable-terminal-physical-live"
-    && terminalTask;
+  const archiveBlocked = terminalTask && (physical === undefined
+    || physical.alive || physical.identityConflict);
 
   return {
     owner: {

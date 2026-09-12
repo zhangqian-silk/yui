@@ -220,6 +220,10 @@ export interface GitWorkspacePort {
    * Project's current repository (e.g. after a catalog switch). Only for
    * unadopted worktrees that are safe to discard. */
   removeStrandedWorktree(path: string): Promise<GitWorkspaceRemoval>;
+  /** Delete a clean, standalone Task clone only at its exact managed identity. */
+  removeTaskClone(input: Readonly<{
+    path: string; container: string; taskSegment: string; branch: string;
+  }>): Promise<GitWorkspaceRemoval>;
   /** Remove the exact clean worktree proven by inspectRecordedWorktree. If
    * the Project moved repositories, delete the obsolete source branch only
    * after the same commit is proven retained in the current repository. */
@@ -1165,7 +1169,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     const project = await this.inspect(input.repositoryPath);
     if (state === "missing") {
       if (input.deleteBranch === true) {
-        await git(["-C", project.root, "worktree", "prune"]);
+        await removeMissingWorktreeRegistration(project.root, path, identity.branch);
         await deleteBranchIfPresent(project.root, identity.branch);
       }
       return state;
@@ -1200,6 +1204,36 @@ export class NodeGitWorkspace implements GitWorkspacePort {
       // Remove the directory directly; the worktree is unadopted.
       await rm(path, { recursive: true, force: true });
     }
+    return "removed";
+  }
+
+  async removeTaskClone(input: Readonly<{
+    path: string; container: string; taskSegment: string; branch: string;
+  }>): Promise<GitWorkspaceRemoval> {
+    const identity = worktreeIdentity(input.taskSegment, "main");
+    const expected = managedPath(resolve(input.container), identity.directory);
+    if (resolve(input.path) !== expected || input.branch !== identity.branch) {
+      throw new Error("Task clone does not match its recorded managed identity.");
+    }
+    const kind = await pathKind(expected);
+    if (kind === undefined) return "missing";
+    if (kind === "symlink") throw new Error("Task clone must not be a symbolic link.");
+    await canonicalContainer(input.container, false);
+    if (await realpath(expected) !== expected || await pathKind(join(expected, ".git")) !== "directory") {
+      throw new Error("Task clone is not a standalone owned Git directory.");
+    }
+    const repository = await this.inspect(expected);
+    if (repository.root !== expected || repository.gitDirectory !== join(expected, ".git")) {
+      throw new Error("Task clone Git ownership cannot be established.");
+    }
+    await assertExpectedBranch(expected, input.branch);
+    if (!await this.isClean(expected)) return "dirty";
+    const worktrees = (await git(["-C", expected, "worktree", "list", "--porcelain", "-z"]))
+      .split("\0").filter(line => line.startsWith("worktree "));
+    if (worktrees.length !== 1 || worktrees[0] !== `worktree ${expected}`) {
+      throw new Error("Task clone still owns Git worktree registrations; retained.");
+    }
+    await rm(expected, { recursive: true });
     return "removed";
   }
 
@@ -1308,6 +1342,9 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     const kind = await pathKind(path);
     if (kind === "symlink") throw new Error("Managed worktree path must not be a symbolic link.");
     const repository = await this.inspect(input.repositoryPath);
+    if (kind === undefined) {
+      await removeMissingWorktreeRegistration(repository.root, path, input.identity.branch);
+    }
     if (kind === "directory") {
       const canonicalContainerPath = await canonicalContainer(container, false);
       await assertOwnedWorktree(repository, canonicalContainerPath, path);
@@ -1339,6 +1376,20 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     }
     return kind === "directory" ? "removed" : "missing";
   }
+}
+
+/** Missing paths do not imply missing Git metadata. Never prune another
+ * workspace's registration as a side effect of cleaning this exact owner.
+ */
+async function removeMissingWorktreeRegistration(repositoryRoot: string, path: string, branch: string): Promise<void> {
+  const records = (await git(["-C", repositoryRoot, "worktree", "list", "--porcelain", "-z"])).split("\0\0");
+  const fields = records.map(record => record.split("\0")).find(record => record.includes(`worktree ${path}`));
+  if (fields === undefined) return;
+  if (!fields.includes(`branch refs/heads/${branch}`) || fields.some(field => field.startsWith("locked"))) {
+    throw new Error(`Missing worktree has uncertain or locked Git ownership: ${path}; metadata retained.`);
+  }
+  if (await pathKind(path) !== undefined) throw new Error(`Worktree reappeared before metadata cleanup: ${path}.`);
+  await git(["-C", repositoryRoot, "worktree", "remove", "--force", "--", path]);
 }
 
 async function deleteBranchIfPresent(repositoryRoot: string, branch: string): Promise<void> {

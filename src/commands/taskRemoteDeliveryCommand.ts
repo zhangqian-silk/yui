@@ -98,8 +98,7 @@ export function createTaskRemoteDeliveryProof(
 export function assertTaskRemoteDeliveryProof(
   store: TaskRemoteDeliveryStore,
   task: Task,
-  proof: TaskRemoteDeliveryProof | undefined,
-  options: Readonly<{ forceUnverified?: boolean }> = {}
+  proof: TaskRemoteDeliveryProof | undefined
 ): TaskRemoteDelivery {
   if (proof === undefined || proof.schemaVersion !== 1) {
     throw usageError(`Task remote-delivery preflight proof is required: ${task.id}.`);
@@ -113,13 +112,12 @@ export function assertTaskRemoteDeliveryProof(
   )) {
     throw usageError(`Task Publication evidence changed after remote-delivery preflight: ${task.id}.`);
   }
-  assertTaskRemoteDeliveryIntegrated(proof.delivery, options);
+  assertTaskRemoteDeliveryIntegrated(proof.delivery);
   return proof.delivery;
 }
 
 export function assertTaskRemoteDeliveryIntegrated(
-  delivery: TaskRemoteDelivery,
-  options: Readonly<{ forceUnverified?: boolean }> = {}
+  delivery: TaskRemoteDelivery
 ): void {
   if (!delivery.allMerged) {
     const headUnavailable = delivery.projects.filter((project) => (
@@ -131,7 +129,7 @@ export function assertTaskRemoteDeliveryIntegrated(
         `Task ${delivery.taskId} has no frozen completion heads for: ${
           headUnavailable.map(({ projectId }) => projectId).join(", ")
         }. Reopen and complete it again to record exact heads before archiving; `
-        + "--force cannot override missing head evidence."
+        + "An explicitly authorized --force archive retains this evidence gap."
       );
     }
     const uncovered = delivery.projects
@@ -148,7 +146,7 @@ export function assertTaskRemoteDeliveryIntegrated(
       + "or use task archive --abandon for an intentional non-merge."
     );
   }
-  if (delivery.allVerified || options.forceUnverified === true) return;
+  if (delivery.allVerified) return;
   const unverified = delivery.projects
     .filter((project) => (
       project.codeDelivery !== "none"
@@ -164,7 +162,7 @@ export function assertTaskRemoteDeliveryIntegrated(
     `Task ${delivery.taskId} has merged Publication evidence that is not verified: `
     + `${unverified || "verification evidence is unavailable"}. Run task publication verify `
     + "for each Publication, or repeat task archive --integrated --force to explicitly "
-    + "override verification. --force never overrides missing, stale, open, or closed merge evidence."
+    + "archive despite evidence gaps, retaining the original delivery facts."
   );
 }
 
