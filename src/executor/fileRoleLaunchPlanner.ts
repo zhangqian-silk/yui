@@ -24,7 +24,6 @@ import type {
   SchedulerRoleSession
 } from "../scheduler/ports.js";
 import type { TaskStore } from "../storage/taskStore.js";
-import { writeTextFileAtomically } from "../storage/durableFile.js";
 import {
   compileRoleSessionContext,
   roleSessionKind
@@ -358,6 +357,9 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
     const role = this.store.getGlobalRole(input.roleName);
     if (role === null) throw new Error(`Global Role not found: ${input.roleName}.`);
     const sessionSet = this.store.getGlobalRoleSessionSet(role.name);
+    if (activeLiveRoleAgentSession(sessionSet) !== null && sessionSet?.providerBinding == null) {
+      throw new Error("Global Role has an unmanaged live Session. Stop that exact Session before opening controlled input; it will not be silently replaced.");
+    }
     const resolvedEffective = activeLiveRoleAgentSession(sessionSet)?.effective
       ?? resolveEffectiveLaunch({ role, purpose: "execution" });
     if (input.effective !== undefined
@@ -370,6 +372,9 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
       && roleSessionMayContinue(existing.effective, effective);
     if (input.mode === "resume" && !compatibleExisting) {
       throw new Error(`Global Role resume effective snapshot drifted: ${role.name}.`);
+    }
+    if (input.mode === "new" && sessionSet?.providerBinding != null) {
+      assertProviderConversationReplaceable(sessionSet.providerBinding);
     }
     return this.#compile(
       role,
@@ -573,7 +578,6 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
     const launchMode: RoleSessionLaunchMode = resumeNativeSessionId === undefined
       ? "new"
       : "resume";
-    const managedControl = owner.scope === "task";
     // Only an Agent that accepts a caller-chosen Session id can have one
     // preallocated. Keying this on the adapter name instead of the declared
     // capability meant every non-Claude adapter was assumed to accept one.
@@ -584,21 +588,9 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
           "Native session id"
         )
       : resumeNativeSessionId;
-    const managedCompiled = managedControl
-      ? adapter.compileManagedControl(
-          compileInput,
-          launchMode,
-          preallocatedNativeSessionId
-        )
-      : undefined;
-    const compiled = managedCompiled !== undefined
-      ? managedCompiled
-      : launchMode === "resume"
-        ? adapter.compileResume({
-            ...compileInput,
-            nativeSessionId: resumeNativeSessionId!
-          })
-        : adapter.compileNew(compileInput);
+    const managedCompiled = adapter.compileManagedControl(
+      compileInput, launchMode, preallocatedNativeSessionId);
+    const compiled = managedCompiled;
     for (const path of [
       bootstrap.manifestPath,
       bootstrap.sessionCliPath,
@@ -621,9 +613,6 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
     // Its native Hooks carry no such request fence and must not compete with
     // the Host for acceptance, completion, or attachment lifecycle facts.
     // Provider tool permissions remain in compiled config, not this observer.
-    if (binding.adapterId === "claude" && owner.scope === "global") {
-      args.push("--plugin-dir", ensureClaudeLifecyclePlugin(this.home, this.#cliPath));
-    }
     if (binding.adapterId === "codex") {
       // Interactive Task sessions may use notify for presentation.
       // Managed AgentRuns receive lifecycle facts through their ordinary App Server
@@ -645,8 +634,7 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
           preallocatedNativeSessionId,
           "Native session id"
         );
-        if (!managedControl) args.push("--session-id", nativeSessionId);
-        else if (!args.includes("--session-id")) args.push("--session-id", nativeSessionId);
+        if (!args.includes("--session-id")) args.push("--session-id", nativeSessionId);
         session = readySession(input.agentId, binding.adapterId, nativeSessionId, effective);
       } else {
         // A runtime-discovered Session id does not exist until the Agent
@@ -667,25 +655,32 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
     // Session lifecycle and AgentRun submission are separate atomic operations.
     // Planning only starts or restores the exact native Session; delivery
     // submits the AgentRun input after that Session fact is durable.
-    if (managedControl && input.runId !== undefined && (managedRun === null || managedRun.status !== "active")) {
+    if (owner.scope === "task" && input.runId !== undefined && (managedRun === null || managedRun.status !== "active")) {
       throw new Error(`Managed AgentRun is no longer active: ${input.runId}.`);
     }
-    const providerAuthority = managedControl
-      ? this.#providerAuthorityForLaunch(
-          owner.taskId,
+    const providerAuthority = this.#providerAuthorityForLaunch(
+          owner.scope === "task" ? owner.taskId : undefined,
           role.name,
           input.mode
-        )
-      : undefined;
-    const providerOwnedRun = managedControl && input.mode === "resume" && input.runId !== undefined
+        );
+    let providerOwnedRun = owner.scope === "task" && input.mode === "resume" && input.runId !== undefined
       ? this.#providerOwnedRunForLaunch(owner.taskId, role.name, input.runId!)
       : undefined;
+    if (owner.scope === "global" && input.mode === "resume") {
+      const turn = this.store.getGlobalRoleSessionSet(role.name)?.providerBinding?.run;
+      if (turn?.status === "accepted") {
+        if (binding.adapterId !== "codex" || turn.nativeTurnId === undefined) {
+          throw new Error("This Global active Turn cannot be restored with exact native identity.");
+        }
+        providerOwnedRun = { attemptId: turn.attemptId, turnId: turn.nativeTurnId };
+      } else if (turn != null && ["submitting", "delivery-unknown"].includes(turn.status)) {
+        throw new Error("Global input delivery is unconfirmed; resolve its exact current attempt before restoring.");
+      }
+    }
     const providerNativeSessionId = binding.adapterId === "claude"
       ? preallocatedNativeSessionId
       : resumeNativeSessionId;
-    const providerControl: AgentHostProviderControl | undefined = !managedControl
-      ? undefined
-      : input.mode === "resume"
+    const providerControl: AgentHostProviderControl = input.mode === "resume"
         ? {
             schemaVersion: 1,
             adapterId: binding.adapterId,
@@ -740,10 +735,7 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
       ...(effective.executionEnvironment === undefined ? {} : {
         executionEnvironment: structuredClone(effective.executionEnvironment)
       }),
-      ...(providerControl === undefined ? {} : { providerControl }),
-      ...(owner.scope === "global" && binding.adapterId === "codex"
-        ? { interactiveCodexThread: compiled.codexThread }
-        : {}),
+      providerControl,
       env: {
         ...launchEnvironment,
         YUI_HOME: resolve(this.home),
@@ -783,17 +775,7 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
     const scopedLaunch = owner.scope === "task"
       ? this.#applyWorkspaceScope(owner.taskId, role, launch, workspaceOverride)
       : launch;
-    const sharedDaemonLaunch = owner.scope === "global" && configured.adapterId === "codex"
-      ? {
-          ...scopedLaunch,
-          args: addCodexSharedDaemonRemote(
-            scopedLaunch.args,
-            launchMode,
-            scopedLaunch.env
-          )
-        }
-      : scopedLaunch;
-    const ordinaryConversationLaunch = withCodexThreadEnvironment(sharedDaemonLaunch);
+    const ordinaryConversationLaunch = withCodexThreadEnvironment(scopedLaunch);
     return {
       role: {
         name: role.name,
@@ -807,11 +789,13 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
   }
 
   #providerAuthorityForLaunch(
-    taskId: string,
+    taskId: string | undefined,
     roleName: string,
     mode: "new" | "resume"
   ): ProviderAuthorityFence {
-    const binding = this.store.getTaskRoleSessionSet(taskId, roleName)?.providerBinding;
+    const binding = (taskId === undefined
+      ? this.store.getGlobalRoleSessionSet(roleName)
+      : this.store.getTaskRoleSessionSet(taskId, roleName))?.providerBinding;
     if (binding === null || binding === undefined) {
       return { epoch: 1, owner: "controller", holderId: "controller" };
     }
@@ -995,45 +979,6 @@ function workspaceScopeEnvironment(
       ])
     ))
   };
-}
-
-function ensureClaudeLifecyclePlugin(home: string, cliPath: string): string {
-  const root = join(resolve(home), "runtime", "claude-lifecycle-plugin");
-  writeTextFileAtomically(
-    join(root, ".claude-plugin", "plugin.json"),
-    `${JSON.stringify({
-      name: "yui-runtime-lifecycle",
-      description: "Yui-owned native lifecycle transport",
-      version: "1.0.0"
-    }, null, 2)}\n`
-  );
-  const command = {
-    type: "command",
-    command: canonicalPath(process.execPath),
-    args: [canonicalPath(cliPath), "internal", "runtime-hook"]
-  };
-  writeTextFileAtomically(
-    join(root, "hooks", "hooks.json"),
-    `${JSON.stringify({
-      hooks: {
-        // All native names terminate at the Driver edge; core sees only
-        // canonical RuntimeObservation values.
-        SessionStart: [{ hooks: [command] }],
-        UserPromptSubmit: [{ hooks: [command] }],
-        PreToolUse: [{ hooks: [command] }],
-        PermissionRequest: [{ hooks: [command] }],
-        MessageDisplay: [{ hooks: [command] }],
-        PostToolUse: [{ hooks: [command] }],
-        PostToolUseFailure: [{ hooks: [command] }],
-        SubagentStart: [{ hooks: [command] }],
-        SubagentStop: [{ hooks: [command] }],
-        Stop: [{ hooks: [command] }],
-        StopFailure: [{ hooks: [command] }],
-        SessionEnd: [{ hooks: [command] }]
-      }
-    }, null, 2)}\n`
-  );
-  return root;
 }
 
 function managedClaudeControlPlaneConfig(

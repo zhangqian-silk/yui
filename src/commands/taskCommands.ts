@@ -1,6 +1,6 @@
 import type { ConfiguredAgent } from "../agent/agent.js";
 import { roleLaunchEventPayload, saveTaskRoleUpdate } from "../role/taskRoleUpdate.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { archiveDeliveryWarnings, archiveRetainedResources, renderArchiveDiagnostics, taskArchiveDiagnostics } from "../task/archiveDiagnostics.js";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -339,6 +339,7 @@ import {
 } from "./taskActor.js";
 import { currentManagedRuntime, resolveManagedTaskReader } from "../runtime/managedCaller.js";
 import { resolveMessageRecipient, messageContinuationBlocker } from "../message/messageContinuation.js";
+import { findTaskInterrupt, reserveTaskInterrupt, taskInterruptReceipt, taskInterruptWasRejected } from "../message/taskInterrupt.js";
 import { resolveTaskInputControl, type ResolvedInputTarget } from "../message/inputControlResolution.js";
 import { enqueueOperatorEvent } from "../scheduler/operatorEvent.js";
 import { queueLeaderWakeup } from "../scheduler/wakeupQueue.js";
@@ -2697,6 +2698,20 @@ function steerTaskMessage(
       { taskId: result.task.id, message: result.message,
         steer: { state: "not-steered" as const, code: resolution.code, detail: resolution.detail } });
   }
+  if (!leaderTarget) {
+    const current = store.getActiveRun(result.task.id, roleName);
+    const native = store.getTaskRoleSessionSet(result.task.id, roleName)?.providerBinding?.run;
+    const recipient = result.message.recipient;
+    if (current === null || native?.runId !== current.id
+      || recipient?.ownerRunId !== current.id
+      || recipient.workItemId !== current.workItemId
+      || recipient.reviewRoundId !== current.reviewRoundId
+      || messageContinuationBlocker(store, result.message) !== undefined) {
+      return output(`Steer message ${result.message.id} saved but not delivered (TARGET_CHANGED: active Assignment differs).\n`,
+        { taskId: result.task.id, message: result.message,
+          steer: { state: "not-steered", code: "TARGET_CHANGED", detail: "The input does not belong to the active Turn's Assignment." } });
+    }
+  }
   const receiptId = `steer:${result.task.id}/${result.message.id}`;
   // Register the one independent control attempt as `pending` before the live
   // edge runs (decision-3 §3, message-5 gap D). This is the messageRef-associated
@@ -3117,24 +3132,50 @@ function interruptTaskRole(
   const now = clock(options);
   const task = requireTask(store, parsed.positionals[0]);
   const role = requireRole(store, task.id, parsed.positionals[1]);
+  const fingerprint = createHash("sha256").update(JSON.stringify({
+    roleName: role.name, expectedTarget, thenMessageRef: thenMessageRef ?? null
+  })).digest("hex");
+  const operationId = requestId ?? `interrupt-${fingerprint}`;
+  let receiptId = "";
   const resolved = store.transaction((tx): TaskCommandExecution | ResolvedInputTarget => {
     assertTaskOpen(task);
     assertTaskInputControlAuthority(tx, options.environment, task.id, role.name);
+    const previous = findTaskInterrupt(tx, task.id, operationId);
+    if (previous !== undefined) {
+      if (previous.payload.fingerprint !== fingerprint) throw usageError("Interrupt requestId already names a different target or then input.");
+      return output("Interrupt already recorded; no native request was repeated.\n", {
+        taskId: task.id, roleName: role.name, interrupt: {
+          state: "idempotent-replay", receipt: taskInterruptReceipt(tx, task.id, previous.payload.receiptId!)
+        }
+      });
+    }
     const resolution = resolveTaskInputControl(tx, task.id, role.name, "interrupt", expectedTarget);
     if (resolution.outcome !== "ready") {
       return output(`Interrupt not delivered (${resolution.code}: ${resolution.detail}).\n`,
         { taskId: task.id, roleName: role.name,
           interrupt: { state: "not-interrupted", code: resolution.code, detail: resolution.detail } });
     }
+    const priorTarget = tx.listEvents(task.id).find(event => event.type === "input.interrupt-requested"
+      && event.payload.roleName === role.name && event.payload.nativeSessionId === resolution.target.nativeSessionId
+      && event.payload.attemptId === resolution.target.attemptId
+      && !taskInterruptWasRejected(tx, task.id, event.payload.receiptId!));
+    if (priorTarget !== undefined) {
+      return output("This exact Turn already has an interrupt request; inspect its original receipt.\n", {
+        taskId: task.id, roleName: role.name, interrupt: {
+          state: "not-interrupted", code: "DELIVERY_UNKNOWN", receiptId: priorTarget.payload.receiptId
+        }
+      });
+    }
     if (thenMessageRef !== undefined) {
       const claimResult = registerInterruptThen(tx, task.id, role.name, thenMessageRef,
-        resolution.target.attemptId, requestId, options, now);
+        resolution.target, operationId, options, now);
       if (claimResult !== "claimed") {
         return output(`Interrupt not delivered (${claimResult.code}: ${claimResult.detail}).\n`,
           { taskId: task.id, roleName: role.name,
             interrupt: { state: "not-interrupted", code: claimResult.code, detail: claimResult.detail } });
       }
     }
+    receiptId = reserveTaskInterrupt(tx, task.id, operationId, fingerprint, resolution.target, thenMessageRef, now);
     return resolution.target;
   });
   if ("kind" in resolved) return resolved;
@@ -3143,7 +3184,7 @@ function interruptTaskRole(
     taskId: task.id,
     roleName: role.name,
     target: resolved,
-    receiptId: `interrupt:${task.id}/${role.name}/${resolved.attemptId}`,
+    receiptId,
     ...(thenMessageRef === undefined ? {} : {
       thenMessageId: taskRecordReference(thenMessageRef, "message", "Then Message reference", options).localId }),
     output: `Interrupting ${task.id}/${role.name} at Turn ${resolved.nativeTurnId ?? resolved.attemptId}`
@@ -3168,8 +3209,9 @@ function interruptTaskRole(
  */
 function registerInterruptThen(
   store: TaskWorkflowStore, taskId: string, roleName: string, thenMessageRef: string,
-  targetAttemptId: string, requestId: string | undefined, options: TaskCommandOptions, now: Date
+  target: ResolvedInputTarget, requestId: string | undefined, options: TaskCommandOptions, now: Date
 ): "claimed" | Readonly<{ code: "DELIVERY_UNKNOWN" | "TARGET_CHANGED"; detail: string }> {
+  const targetAttemptId = target.attemptId;
   const ref = taskRecordReference(thenMessageRef, "message", "Then Message reference", options);
   if (ref.taskId !== taskId) {
     return { code: "TARGET_CHANGED", detail: "The then-Message belongs to another Task." };
@@ -3194,19 +3236,35 @@ function registerInterruptThen(
   // Idempotent per interrupt requestId: an exact repeat of the same claim (same
   // request, same native Turn) is a no-op that still authorizes the live cancel.
   if (message.interruptThen !== undefined) {
-    if (message.interruptThen.requestId === claimRequestId
-      && message.interruptThen.targetAttemptId === targetAttemptId) return "claimed";
+    const prior = findTaskInterrupt(store, taskId, message.interruptThen.requestId);
+    const canReferenceClaim = message.interruptThen.requestId === claimRequestId
+      || (prior !== undefined && taskInterruptWasRejected(store, taskId, prior.payload.receiptId!));
+    if (canReferenceClaim && message.interruptThen.notDeliveredReason === undefined
+      && message.interruptThen.targetAttemptId === targetAttemptId
+      && message.interruptThen.targetNativeSessionId === target.nativeSessionId
+      && message.interruptThen.targetAgentId === target.agentId
+      && message.interruptThen.targetAdapterId === target.adapterId
+      && message.interruptThen.targetRoleName === roleName
+      && message.interruptThen.targetAuthorityEpoch === target.authority.epoch
+      && message.interruptThen.targetAuthorityHolderId === target.authority.holderId) return "claimed";
     return { code: "TARGET_CHANGED",
       detail: `Message ${thenMessageRef} already claims a continuation of Turn ${message.interruptThen.targetAttemptId}.` };
+  }
+  const inputState = taskMessageInputControlState(message);
+  if (inputState === "accepted" || inputState === "pending" || inputState === "delivery-unknown") {
+    return {
+      code: inputState === "accepted" ? "TARGET_CHANGED" : "DELIVERY_UNKNOWN",
+      detail: `Message ${thenMessageRef} has steer disposition ${inputState}; it cannot be submitted again.`
+    };
   }
   // The reused Message must be a legal handoff for this exact interrupt. A
   // Worker/Reviewer handoff must be addressed to the interrupted Assignment; a
   // no-Run Leader handoff (its own management/Draft turn) reuses a Leader input,
   // which is never addressed to a Worker Assignment (no ownerRunId).
-  if (active !== null) {
-    if (message.recipient?.roleName !== roleName || message.recipient.ownerRunId !== active.id) {
+  if (roleName !== LEADER_ROLE) {
+    if (active === null || message.recipient?.roleName !== roleName || message.recipient.ownerRunId !== active.id) {
       return { code: "TARGET_CHANGED",
-        detail: `Message ${thenMessageRef} is not addressed to the interrupted Assignment (${roleName}/${active.id}).` };
+        detail: `Message ${thenMessageRef} is not addressed to the current execution Assignment.` };
     }
   } else if (message.recipient?.ownerRunId !== undefined) {
     return { code: "TARGET_CHANGED",
@@ -3236,6 +3294,10 @@ function registerInterruptThen(
   const { inputControl, ...rest } = message;
   store.updateMessage(taskId, { ...rest,
     interruptThen: { requestId: claimRequestId, targetAttemptId,
+      targetRoleName: roleName, targetNativeSessionId: target.nativeSessionId,
+      targetAgentId: target.agentId, targetAdapterId: target.adapterId,
+      targetAuthorityEpoch: target.authority.epoch, targetAuthorityHolderId: target.authority.holderId,
+      ...(target.nativeTurnId === undefined ? {} : { targetNativeTurnId: target.nativeTurnId }),
       ...(active === null ? {} : { targetRunId: active.id }),
       ...(inputControl === undefined ? {} : { reusedInput: inputControl }) } });
   recordTaskEvent(store, taskId, "message.interrupt-then-claimed", {
@@ -3256,7 +3318,7 @@ function registerInterruptThen(
   // the same claim does not stack a second one; claimLeaderNotification holds it
   // until the interrupted native Turn reaches its proven terminal, and only then
   // does the Leader read the Context that surfaces this handoff.
-  if (roleName === LEADER_ROLE && active === null) {
+  if (roleName === LEADER_ROLE) {
     enqueueWork(store, leaderMailbox(taskId), "interrupt-then", now,
       [messageRef(taskId, message.id)],
       { source: "interrupt-then", dedupeKey: `interrupt-then:${taskId}:${message.id}` });

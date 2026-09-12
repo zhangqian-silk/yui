@@ -191,6 +191,34 @@ async function handleHttpRequest(
     sendJson(response, 403, { error: "Invalid Yui web token.", disposition: "not-submitted" }, method === "HEAD");
     return;
   }
+  const globalControl = /^\/api\/roles\/([^/]+)\/control$/.exec(pathname);
+  if (globalControl && dependencies.surface) {
+    try {
+      const roleName = decodeURIComponent(globalControl[1]!);
+      if (!/^[A-Za-z0-9_-]+$/.test(roleName)) throw new WebRequestRejected("Invalid Global Role.");
+      if (method === "GET") {
+        sendJson(response, 200, dependencies.surface.globalState(roleName), false);
+      } else if (method === "POST") {
+        const body = await readMutationBody(request);
+        if (typeof body !== "object" || body === null || Array.isArray(body)
+          || Object.keys(body).some(key =>
+            !["action", "requestId", "body", "expectedTarget", "thenMessage"].includes(key))) {
+          throw new WebRequestRejected("Global input accepts only action, input and exact target fields.");
+        }
+        const input = body as Record<string, unknown>;
+        const parsed = parseWebControlInput({ ...input,
+          ...(input.action === "interrupt" ? { role: roleName }
+            : input.action === "steer" ? { to: roleName } : {}) });
+        sendJson(response, 200, {
+          ...await dependencies.surface.globalControl(roleName, parsed), requestId: parsed.requestId
+        }, false);
+      } else sendJson(response, 405, { error: "Method not allowed.", disposition: "not-submitted" }, false);
+    } catch (error) {
+      sendJson(response, 409, { error: error instanceof Error ? error.message : "Global input unavailable.",
+        disposition: error instanceof WebRequestRejected ? "not-submitted" : "unknown" }, false);
+    }
+    return;
+  }
   const panelTarget = /^\/api\/tasks\/([^/]+)\/panels$/.exec(pathname);
   if (panelTarget && dependencies.panels) {
     try {

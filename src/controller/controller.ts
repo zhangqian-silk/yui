@@ -166,6 +166,7 @@ export type ControllerRuntimeOptions = Readonly<{
    * runners, harvests terminal evidence, and enqueues Leader wakeups.
    */
   jobSupervisor?: Readonly<{ reconcile(now: Date): void }>;
+  globalInputDelivery?: () => Promise<void>;
   /** Metadata-only reconciliation of already-known detached provider work. */
   continuationReconciler?: Readonly<{
     reconcile(now: Date): Promise<readonly string[]>;
@@ -1107,6 +1108,7 @@ export class FileTaskController {
     | undefined;
   readonly #leaderWakeFence: (() => boolean) | undefined;
   readonly #jobSupervisor: ControllerRuntimeOptions["jobSupervisor"];
+  readonly #globalInputDelivery: ControllerRuntimeOptions["globalInputDelivery"];
   readonly #continuationReconciler: ControllerRuntimeOptions["continuationReconciler"];
   #current: Promise<ControllerSchedulerResult> | undefined;
   #operatorCurrent: Promise<void> | undefined;
@@ -1196,6 +1198,7 @@ export class FileTaskController {
     this.#leaderWakeFence = options.leaderWakeFence;
     this.#jobSupervisor = options.jobSupervisor;
     this.#continuationReconciler = options.continuationReconciler;
+    this.#globalInputDelivery = options.globalInputDelivery;
     this.#signalScheduler = new MailboxScheduler(
       async (keys) => { await this.#requestPass({ kind: "dirty", keys }); },
       {
@@ -1445,6 +1448,7 @@ export class FileTaskController {
             }
           }
           const firstRuntimeDrain = await this.#drainRuntimeEvents();
+          await this.#globalInputDelivery?.();
           for (const taskId of runtimeTaskFailureIds(firstRuntimeDrain)) {
             runtimeFailedTaskIds.add(taskId);
           }

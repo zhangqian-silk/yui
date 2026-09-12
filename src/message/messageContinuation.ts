@@ -120,14 +120,21 @@ export function messageContinuationBlocker(store: TaskStore, message: TaskMessag
  * durable native terminal — preserves only completed/failed/cancelled and cannot
  * itself carry delivery-unknown.
  */
-function interruptThenTerminalState(
+export function interruptThenTerminalState(
   store: TaskStore, message: TaskMessage
 ): "ready" | "waiting" | "unknown" | "missing" {
   const claim = message.interruptThen;
   if (claim === undefined) return "ready";
-  const roleName = message.recipient?.roleName;
-  const turn = roleName === undefined ? null
-    : store.getTaskRoleSessionSet(message.taskId, roleName)?.providerBinding?.run ?? null;
+  const roleName = claim.targetRoleName;
+  const sessions = store.getTaskRoleSessionSet(message.taskId, roleName);
+  const session = sessions?.sessions[sessions.activeAgentId];
+  const binding = sessions?.providerBinding;
+  if (session?.status !== "active" || session.nativeSessionId !== claim.targetNativeSessionId
+    || session.agentId !== claim.targetAgentId || session.adapterId !== claim.targetAdapterId
+    || binding?.authority.owner !== "controller"
+    || binding.authority.epoch !== claim.targetAuthorityEpoch
+    || binding.authority.holderId !== claim.targetAuthorityHolderId) return "missing";
+  const turn = binding.run;
   const owner = claim.targetRunId === undefined ? null : store.getRun(message.taskId, claim.targetRunId);
   if (claim.targetRunId !== undefined && owner === null) return "missing";
   // Primary proof: the exact interrupted native Turn, identity re-verified by
@@ -138,7 +145,8 @@ function interruptThenTerminalState(
     if (["submitting", "accepted", "delivery-unknown"].includes(turn.status)) return "waiting";
     // The native Turn stopped. Its cancel outcome may still be unprovable; that
     // is recorded on the owning AgentRun, never on the settled ProviderTurn.
-    return owner?.result?.failureReason === "delivery-unknown" ? "unknown" : "ready";
+    return ["completed", "failed", "cancelled"].includes(turn.status)
+      && owner?.result?.failureReason !== "delivery-unknown" ? "ready" : "unknown";
   }
   // The live binding no longer holds the target native Turn — a later Turn
   // occupies it, or the binding's run pointer is gone. decision-3 §4/§8: a
@@ -154,6 +162,8 @@ function interruptThenTerminalState(
       && (observation.kind === "turn.completed" || observation.kind === "turn.failed"
         || observation.kind === "turn.cancelled")
       && observation.fence.roleName === roleName
+      && observation.fence.nativeSessionId === claim.targetNativeSessionId
+      && (claim.targetNativeTurnId === undefined || observation.fence.nativeTurnId === claim.targetNativeTurnId)
       && observation.fence.receiptId === claim.targetAttemptId);
   if (nativeStopped) {
     // Proven stopped. Its cancel outcome (clean vs delivery-unknown) is recorded on

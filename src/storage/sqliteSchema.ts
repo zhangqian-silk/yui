@@ -1245,7 +1245,7 @@ UPDATE review_rounds SET payload = json_set(payload, '$.executionGroup.lanes', j
     // exactly as global_role_session_sets parallels role_session_sets: an
     // explicit Global owner and authorizable reference, no fabricated Task and
     // no new private global queue (decision-3 §9/§11).
-    sql: `SELECT 1; -- Messages may carry an input action queue/steer with a stable requestId and an optional interrupt-then continuation claim\n${GLOBAL_ROLE_MESSAGE_SQL}`
+    sql: `SELECT 1; -- Message input actions, exact Session delivery pins, provider receipts and interrupt-then claims; Global Session provider bindings and native interrupt evidence\n${GLOBAL_ROLE_MESSAGE_SQL}`
   }
 ]);
 

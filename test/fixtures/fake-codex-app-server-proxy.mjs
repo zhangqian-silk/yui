@@ -3,6 +3,9 @@ import { createHash } from "node:crypto";
 const WEB_SOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 let input = Buffer.alloc(0);
 let upgraded = false;
+let turnSequence = 0;
+let activeTurnId;
+const controlled = process.env.YUI_FAKE_CONTROLLED === "1";
 
 process.stdin.on("data", (chunk) => {
   input = Buffer.concat([input, chunk]);
@@ -85,8 +88,8 @@ function handleMessage(message) {
       respond({
         thread: {
           id: "fake-thread-1",
-          status: { type: "idle" },
-          turns: []
+          status: { type: activeTurnId === undefined ? "idle" : "active" },
+          turns: activeTurnId === undefined ? [] : [{ id: activeTurnId, status: "inProgress", items: [] }]
         }
       });
       break;
@@ -94,12 +97,16 @@ function handleMessage(message) {
       respond({ goal: null });
       break;
     case "turn/start":
-      respond({ turn: { id: "fake-turn-1" } });
+      turnSequence += 1;
+      const turnId = controlled ? `fake-turn-${turnSequence}` : "fake-turn-1";
+      if (controlled) activeTurnId = turnId;
+      respond({ turn: { id: turnId } });
       setImmediate(() => {
         sendJson({
           method: "turn/started",
-          params: { threadId: "fake-thread-1", turn: { id: "fake-turn-1" } }
+          params: { threadId: "fake-thread-1", turn: { id: turnId } }
         });
+        if (controlled) return;
         sendJson({
           method: "turn/completed",
           params: {
@@ -112,6 +119,19 @@ function handleMessage(message) {
           }
         });
       });
+      break;
+    case "turn/steer":
+      respond({ turnId: `fake-turn-${turnSequence}` });
+      break;
+    case "turn/interrupt":
+      respond({});
+      activeTurnId = undefined;
+      setImmediate(() => sendJson({
+        method: "turn/completed",
+        params: { threadId: "fake-thread-1", turn: {
+          id: `fake-turn-${turnSequence}`, status: "interrupted", items: []
+        } }
+      }));
       break;
     default:
       break;

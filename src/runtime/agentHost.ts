@@ -146,6 +146,7 @@ export type AgentHostCancelControl = Readonly<{
   nativeSessionId: string;
   attemptId: string;
   authority: ProviderAuthorityFence;
+  nativeOnly?: boolean;
 }>;
 
 export type AgentHostControl =
@@ -267,7 +268,7 @@ export function foldSteerLiveReceipt(control: AgentHostControlResult): SteerLive
  * ordinary continuation path after a proven terminal — never re-driven here.
  */
 export type InterruptLiveReceipt = Readonly<{
-  state: "interrupted" | "interrupt-not-active" | "interrupt-unknown" | "interrupt-unavailable";
+  state: "interrupt-requested" | "interrupt-not-active" | "interrupt-unknown" | "interrupt-unavailable";
   outcome: AgentHostControlOutcome;
   cancellation?: AgentEndpointCancellation;
   detail?: string;
@@ -281,12 +282,10 @@ export function foldInterruptLiveReceipt(control: AgentHostControlResult): Inter
     return { state: "interrupt-unavailable", outcome: control.outcome,
       ...withCancellation, ...(detail === undefined ? {} : { detail }) };
   }
-  // A Host that predates the additive `cancellation` field omits it; treat a bare
-  // `cancel-requested` as the stop-requested case, matching the outcome's meaning
-  // and the codebase's forward-compatible handling of optional Host fields.
+  // A transport outcome without native cancellation evidence proves no stop.
   const state = cancellation?.status === "not-active" ? "interrupt-not-active"
-    : cancellation?.status === "unknown" ? "interrupt-unknown"
-    : "interrupted";
+    : cancellation?.status === "requested" ? "interrupt-requested"
+    : "interrupt-unknown";
   return { state, outcome: "cancel-requested", ...withCancellation };
 }
 
@@ -301,6 +300,11 @@ export async function runAgentHost(input: Readonly<{
   const hostInstanceId = randomUUID();
   let hostSequence = 0;
   let payload = await redeem(input.home, input.ticket);
+  if (payload.environment.YUI_SESSION_SCOPE === "global" && payload.providerControl !== undefined) {
+    process.stdout.write("Yui controlled Global Session: this is the Host console, not the native Agent TUI. "
+      + "Type a line to submit to this Session; model, permissions and workspace remain as configured. "
+      + "Queued inputs and live controls use the same Endpoint.\n");
+  }
   if (payload.environment.YUI_SESSION_SCOPE === "global"
     && payload.environment.YUI_ADAPTER_ID === "codex"
     && payload.providerControl === undefined) {
@@ -1263,6 +1267,9 @@ export async function runAgentHost(input: Readonly<{
           }));
     }
     if (request.type === "cancel") {
+      if (request.nativeOnly === true && session?.capabilities.cancel !== "native-interrupt") {
+        throw new Error("This Endpoint cannot natively interrupt; owned-process termination is not input control.");
+      }
       if (session === undefined || request.nativeSessionId !== session.nativeSessionId
         || request.attemptId !== activeRunAttemptId
         || authority === undefined || !sameProviderAuthorityFence(authority, request.authority)) {
@@ -1378,7 +1385,8 @@ export async function runAgentHost(input: Readonly<{
     ? createInterface({ input: process.stdin, output: process.stdout, terminal: true })
     : undefined;
   promptHuman = (): void => {
-    if (humanConsole !== undefined && authority?.owner === "human"
+    if (humanConsole !== undefined && (authority?.owner === "human"
+      || sessionPayload?.environment.YUI_SESSION_SCOPE === "global" && authority?.owner === "controller")
       && activeRunPayload === undefined
       && ["idle", "rejected", "failed"].includes(snapshot.state)) {
       humanConsole.setPrompt("yui(provider)> ");
@@ -1390,7 +1398,8 @@ export async function runAgentHost(input: Readonly<{
       const currentAuthority = authority;
       const currentSession = session;
       const currentPayload = sessionPayload;
-      if (currentAuthority?.owner !== "human"
+      if ((currentAuthority?.owner !== "human"
+        && !(currentPayload?.environment.YUI_SESSION_SCOPE === "global" && currentAuthority?.owner === "controller"))
         || currentSession === undefined
         || currentPayload === undefined) {
         process.stderr.write("Provider input rejected: human authority is not active.\n");
@@ -1409,8 +1418,10 @@ export async function runAgentHost(input: Readonly<{
           boundedText
         }
       };
-      await submitRun(runControl, {});
-      process.stdout.write("Provider accepted the human AgentRun; waiting for its terminal boundary.\n");
+      const submitted = await submitRun(runControl, {});
+      process.stdout.write(submitted.inputAcceptance === "provider"
+        ? "Provider accepted this console input; waiting for its terminal boundary.\n"
+        : "Input written to transport; Provider acceptance is not yet proven.\n");
     }).catch((error) => {
       process.stderr.write(`Provider input failed: ${errorText(error)}\n`);
       promptHuman();
@@ -1505,7 +1516,6 @@ export async function runAgentHost(input: Readonly<{
 /** Host-restart-independent OS custody. No secret or launch payload is stored. */
 async function recordProviderConnection(home: string, payload: AgentHostLaunchPayload, endpoint: AgentEndpoint): Promise<void> {
   const environment = payload.environment;
-  if (environment.YUI_SESSION_SCOPE !== "task") return;
   const identity = endpoint.ownedProcessId === undefined ? undefined : readLinuxProcessIdentity(endpoint.ownedProcessId);
   if (endpoint.ownedProcessId !== undefined && identity === undefined) {
     throw new Error("Dedicated Provider process identity was lost before registration.");
@@ -1517,13 +1527,14 @@ async function recordProviderConnection(home: string, payload: AgentHostLaunchPa
     home, environment, nativeSessionId: endpoint.nativeSessionId, startupRunId: payload.startupRunId,
     connection: {
       ...(identity === undefined ? {} : { processOwner: createSessionOwnerIdentity({
-      owner: { scope: "task", taskId, roleName },
+      owner: environment.YUI_SESSION_SCOPE === "global"
+        ? { scope: "global", roleName } : { scope: "task", taskId, roleName },
       agentId: environment.YUI_AGENT_ID!, adapterId: endpoint.adapterId,
       nativeSessionId: endpoint.nativeSessionId,
       tmux: {
         serverName: yuiTmuxServerName(home),
         socketPath: join(tmuxSocketDirectory(environment), yuiTmuxServerName(home)),
-        sessionName: yuiTmuxSessionName(home, taskId), windowName: roleName, panePid: process.pid
+        sessionName: yuiTmuxSessionName(home, taskId ?? "operator"), windowName: roleName, panePid: process.pid
       },
       providerRoot: { pid: identity.pid, startIdentity: identity.startIdentity,
         processGroupId: identity.processGroupId, processSessionId: identity.processSessionId,
@@ -1991,6 +2002,9 @@ function validateControl(control: AgentHostControl): AgentHostControl {
   }
   if (control.type === "status") return Object.freeze({ ...control });
   if (control.type === "cancel") {
+    if (control.nativeOnly !== undefined && typeof control.nativeOnly !== "boolean") {
+      throw new Error("Native-only cancellation flag is invalid.");
+    }
     validateIdentity(control.nativeSessionId, "native Session id");
     validateIdentity(control.attemptId, "Provider input attempt id");
     validateProviderAuthorityFence(control.authority);
@@ -2188,8 +2202,10 @@ async function observePendingHostSubmission(
 function signalRoleMailbox(home: string, payload: AgentHostLaunchPayload): void {
   const taskId = payload.environment.YUI_TASK_ID;
   const roleName = payload.environment.YUI_ROLE;
-  if (taskId === undefined || roleName === undefined) return;
-  const key = `role:${encodeURIComponent(taskId)}/${encodeURIComponent(roleName)}`;
+  if (roleName === undefined) return;
+  const key = taskId === undefined
+    ? `global-role:${encodeURIComponent(roleName)}`
+    : `role:${encodeURIComponent(taskId)}/${encodeURIComponent(roleName)}`;
   void callController(home, "scheduler.signal", { key }).catch(() => {
     // This is a low-latency hint. Durable mailbox state and periodic
     // reconciliation remain the recovery path across a Controller handover.
@@ -2212,7 +2228,9 @@ function hostRunControlParams(
 ): Readonly<Record<string, string | number>> {
   const environment = payload.environment;
   return Object.freeze({
-    taskId: requiredEnvironment(environment.YUI_TASK_ID, "Task id"),
+    ...(environment.YUI_SESSION_SCOPE === "global" ? {} : {
+      taskId: requiredEnvironment(environment.YUI_TASK_ID, "Task id")
+    }),
     roleName: requiredEnvironment(environment.YUI_ROLE, "Role name"),
     ...(runId === undefined ? {} : { runId: requiredEnvironment(runId, "AgentRun id") }),
     agentId: requiredEnvironment(environment.YUI_AGENT_ID, "Agent id"),

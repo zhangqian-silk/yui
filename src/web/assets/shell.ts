@@ -30,6 +30,7 @@ export const DASHBOARD_HTML = `<!doctype html>
         </div>
         <span class="live" title="Local loopback"><i aria-hidden="true"></i><span class="sr-only" data-i18n="brand.connection">Local loopback</span></span>
       </div>
+      <button id="global-input-open" class="operator-open" type="button">Global inputs · 全局消息</button>
       <label class="search">
         <span class="sr-only" data-i18n="search.label">Search tasks</span>
         <input id="search" type="search" placeholder="Filter by title, ID, tag, or project…" data-i18n-placeholder="search.placeholder">
@@ -91,6 +92,28 @@ export const DASHBOARD_HTML = `<!doctype html>
       </nav>
       <main id="detail" class="detail" aria-labelledby="page-title" tabindex="-1"></main>
     </div>
+    <dialog id="global-input-dialog" class="global-input-dialog" aria-labelledby="global-input-title">
+      <h2 id="global-input-title">Global Role input · 全局 Role 消息</h2>
+      <p class="muted">Queue is the default. A cancel request does not prove the Turn stopped.<br>默认排队；取消请求不代表执行已停止。</p>
+      <form id="global-input-form" class="record-block">
+        <label>Role<input id="global-input-role" value="operator" required pattern="[A-Za-z0-9_-]+"></label>
+        <label>Action · 动作<select id="global-input-action">
+          <option value="queue">Queue · 排队</option>
+          <option value="steer">Steer · 当前轮插话</option>
+          <option value="interrupt">Interrupt · 请求取消</option>
+        </select></label>
+        <label id="global-input-body-label">Message · 消息<textarea id="global-input-body" maxlength="8000" required></textarea></label>
+        <label id="global-input-target-label" hidden>Expected Turn · 精确目标<input id="global-input-target"></label>
+        <label id="global-input-then-label" hidden>Then-message ID · 后续消息引用<input id="global-input-then"></label>
+        <div class="record-actions">
+          <button id="global-input-inspect" type="button" class="record-open">Read state · 读取状态</button>
+          <button id="global-input-submit" type="submit" class="record-open">Submit · 提交</button>
+          <button id="global-input-close" type="button" class="record-open">Close · 关闭</button>
+        </div>
+        <p id="global-input-receipt" role="status" class="muted">Not submitted · 未提交</p>
+        <pre id="global-input-state" class="global-input-state"></pre>
+      </form>
+    </dialog>
     <aside id="terminal-panel" class="terminal-panel" aria-labelledby="terminal-title" aria-hidden="true" hidden>
       <header class="terminal-head">
         <div>

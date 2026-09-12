@@ -2,6 +2,7 @@
 
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { recordTaskInterruptResult } from "./message/taskInterrupt.js";
 import { agentAdapterLabel as adapterLabel } from "./agent/adapterCatalog.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -14,6 +15,7 @@ import { describeCommandTree, findCommandNode } from "./cli/commandCatalog.js";
 import { routeInvocation } from "./cli/invocationRouter.js";
 import { renderCompletion, type CliIdentity } from "./cli/completion.js";
 import { resolveCompletionCandidates } from "./cli/dynamicCompletion.js";
+import { recordGlobalInterruptResult, recordGlobalSteerResult } from "./message/globalInterrupt.js";
 import {
   allowsInteractiveSelection,
   resolveInteractiveArguments,
@@ -1053,17 +1055,28 @@ export async function main(): Promise<void> {
     // its exact code) or a resolved live intent. The CLI performs at most one
     // native edge with scope "global" and taskId omitted — the same shared
     // resolver and transport as a Task Role, never a fabricated Task.
+    let globalInputFailure: Readonly<{ code: string; detail: string; data: unknown }> | undefined;
     const roleOptions: GlobalRoleCommandOptions = {
       yuiHome: home,
       env: process.env,
-      jsonOutput
+      jsonOutput,
+      onInputFailure: failure => { globalInputFailure = failure; }
     };
     const result = runGlobalRoleCommand(
       resolved.slice(1),
       store as unknown as Parameters<typeof runGlobalRoleCommand>[1],
       roleOptions
     );
+    if (resolved[1] === "message" && resolved[2] === "queue" && resolved[3] !== undefined) {
+      await callController(home, "scheduler.signal", {
+        key: `global-role:${encodeURIComponent(resolved[3])}`
+      }).catch(() => {});
+    }
     if (typeof result === "string") {
+      if (globalInputFailure !== undefined) {
+        emitControlFailure(globalInputFailure.detail, globalInputFailure.code, globalInputFailure.data);
+        return;
+      }
       emit(result);
       return;
     }
@@ -1089,6 +1102,10 @@ export async function main(): Promise<void> {
           }
         });
       } catch (error) {
+        recordGlobalSteerResult(store, result.roleName, result.messageId, {
+          state: "steer-unknown", outcome: "pending",
+          detail: error instanceof Error ? error.message : String(error)
+        });
         throw runtimeError(
           `Steer message ${result.messageId} is saved but the native steer did not complete: `
           + `${error instanceof Error ? error.message : String(error)}. `
@@ -1098,6 +1115,13 @@ export async function main(): Promise<void> {
         );
       }
       const steer = foldSteerLiveReceipt(control);
+      recordGlobalSteerResult(store, result.roleName, result.messageId, steer);
+      if (steer.state !== "steered") {
+        emitControlFailure(steerReceiptOutput(result.output, result.roleName, result.messageId, steer),
+          steer.state === "steer-unknown" ? "DELIVERY_UNKNOWN" : "STEER_NOT_DELIVERED",
+          { roleName: result.roleName, messageId: result.messageId, steer });
+        return;
+      }
       emit(
         steerReceiptOutput(result.output, result.roleName, result.messageId, steer),
         false, {
@@ -1122,12 +1146,17 @@ export async function main(): Promise<void> {
           control: {
             protocol: AGENT_HOST_CONTROL_PROTOCOL,
             type: "cancel",
+            nativeOnly: true,
             nativeSessionId: result.target.nativeSessionId,
             attemptId: result.target.attemptId,
             authority: result.target.authority
           }
         });
       } catch (error) {
+        recordGlobalInterruptResult(store, result.roleName, result.receiptId, {
+          state: "interrupt-unknown", outcome: "cancel-requested",
+          detail: error instanceof Error ? error.message : String(error)
+        });
         throw runtimeError(
           `Interrupt of global role ${result.roleName} did not complete: `
           + `${error instanceof Error ? error.message : String(error)}. `
@@ -1135,6 +1164,13 @@ export async function main(): Promise<void> {
         );
       }
       const interrupt = foldInterruptLiveReceipt(control);
+      recordGlobalInterruptResult(store, result.roleName, result.receiptId, interrupt);
+      if (interrupt.state !== "interrupt-requested") {
+        emitControlFailure(interruptReceiptOutput(result.output, result.roleName, interrupt),
+          interrupt.state === "interrupt-unknown" ? "DELIVERY_UNKNOWN" : "INTERRUPT_NOT_DELIVERED",
+          { roleName: result.roleName, interrupt });
+        return;
+      }
       emit(
         interruptReceiptOutput(result.output, result.roleName, interrupt),
         false, {
@@ -2011,6 +2047,12 @@ export async function main(): Promise<void> {
             await workspacePreparer.prepareTaskWorkspace(task.id);
           }
         }
+        const controlData = result.data as { steer?: { code?: string }; interrupt?: { code?: string } } | undefined;
+        const failureCode = controlData?.steer?.code ?? controlData?.interrupt?.code;
+        if (failureCode !== undefined) {
+          emitControlFailure(result.output, failureCode, result.data);
+          return;
+        }
         emit(`${result.output}${reviewOutput}`, false, reviewData === undefined
           ? result.data
           : { command: result.data, ...reviewData as object });
@@ -2083,6 +2125,12 @@ export async function main(): Promise<void> {
           );
         }
         const steer = foldSteerLiveReceipt(control);
+        if (steer.state !== "steered") {
+          emitControlFailure(steerReceiptOutput(result.output, `${result.taskId}/${result.roleName}`, result.messageId, steer),
+            steer.state === "steer-unknown" ? "DELIVERY_UNKNOWN" : "STEER_REJECTED",
+            { taskId: result.taskId, roleName: result.roleName, messageId: result.messageId, steer });
+          return;
+        }
         emit(
           steerReceiptOutput(result.output, `${result.taskId}/${result.roleName}`,
             result.messageId, steer),
@@ -2108,6 +2156,7 @@ export async function main(): Promise<void> {
             control: {
               protocol: AGENT_HOST_CONTROL_PROTOCOL,
               type: "cancel",
+              nativeOnly: true,
               nativeSessionId: result.target.nativeSessionId,
               // Native cancel names the exact original execution attempt it stops
               // (Host matches request.attemptId === activeRunAttemptId). That is
@@ -2118,13 +2167,23 @@ export async function main(): Promise<void> {
             }
           });
         } catch (error) {
+          recordTaskInterruptResult(store, result.taskId, result.receiptId,
+            { state: "interrupt-unknown", outcome: "cancel-requested" });
           throw runtimeError(
-            `Interrupt of ${result.taskId}/${result.roleName} did not complete: `
+            `Interrupt ${result.receiptId} of ${result.taskId}/${result.roleName} did not complete: `
             + `${error instanceof Error ? error.message : String(error)}. `
             + "No process was killed; re-read the Session before retrying."
           );
         }
         const interrupt = foldInterruptLiveReceipt(control);
+        recordTaskInterruptResult(store, result.taskId, result.receiptId, interrupt);
+        if (interrupt.state !== "interrupt-requested") {
+          emitControlFailure(interruptReceiptOutput(result.output, `${result.taskId}/${result.roleName}`, interrupt),
+            interrupt.state === "interrupt-unknown" ? "DELIVERY_UNKNOWN"
+              : interrupt.state === "interrupt-not-active" ? "NO_ACTIVE_TURN" : "INTERRUPT_REJECTED",
+            { taskId: result.taskId, roleName: result.roleName, receiptId: result.receiptId, interrupt });
+          return;
+        }
         emit(
           interruptReceiptOutput(result.output, `${result.taskId}/${result.roleName}`, interrupt),
           false, {
@@ -3437,6 +3496,13 @@ function emit(output: string, literal = false, data?: unknown): void {
     : normalized}\n`);
 }
 
+function emitControlFailure(message: string, code: string, details: unknown): void {
+  process.exitCode = 2;
+  process.stdout.write(`${jsonOutput
+    ? JSON.stringify({ ok: false, code, message: message.trim(), details })
+    : message.trim()}\n`);
+}
+
 /**
  * The human line for a live steer, corrected to the *actual* live acceptance
  * (decision-3 §7). The store command's `base` line is written optimistically
@@ -3468,7 +3534,7 @@ function steerReceiptOutput(
 function interruptReceiptOutput(
   base: string, target: string, receipt: InterruptLiveReceipt
 ): string {
-  if (receipt.state === "interrupted") return base;
+  if (receipt.state === "interrupt-requested") return `${base.trim()}\nNative cancel requested; Turn termination is not yet proven.\n`;
   const detail = receipt.detail === undefined ? "" : ` ${receipt.detail}`;
   const reason = receipt.state === "interrupt-not-active"
     ? "found no active Turn to stop (not-active)"

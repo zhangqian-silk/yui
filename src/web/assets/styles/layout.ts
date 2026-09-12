@@ -9,7 +9,7 @@ body{margin:0;min-width:320px;height:100vh;overflow:hidden;font-size:14px}
 .app-shell{display:grid;grid-template-columns:var(--sidebar-w) minmax(0,1fr) 0;grid-template-rows:100vh;height:100vh;transition:grid-template-columns var(--motion-slow) var(--ease)}
 body.terminal-active .app-shell{grid-template-columns:var(--sidebar-w) minmax(0,1fr) var(--terminal-w)}
 /* Sidebar = persistent work index */
-.sidebar{display:flex;flex-direction:column;min-height:0;height:100vh;padding:16px 14px 14px}
+.sidebar{display:flex;flex-direction:column;min-width:0;min-height:0;height:100vh;padding:16px 14px 14px}
 .sidebar-brand{display:flex;gap:10px;align-items:center;flex:none;margin-bottom:14px}
 .brand-text{display:grid;gap:3px;min-width:0;flex:1}
 .sidebar .search{flex:none;margin-bottom:10px}

@@ -8,11 +8,7 @@ import { resolveEffectiveLaunch } from "../executor/effectiveLaunch.js";
 import {
   createGlobalRoleMessage,
   claimGlobalRoleMessageInterruptThen,
-  markGlobalRoleMessageDelivered,
-  markGlobalRoleMessageNotDelivered,
-  releaseGlobalRoleMessageInterruptThen,
   type GlobalRoleMessage,
-  type GlobalRoleMessageInterruptThen,
   type GlobalRoleMessageKind,
   type GlobalRoleMessageAuthor,
   type TaskMessageInputAction
@@ -22,7 +18,6 @@ import {
   type InputControlResolution,
   type ResolvedInputTarget
 } from "../message/inputControlResolution.js";
-import { hasRecentTurnId } from "../runtime/recentTurnIds.js";
 import { readCommandText } from "./textInput.js";
 import { defaultTableWidth, renderTable } from "../output/table.js";
 import { activeRoleSummary, renderRoleDetails } from "../output/rolePresentation.js";
@@ -84,10 +79,13 @@ type GlobalRoleStore = GlobalRoleTransactionStore & Readonly<{
   transaction<T>(execute: (store: GlobalRoleTransactionStore) => T): T;
 }>;
 
+export type GlobalInputFailure = Readonly<{ code: string; detail: string; data: unknown }>;
+
 export type GlobalRoleCommandOptions = Readonly<{
   yuiHome?: string;
   env?: NodeJS.ProcessEnv;
   jsonOutput?: boolean;
+  onInputFailure?: (failure: GlobalInputFailure) => void;
 }>;
 
 export type GlobalRoleEnterControl = Readonly<{
@@ -100,10 +98,7 @@ export type GlobalRoleEnterControl = Readonly<{
  * durable Global Message is already persisted and the target, capability, and
  * writer fence proven from durable state (decision-3 §9); the CLI performs the
  * one Agent Host steer call with scope "global" and never re-decides target or
- * fallback. Today a real Global Role has no live providerBinding, so a real
- * global steer resolves to NO_ACTIVE_TURN and this variant is reached only once
- * a managed Global Host populates one; the resolver is exercised deterministically
- * with a fake binding.
+ * fallback. The controlled Host supplies the exact native binding.
  */
 export type GlobalRoleInputSteer = Readonly<{
   kind: "input-steer";
@@ -143,6 +138,27 @@ export function runGlobalRoleCommand(
   options: GlobalRoleCommandOptions = {}
 ): GlobalRoleCommandResult {
   const [command, ...rest] = args;
+  if (command === "message" || command === "interrupt") {
+    const env = options.env ?? process.env;
+    const target = command === "message" ? rest[1] : rest[0];
+    if (env.YUI_SESSION_SCOPE !== undefined && env.YUI_SESSION_SCOPE !== "global"
+      || env.YUI_SESSION_SCOPE === "global" && env.YUI_ROLE !== "operator"
+        && env.YUI_ROLE !== target) {
+      throw usageError("Global input mutation is outside the exact Session authority.");
+    }
+    if (env.YUI_SESSION_SCOPE === "global") {
+      const caller = store.getGlobalRoleSessionSet(env.YUI_ROLE ?? "");
+      const session = caller?.sessions[caller.activeAgentId];
+      if (session === undefined || session.status !== "active" || env.YUI_AGENT_ID !== session.agentId
+        || env.YUI_ADAPTER_ID !== session.adapterId
+        || (env.CODEX_THREAD_ID ?? env.YUI_NATIVE_SESSION_ID) !== session.nativeSessionId) {
+        throw usageError("Global input mutation requires the current native caller Session.");
+      }
+    } else if (env.YUI_ROLE !== undefined || env.YUI_AGENT_ID !== undefined
+      || env.YUI_NATIVE_SESSION_ID !== undefined) {
+      throw usageError("Incomplete managed identity cannot acquire user authority.");
+    }
+  }
   switch (command) {
     case "add": return addRole(rest, store, options);
     case "list": return listRoles(rest, store);
@@ -172,11 +188,7 @@ function roleContext(
   const name = roleName(rawName);
   assertNoArguments(rest, "Session context usage: yui session context <role>");
   const environment = options.env ?? process.env;
-  // A managed Global Role reading its own Context is the one authorized self-read
-  // that consumes its durable queue (decision-3 §9). An unmanaged/inspection read
-  // (no Session env) observes the same Messages as pending but never delivers
-  // them — delivery is the Role actually taking the input at its next legal
-  // opportunity, which for an unmanaged pull Role is this exact self-read.
+  // Context reads expose durable input and runtime facts without delivering it.
   const selfRead = environment.YUI_SESSION_SCOPE !== undefined;
   if (selfRead) {
     if (environment.YUI_SESSION_SCOPE !== "global" || environment.YUI_ROLE !== name) {
@@ -191,22 +203,16 @@ function roleContext(
   const effective = resolveEffectiveLaunch({ role, purpose: "execution" });
   const sessions = store.getGlobalRoleSessionSet(name);
   const session = sessions?.sessions[role.activeAgentId];
-  // The durable Global input delivered at this legal opportunity (decision-3
-  // §4/§9). A self-read atomically delivers the next deliverable batch — a ready
-  // interrupt-then handoff ahead of the ordinary queue — exactly once and
-  // surfaces it; an inspection read reports the still-pending input (both the
-  // ordinary queue and any claimed handoff) without consuming it, so the caller
-  // always sees the exact outstanding input.
-  const now = new Date();
-  const queued = selfRead
-    ? store.transaction((tx) => deliverGlobalQueueOnContextRead(tx, name, now))
-    : store.listGlobalRoleMessages(name).filter((message) => message.delivery === undefined
+  // Only the controlled Endpoint's accepted receipt consumes a queued Message.
+  const queued = store.listGlobalRoleMessages(name).filter((message) => message.delivery === undefined
         && message.notDelivered === undefined
         && (message.interruptThen !== undefined || message.inputControl?.action === "queue"));
   const pendingQueue = queued.map((message) => ({
     id: message.id,
     requestId: message.interruptThen?.requestId ?? message.inputControl?.requestId,
     body: message.body,
+    ...(message.control === undefined ? {} : { control: message.control }),
+    ...(message.deliveryTarget === undefined ? {} : { deliveryTarget: message.deliveryTarget }),
     ...(message.interruptThen === undefined ? {} : { interruptThen: true }),
     ...(message.delivery === undefined ? {} : { deliveredAt: message.delivery.deliveredAt })
   }));
@@ -244,10 +250,11 @@ function roleContext(
         ? ["route-request", "inspect-catalog", "answer-user-boundary"]
         : ["perform-global-role-request"]
     },
-    // The durable input the Role must act on now (decision-3 §9). On a self-read
-    // these are the Messages this read just delivered; on an inspection read they
-    // are the still-pending queue. Message receipt is not implementation.
+    // Reading pending input is neither delivery nor implementation.
     pendingMessages: pendingQueue,
+    messages: store.listGlobalRoleMessages(name),
+    nativeTurn: sessions?.providerBinding?.run ?? null,
+    interrupts: sessions?.interrupts ?? {},
     sessionManifestPath: environment.YUI_SESSION_MANIFEST,
     cliCommand: "yui"
   });
@@ -264,128 +271,6 @@ function roleContext(
       : pendingQueue.map((message) => message.id).join(", ")}`,
     ""
   ].join("\n");
-}
-
-/**
- * Deliver a Global Role's durable input at its one legal pull opportunity — the
- * Role's own authorized Context read (decision-3 §4/§9). A Global Role launches
- * unmanaged (fileRoleLaunchPlanner keys managedControl on the Task scope) and its
- * runtime observation Hook rejects any non-Task scope, so no managed push edge
- * ever populates a live Turn for it: reading its own Context to act is its next
- * legal opportunity, and this is the real consumer the persisted queue lacked —
- * no fabricated Task or Run, and no managed Host.
- *
- * Ordering is decision-3 §4: an explicit interrupt-then handoff (M) is released
- * ahead of the ordinary queue and only once its exact interrupted native Turn
- * reaches a proven terminal; while any handoff is still waiting, unprovable, or
- * its evidence is gone, the entire pending set — including the ordinary queue
- * Q1/Q2 — is held, so the queue never preempts a live handoff and Q1/Q2 always
- * follow M in a later read. Every consumed Message is marked delivered exactly
- * once inside the caller's transaction, so a repeated self-read is idempotent.
- */
-function deliverGlobalQueueOnContextRead(
-  store: GlobalRoleTransactionStore, roleName: string, now: Date
-): GlobalRoleMessage[] {
-  const pending = store.listGlobalRoleMessages(roleName).filter((message) => message.delivery === undefined
-    && message.notDelivered === undefined);
-  const sessions = store.getGlobalRoleSessionSet(roleName);
-  const run = sessions?.providerBinding?.run ?? null;
-  const readyThen: GlobalRoleMessage[] = [];
-  let handoffWaiting = false;
-  for (const claim of pending) {
-    if (claim.interruptThen === undefined) continue;
-    // The handoff is released only on its interrupted Turn's proven terminal. A
-    // still-live target holds the whole recipient (§4); a target that can never
-    // prove its terminal fails visibly and stops holding the queue, so it is
-    // never released or replayed and the ordinary queue can eventually drain.
-    const state = globalInterruptThenTerminalState(sessions, claim.interruptThen);
-    if (state === "ready") readyThen.push(claim);
-    else if (state === "waiting") handoffWaiting = true;
-    else {
-      const marked = markGlobalRoleMessageNotDelivered(claim, state === "unknown"
-        ? "interrupt-then-target-delivery-unknown" : "interrupt-then-target-missing", now);
-      store.updateGlobalRoleMessage(marked);
-    }
-  }
-  const delivered: GlobalRoleMessage[] = [];
-  // Hold the entire recipient — including the ordinary queue — while any handoff
-  // still awaits its interrupted Turn's proven terminal (M before Q1/Q2, §4).
-  if (handoffWaiting) return delivered;
-  // A ready handoff delivers in its own read ahead of the ordinary queue, so the
-  // old queue only follows once the handoff has been delivered.
-  if (readyThen.length > 0) {
-    for (const claim of readyThen) {
-      const released = releaseGlobalRoleMessageInterruptThen(claim, now);
-      store.updateGlobalRoleMessage(released);
-      delivered.push(released);
-    }
-    return delivered;
-  }
-  // Busy-gate (decision-3 §6/§11, the corrected queue contract). While the Role's
-  // own native Turn is still in flight, a self-read is happening mid-turn: the
-  // input was not loaded into that live Turn's context, so marking it delivered
-  // now would filter it out of the next read and lose it. Hold the ordinary queue
-  // until a read finds no in-flight Turn — the Role's real next legal opportunity.
-  if (run !== null && (run.status === "submitting" || run.status === "accepted"
-    || run.status === "delivery-unknown")) return delivered;
-  for (const message of pending) {
-    if (message.interruptThen !== undefined || message.inputControl?.action !== "queue") continue;
-    const marked = markGlobalRoleMessageDelivered(message, now);
-    store.updateGlobalRoleMessage(marked);
-    delivered.push(marked);
-  }
-  return delivered;
-}
-
-/**
- * The proven-terminal gate for a claimed Global interrupt-then handoff (decision-3
- * §4), the Global twin of the Task {@link interruptThenTerminalState}. An
- * unmanaged Global Role has no owning AgentRun, so the interrupted target is
- * proven only by native execution fact — never by an AgentRun business status and
- * never by a replacement Turn's mere existence ("requested != stopped", §4/§8):
- * - `ready`   — the target Turn reached a clean native terminal; release the handoff.
- * - `waiting` — the target Turn is still the live Turn and in flight; hold silently.
- * - `unknown` — the target is still the live Turn but its acceptance/stop is
- *               unprovable (delivery-unknown/rejected/deferred); never release.
- * - `missing` — no binding holds this exact Turn any more and no durable native
- *               terminal proves it stopped; its stop is unobservable, never released.
- *
- * Because the ProviderTurn status is the single source of the cancel outcome (there
- * is no owning Run to carry a delivery-unknown failureReason), a clean terminal is
- * proven two ways: the live binding still holding the target at a terminal status,
- * or — once the binding has moved off it — the durable, immutable native terminal
- * recorded on the Role's own Session by the real Provider Stop/StopFailure hook,
- * keyed by the exact interrupted native Turn id captured on the claim.
- */
-function globalInterruptThenTerminalState(
-  sessions: GlobalRoleSessionSet | null, claim: GlobalRoleMessageInterruptThen
-): "ready" | "waiting" | "unknown" | "missing" {
-  const run = sessions?.providerBinding?.run ?? null;
-  // Primary proof: the exact interrupted native Turn, identity re-verified by
-  // attemptId. While it is still the live Turn — in flight (submitting/accepted)
-  // or its own acceptance unproven (delivery-unknown/rejected/deferred) — the
-  // native execution has not cleanly stopped, so the handoff never releases no
-  // matter what a later Turn or business record claims.
-  if (run !== null && run.attemptId === claim.targetAttemptId) {
-    if (run.status === "submitting" || run.status === "accepted") return "waiting";
-    if (run.status === "completed" || run.status === "failed" || run.status === "cancelled") return "ready";
-    return "unknown";
-  }
-  // The live binding no longer holds the target native Turn — a later Turn occupies
-  // it, or the binding's run pointer is gone. A replacement Turn's mere existence is
-  // NOT proof the target stopped (§4/§8); the only protocol-proven stop for an
-  // unmanaged Global Role is the durable native terminal recorded on the Role's own
-  // Session when the real Provider Stop/StopFailure hook observed the exact
-  // interrupted native Turn terminate, keyed by the native Turn id on the claim.
-  const targetNativeTurnId = claim.targetNativeTurnId;
-  const session = sessions?.sessions[sessions.activeAgentId];
-  if (targetNativeTurnId !== undefined && session !== undefined
-    && hasRecentTurnId(session.recentCompletedTurnIds, targetNativeTurnId)) {
-    return "ready";
-  }
-  // No live binding on the target and no durable native terminal: the claim's stop
-  // is unobservable, so it is never released across the gap.
-  return "missing";
 }
 
 function addRole(
@@ -769,19 +654,24 @@ export function sendGlobalRoleMessageCommand(
 ): Readonly<{ message: GlobalRoleMessage; idempotentReplay: boolean }> {
   if (!body.trim()) throw usageError("Message body is required.");
   const existing = store.listGlobalRoleMessages(roleName).find(
-    (entry) => entry.inputControl?.requestId === inputControl.requestId);
+    (entry) => (entry.inputControl ?? entry.interruptThen?.reusedInput)?.requestId === inputControl.requestId);
   if (existing !== undefined) {
-    if (existing.inputControl?.action !== inputControl.action
+    const original = existing.inputControl ?? existing.interruptThen?.reusedInput;
+    if (original?.action !== inputControl.action
       || existing.body !== body
-      || existing.inputControl.expectedTarget !== inputControl.expectedTarget) {
+      || original.expectedTarget !== inputControl.expectedTarget) {
       throw usageError(
         `Input requestId ${inputControl.requestId} was already used with different content or target; use a new requestId for a new input.`);
     }
     return { message: existing, idempotentReplay: true };
   }
   const kind: GlobalRoleMessageKind = author.type;
-  const message = createGlobalRoleMessage(
+  let message = createGlobalRoleMessage(
     store.nextGlobalRoleMessageId(), roleName, body, kind, author, now, { inputControl });
+  const sessions = store.getGlobalRoleSessionSet(roleName);
+  const session = sessions?.sessions[sessions.activeAgentId];
+  if (session !== undefined) message = { ...message,
+    deliveryTarget: { agentId: session.agentId, nativeSessionId: session.nativeSessionId } };
   store.saveGlobalRoleMessage(message);
   return { message, idempotentReplay: false };
 }
@@ -794,9 +684,7 @@ export function sendGlobalRoleMessageCommand(
  * from durable state; on a ready resolution it returns a structured live intent
  * the CLI performs against the Agent Host with scope "global", and on any
  * explicit failure it returns the saved Message plus the exact code and never
- * falls back to interrupt or queue (decision-3 §1/§5). A real Global Role has no
- * live providerBinding today, so a real steer resolves to NO_ACTIVE_TURN: the
- * missing managed Global Host is reported, never faked.
+ * falls back to interrupt or queue (decision-3 §1/§5).
  */
 function globalRoleMessage(
   args: string[],
@@ -827,7 +715,9 @@ function globalRoleMessage(
   const now = new Date();
   // The durable Global input is authored as an operator input: a Global Role has
   // no Task Leader, and the operator is the human authority over Global Roles.
-  const author: GlobalRoleMessageAuthor = { type: "operator" };
+  const environment = options.env ?? process.env;
+  const author: GlobalRoleMessageAuthor = { type: environment.YUI_SESSION_SCOPE === "global"
+    ? environment.YUI_ROLE === "operator" ? "operator" : "agent" : "user" };
   const persisted = store.transaction((tx) => {
     requireRole(name, tx);
     return sendGlobalRoleMessageCommand(tx, name, body,
@@ -849,6 +739,10 @@ function globalRoleMessage(
       { roleName: name, message: persisted.message,
         steer: { state: "not-steered", code: resolution.code, detail: resolution.detail } });
   }
+  store.updateGlobalRoleMessage({ ...persisted.message, control: {
+    requestId, receiptId: `steer:${name}/${persisted.message.id}`,
+    outcome: "pending", observedAt: now.toISOString()
+  } });
   return {
     kind: "input-steer",
     roleName: name,
@@ -866,9 +760,7 @@ function globalRoleMessage(
  * interrupt persists no Message (it is pure control); a `--then-message` names
  * an already-persisted durable Global Message to deliver once after a proven
  * terminal — the ordered composition of interrupt and an existing queue, not a
- * fourth action and not an auto-fallback (decision-3 §4). A real Global Role has
- * no live providerBinding today, so this resolves to NO_ACTIVE_TURN; the missing
- * managed Global settlement Host is the reported residual, never faked.
+ * fourth action and not an auto-fallback (decision-3 §4).
  */
 function globalRoleInterrupt(
   args: string[],
@@ -885,12 +777,27 @@ function globalRoleInterrupt(
   ]));
   const expectedTarget = required(parsed.one("--expected-target"), "--expected-target");
   const thenMessageId = trimmed(parsed.one("--then-message"));
-  const requestId = trimmed(parsed.one("--request-id"));
+  const requestId = trimmed(parsed.one("--request-id")) ?? `cancel:${encodeURIComponent(expectedTarget)}`;
+  const fingerprint = JSON.stringify({ expectedTarget, thenMessageId });
+  const prior = store.getGlobalRoleSessionSet(name)?.interrupts?.[requestId];
+  if (prior !== undefined) {
+    if (prior.fingerprint !== fingerprint) throw usageError("Interrupt requestId already names another control.");
+    return jsonOrText(options, `Interrupt ${requestId} already recorded; no native control repeated.\n`,
+      { roleName: name, interrupt: prior.receipt ?? { state: "interrupt-unknown" }, idempotentReplay: true });
+  }
   const resolved = store.transaction((tx): InputControlResolution | Readonly<{
     outcome: "then-conflict"; code: "TARGET_CHANGED"; detail: string }> => {
     requireRole(name, tx);
     const resolution = resolveGlobalInputControl(tx, name, "interrupt", expectedTarget);
     if (resolution.outcome !== "ready") return resolution;
+    const sessions = tx.getGlobalRoleSessionSet(name)!;
+    if (Object.values(sessions.interrupts ?? {}).some(entry =>
+      entry.attemptId === resolution.target.attemptId
+      && entry.nativeSessionId === resolution.target.nativeSessionId
+      && !(entry.receipt?.state === "interrupt-unavailable" && entry.receipt.outcome === "rejected"))) {
+      return { outcome: "then-conflict", code: "TARGET_CHANGED",
+        detail: "This exact native Turn already has a recorded cancel request; inspect it instead of repeating the control." };
+    }
     // decision-3 §4: before the live cancel, register the continuation claim on
     // the already-persisted durable Global Message in one short transaction, so
     // the handoff relationship, its target Turn, and its stable requestId are
@@ -900,9 +807,14 @@ function globalRoleInterrupt(
     if (thenMessageId !== undefined) {
       const claim = registerGlobalInterruptThen(
         tx, name, thenMessageId, resolution.target.attemptId,
-        resolution.target.nativeTurnId, requestId);
+        resolution.target.nativeTurnId, requestId, resolution.target);
       if (claim !== "claimed") return { outcome: "then-conflict", ...claim };
     }
+    tx.saveGlobalRoleSessionSet({ ...sessions, interrupts: { ...sessions.interrupts,
+      [requestId]: { fingerprint, attemptId: resolution.target.attemptId,
+        nativeSessionId: resolution.target.nativeSessionId,
+        receiptId: `interrupt:${name}/${requestId}` }
+    } });
     return resolution;
   });
   if (resolved.outcome === "then-conflict") {
@@ -919,7 +831,7 @@ function globalRoleInterrupt(
     kind: "input-interrupt",
     roleName: name,
     target: resolved.target,
-    receiptId: `interrupt:${name}/${requestId ?? resolved.target.attemptId}`,
+    receiptId: `interrupt:${name}/${requestId}`,
     ...(thenMessageId === undefined ? {} : { thenMessageId }),
     output: `Interrupting ${name} at Turn ${resolved.target.nativeTurnId ?? resolved.target.attemptId}`
       + `${thenMessageId === undefined ? "" : `, then delivering ${thenMessageId} once after a proven terminal`}.\n`
@@ -929,7 +841,7 @@ function globalRoleInterrupt(
 /**
  * Bind a saved durable Global Message as the single interrupt-then continuation
  * of an exact interrupted native Turn (decision-3 §4). The Global twin of the
- * Task `registerInterruptThen`: an unmanaged Global Role has no AgentRun, so the
+ * Task `registerInterruptThen`: a Global Role has no AgentRun, so the
  * target is proven by the exact native Turn's attemptId under the Role's own
  * writer fence, never by a fabricated Task Run. Idempotent per interrupt
  * requestId; only one continuation may claim a given target Turn; a Message that
@@ -939,22 +851,41 @@ function globalRoleInterrupt(
 function registerGlobalInterruptThen(
   store: GlobalRoleTransactionStore, roleName: string, thenMessageId: string,
   targetAttemptId: string, targetNativeTurnId: string | undefined,
-  requestId: string | undefined
+  requestId: string | undefined,
+  target: ResolvedInputTarget
 ): "claimed" | Readonly<{ code: "TARGET_CHANGED"; detail: string }> {
   const message = store.listGlobalRoleMessages(roleName).find((entry) => entry.id === thenMessageId);
   if (message === undefined) {
     throw usageError(`Then-Message ${thenMessageId} is not a durable Global Message owned by ${roleName}.`);
   }
+  if (message.notDelivered !== undefined) {
+    return { code: "TARGET_CHANGED", detail: `The saved input is already settled not-delivered (${message.notDelivered.reason}).` };
+  }
+  if (message.control !== undefined && message.control.outcome !== "rejected") {
+    return { code: "TARGET_CHANGED", detail: "The saved input is already accepted or its delivery remains unconfirmed." };
+  }
+  if (message.deliveryTarget !== undefined
+    && (message.deliveryTarget.nativeSessionId !== target.nativeSessionId
+      || message.deliveryTarget.agentId !== target.agentId)) {
+    return { code: "TARGET_CHANGED", detail: "The saved input belongs to another native Session." };
+  }
   // A synthesized fallback id is an opaque idempotency key (compared only for
   // equality, never parsed), so it must satisfy the same safe-identity rule as a
   // caller-supplied requestId: no path separators. Use `:` as the field joiner —
   // the receiptId carries the `/`-shaped human receipt, this key stays slash-free.
-  const claimRequestId = requestId ?? `interrupt:${roleName}:${targetAttemptId}`;
+  const claimRequestId = requestId ?? `interrupt:${roleName}:${encodeURIComponent(targetAttemptId)}`;
   // Idempotent per interrupt requestId: an exact repeat of the same claim is a
   // no-op that still authorizes the live cancel.
   if (message.interruptThen !== undefined) {
-    if (message.interruptThen.requestId === claimRequestId
-      && message.interruptThen.targetAttemptId === targetAttemptId) return "claimed";
+    const claim = message.interruptThen;
+    const prior = store.getGlobalRoleSessionSet(roleName)?.interrupts?.[claim.requestId];
+    const canReferenceClaim = claim.requestId === claimRequestId
+      || (prior?.receipt?.state === "interrupt-unavailable" && prior.receipt.outcome === "rejected");
+    if (canReferenceClaim && message.delivery === undefined && message.notDelivered === undefined
+      && claim.targetAttemptId === targetAttemptId
+      && claim.targetAgentId === target.agentId && claim.targetNativeSessionId === target.nativeSessionId
+      && claim.targetAuthorityEpoch === target.authority.epoch
+      && claim.targetAuthorityHolderId === target.authority.holderId) return "claimed";
     return { code: "TARGET_CHANGED",
       detail: `Message ${thenMessageId} already claims a continuation of Turn ${message.interruptThen.targetAttemptId}.` };
   }
@@ -974,6 +905,9 @@ function registerGlobalInterruptThen(
   store.updateGlobalRoleMessage(
     claimGlobalRoleMessageInterruptThen(message, {
       requestId: claimRequestId, targetAttemptId,
+      targetNativeSessionId: target.nativeSessionId, targetAgentId: target.agentId,
+      targetAuthorityEpoch: target.authority.epoch,
+      targetAuthorityHolderId: target.authority.holderId,
       ...(targetNativeTurnId === undefined ? {} : { targetNativeTurnId })
     }));
   return "claimed";
@@ -986,6 +920,11 @@ function jsonOrText(
   text: string,
   data: unknown
 ): string {
+  const record = data as { steer?: { code?: string; detail?: string }; interrupt?: { code?: string; detail?: string } };
+  const failure = record.steer?.code === undefined ? record.interrupt : record.steer;
+  if (failure?.code !== undefined) options.onInputFailure?.({
+    code: failure.code, detail: failure.detail ?? failure.code, data
+  });
   return options.jsonOutput === true ? JSON.stringify(data) : text;
 }
 

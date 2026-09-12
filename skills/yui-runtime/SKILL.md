@@ -93,9 +93,9 @@ invent a Task AgentRun identity for a GlobalRole.
 
 A GlobalRole's durable input uses the same three actions as a Task Role,
 addressed by the Role's own name instead of a Task: `yui role message
-queue|steer <global-role>` and `yui role interrupt <global-role>`. Each persists
-to the GlobalRole's own durable Message store with an explicit owner and a
-stable request id, and reads that Role's own Session; none fabricates a Task or
+queue|steer <global-role>` and `yui role interrupt <global-role>`. Queue and steer
+save an owned Message; bare interrupt records a control request, not a new
+Message. Each uses a stable request id and that Role's own Session; none fabricates a Task or
 runId to reuse Task-scoped delivery. `queue` delivers at the Role's next legal
 opportunity and is idempotent by request id. `steer` and `interrupt` affect only
 the exact current native Turn — a stale `--expected-target`, an incapable plan,
@@ -104,6 +104,19 @@ or an unproven delivery leaves the Message saved and reports the reason, and
 `--then-message` naming one already-saved GlobalRole Message. When the Role holds
 no live managed Turn, a steer or interrupt is `NO_ACTIVE_TURN` and never falls
 back to another action.
+
+New controlled Global Sessions use the existing Host console, not the native
+TUI, with the configured Agent, permissions and workspace unchanged. A live
+unmanaged Session is not silently replaced or adopted; use an explicit Session
+lifecycle action before enabling controlled delivery.
+
+Context reads never consume queue entries. Read the referenced Message in full
+from Session Context. Native/transport acceptance is not implementation, and
+`interrupt-requested` is not a stopped Turn or stopped background resources.
+Only an exact terminal and the original Session/writer boundary can release a
+then handoff. An accepted or unconfirmed steer must not be submitted again by
+changing its request id or composing then. A conclusive rejection permits an
+explicit new control attempt; uncertainty does not.
 
 ## Preserve intent and authority
 

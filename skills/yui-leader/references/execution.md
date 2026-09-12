@@ -118,6 +118,35 @@ global Task lock.
 
 ## Execute the chosen path
 
+### Choose input timing without changing intent
+
+Submission intent (`record`, `discuss`, `develop`) and delivery timing are
+different facts. Input controls do not activate a Task, expand an Assignment,
+or elevate a planning Session. Keep the submission contract when using `send`;
+choose queue, steer or interrupt from the user's intent and current facts:
+
+```sh
+yui task message queue <task> "<continuation>" --request-id <id> --to <role> --work-item <work-id>
+yui task message steer <task> "<current-turn correction>" --request-id <id> --to leader --expected-target <turn>
+yui task role interrupt <task> <role> --expected-target <turn> [--then-message <task/message>] [--request-id <id>]
+```
+
+Queue waits for the next legal opportunity. Steer addresses only the exact
+current native Turn; Worker/Reviewer steer also needs its existing WorkItem or
+ReviewRound. Bare interrupt stores a control request, not a new Message.
+`interrupt-requested` is not a terminal or proof that background resources
+stopped. Then names an already-saved input and reserves its next opportunity
+only within the original Session/writer boundary.
+
+Read `task role session inspect` first. Unsupported and proven-unsubmitted
+steer may be composed with interrupt when the user's intent permits stopping;
+accepted, pending or unknown steer must not be resent through another action
+or request id. Never silently cancel, replace a Session or downgrade to queue.
+
+Global inputs use `role message queue|steer <role>` and `role interrupt <role>`
+with their own owner, not a fabricated Task/Run. See
+[Runtime](../../yui-runtime/SKILL.md) for scope and controlled-console boundaries.
+
 Managed dispatch freezes the Assignment for its assignee. For ordinary
 clarification, feedback or a continuation of that same work, send a Message:
 

@@ -661,9 +661,62 @@ elements.refresh.addEventListener("click", function () { refreshDashboard(); });
 elements.operatorTerminal.addEventListener("click", function () {
   openTerminal({ scope: "global", roleName: "operator" });
 });
+const globalDialog = document.querySelector("#global-input-dialog");
+const globalForm = document.querySelector("#global-input-form");
+const globalRole = document.querySelector("#global-input-role");
+const globalAction = document.querySelector("#global-input-action");
+const globalBody = document.querySelector("#global-input-body");
+const globalTarget = document.querySelector("#global-input-target");
+const globalThen = document.querySelector("#global-input-then");
+const globalSubmit = document.querySelector("#global-input-submit");
+const globalReceipt = document.querySelector("#global-input-receipt");
+const globalState = document.querySelector("#global-input-state");
+document.querySelector("#global-input-open").addEventListener("click", () => globalDialog.showModal());
+document.querySelector("#global-input-close").addEventListener("click", () => globalDialog.close());
+globalAction.addEventListener("change", () => {
+  document.querySelector("#global-input-body-label").hidden = globalAction.value === "interrupt";
+  document.querySelector("#global-input-target-label").hidden = globalAction.value === "queue";
+  document.querySelector("#global-input-then-label").hidden = globalAction.value !== "interrupt";
+  globalBody.required = globalAction.value !== "interrupt";
+  globalTarget.required = globalAction.value !== "queue";
+});
+document.querySelector("#global-input-inspect").addEventListener("click", async () => {
+  try {
+    const facts = await requestJson("/api/roles/" + encodeURIComponent(globalRole.value.trim()) + "/control");
+    globalState.textContent = JSON.stringify(facts, null, 2);
+    globalTarget.value = facts.turn?.nativeTurnId || facts.turn?.attemptId || "";
+  } catch (error) { globalState.textContent = error.message; }
+});
+globalForm.addEventListener("submit", async event => {
+  event.preventDefault();
+  if (globalSubmit.disabled) return;
+  globalSubmit.disabled = true;
+  const role = globalRole.value.trim();
+  const action = globalAction.value;
+  const requestId = crypto.randomUUID();
+  const input = { action, requestId };
+  if (action !== "interrupt") input.body = globalBody.value;
+  if (action !== "queue") input.expectedTarget = globalTarget.value.trim();
+  if (action === "interrupt" && globalThen.value.trim()) input.thenMessage = globalThen.value.trim();
+  globalReceipt.textContent = "Waiting for receipt · 等待回执 · " + requestId;
+  try {
+    const receipt = await submitMutation("global/" + role, "/api/roles/" + encodeURIComponent(role) + "/control", input);
+    const status = receipt.steer || receipt.interrupt || receipt.delivery || {};
+    globalReceipt.textContent = JSON.stringify(receipt);
+    const unknown = ["pending", "delivery-unknown", "steer-unknown", "interrupt-unknown"].includes(status.state)
+      || status.code === "DELIVERY_UNKNOWN";
+    globalSubmit.disabled = unknown;
+    if (!unknown && !status.code) globalBody.value = "";
+  } catch (error) {
+    globalReceipt.textContent = error.disposition === "not-submitted" ? error.message
+      : "Outcome unknown; read state before acting. 结果未知，请先读取状态，不要重发。 · " + requestId;
+    globalSubmit.disabled = error.disposition !== "not-submitted";
+  }
+});
 elements.detailBack.addEventListener("click", clearSelection);
 elements.terminalClose.addEventListener("click", closeTerminalPanel);
 document.addEventListener("keydown", function (event) {
+  if (globalDialog.open) return;
   const active = document.activeElement;
   const typing = active && ["INPUT", "SELECT", "TEXTAREA"].includes(active.tagName);
   if (event.key === "Escape" && terminalPanelOpen()) {

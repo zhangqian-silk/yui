@@ -17,7 +17,7 @@ import type { TaskStore } from "../storage/taskStore.js";
 export class RuntimeHookRunFenceError extends Error {}
 
 export type RuntimeHookRunFence = Readonly<{
-  taskId: string;
+  taskId?: string;
   roleName: string;
   agentId: string;
   runId?: string;
@@ -53,16 +53,44 @@ export function resolveRuntimeHookRunFence(
   options: RuntimeHookRunFenceOptions = {},
   currentStore?: TaskStore
 ): RuntimeHookRunFence {
+  if (currentStore === undefined) {
+    const store = openCurrentTaskStore(requireIdentity(environment.YUI_HOME, "YUI_HOME"));
+    try { return resolveRuntimeHookRunFence(environment, adapterId, payloadNativeSessionId, options, store); }
+    finally { store.close(); }
+  }
+  if (environment.YUI_SESSION_SCOPE === "global") {
+    if (environment.YUI_ADAPTER_ID !== adapterId) throw new RuntimeHookRunFenceError("Global observation adapter mismatch.");
+    const roleName = requireIdentity(environment.YUI_ROLE, "Role name");
+    const agentId = requireIdentity(environment.YUI_AGENT_ID, "Agent id");
+    const workspace = requireIdentity(environment.YUI_WORKSPACE, "YUI workspace");
+    const nativeSessionId = requireIdentity(payloadNativeSessionId, "Provider session id");
+    const sessions = currentStore.getGlobalRoleSessionSet(roleName);
+    const role = currentStore.getGlobalRole(roleName);
+    const session = sessions?.sessions[agentId];
+    const turn = sessions?.providerBinding?.run;
+    if (role?.activeAgentId !== agentId || sessions?.activeAgentId !== agentId || session?.adapterId !== adapterId
+      || session.status === "ended"
+      || session.nativeSessionId !== nativeSessionId || session.effective.workspace.root !== workspace) {
+      throw new RuntimeHookRunFenceError("Global observation Session does not match durable state.");
+    }
+    if (options.attemptId !== undefined && turn?.attemptId !== options.attemptId
+      || options.nativeTurnId !== undefined && turn?.nativeTurnId !== undefined
+        && turn.nativeTurnId !== options.nativeTurnId) {
+      throw new RuntimeHookRunFenceError("Global observation does not match the exact current input.");
+    }
+    if (options.exactInput && (turn == null
+      || options.attemptId === undefined && (options.nativeTurnId === undefined || turn.nativeTurnId !== options.nativeTurnId)
+      || ["rejected", "deferred"].includes(turn.status))) {
+      throw new RuntimeHookRunFenceError("Global observation input has no exact execution binding.");
+    }
+    return { roleName, agentId, workspace, nativeSessionId,
+      ...(options.sessionOnly || turn == null ? {} : { receiptId: turn.attemptId }) };
+  }
   if (environment.YUI_SESSION_SCOPE !== "task") {
     throw new RuntimeHookRunFenceError("Runtime observation Hook requires a Task session scope.");
   }
   if (environment.YUI_ADAPTER_ID !== adapterId) {
     throw new RuntimeHookRunFenceError(`Runtime observation Hook requires the ${adapterId} adapter.`);
-  }
-  if (currentStore === undefined) {
-    const store = openCurrentTaskStore(requireIdentity(environment.YUI_HOME, "YUI_HOME"));
-    try { return resolveRuntimeHookRunFence(environment, adapterId, payloadNativeSessionId, options, store); }
-    finally { store.close(); }
   }
   const taskId = requireIdentity(environment.YUI_TASK_ID, "Task id");
   const roleName = requireIdentity(environment.YUI_ROLE, "Role name");

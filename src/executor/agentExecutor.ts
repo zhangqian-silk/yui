@@ -74,12 +74,16 @@ export type GlobalRoleSessionSet = RoleSessionSetBase<GlobalRoleSessionOwner> & 
   /**
    * Provider-native conversation and Turn observations for a Global Role's own
    * Session, matching the Task Role shape (decision-3 §6/§9). It is optional and
-   * absent on every legacy Global set: the schemaVersion stays 5 because these
-   * sets are read as raw JSON with no version upgrader, so a bump would strand
-   * persisted Homes. A Global control reads this binding to target the exact
+   * absent on older Global sets, as declared by the centralized v19 migration.
+   * A Global control reads this binding to target the exact
    * current native Turn; it never fabricates a Task Role binding to do so.
    */
   providerBinding?: ProviderRuntimeBinding | null;
+  /** Native control evidence, not input intent or an execution queue. */
+  interrupts?: Record<string, {
+    fingerprint: string; attemptId: string; nativeSessionId: string; receiptId: string;
+    receipt?: import("../runtime/agentHost.js").InterruptLiveReceipt;
+  }>;
 };
 
 export type TaskRoleSessionSet = RoleSessionSetBase<TaskRoleSessionOwner> & {
@@ -671,7 +675,7 @@ export function recordTaskRoleNativeTurnBoundary(
 export function validateRoleSessionSet<TSet extends RoleSessionSet>(set: TSet): TSet {
   const ownerScope = (set as unknown as { owner?: { scope?: unknown } }).owner?.scope;
   rejectUnknownFields(set as unknown as Record<string, unknown>, ownerScope === "global"
-    ? ["schemaVersion", "owner", "activeAgentId", "sessions", "updatedAt", "history", "providerBinding"]
+    ? ["schemaVersion", "owner", "activeAgentId", "sessions", "updatedAt", "history", "providerBinding", "interrupts"]
     : [
         "schemaVersion",
         "owner",
@@ -691,6 +695,16 @@ export function validateRoleSessionSet<TSet extends RoleSessionSet>(set: TSet): 
       throw new Error("Global Role session set schema version is invalid.");
     }
     const globalSet = set as GlobalRoleSessionSet;
+    for (const [requestId, control] of Object.entries(globalSet.interrupts ?? {})) {
+      requireSafeIdentity(requestId, "Global interrupt request");
+      requireText(control.fingerprint, "Global interrupt fingerprint");
+      requireText(control.attemptId, "Global interrupt attempt");
+      requireText(control.nativeSessionId, "Global interrupt Session");
+      requireText(control.receiptId, "Global interrupt receipt");
+      if (control.receipt !== undefined
+        && !["interrupt-requested", "interrupt-not-active", "interrupt-unknown", "interrupt-unavailable"]
+          .includes(control.receipt.state)) throw new Error("Global interrupt receipt is invalid.");
+    }
     const history = globalSet.history;
     if (history !== undefined) {
       for (const [ref, session] of Object.entries(history)) {

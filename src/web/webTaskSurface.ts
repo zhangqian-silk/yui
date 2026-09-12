@@ -1,4 +1,7 @@
 import type { TaskStore } from "../storage/taskStore.js";
+import { recordTaskInterruptResult } from "../message/taskInterrupt.js";
+import { recordGlobalInterruptResult, recordGlobalSteerResult } from "../message/globalInterrupt.js";
+import { runGlobalRoleCommand } from "../commands/globalRoleCommands.js";
 import {
   readTaskContext, readTaskContextDelta, inspectTaskContext, withContextObservations,
   type ContextObservationProvider
@@ -107,10 +110,78 @@ export function createWebTaskSurface(
     } else options.runtime?.notifyStateChanged(taskId);
   };
   return {
+    globalState: (roleName: string) => {
+      const role = store.getGlobalRole(roleName);
+      if (role === null) throw new WebRequestRejected("Global Role not found.");
+      const sessions = store.getGlobalRoleSessionSet(roleName);
+      return {
+        roleName,
+        nativeSessionId: sessions?.sessions[sessions.activeAgentId]?.nativeSessionId,
+        turn: sessions?.providerBinding?.run ?? null,
+        authority: sessions?.providerBinding?.authority ?? null,
+        interrupts: sessions?.interrupts ?? {},
+        messages: store.listGlobalRoleMessages(roleName).map(message => ({
+          id: message.id, body: message.body, inputControl: message.inputControl,
+          control: message.control, delivery: message.delivery, notDelivered: message.notDelivered
+        }))
+      };
+    },
+    globalControl: async (roleName: string, input: WebControlInput) => {
+      const argv = input.action === "interrupt"
+        ? ["interrupt", roleName, "--request-id", input.requestId, "--expected-target", input.expectedTarget,
+          ...(input.thenMessage === undefined ? [] : ["--then-message", input.thenMessage])]
+        : ["message", input.action, roleName, input.body, "--request-id", input.requestId,
+          ...(input.action === "steer" ? ["--expected-target", input.expectedTarget] : [])];
+      const result = webLocalMutation(store, tx => runGlobalRoleCommand(argv, tx, {
+        env: {}, yuiHome: options.yuiHome, jsonOutput: true
+      }));
+      if (typeof result === "string") {
+        if (input.action === "queue") void options.runtime?.notifyMailboxChanged?.({
+          kind: "global-role-runtime", roleName
+        });
+        return { action: input.action, ...JSON.parse(result) };
+      }
+      if (result.kind !== "input-steer" && result.kind !== "input-interrupt") {
+        throw new WebRequestRejected("Global input cannot perform a Session lifecycle operation.");
+      }
+      if (options.yuiHome === undefined) throw new Error("Global control requires a configured Yui Home.");
+      if (result.kind === "input-steer") {
+        let control: AgentHostControlResult;
+        try {
+          control = await hostControl.steer({
+            home: options.yuiHome, scope: "global", roleName,
+            control: { protocol: AGENT_HOST_CONTROL_PROTOCOL, type: "steer-turn",
+              nativeSessionId: result.target.nativeSessionId, nativeTurnId: result.target.nativeTurnId!,
+              authority: result.target.authority,
+              run: { attemptId: result.receiptId, boundedText: result.text } }
+          });
+        } catch (error) {
+          recordGlobalSteerResult(store, roleName, result.messageId, { state: "steer-unknown", outcome: "pending" });
+          throw error;
+        }
+        const steer = foldSteerLiveReceipt(control);
+        recordGlobalSteerResult(store, roleName, result.messageId, steer);
+        return { action: "steer", roleName, messageId: result.messageId, steer };
+      }
+      let control: AgentHostControlResult;
+      try {
+        control = await hostControl.cancel({
+          home: options.yuiHome, scope: "global", roleName,
+          control: { protocol: AGENT_HOST_CONTROL_PROTOCOL, type: "cancel", nativeOnly: true,
+            nativeSessionId: result.target.nativeSessionId,
+            authority: result.target.authority, attemptId: result.target.attemptId }
+        });
+      } catch (error) {
+        recordGlobalInterruptResult(store, roleName, result.receiptId, { state: "interrupt-unknown", outcome: "cancel-requested" });
+        throw error;
+      }
+      const interrupt = foldInterruptLiveReceipt(control);
+      recordGlobalInterruptResult(store, roleName, result.receiptId, interrupt);
+      return { action: "interrupt", roleName, receiptId: result.receiptId, interrupt };
+    },
     message: (taskId: string, body: string, intent?: TaskSubmissionIntent, requestId?: string) => {
-      // With no explicit intent the Web surface submits `discuss` like every other
-      // client (§2.5), through the one shared service; the requestId is threaded as
-      // the submission key (§2.3) and the structured feedback is returned verbatim.
+      // Preserve the submission's intent and frozen receipt separately from
+      // queue/steer controls; an omitted intent still means discuss.
       const { message, task, queuedForLeader, feedback } = webLocalMutation(store, (tx) =>
         sendTaskMessageCommand(tx, taskId, body, undefined, commandOptions, undefined, intent, requestId));
       notify(taskId, queuedForLeader);
@@ -202,6 +273,7 @@ export function createWebTaskSurface(
           home, scope: "task", taskId: execution.taskId, roleName: execution.roleName,
           control: {
             protocol: AGENT_HOST_CONTROL_PROTOCOL, type: "cancel",
+            nativeOnly: true,
             nativeSessionId: execution.target.nativeSessionId,
             // Native cancel names the exact original execution attempt it stops,
             // never the durable receiptId of this interrupt operation.
@@ -210,7 +282,9 @@ export function createWebTaskSurface(
           }
         });
       } catch (error) {
-        throw new Error(`Interrupt of ${execution.taskId}/${execution.roleName} did not complete: `
+        recordTaskInterruptResult(store, execution.taskId, execution.receiptId,
+          { state: "interrupt-unknown", outcome: "cancel-requested" });
+        throw new Error(`Interrupt ${execution.receiptId} of ${execution.taskId}/${execution.roleName} did not complete: `
           + `${error instanceof Error ? error.message : String(error)}. No process was killed; `
           + "re-read the Session before retrying.");
       }
@@ -220,6 +294,7 @@ export function createWebTaskSurface(
       // any, was already claimed durably by Core and is delivered once by the
       // ordinary continuation path — never re-driven from this receipt.
       const interrupt = foldInterruptLiveReceipt(control);
+      recordTaskInterruptResult(store, execution.taskId, execution.receiptId, interrupt);
       return { action: "interrupt", disposition: interrupt.state,
         taskId, roleName: execution.roleName,
         target: { scope: "task", taskId, roleName: execution.roleName },

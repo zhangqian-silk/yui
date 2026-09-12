@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { createConfiguredAgent } from "../../dist/agent/agent.js";
 import { activateTask, createTask } from "../../dist/task/task.js";
-import { createRole, createRoleAgentBinding } from "../../dist/role/role.js";
+import { createRole, createRoleAgentBinding, createGlobalRole } from "../../dist/role/role.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
 import {
   bindTaskRoleProviderRuntime, createRoleSessionSet, recordRoleAgentSession,
@@ -19,13 +19,15 @@ import {
 import { runTaskCommand } from "../../dist/commands/taskCommands.js";
 import { prepareMessageContinuations } from "../../dist/message/messageContinuation.js";
 import { createManagedWorkspace } from "../../dist/worktree/managedWorkspace.js";
-import { failRun } from "../../dist/agentRun/agentRun.js";
+import { createRun, failRun } from "../../dist/agentRun/agentRun.js";
+import { createRunInput } from "../../dist/context/runInputContract.js";
 import { createTaskEvent } from "../../dist/event/taskEvent.js";
 import { createAgentEndpointFactory } from "../../dist/runtime/agentEndpoint.js";
 import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
 import { processLeaderWakeups } from "../../dist/scheduler/leaderWakeupProcessor.js";
 import { createRuntimeObservation } from "../../dist/runtime/runtimeObservation.js";
 import { taskMessageInputControlState } from "../../dist/message/message.js";
+import { recordTaskInterruptResult } from "../../dist/message/taskInterrupt.js";
 import { inspectTaskContext, listContextMessages } from "../../dist/context/taskContext.js";
 import { createWebTaskSurface } from "../../dist/web/webTaskSurface.js";
 import { createYuiWebServer } from "../../dist/web/webServer.js";
@@ -75,7 +77,11 @@ function withControllerTurn(store, roleName, { attemptId, nativeTurnId }) {
     providerNamespace: "openai/codex", accountScope: "codex",
     conversationId: `${roleName}-native`, startedAt: at.toISOString()
   });
-  binding = beginProviderTurn(binding, { attemptId, authorityEpoch: 1, submittedAt: at.toISOString() });
+  const owner = store.getActiveRun("task-1", roleName);
+  binding = beginProviderTurn(binding, {
+    ...(owner === null ? {} : { runId: owner.id }),
+    attemptId, authorityEpoch: 1, submittedAt: at.toISOString()
+  });
   binding = acceptProviderTurn(binding, { attemptId, nativeTurnId, acceptedAt: later.toISOString() });
   store.saveTaskRoleSessionSet(bindTaskRoleProviderRuntime(
     store.getTaskRoleSessionSet("task-1", roleName), binding, later));
@@ -292,10 +298,10 @@ test("a saved steer never becomes a queued continuation", t => {
  * (the Host stamps YUI_RUN_ID into the turn). withControllerTurn omits the runId
  * for the no-Run cases; the Worker accepted fold requires it (native.runId ===
  * run.id), so a faithful Worker chain uses this variant. */
-function withRunBoundTurn(store, roleName, { runId, attemptId, nativeTurnId }) {
+function withRunBoundTurn(store, roleName, { runId, attemptId, nativeTurnId, nativeSessionId = `${roleName}-native` }) {
   let binding = createProviderRuntimeBinding({
     providerNamespace: "openai/codex", accountScope: "codex",
-    conversationId: `${roleName}-native`, startedAt: at.toISOString()
+    conversationId: nativeSessionId, startedAt: at.toISOString()
   });
   binding = beginProviderTurn(binding, { runId, attemptId, authorityEpoch: 1, submittedAt: at.toISOString() });
   binding = acceptProviderTurn(binding, { attemptId, nativeTurnId, acceptedAt: later.toISOString() });
@@ -423,6 +429,10 @@ test("a proven control terminal is frozen: a later Host settlement never rewinds
   const steer = command(["message", "steer", "task-1", "Prefer approach B now",
     "--request-id", "s-1", "--expected-target", "t-1", "--to", "worker", "--work-item", "work-item-1"]);
   const adapter = new FileSchedulerStoreAdapter(store);
+  adapter.observeRuntimeObservation(steerSettlement({
+    kind: "input.delivery-unknown", receiptId: steer.receiptId, roleName: "worker",
+    agentId: run.effective.agentId, runId: run.id, nativeSessionId: "worker-native", key: "unknown-first"
+  }), later);
   adapter.observeRuntimeObservation(steerSettlement({
     kind: "input.accepted", receiptId: steer.receiptId, roleName: "worker",
     agentId: run.effective.agentId, runId: run.id, nativeSessionId: "worker-native", key: "accepted-1"
@@ -573,8 +583,17 @@ test("interrupt resolves a native cancel on a capable plan", t => {
   withControllerTurn(store, "worker", { attemptId: "a-1", nativeTurnId: "t-1" });
   const result = command(["role", "interrupt", "task-1", "worker", "--expected-target", "t-1"]);
   assert.equal(result.kind, "input-interrupt");
-  assert.equal(result.receiptId, "interrupt:task-1/worker/a-1");
+  assert.match(result.receiptId, /^interrupt:task-1\/interrupt-/);
   assert.equal(result.thenMessageId, undefined);
+  recordTaskInterruptResult(store, "task-1", result.receiptId,
+    { state: "interrupt-unavailable", outcome: "rejected" }, later);
+  const retry = command(["role", "interrupt", "task-1", "worker",
+    "--expected-target", "t-1", "--request-id", "explicit-retry-after-rejection"]);
+  assert.equal(retry.kind, "input-interrupt", "known rejection permits a new explicit operation");
+  assert.notEqual(retry.receiptId, result.receiptId);
+  const uncertainRetry = command(["role", "interrupt", "task-1", "worker",
+    "--expected-target", "t-1", "--request-id", "cannot-bypass-pending"]);
+  assert.equal(uncertainRetry.data.interrupt.code, "DELIVERY_UNKNOWN");
 });
 
 test("interrupt on an owned-process plan is INTERRUPT_UNSUPPORTED, never a kill", t => {
@@ -616,7 +635,7 @@ test("a second continuation claim on the same target Run is refused, not duplica
   const conflict = command(["role", "interrupt", "task-1", "worker",
     "--expected-target", "t-1", "--then-message", `task-1/${second.data.message.id}`, "--request-id", "i-2"]);
   assert.equal(conflict.kind, "output");
-  assert.equal(conflict.data.interrupt.code, "TARGET_CHANGED");
+  assert.equal(conflict.data.interrupt.code, "DELIVERY_UNKNOWN");
 });
 
 test("interrupt --then-message is idempotent by request id", t => {
@@ -630,8 +649,68 @@ test("interrupt --then-message is idempotent by request id", t => {
   const replay = command(["role", "interrupt", "task-1", "worker",
     "--expected-target", "t-1", "--then-message", ref, "--request-id", "i-1"]);
   assert.equal(first.kind, "input-interrupt");
-  assert.equal(replay.kind, "input-interrupt");
+  assert.equal(replay.kind, "output");
+  assert.equal(replay.data.interrupt.state, "idempotent-replay");
   assert.equal(store.listEvents("task-1").filter(e => e.type === "message.interrupt-then-claimed").length, 1);
+  recordTaskInterruptResult(store, "task-1", first.receiptId,
+    { state: "interrupt-unavailable", outcome: "rejected" }, later);
+  const retry = command(["role", "interrupt", "task-1", "worker",
+    "--expected-target", "t-1", "--then-message", ref, "--request-id", "i-2"]);
+  assert.equal(retry.kind, "input-interrupt");
+  assert.equal(store.listEvents("task-1").filter(e => e.type === "message.interrupt-then-claimed").length, 1);
+});
+
+test("then refuses a steer already accepted or still uncertain without changing its input", t => {
+  const { store, home, command } = fixture(t);
+  dispatchWorker(store, command, home);
+  const run = store.getActiveRun("task-1", "worker");
+  withRunBoundTurn(store, "worker", { runId: run.id, attemptId: "a-1", nativeTurnId: "t-1" });
+  for (const outcome of ["pending", "accepted", "delivery-unknown"]) {
+    const steer = command(["message", "steer", "task-1", `input ${outcome}`,
+      "--request-id", `s-${outcome}`, "--expected-target", "t-1",
+      "--to", "worker", "--work-item", "work-item-1"]);
+    const original = store.listMessages("task-1").find(m => m.id === steer.messageId);
+    store.updateMessage("task-1", { ...original, control: { ...original.control, outcome } });
+    const result = command(["role", "interrupt", "task-1", "worker",
+      "--expected-target", "t-1", "--then-message", `task-1/${steer.messageId}`,
+      "--request-id", `i-${outcome}`]);
+    assert.equal(result.kind, "output");
+    assert.notEqual(result.data.interrupt.state, "interrupted");
+    const kept = store.listMessages("task-1").find(m => m.id === steer.messageId);
+    assert.equal(kept.interruptThen, undefined);
+    assert.equal(kept.inputControl.action, "steer");
+  }
+});
+
+test("a prior Assignment cannot steer the Role's new active Turn", t => {
+  const { store, home, command } = fixture(t);
+  dispatchWorker(store, command, home);
+  const old = readyWorkerContinuation(store);
+  withRunBoundTurn(store, "worker", { runId: old.id, attemptId: "a-1", nativeTurnId: "t-1" });
+  terminalizeWorkerRun(store, old, "cancelled", evenLater);
+  command(["work", "create", "task-1", "Other assignment", "--role", "worker"]);
+  store.saveManagedWorkspace(createManagedWorkspace({
+    owner: { type: "work-item", taskId: "task-1", workItemId: "work-item-2" },
+    root: join(home, "worker-2"), entries: []
+  }, evenLater));
+  store.saveTaskRoleSessionSet(createRoleSessionSet(
+    { scope: "task", taskId: "task-1", roleName: "worker" }, "codex", evenLater));
+  command(["work", "dispatch", "task-1/work-item-2"]);
+  const current = store.getActiveRun("task-1", "worker");
+  store.saveTaskRoleSessionSet(recordRoleAgentSession(
+    store.getTaskRoleSessionSet("task-1", "worker"), {
+      agentId: "codex", adapterId: "codex", nativeSessionId: "worker-native-new",
+      policy: "fixed", status: "active", effective: current.effective
+    }, evenLater));
+  withRunBoundTurn(store, "worker", {
+    runId: current.id, attemptId: "a-2", nativeTurnId: "t-2", nativeSessionId: "worker-native-new"
+  });
+  const result = command(["message", "steer", "task-1", "Old assignment input",
+    "--request-id", "stale-assignment", "--expected-target", "t-2",
+    "--to", "worker", "--work-item", "work-item-1"]);
+  assert.equal(result.kind, "output");
+  assert.equal(result.data.steer.code, "TARGET_CHANGED");
+  assert.equal(result.data.message.control, undefined);
 });
 
 // ── real-chain regressions (decision-3 §11) ──────────────────────────────────
@@ -782,6 +861,10 @@ test("a no-Run Leader interrupt-then wake is held while the interrupted Turn is 
     "--request-id", "s-1", "--expected-target", "t-1", "--to", "leader"],
     store, { now: () => later, environment: {} });
   const messageId = saved.messageId;
+  new FileSchedulerStoreAdapter(store).observeRuntimeObservation(steerSettlement({
+    kind: "input.rejected", receiptId: saved.receiptId, roleName: "leader",
+    agentId: "codex", nativeSessionId: "leader-native"
+  }), later);
   assert.equal(store.getPendingWakeup("task-1"), null, "steer-to-leader must not wake the Leader");
   // Interrupt the Leader's OWN turn with an explicit then-handoff.
   const interrupt = runTaskCommand(["role", "interrupt", "task-1", "leader",
@@ -840,6 +923,10 @@ test("a repeated no-Run Leader interrupt-then claim does not stack a second rele
     "--request-id", "s-1", "--expected-target", "t-1", "--to", "leader"],
     store, { now: () => later, environment: {} });
   const ref = `task-1/${saved.messageId}`;
+  new FileSchedulerStoreAdapter(store).observeRuntimeObservation(steerSettlement({
+    kind: "input.rejected", receiptId: saved.receiptId, roleName: "leader",
+    agentId: "codex", nativeSessionId: "leader-native"
+  }), later);
   const cmd = () => runTaskCommand(["role", "interrupt", "task-1", "leader",
     "--expected-target", "t-1", "--then-message", ref, "--request-id", "i-1"],
     store, { now: () => later, environment: {} });
@@ -850,6 +937,67 @@ test("a repeated no-Run Leader interrupt-then claim does not stack a second rele
     "an idempotent repeat of the same claim does not stack a second wake");
   assert.equal(store.listEvents("task-1").filter((e) => e.type === "message.interrupt-then-claimed").length, 1,
     "the claim is recorded exactly once");
+});
+
+test("Leader then selects its own next notification ahead of ordinary queue", t => {
+  const { store, command } = fixture(t);
+  withLeaderTurn(store, { attemptId: "a-1", nativeTurnId: "t-1" });
+  const queued = command(["message", "queue", "task-1", "Ordinary later input", "--request-id", "q-later"]);
+  const saved = command(["message", "send", "task-1", "Chosen immediate successor", "--wake-policy", "none"]);
+  const result = command(["role", "interrupt", "task-1", "leader", "--expected-target", "t-1",
+    "--then-message", `task-1/${saved.data.message.id}`, "--request-id", "i-next"]);
+  assert.equal(result.kind, "input-interrupt");
+  settleLeaderTurn(store, { nativeTurnId: "t-1", status: "cancelled" }, evenLater);
+  const adapter = new FileSchedulerStoreAdapter(store);
+  assert.throws(() => adapter.beginAgentHostProviderTurn({
+    taskId: "task-1", roleName: "leader", agentId: "codex", nativeSessionId: "leader-native",
+    attemptId: "competing-console-input", authorityEpoch: 1, authorityOwner: "controller",
+    holderId: "controller", now: evenLater
+  }), /then handoff/);
+  const notification = adapter.claimLeaderNotification("task-1", evenLater);
+  assert.equal(notification.disposition, "submit");
+  const wake = store.listTaskWakes("task-1").find(w => w.id === notification.wakeId);
+  assert.deepEqual(wake.refs.filter(r => r.type === "message").map(r => r.id), [saved.data.message.id]);
+  const pending = store.getWorkMailbox({ kind: "role", taskId: "task-1", roleName: "leader" }).pending;
+  assert.ok(pending.refs.some(r => r.type === "message" && r.id === queued.data.message.id));
+});
+
+test("a Leader-owned AgentRun can claim then without inventing a WorkItem Assignment", t => {
+  const { store, command } = fixture(t);
+  const session = store.getTaskRoleSessionSet("task-1", "leader").sessions.codex;
+  const run = createRun("run-1", "task-1", "leader", "new", createRunInput({
+    source: { type: "yui", channel: "task-dispatch" }, directive: "Manage the Task.", deltaRefIds: []
+  }), at, { effective: session.effective, purpose: "execution" });
+  store.saveRun(run);
+  store.saveActiveRun(run);
+  withRunBoundTurn(store, "leader", { runId: run.id, attemptId: "a-leader", nativeTurnId: "t-leader" });
+  const saved = command(["message", "send", "task-1", "Continue after stopping", "--wake-policy", "none"]);
+  const control = command(["role", "interrupt", "task-1", "leader", "--expected-target", "t-leader",
+    "--then-message", `task-1/${saved.data.message.id}`, "--request-id", "leader-with-run"]);
+  assert.equal(control.kind, "input-interrupt");
+  const claim = store.listMessages("task-1").find(message => message.id === saved.data.message.id).interruptThen;
+  assert.equal(claim.targetRunId, run.id);
+  assert.ok(store.getWorkMailbox({ kind: "role", taskId: "task-1", roleName: "leader" }).pending);
+});
+
+test("a replaced Leader never receives an old then, while new queue remains usable", t => {
+  const { store, command } = fixture(t);
+  withLeaderTurn(store, { attemptId: "a-1", nativeTurnId: "t-1" });
+  const saved = command(["message", "send", "task-1", "Old then", "--wake-policy", "none"]);
+  command(["role", "interrupt", "task-1", "leader", "--expected-target", "t-1",
+    "--then-message", `task-1/${saved.data.message.id}`, "--request-id", "i-old"]);
+  const original = store.getTaskRoleSessionSet("task-1", "leader");
+  store.saveTaskRoleSessionSet({
+    ...original, providerBinding: null,
+    sessions: { ...original.sessions, codex: { ...original.sessions.codex, nativeSessionId: "replacement" } }
+  });
+  const queued = command(["message", "queue", "task-1", "New input", "--request-id", "q-new"]);
+  const notification = new FileSchedulerStoreAdapter(store).claimLeaderNotification("task-1", evenLater);
+  assert.equal(notification.disposition, "submit");
+  const wake = store.listTaskWakes("task-1").find(w => w.id === notification.wakeId);
+  assert.deepEqual(wake.refs.filter(r => r.type === "message").map(r => r.id), [queued.data.message.id]);
+  const expired = store.listMessages("task-1").find(m => m.id === saved.data.message.id);
+  assert.equal(expired.interruptThen.notDeliveredReason, "target-session-or-authority-changed");
 });
 
 // ── Endpoint control boundary (decision-3 §3/§7, message-3 #1/#7) ─────────────
@@ -965,6 +1113,54 @@ function fakeWebHostControl() {
   };
 }
 
+test("Draft input controls preserve submission intent and keyed receipts without acquiring develop authority", async t => {
+  const { store, home, command } = fixture(t, {});
+  store.saveTask(createTask("task-1", "Draft input composition", at, { cwd: home }));
+  const host = fakeWebHostControl();
+  const surface = createWebTaskSurface(store, { yuiHome: home }, [], host.port);
+  const recorded = surface.message("task-1", "Keep this requirement", "record", "record-1");
+  assert.equal(recorded.record.intent, "record");
+  assert.equal(recorded.record.submissionKey, "record-1");
+  assert.equal(recorded.submission.planning, "none");
+  assert.equal(recorded.submission.activation, "none");
+  assert.equal(recorded.record.inputControl, undefined);
+
+  const steer = await surface.control("task-1", {
+    action: "steer", body: "Develop immediately", requestId: "steer-draft",
+    to: "leader", expectedTarget: "absent-turn"
+  });
+  assert.equal(steer.record.inputControl.action, "steer");
+  assert.equal(steer.record.intent, "record");
+  assert.equal(steer.steer.state, "not-steered");
+  assert.equal(store.getTask("task-1").activationRequest, undefined);
+  assert.equal(store.listEvents("task-1").some(e => e.type === "task.planning-entered"), false);
+
+  const queued = await surface.control("task-1", {
+    action: "queue", body: "Develop immediately", requestId: "queue-draft"
+  });
+  assert.equal(queued.record.inputControl.action, "queue");
+  assert.equal(queued.record.intent, "discuss");
+  assert.equal(store.getTask("task-1").activationRequest, undefined);
+  assert.equal(store.listEvents("task-1").filter(e => e.type === "task.planning-entered").length, 1);
+  const replay = command(["message", "queue", "task-1", "Develop immediately",
+    "--request-id", "queue-draft"]);
+  assert.equal(replay.data.message.id, queued.record.id);
+  assert.equal(replay.data.delivery.state, "idempotent-replay");
+  assert.equal(store.listMessages("task-1").length, 3);
+
+  // A receipt remains its original pre-planning disposition, even after queue
+  // has entered planning; a different intent under that key is not a replay.
+  const recordReplay = surface.message("task-1", "Keep this requirement", "record", "record-1");
+  assert.equal(recordReplay.record.id, recorded.record.id);
+  assert.deepEqual(recordReplay.submission, recorded.submission);
+  assert.throws(() => surface.message("task-1", "Keep this requirement", "develop", "record-1"));
+  const manual = surface.message("task-1", "Explicit develop", "develop", "develop-1");
+  assert.equal(manual.submission.activation, "manual-required");
+  assert.equal(store.getTask("task-1").activationRequest, undefined);
+  assert.equal(host.steers.length, 0);
+  assert.equal(host.cancels.length, 0);
+});
+
 test("the Web surface queues through the shared primitive and never reaches the live Host (gap F)", async t => {
   const { store, home, command } = fixture(t);
   dispatchWorker(store, command, home);
@@ -1044,7 +1240,7 @@ test("the Web surface interrupt performs the one live Host cancel and claims a t
     action: "interrupt", role: "worker", expectedTarget: "t-1",
     thenMessage: `task-1/${saved.data.message.id}`, requestId: "wi-1" });
   assert.equal(receipt.action, "interrupt");
-  assert.equal(receipt.disposition, "interrupted");
+  assert.equal(receipt.disposition, "interrupt-unknown");
   assert.equal(receipt.interrupt.outcome, "cancel-requested");
   assert.equal(receipt.thenMessageId, saved.data.message.id);
   // The one live edge is a native cancel of the exact attempt, never a kill.
@@ -1112,6 +1308,36 @@ test("the Web control HTTP route drives the surface and rejects a malformed body
   assert.equal(noToken.status, 403);
 });
 
+test("Global Web inputs use the authenticated shared primitive and state reads never consume queue", async t => {
+  const { store, home } = fixture(t);
+  const agent = store.getConfiguredAgent("codex");
+  store.createGlobalRoleIfAbsent(createGlobalRole("assistant", [createRoleAgentBinding(agent)], agent.id, home, at));
+  const host = fakeWebHostControl();
+  const surface = createWebTaskSurface(store, { yuiHome: home }, [], host.port);
+  const server = createYuiWebServer(store, { surface, token: "global-web-token" });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const url = `http://127.0.0.1:${server.address().port}/api/roles/assistant/control`;
+  const headers = { "content-type": "application/json", "x-yui-web-token": "global-web-token" };
+  assert.equal((await fetch(url)).status, 403);
+  const response = await fetch(url, { method: "POST", headers,
+    body: JSON.stringify({ action: "queue", body: "Global input", requestId: "global-web-1" }) });
+  assert.equal(response.status, 200);
+  const receipt = await response.json();
+  assert.equal(receipt.delivery.state, "queued");
+  assert.equal(receipt.message.roleName, "assistant");
+  const before = store.listGlobalRoleMessages("assistant");
+  const state = await (await fetch(url, { headers })).json();
+  assert.equal(state.messages[0].id, before[0].id);
+  assert.deepEqual(store.listGlobalRoleMessages("assistant"), before);
+  assert.equal(host.steers.length + host.cancels.length, 0);
+  const bad = await fetch(url, { method: "POST", headers,
+    body: JSON.stringify({ action: "queue", body: "x", requestId: "global-web-2", caller: "operator" }) });
+  assert.equal(bad.status, 409);
+  assert.equal((await bad.json()).disposition, "not-submitted");
+  assert.equal(store.listGlobalRoleMessages("assistant").length, 1);
+});
+
 // ---------------------------------------------------------------------------
 // Gap G (message-5): the live edge must report the ACTUAL decision-3 §7
 // acceptance, not presume success. The static resolver is only the pre-flight
@@ -1162,11 +1388,10 @@ test("foldSteerLiveReceipt carries a redacted failure/snapshot detail on non-suc
   assert.equal(foldSteerLiveReceipt(steerControl("accepted")).detail, undefined);
 });
 
-test("foldInterruptLiveReceipt proves a stop from cancellation.status, not the bare outcome (gap G)", () => {
-  // Only a proven stop-request is `interrupted`, and the stop-proof is preserved.
+test("interrupt receipt distinguishes a cancellation request from a proven stop", () => {
   assert.deepEqual(
     foldInterruptLiveReceipt(cancelControl({ status: "requested", resources: "unknown" })),
-    { state: "interrupted", outcome: "cancel-requested",
+    { state: "interrupt-requested", outcome: "cancel-requested",
       cancellation: { status: "requested", resources: "unknown" } });
   // No active Turn to stop: reported distinctly, cancellation retained.
   assert.deepEqual(
@@ -1180,11 +1405,9 @@ test("foldInterruptLiveReceipt proves a stop from cancellation.status, not the b
       cancellation: { status: "unknown", resources: "unknown" } });
 });
 
-test("foldInterruptLiveReceipt is forward-compatible and reports a non-cancel outcome (gap G)", () => {
-  // A Host that predates the additive cancellation field: a bare cancel-requested
-  // is treated as the stop-requested case, matching the outcome's meaning.
+test("interrupt receipt without cancellation evidence remains unknown", () => {
   assert.deepEqual(foldInterruptLiveReceipt(cancelControl(undefined)),
-    { state: "interrupted", outcome: "cancel-requested" });
+    { state: "interrupt-unknown", outcome: "cancel-requested" });
   // An outcome that is not cancel-requested at all means the cancel edge could
   // not run; surface it (with detail) rather than claim an interrupt.
   assert.deepEqual(foldInterruptLiveReceipt({
@@ -1379,6 +1602,3 @@ test("a real Endpoint cancel that cannot prove a stop holds the durable handoff,
   assert.equal(store.listRuns("task-1").length, runsBefore);
   assert.equal(store.listMessages("task-1").find(m => m.id === handoff.data.message.id).continuation?.runId, undefined);
 });
-
-
-

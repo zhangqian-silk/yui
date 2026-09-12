@@ -453,7 +453,8 @@ export class TmuxSessionHost implements SessionHostPort {
         throw toRuntimeLaunchFailure(error, "validation", launchContext);
       }
     }
-    const interactiveCodex = request.owner.scope === "global" && request.adapterId === "codex";
+    const interactiveCodex = request.owner.scope === "global" && request.adapterId === "codex"
+      && planned.launch.providerControl === undefined;
     let reuseInteractivePane = false;
     if (interactiveCodex) {
       let status: "running" | "exited";

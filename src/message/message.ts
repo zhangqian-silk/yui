@@ -118,6 +118,14 @@ export type TaskMessageInterruptThen = Readonly<{
    * AgentRun) can still claim and release a continuation.
    */
   targetAttemptId: string;
+  targetRoleName: string;
+  targetAgentId: string;
+  targetAdapterId: string;
+  targetNativeSessionId: string;
+  targetAuthorityEpoch: number;
+  targetAuthorityHolderId: string;
+  targetNativeTurnId?: string;
+  notDeliveredReason?: string;
   /**
    * The owning AgentRun of the interrupted Turn, when one exists. A Worker/
    * Reviewer turn is owned by an AgentRun whose `delivery-unknown` terminal makes
@@ -282,7 +290,19 @@ export function createTaskMessage(
       ? {}
       : { interruptThen: {
           requestId: requireSafeIdentity(context.interruptThen.requestId, "Message interrupt requestId"),
-          targetAttemptId: requireSafeIdentity(context.interruptThen.targetAttemptId, "Message interrupt targetAttemptId"),
+          targetAttemptId: requireText(context.interruptThen.targetAttemptId, "Message interrupt targetAttemptId"),
+          targetRoleName: context.interruptThen.targetRoleName,
+          targetAgentId: context.interruptThen.targetAgentId,
+          targetAdapterId: context.interruptThen.targetAdapterId,
+          targetNativeSessionId: context.interruptThen.targetNativeSessionId,
+          targetAuthorityEpoch: context.interruptThen.targetAuthorityEpoch,
+          targetAuthorityHolderId: context.interruptThen.targetAuthorityHolderId,
+          ...(context.interruptThen.targetNativeTurnId === undefined ? {} : {
+            targetNativeTurnId: context.interruptThen.targetNativeTurnId
+          }),
+          ...(context.interruptThen.notDeliveredReason === undefined ? {} : {
+            notDeliveredReason: context.interruptThen.notDeliveredReason
+          }),
           ...(context.interruptThen.targetRunId === undefined
             ? {} : { targetRunId: context.interruptThen.targetRunId }),
           ...(context.interruptThen.reusedInput === undefined ? {} : { reusedInput: {
@@ -308,15 +328,6 @@ export function createTaskMessage(
 export function taskMessageAuthorLabel(author: TaskMessageAuthor): string {
   return author.type === "role" ? author.roleName : author.type;
 }
-
-/** Rank of a control outcome for the monotonic guard in {@link
- * recordTaskMessageControlOutcome}. A live attempt starts at `pending`; the
- * three terminals are equally final and mutually exclusive, so once any terminal
- * is recorded a later `pending` (a stale or replayed live edge) never rewinds
- * it, and a terminal is never silently replaced by a different terminal. */
-const CONTROL_OUTCOME_RANK: Readonly<Record<TaskMessageInputControlOutcome, number>> = {
-  pending: 0, accepted: 1, rejected: 1, "delivery-unknown": 1
-};
 
 /**
  * The four visible states a later reader distinguishes for a steer input
@@ -369,8 +380,8 @@ export function recordTaskMessageControlOutcome(
   // `pending`, an identical repeat is idempotent. Each frozen/absorbed case
   // returns the Message unchanged so a fold can persist without a second write.
   if (existing !== undefined) {
-    if (CONTROL_OUTCOME_RANK[existing.outcome] === 1) return message;
-    if (record.outcome === "pending") return message;
+    if (existing.outcome === "accepted" || existing.outcome === "rejected") return message;
+    if (record.outcome === "pending" || record.outcome === existing.outcome) return message;
   }
   const updated: TaskMessage = {
     ...message,
@@ -490,7 +501,17 @@ export function validateTaskMessage(message: TaskMessage): void {
   }
   if (message.interruptThen !== undefined) {
     requireSafeIdentity(message.interruptThen.requestId, "Message interrupt requestId");
-    requireSafeIdentity(message.interruptThen.targetAttemptId, "Message interrupt targetAttemptId");
+    requireText(message.interruptThen.targetAttemptId, "Message interrupt targetAttemptId");
+    requireSafeIdentity(message.interruptThen.targetRoleName, "Message interrupt target Role");
+    requireSafeIdentity(message.interruptThen.targetAgentId, "Message interrupt target Agent");
+    requireSafeIdentity(message.interruptThen.targetAdapterId, "Message interrupt target Adapter");
+    requireText(message.interruptThen.targetNativeSessionId, "Message interrupt target Session");
+    requireText(message.interruptThen.targetAuthorityHolderId, "Message interrupt authority holder");
+    if (message.interruptThen.notDeliveredReason !== undefined) {
+      requireText(message.interruptThen.notDeliveredReason, "Message interrupt nondelivery reason");
+    }
+    if (!Number.isSafeInteger(message.interruptThen.targetAuthorityEpoch)
+      || message.interruptThen.targetAuthorityEpoch < 1) throw new Error("Invalid interrupt authority epoch.");
     if (message.interruptThen.targetRunId !== undefined) {
       validateTaskRecordReference(
         { taskId: message.taskId, localId: message.interruptThen.targetRunId }, "run");
@@ -590,13 +611,14 @@ export function validateTaskMessage(message: TaskMessage): void {
  * Assignment, so a `role-result` (which references a Task AgentRun) is not one
  * of them; user/operator/system inputs are (decision-3 §9/§11).
  */
-export const GLOBAL_ROLE_MESSAGE_KINDS = ["user", "operator", "system"] as const;
+export const GLOBAL_ROLE_MESSAGE_KINDS = ["user", "operator", "system", "agent"] as const;
 
 export type GlobalRoleMessageKind = typeof GLOBAL_ROLE_MESSAGE_KINDS[number];
 
 export type GlobalRoleMessageAuthor =
   | Readonly<{ type: "user" }>
   | Readonly<{ type: "operator" }>
+  | Readonly<{ type: "agent" }>
   | Readonly<{ type: "system" }>;
 
 /**
@@ -617,6 +639,8 @@ export type GlobalRoleMessage = {
   kind: GlobalRoleMessageKind;
   author: GlobalRoleMessageAuthor;
   body: string;
+  control?: TaskMessageControlOutcome;
+  deliveryTarget?: Readonly<{ agentId: string; nativeSessionId: string }>;
   /**
    * The scope-generic durable input action and stable requestId, reused from
    * the Task shape so a Global queue/steer is immutable and idempotent per
@@ -626,16 +650,10 @@ export type GlobalRoleMessage = {
    */
   inputControl?: TaskMessageInputControl;
   /**
-   * The one durable delivery fact for a Global queue action (decision-3 §9). A
-   * Global Role launches unmanaged (fileRoleLaunchPlanner keys managedControl on
-   * the Task scope), so there is no managed push edge: its "next legal
-   * opportunity" is the Role's own authorized Session reading its own Context to
-   * act. This records that consumption exactly once. Absent means still pending;
-   * a second self-read is idempotent and never re-delivers. It is never set by an
-   * external inspection read, which observes the pending Message without consuming
-   * it, so delivery is the Role actually taking the input — not merely a read.
+   * Delivery evidence for this input. Transport is weaker than Provider
+   * acceptance; Context reads never create either receipt.
    */
-  delivery?: Readonly<{ deliveredAt: string; via: "context-read" }>;
+  delivery?: Readonly<{ deliveredAt: string; via: "provider" | "transport" }>;
   /**
    * A claimed interrupt-then handoff (decision-3 §4). Set atomically before the
    * live cancel by `yui role interrupt --then-message`, it binds this already
@@ -668,14 +686,15 @@ export type GlobalRoleMessageInterruptThen = Readonly<{
   requestId: string;
   /** The exact interrupted native Turn's local input attempt id. */
   targetAttemptId: string;
+  targetNativeSessionId: string;
+  targetAgentId: string;
+  targetAuthorityEpoch: number;
+  targetAuthorityHolderId: string;
   /**
    * The interrupted native Turn's provider Turn id, captured from the resolved
    * target when the Provider surfaced one (decision-3 §6, "若存在则 native
-   * Turn"). An unmanaged Global Role has no owning AgentRun, so once the live
-   * binding no longer holds the target its only protocol-proven stop is the
-   * Role's durable native terminal — `recentCompletedTurnIds`, written by the
-   * real runtime Stop Hook and keyed by this native id. A claim without one
-   * cannot fall back to that durable proof (decision-3 §4/§8).
+   * Turn"). The local attempt and fixed Session remain authoritative; a
+   * historical native id never releases input into another Session.
    */
   targetNativeTurnId?: string;
   /** The saved input this handoff reuses, kept as provenance (decision-3 §3). */
@@ -723,6 +742,16 @@ export function validateGlobalRoleMessage(message: GlobalRoleMessage): void {
   requireSafeIdentity(message.roleName, "Global message Role name");
   requireBody(message.body);
   validateGlobalKindAndAuthor(message.kind, message.author);
+  if (message.deliveryTarget !== undefined) {
+    requireText(message.deliveryTarget.agentId, "Global input Agent");
+    requireText(message.deliveryTarget.nativeSessionId, "Global input Session");
+  }
+  if (message.control !== undefined) {
+    requireSafeIdentity(message.control.requestId, "Global input requestId");
+    requireText(message.control.receiptId, "Global input receiptId");
+    if (!TASK_MESSAGE_INPUT_CONTROL_OUTCOMES.includes(message.control.outcome)
+      || !Number.isFinite(Date.parse(message.control.observedAt))) throw new Error("Global input disposition is invalid.");
+  }
   if (message.inputControl !== undefined) {
     if (!TASK_MESSAGE_INPUT_ACTIONS.includes(message.inputControl.action)) {
       throw new Error(`Message input action is invalid: ${String(message.inputControl.action)}.`);
@@ -736,24 +765,26 @@ export function validateGlobalRoleMessage(message: GlobalRoleMessage): void {
     }
   }
   if (message.delivery !== undefined) {
-    if (message.delivery.via !== "context-read") {
+    if (message.delivery.via !== "provider" && message.delivery.via !== "transport") {
       throw new Error(`Global message delivery via is invalid: ${String(message.delivery.via)}.`);
     }
     if (typeof message.delivery.deliveredAt !== "string"
       || Number.isNaN(Date.parse(message.delivery.deliveredAt))) {
       throw new Error("Global message delivery deliveredAt is invalid.");
     }
-    // A delivery records that a durable Global Message was taken at a legal pull
-    // opportunity: an ordinary queue entry, or an interrupt-then handoff released
-    // after its target Turn's proven terminal (decision-3 §4/§9). A live steer,
-    // which targets the exact current Turn, is never delivered this way.
-    if (message.inputControl?.action !== "queue" && message.interruptThen === undefined) {
-      throw new Error("Only a queued or interrupt-then Global message records a context-read delivery.");
+    // Receipt evidence is shared by queue, explicit then and native steer.
+    if (message.inputControl === undefined && message.interruptThen === undefined) {
+      throw new Error("Only a durable Global input records Provider delivery.");
     }
   }
   if (message.interruptThen !== undefined) {
     requireSafeIdentity(message.interruptThen.requestId, "Global message interrupt requestId");
-    requireSafeIdentity(message.interruptThen.targetAttemptId, "Global message interrupt targetAttemptId");
+    requireText(message.interruptThen.targetAttemptId, "Global message interrupt targetAttemptId");
+    requireText(message.interruptThen.targetNativeSessionId, "Global interrupt target Session");
+    requireText(message.interruptThen.targetAgentId, "Global interrupt target Agent");
+    requireText(message.interruptThen.targetAuthorityHolderId, "Global interrupt writer");
+    if (!Number.isSafeInteger(message.interruptThen.targetAuthorityEpoch)
+      || message.interruptThen.targetAuthorityEpoch < 1) throw new Error("Global interrupt epoch is invalid.");
     if (message.interruptThen.targetNativeTurnId !== undefined) {
       requireText(message.interruptThen.targetNativeTurnId, "Global message interrupt targetNativeTurnId");
     }
@@ -803,15 +834,18 @@ export function validateGlobalRoleMessageId(localId: string): string {
  * here.
  */
 export function markGlobalRoleMessageDelivered(
-  message: GlobalRoleMessage, now: Date
+  message: GlobalRoleMessage, now: Date, via: "provider" | "transport" = "provider"
 ): GlobalRoleMessage {
-  if (message.inputControl?.action !== "queue") {
-    throw new Error("Only a queued Global message is delivered by a Context read.");
+  if (message.inputControl === undefined && message.interruptThen === undefined) {
+    throw new Error("Only a durable Global input is delivered by a Provider.");
   }
-  if (message.delivery !== undefined) return message;
+  if (message.delivery?.via === "provider" || message.delivery?.via === via) return message;
   const delivered: GlobalRoleMessage = {
     ...message,
-    delivery: { deliveredAt: now.toISOString(), via: "context-read" }
+    ...(message.control === undefined ? {} : { control: {
+      ...message.control, outcome: via === "provider" ? "accepted" : "pending", observedAt: now.toISOString()
+    } }),
+    delivery: { deliveredAt: now.toISOString(), via }
   };
   validateGlobalRoleMessage(delivered);
   return delivered;
@@ -826,14 +860,18 @@ export function markGlobalRoleMessageDelivered(
  */
 export function claimGlobalRoleMessageInterruptThen(
   message: GlobalRoleMessage,
-  claim: Readonly<{ requestId: string; targetAttemptId: string; targetNativeTurnId?: string }>
+  claim: Omit<GlobalRoleMessageInterruptThen, "reusedInput">
 ): GlobalRoleMessage {
-  const { inputControl, ...rest } = message;
+  const { inputControl, notDelivered: _priorNondelivery, ...rest } = message;
   const claimed: GlobalRoleMessage = {
     ...rest,
     interruptThen: {
       requestId: requireSafeIdentity(claim.requestId, "Global message interrupt requestId"),
-      targetAttemptId: requireSafeIdentity(claim.targetAttemptId, "Global message interrupt targetAttemptId"),
+      targetAttemptId: requireText(claim.targetAttemptId, "Global message interrupt targetAttemptId"),
+      targetNativeSessionId: claim.targetNativeSessionId,
+      targetAgentId: claim.targetAgentId,
+      targetAuthorityEpoch: claim.targetAuthorityEpoch,
+      targetAuthorityHolderId: claim.targetAuthorityHolderId,
       ...(claim.targetNativeTurnId === undefined
         ? {}
         : { targetNativeTurnId: requireText(claim.targetNativeTurnId, "Global message interrupt targetNativeTurnId") }),
@@ -842,31 +880,6 @@ export function claimGlobalRoleMessageInterruptThen(
   };
   validateGlobalRoleMessage(claimed);
   return claimed;
-}
-
-/**
- * Return a copy of a claimed interrupt-then Global Message marked delivered at the
- * handoff release opportunity (decision-3 §4). Unlike {@link
- * markGlobalRoleMessageDelivered}, which consumes an ordinary queue entry, this
- * releases the single continuation of an interrupted Turn and so requires an
- * `interruptThen` claim rather than a live `queue` input. It is idempotent — a
- * Message already carrying a delivery is returned unchanged — and the caller,
- * never this helper, is responsible for having proven the target Turn's terminal
- * first, so a handoff is never released across an unproven cancel boundary.
- */
-export function releaseGlobalRoleMessageInterruptThen(
-  message: GlobalRoleMessage, now: Date
-): GlobalRoleMessage {
-  if (message.interruptThen === undefined) {
-    throw new Error("Only an interrupt-then Global message is released by a handoff.");
-  }
-  if (message.delivery !== undefined) return message;
-  const released: GlobalRoleMessage = {
-    ...message,
-    delivery: { deliveredAt: now.toISOString(), via: "context-read" }
-  };
-  validateGlobalRoleMessage(released);
-  return released;
 }
 
 /**

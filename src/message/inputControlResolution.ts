@@ -140,6 +140,10 @@ function resolveInputControl(
       detail: `The current Turn's own delivery is ${turn.status}; confirm the original attempt `
         + "before steering or interrupting. Do not reissue under a new requestId or a different action." };
   }
+  if (kind === "steer" && turn.nativeTurnId === undefined) {
+    return { outcome: "delivery-unknown", code: "DELIVERY_UNKNOWN",
+      detail: "The Provider has not supplied an exact native Turn id for steering." };
+  }
   return { outcome: "ready", target: {
     roleName, agentId: active.agentId, adapterId: active.adapterId,
     nativeSessionId: active.nativeSessionId,
@@ -177,14 +181,6 @@ export function resolveTaskInputControl(
  * (decision-3 §6/§9). Identical contract to the Task resolver, reading the
  * Global Role's own Session set; the resolved target carries no taskId because a
  * Global Role has no owning Task and never fabricates one.
- *
- * Today a Global Role's Session set carries no live providerBinding on the
- * managed control path — a managed Global structured Host that populates one
- * does not exist (fileRoleLaunchPlanner keys managedControl on the Task scope).
- * This resolver therefore reports NO_ACTIVE_TURN for a real Global Role now; it
- * is complete and correct for the moment such a binding is present, and the
- * missing live global settlement Host is the reported residual, never faked with
- * a Task binding.
  */
 export function resolveGlobalInputControl(
   store: GlobalRoleSessionReader,

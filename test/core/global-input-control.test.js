@@ -16,7 +16,11 @@ import {
   markProviderTurnDeliveryUnknown, settleProviderTurn, transferProviderAuthority
 } from "../../dist/runtime/providerRuntimeIdentity.js";
 import { runGlobalRoleCommand } from "../../dist/commands/globalRoleCommands.js";
+import { recordGlobalInterruptResult } from "../../dist/message/globalInterrupt.js";
 import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
+import { deliverGlobalInputs } from "../../dist/controller/globalInputDelivery.js";
+import { FileRoleLaunchPlanner } from "../../dist/executor/fileRoleLaunchPlanner.js";
+import { createRuntimeObservation } from "../../dist/runtime/runtimeObservation.js";
 
 const at = new Date("2026-09-11T00:00:00Z");
 const later = new Date("2026-09-11T00:01:00Z");
@@ -163,7 +167,7 @@ test("a Global Role Session set persists and reloads with an absent providerBind
   assert.equal(reloaded.sessions[role.activeAgentId].status, "active");
 });
 
-test("a real Global Role has no live providerBinding, so steer is NO_ACTIVE_TURN, never faked", t => {
+test("an unmanaged Global Session without a binding cannot fabricate an active Turn", t => {
   const { store, command, role } = globalFixture(t);
   recordGlobalSession(store, role);
   // No providerBinding bound: the honest state of a managed Global Role today.
@@ -258,7 +262,7 @@ test("global interrupt resolves a native cancel via a fake providerBinding", t =
   const result = command(["interrupt", "assistant", "--expected-target", "t-1"]);
   assert.equal(result.kind, "input-interrupt");
   assert.equal(result.roleName, "assistant");
-  assert.equal(result.receiptId, "interrupt:assistant/a-1");
+  assert.equal(result.receiptId, "interrupt:assistant/cancel:t-1");
   assert.equal(result.thenMessageId, undefined);
   assert.equal(result.target.taskId, undefined);
 });
@@ -290,6 +294,16 @@ test("global interrupt --then-message names an already-persisted durable Global 
   assert.equal(result.kind, "input-interrupt");
   // The ordered composition: an existing durable Global Message, not a fourth action.
   assert.equal(result.thenMessageId, queued.message.id);
+  const replay = command(["message", "queue", "assistant", "Do this next", "--request-id", "gq-1"]);
+  assert.equal(replay.delivery.state, "idempotent-replay");
+  assert.equal(replay.message.id, queued.message.id);
+  assert.equal(store.listGlobalRoleMessages("assistant").length, 1);
+  recordGlobalInterruptResult(store, "assistant", result.receiptId,
+    { state: "interrupt-unavailable", outcome: "rejected" });
+  const retry = command(["interrupt", "assistant", "--expected-target", "t-1",
+    "--then-message", queued.message.id, "--request-id", "retry-after-rejection"]);
+  assert.equal(retry.kind, "input-interrupt");
+  assert.equal(store.listGlobalRoleMessages("assistant").length, 1);
 });
 
 test("global interrupt --then-message rejects a ref that is not an owned durable Global Message", t => {
@@ -319,7 +333,7 @@ function contextSelfRead(store, roleName) {
 
 // ── Bug-2: the corrected queue contract — no mark-delivered while busy ─────────
 
-test("an idle self-read delivers the ordinary queue exactly once and is idempotent", t => {
+test("an idle self-read exposes intent but never fabricates a Provider receipt", t => {
   const { store, command, role } = globalFixture(t);
   recordGlobalSession(store, role);
   command(["message", "queue", "assistant", "First", "--request-id", "gq-1"]);
@@ -329,10 +343,10 @@ test("an idle self-read delivers the ordinary queue exactly once and is idempote
   const first = contextSelfRead(store, "assistant");
   assert.deepEqual(first.pendingMessages.map(m => m.id), ["global-message-1", "global-message-2"]);
   const delivered = store.listGlobalRoleMessages("assistant").filter(m => m.delivery !== undefined);
-  assert.equal(delivered.length, 2);
+  assert.equal(delivered.length, 0);
   // A repeated self-read is idempotent: the consumed queue is not re-delivered.
   const second = contextSelfRead(store, "assistant");
-  assert.deepEqual(second.pendingMessages, []);
+  assert.deepEqual(second.pendingMessages, first.pendingMessages);
 });
 
 test("a self-read while the Role's own native Turn is in flight delivers nothing (busy-gate)", t => {
@@ -344,7 +358,7 @@ test("a self-read while the Role's own native Turn is in flight delivers nothing
   // busy-gate holds it undelivered until a read finds no in-flight Turn.
   withGlobalControllerTurn(store, "assistant", { attemptId: "a-1", nativeTurnId: "t-1" });
   const busy = contextSelfRead(store, "assistant");
-  assert.deepEqual(busy.pendingMessages.map(m => m.id), []);
+  assert.deepEqual(busy.pendingMessages.map(m => m.id), ["global-message-1"]);
   assert.equal(store.listGlobalRoleMessages("assistant").every(m => m.delivery === undefined), true);
   // The Message is neither delivered nor failed: it is held for the next legal turn.
   assert.equal(store.listGlobalRoleMessages("assistant")[0].notDelivered ?? null, null);
@@ -373,11 +387,11 @@ test("a then-handoff holds the whole queue while its interrupted Turn is still i
   // The interrupted Turn t-1 is still the live accepted Turn: requested != stopped.
   // The handoff waits AND holds the ordinary queue behind it, so nothing delivers.
   const held = contextSelfRead(store, "assistant");
-  assert.deepEqual(held.pendingMessages.map(m => m.id), []);
+  assert.deepEqual(held.pendingMessages.map(m => m.id), [queued.message.id]);
   assert.equal(store.listGlobalRoleMessages("assistant")[0].delivery ?? null, null);
 });
 
-test("a then-handoff releases only on the interrupted Turn's durable native terminal", t => {
+test("a terminal fact does not make a Context read deliver the then input", t => {
   const { store, command, role } = globalFixture(t);
   recordGlobalSession(store, role);
   withGlobalControllerTurn(store, "assistant", { attemptId: "a-1", nativeTurnId: "t-1" });
@@ -398,10 +412,10 @@ test("a then-handoff releases only on the interrupted Turn's durable native term
   const released = contextSelfRead(store, "assistant");
   assert.deepEqual(released.pendingMessages.map(m => m.id), [queued.message.id]);
   const handoff = store.listGlobalRoleMessages("assistant").find(m => m.id === queued.message.id);
-  assert.notEqual(handoff.delivery ?? null, null);
+  assert.equal(handoff.delivery ?? null, null);
 });
 
-test("a then-handoff whose interrupted Turn vanished without a durable terminal fails visibly", t => {
+test("Context inspection never mutates a handoff whose interrupted Turn vanished", t => {
   const { store, command, role } = globalFixture(t);
   recordGlobalSession(store, role);
   withGlobalControllerTurn(store, "assistant", { attemptId: "a-1", nativeTurnId: "t-1" });
@@ -417,10 +431,10 @@ test("a then-handoff whose interrupted Turn vanished without a durable terminal 
   store.saveGlobalRoleSessionSet({ ...sessions, providerBinding: null });
   const drained = contextSelfRead(store, "assistant");
   const handoff = store.listGlobalRoleMessages("assistant").find(m => m.id === queued.message.id);
-  assert.equal(handoff.notDelivered.reason, "interrupt-then-target-missing");
+  assert.equal(handoff.notDelivered, undefined);
   assert.equal(handoff.delivery ?? null, null);
   // The ordinary queue behind the now-failed handoff drains at the same read.
-  assert.deepEqual(drained.pendingMessages.map(m => m.id), [alsoQueued.message.id]);
+  assert.deepEqual(drained.pendingMessages.map(m => m.id), [queued.message.id, alsoQueued.message.id]);
 });
 
 test("a then-handoff persists its interrupted native Turn id for the durable fallback", t => {
@@ -472,11 +486,11 @@ test("a replacement Turn's existence never releases a handoff without the durabl
   withGlobalReplacementTurn(store, "assistant", { nativeTurnId: "t-1" }, { attemptId: "a-2", nativeTurnId: "t-2" });
   contextSelfRead(store, "assistant");
   const handoff = store.listGlobalRoleMessages("assistant").find(m => m.id === queued.message.id);
-  assert.equal(handoff.notDelivered.reason, "interrupt-then-target-missing");
+  assert.equal(handoff.notDelivered, undefined);
   assert.equal(handoff.delivery ?? null, null);
 });
 
-test("a durable native terminal releases the handoff even while a replacement Turn is live", t => {
+test("a historical native terminal cannot release a handoff through Context while another Turn is live", t => {
   const { store, command, role } = globalFixture(t);
   recordGlobalSession(store, role);
   withGlobalControllerTurn(store, "assistant", { attemptId: "a-1", nativeTurnId: "t-1" });
@@ -495,7 +509,7 @@ test("a durable native terminal releases the handoff even while a replacement Tu
   const released = contextSelfRead(store, "assistant");
   assert.deepEqual(released.pendingMessages.map(m => m.id), [queued.message.id]);
   const handoff = store.listGlobalRoleMessages("assistant").find(m => m.id === queued.message.id);
-  assert.notEqual(handoff.delivery ?? null, null);
+  assert.equal(handoff.delivery ?? null, null);
 });
 
 
@@ -555,3 +569,128 @@ test("the Global runtime terminal leaves a non-matching bound Turn untouched", t
   assert.equal(sessions.sessions[role.activeAgentId].recentCompletedTurnIds.includes("t-1"), true);
 });
 
+test("Global input authority precedes persistence and retired Sessions cannot impersonate the operator", t => {
+  const { store, role } = globalFixture(t);
+  recordGlobalSession(store, role);
+  const args = ["message", "queue", "assistant", "Scoped input", "--request-id", "scoped"];
+  assert.throws(() => runGlobalRoleCommand(args, store, { env: {
+    YUI_SESSION_SCOPE: "task", YUI_ROLE: "leader", YUI_TASK_ID: "task-1"
+  } }), /Session authority/);
+  assert.throws(() => runGlobalRoleCommand(args, store, { env: {
+    YUI_SESSION_SCOPE: "global", YUI_ROLE: "assistant", YUI_AGENT_ID: "codex",
+    YUI_ADAPTER_ID: "codex", CODEX_THREAD_ID: "retired-session"
+  } }), /current native caller Session/);
+  assert.deepEqual(store.listGlobalRoleMessages("assistant"), []);
+  runGlobalRoleCommand(args, store, { env: {
+    YUI_SESSION_SCOPE: "global", YUI_ROLE: "assistant", YUI_AGENT_ID: "codex",
+    YUI_ADAPTER_ID: "codex", CODEX_THREAD_ID: "assistant-native"
+  } });
+  assert.equal(store.listGlobalRoleMessages("assistant")[0].author.type, "agent");
+});
+
+test("Global queue pins reject Session replacement both before and during ensure", async t => {
+  const { store, role, command } = globalFixture(t);
+  recordGlobalSession(store, role);
+  withGlobalControllerTurn(store, role.name, { attemptId: "old", nativeTurnId: "old-turn" });
+  const binding = settleProviderTurn(store.getGlobalRoleSessionSet(role.name).providerBinding, {
+    attemptId: "old", nativeTurnId: "old-turn", status: "completed", settledAt: later.toISOString()
+  });
+  store.saveGlobalRoleSessionSet(updateGlobalRoleProviderRuntime(store.getGlobalRoleSessionSet(role.name), binding, later));
+  const queued = command(["message", "queue", role.name, "Never retarget", "--request-id", "pinned"]).message;
+  const before = store.getGlobalRoleSessionSet(role.name);
+  let ensureCalls = 0;
+  await deliverGlobalInputs("/not-used", store, async () => {
+    ensureCalls += 1;
+    const current = store.getGlobalRoleSessionSet(role.name);
+    store.saveGlobalRoleSessionSet({
+      ...current, sessions: { ...current.sessions,
+        codex: { ...current.sessions.codex, nativeSessionId: "replacement" } },
+      providerBinding: createProviderRuntimeBinding({
+        providerNamespace: "openai/codex", accountScope: "codex", conversationId: "replacement",
+        startedAt: later.toISOString()
+      })
+    });
+  }, error => { throw error; });
+  assert.equal(ensureCalls, 1);
+  const preserved = store.listGlobalRoleMessages(role.name).find(message => message.id === queued.id);
+  assert.equal(preserved.deliveryTarget.nativeSessionId, before.sessions.codex.nativeSessionId);
+  assert.equal(preserved.delivery, undefined);
+  assert.equal(preserved.notDelivered.reason, "native-session-changed");
+  await deliverGlobalInputs("/not-used", store, async () => { ensureCalls += 1; }, error => { throw error; });
+  assert.equal(ensureCalls, 1);
+});
+
+test("Global unknown survives restart, late evidence settles it, and conclusive rejection remains visible", async t => {
+  const { store, role, home, command } = globalFixture(t);
+  recordGlobalSession(store, role);
+  store.saveGlobalRoleSessionSet(bindGlobalRoleProviderRuntime(store.getGlobalRoleSessionSet(role.name),
+    createProviderRuntimeBinding({ providerNamespace: "openai/codex", accountScope: "codex",
+      conversationId: "assistant-native", startedAt: at.toISOString() }), at));
+  const message = command(["message", "queue", role.name, "Only once", "--request-id", "unknown"]).message;
+  const attemptId = `global-input:${role.name}/${message.id}`;
+  const scheduler = new FileSchedulerStoreAdapter(store);
+  scheduler.beginAgentHostProviderTurn({ roleName: role.name, agentId: "codex",
+    nativeSessionId: "assistant-native", attemptId, authorityEpoch: 1, authorityOwner: "controller",
+    holderId: "controller", now: later });
+  scheduler.observeRuntimeObservation(createRuntimeObservation({
+    schemaVersion: 4, eventId: "transport-only", semanticKey: "transport-only",
+    kind: "turn.accepted", authority: "transport", receivedAt: later.toISOString(),
+    observedAt: later.toISOString(), payload: {},
+    fence: { roleName: role.name, agentId: "codex", driverId: "openai/codex",
+      nativeSessionId: "assistant-native", conversationId: "assistant-native", receiptId: attemptId }
+  }), later);
+  assert.equal(store.getGlobalRoleSessionSet(role.name).providerBinding.run.status, "submitting");
+  assert.equal(store.listGlobalRoleMessages(role.name)[0].delivery.via, "transport");
+  scheduler.resolveAgentHostProviderTurnSubmission({ roleName: role.name, attemptId,
+    status: "delivery-unknown", reason: "acknowledgement lost", raw: "acknowledgement lost", now: later });
+  const reopened = new SqliteTaskStore(home);
+  t.after(() => reopened.close());
+  let calls = 0;
+  await deliverGlobalInputs(home, reopened, async () => { calls += 1; }, error => { throw error; });
+  assert.equal(calls, 0);
+  const pending = reopened.listGlobalRoleMessages(role.name)[0];
+  assert.equal(pending.control.outcome, "delivery-unknown");
+  assert.equal(pending.delivery.via, "transport");
+  const reloadedScheduler = new FileSchedulerStoreAdapter(reopened);
+  const accepted = createRuntimeObservation({
+    schemaVersion: 4, eventId: "late-global-receipt", semanticKey: "late-global-receipt",
+    kind: "turn.accepted", authority: "provider-structured", receivedAt: later.toISOString(),
+    observedAt: later.toISOString(), payload: {},
+    fence: { roleName: role.name, agentId: "codex", driverId: "openai/codex",
+      nativeSessionId: "assistant-native", conversationId: "assistant-native",
+      nativeTurnId: "confirmed-turn", receiptId: attemptId }
+  });
+  assert.equal(reloadedScheduler.observeRuntimeObservation(accepted, later), "applied");
+  assert.equal(reopened.listGlobalRoleMessages(role.name)[0].control.outcome, "accepted");
+  assert.equal(reopened.listGlobalRoleMessages(role.name)[0].delivery.via, "provider");
+  assert.equal(command(["message", "queue", role.name, "Only once", "--request-id", "unknown"]).delivery.state,
+    "idempotent-replay");
+  reloadedScheduler.observeRuntimeObservation(createRuntimeObservation({
+    ...accepted, kind: "turn.completed", eventId: "known-terminal", semanticKey: "known-terminal",
+    payload: { output: "done" }
+  }), later);
+  const rejected = command(["message", "queue", role.name, "Explicit rejection", "--request-id", "rejected"]).message;
+  const rejectedAttempt = `global-input:${role.name}/${rejected.id}`;
+  reloadedScheduler.beginAgentHostProviderTurn({ roleName: role.name, agentId: "codex",
+    nativeSessionId: "assistant-native", attemptId: rejectedAttempt, authorityEpoch: 1,
+    authorityOwner: "controller", holderId: "controller", now: later });
+  reloadedScheduler.resolveAgentHostProviderTurnSubmission({ roleName: role.name, attemptId: rejectedAttempt,
+    status: "rejected", reason: "Provider refused this input", raw: "Provider refused this input", now: later });
+  const context = contextSelfRead(reopened, role.name);
+  assert.equal(context.messages.find(entry => entry.id === rejected.id).notDelivered.reason, "Provider refused this input");
+  assert.equal(context.messages.find(entry => entry.id === rejected.id).control.outcome, "rejected");
+  await deliverGlobalInputs(home, reopened, async () => { calls += 1; }, error => { throw error; });
+  assert.equal(calls, 0);
+});
+
+test("Global planner refuses live unmanaged Sessions instead of silently migrating them", t => {
+  const { store, role, home } = globalFixture(t);
+  recordGlobalSession(store, role);
+  const planner = new FileRoleLaunchPlanner(home, store, { environment: { HOME: home, PATH: process.env.PATH } });
+  const before = store.getGlobalRoleSessionSet(role.name);
+  assert.throws(() => planner.planGlobalRole({
+    roleName: role.name, agentId: "codex", adapterId: "codex", mode: "resume",
+    nativeSessionId: "assistant-native"
+  }), /unmanaged live Session/);
+  assert.deepEqual(store.getGlobalRoleSessionSet(role.name), before);
+});
