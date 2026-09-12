@@ -10,6 +10,7 @@ import {
   type TaskCommandOptions
 } from "../commands/taskCommands.js";
 import type { TaskMetadataUpdate } from "../task/task.js";
+import type { TaskSubmissionIntent } from "../message/message.js";
 import { webLocalMutation, WebRequestRejected } from "./webMutation.js";
 import { runTaskInputCommand } from "../commands/taskInputCommands.js";
 import type { WebInputAnswer } from "./webServer.js";
@@ -34,17 +35,17 @@ export function createWebTaskSurface(
     } else options.runtime?.notifyStateChanged(taskId);
   };
   return {
-    message: (taskId: string, body: string) => {
-      // `queuedForLeader` is the fact the shared transaction actually committed,
-      // not a re-derivation from Task status. A Draft queues its Leader exactly
-      // like an active Task (planning is a Leader conversation), so reporting
-      // "saved" here would have understated a wake that really did happen.
-      const { message, task, queuedForLeader } = webLocalMutation(store, (tx) =>
-        sendTaskMessageCommand(tx, taskId, body, "leader", commandOptions));
+    message: (taskId: string, body: string, intent?: TaskSubmissionIntent, requestId?: string) => {
+      // With no explicit intent the Web surface submits `discuss` like every other
+      // client (§2.5), through the one shared service; the requestId is threaded as
+      // the submission key (§2.3) and the structured feedback is returned verbatim.
+      const { message, task, queuedForLeader, feedback } = webLocalMutation(store, (tx) =>
+        sendTaskMessageCommand(tx, taskId, body, undefined, commandOptions, undefined, intent, requestId));
       notify(taskId, queuedForLeader);
       return { record: message, revision: message.createdAt,
         disposition: queuedForLeader ? "queued" : "saved",
         planning: task.status === "draft",
+        ...(feedback === undefined ? {} : { submission: feedback }),
         target: { scope: "task", taskId, roleName: "leader" } };
     },
     read: async (taskId: string) => withContextObservations(

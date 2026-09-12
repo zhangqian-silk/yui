@@ -7,6 +7,7 @@ import { sourceRunContextValue } from "./sourceRunContext.js";
 import { expandTaskMessageResult, type TaskMessage } from "../message/message.js";
 import { managedWorkspaceKey } from "../worktree/managedWorkspace.js";
 import { runExecutionObservation, type AgentRun } from "../agentRun/agentRun.js";
+import { isGitArtifactRefString, parseGitArtifactRef } from "../artifacts/gitArtifactRef.js";
 
 const MAX_RECORDS = 256;
 const MAX_VALUE_BYTES = 4096;
@@ -335,7 +336,22 @@ function inspectValue(
       return run === null ? null : sourceRunContextValue(run);
     }
     case "review-round": return store.getReviewRound(taskId, refId);
-    case "artifact": return store.getArtifact(taskId, refId);
+    case "artifact": {
+      // A file artifact is addressed by its self-certifying commit-pinned refId
+      // (git:<commit>:<relativePath>). Resolve it to the pure pointer only; the
+      // bytes are read on the async `artifact.read` path, never synchronously in
+      // this transaction.
+      if (!isGitArtifactRefString(refId)) return null;
+      try {
+        const pinned = parseGitArtifactRef(refId, taskId);
+        return {
+          taskId: pinned.taskId,
+          commit: pinned.commit,
+          relativePath: pinned.relativePath,
+          ...(pinned.digest === undefined ? {} : { digest: pinned.digest })
+        };
+      } catch { return null; }
+    }
     case "environment-preparation": return store.getEnvironmentPreparation(taskId, refId);
     case "change-set": return store.getChangeSet(taskId, refId);
     case "managed-workspace": {
@@ -393,7 +409,11 @@ function authorizedEntries(store: TaskStore, taskId: string, environment: NodeJS
     if (allow?.has(`accepted-work-item:${item.id}`)) add("accepted-work-item", item.id, item);
     for (const candidate of [...item.candidates].reverse()) add("candidate", `${item.id}/${candidate.id}`, candidate);
   }
-  for (const artifact of store.listArtifacts(taskId)) add("artifact", artifact.id, artifact);
+  // File artifacts are not enumerated into the synchronous Context listing: the
+  // core cursor does not cover file edits and an ambient directory index here
+  // would be the forbidden update-time mirror (§3.7). Current artifacts are
+  // listed on demand via the async `artifact.list` capability; frozen Candidate
+  // artifacts remain reachable as commit-pinned pointers under their Candidate.
   for (const preparation of store.listEnvironmentPreparations(taskId)) add("environment-preparation", preparation.id, preparation);
   for (const workspace of store.listManagedWorkspaces(taskId)) add("managed-workspace", managedWorkspaceKey(workspace.owner), workspace);
   if (caller?.currentRunId !== undefined) {

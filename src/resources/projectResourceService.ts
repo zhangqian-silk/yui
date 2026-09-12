@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, statSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, realpathSync, rmdirSync, statSync } from "node:fs";
 import { join, relative, resolve, isAbsolute } from "node:path";
 import type { TaskStore } from "../storage/taskStore.js";
 import { checkGrant, recordGrantUse } from "../grant/capabilityGrant.js";
-import { requireIdentity, requireText, requireTimestamp } from "../domain/validation.js";
+import { requireText } from "../domain/validation.js";
 import { validateProject } from "../repository/project.js";
 import { updateRole, type TaskRole } from "../role/role.js";
 import { saveTaskRoleUpdate } from "../role/taskRoleUpdate.js";
@@ -12,53 +12,14 @@ import { assertRoleRuntimeMutationAllowed } from "../commands/roleRuntimeGuard.j
 import { assertProviderConversationReplaceable, currentProviderConversation } from "../runtime/providerRuntimeIdentity.js";
 import { projectProviderContinuations } from "../runtime/runtimeContinuationProjection.js";
 import {
-  contentDigest, validateArtifact, stableArtifactRef, validateExecutionEnvironmentSnapshot,
-  type Artifact, type EnvironmentPreparation, type ExecutionEnvironmentSnapshot, type LocalResource
+  contentDigest, validateExecutionEnvironmentSnapshot,
+  type EnvironmentPreparation, type ExecutionEnvironmentSnapshot, type LocalResource
 } from "./projectResource.js";
-
-export type ArtifactInput = Readonly<{
-  displayName: string; provenance: string; mediaType?: string;
-} & (
-  | { kind: "content"; content: string }
-  | { kind: "external-version"; resourceId: string; version: string; verification: string }
-  | { kind: "receipt"; jobId: string; receiptRef: string }
-  | { kind: "reference"; locator: string; observedAt: string }
-)>;
 
 export type EnvironmentPlan =
   | Readonly<{ kind: "empty" }>
   | Readonly<{ kind: "scratch" }>
   | Readonly<{ kind: "local"; resourceId: string; access: "read" | "write" }>;
-
-export function validateArtifactInput(value: unknown): ArtifactInput {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Artifact input must be an object.");
-  const input = value as ArtifactInput;
-  requireText(input.displayName, "Artifact name");
-  requireText(input.provenance, "Artifact provenance");
-  if (input.mediaType !== undefined) requireText(input.mediaType, "Artifact media type");
-  switch (input.kind) {
-    case "content":
-      if (typeof input.content !== "string" || Buffer.byteLength(input.content) > 8 * 1024 * 1024) {
-        throw new Error("Artifact content must be UTF-8 text of at most 8 MiB.");
-      }
-      break;
-    case "receipt":
-      requireIdentity(input.jobId, "Artifact Job");
-      requireText(input.receiptRef, "Artifact receipt");
-      break;
-    case "external-version":
-      requireIdentity(input.resourceId, "Artifact resource");
-      requireText(input.version, "Artifact external version");
-      requireText(input.verification, "Artifact version verification");
-      break;
-    case "reference":
-      requireText(input.locator, "Reference locator");
-      requireTimestamp(input.observedAt, "Reference observation");
-      break;
-    default: throw new Error("Unknown Artifact kind.");
-  }
-  return input;
-}
 
 /** Trusted typed owner; the public caller is authenticated by the existing
  * capability boundary. No new Store, worker, scheduling or Git authority. */
@@ -164,41 +125,6 @@ export function createProjectResources(store: TaskStore, now: () => Date = () =>
         // immutable actual snapshot until explicitly ended.
         saveTaskRoleUpdate(tx, role, updated, timestamp, source);
         return updated;
-      });
-    },
-    saveArtifact(taskId: string, input: ArtifactInput): Artifact {
-      task(taskId);
-      validateArtifactInput(input);
-      const base = { schemaVersion: 1 as const, taskId, id: `artifact-${randomUUID()}`,
-        displayName: input.displayName, mediaType: input.mediaType ?? "text/plain",
-        provenance: input.provenance, createdAt: now().toISOString() };
-      let artifact: Artifact;
-      if (input.kind === "content") {
-        artifact = { ...base, kind: input.kind, content: input.content, digest: contentDigest(input.content) };
-      } else if (input.kind === "receipt") {
-        const job = store.getDurableJob(taskId, input.jobId);
-        if (!job?.operation.receiptRefs.includes(input.receiptRef)) throw new Error("Receipt is not recorded by this Task's Job.");
-        const path = realpathSync(input.receiptRef);
-        if (!within(realpathSync(job.artifactsLocator), path)) throw new Error("Receipt is outside the Job artifact directory.");
-        const content = readText(path);
-        artifact = { ...base, kind: input.kind, jobId: job.id, receiptRef: input.receiptRef,
-          content, digest: contentDigest(content) };
-      } else if (input.kind === "external-version") {
-        // Recording supplied version evidence is not an external resource read.
-        // Actual resource operations must separately pass their owner's grant.
-        artifact = { ...base, kind: input.kind, resourceId: input.resourceId,
-          version: input.version, verification: input.verification };
-      } else {
-        artifact = { ...base, kind: input.kind, locator: input.locator, observedAt: input.observedAt };
-      }
-      store.saveArtifact(validateArtifact(artifact));
-      return artifact;
-    },
-    resultRefs(taskId: string, artifactIds: readonly string[]) {
-      return artifactIds.map((id) => {
-        const artifact = store.getArtifact(taskId, id);
-        if (!artifact) throw new Error(`Artifact not found: ${taskId}/${id}.`);
-        return stableArtifactRef(artifact);
       });
     },
     gitResult(taskId: string, changeSetId: string) {
@@ -402,10 +328,4 @@ function currentOrAbsentPath(path: string): string {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return resolve(path);
     throw error;
   }
-}
-
-function readText(path: string): string {
-  const stat = statSync(path);
-  if (!stat.isFile() || stat.size > 8 * 1024 * 1024) throw new Error("Receipt must be a file of at most 8 MiB.");
-  return readFileSync(path, "utf8");
 }

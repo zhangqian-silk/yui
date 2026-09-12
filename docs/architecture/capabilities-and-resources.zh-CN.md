@@ -47,8 +47,10 @@ Git 集成捕获精确 ChangeSet，在候选 worktree 检查后 CAS 推进目标
 
 ## Artifact 与环境
 
-- `artifact.save/read/list` 保存不可变内容、外部版本证据、Job 回执或引用资料。
-  Reference 不等于固定交付成果；最终结果不能选择缺失或跨 Task Artifact。
+- `artifact.save/read/list` 在 Task 自有的本地专用 Git 仓库中维护文件/目录交付物
+  （完整方案、原型、图表、报告）。`save` 写入 `relativePath` 并只提交该路径，
+  返回自证的 `commit + relativePath` 引用；`read` 解析 HEAD 或固定 commit 以取冻结证据；
+  `list` 为普通当前读取。Reference 不等于固定交付成果；最终结果不能选择缺失或跨 Task Artifact。
 - `environment.prepare` 准备 empty、scratch 或获授权 local 目录，不自动采用。
 - `environment.adopt` 复核身份、资源意图、权限与冲突后保存所有权。
 - `environment.bind` 选择 Role 下一次原生执行环境；`null` 返回 managed workspace。

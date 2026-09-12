@@ -134,7 +134,7 @@ export type RpcOptions = Readonly<{
  */
 const READ_ONLY_STORE_METHODS: ReadonlySet<string> = new Set([
   "getPluginIntent", "listPluginIntents",
-  "getPluginValidation", "getArtifact", "listArtifacts", "getLocalResource", "listLocalResources",
+  "getPluginValidation", "getLocalResource", "listLocalResources",
   "getEnvironmentPreparation", "listEnvironmentPreparations",
   "rootDirectory",
   "getConfig",
