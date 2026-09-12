@@ -1,6 +1,10 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { findLiveControllerProcessForHome } from "../core/controllerProcessIdentity.js";
+import {
+  findLiveControllerProcessForHome,
+  inspectLiveControllerProcess,
+  type LiveControllerProcess
+} from "../core/controllerProcessIdentity.js";
 import { readHomeFilesystemId } from "../core/homeFilesystemIdentity.js";
 
 import {
@@ -314,6 +318,9 @@ export async function stopFileTaskController(
     ...(expectedPid === undefined ? {} : { expectedPid }) };
   try {
     const result = await stopControllerGracefully(home, bounded);
+    if (result.stopped && physical !== undefined) {
+      await waitForControllerProcessExit(home, physical, options);
+    }
     if (result.stopped || options.call !== undefined) return result;
   } catch (error) {
     if (options.call !== undefined || !controllerRecoveryError(error)) throw error;
@@ -324,6 +331,36 @@ export async function stopFileTaskController(
       ...(physical === undefined ? {} : { expectedProcessStartIdentity: physical.processStartIdentity }) }
   );
   return stopped === undefined ? { stopped: false, alreadyStopped: true } : { stopped: true, pid: stopped.pid };
+}
+
+async function waitForControllerProcessExit(
+  home: string,
+  controller: LiveControllerProcess,
+  options: FileControllerClientOptions
+): Promise<void> {
+  const timeoutMs = positive(
+    options.shutdownTimeoutMs,
+    CONTROLLER_SHUTDOWN_TIMEOUT_MS,
+    "shutdownTimeoutMs"
+  );
+  const pollMs = positive(options.pollIntervalMs, POLL_INTERVAL_MS, "pollIntervalMs");
+  const homeFilesystemId = readHomeFilesystemId(home);
+  const deadline = Date.now() + timeoutMs;
+  while (
+    inspectLiveControllerProcess(
+      controller.pid,
+      homeFilesystemId,
+      controller.processStartIdentity
+    ) !== undefined
+  ) {
+    if (Date.now() >= deadline) {
+      throw new ControllerClientError(
+        "CONTROLLER_TIMEOUT",
+        `Controller process ${controller.pid} did not exit within ${timeoutMs} ms.`
+      );
+    }
+    await delay(pollMs);
+  }
 }
 
 async function stopControllerGracefully(
