@@ -18,7 +18,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { isDeepStrictEqual } from "node:util";
 
 /**
- * Storage 23 -> 24: collapse the two-layer managed workspace layout into a
+ * Storage 24 -> 25: collapse the two-layer managed workspace layout into a
  * single layer of real Git worktrees addressed by Task/owner and Project.
  *
  * Before this migration each managed Git worktree lived under a per-Project

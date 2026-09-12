@@ -17,7 +17,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 /**
- * Storage 22 -> 23: unify every Yui self-managed path under a single canonical
+ * Storage 23 -> 24: unify every Yui self-managed path under a single canonical
  * YUI_HOME.
  *
  * Before this migration the managed Git worktrees lived under the user-facing

@@ -130,6 +130,8 @@ import {
 } from "../runtime/processExitObservation.js";
 import { replayRuntimeProcessExitOutbox } from "../runtime/processExitOutbox.js";
 import { appendGlobalProcessExitObservation } from "../runtime/globalProcessExitStore.js";
+import { deliverGlobalInputs } from "./globalInputDelivery.js";
+import { createGlobalRoleMessage } from "../message/message.js";
 import { builtinAgentDriverRegistry } from "../runtime/builtinAgentDrivers.js";
 import {
   createRuntimeObservation,
@@ -407,6 +409,29 @@ export async function startFileTaskControllerRuntime(
         sessionHost,
         promptPush,
         launchCoordinator,
+        notifyOperatorInputOnce: async (input) => {
+          // The original attention mailbox remains pending until this one
+          // Global Message has an actual Provider receipt. Never inject keys
+          // into a busy Host console and mistake that for accepted attention.
+          const message = store.transaction(tx => {
+            const requestId = `operator-notice:${encodeURIComponent(input.receiptId)}`;
+            const previous = tx.listGlobalRoleMessages("operator").find(entry =>
+              (entry.inputControl ?? entry.interruptThen?.reusedInput)?.requestId === requestId);
+            if (previous !== undefined) return previous;
+            const sessions = tx.getGlobalRoleSessionSet("operator");
+            const session = sessions?.sessions[sessions.activeAgentId];
+            if (session?.status !== "active" || sessions?.providerBinding == null) return null;
+            const created = { ...createGlobalRoleMessage(tx.nextGlobalRoleMessageId(), "operator", input.text,
+              "system", { type: "system" }, new Date(), { inputControl: { action: "queue", requestId } }),
+              deliveryTarget: { agentId: session.agentId, nativeSessionId: session.nativeSessionId } };
+            tx.saveGlobalRoleMessage(created);
+            return created;
+          });
+          if (message === null) return "unavailable";
+          if (message.delivery?.via === "provider") return "already-sent";
+          runningRuntime?.signal("global-role:operator");
+          return "not-ready";
+        },
         roleResourceInventory: async (panes, inputs) => {
           const inventory = await scanInventory(panes);
           return inventory.resources.flatMap((resource) => {
@@ -620,6 +645,9 @@ export async function startFileTaskControllerRuntime(
         onError: options.onError,
         lifecycleHost,
         jobSupervisor,
+        globalInputDelivery: () => deliverGlobalInputs(home, store, async (roleName) => {
+          await lifecycleDispatcher("runtime.ensure-role-session", { scope: "global", roleName });
+        }, options.onError ?? (() => undefined)),
         jobControl,
         capabilityDispatcher: createCapabilityDispatcher(kernel.capabilities),
         ...(continuationReconciler === undefined ? {} : { continuationReconciler }),
@@ -1525,7 +1553,7 @@ function requiredParam(value: JsonValue | undefined): string {
 }
 
 function providerTurnControlParams(params: JsonValue): Readonly<{
-  taskId: string;
+  taskId?: string;
   roleName: string;
   runId?: string;
   agentId: string;
@@ -1549,7 +1577,7 @@ function providerTurnControlParams(params: JsonValue): Readonly<{
     throw applicationError("INVALID_PARAMS", "Provider Turn control fence is invalid.");
   }
   return {
-    taskId: requiredParam(value.taskId),
+    ...(value.taskId === undefined ? {} : { taskId: requiredParam(value.taskId) }),
     roleName: requiredParam(value.roleName),
     ...(value.runId === undefined ? {} : { runId: requiredParam(value.runId) }),
     agentId: requiredParam(value.agentId),

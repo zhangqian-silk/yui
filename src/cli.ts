@@ -2,6 +2,7 @@
 
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { recordTaskInterruptResult } from "./message/taskInterrupt.js";
 import { agentAdapterLabel as adapterLabel } from "./agent/adapterCatalog.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -14,6 +15,7 @@ import { describeCommandTree, findCommandNode } from "./cli/commandCatalog.js";
 import { routeInvocation } from "./cli/invocationRouter.js";
 import { renderCompletion, type CliIdentity } from "./cli/completion.js";
 import { resolveCompletionCandidates } from "./cli/dynamicCompletion.js";
+import { recordGlobalInterruptResult, recordGlobalSteerResult } from "./message/globalInterrupt.js";
 import {
   allowsInteractiveSelection,
   resolveInteractiveArguments,
@@ -184,7 +186,13 @@ import {
   inspectAgentHost,
   runAgentHost,
   sendAgentHostAuthorityControl,
-  type AgentHostControlResult
+  sendAgentHostSteerControl,
+  sendAgentHostCancelControl,
+  foldSteerLiveReceipt,
+  foldInterruptLiveReceipt,
+  type AgentHostControlResult,
+  type SteerLiveReceipt,
+  type InterruptLiveReceipt
 } from "./runtime/agentHost.js";
 import {
   unknownAgentRunConfiguration,
@@ -1025,10 +1033,159 @@ export async function main(): Promise<void> {
       emit(result);
       return;
     }
+    // The session surface (record/replace/enter/context) only ever yields the
+    // enter control; the live input actions live under the top-level `role`
+    // command below, never here.
+    if (result.kind !== "enter") {
+      throw new Error("Session commands cannot perform a live input control.");
+    }
     await ensureFileTaskController(home, { environment: process.env });
     await runtime.prepareGlobalRoleEnter(result.role.name);
     tmux.attachRole("operator", result.role.name, "auto");
     return;
+  }
+  if (resolved[0] === "role") {
+    // decision-3 §7 CLI grammar: the durable Global input actions are top-level
+    // `role message queue|steer <global-role> …` and `role interrupt
+    // <global-role> …`, distinct from `config role …` (desired configuration)
+    // and `session …` (native session lifecycle). Core persists the durable
+    // Global-owned Message, proves owner/target/capability/writer-fence from
+    // durable state, and returns either a string disposition (queued,
+    // idempotent-replay, or an explicit not-steered/not-interrupted failure with
+    // its exact code) or a resolved live intent. The CLI performs at most one
+    // native edge with scope "global" and taskId omitted — the same shared
+    // resolver and transport as a Task Role, never a fabricated Task.
+    let globalInputFailure: Readonly<{ code: string; detail: string; data: unknown }> | undefined;
+    const roleOptions: GlobalRoleCommandOptions = {
+      yuiHome: home,
+      env: process.env,
+      jsonOutput,
+      onInputFailure: failure => { globalInputFailure = failure; }
+    };
+    const result = runGlobalRoleCommand(
+      resolved.slice(1),
+      store as unknown as Parameters<typeof runGlobalRoleCommand>[1],
+      roleOptions
+    );
+    if (resolved[1] === "message" && resolved[2] === "queue" && resolved[3] !== undefined) {
+      await callController(home, "scheduler.signal", {
+        key: `global-role:${encodeURIComponent(resolved[3])}`
+      }).catch(() => {});
+    }
+    if (typeof result === "string") {
+      if (globalInputFailure !== undefined) {
+        emitControlFailure(globalInputFailure.detail, globalInputFailure.code, globalInputFailure.data);
+        return;
+      }
+      emit(result);
+      return;
+    }
+    if (result.kind === "input-steer") {
+      // Core already persisted the durable Global Message and proved target +
+      // capability + writer fence from the Global Role's own Session set. This
+      // is the single live edge: one native steer of the exact current Turn,
+      // scope "global", no retarget and no fallback to interrupt or queue.
+      await ensureFileTaskController(home, { environment: process.env });
+      let control: AgentHostControlResult;
+      try {
+        control = await sendAgentHostSteerControl({
+          home,
+          scope: "global",
+          roleName: result.roleName,
+          control: {
+            protocol: AGENT_HOST_CONTROL_PROTOCOL,
+            type: "steer-turn",
+            nativeSessionId: result.target.nativeSessionId,
+            nativeTurnId: result.target.nativeTurnId ?? result.target.attemptId,
+            authority: result.target.authority,
+            run: { attemptId: result.receiptId, boundedText: result.text }
+          }
+        });
+      } catch (error) {
+        recordGlobalSteerResult(store, result.roleName, result.messageId, {
+          state: "steer-unknown", outcome: "pending",
+          detail: error instanceof Error ? error.message : String(error)
+        });
+        throw runtimeError(
+          `Steer message ${result.messageId} is saved but the native steer did not complete: `
+          + `${error instanceof Error ? error.message : String(error)}. `
+          + "The Message is retained and its outcome is recorded from the Host; whether the "
+          + "Provider accepted it may be delivery-unknown. Re-read the Session before acting; "
+          + "do not reissue the same input under a new requestId or a different action."
+        );
+      }
+      const steer = foldSteerLiveReceipt(control);
+      recordGlobalSteerResult(store, result.roleName, result.messageId, steer);
+      if (steer.state !== "steered") {
+        emitControlFailure(steerReceiptOutput(result.output, result.roleName, result.messageId, steer),
+          steer.state === "steer-unknown" ? "DELIVERY_UNKNOWN" : "STEER_NOT_DELIVERED",
+          { roleName: result.roleName, messageId: result.messageId, steer });
+        return;
+      }
+      emit(
+        steerReceiptOutput(result.output, result.roleName, result.messageId, steer),
+        false, {
+          roleName: result.roleName,
+          messageId: result.messageId, steer
+        });
+      return;
+    }
+    if (result.kind === "input-interrupt") {
+      // The single live edge for a Global interrupt: one native cancel of the
+      // exact current Turn, scope "global". Never a kill/restart/detach. Any
+      // then-handoff was already claimed durably by Core (an existing Global
+      // Message owned by this Role) and is delivered once by the ordinary
+      // continuation path after this Turn reaches a proven terminal.
+      await ensureFileTaskController(home, { environment: process.env });
+      let control: AgentHostControlResult;
+      try {
+        control = await sendAgentHostCancelControl({
+          home,
+          scope: "global",
+          roleName: result.roleName,
+          control: {
+            protocol: AGENT_HOST_CONTROL_PROTOCOL,
+            type: "cancel",
+            nativeOnly: true,
+            nativeSessionId: result.target.nativeSessionId,
+            attemptId: result.target.attemptId,
+            authority: result.target.authority
+          }
+        });
+      } catch (error) {
+        recordGlobalInterruptResult(store, result.roleName, result.receiptId, {
+          state: "interrupt-unknown", outcome: "cancel-requested",
+          detail: error instanceof Error ? error.message : String(error)
+        });
+        throw runtimeError(
+          `Interrupt of global role ${result.roleName} did not complete: `
+          + `${error instanceof Error ? error.message : String(error)}. `
+          + "No process was killed; re-read the Session before retrying."
+        );
+      }
+      const interrupt = foldInterruptLiveReceipt(control);
+      recordGlobalInterruptResult(store, result.roleName, result.receiptId, interrupt);
+      if (interrupt.state !== "interrupt-requested") {
+        emitControlFailure(interruptReceiptOutput(result.output, result.roleName, interrupt),
+          interrupt.state === "interrupt-unknown" ? "DELIVERY_UNKNOWN" : "INTERRUPT_NOT_DELIVERED",
+          { roleName: result.roleName, interrupt });
+        return;
+      }
+      emit(
+        interruptReceiptOutput(result.output, result.roleName, interrupt),
+        false, {
+          roleName: result.roleName,
+          ...(result.thenMessageId === undefined ? {} : { thenMessageId: result.thenMessageId }),
+          interrupt
+        });
+      return;
+    }
+    if (result.kind !== "enter") {
+      throw new Error("Role command returned an invalid control result.");
+    }
+    // A top-level `role` command never enters a runtime Session; that is
+    // `session enter`.
+    throw usageError("Use 'yui session enter <role>' to attach to a Global Role.");
   }
   if (resolved[0] === "operator") {
     if (resolved[1] === "enter") {
@@ -1890,12 +2047,19 @@ export async function main(): Promise<void> {
             await workspacePreparer.prepareTaskWorkspace(task.id);
           }
         }
+        const controlData = result.data as { steer?: { code?: string }; interrupt?: { code?: string } } | undefined;
+        const failureCode = controlData?.steer?.code ?? controlData?.interrupt?.code;
+        if (failureCode !== undefined) {
+          emitControlFailure(result.output, failureCode, result.data);
+          return;
+        }
         emit(`${result.output}${reviewOutput}`, false, reviewData === undefined
           ? result.data
           : { command: result.data, ...reviewData as object });
         return;
       }
-      if (jsonOutput && result.kind !== "session-stop") {
+      if (jsonOutput && result.kind !== "session-stop"
+        && result.kind !== "input-steer" && result.kind !== "input-interrupt") {
         throw usageError("Task Role view/takeover requires an interactive terminal.");
       }
       if (result.kind === "session-stop") {
@@ -1927,6 +2091,106 @@ export async function main(): Promise<void> {
       if (result.kind === "view") {
         if (result.output !== undefined) emit(result.output);
         tmux.attachRole(result.taskId, result.roleName, "read-only");
+        return;
+      }
+      if (result.kind === "input-steer") {
+        // Core already persisted the Message and proved target + capability +
+        // writer fence. This is the single live edge: one native steer of the
+        // exact current Turn, with no retarget and no fallback to interrupt or
+        // queue. Its durable settlement flows through the steer receipt fold.
+        await ensureFileTaskController(home, { environment: process.env });
+        let control: AgentHostControlResult;
+        try {
+          control = await sendAgentHostSteerControl({
+            home,
+            scope: "task",
+            taskId: result.taskId,
+            roleName: result.roleName,
+            control: {
+              protocol: AGENT_HOST_CONTROL_PROTOCOL,
+              type: "steer-turn",
+              nativeSessionId: result.target.nativeSessionId,
+              nativeTurnId: result.target.nativeTurnId ?? result.target.attemptId,
+              authority: result.target.authority,
+              run: { attemptId: result.receiptId, boundedText: result.text }
+            }
+          });
+        } catch (error) {
+          throw runtimeError(
+            `Steer message ${result.messageId} is saved but the native steer did not complete: `
+            + `${error instanceof Error ? error.message : String(error)}. `
+            + "The Message is retained and its outcome is recorded from the Host; whether the "
+            + "Provider accepted it may be delivery-unknown. Re-read the Session before acting; "
+            + "do not reissue the same input under a new requestId or a different action."
+          );
+        }
+        const steer = foldSteerLiveReceipt(control);
+        if (steer.state !== "steered") {
+          emitControlFailure(steerReceiptOutput(result.output, `${result.taskId}/${result.roleName}`, result.messageId, steer),
+            steer.state === "steer-unknown" ? "DELIVERY_UNKNOWN" : "STEER_REJECTED",
+            { taskId: result.taskId, roleName: result.roleName, messageId: result.messageId, steer });
+          return;
+        }
+        emit(
+          steerReceiptOutput(result.output, `${result.taskId}/${result.roleName}`,
+            result.messageId, steer),
+          false, {
+            taskId: result.taskId, roleName: result.roleName,
+            messageId: result.messageId, steer
+          });
+        return;
+      }
+      if (result.kind === "input-interrupt") {
+        // The single live edge for interrupt: one native cancel of the exact
+        // current Turn. Never a kill/restart/detach. Any then-handoff was
+        // already claimed durably by Core and is delivered once by the ordinary
+        // continuation path after this Turn reaches a proven terminal.
+        await ensureFileTaskController(home, { environment: process.env });
+        let control: AgentHostControlResult;
+        try {
+          control = await sendAgentHostCancelControl({
+            home,
+            scope: "task",
+            taskId: result.taskId,
+            roleName: result.roleName,
+            control: {
+              protocol: AGENT_HOST_CONTROL_PROTOCOL,
+              type: "cancel",
+              nativeOnly: true,
+              nativeSessionId: result.target.nativeSessionId,
+              // Native cancel names the exact original execution attempt it stops
+              // (Host matches request.attemptId === activeRunAttemptId). That is
+              // distinct from receiptId, the durable identity of this interrupt
+              // control operation — never send the operation id as the turn id.
+              attemptId: result.target.attemptId,
+              authority: result.target.authority
+            }
+          });
+        } catch (error) {
+          recordTaskInterruptResult(store, result.taskId, result.receiptId,
+            { state: "interrupt-unknown", outcome: "cancel-requested" });
+          throw runtimeError(
+            `Interrupt ${result.receiptId} of ${result.taskId}/${result.roleName} did not complete: `
+            + `${error instanceof Error ? error.message : String(error)}. `
+            + "No process was killed; re-read the Session before retrying."
+          );
+        }
+        const interrupt = foldInterruptLiveReceipt(control);
+        recordTaskInterruptResult(store, result.taskId, result.receiptId, interrupt);
+        if (interrupt.state !== "interrupt-requested") {
+          emitControlFailure(interruptReceiptOutput(result.output, `${result.taskId}/${result.roleName}`, interrupt),
+            interrupt.state === "interrupt-unknown" ? "DELIVERY_UNKNOWN"
+              : interrupt.state === "interrupt-not-active" ? "NO_ACTIVE_TURN" : "INTERRUPT_REJECTED",
+            { taskId: result.taskId, roleName: result.roleName, receiptId: result.receiptId, interrupt });
+          return;
+        }
+        emit(
+          interruptReceiptOutput(result.output, `${result.taskId}/${result.roleName}`, interrupt),
+          false, {
+            taskId: result.taskId, roleName: result.roleName,
+            ...(result.thenMessageId === undefined ? {} : { thenMessageId: result.thenMessageId }),
+            interrupt
+          });
         return;
       }
       const syncAuthority = async (
@@ -3230,6 +3494,55 @@ function emit(output: string, literal = false, data?: unknown): void {
         ? { ok: true, output: normalized }
         : { ok: true, data })
     : normalized}\n`);
+}
+
+function emitControlFailure(message: string, code: string, details: unknown): void {
+  process.exitCode = 2;
+  process.stdout.write(`${jsonOutput
+    ? JSON.stringify({ ok: false, code, message: message.trim(), details })
+    : message.trim()}\n`);
+}
+
+/**
+ * The human line for a live steer, corrected to the *actual* live acceptance
+ * (decision-3 §7). The store command's `base` line is written optimistically
+ * ("Steering …"); only a proven `steered` keeps it. `steer-unknown` (pending) is
+ * delivery-unknown, and a rejected/unavailable steer did not deliver — in both
+ * cases the Message is retained and the operator must not reissue. There is no
+ * retarget, queue, or interrupt fallback here; this only reports.
+ */
+function steerReceiptOutput(
+  base: string, target: string, messageId: string, receipt: SteerLiveReceipt
+): string {
+  if (receipt.state === "steered") return base;
+  const detail = receipt.detail === undefined ? "" : ` ${receipt.detail}`;
+  const head = receipt.state === "steer-unknown"
+    ? `Steer message ${messageId} to ${target} is delivery-unknown (${receipt.outcome}): the Host `
+      + "holds it but the Provider has not yet proven acceptance."
+    : `Steer message ${messageId} to ${target} did not deliver (${receipt.outcome}).`;
+  return `${head}${detail} The Message is retained; re-read the Session before acting, and do not `
+    + "reissue the same input under a new requestId or a different action.\n";
+}
+
+/**
+ * The human line for a live interrupt, corrected to `control.cancellation`
+ * (decision-3 §7). Only a proven stop-request keeps the optimistic `base` line.
+ * `not-active`/`unknown`/unavailable each report that nothing was proven stopped;
+ * no process is ever killed. A then-handoff, if any, was already claimed durably
+ * and is delivered once by the ordinary continuation path after a proven terminal.
+ */
+function interruptReceiptOutput(
+  base: string, target: string, receipt: InterruptLiveReceipt
+): string {
+  if (receipt.state === "interrupt-requested") return `${base.trim()}\nNative cancel requested; Turn termination is not yet proven.\n`;
+  const detail = receipt.detail === undefined ? "" : ` ${receipt.detail}`;
+  const reason = receipt.state === "interrupt-not-active"
+    ? "found no active Turn to stop (not-active)"
+    : receipt.state === "interrupt-unknown"
+      ? "could not prove a stop (unknown)"
+      : `did not complete (${receipt.outcome})`;
+  return `Interrupt of ${target} ${reason}.${detail} No process was killed; re-read the Session `
+    + "before retrying.\n";
 }
 
 function withControllerRefreshWarning(

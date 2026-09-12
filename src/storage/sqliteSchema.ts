@@ -673,6 +673,28 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_context_snapshots_scope_sequence
   ON context_snapshots(task_id, scope, COALESCE(scope_ref, ''), sequence);
 `;
 
+/**
+ * The Global-owned Message store (decision-3 §9/§11). It extends the Message
+ * store to a Global owner exactly as `global_role_session_sets` parallels
+ * `role_session_sets`: keyed by the Global Role `name` with an FK to
+ * `global_roles`, never by a fabricated `task_id`, and never a new private
+ * queue. Ids are minted from the existing `global_sequences` counter, so a
+ * Global input has an explicit owner and an authorizable reference without
+ * reusing Task record shapes or Task permissions.
+ */
+const GLOBAL_ROLE_MESSAGE_SQL = `
+CREATE TABLE IF NOT EXISTS global_role_messages (
+  name       TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  seq        INTEGER NOT NULL,
+  payload    TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (name, message_id),
+  FOREIGN KEY (name) REFERENCES global_roles(name)
+);
+CREATE INDEX IF NOT EXISTS idx_global_role_messages_seq ON global_role_messages(name, seq);
+`;
+
 const MIGRATION_1_SQL = [
   BASELINE_CORE_SQL,
   BASELINE_JOB_AND_RELEASE_SQL,
@@ -1219,6 +1241,22 @@ UPDATE review_rounds SET payload = json_set(payload, '$.executionGroup.lanes', j
   },
   {
     version: 23,
+    name: "unified-message-input-control",
+    introducedIn: "0.16.1",
+    // Widen the Message payload with an optional durable input action
+    // (queue/steer) plus its stable requestId, and an optional interrupt-then
+    // handoff claim (requestId + exact target AgentRun). Existing messages carry
+    // neither field and keep their current queue semantics and delivery history;
+    // no native Turn identity is synthesized and no history is rewritten. The
+    // same contiguous migration adds the Global-owned Message store
+    // (global_role_messages), extending the Message store to a Global owner
+    // exactly as global_role_session_sets parallels role_session_sets: an
+    // explicit Global owner and authorizable reference, no fabricated Task and
+    // no new private global queue (decision-3 §9/§11).
+    sql: `SELECT 1; -- Message input actions, exact Session delivery pins, provider receipts and interrupt-then claims; Global Session provider bindings and native interrupt evidence\n${GLOBAL_ROLE_MESSAGE_SQL}`
+  },
+  {
+    version: 24,
     name: "unify-home-layout",
     introducedIn: "0.15.9",
     // Unify every Yui self-managed path under a single canonical YUI_HOME. The
@@ -1241,7 +1279,7 @@ UPDATE review_rounds SET payload = json_set(payload, '$.executionGroup.lanes', j
     migrateData: migrateUnifyHomeLayout
   },
   {
-    version: 24,
+    version: 25,
     name: "collapse-worktree-layout",
     introducedIn: "0.15.9",
     // Collapse the two-layer managed workspace layout into a single layer of real
@@ -1721,6 +1759,7 @@ export const SQLITE_SCHEMA_TABLES: readonly string[] = [
   "projects",
   "global_roles",
   "global_role_session_sets",
+  "global_role_messages",
   "global_sequences",
   "tasks_catalog",
   "managed_workspaces",

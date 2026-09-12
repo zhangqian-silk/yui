@@ -33,7 +33,7 @@ let deliveryFailure: AgentHostEventDelivery["failure"];
 // Only live diagnostics for this process's immutable files, not another queue.
 // No payload, retry, or authoritative delivery state is kept in this map.
 const emittedEvents = new Map<string, Readonly<{
-  home: string; taskId: string; roleName: string; nativeSessionId?: string; terminal: boolean;
+  home: string; taskId?: string; roleName: string; nativeSessionId?: string; terminal: boolean;
 }>>();
 
 /** A live transport observation, independent of Provider state and Run truth. */
@@ -224,6 +224,8 @@ export async function publishStructuredProviderInputSettlement(input: Readonly<{
   const adapterId = requireIdentity(input.environment.YUI_ADAPTER_ID, "Agent adapter id");
   const driver = builtinAgentDriverRegistry().requireByAdapterId(adapterId);
   const fence = describeHostIdentity(input.environment, adapterId, input.nativeSessionId);
+  // The Host reports the exact Session/turn/attempt, including input with no
+  // AgentRun. Only the Controller resolves a current Run from durable state.
   const entry = observation({
     kind: input.status === "accepted" ? "input.accepted"
       : input.status === "rejected" ? "input.rejected" : "input.delivery-unknown",
@@ -486,9 +488,10 @@ function observation(input: Readonly<{
   });
 }
 
-async function signalController(home: string, taskId: string, roleName: string): Promise<void> {
+async function signalController(home: string, taskId: string | undefined, roleName: string): Promise<void> {
   await callController(home, "scheduler.signal", {
-    key: runtimeLifecycleSignalKey({ scope: "task", taskId, roleName })
+    key: runtimeLifecycleSignalKey(taskId === undefined
+      ? { scope: "global", roleName } : { scope: "task", taskId, roleName })
   }, { timeoutMs: 100 }).catch(() => {});
 }
 
@@ -582,7 +585,7 @@ function describeHostIdentity(
   environment: NodeJS.ProcessEnv,
   adapterId: string,
   nativeSessionId: string
-): Readonly<{ taskId: string; roleName: string; agentId: string; nativeSessionId: string }> {
+): Readonly<{ taskId?: string; roleName: string; agentId: string; nativeSessionId: string }> {
   if (environment.YUI_ADAPTER_ID !== adapterId) throw new Error("Agent adapter id does not match.");
   return {
     taskId: hostTaskId(environment),
@@ -592,7 +595,11 @@ function describeHostIdentity(
   };
 }
 
-function hostTaskId(environment: NodeJS.ProcessEnv): string {
+function hostTaskId(environment: NodeJS.ProcessEnv): string | undefined {
+  if (environment.YUI_SESSION_SCOPE === "global") {
+    if (environment.YUI_TASK_ID !== undefined) throw new Error("Global Host must not carry a Task id.");
+    return undefined;
+  }
   if (environment.YUI_SESSION_SCOPE !== "task") throw new Error("Agent Host observation requires Task scope.");
   return requireIdentity(environment.YUI_TASK_ID, "Task id");
 }

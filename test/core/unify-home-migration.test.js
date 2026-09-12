@@ -45,8 +45,8 @@ import { sanitizedTestEnv } from "../helpers/sanitizedEnv.mjs";
 // takes a v18 Home to v19 and its intermediate state (managed worktrees copied
 // under `<home>/workspaces/worktree/`) is what these direct-runner tests assert.
 // The orchestrator tests below deliberately drive the FULL chain to head.
-const PRIOR_VERSION = 22;
-const UNIFY_TARGET_VERSION = 23;
+const PRIOR_VERSION = 23;
+const UNIFY_TARGET_VERSION = 24;
 
 const gitEnv = sanitizedTestEnv({
   GIT_AUTHOR_NAME: "Yui Test",

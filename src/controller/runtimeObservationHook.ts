@@ -232,14 +232,14 @@ export function parseRuntimeObservationHook(
       conversationId: fence.nativeSessionId,
       nativeSessionId: fence.nativeSessionId,
       ...(nativeTurnId === undefined ? {} : { nativeTurnId }),
-      receiptId: fence.receiptId ?? formatRunReceiptId(fence.taskId, fence.runId)
+      receiptId: fence.receiptId ?? formatRunReceiptId(fence.taskId!, fence.runId)
     },
     payload
   } as const;
   const observations = mapAgentDriverHooks({ ...driverInput, ordinal: 0 });
   return {
     home: requireIdentity(environment.YUI_HOME, "YUI_HOME"),
-    taskId: fence.taskId,
+    taskId: fence.taskId!,
     roleName: fence.roleName,
     observations: Object.freeze(observations)
   };

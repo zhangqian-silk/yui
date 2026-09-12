@@ -1,6 +1,6 @@
 import type { ConfiguredAgent } from "../agent/agent.js";
 import { roleLaunchEventPayload, saveTaskRoleUpdate } from "../role/taskRoleUpdate.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { archiveDeliveryWarnings, archiveRetainedResources, renderArchiveDiagnostics, taskArchiveDiagnostics } from "../task/archiveDiagnostics.js";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -67,13 +67,16 @@ import { renderRoleDetails, renderRoleLaunchComparison } from "../output/rolePre
 import {
   createTaskMessage,
   expandTaskMessageResult,
+  recordTaskMessageControlOutcome,
   taskMessageAuthorLabel,
+  taskMessageInputControlState,
   updateDraftTaskMessage,
   withSubmissionReceipt,
   TASK_SUBMISSION_INTENTS,
   type TaskMessage,
   type TaskMessageAuthor,
   type TaskMessageContext,
+  type TaskMessageInputAction,
   type TaskMessageKind,
   type TaskSubmissionIntent
 } from "../message/message.js";
@@ -104,6 +107,7 @@ import type {
   WorkItemIntegrationProof
 } from "../workspace/workItemChangeSetManager.js";
 import { cancelInputRequest } from "../input/inputRequest.js";
+import { builtinAgentDriverRegistry } from "../runtime/builtinAgentDrivers.js";
 import {
   retireExactActiveRun,
   terminalizeExactTaskRun,
@@ -331,10 +335,13 @@ import { runGrantCommand } from "./grantCommands.js";
 import { runWorkflowCommand } from "./workflowCommands.js";
 import {
   taskLocalActor as resolveTaskLocalActor,
-  assertTaskDeliveryAuthority
+  assertTaskDeliveryAuthority,
+  assertTaskInputControlAuthority
 } from "./taskActor.js";
 import { currentManagedRuntime, resolveManagedTaskReader } from "../runtime/managedCaller.js";
 import { resolveMessageRecipient, messageContinuationBlocker } from "../message/messageContinuation.js";
+import { findTaskInterrupt, reserveTaskInterrupt, taskInterruptReceipt, taskInterruptWasRejected } from "../message/taskInterrupt.js";
+import { resolveTaskInputControl, type ResolvedInputTarget } from "../message/inputControlResolution.js";
 import { enqueueOperatorEvent } from "../scheduler/operatorEvent.js";
 import { queueLeaderWakeup } from "../scheduler/wakeupQueue.js";
 import { renderWakeReason, wakeReason } from "../scheduler/wakeReason.js";
@@ -466,6 +473,40 @@ export type TaskCommandExecution =
       roleName: string;
       nativeSessionId: string;
       authority: ProviderAuthorityFence;
+      output: string;
+    }>
+  | Readonly<{
+      /**
+       * A resolved live steer against the exact current native Turn. Core has
+       * already persisted the Message and proven the target, capability, and
+       * writer fence from durable state; the CLI performs the one Agent Host
+       * steer call and never re-decides urgency, target, or fallback.
+       */
+      kind: "input-steer";
+      taskId: string;
+      roleName: string;
+      messageId: string;
+      target: ResolvedInputTarget;
+      /** Stable Provider request id for the steer; repeating it is idempotent. */
+      receiptId: string;
+      text: string;
+      output: string;
+    }>
+  | Readonly<{
+      /**
+       * A resolved live interrupt of the exact current native Turn, delivered
+       * only through the Provider's native cancel. Core has proven native
+       * interrupt capability and the exact target; the CLI performs the one
+       * Agent Host cancel and never kills, restarts, or detaches the process.
+       */
+      kind: "input-interrupt";
+      taskId: string;
+      roleName: string;
+      target: ResolvedInputTarget;
+      /** Stable Provider request id for the cancel; repeating it is idempotent. */
+      receiptId: string;
+      /** The claimed then-handoff Message to deliver once, when one was chosen. */
+      thenMessageId?: string;
       output: string;
     }>;
 
@@ -1121,7 +1162,8 @@ function routeUserSubmission(
   intent: TaskSubmissionIntent,
   now: Date,
   submissionKey?: string,
-  target?: SubmissionTarget
+  target?: SubmissionTarget,
+  inputControl?: TaskMessageContext["inputControl"]
 ): UserSubmissionResult {
   const kind: TaskMessageKind = actor;
   const author: TaskMessageAuthor = actor === "operator"
@@ -1145,7 +1187,8 @@ function routeUserSubmission(
   // how routing then resolves (§2.5). Intent is stored, never re-read from the body.
   const message = appendMessage(tx, task.id, body, kind, author, now, {
     intent,
-    ...(submissionKey === undefined ? {} : { submissionKey })
+    ...(submissionKey === undefined ? {} : { submissionKey }),
+    ...(inputControl === undefined ? {} : { inputControl })
   });
 
   // Re-read phase and activation inside this same transaction: this is the point
@@ -2489,6 +2532,8 @@ function taskMessageCommand(
     return output(`Saved message ${result.message.id} to ${result.task.id} (${delivery.state}${reason === undefined ? "" : `: ${reason}`}).\n`,
       { taskId: result.task.id, message: result.message, delivery });
   }
+  if (command === "queue") return queueTaskMessage(rest, store, options);
+  if (command === "steer") return steerTaskMessage(rest, store, options);
   if (command === "list") {
     const messageListUsage = "Task message list usage: yui task message list <id> [--after <timestamp>] [--limit <n>].";
     const parsed = parseTail(rest, new Set(["--after", "--limit"]), messageListUsage);
@@ -2548,6 +2593,175 @@ function taskMessageCommand(
 /** CLI and authenticated user Surface share the same message and mailbox
  * transaction. Talking to Leader does not impersonate Leader authority. */
 /**
+ * `queue` is the explicit, idempotent form of the existing send: it persists a
+ * Message tagged with the durable `queue` action and a stable requestId, and
+ * relies on the identical continuation path as `send`. Repeating the exact same
+ * (requestId, body) returns the original Message and delivers nothing twice;
+ * reusing the requestId with different content is a conflict, never a second
+ * input (decision-3 §5/§6).
+ */
+function queueTaskMessage(
+  args: string[],
+  store: TaskWorkflowStore,
+  options: TaskCommandOptions
+): TaskCommandExecution {
+  const usage = "Task message queue usage: yui task message queue <id> (<body>|--body-file <path|->) --request-id <id> [--to <role> --work-item <id>|--review-round <id>].";
+  const parsed = parseTail(
+    args,
+    new Set(["--body-file", "--request-id", "--to", "--work-item", "--review-round"]),
+    usage
+  );
+  if (parsed.positionals.length < 1 || parsed.positionals.length > 2) throw usageError(usage);
+  const body = readCommandText(parsed.positionals[1], parsed.options.get("--body-file"), "--body", usage);
+  const requestId = requiredOption(parsed.options, "--request-id");
+  const recipientRole = parsed.options.get("--to");
+  const workItemId = parsed.options.get("--work-item");
+  const reviewRoundId = parsed.options.get("--review-round");
+  if (recipientRole === undefined && (workItemId !== undefined || reviewRoundId !== undefined)) {
+    throw usageError("--to is required for scoped Message delivery.");
+  }
+  const result = sendTaskMessageCommand(store, parsed.positionals[0], body, undefined, options,
+    recipientRole === undefined ? undefined : { roleName: recipientRole, workItemId, reviewRoundId },
+    undefined, undefined, { action: "queue", requestId });
+  const reason = result.message.continuation?.notDeliveredReason;
+  const delivery = result.idempotentReplay ? { state: "idempotent-replay" }
+    : reason !== undefined ? { state: "not-delivered", reason }
+    : recipientRole !== undefined || result.actor !== "leader" ? { state: "queued" } : { state: "saved" };
+  return output(`Queued message ${result.message.id} to ${result.task.id} (${delivery.state}${reason === undefined ? "" : `: ${reason}`}).\n`,
+    { taskId: result.task.id, message: result.message, delivery });
+}
+
+/**
+ * `steer` targets only the exact current native Turn. It always persists the
+ * Message (so an unsupported or missed steer stays visible and re-choosable),
+ * then resolves the live target from durable state with no Provider call. On a
+ * ready resolution it returns a structured intent the CLI performs against the
+ * Agent Host; on any explicit failure it returns the saved Message plus the
+ * exact error code, and never falls back to an interrupt or a queue
+ * (decision-3 §1/§5). The steer Message is excluded from the queued
+ * continuation path, so a failed live attempt cannot silently become a queue.
+ */
+function steerTaskMessage(
+  args: string[],
+  store: TaskWorkflowStore,
+  options: TaskCommandOptions
+): TaskCommandExecution {
+  const usage = "Task message steer usage: yui task message steer <id> (<body>|--body-file <path|->) --request-id <id> --expected-target <turn> [--to <role> --work-item <id>|--review-round <id>].";
+  const parsed = parseTail(
+    args,
+    new Set(["--body-file", "--request-id", "--expected-target", "--to", "--work-item", "--review-round"]),
+    usage
+  );
+  if (parsed.positionals.length < 1 || parsed.positionals.length > 2) throw usageError(usage);
+  const body = readCommandText(parsed.positionals[1], parsed.options.get("--body-file"), "--body", usage);
+  const requestId = requiredOption(parsed.options, "--request-id");
+  const expectedTarget = requiredOption(parsed.options, "--expected-target");
+  const recipientRole = parsed.options.get("--to");
+  const workItemId = parsed.options.get("--work-item");
+  const reviewRoundId = parsed.options.get("--review-round");
+  if (recipientRole === undefined) {
+    throw usageError("steer requires --to <role>; it targets that Role's exact current Turn.");
+  }
+  // decision-3 §9: a Task Leader's current native turn (including a Draft's
+  // planning turn) is a real turn but NOT an implicit AgentRun, so steering it
+  // never establishes a Worker-style Assignment. It is persisted as an ordinary
+  // no-Run Leader notification (recipient undefined, wake "none" so it never
+  // spawns a Leader AgentRun) and its live target is the Leader's own turn. A
+  // Worker/Reviewer steer keeps the exact Assignment recipient it always had.
+  const leaderTarget = recipientRole === "leader";
+  if (leaderTarget && (workItemId !== undefined || reviewRoundId !== undefined)) {
+    throw usageError("Steering the Leader targets its current turn directly; it takes no --work-item/--review-round Assignment.");
+  }
+  const result = leaderTarget
+    ? sendTaskMessageCommand(store, parsed.positionals[0], body, "none", options,
+        undefined, undefined, undefined, { action: "steer", requestId, expectedTarget })
+    : sendTaskMessageCommand(store, parsed.positionals[0], body, undefined, options,
+        { roleName: recipientRole, workItemId, reviewRoundId }, undefined, undefined,
+        { action: "steer", requestId, expectedTarget });
+  const roleName = result.message.recipient?.roleName ?? recipientRole;
+  if (result.idempotentReplay) {
+    // A replay is a later reader (another CLI invocation): surface the durable
+    // control state the Host settlement folded onto this exact Message, so an
+    // unknown steer is visibly not-submitted/pending/accepted/rejected/
+    // delivery-unknown rather than silently re-attempted (message-5 gap D).
+    const controlState = taskMessageInputControlState(result.message);
+    return output(`Steer message ${result.message.id} already recorded (idempotent-replay${
+      controlState === undefined ? "" : `; control ${controlState}`}).\n`,
+      { taskId: result.task.id, message: result.message,
+        steer: { state: "idempotent-replay" as const,
+          ...(controlState === undefined ? {} : { control: controlState }) } });
+  }
+  // The static resolution is the testable contract: capability gate, exact-turn
+  // match, and writer fence, all from durable state without a live Endpoint.
+  const resolution = resolveTaskInputControl(store, result.task.id, roleName, "steer", expectedTarget);
+  if (resolution.outcome !== "ready") {
+    return output(`Steer message ${result.message.id} saved but not delivered (${resolution.code}: ${resolution.detail}).\n`,
+      { taskId: result.task.id, message: result.message,
+        steer: { state: "not-steered" as const, code: resolution.code, detail: resolution.detail } });
+  }
+  if (!leaderTarget) {
+    const current = store.getActiveRun(result.task.id, roleName);
+    const native = store.getTaskRoleSessionSet(result.task.id, roleName)?.providerBinding?.run;
+    const recipient = result.message.recipient;
+    if (current === null || native?.runId !== current.id
+      || recipient?.ownerRunId !== current.id
+      || recipient.workItemId !== current.workItemId
+      || recipient.reviewRoundId !== current.reviewRoundId
+      || messageContinuationBlocker(store, result.message) !== undefined) {
+      return output(`Steer message ${result.message.id} saved but not delivered (TARGET_CHANGED: active Assignment differs).\n`,
+        { taskId: result.task.id, message: result.message,
+          steer: { state: "not-steered", code: "TARGET_CHANGED", detail: "The input does not belong to the active Turn's Assignment." } });
+    }
+  }
+  const receiptId = `steer:${result.task.id}/${result.message.id}`;
+  // Register the one independent control attempt as `pending` before the live
+  // edge runs (decision-3 §3, message-5 gap D). This is the messageRef-associated
+  // control op that makes a dispatched-but-unproven steer visibly distinct from a
+  // steer that was merely saved and never attempted (`not-submitted`). It is
+  // keyed by this exact receiptId and the steer's own requestId, and is monotonic
+  // and idempotent, so the Host's later settlement fold promotes it to a proven
+  // terminal and never rewinds it. An idempotent replay above already returned
+  // the saved Message, so this records the attempt exactly once.
+  store.transaction((tx) => {
+    const saved = tx.listMessages(result.task.id).find((entry) => entry.id === result.message.id);
+    const requestId = saved?.inputControl?.requestId;
+    if (saved === undefined || requestId === undefined) return;
+    tx.updateMessage(result.task.id, recordTaskMessageControlOutcome(saved, {
+      requestId, receiptId, outcome: "pending", observedAt: clock(options)
+    }));
+  });
+  return {
+    kind: "input-steer",
+    taskId: result.task.id,
+    roleName,
+    messageId: result.message.id,
+    target: resolution.target,
+    receiptId,
+    // decision-3 §9: deliver the input as an authorized, reconcilable delta, not
+    // loose body text and not a bare Message id. The Host additionally decorates
+    // this with the Session Manifest read pointer, so the running turn can read
+    // the exact durable Message through its authorized Context path.
+    text: steerInputDelivery(result.task.id, result.message.id, roleName, body),
+    output: `Steering ${result.task.id}/${roleName} at Turn ${resolution.target.nativeTurnId ?? resolution.target.attemptId} with message ${result.message.id}.\n`
+  };
+}
+
+/** Compose the exact input a steer pushes into the live turn: a bounded header
+ * that names the durable Message and states receipt-is-not-acceptance, then the
+ * verbatim body. The header keeps the input reconcilable with durable state
+ * (decision-3 §9) without copying the body twice or fabricating a Run. */
+function steerInputDelivery(taskId: string, messageId: string, roleName: string, body: string): string {
+  return [
+    `[Steer ${taskId}/${messageId} → ${roleName}] Additional input to your current turn; receipt is not acceptance of prior work.`,
+    `It is saved durably as Message ${messageId}; reconcile it through your Session Manifest's authorized Context read path.`,
+    "",
+    body
+  ].join("\n");
+}
+
+/** CLI and authenticated user Surface share the same message and mailbox
+ * transaction. Talking to Leader does not impersonate Leader authority. */
+/**
  * The one transaction that turns an inbound Task Message into durable facts and,
  * when the Task's own lifecycle calls for it, Leader work.
  *
@@ -2568,7 +2782,8 @@ export function sendTaskMessageCommand(
   wakePolicy: "leader" | "none" | undefined, options: TaskCommandOptions = {},
   recipient?: Readonly<{ roleName: string; workItemId?: string; reviewRoundId?: string }>,
   intent?: TaskSubmissionIntent,
-  submissionKey?: string
+  submissionKey?: string,
+  inputControl?: Readonly<{ action: TaskMessageInputAction; requestId: string; expectedTarget?: string }>
 ) {
   if (!body.trim()) throw usageError("Message body is required.");
   if (recipient !== undefined && wakePolicy !== undefined) {
@@ -2584,8 +2799,37 @@ export function sendTaskMessageCommand(
   const result = store.transaction((tx): Readonly<{
     task: Task; message: TaskMessage; actor: string;
     queuedForLeader: boolean; feedback: SubmissionFeedback | undefined;
+    idempotentReplay?: boolean;
   }> => {
     const task = requireTask(tx, taskId);
+    // A stable requestId makes the whole send idempotent: an exact repeat
+    // returns the original Message, and any different body/action/recipient/
+    // target under the same id is a conflicting reuse, never a silent second
+    // input (decision-3 §6). The prior input is matched by requestId across
+    // both a live inputControl and the reusedInput provenance an interrupt-then
+    // handoff preserved, so re-tagging a steer as a handoff never frees its
+    // requestId to create a second Message.
+    if (inputControl !== undefined) {
+      const existing = tx.listMessages(task.id).find((entry) =>
+        entry.inputControl?.requestId === inputControl.requestId
+        || entry.interruptThen?.reusedInput?.requestId === inputControl.requestId);
+      if (existing !== undefined) {
+        const prior = existing.inputControl ?? existing.interruptThen?.reusedInput;
+        const priorRecipient = existing.recipient === undefined ? undefined
+          : { roleName: existing.recipient.roleName, workItemId: existing.recipient.workItemId,
+              reviewRoundId: existing.recipient.reviewRoundId };
+        const nextRecipient = recipient === undefined ? undefined
+          : { roleName: recipient.roleName, workItemId: recipient.workItemId, reviewRoundId: recipient.reviewRoundId };
+        if (prior?.action !== inputControl.action || existing.body !== body
+          || prior.expectedTarget !== inputControl.expectedTarget
+          || !isDeepStrictEqual(priorRecipient, nextRecipient)) {
+          throw usageError(
+            `Input requestId ${inputControl.requestId} was already used with different content or target; use a new requestId for a new input.`);
+        }
+        return { task, message: existing, actor: replayActor(existing), queuedForLeader: false,
+          feedback: existing.submissionReceipt?.feedback, idempotentReplay: true };
+      }
+    }
     if (recipient === undefined) assertTaskOpen(task);
     const caller = currentManagedRuntime(tx, options.environment, task.id);
     const roleCaller = caller !== undefined && caller.roleName !== "leader" ? caller : undefined;
@@ -2606,10 +2850,10 @@ export function sendTaskMessageCommand(
     if (recipient === undefined && (actor === "user" || actor === "operator")) {
       const effectiveIntent = normalizeSubmissionIntent(intent, wakePolicy);
       const routed = routeUserSubmission(tx, task, actor, body, effectiveIntent,
-        now, submissionKey, { kind: "task", taskId: task.id });
+        now, submissionKey, { kind: "task", taskId: task.id }, inputControl);
       return {
         task: routed.task, message: routed.message, actor,
-        queuedForLeader: routed.queuedForLeader, feedback: routed.feedback
+        queuedForLeader: routed.queuedForLeader, feedback: routed.feedback, idempotentReplay: false
       };
     }
     if (intent !== undefined) {
@@ -2625,7 +2869,8 @@ export function sendTaskMessageCommand(
         ...(recipient.reviewRoundId === undefined ? {} : { reviewRoundId: recipient.reviewRoundId }) });
     const context: TaskMessageContext = {
       ...(target === undefined ? {} : { recipient: target }),
-      ...(recipient?.workItemId === undefined ? {} : { workItemId: recipient.workItemId })
+      ...(recipient?.workItemId === undefined ? {} : { workItemId: recipient.workItemId }),
+      ...(inputControl === undefined ? {} : { inputControl })
     };
     const message = actor === "leader"
       ? appendMessage(tx, task.id, body, "role-result", { type: "role", roleName: LEADER_ROLE }, now, context)
@@ -2653,8 +2898,9 @@ export function sendTaskMessageCommand(
       enqueueWork(tx, leaderMailbox(task.id), actor === "operator" ? "operator-input" : "user-message",
         now, [messageRef(task.id, message.id)], { source: actor, dedupeKey: `message:${task.id}:${message.id}` });
     }
-    return { task, message, actor, queuedForLeader, feedback: undefined };
+    return { task, message, actor, queuedForLeader, feedback: undefined, idempotentReplay: false };
   });
+  if (result.idempotentReplay) return result;
   if (recipient !== undefined) {
     notifyMailbox(options.runtime, taskMailbox(result.task.id), result.task.id);
   } else if (result.actor !== "leader") {
@@ -2662,6 +2908,13 @@ export function sendTaskMessageCommand(
       ? leaderMailbox(result.task.id) : taskMailbox(result.task.id), result.task.id);
   }
   return result;
+}
+
+/** The durable author of an already-persisted Message, for an idempotent replay
+ * that must return the same actor label the original send computed. */
+function replayActor(message: TaskMessage): "leader" | "role" | "operator" | "user" {
+  if (message.author.type === "role") return message.author.roleName === LEADER_ROLE ? "leader" : "role";
+  return message.author.type === "operator" ? "operator" : "user";
 }
 
 /**
@@ -2841,12 +3094,237 @@ function taskRoleCommand(
   if (command === "bind") return output(bindTaskRole(rest, store, options));
   if (command === "unbind") return output(unbindTaskRole(rest, store, options));
   if (command === "session") return taskRoleSessionCommand(rest, store, options);
+  if (command === "interrupt") return interruptTaskRole(rest, store, options);
   if (command === "view") return viewTaskRole(rest, store);
   if (command === "takeover") return transferTaskRoleAuthority(rest, store, options, "takeover");
   if (command === "release") return transferTaskRoleAuthority(rest, store, options, "release");
   throw usageError(command === undefined
     ? "Task role command is required."
     : `Unknown command: task role ${command}`);
+}
+
+/**
+ * `interrupt` stops the exact current native Turn through the Provider's own
+ * native cancel, and never through an owned-process kill, restart, or detach
+ * (decision-3 §1/§7). It is a control operation, not a persisted Message, so it
+ * carries no body of its own.
+ *
+ * The optional `--then-message` is the explicit continuation handoff
+ * (decision-3 §4): it names a Message the Leader already saved (typically the
+ * one a failed steer left behind, reusing that Message's original ref) and
+ * claims "deliver this once, in the same Session, after the interrupted Turn
+ * reaches a proven terminal, without the prior queue preempting it." The claim
+ * is registered on the durable Message before the live cancel. Registration is
+ * idempotent per interrupt requestId, and only one continuation may claim a
+ * given target AgentRun; a conflicting second claim is refused, never silently
+ * dropped or duplicated.
+ */
+function interruptTaskRole(
+  args: string[],
+  store: TaskWorkflowStore,
+  options: TaskCommandOptions
+): TaskCommandExecution {
+  const usage = "Task role interrupt usage: yui task role interrupt <task> <role> --expected-target <turn> [--then-message <task/message>] [--request-id <id>].";
+  const parsed = parseTail(args, new Set(["--expected-target", "--then-message", "--request-id"]), usage);
+  exactPositionals(parsed.positionals, 2, usage);
+  const expectedTarget = requiredOption(parsed.options, "--expected-target");
+  const thenMessageRef = optionalNonEmptyOption(parsed.options, "--then-message");
+  const requestId = optionalNonEmptyOption(parsed.options, "--request-id");
+  const now = clock(options);
+  const task = requireTask(store, parsed.positionals[0]);
+  const role = requireRole(store, task.id, parsed.positionals[1]);
+  const fingerprint = createHash("sha256").update(JSON.stringify({
+    roleName: role.name, expectedTarget, thenMessageRef: thenMessageRef ?? null
+  })).digest("hex");
+  const operationId = requestId ?? `interrupt-${fingerprint}`;
+  let receiptId = "";
+  const resolved = store.transaction((tx): TaskCommandExecution | ResolvedInputTarget => {
+    assertTaskOpen(task);
+    assertTaskInputControlAuthority(tx, options.environment, task.id, role.name);
+    const previous = findTaskInterrupt(tx, task.id, operationId);
+    if (previous !== undefined) {
+      if (previous.payload.fingerprint !== fingerprint) throw usageError("Interrupt requestId already names a different target or then input.");
+      return output("Interrupt already recorded; no native request was repeated.\n", {
+        taskId: task.id, roleName: role.name, interrupt: {
+          state: "idempotent-replay", receipt: taskInterruptReceipt(tx, task.id, previous.payload.receiptId!)
+        }
+      });
+    }
+    const resolution = resolveTaskInputControl(tx, task.id, role.name, "interrupt", expectedTarget);
+    if (resolution.outcome !== "ready") {
+      return output(`Interrupt not delivered (${resolution.code}: ${resolution.detail}).\n`,
+        { taskId: task.id, roleName: role.name,
+          interrupt: { state: "not-interrupted", code: resolution.code, detail: resolution.detail } });
+    }
+    const priorTarget = tx.listEvents(task.id).find(event => event.type === "input.interrupt-requested"
+      && event.payload.roleName === role.name && event.payload.nativeSessionId === resolution.target.nativeSessionId
+      && event.payload.attemptId === resolution.target.attemptId
+      && !taskInterruptWasRejected(tx, task.id, event.payload.receiptId!));
+    if (priorTarget !== undefined) {
+      return output("This exact Turn already has an interrupt request; inspect its original receipt.\n", {
+        taskId: task.id, roleName: role.name, interrupt: {
+          state: "not-interrupted", code: "DELIVERY_UNKNOWN", receiptId: priorTarget.payload.receiptId
+        }
+      });
+    }
+    if (thenMessageRef !== undefined) {
+      const claimResult = registerInterruptThen(tx, task.id, role.name, thenMessageRef,
+        resolution.target, operationId, options, now);
+      if (claimResult !== "claimed") {
+        return output(`Interrupt not delivered (${claimResult.code}: ${claimResult.detail}).\n`,
+          { taskId: task.id, roleName: role.name,
+            interrupt: { state: "not-interrupted", code: claimResult.code, detail: claimResult.detail } });
+      }
+    }
+    receiptId = reserveTaskInterrupt(tx, task.id, operationId, fingerprint, resolution.target, thenMessageRef, now);
+    return resolution.target;
+  });
+  if ("kind" in resolved) return resolved;
+  return {
+    kind: "input-interrupt",
+    taskId: task.id,
+    roleName: role.name,
+    target: resolved,
+    receiptId,
+    ...(thenMessageRef === undefined ? {} : {
+      thenMessageId: taskRecordReference(thenMessageRef, "message", "Then Message reference", options).localId }),
+    output: `Interrupting ${task.id}/${role.name} at Turn ${resolved.nativeTurnId ?? resolved.attemptId}`
+      + `${thenMessageRef === undefined ? "" : `, then delivering ${thenMessageRef} once after a proven terminal`}.\n`
+  };
+}
+
+/**
+ * Bind a saved Message as the one continuation of a target AgentRun. The target
+ * run is the exact interrupted Turn's durable AgentRun; the claim is refused
+ * when the target has no AgentRun (a native-only Turn cannot prove its terminal
+ * for a later same-Session delivery), when the Message is unknown or not a
+ * legal saved input to reuse, or when another continuation already claims that
+ * run.
+ *
+ * The Message being reused must be a legal handoff for this exact interrupt: it
+ * must belong to this Role's current Assignment, must not already have been
+ * delivered or marked undeliverable, and must not still be a live control op.
+ * Its original input identity is preserved as `interruptThen.reusedInput`
+ * provenance rather than erased, so a replay of that requestId keeps resolving
+ * to this same Message and never creates a second input (decision-3 §3).
+ */
+function registerInterruptThen(
+  store: TaskWorkflowStore, taskId: string, roleName: string, thenMessageRef: string,
+  target: ResolvedInputTarget, requestId: string | undefined, options: TaskCommandOptions, now: Date
+): "claimed" | Readonly<{ code: "DELIVERY_UNKNOWN" | "TARGET_CHANGED"; detail: string }> {
+  const targetAttemptId = target.attemptId;
+  const ref = taskRecordReference(thenMessageRef, "message", "Then Message reference", options);
+  if (ref.taskId !== taskId) {
+    return { code: "TARGET_CHANGED", detail: "The then-Message belongs to another Task." };
+  }
+  const message = store.listMessages(taskId).find((entry) => entry.id === ref.localId);
+  if (message === undefined) {
+    return { code: "TARGET_CHANGED", detail: `Then-Message ${thenMessageRef} is unknown.` };
+  }
+  // The claim is keyed on the exact interrupted native Turn (targetAttemptId),
+  // which the resolution proved present under the current Session. An AgentRun
+  // owns the Turn for a Worker/Reviewer Assignment; a Leader's own management or
+  // Draft planning Turn is a real native Turn with NO AgentRun (decision-3 §9,
+  // message-5 gap B). The claim never invents a Run to prove a terminal — the
+  // native Turn is the primary proof, and targetRunId is recorded only when a Run
+  // actually owns the Turn.
+  const active = store.getActiveRun(taskId, roleName);
+  // A synthesized fallback id is an opaque idempotency key (compared only for
+  // equality, never parsed), so it must satisfy the same safe-identity rule as a
+  // caller-supplied requestId: no path separators. Use `:` as the field joiner —
+  // the receiptId carries the `/`-shaped human receipt, this key stays slash-free.
+  const claimRequestId = requestId ?? `interrupt:${taskId}:${roleName}:${targetAttemptId}`;
+  // Idempotent per interrupt requestId: an exact repeat of the same claim (same
+  // request, same native Turn) is a no-op that still authorizes the live cancel.
+  if (message.interruptThen !== undefined) {
+    const prior = findTaskInterrupt(store, taskId, message.interruptThen.requestId);
+    const canReferenceClaim = message.interruptThen.requestId === claimRequestId
+      || (prior !== undefined && taskInterruptWasRejected(store, taskId, prior.payload.receiptId!));
+    if (canReferenceClaim && message.interruptThen.notDeliveredReason === undefined
+      && message.interruptThen.targetAttemptId === targetAttemptId
+      && message.interruptThen.targetNativeSessionId === target.nativeSessionId
+      && message.interruptThen.targetAgentId === target.agentId
+      && message.interruptThen.targetAdapterId === target.adapterId
+      && message.interruptThen.targetRoleName === roleName
+      && message.interruptThen.targetAuthorityEpoch === target.authority.epoch
+      && message.interruptThen.targetAuthorityHolderId === target.authority.holderId) return "claimed";
+    return { code: "TARGET_CHANGED",
+      detail: `Message ${thenMessageRef} already claims a continuation of Turn ${message.interruptThen.targetAttemptId}.` };
+  }
+  const inputState = taskMessageInputControlState(message);
+  if (inputState === "accepted" || inputState === "pending" || inputState === "delivery-unknown") {
+    return {
+      code: inputState === "accepted" ? "TARGET_CHANGED" : "DELIVERY_UNKNOWN",
+      detail: `Message ${thenMessageRef} has steer disposition ${inputState}; it cannot be submitted again.`
+    };
+  }
+  // The reused Message must be a legal handoff for this exact interrupt. A
+  // Worker/Reviewer handoff must be addressed to the interrupted Assignment; a
+  // no-Run Leader handoff (its own management/Draft turn) reuses a Leader input,
+  // which is never addressed to a Worker Assignment (no ownerRunId).
+  if (roleName !== LEADER_ROLE) {
+    if (active === null || message.recipient?.roleName !== roleName || message.recipient.ownerRunId !== active.id) {
+      return { code: "TARGET_CHANGED",
+        detail: `Message ${thenMessageRef} is not addressed to the current execution Assignment.` };
+    }
+  } else if (message.recipient?.ownerRunId !== undefined) {
+    return { code: "TARGET_CHANGED",
+      detail: `Message ${thenMessageRef} is addressed to an execution Assignment and cannot be a no-Run ${roleName} handoff.` };
+  }
+  // A Message that already delivered, or was already ruled undeliverable, is not
+  // a fresh input to reuse; reusing it would replay or resurrect a settled fact.
+  if (message.continuation?.runId !== undefined) {
+    return { code: "TARGET_CHANGED", detail: `Message ${thenMessageRef} was already delivered by ${message.continuation.runId}.` };
+  }
+  if (message.continuation?.notDeliveredReason !== undefined) {
+    return { code: "TARGET_CHANGED",
+      detail: `Message ${thenMessageRef} was already settled not-delivered (${message.continuation.notDeliveredReason}).` };
+  }
+  // Only one continuation may claim a given target native Turn.
+  const existing = store.listMessages(taskId).find((entry) =>
+    entry.interruptThen?.targetAttemptId === targetAttemptId && entry.id !== message.id);
+  if (existing !== undefined) {
+    return { code: "TARGET_CHANGED",
+      detail: `Turn ${targetAttemptId} is already the terminal target of Message ${existing.id}.` };
+  }
+  // Reference the new op without rewriting the original input facts: keep the
+  // Message's history, move any steer identity into reusedInput provenance (so a
+  // replay of that requestId still resolves here, never a second input), and
+  // clear only the live steer action so the handoff is deliverable by the queued
+  // continuation path after a proven terminal.
+  const { inputControl, ...rest } = message;
+  store.updateMessage(taskId, { ...rest,
+    interruptThen: { requestId: claimRequestId, targetAttemptId,
+      targetRoleName: roleName, targetNativeSessionId: target.nativeSessionId,
+      targetAgentId: target.agentId, targetAdapterId: target.adapterId,
+      targetAuthorityEpoch: target.authority.epoch, targetAuthorityHolderId: target.authority.holderId,
+      ...(target.nativeTurnId === undefined ? {} : { targetNativeTurnId: target.nativeTurnId }),
+      ...(active === null ? {} : { targetRunId: active.id }),
+      ...(inputControl === undefined ? {} : { reusedInput: inputControl }) } });
+  recordTaskEvent(store, taskId, "message.interrupt-then-claimed", {
+    messageId: message.id, roleName, targetAttemptId,
+    ...(active === null ? {} : { targetRunId: active.id }),
+    ...(inputControl === undefined ? {} : { reusedRequestId: inputControl.requestId })
+  }, now);
+  // Release trigger for a no-Run Leader handoff (decision-3 §4/§9). A
+  // Worker/Reviewer claim (active !== null) is released by the reconcile loop's
+  // unconditional prepareMessageContinuations pass, driven by the owning
+  // AgentRun's terminal — no extra wake is needed. A no-Run Leader turn owns no
+  // AgentRun and is never surfaced by that push path; it is delivered only by
+  // being woken to read its own Context. The interrupt itself (and, when the
+  // handoff reuses a Leader self-steer, wakePolicy "none") enqueues no wake, so
+  // without this the claim would be structurally unreleasable: listPendingWakeups
+  // never selects the Task and the busy-gated leader mailbox is never consulted.
+  // Enqueue that wake now, keyed to the claimed Message so an idempotent repeat of
+  // the same claim does not stack a second one; claimLeaderNotification holds it
+  // until the interrupted native Turn reaches its proven terminal, and only then
+  // does the Leader read the Context that surfaces this handoff.
+  if (roleName === LEADER_ROLE) {
+    enqueueWork(store, leaderMailbox(taskId), "interrupt-then", now,
+      [messageRef(taskId, message.id)],
+      { source: "interrupt-then", dedupeKey: `interrupt-then:${taskId}:${message.id}` });
+  }
+  return "claimed";
 }
 
 function taskRoleSessionCommand(

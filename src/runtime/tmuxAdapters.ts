@@ -453,7 +453,8 @@ export class TmuxSessionHost implements SessionHostPort {
         throw toRuntimeLaunchFailure(error, "validation", launchContext);
       }
     }
-    const interactiveCodex = request.owner.scope === "global" && request.adapterId === "codex";
+    const interactiveCodex = request.owner.scope === "global" && request.adapterId === "codex"
+      && planned.launch.providerControl === undefined;
     let reuseInteractivePane = false;
     if (interactiveCodex) {
       let status: "running" | "exited";
@@ -882,8 +883,8 @@ export class AgentHostPromptPushAdapter implements ActivePromptPushPort {
     try {
       const result = await sendAgentHostSteerControl({
         home: this.home,
-        scope: "task",
-        taskId: request.owner.taskId,
+        scope: request.owner.scope,
+        ...(request.owner.scope === "task" ? { taskId: request.owner.taskId } : {}),
         roleName: request.owner.roleName,
         control: {
           protocol: AGENT_HOST_CONTROL_PROTOCOL,

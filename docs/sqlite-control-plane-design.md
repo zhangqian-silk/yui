@@ -69,7 +69,7 @@ Every persistent schema or payload change appends one immutable, contiguous
 storage migration. The CLI publishes both `storageVersion` and
 `minimumStorageVersion`; every valid Home in that inclusive range can upgrade
 directly to the current version without installing intermediate releases.
-The current source declares storage version **24**, with minimum supported
+The current source declares storage version **25**, with minimum supported
 migration version **1**, in `src/storage/storageVersions.ts`. Homes below that
 floor are not migration inputs and remain untouched.
 The target binary's `upgrade --update-preflight` and `--update-apply` result
@@ -96,16 +96,17 @@ managed root from Home:
 | Release workflow scratch | `<home>/runtime/release-workflow` | The release workflow's smoke-install dir and verified publish-snapshot tarball (release artifacts). |
 | Storage backups | `<home>/backups` | Pre-upgrade DB backups (the fenced upgrade's rollback anchor). |
 
-Published migrations 1–22 remain unchanged, including Task artifacts in local
+Published migrations 1–23 remain unchanged, including Task artifacts in local
 Git (19), Integration continuation (20), force-archive evidence (21), and
-Controller-owned Host ingress (22). The two offline layout steps are now
-22→23 (`unify-home-layout`) and 23→24 (`collapse-worktree-layout`). Version 23's
+Controller-owned Host ingress (22), and unified message input control (23).
+The two offline layout steps are now 23→24 (`unify-home-layout`) and
+24→25 (`collapse-worktree-layout`). Version 24's
 `workspaces/worktree` directory is an intermediate layout, not a second live
-root at version 24. A single upgrade applies the full pending chain.
+root at version 25. A single upgrade applies the full pending chain.
 
 Stop this Home's writers and take a backup before upgrading. The layout steps
 copy and verify the registered Git trees, repair only the copies' links, and
-preserve old sources for manual recovery. Version 24 replaces registered
+preserve old sources for manual recovery. Version 25 replaces registered
 Task-view symlinks with real writable directories; unrelated Task scratch is
 retained. Read-only context remains a view and can be promoted to a writable
 worktree when WorkItem scope expands. Do not delete the old sources until the
@@ -150,7 +151,7 @@ provider data, cache, and temp roots live in the Home partition above
 (`runtime/integration-runtimes`); `TMPDIR`/`TMP`/`TEMP` point there, and only
 `TMUX_TMPDIR` is redirected to the short `/tmp` socket dir.
 
-## Migration 22 → 23: unify managed paths under Home
+## Migration 23 → 24: unify managed paths under Home
 
 Historically the managed worktrees lived under the out-of-Home
 `defaultWorkspace` (`<ws>/worktree`, `<ws>/tasks`) and the provider runtimes

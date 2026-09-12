@@ -49,7 +49,13 @@ const IMMEDIATE_KINDS: ReadonlySet<string> = new Set([
   "activation-failed",
   "task-reopened",
   "leader-turn-failed",
-  "role-turn-failed"
+  "role-turn-failed",
+  // A claimed interrupt-then handoff for a no-Run Leader turn: the operator/Leader
+  // explicitly redirected, so the release wake bypasses the aggregation debounce.
+  // It is still held by the leader-mailbox busy-gate until the interrupted native
+  // Turn reaches its proven terminal (decision-3 §4), so "immediate" only removes
+  // the extra 60s aggregation delay once that terminal actually opens the gate.
+  "interrupt-then"
 ]);
 
 export function wakeReason(kind: WakeReasonKind, ref?: string): string {
