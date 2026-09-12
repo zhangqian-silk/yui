@@ -205,7 +205,12 @@ export class FileTaskRuntimeIsolation implements TaskRuntimeIsolationPort {
       this.#resourceRegistrar().registerTaskRuntimeIsolation(descriptor);
       return;
     }
-    ensureDirectoryChain(this.#runtimeRoot, dirname(root));
+    ensureDirectoryChain(
+      this.#controlPlane.managedRuntimeRoot === undefined
+        ? this.#runtimeRoot
+        : this.#controlPlane.yuiHome,
+      dirname(root)
+    );
     mkdirSync(root, { mode: 0o700 });
     try {
       const marker: TaskRuntimeResourceMarker = {

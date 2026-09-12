@@ -1257,6 +1257,20 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
           const requestedBase = previous?.access === "write" || requestedBaseRef === undefined
             ? null
             : await this.git.inspect(mainEntry.path, requestedBaseRef);
+          if (previous?.access === "read" && previous.directory === binding.directory) {
+            const viewPath = join(root, binding.directory);
+            const metadata = await lstat(viewPath).catch((error: unknown) => {
+              if (errorCode(error) === "ENOENT") return null;
+              throw error;
+            });
+            if (metadata?.isSymbolicLink()) {
+              if (resolve(root, await readlink(viewPath)) !== resolve(previous.path)) {
+                throw new Error(`Read-only workspace view changed before scope expansion: ${viewPath}.`);
+              }
+              // Remove only the registered read view, never its target.
+              await unlink(viewPath);
+            }
+          }
           const physical = await this.git.ensureWorktree({
             repositoryPath: mainEntry.path,
             container: root,

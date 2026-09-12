@@ -27,7 +27,7 @@ import { sanitizedTestEnv } from "../helpers/sanitizedEnv.mjs";
 // surfaced through symlink views under `tasks/`) to the single-layer v20 layout
 // (real worktrees at `tasks/<taskId>/<owner>/<projectDirectory>`). These tests
 // seed the v19 NATIVE on-disk shape directly and drive the real runner to head.
-const V19 = 19;
+const V19 = 21;
 
 const gitEnv = sanitizedTestEnv({
   GIT_AUTHOR_NAME: "Yui Test",

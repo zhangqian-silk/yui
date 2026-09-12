@@ -22,6 +22,7 @@ import {
   createCandidateGitSnapshot,
   createWorkItem,
   submitWorkItemCandidate,
+  updateWorkItemWriteProjects,
   updateWorkItemStatus
 } from "../../dist/workItem/workItem.js";
 import { sanitizedTestEnv } from "../helpers/sanitizedEnv.mjs";
@@ -182,6 +183,17 @@ test("new Task multi-project lifecycle lands every worktree at the single-layer 
   assertSingleLayerEntry(home, writeEntry, workItemRoot, "lib-src");
   const readEntry = workItemWorkspace.entries.find((e) => e.access === "read");
   assert.equal(readEntry.projectId, "project-1", "the read-only Project is project-1");
+
+  // Scope expansion promotes an owned read view into an independent worktree.
+  const promotedPath = join(workItemRoot, "app");
+  assert.equal(lstatSync(promotedPath).isSymbolicLink(), true);
+  item = updateWorkItemWriteProjects(item, ["project-1", "project-2"], now);
+  store.saveWorkItem(task.id, item);
+  const expanded = await preparer.prepareWorkItemWorkspace(task.id, item.id);
+  const promoted = expanded.entries.find((entry) => entry.projectId === "project-1");
+  assert.equal(promoted.access, "write");
+  assertSingleLayerEntry(home, promoted, workItemRoot, "app");
+  assert.equal(git(["rev-parse", "--show-toplevel"], promotedPath), promotedPath);
 
   // (3) An Integration attempt for project-2 gets a worktree under
   // tasks/<taskId>/integrations/<id>/<boundDirectory>, addressed by the BOUND

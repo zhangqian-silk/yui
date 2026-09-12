@@ -18,7 +18,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { isDeepStrictEqual } from "node:util";
 
 /**
- * Storage 19 -> 20: collapse the two-layer managed workspace layout into a
+ * Storage 21 -> 22: collapse the two-layer managed workspace layout into a
  * single layer of real Git worktrees addressed by Task/owner and Project.
  *
  * Before this migration each managed Git worktree lived under a per-Project
@@ -66,7 +66,7 @@ import { isDeepStrictEqual } from "node:util";
  * OFFLINE migration by design, applied by the standalone `yui upgrade` mutation
  * boundary AFTER the operator has stopped this Home's writers. Its only runtime
  * precondition is the minimal in-flight-Job conflict check. On any failure it
- * throws, the upgrade transaction rolls the schema back to 19, and the preserved
+ * throws, the upgrade transaction rolls back to its starting version, and the preserved
  * source under `worktree/` plus the fenced DB backup are the recovery pair for a
  * manual re-run.
  *

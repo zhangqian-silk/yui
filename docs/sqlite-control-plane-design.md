@@ -69,7 +69,7 @@ Every persistent schema or payload change appends one immutable, contiguous
 storage migration. The CLI publishes both `storageVersion` and
 `minimumStorageVersion`; every valid Home in that inclusive range can upgrade
 directly to the current version without installing intermediate releases.
-The current source declares storage version **19**, with minimum supported
+The current source declares storage version **22**, with minimum supported
 migration version **1**, in `src/storage/storageVersions.ts`. Homes below that
 floor are not migration inputs and remain untouched.
 The target binary's `upgrade --update-preflight` and `--update-apply` result
@@ -87,14 +87,29 @@ managed root from Home:
 
 | Root | Path | Holds |
 |---|---|---|
-| Managed worktrees | `<home>/workspaces/worktree/<project>/<worktree>` | Task/WorkItem/Review/Integration Git clones and linked worktrees (durable, committed **and** uncommitted content). |
-| Managed task views | `<home>/workspaces/tasks/<taskId>/…` | Regenerable per-Task symlink views (rebuilt at launch from the registry). |
+| Managed worktrees | `<home>/workspaces/tasks/<taskId>/<owner>/<projectDirectory>` | Actual Task/WorkItem/Review/Integration Git directories, addressed by the bound Project directory. Owners are `main`, `work-items/<id>`, `reviews/<id>`, `integrations/<id>` and `execution-lanes/<group>/<lane>`. |
+| Read-only context views | Within the same owner directory | Regenerable symlinks to read-only Project context only; writable entries are actual Git directories, not links. |
 | Global Role workspace | `<home>/workspaces/global` | Default cwd for Yui-auto-created Global Roles (the `yui setup` Operator/Leader and ad-hoc Global Roles added without an explicit `--workspace`). A plain cwd, not a managed Git workspace. |
 | Task provider runtimes | `<home>/runtime/task-runtimes` | Task provider data/cache/tmp; also the planning cwd at `…/planning/<taskId>`. |
 | Integration runtimes | `<home>/runtime/integration-runtimes` | The integration check's provider data/cache/tmp (a separate partition from Task runtimes). |
 | Update staging | `<home>/runtime/update-staging` | `yui update`'s side-by-side package install (an upgrade artifact). |
 | Release workflow scratch | `<home>/runtime/release-workflow` | The release workflow's smoke-install dir and verified publish-snapshot tarball (release artifacts). |
 | Storage backups | `<home>/backups` | Pre-upgrade DB backups (the fenced upgrade's rollback anchor). |
+
+Published migrations 1–20 remain unchanged, including Task artifacts in local
+Git (19) and Integration continuation (20). The two offline layout steps are now
+20→21 (`unify-home-layout`) and 21→22 (`collapse-worktree-layout`). Version 21's
+`workspaces/worktree` directory is an intermediate layout, not a second live
+root at version 22. A single upgrade applies the full pending chain.
+
+Stop this Home's writers and take a backup before upgrading. The layout steps
+copy and verify the registered Git trees, repair only the copies' links, and
+preserve old sources for manual recovery. Version 22 replaces registered
+Task-view symlinks with real writable directories; unrelated Task scratch is
+retained. Read-only context remains a view and can be promoted to a writable
+worktree when WorkItem scope expands. Do not delete the old sources until the
+new layout is verified; a failed upgrade requires manual residue cleanup and
+backup recovery, not automatic resume.
 
 Both runtime partitions (`runtime/task-runtimes`, `runtime/integration-runtimes`)
 are the ONLY Home subtrees a provider runtime root is allowed to overlap; a
@@ -134,7 +149,7 @@ provider data, cache, and temp roots live in the Home partition above
 (`runtime/integration-runtimes`); `TMPDIR`/`TMP`/`TEMP` point there, and only
 `TMUX_TMPDIR` is redirected to the short `/tmp` socket dir.
 
-## Migration 18 → 19: unify managed paths under Home
+## Migration 20 → 21: unify managed paths under Home
 
 Historically the managed worktrees lived under the out-of-Home
 `defaultWorkspace` (`<ws>/worktree`, `<ws>/tasks`) and the provider runtimes
@@ -260,7 +275,7 @@ so the transaction rolls back rather than advancing the version over unrepaired
 worktrees.
 
 Because the data step runs inside the upgrade transaction, any throw rolls the
-schema back to 18; the fenced upgrade orchestrator additionally takes a
+schema back to its original version; the fenced upgrade orchestrator additionally takes a
 `database.backup()` and restores it on failure. Recovery from a failed run is
 **manual, not automatic**: because the source is never removed and the copy is
 digest-verified before publish, the preserved source is always intact, so the
