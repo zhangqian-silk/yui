@@ -26,6 +26,7 @@ import {
   detachRoleAgentSessionHost,
   updateRoleAgentSessionStatus,
   updateTaskRoleProviderRuntime,
+  updateGlobalRoleProviderRuntime,
   selectNewTaskRoleSession,
   taskRoleControlTarget,
   type AgentSessionStatus,
@@ -3221,6 +3222,15 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         input.nativeTurnId,
         now
       );
+      // decision-3 §9: when a controller-owned native Turn is actually bound for
+      // this Global Role, settle it to the observed terminal so the scope-generic
+      // resolver and the interrupt-then gate see the real stop on the live binding
+      // — the same edge Task settles via settleStructuredProviderTurn. This is a
+      // strict guarded no-op whenever no such Turn is bound (the honest unmanaged
+      // reality today: a Global Role has no controller-owned begin edge, so the
+      // binding is absent or holds a different/already-terminal Turn), and the
+      // durable native terminal recorded just above remains the proof of record.
+      current = settleGlobalRoleRuntimeTurn(current, input.nativeTurnId, input.providerStatus, now);
       store.saveGlobalRoleSessionSet(current);
       if (
         input.roleName === SYSTEM_OPERATOR_ROLE
@@ -4274,6 +4284,35 @@ function settleStructuredProviderTurn(
   return updateTaskRoleProviderRuntime(sessions, settleProviderTurn(binding, {
     nativeTurnId: runId,
     ...(attemptId === undefined ? {} : { attemptId }),
+    status,
+    settledAt: now.toISOString()
+  }), now);
+}
+
+/**
+ * The Global twin of {@link settleStructuredProviderTurn}: settle a Global Role's
+ * own live Provider Turn to the observed native terminal, keyed by the exact
+ * native Turn id the real Provider Stop/StopFailure hook carries (decision-3 §9).
+ * It is a strict guarded no-op unless a controller-owned Turn with that exact
+ * native id is bound and still in flight (`accepted`) — an absent binding, a
+ * different/only-submitting Turn, or an already-terminal one is left untouched, so
+ * the honest unmanaged reality (no controller-owned begin edge) settles nothing
+ * and the durable `recentCompletedTurnIds` terminal remains the proof of record.
+ */
+function settleGlobalRoleRuntimeTurn(
+  sessions: GlobalRoleSessionSet,
+  nativeTurnId: string,
+  status: "completed" | "failed" | "cancelled",
+  now: Date
+): GlobalRoleSessionSet {
+  const binding = sessions.providerBinding;
+  if (binding === null || binding === undefined || binding.run === null
+    || binding.run.nativeTurnId !== nativeTurnId
+    || binding.run.status !== "accepted") {
+    return sessions;
+  }
+  return updateGlobalRoleProviderRuntime(sessions, settleProviderTurn(binding, {
+    nativeTurnId,
     status,
     settledAt: now.toISOString()
   }), now);

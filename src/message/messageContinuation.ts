@@ -10,6 +10,7 @@ import { createTaskEvent } from "../event/taskEvent.js";
 import { validateExactRunReviewRound } from "../lifecycle/exactRunTerminalization.js";
 import { sourceRunContextValue } from "../context/sourceRunContext.js";
 import { requireManagedTaskCaller } from "../runtime/managedCaller.js";
+import { runtimeObservationFromTaskEvent } from "../runtime/runtimeObservation.js";
 
 export function resolveMessageRecipient(
   store: TaskStore, taskId: string, roleName: string,
@@ -109,9 +110,14 @@ export function messageContinuationBlocker(store: TaskStore, message: TaskMessag
  * termination is read from the live ProviderTurn, re-verified by attemptId,
  * because a Run's business status can flip to failed while its native Turn is
  * still running — the old AgentRun-only gate could release across a Turn that had
- * not actually stopped. The cancel's *outcome* (clean vs delivery-unknown) lives
- * on the owning AgentRun's failureReason when a Run owns the Turn, because a
- * settled ProviderTurn preserves only completed/failed/cancelled and cannot
+ * not actually stopped. When the live binding no longer holds that exact Turn, the
+ * proof falls back to the durable native terminal observation keyed by the target
+ * attemptId — never to the AgentRun's business status and never to a replacement
+ * Turn's existence, both of which can be true while the target's native execution
+ * has not stopped (decision-3 §4/§8, "requested != stopped"). The cancel's
+ * *outcome* (clean vs delivery-unknown) lives on the owning AgentRun's
+ * failureReason when a Run owns the Turn, because a settled ProviderTurn — or a
+ * durable native terminal — preserves only completed/failed/cancelled and cannot
  * itself carry delivery-unknown.
  */
 function interruptThenTerminalState(
@@ -134,16 +140,33 @@ function interruptThenTerminalState(
     // is recorded on the owning AgentRun, never on the settled ProviderTurn.
     return owner?.result?.failureReason === "delivery-unknown" ? "unknown" : "ready";
   }
-  // The live native Turn is no longer the target (a later Turn replaced it, which
-  // itself proves the target ended) or the Session binding is gone. Fall back to
-  // the durable AgentRun terminal record when a Run owns the Turn.
-  if (owner !== null) {
-    if (owner.status === "active") return "waiting";
-    return owner.result?.failureReason === "delivery-unknown" ? "unknown" : "ready";
+  // The live binding no longer holds the target native Turn — a later Turn
+  // occupies it, or the binding's run pointer is gone. decision-3 §4/§8: a
+  // replacement Turn's mere existence is NOT proof the target's native execution
+  // stopped ("requested != stopped"; native quiescence is never inferred from a
+  // new Turn's existence, and never from the owning AgentRun's business status).
+  // The only protocol-proven stop is the durable, immutable native terminal
+  // observation keyed by the exact target attemptId, written when the Provider
+  // Host observed the Turn actually terminate.
+  const nativeStopped = store.listEvents(message.taskId)
+    .map(runtimeObservationFromTaskEvent)
+    .some((observation) => observation !== null
+      && (observation.kind === "turn.completed" || observation.kind === "turn.failed"
+        || observation.kind === "turn.cancelled")
+      && observation.fence.roleName === roleName
+      && observation.fence.receiptId === claim.targetAttemptId);
+  if (nativeStopped) {
+    // Proven stopped. Its cancel outcome (clean vs delivery-unknown) is recorded on
+    // the owning AgentRun, never on the settled native terminal itself — the same
+    // composite the primary path reads once native termination is proven.
+    return owner?.result?.failureReason === "delivery-unknown" ? "unknown" : "ready";
   }
-  // No owning Run and the native Turn identity cannot be re-verified: the claim's
-  // target can never prove its terminal.
-  return "missing";
+  // No durable proof the target native Turn stopped. Hold silently while an owning
+  // Run could still produce that terminal; a later business-terminal or a
+  // replacement Turn must never release it. With nothing owning the Turn and no
+  // durable terminal, its stop is unobservable and the claim can never prove a
+  // safe boundary — never released or replayed either way.
+  return owner !== null ? "waiting" : "missing";
 }
 
 /** Called in the Controller's ordinary reconciliation transaction. Messages

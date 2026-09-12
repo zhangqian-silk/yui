@@ -644,6 +644,17 @@ export type GlobalRoleMessage = {
    * the target's attemptId. It is never a fourth action and never a second queue.
    */
   interruptThen?: GlobalRoleMessageInterruptThen;
+  /**
+   * A visible not-delivered fact for a durable Global input (decision-3 §5/§10,
+   * the Global twin of the Task {@link TaskMessage.continuation.notDeliveredReason}).
+   * A queued Message or a claimed interrupt-then handoff whose target can never
+   * prove a safe boundary — its interrupted Turn's terminal is unprovable
+   * (delivery-unknown) or its durable evidence is gone — fails visibly here and
+   * stops holding the queue, rather than silently wedging the Role's pending set.
+   * It is never released or replayed across that boundary; the Operator re-chooses
+   * with a fresh input. Absent means still pending or already delivered.
+   */
+  notDelivered?: Readonly<{ reason: string; at: string }>;
   createdAt: string;
 };
 
@@ -657,6 +668,16 @@ export type GlobalRoleMessageInterruptThen = Readonly<{
   requestId: string;
   /** The exact interrupted native Turn's local input attempt id. */
   targetAttemptId: string;
+  /**
+   * The interrupted native Turn's provider Turn id, captured from the resolved
+   * target when the Provider surfaced one (decision-3 §6, "若存在则 native
+   * Turn"). An unmanaged Global Role has no owning AgentRun, so once the live
+   * binding no longer holds the target its only protocol-proven stop is the
+   * Role's durable native terminal — `recentCompletedTurnIds`, written by the
+   * real runtime Stop Hook and keyed by this native id. A claim without one
+   * cannot fall back to that durable proof (decision-3 §4/§8).
+   */
+  targetNativeTurnId?: string;
   /** The saved input this handoff reuses, kept as provenance (decision-3 §3). */
   reusedInput?: TaskMessageInputControl;
 }>;
@@ -733,11 +754,29 @@ export function validateGlobalRoleMessage(message: GlobalRoleMessage): void {
   if (message.interruptThen !== undefined) {
     requireSafeIdentity(message.interruptThen.requestId, "Global message interrupt requestId");
     requireSafeIdentity(message.interruptThen.targetAttemptId, "Global message interrupt targetAttemptId");
+    if (message.interruptThen.targetNativeTurnId !== undefined) {
+      requireText(message.interruptThen.targetNativeTurnId, "Global message interrupt targetNativeTurnId");
+    }
     if (message.interruptThen.reusedInput !== undefined) {
       if (!TASK_MESSAGE_INPUT_ACTIONS.includes(message.interruptThen.reusedInput.action)) {
         throw new Error(`Reused input action is invalid: ${String(message.interruptThen.reusedInput.action)}.`);
       }
       requireSafeIdentity(message.interruptThen.reusedInput.requestId, "Reused input requestId");
+    }
+  }
+  if (message.notDelivered !== undefined) {
+    requireText(message.notDelivered.reason, "Global message nondelivery reason");
+    if (typeof message.notDelivered.at !== "string"
+      || Number.isNaN(Date.parse(message.notDelivered.at))) {
+      throw new Error("Global message nondelivery timestamp is invalid.");
+    }
+    // A delivered Message is a settled positive fact; a not-delivered fact is its
+    // visible negative twin. The two are mutually exclusive on one Message.
+    if (message.delivery !== undefined) {
+      throw new Error("A Global message cannot be both delivered and not-delivered.");
+    }
+    if (message.inputControl?.action !== "queue" && message.interruptThen === undefined) {
+      throw new Error("Only a queued or interrupt-then Global message records a nondelivery.");
     }
   }
   if (typeof message.createdAt !== "string" || Number.isNaN(Date.parse(message.createdAt))) {
@@ -787,7 +826,7 @@ export function markGlobalRoleMessageDelivered(
  */
 export function claimGlobalRoleMessageInterruptThen(
   message: GlobalRoleMessage,
-  claim: Readonly<{ requestId: string; targetAttemptId: string }>
+  claim: Readonly<{ requestId: string; targetAttemptId: string; targetNativeTurnId?: string }>
 ): GlobalRoleMessage {
   const { inputControl, ...rest } = message;
   const claimed: GlobalRoleMessage = {
@@ -795,6 +834,9 @@ export function claimGlobalRoleMessageInterruptThen(
     interruptThen: {
       requestId: requireSafeIdentity(claim.requestId, "Global message interrupt requestId"),
       targetAttemptId: requireSafeIdentity(claim.targetAttemptId, "Global message interrupt targetAttemptId"),
+      ...(claim.targetNativeTurnId === undefined
+        ? {}
+        : { targetNativeTurnId: requireText(claim.targetNativeTurnId, "Global message interrupt targetNativeTurnId") }),
       ...(inputControl === undefined ? {} : { reusedInput: inputControl })
     }
   };
@@ -825,6 +867,30 @@ export function releaseGlobalRoleMessageInterruptThen(
   };
   validateGlobalRoleMessage(released);
   return released;
+}
+
+/**
+ * Return a copy of a durable Global Message marked visibly not-delivered
+ * (decision-3 §5/§10), the Global twin of the Task {@link markNotDelivered}. An
+ * ordinary queue entry or a claimed interrupt-then handoff whose target can never
+ * prove a safe boundary fails here and stops holding the Role's pending set,
+ * rather than silently wedging it. It is idempotent for the same reason — a
+ * Message already carrying this exact reason is returned unchanged — and a
+ * delivered Message is never overwritten with a nondelivery.
+ */
+export function markGlobalRoleMessageNotDelivered(
+  message: GlobalRoleMessage, reason: string, now: Date
+): GlobalRoleMessage {
+  if (message.delivery !== undefined) {
+    throw new Error("A delivered Global message cannot be marked not-delivered.");
+  }
+  if (message.notDelivered?.reason === reason) return message;
+  const marked: GlobalRoleMessage = {
+    ...message,
+    notDelivered: { reason: requireText(reason, "Global message nondelivery reason"), at: now.toISOString() }
+  };
+  validateGlobalRoleMessage(marked);
+  return marked;
 }
 
 function validateGlobalKindAndAuthor(

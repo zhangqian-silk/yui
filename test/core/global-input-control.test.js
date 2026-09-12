@@ -8,13 +8,15 @@ import { createConfiguredAgent } from "../../dist/agent/agent.js";
 import { createGlobalRole, createRoleAgentBinding } from "../../dist/role/role.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
 import {
-  bindGlobalRoleProviderRuntime, createRoleSessionSet, recordRoleAgentSession
+  bindGlobalRoleProviderRuntime, createRoleSessionSet, recordRoleAgentSession,
+  rememberRoleAgentCompletedTurn, updateGlobalRoleProviderRuntime
 } from "../../dist/executor/agentExecutor.js";
 import {
   acceptProviderTurn, beginProviderTurn, createProviderRuntimeBinding,
-  markProviderTurnDeliveryUnknown, transferProviderAuthority
+  markProviderTurnDeliveryUnknown, settleProviderTurn, transferProviderAuthority
 } from "../../dist/runtime/providerRuntimeIdentity.js";
 import { runGlobalRoleCommand } from "../../dist/commands/globalRoleCommands.js";
+import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
 
 const at = new Date("2026-09-11T00:00:00Z");
 const later = new Date("2026-09-11T00:01:00Z");
@@ -297,3 +299,259 @@ test("global interrupt --then-message rejects a ref that is not an owned durable
   assert.throws(() => command(["interrupt", "assistant", "--expected-target", "t-1",
     "--then-message", "global-message-999"]), /not a durable Global Message/);
 });
+
+// ── the managed self-read that delivers the durable queue (decision-3 §4/§9) ───
+
+/** The env a managed Global Role presents when it reads its own Context — the one
+ * authorized self-read that consumes its durable queue at its next legal
+ * opportunity. An inspection read (no env) never delivers. */
+function selfReadEnv(roleName) {
+  return {
+    YUI_SESSION_SCOPE: "global", YUI_ROLE: roleName,
+    YUI_SESSION_MANIFEST: `/tmp/${roleName}-manifest.json`
+  };
+}
+
+function contextSelfRead(store, roleName) {
+  return JSON.parse(runGlobalRoleCommand(
+    ["context", roleName], store, { env: selfReadEnv(roleName), jsonOutput: true }));
+}
+
+// ── Bug-2: the corrected queue contract — no mark-delivered while busy ─────────
+
+test("an idle self-read delivers the ordinary queue exactly once and is idempotent", t => {
+  const { store, command, role } = globalFixture(t);
+  recordGlobalSession(store, role);
+  command(["message", "queue", "assistant", "First", "--request-id", "gq-1"]);
+  command(["message", "queue", "assistant", "Second", "--request-id", "gq-2"]);
+  // No live Turn: an idle self-read is the Role's real next legal opportunity, so
+  // both queued Messages are delivered in order.
+  const first = contextSelfRead(store, "assistant");
+  assert.deepEqual(first.pendingMessages.map(m => m.id), ["global-message-1", "global-message-2"]);
+  const delivered = store.listGlobalRoleMessages("assistant").filter(m => m.delivery !== undefined);
+  assert.equal(delivered.length, 2);
+  // A repeated self-read is idempotent: the consumed queue is not re-delivered.
+  const second = contextSelfRead(store, "assistant");
+  assert.deepEqual(second.pendingMessages, []);
+});
+
+test("a self-read while the Role's own native Turn is in flight delivers nothing (busy-gate)", t => {
+  const { store, command, role } = globalFixture(t);
+  recordGlobalSession(store, role);
+  command(["message", "queue", "assistant", "Do this later", "--request-id", "gq-1"]);
+  // The Role is mid-turn (accepted, in flight). Marking the queue delivered now
+  // would filter it out of the next loaded context and lose it (§6/§11): the
+  // busy-gate holds it undelivered until a read finds no in-flight Turn.
+  withGlobalControllerTurn(store, "assistant", { attemptId: "a-1", nativeTurnId: "t-1" });
+  const busy = contextSelfRead(store, "assistant");
+  assert.deepEqual(busy.pendingMessages.map(m => m.id), []);
+  assert.equal(store.listGlobalRoleMessages("assistant").every(m => m.delivery === undefined), true);
+  // The Message is neither delivered nor failed: it is held for the next legal turn.
+  assert.equal(store.listGlobalRoleMessages("assistant")[0].notDelivered ?? null, null);
+});
+
+test("an inspection read never delivers the queue and reports it still pending", t => {
+  const { store, command, role } = globalFixture(t);
+  recordGlobalSession(store, role);
+  command(["message", "queue", "assistant", "Waiting", "--request-id", "gq-1"]);
+  // No Session env: an unmanaged/inspection read observes but never consumes.
+  const inspect = JSON.parse(runGlobalRoleCommand(
+    ["context", "assistant"], store, { env: {}, jsonOutput: true }));
+  assert.deepEqual(inspect.pendingMessages.map(m => m.id), ["global-message-1"]);
+  assert.equal(store.listGlobalRoleMessages("assistant")[0].delivery ?? null, null);
+});
+
+// ── Bug-3: then-gate — no quiescence inferred from a new Turn (decision-3 §4/§8) ─
+
+test("a then-handoff holds the whole queue while its interrupted Turn is still in flight", t => {
+  const { store, command, role } = globalFixture(t);
+  recordGlobalSession(store, role);
+  withGlobalControllerTurn(store, "assistant", { attemptId: "a-1", nativeTurnId: "t-1" });
+  const queued = command(["message", "queue", "assistant", "After the stop", "--request-id", "gq-1"]);
+  command(["interrupt", "assistant", "--expected-target", "t-1",
+    "--then-message", queued.message.id, "--request-id", "int-1"]);
+  // The interrupted Turn t-1 is still the live accepted Turn: requested != stopped.
+  // The handoff waits AND holds the ordinary queue behind it, so nothing delivers.
+  const held = contextSelfRead(store, "assistant");
+  assert.deepEqual(held.pendingMessages.map(m => m.id), []);
+  assert.equal(store.listGlobalRoleMessages("assistant")[0].delivery ?? null, null);
+});
+
+test("a then-handoff releases only on the interrupted Turn's durable native terminal", t => {
+  const { store, command, role } = globalFixture(t);
+  recordGlobalSession(store, role);
+  withGlobalControllerTurn(store, "assistant", { attemptId: "a-1", nativeTurnId: "t-1" });
+  const queued = command(["message", "queue", "assistant", "After the stop", "--request-id", "gq-1"]);
+  command(["interrupt", "assistant", "--expected-target", "t-1",
+    "--then-message", queued.message.id, "--request-id", "int-1"]);
+  // The real Provider Stop hook observes the exact interrupted native Turn
+  // terminate. This is the production edge: it settles the live binding AND
+  // records the durable native terminal on the Role's own Session.
+  const adapter = new FileSchedulerStoreAdapter(store);
+  adapter.observeGlobalRuntimeRunTerminal({
+    roleName: "assistant", agentId: role.activeAgentId, adapterId: "codex",
+    nativeSessionId: "assistant-native", nativeTurnId: "t-1",
+    providerStatus: "completed", outcome: { status: "completed", output: "stopped" }
+  }, new Date("2026-09-11T00:02:00Z"));
+  // Now the handoff's interrupted Turn has a proven terminal, so the then-Message
+  // is released ahead of the ordinary queue in its own read (M before Q1).
+  const released = contextSelfRead(store, "assistant");
+  assert.deepEqual(released.pendingMessages.map(m => m.id), [queued.message.id]);
+  const handoff = store.listGlobalRoleMessages("assistant").find(m => m.id === queued.message.id);
+  assert.notEqual(handoff.delivery ?? null, null);
+});
+
+test("a then-handoff whose interrupted Turn vanished without a durable terminal fails visibly", t => {
+  const { store, command, role } = globalFixture(t);
+  recordGlobalSession(store, role);
+  withGlobalControllerTurn(store, "assistant", { attemptId: "a-1", nativeTurnId: "t-1" });
+  const queued = command(["message", "queue", "assistant", "After the stop", "--request-id", "gq-1"]);
+  command(["interrupt", "assistant", "--expected-target", "t-1",
+    "--then-message", queued.message.id, "--request-id", "int-1"]);
+  const alsoQueued = command(["message", "queue", "assistant", "Ordinary", "--request-id", "gq-2"]);
+  // Drop the live binding without ever recording a durable native terminal for
+  // t-1: the interrupted Turn's stop is now unobservable. The claim can never
+  // prove a safe boundary, so it fails visibly (never released, never replayed)
+  // and, once failed, stops holding the ordinary queue (§4/§8).
+  const sessions = store.getGlobalRoleSessionSet("assistant");
+  store.saveGlobalRoleSessionSet({ ...sessions, providerBinding: null });
+  const drained = contextSelfRead(store, "assistant");
+  const handoff = store.listGlobalRoleMessages("assistant").find(m => m.id === queued.message.id);
+  assert.equal(handoff.notDelivered.reason, "interrupt-then-target-missing");
+  assert.equal(handoff.delivery ?? null, null);
+  // The ordinary queue behind the now-failed handoff drains at the same read.
+  assert.deepEqual(drained.pendingMessages.map(m => m.id), [alsoQueued.message.id]);
+});
+
+test("a then-handoff persists its interrupted native Turn id for the durable fallback", t => {
+  const { store, command, role } = globalFixture(t);
+  recordGlobalSession(store, role);
+  withGlobalControllerTurn(store, "assistant", { attemptId: "a-1", nativeTurnId: "t-1" });
+  const queued = command(["message", "queue", "assistant", "After the stop", "--request-id", "gq-1"]);
+  command(["interrupt", "assistant", "--expected-target", "t-1",
+    "--then-message", queued.message.id, "--request-id", "int-1"]);
+  const claim = store.listGlobalRoleMessages("assistant").find(m => m.id === queued.message.id);
+  // The claim captures BOTH ids from the resolved target: the attemptId (primary
+  // live proof) and the nativeTurnId (durable recentCompletedTurnIds fallback).
+  assert.equal(claim.interruptThen.targetAttemptId, "a-1");
+  assert.equal(claim.interruptThen.targetNativeTurnId, "t-1");
+});
+
+/** Advance the Role's binding onto a live replacement Turn: settle the current
+ * accepted Turn, then begin+accept a new one. The binding now holds a *different*
+ * live native Turn than the interrupted target — the §4/§8 hazard where a new
+ * Turn's mere existence must never be read as the old Turn having stopped. */
+function withGlobalReplacementTurn(store, roleName, settle, next) {
+  const settled = settleProviderTurn(store.getGlobalRoleSessionSet(roleName).providerBinding, {
+    nativeTurnId: settle.nativeTurnId, status: "completed",
+    settledAt: new Date("2026-09-11T00:03:00Z").toISOString()
+  });
+  let binding = beginProviderTurn(settled, {
+    attemptId: next.attemptId, authorityEpoch: 1,
+    submittedAt: new Date("2026-09-11T00:03:01Z").toISOString()
+  });
+  binding = acceptProviderTurn(binding, {
+    attemptId: next.attemptId, nativeTurnId: next.nativeTurnId,
+    acceptedAt: new Date("2026-09-11T00:03:02Z").toISOString()
+  });
+  store.saveGlobalRoleSessionSet(updateGlobalRoleProviderRuntime(
+    store.getGlobalRoleSessionSet(roleName), binding, new Date("2026-09-11T00:03:02Z")));
+}
+
+test("a replacement Turn's existence never releases a handoff without the durable terminal", t => {
+  const { store, command, role } = globalFixture(t);
+  recordGlobalSession(store, role);
+  withGlobalControllerTurn(store, "assistant", { attemptId: "a-1", nativeTurnId: "t-1" });
+  const queued = command(["message", "queue", "assistant", "After the stop", "--request-id", "gq-1"]);
+  command(["interrupt", "assistant", "--expected-target", "t-1",
+    "--then-message", queued.message.id, "--request-id", "int-1"]);
+  // A NEW native Turn t-2 becomes live. The binding no longer holds t-1, and no
+  // durable terminal for t-1 was recorded. decision-3 §4/§8: "requested != stopped"
+  // and native quiescence is never inferred from a replacement Turn's existence.
+  // The claim's stop is unobservable → it fails visibly, never released.
+  withGlobalReplacementTurn(store, "assistant", { nativeTurnId: "t-1" }, { attemptId: "a-2", nativeTurnId: "t-2" });
+  contextSelfRead(store, "assistant");
+  const handoff = store.listGlobalRoleMessages("assistant").find(m => m.id === queued.message.id);
+  assert.equal(handoff.notDelivered.reason, "interrupt-then-target-missing");
+  assert.equal(handoff.delivery ?? null, null);
+});
+
+test("a durable native terminal releases the handoff even while a replacement Turn is live", t => {
+  const { store, command, role } = globalFixture(t);
+  recordGlobalSession(store, role);
+  withGlobalControllerTurn(store, "assistant", { attemptId: "a-1", nativeTurnId: "t-1" });
+  const queued = command(["message", "queue", "assistant", "After the stop", "--request-id", "gq-1"]);
+  command(["interrupt", "assistant", "--expected-target", "t-1",
+    "--then-message", queued.message.id, "--request-id", "int-1"]);
+  // The interrupted Turn t-1 has a proven durable native terminal (the real Claude
+  // Stop-hook fact on recentCompletedTurnIds), even though a later Turn t-2 is now
+  // the live one. The durable terminal — not the live binding — proves t-1 stopped,
+  // so the handoff releases. The gate reads the terminal by the claim's nativeTurnId.
+  const withTerminal = rememberRoleAgentCompletedTurn(
+    store.getGlobalRoleSessionSet("assistant"), role.activeAgentId, "assistant-native", "t-1",
+    new Date("2026-09-11T00:02:30Z"));
+  store.saveGlobalRoleSessionSet(withTerminal);
+  withGlobalReplacementTurn(store, "assistant", { nativeTurnId: "t-1" }, { attemptId: "a-2", nativeTurnId: "t-2" });
+  const released = contextSelfRead(store, "assistant");
+  assert.deepEqual(released.pendingMessages.map(m => m.id), [queued.message.id]);
+  const handoff = store.listGlobalRoleMessages("assistant").find(m => m.id === queued.message.id);
+  assert.notEqual(handoff.delivery ?? null, null);
+});
+
+
+// ── Bug-1: the production terminal edge settles the live binding ───────────────
+
+test("the Global runtime terminal settles a bound controller-owned Turn to terminal", t => {
+  const { store, role } = globalFixture(t);
+  recordGlobalSession(store, role);
+  withGlobalControllerTurn(store, "assistant", { attemptId: "a-1", nativeTurnId: "t-1" });
+  const adapter = new FileSchedulerStoreAdapter(store);
+  adapter.observeGlobalRuntimeRunTerminal({
+    roleName: "assistant", agentId: role.activeAgentId, adapterId: "codex",
+    nativeSessionId: "assistant-native", nativeTurnId: "t-1",
+    providerStatus: "completed", outcome: { status: "completed", output: "done" }
+  }, new Date("2026-09-11T00:02:00Z"));
+  const sessions = store.getGlobalRoleSessionSet("assistant");
+  // Bug-1: the live binding's run is settled to the observed terminal, so the
+  // scope-generic resolver and the then-gate see the real stop — not a run
+  // wedged forever at "accepted".
+  assert.equal(sessions.providerBinding.run.status, "completed");
+  assert.equal(sessions.providerBinding.run.nativeTurnId, "t-1");
+  // The durable native terminal is recorded on the Role's own Session as well.
+  assert.equal(sessions.sessions[role.activeAgentId].recentCompletedTurnIds.includes("t-1"), true);
+});
+
+test("the Global runtime terminal is a strict no-op when no controller-owned Turn is bound", t => {
+  const { store, role } = globalFixture(t);
+  recordGlobalSession(store, role);
+  // The honest unmanaged reality: no providerBinding, so nothing to settle. Only
+  // the durable native terminal is recorded; no binding is fabricated.
+  const adapter = new FileSchedulerStoreAdapter(store);
+  adapter.observeGlobalRuntimeRunTerminal({
+    roleName: "assistant", agentId: role.activeAgentId, adapterId: "codex",
+    nativeSessionId: "assistant-native", nativeTurnId: "t-1",
+    providerStatus: "completed", outcome: { status: "completed", output: "done" }
+  }, new Date("2026-09-11T00:02:00Z"));
+  const sessions = store.getGlobalRoleSessionSet("assistant");
+  assert.equal(sessions.providerBinding ?? null, null);
+  assert.equal(sessions.sessions[role.activeAgentId].recentCompletedTurnIds.includes("t-1"), true);
+});
+
+test("the Global runtime terminal leaves a non-matching bound Turn untouched", t => {
+  const { store, role } = globalFixture(t);
+  recordGlobalSession(store, role);
+  // A different native Turn (t-2) is live; the terminal for t-1 must not settle it.
+  withGlobalControllerTurn(store, "assistant", { attemptId: "a-2", nativeTurnId: "t-2" });
+  const adapter = new FileSchedulerStoreAdapter(store);
+  adapter.observeGlobalRuntimeRunTerminal({
+    roleName: "assistant", agentId: role.activeAgentId, adapterId: "codex",
+    nativeSessionId: "assistant-native", nativeTurnId: "t-1",
+    providerStatus: "completed", outcome: { status: "completed", output: "done" }
+  }, new Date("2026-09-11T00:02:00Z"));
+  const sessions = store.getGlobalRoleSessionSet("assistant");
+  // The live Turn t-2 is untouched (still accepted); only t-1's durable terminal lands.
+  assert.equal(sessions.providerBinding.run.status, "accepted");
+  assert.equal(sessions.providerBinding.run.nativeTurnId, "t-2");
+  assert.equal(sessions.sessions[role.activeAgentId].recentCompletedTurnIds.includes("t-1"), true);
+});
+
