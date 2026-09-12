@@ -105,6 +105,9 @@ import { createGitHubCliPublicationVerifier } from "./external/githubPublication
 import { createGitLabCliPublicationVerifier } from "./external/gitlabPublicationVerifier.js";
 import { taskLocalActor, assertTaskDeliveryAuthority } from "./commands/taskActor.js";
 import {
+  saveArtifactCapability, readArtifactCapability, listArtifactsCapability
+} from "./artifacts/artifactCapability.js";
+import {
   parseTaskExecutionStartRequest,
   parseTaskExecutionStopRequest,
   finalizeStoppedTaskExecution,
@@ -1050,6 +1053,58 @@ export async function main(): Promise<void> {
     return;
   }
   if (resolved[0] === "task") {
+    if (resolved[1] === "artifact") {
+      // File/directory artifacts live in the Task's local Git repository, so
+      // their save/read/list are asynchronous and handled here rather than in
+      // the synchronous runTaskCommand chain. Save commits exactly one path and
+      // returns a self-certifying commit-pinned reference; read pins to a commit
+      // for frozen evidence; list is an ordinary current read.
+      const action = resolved[2];
+      const taskId = resolved[3];
+      const usage = "Usage: yui task artifact list <task> | read <task> <relative-path> [<commit>] | "
+        + "save <task> <relative-path> <content> [--message <text>] [--expected-head <commit>]";
+      if (taskId === undefined || action === undefined || !["list", "read", "save"].includes(action)) {
+        throw usageError(usage);
+      }
+      if (process.env.YUI_SESSION_SCOPE === "task" && process.env.YUI_TASK_ID !== taskId) {
+        throw usageError("Artifact is outside the managed Task scope.");
+      }
+      if (store.getTask(taskId) === null) throw usageError(`Task not found: ${taskId}.`);
+      let data: unknown;
+      if (action === "list") {
+        if (resolved.length !== 4) throw usageError(usage);
+        data = await listArtifactsCapability(home, taskId);
+      } else if (action === "read") {
+        const relativePath = resolved[4];
+        const commit = resolved[5];
+        if (relativePath === undefined || resolved.length > 6) throw usageError(usage);
+        data = await readArtifactCapability(home, taskId, {
+          relativePath, ...(commit === undefined ? {} : { commit })
+        });
+      } else {
+        // save: a delivery-authoritative action; a managed Task caller must be the current Leader.
+        taskLocalActor(store, process.env, taskId);
+        const relativePath = resolved[4];
+        const content = resolved[5];
+        if (relativePath === undefined || content === undefined) throw usageError(usage);
+        const rest = resolved.slice(6);
+        let message: string | undefined;
+        let expectedHead: string | undefined;
+        for (let index = 0; index < rest.length; index += 1) {
+          const value = rest[index + 1];
+          if (rest[index] === "--message" && value !== undefined) { message = value; index += 1; continue; }
+          if (rest[index] === "--expected-head" && value !== undefined) { expectedHead = value; index += 1; continue; }
+          throw usageError(usage);
+        }
+        data = await saveArtifactCapability(home, taskId, {
+          relativePath, content,
+          ...(message === undefined ? {} : { message }),
+          ...(expectedHead === undefined ? {} : { expectedHead })
+        });
+      }
+      emit(JSON.stringify(data, null, 2), false, data);
+      return;
+    }
     if (resolved[1] === "execution") {
       if (resolved[2] === "stop") {
         const request = parseTaskExecutionStopRequest(resolved.slice(3));

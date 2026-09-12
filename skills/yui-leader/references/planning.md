@@ -26,10 +26,22 @@ finished. An InputRequest is not required for ordinary continued discussion.
 
 ## Hand off only through authorized activation
 
-For a Draft without accepted planning history, follow its accepted intent
-through the currently supported routing entry. A request only to record must
-not wake planning; a direct development request must not be turned into an
-unrequested planning Session.
+User/Operator submissions use `--intent record|discuss|develop` on
+`operator submit` or an unaddressed `task message send`. The default is
+`discuss`; Core does not infer intent from message text.
+
+- `record` saves the message without waking the Leader.
+- `discuss` on an unplanned Draft records the planning route and wakes planning.
+- `develop` on an unplanned Draft saves the requirement and activation intent,
+  then enters delivery through formal activation, without first starting planning.
+- `develop` after planning has been entered saves the input but does not wake
+  or activate; the routing result is `planned-needs-manual-activation`.
+
+Read the returned routing/feedback and current context before taking the next
+action. Active submissions do not downgrade or reactivate the Task; terminal
+submissions do not reopen it. A stopped execution gate is not permission to
+resume. `--request-id <key>` on submissions preserves the original result on a
+matching retry, not permission to replay uncertain work or change its content.
 
 Once planning has been entered, starting delivery requires a distinct,
 explicit activation authorization. A development remark during discussion,
@@ -54,19 +66,44 @@ delivery-authorized Session/workspace is ready. Do not demand another
 “continue.” An old planning Session remains planning-scoped: preserve its
 successor context and end its turn rather than promoting itself.
 
-## Storage interface boundary
+## Task artifact operations
 
-Use actual available result commands, not a proposed API. When the supported
-Task result interface exposes a local Git result repository, the Leader
-adopts meaningful file/directory changes there, checks their scope, commits
-locally and updates the Brief reference. Other Agents contribute from their
-authorized workspaces; do not share an uncoordinated Git index. Current
-references identify Task and path; fixed evidence additionally identifies the
-commit. Do not mirror document bodies, HEAD or timestamps into DB records.
+These operations apply to planning and delivery results. The current Leader
+adopts contributions from other Agents' authorized workspaces; do not share
+an uncoordinated Git index or edit Yui storage directly.
 
-That result repository has no remote or transport; this says nothing about
-the legitimate remote of a Project code repository. Saving results in Draft
-does not grant delivery authority, and handoff or archive must preserve them.
-If this interface is not available, retain existing supported references and
-state the specific storage integration dependency, without inventing commands
-or reimplementing storage in Skill instructions.
+```sh
+yui task artifact list <task-id>
+yui task artifact save <task-id> plans/design.md "<UTF-8 content>" --message "Revise design"
+yui task artifact read <task-id> plans/design.md
+yui task artifact read <task-id> plans/design.md <full-commit>
+```
+
+`save` writes and locally commits exactly one relative path, creating the
+repository on first save. The `artifact.save` capability takes `taskId`,
+`relativePath`, `content`, optional `message` and optional `expectedHead`;
+the CLI equivalent is `--expected-head <commit>`. A head conflict leaves
+the save unapplied: re-read and reconcile the intended update, not overwrite
+blindly. The text interface accepts UTF-8 files up to 8 MiB, not arbitrary
+binary payloads or an invented directory-upload command.
+
+Current reads use Task and relative path at HEAD. Frozen Candidate, Review,
+Context and completion evidence use the returned `taskId + commit +
+relativePath`; do not replace a pinned read with a current read. For same-Task
+string reference lists, use `git:<full-commit>:<relativePath>`, including
+`task complete ... --artifact-ref "git:<full-commit>:plans/design.md"`.
+The commit must be the artifact repository's returned commit, not the Project
+code head. Preserve fixed old references when updating the current document.
+
+After a meaningful save, update the Brief's summary/reference; keep Decisions
+to the choice, reason and boundary. No document-body, HEAD or timestamp mirror
+is needed. The artifact repository has no remote or transport; this does not
+prohibit a Project code repository's legitimate remote. Saving in Draft grants
+no delivery authority; Session handoff and archive preserve the artifacts.
+Stored scripts/HTML remain data and are never implicitly executed or previewed.
+
+These commands describe this source version's interface. A managed Session
+still uses its authorized CLI and actual available capabilities. If an older
+installation lacks them, report that version boundary; do not switch it to
+an unapproved checkout CLI, migrate a shared Home, or upgrade the installation
+merely to save a result.

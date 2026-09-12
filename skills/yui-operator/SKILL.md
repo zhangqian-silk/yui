@@ -60,12 +60,21 @@ delivery; follow the Leader's [planning and activation boundary](../yui-leader/r
 before activation. Do not reopen terminal Tasks merely because new input arrives.
 
 ```sh
-yui operator submit "<related request and delta>" --task <task-id>
+yui operator submit "<related request and delta>" --task <task-id> --intent discuss
 yui task create "<independent outcome>" \
   --project <project> --base <project>=<ref>
-yui operator submit "<request and routing context>" --task <new-task-id>
+yui operator submit "<request and routing context>" --task <new-task-id> --intent develop
 yui task activate <new-task-id>
 ```
+
+Choose the submission intent explicitly; it is never inferred from the message
+text. `discuss` (the default, and what an old client sends) routes the Draft to
+planning; `record` saves the message without waking the Leader; `develop` asks an
+unplanned Draft to activate now, and reports the exact next step when it cannot
+(already planned → activate manually; execution stopped → start it first). Pass
+`--request-id <key>` to make a submission idempotent: retrying the same key
+returns the original message and routing instead of creating a duplicate, and the
+same key with different text is refused as a conflict.
 
 Resolve all known Projects before repository-backed execution. A stable Project
 checkout is read-only reference state, not the Task base authority. Yui records

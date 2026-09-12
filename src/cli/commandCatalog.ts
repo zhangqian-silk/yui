@@ -467,12 +467,12 @@ const taskChildren: readonly NodeInput[] = [
   { name: "show", summary: "Show a Task.", usage: "yui task show <id>" },
   {
     name: "artifact",
-    summary: "Save fixed Task results and read history without the original Runtime.",
-    sections: [{ id: "manage", title: "Commands", entries: ["list", "show", "save"] }],
+    summary: "Save Task files in local Git and read current or commit-pinned content.",
+    sections: [{ id: "manage", title: "Commands", entries: ["list", "read", "save"] }],
     children: [
       { name: "list", summary: "List saved Task artifacts.", usage: "yui task artifact list <task>" },
-      { name: "show", summary: "Read one saved artifact.", usage: "yui task artifact show <task> <artifact-id>" },
-      { name: "save", summary: "Save content, a version, receipt, or reference.", usage: "yui task artifact save <task> <artifact-json>" }
+      { name: "read", summary: "Read a file at HEAD or an exact commit.", usage: "yui task artifact read <task> <relative-path> [<commit>]" },
+      { name: "save", summary: "Save and locally commit one file.", usage: "yui task artifact save <task> <relative-path> <content> [--message <text>] [--expected-head <commit>]", options: ["--message", "--expected-head"] }
     ]
   },
   {
@@ -532,10 +532,11 @@ const taskChildren: readonly NodeInput[] = [
       },
       {
         name: "send",
-        summary: "Send a Task message.",
-        usage: "yui task message send <id> (<body>|--body-file <path|->) [--wake-policy leader|none] [--to <role> --work-item <id>|--review-round <id>]",
-        options: ["--body-file", "--wake-policy", "--to", "--work-item", "--review-round"],
+        summary: "Send a Task message. An unaddressed user/operator message carries a submission intent (record|discuss|develop) and an optional idempotency key.",
+        usage: "yui task message send <id> (<body>|--body-file <path|->) [--intent record|discuss|develop] [--request-id <key>] [--wake-policy leader|none] [--to <role> --work-item <id>|--review-round <id>]",
+        options: ["--body-file", "--intent", "--request-id", "--wake-policy", "--to", "--work-item", "--review-round"],
         optionValues: {
+          "--intent": ["record", "discuss", "develop"],
           "--wake-policy": ["leader", "none"]
         },
         fileOptions: ["--body-file"]
@@ -1374,9 +1375,12 @@ export const ROOT_COMMAND = buildNode({
         },
         {
           name: "submit",
-          summary: "Submit work through the Operator.",
-          usage: "yui operator submit (<body>|--body-file <path|->) [--task <id>]",
-          options: ["--task", "--body-file"],
+          summary: "Submit work through the Operator with a submission intent (record|discuss|develop); a task-less submit opens a Draft. An optional idempotency key makes a retry safe.",
+          usage: "yui operator submit (<body>|--body-file <path|->) [--task <id>] [--intent record|discuss|develop] [--request-id <key>]",
+          options: ["--task", "--body-file", "--intent", "--request-id"],
+          optionValues: {
+            "--intent": ["record", "discuss", "develop"]
+          },
           fileOptions: ["--body-file"]
         }
       ]

@@ -1,0 +1,162 @@
+import { lstat } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
+
+/**
+ * Filesystem layout and path-safety for per-Task artifact repositories.
+ *
+ * At most one local Git repository per Task lives at
+ * `<YUI_HOME>/task-artifacts/<task-id>/`. This location is derived DIRECTLY
+ * from the Home (not through `resolveWorkspaceRoot`, which forbids paths inside
+ * YUI_HOME): artifact repos are deliberately Home-internal working stores, not
+ * delivery workspaces.
+ *
+ * `relativePath` is an artifact's identity. Every path a caller supplies is
+ * validated against traversal (`..`), absolute escape, and symbolic-link
+ * escape before it is used for a filesystem or Git operation. The canonical
+ * form is POSIX (forward-slash) so it doubles as a stable Git pathspec and a
+ * stable identity across platforms.
+ */
+
+const RESERVED_SEGMENTS: readonly string[] = Object.freeze([
+  ".", "..", "__proto__", "prototype", "constructor"
+]);
+
+/** Root under the Home that holds every Task's artifact repository. */
+export function taskArtifactsRoot(home: string): string {
+  return join(resolve(home), "task-artifacts");
+}
+
+/**
+ * Absolute path of one Task's artifact repository. The Task id is validated as
+ * a single safe path segment, so a crafted id cannot escape the artifacts root.
+ */
+export function taskArtifactRepoPath(home: string, taskId: string): string {
+  return join(taskArtifactsRoot(home), safePathSegment(taskId, "Task id"));
+}
+
+/** Validate one path segment (Task id / directory name). Mirrors safePathSegment in the workspace layer. */
+export function safePathSegment(value: string, label = "Identity"): string {
+  const normalized = value.trim();
+  if (
+    normalized.length === 0 ||
+    RESERVED_SEGMENTS.includes(normalized) ||
+    /[\/\\\0]/.test(normalized)
+  ) {
+    throw new Error(`${label} is invalid for managed artifact layout.`);
+  }
+  return normalized;
+}
+
+/**
+ * Validate and canonicalize an artifact `relativePath` to POSIX form. Rejects
+ * absolute paths, empty input, backslashes, control characters, and any `.`,
+ * `..`, empty, or reserved segment. The result is a forward-slash relative path
+ * suitable as both a Git pathspec and a stable identity.
+ *
+ * This is a PURE lexical check; it does not touch the filesystem. Use
+ * {@link resolveContainedArtifactPath} to additionally guard against symbolic
+ * links before a filesystem read or write.
+ */
+export function safeRelativeArtifactPath(relativePath: string): string {
+  if (typeof relativePath !== "string" || relativePath.length === 0) {
+    throw new Error("Artifact relativePath is required.");
+  }
+  if (relativePath.includes("\0")) {
+    throw new Error("Artifact relativePath contains a NUL byte.");
+  }
+  if (relativePath.includes("\\")) {
+    throw new Error("Artifact relativePath must use forward slashes.");
+  }
+  if (isAbsolute(relativePath) || relativePath.startsWith("/")) {
+    throw new Error("Artifact relativePath must be relative.");
+  }
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f]/.test(relativePath)) {
+    throw new Error("Artifact relativePath contains control characters.");
+  }
+  // An artifact's identity is a literal path, never a pattern. Reject Git glob
+  // and pathspec-magic metacharacters (`*` `?` `[` `]` `:`) so a relativePath can
+  // never be interpreted as a wildcard that matches OTHER paths, and never carry
+  // pathspec magic like `:(exclude)`. (The managed runner also forces literal
+  // pathspecs, but rejecting them in the identity keeps identities unambiguous.)
+  if (/[*?[\]:]/.test(relativePath)) {
+    throw new Error("Artifact relativePath contains a glob or pathspec metacharacter (*?[]:).");
+  }
+  const segments = relativePath.split("/");
+  for (const segment of segments) {
+    if (segment.length === 0) {
+      throw new Error("Artifact relativePath has an empty path segment.");
+    }
+    if (RESERVED_SEGMENTS.includes(segment)) {
+      throw new Error(`Artifact relativePath has a forbidden segment: ${segment}.`);
+    }
+    // The Git control directory is never a valid artifact location. Reject it
+    // case-insensitively so a case-insensitive filesystem cannot alias into it.
+    if (segment.toLowerCase() === ".git") {
+      throw new Error("Artifact relativePath may not enter the Git control directory.");
+    }
+    if (segment.trim() !== segment) {
+      throw new Error("Artifact relativePath segment has leading or trailing whitespace.");
+    }
+  }
+  return segments.join("/");
+}
+
+/**
+ * Resolve a validated `relativePath` to an absolute filesystem path inside the
+ * repository, and prove it does not escape through a symbolic link. Every
+ * existing ancestor component (and the target itself, when present) is
+ * `lstat`ed; a symlink anywhere on the path is rejected. Artifact repositories
+ * are created solely by Yui and never legitimately contain symlinks, so this
+ * strict policy blocks read/write-through-symlink escapes without false
+ * positives.
+ *
+ * Returns the absolute path. Does not create anything.
+ */
+export async function resolveContainedArtifactPath(
+  repoRoot: string,
+  relativePath: string
+): Promise<string> {
+  const canonicalRoot = resolve(repoRoot);
+  const safeRelative = safeRelativeArtifactPath(relativePath);
+  const absolute = resolve(canonicalRoot, safeRelative);
+
+  // Lexical containment: the resolved path must remain within the repo root.
+  const fromRoot = relative(canonicalRoot, absolute);
+  if (fromRoot.length === 0 || fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
+    throw new Error("Artifact relativePath escapes its repository.");
+  }
+
+  // Symlink-escape guard: walk each component from the root down; reject the
+  // first symbolic link. `.git` is never a valid artifact ancestor either.
+  const segments = safeRelative.split("/");
+  let current = canonicalRoot;
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index]!;
+    if (segment === ".git") {
+      throw new Error("Artifact relativePath may not enter the Git control directory.");
+    }
+    current = join(current, segment);
+    const kind = await pathKind(current);
+    if (kind === "symlink") {
+      throw new Error("Artifact relativePath resolves through a symbolic link.");
+    }
+    // An intermediate component that exists but is not a directory is invalid.
+    if (kind === "file" && index < segments.length - 1) {
+      throw new Error("Artifact relativePath descends into a file.");
+    }
+  }
+  return absolute;
+}
+
+async function pathKind(path: string): Promise<"directory" | "file" | "symlink" | undefined> {
+  try {
+    const entry = await lstat(path);
+    if (entry.isSymbolicLink()) return "symlink";
+    if (entry.isDirectory()) return "directory";
+    return "file";
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
+    throw error;
+  }
+}

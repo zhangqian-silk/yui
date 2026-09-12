@@ -2,24 +2,6 @@ import { createHash } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
 import { requireIdentity, requireText, requireTimestamp } from "../domain/validation.js";
 
-/** Content belongs to the Home, never to an executable plugin or workspace. */
-export type Artifact = Readonly<{
-  schemaVersion: 1;
-  id: string;
-  taskId: string;
-  displayName: string;
-  mediaType: string;
-  provenance: string;
-  createdAt: string;
-} & (
-  | { kind: "content"; content: string; digest: string }
-  | { kind: "external-version"; resourceId: string; version: string; verification: string }
-  | { kind: "receipt"; jobId: string; receiptRef: string; content: string; digest: string }
-  | { kind: "reference"; locator: string; observedAt: string }
-)>;
-
-export type ArtifactRef = Readonly<{ taskId: string; artifactId: string; kind: Exclude<Artifact["kind"], "reference">; digest?: string }>;
-
 /** Concrete local directory identity. Git keeps its existing owner stores. */
 export type LocalResource = Readonly<{
   schemaVersion: 1;
@@ -82,50 +64,6 @@ export function validateExecutionEnvironmentSnapshot(value: ExecutionEnvironment
 
 export function contentDigest(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
-}
-
-export function validateArtifact(artifact: Artifact): Artifact {
-  if (artifact.schemaVersion !== 1) throw new Error("Artifact schemaVersion must be 1.");
-  requireIdentity(artifact.id, "Artifact id");
-  requireIdentity(artifact.taskId, "Artifact Task");
-  requireText(artifact.displayName, "Artifact name");
-  requireText(artifact.mediaType, "Artifact media type");
-  requireText(artifact.provenance, "Artifact provenance");
-  requireTimestamp(artifact.createdAt, "Artifact timestamp");
-  if (artifact.kind === "content" || artifact.kind === "receipt") {
-    if (typeof artifact.content !== "string" || Buffer.byteLength(artifact.content) > 8 * 1024 * 1024) {
-      throw new Error("Artifact content must be UTF-8 text of at most 8 MiB.");
-    }
-    if (artifact.digest !== contentDigest(artifact.content)) throw new Error("Artifact content digest mismatch.");
-    if (artifact.kind === "receipt") {
-      requireIdentity(artifact.jobId, "Artifact Job");
-      requireText(artifact.receiptRef, "Artifact receipt");
-    }
-  } else if (artifact.kind === "external-version") {
-    requireIdentity(artifact.resourceId, "Artifact resource");
-    requireText(artifact.version, "Artifact external version");
-    requireText(artifact.verification, "Artifact version verification");
-  } else if (artifact.kind === "reference") {
-    requireText(artifact.locator, "Reference locator");
-    requireTimestamp(artifact.observedAt, "Reference observation");
-  } else throw new Error("Unknown Artifact kind.");
-  return artifact;
-}
-
-export function stableArtifactRef(artifact: Artifact): ArtifactRef {
-  validateArtifact(artifact);
-  if (artifact.kind === "reference") throw new Error("Reference material is not a fixed result.");
-  return { taskId: artifact.taskId, artifactId: artifact.id, kind: artifact.kind,
-    ...("digest" in artifact ? { digest: artifact.digest } : {}) };
-}
-
-/** Listings expose locators and provenance without replaying every body. */
-export function artifactSummary(artifact: Artifact) {
-  if ("content" in artifact) {
-    const { content, ...summary } = artifact;
-    return { ...summary, contentBytes: Buffer.byteLength(content, "utf8") };
-  }
-  return artifact;
 }
 
 export function validateLocalResource(resource: LocalResource): LocalResource {

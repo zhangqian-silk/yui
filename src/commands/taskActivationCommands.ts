@@ -12,6 +12,7 @@ import {
   taskActivationOperationRef
 } from "../task/taskActivationService.js";
 import type { Task } from "../task/task.js";
+import type { TaskStore } from "../storage/taskStore.js";
 import { taskLocalActor } from "./taskActor.js";
 import type {
   TaskCommandExecution,
@@ -78,6 +79,10 @@ function requestActivation(
     actorId: caller.actorId,
     authorityRef: caller.authorityRef,
     environmentPlan,
+    // The activation-request command is the explicit activation boundary, so
+    // every request it records carries an explicit provable origin (task-32
+    // §2.4). A develop submission records its own request with `submit-develop`.
+    origin: "explicit",
     ...(caller.planningRunId === undefined ? {} : { callerRunId: caller.planningRunId })
   }, now));
   // An immediate request has nothing left to wait for, so ask the Controller to
@@ -235,6 +240,28 @@ function activationCaller(
         : {})
     };
   }
+  if (actor === "operator") {
+    return nonLeaderActivationIdentity(store, "operator");
+  }
+  return nonLeaderActivationIdentity(store, "user");
+}
+
+/**
+ * The activation actor/authority identity for a user or Operator submission.
+ *
+ * A develop submission (task-32 §2.4) records its own activation request inside
+ * the message-save transaction, and it must stamp the exact same identity the
+ * explicit `yui task activation request` boundary would for the same caller —
+ * otherwise the Controller and the workspace preparer could treat "the user
+ * asked via submit" differently from "the user asked via activate". Sharing this
+ * mapping is what keeps the two entry points one activation contract rather than
+ * two. Leader identity is deliberately excluded: it binds to a live native
+ * Session and is resolved only by {@link activationCaller}.
+ */
+export function nonLeaderActivationIdentity(
+  store: Pick<TaskStore, "getGlobalRole">,
+  actor: "user" | "operator"
+): Readonly<{ actorId: string; authorityRef: string }> {
   if (actor === "operator") {
     return {
       actorId: "global:operator",
