@@ -4,6 +4,9 @@ import { freezeRunContextSnapshot } from "../context/runContextPack.js";
 import { contextSnapshotRef } from "../context/contextSnapshot.js";
 import { isDeepStrictEqual } from "node:util";
 import { assertExecutionEnvironmentCurrent } from "../runtime/executionEnvironment.js";
+import { resolveAgentHostObservation, recordAgentHostConnection, AgentHostObservationDeferred } from "./agentHostObservation.js";
+import { RuntimeHookRunFenceError } from "./runtimeHookRunFence.js";
+import type { RuntimeObservationInboxEvent } from "./runtimeEventInbox.js";
 
 import type { DurableJob } from "../job/durableJob.js";
 import type { MailboxEntityRef } from "../coordination/workMailbox.js";
@@ -224,6 +227,54 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
     private readonly drivers: AgentDriverRegistry = builtinAgentDriverRegistry(),
     private readonly snapshotExecutionLaneWorkspace = snapshotExecutionLaneWorkspaceSync
   ) {}
+
+  observeAgentHostObservation(event: RuntimeObservationInboxEvent, now = new Date()): ProviderLifecycleObservation {
+    // Match canonical ingress: archive and Host fact settlement share the
+    // same write boundary, including the original transport envelope.
+    return this.store.transaction(() => this.foldAgentHostObservation(event, now));
+  }
+
+  private foldAgentHostObservation(event: RuntimeObservationInboxEvent, now: Date): ProviderLifecycleObservation {
+    const raw = createRuntimeObservation(event.observation);
+    const task = raw.fence.taskId === undefined ? null : this.store.getTask(raw.fence.taskId);
+    if (task === null) return "obsolete";
+    if (task.status === "archived") {
+      this.observeObsoleteRuntimeEvent({
+        eventId: event.id, eventType: event.type, taskId: task.id,
+        roleName: raw.fence.roleName, agentId: raw.fence.agentId,
+        nativeSessionId: raw.fence.nativeSessionId ?? "unknown",
+        reason: "task-archived", originalEvent: event
+      }, now);
+      return "obsolete";
+    }
+    if (Date.parse(raw.receivedAt) > now.getTime()) {
+      return this.recordObsoleteCanonicalObservation(raw, "received-at-in-future", now);
+    }
+    let input: RuntimeObservation;
+    try {
+      if (event.observation.kind === "host.observed") {
+        return this.store.transaction(store => {
+          const connection = resolveAgentHostObservation(store, event);
+          recordAgentHostConnection(store, event, connection, now);
+          this.persistRuntimeObservation(connection, now);
+          return "applied";
+        });
+      }
+      input = resolveAgentHostObservation(this.store, event);
+      if (input.kind === "input.accepted" && input.fence.runId === undefined
+        && input.fence.receiptId?.startsWith("native-input:")) {
+        // A valid ordinary conversation has no managed Run input to mirror.
+        // Consuming this fact is not rejection, nor assignment acceptance.
+        return "applied";
+      }
+    } catch (error) {
+      if (error instanceof AgentHostObservationDeferred) return "deferred";
+      if (!(error instanceof RuntimeHookRunFenceError)) throw error;
+      // Rejection is durable diagnostic evidence, never business acceptance.
+      return this.recordObsoleteCanonicalObservation(event.observation, error.message, now);
+    }
+    return this.observeRuntimeObservation(input, now);
+  }
 
   /**
    * Sole provider-independent ingress for structured runtime state. Driver

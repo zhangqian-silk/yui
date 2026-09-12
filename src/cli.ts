@@ -190,6 +190,7 @@ import {
   unknownAgentRunConfiguration,
   type AgentRunConfigurationObservation
 } from "./runtime/agentRunConfiguration.js";
+import type { TaskRoleHostObservation } from "./commands/taskRoleRuntimeStatus.js";
 import {
   TaskWorkspaceCoordinator,
   WorkspaceCleanupBlockedError
@@ -1691,15 +1692,16 @@ export async function main(): Promise<void> {
         store,
         actualTaskReviewCandidate
       );
-      // Read-only, and only for a Session inspect. The command itself stays
+      // Read-only Host evidence for Session inspect and Role status/list. The command stays
       // synchronous over persisted state; this is the live reading it prints
       // beside those facts, prepared here because the Host is reached over a
       // socket.
-      const liveRunConfiguration = await liveRunConfigurationForTaskCommand(
+      const liveHostObservations = await liveHostObservationsForTaskCommand(
         resolved,
         store,
         home
       );
+      const liveRunConfiguration = runConfigurationForHostObservation(liveHostObservations?.[resolved[5] ?? ""]);
       // Physical preparation may precede the durable write, but Task status,
       // workspace identity/cwd, and ManagedWorkspace ownership are adopted by
       // one transaction. A failed attempt therefore leaves the Task Draft and
@@ -1744,6 +1746,7 @@ export async function main(): Promise<void> {
           ...(liveRunConfiguration === undefined
             ? {}
             : { liveRunConfiguration }),
+          ...(liveHostObservations === undefined ? {} : { liveHostObservations }),
           ...(taskRetirementProof === undefined ? {} : { taskRetirementProof }),
           ...(validateAgentConfiguration === undefined
             ? {}
@@ -3009,31 +3012,34 @@ async function warmLegacyRoleConfigurationMutation(
  * no Host is running for most Sessions ever inspected, and the persisted facts
  * the command prints are worth showing regardless of whether a live one answered.
  */
-async function liveRunConfigurationForTaskCommand(
+async function liveHostObservationsForTaskCommand(
   args: readonly string[],
   store: TaskStore,
   home: string
-): Promise<AgentRunConfigurationObservation | undefined> {
-  if (args[0] !== "task" || args[1] !== "role" || args[2] !== "session"
-    || args[3] !== "inspect" || args.length !== 6) {
-    return undefined;
-  }
-  const taskId = args[4];
-  const roleName = args[5];
-  if (taskId === undefined || roleName === undefined) return undefined;
-  // A Session must be recorded as active before asking. Probing a socket for a
-  // Role that never ran would report a reach failure as if it were a fact about
-  // that Role's Agent.
+): Promise<Readonly<Record<string, TaskRoleHostObservation>> | undefined> {
+  if (args[0] !== "task" || args[1] !== "role") return undefined;
+  const inspect = args[2] === "session" && args[3] === "inspect" && args.length === 6;
+  const status = args[2] === "status" && args.length === 5;
+  const list = args[2] === "list" && args.length === 4;
+  if (!inspect && !status && !list) return undefined;
+  const taskId = args[inspect ? 4 : 3]!;
+  const roles = list ? store.listRoles(taskId).map(role => role.name) : [args[inspect ? 5 : 4]!];
+  const entries = await Promise.all(roles.map(async roleName => [
+    roleName, await readLiveHostObservation(store, home, taskId, roleName)
+  ] as const));
+  return Object.fromEntries(entries.filter((entry): entry is readonly [string, TaskRoleHostObservation] => entry[1] !== undefined));
+}
+
+async function readLiveHostObservation(
+  store: TaskStore, home: string, taskId: string, roleName: string
+): Promise<TaskRoleHostObservation | undefined> {
   const sessions = store.getTaskRoleSessionSet(taskId, roleName);
   const active = sessions === null
     ? undefined
     : sessions.sessions[sessions.activeAgentId];
   if (active === undefined) return undefined;
   if (active.status !== "active") {
-    return unknownAgentRunConfiguration(
-      `This Session is ${active.status}, so there is no live Agent to report what it `
-      + "is running under."
-    );
+    return { detail: `This Session is ${active.status}; no live Host reading was requested.` };
   }
   try {
     const snapshot = await inspectAgentHost({
@@ -3043,22 +3049,20 @@ async function liveRunConfigurationForTaskCommand(
       roleName
     });
     if (snapshot.nativeSessionId !== active.nativeSessionId
-      || snapshot.adapterId !== active.adapterId
-      || snapshot.state === "exited" || snapshot.state === "failed") {
-      return unknownAgentRunConfiguration(
-        "The Agent Host has no live connection matching the recorded Session."
-      );
+      || snapshot.adapterId !== active.adapterId) {
+      return { detail: "The Agent Host does not match the recorded Session." };
     }
-    return snapshot.runConfiguration ?? unknownAgentRunConfiguration(
-      "The Agent Host is running but has no Provider Session open, so no Agent "
-      + "has reported a configuration yet."
-    );
+    return { snapshot };
   } catch (error) {
-    return unknownAgentRunConfiguration(
-      "The Agent Host for this Session could not be reached, so its live "
-      + `configuration is unavailable: ${error instanceof Error ? error.message : String(error)}`
-    );
+    return { detail: `The Agent Host could not be reached: ${error instanceof Error ? error.message : String(error)}` };
   }
+}
+
+function runConfigurationForHostObservation(host?: TaskRoleHostObservation): AgentRunConfigurationObservation | undefined {
+  if (host === undefined) return undefined;
+  return host.snapshot?.runConfiguration ?? unknownAgentRunConfiguration(
+    host.detail ?? `Host=${host.snapshot?.state ?? "unknown"}; no live Agent configuration was reported.`
+  );
 }
 
 function hasModelOrEffortMutation(args: readonly string[]): boolean {

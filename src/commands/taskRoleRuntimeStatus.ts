@@ -36,6 +36,7 @@ import { resolveRuntimeHealth } from "../config/yuiConfig.js";
 import { builtinDriverIdForAdapter } from "../runtime/builtinAgentDrivers.js";
 import { formatRunReceiptId } from "../task/taskRecordReference.js";
 import { operationalTaskRecords } from "../task/taskRecordRetirement.js";
+import type { AgentHostSnapshot } from "../runtime/agentHost.js";
 import {
   projectSessionTokenMetrics,
   resolveSessionTokenIdentity,
@@ -81,6 +82,7 @@ export type TaskRoleRuntimeStatus = Readonly<{
   runSessionDrift: boolean;
   health: TaskRoleHealth;
   healthReason: string;
+  host?: TaskRoleHostObservation;
   openInputRequestCount: number;
   role: TaskRole;
   activeRun: AgentRun | null;
@@ -117,6 +119,49 @@ export type TaskRoleRuntimeStatus = Readonly<{
     kind?: "delivery-stalled" | "workflow-not-progressing";
   }>;
 }>;
+
+export type TaskRoleHostObservation = Readonly<{
+  snapshot?: AgentHostSnapshot;
+  detail?: string;
+}>;
+
+export function taskRoleHostDiagnostic(host: TaskRoleHostObservation): string {
+  const snapshot = host.snapshot;
+  if (snapshot === undefined) return `unavailable: ${host.detail ?? "Host could not be read"}`;
+  const delivery = snapshot.eventDelivery;
+  return [
+    `Provider Host=${snapshot.state}`,
+    delivery === undefined ? "event delivery=unreported (legacy Host)" :
+      `pending facts=${delivery.pending}; native terminals awaiting acknowledgement=${delivery.pendingTerminals}`,
+    delivery?.failure === undefined ? undefined :
+      `reporting failure (${delivery.failure.stage}, ${delivery.failure.observedAt}): ${delivery.failure.detail}`,
+    snapshot.detail
+  ].filter(Boolean).join("; ");
+}
+
+/** Overlay live reporting evidence without rewriting Run/Provider/business truth. */
+export function withTaskRoleHostObservation(
+  status: TaskRoleRuntimeStatus, host?: TaskRoleHostObservation
+): TaskRoleRuntimeStatus {
+  if (host === undefined) return status;
+  const snapshot = host.snapshot;
+  if (snapshot !== undefined && (snapshot.nativeSessionId !== status.nativeSession?.nativeSessionId
+    || snapshot.adapterId !== status.nativeSession?.adapterId)) {
+    return { ...status, host: { detail: "Host does not match the recorded native Session." } };
+  }
+  const reportingNeedsAttention = snapshot !== undefined && (
+    snapshot.state === "failed" || snapshot.state === "exited"
+    || snapshot.eventDelivery?.failure !== undefined
+    || (snapshot.eventDelivery?.pendingTerminals ?? 0) > 0
+  );
+  return {
+    ...status, host,
+    ...(reportingNeedsAttention ? {
+      health: "needs-attention" as const,
+      healthReason: `${taskRoleHostDiagnostic(host)}. Formal Run status and business acceptance are unchanged.`
+    } : {})
+  };
+}
 
 export function inspectTaskRoleRuntimeStatuses(
   taskId: string,
@@ -229,6 +274,7 @@ export function renderTaskRoleRuntimeStatus(status: TaskRoleRuntimeStatus): stri
       : "none"}`,
     `  Native session   ${nativeSession}`,
     `  AgentRuntime    ${runtime}`,
+    ...(status.host === undefined ? [] : [`  Host reporting   ${taskRoleHostDiagnostic(status.host)}`]),
     `  Session tokens   ${sessionTokens}`,
     `  Runtime cleanup  ${status.runtimeCleanupPending ? "pending" : "none"}`,
     `  tmux pane        ${tmux}`,

@@ -122,6 +122,7 @@ import {
 } from "./resourceInventory.js";
 import { SessionOwnerReconciliation } from "./sessionOwnerReconciliation.js";
 import { launchBrokerForHome } from "../runtime/launchBroker.js";
+import { assertExecutionEnvironmentCurrent } from "../runtime/executionEnvironment.js";
 import {
   classifyRuntimeProcessExit,
   validateRuntimeProcessExitObservation
@@ -737,6 +738,18 @@ export function createRuntimeLifecycleDispatcher(
     });
   const lifecycleTails = new Map<string, Promise<void>>();
   return async (method, params) => {
+    if (method === "runtime.host-observation-apply") {
+      const id = (params as { eventId?: unknown }).eventId;
+      if (typeof id !== "string") throw applicationError("INVALID_PARAMS", "Host event id is required.");
+      // Eager delivery is only a hint about the exact immutable Inbox file.
+      // Missing means the normal drainer has already committed and ACKed it.
+      const event = new FileRuntimeEventInbox(store.rootDirectory()).read(id);
+      if (event === null) return { outcome: "applied" };
+      if (event.type !== "runtime-observation" || event.host === undefined) {
+        throw applicationError("INVALID_PARAMS", "Expected an Agent Host observation.");
+      }
+      return { outcome: schedulerStore.observeAgentHostObservation(event, new Date()) };
+    }
     if (method === "runtime.observation-apply") {
       try {
         return {
@@ -881,7 +894,34 @@ export function createRuntimeLifecycleDispatcher(
       }
       // The launch payload is validated at reservation time and every member
       // of its discriminated Provider-control union is JSON serializable.
-      return launchBrokerForHome(store.rootDirectory()).redeem(ticket) as unknown as JsonValue;
+      const payload = launchBrokerForHome(store.rootDirectory()).redeem(ticket);
+      if (payload.executionEnvironment !== undefined) {
+        if (payload.environment.YUI_SESSION_SCOPE !== "task"
+          || payload.environment.YUI_TASK_ID !== payload.executionEnvironment.taskId
+          || payload.cwd !== payload.executionEnvironment.directory.path) {
+          throw applicationError("INVALID_PARAMS", "Launch does not match its adopted execution environment.");
+        }
+        assertExecutionEnvironmentCurrent(store, payload.executionEnvironment.taskId, payload.executionEnvironment);
+      }
+      return payload as unknown as JsonValue;
+    }
+    if (method === "runtime.execution-environment-check") {
+      const value = params as Record<string, unknown>;
+      const { taskId, roleName, agentId, nativeSessionId, workspace } = value;
+      if ([taskId, roleName, agentId, nativeSessionId, workspace].some(v => typeof v !== "string")) {
+        throw applicationError("INVALID_PARAMS", "Exact Host execution identity is required.");
+      }
+      const sessions = store.getTaskRoleSessionSet(taskId as string, roleName as string);
+      const session = sessions?.sessions[agentId as string];
+      if (sessions?.activeAgentId !== agentId || session?.status !== "active"
+        || session.nativeSessionId !== nativeSessionId
+        || (session.effective.executionEnvironment?.directory.path ?? session.effective.workspace.root) !== workspace) {
+        throw applicationError("INVALID_PARAMS", "Host no longer owns the current execution environment.");
+      }
+      if (session.effective.executionEnvironment !== undefined) {
+        assertExecutionEnvironmentCurrent(store, taskId as string, session.effective.executionEnvironment);
+      }
+      return { current: true };
     }
     if (method === "runtime.replace-agent-environment") {
       if (environmentRefresher === undefined) {

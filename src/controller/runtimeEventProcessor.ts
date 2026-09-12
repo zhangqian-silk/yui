@@ -46,6 +46,7 @@ export type RuntimeRunEventObserver = Readonly<{
   /** Batch multiple inbox folds into one authoritative aggregate commit. */
   withRuntimeEventTransaction?<T>(execute: () => T): T;
   getTask(taskId: string): SchedulerTask | null;
+  observeAgentHostObservation?(input: RuntimeObservationInboxEvent, now?: Date): ProviderLifecycleObservation;
   /** Applies one provider-neutral runtime state/activity observation. */
   observeRuntimeObservation?(
     input: RuntimeObservation,
@@ -308,6 +309,9 @@ export class FileRuntimeEventProcessor implements RuntimeEventProcessorPort {
     event: RuntimeObservationInboxEvent,
     now: Date
   ): "applied" | "deferred" | "obsolete" {
+    if (event.host !== undefined) {
+      return this.observer.observeAgentHostObservation?.(event, now) ?? "deferred";
+    }
     const taskId = event.observation.fence.taskId;
     if (taskId !== undefined) {
       const task = this.observer.getTask(taskId);
@@ -587,6 +591,9 @@ function progressStreamKey(event: RuntimeObservationInboxEvent): string {
     fence.driverId,
     fence.nativeSessionId ?? null,
     fence.runId ?? null,
+    fence.receiptId ?? null,
+    fence.nativeTurnId ?? null,
+    event.host ?? null,
     payload.activity,
     isRuntimeTokenEvidence(event.observation) ? "usage" : "signal"
   ]);
@@ -727,6 +734,7 @@ function nonEmptyString(value: unknown): string | undefined {
  */
 export type AsyncRuntimeRunEventObserver = Readonly<{
   getTask(taskId: string): Promise<SchedulerTask | null>;
+  observeAgentHostObservation?(input: RuntimeObservationInboxEvent, now?: Date): Promise<ProviderLifecycleObservation>;
   observeRuntimeObservation?(
     input: RuntimeObservation,
     now?: Date
@@ -776,6 +784,8 @@ export function createAsyncRuntimeObserver(invoke: AsyncObserverInvoker): AsyncR
     now === undefined ? call(method, [input]) : call(method, [input, now]);
   return {
     getTask: (taskId) => call("getTask", [taskId]) as Promise<SchedulerTask | null>,
+    observeAgentHostObservation: (input, now) =>
+      withNow("observeAgentHostObservation", input, now) as Promise<ProviderLifecycleObservation>,
     observeRuntimeObservation: (input, now) =>
       withNow("observeRuntimeObservation", input, now) as Promise<ProviderLifecycleObservation>,
     observeRuntimeRunTerminal: (input, now) => withNow("observeRuntimeRunTerminal", input, now),
@@ -890,6 +900,9 @@ export class AsyncRuntimeEventProcessor {
     event: RuntimeObservationInboxEvent,
     now: Date
   ): Promise<"applied" | "deferred" | "obsolete"> {
+    if (event.host !== undefined) {
+      return this.observer.observeAgentHostObservation?.(event, now) ?? "deferred";
+    }
     const taskId = event.observation.fence.taskId;
     if (taskId !== undefined) {
       const task = await this.observer.getTask(taskId);

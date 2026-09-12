@@ -390,6 +390,7 @@ test("update quiesces the exact Controller before replacing a current-contract b
     "handover",
     "status",
     "stop:42",
+    "preflight",
     "activate",
     "verify",
     "start",
@@ -441,6 +442,7 @@ test("update applies a supported storage migration before post-verification", ()
     "preflight",
     "handover",
     "status",
+    "preflight",
     "activate",
     "migrate",
     "verify",
@@ -3458,7 +3460,7 @@ test("Controller begin-handover accepts a null fromReleaseId", async (t) => {
 
 test("production storage exposes one current version and one migration floor", () => {
   assert.equal(MIN_SUPPORTED_STORAGE_VERSION, 1);
-  assert.equal(CURRENT_STORAGE_VERSION, 21);
+  assert.equal(CURRENT_STORAGE_VERSION, 22);
   for (const retiredExport of [
     "FileTaskStore",
     "STORAGE_STATE_FILE",

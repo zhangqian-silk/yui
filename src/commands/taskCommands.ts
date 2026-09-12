@@ -316,7 +316,10 @@ import {
   taskRoleLastRunLabel,
   taskRoleNativeSessionLabel,
   taskRoleOpenInputLabel,
-  taskRoleTmuxLabel
+  taskRoleTmuxLabel,
+  withTaskRoleHostObservation,
+  taskRoleHostDiagnostic,
+  type TaskRoleHostObservation
 } from "./taskRoleRuntimeStatus.js";
 import {
   assertNoOpenInputRequests,
@@ -531,6 +534,7 @@ export type TaskCommandOptions = Readonly<{
    * expectation, and this states what the Agent answered about it.
    */
   liveRunConfiguration?: AgentRunConfigurationObservation;
+  liveHostObservations?: Readonly<Record<string, TaskRoleHostObservation>>;
   /** CLI-prepared capability validation; throws before a Role mutation persists. */
   validateAgentConfiguration?: (
     input: Readonly<{
@@ -2872,6 +2876,7 @@ function taskRoleSessionCommand(
     // means there was nothing an Agent reported, and the one-line label above
     // still states which of the "no value" cases applies.
     const runConfiguration = active === null ? undefined : options.liveRunConfiguration;
+    const host = options.liveHostObservations?.[role.name];
     const runConfigurationDetail = renderAgentRunConfiguration(runConfiguration);
     return output(
       active === null
@@ -2886,6 +2891,7 @@ function taskRoleSessionCommand(
             `Native id: ${active.nativeSessionId}`,
             `Session: ${active.status}${active.endReason === undefined ? "" : `/${active.endReason}`}`,
             `AgentRun: ${binding?.run?.status ?? "none"}`,
+            ...(host === undefined ? [] : [`Host reporting: ${taskRoleHostDiagnostic(host)}`]),
             `Run configuration: ${agentRunConfigurationLabel(runConfiguration)}`
           ].join("\n") + "\n"
           + `\n${renderRoleLaunchComparison(role, active.effective)}\n`
@@ -2895,6 +2901,7 @@ function taskRoleSessionCommand(
         role,
         session: active,
         providerBinding: binding,
+        ...(host === undefined ? {} : { host }),
         ...(runConfiguration === undefined ? {} : { runConfiguration })
       }
     );
@@ -3080,7 +3087,7 @@ function listTaskRoles(
     store,
     options.runtime?.inspectTaskRolePanes?.(task.id) ?? [],
     options.now?.() ?? new Date()
-  );
+  ).map(status => withTaskRoleHostObservation(status, options.liveHostObservations?.[status.roleName]));
   if (statuses.length === 0) return output("No roles assigned.\n", { roles: statuses });
   return output(`${renderTable(
     `Task roles: ${task.id}`,
@@ -3124,7 +3131,8 @@ function taskRoleStatus(
     options.now?.() ?? new Date()
   );
   if (status === undefined) throw roleNotFound(role.name);
-  return output(renderTaskRoleRuntimeStatus(status), { role: status });
+  const observed = withTaskRoleHostObservation(status, options.liveHostObservations?.[role.name]);
+  return output(renderTaskRoleRuntimeStatus(observed), { role: observed });
 }
 
 function showTaskRole(args: string[], store: TaskWorkflowStore): TaskCommandExecution {
