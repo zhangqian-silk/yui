@@ -18,11 +18,12 @@ import { FileRuntimeEventProcessor, AsyncRuntimeEventProcessor, createAsyncRunti
 import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
 import { createConfiguredAgent } from "../../dist/agent/agent.js";
 import { activateTask, createTask } from "../../dist/task/task.js";
-import { createRole, createRoleAgentBinding } from "../../dist/role/role.js";
+import { createGlobalRole, createRole, createRoleAgentBinding } from "../../dist/role/role.js";
 import { createManagedWorkspace } from "../../dist/worktree/managedWorkspace.js";
 import { bindTaskRoleProviderRuntime, updateTaskRoleProviderRuntime, createRoleSessionSet, recordRoleAgentSession } from "../../dist/executor/agentExecutor.js";
 import { createProviderRuntimeBinding, beginProviderTurn } from "../../dist/runtime/providerRuntimeIdentity.js";
-import { runTaskCommand } from "../../dist/commands/taskCommands.js";
+import { runTaskCommand, submitOperatorMessage } from "../../dist/commands/taskCommands.js";
+import { terminalizeExactTaskRun } from "../../dist/lifecycle/exactRunTerminalization.js";
 import { createRuntimeLifecycleDispatcher } from "../../dist/controller/runtime.js";
 import { startControllerServer } from "../../dist/core/controllerServer.js";
 import { runStorageUpgrade } from "../../dist/storage/upgrade/upgradeOrchestrator.js";
@@ -40,7 +41,7 @@ import { FileRoleLaunchPlanner } from "../../dist/executor/fileRoleLaunchPlanner
 import { TmuxSessionHost } from "../../dist/runtime/tmuxAdapters.js";
 import { launchBrokerForHome } from "../../dist/runtime/launchBroker.js";
 import { randomBytes } from "node:crypto";
-import { readLinuxProcessIdentity } from "../../dist/runtime/sessionOwnerIdentity.js";
+import { createSessionOwnerIdentity, readLinuxProcessIdentity } from "../../dist/runtime/sessionOwnerIdentity.js";
 
 /** Independent minimum RPC-v4 Controller transport; intentionally no current
  * Controller/store parser on the Home-19 side. It authenticates the exact
@@ -216,6 +217,92 @@ test("production launch preserves scoped startup facts before native Session ado
     nativeSessionId: "must-not-bind", connection: { account: { home, codexHome: join(home, "wrong-account") } } });
   assert.deepEqual(processor.drain(new Date()).failed, []);
   assert.equal(store.listEvents("task-1").filter(e => e.type === "runtime.native-connection-bound").length, 1);
+});
+
+test("restoring an authorized Draft planning Session retains Host custody without a new Run", async t => {
+  const root = mkdtempSync(join(tmpdir(), "yui-host-planning-restore-"));
+  const home = join(root, "home");
+  const store = new SqliteTaskStore(home);
+  t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
+  const now = new Date();
+  const agent = createConfiguredAgent("codex", "codex", "codex", [], [], now);
+  store.saveConfiguredAgent(agent);
+  store.saveGlobalRole(createGlobalRole("leader", [createRoleAgentBinding(agent)], agent.id, home, now));
+  store.saveConfig({ ...store.getConfig(), defaultAgent: agent.id, defaultWorkspace: home });
+  submitOperatorMessage("Discuss the result before activation.", undefined, store, { now: () => now });
+  const scheduler = new FileSchedulerStoreAdapter(store);
+  assert.equal(scheduler.prepareDraftPlanning("task-1", now), true);
+  const run = store.getActiveRun("task-1", "leader");
+  const owner = { scope: "task", taskId: "task-1", roleName: "leader" };
+  const identity = { owner, agentId: agent.id, adapterId: "codex",
+    nativeSessionId: "planning-session", effective: run.effective };
+  scheduler.recordLaunchedRuntimeNativeSession(identity, () => {}, now);
+  store.transaction(tx => terminalizeExactTaskRun(tx, {
+    taskId: "task-1", roleName: "leader", agentId: agent.id, runId: run.id,
+    outcome: { status: "completed", output: "Proposal saved; await discussion." }
+  }, now));
+  assert.equal(store.getActiveRun("task-1", "leader"), null);
+  const planner = new FileRoleLaunchPlanner(home, store, { environment: { HOME: home, PATH: process.env.PATH } });
+  let payload;
+  const host = new TmuxSessionHost({
+    plan: input => {
+      const planned = planner.plan(input);
+      return { ...planned, launch: { ...planned.launch, deferProviderStart: true } };
+    }
+  }, {
+    ensureRoleWindow: (_task, _role, launch) => {
+      payload = launchBrokerForHome(home).redeem(launch.args.at(-1));
+      return true;
+    }
+  });
+  await host.restore({ mode: "resume", ...identity, workspace: run.effective.workspace.root });
+  assert.equal(payload.startupRunId, undefined);
+  assert.equal(payload.environment.YUI_RUN_ID, undefined);
+  const processOwner = createSessionOwnerIdentity({
+    owner, agentId: agent.id, adapterId: "codex", nativeSessionId: identity.nativeSessionId,
+    tmux: { serverName: "isolated", socketPath: join(home, "tmux.sock"),
+      sessionName: "task-1", windowName: "leader" },
+    providerRoot: { pid: 12345, startIdentity: "1", attribution: "owned-child" }, recordedAt: now
+  });
+  const connection = { processOwner, account: { home, codexHome: join(home, "native-account") } };
+  const publish = overrides => publishStructuredProviderConnection({
+    home, environment: payload.environment, nativeSessionId: identity.nativeSessionId,
+    connection, ...overrides
+  });
+  await publish({});
+  scheduler.recordLaunchedRuntimeNativeSession(identity, () => {}, new Date());
+  const inbox = new FileRuntimeEventInbox(home);
+  const processor = new FileRuntimeEventProcessor(inbox, scheduler);
+  assert.deepEqual(processor.drain(new Date()).failed, []);
+  const connections = () => store.listEvents("task-1").filter(e => e.type === "runtime.native-connection-bound");
+  assert.equal(connections().length, 1, "A completed planning Run cannot erase restored Session evidence.");
+  assert.deepEqual(store.listSessionOwnersForOwner(owner), [processOwner]);
+  assert.equal(inbox.list().length, 0);
+
+  // The runless planning allowance still requires the exact live Session,
+  // its workspace, planning authority and an enabled Task.
+  const accepted = store.getTaskRoleSessionSet("task-1", "leader");
+  const session = accepted.sessions.codex;
+  const rejected = async (overrides = {}) => {
+    await publish(overrides);
+    const [event] = inbox.list();
+    assert.equal(scheduler.observeAgentHostObservation(event, new Date()), "obsolete");
+    assert.deepEqual(processor.drain(new Date()).failed, []);
+    assert.equal(connections().length, 1);
+    assert.deepEqual(store.listSessionOwnersForOwner(owner), [processOwner]);
+  };
+  await rejected({ nativeSessionId: "other-session" });
+  await rejected({ environment: { ...payload.environment, YUI_WORKSPACE: join(home, "wrong-workspace") } });
+  store.saveTaskRoleSessionSet({ ...accepted, sessions: { codex: {
+    ...session, effective: { ...session.effective, executionAuthority: "delivery" }
+  } } });
+  await rejected();
+  store.saveTaskRoleSessionSet(accepted);
+  store.saveTask({ ...store.getTask("task-1"), executionGate: { state: "stopped" } });
+  await rejected();
+  assert.equal(store.getTask("task-1").status, "draft");
+  assert.equal(store.listRuns("task-1").length, 1, "Restoration must not manufacture a managed Run.");
+  assert.equal(store.getRun("task-1", run.id).effective.executionAuthority, "planning");
 });
 
 test("Host saves exact provider facts before any Controller/storage compatibility check", async t => {

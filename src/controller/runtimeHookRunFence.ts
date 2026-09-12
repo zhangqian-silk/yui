@@ -135,9 +135,18 @@ export function resolveRuntimeHookRunFence(
     && activeRun.purpose === "planning"
     && activeRun.roleName === roleName
     && runPurposeAdmitsTaskState(activeRun.purpose, task);
+  // Restoring the Draft Leader's existing planning Session needs no new Run.
+  // Admit its Session facts; the shared identity/workspace fence below still
+  // requires the exact current Session and never grants delivery authority.
+  const planningSessionObservation = options.sessionOnly === true
+    && task.status === "draft" && roleName === "leader"
+    && runPurposeAdmitsTaskState("planning", task)
+    && session?.status === "active"
+    && session.effective.executionAuthority === "planning";
   if (!(task.status === "active" && task.executionGate.state === "enabled")
     && !(task.status === "completed" && options.sessionOnly === true)
     && !planningObservation
+    && !planningSessionObservation
     && !existingExecutionObservation) {
     throw new RuntimeHookRunFenceError("Runtime observation Hook Task does not accept this lifecycle boundary.");
   }
