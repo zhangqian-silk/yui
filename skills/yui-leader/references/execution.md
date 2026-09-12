@@ -22,29 +22,56 @@ implementation patterns, scheduling options, review routing, or recoverable
 runtime actions. Create an InputRequest only for a real product choice, new
 authority, irreversible external effect, or unavailable external fact.
 
-## Choose execution topology from ownership
+## Separate the work unit, executor, and concurrency
 
-A WorkItem is one substantial requirement with an independent owner and useful
-acceptance boundary. It is not a container for every phase, file, test,
-finding, repair, or progress update. Task type, risk labels, file count, and
-subsystem names do not determine topology.
+Honor the user's explicit choice of direct work or delegation. Otherwise make
+three independent judgments; Review is a fourth judgment below.
 
-Choose the smallest useful executor:
+**Does this result need its own management and acceptance boundary?** A WorkItem
+is a substantial result worth managing and accepting separately inside the Task.
+It need not have a different person, an independent release, or parallel execution.
+Use zero WorkItems when the Task already holds one coherent outcome. One WorkItem
+can be Leader-owned or hold a justified whole-result managed Assignment and
+Candidate. Copying the Task unchanged or displaying progress is not a reason
+to create it. Do not split analysis, editing, testing, Review, and ordinary
+repairs into phase-shaped WorkItems.
 
-1. **Leader directly** when current context, authority, and tools are enough.
-2. **Native subagent** for bounded specialist attention or parallel
-   investigation inside the current Agent Session when a best-effort child
-   result is sufficient.
-3. **Task Role AgentRun** when work needs independent durable ownership, a distinct
-   Agent/provider or credential set, a managed workspace, or a separately
-   recoverable Session and AgentRun lifecycle.
+**Who should execute?** Direct Leader execution is the default viable path for
+one coupled result when current context, delivery authority, and tools suffice.
+A native child can supply bounded specialist attention or parallel investigation
+inside this Session when a best-effort result suffices; it creates no Yui identity,
+authority, or WorkItem by itself.
 
-Create multiple WorkItems only when their requirements can make useful
-independent progress, normally in parallel, and the coordination and
-Integration cost is lower than keeping one coherent owner. Keep coupled
-changes together.
+Choose a managed Worker only for a concrete benefit that repays requirement
+restatement, context reload, startup, waiting, inspection/rework, Integration,
+and lifecycle management. Benefits include safely parallel independent results,
+a needed capability or execution environment, a genuinely necessary separately
+recoverable lifecycle, freeing the Leader for another actual responsibility,
+or explicit user delegation. An available Worker, cheaper/different model,
+many files, high risk, long duration, or generic maintainability alone is not
+enough. Risk can justify independent Review without delegating implementation.
+When delegation involves a material tradeoff, leave one sentence of concrete
+benefit in the existing Brief; no form, approval, or separate decision record
+is needed.
 
-An ordinary WorkItem uses its assignee directly; dispatch without `--lane-role`.
+**Should separate units run concurrently?** Multiple WorkItems may run serially
+because of a real dependency, or concurrently when their results can advance
+independently and the net benefit exceeds coordination and Integration cost.
+Neither a single WorkItem nor multiple executors proves parallelism. Keep
+coupled changes together.
+
+For example, fix one coupled behavior directly in Task main, even when it touches
+many files. Delegate an independent import tool while the Leader implements its
+consumer when the two have a stable boundary and useful parallel progress.
+Keep two separately accepted stages serial when the second genuinely needs the
+first result. Do not wrap a whole Task in an `implementer` WorkItem merely because
+that Role exists.
+
+Apply these choices to new work. Do not automatically cancel an existing Worker,
+reassign/retire WorkItems, or move workspaces to conform to a new default; preserve
+their current ownership and evidence until a justified explicit change.
+
+An ordinary managed dispatch uses the WorkItem assignee; omit `--lane-role`.
 Use [replicated execution](replicated-execution.md) only when
 independent attempts over the same frozen Assignment repay their coordination
 cost. Direct managed execution already provides durable ownership.
@@ -90,7 +117,7 @@ global Task lock.
 
 ## Execute the chosen path
 
-Dispatch establishes the first owner and frozen Assignment. For ordinary
+Managed dispatch freezes the Assignment for its assignee. For ordinary
 clarification, feedback or a continuation of that same work, send a Message:
 
 ```sh
@@ -112,37 +139,72 @@ For unknown delivery or Session replacement, read
 [runtime recovery](../../yui-runtime/references/recovery.md). Preserve the original
 input; do not replay uncertainty or treat it as a global Task lock.
 
-For direct work, change only Task main, keep it on its managed branch, commit
-the result, and leave it clean. Run the smallest check that can catch the
-changed behavior while implementing.
+### Direct delivery with zero WorkItems
 
-For a substantial delegated requirement:
+The current delivery Leader needs no self-dispatched AgentRun or placeholder
+WorkItem. Read the full Task requirements and relevant Messages, then implement,
+verify, and fix the coherent result in Task main on its managed branch. Commit
+and leave it clean. Run focused checks while changing behavior and the required
+Project delivery checks on the final result.
+
+Keep the Brief as a current summary, not a replacement for Task requirements.
+Preserve changed intent and reasons in Messages/Decisions, substantial documents
+in Task artifacts, and code and verification evidence in the actual delivery.
+Zero WorkItems reduces coordination records, not requirements or evidence.
+
+Inspect the complete final diff and decide Review separately. If a Task-final
+Review is required or adds useful evidence, request it against the clean Task
+heads using `yui task review request <task> --role <reviewer>`. No WorkItem is
+needed. Consume the original result, fix reachable findings directly in Task
+main, and decide whether the changed result needs another Review. Honor immutable
+Review contracts and explicit user/Project requirements even if a default is
+disabled. Once the outcome and obligations are satisfied, use `task complete`
+with the outcome, checks, and remaining risk; a final chat message is not completion.
+
+### Leader-owned WorkItem
+
+Use this only when the result merits separate management/acceptance. Omit
+`--role` for direct execution: the Leader owns coordination and performs the
+work without a managed executor Assignment. `--role leader` instead selects the
+Leader Role as a **managed AgentRun executor**; it is not how to label direct
+ownership. Do not self-dispatch merely to gain execution authority.
+
+For a writable Project result, create and inspect its WorkItem-owned workspace
+before editing. The Leader can work there directly; isolation does not require a
+Worker. Task main, WorkItem Develop, and Review workspaces remain distinct owners.
 
 ```sh
-yui task work create <task-id> "<title>" \
-  --project <project-to-modify> \
-  --objective "<bounded outcome>" \
-  --accept "<observable criterion>"
-```
-
-Add `--after` only for a real dependency. Likely file overlap is not by itself
-a dependency. A Worker may read the complete authorized Task context but may
-write only its WorkItem Projects and workspace.
-
-For a Leader-owned WorkItem, mark it running, complete it directly, then record
-its actual result:
-
-```sh
+yui task work create <task> "<separately accepted result>" \
+  --project <project> --objective "<outcome>" --accept "<criterion>"
+yui task work isolate <work-id>
 yui task work update <work-id> running
+# Implement and verify in the returned WorkItem workspace; commit and leave it clean.
 yui task work update <work-id> done --summary "<result and evidence>"
-yui task work accept <work-id> --summary "<explicit acceptance and evidence>"
 ```
+
+`done` freezes a direct Candidate, not an AgentRun result or acceptance.
+Inspect it, then integrate the exact isolated result before acceptance:
+
+```sh
+yui task integration start <task> --work-item <work-id> \
+  --project <project> --strategy <ff|cherry-pick|merge|manual>
+# Inspect the attempt and finish it through Integration's normal checks/continuation.
+yui task work accept <work-id> --summary "<decision and evidence>"
+```
+
+Read [Integration](integration.md) for checks, continuation, and recovery.
+Keep the same unit through ordinary fixes.
+A read-only or Gitless result with no writable Projects needs no Git isolation;
+submit its actual evidence and accept it explicitly. Existing exact Task-final
+metadata-only Candidates retain their contract; do not establish a special Review
+contract merely to avoid the ordinary writable WorkItem isolation boundary.
 
 For a native child, pass a bounded brief and applicable Profile constraints
 through the provider's child tools. A small investigation needs no synthetic
 WorkItem. If the child implements an existing Leader-owned WorkItem, keep that
-WorkItem roleless and mark it running. Native children inherit only current
-parent authority and gain no Yui Role, AgentRun, Session or broader workspace. Their
+WorkItem roleless, supply its exact workspace and scope, and mark it running.
+Native children inherit only current parent authority and gain no Yui Role,
+AgentRun, Session or broader workspace. Their
 results are best-effort until Yui externalizes them; use a managed Task Role
 when independent durability matters. Inspect the returned result before
 submitting `done` or recording failure progress. `done` creates a Candidate;
@@ -153,20 +215,27 @@ materializing a Task Role, not when launching a native child. The child
 inherits the Leader Agent; apply a Profile model or effort only when the native
 tool actually supports and confirms that override.
 
-For a managed Task Role:
+### Managed Task Role
 
 ```sh
 yui task role add <task-id> <role> --profile <profile>
 yui task role show <task-id> <role>
-yui task work create <task-id> "<outcome>" --role <role>
+yui task work create <task-id> "<outcome>" --role <role> \
+  --project <project> --objective "<bounded outcome>" --accept "<criterion>"
 yui task work dispatch <work-id> --input "<decision-complete brief>"
 ```
+
+Add `--after` only for a real dependency. Likely file overlap is not by itself
+a dependency. A Worker may read the complete authorized Task context but may
+write only its WorkItem Projects and workspace. Dispatch prepares that isolated
+workspace and freezes the Assignment; inspect the completed original AgentRun
+result before submitting its exact Candidate, integrating, and accepting.
 
 Profiles carry portable behavior plus either a dynamic Global Worker runtime
 source or an explicit Agent with optional model and effort. Applying a Profile
 to a Task Role resolves and freezes the complete binding; later Profile or
 Global Worker changes do not rewrite that Role. Before dispatch, use
-`profile show` and `task role show` to read the exact behavior, Agent, model,
+`config profile show` and `task role show` to read the exact behavior, Agent, model,
 effort, Profile, and workspace. Do not reconstruct or guess launch
 configuration. Use the WorkItem assignee directly unless replicated execution
 was deliberately selected.

@@ -3051,7 +3051,7 @@ function addTaskRole(
     `Runtime source: ${runtimeSource}`,
     `Agent: ${result.role.activeAgentId}/${result.binding.adapterId}`,
     `Model: ${result.binding.config.model ?? "CLI default"}; effort: ${result.binding.config.effort ?? "CLI default"}; permission: ${result.binding.config.permission.strategy}`,
-    "Next: create a WorkItem and start this Role when it has assigned work."
+    "Next: dispatch an assigned WorkItem, or request a Task-final Review with this Role; a Review needs no WorkItem."
   ].join("\n").concat("\n");
 }
 
@@ -3968,6 +3968,20 @@ function updateWork(
   });
 }
 
+/** Shared with CLI preflight so a refused dispatch cannot prepare workspaces. */
+export function requireWorkItemAssignee(item: WorkItem): string {
+  if (item.assignee === undefined) {
+    throw usageError(
+      `Work Item has no Task Role assignee: ${item.id}. `
+      + `The Task Leader can execute it directly without dispatch: `
+      + `yui task work update ${item.taskId}/${item.id} running. `
+      + (item.writeProjectIds.length === 0 ? "" :
+        `For code, first use yui task work isolate ${item.taskId}/${item.id}.`)
+    );
+  }
+  return item.assignee;
+}
+
 function dispatchWork(
   args: string[],
   store: TaskWorkflowStore,
@@ -3989,14 +4003,9 @@ function dispatchWork(
     taskActor(tx, options, task.id);
     if (task.status !== "active") throw usageError(inactiveTaskMessage(task, "dispatch"));
     assertTaskExecutionEnabled(task, "dispatching work");
-    if (item.assignee === undefined) {
-      throw usageError(
-        `Work Item has no Task Role assignee: ${item.id}. `
-        + `The Task Leader must run "yui task work update ${item.id} running" and execute it directly.`
-      );
-    }
+    const assignee = requireWorkItemAssignee(item);
     const lanePlan = planReplicatedWorkItemLanes(
-      item.assignee,
+      assignee,
       requestedLaneRoles,
       `execution-group-${tx.peekNextRunId(task.id)}`
     );
@@ -4040,7 +4049,7 @@ function dispatchWork(
     const rawInput = trimmed(parsed.options.get("--input")) ?? item.objective;
     let workItemForDispatch = prepareWorkItemDispatch(item, now);
     if (lanePlan.roles.length === 0) {
-      const role = requireRole(tx, task.id, item.assignee);
+      const role = requireRole(tx, task.id, assignee);
       if (tx.getActiveRun(task.id, role.name) !== null) {
         throw usageError(`${task.id}/${role.name} already has an active run.`);
       }

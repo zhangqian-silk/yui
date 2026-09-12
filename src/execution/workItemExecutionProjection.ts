@@ -96,6 +96,7 @@ export type WorkItemCandidateSourceProjection = Readonly<{
 
 export type WorkItemExecutionNextAction = Readonly<{
   kind:
+    | "execute-directly"
     | "dispatch-work"
     | "wait-for-lanes"
     | "retry-or-settle-lanes"
@@ -430,7 +431,8 @@ function projectNextAction(
     return action("inspect-unknown", ["leader"], mainRun.runId === undefined ? [item.id] : [mainRun.runId]);
   }
   if (item.status === "open") {
-    return action("dispatch-work", ["leader"], [item.id]);
+    return action(item.assignee === undefined ? "execute-directly" : "dispatch-work",
+      ["leader"], [item.id]);
   }
   return action("inspect-unknown", ["leader"], [item.id]);
 }

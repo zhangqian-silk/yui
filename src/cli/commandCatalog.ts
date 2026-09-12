@@ -793,7 +793,7 @@ const taskChildren: readonly NodeInput[] = [
     children: [
       {
         name: "create",
-        summary: "Create a work item.",
+        summary: "Create a separately managed result; a coherent Task may use zero WorkItems. Omit --role for Leader-direct execution; --role (including leader) selects a managed AgentRun executor. Isolate writable direct work before editing, then submit, integrate and accept its Candidate.",
         usage: "yui task work create <task> <title> [--project <project> ...] [--base-ref <project>=<ref> ...] [--objective <text>] [--accept <criterion> ...] [--after <work> ...] [--role <name>]",
         options: ["--project", "--base-ref", "--objective", "--accept", "--after", "--role"]
       },

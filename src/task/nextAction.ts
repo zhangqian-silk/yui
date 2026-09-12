@@ -466,28 +466,35 @@ export function projectNextAction(facts: NextActionFacts): NextAction {
       return synthesisSelectionAction(facts, "work", item.id);
     }
     const refs = [ref("work-item", item.id)];
+    const direct = item.assignee === undefined;
     return buildAction(facts, {
       kind: "implement-current-work-item",
-      reason: `Work Item ${item.id} is ${item.status}; dispatch or continue its implementation.`,
+      reason: direct
+        ? `Work Item ${item.id} has no managed assignee; the Leader can execute it directly.`
+        : `Work Item ${item.id} is assigned to ${item.assignee}; dispatch or continue that assignment.`,
       refs,
       preconditions: [
         { fact: `Work Item is ${item.status}`, satisfied: true, ref: refs[0] }
       ],
-      recommendedCommand: `yui task work dispatch ${task.id}/${item.id}`,
-      alternatives: [
-        {
-          kind: "execute-directly",
-          reason: "Execute the bounded Work Item directly when the Leader's current context and authority are sufficient.",
+      recommendedCommand: direct
+        ? `yui task work update ${task.id}/${item.id} running`
+        : `yui task work dispatch ${task.id}/${item.id}`,
+      alternatives: direct ? [
+        ...(item.writeProjectIds.length === 0 ? [] : [{
+          kind: "isolate-work-item",
+          reason: "Prepare and inspect the WorkItem-owned code workspace before direct implementation.",
+          recommendedCommand: `yui task work isolate ${task.id}/${item.id}`,
           refs
-        },
+        }]),
         {
           kind: "native-subagent",
-          reason: "Use native implementer subagents when bounded work benefits from specialist attention or parallel fan-out inside the Leader Session.",
+          reason: "Use a bounded native child only when authorized and useful within the Leader's current scope.",
           refs
         }
-      ],
-      judgmentRequired:
-        "Leader must choose the execution path: direct execution, a native subagent, or managed Task Role dispatch."
+      ] : [],
+      judgmentRequired: direct
+        ? "Honor explicit execution preferences. For code, use the WorkItem-owned workspace and integrate its Candidate before acceptance; no self-dispatch is needed."
+        : "Preserve the current managed Assignment and original results; do not switch ownership merely to follow a different default."
     });
   }
 

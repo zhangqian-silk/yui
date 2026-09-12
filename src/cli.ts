@@ -85,6 +85,7 @@ import {
 } from "./commands/profileCommands.js";
 import {
   assertWorkItemDependenciesCompletedForCommand,
+  requireWorkItemAssignee,
   dispatchPreparedReviewRound,
   failPendingReviewRound,
   preserveReviewRoundWorkspace,
@@ -196,6 +197,7 @@ import {
   FileTaskWorkspacePreparer,
   type TaskWorkspaceActivation
 } from "./repository/taskWorkspacePreparer.js";
+import { snapshotWorkItemCandidate } from "./repository/workItemCandidateSnapshot.js";
 import { inspectStorageSchema } from "./storage/storageSchema.js";
 import {
   collectRuntimeBuildIdentity,
@@ -1510,9 +1512,8 @@ export async function main(): Promise<void> {
         // Authority and pure Lane-shape checks precede every physical or
         // durable workspace preparation performed for dispatch.
         assertTaskDeliveryAuthority(store, process.env, task.id);
-        if (item.assignee !== undefined) {
-          workItemDispatchLanePlan(resolved, store, item);
-        }
+        requireWorkItemAssignee(item);
+        workItemDispatchLanePlan(resolved, store, item);
       }
       // A rejected Candidate starts a new execution iteration. Release every
       // terminal Lane Role runtime before preparing the new Lane workspaces;
@@ -1656,14 +1657,7 @@ export async function main(): Promise<void> {
         laneDispatchRelease = preparedLanes.release;
         laneDispatchProjectPaths = preparedLanes.projectPaths;
       }
-      const candidateGitSnapshot = await candidateSnapshotForTaskCommand(
-        resolved,
-        store,
-        workspacePreparer,
-        process.env,
-        taskFinalReviewContract
-      );
-      const directTaskMainSnapshot = await directTaskMainSnapshotForTaskCommand(
+      const candidateSnapshots = await candidateSnapshotForTaskCommand(
         resolved,
         store,
         workspacePreparer,
@@ -1720,11 +1714,10 @@ export async function main(): Promise<void> {
             ? {}
             : { completionPublishedTreeProof }),
           ...(workItemIntegrationProof === undefined ? {} : { workItemIntegrationProof }),
-          ...(candidateGitSnapshot === undefined ? {} : { candidateGitSnapshot }),
+          ...candidateSnapshots,
           ...(executionLaneWorkspaces === undefined ? {} : { executionLaneWorkspaces }),
           ...(taskWorkspaceActivation === undefined ? {} : { taskWorkspaceActivation }),
           ...(laneDispatchProjectPaths === undefined ? {} : { laneDispatchProjectPaths }),
-          ...(directTaskMainSnapshot === undefined ? {} : { directTaskMainSnapshot }),
           ...(actualTaskReviewCandidate === undefined
             ? {}
             : { actualTaskReviewCandidate }),
@@ -2312,38 +2305,12 @@ async function candidateSnapshotForTaskCommand(
   environment: NodeJS.ProcessEnv,
   taskFinalReviewContract?: TaskFinalReviewContract
 ) {
-  if (args[0] !== "task") return undefined;
-  const reviewableCandidateCommand = (
-    args[1] === "work" && args[2] === "update"
-    && args[3] !== undefined && args[4] === "done"
-  ) || (
-    args[1] === "work" && args[2] === "group" && args[3] === "resolve"
-    && args[4] !== undefined
+  if (args[0] !== "task" || args[1] !== "work" || args[2] !== "update"
+    || args[3] === undefined || args[4] !== "done") return {};
+  const reference = cliWorkItemReference(args[3], environment);
+  return snapshotWorkItemCandidate(
+    store, preparer, reference.taskId, reference.localId, taskFinalReviewContract
   );
-  // Explicit Task-final review requests must remain independent of the
-  // mutable global review trigger. Candidate snapshots are a delivery
-  // boundary for every writable WorkItem, not only review-configured Tasks.
-  const groupResolve = args[1] === "work" && args[2] === "group" && args[3] === "resolve";
-  if (!reviewableCandidateCommand
-    || (groupResolve && args.includes("--decision") && args[args.indexOf("--decision") + 1] !== "accept")) {
-    return undefined;
-  }
-  if (args[1] === "work" && args[2] === "update"
-    && args[3] !== undefined && args[4] === "done") {
-    const reference = cliWorkItemReference(args[3], environment);
-    const workspace = store.getWorkItemWorkspace(reference.taskId, reference.localId);
-    if (workspace === null) {
-      // The exact Task-final contract intentionally supports a Leader-direct,
-      // metadata-only Project Candidate. The command layer performs the full
-      // Task/WorkItem/source/contract validation before any aggregate write.
-      if (taskFinalReviewContract !== undefined) return undefined;
-      throw usageError(
-        `Reviewable direct WorkItem has no managed Candidate workspace: ${reference.localId}.`
-      );
-    }
-    return preparer.snapshotCandidateWorkspace(workspace);
-  }
-  return undefined;
 }
 
 async function prepareExecutionLaneWorkspacesForCommand(
@@ -2466,42 +2433,6 @@ async function prepareReviewLaneWorkspaces(
     throw error;
   }
   return map;
-}
-
-async function directTaskMainSnapshotForTaskCommand(
-  args: readonly string[],
-  store: TaskStore,
-  preparer: FileTaskWorkspacePreparer,
-  environment: NodeJS.ProcessEnv,
-  taskFinalReviewContract?: TaskFinalReviewContract
-) {
-  if (taskFinalReviewContract === undefined
-    || args[0] !== "task"
-    || args[1] !== "work"
-    || args[2] !== "update"
-    || args[3] === undefined
-    || args[4] !== "done") {
-    return undefined;
-  }
-  const reference = cliWorkItemReference(args[3], environment);
-  const item = store.getWorkItem(reference.taskId, reference.localId);
-  if (item === null || item.writeProjectIds.length === 0
-    || store.getWorkItemWorkspace(reference.taskId, reference.localId) !== null) {
-    return undefined;
-  }
-  const workspace = store.getTaskWorkspace(reference.taskId);
-  // Exact Task-final Candidates may intentionally be metadata-only when no
-  // Task main exists. They remain review anchors, but are not eligible for the
-  // direct ChangeSet capture path.
-  if (workspace === null) return undefined;
-  if (workspace.owner.type !== "task") {
-    throw usageError(`Task has no authoritative main workspace: ${reference.taskId}.`);
-  }
-  try {
-    return await preparer.snapshotDirectTaskMain(workspace, item.writeProjectIds);
-  } catch (error) {
-    throw usageError(error instanceof Error ? error.message : String(error));
-  }
 }
 
 async function actualTaskReviewCandidateForTaskCommand(
