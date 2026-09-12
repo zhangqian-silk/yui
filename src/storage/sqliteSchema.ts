@@ -28,6 +28,7 @@ import {
 } from "./migrations/removeRuntimeGeneration.js";
 import { migrateAgentRunContract } from "./migrations/agentRunContract.js";
 import { migrateArtifactsToGit } from "./migrations/artifactsToGit.js";
+import { migrateIntegrationContinuation } from "./migrations/integrationContinuation.js";
 
 import {
   CURRENT_STORAGE_VERSION,
@@ -1174,6 +1175,17 @@ UPDATE review_rounds SET payload = json_set(payload, '$.executionGroup.lanes', j
     // satisfies "optional still requires a migration declaration".
     sql: "SELECT 1; -- artifacts move to per-Task local Git; see migrateArtifactsToGit",
     migrateData: migrateArtifactsToGit
+  },
+  {
+    version: 20,
+    name: "integration-conflict-continuation",
+    introducedIn: "0.16.0",
+    // Widen Integration status with conflicted; declare optional sourceProgress
+    // (Git cursor/reflog action) and checkInputDigest. Exact old bound FF Job
+    // receipts supply these facts; unprovable history remains unchanged.
+    // Frozen Context and events are never rewritten.
+    sql: "SELECT 1; -- Integration Git progress and exact check admission",
+    migrateData: migrateIntegrationContinuation
   }
 ]);
 

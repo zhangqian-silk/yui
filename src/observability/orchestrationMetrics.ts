@@ -226,7 +226,7 @@ function terminalWorkspaceCount(facts: TaskOrchestrationFacts): number {
 }
 
 function terminalStatus(status: string | undefined): boolean {
-  return status !== undefined && !["pending", "running", "awaiting_acceptance", "blocked", "validating"].includes(status);
+  return status !== undefined && !["pending", "running", "awaiting_acceptance", "blocked", "conflicted", "validating"].includes(status);
 }
 
 function counts(values: readonly string[]): Readonly<Record<string, number>> {

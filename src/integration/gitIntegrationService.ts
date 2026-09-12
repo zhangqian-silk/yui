@@ -19,7 +19,8 @@ import { promisify } from "node:util";
 
 import { selectEnvironment } from "../agent/launchEnvironment.js";
 import { controllerSocketPath } from "../core/controllerEndpoint.js";
-import type { DurableJob, DurableJobStep } from "../job/durableJob.js";
+import { durableJobIdempotencyKey, type DurableJob, type DurableJobStep } from "../job/durableJob.js";
+import { applyIntegrationSource, assertIntegrationCandidate, assertRecordedSourceCandidate } from "./integrationSourceApplication.js";
 import {
   planBootstrapJobSteps,
   planL2JobSteps
@@ -44,7 +45,6 @@ import { touchGateArtifact } from "../verification/gateArtifactStore.js";
 import type { CheckResult } from "./checkResult.js";
 import {
   NodeGitWorkspace,
-  RemoteBaselineConflictError,
   type GitWorkspacePort
 } from "../repository/gitWorkspace.js";
 import type { GitWorkspaceRemoval } from "../repository/gitWorkspace.js";
@@ -61,7 +61,6 @@ import { advanceTaskProjectCommit } from "../task/task.js";
 import { yuiTmuxServerName } from "../tmux/tmuxManager.js";
 import {
   recordIntegrationCheckJob,
-  requireResolutionDecision,
   updateIntegrationAttempt,
   type IntegrationAttempt
 } from "./integrationAttempt.js";
@@ -111,6 +110,7 @@ const INTEGRATION_OPERATIONAL_ENVIRONMENT_NAMES = [
 export type IntegrationResult =
   | Readonly<{ status: "committed"; attempt: IntegrationAttempt; workspace: IntegrationWorkspace }>
   | Readonly<{ status: "blocked"; attempt: IntegrationAttempt; workspace: IntegrationWorkspace }>
+  | Readonly<{ status: "conflicted"; attempt: IntegrationAttempt; workspace: IntegrationWorkspace }>
   | Readonly<{ status: "checks-running"; attempt: IntegrationAttempt; workspace: IntegrationWorkspace; job: DurableJob }>
   | Readonly<{ status: "failed"; attempt: IntegrationAttempt; workspace?: IntegrationWorkspace }>;
 
@@ -134,10 +134,6 @@ export type IntegrationJobPort = Readonly<{
   cancelJob(taskId: string, jobId: string): Promise<void>;
 }>;
 
-type PlannedCommit = Readonly<{ label: string; commit: string }>;
-export const REMOTE_BASELINE_CONFLICT_PREFIX = "Upstream rebase conflicts";
-const WORK_ITEM_MERGE_CONFLICT_PREFIX = "WorkItem merge conflicts";
-const MANUAL_INTEGRATION_PREFIX = "Manual WorkItem integration";
 export type IntegrationWorkspace = Readonly<{
   projectId: string;
   path: string;
@@ -178,7 +174,10 @@ export class GitIntegrationService {
     taskId: string,
     integrationId: string
   ): Promise<IntegrationResult> {
-    const initial = requireIntegration(this.store, taskId, integrationId);
+    let initial = requireIntegration(this.store, taskId, integrationId);
+    if (!["running", "conflicted", "blocked", "validating"].includes(initial.status)) {
+      throw new Error(`Integration cannot continue from ${initial.status}.`);
+    }
     // The whole Integration is one Git transaction against the Project's
     // repository: worktree creation, cherry-picks, checks, and the target ref
     // CAS. A concurrent `project migrate` must not switch the catalog path or
@@ -186,17 +185,26 @@ export class GitIntegrationService {
     // fence is held across every Git effect and released only on exit.
     const release = acquireProjectMaintenanceLocks(this.home, [initial.projectId]);
     try {
+    // A concurrent abort may have settled the attempt while this caller was
+    // acquiring the same Project fence. Never execute a pre-fence snapshot.
+    const currentUnderFence = requireIntegration(this.store, taskId, integrationId);
+    if (currentUnderFence.projectId !== initial.projectId
+      || !["running", "conflicted", "blocked", "validating"].includes(currentUnderFence.status)) {
+      throw new Error("Integration changed before execution admission; read its current record.");
+    }
+    initial = currentUnderFence;
     const task = this.store.getTask(initial.taskId);
     if (task === null || !task.projectBindings.some(
       ({ projectId }) => projectId === initial.projectId
     )) {
       throw new Error(`Integration Task Project is unavailable: ${initial.taskId}.`);
     }
-    if (task.status !== "active") {
+    if (task.status !== "active" || task.executionGate.state !== "enabled") {
       throw new Error(`Integration Task is not active: ${task.id}/${task.status}.`);
     }
     const project = this.store.getProject(initial.projectId);
     if (project === null) throw new Error(`Project not found: ${initial.projectId}.`);
+    if (project.status !== "active") throw new Error(`Integration Project is not active: ${project.id}.`);
     const taskWorkspace = this.store.getTaskWorkspace(task.id);
     const taskRepository = taskWorkspace?.entries.find(
       ({ projectId }) => projectId === project.id
@@ -209,7 +217,6 @@ export class GitIntegrationService {
     // Issue 08: a Project with a VerificationPlan gates through its plan
     // (bootstrap + L2) and reuses exact-SHA artifacts; an unconfigured
     // Project keeps the existing explicit check path unchanged.
-    const gate = resolveVerificationGate(project, this.environment);
     let prepared: Readonly<{ path: string; branch: string; baseCommit: string }>;
     let workspace: IntegrationWorkspace;
     let managedWorkspace: ManagedWorkspace;
@@ -228,6 +235,13 @@ export class GitIntegrationService {
         baseCommit: prepared.baseCommit
       };
       const existingWorkspace = this.store.getIntegrationWorkspace(task.id, initial.id);
+      if (existingWorkspace !== null && (
+        resolve(existingWorkspace.root) !== resolve(prepared.path)
+        || existingWorkspace.entries.length !== 1
+        || existingWorkspace.entries[0]?.projectId !== project.id
+        || existingWorkspace.entries[0]?.access !== "write"
+        || existingWorkspace.entries[0]?.branch !== prepared.branch
+      )) throw new Error("Integration managed workspace identity changed.");
       managedWorkspace = existingWorkspace ?? createManagedWorkspace({
         owner: {
           type: "integration-attempt",
@@ -251,26 +265,26 @@ export class GitIntegrationService {
       return this.#fail(initial, error, "integration-preparation");
     }
     if (initial.status === "validating") {
-      return this.#recoverValidating(initial, workspace, taskRepository);
+      return await this.#recoverValidating(initial, workspace, managedWorkspace, taskRepository);
     }
+    const gate = resolveVerificationGate(project, this.environment);
     let current = initial;
 
     // A check DurableJob is the source of truth for a running attempt that
     // already bound one: never re-apply commits or spawn a second job. The
     // job's terminal wakeup drives the resume through `integration continue`.
-    if (current.status === "running" && current.jobId !== undefined) {
-      return this.#resumeCheckJob(current, workspace, prepared.path, taskRepository, gate);
-    }
-
     try {
-      const conflict = await this.#applySource(
-        current,
-        workspace,
-        prepared.path,
-        project.remoteUrl
-      );
-      if (conflict !== undefined) {
-        return conflict;
+      current = await applyIntegrationSource({
+        attempt: current, workspace, remoteUrl: project.remoteUrl,
+        git: this.git, store: this.store, now: this.now
+      });
+      if (current.status === "conflicted" || current.status === "blocked") {
+        return { status: current.status, attempt: current, workspace };
+      }
+      await assertIntegrationCandidate(prepared.path, current.candidateCommit, workspace.branch);
+      if (current.jobId !== undefined || current.checkInputDigest !== undefined) {
+        if (this.jobPort === undefined) throw new Error("Integration requires its Controller Job port to resume.");
+        return await this.#startCheckJob(current, workspace, prepared.path, managedWorkspace, taskRepository, gate);
       }
 
       // Static preflight: fail before any expensive check when the target
@@ -279,7 +293,7 @@ export class GitIntegrationService {
       // after the checks, so a move during the gate is still fenced at CAS.
       await assertTargetReadyForChecks(taskRepository, current.targetRef, current.beforeCommit);
       if (gate !== undefined) {
-        return this.#runVerificationGate(
+        return await this.#runVerificationGate(
           current,
           workspace,
           prepared.path,
@@ -289,7 +303,7 @@ export class GitIntegrationService {
         );
       }
       if (this.jobPort !== undefined && current.checkCommands.length > 0) {
-        return this.#startCheckJob(
+        return await this.#startCheckJob(
           current,
           workspace,
           prepared.path,
@@ -297,17 +311,12 @@ export class GitIntegrationService {
           taskRepository
         );
       }
+      const spec = await this.#checkSpecification(current, managedWorkspace, gate);
+      current = updateIntegrationAttempt(current, { checkInputDigest: spec.inputDigest }, this.now());
+      this.store.saveIntegrationAttempt(task.id, current);
       const checkedHead = await gitLine(["-C", prepared.path, "rev-parse", "HEAD^{commit}"]);
-      const checkResults = await this.#runChecks(current, managedWorkspace, prepared.path);
-      const afterHead = await gitLine(["-C", prepared.path, "rev-parse", "HEAD^{commit}"]);
-      if (afterHead !== checkedHead) {
-        return this.#fail(
-          current,
-          new Error(`Integration workspace moved during the checks: ${afterHead} != checked ${checkedHead}.`),
-          "integration",
-          workspace
-        );
-      }
+      const checkResults = await this.#runChecks(current, managedWorkspace, prepared.path, spec.environment);
+      await assertIntegrationCandidate(prepared.path, checkedHead, workspace.branch);
       if (checkResults.some((check) => check.outcome === "failed")) {
         current = updateIntegrationAttempt(current, {
           status: "failed",
@@ -332,18 +341,14 @@ export class GitIntegrationService {
       const committed = this.#recordCommitted(current);
       return this.#terminalResult("committed", committed, workspace);
     } catch (error) {
-      if (error instanceof RemoteBaselineConflictError) {
-        const pending = requireResolutionDecision(current, {
-          affectedPaths: error.affectedPaths,
-          summary: error.message
-        }, this.now());
-        this.store.saveIntegrationAttempt(task.id, pending);
-        return { status: "blocked", attempt: pending, workspace };
-      }
+      // Git/Job effects may already exist even if the following save failed.
+      // Keep the last durable cursor/candidate for exact Agent-directed retry.
+      current = requireIntegration(this.store, taskId, integrationId);
       if (current.status === "validating" && current.candidateCommit !== undefined) {
         const target = await resolveRef(taskRepository, current.targetRef);
         if (target === current.candidateCommit) {
           try {
+            await assertIntegrationCandidate(workspace.path, current.candidateCommit, workspace.branch);
             await assertTargetReadyForChecks(
               taskRepository,
               current.targetRef,
@@ -358,11 +363,101 @@ export class GitIntegrationService {
           }
         }
       }
-      return this.#fail(current, error, "integration", workspace);
+      const diagnosed = updateIntegrationAttempt(current, {
+        summary: error instanceof Error ? error.message : String(error)
+      }, this.now());
+      this.store.saveIntegrationAttempt(taskId, diagnosed);
+      return { status: diagnosed.status === "conflicted" ? "conflicted" : "blocked", attempt: diagnosed, workspace };
     }
     } finally {
       release();
     }
+  }
+
+  /** Abandon under the same fence as Git/CAS, not just a status whitelist.
+   * A delivered validating candidate is recorded as committed; a provably
+   * unadvanced one may be abandoned without requiring obsolete check settings. */
+  async abort(
+    taskId: string,
+    integrationId: string,
+    reason: string,
+    authorize: (store: TaskStore, taskId: string) => unknown
+  ): Promise<IntegrationAttempt> {
+    const initial = requireIntegration(this.store, taskId, integrationId);
+    const release = acquireProjectMaintenanceLocks(this.home, [initial.projectId]);
+    try {
+      const attempt = requireIntegration(this.store, taskId, integrationId);
+      authorize(this.store, taskId);
+      const task = this.store.getTask(taskId);
+      if (task?.status !== "active" || attempt.projectId !== initial.projectId
+        || !task.projectBindings.some(binding => binding.projectId === attempt.projectId)) {
+        throw new Error("Integration Task/Project is not available for abort.");
+      }
+      if (!["running", "blocked", "conflicted", "validating"].includes(attempt.status)) {
+        throw new Error(`Integration cannot be aborted from ${attempt.status}: ${attempt.id}.`);
+      }
+      if (reason.trim() === "") throw new Error("Integration abort reason is required.");
+      const jobs = this.store.listDurableJobs(taskId).filter(job =>
+        job.owner.kind === "integration-attempt" && job.owner.integrationAttemptId === integrationId);
+      const workspace = this.store.getIntegrationWorkspace(taskId, integrationId);
+      if (jobs.some(job => job.taskId !== taskId || job.projectId !== attempt.projectId
+        || job.workspace !== workspace?.root)) {
+        throw new Error("Integration Job Project/workspace identity changed; inspect before abort.");
+      }
+      if (attempt.jobId !== undefined && !jobs.some(job => job.id === attempt.jobId)) {
+        throw new Error("Integration Job binding does not match its owner; inspect before abort.");
+      }
+      if (attempt.status === "validating") {
+        if (attempt.candidateCommit === undefined || attempt.checks === undefined) {
+          throw new Error("Validating Integration has no candidate/check evidence; inspect before settlement.");
+        }
+        const main = this.store.getTaskWorkspace(taskId);
+        const mainEntry = main?.entries.find(entry =>
+          entry.projectId === attempt.projectId && entry.access === "write");
+        const workspaceEntry = workspace?.entries.find(entry =>
+          entry.projectId === attempt.projectId && entry.access === "write");
+        const project = this.store.getProject(attempt.projectId);
+        if (main?.owner.type !== "task" || mainEntry === undefined || workspace === null
+          || project === null || project.status !== "active"
+          || workspace.owner.type !== "integration-attempt" || workspace.owner.taskId !== taskId
+          || workspace.owner.integrationAttemptId !== integrationId
+          || workspaceEntry?.path !== workspace.root) {
+          throw new Error("Integration target/workspace ownership is unavailable for settlement.");
+        }
+        if (jobs.some(job => ["queued", "running", "unknown-needs-attention"].includes(job.status))) {
+          throw new Error("Validating Integration still has an active or unproven Job; settle that exact Job first.");
+        }
+        if (attempt.jobId !== undefined) {
+          assertCheckJobIdentity(attempt, jobs.find(job => job.id === attempt.jobId)!, workspace.root);
+        }
+        const target = await resolveRef(mainEntry.path, attempt.targetRef);
+        if (target === attempt.candidateCommit && target !== attempt.beforeCommit) {
+          await assertTargetReadyForChecks(mainEntry.path, attempt.targetRef, target);
+          return this.#recordCommitted(attempt, authorize);
+        }
+        if (target !== attempt.beforeCommit) {
+          throw new Error(`Target moved to ${target}; cannot prove this Integration is unadvanced. Inspect before settlement.`);
+        }
+      }
+      for (const job of jobs) {
+        if (this.jobPort !== undefined && (job.status === "queued" || job.status === "running")) {
+          await this.jobPort.cancelJob(taskId, job.id);
+        }
+      }
+      return this.store.transaction(tx => {
+        authorize(tx, taskId);
+        const current = requireIntegration(tx, taskId, integrationId);
+        if (JSON.stringify(current) !== JSON.stringify(attempt)) {
+          throw new Error("Integration changed during abort; inspect its current record.");
+        }
+        const aborted = updateIntegrationAttempt(current, {
+          status: "failed",
+          checks: [...(current.checks ?? []), { name: "aborted", outcome: "failed", details: reason }]
+        }, this.now());
+        tx.saveIntegrationAttempt(taskId, aborted);
+        return aborted;
+      });
+    } finally { release(); }
   }
 
   async cleanup(integration: IntegrationAttempt): Promise<GitWorkspaceRemoval> {
@@ -437,26 +532,17 @@ export class GitIntegrationService {
     repositoryPath: string,
     gate?: ResolvedVerificationGate
   ): Promise<IntegrationResult> {
-    const runtime = this.#runtimePreparation(attempt, managedWorkspace);
-    const head = await gitLine(["-C", path, "rev-parse", "HEAD^{commit}"]);
-    const steps: DurableJobStep[] = gate === undefined
-      ? attempt.checkCommands.map((command, index) => ({
-          name: `check-${index + 1}`,
-          command,
-          timeoutMs: 30 * 60_000
-        }))
-      : [
-          ...planBootstrapJobSteps(gate.plan).map((step) => ({
-            ...step,
-            timeoutMs: 30 * 60_000
-          })),
-          ...planL2JobSteps(gate.plan).map((step) => ({
-            ...step,
-            timeoutMs: 30 * 60_000
-          }))
-        ];
-    const releaseId = integrationRuntimeReleaseIdentity(this.home);
-    if (gate === undefined && releaseId !== null) {
+    if (attempt.status !== "running" || attempt.candidateCommit === undefined) {
+      throw new Error(`Integration check admission requires a running, proven candidate: ${attempt.id}.`);
+    }
+    await assertIntegrationCandidate(path, attempt.candidateCommit, workspace.branch);
+    await assertTargetReadyForChecks(repositoryPath, attempt.targetRef, attempt.beforeCommit);
+    const { runtime, head, steps, environment, inputDigest, releaseId } =
+      await this.#checkSpecification(attempt, managedWorkspace, gate);
+    const ownedJobs = this.store.listDurableJobs(attempt.taskId).filter(job =>
+      job.owner.kind === "integration-attempt" && job.owner.integrationAttemptId === attempt.id);
+    if (gate === undefined && releaseId !== null && attempt.checkInputDigest === undefined
+      && ownedJobs.length === 0 && attempt.jobId === undefined) {
       const reusable = findReusableIntegrationCheckEvidence({
         taskId: attempt.taskId,
         projectId: attempt.projectId,
@@ -473,7 +559,7 @@ export class GitIntegrationService {
       });
       if (reusable !== null) {
         return this.#finalizeGateSuccess(
-          attempt,
+          updateIntegrationAttempt(attempt, { checkInputDigest: inputDigest }, this.now()),
           workspace,
           repositoryPath,
           head,
@@ -481,22 +567,25 @@ export class GitIntegrationService {
         );
       }
     }
-    this.runtimeIsolation.activate(runtime);
-    const baseEnvironment = await integrationCheckEnvironment(this.environment, runtime);
-    const environment = Object.freeze({
-      ...baseEnvironment,
-      ...(releaseId === null ? {} : { [INTEGRATION_RUNTIME_RELEASE_ENV]: releaseId })
-    });
+    if (attempt.checkInputDigest !== undefined && attempt.checkInputDigest !== inputDigest) {
+      throw new Error("Integration check conditions changed since admission; inspect the original Job, then abort or start a new attempt.");
+    }
+    if (attempt.jobId !== undefined) {
+      return this.#resumeCheckJob(attempt, workspace, path, repositoryPath, gate);
+    }
     // Persist the gate identity before starting the job so a plan edit
     // during the gate never misattributes the evidence on resume.
-    let persisted = attempt;
-    if (gate !== undefined) {
-      persisted = updateIntegrationAttempt(attempt, {
+    const persisted = updateIntegrationAttempt(attempt, {
+      checkInputDigest: inputDigest,
+      ...(gate === undefined ? {} : {
         gatePlanDigest: gate.planDigest,
         gateToolchainDigest: gate.toolchainDigest
-      }, this.now());
-      this.store.saveIntegrationAttempt(attempt.taskId, persisted);
-    }
+      })
+    }, this.now());
+    this.store.saveIntegrationAttempt(attempt.taskId, persisted);
+    // All domain admission and durable candidate identity precede Job effects.
+    this.runtimeIsolation.activate(runtime);
+    await prepareIntegrationRuntimeHome(runtime);
     const job = await this.jobPort!.startCheckJob({
       taskId: attempt.taskId,
       integrationId: attempt.id,
@@ -506,6 +595,7 @@ export class GitIntegrationService {
       env: environment,
       steps
     });
+    assertCheckJobIdentity(persisted, job, path);
     const bound = recordIntegrationCheckJob(persisted, job.id, this.now());
     this.store.saveIntegrationAttempt(attempt.taskId, bound);
     if (job.status !== "queued" && job.status !== "running") {
@@ -532,14 +622,17 @@ export class GitIntegrationService {
     gate?: ResolvedVerificationGate
   ): Promise<IntegrationResult> {
     const job = await this.jobPort!.getJob(attempt.taskId, attempt.jobId!);
+    assertCheckJobIdentity(attempt, job, path);
+    await assertIntegrationCandidate(path, job.head, workspace.branch);
+    await assertTargetReadyForChecks(repositoryPath, attempt.targetRef, attempt.beforeCommit);
+    if (gate?.planDigest !== attempt.gatePlanDigest
+      || gate?.toolchainDigest !== attempt.gateToolchainDigest) {
+      throw new Error("Integration verification plan/toolchain changed; the original Job cannot prove the current gate.");
+    }
     if (job.status === "queued" || job.status === "running") {
       return { status: "checks-running", attempt, workspace, job };
     }
-    const planStyle = gate !== undefined
-      || (job.steps?.some((step) =>
-        step.name.startsWith("bootstrap-") || step.name.startsWith("gate-")
-      ) ?? false);
-    const checks = planStyle
+    const checks = gate !== undefined
       ? checkResultsFromGateJob(job, this.home)
       : checkResultsFromJob(attempt, job);
     const managedWorkspace = this.store.getIntegrationWorkspace(attempt.taskId, attempt.id);
@@ -550,25 +643,13 @@ export class GitIntegrationService {
         checks.some((check) => check.outcome === "failed") ? "failure" : "completion"
       );
     }
-    // Issue 08: record the GateArtifact for a plan-gated attempt. The
-    // identity is recomputed from the current plan and the job's exact
-    // checked head; a plan/toolchain change since the job started yields a
-    // different key, so the artifact is never misattributed (the attempt
-    // still converges from the job's own evidence).
+    // The current plan/toolchain was matched to admission above. Record only
+    // that exact identity, never reinterpret an old Job under a changed plan.
     if (gate !== undefined
       && (job.result?.outcome === "succeeded" || job.result?.outcome === "failed")) {
-      // Use the digests captured at job start so a plan edit during the
-      // gate never misattributes the evidence.
-      const recordGate = attempt.gatePlanDigest !== undefined
-        ? Object.freeze({
-            ...gate,
-            planDigest: attempt.gatePlanDigest,
-            toolchainDigest: attempt.gateToolchainDigest ?? gate.toolchainDigest
-          })
-        : gate;
       const identity = gateIdentityForCandidate({
         projectId: attempt.projectId,
-        gate: recordGate,
+        gate,
         level: "L2",
         commit: job.head,
         targetRef: attempt.targetRef,
@@ -605,45 +686,20 @@ export class GitIntegrationService {
       this.store.saveIntegrationAttempt(attempt.taskId, failed);
       return this.#terminalResult("failed", failed, workspace);
     }
-    const candidateCommit = await gitLine(["-C", path, "rev-parse", "HEAD^{commit}"]);
-    if (candidateCommit !== job.head) {
-      // The job proved the checks at one SHA; the workspace has since moved.
-      // Advancing the target ref would publish unchecked code, so fail closed.
-      return this.#fail(
-        attempt,
-        new Error(
-          `Integration workspace moved since the check ran: ${candidateCommit} != checked ${job.head}.`
-        ),
-        "integration",
-        workspace
-      );
-    }
-    const validating = updateIntegrationAttempt(attempt, {
-      status: "validating",
-      candidateCommit,
-      checks
-    }, this.now());
-    this.store.saveIntegrationAttempt(attempt.taskId, validating);
-    await advanceTargetRef(
-      repositoryPath,
-      validating.targetRef,
-      candidateCommit,
-      validating.beforeCommit
-    );
-    const committed = this.#recordCommitted(validating);
-    return this.#terminalResult("committed", committed, workspace);
+    return this.#finalizeGateSuccess(attempt, workspace, repositoryPath, job.head, checks);
   }
 
   async #runChecks(
     attempt: IntegrationAttempt,
     workspace: ManagedWorkspace,
-    path: string
+    path: string,
+    environment: Readonly<Record<string, string>>
   ): Promise<CheckResult[]> {    if (attempt.checkCommands.length === 0) return [];
     const runtime = this.#runtimePreparation(attempt, workspace);
     this.runtimeIsolation.activate(runtime);
     let cleanupReason: "completion" | "failure" = "failure";
     try {
-      const environment = await integrationCheckEnvironment(this.environment, runtime);
+      await prepareIntegrationRuntimeHome(runtime);
       const checks = await runChecks(
         path,
         attempt.checkCommands,
@@ -682,6 +738,12 @@ export class GitIntegrationService {
     repositoryPath: string,
     gate: ResolvedVerificationGate
   ): Promise<IntegrationResult> {
+    const spec = await this.#checkSpecification(attempt, managedWorkspace, gate);
+    attempt = updateIntegrationAttempt(attempt, {
+      checkInputDigest: spec.inputDigest,
+      gatePlanDigest: gate.planDigest, gateToolchainDigest: gate.toolchainDigest
+    }, this.now());
+    this.store.saveIntegrationAttempt(attempt.taskId, attempt);
     if (gate.mode === "enforce") {
       try {
         assertNoAdHocFullSuiteChecks(gate.plan, attempt.checkCommands);
@@ -739,7 +801,7 @@ export class GitIntegrationService {
     this.runtimeIsolation.activate(runtime);
     let cleanupReason: "completion" | "failure" = "failure";
     try {
-      const environment = await integrationCheckEnvironment(this.environment, runtime);
+      await prepareIntegrationRuntimeHome(runtime);
       const steps = [
         ...planBootstrapJobSteps(gate.plan),
         ...planL2JobSteps(gate.plan)
@@ -747,7 +809,7 @@ export class GitIntegrationService {
       const outcomes = await runGateStepsInProcess(
         path,
         steps,
-        environment,
+        spec.environment,
         integrationCheckDirectory(this.home, attempt.taskId, attempt.id),
         candidateCommit
       );
@@ -793,6 +855,7 @@ export class GitIntegrationService {
     candidateCommit: string,
     checks: CheckResult[]
   ): Promise<IntegrationResult> {
+    await assertIntegrationCandidate(workspace.path, candidateCommit, workspace.branch);
     const validating = updateIntegrationAttempt(attempt, {
       status: "validating",
       candidateCommit,
@@ -819,174 +882,40 @@ export class GitIntegrationService {
     });
   }
 
-  async #applySource(
+  /** The same specification is compared before first execution, bound-Job
+   * consumption and an unadvanced validating CAS. Computing it is read-only:
+   * a changed condition must not recreate a completed runtime or start a Job. */
+  async #checkSpecification(
     attempt: IntegrationAttempt,
-    workspace: IntegrationWorkspace,
-    candidatePath: string,
-    remoteUrl: string | undefined
-  ): Promise<IntegrationResult | undefined> {
-    if (attempt.source.kind === "historical-change-sets") {
-      throw new Error(
-        `Historical Integration cannot be resumed under the current source contract: ${attempt.id}.`
-      );
-    }
-    if (attempt.source.kind === "upstream") {
-      if (remoteUrl === undefined) {
-        throw new Error(`Project has no remote URL for upstream Integration: ${attempt.projectId}.`);
-      }
-      if (attempt.resolution?.action === "manual-resolution"
-        && attempt.conflict?.summary.startsWith(REMOTE_BASELINE_CONFLICT_PREFIX)) {
-        await continueUpstreamRebase(candidatePath);
-        return undefined;
-      }
-      const fetchRemote = this.git.fetchRemoteHeadIntoWorktree;
-      if (fetchRemote === undefined) {
-        throw new Error("Integration Git workspace cannot fetch an upstream source.");
-      }
-      const fetched = await fetchRemote.call(this.git, {
-        repositoryPath: candidatePath,
-        remoteUrl,
-        branch: attempt.source.branch
-      });
-      if (fetched.commit !== attempt.source.remoteCommit) {
-        throw new Error(
-          `Upstream branch moved before Integration: expected ${
-            attempt.source.remoteCommit
-          }, fetched ${fetched.commit}.`
-        );
-      }
-      if (await this.git.isAncestor(
-        candidatePath,
-        attempt.source.remoteCommit,
-        attempt.beforeCommit
-      )) {
-        return undefined;
-      }
-      try {
-        await git([
-          "-C", candidatePath,
-          "-c", "user.name=Yui",
-          "-c", "user.email=yui@local",
-          "rebase", "--onto",
-          attempt.source.remoteCommit,
-          attempt.source.taskBaseCommit,
-          workspace.branch
-        ]);
-      } catch (error) {
-        const affectedPaths = await conflictedPaths(candidatePath);
-        if (affectedPaths.length === 0) throw error;
-        const pending = requireResolutionDecision(attempt, {
-          affectedPaths,
-          summary: `${REMOTE_BASELINE_CONFLICT_PREFIX} in ${attempt.targetRef}.`
-        }, this.now());
-        this.store.saveIntegrationAttempt(attempt.taskId, pending);
-        return { status: "blocked", attempt: pending, workspace };
-      }
-      return undefined;
-    }
-
-    if (attempt.source.strategy === "manual") {
-      if (attempt.resolution?.action === "manual-resolution"
-        && attempt.conflict?.summary.startsWith(MANUAL_INTEGRATION_PREFIX)) {
-        if (!await this.git.isClean(candidatePath)) {
-          throw new Error("Manual Integration workspace must be clean and committed.");
-        }
-        return undefined;
-      }
-      const pending = requireResolutionDecision(attempt, {
-        affectedPaths: [],
-        summary: `${MANUAL_INTEGRATION_PREFIX}; apply the selected WorkItem result in the Integration workspace.`
-      }, this.now());
-      this.store.saveIntegrationAttempt(attempt.taskId, pending);
-      return { status: "blocked", attempt: pending, workspace };
-    }
-
-    if (attempt.source.strategy === "ff") {
-      await git([
-        "-C", candidatePath,
-        "merge", "--ff-only",
-        attempt.source.resultCommit
-      ]);
-      return undefined;
-    }
-
-    if (attempt.source.strategy === "merge") {
-      if (attempt.resolution?.action === "manual-resolution"
-        && attempt.conflict?.summary.startsWith(WORK_ITEM_MERGE_CONFLICT_PREFIX)) {
-        await completeMergeResolution(candidatePath);
-        return undefined;
-      }
-      try {
-        await git([
-          "-C", candidatePath,
-          "-c", "user.name=Yui",
-          "-c", "user.email=yui@local",
-          "merge", "--no-edit", "--no-ff",
-          attempt.source.resultCommit
-        ]);
-      } catch (error) {
-        const affectedPaths = await conflictedPaths(candidatePath);
-        if (affectedPaths.length === 0) throw error;
-        const pending = requireResolutionDecision(attempt, {
-          affectedPaths,
-          summary: `${WORK_ITEM_MERGE_CONFLICT_PREFIX} in ${attempt.targetRef}.`
-        }, this.now());
-        this.store.saveIntegrationAttempt(attempt.taskId, pending);
-        return { status: "blocked", attempt: pending, workspace };
-      }
-      return undefined;
-    }
-
-    const commits = await commitsBetween(
-      candidatePath,
-      attempt.source.startCommit,
-      attempt.source.resultCommit,
-      attempt.source.workItemId
-    );
-    let remaining = commits;
-    if (attempt.resolution?.action === "manual-resolution") {
-      const resolvedCommit = await completeCherryPickResolution(candidatePath);
-      const resolvedIndex = commits.findIndex(({ commit }) => commit === resolvedCommit);
-      if (resolvedIndex < 0) {
-        throw new Error(
-          `Manual resolution commit is not part of the WorkItem result: ${resolvedCommit}.`
-        );
-      }
-      remaining = commits.slice(resolvedIndex + 1);
-    }
-    for (const { label, commit } of remaining) {
-      // Fast-forward when the commit is a direct descendant of HEAD: this
-      // preserves the original commit SHA, which exact-SHA review evidence
-      // relies on.  Fall back to cherry-pick when the target moved since the
-      // WorkItem was based (the commit is no longer a direct descendant).
-      if (await gitSucceeds(["-C", candidatePath, "merge", "--ff-only", commit])) {
-        continue;
-      }
-      try {
-        await git(["-C", candidatePath, "cherry-pick", commit]);
-      } catch {
-        const affectedPaths = (await git([
-          "-C", candidatePath, "diff", "--name-only", "--diff-filter=U"
-        ])).trim().split("\n").filter(Boolean);
-        if (affectedPaths.length === 0
-          && await isEmptyCherryPick(candidatePath, commit)) {
-          await git(["-C", candidatePath, "cherry-pick", "--skip"]);
-          continue;
-        }
-        const pending = requireResolutionDecision(attempt, {
-          affectedPaths,
-          summary: `${label} conflicts with ${attempt.targetRef}.`
-        }, this.now());
-        this.store.saveIntegrationAttempt(attempt.taskId, pending);
-        return { status: "blocked", attempt: pending, workspace };
-      }
-    }
-    return undefined;
+    managedWorkspace: ManagedWorkspace,
+    gate?: ResolvedVerificationGate
+  ) {
+    const runtime = this.#runtimePreparation(attempt, managedWorkspace);
+    const head = attempt.candidateCommit;
+    if (head === undefined) throw new Error("Integration check specification requires a candidate.");
+    const steps: DurableJobStep[] = gate === undefined
+      ? attempt.checkCommands.map((command, index) => ({
+          name: `check-${index + 1}`, command, timeoutMs: 30 * 60_000
+        }))
+      : [...planBootstrapJobSteps(gate.plan), ...planL2JobSteps(gate.plan)]
+        .map(step => ({ ...step, timeoutMs: 30 * 60_000 }));
+    const releaseId = integrationRuntimeReleaseIdentity(this.home);
+    const environment = Object.freeze({
+      ...integrationCheckEnvironment(this.environment, runtime),
+      ...(releaseId === null ? {} : { [INTEGRATION_RUNTIME_RELEASE_ENV]: releaseId })
+    });
+    const inputDigest = durableJobIdempotencyKey({
+      owner: { kind: "integration-attempt", integrationAttemptId: attempt.id },
+      projectId: attempt.projectId, head, workspace: managedWorkspace.root,
+      env: environment, steps
+    });
+    return { runtime, head, steps, environment, inputDigest, releaseId };
   }
 
   async #recoverValidating(
     attempt: IntegrationAttempt,
     workspace: IntegrationWorkspace,
+    managedWorkspace: ManagedWorkspace,
     repositoryPath: string
   ): Promise<IntegrationResult> {
     if (attempt.candidateCommit === undefined || attempt.checks === undefined) {
@@ -998,24 +927,31 @@ export class GitIntegrationService {
       );
     }
     const target = await resolveRef(repositoryPath, attempt.targetRef);
-    if (target === attempt.beforeCommit) {
-      try {
-        await advanceTargetRef(
-          repositoryPath,
-          attempt.targetRef,
-          attempt.candidateCommit,
-          attempt.beforeCommit
-        );
-      } catch (error) {
-        return this.#fail(attempt, error, "integration-recovery", workspace);
+    // An already-applied CAS is a delivery fact, not a request to validate
+    // again under today's settings. No-op candidates still need current checks.
+    if (target !== attempt.candidateCommit || target === attempt.beforeCommit) {
+      if (target !== attempt.beforeCommit) {
+        throw new Error(`Target moved to ${target}; Integration CAS outcome needs inspection.`);
       }
-    } else if (target !== attempt.candidateCommit) {
-      return this.#fail(
-        attempt,
-        new Error(`Target moved to ${target}; expected ${attempt.beforeCommit}.`),
-        "integration-recovery",
-        workspace
-      );
+      await assertIntegrationCandidate(workspace.path, attempt.candidateCommit, workspace.branch);
+      assertRecordedSourceCandidate(attempt, workspace);
+      const project = this.store.getProject(attempt.projectId);
+      if (project === null) throw new Error("Integration Project is unavailable for check validation.");
+      const gate = resolveVerificationGate(project, this.environment);
+      const spec = await this.#checkSpecification(attempt, managedWorkspace, gate);
+      if (attempt.checkInputDigest !== spec.inputDigest
+        || gate?.planDigest !== attempt.gatePlanDigest
+        || gate?.toolchainDigest !== attempt.gateToolchainDigest) {
+        throw new Error("Integration check conditions changed after validation; preserve the evidence and abort or use a new attempt.");
+      }
+      if (attempt.jobId !== undefined) {
+        const job = this.store.getDurableJob(attempt.taskId, attempt.jobId);
+        if (job === null || job.status !== "succeeded") {
+          throw new Error("Validating Integration has no successful bound Job evidence.");
+        }
+        assertCheckJobIdentity(attempt, job, workspace.path);
+      }
+      await advanceTargetRef(repositoryPath, attempt.targetRef, attempt.candidateCommit, attempt.beforeCommit);
     }
     await assertTargetReadyForChecks(
       repositoryPath,
@@ -1026,12 +962,16 @@ export class GitIntegrationService {
     return this.#terminalResult("committed", committed, workspace);
   }
 
-  #recordCommitted(attempt: IntegrationAttempt): IntegrationAttempt {
+  #recordCommitted(
+    attempt: IntegrationAttempt,
+    authorize?: (store: TaskStore, taskId: string) => unknown
+  ): IntegrationAttempt {
     if (attempt.candidateCommit === undefined) {
       throw new Error(`Committed Integration has no candidate commit: ${attempt.id}.`);
     }
     const candidateCommit = attempt.candidateCommit;
     return this.store.transaction((tx) => {
+      authorize?.(tx, attempt.taskId);
       const task = tx.getTask(attempt.taskId);
       if (task === null) throw new Error(`Task not found: ${attempt.taskId}.`);
       const binding = task.projectBindings.find(
@@ -1103,6 +1043,27 @@ export class GitIntegrationService {
   }
 }
 
+function assertCheckJobIdentity(attempt: IntegrationAttempt, job: DurableJob, path: string): void {
+  if (job.taskId !== attempt.taskId
+    || job.owner.kind !== "integration-attempt" || job.owner.integrationAttemptId !== attempt.id
+    || job.projectId !== attempt.projectId || job.workspace !== path
+    || job.head !== attempt.candidateCommit
+    || (attempt.jobId !== undefined && job.id !== attempt.jobId)
+    || attempt.checkInputDigest === undefined
+    || durableJobIdempotencyKey(job) !== attempt.checkInputDigest) {
+    throw new Error("Integration Job identity does not match its admitted Task, source candidate, Project, workspace and check specification.");
+  }
+  if (job.status === "succeeded") {
+    const results = job.result?.steps;
+    if (job.result?.outcome !== "succeeded" || results?.length !== job.steps.length
+      || job.steps.some((step, index) => {
+        const result = results[index];
+        return result?.name !== step.name || result.head !== job.head
+          || result.exitCode !== 0 || result.signal !== null || result.timedOut;
+      })) throw new Error("Integration Job success lacks exact candidate step evidence.");
+  }
+}
+
 function integrationSummary(attempt: IntegrationAttempt): string {
   const unchanged = attempt.beforeCommit === attempt.candidateCommit;
   if (attempt.source.kind === "upstream") {
@@ -1129,122 +1090,6 @@ function integrationSummary(attempt: IntegrationAttempt): string {
   return unchanged
     ? `WorkItem ${attempt.source.workItemId} result was already represented; Task head was unchanged.`
     : `Integrated WorkItem ${attempt.source.workItemId} with ${attempt.source.strategy}.`;
-}
-
-async function isEmptyCherryPick(path: string, commit: string): Promise<boolean> {
-  let cherryPickHead: string;
-  try {
-    cherryPickHead = await gitLine([
-      "-C", path, "rev-parse", "--verify", "CHERRY_PICK_HEAD^{commit}"
-    ]);
-  } catch {
-    return false;
-  }
-  return cherryPickHead === commit
-    && await gitSucceeds(["-C", path, "diff", "--cached", "--quiet"]);
-}
-
-async function commitsBetween(
-  repositoryPath: string,
-  startCommit: string,
-  resultCommit: string,
-  workItemId: string
-): Promise<PlannedCommit[]> {
-  const commits = (await git([
-    "-C", repositoryPath, "rev-list", "--reverse",
-    `${startCommit}..${resultCommit}`
-  ])).trim().split("\n").filter(Boolean);
-  const plan: PlannedCommit[] = [];
-  for (const commit of commits) {
-    if (await gitSucceeds([
-      "-C", repositoryPath,
-      "merge-base", "--is-ancestor", commit, "HEAD"
-    ])) continue;
-    plan.push({ label: `WorkItem ${workItemId} commit ${commit}`, commit });
-  }
-  return plan;
-}
-
-async function completeCherryPickResolution(path: string): Promise<string> {
-  const unmerged = (await git(["-C", path, "diff", "--name-only", "--diff-filter=U"])).trim();
-  if (unmerged.length > 0) {
-    throw new Error(`Manual resolution is incomplete: ${unmerged.split("\n").join(", ")}.`);
-  }
-  let cherryPickHead: string;
-  try {
-    cherryPickHead = await gitLine([
-      "-C", path, "rev-parse", "--verify", "CHERRY_PICK_HEAD"
-    ]);
-  } catch {
-    throw new Error("Manual resolution has no active cherry-pick.");
-  }
-  const emptyResolution = await gitSucceeds(["-C", path, "diff", "--cached", "--quiet"]);
-  if (emptyResolution) {
-    await git(["-C", path, "cherry-pick", "--skip"]);
-  } else {
-    await git(["-C", path, "-c", "user.name=Yui", "-c", "user.email=yui@local",
-      "cherry-pick", "--continue"]);
-  }
-  return cherryPickHead;
-}
-
-async function completeMergeResolution(path: string): Promise<void> {
-  const affected = await conflictedPaths(path);
-  if (affected.length > 0) {
-    throw new Error(`Manual merge resolution is incomplete: ${affected.join(", ")}.`);
-  }
-  try {
-    await gitLine(["-C", path, "rev-parse", "--verify", "MERGE_HEAD"]);
-  } catch {
-    throw new Error("Manual WorkItem resolution has no active merge.");
-  }
-  await git([
-    "-C", path,
-    "-c", "user.name=Yui",
-    "-c", "user.email=yui@local",
-    "commit", "--no-edit"
-  ]);
-}
-
-async function continueUpstreamRebase(path: string): Promise<void> {
-  const affected = await conflictedPaths(path);
-  if (affected.length > 0) {
-    throw new RemoteBaselineConflictError(
-      affected,
-      `${REMOTE_BASELINE_CONFLICT_PREFIX}: ${affected.join(", ")}.`
-    );
-  }
-  try {
-    await gitLine(["-C", path, "rev-parse", "--verify", "REBASE_HEAD"]);
-  } catch {
-    throw new Error("Manual upstream resolution has no active rebase.");
-  }
-  try {
-    await git([
-      "-C", path,
-      "-c", "user.name=Yui",
-      "-c", "user.email=yui@local",
-      "-c", "core.editor=true",
-      "rebase", "--continue"
-    ]);
-  } catch (error) {
-    const nextAffected = await conflictedPaths(path);
-    if (nextAffected.length > 0) {
-      throw new RemoteBaselineConflictError(
-        nextAffected,
-        `${REMOTE_BASELINE_CONFLICT_PREFIX}: ${nextAffected.join(", ")}.`,
-        { cause: error }
-      );
-    }
-    throw error;
-  }
-}
-
-async function conflictedPaths(path: string): Promise<string[]> {
-  return (await git([
-    "-C", path,
-    "diff", "--name-only", "--diff-filter=U"
-  ])).trim().split("\n").filter(Boolean);
 }
 
 /**
@@ -1428,10 +1273,7 @@ async function spawnCheck(
   return { ...completion, timedOut };
 }
 
-async function integrationCheckEnvironment(
-  source: NodeJS.ProcessEnv,
-  runtime: TaskRuntimeIsolationPreparation
-): Promise<Readonly<Record<string, string>>> {
+async function prepareIntegrationRuntimeHome(runtime: TaskRuntimeIsolationPreparation): Promise<void> {
   const home = join(runtime.descriptor.roots.data, "home");
   try {
     await mkdir(home, { mode: 0o700 });
@@ -1442,6 +1284,13 @@ async function integrationCheckEnvironment(
   if (!homeMetadata.isDirectory() || homeMetadata.isSymbolicLink()) {
     throw new Error("Integration runtime HOME is not an owned directory.");
   }
+}
+
+function integrationCheckEnvironment(
+  source: NodeJS.ProcessEnv,
+  runtime: TaskRuntimeIsolationPreparation
+): Readonly<Record<string, string>> {
+  const home = join(runtime.descriptor.roots.data, "home");
   return Object.freeze({
     ...selectEnvironment(source, INTEGRATION_OPERATIONAL_ENVIRONMENT_NAMES),
     PATH: source.PATH || `${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`,
@@ -1561,15 +1410,6 @@ async function git(args: readonly string[]): Promise<string> {
     throw new Error(stderr.length === 0 ? "Git command failed." : `Git command failed: ${stderr}`, {
       cause: error
     });
-  }
-}
-
-async function gitSucceeds(args: readonly string[]): Promise<boolean> {
-  try {
-    await git(args);
-    return true;
-  } catch {
-    return false;
   }
 }
 

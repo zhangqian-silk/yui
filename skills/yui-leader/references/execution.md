@@ -106,8 +106,9 @@ messages and Task Brief. Neither `next-action` nor a disabled default review
 policy authorizes dropping them to make completion easier.
 
 An Integration Job's success is not the final target update. For that
-notification, read [Integration](integration.md) and finish the same
-attempt; do not start a duplicate operation.
+notification, read [Integration](integration.md) and continue from its exact
+evidence; do not start a duplicate operation. Read that guidance also for an
+ordinary Git conflict or an attempt that cannot be reliably resumed.
 
 Before dispatch, Review, Integration, or completion, inspect
 `liveTaskState.activeRuns` and `liveTaskState.activeTaskReviews` in the current

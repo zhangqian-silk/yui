@@ -1984,6 +1984,7 @@ function archiveTaskCommand(
     const unresolvedIntegration = tx.listIntegrationAttempts(task.id).find((integration) => (
       integration.status === "running"
       || integration.status === "blocked"
+      || integration.status === "conflicted"
       || integration.status === "validating"
     ));
     if (unresolvedIntegration !== undefined) {
@@ -2155,6 +2156,7 @@ function retireTaskCommand(
     const unresolvedIntegration = tx.listIntegrationAttempts(task.id).find((integration) => (
       integration.status === "running"
       || integration.status === "blocked"
+      || integration.status === "conflicted"
       || integration.status === "validating"
     ));
     if (unresolvedIntegration !== undefined) {
@@ -2344,6 +2346,7 @@ export function validateTaskArchiveRequest(
     const unresolvedIntegration = store.listIntegrationAttempts(task.id).find((integration) => (
       integration.status === "running"
       || integration.status === "blocked"
+      || integration.status === "conflicted"
       || integration.status === "validating"
     ));
     if (unresolvedIntegration !== undefined) {

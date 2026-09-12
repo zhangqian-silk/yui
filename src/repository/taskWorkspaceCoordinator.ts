@@ -309,6 +309,7 @@ export class TaskWorkspaceCoordinator {
         if (attempt === null
           || attempt.status === "running"
           || attempt.status === "blocked"
+          || attempt.status === "conflicted"
           || attempt.status === "validating") {
           throw new Error(
             `IntegrationAttempt must be terminal before archive cleanup: ${

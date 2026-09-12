@@ -2483,6 +2483,7 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
     }
     if (attempt.status === "running"
       || attempt.status === "blocked"
+      || attempt.status === "conflicted"
       || attempt.status === "validating") {
       throw new Error(`IntegrationAttempt must be terminal before cleanup: ${attempt.id}.`);
     }

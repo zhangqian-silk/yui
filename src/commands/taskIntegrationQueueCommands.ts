@@ -173,7 +173,7 @@ async function process(
     if (result.status === "committed") {
       return `${entry.id} committed ${entry.changeSetId} -> ${entry.targetAfter ?? "-"}`;
     }
-    if (result.status === "blocked") {
+    if (result.status === "blocked" || result.status === "conflicted") {
       return `${entry.id} conflicted ${entry.changeSetId}: ${entry.conflictSummary ?? "blocked"}`;
     }
     return `${entry.id} conflicted ${entry.changeSetId}: ${entry.conflictSummary ?? "gate failure"}`;
