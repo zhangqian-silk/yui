@@ -143,6 +143,13 @@ export function operationalAgentEnvironment(
       || `${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`,
     HOME: source.HOME || homedir(),
     TERM: usableInteractiveTerminal(source.TERM),
+    // Base fallback only. Every managed Task launch has its isolation
+    // environment (TMPDIR = the Home-side runtime `roots.temporary`) assigned
+    // OVER this by the launch planner, so this branch is reached only by
+    // non-isolated global/ad-hoc launches with no managed runtime. Those run in
+    // the operator's own context, where their inherited TMPDIR (or the system
+    // temp) is the correct scratch — forcing it under control Home would
+    // misroute user scratch into Yui-managed storage.
     TMPDIR: source.TMPDIR || tmpdir()
   };
 }

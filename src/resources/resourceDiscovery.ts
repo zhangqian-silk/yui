@@ -19,6 +19,7 @@ import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { managedProjectPath, type Project } from "../repository/project.js";
+import { managedRuntimeRoot } from "../storage/homeLayout.js";
 import type { ManagedWorkspace } from "../worktree/managedWorkspace.js";
 import { isResourceQuarantinePath } from "./resourceRegistry.js";
 import {
@@ -222,8 +223,8 @@ function discoverRuntimeArtifacts(
   const discovered: DiscoveredResource[] = [];
   const now = input.now;
 
-  // 3a. Task runtime isolation roots: <home>.task-runtimes/<taskId>/<owner>/<launch>/
-  const runtimeRoot = `${resolve(home)}.task-runtimes`;
+  // 3a. Task runtime isolation roots: <home>/runtime/task-runtimes/<taskId>/<owner>/<launch>/
+  const runtimeRoot = managedRuntimeRoot(home);
   if (existsSync(runtimeRoot)) {
     for (const taskEntry of safeReaddir(runtimeRoot)) {
       if (!taskEntry.isDirectory()) continue;

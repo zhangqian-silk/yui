@@ -71,6 +71,15 @@ export type TaskRuntimeControlBoundary = Readonly<{
   controllerSocketPath: string;
   tmuxNamespace: string;
   globalInstallPaths?: readonly string[];
+  /**
+   * The single Home subtree that provider runtime roots are allowed to occupy.
+   * When present it must lie within `yuiHome`, and runtime roots may overlap
+   * Home only when fully contained here; every other part of Home (the
+   * database, managed Git workspaces, projects) stays protected. When absent,
+   * the whole-Home overlap ban applies unchanged (runtime roots must then live
+   * entirely outside Home).
+   */
+  managedRuntimeRoot?: string;
 }>;
 
 export type TaskRuntimeResourceObservation = Readonly<{
@@ -196,7 +205,12 @@ export class FileTaskRuntimeIsolation implements TaskRuntimeIsolationPort {
       this.#resourceRegistrar().registerTaskRuntimeIsolation(descriptor);
       return;
     }
-    ensureDirectoryChain(this.#runtimeRoot, dirname(root));
+    ensureDirectoryChain(
+      this.#controlPlane.managedRuntimeRoot === undefined
+        ? this.#runtimeRoot
+        : this.#controlPlane.yuiHome,
+      dirname(root)
+    );
     mkdirSync(root, { mode: 0o700 });
     try {
       const marker: TaskRuntimeResourceMarker = {
@@ -458,10 +472,24 @@ export function assertTaskRuntimeIsolationPreflight(input: Readonly<{
     }
   }
   const control = normalizeControlBoundary(input.controlPlane);
-  const protectedPaths = [control.yuiHome, ...control.globalInstallPaths];
   for (const root of Object.values(descriptor.roots)) {
-    if (protectedPaths.some((path) => pathsOverlap(root, path))) {
-      throw new Error("Task runtime roots overlap the control YUI_HOME or a global install path.");
+    if (control.globalInstallPaths.some((path) => pathsOverlap(root, path))) {
+      throw new Error("Task runtime roots overlap a global install path.");
+    }
+    // Precise partition isolation: a runtime root may occupy Home only when it
+    // is fully within the single designated managed runtime partition. Every
+    // other part of Home — the database, managed Git workspaces, projects —
+    // stays protected. Both Task and integration runtimes now supply such a
+    // partition; a caller that supplies none keeps the whole-Home overlap ban.
+    if (pathsOverlap(root, control.yuiHome)) {
+      const partition = control.managedRuntimeRoot;
+      const withinPartition = partition !== undefined
+        && (root === partition || isWithin(partition, root));
+      if (!withinPartition) {
+        throw new Error(
+          "Task runtime roots overlap the control YUI_HOME outside the managed runtime partition."
+        );
+      }
     }
     if (pathsOverlap(root, descriptor.workspace.root)) {
       throw new Error("Task runtime roots must not dirty the managed workspace.");
@@ -694,9 +722,19 @@ function taskRuntimeServiceNamespace(
 
 function normalizeControlBoundary(
   value: TaskRuntimeControlBoundary
-): Required<TaskRuntimeControlBoundary> {
+): Required<Omit<TaskRuntimeControlBoundary, "managedRuntimeRoot">>
+  & Readonly<{ managedRuntimeRoot?: string }> {
+  const yuiHome = canonicalPath(value.yuiHome, "Control YUI_HOME");
+  const managedRuntimeRoot = value.managedRuntimeRoot === undefined
+    ? undefined
+    : canonicalPath(value.managedRuntimeRoot, "Managed runtime root");
+  if (managedRuntimeRoot !== undefined
+    && managedRuntimeRoot !== yuiHome
+    && !isWithin(yuiHome, managedRuntimeRoot)) {
+    throw new Error("Managed runtime root must be within the control YUI_HOME.");
+  }
   return Object.freeze({
-    yuiHome: canonicalPath(value.yuiHome, "Control YUI_HOME"),
+    yuiHome,
     controllerSocketPath: canonicalPath(
       value.controllerSocketPath,
       "Controller socket path"
@@ -704,7 +742,8 @@ function normalizeControlBoundary(
     tmuxNamespace: requireIdentity(value.tmuxNamespace, "Controller tmux namespace"),
     globalInstallPaths: Object.freeze((value.globalInstallPaths ?? []).map(
       (path) => canonicalPath(path, "Global install path")
-    ))
+    )),
+    ...(managedRuntimeRoot === undefined ? {} : { managedRuntimeRoot })
   });
 }
 

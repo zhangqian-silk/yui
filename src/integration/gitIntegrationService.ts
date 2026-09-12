@@ -48,7 +48,7 @@ import {
   type GitWorkspacePort
 } from "../repository/gitWorkspace.js";
 import type { GitWorkspaceRemoval } from "../repository/gitWorkspace.js";
-import { resolveWorktreeRoot } from "../repository/taskWorkspacePreparer.js";
+import { integrationWorkspaceRoot } from "../repository/taskWorkspacePreparer.js";
 import { acquireProjectMaintenanceLocks } from "../repository/projectMaintenanceLock.js";
 import { taskWorkspaceRefSegment } from "../repository/taskWorkspaceIdentity.js";
 import {
@@ -57,6 +57,7 @@ import {
   type TaskRuntimeIsolationPreparation
 } from "../runtime/taskRuntimeIsolation.js";
 import type { TaskStore } from "../storage/taskStore.js";
+import { managedIntegrationRuntimeRoot } from "../storage/homeLayout.js";
 import { advanceTaskProjectCommit } from "../task/task.js";
 import { yuiTmuxServerName } from "../tmux/tmuxManager.js";
 import {
@@ -143,7 +144,6 @@ export type IntegrationWorkspace = Readonly<{
 
 export class GitIntegrationService {
   readonly home: string;
-  readonly worktreeRoot: string;
   readonly environment: NodeJS.ProcessEnv;
   readonly runtimeIsolation: TaskRuntimeIsolationPort;
   #resourceRegistrarValue: ResourceRegistrar | undefined;
@@ -161,7 +161,6 @@ export class GitIntegrationService {
     readonly jobPort?: IntegrationJobPort
   ) {
     this.home = resolve(home);
-    this.worktreeRoot = resolveWorktreeRoot(home, store.getConfig().defaultWorkspace);
     this.environment = { ...environment };
     this.runtimeIsolation = runtimeIsolation;
   }
@@ -206,11 +205,13 @@ export class GitIntegrationService {
     if (project === null) throw new Error(`Project not found: ${initial.projectId}.`);
     if (project.status !== "active") throw new Error(`Integration Project is not active: ${project.id}.`);
     const taskWorkspace = this.store.getTaskWorkspace(task.id);
-    const taskRepository = taskWorkspace?.entries.find(
+    const taskEntry = taskWorkspace?.entries.find(
       ({ projectId }) => projectId === project.id
-    )?.path;
+    );
+    const taskRepository = taskEntry?.path;
     if (taskWorkspace === null
       || taskWorkspace.owner.type !== "task"
+      || taskEntry === undefined
       || taskRepository === undefined) {
       throw new Error(`Integration Task clone is unavailable: ${task.id}/${project.id}.`);
     }
@@ -223,7 +224,8 @@ export class GitIntegrationService {
     try {
       prepared = await this.git.ensureIntegrationWorktree({
         repositoryPath: taskRepository,
-        container: join(this.worktreeRoot, project.name),
+        container: integrationWorkspaceRoot(this.home, task.id, initial.id),
+        directory: taskEntry.directory,
         taskSegment: taskWorkspaceRefSegment(task),
         integrationId: initial.id,
         baseRef: initial.beforeCommit
@@ -251,7 +253,7 @@ export class GitIntegrationService {
         root: prepared.path,
         entries: [{
           projectId: project.id,
-          directory: project.name,
+          directory: taskEntry.directory,
           access: "write",
           path: prepared.path,
           branch: prepared.branch,
@@ -491,9 +493,20 @@ export class GitIntegrationService {
           integration.status === "committed" ? "completion" : "failure"
         );
       }
+      const recorded = managedWorkspace?.entries[0];
+      const directory = recorded?.directory
+        ?? task.projectBindings.find(
+          ({ projectId }) => projectId === integration.projectId
+        )?.directory;
+      if (directory === undefined) {
+        throw new Error(`Integration Project binding is unavailable: ${task.id}/${project.id}.`);
+      }
       const result = await this.git.removeIntegrationWorktree({
         repositoryPath: taskRepository,
-        container: join(this.worktreeRoot, project.name),
+        container: recorded !== undefined
+          ? dirname(recorded.path)
+          : integrationWorkspaceRoot(this.home, task.id, integration.id),
+        directory,
         taskSegment: taskWorkspaceRefSegment(task),
         integrationId: integration.id,
         discardChanges: integration.status === "failed"
@@ -585,7 +598,7 @@ export class GitIntegrationService {
     this.store.saveIntegrationAttempt(attempt.taskId, persisted);
     // All domain admission and durable candidate identity precede Job effects.
     this.runtimeIsolation.activate(runtime);
-    await prepareIntegrationRuntimeHome(runtime);
+    await prepareIntegrationRuntimeHome(runtime, this.home);
     const job = await this.jobPort!.startCheckJob({
       taskId: attempt.taskId,
       integrationId: attempt.id,
@@ -699,7 +712,7 @@ export class GitIntegrationService {
     this.runtimeIsolation.activate(runtime);
     let cleanupReason: "completion" | "failure" = "failure";
     try {
-      await prepareIntegrationRuntimeHome(runtime);
+      await prepareIntegrationRuntimeHome(runtime, this.home);
       const checks = await runChecks(
         path,
         attempt.checkCommands,
@@ -801,7 +814,7 @@ export class GitIntegrationService {
     this.runtimeIsolation.activate(runtime);
     let cleanupReason: "completion" | "failure" = "failure";
     try {
-      await prepareIntegrationRuntimeHome(runtime);
+      await prepareIntegrationRuntimeHome(runtime, this.home);
       const steps = [
         ...planBootstrapJobSteps(gate.plan),
         ...planL2JobSteps(gate.plan)
@@ -901,7 +914,7 @@ export class GitIntegrationService {
         .map(step => ({ ...step, timeoutMs: 30 * 60_000 }));
     const releaseId = integrationRuntimeReleaseIdentity(this.home);
     const environment = Object.freeze({
-      ...integrationCheckEnvironment(this.environment, runtime),
+      ...integrationCheckEnvironment(this.environment, runtime, this.home),
       ...(releaseId === null ? {} : { [INTEGRATION_RUNTIME_RELEASE_ENV]: releaseId })
     });
     const inputDigest = durableJobIdempotencyKey({
@@ -1273,32 +1286,42 @@ async function spawnCheck(
   return { ...completion, timedOut };
 }
 
-async function prepareIntegrationRuntimeHome(runtime: TaskRuntimeIsolationPreparation): Promise<void> {
-  const home = join(runtime.descriptor.roots.data, "home");
+async function prepareIntegrationRuntimeHome(runtime: TaskRuntimeIsolationPreparation, home: string): Promise<void> {
+  const homeDirectory = join(runtime.descriptor.roots.data, "home");
   try {
-    await mkdir(home, { mode: 0o700 });
+    await mkdir(homeDirectory, { mode: 0o700 });
   } catch (error) {
     if (!isNodeCode(error, "EEXIST")) throw error;
   }
-  const homeMetadata = await lstat(home);
+  const homeMetadata = await lstat(homeDirectory);
   if (!homeMetadata.isDirectory() || homeMetadata.isSymbolicLink()) {
     throw new Error("Integration runtime HOME is not an owned directory.");
+  }
+  // The tmux socket endpoint is the one approved short-path IPC exception; every
+  // other temp consumer (TMPDIR/TMP/TEMP) stays on the Home-side runtime tmp.
+  const tmuxSocketRoot = integrationTmuxSocketRoot(home);
+  try {
+    await mkdir(tmuxSocketRoot, { mode: 0o700 });
+  } catch (error) {
+    if (!isNodeCode(error, "EEXIST")) throw error;
   }
 }
 
 function integrationCheckEnvironment(
   source: NodeJS.ProcessEnv,
-  runtime: TaskRuntimeIsolationPreparation
+  runtime: TaskRuntimeIsolationPreparation,
+  home: string
 ): Readonly<Record<string, string>> {
-  const home = join(runtime.descriptor.roots.data, "home");
+  const homeDirectory = join(runtime.descriptor.roots.data, "home");
+  const tmuxSocketRoot = integrationTmuxSocketRoot(home);
   return Object.freeze({
     ...selectEnvironment(source, INTEGRATION_OPERATIONAL_ENVIRONMENT_NAMES),
     PATH: source.PATH || `${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`,
-    HOME: home,
+    HOME: homeDirectory,
     TMPDIR: runtime.descriptor.roots.temporary,
     TMP: runtime.descriptor.roots.temporary,
     TEMP: runtime.descriptor.roots.temporary,
-    TMUX_TMPDIR: runtime.descriptor.roots.temporary,
+    TMUX_TMPDIR: tmuxSocketRoot,
     ...runtime.environment
   });
 }
@@ -1315,11 +1338,18 @@ function defaultIntegrationRuntimeIsolation(
   homeId: string
 ): TaskRuntimeIsolationPort {
   const controlHome = resolve(home);
+  const runtimeRoot = managedIntegrationRuntimeRoot(controlHome);
   return new FileTaskRuntimeIsolation({
-    runtimeRoot: integrationRuntimeRoot(controlHome),
+    // The integration check's provider data/cache/tmp live in a dedicated Home
+    // partition — the same isolation contract every Task runtime obeys — not in
+    // a system-wide `/tmp` root. Only the tmux socket ENDPOINT stays a short
+    // `/tmp` path (see `integrationCheckEnvironment`) for the `sockaddr_un`
+    // budget; ordinary runtime state is now Yui-managed under Home.
+    runtimeRoot,
     pathLayout: "compact",
     controlPlane: {
       yuiHome: controlHome,
+      managedRuntimeRoot: runtimeRoot,
       controllerSocketPath: controllerSocketPath(homeId),
       tmuxNamespace: yuiTmuxServerName(controlHome),
       globalInstallPaths: [process.execPath]
@@ -1327,7 +1357,14 @@ function defaultIntegrationRuntimeIsolation(
   });
 }
 
-function integrationRuntimeRoot(home: string): string {
+/**
+ * Short `/tmp` directory that holds ONLY the integration check's tmux socket
+ * endpoint. tmux uses a `sockaddr_un` path whose length budget cannot absorb a
+ * deep Home path, so this single IPC endpoint is the one approved exception to
+ * the unified-Home contract. All other integration runtime state (data, cache,
+ * ordinary temp) lives in the Home partition from `managedIntegrationRuntimeRoot`.
+ */
+function integrationTmuxSocketRoot(home: string): string {
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   const homeDigest = createHash("sha256").update(resolve(home)).digest("hex").slice(0, 16);
   return join("/tmp", `yi-${uid.toString(36)}-${homeDigest}`);

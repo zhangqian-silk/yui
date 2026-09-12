@@ -24,6 +24,7 @@ import type {
   SchedulerRoleSession
 } from "../scheduler/ports.js";
 import type { TaskStore } from "../storage/taskStore.js";
+import { planningRuntimeCwd } from "../storage/homeLayout.js";
 import {
   compileRoleSessionContext,
   roleSessionKind
@@ -210,7 +211,7 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
     const planningDraft = purpose === "planning" && task.status === "draft";
     // A planning cwd is a disposable per-Task runtime resource, not a delivery
     // workspace. Materialize only the exact directory selected at creation.
-    if (planningDraft && resolve(role.workspace) === resolve(`${this.home}.task-runtimes`, "planning", task.id)) {
+    if (planningDraft && resolve(role.workspace) === resolve(planningRuntimeCwd(this.home, task.id))) {
       mkdirSync(role.workspace, { recursive: true, mode: 0o700 });
     }
     const workspaceFree = planningDraft || !taskOwnsManagedWorkspace(task);

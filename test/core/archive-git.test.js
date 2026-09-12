@@ -12,7 +12,7 @@ test("archive cleanup distinguishes a missing directory from exact Git metadata 
   t.after(() => rmSync(container, { recursive: true, force: true }));
   const taskSegment = "task-1-1234abcd";
   const mainIdentity = worktreeIdentity(taskSegment, "main");
-  const root = join(container, mainIdentity.directory);
+  const root = join(container, "bound-app");
   mkdirSync(root, { recursive: true });
   const env = { ...sanitizedTestEnv(), GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.invalid",
     GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.invalid" };
@@ -21,27 +21,27 @@ test("archive cleanup distinguishes a missing directory from exact Git metadata 
   git("commit", "--allow-empty", "-m", "isolated baseline");
   const workspace = new NodeGitWorkspace();
   const missing = await workspace.ensureWorktree({
-    repositoryPath: root, container, taskSegment, roleName: "work-item-1", baseRef: "HEAD"
+    repositoryPath: root, container, directory: "work-item-1-app", taskSegment, roleName: "work-item-1", baseRef: "HEAD"
   });
   const foreign = await workspace.ensureWorktree({
-    repositoryPath: root, container, taskSegment, roleName: "work-item-2", baseRef: "HEAD"
+    repositoryPath: root, container, directory: "work-item-2-app", taskSegment, roleName: "work-item-2", baseRef: "HEAD"
   });
   rmSync(missing.path, { recursive: true });
   rmSync(foreign.path, { recursive: true });
-  const clone = { path: root, container, taskSegment, branch: mainIdentity.branch };
+  const clone = { path: root, container, directory: "bound-app", taskSegment, branch: mainIdentity.branch };
   await assert.rejects(workspace.removeTaskClone(clone), /registrations/);
   assert.equal(await workspace.removeWorktree({
-    repositoryPath: root, container, taskSegment, roleName: "work-item-1", deleteBranch: true
+    repositoryPath: root, container, directory: "work-item-1-app", taskSegment, roleName: "work-item-1", deleteBranch: true
   }), "missing");
   const records = git("worktree", "list", "--porcelain", "-z");
   assert.ok(!records.includes(missing.path));
   assert.ok(records.includes(foreign.path), "exact cleanup must not prune another owner's missing registration");
   assert.equal(await workspace.refExists(root, missing.branch), false);
   assert.equal(await workspace.removeWorktree({
-    repositoryPath: root, container, taskSegment, roleName: "work-item-1", deleteBranch: true
+    repositoryPath: root, container, directory: "work-item-1-app", taskSegment, roleName: "work-item-1", deleteBranch: true
   }), "missing", "repeated removal is idempotent");
   await workspace.removeWorktree({
-    repositoryPath: root, container, taskSegment, roleName: "work-item-2", deleteBranch: true
+    repositoryPath: root, container, directory: "work-item-2-app", taskSegment, roleName: "work-item-2", deleteBranch: true
   });
   writeFileSync(join(root, "keep.txt"), "uncommitted user data");
   assert.equal(await workspace.removeTaskClone(clone), "dirty");

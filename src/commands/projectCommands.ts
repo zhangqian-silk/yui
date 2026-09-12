@@ -37,6 +37,7 @@ import {
   type ProjectOwnership,
   type ProjectReferenceSummary
 } from "../repository/project.js";
+import { managedWorkspacesRoot } from "../storage/homeLayout.js";
 import { projectActor } from "./taskActor.js";
 import type { Decision } from "../decision/decision.js";
 import type { Milestone } from "../milestone/milestone.js";
@@ -336,7 +337,7 @@ async function cloneProject(
     if (dirname(destination) !== workspaceRoot) {
       throw usageError("Project clone destination must be directly inside the configured workspace.");
     }
-    assertOutsideManagedWorktrees(destination, workspace);
+    assertOutsideManagedWorktrees(destination, store.rootDirectory());
     ownership = "external";
   } else {
     destination = managedProjectPath(store.rootDirectory(), projectId);
@@ -608,10 +609,10 @@ async function addProject(
 ): Promise<Project> {
   const usage = "Project add usage: yui project add <name> <path> [--alias <name> ...] [--remote <url>] [--stable <ref>] [--development <ref>].";
   const parsed = parseAddArguments(args, usage);
-  assertOutsideManagedWorktrees(parsed.path, store.getConfig().defaultWorkspace);
+  assertOutsideManagedWorktrees(parsed.path, store.rootDirectory());
   const git = options.git ?? new NodeGitWorkspace();
   const head = await git.inspect(parsed.path, "HEAD");
-  assertOutsideManagedWorktrees(head.root, store.getConfig().defaultWorkspace);
+  assertOutsideManagedWorktrees(head.root, store.rootDirectory());
   if (!await git.isClean(head.root)) {
     throw usageError("Project checkout must be clean before it can be registered.");
   }
@@ -1331,10 +1332,9 @@ function assertProjectAvailable(
 
 function assertOutsideManagedWorktrees(
   path: string,
-  workspace: string | undefined
+  home: string
 ): void {
-  if (workspace === undefined) return;
-  const managedRoot = join(resolve(workspace), "worktree");
+  const managedRoot = managedWorkspacesRoot(home);
   const candidate = resolve(path);
   const fromManagedRoot = relative(managedRoot, candidate);
   const toManagedRoot = relative(candidate, managedRoot);

@@ -29,9 +29,9 @@ test("published v22 history survives the additive input-control migration", t =>
     .run("task-1", "message-1", 1, original, "2026-09-01T00:00:00.000Z");
   assert.equal(inspectSqliteSchemaMigrations(db).currentVersion, 22);
   assert.equal(db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE name='global_role_messages'").get().n, 0);
-  assert.deepEqual(storageMigrationPlan(22).map(step => [step.fromVersion, step.toVersion, step.name]),
+  assert.deepEqual(storageMigrationPlan(22).filter(step => step.toVersion <= 23).map(step => [step.fromVersion, step.toVersion, step.name]),
     [[22, 23, "unified-message-input-control"]]);
-  migrateSqliteSchema(db, { mode: "apply" });
+  migrateSqliteSchema(db, { mode: "apply", throughVersion: 23 });
   assert.equal(inspectSqliteSchemaMigrations(db).currentVersion, 23);
   assert.deepEqual(db.prepare("SELECT * FROM schema_migrations WHERE version <= 22 ORDER BY version").all(), oldLedger);
   assert.equal(db.prepare("SELECT payload FROM messages WHERE message_id='message-1'").get().payload, original);

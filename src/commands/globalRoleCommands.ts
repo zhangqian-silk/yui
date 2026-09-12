@@ -5,6 +5,7 @@ import {
   type GlobalRoleSessionSet
 } from "../executor/agentExecutor.js";
 import { resolveEffectiveLaunch } from "../executor/effectiveLaunch.js";
+import { managedGlobalRoleWorkspace } from "../storage/homeLayout.js";
 import {
   createGlobalRoleMessage,
   claimGlobalRoleMessageInterruptThen,
@@ -291,9 +292,16 @@ function addRole(
   const created = store.transaction((tx) => {
     assertRoleRuntimeMutationAllowed(tx, { scope: "global", roleName: name }, "creation");
     const agent = requireAgent(agentId, tx);
-    const workspace = trimmed(parsed.one("--workspace"))
-      ?? tx.getConfig().defaultWorkspace
-      ?? process.cwd();
+    // An explicit --workspace is a user-chosen cwd and keeps its own semantics
+    // (external roots stay external). When none is given, default to a
+    // Home-internal Global Role working directory rather than the external
+    // `defaultWorkspace` or the ambient process.cwd(), so Yui-auto-created
+    // scratch never lands outside the canonical Home.
+    const explicitWorkspace = trimmed(parsed.one("--workspace"));
+    const workspace = explicitWorkspace
+      ?? (options.yuiHome !== undefined
+        ? managedGlobalRoleWorkspace(options.yuiHome)
+        : tx.getConfig().defaultWorkspace ?? process.cwd());
     const binding = patchRoleAgentBinding(createRoleAgentBinding(definition(agent)), parsed);
     const profile = roleProfileFrom(parsed);
     validateConfiguredRoleSkills(options.yuiHome, profile.skills ?? []);

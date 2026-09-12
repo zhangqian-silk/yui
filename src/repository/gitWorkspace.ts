@@ -186,7 +186,10 @@ export interface GitWorkspacePort {
   ): Promise<GitRepositoryInspection>;
   ensureWorktree(input: Readonly<{
     repositoryPath: string;
+    /** The owner workspace root that directly contains the worktree. */
     container: string;
+    /** Bound Project directory: the sole path segment under `container`. */
+    directory: string;
     /** The Task workspace ref segment (`task-N` or `task-N-<8hex>`). */
     taskSegment: string;
     roleName: string;
@@ -195,6 +198,7 @@ export interface GitWorkspacePort {
   inspectWorktree(input: Readonly<{
     repositoryPath: string;
     container: string;
+    directory: string;
     taskSegment: string;
     roleName: string;
   }>): Promise<GitWorkspaceState>;
@@ -204,6 +208,7 @@ export interface GitWorkspacePort {
   inspectRecordedWorktree(input: Readonly<{
     repositoryPath: string;
     container: string;
+    directory: string;
     path: string;
     branch: string;
     taskSegment: string;
@@ -212,6 +217,7 @@ export interface GitWorkspacePort {
   removeWorktree(input: Readonly<{
     repositoryPath: string;
     container: string;
+    directory: string;
     taskSegment: string;
     roleName: string;
     deleteBranch?: boolean;
@@ -222,7 +228,7 @@ export interface GitWorkspacePort {
   removeStrandedWorktree(path: string): Promise<GitWorkspaceRemoval>;
   /** Delete a clean, standalone Task clone only at its exact managed identity. */
   removeTaskClone(input: Readonly<{
-    path: string; container: string; taskSegment: string; branch: string;
+    path: string; container: string; directory: string; taskSegment: string; branch: string;
   }>): Promise<GitWorkspaceRemoval>;
   /** Remove the exact clean worktree proven by inspectRecordedWorktree. If
    * the Project moved repositories, delete the obsolete source branch only
@@ -230,6 +236,7 @@ export interface GitWorkspacePort {
   removeRecordedWorktree(input: Readonly<{
     repositoryPath: string;
     container: string;
+    directory: string;
     path: string;
     branch: string;
     retainedRef: string;
@@ -239,6 +246,7 @@ export interface GitWorkspacePort {
   ensureIntegrationWorktree(input: Readonly<{
     repositoryPath: string;
     container: string;
+    directory: string;
     taskSegment: string;
     integrationId: string;
     baseRef: string;
@@ -246,6 +254,7 @@ export interface GitWorkspacePort {
   removeIntegrationWorktree(input: Readonly<{
     repositoryPath: string;
     container: string;
+    directory: string;
     taskSegment: string;
     integrationId: string;
     discardChanges?: boolean;
@@ -1079,6 +1088,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
   async ensureWorktree(input: Readonly<{
     repositoryPath: string;
     container: string;
+    directory: string;
     taskSegment: string;
     roleName: string;
     baseRef: string;
@@ -1086,7 +1096,10 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     return this.#ensureManagedWorktree({
       repositoryPath: input.repositoryPath,
       container: input.container,
-      identity: worktreeIdentity(input.taskSegment, input.roleName),
+      identity: {
+        directory: input.directory,
+        branch: worktreeIdentity(input.taskSegment, input.roleName).branch
+      },
       baseRef: input.baseRef
     });
   }
@@ -1094,6 +1107,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
   async ensureIntegrationWorktree(input: Readonly<{
     repositoryPath: string;
     container: string;
+    directory: string;
     taskSegment: string;
     integrationId: string;
     baseRef: string;
@@ -1101,7 +1115,10 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     return this.#ensureManagedWorktree({
       repositoryPath: input.repositoryPath,
       container: input.container,
-      identity: integrationWorktreeIdentity(input.taskSegment, input.integrationId),
+      identity: {
+        directory: input.directory,
+        branch: integrationWorktreeIdentity(input.taskSegment, input.integrationId).branch
+      },
       baseRef: input.baseRef,
       allowRebase: true
     });
@@ -1157,6 +1174,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
   async removeWorktree(input: Readonly<{
     repositoryPath: string;
     container: string;
+    directory: string;
     taskSegment: string;
     roleName: string;
     deleteBranch?: boolean;
@@ -1164,19 +1182,19 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     const state = await this.inspectWorktree(input);
     if (state === "dirty") return state;
     const container = resolve(input.container);
-    const identity = worktreeIdentity(input.taskSegment, input.roleName);
-    const path = managedPath(container, identity.directory);
+    const branch = worktreeIdentity(input.taskSegment, input.roleName).branch;
+    const path = managedPath(container, input.directory);
     const project = await this.inspect(input.repositoryPath);
     if (state === "missing") {
       if (input.deleteBranch === true) {
-        await removeMissingWorktreeRegistration(project.root, path, identity.branch);
-        await deleteBranchIfPresent(project.root, identity.branch);
+        await removeMissingWorktreeRegistration(project.root, path, branch);
+        await deleteBranchIfPresent(project.root, branch);
       }
       return state;
     }
     await git(["-C", project.root, "worktree", "remove", "--", path]);
     if (input.deleteBranch === true) {
-      await deleteBranchIfPresent(project.root, identity.branch);
+      await deleteBranchIfPresent(project.root, branch);
     }
     return "removed";
   }
@@ -1208,10 +1226,10 @@ export class NodeGitWorkspace implements GitWorkspacePort {
   }
 
   async removeTaskClone(input: Readonly<{
-    path: string; container: string; taskSegment: string; branch: string;
+    path: string; container: string; directory: string; taskSegment: string; branch: string;
   }>): Promise<GitWorkspaceRemoval> {
     const identity = worktreeIdentity(input.taskSegment, "main");
-    const expected = managedPath(resolve(input.container), identity.directory);
+    const expected = managedPath(resolve(input.container), input.directory);
     if (resolve(input.path) !== expected || input.branch !== identity.branch) {
       throw new Error("Task clone does not match its recorded managed identity.");
     }
@@ -1240,6 +1258,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
   async inspectRecordedWorktree(input: Readonly<{
     repositoryPath: string;
     container: string;
+    directory: string;
     path: string;
     branch: string;
     taskSegment: string;
@@ -1252,6 +1271,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
   async removeRecordedWorktree(input: Readonly<{
     repositoryPath: string;
     container: string;
+    directory: string;
     path: string;
     branch: string;
     retainedRef: string;
@@ -1295,14 +1315,12 @@ export class NodeGitWorkspace implements GitWorkspacePort {
   async inspectWorktree(input: Readonly<{
     repositoryPath: string;
     container: string;
+    directory: string;
     taskSegment: string;
     roleName: string;
   }>): Promise<GitWorkspaceState> {
     const container = resolve(input.container);
-    const path = managedPath(
-      container,
-      worktreeIdentity(input.taskSegment, input.roleName).directory
-    );
+    const path = managedPath(container, input.directory);
     const kind = await pathKind(path);
     if (kind === undefined) return "missing";
     if (kind === "symlink") throw new Error("Managed worktree path must not be a symbolic link.");
@@ -1317,6 +1335,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
   async removeIntegrationWorktree(input: Readonly<{
     repositoryPath: string;
     container: string;
+    directory: string;
     taskSegment: string;
     integrationId: string;
     discardChanges?: boolean;
@@ -1324,7 +1343,10 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     return this.#removeManagedWorktree({
       repositoryPath: input.repositoryPath,
       container: input.container,
-      identity: integrationWorktreeIdentity(input.taskSegment, input.integrationId),
+      identity: {
+        directory: input.directory,
+        branch: integrationWorktreeIdentity(input.taskSegment, input.integrationId).branch
+      },
       discardChanges: input.discardChanges
     });
   }
@@ -1493,15 +1515,16 @@ type ExactRecordedWorktree = Readonly<{
 async function inspectExactRecordedWorktree(input: Readonly<{
   repositoryPath: string;
   container: string;
+  directory: string;
   path: string;
   branch: string;
   taskSegment: string;
   roleName: string;
 }>): Promise<ExactRecordedWorktree | undefined> {
   const container = resolve(input.container);
-  const identity = worktreeIdentity(input.taskSegment, input.roleName);
-  const expectedPath = managedPath(container, identity.directory);
-  if (resolve(input.path) !== expectedPath || input.branch !== identity.branch) {
+  const expectedBranch = worktreeIdentity(input.taskSegment, input.roleName).branch;
+  const expectedPath = managedPath(container, input.directory);
+  if (resolve(input.path) !== expectedPath || input.branch !== expectedBranch) {
     throw new Error("Recorded managed worktree identity is invalid.");
   }
   const kind = await pathKind(expectedPath);
@@ -1572,6 +1595,7 @@ async function recordedWorktreeWithoutRepository(
   input: Readonly<{
     repositoryPath: string;
     container: string;
+    directory: string;
     path: string;
     branch: string;
     taskSegment: string;
@@ -1580,9 +1604,9 @@ async function recordedWorktreeWithoutRepository(
   cause: unknown
 ): Promise<GitWorkspaceRemoval> {
   if (await pathKind(input.repositoryPath) !== undefined) throw cause;
-  const identity = worktreeIdentity(input.taskSegment, input.roleName);
-  const expectedPath = managedPath(resolve(input.container), identity.directory);
-  if (resolve(input.path) !== expectedPath || input.branch !== identity.branch) {
+  const branch = worktreeIdentity(input.taskSegment, input.roleName).branch;
+  const expectedPath = managedPath(resolve(input.container), input.directory);
+  if (resolve(input.path) !== expectedPath || input.branch !== branch) {
     throw cause;
   }
   if (await pathKind(expectedPath) === undefined) return "missing";

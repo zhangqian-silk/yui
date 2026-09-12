@@ -1,6 +1,4 @@
 import {
-  basename,
-  dirname,
   join
 } from "node:path";
 import {
@@ -32,6 +30,15 @@ import { validateRun } from "../../agentRun/agentRun.js";
 import { validateDurableJob } from "../../job/durableJob.js";
 import { validateWorkItem } from "../../workItem/workItem.js";
 import { SqliteTaskStore } from "../sqliteStore.js";
+import { storageBackupRoot } from "../homeLayout.js";
+import {
+  preflightUnifyHomeLayout,
+  type UnifyHomePreflightBlocker
+} from "../migrations/unifyHomeLayout.js";
+import {
+  preflightCollapseWorktreeLayout,
+  type CollapseWorktreePreflightBlocker
+} from "../migrations/collapseWorktreeLayout.js";
 import {
   migrateSqliteSchema,
   storageMigrationPlan,
@@ -79,7 +86,15 @@ export type StorageUpgradeReport = Readonly<{
   backupPath?: string;
 }>;
 
-export type UpgradeBlockerStage = "uninitialized" | "unsupported" | "corruption" | "host-compatibility";
+export type UpgradeBlockerStage = "uninitialized" | "unsupported" | "corruption" | "in-flight" | "host-compatibility";
+
+/**
+ * A structured pre-migration blocker surfaced through the `blocked` result. Its
+ * JSON shape is compatible with the updater's blocker contract (`reason` is the
+ * field the updater preserves); `detail` carries the same operator-facing text
+ * the migration would throw, and is also folded into the human `message`.
+ */
+export type UpgradePreflightBlocker = Readonly<{ reason: string; detail: string }>;
 
 export type UpgradeResult = Readonly<
   | {
@@ -109,6 +124,7 @@ export type UpgradeResult = Readonly<
       stage: UpgradeBlockerStage;
       message: string;
       action: string;
+      blockers?: readonly UpgradePreflightBlocker[];
       classification: HomeClassification;
       sceneUnchanged: true;
       hosts?: readonly AgentHostUpgradeBlocker[];
@@ -233,6 +249,22 @@ export async function runStorageUpgrade(options: RunStorageUpgradeOptions): Prom
     );
   }
   const classification = migratableClassification(state.currentVersion);
+
+  // Genuine pre-migration safety check, shared by ALL migrating modes. The
+  // unify-home data migration (18->19) physically relocates on-disk trees and
+  // rewrites live launch pointers, so before any mode proceeds we run its READ-
+  // ONLY preflight and refuse up front on the same conditions the migration would
+  // throw on inside the apply transaction: a queued/running Job bound under a
+  // relocating root, or a conflicting relocation target. The migration is applied
+  // offline (after the operator has stopped this Home's writers), so the preflight
+  // does not scan for live processes. Surfacing these here — before the Controller
+  // is stopped or a backup is taken — is what makes `--dry-run` and the updater's
+  // `--update-preflight` a genuine readiness signal rather than a mere list of
+  // schema steps, while the in-transaction checks remain the authoritative guard
+  // against anything that starts after this point.
+  const migrationBlocked = preflightMigrationBlockers(options.home, plan, classification);
+  if (migrationBlocked !== null) return migrationBlocked;
+
   if (options.mode === "update-preflight") {
     return {
       outcome: "update-preflight",
@@ -389,7 +421,10 @@ async function createDatabaseBackup(
 ): Promise<string> {
   const source = join(home, CURRENT_DATABASE_FILENAME);
   if (!existsSync(source)) throw new Error("The authoritative yui.db is missing.");
-  const backupDirectory = join(dirname(home), `${basename(home)}-backups`);
+  // Backups live inside Home so a single canonical root contains every
+  // self-managed artifact; the upgrade fence still protects them from the
+  // live database because they are a distinct partition from yui.db.
+  const backupDirectory = storageBackupRoot(home);
   mkdirSync(backupDirectory, { recursive: true, mode: 0o700 });
   const timestamp = now.toISOString().replaceAll(":", "-");
   const backupPath = join(
@@ -493,6 +528,77 @@ function blocked(
     stage,
     message,
     action,
+    classification,
+    sceneUnchanged: true
+  };
+}
+
+/**
+ * Run each path-relocating data migration's READ-ONLY preflight against the
+ * current (pre-upgrade) database and, when any finds a blocker, return a
+ * `blocked` result the caller surfaces before touching the Controller or the
+ * Home. Returns `null` when the plan carries no path-relocating data migration,
+ * or when every preflight is clear.
+ *
+ * Both the 18->19 unify and the 19->20 collapse migrations physically relocate
+ * managed worktrees and share the same blocker shape (in-flight Job, conflicting
+ * relocation target). When a Home is upgraded across both in one run, their
+ * blockers are aggregated so the operator sees every readiness problem at once.
+ *
+ * The database is opened read-only so the checks cannot mutate the authoritative
+ * store, and the handle is always closed. An unexpected failure to evaluate a
+ * preflight is itself a fail-closed blocker: we must not advance to an
+ * irreversible migration on an unverifiable readiness signal.
+ */
+function preflightMigrationBlockers(
+  home: string,
+  plan: readonly StorageMigrationStep[],
+  classification: HomeClassification
+): Extract<UpgradeResult, { outcome: "blocked" }> | null {
+  const relocatesUnify = plan.some((step) => step.name === "unify-home-layout");
+  const relocatesCollapse = plan.some((step) => step.name === "collapse-worktree-layout");
+  // Only meaningful when the plan actually includes a path-relocating migration.
+  if (!relocatesUnify && !relocatesCollapse) return null;
+
+  type MigrationBlocker = UnifyHomePreflightBlocker | CollapseWorktreePreflightBlocker;
+  let blockers: MigrationBlocker[];
+  try {
+    const database = new Database(join(home, CURRENT_DATABASE_FILENAME), {
+      readonly: true,
+      fileMustExist: true
+    });
+    try {
+      blockers = [];
+      if (relocatesUnify) blockers.push(...preflightUnifyHomeLayout(database).blockers);
+      if (relocatesCollapse) blockers.push(...preflightCollapseWorktreeLayout(database).blockers);
+    } finally {
+      database.close();
+    }
+  } catch (error) {
+    return {
+      ...blocked(
+        classification,
+        "in-flight",
+        `The storage migration readiness check could not be completed: ${messageOf(error)}`,
+        "Resolve the reported problem, confirm no Job is queued or running against a managed "
+          + "workspace, then rerun the upgrade."
+      )
+    };
+  }
+  if (blockers.length === 0) return null;
+
+  return {
+    outcome: "blocked",
+    stage: "in-flight",
+    message:
+      "Refusing to migrate: the Home is not safe to relocate under the current layout yet. "
+      + blockers.map((entry) => entry.detail).join("; ") + ".",
+    action:
+      "Resolve the reported condition(s) — let a queued/running Job finish or cancel it, and "
+      + "clear any conflicting relocation target — then rerun the upgrade. The migration is applied "
+      + "offline, so first confirm the Controller and any execution writers for this Home are "
+      + "stopped. The authoritative Home is unchanged.",
+    blockers: blockers.map((entry) => ({ reason: entry.reason, detail: entry.detail })),
     classification,
     sceneUnchanged: true
   };
