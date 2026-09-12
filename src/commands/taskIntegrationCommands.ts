@@ -8,7 +8,6 @@ import {
   createIntegrationAttempt,
   recordResolutionDecision,
   supersedeIntegration,
-  updateIntegrationAttempt,
   type IntegrationAttempt,
   type WorkItemIntegrationStrategy
 } from "../integration/integrationAttempt.js";
@@ -312,55 +311,18 @@ async function abortIntegration(
   const integration = requireIntegration(store, parsed.positionals[0], options.environment);
   requireActiveIntegrationTask(store, integration);
   taskLocalActor(store, options.environment, integration.taskId);
-  if (integration.status !== "running" && integration.status !== "blocked" && integration.status !== "conflicted") {
-    throw usageError(
-      `Integration cannot be aborted from ${integration.status}: ${integration.id}.`
-    );
-  }
   const reason = parsed.one.get("--reason");
   if (reason === undefined) throw usageError(usage);
-  const ownedJobs = store.listDurableJobs(integration.taskId).filter(job =>
-    job.owner.kind === "integration-attempt" && job.owner.integrationAttemptId === integration.id);
-  if (integration.jobId !== undefined && !ownedJobs.some(job => job.id === integration.jobId)) {
-    throw usageError("Integration Job binding does not match its owner; inspect the exact records before abort.");
-  }
-  if (options.jobPort !== undefined) {
-    for (const job of ownedJobs) {
-      if (job.status === "queued" || job.status === "running") {
-        await options.jobPort.cancelJob(integration.taskId, job.id);
-      }
-    }
-  }
-  return store.transaction((tx) => {
-    // Re-read inside the transaction: a concurrent `continue` can advance the
-    // Attempt to validating (and then commit the target) after the initial
-    // read.  Aborting a validating or committed Attempt would leave the
-    // target advanced while the Attempt is failed.
-    const current = tx.getIntegrationAttempt(integration.taskId, integration.id);
-    if (current === null) {
-      throw usageError(
-        `Integration Attempt not found: ${integration.taskId}/${integration.id}.`
-      );
-    }
-    if (current.status !== "running" && current.status !== "blocked" && current.status !== "conflicted") {
-      throw usageError(
-        `Integration cannot be aborted from ${current.status}: ${current.id}.`
-      );
-    }
-    taskLocalActor(tx, options.environment, current.taskId);
-    const aborted = updateIntegrationAttempt(current, {
-      status: "failed",
-      checks: [
-        ...(current.checks ?? []),
-        { name: "aborted", outcome: "failed", details: reason }
-      ]
-    }, now);
-    tx.saveIntegrationAttempt(aborted.taskId, aborted);
-    return {
-      output: `Aborted Integration ${aborted.id}; candidate, workspace and history are preserved. This is not Git abort or proof of Job quiescence. Choose an authorized replacement delivery path.\n`,
-      data: { integration: aborted }
-    };
-  });
+  const settled = await new GitIntegrationService(
+    home, store, undefined, () => now, options.environment, undefined, options.jobPort
+  ).abort(integration.taskId, integration.id, reason,
+    (tx, taskId) => taskLocalActor(tx, options.environment, taskId));
+  return {
+    output: settled.status === "committed"
+      ? `Integration ${settled.id} had already advanced its target; recorded committed, not aborted.\n`
+      : `Aborted Integration ${settled.id}; candidate, workspace and history are preserved. This is not Git abort or proof of Job quiescence. Choose an authorized replacement delivery path.\n`,
+    data: { integration: settled }
+  };
 }
 function supersedeIntegrationCommand(
   args: readonly string[],

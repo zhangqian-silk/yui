@@ -20,7 +20,7 @@ import { promisify } from "node:util";
 import { selectEnvironment } from "../agent/launchEnvironment.js";
 import { controllerSocketPath } from "../core/controllerEndpoint.js";
 import { durableJobIdempotencyKey, type DurableJob, type DurableJobStep } from "../job/durableJob.js";
-import { applyIntegrationSource, assertIntegrationCandidate } from "./integrationSourceApplication.js";
+import { applyIntegrationSource, assertIntegrationCandidate, assertRecordedSourceCandidate } from "./integrationSourceApplication.js";
 import {
   planBootstrapJobSteps,
   planL2JobSteps
@@ -174,7 +174,7 @@ export class GitIntegrationService {
     taskId: string,
     integrationId: string
   ): Promise<IntegrationResult> {
-    const initial = requireIntegration(this.store, taskId, integrationId);
+    let initial = requireIntegration(this.store, taskId, integrationId);
     if (!["running", "conflicted", "blocked", "validating"].includes(initial.status)) {
       throw new Error(`Integration cannot continue from ${initial.status}.`);
     }
@@ -185,6 +185,14 @@ export class GitIntegrationService {
     // fence is held across every Git effect and released only on exit.
     const release = acquireProjectMaintenanceLocks(this.home, [initial.projectId]);
     try {
+    // A concurrent abort may have settled the attempt while this caller was
+    // acquiring the same Project fence. Never execute a pre-fence snapshot.
+    const currentUnderFence = requireIntegration(this.store, taskId, integrationId);
+    if (currentUnderFence.projectId !== initial.projectId
+      || !["running", "conflicted", "blocked", "validating"].includes(currentUnderFence.status)) {
+      throw new Error("Integration changed before execution admission; read its current record.");
+    }
+    initial = currentUnderFence;
     const task = this.store.getTask(initial.taskId);
     if (task === null || !task.projectBindings.some(
       ({ projectId }) => projectId === initial.projectId
@@ -209,7 +217,6 @@ export class GitIntegrationService {
     // Issue 08: a Project with a VerificationPlan gates through its plan
     // (bootstrap + L2) and reuses exact-SHA artifacts; an unconfigured
     // Project keeps the existing explicit check path unchanged.
-    const gate = resolveVerificationGate(project, this.environment);
     let prepared: Readonly<{ path: string; branch: string; baseCommit: string }>;
     let workspace: IntegrationWorkspace;
     let managedWorkspace: ManagedWorkspace;
@@ -258,8 +265,9 @@ export class GitIntegrationService {
       return this.#fail(initial, error, "integration-preparation");
     }
     if (initial.status === "validating") {
-      return this.#recoverValidating(initial, workspace, taskRepository, gate);
+      return await this.#recoverValidating(initial, workspace, managedWorkspace, taskRepository);
     }
+    const gate = resolveVerificationGate(project, this.environment);
     let current = initial;
 
     // A check DurableJob is the source of truth for a running attempt that
@@ -303,8 +311,11 @@ export class GitIntegrationService {
           taskRepository
         );
       }
+      const spec = await this.#checkSpecification(current, managedWorkspace, gate);
+      current = updateIntegrationAttempt(current, { checkInputDigest: spec.inputDigest }, this.now());
+      this.store.saveIntegrationAttempt(task.id, current);
       const checkedHead = await gitLine(["-C", prepared.path, "rev-parse", "HEAD^{commit}"]);
-      const checkResults = await this.#runChecks(current, managedWorkspace, prepared.path);
+      const checkResults = await this.#runChecks(current, managedWorkspace, prepared.path, spec.environment);
       await assertIntegrationCandidate(prepared.path, checkedHead, workspace.branch);
       if (checkResults.some((check) => check.outcome === "failed")) {
         current = updateIntegrationAttempt(current, {
@@ -361,6 +372,92 @@ export class GitIntegrationService {
     } finally {
       release();
     }
+  }
+
+  /** Abandon under the same fence as Git/CAS, not just a status whitelist.
+   * A delivered validating candidate is recorded as committed; a provably
+   * unadvanced one may be abandoned without requiring obsolete check settings. */
+  async abort(
+    taskId: string,
+    integrationId: string,
+    reason: string,
+    authorize: (store: TaskStore, taskId: string) => unknown
+  ): Promise<IntegrationAttempt> {
+    const initial = requireIntegration(this.store, taskId, integrationId);
+    const release = acquireProjectMaintenanceLocks(this.home, [initial.projectId]);
+    try {
+      const attempt = requireIntegration(this.store, taskId, integrationId);
+      authorize(this.store, taskId);
+      const task = this.store.getTask(taskId);
+      if (task?.status !== "active" || attempt.projectId !== initial.projectId
+        || !task.projectBindings.some(binding => binding.projectId === attempt.projectId)) {
+        throw new Error("Integration Task/Project is not available for abort.");
+      }
+      if (!["running", "blocked", "conflicted", "validating"].includes(attempt.status)) {
+        throw new Error(`Integration cannot be aborted from ${attempt.status}: ${attempt.id}.`);
+      }
+      if (reason.trim() === "") throw new Error("Integration abort reason is required.");
+      const jobs = this.store.listDurableJobs(taskId).filter(job =>
+        job.owner.kind === "integration-attempt" && job.owner.integrationAttemptId === integrationId);
+      const workspace = this.store.getIntegrationWorkspace(taskId, integrationId);
+      if (jobs.some(job => job.taskId !== taskId || job.projectId !== attempt.projectId
+        || job.workspace !== workspace?.root)) {
+        throw new Error("Integration Job Project/workspace identity changed; inspect before abort.");
+      }
+      if (attempt.jobId !== undefined && !jobs.some(job => job.id === attempt.jobId)) {
+        throw new Error("Integration Job binding does not match its owner; inspect before abort.");
+      }
+      if (attempt.status === "validating") {
+        if (attempt.candidateCommit === undefined || attempt.checks === undefined) {
+          throw new Error("Validating Integration has no candidate/check evidence; inspect before settlement.");
+        }
+        const main = this.store.getTaskWorkspace(taskId);
+        const mainEntry = main?.entries.find(entry =>
+          entry.projectId === attempt.projectId && entry.access === "write");
+        const workspaceEntry = workspace?.entries.find(entry =>
+          entry.projectId === attempt.projectId && entry.access === "write");
+        const project = this.store.getProject(attempt.projectId);
+        if (main?.owner.type !== "task" || mainEntry === undefined || workspace === null
+          || project === null || project.status !== "active"
+          || workspace.owner.type !== "integration-attempt" || workspace.owner.taskId !== taskId
+          || workspace.owner.integrationAttemptId !== integrationId
+          || workspaceEntry?.path !== workspace.root) {
+          throw new Error("Integration target/workspace ownership is unavailable for settlement.");
+        }
+        if (jobs.some(job => ["queued", "running", "unknown-needs-attention"].includes(job.status))) {
+          throw new Error("Validating Integration still has an active or unproven Job; settle that exact Job first.");
+        }
+        if (attempt.jobId !== undefined) {
+          assertCheckJobIdentity(attempt, jobs.find(job => job.id === attempt.jobId)!, workspace.root);
+        }
+        const target = await resolveRef(mainEntry.path, attempt.targetRef);
+        if (target === attempt.candidateCommit && target !== attempt.beforeCommit) {
+          await assertTargetReadyForChecks(mainEntry.path, attempt.targetRef, target);
+          return this.#recordCommitted(attempt, authorize);
+        }
+        if (target !== attempt.beforeCommit) {
+          throw new Error(`Target moved to ${target}; cannot prove this Integration is unadvanced. Inspect before settlement.`);
+        }
+      }
+      for (const job of jobs) {
+        if (this.jobPort !== undefined && (job.status === "queued" || job.status === "running")) {
+          await this.jobPort.cancelJob(taskId, job.id);
+        }
+      }
+      return this.store.transaction(tx => {
+        authorize(tx, taskId);
+        const current = requireIntegration(tx, taskId, integrationId);
+        if (JSON.stringify(current) !== JSON.stringify(attempt)) {
+          throw new Error("Integration changed during abort; inspect its current record.");
+        }
+        const aborted = updateIntegrationAttempt(current, {
+          status: "failed",
+          checks: [...(current.checks ?? []), { name: "aborted", outcome: "failed", details: reason }]
+        }, this.now());
+        tx.saveIntegrationAttempt(taskId, aborted);
+        return aborted;
+      });
+    } finally { release(); }
   }
 
   async cleanup(integration: IntegrationAttempt): Promise<GitWorkspaceRemoval> {
@@ -440,25 +537,8 @@ export class GitIntegrationService {
     }
     await assertIntegrationCandidate(path, attempt.candidateCommit, workspace.branch);
     await assertTargetReadyForChecks(repositoryPath, attempt.targetRef, attempt.beforeCommit);
-    const runtime = this.#runtimePreparation(attempt, managedWorkspace);
-    const head = await gitLine(["-C", path, "rev-parse", "HEAD^{commit}"]);
-    const steps: DurableJobStep[] = gate === undefined
-      ? attempt.checkCommands.map((command, index) => ({
-          name: `check-${index + 1}`,
-          command,
-          timeoutMs: 30 * 60_000
-        }))
-      : [
-          ...planBootstrapJobSteps(gate.plan).map((step) => ({
-            ...step,
-            timeoutMs: 30 * 60_000
-          })),
-          ...planL2JobSteps(gate.plan).map((step) => ({
-            ...step,
-            timeoutMs: 30 * 60_000
-          }))
-        ];
-    const releaseId = integrationRuntimeReleaseIdentity(this.home);
+    const { runtime, head, steps, environment, inputDigest, releaseId } =
+      await this.#checkSpecification(attempt, managedWorkspace, gate);
     const ownedJobs = this.store.listDurableJobs(attempt.taskId).filter(job =>
       job.owner.kind === "integration-attempt" && job.owner.integrationAttemptId === attempt.id);
     if (gate === undefined && releaseId !== null && attempt.checkInputDigest === undefined
@@ -479,7 +559,7 @@ export class GitIntegrationService {
       });
       if (reusable !== null) {
         return this.#finalizeGateSuccess(
-          attempt,
+          updateIntegrationAttempt(attempt, { checkInputDigest: inputDigest }, this.now()),
           workspace,
           repositoryPath,
           head,
@@ -487,16 +567,6 @@ export class GitIntegrationService {
         );
       }
     }
-    this.runtimeIsolation.activate(runtime);
-    const baseEnvironment = await integrationCheckEnvironment(this.environment, runtime);
-    const environment = Object.freeze({
-      ...baseEnvironment,
-      ...(releaseId === null ? {} : { [INTEGRATION_RUNTIME_RELEASE_ENV]: releaseId })
-    });
-    const inputDigest = durableJobIdempotencyKey({
-      owner: { kind: "integration-attempt", integrationAttemptId: attempt.id },
-      projectId: attempt.projectId, head, workspace: path, env: environment, steps
-    });
     if (attempt.checkInputDigest !== undefined && attempt.checkInputDigest !== inputDigest) {
       throw new Error("Integration check conditions changed since admission; inspect the original Job, then abort or start a new attempt.");
     }
@@ -514,6 +584,8 @@ export class GitIntegrationService {
     }, this.now());
     this.store.saveIntegrationAttempt(attempt.taskId, persisted);
     // All domain admission and durable candidate identity precede Job effects.
+    this.runtimeIsolation.activate(runtime);
+    await prepareIntegrationRuntimeHome(runtime);
     const job = await this.jobPort!.startCheckJob({
       taskId: attempt.taskId,
       integrationId: attempt.id,
@@ -620,13 +692,14 @@ export class GitIntegrationService {
   async #runChecks(
     attempt: IntegrationAttempt,
     workspace: ManagedWorkspace,
-    path: string
+    path: string,
+    environment: Readonly<Record<string, string>>
   ): Promise<CheckResult[]> {    if (attempt.checkCommands.length === 0) return [];
     const runtime = this.#runtimePreparation(attempt, workspace);
     this.runtimeIsolation.activate(runtime);
     let cleanupReason: "completion" | "failure" = "failure";
     try {
-      const environment = await integrationCheckEnvironment(this.environment, runtime);
+      await prepareIntegrationRuntimeHome(runtime);
       const checks = await runChecks(
         path,
         attempt.checkCommands,
@@ -665,7 +738,9 @@ export class GitIntegrationService {
     repositoryPath: string,
     gate: ResolvedVerificationGate
   ): Promise<IntegrationResult> {
+    const spec = await this.#checkSpecification(attempt, managedWorkspace, gate);
     attempt = updateIntegrationAttempt(attempt, {
+      checkInputDigest: spec.inputDigest,
       gatePlanDigest: gate.planDigest, gateToolchainDigest: gate.toolchainDigest
     }, this.now());
     this.store.saveIntegrationAttempt(attempt.taskId, attempt);
@@ -726,7 +801,7 @@ export class GitIntegrationService {
     this.runtimeIsolation.activate(runtime);
     let cleanupReason: "completion" | "failure" = "failure";
     try {
-      const environment = await integrationCheckEnvironment(this.environment, runtime);
+      await prepareIntegrationRuntimeHome(runtime);
       const steps = [
         ...planBootstrapJobSteps(gate.plan),
         ...planL2JobSteps(gate.plan)
@@ -734,7 +809,7 @@ export class GitIntegrationService {
       const outcomes = await runGateStepsInProcess(
         path,
         steps,
-        environment,
+        spec.environment,
         integrationCheckDirectory(this.home, attempt.taskId, attempt.id),
         candidateCommit
       );
@@ -807,11 +882,41 @@ export class GitIntegrationService {
     });
   }
 
+  /** The same specification is compared before first execution, bound-Job
+   * consumption and an unadvanced validating CAS. Computing it is read-only:
+   * a changed condition must not recreate a completed runtime or start a Job. */
+  async #checkSpecification(
+    attempt: IntegrationAttempt,
+    managedWorkspace: ManagedWorkspace,
+    gate?: ResolvedVerificationGate
+  ) {
+    const runtime = this.#runtimePreparation(attempt, managedWorkspace);
+    const head = attempt.candidateCommit;
+    if (head === undefined) throw new Error("Integration check specification requires a candidate.");
+    const steps: DurableJobStep[] = gate === undefined
+      ? attempt.checkCommands.map((command, index) => ({
+          name: `check-${index + 1}`, command, timeoutMs: 30 * 60_000
+        }))
+      : [...planBootstrapJobSteps(gate.plan), ...planL2JobSteps(gate.plan)]
+        .map(step => ({ ...step, timeoutMs: 30 * 60_000 }));
+    const releaseId = integrationRuntimeReleaseIdentity(this.home);
+    const environment = Object.freeze({
+      ...integrationCheckEnvironment(this.environment, runtime),
+      ...(releaseId === null ? {} : { [INTEGRATION_RUNTIME_RELEASE_ENV]: releaseId })
+    });
+    const inputDigest = durableJobIdempotencyKey({
+      owner: { kind: "integration-attempt", integrationAttemptId: attempt.id },
+      projectId: attempt.projectId, head, workspace: managedWorkspace.root,
+      env: environment, steps
+    });
+    return { runtime, head, steps, environment, inputDigest, releaseId };
+  }
+
   async #recoverValidating(
     attempt: IntegrationAttempt,
     workspace: IntegrationWorkspace,
-    repositoryPath: string,
-    gate?: ResolvedVerificationGate
+    managedWorkspace: ManagedWorkspace,
+    repositoryPath: string
   ): Promise<IntegrationResult> {
     if (attempt.candidateCommit === undefined || attempt.checks === undefined) {
       return this.#fail(
@@ -821,29 +926,32 @@ export class GitIntegrationService {
         workspace
       );
     }
-    await assertIntegrationCandidate(workspace.path, attempt.candidateCommit, workspace.branch);
-    if (gate?.planDigest !== attempt.gatePlanDigest || gate?.toolchainDigest !== attempt.gateToolchainDigest) {
-      throw new Error("Integration verification plan/toolchain changed after validation; inspect the frozen evidence before delivery.");
-    }
     const target = await resolveRef(repositoryPath, attempt.targetRef);
-    if (target === attempt.beforeCommit) {
-      try {
-        await advanceTargetRef(
-          repositoryPath,
-          attempt.targetRef,
-          attempt.candidateCommit,
-          attempt.beforeCommit
-        );
-      } catch (error) {
-        return this.#fail(attempt, error, "integration-recovery", workspace);
+    // An already-applied CAS is a delivery fact, not a request to validate
+    // again under today's settings. No-op candidates still need current checks.
+    if (target !== attempt.candidateCommit || target === attempt.beforeCommit) {
+      if (target !== attempt.beforeCommit) {
+        throw new Error(`Target moved to ${target}; Integration CAS outcome needs inspection.`);
       }
-    } else if (target !== attempt.candidateCommit) {
-      return this.#fail(
-        attempt,
-        new Error(`Target moved to ${target}; expected ${attempt.beforeCommit}.`),
-        "integration-recovery",
-        workspace
-      );
+      await assertIntegrationCandidate(workspace.path, attempt.candidateCommit, workspace.branch);
+      assertRecordedSourceCandidate(attempt, workspace);
+      const project = this.store.getProject(attempt.projectId);
+      if (project === null) throw new Error("Integration Project is unavailable for check validation.");
+      const gate = resolveVerificationGate(project, this.environment);
+      const spec = await this.#checkSpecification(attempt, managedWorkspace, gate);
+      if (attempt.checkInputDigest !== spec.inputDigest
+        || gate?.planDigest !== attempt.gatePlanDigest
+        || gate?.toolchainDigest !== attempt.gateToolchainDigest) {
+        throw new Error("Integration check conditions changed after validation; preserve the evidence and abort or use a new attempt.");
+      }
+      if (attempt.jobId !== undefined) {
+        const job = this.store.getDurableJob(attempt.taskId, attempt.jobId);
+        if (job === null || job.status !== "succeeded") {
+          throw new Error("Validating Integration has no successful bound Job evidence.");
+        }
+        assertCheckJobIdentity(attempt, job, workspace.path);
+      }
+      await advanceTargetRef(repositoryPath, attempt.targetRef, attempt.candidateCommit, attempt.beforeCommit);
     }
     await assertTargetReadyForChecks(
       repositoryPath,
@@ -854,12 +962,16 @@ export class GitIntegrationService {
     return this.#terminalResult("committed", committed, workspace);
   }
 
-  #recordCommitted(attempt: IntegrationAttempt): IntegrationAttempt {
+  #recordCommitted(
+    attempt: IntegrationAttempt,
+    authorize?: (store: TaskStore, taskId: string) => unknown
+  ): IntegrationAttempt {
     if (attempt.candidateCommit === undefined) {
       throw new Error(`Committed Integration has no candidate commit: ${attempt.id}.`);
     }
     const candidateCommit = attempt.candidateCommit;
     return this.store.transaction((tx) => {
+      authorize?.(tx, attempt.taskId);
       const task = tx.getTask(attempt.taskId);
       if (task === null) throw new Error(`Task not found: ${attempt.taskId}.`);
       const binding = task.projectBindings.find(
@@ -1161,10 +1273,7 @@ async function spawnCheck(
   return { ...completion, timedOut };
 }
 
-async function integrationCheckEnvironment(
-  source: NodeJS.ProcessEnv,
-  runtime: TaskRuntimeIsolationPreparation
-): Promise<Readonly<Record<string, string>>> {
+async function prepareIntegrationRuntimeHome(runtime: TaskRuntimeIsolationPreparation): Promise<void> {
   const home = join(runtime.descriptor.roots.data, "home");
   try {
     await mkdir(home, { mode: 0o700 });
@@ -1175,6 +1284,13 @@ async function integrationCheckEnvironment(
   if (!homeMetadata.isDirectory() || homeMetadata.isSymbolicLink()) {
     throw new Error("Integration runtime HOME is not an owned directory.");
   }
+}
+
+function integrationCheckEnvironment(
+  source: NodeJS.ProcessEnv,
+  runtime: TaskRuntimeIsolationPreparation
+): Readonly<Record<string, string>> {
+  const home = join(runtime.descriptor.roots.data, "home");
   return Object.freeze({
     ...selectEnvironment(source, INTEGRATION_OPERATIONAL_ENVIRONMENT_NAMES),
     PATH: source.PATH || `${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`,

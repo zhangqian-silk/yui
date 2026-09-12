@@ -1181,8 +1181,9 @@ UPDATE review_rounds SET payload = json_set(payload, '$.executionGroup.lanes', j
     name: "integration-conflict-continuation",
     introducedIn: "0.16.0",
     // Widen Integration status with conflicted; declare optional sourceProgress
-    // (Git cursor/reflog action) and checkInputDigest. Missing historical
-    // evidence stays missing. Frozen Context and events remain unchanged.
+    // (Git cursor/reflog action) and checkInputDigest. Exact old bound FF Job
+    // receipts supply these facts; unprovable history remains unchanged.
+    // Frozen Context and events are never rewritten.
     sql: "SELECT 1; -- Integration Git progress and exact check admission",
     migrateData: migrateIntegrationContinuation
   }

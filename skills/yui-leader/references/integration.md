@@ -69,6 +69,13 @@ logs and successful evidence, then formally `integration abort --reason ...`
 the same ID forever or repairing a shared installation before any delivery.
 Choose a new Integration or another already-authorized delivery path.
 
+For `validating`, `abort` checks the exact target and Jobs under the same Git
+fence as `continue`. An unadvanced target can be abandoned despite changed
+check conditions. If CAS already advanced the target, the action records
+`committed` instead of pretending delivery was aborted. Read the returned
+outcome. A concurrent operation, unknown Job, or ambiguous target requires
+inspection, not a forced status change or rollback of current Project policy.
+
 Formal abort preserves history and workspaces. It is not Git abort, branch
 deletion, target advancement, or proof that a Job/process has stopped.
 Inspect all Jobs owned by the exact attempt, including an unbound Job;

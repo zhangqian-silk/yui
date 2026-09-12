@@ -642,7 +642,7 @@ export const INTERACTION_POLICIES: readonly InteractionPolicy[] = Object.freeze(
       actionTarget: true,
       ...(command === "continue" ? { statuses: ["running", "conflicted", "blocked", "validating"] } : {}),
       ...(command === "resolve" ? { statuses: ["blocked", "conflicted"] } : {}),
-      ...(command === "abort" ? { statuses: ["running", "conflicted", "blocked"] } : {})
+      ...(command === "abort" ? { statuses: ["running", "conflicted", "blocked", "validating"] } : {})
     }],
     ...(command === "resolve"
         ? { trailingOptions: { "--option": "value" as const, "--rationale": "value" as const } }

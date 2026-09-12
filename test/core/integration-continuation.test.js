@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,10 +10,11 @@ import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { createProject } from "../../dist/repository/project.js";
 import { createTask, activateTask, bindTaskWorkspaceIdentity } from "../../dist/task/task.js";
 import { generateTaskWorkspaceIdentity } from "../../dist/repository/taskWorkspaceIdentity.js";
-import { createManagedWorkspace } from "../../dist/worktree/managedWorkspace.js";
+import { createManagedWorkspace, managedWorkspaceKey } from "../../dist/worktree/managedWorkspace.js";
 import { createIntegrationAttempt } from "../../dist/integration/integrationAttempt.js";
 import { GitIntegrationService } from "../../dist/integration/gitIntegrationService.js";
 import { createDurableJob, startDurableJob, completeDurableJob, durableJobIdempotencyKey } from "../../dist/job/durableJob.js";
+import { runTaskIntegrationCommand } from "../../dist/commands/taskIntegrationCommands.js";
 
 const now = new Date("2026-09-12T00:00:00Z");
 const git = (path, ...args) => execFileSync("git", ["-C", path, ...args], {
@@ -184,6 +185,47 @@ test("interrupted rebase receipt and successful unbound Job resume without repla
   assert.equal(f.starts(), 1);
 });
 
+test("validating settlement distinguishes new check conditions from an already-applied CAS", async t => {
+  for (const applied of [false, true]) await t.test(applied ? "applied" : "unadvanced", async t => {
+    const f = integrationFixture(t);
+    const ids = ["task-1", "integration-1"];
+    const conflict = await f.service().integrate(...ids);
+    f.resolve(conflict.workspace.path);
+    const checked = await f.service().integrate(...ids);
+    assert.equal(checked.status, "checks-running");
+    f.finishJob();
+    const original = readFileSync(join(f.repo, "file"));
+    const saveAttempt = f.store.saveIntegrationAttempt.bind(f.store);
+    const saveTask = f.store.saveTask.bind(f.store);
+    if (applied) {
+      f.store.saveTask = () => { throw new Error("completion write interrupted"); };
+    } else {
+      f.store.saveIntegrationAttempt = (taskId, attempt) => {
+        saveAttempt(taskId, attempt);
+        if (attempt.status === "validating") writeFileSync(join(f.repo, "file"), "concurrent target edit");
+      };
+    }
+    const pending = await f.service().integrate(...ids);
+    assert.equal(pending.attempt.status, "validating");
+    f.store.saveIntegrationAttempt = saveAttempt;
+    f.store.saveTask = saveTask;
+    if (!applied) writeFileSync(join(f.repo, "file"), original);
+    const changed = new GitIntegrationService(f.home, f.store, undefined, () => now,
+      { PATH: process.env.PATH, LANG: "new-check-environment" }, undefined, f.jobs);
+    if (!applied) {
+      await assert.rejects(changed.integrate(...ids), /check conditions changed/);
+      assert.equal(f.git("rev-parse", "HEAD"), f.before);
+    }
+    const settled = await runTaskIntegrationCommand(["abort", ids.join("/"), "--reason", "changed checks"],
+      f.store, f.home, { environment: {}, jobPort: f.jobs });
+    assert.equal(settled.data.integration.status, applied ? "committed" : "failed");
+    assert.equal(f.git("rev-parse", "HEAD"), applied ? checked.attempt.candidateCommit : f.before);
+    assert.equal(f.store.getDurableJob("task-1", "job-1").status, "succeeded");
+    assert.equal(f.starts(), 1);
+    assert.equal(f.store.getIntegrationWorkspace(...ids).root, conflict.workspace.path);
+  });
+});
+
 test("storage 20 classifies old Git conflicts without fabricating recovery evidence", () => {
   const db = new Database(":memory:");
   try {
@@ -206,13 +248,56 @@ test("storage 20 classifies old Git conflicts without fabricating recovery evide
         conflict: { affectedPaths: [], summary: "Manual WorkItem integration" } }
     ];
     for (const value of payloads) insert.run("task-1", value.id, "blocked", JSON.stringify(value), now.toISOString());
+    // Snapshot of the v19 record contract observed using the actual baseline
+    // service in the temporary compatibility regression: no new receipt or
+    // digest is seeded. This unit keeps the migration itself seconds-scale.
+    const ff = { ...createIntegrationAttempt({
+      ...base, id: "integration-4", checkCommands: ["true"],
+      source: { kind: "work-item", workItemId: "work-item-1", strategy: "ff",
+        startCommit: base.beforeCommit, resultCommit: "b".repeat(40) }
+    }, now), jobId: "job-1" };
+    const project = createProject("project-1", "app", "/fixture/stable", { stable: "main", development: "main" }, now);
+    const task = activateTask(createTask("task-1", "Legacy FF", now, {
+      projectBindings: [{ projectId: project.id, directory: "app", baseRef: "main",
+        baseCommit: ff.beforeCommit, currentCommit: ff.beforeCommit }]
+    }), now);
+    db.prepare("INSERT INTO tasks_catalog (task_id,status,lifecycle,is_active,created_at,updated_at) VALUES (?,?,?,?,?,?)")
+      .run(task.id, "active", "delivery", 1, task.createdAt, task.updatedAt);
+    db.prepare("INSERT INTO task_records (task_id,payload,updated_at) VALUES (?,?,?)").run(task.id, JSON.stringify(task), task.updatedAt);
+    db.prepare("INSERT INTO projects VALUES (?,?,?,?,?,?)").run(project.id, project.name, project.path, JSON.stringify(project), project.createdAt, project.updatedAt);
+    const main = createManagedWorkspace({
+      owner: { type: "task", taskId: task.id }, root: "/fixture/main",
+      entries: [{ projectId: project.id, directory: "app", access: "write", path: "/fixture/main",
+        branch: "main", baseRef: "main", baseCommit: ff.beforeCommit }]
+    }, now);
+    const workspace = createManagedWorkspace({
+      owner: { type: "integration-attempt", taskId: task.id, integrationAttemptId: ff.id },
+      root: "/fixture/integration",
+      entries: [{ ...main.entries[0], path: "/fixture/integration", branch: "integration" }]
+    }, now);
+    for (const w of [main, workspace]) db.prepare("INSERT INTO managed_workspaces VALUES (?,?,?,?,?,?,?,?)")
+      .run(w.owner.type, managedWorkspaceKey(w.owner), task.id, w.root, JSON.stringify(w), "active", w.createdAt, w.updatedAt);
+    const job = createDurableJob({
+      id: "job-1", taskId: task.id, owner: { kind: "integration-attempt", integrationAttemptId: ff.id },
+      projectId: project.id, head: ff.source.resultCommit, workspace: workspace.root,
+      env: {}, steps: [{ name: "check-1", command: "true", timeoutMs: 1800000 }], artifactsLocator: "artifacts/job-1"
+    }, now);
+    db.prepare("INSERT INTO durable_jobs (job_id,task_id,idempotency_key,status,payload,created_at,updated_at) VALUES (?,?,?,?,?,?,?)")
+      .run(job.id, task.id, job.idempotencyKey, job.status, JSON.stringify(job), job.createdAt, job.updatedAt);
+    insert.run(task.id, ff.id, ff.status, JSON.stringify(ff), ff.updatedAt);
     const result = migrateSqliteSchema(db, { mode: "apply" });
     assert.deepEqual(result.applied, [20]);
     const rows = db.prepare("SELECT status, payload FROM integration_attempts ORDER BY integration_id").all();
-    assert.deepEqual(rows.map(row => row.status), ["conflicted", "blocked", "blocked"]);
-    assert.deepEqual(rows.map(row => JSON.parse(row.payload)), [
+    assert.deepEqual(rows.map(row => row.status), ["conflicted", "blocked", "blocked", "running"]);
+    assert.deepEqual(rows.slice(0, 3).map(row => JSON.parse(row.payload)), [
       { ...old, status: "conflicted" }, payloads[1], payloads[2]
     ]);
+    const upgraded = JSON.parse(rows[3].payload);
+    assert.equal(upgraded.sourceProgress.head, ff.source.resultCommit);
+    assert.equal(upgraded.candidateCommit, job.head);
+    assert.equal(upgraded.checkInputDigest, durableJobIdempotencyKey(job));
+    assert.equal(upgraded.sourceProgress.activeAction, undefined);
+    assert.equal(upgraded.checks, undefined); // no fabricated successful checks
     assert.deepEqual(migrateSqliteSchema(db, { mode: "apply" }).applied, []);
   } finally { db.close(); }
 });

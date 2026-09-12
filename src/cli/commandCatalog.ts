@@ -1009,7 +1009,7 @@ const taskChildren: readonly NodeInput[] = [
       },
       {
         name: "abort",
-        summary: "Abandon a running, conflicted or blocked Integration Attempt while preserving evidence.",
+        summary: "Abandon an unadvanced Integration while preserving evidence; reconcile an already-applied target.",
         usage: "yui task integration abort <task>/<integration> --reason <text>",
         options: ["--reason"]
       },

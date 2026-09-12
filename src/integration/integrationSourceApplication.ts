@@ -67,10 +67,7 @@ export async function applyIntegrationSource(input: Readonly<{
     save({ status: "running", candidateCommit: await line(path, "rev-parse", "HEAD") });
     return current;
   }
-  const sourceDigest = createHash("sha256").update(JSON.stringify([
-    current.taskId, current.id, current.projectId, current.targetRef, current.beforeCommit,
-    source, resolve(path), workspace.branch
-  ])).digest("hex");
+  const sourceDigest = integrationSourceDigest(current, workspace);
   const commits = source.kind === "work-item" && source.strategy === "cherry-pick"
     ? (await command(path, ["rev-list", "--reverse", `${source.startCommit}..${source.resultCommit}`]))
       .trim().split("\n").filter(Boolean)
@@ -206,6 +203,25 @@ export async function applyIntegrationSource(input: Readonly<{
   await assertIntegrationCandidate(path, progress.head);
   save({ status: "running", conflict: undefined, candidateCommit: progress.head });
   return current;
+}
+
+export function assertRecordedSourceCandidate(attempt: IntegrationAttempt, workspace: Workspace): void {
+  if (attempt.source.kind === "work-item" && attempt.source.strategy === "manual"
+    && attempt.resolution?.action === "manual-resolution") return;
+  const progress = attempt.sourceProgress;
+  const branch = workspace.branch.startsWith("refs/") ? workspace.branch : `refs/heads/${workspace.branch}`;
+  if (progress === undefined || progress.activeAction !== undefined
+    || progress.head !== attempt.candidateCommit || progress.workspace !== resolve(workspace.path)
+    || progress.branch !== branch || progress.sourceDigest !== integrationSourceDigest(attempt, workspace)) {
+    throw new Error("Integration candidate does not match its recorded source/workspace identity.");
+  }
+}
+
+function integrationSourceDigest(attempt: IntegrationAttempt, workspace: Workspace): string {
+  return createHash("sha256").update(JSON.stringify([
+    attempt.taskId, attempt.id, attempt.projectId, attempt.targetRef, attempt.beforeCommit,
+    attempt.source, resolve(workspace.path), workspace.branch
+  ])).digest("hex");
 }
 
 export async function assertIntegrationCandidate(path: string, expectedHead?: string, expectedBranch?: string): Promise<void> {
