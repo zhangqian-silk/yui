@@ -124,6 +124,8 @@ Agent 可以重新读取任务上下文，继续兼容的 Session，或在必要
 想直观看进展，可以在另一个终端运行 `yui web`。本地 Web 展示同一份任务与
 待回答问题，也允许发送消息、回答问题，以及显式 queue、steer 或 interrupt Task 输入。
 这些经认证的 Task 控制复用 CLI 的相同操作，不是另一套需要同步的任务系统。
+详情优先展示用户待办、原生会话活动、任务进展和关键结论；固定文件成果与交付证据
+按需展开。详见[用户关注与进展](../docs/observability/README.zh-CN.md#web-用户关注与进展)。
 详见 [Web 权限](../docs/architecture/capabilities-and-resources.zh-CN.md#cli-与-web)
 和[输入时机](../docs/managed-turn-and-session-runtime.zh-CN.md#输入时机queuesteer-与-interrupt)。
 

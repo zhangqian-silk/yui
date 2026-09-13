@@ -18,6 +18,7 @@ import type { CapabilityResult } from "../kernel/capabilityRegistry.js";
 import { DASHBOARD_HTML, findWebAsset, type WebAsset } from "./assets/assetManifest.js";
 import {
   buildWebTaskCatalog,
+  buildWebPageSessions,
   buildWebTaskDetail,
   type WebDashboardStore
 } from "./webSnapshot.js";
@@ -192,6 +193,34 @@ async function handleHttpRequest(
     sendJson(response, 403, { error: "Invalid Yui web token.", disposition: "not-submitted" }, method === "HEAD");
     return;
   }
+  const artifactTarget = /^\/api\/tasks\/([^/]+)\/(artifacts|evidence)$/.exec(pathname);
+  if (artifactTarget && dependencies.surface) {
+    if (method !== "GET") {
+      sendJson(response, 405, { error: "Artifacts are read-only." }, false);
+      return;
+    }
+    try {
+      const taskId = decodeURIComponent(artifactTarget[1]!);
+      const query = new URL(request.url!, "http://localhost").searchParams;
+      if (artifactTarget[2] === "evidence") {
+        if ([...query.keys()].length) throw new WebRequestRejected("Evidence read takes no additional parameters.");
+        sendJson(response, 200, dependencies.surface.evidence(taskId), false);
+        return;
+      }
+      if ([...query.keys()].some(key => !["path", "commit"].includes(key))) {
+        throw new WebRequestRejected("Artifact read accepts only path and commit.");
+      }
+      const path = query.get("path");
+      const commit = query.get("commit");
+      if ((path === null) !== (commit === null)) throw new WebRequestRejected("Select path and fixed commit together.");
+      const result = path === null ? await dependencies.surface.artifacts(taskId)
+        : await dependencies.surface.artifact(taskId, path, commit!);
+      sendJson(response, 200, result, false);
+    } catch (error) {
+      sendJson(response, 409, { error: error instanceof Error ? error.message : "Artifact unavailable." }, false);
+    }
+    return;
+  }
   const globalControl = /^\/api\/roles\/([^/]+)\/control$/.exec(pathname);
   if (globalControl && dependencies.surface) {
     try {
@@ -311,18 +340,21 @@ async function handleHttpRequest(
         );
       } else if (asset !== null) {
         sendAsset(response, asset, method === "HEAD");
-      } else if (pathname === "/api/dashboard") {
+      } else if (pathname === "/api/dashboard" || pathname === "/api/dashboard/sessions") {
         const query = new URL(request.url!, "http://localhost").searchParams;
-        const snapshot = buildWebTaskCatalog(store, parseTaskCatalogOptions(
+        const options = parseTaskCatalogOptions(
           [...query].flatMap(([key, value]) => key === "all"
             ? (value === "true" ? ["--all"] : ["--invalid-all"])
-            : [`--${key}`, value])));
+            : [`--${key}`, value]));
+        const snapshot = pathname.endsWith("/sessions")
+          ? buildWebPageSessions(store, options, now())
+          : buildWebTaskCatalog(store, options);
         sendJson(response, 200, snapshot, method === "HEAD");
       } else if (pathname.startsWith("/api/tasks/")) {
         const taskId = decodeURIComponent(pathname.slice("/api/tasks/".length));
         const detail = taskId.length === 0 || taskId.includes("/")
           ? null
-          : buildWebTaskDetail(store, taskId);
+          : buildWebTaskDetail(store, taskId, now());
         sendJson(
           response,
           detail === null ? 404 : 200,

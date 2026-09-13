@@ -89,6 +89,7 @@ export const DASHBOARD_HTML = `<!doctype html>
       <nav id="detail-tabs" class="detail-tabs" aria-label="Task sections" data-i18n-aria-label="tabs.label" hidden>
         <button class="tab" type="button" data-target="detail-top" data-i18n="tabs.summary">Summary</button>
         <button class="tab" type="button" data-target="detail-focus" data-i18n="tabs.focus">Focus</button>
+        <button class="tab" type="button" data-target="detail-results" data-i18n="tabs.results">Results</button>
         <button class="tab" type="button" data-target="detail-work" data-i18n="tabs.work">Work items</button>
         <button class="tab" type="button" data-target="detail-exec" data-i18n="tabs.exec">AgentRuns</button>
         <button class="tab" type="button" data-target="detail-reviews" data-i18n="tabs.reviews">Reviews</button>

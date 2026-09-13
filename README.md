@@ -140,6 +140,9 @@ For a visual overview, run `yui web` in another terminal. The local Web view
 shows the same tasks and pending questions and lets you send messages, answer
 questions and explicitly queue, steer or interrupt Task input. These authenticated
 Task controls use the same operations as the CLI; Web is not a separate task system.
+The detail prioritizes user input, native Session activity, Task progress and key
+conclusions; fixed file results and delivery evidence open on demand. See
+[attention and progress](docs/observability/README.md#web-attention-and-progress).
 See [Web permissions](docs/architecture/capabilities-and-resources.md#cli-and-web)
 and [input timing](docs/managed-turn-and-session-runtime.md#input-timing-queue-steer-and-interrupt).
 

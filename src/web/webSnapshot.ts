@@ -1,5 +1,6 @@
 import type { TaskStore } from "../storage/taskStore.js";
 import { providerRetryProjection } from "../runtime/providerRetry.js";
+import { projectWebSessions } from "./webSessions.js";
 import { readTaskCatalog, type TaskCatalogOptions } from "../context/taskCatalog.js";
 import type { Task } from "../task/task.js";
 import { isRoleRunStalled, latestRunDurableProgressAt } from "../scheduler/roleRunStall.js";
@@ -27,6 +28,24 @@ import {
 
 export function buildWebTaskCatalog(store: WebDashboardStore, options: TaskCatalogOptions) {
   return store.transaction(reader => readTaskCatalog(reader, options));
+}
+
+/** Explicit optional read of just one visible catalog page. Never part of the
+ * compact discovery contract, and never an unfiltered global Session count. */
+export function buildWebPageSessions(store: WebDashboardStore, options: TaskCatalogOptions, now: Date) {
+  return store.transaction(reader => {
+    const page = readTaskCatalog(reader, options);
+    const tasks = page.tasks.map(task => ({
+      title: task.title,
+      ...projectWebSessions({ taskId: task.id, sessionSets: reader.listRoleSessionSets(task.id),
+        events: reader.listEvents(task.id), now,
+        ...(reader.getTaskBrief(task.id)?.updatedAt === undefined ? {} : {
+          semanticProgressAt: reader.getTaskBrief(task.id)!.updatedAt
+        }),
+        policy: resolveRuntimeHealth(reader.getConfig().runtimeHealth) })
+    }));
+    return { scope: "current-catalog-page", readAt: now.toISOString(), tasks };
+  });
 }
 
 export type WebDashboardStore = Pick<TaskStore,
@@ -151,6 +170,11 @@ export function buildWebTaskDetail(
         ...(projectNames.length === 0 ? {} : { projectNames })
       },
       execution,
+      sessions: projectWebSessions({ taskId, sessionSets: roleSessionSets, events, now,
+        ...(reader.getTaskBrief(taskId)?.updatedAt === undefined ? {} : {
+          semanticProgressAt: reader.getTaskBrief(taskId)!.updatedAt
+        }),
+        policy: resolveRuntimeHealth(reader.getConfig().runtimeHealth) }),
       remoteDelivery,
       observability: execution.observability,
       brief: reader.getTaskBrief(taskId),

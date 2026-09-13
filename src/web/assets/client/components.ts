@@ -93,7 +93,8 @@ export function sectionHead(label, options) {
 export function anchorSection(id, head, body) {
   const section = node("section", "detail-section anchor");
   section.id = id;
-  section.append(head, body);
+  if (head) section.append(head);
+  section.append(body);
   return section;
 }
 

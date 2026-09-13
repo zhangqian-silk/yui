@@ -3,6 +3,7 @@ import { Terminal } from "/assets/vendor/xterm.mjs";
 import { FitAddon } from "/assets/vendor/addon-fit.mjs";
 import { createI18n } from "/assets/js/i18n.js";
 import { createThemeController } from "/assets/js/theme.js";
+import { updateTaskObservations } from "/assets/js/task-summary.js";
 import {
   renderError,
   renderFilters,
@@ -46,6 +47,10 @@ const state = {
   attention: [],
   catalogAttention: null,
   catalogScope: null,
+  catalogQuery: "",
+  sessionOverview: null,
+  sessionLoading: false,
+  sessionError: null,
   catalogAll: false,
   catalogTotal: 0,
   catalogCursor: null,
@@ -144,6 +149,10 @@ function detailActions() {
     answerInput: answerInput,
     openTerminal: openTerminal,
     inspect: inspectRecord,
+    artifacts: taskId => requestJson("/api/tasks/" + encodeURIComponent(taskId) + "/artifacts"),
+    evidence: taskId => requestJson("/api/tasks/" + encodeURIComponent(taskId) + "/evidence"),
+    readArtifact: (taskId, path, commit) => requestJson("/api/tasks/" + encodeURIComponent(taskId)
+      + "/artifacts?" + new URLSearchParams({ path, commit })),
     sendMessage: (taskId, body, requestId, intent) => submitMutation(taskId + "/messages",
       "/api/tasks/" + encodeURIComponent(taskId) + "/messages",
       { body, requestId, ...(intent === undefined ? {} : { intent }) }),
@@ -209,7 +218,11 @@ function detailKeyOf(detail) {
 // every poll and would re-render the detail continuously.
 function runtimeSignatureOf(detail) {
   const roles = (detail.runtime && detail.runtime.roles) || [];
-  return detail.runtimeStatus + "|" + roles.map(function (role) {
+  return detail.runtimeStatus + "|" + JSON.stringify([
+    detail.runtime?.sessions?.sessions, detail.runtime?.remoteDelivery,
+    detail.runtime?.execution?.attention, detail.runtime?.execution?.blockers,
+    detail.runtime?.execution?.next
+  ]) + "|" + roles.map(function (role) {
     const session = role.runtimeSession;
     return role.name + ":" + (session
       ? session.nativeSessionId + "/" + session.status
@@ -223,10 +236,13 @@ function renderCurrentDetail(force) {
     // after the user has moved focus. This is view state, never Task state.
     if (elements.detail.dataset.taskId === state.detail.task.id
       && (elements.detail.querySelector('[data-unsent="true"]')
+        || elements.detail.querySelector('[data-reading="true"]')
         || elements.detail.contains(document.activeElement))) return;
     const key = i18n.getLocale() + "|" + state.detailKey
       + "|" + runtimeSignatureOf(state.detail);
     if (!force && key === renderedDetailKey) return;
+    const openSections = Array.from(elements.detail.querySelectorAll("details[data-view-key][open]"))
+      .map(element => element.dataset.viewKey);
     renderTaskDetail(
       elements.detail,
       state.detail,
@@ -234,6 +250,9 @@ function renderCurrentDetail(force) {
       i18n.getLocale(),
       detailActions()
     );
+    elements.detail.querySelectorAll("details[data-view-key]").forEach(element => {
+      element.open = openSections.includes(element.dataset.viewKey);
+    });
     renderedDetailKey = key;
   } else if (!state.selected) {
     renderedDetailKey = null;
@@ -319,6 +338,7 @@ function showToast(message) {
 }
 
 function clearSelection() {
+  if (!canLeaveDetail()) return;
   state.selected = null;
   state.detail = null;
   setDetailActive(false);
@@ -382,6 +402,7 @@ async function loadTaskDetail(taskId, showLoading) {
   const previous = state.detail && state.detail.task.id === taskId ? state.detail : null;
   const detail = {
     task, core,
+    viewState: previous ? previous.viewState : {},
     runtime: previous && previous.runtime,
     runtimeStatus: previous ? previous.runtimeStatus : "waiting",
     runtimeObservedAt: previous ? previous.runtimeObservedAt : new Date().toISOString()
@@ -419,6 +440,7 @@ async function loadTaskDetail(taskId, showLoading) {
 }
 
 function updateRuntimePanel(detail) {
+  updateTaskObservations(elements.detail, detail, i18n.t, i18n.getLocale());
   const status = elements.detail.querySelector("[data-runtime-status]");
   const value = elements.detail.querySelector("[data-runtime-value]");
   if (status) status.textContent = detail.runtimeStatus + " · " + detail.runtimeObservedAt;
@@ -433,11 +455,19 @@ function updateRuntimePanel(detail) {
 }
 
 async function inspectRecord(taskId, ref) {
-  const query = new URLSearchParams({ store: ref.store, ref: ref.refId, digest: ref.digest });
+  const query = new URLSearchParams({ store: ref.store, ref: ref.refId });
+  if (ref.digest) query.set("digest", ref.digest);
   return requestJson("/api/tasks/" + encodeURIComponent(taskId) + "/inspect?" + query);
 }
 
 async function selectTask(taskId) {
+  // Re-selecting the already visible Task is not navigation. Keep the same
+  // draft and fixed artifact selection, just as an ordinary refresh does.
+  if (state.selected === taskId && state.detail) return;
+  if (state.selected !== taskId && !canLeaveDetail()) {
+    syncUrlFromState({ replace: true });
+    return;
+  }
   // Switching tasks drops the previous section; staying on the same task
   // (URL-driven loads, popstate) keeps it.
   if (urlTaskId() !== taskId) {
@@ -464,6 +494,17 @@ async function selectTask(taskId) {
     showToast(i18n.t("errors.detail"));
   }
 }
+
+function canLeaveDetail() {
+  return !elements.detail.querySelector('[data-unsent="true"]') || window.confirm(
+    i18n.getLocale().startsWith("zh") ? "此任务有未提交或结果尚不确定的输入。仍要离开？"
+      : "This Task has unsent input or an unresolved submission. Leave anyway?");
+}
+window.addEventListener("beforeunload", event => {
+  if (!elements.detail.querySelector('[data-unsent="true"]')) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
 
 async function answerInput(input, answer) {
   if (!state.detail) return;
@@ -513,6 +554,11 @@ async function refreshDashboard(options) {
     const dashboard = await requestJson("/api/dashboard?" + query.toString());
     if (request !== catalogRequest) return;
     state.tasks = dashboard.tasks;
+    if (state.catalogQuery !== query.toString() || (state.sessionOverview && JSON.stringify(
+      state.sessionOverview.tasks.map(task => task.taskId)) !== JSON.stringify(dashboard.tasks.map(task => task.id)))) {
+      state.sessionOverview = null;
+    }
+    state.catalogQuery = query.toString();
     state.counts = { ...dashboard.counts, openInputs: dashboard.attention.openInputs.count };
     state.catalogAttention = dashboard.attention;
     state.catalogScope = dashboard.scope;
@@ -689,6 +735,8 @@ if (elements.detailTabs) {
     if (!targetId || !elements.detail) return;
     const section = elements.detail.querySelector("#" + targetId);
     if (!section) return;
+    const folded = section.querySelector(":scope > details");
+    if (folded) folded.open = true;
     section.scrollIntoView({ behavior: "smooth", block: "start" });
     setSectionParam(targetId);
     elements.detailTabs.querySelectorAll(".tab").forEach(function (other) {
@@ -718,7 +766,28 @@ elements.catalogAttentionReset.addEventListener("click", function () {
   syncUrlFromState({ replace: false });
   resetCatalog();
 });
-elements.detail.addEventListener("click", function (event) {
+elements.detail.addEventListener("click", async function (event) {
+  const observe = event.target.closest("[data-observe-sessions]");
+  if (observe) {
+    if (state.sessionLoading) return;
+    const query = state.catalogQuery;
+    state.sessionLoading = true;
+    observe.disabled = true;
+    try {
+      const result = await requestJson("/api/dashboard/sessions?" + query, { signal: AbortSignal.timeout(5000) });
+      if (query !== state.catalogQuery) return;
+      if (JSON.stringify(result.tasks.map(task => task.taskId)) !== JSON.stringify(state.tasks.map(task => task.id))) {
+        throw new Error("Catalog page changed; refresh it before reading Sessions.");
+      }
+      state.sessionOverview = result;
+      state.sessionError = null;
+    } catch (error) { state.sessionError = error.message; }
+    finally {
+      state.sessionLoading = false;
+      if (!state.selected) showOverview();
+    }
+    return;
+  }
   const button = event.target.closest("[data-catalog-attention]");
   if (!button) return;
   state.attentionFilter = button.dataset.catalogAttention;
