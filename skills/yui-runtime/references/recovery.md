@@ -12,6 +12,53 @@ affected WorkItem, ReviewRound or Integration. Use `task next-action` and
 `execution audit` as decision support, not as an automatic plan.
 Active or quiet observations are not a Task-wide lock or proof of failure.
 
+### Configuration and model-name failures
+
+The already-running caller handles a failed launch: Worker/Reviewer failures
+go to their Leader, and an unavailable Leader's failure goes to the existing
+Operator channel. A target that did not start cannot repair itself. Read the
+referenced error once; do not create a recovery Agent, a polling loop or a new
+Task merely to handle it.
+
+Use the error's capability-query pointer to inspect native metadata with the
+recorded failed configuration:
+
+```sh
+yui task event show <task> <error-event>
+yui task role capabilities <task> <role> --error <error-event> --refresh
+```
+
+The query uses the Controller's Provider environment, not your own Agent's
+possibly different account variables, and requires that Controller to be running.
+It preserves the requested model, workspace, profile/settings selection and
+configured Agent identity. Native settings files and credentials are still read
+currently, not copied into error history. A historical error without a recorded
+configuration, or a changed Agent command/bindings, returns a diagnosis instead
+of borrowing today's Role configuration. To inspect the desired next launch
+explicitly, omit `--error`. Distinguish live, cached and unavailable metadata.
+Do not treat an alias list as a complete Provider whitelist.
+
+Reconcile the original user requirement with exact native IDs and alias
+mappings. Correcting the name of the same authorized model is routine recovery;
+selecting another model, account, permission or cost boundary is not. If there
+is no proven equivalent, preserve the failure and report the missing choice.
+Do not guess names, select a similarly named variant, or silently fall back.
+
+After correcting only the intended configuration, choose the existing operation
+that matches current facts. A rejected notification retains its input:
+
+```sh
+yui task wake show <task> <wake>
+yui task wake retry <task> <wake> --reason "<correction and evidence>"
+```
+
+Retry does not replace a Session or change its immutable effective configuration.
+If an existing Session must adopt changed settings, use the deliberate Session
+replacement operation below; an assigned Run uses its own legal retry operation.
+Accepted or uncertain input cannot be replayed through notification retry.
+Configuration failure is not transient infrastructure recovery, and unchanged
+configuration does not justify another attempt.
+
 ### Bounded infrastructure retry
 
 The Controller, not the Agent, counts and schedules qualifying transient

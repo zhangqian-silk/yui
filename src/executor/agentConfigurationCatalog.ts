@@ -7,6 +7,8 @@ import type { ConfiguredAgent } from "../agent/agent.js";
 import type { AgentAdapterId } from "../agent/adapterCatalog.js";
 import { writeTextFileAtomically } from "../storage/durableFile.js";
 import { resolveAgentAdapter, type RoleAgentConfig } from "./agentAdapter.js";
+import { redactAgentErrorText } from "../runtime/agentError.js";
+import type { AgentCapabilityConfig } from "./agentCapabilityConfig.js";
 
 export type AgentConfigurationChoice = Readonly<{
   value: string;
@@ -82,7 +84,7 @@ export type AgentConfigurationCatalog = Readonly<{
 export type AgentConfigurationDiscoveryInput = Readonly<{
   agent: ConfiguredAgent;
   cwd: string;
-  config?: RoleAgentConfig;
+  config?: AgentCapabilityConfig;
   environment: NodeJS.ProcessEnv;
   signal: AbortSignal;
 }>;
@@ -107,7 +109,9 @@ export type ResolvedAgentConfigurationCatalog = Readonly<{
 export type ResolveAgentConfigurationInput = Readonly<{
   agent: ConfiguredAgent;
   cwd: string;
-  config?: RoleAgentConfig;
+  config?: AgentCapabilityConfig;
+  /** Explicitly re-probe metadata; never start model work or a refresh worker. */
+  refresh?: boolean;
 }>;
 
 export type AgentConfigurationCatalogServiceOptions = Readonly<{
@@ -115,6 +119,8 @@ export type AgentConfigurationCatalogServiceOptions = Readonly<{
   timeoutMs?: number;
   now?: () => Date;
   discover?: AgentConfigurationDiscovery;
+  /** Bound completed metadata results; active requests are coalesced separately. */
+  memoryCacheLimit?: number;
 }>;
 
 type CachedCatalog = Readonly<{
@@ -131,7 +137,9 @@ export class AgentConfigurationCatalogService {
   readonly #timeoutMs: number;
   readonly #now: () => Date;
   readonly #discover: AgentConfigurationDiscovery;
+  readonly #memoryCacheLimit: number;
   readonly #requests = new Map<string, Promise<ResolvedAgentConfigurationCatalog>>();
+  readonly #completed = new Map<string, ResolvedAgentConfigurationCatalog>();
 
   constructor(
     private readonly yuiHome: string,
@@ -142,13 +150,30 @@ export class AgentConfigurationCatalogService {
     this.#now = options.now ?? (() => new Date());
     this.#discover = options.discover ?? ((input) =>
       resolveAgentAdapter(input.agent.adapterId).discoverConfiguration(input));
+    this.#memoryCacheLimit = options.memoryCacheLimit ?? 64;
+    if (!Number.isSafeInteger(this.#memoryCacheLimit) || this.#memoryCacheLimit < 1) {
+      throw new Error("Agent metadata memory cache limit must be positive.");
+    }
   }
 
   resolve(input: ResolveAgentConfigurationInput): Promise<ResolvedAgentConfigurationCatalog> {
     const fingerprint = catalogFingerprint(input, this.#environment);
-    const existing = this.#requests.get(fingerprint);
-    if (existing !== undefined) return existing;
-    const request = this.#resolve(input, fingerprint);
+    const active = this.#requests.get(fingerprint);
+    if (active !== undefined) return active;
+    const cached = this.#completed.get(fingerprint);
+    if (cached !== undefined && input.refresh !== true) {
+      this.#completed.delete(fingerprint);
+      this.#completed.set(fingerprint, cached);
+      return Promise.resolve(cached.source === "live" ? { ...cached, source: "cache" } : cached);
+    }
+    const request = this.#resolve(input, fingerprint).then(result => {
+      this.#completed.delete(fingerprint);
+      this.#completed.set(fingerprint, result);
+      while (this.#completed.size > this.#memoryCacheLimit) {
+        this.#completed.delete(this.#completed.keys().next().value!);
+      }
+      return result;
+    }).finally(() => { this.#requests.delete(fingerprint); });
     this.#requests.set(fingerprint, request);
     return request;
   }
@@ -323,13 +348,29 @@ export function modelChoice(
 ): AgentModelChoice | undefined {
   return value === undefined
     ? defaultModel(catalog)
-    : catalog.models.find((model) => model.value === value);
+    : catalog.models.find((model) => model.value === value)
+      ?? catalog.models.find((model) => model.resolvedModel === value && !model.isDefault)
+      ?? catalog.models.find((model) => model.resolvedModel === value);
+}
+
+/** Observed choices, not an invented complete list of a Provider's model IDs. */
+export function agentModelOptionsSummary(catalog: AgentConfigurationCatalog): string {
+  const choices = catalog.models.map(model =>
+    `${JSON.stringify(model.value)}${model.resolvedModel === undefined
+      || model.resolvedModel === model.value ? "" : ` -> ${JSON.stringify(model.resolvedModel)}`}`);
+  return [
+    choices.length === 0
+      ? "No native model options were reported."
+      : `Native model options: ${choices.join(", ")}.`,
+    ...(configurationField(catalog, "model")?.allowCustom === true
+      ? ["Custom model IDs are validated by the Provider; this list is not exhaustive."] : [])
+  ].join(" ");
 }
 
 /**
- * Validates the launch-time model/effort against a live or cached capability
- * catalog. A fallback catalog intentionally carries no model list, so an
- * unavailable Provider probe does not block a supported launch.
+ * Validate known model/effort constraints. An explicitly open model field
+ * delegates unlisted IDs to the Provider; aliases are not a complete whitelist.
+ * A fallback has no model list and makes no claim about native acceptance.
  */
 export function validateAgentLaunchConfiguration(
   catalog: AgentConfigurationCatalog,
@@ -338,10 +379,12 @@ export function validateAgentLaunchConfiguration(
   if (catalog.models.length === 0) return;
   const model = modelChoice(catalog, config.model);
   if (model === undefined) {
+    if (config.model !== undefined && configurationField(catalog, "model")?.allowCustom === true) return;
     throw new Error(
       `Unsupported ${catalog.adapterId} launch configuration: field=model actual=${
         JSON.stringify(config.model ?? "")
-      } supported=${JSON.stringify(catalog.models.map(({ value }) => value))}.`
+      }. ${agentModelOptionsSummary(catalog)} `
+      + `Inspect current options: yui config agent capabilities ${catalog.agentId}.`
     );
   }
   if (
@@ -354,7 +397,8 @@ export function validateAgentLaunchConfiguration(
         JSON.stringify(config.effort)
       } model=${JSON.stringify(model.value)} supported=${
         JSON.stringify(model.efforts.map(({ value }) => value))
-      }.`
+      }. ${agentModelOptionsSummary(catalog)} `
+      + `Inspect current options: yui config agent capabilities ${catalog.agentId}.`
     );
   }
 }
@@ -632,7 +676,7 @@ function catalogFailure(error: unknown): AgentConfigurationFailure {
     code: code === "ETIMEDOUT" || candidate.name === "AbortError"
       ? "timeout"
       : code === "ENOENT" ? "missing-command" : "probe-failed",
-    message: candidate.message || "Agent capability discovery failed."
+    message: redactAgentErrorText(candidate.message || "Agent capability discovery failed.")
   };
 }
 

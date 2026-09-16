@@ -197,7 +197,8 @@ const agentChildren: readonly NodeInput[] = [
   {
     name: "capabilities",
     summary: "Probe one Agent CLI for runtime configuration options.",
-    usage: "yui config agent capabilities <id>"
+    usage: "yui config agent capabilities <id> [--refresh]",
+    options: ["--refresh"]
   },
   {
     name: "update",
@@ -742,7 +743,7 @@ const taskChildren: readonly NodeInput[] = [
     summary: "Manage Roles within a Task.",
     sections: [{ id: "manage", title: "Commands", entries: [
       "add", "list", "status", "show", "update", "remove", "bind", "unbind",
-      "session", "interrupt", "view", "takeover", "release"
+      "capabilities", "session", "interrupt", "view", "takeover", "release"
     ] }],
     children: [
       {
@@ -759,6 +760,9 @@ const taskChildren: readonly NodeInput[] = [
         usage: "yui task role status <task> <role>"
       },
       { name: "show", summary: "Show one Task Role.", usage: "yui task role show <task> <role>" },
+      { name: "capabilities", summary: "Read native options using this Role's desired or exact failed launch configuration.",
+        usage: "yui task role capabilities <task> <role> [--error <event-id>] [--refresh]",
+        options: ["--error", "--refresh"] },
       {
         name: "update",
         summary: "Update a Task Role; Agent settings target the named or active binding without switching it.",
@@ -1154,10 +1158,12 @@ const taskChildren: readonly NodeInput[] = [
   {
     name: "wake",
     summary: "Inspect the durable Leader wake ledger and its delta content.",
-    sections: [{ id: "manage", title: "Commands", entries: ["list", "show", "resolve"] }],
+    sections: [{ id: "manage", title: "Commands", entries: ["list", "show", "retry", "resolve"] }],
     children: [
       { name: "list", summary: "List recorded Leader wakes.", usage: "yui task wake list <task>" },
       { name: "show", summary: "Show one wake and its delta content.", usage: "yui task wake show <task> <wake>" },
+      { name: "retry", summary: "Retry a rejected notification after correcting its cause; preserve original input.",
+        usage: "yui task wake retry <task> <wake> --reason <correction>", options: ["--reason"] },
       { name: "resolve", summary: "Release an unknown notification claim after explicit quiescence evidence, without replay.",
         usage: "yui task wake resolve <task> <wake> --reason <quiescence-evidence>", options: ["--reason"] }
     ]

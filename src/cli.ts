@@ -188,6 +188,9 @@ import {
   operatorSessionRef
 } from "./operator/operatorSessionHistory.js";
 import { renderAgentConfigurationCatalog } from "./output/agentConfigurationPresentation.js";
+import { parseTaskAgentCapabilityQuery } from "./commands/taskAgentCapabilities.js";
+import type { TaskAgentCapabilityResult } from "./executor/taskAgentCapabilities.js";
+import { capabilityReaderIdentity } from "./controller/agentCapabilities.js";
 import { formatTimestamp } from "./output/timePresentation.js";
 import type { AgentProfile } from "./profile/agentProfile.js";
 import {
@@ -806,6 +809,16 @@ export async function main(): Promise<void> {
     return;
   }
   assertTaskInvocationScope(resolved, process.env);
+  if (resolved[0] === "task" && resolved[1] === "role" && resolved[2] === "capabilities") {
+    const query = parseTaskAgentCapabilityQuery(resolved.slice(3));
+    const result = await callController(home, "task.role-capabilities", {
+      ...query, reader: capabilityReaderIdentity(process.env)
+    }, { timeoutMs: 15_000 }) as unknown as TaskAgentCapabilityResult;
+    emit(`Configuration: ${result.context.selection} ${result.context.taskId}/${result.context.roleName}\n`
+      + "Discovery uses the Controller's current native account environment; settings files and secret values are not historical snapshots.\n"
+      + renderAgentConfigurationCatalog(result), false, result);
+    return;
+  }
   const validateAgentConfiguration = await preflightAgentConfigurationMutation(
     resolved,
     store,
@@ -917,14 +930,15 @@ export async function main(): Promise<void> {
       if (domain === "agent") {
         const agentArgs = resolved.slice(2);
         if (agentArgs[0] === "capabilities") {
-          if (agentArgs.length !== 2) {
-            throw usageError("Agent capabilities usage: yui config agent capabilities <agent-id>");
+          if (agentArgs.length !== 2 && !(agentArgs.length === 3 && agentArgs[2] === "--refresh")) {
+            throw usageError("Agent capabilities usage: yui config agent capabilities <agent-id> [--refresh]");
           }
           const agent = store.getConfiguredAgent(agentArgs[1] ?? "");
           if (agent === null) throw agentNotFound(agentArgs[1] ?? "");
           const result = await catalogs.resolve({
             agent,
-            cwd: store.getConfig().defaultWorkspace ?? process.cwd()
+            cwd: store.getConfig().defaultWorkspace ?? process.cwd(),
+            refresh: agentArgs[2] === "--refresh"
           });
           emit(renderAgentConfigurationCatalog(result), false, result);
           return;

@@ -26,6 +26,7 @@ export const WAKE_REASON_KINDS = Object.freeze([
   "role-turn-failed",
   "job-finished",
   "published-tree-authorized",
+  "notification-retry",
   "force-wake"
 ] as const);
 
@@ -46,6 +47,7 @@ const IMMEDIATE_KINDS: ReadonlySet<string> = new Set([
   "execution-started",
   "session-replaced",
   "force-wake",
+  "notification-retry",
   "activation-failed",
   "task-reopened",
   "leader-turn-failed",

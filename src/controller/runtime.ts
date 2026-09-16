@@ -141,6 +141,7 @@ import {
   type CoordinatedRuntimeLaunchRequest
 } from "./runtimeLaunchCoordinator.js";
 import { SessionOwnerReconciliation } from "./sessionOwnerReconciliation.js";
+import { readTaskAgentCapabilities } from "./agentCapabilities.js";
 
 export type FileTaskControllerFactoryOptions = ControllerRuntimeOptions & Readonly<{
   store?: TaskStore;
@@ -629,8 +630,10 @@ export async function startFileTaskControllerRuntime(
       home,
       schedulerStore,
       delivery,
-      (method, params) => method === "web.start" || method === "web.stop" || method === "web.status"
-        ? web.dispatch(method, params) : lifecycleDispatcher(method, params),
+      (method, params) => method === "task.role-capabilities"
+        ? readTaskAgentCapabilities(store, catalogs, params)
+        : method === "web.start" || method === "web.stop" || method === "web.status"
+          ? web.dispatch(method, params) : lifecycleDispatcher(method, params),
       {
         intervalMs: options.intervalMs
           ?? reconciliationIntervalMilliseconds(store.getConfig().reconciliationIntervalSeconds),

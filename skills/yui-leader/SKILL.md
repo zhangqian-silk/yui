@@ -47,6 +47,11 @@ These are instruction routes, not new lifecycle states or a scheduling
 protocol. Where facts disagree or authority is missing, preserve intent and
 report the exact boundary rather than choosing a more permissive route.
 
+Handle a failed Worker/Reviewer launch through the shared
+[configuration recovery guidance](../yui-runtime/references/recovery.md#configuration-and-model-name-failures).
+Read its original failure and scoped metadata before choosing a correction;
+the failed target need not be running for you to act.
+
 ## Maintain useful durable context
 
 The DB Brief is the current summary, not a full plan or a history of messages.

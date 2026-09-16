@@ -180,6 +180,24 @@ is required.
     SQLite Session custody without consulting old JSON. The 34→35 cutover
     preserves raw retired payloads/log bytes and identity counters, blocks
     unsettled gates/custody, and rolls back malformed conversions.
+35. Native model aliases/resolved IDs and open custom-model fields retain their
+    distinct contracts; configuration errors display the observed choices.
+    Rejected Leader startup stays quiet across Store reopen and repeated passes,
+    preserves original/later input and blocks premature completion. Explicit
+    retry requeues the exact rejected claim once without rewriting its history;
+    typed contention remains retryable and unknown acceptance cannot be replayed.
+36. Failure-scoped capability reads preserve the recorded model/workspace/settings
+    selection after Role edits, reject changed Agent bindings, honor explicit
+    metadata refresh and identify cached fallback. The Controller supplies native
+    account context without accepting caller credentials. Task/Role/record reads
+    stay fenced. Runless startup and native rejection reuse one error/notification.
+    Migration 35→36 preserves historical error bytes and the earlier ledger while
+    marking absent historical configuration unavailable, never reconstructing it.
+37. Narrow failure context survives independently of execution/Review/Session
+    protocols; 36→37 preserves the original snapshot in audit. Repeated native
+    submission rejection creates one error and one supervisor notice through
+    the shared writer. A small injected cache proves completed-result eviction,
+    pending-request coalescing, explicit refresh and truthful cache provenance.
 
 Keep the test phase seconds-scale; measure TypeScript build separately. Record
 incremental runtime when adding a critical regression. The seven recovery boundary

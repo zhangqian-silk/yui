@@ -34,6 +34,8 @@ import { migrateWorkItemHistory } from "./migrations/workItemHistory.js";
 import { migrateVerificationPolicy } from "./migrations/verificationPolicy.js";
 import { migrateCurrentInputContract } from "./migrations/currentInputContract.js";
 import { CURRENT_RUNTIME_CONTRACT_SQL, migrateCurrentRuntimeContract } from "./migrations/currentRuntimeContract.js";
+import { migrateAgentFailureContext } from "./migrations/agentFailureContext.js";
+import { migrateNarrowAgentFailureContext } from "./migrations/narrowAgentFailureContext.js";
 import {
   UNIFY_HOME_LAYOUT_SQL,
   migrateUnifyHomeLayout
@@ -1458,6 +1460,20 @@ WHERE json_type(payload, '$.scope') IS NULL
     introducedIn: "0.16.0",
     sql: CURRENT_RUNTIME_CONTRACT_SQL,
     migrateData: migrateCurrentRuntimeContract
+  },
+  {
+    version: 36,
+    name: "agent-failure-configuration-context",
+    introducedIn: "0.16.0",
+    sql: "SELECT 1; -- Preserve historical errors; absent original launch configuration is explicitly unavailable",
+    migrateData: migrateAgentFailureContext
+  },
+  {
+    version: 37,
+    name: "narrow-agent-failure-context",
+    introducedIn: "0.16.0",
+    sql: "SELECT 1; -- Archive full v36 failure snapshots; retain only native metadata selectors",
+    migrateData: migrateNarrowAgentFailureContext
   }
 ]);
 

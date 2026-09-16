@@ -35,6 +35,7 @@ import { listContextMessages } from "../context/taskContext.js";
 import { referencedWakeRunIds } from "../context/wakeRunReferences.js";
 import {
   completeProcessing,
+  releaseProcessing,
   type MailboxEntityRef
 } from "../coordination/workMailbox.js";
 import {
@@ -189,6 +190,7 @@ import { controlProviderRetry, providerRetryProjection, renderProviderRetry } fr
 import { currentProviderConversation, transferProviderAuthority } from "../runtime/providerRuntimeIdentity.js";
 import { projectProviderContinuations } from "../runtime/runtimeContinuationProjection.js";
 import { runtimeObservationFromTaskEvent } from "../runtime/runtimeObservation.js";
+import { failureCapabilitiesCommand } from "../runtime/agentFailureContext.js";
 import { enqueueOperatorEvent } from "../scheduler/operatorEvent.js";
 import {
   isRoleRunStalled,
@@ -2896,33 +2898,59 @@ function retireMessage(
   return `Retired Task Message ${result.task.id}/${result.message.id}\n`;
 }
 
-/**
- * Issue 05: force-wake escape hatch. Bypasses the actionability digest and
- * enqueues exactly one Leader wakeup with an auditable reason. The reason is
- * truncated to keep the event payload compact.
- */
-function taskWakeForceCommand(
+/** Explicitly retry one proven-rejected notification, preserving its inputs. */
+function taskWakeRetryCommand(
   args: string[],
   store: TaskWorkflowStore,
   options: TaskCommandOptions
-): string {
-  const usage = "Task wake usage: yui task wake <id> --force --reason <text>.";
-  const parsed = parseTail(args, new Set(["--reason"]), usage, new Set(["--force"]));
-  exactPositionals(parsed.positionals, 1, usage);
-  if (!parsed.options.has("--force")) {
-    throw usageError("--force is required to wake a Task.", usage);
-  }
+): TaskCommandExecution {
+  const usage = "Task wake retry usage: yui task wake retry <task> <wake> --reason <correction>.";
+  const parsed = parseTail(args, new Set(["--reason"]), usage);
+  exactPositionals(parsed.positionals, 2, usage);
   const reason = requiredOption(parsed.options, "--reason");
   const now = clock(options);
-  const task = requireTask(store, parsed.positionals[0]);
-  assertTaskOpen(task);
-  const wakeReasonTag = wakeReason("force-wake", truncateEventNote(reason));
-  store.transaction((tx) => {
-    queueLeaderWakeup(tx, task.id, wakeReasonTag, now);
-    recordTaskEvent(tx, task.id, "task.wake-forced", { reason: wakeReasonTag }, now);
+  const result = store.transaction((tx) => {
+    const task = requireTask(tx, parsed.positionals[0]);
+    assertTaskOpen(task);
+    taskActor(tx, options, task.id);
+    const wakeId = parsed.positionals[1]!;
+    const wake = tx.getTaskWake(task.id, wakeId);
+    if (wake === null) throw dataError(`Wake not found: ${wakeId}.`);
+    if (wake.status === "consumed") throw usageError("An accepted notification cannot be retried.");
+    const mailbox = tx.getWorkMailbox(leaderMailbox(task.id));
+    const claim = mailbox?.processing;
+    if (claim == null || claim.owner !== `leader-notification:${wakeId}`) {
+      throw usageError("This wake has no rejected notification claim.");
+    }
+    const events = tx.listEvents(task.id);
+    const previous = events.filter(event =>
+      event.type === "notification.delivery" && event.payload.attemptId === claim.batchId).at(-1);
+    if (previous?.payload.outcome !== "rejected") {
+      throw usageError("Only a rejected notification can be retried; unknown acceptance must not be replayed.");
+    }
+    const provider = tx.getTaskRoleSessionSet(task.id, "leader")?.providerBinding;
+    const accepted = events.some(event => {
+      const observation = runtimeObservationFromTaskEvent(event);
+      return observation?.fence.roleName === "leader" && observation.fence.receiptId === claim.batchId
+        && ((observation.kind === "turn.accepted" && observation.authority !== "transport")
+          || ["turn.completed", "turn.failed", "turn.cancelled"].includes(observation.kind));
+    });
+    if (accepted || tx.getActiveRun(task.id, "leader") !== null
+      || provider?.authority.owner === "human" || provider?.authority.owner === "unknown"
+      || (provider?.run != null && (
+        ["submitting", "accepted", "delivery-unknown"].includes(provider.run.status)
+        || provider.run.attemptId === claim.batchId && provider.run.status !== "rejected"))) {
+      throw usageError("Native execution is not proven unaccepted and quiescent; this notification cannot be replayed.");
+    }
+    tx.saveWorkMailbox(releaseProcessing(mailbox!, claim.batchId));
+    queueLeaderWakeup(tx, task.id, wakeReason("notification-retry", wakeId), now);
+    recordTaskEvent(tx, task.id, "notification.retry-requested", {
+      wakeId, attemptId: claim.batchId, reason
+    }, now);
+    return { taskId: task.id, wakeId, outcome: "queued" };
   });
-  notifyMailbox(options.runtime, leaderMailbox(task.id));
-  return `Woke ${task.id} (${wakeReasonTag})\n`;
+  notifyMailbox(options.runtime, leaderMailbox(result.taskId));
+  return output(`Queued rejected ${result.wakeId} for retry; original input was preserved.\n`, result);
 }
 
 function taskRoleCommand(
@@ -8764,6 +8792,7 @@ function taskWakeDispatch(
   options: TaskCommandOptions
 ): TaskCommandExecution {
   const [subcommand] = args;
+  if (subcommand === "retry") return taskWakeRetryCommand(args.slice(1), store, options);
   if (subcommand === "resolve") {
     const usage = "Task wake resolve usage: yui task wake resolve <task> <wake> --reason <quiescence-evidence>.";
     const parsed = parseTail(args.slice(1), new Set(["--reason"]), usage);
@@ -8808,7 +8837,9 @@ function taskWakeDispatch(
   if (subcommand === "list" || subcommand === "show") {
     return taskWakeInspectionCommand(args, store);
   }
-  return output(taskWakeForceCommand(args, store, options));
+  throw usageError(subcommand === undefined
+    ? "Task wake command is required."
+    : `Unknown command: task wake ${subcommand}`);
 }
 
 /**
@@ -8866,6 +8897,8 @@ function taskWakeInspectionCommand(
       (event.type === "notification.delivery" || event.type === "notification.resolved")
       && (event.payload.wakeId === wake.id
         || event.payload.attemptId?.startsWith(`notification:${task.id}/${wake.id}/`)));
+    const lastDelivery = deliveryEvents.at(-1);
+    const currentClaim = store.getWorkMailbox(leaderMailbox(task.id))?.processing;
     const referenced = (type: MailboxEntityRef["type"], id: string) =>
       wake.refs?.some(ref => ref.type === type && ref.id === id
         && (!("taskId" in ref) || ref.taskId === task.id)) === true;
@@ -8882,7 +8915,16 @@ function taskWakeInspectionCommand(
       `Wake: ${wake.id}`,
       `Task: ${task.id}`,
       `Status: ${wake.status}`,
-      `Notification: ${deliveryEvents.at(-1)?.payload.outcome ?? "unobserved"}`,
+      `Notification: ${lastDelivery?.payload.outcome ?? "unobserved"}`,
+      ...(lastDelivery?.payload.detail === undefined ? [] : [`Failure: ${lastDelivery.payload.detail}`]),
+      ...(lastDelivery?.payload.errorEventId === undefined ? [] : [
+        `Failure record: ${task.id}/${lastDelivery.payload.errorEventId}`,
+        `Inspect capabilities: ${failureCapabilitiesCommand(task.id, "leader", lastDelivery.payload.errorEventId)}`
+      ]),
+      ...(lastDelivery?.payload.outcome !== "rejected"
+        || currentClaim?.batchId !== lastDelivery.payload.attemptId ? [] : [
+        `Recovery: correct the cause, then yui task wake retry ${task.id} ${wake.id} --reason <correction>.`
+      ]),
       `Reasons: ${wake.reasons.map(renderWakeReason).join(", ")}`,
       `Delta window: ${wake.fromCursor} → ${wake.toCursor}`,
       `Dispatched: ${presentTime(wake.createdAt, timeZone)}`,

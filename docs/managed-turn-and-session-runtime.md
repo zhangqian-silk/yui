@@ -98,6 +98,42 @@ candidates retain visible nondelivery reasons. Explicit handoff only targets an
 already-dispatched successor for the same work. Replicated Producer/synthesis
 lineage is not silently rewritten by a message.
 
+Rejected Leader notifications retain their original input and failure diagnosis.
+Deterministic startup failures do not automatically retry; only typed runtime
+contention remains deferred. New messages and a Controller restart do not replay
+the rejected claim. After correcting the cause, explicitly retry its exact wake:
+
+```sh
+yui task wake show <task> <wake>
+yui task wake retry <task> <wake> --reason "<what was corrected>"
+```
+
+Retry returns the rejected batch and later queued input to the existing mailbox;
+it does not rewrite the old wake as accepted or replace a Session. Current runtime
+authority and readiness checks still apply. Model/effort validation rejections show the
+native model options and a command to inspect the full current catalog.
+
+Pre-Run launch failures and native Provider rejections both retain a
+`runtime.agent-error` fact. Notification delivery references that original error
+instead of creating a second copy of the cause. `task event show` supplies the
+scoped capability-query pointer in both human and JSON output; `wake show`
+links the same fact. An unavailable Leader notifies the existing Operator
+channel once; Worker/Reviewer failures use the existing Leader channel. No new
+recovery Agent is started, and there need not be a Run or Session to record the
+failure.
+
+Storage 35→36 archives original historical error payloads and marks their
+unrecorded launch configuration as unavailable. It never reconstructs old model,
+account or settings choices from current Roles.
+
+Storage 36→37 narrows that context to native metadata selectors and the requested
+model/effort. Full old snapshots remain in migration audit, not in the active
+reader. Reading a failure's model options does not validate Task permissions,
+Review state, workspace entries or the current Session bootstrap protocol.
+The three failure ingresses retain their native fencing/classification, while
+record creation and deduplication share one writer and supervisor notices use
+the existing event-routing boundary.
+
 Unknown Leader notifications preserve their wake and input window:
 
 ```sh
@@ -112,7 +148,9 @@ Role work and legal local facts are not a Task-wide recovery lock.
 Wake status records notification delivery, not Message implementation. For
 ordinary Leader notifications, `consumed` means native acceptance. Native Turn
 completion and Task delivery need their own runtime evidence and durable results.
-A rejected or released wake may remain `dispatched` without an active mailbox claim.
+A rejected wake stays `dispatched` with its claim until explicit retry or Session
+replacement; an explicitly released historical wake can remain `dispatched`
+without a claim. Unknown acceptance cannot use `wake retry`.
 Session replacement preserves queued input for a new wake and current Context;
 it does not retroactively mark an old wake accepted. Late receipts cannot settle
 the successor's batch. While Session cleanup is pending, new input remains queued.

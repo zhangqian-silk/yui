@@ -126,6 +126,7 @@ test("runtime cutover refuses unsettled gates and legacy custody; malformed conv
     assert.deepEqual(db.prepare("SELECT * FROM schema_migrations ORDER BY version").all(), ledger);
     rmSync(receipt);
     migrateSqliteSchema(db, { mode: "apply" });
-    assert.equal(db.prepare("SELECT max(version) AS version FROM schema_migrations").get().version, 35);
+    assert.ok(db.prepare("SELECT 1 FROM schema_migrations WHERE version=35").get(),
+      "The current-runtime cutover remains part of the complete migration chain.");
   } finally { db.close(); }
 });

@@ -29,11 +29,11 @@ or model effects.
 
 ## Pre-1.0 contract cleanup
 
-The current development step retires runtime compatibility before the final
-1.0 baseline cutover. It does not publish a release or reset storage numbering.
+Version 0.16.0 retires runtime compatibility before the final
+1.0 baseline cutover. It does not reset storage numbering.
 Storage 27→28 normalizes only provable singleton Role dispatch dedupe keys;
 the old migration ledger, Messages, Task results and unconfirmed effects remain
-unchanged. Ordinary opens require storage 35. Existing Homes advance only through
+unchanged. Ordinary opens require storage 37. Existing Homes advance only through
 the explicit upgrade boundary; no runtime dual-reader is added.
 
 This is a breaking pre-1.0 change:
@@ -118,6 +118,15 @@ files in `runtime/session-owners` block this cutover: use the old release to
 inspect and settle their exact resources, then explicitly archive obsolete
 files outside the active Home. The migration does not kill, infer ownership,
 repair malformed records or rewrite immutable Session Manifests.
+
+Storage 35→36 preserves historical Agent errors and explicitly marks missing
+failure configuration as unavailable. Storage 36→37 narrows recorded failure
+context to native metadata-query inputs, preserving the original snapshot and
+empty optional identity placeholders in migration audit. Current error readers
+do not depend on the execution snapshot protocol or reconstruct missing history.
+Configuration rejection preserves input without automatic retry; an authorized
+Agent can inspect failure-scoped model capabilities, correct the intended
+configuration, and explicitly retry the rejected notification.
 
 `task turn` and the `yui-dev` completion identity are no longer supported.
 Before rollout, replace Sessions whose old Manifest still names `task turn`,

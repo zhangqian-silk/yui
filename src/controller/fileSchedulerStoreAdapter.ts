@@ -91,6 +91,7 @@ import { activeRoleAgentBinding } from "../role/role.js";
 import { SYSTEM_OPERATOR_ROLE } from "../role/systemRoles.js";
 import type { AgentDriverRegistry } from "../runtime/agentDriver.js";
 import { standardAgentError } from "../runtime/agentError.js";
+import { recordTaskAgentError } from "./taskAgentError.js";
 import {
   builtinAgentDriverRegistry
 } from "../runtime/builtinAgentDrivers.js";
@@ -143,6 +144,7 @@ import type {
 } from "../runtime/runtimeSessionCandidate.js";
 import { recordLeaderFailure } from "../scheduler/leaderFailure.js";
 import {
+  enqueueSupervisorEvent,
   recordLeaderAttentionRequired,
   routeRoleEvent
 } from "../scheduler/operatorEvent.js";
@@ -976,37 +978,24 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         const run = input.fence.runId === undefined
           ? null
           : store.getRun(taskId, input.fence.runId);
-        const errorEvent = createTaskEvent(
-          store.nextEventId(taskId),
-          taskId,
-          "runtime.agent-error",
-          {
-            sourceEventId: input.eventId,
+        const errorSessions = store.getTaskRoleSessionSet(taskId, input.fence.roleName);
+        const errorSession = [...Object.values(errorSessions?.sessions ?? {}), ...(errorSessions?.history ?? [])]
+          .find(session => session.nativeSessionId === input.fence.nativeSessionId
+            && session.agentId === input.fence.agentId);
+        const effective = run?.effective ?? errorSession?.effective;
+        const { event: errorEvent, created } = recordTaskAgentError(store, {
+          taskId, roleName: input.fence.roleName, sourceEventId: input.eventId,
+          agentId: input.fence.agentId, adapterId: effective?.adapterId ?? "unknown",
+          driverId: input.fence.driverId, error, effective,
+          evidence: {
             observationEventId,
-            runId: input.fence.runId ?? "",
-            roleName: input.fence.roleName,
-            agentId: input.fence.agentId,
-            adapterId: run?.effective.adapterId ?? "unknown",
-            driverId: input.fence.driverId,
-            nativeSessionId: input.fence.nativeSessionId ?? "",
-            nativeTurnId: input.fence.nativeTurnId ?? "",
-            source: error.source,
-            phase: error.phase,
-            category: error.category,
-            code: error.code,
-            message: error.message,
-            raw: error.raw,
-            inputDisposition: error.inputDisposition,
-            sessionDisposition: error.sessionDisposition,
-            ...(error.retryAfterMs === undefined
-              ? {}
-              : { retryAfterMs: String(error.retryAfterMs) }),
-            ...(failure.lastOutput === undefined ? {} : { lastOutput: failure.lastOutput })
+            runId: input.fence.runId,
+            nativeSessionId: input.fence.nativeSessionId,
+            nativeTurnId: input.fence.nativeTurnId,
+            lastOutput: failure.lastOutput
           },
-          now
-        );
-        store.saveEvent(taskId, errorEvent);
-        if (!providerRetryPending(store.getTaskRoleSessionSet(taskId, input.fence.roleName)?.providerBinding)) routeRoleEvent(
+        }, now);
+        if (created && !providerRetryPending(store.getTaskRoleSessionSet(taskId, input.fence.roleName)?.providerBinding)) routeRoleEvent(
           store,
           errorEvent,
           input.fence.roleName,
@@ -1700,52 +1689,24 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         raw: input.raw,
         inputDisposition: input.status === "delivery-unknown" ? "unknown" : "not-accepted"
       });
-      const errorEvent = createTaskEvent(
-        store.nextEventId(input.taskId),
-        input.taskId,
-        "runtime.agent-error",
-        {
-          sourceEventId: input.attemptId,
-          runId: input.runId ?? "",
-          roleName: input.roleName,
-          agentId: run?.effective.agentId ?? sessions.activeAgentId,
-          adapterId: run?.effective.adapterId ?? session?.adapterId ?? "unknown",
-          driverId: driver?.id ?? "unknown",
-          // No native Turn exists at submission resolution, and the Session
-          // facts may be absent. An unknown fact is an absent key: an empty
-          // string reads back as a real value and cannot be told apart from
-          // one the Provider genuinely reported.
-          ...optionalEventFields({
-            nativeSessionId: session?.nativeSessionId
-          }),
-          source: error.source,
-          phase: error.phase,
-          category: error.category,
-          code: error.code,
-          message: error.message,
-          raw: error.raw,
-          inputDisposition: error.inputDisposition,
-          sessionDisposition: error.sessionDisposition
-        },
-        input.now
-      );
-      store.saveEvent(input.taskId, errorEvent);
-      if (input.status === "deferred" || providerRetryPending(updated)) return;
-      const route = input.roleName === "leader"
-        ? { kind: "operator" } as const
-        : { kind: "role", taskId: input.taskId, roleName: "leader" } as const;
-      enqueueWork(
-        store,
-        route,
+      const { event: errorEvent, created } = recordTaskAgentError(store, {
+        taskId: input.taskId, roleName: input.roleName, sourceEventId: input.attemptId,
+        agentId: run?.effective.agentId ?? sessions.activeAgentId,
+        adapterId: adapterId ?? "unknown", driverId: driver?.id ?? "unknown",
+        error, effective: run?.effective ?? session?.effective,
+        evidence: {
+          attemptId: input.attemptId,
+          runId: input.runId,
+          nativeSessionId: session?.nativeSessionId
+        }
+      }, input.now);
+      if (!created || input.status === "deferred" || providerRetryPending(updated)) return;
+      enqueueSupervisorEvent(
+        store, errorEvent, input.roleName === "leader" ? "operator" : "leader",
         input.roleName === "leader"
           ? "leader-turn-submission-error"
           : wakeReason("agent-error", errorEvent.id),
-        input.now,
-        [{ type: "event", taskId: input.taskId, id: errorEvent.id }],
-        {
-          source: driver?.id ?? "agent-host",
-          dedupeKey: `agent-error:${input.taskId}:${input.attemptId}`
-        }
+        input.now
       );
     });
   }
@@ -1833,7 +1794,8 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
   recordAgentError(input: Readonly<{
     taskId: string;
     roleName: string;
-    runId: string;
+    runId?: string;
+    effective?: EffectiveLaunchSnapshot;
     source: import("../runtime/agentError.js").AgentErrorSource;
     phase: import("../runtime/agentError.js").AgentErrorPhase;
     message: string;
@@ -1848,15 +1810,19 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       import("../runtime/agentError.js").AgentErrorRegistrationDisposition;
   }>, now: Date): string {
     return this.store.transaction((store) => {
-      const run = store.getRun(input.taskId, input.runId);
+      if (input.runId === undefined && input.attemptId === undefined) {
+        throw new Error("An Agent error needs an exact Run or notification attempt.");
+      }
+      const run = input.runId === undefined ? null : store.getRun(input.taskId, input.runId);
       const sessionSet = store.getTaskRoleSessionSet(input.taskId, input.roleName);
-      const sessionAgentId = run?.effective.agentId ?? sessionSet?.activeAgentId;
+      const effective = input.effective ?? run?.effective;
+      const sessionAgentId = effective?.agentId ?? sessionSet?.activeAgentId;
       const session = sessionAgentId === undefined
         ? undefined
         : sessionSet?.sessions[sessionAgentId];
-      const driver = run === null
+      const driver = effective === undefined
         ? null
-        : this.drivers.findByAdapterId(run.effective.adapterId);
+        : this.drivers.findByAdapterId(effective.adapterId);
       const error = standardAgentError({
         source: input.source,
         phase: input.phase,
@@ -1873,64 +1839,21 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
           ? {}
           : { sessionDisposition: input.sessionDisposition })
       });
-      const duplicate = [...store.listEvents(input.taskId)].reverse().find((event) => (
-        event.type === "runtime.agent-error"
-        && event.payload.runId === input.runId
-        && event.payload.roleName === input.roleName
-        && event.payload.phase === input.phase
-        && event.payload.attemptId === input.attemptId
-        && event.payload.source === error.source
-        && event.payload.inputDisposition === error.inputDisposition
-        && event.payload.sessionDisposition === error.sessionDisposition
-        && event.payload.registrationDisposition === input.registrationDisposition
-        && event.payload.hostState === input.hostState
-        && (input.attemptId === undefined
-          ? event.payload.raw === error.raw
-          : event.payload.message === error.message
-            && event.payload.errorName === input.errorName
-            && event.payload.causeName === input.causeName)
-      ));
-      // Re-reading one failed attempt may add a different caller stack, not a
-      // new execution fact. Preserve its first full cause without multiplying
-      // notifications; changed disposition/identity/diagnostic remains visible.
-      if (duplicate !== undefined) return duplicate.id;
-      const event = createTaskEvent(
-        store.nextEventId(input.taskId),
-        input.taskId,
-        "runtime.agent-error",
-        {
-          sourceEventId: `${input.runId}:${input.phase}${input.attemptId === undefined ? "" : `:${input.attemptId}`}`,
-          runId: input.runId,
-          roleName: input.roleName,
-          agentId: run?.effective.agentId ?? session?.agentId ?? "unknown",
-          adapterId: run?.effective.adapterId ?? session?.adapterId ?? "unknown",
-          driverId: driver?.id ?? "unknown",
-          source: error.source,
-          phase: error.phase,
-          category: error.category,
-          code: error.code,
-          message: error.message,
-          raw: error.raw,
-          inputDisposition: error.inputDisposition,
-          sessionDisposition: error.sessionDisposition,
-          // Structured facts from the failing operation. Absent keys stay
-          // absent rather than becoming an empty string, so a reader can tell
-          // "the Host did not report this" from "the Host reported nothing".
-          // The Session identities follow the same rule: this failure can
-          // happen before any Session record exists, and there is no native
-          // AgentRun to name at all.
-          ...optionalEventFields({
-            nativeSessionId: session?.nativeSessionId,
-            errorName: input.errorName,
-            causeName: input.causeName,
-            hostState: input.hostState,
-            attemptId: input.attemptId,
-            registrationDisposition: input.registrationDisposition
-          })
-        },
-        now
-      );
-      store.saveEvent(input.taskId, event);
+      const { event, created } = recordTaskAgentError(store, {
+        taskId: input.taskId, roleName: input.roleName,
+        sourceEventId: `${input.runId ?? input.attemptId}:${input.phase}${
+          input.runId === undefined || input.attemptId === undefined ? "" : `:${input.attemptId}`}`,
+        agentId: effective?.agentId ?? session?.agentId ?? "unknown",
+        adapterId: effective?.adapterId ?? session?.adapterId ?? "unknown",
+        driverId: driver?.id ?? "unknown", error, effective,
+        evidence: {
+          runId: input.runId, attemptId: input.attemptId, nativeSessionId: session?.nativeSessionId,
+          errorName: input.errorName, causeName: input.causeName, hostState: input.hostState,
+          registrationDisposition: input.registrationDisposition
+        }
+      }, now);
+      if (!created) return event.id;
+      if (store.getTask(input.taskId)?.status === "archived") return event.id;
       if (input.phase === "turn-submit" && error.inputDisposition === "unknown"
         && input.attemptId !== undefined && sessionSet?.providerBinding?.run?.attemptId === input.attemptId
         && sessionSet.providerBinding.run.status === "submitting") {
@@ -1946,32 +1869,8 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         && ["host-start", "session-start", "session-restore", "turn-submit"].includes(
           input.phase
         );
-      if (!leaderCannotReceive) {
-        enqueueWork(
-          store,
-          { kind: "role", taskId: input.taskId, roleName: "leader" },
-          wakeReason("agent-error", event.id),
-          now,
-          [{ type: "event", taskId: input.taskId, id: event.id }],
-          {
-            source: driver?.id ?? input.source,
-            dedupeKey: `agent-error:${input.taskId}:${input.runId}:${input.phase}:${event.id}`
-          }
-        );
-      }
-      if (leaderCannotReceive) {
-        enqueueWork(
-          store,
-          { kind: "operator" },
-          "leader-agent-error",
-          now,
-          [{ type: "event", taskId: input.taskId, id: event.id }],
-          {
-            source: driver?.id ?? input.source,
-            dedupeKey: `leader-agent-error:${input.taskId}:${input.runId}:${event.id}`
-          }
-        );
-      }
+      enqueueSupervisorEvent(store, event, leaderCannotReceive ? "operator" : "leader",
+        leaderCannotReceive ? "leader-agent-error" : wakeReason("agent-error", event.id), now);
       return event.id;
     });
   }
@@ -2383,8 +2282,10 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
           return null;
         }
         if (native?.status === "rejected" || previous?.payload.outcome === "rejected") {
-          this.settleLeaderNotification(taskId, attemptId, "rejected", now);
-          return null;
+          if (previous?.payload.outcome !== "rejected") {
+            this.settleLeaderNotification(taskId, attemptId, "rejected", now);
+          }
+          return { wakeId, attemptId, disposition: "rejected" };
         }
         if (native?.status === "submitting") return { wakeId, attemptId, disposition: "pending" };
         if (native?.status !== "deferred" && previous?.payload.outcome !== "deferred") {
@@ -2460,7 +2361,9 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
   }
 
   settleLeaderNotification(taskId: string, attemptId: string,
-    outcome: "accepted" | "deferred" | "rejected" | "unknown", now: Date, detail?: string): void {
+    outcome: "accepted" | "deferred" | "rejected" | "unknown", now: Date, detail?: string,
+    failure?: Readonly<{ effective: EffectiveLaunchSnapshot; raw: string;
+      phase: import("../runtime/agentError.js").AgentErrorPhase }>): void {
     this.store.transaction((store) => {
       const target = { kind: "role", taskId, roleName: "leader" } as const;
       const mailbox = store.getWorkMailbox(target);
@@ -2469,17 +2372,33 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         || !processing.owner.startsWith("leader-notification:")) return;
       if (!store.listEvents(taskId).some((event) => event.type === "notification.delivery"
         && event.payload.attemptId === attemptId && event.payload.outcome === outcome)) {
+        // Native ingress may already have persisted the same rejection. Reuse
+        // that original failure rather than reporting it twice from the caller.
+        const existing = store.listEventsByType(taskId, ["runtime.agent-error"])
+          .find(event => event.payload.roleName === "leader"
+            && (event.payload.attemptId === attemptId || event.payload.sourceEventId === attemptId));
+        const errorEventId = existing?.id ?? (failure !== undefined
+          && (outcome === "rejected" || outcome === "unknown")
+          ? this.recordAgentError({
+              taskId, roleName: "leader", attemptId, effective: failure.effective,
+              source: "host", phase: failure.phase,
+              message: detail ?? `Notification ${outcome}.`, raw: failure.raw,
+              inputDisposition: outcome === "unknown" ? "unknown" : "not-accepted",
+              ...(failure.phase === "session-start" ? { registrationDisposition: "not-committed" as const } : {})
+            }, now) : undefined);
         store.saveEvent(taskId, createTaskEvent(store.nextEventId(taskId), taskId,
-          "notification.delivery", { attemptId, outcome, ...(detail === undefined ? {} : { detail }) }, now));
+          "notification.delivery", { attemptId, outcome, ...(detail === undefined ? {} : { detail }),
+            ...(errorEventId === undefined ? {} : { errorEventId }) }, now));
       }
       if (store.getTask(taskId)?.status === "archived") return;
-      if (outcome !== "accepted" && outcome !== "rejected") return;
+      // Rejection proves nondelivery, not consumption of the original input.
+      // Keep the exact claim as the existing recovery/completion boundary.
+      // An explicit retry or Session replacement can release it later.
+      if (outcome !== "accepted") return;
       store.saveWorkMailbox(completeProcessing(mailbox, attemptId));
-      if (outcome === "accepted") {
-        const wakeId = processing.owner.slice("leader-notification:".length);
-        const wake = store.listTaskWakes(taskId).find((entry) => entry.id === wakeId);
-        if (wake !== undefined) store.saveTaskWake(taskId, markTaskWakeConsumed(wake, now));
-      }
+      const wakeId = processing.owner.slice("leader-notification:".length);
+      const wake = store.listTaskWakes(taskId).find((entry) => entry.id === wakeId);
+      if (wake !== undefined) store.saveTaskWake(taskId, markTaskWakeConsumed(wake, now));
     });
   }
 
@@ -4237,22 +4156,6 @@ function requireRole(store: TaskStore, taskId: string, roleName: string) {
   return role;
 }
 
-
-/**
- * Keeps only the fields the caller actually knew. Event payloads are a
- * string map, so an unknown fact has to be an absent key: writing `""` would
- * claim the Host reported an empty value.
- */
-function optionalEventFields(
-  fields: Readonly<Record<string, string | undefined>>
-): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(fields).filter(
-      (entry): entry is [string, string] =>
-        typeof entry[1] === "string" && entry[1].trim().length > 0
-    )
-  );
-}
 
 function runtimeObservationTelemetryEntry(
   input: RuntimeObservation

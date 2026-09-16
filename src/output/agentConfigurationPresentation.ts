@@ -1,5 +1,5 @@
-import type {
-  ResolvedAgentConfigurationCatalog
+import {
+  agentModelOptionsSummary, type ResolvedAgentConfigurationCatalog
 } from "../executor/agentConfigurationCatalog.js";
 import { renderAgentConfigurationResolutionNotice } from "../cli/agentConfigurationPicker.js";
 import { agentHandshakeLine } from "./agentRunConfigurationPresentation.js";
@@ -46,6 +46,7 @@ export function renderAgentConfigurationCatalog(
           modelRows,
           defaultTableWidth()
         ),
+    agentModelOptionsSummary(catalog),
     ...(fieldRows.length === 0
       ? []
       : [renderTable(

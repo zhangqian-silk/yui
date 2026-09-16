@@ -189,7 +189,7 @@ export function renderAgentConfigurationResolutionNotice(
   const lines: string[] = [];
   if (resolved.source === "cache") {
     lines.push(
-      `! Runtime capability request failed (${resolved.failure?.message ?? "unknown failure"}). `
+      (resolved.failure === undefined ? "" : `! Runtime capability request failed (${resolved.failure.message}). `)
       + `Showing cached options from ${resolved.fetchedAt ?? "an earlier request"}; they may be stale.`
     );
   } else if (resolved.source === "fallback") {
