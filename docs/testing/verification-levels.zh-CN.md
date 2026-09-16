@@ -125,6 +125,12 @@ package smoke 覆盖，不在 core 中维护第二套 daemon 矩阵。
 归档预检新增三个可丢弃 Git/SQLite 场景，测试体约一秒；更广的 owner/诊断组合
 保留为临时验证证据，不形成第二套永久矩阵。
 
+新增的入口与 GC 回归还验证：实际 CLI 拒绝旧 Operator 写入、Task 角色修改
+Home 设置和跨 Task 查询，同时保留正常读取与当前 Operator 操作；
+Job 读取在 Controller 入口执行 Context 范围检查。真实本地 runtime 目录
+只移动一次，隔离、恢复与清除可闭环；最新持久所有权优先于旧清理计划，
+Task 重新打开后不能被 purge。
+
 ## Skill 与指令变更
 
 一并审阅共享的 Runtime 合同和受影响的 Role/Project Skill。用几个相关场景检查指令

@@ -35,6 +35,29 @@ export type ManagedCallerStore = Pick<
   "getRole" | "getActiveRun" | "getTaskRoleSessionSet" | "listEventsByType"
 >;
 
+export type ManagedGlobalCallerStore = Pick<TaskStore, "getGlobalRole" | "getGlobalRoleSessionSet">;
+
+/** Global writes use the same command-time native identity as Task writes.
+ * A Manifest locates context; it is not continuing mutation authority. */
+export function requireManagedGlobalCaller(store: ManagedGlobalCallerStore, env: NodeJS.ProcessEnv) {
+  const name = identity(env.YUI_ROLE);
+  const role = name === undefined ? null : store.getGlobalRole(name);
+  const binding = role?.agentBindings[role.activeAgentId];
+  const set = name === undefined ? null : store.getGlobalRoleSessionSet(name);
+  const session = set?.sessions[set.activeAgentId];
+  const nativeSessionId = identity(binding?.adapterId === "codex"
+    ? env.CODEX_THREAD_ID ?? env.YUI_NATIVE_SESSION_ID : env.YUI_NATIVE_SESSION_ID);
+  if (env.YUI_SESSION_SCOPE !== "global" || env.YUI_TASK_ID !== undefined
+    || !role || !binding || !set || !session || session.status !== "active"
+    || set.activeAgentId !== role.activeAgentId || session.agentId !== binding.agentId
+    || session.adapterId !== binding.adapterId || nativeSessionId !== session.nativeSessionId
+    || (env.YUI_AGENT_ID !== undefined && env.YUI_AGENT_ID !== session.agentId)
+    || (env.YUI_ADAPTER_ID !== undefined && env.YUI_ADAPTER_ID !== session.adapterId)) {
+    throw new ManagedRuntimeDriftError("This command requires the current managed global native Session; the previous Session has no write authority.");
+  }
+  return { roleName: role.name, agentId: session.agentId, adapterId: session.adapterId, nativeSessionId };
+}
+
 /** Immutable self-identity a managed Task Session asserts about its own process. */
 export type ManagedTaskSessionIdentity = Readonly<{
   taskId: string;

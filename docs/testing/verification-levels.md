@@ -169,6 +169,12 @@ is required.
     Plugin replacement retains delayed old-generation cleanup errors without
     undoing a newer selection. A shared validator rejects bad record writes,
     ordinary/Context reads and full-Home health checks without repairing data.
+33. Built CLI calls refuse replaced Operator writes, Task-owned Home mutations
+    and foreign-Task queries while retaining legitimate reads and current
+    Operator actions. Job reads enforce Context scope at the Controller port.
+    Real local runtime directories move once through quarantine/restore/purge;
+    current durable ownership overrides a stale cleanup plan and prevents
+    purging a reopened Task.
 
 Keep the test phase seconds-scale; measure TypeScript build separately. Record
 incremental runtime when adding a critical regression. The seven recovery boundary

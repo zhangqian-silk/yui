@@ -9,7 +9,6 @@ import {
 } from "../errors/cliError.js";
 import { createTaskEvent, type TaskEventPayload } from "../event/taskEvent.js";
 import {
-  activeLiveRoleAgentSession,
   type TaskRoleSessionSet
 } from "../executor/agentExecutor.js";
 import {
@@ -26,7 +25,7 @@ import {
 import { defaultTableWidth, renderTable } from "../output/table.js";
 import { formatTimestamp } from "../output/timePresentation.js";
 import { type Role } from "../role/role.js";
-import { requireManagedTaskCaller } from "../runtime/managedCaller.js";
+import { requireManagedTaskCaller, requireManagedGlobalCaller } from "../runtime/managedCaller.js";
 import {
   isRoleRunStalled,
   RUN_RECOVERED_EVENT
@@ -363,27 +362,10 @@ export function isCurrentGlobalOperator(
     || (environment.YUI_ROLE !== undefined && environment.YUI_ROLE !== "operator")
     || environment.YUI_TASK_ID !== undefined
   ) return false;
-  const role = store.getGlobalRole("operator");
-  if (role === null) return false;
-  const binding = role.agentBindings[role.activeAgentId];
-  if (binding === undefined) return false;
-  const sessions = store.getGlobalRoleSessionSet(role.name);
-  const session = activeLiveRoleAgentSession(sessions);
-  if (sessions === null || session === null || sessions.activeAgentId !== role.activeAgentId) {
-    return false;
-  }
-  // The provider's conversation survives Host restarts and entry-point changes.
-  // Prefer its command-time identity over a launch-time environment snapshot.
-  // A launch reservation alone is not a registered Operator conversation.
-  const nativeSessionId = exactIdentity(
-    binding.adapterId === "codex"
-      ? environment.CODEX_THREAD_ID ?? environment.YUI_NATIVE_SESSION_ID
-      : environment.YUI_NATIVE_SESSION_ID
-  );
-  return binding.agentId === session.agentId
-    && binding.adapterId === session.adapterId
-    && nativeSessionId !== undefined
-    && nativeSessionId === session.nativeSessionId;
+  try {
+    requireManagedGlobalCaller(store, { ...environment, YUI_SESSION_SCOPE: "global", YUI_ROLE: "operator" });
+    return true;
+  } catch { return false; }
 }
 
 function inputAnswerer(environment: NodeJS.ProcessEnv | undefined): "user" | "operator" {
@@ -555,12 +537,6 @@ function requiredText(value: string | undefined, label: string): string {
   return normalized;
 }
 
-
-function exactIdentity(value: string | undefined): string | undefined {
-  if (value === undefined || value.includes("\0")) return undefined;
-  const normalized = value.trim();
-  return normalized.length === 0 || normalized !== value ? undefined : normalized;
-}
 
 function timeoutAfter(now: Date, value: string): string {
   if (!/^[1-9][0-9]*$/.test(value)) {

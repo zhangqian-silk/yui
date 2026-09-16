@@ -144,4 +144,8 @@ export class SqliteResourceRegistry {
   close(): void {
     this.#db.close();
   }
+
+  transaction<T>(operation: () => T): T {
+    return this.#db.transaction(operation).immediate();
+  }
 }

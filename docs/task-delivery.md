@@ -258,6 +258,19 @@ operations for safe cleanup; no background retry or broader deletion authority
 is implied. Both archive paths preserve Task history and recovery information.
 Archived Tasks cannot reopen.
 
+Resource GC is a separate, opt-in quarantine path. A runtime subtree moves once:
+the parent receipt owns recovery of its contents, and redundant child registry
+entries are removed in the same registry transaction. Independently owned Git
+worktrees or retained descendants prevent moving their enclosing directory.
+Task records and results are never removed by this consolidation.
+
+The plan is not cleanup authority. Apply and purge re-read Task status, managed
+workspaces, active Runs and unsettled Jobs under the existing SQLite writer
+fence, which spans the bounded physical mutation and registry update. A reopened
+Task or new durable owner prevents quarantine/deletion; uncertainty retains the
+resource with a diagnosis. Reopened quarantined resources can be restored.
+This adds neither a retry worker nor another persistent ownership protocol.
+
 `yui task archive-preflight <task> (--integrated|--abandon) [--force] [--json]`
 reads current admission, delivery and exact-owner cleanup checks in one report.
 It is available before and after archive, including to the Task's authorized

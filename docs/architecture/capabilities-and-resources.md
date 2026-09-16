@@ -105,6 +105,18 @@ failure contract.
 
 ## CLI and Web
 
+Ordinary Global CLI operations require the Role's current native Session;
+an old Manifest is a context pointer, not continuing write authority. Historical
+self-context reads and the explicit offline diagnostic/recovery routes remain
+available. Home configuration and resource-GC mutations belong to the user or
+current Operator, never a Task Worker. Configuration reads remain available.
+
+Managed Task commands cannot name a different Task. Independent Brief,
+Decision, Milestone, Event and Job reads share Context's readable references;
+an Assignment does not gain a wider view by selecting another query command.
+Job read RPCs carry an explicit caller, and the Controller enforces the scope.
+Current WorkItem Jobs remain visible to their assigned Worker.
+
 A Surface contribution is derived from the Registry's currently authorized
 catalog; there is no second catalog or Host. A CLI contribution uses the
 capability's original name. A Web panel accepts only controlled text, an HTTP(S)

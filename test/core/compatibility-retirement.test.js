@@ -114,8 +114,8 @@ test("unproven handover lock identity stays fenced and untouched", t => {
 
 test("GC keeps unsupported recovery evidence while current move-based quarantine remains reversible", async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-contract-gc-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
-  new SqliteTaskStore(home).close();
+  const store = new SqliteTaskStore(home);
+  t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
   const now = new Date("2026-09-14T00:00:00Z");
   const saved = join(home, "quarantine", "preserved");
   mkdirSync(saved, { recursive: true });
@@ -138,7 +138,7 @@ test("GC keeps unsupported recovery evidence while current move-based quarantine
     const purge = await purgeResourceQuarantine(home, {
       now: new Date(now.getTime() + 48 * 3_600_000), ttlHours: 1,
       liveReferencePorts: { processCwdRefs: () => new Map(), tmuxPaneCwds: async () => [] }
-    });
+    }, store);
     assert.equal(purge.purged.length, 0);
     assert.equal(readFileSync(join(saved, "evidence"), "utf8"), "original");
     assert.equal(existsSync(record.path), false);

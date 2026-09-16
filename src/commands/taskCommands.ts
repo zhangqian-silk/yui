@@ -730,7 +730,7 @@ export function runTaskCommand(
     case "brief": return taskBriefCommand(rest, store, options);
     case "decision": return taskDecisionCommand(rest, store, options);
     case "milestone": return taskMilestoneCommand(rest, store, options);
-    case "event": return taskEventCommand(rest, store);
+    case "event": return taskEventCommand(rest, store, options);
     case "continuation": return taskContinuationCommand(rest, store);
     default:
       throw usageError(command === undefined

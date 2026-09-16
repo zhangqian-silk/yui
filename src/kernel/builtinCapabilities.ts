@@ -356,7 +356,7 @@ export function createBuiltinCapabilities(
         });
       }
       if (name === "job.get") {
-        const job = jobs.getJob(taskId, params.jobId as string);
+        const job = jobs.getJob(taskId, params.jobId as string, caller);
         if (!job) throw new Error(`Job not found: ${taskId}/${params.jobId}.`);
         const operation = inspectJobOperation(job);
         invocation.observe(operation);

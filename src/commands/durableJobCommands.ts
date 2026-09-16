@@ -82,8 +82,9 @@ async function getJob(
   options: DurableJobCommandOptions
 ): Promise<string> {
   const ref = parseRefArgs(args, "get");
+  const caller = resolveJobCaller(options.environment, ref.taskId);
   await ensureFileTaskController(options.home, { environment: options.environment });
-  const job = await getDurableJob(options.home, ref.taskId, ref.jobId);
+  const job = await getDurableJob(options.home, ref.taskId, ref.jobId, caller);
   if (options.json === true) return `${JSON.stringify(job, null, 2)}\n`;
   const lines = [
     `Job ${job.id} (task ${job.taskId})`,

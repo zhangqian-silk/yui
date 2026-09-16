@@ -2243,7 +2243,7 @@ export async function startFileTaskController(
         }
         if (method === "job.get") {
           const ref = parseDurableJobRefParams(params);
-          const job = control.getJob(ref.taskId, ref.jobId);
+          const job = control.getJob(ref.taskId, ref.jobId, ref.caller);
           if (job === null) {
             throw controllerApplicationError(
               "NOT_FOUND",

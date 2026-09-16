@@ -1,4 +1,5 @@
 import { createTaskBrief, updateTaskBrief } from "../brief/taskBrief.js";
+import { assertContextRecordReadable, contextRecordReader } from "../context/taskContext.js";
 import {
   enqueueWork
 } from "../coordination/workMailboxQueue.js";
@@ -39,6 +40,7 @@ export function taskBriefCommand(
   if (command === "show") {
     exactPositionals(rest, 1, "Task brief show usage: yui task brief show <task>.");
     const task = requireTask(store, rest[0]);
+    assertContextRecordReadable(store, task.id, "task-brief", task.id, options.environment);
     const brief = store.getTaskBrief(task.id);
     if (brief === null) {
       return output(`Task ${task.id} has no brief.\n`, { taskId: task.id, brief: null });
@@ -164,7 +166,8 @@ export function taskDecisionCommand(
     const parsed = parseTail(rest, new Set(["--status"]), usage);
     exactPositionals(parsed.positionals, 1, usage);
     const task = requireTask(store, parsed.positionals[0]);
-    let decisions = store.listDecisions(task.id);
+    const readable = contextRecordReader(store, task.id, options.environment);
+    let decisions = store.listDecisions(task.id).filter(record => readable("task-decision", record.id));
     const status = parsed.options.get("--status");
     if (status !== undefined) {
       if (status !== "active" && status !== "superseded") {
@@ -191,6 +194,7 @@ export function taskDecisionCommand(
   if (command === "show") {
     exactPositionals(rest, 2, "Task decision show usage: yui task decision show <task> <decision>.");
     const task = requireTask(store, rest[0]);
+    assertContextRecordReadable(store, task.id, "task-decision", rest[1]!, options.environment);
     const decision = store.getDecision(task.id, rest[1]);
     if (decision === null) throw dataError(`Decision not found: ${rest[1]}.`);
     const timeZone = store.getConfig().timeZone;
@@ -281,7 +285,8 @@ export function taskMilestoneCommand(
   if (command === "list") {
     exactPositionals(rest, 1, "Task milestone list usage: yui task milestone list <task>.");
     const task = requireTask(store, rest[0]);
-    const milestones = store.listMilestones(task.id);
+    const readable = contextRecordReader(store, task.id, options.environment);
+    const milestones = store.listMilestones(task.id).filter(record => readable("task-milestone", record.id));
     if (milestones.length === 0) {
       return output(`No milestones found for ${task.id}.\n`, { taskId: task.id, milestones: [] });
     }
@@ -300,6 +305,7 @@ export function taskMilestoneCommand(
   if (command === "show") {
     exactPositionals(rest, 2, "Task milestone show usage: yui task milestone show <task> <milestone>.");
     const task = requireTask(store, rest[0]);
+    assertContextRecordReadable(store, task.id, "task-milestone", rest[1]!, options.environment);
     const milestone = store.getMilestone(task.id, rest[1]);
     if (milestone === null) throw dataError(`Milestone not found: ${rest[1]}.`);
     const timeZone = store.getConfig().timeZone;
@@ -320,7 +326,8 @@ export function taskMilestoneCommand(
 
 export function taskEventCommand(
   args: string[],
-  store: TaskWorkflowStore
+  store: TaskWorkflowStore,
+  options: TaskCommandOptions = {}
 ): TaskCommandExecution {
   const [command, ...rest] = args;
   if (command === "list") {
@@ -328,7 +335,8 @@ export function taskEventCommand(
     const parsed = parseTail(rest, new Set(["--after", "--limit"]), eventListUsage);
     exactPositionals(parsed.positionals, 1, eventListUsage);
     const task = requireTask(store, parsed.positionals[0]);
-    let events = store.listEvents(task.id);
+    const readable = contextRecordReader(store, task.id, options.environment);
+    let events = store.listEvents(task.id).filter(record => readable("task-event", record.id));
     const after = optionalNonEmptyOption(parsed.options, "--after");
     if (after !== undefined) {
       const afterMs = Date.parse(after);
@@ -359,6 +367,7 @@ export function taskEventCommand(
   if (command === "show") {
     exactPositionals(rest, 2, "Task event show usage: yui task event show <task> <event>.");
     const task = requireTask(store, rest[0]);
+    assertContextRecordReadable(store, task.id, "task-event", rest[1]!, options.environment);
     const events = store.listEvents(task.id);
     const event = events.find((e) => e.id === rest[1]) ?? null;
     if (event === null) throw dataError(`Event not found: ${rest[1]}.`);

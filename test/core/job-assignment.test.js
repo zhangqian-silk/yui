@@ -66,6 +66,7 @@ test("Job admission, management and spawn keep a Worker inside its current Assig
   const control = createDurableJobControl(store);
   const own = control.startJob(params, at);
   assert.equal(own.created, true);
+  assert.equal(control.getJob(task.id, own.job.id, caller("worker")).id, own.job.id);
   authorizeJobStart(store, own.job);
   assert.equal(control.startJob(params, at).job.id, own.job.id);
   const outside = { ...params, requestId: "main-check", owner: { kind: "task" }, head, workspace: main };
@@ -81,6 +82,7 @@ test("Job admission, management and spawn keep a Worker inside its current Assig
   // An older queued record must also be rejected at the actual spawn boundary.
   assert.throws(() => authorizeJobStart(store, { ...own.job, owner: outside.owner, workspace: main, head }), /[Aa]ssignment/);
   const leaderJob = control.startJob({ ...outside, caller: caller("leader") }, at).job;
+  assert.throws(() => control.getJob(task.id, leaderJob.id, caller("worker")), /Assignment/i);
   assert.throws(() => control.cancelJob(task.id, leaderJob.id, at, caller("worker")), /[Aa]ssignment/);
   assert.throws(() => control.acknowledgeJob(task.id, leaderJob.id, at, caller("worker")), /[Aa]ssignment/);
   assert.equal(store.getDurableJob(task.id, leaderJob.id).cancelRequestedAt, undefined);

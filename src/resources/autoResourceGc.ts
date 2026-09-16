@@ -12,10 +12,10 @@
  */
 
 import type { TaskStore } from "../storage/taskStore.js";
-import type { ManagedWorkspace } from "../worktree/managedWorkspace.js";
 import {
   applyResourceGc,
   planResourceGc,
+  readResourceGcState,
 } from "./resourceGc.js";
 import {
   resolveResourcesGcAutoQuarantine,
@@ -47,24 +47,18 @@ export function createResourceAutoGc(options: {
       return { skipped: true, applied: 0, failed: 0, restored: 0 };
     }
     const now = new Date();
-    const projects = store.listProjects();
-    const managedWorkspaces = collectManagedWorkspaces(store);
-    const taskStatusById = collectTaskStatuses(store);
     const input = {
       home,
-      projects,
-      managedWorkspaces,
-      taskStatusById,
+      ...readResourceGcState(store),
       mode: "quarantine" as const,
       now,
       quarantineTtlHours: resolveResourcesQuarantineTtlHours(
         config.resourcesQuarantineTtlHours
       ),
-      environment,
-      activeWorkspaceOwnerPaths: collectActiveWorkspaceOwnerPaths(store)
+      environment
     };
     const plan = await planResourceGc(input);
-    const result = await applyResourceGc(input, plan);
+    const result = await applyResourceGc(input, plan, store);
     return {
       skipped: false,
       applied: result.applied.length,
@@ -72,38 +66,4 @@ export function createResourceAutoGc(options: {
       restored: result.restored.length
     };
   };
-}
-
-function collectManagedWorkspaces(store: TaskStore): ManagedWorkspace[] {
-  const workspaces: ManagedWorkspace[] = [];
-  for (const task of store.listTasks()) {
-    workspaces.push(...store.listManagedWorkspaces(task.id));
-  }
-  return workspaces;
-}
-
-function collectTaskStatuses(store: TaskStore): Map<string, string> {
-  const statuses = new Map<string, string>();
-  for (const task of store.listTasks()) {
-    statuses.set(task.id, task.status);
-  }
-  return statuses;
-}
-
-/**
- * Workspace paths claimed by active durable Jobs. An active AgentRun still
- * holds its workspace even after the managed workspace record is gone, so
- * those paths stay protected until the AgentRun finishes.
- */
-function collectActiveWorkspaceOwnerPaths(store: TaskStore): string[] {
-  const paths: string[] = [];
-  for (const task of store.listTasks()) {
-    for (const run of store.listRuns(task.id)) {
-      if (run.status !== "active") continue;
-      const workspace = run.workspace;
-      if (workspace === undefined) continue;
-      paths.push(workspace.root, ...workspace.entries.map((entry) => entry.path));
-    }
-  }
-  return paths;
 }

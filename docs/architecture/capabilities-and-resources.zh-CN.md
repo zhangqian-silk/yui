@@ -74,6 +74,16 @@ actual 可以为空，必须显式激活。原 Task 可以发现并调用新能�
 
 ## CLI 与 Web
 
+普通 Global CLI 操作要求 Role 当前的原生 Session；旧 Manifest 只是 Context
+指针，不是持续写权限。历史 Session 的自身 Context 读取，以及明确的离线诊断、
+恢复入口仍可使用。Home 配置与资源 GC 修改属于用户或当前 Operator，不能由
+Task Worker 执行；配置读取保持可用。
+
+受管 Task 命令不能指定其他 Task。独立的 Brief、Decision、Milestone、Event
+和 Job 查询复用 Context 的可读引用，不能通过换查询入口扩大 Assignment
+视图。Job 读取 RPC 必须携带调用者，由 Controller 执行范围检查；
+Worker 仍可读取其当前 WorkItem 的 Job。
+
 Surface contribution 由 Registry 当前获授权目录派生，没有第二份目录或 Host。
 CLI contribution 使用能力原名称。Web panel 只接受受控 text、HTTP(S) link 或
 JSON query 描述，不接受作者脚本或任意 HTML。

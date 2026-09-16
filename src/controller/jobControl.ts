@@ -27,10 +27,12 @@ import {
 } from "../job/durableJob.js";
 import { CallAuthority } from "../kernel/callAuthority.js";
 import { redactLaunchText } from "../runtime/launchDiagnostics.js";
-import { requireManagedTaskCaller } from "../runtime/managedCaller.js";
+import { requireManagedTaskCaller, ManagedRuntimeDriftError } from "../runtime/managedCaller.js";
+import { CliError } from "../errors/cliError.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import type { ManagedWorkspace } from "../worktree/managedWorkspace.js";
 import { assertJobAssignmentScope, JobAssignmentScopeError } from "../job/jobAssignmentScope.js";
+import { assertContextRecordReadable } from "../context/taskContext.js";
 
 /**
  * rr8: The caller identity a `job.start`/`job.cancel` request is bound to.
@@ -80,7 +82,7 @@ export type DurableJobStartResult = Readonly<{
 
 export type DurableJobControlPort = Readonly<{
   startJob(params: DurableJobStartParams, now: Date): DurableJobStartResult;
-  getJob(taskId: string, jobId: string): DurableJob | null;
+  getJob(taskId: string, jobId: string, caller: DurableJobCaller): DurableJob | null;
   cancelJob(
     taskId: string,
     jobId: string,
@@ -173,7 +175,19 @@ export function createDurableJobControl(store: TaskStore): DurableJobControlPort
         return { job, created: true };
       });
     },
-    getJob(taskId, jobId) {
+    getJob(taskId, jobId, caller) {
+      if (caller === undefined) throw jobControlError("UNAUTHORIZED", "Job reads require an explicit caller.");
+      try {
+        assertContextRecordReadable(store, taskId, "job", jobId, caller.scope === "user" ? {} : {
+          YUI_SESSION_SCOPE: caller.scope, YUI_TASK_ID: caller.taskId, YUI_ROLE: caller.role,
+          YUI_AGENT_ID: caller.agentId, YUI_ADAPTER_ID: caller.adapterId, YUI_NATIVE_SESSION_ID: caller.nativeSessionId
+        });
+      } catch (error) {
+        if (error instanceof ManagedRuntimeDriftError || (error instanceof CliError && error.code === "USAGE_ERROR")) {
+          throw jobControlError("UNAUTHORIZED", error.message);
+        }
+        throw error;
+      }
       return store.getDurableJob(taskId, jobId);
     },
     cancelJob(taskId, jobId, now, caller) {
@@ -629,25 +643,26 @@ export function parseDurableJobStartParams(value: JsonValue): DurableJobStartPar
 export function parseDurableJobRefParams(value: JsonValue): Readonly<{
   taskId: string;
   jobId: string;
+  caller: DurableJobCaller;
 }> {
   if (
     typeof value !== "object" || value === null || Array.isArray(value)
-    || Object.keys(value).length !== 2
+    || Object.keys(value).length !== 3
   ) {
     throw jobControlError("INVALID_PARAMS", "DurableJob ref params are invalid.");
   }
   const record = value as Readonly<Record<string, JsonValue>>;
   return {
     taskId: requiredId(record.taskId, "DurableJob taskId"),
-    jobId: requiredId(record.jobId, "DurableJob jobId")
+    jobId: requiredId(record.jobId, "DurableJob jobId"),
+    caller: parseCaller(record.caller)
   };
 }
 
 /**
  * rr8: `job.cancel` params carry the caller identity so the Controller can
- * bind the cancel request to the caller's managed scope. Distinct from
- * `parseDurableJobRefParams` (used by `job.get`) because cancel requires the
- * third `caller` key.
+ * bind the cancel request to the caller's managed scope. Reads also carry
+ * an explicit caller but use Context's read authority rather than write authority.
  */
 export function parseDurableJobCancelParams(value: JsonValue): Readonly<{
   taskId: string;

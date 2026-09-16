@@ -9,15 +9,14 @@
  * Safety model:
  * - `planResourceGc` is strictly read-only: it discovers, scans, classifies,
  *   and returns a plan. It never writes the registry or moves files.
- * - `applyResourceGc` re-discovers and re-scans live references immediately
- *   before each mutation, so a stale plan can never release a resource that
- *   gained a reference after planning.
+ * - `applyResourceGc` refreshes discovery and scans each physical subtree.
+ *   Durable owners are re-read under SQLite's writer fence through the move.
  * - `purgeResourceQuarantine` scans both the original and quarantine paths;
  *   a file held open inside quarantine triggers a restore instead of deletion.
  * - `restoreAllResourceGc` is the explicit rollback entry point.
  */
 
-import { execFile, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -25,8 +24,9 @@ import {
   rmSync,
   writeFileSync
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { promisify } from "node:util";
+import { dirname, join, resolve, relative, isAbsolute } from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import type { TaskStore } from "../storage/taskStore.js";
 
 import {
   scanLiveReferences,
@@ -51,8 +51,6 @@ import {
   type ResourceRecord,
   type ResourceRegistryState
 } from "./resourceTypes.js";
-
-const executeFile = promisify(execFile);
 
 export const DEFAULT_QUARANTINE_TTL_HOURS = 24;
 
@@ -103,6 +101,48 @@ type ClassifiedResource = Readonly<{
   record: ResourceRecord;
   ownerTerminal: boolean;
 }>;
+
+/** One current snapshot shared by manual and automatic GC. The execution
+ * boundary reads it again while holding the database's existing writer fence. */
+export function readResourceGcState(store: TaskStore) {
+  return store.readTransaction(reader => {
+    const tasks = reader.listTasks();
+    return {
+      projects: reader.listProjects(),
+      managedWorkspaces: tasks.flatMap(task => reader.listManagedWorkspaces(task.id)),
+      taskStatusById: new Map(tasks.map(task => [task.id, task.status])),
+      activeWorkspaceOwnerPaths: tasks.flatMap(task => [
+        ...reader.listRuns(task.id).filter(run => run.status === "active").flatMap(run => {
+          const workspace = run.workspace ?? run.effective.workspace;
+          return [workspace.root, ...workspace.entries.map(entry => entry.path)];
+        }),
+        ...reader.listDurableJobs(task.id).filter(job => job.status === "queued" || job.status === "running"
+          || (job.status === "unknown-needs-attention" && job.acknowledgedAt === undefined))
+          .map(job => job.workspace)
+      ])
+    };
+  });
+}
+
+function within(path: string, parent: string): boolean {
+  const child = relative(resolve(parent), resolve(path));
+  return child === "" || (!isAbsolute(child) && child !== ".." && !child.startsWith("../"));
+}
+
+function currentDurableRefs(record: ResourceRecord, state: ReturnType<typeof readResourceGcState>): string[] {
+  const refs: string[] = [];
+  if (record.owner.taskId === undefined || !state.taskStatusById.has(record.owner.taskId)) {
+    refs.push("owner-unproven");
+  } else if (!isTerminalTaskStatus(state.taskStatusById.get(record.owner.taskId))) {
+    refs.push("owner-not-terminal");
+  }
+  const paths = [
+    ...state.managedWorkspaces.flatMap(workspace => [workspace.root, ...workspace.entries.map(entry => entry.path)]),
+    ...state.activeWorkspaceOwnerPaths
+  ];
+  if (paths.some(path => within(path, record.path) || within(record.path, path))) refs.push("durable-owner");
+  return refs;
+}
 
 /**
  * Plan a GC pass: discover resources, scan live references, and classify each
@@ -311,13 +351,14 @@ function dirtyWorktreeSuggestion(record: ResourceRecord): string {
  * Apply a GC plan: quarantine every releasable resource. In `report` mode this
  * is a shadow pass — the plan is returned unchanged and nothing is mutated.
  *
- * Before each mutation the engine re-discovers and re-scans live references,
- * so a plan that went stale after generation cannot release a resource that
- * gained a reference.
+ * Physical discovery is refreshed, each subtree gets a live-reference scan,
+ * and current durable ownership is checked under the existing writer fence.
+ * No registry connection is held across an asynchronous scan.
  */
 export async function applyResourceGc(
   input: ResourceGcInput,
-  plan: GcPlan
+  plan: GcPlan,
+  store: TaskStore
 ): Promise<GcResult> {
   if (plan.mode === "report") {
     return Object.freeze({
@@ -330,96 +371,99 @@ export async function applyResourceGc(
   }
 
   const home = resolve(input.home);
+  if (resolve(store.rootDirectory()) !== home || resolve(plan.home) !== home) {
+    throw new Error("GC plan, ownership Store and resource Home must match.");
+  }
   const now = input.now;
-  const previous = withResourceRegistry(home, input.registryStore, store => store.load());
-  let registry = previous;
   const applied: ResourceRecord[] = [];
   const failed: ResourceRecord[] = [];
   const restored: ResourceRecord[] = [];
 
-  // Re-discover and re-scan with fresh state so the plan is validated against
-  // the world as it exists right now, not when the plan was generated.
-  const discovered = await discoverResources({
-    home,
-    projects: input.projects,
-    managedWorkspaces: input.managedWorkspaces,
-    taskStatusById: input.taskStatusById,
-    now
+  const fresh = await planResourceGc({ ...input, ...readResourceGcState(store) });
+  const freshById = new Map(fresh.records.map(record => [record.id, record]));
+  const retained = new Map(fresh.retained.map(record => [record.id, record]));
+  const retain = (record: ResourceRecord, reason: string) => retained.set(record.id, {
+    ...record, disposition: "retained-unproven", blocker: reason, updatedAt: now.toISOString()
   });
-  const freshPaths = discovered.map(({ record }) => record.path);
-  appendRegistryScanPaths(registry, freshPaths, home);
-  const freshScan = await scanLiveReferences({
-    home,
-    paths: freshPaths,
-    environment: input.environment,
-    tmuxServerName: input.tmuxServerName,
-    ports: {
-      ...input.liveReferencePorts,
-      managedWorkspaces: () => input.managedWorkspaces,
-      activeWorkspaceOwners: () => collectActiveWorkspaceOwners(input)
-    }
-  });
-
-  const freshClassified = classifyDiscoveredResources(
-    discovered,
-    registry,
-    freshScan,
-    input,
-    home
-  );
-  const freshById = new Map(freshClassified.map(({ record }) => [record.id, record]));
+  const inspectedRegistry = withResourceRegistry(home, input.registryStore, registry => registry.load());
+  const movedRoots: string[] = [];
 
   // Restore quarantined records whose owner is no longer terminal or that
   // gained a live reference. This is the apply-time counterpart of the old
   // planning-time restore: planning is read-only, so restore happens here.
-  for (const record of Object.values(registry.records) as ResourceRecord[]) {
+  for (const record of Object.values(inspectedRegistry.records)) {
     if (record.disposition !== "quarantined" || record.quarantine === undefined) continue;
-    const ownerTaskId = record.owner.taskId;
-    const ownerNoLongerTerminal = ownerTaskId !== undefined
-      && input.taskStatusById.has(ownerTaskId)
-      && !isTerminalTaskStatus(input.taskStatusById.get(ownerTaskId) as never);
-    const originalRefs = freshScan.refsByPath.get(record.quarantine.originalPath) ?? [];
-    if (ownerNoLongerTerminal || originalRefs.length > 0) {
-      const restoredRecord = restoreQuarantinedRecord(record, originalRefs, now);
-      registry = upsertResourceRecord(registry, restoredRecord);
-      if (restoredRecord.disposition === "active") {
-        restored.push(restoredRecord);
-      } else {
-        failed.push(restoredRecord);
-      }
-    }
+    withResourceRegistry(home, input.registryStore, registry => registry.transaction(() => {
+      const before = registry.load();
+      if (!isDeepStrictEqual(before.records[record.id], record)) throw new Error("Quarantine ownership changed; inspect and retry.");
+      const refs = [...(fresh.scan.refsByPath.get(record.quarantine!.originalPath) ?? []),
+        ...currentDurableRefs(record, readResourceGcState(store)).filter(ref => ref !== "owner-unproven")];
+      if (refs.length === 0) return;
+      const result = restoreQuarantinedRecord(record, refs, now);
+      registry.save(upsertResourceRecord(before, result), before);
+      (result.disposition === "active" ? restored : failed).push(result);
+    }));
   }
 
-  for (const planned of plan.records) {
+  // A physical parent owns one move. Its unreferenced runtime descendants are
+  // redundant registry receipts, not separately movable resources.
+  for (const planned of [...plan.records].sort((a, b) => a.path.length - b.path.length)) {
     if (!isReleasable(planned)) continue;
-
-    // Re-validate against fresh state: the resource must still exist, still
-    // be clean, and still have zero live references.
-    const fresh = freshById.get(planned.id);
-    if (fresh === undefined) {
-      // Resource disappeared since planning; reconcile the stale record.
-      registry = removeResourceRecord(registry, planned.id);
+    if (movedRoots.some(root => within(planned.path, root))) continue;
+    const candidate = freshById.get(planned.id);
+    if (!candidate || !isReleasable(candidate)) continue;
+    const descendants = fresh.records.filter(record => record.id !== candidate.id
+      && within(record.path, candidate.path) && existsSync(record.path));
+    // Do not move a directory around independent Git worktrees or retained
+    // descendants. Their own owner must release them first.
+    if (descendants.some(record => record.kind !== "runtime-artifact" || !isReleasable(record))) {
+      retain(candidate, "Directory contains independently owned or retained resources.");
       continue;
     }
-    if (!isReleasable(fresh)) {
-      // Fresh liveness, cleanliness, ownership, or diagnostic evidence changed
-      // since planning: retain the resource and reconcile its registry record.
-      registry = upsertResourceRecord(registry, fresh);
+    const scan = await scanLiveReferences({
+      home, paths: [candidate.path, ...descendants.map(record => record.path)],
+      environment: input.environment, tmuxServerName: input.tmuxServerName,
+      ports: input.liveReferencePorts
+    });
+    if (scan.diagnostics.some(d => d.severity === "error")
+      || [...scan.refsByPath.values()].some(refs => refs.length > 0)) {
+      retain(candidate, "Current physical references prevent this subtree move.");
       continue;
     }
-
-    const result = await quarantineResource(home, fresh, now);
-    registry = upsertResourceRecord(registry, result.record);
-    if (result.ok) {
-      applied.push(result.record);
-    } else {
-      failed.push(result.record);
-    }
+    withResourceRegistry(home, input.registryStore, registry => registry.transaction(() => {
+      const before = registry.load();
+      const subtree = Object.values(before.records).filter(record => within(record.path, candidate.path)
+        && existsSync(record.path));
+      for (const record of [candidate, ...subtree]) {
+        if (!isDeepStrictEqual(before.records[record.id], inspectedRegistry.records[record.id])) {
+          throw new Error(`Resource registry ownership changed: ${record.id}; inspect and retry.`);
+        }
+      }
+      const state = readResourceGcState(store);
+      if ([candidate, ...subtree].some(record => currentDurableRefs(record, state).length > 0)) {
+        retain(candidate, "Current Task or workspace ownership prevents this subtree move.");
+        return;
+      }
+      if (!existsSync(candidate.path)) return;
+      const result = quarantineResource(home, candidate, now);
+      let next = upsertResourceRecord(before, result.record);
+      if (result.ok) {
+        for (const record of subtree) {
+          if (record.id !== candidate.id) next = removeResourceRecord(next, record.id);
+        }
+        movedRoots.push(candidate.path);
+        applied.push(result.record);
+      } else failed.push(result.record);
+      registry.save(next, before);
+    }));
   }
-
-  withResourceRegistry(home, input.registryStore, store => store.save(registry, previous));
   return Object.freeze({
-    planned: plan,
+    planned: {
+      ...fresh,
+      records: fresh.records.map(record => retained.get(record.id) ?? record),
+      retained: [...retained.values()],
+      releasable: fresh.releasable.filter(record => !retained.has(record.id))
+    },
     applied: Object.freeze(applied),
     failed: Object.freeze(failed),
     restored: Object.freeze(restored),
@@ -427,11 +471,11 @@ export async function applyResourceGc(
   });
 }
 
-async function quarantineResource(
+function quarantineResource(
   home: string,
   record: ResourceRecord,
   now: Date
-): Promise<{ ok: boolean; record: ResourceRecord }> {
+): { ok: boolean; record: ResourceRecord } {
   const quarantineRoot = resourceQuarantineRoot(home);
   const quarantinePath = join(quarantineRoot, record.id);
   const receiptPath = `${quarantinePath}.receipt.json`;
@@ -441,7 +485,9 @@ async function quarantineResource(
       // metadata, into the Home-local quarantine. Restore is the inverse
       // move, so the recorded HEAD cannot drift with a branch.
       mkdirSync(quarantineRoot, { recursive: true, mode: 0o700 });
-      await executeFile(
+      // Keep the existing SQLite writer fence through this bounded move, so a
+      // Task reopen or new durable owner cannot commit between check and move.
+      execFileSync(
         "git",
         ["-C", record.path, "worktree", "move", "--", record.path, quarantinePath],
         { timeout: 30_000 }
@@ -604,9 +650,11 @@ export async function purgeResourceQuarantine(
     managedWorkspaces?: readonly import("../worktree/managedWorkspace.js").ManagedWorkspace[];
     /** Test seam for live-reference sources; production callers omit it. */
     liveReferencePorts?: LiveReferencePorts;
-  }
+  },
+  store: TaskStore
 ): Promise<GcResult> {
   const resolvedHome = resolve(home);
+  if (resolve(store.rootDirectory()) !== resolvedHome) throw new Error("GC ownership Store belongs to another Home.");
   const ttlHours = options.ttlHours ?? DEFAULT_QUARANTINE_TTL_HOURS;
   const ttlMs = ttlHours * 3_600_000;
   const registry = withResourceRegistry(resolvedHome, undefined, store => store.load());
@@ -634,7 +682,6 @@ export async function purgeResourceQuarantine(
     }
   });
 
-  let state = registry;
   const purged: ResourceRecord[] = [];
   const restored: ResourceRecord[] = [];
   const failed: ResourceRecord[] = [];
@@ -643,75 +690,72 @@ export async function purgeResourceQuarantine(
   for (const record of quarantined) {
     const quarantine = record.quarantine;
     if (quarantine === undefined) continue;
-    if (quarantine.method !== "move" || !["worktree", "runtime-artifact"].includes(record.kind)) {
-      const retained = { ...record, disposition: "cleanup-failed" as const,
-        blocker: `Unsupported quarantine provenance: ${record.kind}/${quarantine.method}; preserve its evidence for explicit recovery.`,
-        updatedAt: options.now.toISOString() };
-      state = upsertResourceRecord(state, retained);
-      failed.push(retained);
-      continue;
-    }
     const ageMs = options.now.getTime() - Date.parse(quarantine.movedAt);
     if (!Number.isFinite(ageMs) || ageMs < ttlMs) continue;
     // A live-reference source that cannot be trusted fails closed: keep the
     // resource quarantined instead of permanently deleting it.
     if (scanUntrusted) continue;
 
-    const originalRefs = scan.refsByPath.get(quarantine.originalPath) ?? [];
-    const quarantineRefs = scan.refsByPath.get(quarantine.path) ?? [];
-    const allRefs = [...originalRefs, ...quarantineRefs];
-    if (allRefs.length > 0) {
-      const restoredRecord = restoreQuarantinedRecord(record, allRefs, options.now);
-      state = upsertResourceRecord(state, restoredRecord);
-      if (restoredRecord.disposition === "active") {
-        restored.push(restoredRecord);
-      } else {
-        failed.push(restoredRecord);
+    withResourceRegistry(resolvedHome, undefined, registryStore => registryStore.transaction(() => {
+      const before = registryStore.load();
+      if (!isDeepStrictEqual(before.records[record.id], record)) throw new Error("Quarantine ownership changed; inspect and retry.");
+      const save = (next: ResourceRecord) => registryStore.save(upsertResourceRecord(before, next), before);
+      if (quarantine.method !== "move" || !["worktree", "runtime-artifact"].includes(record.kind)) {
+        const retained = { ...record, disposition: "cleanup-failed" as const,
+          blocker: `Unsupported quarantine provenance: ${record.kind}/${quarantine.method}; preserve its evidence for explicit recovery.`,
+          updatedAt: options.now.toISOString() };
+        save(retained);
+        failed.push(retained);
+        return;
       }
-      continue;
-    }
-
-    try {
-      if (existsSync(quarantine.path)) {
-        if (isGitWorktreePath(quarantine.path)) {
-          await executeFile(
-            "git",
-            ["-C", quarantine.path, "worktree", "remove", "--force", "--", quarantine.path],
-            { timeout: 30_000 }
-          );
+      const state = readResourceGcState(store);
+      if (record.owner.taskId === undefined || !state.taskStatusById.has(record.owner.taskId)) {
+        save({ ...record, blocker: "Current Task ownership cannot be proven; quarantine retained.", updatedAt: options.now.toISOString() });
+        return;
+      }
+      const allRefs = [
+        ...(scan.refsByPath.get(quarantine.originalPath) ?? []),
+        ...(scan.refsByPath.get(quarantine.path) ?? []),
+        ...currentDurableRefs(record, state)
+      ];
+      if (allRefs.length > 0) {
+        const result = restoreQuarantinedRecord(record, allRefs, options.now);
+        save(result);
+        (result.disposition === "active" ? restored : failed).push(result);
+        return;
+      }
+      try {
+        if (existsSync(quarantine.path)) {
+          if (isGitWorktreePath(quarantine.path)) {
+            execFileSync(
+              "git",
+              ["-C", quarantine.path, "worktree", "remove", "--force", "--", quarantine.path],
+              { timeout: 30_000 }
+            );
+          }
+          rmSync(quarantine.path, { recursive: true, force: true });
         }
-        rmSync(quarantine.path, { recursive: true, force: true });
+        const receiptPath = `${quarantine.path}.receipt.json`;
+        if (existsSync(receiptPath)) rmSync(receiptPath, { force: true });
+        const deleted: ResourceRecord = {
+          ...record, disposition: "deleted", quarantine: undefined,
+          cleanupReceipt: { removedAt: options.now.toISOString(), method: "quarantine-purge" },
+          updatedAt: options.now.toISOString()
+        };
+        save(deleted);
+        purged.push(deleted);
+      } catch (error) {
+        const failedRecord: ResourceRecord = {
+          ...record, disposition: "cleanup-failed",
+          blocker: `Purge failed: ${error instanceof Error ? error.message : "unknown error"}`,
+          updatedAt: options.now.toISOString()
+        };
+        save(failedRecord);
+        failed.push(failedRecord);
       }
-      // Also remove the receipt sibling.
-      const receiptPath = `${quarantine.path}.receipt.json`;
-      if (existsSync(receiptPath)) {
-        rmSync(receiptPath, { force: true });
-      }
-      const deleted: ResourceRecord = {
-        ...record,
-        disposition: "deleted",
-        quarantine: undefined,
-        cleanupReceipt: {
-          removedAt: options.now.toISOString(),
-          method: "quarantine-purge"
-        },
-        updatedAt: options.now.toISOString()
-      };
-      state = upsertResourceRecord(state, deleted);
-      purged.push(deleted);
-    } catch (error) {
-      const failedRecord: ResourceRecord = {
-        ...record,
-        disposition: "cleanup-failed",
-        blocker: `Purge failed: ${error instanceof Error ? error.message : "unknown error"}`,
-        updatedAt: options.now.toISOString()
-      };
-      state = upsertResourceRecord(state, failedRecord);
-      failed.push(failedRecord);
-    }
+    }));
   }
 
-  withResourceRegistry(resolvedHome, undefined, store => store.save(state, registry));
   return Object.freeze({
     planned: Object.freeze({
       home: resolvedHome,

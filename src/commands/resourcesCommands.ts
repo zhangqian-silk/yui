@@ -22,6 +22,7 @@ import {
 import {
   applyResourceGc,
   planResourceGc,
+  readResourceGcState,
   purgeResourceQuarantine,
   restoreAllResourceGc,
   type GcMode,
@@ -29,7 +30,6 @@ import {
   type GcResult
 } from "../resources/resourceGc.js";
 import type { TaskStore } from "../storage/taskStore.js";
-import type { ManagedWorkspace } from "../worktree/managedWorkspace.js";
 
 export type ResourcesCommandResult = Readonly<{
   output: string;
@@ -68,10 +68,7 @@ async function runGcCommand(
   const home = resolve(store.rootDirectory());
   const mode = resolveGcMode(store);
 
-  const projects = store.listProjects();
-  const managedWorkspaces = collectManagedWorkspaces(store);
-  const taskStatusById = collectTaskStatuses(store);
-  const activeWorkspaceOwnerPaths = collectActiveWorkspaceOwnerPaths(store);
+  const { projects, managedWorkspaces, taskStatusById, activeWorkspaceOwnerPaths } = readResourceGcState(store);
 
   if (action === "restore") {
     const result = await restoreAllResourceGc(home, { now });
@@ -89,7 +86,7 @@ async function runGcCommand(
         data: { mode, action: "purge", skipped: true }
       };
     }
-    const result = await purgeResourceQuarantine(home, { now, ttlHours, managedWorkspaces });
+    const result = await purgeResourceQuarantine(home, { now, ttlHours, managedWorkspaces }, store);
     return {
       output: renderPurgeResult(result),
       data: result
@@ -117,7 +114,7 @@ async function runGcCommand(
       now,
       quarantineTtlHours: ttlHours,
       activeWorkspaceOwnerPaths
-    }, plan);
+    }, plan, store);
     return {
       output: renderApplyResult(result),
       data: result
@@ -156,35 +153,6 @@ function resolveGcMode(store: TaskStore): GcMode {
   return resolveResourcesGcMode(store.getConfig().resourcesGcMode);
 }
 
-function collectManagedWorkspaces(store: TaskStore): ManagedWorkspace[] {
-  const workspaces: ManagedWorkspace[] = [];
-  for (const task of store.listTasks()) {
-    workspaces.push(...store.listManagedWorkspaces(task.id));
-  }
-  return workspaces;
-}
-
-function collectTaskStatuses(store: TaskStore): Map<string, string> {
-  const statuses = new Map<string, string>();
-  for (const task of store.listTasks()) {
-    statuses.set(task.id, task.status);
-  }
-  return statuses;
-}
-
-/** Workspace paths claimed by active durable Jobs (AgentRuns). */
-function collectActiveWorkspaceOwnerPaths(store: TaskStore): string[] {
-  const paths: string[] = [];
-  for (const task of store.listTasks()) {
-    for (const run of store.listRuns(task.id)) {
-      if (run.status !== "active") continue;
-      const workspace = run.workspace;
-      if (workspace === undefined) continue;
-      paths.push(workspace.root, ...workspace.entries.map((entry) => entry.path));
-    }
-  }
-  return paths;
-}
 
 function renderPlan(plan: GcPlan, action: GcAction): string {
   const lines: string[] = [];
@@ -265,6 +233,9 @@ function renderApplyResult(result: GcResult): string {
   }
   if (result.restored.length > 0) {
     lines.push(`Restored ${result.restored.length} resource(s) from quarantine.`);
+  }
+  for (const record of result.planned.retained) {
+    lines.push(`Retained ${record.id} ${record.path}: ${record.blocker ?? "current ownership or live reference"}`);
   }
   if (result.applied.length === 0 && result.failed.length === 0 && result.restored.length === 0) {
     lines.push("No releasable resources.");

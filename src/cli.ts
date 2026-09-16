@@ -32,6 +32,8 @@ import {
 } from "./cli/interactiveSelection.js";
 import { routeInvocation } from "./cli/invocationRouter.js";
 import { operatorOfflineCommand, taskDiagnosticTarget } from "./cli/managedDiagnostics.js";
+import { assertConfigurationAuthority, assertTaskInvocationScope } from "./cli/invocationAuthority.js";
+import { requireManagedGlobalCaller } from "./runtime/managedCaller.js";
 import { resolveOperatorWizardArguments } from "./cli/operatorWizard.js";
 import {
   resolveGlobalRoleAgentConfigurationArguments,
@@ -392,6 +394,14 @@ export async function main(): Promise<void> {
     contract: taskFinalReviewContract,
     verifiedStore
   } = await preflightManagedTaskControlPlane();
+  assertTaskInvocationScope(args, process.env);
+  if (["config", "resources"].includes(args[0] ?? "") && (managedInvocation
+    || process.env.YUI_ROLE !== undefined || process.env.YUI_AGENT_ID !== undefined
+    || process.env.YUI_NATIVE_SESSION_ID !== undefined)) {
+    const ownedStore = verifiedStore === undefined ? openCurrentTaskStore(home) : undefined;
+    try { assertConfigurationAuthority(args, verifiedStore ?? ownedStore!, process.env); }
+    finally { ownedStore?.close(); }
+  }
   if (args[0] === "update") {
     if (jsonOutput) throw usageError("Update does not support --json.");
     if (args.length !== 1) throw usageError("Update usage: yui update");
@@ -795,6 +805,7 @@ export async function main(): Promise<void> {
     emit("Cancelled.");
     return;
   }
+  assertTaskInvocationScope(resolved, process.env);
   const validateAgentConfiguration = await preflightAgentConfigurationMutation(
     resolved,
     store,
@@ -2467,7 +2478,14 @@ async function preflightManagedGlobalControlPlane(): Promise<ManagedTaskControlP
   await assertRuntimeCoherence({ actualHome: home }, {
     checkController: !(expectedRoleKind === "operator" && operatorOfflineCommand(args))
   });
-  return { contract: undefined, verifiedStore: openCurrentTaskStore(home) };
+  const verifiedStore = openCurrentTaskStore(home);
+  const internalCallback = args[0] === "internal"
+    && ["agent-host", "session-notify", "runtime-hook"].includes(args[1] ?? "");
+  if (!internalCallback && !operatorOfflineCommand(args)) {
+    try { requireManagedGlobalCaller(verifiedStore, process.env); }
+    catch (error) { verifiedStore.close(); throw error; }
+  }
+  return { contract: undefined, verifiedStore };
 }
 
 /**

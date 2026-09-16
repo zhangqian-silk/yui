@@ -6,6 +6,8 @@ export interface ResourceRegistryStore {
   load(): ResourceRegistryState;
   /** Apply only changed records, comparing their original ownership evidence. */
   save(next: ResourceRegistryState, previous: ResourceRegistryState): void;
+  /** Share the existing SQLite writer fence with a bounded physical mutation. */
+  transaction<T>(operation: () => T): T;
   close(): void;
 }
 

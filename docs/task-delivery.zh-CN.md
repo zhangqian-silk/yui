@@ -200,6 +200,16 @@ Force 不验证合并、不验收工作、不证明物理静止、不丢弃脏�
 检查后通过显式的精确 owner 资源操作进行安全清理；不隐含后台重试或更广泛的删除
 权限。两条归档路径都保留 Task 历史与恢复信息。已归档的 Task 不能重开。
 
+资源 GC 是独立、显式启用的隔离路径。同一 runtime 子树只移动一次，由父目录
+回执负责恢复完整内容；重复的子目录 registry 记录在同一事务内移除。
+独立 Git worktree 或仍需保留的子资源会阻止移动其父目录，不删除 Task 记录或成果。
+
+清理计划不是执行授权。Apply 与 purge 在现有 SQLite 写锁内重读 Task 状态、
+受管工作区、active Run 和未结算 Job，并保持写锁直到有界文件操作与 registry
+更新完成。Task 重新打开或新增持久所有者会阻止隔离、删除；无法证明安全时
+保留资源并给出原因。已经隔离、随后重新打开的资源可以恢复。
+不增加后台重试 worker 或第二套持久所有权协议。
+
 `yui task archive-preflight <task> (--integrated|--abandon) [--force] [--json]`
 一次读取归档条件、交付覆盖与各精确 owner 的清理检查。归档前后都可用，获授权的
 Task Leader reader 也可读取。这里的 `--force` 仅选择要检查的行为，不会归档、

@@ -288,8 +288,28 @@ function authorizeContext(store: TaskStore, taskId: string, environment: NodeJS.
     });
     for (const id of current.messages) allow.add(`task-message:${id}`);
     for (const id of current.events) allow.add(`task-event:${id}`);
+    if (run?.workItemId !== undefined) {
+      for (const job of store.listDurableJobs(taskId)) {
+        if (job.owner.kind === "work-item" && job.owner.workItemId === run.workItemId) allow.add(`job:${job.id}`);
+      }
+    }
   }
   return { task, allow, caller };
+}
+
+/** Independent record commands share Context's exact read boundary, not a
+ * second role-based approximation of Assignment visibility. */
+export function contextRecordReader(store: TaskStore, taskId: string, environment: NodeJS.ProcessEnv = {}) {
+  const { allow } = authorizeContext(store, taskId, environment);
+  return (family: string, id: string) => isAllowed(allow, family, id);
+}
+
+export function assertContextRecordReadable(
+  store: TaskStore, taskId: string, family: string, id: string, environment: NodeJS.ProcessEnv = {}
+) {
+  if (!contextRecordReader(store, taskId, environment)(family, id)) {
+    throw usageError("Context reference is outside the caller's Assignment.");
+  }
 }
 
 function isAllowed(allow: Set<string> | undefined, family: string, id: string): boolean {

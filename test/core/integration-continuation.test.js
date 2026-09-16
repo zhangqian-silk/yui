@@ -59,7 +59,7 @@ test("explicit Job requests replay their original operation and never fall back 
   assert.throws(() => control.startJob({ ...params, requestId: undefined }, now), /requestId/);
   assert.throws(() => control.startJob({ ...params, steps: [{ name: "changed", command: "false" }] }, now), /conflicts/);
   assert.equal(store.listDurableJobs(task.id).length, 1);
-  assert.equal(control.getJob(task.id, first.job.id).operation.requestId, "check-1");
+  assert.equal(control.getJob(task.id, first.job.id, params.caller).operation.requestId, "check-1");
 });
 
 export function integrationFixture(t, strategy = "merge") {

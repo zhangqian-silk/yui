@@ -59,12 +59,13 @@ export async function getDurableJob(
   home: string,
   taskId: string,
   jobId: string,
+  caller: DurableJobCaller,
   clientOptions: FileControllerClientOptions = {}
 ): Promise<DurableJob> {
   const result = await callFileTaskController(
     home,
     "job.get",
-    { taskId, jobId },
+    { taskId, jobId, caller },
     clientOptions
   );
   return parseJobResult(result);
@@ -193,7 +194,7 @@ export function createControllerIntegrationJobPort(
       return job;
     },
     async getJob(taskId, jobId) {
-      return getDurableJob(home, taskId, jobId, clientOptions);
+      return getDurableJob(home, taskId, jobId, resolveJobCaller(clientOptions.environment, taskId), clientOptions);
     },
     async cancelJob(taskId, jobId) {
       // rr8/rr12: Bind the cancel request to the caller's managed identity.
