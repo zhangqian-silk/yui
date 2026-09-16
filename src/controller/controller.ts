@@ -57,10 +57,13 @@ import {
   type ProcessingBatch,
   type WorkMailbox
 } from "../coordination/workMailbox.js";
-import { hasRuntimeCleanupObligation, type RuntimeLifecycleTarget, type RuntimeRoleOwner } from "../runtime/lifecycleReservation.js";
+import {
+  hasRuntimeCleanupObligation,
+  type RuntimeLifecycleTarget,
+  type RuntimeRoleOwner
+} from "../runtime/lifecycleReservation.js";
 import type { SessionHostPort } from "../runtime/ports.js";
 import { formatTaskRecordReference } from "../task/taskRecordReference.js";
-import { activationRequestIsControllerAdoptable } from "../task/taskActivation.js";
 import type {
   AsyncRuntimeEventProcessorPort,
   RuntimeEventDrainMetrics,
@@ -551,10 +554,7 @@ async function processSelectedRoleRuntimeCleanups(
             `Role runtime cleanup could not confirm the host stopped: ${runtimeOwnerLabel(owner)}.`
           );
         }
-        if (
-          store.completeRuntimeCleanup === undefined
-          || !store.completeRuntimeCleanup(target, now)
-        ) {
+        if (!store.completeRuntimeCleanup(target, now)) {
           throw new Error(
             `Role runtime cleanup mailbox changed: ${runtimeOwnerLabel(owner)}.`
           );
@@ -597,9 +597,9 @@ function selectedTaskIdsForBoundedPass(
 }
 
 function selectedReadyWorkMailboxes(
-  store: Pick<SchedulerStorePort, "listReadyWorkMailboxes" | "listWorkMailboxes">
+  store: Pick<SchedulerStorePort, "listReadyWorkMailboxes">
 ): readonly WorkMailbox[] {
-  return store.listReadyWorkMailboxes?.() ?? store.listWorkMailboxes();
+  return store.listReadyWorkMailboxes();
 }
 
 function selectedRuntimeLifecycleTargets(
@@ -830,9 +830,9 @@ export function compileReconcileSelection(scope: ReconcileScope): ReconcileSelec
 }
 
 /**
- * Adopts activation requests whose deferral has been released.
+ * Continues admitted activation requests once their execution boundaries allow it.
  *
- * The deferral is only ever released by the planning Turn ending, so this phase
+ * A planning deferral is released only by its Turn ending. This phase therefore
  * re-reads the request instead of trusting the signal that woke it: a request
  * cancelled, or a Task retired or stopped, while the Turn was still running is
  * left alone rather than replayed as historical intent. Adoption itself belongs
@@ -853,12 +853,7 @@ async function adoptReleasedTaskActivations(
 ): Promise<void> {
   if (workspace === undefined) return;
   const candidates = selection.full
-    ? (store.listPendingActivationRequestTaskIds?.()
-      ?? store.listTasks().flatMap((task) => (
-        task.status === "draft" && task.activationRequest?.disposition === "pending"
-          ? [task.id]
-          : []
-      )))
+    ? store.listPendingActivationRequestTaskIds()
     : selection.taskIds;
   for (const taskId of candidates) {
     if (selection.blockedTaskIds?.has(taskId)) continue;
@@ -866,18 +861,13 @@ async function adoptReleasedTaskActivations(
     if (task?.status !== "draft" || task.executionGate.state !== "enabled") continue;
     const request = task.activationRequest;
     if (request?.disposition !== "pending") continue;
-    // Continue only requests with a provable source: a released deferral, or an
-    // immediate request carrying a recognised origin (explicit action, or a
-    // develop submission accepted while unplanned). This admits legal
-    // Operator/user immediate requests the old actor filter dropped, while
-    // still refusing origin-less historical requests, which stay behind the
-    // explicit `yui task activate` boundary.
-    if (!activationRequestIsControllerAdoptable(request)) continue;
+    // The request was authorized at admission. Recheck its current execution
+    // and Session boundaries without a second provenance-based workflow gate.
     // Later Draft discussion is a Session notification, not another AgentRun.
     // Its durable activation intent is sufficient once the exact native input
     // is settled. Never create a synthetic Run merely to release that intent.
     if (store.getActiveRun(taskId, "leader") !== null) continue;
-    const provider = store.getTaskRoleSessionSet?.(taskId, "leader")?.providerBinding;
+    const provider = store.getTaskRoleSessionSet(taskId, "leader")?.providerBinding;
     if (provider?.run != null
       && ["submitting", "accepted", "delivery-unknown"].includes(provider.run.status)) continue;
     try {
@@ -1052,7 +1042,6 @@ function mergeControllerSchedulerResults(
  * progress concurrently across different Tasks up to the configured bound.
  */
 export class FileTaskController {
-  readonly #startedAt: Date;
   #intervalMs: number;
   readonly #now: () => Date;
   readonly #onError: (error: unknown) => void;
@@ -1142,7 +1131,6 @@ export class FileTaskController {
       "Controller reconciliation interval"
     );
     this.#now = options.now ?? (() => new Date());
-    this.#startedAt = this.#now();
     this.#onError = options.onError ?? (() => {});
     const workspacePreparer = options.workspacePreparer;
     this.#workspacePreparer = workspacePreparer === undefined ? undefined : {
@@ -2255,7 +2243,7 @@ export async function startFileTaskController(
         }
         if (method === "job.get") {
           const ref = parseDurableJobRefParams(params);
-          const job = control.getJob(ref.taskId, ref.jobId);
+          const job = control.getJob(ref.taskId, ref.jobId, ref.caller);
           if (job === null) {
             throw controllerApplicationError(
               "NOT_FOUND",

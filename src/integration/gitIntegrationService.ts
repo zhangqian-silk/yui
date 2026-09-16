@@ -1,6 +1,4 @@
 import { execFile, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
 import {
   lstat,
   mkdir,
@@ -20,13 +18,31 @@ import { promisify } from "node:util";
 import { selectEnvironment } from "../agent/launchEnvironment.js";
 import { controllerSocketPath } from "../core/controllerEndpoint.js";
 import { durableJobIdempotencyKey, type DurableJob, type DurableJobStep } from "../job/durableJob.js";
-import { applyIntegrationSource, assertIntegrationCandidate, assertRecordedSourceCandidate } from "./integrationSourceApplication.js";
+import { readRuntimeIdentity } from "../release/runtimeRelease.js";
+import type { GitWorkspaceRemoval } from "../repository/gitWorkspace.js";
 import {
-  planBootstrapJobSteps,
-  planL2JobSteps
-} from "../verification/verificationPlan.js";
+  NodeGitWorkspace,
+  type GitWorkspacePort
+} from "../repository/gitWorkspace.js";
+import { acquireProjectMaintenanceLocks } from "../repository/projectMaintenanceLock.js";
+import { taskWorkspaceRefSegment } from "../repository/taskWorkspaceIdentity.js";
+import { integrationWorkspaceRoot } from "../repository/taskWorkspacePreparer.js";
+import { ResourceRegistrar } from "../resources/resourceRegistrar.js";
 import {
-  assertNoAdHocFullSuiteChecks,
+  FileTaskRuntimeIsolation,
+  type TaskRuntimeIsolationPort,
+  type TaskRuntimeIsolationPreparation
+} from "../runtime/taskRuntimeIsolation.js";
+import { integrationTmuxSocketRoot, managedIntegrationRuntimeRoot } from "../storage/homeLayout.js";
+import type { TaskStore } from "../storage/taskStore.js";
+import { advanceTaskProjectCommit } from "../task/task.js";
+import { yuiTmuxServerName } from "../tmux/tmuxManager.js";
+import {
+  recordGateArtifactReuse
+} from "../verification/gateArtifact.js";
+import { touchGateArtifact } from "../verification/gateArtifactStore.js";
+import {
+  beginGateVerification,
   checkResultsFromGateArtifact,
   checkResultsFromGateJob,
   gateIdentityForCandidate,
@@ -38,45 +54,28 @@ import {
   type ResolvedVerificationGate
 } from "../verification/verificationGateService.js";
 import {
-  recordGateArtifactPotentialReuse,
-  recordGateArtifactReuse
-} from "../verification/gateArtifact.js";
-import { touchGateArtifact } from "../verification/gateArtifactStore.js";
+  planBootstrapJobSteps,
+  planL2JobSteps
+} from "../verification/verificationPlan.js";
+import {
+  createManagedWorkspace,
+  type ManagedWorkspace
+} from "../worktree/managedWorkspace.js";
 import type { CheckResult } from "./checkResult.js";
-import {
-  NodeGitWorkspace,
-  type GitWorkspacePort
-} from "../repository/gitWorkspace.js";
-import type { GitWorkspaceRemoval } from "../repository/gitWorkspace.js";
-import { integrationWorkspaceRoot } from "../repository/taskWorkspacePreparer.js";
-import { acquireProjectMaintenanceLocks } from "../repository/projectMaintenanceLock.js";
-import { taskWorkspaceRefSegment } from "../repository/taskWorkspaceIdentity.js";
-import {
-  FileTaskRuntimeIsolation,
-  type TaskRuntimeIsolationPort,
-  type TaskRuntimeIsolationPreparation
-} from "../runtime/taskRuntimeIsolation.js";
-import type { TaskStore } from "../storage/taskStore.js";
-import { managedIntegrationRuntimeRoot } from "../storage/homeLayout.js";
-import { advanceTaskProjectCommit } from "../task/task.js";
-import { yuiTmuxServerName } from "../tmux/tmuxManager.js";
 import {
   recordIntegrationCheckJob,
   updateIntegrationAttempt,
   type IntegrationAttempt
 } from "./integrationAttempt.js";
 import {
-  createManagedWorkspace,
-  type ManagedWorkspace
-} from "../worktree/managedWorkspace.js";
-import { ResourceRegistrar } from "../resources/resourceRegistrar.js";
-import { readRuntimeIdentity } from "../release/runtimeRelease.js";
-import {
-  findReusableIntegrationCheckEvidence,
-  INTEGRATION_RUNTIME_RELEASE_ENV
-} from "./integrationCheckEvidenceReuse.js";
+  applyIntegrationSource,
+  assertIntegrationCandidate,
+  assertRecordedSourceCandidate
+} from "./integrationSourceApplication.js";
 
 const executeFile = promisify(execFile);
+/** Preserve the exact execution-environment fence in durable Job input digests. */
+const INTEGRATION_RUNTIME_RELEASE_ENV = "YUI_INTEGRATION_RUNTIME_RELEASE_ID";
 
 const INTEGRATION_OPERATIONAL_ENVIRONMENT_NAMES = [
   "PATH",
@@ -569,36 +568,8 @@ export class GitIntegrationService {
     }
     await assertIntegrationCandidate(path, attempt.candidateCommit, workspace.branch);
     await assertTargetReadyForChecks(repositoryPath, attempt.targetRef, attempt.beforeCommit);
-    const { runtime, head, steps, environment, inputDigest, releaseId } =
+    const { runtime, head, steps, environment, inputDigest } =
       await this.#checkSpecification(attempt, managedWorkspace, gate);
-    const ownedJobs = this.store.listDurableJobs(attempt.taskId).filter(job =>
-      job.owner.kind === "integration-attempt" && job.owner.integrationAttemptId === attempt.id);
-    if (gate === undefined && releaseId !== null && attempt.checkInputDigest === undefined
-      && ownedJobs.length === 0 && attempt.jobId === undefined) {
-      const reusable = findReusableIntegrationCheckEvidence({
-        taskId: attempt.taskId,
-        projectId: attempt.projectId,
-        currentAttemptId: attempt.id,
-        candidateCommit: head,
-        checkCommands: attempt.checkCommands,
-        runtimeReleaseId: releaseId,
-        attempts: this.store.listIntegrationAttempts(attempt.taskId),
-        jobs: this.store.listDurableJobs(attempt.taskId),
-        logExists: (homeRelativePath) => existsSync(join(this.home, homeRelativePath)),
-        logPathFor: (job, relativeLogPath) => (
-          join(job.artifactsLocator, "logs", relativeLogPath)
-        )
-      });
-      if (reusable !== null) {
-        return this.#finalizeGateSuccess(
-          updateIntegrationAttempt(attempt, { checkInputDigest: inputDigest }, this.now()),
-          workspace,
-          repositoryPath,
-          head,
-          [...reusable.checks]
-        );
-      }
-    }
     if (attempt.checkInputDigest !== undefined && attempt.checkInputDigest !== inputDigest) {
       throw new Error("Integration check conditions changed since admission; inspect the original Job, then abort or start a new attempt.");
     }
@@ -615,6 +586,14 @@ export class GitIntegrationService {
       })
     }, this.now());
     this.store.saveIntegrationAttempt(attempt.taskId, persisted);
+    if (gate !== undefined) {
+      // Resumption can enter here after persisting admission but before the
+      // original call withdrew old proof or recorded its Job id.
+      beginGateVerification(this.store, gateIdentityForCandidate({
+        projectId: attempt.projectId, gate, level: "L2", commit: head,
+        targetRef: attempt.targetRef, baseHead: attempt.beforeCommit
+      }), gate.plan, this.now());
+    }
     // All domain admission and durable candidate identity precede Job effects.
     this.runtimeIsolation.activate(runtime);
     await prepareIntegrationRuntimeHome(runtime, this.home);
@@ -688,14 +667,14 @@ export class GitIntegrationService {
         baseHead: attempt.beforeCommit
       });
       try {
-        const artifact = await recordGateArtifactFromJob(
+        const artifact = await this.#publishGateEvidence(workspace, job.head, () => recordGateArtifactFromJob(
           this.store,
           this.home,
           identity,
           gate.plan,
           job,
           this.now()
-        );
+        ));
         if (checks.every((check) => check.outcome !== "failed")) {
           checks.push(...checkResultsFromGateArtifact(artifact));
         }
@@ -752,11 +731,10 @@ export class GitIntegrationService {
   /**
    * Issue 08: the VerificationPlan gate for a configured Project.
    *
-   * Enforce mode rejects ad-hoc full-suite checks before the gate. Reuse mode
-   * returns an existing successful artifact for the same identity tuple
+   * Returns an existing successful artifact for the same identity tuple
    * (project + exact commit + plan digest + toolchain digest + target
-   * boundary); record mode always runs and only counts shadow potential
-   * reuses. The gate itself runs as bootstrap + L2 DurableJob steps (or
+   * boundary), unless this attempt explicitly requests fresh checks.
+   * The gate itself runs as bootstrap + L2 DurableJob steps (or
    * in-process when no Controller job port is available) and records a
    * self-contained GateArtifact. The final CAS in
    * {@link #finalizeGateSuccess} still fences a target that moves during the
@@ -771,23 +749,24 @@ export class GitIntegrationService {
     gate: ResolvedVerificationGate
   ): Promise<IntegrationResult> {
     const spec = await this.#checkSpecification(attempt, managedWorkspace, gate);
+    const unsettled = this.store.listIntegrationAttempts(attempt.taskId).find(other => {
+      if (other.id === attempt.id || other.projectId !== attempt.projectId
+        || other.targetRef !== attempt.targetRef || other.beforeCommit !== attempt.beforeCommit
+        || other.candidateCommit !== attempt.candidateCommit
+        || other.gatePlanDigest !== gate.planDigest || other.gateToolchainDigest !== gate.toolchainDigest) return false;
+      if (other.status === "running" || other.status === "validating") return true;
+      const job = other.jobId === undefined ? null : this.store.getDurableJob(other.taskId, other.jobId);
+      return job !== null && (job.status === "queued" || job.status === "running"
+        || (job.status === "unknown-needs-attention" && job.acknowledgedAt === undefined));
+    });
+    if (unsettled !== undefined) {
+      throw new Error(`Exact verification is unsettled in ${unsettled.taskId}/${unsettled.id}; continue or settle its original Job before requesting another check.`);
+    }
     attempt = updateIntegrationAttempt(attempt, {
       checkInputDigest: spec.inputDigest,
       gatePlanDigest: gate.planDigest, gateToolchainDigest: gate.toolchainDigest
     }, this.now());
     this.store.saveIntegrationAttempt(attempt.taskId, attempt);
-    if (gate.mode === "enforce") {
-      try {
-        assertNoAdHocFullSuiteChecks(gate.plan, attempt.checkCommands);
-      } catch (error) {
-        return this.#fail(
-          attempt,
-          error instanceof Error ? error : new Error(String(error)),
-          "verification-plan",
-          workspace
-        );
-      }
-    }
     const candidateCommit = await gitLine(["-C", path, "rev-parse", "HEAD^{commit}"]);
     const identity = gateIdentityForCandidate({
       projectId: attempt.projectId,
@@ -797,7 +776,7 @@ export class GitIntegrationService {
       targetRef: attempt.targetRef,
       baseHead: attempt.beforeCommit
     });
-    if (gate.mode !== "record") {
+    if (!attempt.rerunChecks && attempt.checkCommands.length === 0) {
       const existing = await lookupReusableGateArtifact(this.store, identity);
       if (existing !== null) {
         touchGateArtifact(this.store, recordGateArtifactReuse(existing, this.now()));
@@ -810,12 +789,6 @@ export class GitIntegrationService {
           checks
         );
       }
-    } else {
-      // Record mode: observe the potential reuse without skipping the gate.
-      const existing = await lookupReusableGateArtifact(this.store, identity);
-      if (existing !== null) {
-        touchGateArtifact(this.store, recordGateArtifactPotentialReuse(existing, this.now()));
-      }
     }
     if (this.jobPort !== undefined) {
       return this.#startCheckJob(
@@ -827,17 +800,15 @@ export class GitIntegrationService {
         gate
       );
     }
-    // Jobless fallback (queue processing without a Controller): run the
+    beginGateVerification(this.store, identity, gate.plan, this.now());
+    // An explicit local caller without a Controller Job port runs the
     // plan gate in-process and record the artifact directly.
     const runtime = this.#runtimePreparation(attempt, managedWorkspace);
     this.runtimeIsolation.activate(runtime);
     let cleanupReason: "completion" | "failure" = "failure";
     try {
       await prepareIntegrationRuntimeHome(runtime, this.home);
-      const steps = [
-        ...planBootstrapJobSteps(gate.plan),
-        ...planL2JobSteps(gate.plan)
-      ];
+      const steps = spec.steps;
       const outcomes = await runGateStepsInProcess(
         path,
         steps,
@@ -849,14 +820,14 @@ export class GitIntegrationService {
         && outcomes.every((outcome) =>
           outcome.exitCode === 0 && outcome.signal === null && !outcome.timedOut
         );
-      const artifact = await recordGateArtifactFromStepOutcomes(
+      const artifact = await this.#publishGateEvidence(workspace, candidateCommit, () => recordGateArtifactFromStepOutcomes(
         this.store,
         identity,
         gate.plan,
         outcomes,
         succeeded,
         this.now()
-      );
+      ));
       const checks = checkResultsFromGateArtifact(artifact);
       cleanupReason = succeeded ? "completion" : "failure";
       if (!succeeded) {
@@ -878,6 +849,18 @@ export class GitIntegrationService {
     } finally {
       this.runtimeIsolation.cleanup(runtime, cleanupReason);
     }
+  }
+
+  /** Both executors publish proof only for the exact clean candidate they
+   * checked. A later delivery/CAS failure is separate from this evidence, but
+   * a mutated candidate must never enter the reusable-success cache. */
+  async #publishGateEvidence<T>(
+    workspace: IntegrationWorkspace,
+    candidateCommit: string,
+    publish: () => Promise<T>
+  ): Promise<T> {
+    await assertIntegrationCandidate(workspace.path, candidateCommit, workspace.branch);
+    return publish();
   }
 
   async #finalizeGateSuccess(
@@ -905,7 +888,7 @@ export class GitIntegrationService {
   }
 
   #runtimePreparation(
-    attempt: IntegrationAttempt,
+    _attempt: IntegrationAttempt,
     workspace: ManagedWorkspace
   ): TaskRuntimeIsolationPreparation {
     return this.runtimeIsolation.preflight({
@@ -925,11 +908,12 @@ export class GitIntegrationService {
     const runtime = this.#runtimePreparation(attempt, managedWorkspace);
     const head = attempt.candidateCommit;
     if (head === undefined) throw new Error("Integration check specification requires a candidate.");
-    const steps: DurableJobStep[] = gate === undefined
-      ? attempt.checkCommands.map((command, index) => ({
-          name: `check-${index + 1}`, command, timeoutMs: 30 * 60_000
-        }))
-      : [...planBootstrapJobSteps(gate.plan), ...planL2JobSteps(gate.plan)]
+    const explicitChecks = attempt.checkCommands.map((command, index) => ({
+      name: `check-${index + 1}`, command, timeoutMs: 30 * 60_000
+    }));
+    const steps: DurableJobStep[] = gate === undefined ? explicitChecks
+      : [...planBootstrapJobSteps(gate.plan, managedWorkspace.root),
+          ...planL2JobSteps(gate.plan, managedWorkspace.root), ...explicitChecks]
         .map(step => ({ ...step, timeoutMs: 30 * 60_000 }));
     const releaseId = integrationRuntimeReleaseIdentity(this.home);
     const environment = Object.freeze({
@@ -941,7 +925,7 @@ export class GitIntegrationService {
       projectId: attempt.projectId, head, workspace: managedWorkspace.root,
       env: environment, steps
     });
-    return { runtime, head, steps, environment, inputDigest, releaseId };
+    return { runtime, head, steps, environment, inputDigest };
   }
 
   async #recoverValidating(
@@ -1374,19 +1358,6 @@ function defaultIntegrationRuntimeIsolation(
       globalInstallPaths: [process.execPath]
     }
   });
-}
-
-/**
- * Short `/tmp` directory that holds ONLY the integration check's tmux socket
- * endpoint. tmux uses a `sockaddr_un` path whose length budget cannot absorb a
- * deep Home path, so this single IPC endpoint is the one approved exception to
- * the unified-Home contract. All other integration runtime state (data, cache,
- * ordinary temp) lives in the Home partition from `managedIntegrationRuntimeRoot`.
- */
-function integrationTmuxSocketRoot(home: string): string {
-  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
-  const homeDigest = createHash("sha256").update(resolve(home)).digest("hex").slice(0, 16);
-  return join("/tmp", `yi-${uid.toString(36)}-${homeDigest}`);
 }
 
 /**

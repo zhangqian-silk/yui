@@ -380,7 +380,7 @@ const taskChildren: readonly NodeInput[] = [
       "--type": ["feature", "bugfix"]
     }
   },
-  { name: "activate", summary: "Activate a Draft Task.", usage: "yui task activate <id>" },
+  { name: "activate", summary: "Adopt an existing Activation request for a Draft Task.", usage: "yui task activate <id>" },
   {
     name: "activation",
     summary: "Request, cancel or inspect explicit Task Activation.",
@@ -465,9 +465,9 @@ const taskChildren: readonly NodeInput[] = [
   },
   {
     name: "list",
-    summary: "List Task overviews or a bounded discovery catalog.",
-    usage: "yui task list [--all] [--verbose] | --view compact [--all] [--status <status>] [--project <id>] [--search <text>] [--attention <category>] [--limit <1..100>] [--cursor <cursor>]",
-    options: ["--all", "--verbose", "--view", "--status", "--project", "--search", "--attention", "--limit", "--cursor"]
+    summary: "Discover Tasks through a bounded, filterable catalog.",
+    usage: "yui task list [--all] [--status <status>] [--project <id>] [--search <text>] [--attention <category>] [--limit <1..100>] [--cursor <cursor>]",
+    options: ["--all", "--status", "--project", "--search", "--attention", "--limit", "--cursor"]
   },
   { name: "show", summary: "Show a Task.", usage: "yui task show <id>" },
   {
@@ -519,8 +519,8 @@ const taskChildren: readonly NodeInput[] = [
       {
         name: "integrate",
         summary: "Rebase Task changes onto the remote development head through Integration.",
-        usage: "yui task upstream integrate <task> (--latest|--project <project>) [--check <command> ...]",
-        options: ["--latest", "--project", "--check"]
+        usage: "yui task upstream integrate <task> (--latest|--project <project>) [--check <command> ...] [--rerun-checks]",
+        options: ["--latest", "--project", "--check", "--rerun-checks"]
       }
     ]
   },
@@ -544,18 +544,17 @@ const taskChildren: readonly NodeInput[] = [
       {
         name: "send",
         summary: "Send a Task message. An unaddressed user/operator message carries a submission intent (record|discuss|develop) and an optional idempotency key.",
-        usage: "yui task message send <id> (<body>|--body-file <path|->) [--intent record|discuss|develop] [--request-id <key>] [--wake-policy leader|none] [--to <role> --work-item <id>|--review-round <id>]",
-        options: ["--body-file", "--intent", "--request-id", "--wake-policy", "--to", "--work-item", "--review-round"],
+        usage: "yui task message send <id> (<body>|--body-file <path|->) [--intent record|discuss|develop] [--request-id <key>] [--to <role> --work-item <id>|--review-round <id>]",
+        options: ["--body-file", "--intent", "--request-id", "--to", "--work-item", "--review-round"],
         optionValues: {
-          "--intent": ["record", "discuss", "develop"],
-          "--wake-policy": ["leader", "none"]
+          "--intent": ["record", "discuss", "develop"]
         },
         fileOptions: ["--body-file"]
       },
       {
         name: "queue",
-        summary: "Queue an input for delivery at the recipient's next legal opportunity (idempotent by request id).",
-        usage: "yui task message queue <id> (<body>|--body-file <path|->) --request-id <id> [--to <role> --work-item <id>|--review-round <id>]",
+        summary: "Queue ordinary Leader input without --to; an explicit Role requires an existing WorkItem/ReviewRound Assignment. Idempotent by request id.",
+        usage: "yui task message queue <id> (<body>|--body-file <path|->) --request-id <id> [--to <role> (--work-item <id>|--review-round <id>)]",
         options: ["--body-file", "--request-id", "--to", "--work-item", "--review-round"],
         fileOptions: ["--body-file"]
       },
@@ -579,12 +578,9 @@ const taskChildren: readonly NodeInput[] = [
       },
       {
         name: "update",
-        summary: "Replace the mutable body and wake policy of a Draft user/operator Message.",
-        usage: "yui task message update <task>/<message> (<body>|--body-file <path|->) [--wake-policy leader|none]",
-        options: ["--body-file", "--wake-policy"],
-        optionValues: {
-          "--wake-policy": ["leader", "none"]
-        },
+        summary: "Edit unkeyed Draft context without changing intent; inputs with request identities require a new Message.",
+        usage: "yui task message update <task>/<message> (<body>|--body-file <path|->)",
+        options: ["--body-file"],
         fileOptions: ["--body-file"]
       },
       {
@@ -1034,13 +1030,13 @@ const taskChildren: readonly NodeInput[] = [
   {
     name: "integration",
     summary: "Integrate WorkItem results and upstream commits with Leader-owned decisions.",
-    sections: [{ id: "manage", title: "Commands", entries: ["start", "continue", "resolve", "abort", "supersede", "list", "show", "cleanup", "queue"] }],
+    sections: [{ id: "manage", title: "Commands", entries: ["start", "continue", "resolve", "abort", "supersede", "list", "show", "cleanup"] }],
     children: [
       {
         name: "start",
         summary: "Build, validate, and CAS-commit an integration candidate.",
-        usage: "yui task integration start <task> --work-item <id> --strategy <ff|cherry-pick|merge|manual> [--project <project>] [--target <ref>] [--check <command> ...]",
-        options: ["--work-item", "--strategy", "--project", "--target", "--check"],
+        usage: "yui task integration start <task> --work-item <id> --strategy <ff|cherry-pick|merge|manual> [--project <project>] [--target <ref>] [--check <command> ...] [--rerun-checks]",
+        options: ["--work-item", "--strategy", "--project", "--target", "--check", "--rerun-checks"],
         optionValues: { "--strategy": ["ff", "cherry-pick", "merge", "manual"] }
       },
       {
@@ -1069,21 +1065,7 @@ const taskChildren: readonly NodeInput[] = [
       },
       { name: "list", summary: "List Integration Attempts.", usage: "yui task integration list <task>" },
       { name: "show", summary: "Show one Integration Attempt.", usage: "yui task integration show <task>/<integration>" },
-      { name: "cleanup", summary: "Remove a terminal Integration worktree and branch.", usage: "yui task integration cleanup <task>/<integration>" },
-      {
-        name: "queue",
-        summary: "Manage the serialized integration queue.",
-        sections: [{ id: "queue", title: "Commands", entries: ["enqueue", "list", "show", "process", "supersede", "requeue", "reconcile"] }],
-        children: [
-          { name: "enqueue", summary: "Enqueue a ChangeSet for serialized integration.", usage: "yui task integration queue enqueue <task> --project <project> --change-set <id> [--target <ref>] [--check <command> ...]", options: ["--project", "--change-set", "--target", "--check"] },
-          { name: "list", summary: "List integration queue entries.", usage: "yui task integration queue list <task> [--project <project>]", options: ["--project"] },
-          { name: "show", summary: "Show one integration queue entry.", usage: "yui task integration queue show <task>/<entry>" },
-          { name: "process", summary: "Process queued integration entries.", usage: "yui task integration queue process <task> [--project <project>] [--limit <n>]", options: ["--project", "--limit"] },
-          { name: "supersede", summary: "Supersede a queued entry.", usage: "yui task integration queue supersede <task>/<entry> --reason <text>", options: ["--reason"] },
-          { name: "requeue", summary: "Requeue a conflicted entry.", usage: "yui task integration queue requeue <task>/<entry>" },
-          { name: "reconcile", summary: "Reconcile a blocked entry.", usage: "yui task integration queue reconcile <task>/<entry>" }
-        ]
-      }
+      { name: "cleanup", summary: "Remove a terminal Integration worktree and branch.", usage: "yui task integration cleanup <task>/<integration>" }
     ]
   },
   {
@@ -1205,13 +1187,41 @@ export const ROOT_COMMAND = buildNode({
     { id: "general", title: "General", entries: [
       "help", "version", "update", "upgrade", "setup", "doctor"
     ] },
-    { id: "workflow", title: "Workflow", entries: ["operator", "project", "task"] },
+    { id: "workflow", title: "Workflow", entries: ["operator", "role", "project", "task"] },
     { id: "configuration", title: "Configuration", entries: ["config"] },
     { id: "operations", title: "Operations", entries: ["web", "controller", "session", "execution", "capability", "job", "jobs", "telemetry", "release"] },
     { id: "resources", title: "Resources", entries: ["resources"] },
     { id: "internal", title: "Internal", entries: ["internal"] }
   ],
   children: [
+    {
+      name: "role",
+      summary: "Queue input or control an exact current Global Role Turn.",
+      sections: [{ id: "input", title: "Input control", entries: ["message", "interrupt"] }],
+      children: [
+        {
+          name: "message", summary: "Send durable input to a Global Role.",
+          sections: [{ id: "input", title: "Input control", entries: ["queue", "steer"] }],
+          children: [
+            {
+              name: "queue", summary: "Queue input for the next legal delivery opportunity.",
+              usage: "yui role message queue <role> (<text>|--body-file <path|->) --request-id <id>",
+              options: ["--request-id", "--body-file"], fileOptions: ["--body-file"]
+            },
+            {
+              name: "steer", summary: "Steer the exact current native Turn.",
+              usage: "yui role message steer <role> (<text>|--body-file <path|->) --request-id <id> --expected-target <turn>",
+              options: ["--request-id", "--expected-target", "--body-file"], fileOptions: ["--body-file"]
+            }
+          ]
+        },
+        {
+          name: "interrupt", summary: "Request cancellation of the exact current native Turn.",
+          usage: "yui role interrupt <role> --expected-target <turn> [--request-id <id>] [--then-message <message>]",
+          options: ["--request-id", "--expected-target", "--then-message"]
+        }
+      ]
+    },
     { name: "help", summary: "Show root or scoped command help.", usage: "yui help [command ...]", commandPathArguments: true },
     { name: "version", summary: "Print the installed Yui version." },
     { name: "update", summary: "Install the latest published Yui package globally." },
@@ -1628,7 +1638,7 @@ export const ROOT_COMMAND = buildNode({
       summary: "Start, inspect, cancel, or acknowledge a Controller-managed DurableJob.",
       sections: [{ id: "manage", title: "Commands", entries: ["start", "get", "cancel", "acknowledge"] }],
       children: [
-        { name: "start", summary: "Start a DurableJob for build, test, package, or Integration checks.", usage: "yui job start --task <id> --project <project> --head <sha> --workspace <dir> --step <name>=<command> [--step ...] [--owner task|work-item:<id>|integration-attempt:<id>] [--env <k=v>...]" },
+        { name: "start", summary: "Start a DurableJob under an explicit request identity.", usage: "yui job start --request-id <id> --task <id> --project <project> --head <sha> --workspace <dir> --step <name>=<command> [--step ...] [--owner task|work-item:<id>|integration-attempt:<id>] [--env <k=v>...]" },
         { name: "get", summary: "Show a DurableJob record and its terminal result.", usage: "yui job get --task <id> --job <job-id>" },
         { name: "cancel", summary: "Request cancellation of a running or queued DurableJob.", usage: "yui job cancel --task <id> --job <job-id>" },
         { name: "acknowledge", summary: "Acknowledge an unknown-needs-attention DurableJob so Task lifecycle gates can proceed.", usage: "yui job acknowledge --task <id> --job <job-id>" }

@@ -94,11 +94,31 @@ yui task wake resolve <task> <wake> --reason <quiescence-evidence>
 resolve 在原生效果围栏清除后释放该认领。它既不重放通知，也不编造接受或完成。独立的
 Role 工作和合法的本地事实不是一把 Task 范围的恢复锁。
 
+wake 状态记录通知投递，不记录 Message 的实施结果。普通 Leader 通知的 `consumed`
+表示原生接受；原生 Turn 完成与 Task 交付应分别依据运行证据和持久结果判断。
+被拒绝或释放的 wake 可以保留为 `dispatched`，但已不再占用 mailbox claim。Session 替换把待投递输入
+保留给新 wake 与当前 Context，不会追溯把旧 wake 标成已接受；旧回执也不能结算
+新批次。Session 清理期间，新输入保持排队。检查时应结合 wake、
+`notification.delivery` 事件、当前 mailbox 与 Session，不应要求每个历史 wake
+都对应一条最终回复。
+
+现行 wake 只表示通知，Run 完成不能消费 wake；首次通知窗口从 Task 创建时间开始。
+退役的 Run-linked wake 通过 Task 事件保留原 ID 和完整原文，不作为第二种活动 wake 格式。
+
 ## 输入时机：queue、steer 与 interrupt
 
 提交意图（`record / discuss / develop`）决定需求如何路由。输入时机决定一条已经
 获授权的输入何时到达 Role；它不激活 Task、不扩大 Assignment，也不提升 planning
-权限。[经认证的 Web 控制](architecture/capabilities-and-resources.zh-CN.md#cli-与-web)
+权限。仅保存输入使用 `message send --intent record`，`--wake-policy` 已移除。
+未绑定请求身份的 Draft Message 仍可编辑，保留原提交意图。编辑 `record` 或
+`develop` 不会启动规划、创建或重试激活；编辑 `discuss` 复用讨论提交的激活／规划
+路由，因此已有 pending 或 failed 激活时，编辑后的讨论仍等待激活处理。
+
+带 submission key、queue/steer 请求或 interrupt-then 交接的 Message 正文不可变；
+需要改内容时，应使用新的 request ID 提交新消息。这保留原请求的判重依据和回执，
+不新增第二套输入存储。更新为相同正文是无操作：不写事件、不改队列、不通知
+Controller。现行 user/operator 消息必须存有意图；改变意图同样需要显式提交新输入。
+[经认证的 Web 控制](architecture/capabilities-and-resources.zh-CN.md#cli-与-web)
 与 CLI 使用同样的三种操作。
 
 | 动作 | 效果 | 不证明什么 |
@@ -111,13 +131,15 @@ Role 工作和合法的本地事实不是一把 Task 范围的恢复锁。
 
 ```sh
 yui task role session inspect <task> <role>
-yui task message queue <task> "<continuation>" --request-id <id> --to leader
+yui task message queue <task> "<continuation>" --request-id <id>
 yui task message steer <task> "<correction>" --request-id <id> --to leader --expected-target <turn>
 yui task role interrupt <task> <role> --expected-target <turn> --request-id <id> [--then-message <task/message>]
 ```
 
-Worker/Reviewer 消息保留既有的 `--work-item` 或 `--review-round` 关联。同一个
-request ID 若换正文或目标会产生冲突。`steer` 与 `interrupt` 不会静默改目标、
+普通 Leader `queue` 输入省略 `--to`。显式 `--to <role>`（包括 `leader`）指向既有
+Assignment，必须带 `--work-item` 或 `--review-round`；Message 不能创建 Assignment。
+`steer` 仍需要显式 Role 与精确实时目标。同一个 request ID 若换正文或目标会产生冲突。
+`steer` 与 `interrupt` 不会静默改目标、
 替换 Session、杀进程或回退到另一动作。没有活动受管 Turn 时返回 `NO_ACTIVE_TURN`；
 陈旧目标与不受支持的控制也保持为显式结果。
 
@@ -127,11 +149,11 @@ request ID 若换正文或目标会产生冲突。`steer` 与 `interrupt` 不会
 可以显式选择新的控制；不确定性不允许重放。
 
 Global Role 使用同样的三种动作和自己的 owner、Session，不虚构 Task 或 Run。
-本地用户 Web Surface 通过共享 Global Role 处理器暴露这些动作。目前 CLI 存在可用性
-缺口：`src/cli.ts` 实现了 `yui role message queue|steer` 和 `yui role interrupt`，
-但 `src/cli/commandCatalog.ts` 没有注册顶层 `role`，因此公开 CLI 路由会拒绝这些路径，
-报告 unknown command。它们不是可用的 CLI 示例；应报告该缺口，不虚构 Task/Run 或
-借用浏览器用户权限。新的受控 Global Session 使用 Host console。活动的非受管 Session
+本地用户 Web Surface 通过共享 Global Role 处理器暴露这些动作。公开 CLI 提供
+`yui role message queue|steer <role> <text>` 和 `yui role interrupt <role>`。
+queue/steer 要求 `--request-id`，steer/interrupt 要求 `--expected-target`。
+这些命令保留调用者现有 Session 权限，不虚构 Task/Run 或借用浏览器用户权限。
+配置仍使用 `config role`，生命周期使用 `session`。新的受控 Global Session 使用 Host console。活动的非受管 Session
 不会被静默采用，需要先执行显式的 Session 生命周期操作。
 
 ## 精确结果
@@ -158,8 +180,8 @@ Candidate 和 ReviewRound 保留来源；Core 不从散文中推导语义接受�
 仍是通知。Operator 提交和直接的 Task 消息都能到达那个 Session。Draft 计划/WorkItem
 编辑保留执行历史；外部编辑通知 Leader，而它自己的规划编辑不创建自唤醒。
 
-新的 Draft Role 使用位于 `<YUI_HOME>.task-runtimes/planning` 下、专属于该 Task 的规划
-目录，在控制 Home 和交付树之外。一个 planning Run 可以用 `task activation request`
+新的 Draft Role 使用位于 `<YUI_HOME>/runtime/task-runtimes/planning` 下、专属于该 Task 的规划
+目录，与持久控制数据和交付树分开。一个 planning Run 可以用 `task activation request`
 持久化意图并立即返回一个 `afterPlanningRun` 引用。它的终态把该请求释放给 Controller
 准入；被取消的意图不会复活。Leader 也可以在普通讨论中请求激活而无需 AgentRun：一旦
 原生输入结算，Controller 就采用其持久意图。不需要合成 Run 或额外的用户“continue”。
@@ -167,6 +189,9 @@ Candidate 和 ReviewRound 保留来源；Core 不从散文中推导语义接受�
 对于已绑定的 Git Project，`--environment empty` 表示没有额外环境：这些 Project 仍会
 获得受管 worktree。`scratch` 选择一个 Task 拥有的目录。`local` 需要一个已登记的 local
 Resource 及其 grant；Project ID 不是 local Resource ID。
+
+`task activate` 是对已有请求的前台采用，不是创建激活意图的另一条路径。
+没有请求的 Draft 会在资源准备前被拒绝；命令不代填环境计划或 request ID。
 
 资源准备先于对 Task 状态和工作区所有权的原子采用。一次失败的采用记录一个失败请求，
 并用持久事实通知 Leader；在失败未变时它不反复准备资源。Leader 选择显式重试或修正后的

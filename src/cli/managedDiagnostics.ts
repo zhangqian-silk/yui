@@ -3,7 +3,7 @@
 export function taskDiagnosticTarget(args: readonly string[]): string | undefined {
   if (args[0] !== "task") return undefined;
   if (["show", "context", "next-action", "archive-preflight"].includes(args[1] ?? "")) {
-    return args[1] === "context" && ["inspect", "delta"].includes(args[2] ?? "")
+    return args[1] === "context" && ["read", "inspect", "delta"].includes(args[2] ?? "")
       ? args[3] : args[2];
   }
   if (args[1] === "role" && ["list", "status", "show"].includes(args[2] ?? "")) return args[3];

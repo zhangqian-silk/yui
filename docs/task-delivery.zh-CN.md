@@ -7,6 +7,10 @@
 Task 生命周期是 `draft / active / completed / cancelled / archived`。Draft 保存
 意图、Project 绑定、规划讨论和可变需求。它在创建时不采用可写的交付工作区。
 
+激活要求先保存带明确环境计划的请求：
+`task activation request <task> --request-id <id> --environment <plan>`。
+Controller 采用符合条件的请求；`task activate <task>` 可以在前台消费已有请求，
+但不会隐式创建激活意图。
 激活会校验当前 Role、依赖、Project 范围和资源，准备物理工作区，并原子地采用
 状态/所有权。准备失败会让 Task 停在 Draft，附带一个失败请求和投递给 Leader 的
 诊断。延迟激活保留确切意图并等待原生静止，无论它是在规划 Run 中还是在后续讨论中
@@ -17,6 +21,10 @@ Project 维护争用会在采用资源前异步等待。锁超时或等待被取
 Task type 描述被请求的结果，而不是强制的执行者。Leader 直接负责有界工作，或分派
 有独立价值的 WorkItem。直接执行没有 Group。复制是为了在同一个冻结 Assignment 上
 进行独立尝试而被显式请求的，随后由 Leader 选择综合。
+
+工作范围重叠只在 `task next-action` 中作为只读建议，不再按文本匹配拦截创建。
+Leader 读取原始需求并判断是否属于独立工作。请求身份、权限、依赖、工作区隔离和
+验收校验仍独立强制执行。
 
 ## 受管工作区
 
@@ -37,17 +45,63 @@ Task 仓库所有。对单个 Project，Agent 的正常 cwd 是其受管 Git 根
 
 ## Candidate、Review 与 Integration
 
-Provider 终态保存确切的原始 Run 结果。它不验收 WorkItem。Leader 评估结果，并为
-隔离代码捕获不可变的、按 Project 划分的 ChangeSet。治理 Candidate 为 Review 和
+Provider 终态保存确切的原始 Run 结果。它不验收 WorkItem。Leader 评估结果及其不可变的
+按 Project 划分的 Git 快照。ChangeSet 是可选的差异证据；治理 Candidate 为 Review 和
 Integration 提供来源；Producer 不独立进入这两条路径中的任何一条。
 
-Integration 在候选 worktree 中套用固定 ChangeSet，运行已配置的检查，然后只有在
+Agent 选择结果顺序与策略，再从精确 WorkItem Candidate 发起一次 Integration，
+不再维护单独的 ChangeSet 集成队列。
+Integration 在候选 worktree 中套用固定来源提交，运行已配置的检查，然后只有在
 目标 head 仍匹配时才推进目标。冲突、检查失败、目标移动或拒绝都保留证据，绝不推进
 目标。Agent 在保留的工作区内选择重试或手动解决。
 
+已有 merge/rebase/cherry-pick 若缺少原尝试的进度回执，不根据 Git 标记接管。
+保留现场并选择显式恢复；正常续作使用原回执，不重放已完成步骤。
+
 当检查是一个 DurableJob 时，Integration 在运行期间保留那个确切的 jobId。Job 结算
 后，`task integration continue <task>/<integration>` 消费其结果并执行带守卫的收尾。
-这个直接操作不依赖单独 integration 队列中的条目。
+未结算的 Integration（包括冲突）仍阻止完成，不依赖 Agent 采用了什么执行顺序。
+
+### 验证复用与显式重跑
+
+配置了 VerificationPlan 的项目，默认只复用完整成功、日志可校验，且 Project、
+提交、计划、工具链、目标 ref／基线都精确匹配的证据。未接入生产的 L1 执行入口
+和路径选择器已移除；已有 L1 计划数据及历史证据保持可读，不是自动执行路径。
+无匹配证据时正常执行。
+计划必须提供 `schemaVersion: 1`，不再包含 `record/reuse/enforce` 模式。
+
+新建操作时显式要求重跑：
+
+```sh
+yui task integration start <task> --work-item <id> --strategy ff --rerun-checks
+yui task upstream integrate <task> --project <project> --rerun-checks
+```
+
+该选项是本次 Integration 的不可变意图，不是全局配置开关。`continue` 只消费原先
+接纳的 Job，不会变成重跑。再次执行需创建新尝试，并先结算等价的未完成验证。
+重跑只跳过缓存，不绕过权限、Job 身份、工作区检查或最终目标 CAS。
+显式 `--check` 同样要求实际执行。配置了计划时，它们在计划检查后执行，
+不会被忽略，也不会因命令文本相同而被拒绝。
+非结构化检查不再搜索历史 Job 来替代本次执行。
+
+新执行开始前撤下旧成功。失败如实记录；中断、缺失日志或候选被改写时，
+不会保留可复用成功。Job 和本地执行在发布成功证据前，共同检查候选的精确提交、
+分支和干净状态。v4 执行摘要隔离旧证据，不删除原有历史。
+过期的缓存使用者不能恢复旧结果。发布查询查看最新匹配证据，不跳过失败去找旧绿灯。
+缓存只表示当前可复用证据，不充当 Task 执行历史；原 Job 和 Integration 记录独立保留。
+
+公开 upstream CLI 与其他 Integration 命令共用 Controller Job 入口。
+`--latest` 可以返回多个 Project 各自待处理的 Job；应继续返回的每个 Integration ID，
+而不是重新发起 upstream 请求来轮询进度。
+
+Job 的准入、管理操作及启动前检查把非 Leader 限定到当前 Assignment、
+精确 WorkItem 工作区和可写 Project。现有 Job owner 不能表达 Review/replica
+工作区时会明确拒绝，不退回 Task 主工作区。Leader/Operator 管理与已运行 Job 的
+结果结算保持独立。
+
+这些身份只覆盖已声明输入，不是所有外部服务和未跟踪环境的完整指纹。
+外部条件变化、排查偶发失败或用户要求再次检查时，应显式重跑。
+计划不赋予真实模型、付费或共享资源测试授权；复用也不替代 Review、验收或发布权限。
 
 Review 遵循适用的 Candidate 规则或 Task-final 合同以及冻结的 head。确切的 main
 Reviewer Run 持有报告；执行成功不等于语义通过。验收归 Leader。即使默认审查策略
@@ -145,6 +199,16 @@ Force 不验证合并、不验收工作、不证明物理静止、不丢弃脏�
 也只代表前台清理已走完，不代表资源全部移除。重复归档只报告当前事实，不重放清理。
 检查后通过显式的精确 owner 资源操作进行安全清理；不隐含后台重试或更广泛的删除
 权限。两条归档路径都保留 Task 历史与恢复信息。已归档的 Task 不能重开。
+
+资源 GC 是独立、显式启用的隔离路径。同一 runtime 子树只移动一次，由父目录
+回执负责恢复完整内容；重复的子目录 registry 记录在同一事务内移除。
+独立 Git worktree 或仍需保留的子资源会阻止移动其父目录，不删除 Task 记录或成果。
+
+清理计划不是执行授权。Apply 与 purge 在现有 SQLite 写锁内重读 Task 状态、
+受管工作区、active Run 和未结算 Job，并保持写锁直到有界文件操作与 registry
+更新完成。Task 重新打开或新增持久所有者会阻止隔离、删除；无法证明安全时
+保留资源并给出原因。已经隔离、随后重新打开的资源可以恢复。
+不增加后台重试 worker 或第二套持久所有权协议。
 
 `yui task archive-preflight <task> (--integrated|--abandon) [--force] [--json]`
 一次读取归档条件、交付覆盖与各精确 owner 的清理检查。归档前后都可用，获授权的

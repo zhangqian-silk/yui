@@ -15,10 +15,127 @@ Agent 选择一个预先声明的计划，设施从持久状态驱动该计划�
 - **ReleaseWorkflow**（`release-workflow-N`）——计划及其进展：一个确切来源（仓库 +
   钉住的 commit，可选一个 artifact）、一份不可变的有序步骤计划，以及每步一条持久记录。
 
-引擎（`src/release/releaseWorkflowEngine.ts`）是一个纯库；`yui task workflow` 和
+引擎（`src/release/releaseWorkflowEngine.ts`）负责持久状态转换和工作流锁；`yui task workflow` 和
 `yui task grant` 命令驱动它。每个外部系统都位于 `ReleaseWorkflowPorts`
-（`src/release/releaseWorkflowPorts.ts`）之后，因此整个工作流可以用确定性的 fake
-测试，不产生任何真实的 GitHub、npm、git、Controller 或进程副作用。
+（`src/release/releaseWorkflowPorts.ts`）之后。可用临时 SQLite 和确定性的外部端口测试
+恢复逻辑，无需真实 GitHub、npm、git、Controller 或模型效果。
+
+## 1.0 前的契约清理
+
+当前开发步骤先清退运行时兼容分支，尚未执行最终 1.0 基线切换，也不发布版本或重置
+存储编号。存储 `27→28` 只规范化可明确识别的单条 Role 调度去重键，旧迁移账本、
+Message、Task 结果和不确定外部效果保持不变。普通打开要求存储 34；已有 Home 只通过
+显式升级入口前进，不增加运行时双读。
+
+这是一次 1.0 前的破坏性变更：
+
+- `message send` 统一使用 `--intent`；CLI 与 capability API 不再接受 `--wake-policy`
+  或 `wakePolicy` 参数，Draft 编辑保留原提交意图。
+- 内部命令集成实现 `notifyMailboxChanged`；Task-only 通知适配器及其调用已统一。
+- ACP peer 必须回报 `configOptions`，不再走 `modes`／`set_mode` 路径。
+- Release 恢复要求精确 Home 与安装 prefix。缺少固定目标的效果保持 unknown，
+  身份不完整的 handover lock 保持围栏。
+- 开发 link/unlink 要求当前登记文件，不搜索或接管旧 NVM 登记，不重建孤立链接。
+- GC 不再发现旧 deployment 布局或重建已删除 worktree；不受支持的 quarantine
+  证据保留，不会被当成当前 move 回执清除。
+- `task activate` 只消费已有请求；没有请求就不采用资源。请求创建、延后准入和
+  原子工作区采用仍分开，并复用同一个现行执行边界。
+- 删除 `task integration queue` 及其状态机。Agent 选择每个 WorkItem 结果的顺序与
+  策略，逐项调用原子 Integration；保留精确检查、目标 CAS 和完成义务。
+
+存储 `28→29` 在删除活动队列表前，将每条旧 payload 原样保存在
+`integration.queue-retired` Task 事件中，并保留原队列 ID。事件编号越过已有计数器
+和历史最大 ID。此操作不验收交付、不生成 Integration、不重放工作；已有 Integration
+与 Job 保持不变。通过 `task event list <task>` 和引用的 WorkItem/Integration
+判断剩余工作；队列退役不代表未完成的 Integration 已结算。
+
+存储 `29→30` 将 Run-linked wake 的完整原文移入 `wake.run-link-retired` Task 事件。
+现有通知保留 ID、投递状态和引用，使用 wake schema 2；Run 终态不再消费通知。
+引用待退役 wake 的活动 Run、受管重试或未决 claim 会同时阻止预检和迁移；
+迁移不停止执行、不编造接受。Global Session 没有受控 binding 时统一显式保存
+`providerBinding: null`。
+
+存储 `30→31` 将 Review scope 统一为显式值：有效旧 WorkItem Review 的缺失／null
+scope 转为 `work-item`，Task-final 候选证据和原迁移账本不变。新建和重试均显式写入 scope。
+
+存储 `31→32` 从当前 WorkItem 移除 `historicalState`，移除前将完整原始 payload
+原样保存在 `work-item.execution-state-retired` Task 事件。当前状态、工作范围、
+Candidate 和执行组不变，不生成 Run 或验收。未知历史形态会报错，记录和迁移账本不前进。
+
+存储 `32→33` 清退 Leader 过渡／预算配置以及 VerificationPlan 的模式。
+活动计划显式补上 schema 版本，实际检查保持不变；已退役 Knowledge 原文保留。
+Integration 显式补入 `rerunChecks: false`，缓存 Artifact 移除试运行复用计数。
+原配置可从显式升级备份恢复。这是已确认的行为变更，不将三种旧模式声称为等价。
+
+已接纳且仍为 `running/validating` 的计划验证会阻止预检和迁移，需先用旧版本完成
+结算；不会把运行中的 Job 改标为新证据契约。该次切换使用 v3 验证摘要，使更早缓存不再被
+自动复用，不重写历史 Job／Integration 结果或删除其日志。旧计划解析冻结在迁移
+目录中，早期迁移保持原有语义。
+
+现行干净候选证明采用 v4 执行摘要。Job 和本地验证都在发布可复用成功前，
+检查候选工作区的干净状态、分支和精确 HEAD；v4 之前的缓存不能绕过这一边界。
+旧记录和日志保持可读，已接纳 Job 不会被改标为新摘要。应先按原契约结算旧尝试，
+或明确放弃后再开始新操作。
+
+未接入生产的 L1 执行入口和路径选择器已移除，缓存回归改为覆盖共享证明原语与
+实际 Integration 路径。既有计划元数据和历史 L1 证据仍保留；
+这不重置 Home 版本，也不删除受支持的迁移链。
+
+存储 `33→34` 从当前记录移除 Message `wakePolicy` 与激活 `origin`，原始表达
+保存在审计事件。旧的仅记录消息转换为 `intent: record`，其他缺少意图的
+user/operator 消息转换为 `discuss`；运行时不再解释缺失的持久化意图。
+编辑仅记录内容不会唤醒 Leader。完成检查读取实际待投递消息引用，也涵盖显式交接
+此前仅保存的内容。
+
+Draft 编辑同时保护请求身份：已经绑定 submission、queue/steer 或交接请求的消息
+不能原地改正文，需新建消息并使用新请求 ID；相同正文更新为无操作。未绑定请求
+身份的讨论编辑仍遵守 pending/failed 激活状态，develop 编辑不启动规划或创建／
+重试激活。这是操作边界修复，不改变存储格式，也不猜测修复过去已被编辑的原文。
+
+Draft 中缺少 origin 且仍 pending 的旧 immediate 激活请求会阻止预检和迁移，即使 Task
+已停止执行。必须先用旧版本显式激活或取消；升级不替用户做这个决定。当前已接纳
+请求不再经过第二次来源门槛，但取消、planning 延后、执行状态与精确 Session 权限
+仍需检查。旧来源及 settled 请求历史保留在 `task.activation-origin-retired` 事件。
+
+新 `job start` 必须带 `--request-id`；RPC 必须提供 `requestId`，capability
+入口使用 invocation 身份。不再从命令内容隐式生成请求，也不再构造匿名 Job。
+已有 Job 的操作证据和按 ID 读取保持不变；相同请求重试防重、不同输入冲突，
+Integration 在 Session 替换后仍找回原 Job。新 request ID 表示明确的新操作，
+不是对旧未知结果的自动重放。
+
+Scheduler 核心读取和持久化操作成为必需接口，缺少 Session／Event 读取不再被当作
+空证据，也不能跳过错误持久化。执行及 Web 投影直接读取当前 Store；
+消息入队必须读取 Task 生命周期。精确投递结算仍独立，不增加会丢失迟到证据的归档门槛。
+Observer、配置、Knowledge 与工作区清理所需 Store 读取也成为必需接口；
+测试替身实现现行合同，不再令生产代码降级。
+
+Task 列表及 `/api/dashboard` 只保留有界目录；调用方去掉 `--view compact`，
+详情使用单 Task 读取。Scheduler 目录索引是必需接口，不再兼容缺失时的全量扫描。
+额外 `schema.json`／`state.json` 不覆盖 SQLite 版本，也不用于开发 Home reset；
+升级保留无关文件。非空 Home 缺少数据库时仍拒绝初始化。
+不认识的 writer lease 明确诊断，不接管、不删除。
+
+`controller status` 固定输出身份信息，存储矛盾仍返回非零健康退出码；
+`YUI_STATUS_IDENTITY` 不再选择另一套契约。升级侧直接复用资源采集器读取生命周期，
+无需让旧 Home 先通过当前 schema 的健康校验。
+
+现行边界进一步收敛：
+
+- Project／Artifact 文件锁及 handover lock 要求精确进程代际证据。owner 缺失、
+  格式不完整或 OS 身份不可读时保持围栏；仅凭年龄不能证明创建者退出，不再用
+  PID-only 存活判断代替身份确认。
+- PR head 查询只调用 `gh pr list --head ... --state open`。仅有效空数组证明不存在；
+  传输失败、身份格式错误和多个匹配都不允许继续创建。
+- 已有 Git 操作缺少原 Integration 进度回执时不再被接管。保留文件并明确诊断；
+  有精确回执的正常冲突／Job 续作仍受支持。
+
+发布前应先收敛旧执行，对不受支持的锁、链接和隔离资源做显式清理。归属与处置尚未
+确定时保留原记录，运行时不替 Agent 选择恢复方案。
+
+后续基线切换必须先验证到目标格式的桥接或导出，再用一个干净基线替换旧初始化和迁移链，
+之后才能删除基线之前的迁移及历史夹具。存储基线只重置一次，不在发布 `1.0.0` 时再次
+重置。未知版本拒绝、精确进程／Host 身份检查与持久审计证据仍应保留。版本 tag、真实
+Home 迁移和发布效果需要各自的发布授权。
 
 ## 授权模型
 
@@ -165,8 +282,9 @@ kind、可选 params，以及一个可选的不可逆级别（`none` | `reversib
 
 该键被传给该步骤的每一次 `executeStep` 调用，包括在一次确认为 absent 的超时之后的
 重试。端口合同要求 `executeStep` 在同一键下是幂等的：一次重试尝试不得产生第二次
-副作用。引擎侧的合同更严格——它绝不为一个已标记 `unknown` 的步骤调用 `executeStep`,
-而是按记录的身份重新查询。fake 记录每一个键，因此测试套件直接证明至多一次执行。
+副作用。引擎不会盲目为 `unknown` 步骤调用 `executeStep`，而是先按记录的身份查询。
+核心测试用真实 SQLite 和确定性端口检查不确定效果查询、已确认步骤复用和 grant 次数耗尽。
+这证明这些引擎边界，不代表真实外部服务或所有发布适配器的幂等性已被验证。
 
 ## Operator 指南
 

@@ -943,7 +943,7 @@ test("Leader then selects its own next notification ahead of ordinary queue", t 
   const { store, command } = fixture(t);
   withLeaderTurn(store, { attemptId: "a-1", nativeTurnId: "t-1" });
   const queued = command(["message", "queue", "task-1", "Ordinary later input", "--request-id", "q-later"]);
-  const saved = command(["message", "send", "task-1", "Chosen immediate successor", "--wake-policy", "none"]);
+  const saved = command(["message", "send", "task-1", "Chosen immediate successor", "--intent", "record"]);
   const result = command(["role", "interrupt", "task-1", "leader", "--expected-target", "t-1",
     "--then-message", `task-1/${saved.data.message.id}`, "--request-id", "i-next"]);
   assert.equal(result.kind, "input-interrupt");
@@ -971,7 +971,7 @@ test("a Leader-owned AgentRun can claim then without inventing a WorkItem Assign
   store.saveRun(run);
   store.saveActiveRun(run);
   withRunBoundTurn(store, "leader", { runId: run.id, attemptId: "a-leader", nativeTurnId: "t-leader" });
-  const saved = command(["message", "send", "task-1", "Continue after stopping", "--wake-policy", "none"]);
+  const saved = command(["message", "send", "task-1", "Continue after stopping", "--intent", "record"]);
   const control = command(["role", "interrupt", "task-1", "leader", "--expected-target", "t-leader",
     "--then-message", `task-1/${saved.data.message.id}`, "--request-id", "leader-with-run"]);
   assert.equal(control.kind, "input-interrupt");
@@ -983,7 +983,7 @@ test("a Leader-owned AgentRun can claim then without inventing a WorkItem Assign
 test("a replaced Leader never receives an old then, while new queue remains usable", t => {
   const { store, command } = fixture(t);
   withLeaderTurn(store, { attemptId: "a-1", nativeTurnId: "t-1" });
-  const saved = command(["message", "send", "task-1", "Old then", "--wake-policy", "none"]);
+  const saved = command(["message", "send", "task-1", "Old then", "--intent", "record"]);
   command(["role", "interrupt", "task-1", "leader", "--expected-target", "t-1",
     "--then-message", `task-1/${saved.data.message.id}`, "--request-id", "i-old"]);
   const original = store.getTaskRoleSessionSet("task-1", "leader");
@@ -1168,7 +1168,7 @@ test("the Web surface queues through the shared primitive and never reaches the 
   const host = fakeWebHostControl();
   const surface = createWebTaskSurface(store, { yuiHome: home }, [], host.port);
   const receipt = await surface.control("task-1", {
-    action: "queue", body: "Continue when free", requestId: "wq-1", to: "worker", workItem: "work-item-1" });
+    action: "queue", body: "--literal text, not a CLI option", requestId: "wq-1", to: "worker", workItem: "work-item-1" });
   // A queue is a durable save: it produced a real Message with a queued delivery
   // and touched no live edge, exactly like the CLI queue path.
   assert.equal(receipt.action, "queue");
@@ -1179,6 +1179,7 @@ test("the Web surface queues through the shared primitive and never reaches the 
   const saved = store.listMessages("task-1").find(m => m.inputControl?.requestId === "wq-1");
   assert.ok(saved, "the queue persisted a real Message");
   assert.equal(saved.inputControl.action, "queue");
+  assert.equal(saved.body, "--literal text, not a CLI option");
 });
 
 test("the Web surface steer records pending then performs the one live Host steer (gap F)", async t => {
@@ -1321,11 +1322,12 @@ test("Global Web inputs use the authenticated shared primitive and state reads n
   const headers = { "content-type": "application/json", "x-yui-web-token": "global-web-token" };
   assert.equal((await fetch(url)).status, 403);
   const response = await fetch(url, { method: "POST", headers,
-    body: JSON.stringify({ action: "queue", body: "Global input", requestId: "global-web-1" }) });
+    body: JSON.stringify({ action: "queue", body: "--literal global input", requestId: "global-web-1" }) });
   assert.equal(response.status, 200);
   const receipt = await response.json();
   assert.equal(receipt.delivery.state, "queued");
   assert.equal(receipt.message.roleName, "assistant");
+  assert.equal(receipt.message.body, "--literal global input");
   const before = store.listGlobalRoleMessages("assistant");
   const state = await (await fetch(url, { headers })).json();
   assert.equal(state.messages[0].id, before[0].id);

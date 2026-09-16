@@ -8,6 +8,10 @@ Task lifecycle is `draft / active / completed / cancelled / archived`. A Draft
 stores intent, Project bindings, planning discussion and mutable requirements.
 It does not adopt a writable delivery workspace at creation.
 
+Activation requires a durable request with an explicit environment plan:
+use `task activation request <task> --request-id <id> --environment <plan>`.
+The Controller adopts eligible requests; `task activate <task>` may consume an
+existing request in the foreground but never creates implicit activation intent.
 Activation validates current Roles, dependencies, Project scope and resources,
 prepares physical workspaces, and adopts status/ownership atomically. Failed
 preparation leaves the Task Draft with a failed request and a diagnosis delivered
@@ -21,6 +25,11 @@ Task type describes the requested outcome, not the mandatory executor.
 Leader owns bounded work directly or assigns substantial independent WorkItems.
 Direct execution has no Group. Replication is explicitly requested for independent
 attempts at the same frozen Assignment, followed by Leader-selected synthesis.
+
+Scope overlap is a read-only advisory in `task next-action`, not a text-matching
+creation gate. The Leader inspects original requirements and decides whether
+work is independent. Request identity, permissions, dependencies, workspace
+isolation and acceptance checks remain enforced independently.
 
 ## Managed workspaces
 
@@ -47,20 +56,79 @@ managed workspace remains the Git/control ownership record.
 ## Candidate, Review and Integration
 
 Provider terminal saves the exact original Run result. It does not accept the
-WorkItem. The Leader evaluates the result and captures immutable per-Project
-ChangeSets for isolated code. The governing Candidate supplies provenance for
+WorkItem. The Leader evaluates the result and its immutable per-Project Git
+snapshot. Optional ChangeSets supply diff evidence. The governing Candidate supplies provenance for
 Review and Integration; Producers do not independently enter either path.
 
-Integration applies the fixed ChangeSet in a candidate worktree, runs configured
+The Agent chooses the order and strategy, then starts one Integration from an
+exact WorkItem Candidate. There is no separate ChangeSet integration queue.
+Integration applies the fixed source commits in a candidate worktree, runs configured
 checks, then advances the target only if its head still matches. Conflict,
 failed checks, target movement or rejection retain evidence and never advance
 the target. The Agent chooses retry or manual resolution within the retained
 workspace.
 
+An existing merge/rebase/cherry-pick without the attempt's own progress receipt
+is not adopted from Git markers. Preserve the scene and choose explicit recovery;
+normal continuation uses the original receipt and never replays a completed step.
+
 When checks are a DurableJob, the Integration retains that exact jobId while
 running. Once the Job settles, `task integration continue <task>/<integration>`
-consumes its result and performs the guarded finalization. The direct operation
-does not depend on entries in the separate integration queue.
+consumes its result and performs the guarded finalization. Existing unsettled
+Integrations, including conflicts, remain completion blockers independently of
+how the Agent ordered them.
+
+### Verification reuse and explicit reruns
+
+A configured VerificationPlan reuses only complete, successful, log-verified
+evidence for the exact Project, commit, plan, toolchain and target/base boundary.
+A plan with no reusable evidence executes normally. The unused L1 execution and
+path-selector helpers have been removed; stored L1 plan data and historical
+artifacts remain readable, not an automatic execution path.
+Plans require `schemaVersion: 1`; there is no `record/reuse/enforce` mode.
+
+Request fresh checks when creating an operation:
+
+```sh
+yui task integration start <task> --work-item <id> --strategy ff --rerun-checks
+yui task upstream integrate <task> --project <project> --rerun-checks
+```
+
+The flag is immutable intent on that Integration, not a global configuration
+switch. `continue` consumes the same admitted Job; it cannot turn into a rerun.
+Create a new attempt for another execution, and settle any equivalent unfinished
+verification first. Rerun affects only cache reuse, never permissions, Job
+identity, workspace checks or the final target CAS.
+Explicit `--check` commands also request fresh execution. With a plan configured,
+they run after its checks; they are neither ignored nor rejected by text matching.
+Unstructured checks do not search historical Jobs for a substitute result.
+
+Fresh execution withdraws the old success before starting. Failure is recorded
+as failure; interruption, missing logs or a mutated candidate leave no reusable
+success. Both Job and local execution verify the exact clean candidate before
+publishing successful proof. The v4 execution digest excludes older proof without
+deleting its history. A stale
+cache consumer cannot restore an older result. Release lookup considers the
+newest recorded matching proof rather than searching past a failure for an
+older green result. The cache represents current reusable evidence, not Task
+execution history; original Job and Integration records remain separate.
+
+The public upstream CLI uses the same Controller Job port as other Integration
+commands. `--latest` may return independent pending Jobs for several Projects;
+continue each returned Integration ID rather than issuing another upstream
+request to poll it.
+
+Job admission, management and pre-spawn checks bind a non-Leader to its current
+Assignment, exact WorkItem workspace and writable Project scope. The existing
+Job owner contract does not represent Review/replica workspaces, so those
+requests fail explicitly rather than falling back to Task main. Leader/Operator
+supervision and settlement of already-running Jobs remain separate.
+
+The identity covers declared inputs, not every external service or untracked
+environment condition. Use explicit reruns for changing external inputs,
+flakiness investigation or a user-requested new check. A plan does not authorize
+real-model/paid/shared-resource validation. Reuse never substitutes for Review,
+acceptance or publication authority.
 
 Review follows the applicable Candidate rule or Task-final contract and frozen
 heads. The exact main Reviewer Run holds the report; successful execution is
@@ -189,6 +257,19 @@ not replay cleanup. After inspection, use explicit exact-owner resource
 operations for safe cleanup; no background retry or broader deletion authority
 is implied. Both archive paths preserve Task history and recovery information.
 Archived Tasks cannot reopen.
+
+Resource GC is a separate, opt-in quarantine path. A runtime subtree moves once:
+the parent receipt owns recovery of its contents, and redundant child registry
+entries are removed in the same registry transaction. Independently owned Git
+worktrees or retained descendants prevent moving their enclosing directory.
+Task records and results are never removed by this consolidation.
+
+The plan is not cleanup authority. Apply and purge re-read Task status, managed
+workspaces, active Runs and unsettled Jobs under the existing SQLite writer
+fence, which spans the bounded physical mutation and registry update. A reopened
+Task or new durable owner prevents quarantine/deletion; uncertainty retains the
+resource with a diagnosis. Reopened quarantined resources can be restored.
+This adds neither a retry worker nor another persistent ownership protocol.
 
 `yui task archive-preflight <task> (--integrated|--abandon) [--force] [--json]`
 reads current admission, delivery and exact-owner cleanup checks in one report.

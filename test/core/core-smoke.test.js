@@ -58,18 +58,15 @@ import {
   createRuntimeObservation,
   runtimeObservationTaskEventPayload
 } from "../../dist/runtime/runtimeObservation.js";
-import { createSessionOwnerIdentity } from "../../dist/runtime/sessionOwnerIdentity.js";
+import { createSessionOwnerIdentity, readLinuxProcessIdentity } from "../../dist/runtime/sessionOwnerIdentity.js";
 import {
   RuntimeLaunchError
 } from "../../dist/runtime/ports.js";
 import { RuntimeLaunchCoordinator } from "../../dist/controller/runtimeLaunchCoordinator.js";
 import { resolveManagedTaskCaller } from "../../dist/runtime/managedCaller.js";
-import { taskLocalActor } from "../../dist/commands/taskActor.js";
+import { taskLocalActor } from "../../dist/task/taskAuthority.js";
 import { buildRunContextPack } from "../../dist/context/runContextPack.js";
-import {
-  buildTaskWakeEnvelope,
-  WAKE_ENVELOPE_HARD_BYTES
-} from "../../dist/context/wakeNotification.js";
+import { createTaskWake } from "../../dist/scheduler/taskWake.js";
 import { startStructuredProviderSession } from "../../dist/runtime/structuredProviderHost.js";
 import {
   acceptProviderTurn,
@@ -1048,6 +1045,7 @@ test("Role dispatch settlement preserves merged work and Leader wakes", () => {
   const workerTarget = { kind: "role", taskId: "task-1", roleName: "worker" };
   let workerMailbox = createWorkMailbox(workerTarget);
   const workerStore = {
+    getTask: () => ({ status: "active" }),
     getWorkMailbox: () => workerMailbox,
     saveWorkMailbox: (updated) => { workerMailbox = updated; }
   };
@@ -1125,12 +1123,12 @@ test("Role dispatch settlement preserves merged work and Leader wakes", () => {
 
 test("Reviewer availability ignores Role delivery residue", () => {
   const target = { kind: "role", taskId: "task-1", roleName: "reviewer" };
-  const mailbox = enqueueSignal(createWorkMailbox(target), {
-    reason: "review-requested",
-    refs: [
-      { type: "run", taskId: "task-1", id: "turn-1" },
-      { type: "work-item", taskId: "task-1", id: "work-item-1" }
-    ],
+  const mailbox = enqueueRoleRunDispatch({
+    getTask: () => ({ status: "active" }),
+    getWorkMailbox: () => createWorkMailbox(target),
+    saveWorkMailbox: () => {}
+  }, {
+    taskId: "task-1", roleName: "reviewer", runId: "turn-1", reason: "review-requested",
     occurredAt: "2026-09-02T00:00:00.000Z"
   });
   const availability = projectReviewerAvailability({
@@ -1418,47 +1416,18 @@ test("a wake names a completed Turn even when that Turn predates the delta curso
     eventAt
   ));
 
-  const envelope = buildTaskWakeEnvelope(store, {
+  const wake = createTaskWake({
+    id: "wake-1",
     taskId: task.id,
-    wakeId: "wake-1",
     reasons: ["worker-completed"],
     fromCursor: cursor,
+    toCursor: eventAt.toISOString(),
     now: eventAt
   });
-  assert.deepEqual(envelope.referencedRunIds, [run.id]);
-  assert.match(envelope.text, /Changed: 1 events, 0 messages, 1 AgentRuns/u);
-  assert.match(envelope.text, /yui task run show task-1\/turn-1/u);
-
-  const wideRuns = Array.from({ length: 6 }, (_, index) => ({
-    ...run,
-    id: `run-${index + 2}`
-  }));
-  const wideEvents = wideRuns.map((candidate, index) => createTaskEvent(
-    `event-${index + 10}`,
-    task.id,
-    "run.completed",
-    { runId: candidate.id, role: worker.name },
-    new Date(eventAt.getTime() + index + 1)
-  ));
-  const wideEnvelope = buildTaskWakeEnvelope({
-    getTask: () => task,
-    listEvents: () => wideEvents,
-    listMessages: () => [],
-    listRuns: () => wideRuns,
-    listReviewRounds: () => []
-  }, {
-    taskId: task.id,
-    wakeId: "wake-wide",
-    reasons: Array.from(
-      { length: 6 },
-      (_, index) => `reason-${index + 1}-${"r".repeat(400)}`
-    ),
-    fromCursor: cursor,
-    now: eventAt
-  });
-  assert.equal(wideEnvelope.referencedRunIds.length, 6);
-  assert.ok(wideEnvelope.totalBytes <= WAKE_ENVELOPE_HARD_BYTES);
-  assert.equal(Buffer.byteLength(wideEnvelope.text, "utf8"), wideEnvelope.totalBytes);
+  store.saveTaskWake(task.id, wake);
+  const shown = runTaskCommand(["wake", "show", task.id, wake.id], store, { environment: {} });
+  assert.deepEqual(shown.data.runs.map(result => result.id), [run.id]);
+  assert.match(shown.output, /yui task run show task-1\/turn-1/u);
 });
 
 test("Leader notifications settle their accepted mailbox batch without creating an AgentRun", async (t) => {
@@ -2752,7 +2721,7 @@ test("direct and replicated Review keep Producer results non-authoritative", (t)
     environment: bareEnv
   });
   let round = store.listReviewRounds(task.id).at(-1);
-  assert.equal(round.scope ?? "work-item", "work-item");
+  assert.equal(round.scope, "work-item");
   assert.deepEqual(
     round.executionGroup.lanes.map(({ roleName }) => roleName),
     ["candidate-a", "candidate-b"]
@@ -3402,15 +3371,12 @@ test("a packaged Controller restart inherits its direct parent's handover", (t) 
   const home = mkdtempSync(join(tmpdir(), "yui-controller-handover-smoke-"));
   const environment = { ...bareEnv, YUI_HOME: home };
   t.after(() => {
-    try {
-      execFileSync(
-        process.execPath,
-        [join(root, "dist", "cli.js"), "controller", "stop"],
-        { cwd: root, encoding: "utf8", env: environment }
-      );
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+    execFileSync(
+      process.execPath,
+      [join(root, "dist", "cli.js"), "controller", "stop"],
+      { cwd: root, encoding: "utf8", env: environment }
+    );
+    rmSync(home, { recursive: true, force: true });
   });
   new SqliteTaskStore(home).close();
 
@@ -3428,6 +3394,17 @@ test("a packaged Controller restart inherits its direct parent's handover", (t) 
   assert.equal(restarted.ok, true);
   assert.equal(restarted.data.restarted, true);
   assert.ok(Number.isInteger(restarted.data.pid) && restarted.data.pid > 0);
+  const replacedPid = restarted.data.pid;
+  const replacement = JSON.parse(execFileSync(
+    process.execPath,
+    [join(root, "dist", "cli.js"), "--json", "controller", "restart"],
+    { cwd: root, encoding: "utf8", env: environment }
+  ));
+  assert.equal(replacement.data.previousPid, replacedPid);
+  assert.notEqual(replacement.data.pid, replacedPid);
+  const oldProcess = readLinuxProcessIdentity(replacedPid);
+  assert.ok(oldProcess === undefined || oldProcess.state === "Z",
+    "restart must wait for the old Controller process, including its Workers, to exit");
 });
 
 test("Controller begin-handover accepts a null fromReleaseId", async (t) => {
@@ -3459,7 +3436,7 @@ test("Controller begin-handover accepts a null fromReleaseId", async (t) => {
 
 test("production storage exposes one current version and one migration floor", () => {
   assert.equal(MIN_SUPPORTED_STORAGE_VERSION, 1);
-  assert.equal(CURRENT_STORAGE_VERSION, 27);
+  assert.equal(CURRENT_STORAGE_VERSION, 34);
   for (const retiredExport of [
     "FileTaskStore",
     "STORAGE_STATE_FILE",
@@ -3754,7 +3731,7 @@ test("Task Role Profiles preserve runtime and portable behavior across add and u
   );
 });
 
-test("a pre-0.15.0 Home stays outside the migration floor and remains untouched", async (t) => {
+test("an unrecognized SQLite ledger is rejected without interpreting side files or changing the Home", async (t) => {
   const home = mkdtempSync(join(tmpdir(), "yui-pre-baseline-storage-smoke-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const databasePath = join(home, "yui.db");
@@ -3807,16 +3784,14 @@ test("a pre-0.15.0 Home stays outside the migration floor and remains untouched"
 
   const before = readFileSync(databasePath);
   const inspected = inspectStorageSchema(home);
-  assert.equal(inspected.status, "unsupported");
-  assert.equal(inspected.direction, "older");
-  assert.equal(inspected.currentVersion, 0);
+  assert.equal(inspected.status, "invalid");
+  assert.match(inspected.detail, /schema_migrations columns/);
   assert.equal(inspected.latestVersion, CURRENT_STORAGE_VERSION);
 
   const dryRun = await runStorageUpgrade({ home, mode: "dry-run" });
   assert.equal(dryRun.outcome, "blocked");
-  assert.equal(dryRun.stage, "unsupported");
+  assert.equal(dryRun.stage, "corruption");
   assert.equal(dryRun.sceneUnchanged, true);
-  assert.match(dryRun.action, /initialize a new Home/u);
   assert.deepEqual(readFileSync(databasePath), before);
   assert.equal(existsSync(manifestPath), true);
 });

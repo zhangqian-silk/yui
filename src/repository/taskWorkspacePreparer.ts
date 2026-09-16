@@ -1,8 +1,8 @@
 import {
   lstat,
   mkdir,
-  readlink,
   readdir,
+  readlink,
   rm,
   rmdir,
   symlink,
@@ -18,25 +18,31 @@ import {
 import { isDeepStrictEqual } from "node:util";
 import { recordArchiveCleanup } from "../task/archiveDiagnostics.js";
 
+import type { AgentRun } from "../agentRun/agentRun.js";
+import { enqueueWork } from "../coordination/workMailboxQueue.js";
+import { createTaskEvent } from "../event/taskEvent.js";
 import {
   retireTaskRoleSessionsForWorkspace,
   updateRoleAgentSessionStatus
 } from "../executor/agentExecutor.js";
 import { formatWorkspacePreflightError } from "../executor/workspacePreflightClassification.js";
-import { updateRole, type TaskRole } from "../role/role.js";
-import { taskRoleRuntimeIdentity } from "../runtime/managedCaller.js";
-import {
-  hasRuntimeCleanupObligation,
-  runtimeLifecycleTarget,
-  RUNTIME_HOST_DETACH_REQUIRED_REASON
-} from "../runtime/lifecycleReservation.js";
-import { taskLocalActor } from "../commands/taskActor.js";
+import { createProjectResources } from "../resources/projectResourceService.js";
+import { ResourceRegistrar } from "../resources/resourceRegistrar.js";
 import {
   attachReviewRoundWorkspace,
   recordReviewWorkspaceDisposition,
   type ReviewRound
 } from "../review/reviewRound.js";
+import { updateRole, type TaskRole } from "../role/role.js";
+import {
+  hasRuntimeCleanupObligation,
+  RUNTIME_HOST_DETACH_REQUIRED_REASON,
+  runtimeLifecycleTarget
+} from "../runtime/lifecycleReservation.js";
+import { taskRoleRuntimeIdentity } from "../runtime/managedCaller.js";
+import { managedTaskRoot } from "../storage/homeLayout.js";
 import { StorageConflictError, type TaskStore } from "../storage/taskStore.js";
+import { validateDraftTaskForActivation } from "../task/draftPlan.js";
 import {
   activateTask,
   bindTaskProjectCommits,
@@ -45,28 +51,25 @@ import {
   taskOwnsManagedWorkspace,
   type Task
 } from "../task/task.js";
+import type { TaskActivationRequest } from "../task/taskActivation.js";
 import {
   admitStoredTaskActivation,
   adoptTaskActivationResources,
-  recordFailedTaskActivation,
-  recordAdoptedTaskActivation
+  recordAdoptedTaskActivation,
+  recordFailedTaskActivation
 } from "../task/taskActivationService.js";
-import type { TaskActivationRequest } from "../task/taskActivation.js";
-import { validateDraftTaskForActivation } from "../task/draftPlan.js";
-import { createProjectResources } from "../resources/projectResourceService.js";
-import { createTaskEvent } from "../event/taskEvent.js";
-import { enqueueWork } from "../coordination/workMailboxQueue.js";
+import { taskLocalActor } from "../task/taskAuthority.js";
 import {
   createCandidateGitSnapshot,
   createDirectTaskMainSnapshot,
-  currentWorkItemExecutionGroup,
-  workItemExecutionGroupById,
   recordWorkItemWorkspaceDisposition,
+  workItemExecutionGroupById,
   type CandidateGitSnapshot,
   type DirectTaskMainSnapshot,
   type WorkItem,
   type WorkItemWorkspaceDisposition
 } from "../workItem/workItem.js";
+import { CleanupInspectionError, type CleanupCheck } from "../workspace/cleanupInspection.js";
 import {
   createManagedWorkspace,
   isTaskOwnedWorkspace,
@@ -77,7 +80,6 @@ import {
   type WorkspaceProjectEntry
 } from "../worktree/managedWorkspace.js";
 import type { ExecutionLaneGitSnapshot } from "./executionLaneGitSnapshot.js";
-import type { AgentRun } from "../agentRun/agentRun.js";
 import {
   NodeGitWorkspace,
   worktreeIdentity,
@@ -89,25 +91,22 @@ import {
 import type { Project } from "./project.js";
 import {
   acquireProjectMaintenanceLocks,
-  ProjectMaintenanceLockedError,
   ProjectMaintenanceLockCancelledError,
+  ProjectMaintenanceLockedError,
   type ProjectMaintenanceLockOptions
 } from "./projectMaintenanceLock.js";
+import {
+  captureTaskBaseProvenance,
+  recordTaskBaseProvenanceEvents,
+  type TaskBaseProvenance
+} from "./taskBaseFreshness.js";
 import {
   generateTaskWorkspaceIdentity,
   taskWorkspaceRefSegment,
   validateTaskWorkspaceIdentity,
   type TaskWorkspaceIdentity
 } from "./taskWorkspaceIdentity.js";
-import { ResourceRegistrar } from "../resources/resourceRegistrar.js";
-import {
-  captureTaskBaseProvenance,
-  recordTaskBaseProvenanceEvents,
-  type TaskBaseProvenance
-} from "./taskBaseFreshness.js";
-import { managedTaskRoot } from "../storage/homeLayout.js";
 import { inspectWorkspaceCleanup } from "./workspaceCleanupInspection.js";
-import { CleanupInspectionError, type CleanupCheck } from "../workspace/cleanupInspection.js";
 
 const MAIN_WORKTREE = "main";
 const LEADER_ROLE = "leader";
@@ -302,12 +301,16 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
             changed: false
           };
         }
+        const admission = admitStoredTaskActivation(this.store, task.id);
+        if (admission.disposition === "absent") {
+          throw new Error(`Task activation request is required: ${task.id}. `
+            + `Use yui task activation request ${task.id} --request-id <id> --environment <plan> first.`);
+        }
         const provider = this.store.getTaskRoleSessionSet(task.id, LEADER_ROLE)?.providerBinding;
         if (provider?.run != null
           && ["submitting", "accepted", "delivery-unknown"].includes(provider.run.status)) {
           throw new Error("Planning native input is unsettled; preserve activation intent and retry after its exact terminal.");
         }
-        const admission = admitStoredTaskActivation(this.store, task.id);
         if (admission.disposition === "ready") attemptedRequest = admission.request;
         validateDraftTaskForActivation(this.store, task);
         return await this.#prepareActivatedTaskWorkspace(task, actor, environment, signal);
@@ -369,9 +372,8 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
    * Prepares and adopts the resource configuration an explicit activation
    * request named, before any status change.
    *
-   * A Task with no request keeps the historical behavior: its managed workspace
-   * is the whole environment. A request whose plan is empty and whose Task
-   * binds no Project owns nothing physical, and is reported as workspace-free
+   * A request whose plan is empty and whose Task binds no Project owns nothing
+   * physical, and is reported as workspace-free
    * so activation creates no directory at all.
    *
    * The exact request that was adopted travels with the result, so the later
@@ -382,7 +384,6 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
     task: Task
   ): Promise<AdoptedActivationEnvironment> {
     const admission = admitStoredTaskActivation(this.store, task.id);
-    if (admission.disposition === "absent") return { workspaceFree: false };
     if (admission.disposition !== "ready") {
       throw new Error(
         `Task activation is not adoptable: ${task.id}/${admission.disposition}`
@@ -1822,7 +1823,7 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
     if (round.status !== "pending") {
       throw new Error(`ReviewRound workspace can only prepare while pending: ${round.id}.`);
     }
-    const taskScope = (round.scope ?? "work-item") === "task";
+    const taskScope = round.scope === "task";
     const item = taskScope || round.workItemId === undefined
       ? undefined
       : requireWorkItem(this.store, task.id, round.workItemId);
@@ -2206,7 +2207,7 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
     const previous = this.store.listReviewRounds(task.id)
       .filter((candidate) => (
         candidate.id !== round.id
-        && (candidate.scope ?? "work-item") === "task"
+        && candidate.scope === "task"
         && candidate.reviewerRoleName === round.reviewerRoleName
         && (candidate.status === "completed" || candidate.status === "failed")
         && candidate.workspaceDisposition?.kind !== "removed"
@@ -2633,6 +2634,7 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
     if (main.owner.type !== "task") {
       throw new Error(`Task main workspace ownership is invalid: ${task.id}.`);
     }
+    if (main.entries.length === 0) return "missing";
     return this.#inspectEntries(task.id, this.#taskSegment(task), MAIN_WORKTREE, main.entries);
   }
 
@@ -2655,7 +2657,8 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
     if (main !== null) {
       await this.#assertWorkspaceCleanup(main, disposition);
       assertTaskArchiveState(requireTask(this.store, task.id), task);
-      if (await this.#inspectEntries(
+      // Scratch-only workspaces have no Git entries or Git workspace identity.
+      if (main.entries.length > 0 && await this.#inspectEntries(
         task.id,
         this.#taskSegment(task),
         MAIN_WORKTREE,
@@ -2754,7 +2757,7 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
   }
 
   #reviewWorktreeName(round: ReviewRound): string {
-    return (round.scope ?? "work-item") === "task"
+    return round.scope === "task"
       ? `reviewer-${round.reviewerRoleName}`
       : round.id;
   }

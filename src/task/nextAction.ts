@@ -1,21 +1,22 @@
 import { createHash } from "node:crypto";
 
-import type { InputRequest } from "../input/inputRequest.js";
-import type { IntegrationAttempt } from "../integration/integrationAttempt.js";
-import type { ChangeSet } from "../integration/changeSet.js";
-import type { IntegrationQueueEntry } from "../integration/integrationQueueEntry.js";
-import {
-  governingWorkItemDeliveries,
-  workItemDeliverySettled
-} from "../integration/deliveryObligation.js";
 import type { AgentRun } from "../agentRun/agentRun.js";
-import type { ReviewRound, TaskReviewCandidate } from "../review/reviewRound.js";
-import { isCompletedTaskReviewEvidenceFromRuns } from "../review/reviewAcceptance.js";
 import {
   actionableExecutionLaneRecoveries,
   type ActionableExecutionLaneRecovery,
   type ExecutionGroupHealthSummary
 } from "../execution/executionHealth.js";
+import type { InputRequest } from "../input/inputRequest.js";
+import type { ChangeSet } from "../integration/changeSet.js";
+import {
+  governingWorkItemDeliveries,
+  workItemDeliverySettled
+} from "../integration/deliveryObligation.js";
+import type { IntegrationAttempt } from "../integration/integrationAttempt.js";
+import type { DurableJob } from "../job/durableJob.js";
+import { isCompletedTaskReviewEvidenceFromRuns } from "../review/reviewAcceptance.js";
+import type { ReviewConfig } from "../review/reviewConfig.js";
+import type { ReviewRound, TaskReviewCandidate } from "../review/reviewRound.js";
 import {
   sameTaskFinalReviewContract,
   type TaskFinalReviewContract
@@ -24,16 +25,14 @@ import {
   resolveRecordedTaskFinalReviewContract,
   type TaskFinalReviewContractResolution
 } from "../review/taskFinalReviewContractResolution.js";
-import type { ReviewConfig } from "../review/reviewConfig.js";
-import type { Task } from "./task.js";
-import type { DurableJob } from "../job/durableJob.js";
-import { draftWorkItemDependencyIssue } from "./draftPlan.js";
 import {
   currentWorkItemCandidate,
   currentWorkItemExecutionGroup,
   governingWorkItemCandidate,
   type WorkItem
 } from "../workItem/workItem.js";
+import { draftWorkItemDependencyIssue } from "./draftPlan.js";
+import type { Task } from "./task.js";
 
 /**
  * Issue 07 (Leader convergence): a read-only decision-support projection for
@@ -109,7 +108,6 @@ export type NextActionFacts = Readonly<{
   integrations: readonly IntegrationAttempt[];
   /** Current check-job state, not a second Integration lifecycle. */
   integrationJobs?: readonly Pick<DurableJob, "id" | "status">[];
-  integrationQueueEntries: readonly IntegrationQueueEntry[];
   reviewRounds: readonly ReviewRound[];
   reviewConfig: ReviewConfig | null;
   openInputRequests: readonly InputRequest[];
@@ -283,7 +281,7 @@ export function projectNextAction(facts: NextActionFacts): NextAction {
     }
     return buildAction(facts, {
       kind: "integrate-work-item",
-      reason: `Integration ${checkingIntegration.id} awaits check-result consumption (${job?.status ?? "read current Job"}); an empty integration queue does not finalize this direct attempt.`,
+      reason: `Integration ${checkingIntegration.id} awaits check-result consumption (${job?.status ?? "read current Job"}); its exact Job must be consumed to finalize the attempt.`,
       refs,
       preconditions: [{ fact: "The Integration retains its exact check Job", satisfied: true, ref: refs[0] }],
       recommendedCommand: `yui task integration continue ${task.id}/${checkingIntegration.id}`
@@ -528,7 +526,7 @@ export function projectNextAction(facts: NextActionFacts): NextAction {
   if (deliveryWorkItems.length === 0
     && !taskFinalReviewRequired(facts)
     && !facts.reviewRounds.some((round) => (
-      (round.scope ?? "work-item") === "task"
+      round.scope === "task"
       && (round.status === "pending" || round.status === "running")
     ))) {
     const reviewAlternative = facts.reviewConfig === null
@@ -865,8 +863,6 @@ export function durableStateFingerprint(facts: NextActionFacts): string {
       `change-set:${changeSet.id}:${changeSet.headCommit}`),
     ...facts.integrations.map((attempt) =>
       `integration:${attempt.id}:${attempt.status}:${attempt.updatedAt}`),
-    ...facts.integrationQueueEntries.map((entry) =>
-      `integration-queue:${entry.id}:${entry.status}:${entry.updatedAt}`),
     ...facts.reviewRounds.map((round) =>
       `review:${round.id}:${round.status}:${round.endedAt ?? ""}`)
   ];
@@ -1062,14 +1058,6 @@ function ref(kind: string, id: string): NextActionRef {
   return { kind, id };
 }
 
-function latestFailedReviewFor(
-  rounds: readonly ReviewRound[],
-  workItemId: string
-): ReviewRound | undefined {
-  return [...rounds]
-    .reverse()
-    .find((round) => round.workItemId === workItemId && round.status === "failed");
-}
 
 function latestTaskFinalReview(
   rounds: readonly ReviewRound[],
@@ -1078,7 +1066,7 @@ function latestTaskFinalReview(
   return [...rounds]
     .reverse()
     .find((round) => (
-      (round.scope ?? "work-item") === "task"
+      round.scope === "task"
       && (contract === undefined || sameTaskFinalReviewContract(
         round.taskFinalReviewContract,
         contract
@@ -1091,7 +1079,7 @@ function hasValidFinalReview(facts: NextActionFacts): boolean {
   const final = [...facts.reviewRounds]
     .reverse()
     .find((round) => (
-      (round.scope ?? "work-item") === "task"
+      round.scope === "task"
       && (contract === undefined || sameTaskFinalReviewContract(
         round.taskFinalReviewContract,
         contract
@@ -1124,7 +1112,7 @@ function detectProtocolInconsistency(facts: NextActionFacts): Inconsistency | nu
     });
     const reviewRefs = facts.reviewRounds
       .filter((round) => (
-        (round.scope ?? "work-item") === "task"
+        round.scope === "task"
         && round.taskFinalReviewContract !== undefined
       ))
       .map((round) => ref("review-round", round.id));

@@ -1,24 +1,20 @@
 import { createHash } from "node:crypto";
 
+import { enqueueWork } from "../coordination/workMailboxQueue.js";
 import { usageError } from "../errors/cliError.js";
 import type { EnvironmentPlan } from "../resources/projectResourceService.js";
-import { currentManagedRuntime } from "../runtime/managedCaller.js";
-import { enqueueWork } from "../coordination/workMailboxQueue.js";
 import { SYSTEM_LEADER_ROLE } from "../role/systemRoles.js";
+import { currentManagedRuntime } from "../runtime/managedCaller.js";
+import type { TaskStore } from "../storage/taskStore.js";
+import type { Task } from "../task/task.js";
 import { describeEnvironmentPlan } from "../task/taskActivation.js";
 import {
   cancelTaskActivation,
   requestTaskActivation,
   taskActivationOperationRef
 } from "../task/taskActivationService.js";
-import type { Task } from "../task/task.js";
-import type { TaskStore } from "../storage/taskStore.js";
-import { taskLocalActor } from "./taskActor.js";
-import type {
-  TaskCommandExecution,
-  TaskCommandOptions,
-  TaskWorkflowStore
-} from "./taskCommands.js";
+import { taskLocalActor } from "../task/taskAuthority.js";
+import type { TaskCommandExecution, TaskCommandOptions, TaskWorkflowStore } from "./taskCommandTypes.js";
 
 /**
  * Explicit Activation requests.
@@ -79,10 +75,6 @@ function requestActivation(
     actorId: caller.actorId,
     authorityRef: caller.authorityRef,
     environmentPlan,
-    // The activation-request command is the explicit activation boundary, so
-    // every request it records carries an explicit provable origin (task-32
-    // §2.4). A develop submission records its own request with `submit-develop`.
-    origin: "explicit",
     ...(caller.planningRunId === undefined ? {} : { callerRunId: caller.planningRunId })
   }, now));
   // An immediate request has nothing left to wait for, so ask the Controller to
@@ -98,7 +90,7 @@ function requestActivation(
         [{ type: "task", id: taskId }]
       );
     });
-    void options.runtime?.notifyMailboxChanged?.({ kind: "task", taskId });
+    void options.runtime?.notifyMailboxChanged({ kind: "task", taskId });
   }
   const request = result.request;
   const lines = [

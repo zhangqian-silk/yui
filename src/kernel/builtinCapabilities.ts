@@ -1,30 +1,36 @@
-import { updateTaskMetadataCommand, sendTaskMessageCommand } from "../commands/taskCommands.js";
-import { runConfigCommand } from "../commands/configCommands.js";
-import type { TaskSubmissionIntent } from "../message/message.js";
 import {
-  readTaskContext, readTaskContextDelta, inspectTaskContext, withContextObservations,
+  listArtifactsCapability,
+  readArtifactCapability,
+  saveArtifactCapability
+} from "../artifacts/artifactCapability.js";
+import { runConfigCommand } from "../commands/configCommands.js";
+import { sendTaskMessageCommand, updateTaskMetadataCommand } from "../commands/taskCommands.js";
+import { CONFIG_DOMAINS, type ConfigDomain } from "../config/configCatalog.js";
+import {
+  inspectTaskContext,
+  readTaskContext, readTaskContextDelta,
+  withContextObservations,
   type ContextObservationProvider
 } from "../context/taskContext.js";
-import { CONFIG_DOMAINS, type ConfigDomain } from "../config/configCatalog.js";
 import {
   createJobCallAuthority, parseDurableJobStartParams,
   type DurableJobCaller, type DurableJobControlPort
 } from "../controller/jobControl.js";
 import type { JsonValue } from "../core/protocol.js";
+import { inspectJobOperation } from "../job/jobOperation.js";
+import { assertJobAssignmentScope } from "../job/jobAssignmentScope.js";
+import type { DurableJob } from "../job/durableJob.js";
+import type { TaskSubmissionIntent } from "../message/message.js";
+import { createPluginService } from "../plugins/pluginService.js";
+import { createProjectResources, type EnvironmentPlan } from "../resources/projectResourceService.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import type { TaskMetadataUpdate } from "../task/task.js";
 import type { TrustedCallContext } from "./callAuthority.js";
-import type { InstanceHost } from "./instanceHost.js";
-import { inspectJobOperation } from "./kernelPorts.js";
 import {
   CapabilityRegistry, type CapabilityDescriptor, type CapabilityImplementation,
 } from "./capabilityRegistry.js";
 import type { CapabilitySchema } from "./capabilitySchema.js";
-import { createProjectResources, type EnvironmentPlan } from "../resources/projectResourceService.js";
-import {
-  saveArtifactCapability, readArtifactCapability, listArtifactsCapability
-} from "../artifacts/artifactCapability.js";
-import { createPluginService } from "../plugins/pluginService.js";
+import type { InstanceHost } from "./instanceHost.js";
 
 const text: CapabilitySchema = { type: "string", minLength: 1 };
 const strings: CapabilitySchema = { type: "object", additionalProperties: { type: "string" } };
@@ -45,7 +51,6 @@ const definitions: readonly Omit<CapabilityDescriptor, "contractVersion" | "prov
     effect: "local-mutation", requiredPermissions: ["task:read"], source: "sendTaskMessageCommand",
     inputSchema: object({ taskId: text, body: text,
       intent: { enum: ["record", "discuss", "develop"] },
-      wakePolicy: { enum: ["leader", "none"] },
       recipient: object({ roleName: text, workItemId: text, reviewRoundId: text }, ["roleName"])
     }, ["taskId", "body"]), outputSchema: recordOutput
   },
@@ -190,7 +195,8 @@ const definitions: readonly Omit<CapabilityDescriptor, "contractVersion" | "prov
       ] },
       env: strings,
       steps: { type: "array", minItems: 1, items: object({
-        name: text, command: text, timeoutMs: { type: "integer" }
+        name: text, command: text, timeoutMs: { type: "integer" },
+        argv: { type: "array", minItems: 1, items: text }, cwd: text, env: strings
       }, ["name", "command"]) },
       retryOf: text
     }, ["taskId", "projectId", "head", "workspace", "owner", "env", "steps"]),
@@ -273,8 +279,7 @@ export function createBuiltinCapabilities(
         // gains develop from an intent argument; only a global Operator Session
         // (user-authority) may carry one. sendTaskMessageCommand enforces this,
         // so the capability just forwards the optional intent unchanged.
-        const result = sendTaskMessageCommand(store, taskId, params.body as string,
-          params.wakePolicy as "leader" | "none" | undefined, { environment: callerEnvironment(caller) },
+        const result = sendTaskMessageCommand(store, taskId, params.body as string, { environment: callerEnvironment(caller) },
           params.recipient as { roleName: string; workItemId?: string; reviewRoundId?: string } | undefined,
           params.intent as TaskSubmissionIntent | undefined);
         signal(taskId);
@@ -347,11 +352,11 @@ export function createBuiltinCapabilities(
           ...(patch.tags?.length === 0 ? { tags: null } : {})
         }, {
           environment: callerEnvironment(caller),
-          runtime: { notifyStateChanged: signal, reconcileTask: signal }
+          runtime: { notifyMailboxChanged: () => signal(taskId), reconcileTask: signal }
         });
       }
       if (name === "job.get") {
-        const job = jobs.getJob(taskId, params.jobId as string);
+        const job = jobs.getJob(taskId, params.jobId as string, caller);
         if (!job) throw new Error(`Job not found: ${taskId}/${params.jobId}.`);
         const operation = inspectJobOperation(job);
         invocation.observe(operation);
@@ -385,6 +390,10 @@ export function createBuiltinCapabilities(
         const sessions = store.getTaskRoleSessionSet(task.id, caller.role!);
         if (sessions?.sessions[sessions.activeAgentId]?.effective.executionAuthority !== "delivery") {
           throw new Error("Planning Sessions cannot start delivery Jobs.");
+        }
+        if (descriptor?.name === "job.start" && input !== undefined) {
+          assertJobAssignmentScope(store,
+            input as Pick<DurableJob, "taskId" | "owner" | "projectId" | "workspace">, caller);
         }
       }
       if (permission === "task:read" || permission === "job:start") continue;

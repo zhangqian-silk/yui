@@ -289,7 +289,10 @@ export const INTERACTION_POLICIES: readonly InteractionPolicy[] = Object.freeze(
   {
     commandPath: ["task", "list"],
     selectors: [],
-    trailingOptions: { "--all": "flag", "--verbose": "flag" }
+    trailingOptions: {
+      "--all": "flag", "--status": "value", "--project": "value",
+      "--search": "value", "--attention": "value", "--limit": "value", "--cursor": "value"
+    }
   },
   {
     ...taskTarget("remote-delivery"),
@@ -342,7 +345,7 @@ export const INTERACTION_POLICIES: readonly InteractionPolicy[] = Object.freeze(
       provider: "messages",
       actionTarget: true
     }],
-    trailingOptions: { "--body-file": "value", "--wake-policy": "value" }
+    trailingOptions: { "--body-file": "value" }
   },
   {
     commandPath: ["task", "message", "retire"],
@@ -620,7 +623,8 @@ export const INTERACTION_POLICIES: readonly InteractionPolicy[] = Object.freeze(
       "--strategy": "value",
       "--project": "value",
       "--target": "value",
-      "--check": "value"
+      "--check": "value",
+      "--rerun-checks": "flag"
     }
   },
   {

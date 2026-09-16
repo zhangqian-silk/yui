@@ -14,8 +14,10 @@ import {
 export type WorkMailboxQueueStore = Readonly<{
   getWorkMailbox(target: MailboxTarget): WorkMailbox | null;
   saveWorkMailbox(mailbox: WorkMailbox): void;
-  getTask?(taskId: string): Readonly<{ status: string }> | null;
+  getTask(taskId: string): Readonly<{ status: string }> | null;
 }>;
+
+type WorkMailboxSettlementStore = Pick<WorkMailboxQueueStore, "getWorkMailbox" | "saveWorkMailbox">;
 
 export type RoleRunDispatchIdentity = Readonly<{
   taskId: string;
@@ -36,14 +38,6 @@ export type RoleRunDispatchToken =
 
 export type RoleRunDispatchSettlement = "settled" | "absent" | "state-changed";
 
-const LEGACY_ROLE_RUN_DISPATCH_REASONS = new Set([
-  "turn-dispatched",
-  "turn-retried",
-  "review-requested",
-  "workitem-synthesis-ready",
-  "review-synthesis-ready"
-]);
-
 /** Atomically useful when called inside the caller's TaskStore transaction. */
 export function enqueueWork(
   store: WorkMailboxQueueStore,
@@ -57,7 +51,7 @@ export function enqueueWork(
   // Archive is an admission boundary, not an acknowledgement of old input.
   // Runtime cleanup mailboxes remain usable for exact-owner recovery.
   if ((target.kind === "task" || target.kind === "role")
-    && store.getTask?.(target.taskId)?.status === "archived") return mailbox;
+    && store.getTask(target.taskId)?.status === "archived") return mailbox;
   const queued = enqueueSignal(mailbox, {
     reason,
     refs,
@@ -137,32 +131,15 @@ export function captureRoleRunDispatch(
       };
     }
   }
-  // Valid earlier dispatches used sequence-generated dedupe keys and could
-  // include a companion WorkItem ref. Consume that complete legacy batch once
-  // the exact AgentRun reaches an accepted or terminal boundary.
-  if (pending.requestCount === 1
-    && pending.sources.length === 1
-    && pending.sources[0] === "yui"
-    && pending.reasons.some((reason) => LEGACY_ROLE_RUN_DISPATCH_REASONS.has(reason))
-    && pending.refs.some((ref) => (
-      mailboxEntityRefKey(ref) === mailboxEntityRefKey(exactRef)
-    ))) {
-    return {
-      kind: "pending",
-      fromSequence: pending.fromSequence,
-      toSequence: pending.toSequence
-    };
-  }
   return null;
 }
 
 /**
  * Settles one exact ordinary Role AgentRun dispatch. Provider acceptance is the
- * normal boundary; terminalization calls the same operation for conclusively
- * unaccepted and valid earlier dispatches.
+ * normal boundary; terminalization uses the same exact dispatch identity.
  */
 export function settleRoleRunDispatch(
-  store: WorkMailboxQueueStore,
+  store: WorkMailboxSettlementStore,
   input: RoleRunDispatchIdentity,
   expected?: RoleRunDispatchToken | null
 ): RoleRunDispatchSettlement {
@@ -191,7 +168,7 @@ export function settleRoleRunDispatch(
 
 /** Completes only the batch owned by the matching durable execution. */
 export function completeWorkExecution(
-  store: WorkMailboxQueueStore,
+  store: WorkMailboxSettlementStore,
   target: MailboxTarget,
   executionRef: MailboxEntityRef
 ): boolean {
@@ -218,7 +195,7 @@ export function completeWorkExecution(
  * durable work stuck in `processing` after the AgentRun has already ended.
  */
 export function requireCompleteWorkExecution(
-  store: WorkMailboxQueueStore,
+  store: WorkMailboxSettlementStore,
   target: MailboxTarget,
   executionRef: MailboxEntityRef
 ): void {
@@ -250,7 +227,7 @@ export function requireCompleteWorkExecution(
  * recoverable.
  */
 export function settleExactWorkExecution(
-  store: WorkMailboxQueueStore,
+  store: WorkMailboxSettlementStore,
   target: MailboxTarget,
   executionRef: MailboxEntityRef
 ): "processing" | "pending" | "absent" {

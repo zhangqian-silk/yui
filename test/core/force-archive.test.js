@@ -27,9 +27,9 @@ import { acceptProviderTurn, beginProviderTurn, createProviderRuntimeBinding } f
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
 import { createRun } from "../../dist/agentRun/agentRun.js";
 import { createRunInput } from "../../dist/context/runInputContract.js";
-import { createDurableJob } from "../../dist/job/durableJob.js";
-import { createTaskRemoteDeliveryProof } from "../../dist/commands/taskRemoteDeliveryCommand.js";
-import { buildWebDashboardSnapshot } from "../../dist/web/webSnapshot.js";
+import { createDurableJob, durableJobIdempotencyKey } from "../../dist/job/durableJob.js";
+import { createTaskRemoteDeliveryProof } from "../../dist/task/remoteDeliveryService.js";
+import { buildWebTaskCatalog, buildWebTaskDetail } from "../../dist/web/webSnapshot.js";
 
 const now = new Date("2026-09-12T00:00:00Z");
 const base = "a".repeat(40);
@@ -84,10 +84,11 @@ test("force archive commits despite stale delivery and retained resources, prese
   const input = { id: "input-1", taskId: task.id, status: "open" };
   const listInputs = store.listInputRequests;
   store.listInputRequests = () => [input];
-  const dashboard = buildWebDashboardSnapshot(store, now);
-  assert.equal(dashboard.counts.openInputs, 0);
-  assert.deepEqual(dashboard.attention, []);
-  assert.equal(dashboard.tasks[0].openInputCount, 1, "explicit archived detail retains unresolved facts");
+  const dashboard = buildWebTaskCatalog(store, { all: false, limit: 20 });
+  assert.equal(dashboard.attention.openInputs.count, 0);
+  assert.deepEqual(dashboard.tasks, []);
+  assert.equal(buildWebTaskDetail(store, task.id, now).openInputs.length, 1,
+    "explicit archived detail retains unresolved facts");
   store.listInputRequests = listInputs;
   const events = store.listEvents(task.id);
   command(["archive", task.id, "--integrated", "--force"]);
@@ -149,6 +150,7 @@ test("force cleanup records independent failures and successes after archive wit
     }
   }, {
     async stopTaskRoleSessions() { assert.fail("no Role to stop"); },
+    async releaseTaskTerminals() {},
     async assertTaskPhysicalResourcesReleased() {}
   });
   await coordinator.cleanupArchivedTask(task.id, "integrated");
@@ -186,7 +188,7 @@ test("cleanup persistence failures propagate even when the next audit write coul
           { resource: "path:partial", detail: "One path removed" }, "removed", now);
         throw Object.assign(new Error("one-off durable cleanup write failure"), { code: "SQLITE_BUSY" });
       }
-    }, { async stopTaskRoleSessions() {}, async assertTaskPhysicalResourcesReleased() {} });
+    }, { async stopTaskRoleSessions() {}, async releaseTaskTerminals() {}, async assertTaskPhysicalResourcesReleased() {} });
     await assert.rejects(coordinator.cleanupArchivedTask(task.id, "integrated"), /write failure/);
     assert.equal(store.getTask(task.id).status, "archived");
     assert.equal(taskArchiveDiagnostics(store, store.getTask(task.id)).cleanupFinished, false);
@@ -277,15 +279,20 @@ test("force retains active Runs and queued Jobs, while plain settled archive sti
     source: { type: "yui", channel: "task-dispatch" }, directive: "Original execution", deltaRefIds: []
   }), now, { effective: resolveEffectiveLaunch({ role, purpose: "execution" }) });
   store.saveActiveRun(run);
-  const job = createDurableJob({
+  const jobInput = {
     id: "job-1", taskId: task.id, owner: { kind: "task" }, projectId: "project-1",
     head, workspace: home, env: {}, steps: [{ name: "original", command: "true" }], artifactsLocator: "artifacts/job-1"
-  }, now);
+  };
+  const job = createDurableJob({ ...jobInput, operation: {
+    requestId: "fixture-request", actorId: "fixture:leader", authorityRef: "fixture:leader",
+    inputDigest: durableJobIdempotencyKey(jobInput)
+  } }, now);
   store.saveDurableJob(task.id, job);
   store.saveTask(task);
   command(["archive", task.id, "--integrated", "--force"]);
   await new TaskWorkspaceCoordinator(store, { home }, {
     async stopTaskRoleSessions() { assert.fail("An active Run must not be presumed stopped."); },
+    async releaseTaskTerminals() { assert.fail("Active execution must retain its terminals."); },
     async assertTaskPhysicalResourcesReleased() { assert.fail("Active execution must retain its resources."); }
   }).cleanupArchivedTask(task.id, "integrated");
   assert.deepEqual(store.getActiveRun(task.id, role.name), run);

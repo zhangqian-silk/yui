@@ -1,17 +1,18 @@
+import { parseRepeatable } from "../cli/parseRepeatable.js";
 import { usageError } from "../errors/cliError.js";
-import { GitIntegrationService } from "../integration/gitIntegrationService.js";
+import { GitIntegrationService, type IntegrationJobPort } from "../integration/gitIntegrationService.js";
 import { createIntegrationAttempt } from "../integration/integrationAttempt.js";
 import { NodeGitWorkspace, type GitWorkspacePort } from "../repository/gitWorkspace.js";
 import { FileTaskWorkspacePreparer } from "../repository/taskWorkspacePreparer.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import { workspaceProjectEntry } from "../worktree/managedWorkspace.js";
-import { parseRepeatable } from "./taskIntegrationCommands.js";
-import { taskLocalActor } from "./taskActor.js";
+import { taskLocalActor } from "../task/taskAuthority.js";
 
 export type TaskUpstreamCommandOptions = Readonly<{
   git?: GitWorkspacePort;
   now?: () => Date;
   environment?: NodeJS.ProcessEnv;
+  jobPort?: IntegrationJobPort;
 }>;
 
 export type TaskUpstreamCommandResult = Readonly<{
@@ -40,7 +41,7 @@ async function integrateUpstream(
   home: string,
   options: TaskUpstreamCommandOptions
 ): Promise<TaskUpstreamCommandResult> {
-  const usage = "Task upstream integrate usage: yui task upstream integrate <task> (--latest|--project <project>) [--check <command> ...].";
+  const usage = "Task upstream integrate usage: yui task upstream integrate <task> (--latest|--project <project>) [--check <command> ...] [--rerun-checks].";
   let latest = false;
   const normalized: string[] = [];
   for (const arg of args) {
@@ -59,7 +60,8 @@ async function integrateUpstream(
     normalized,
     new Set(["--check"]),
     new Set(["--project"]),
-    usage
+    usage,
+    new Set(["--rerun-checks"])
   );
   if (parsed.positionals.length !== 1) throw usageError(usage);
   const taskId = parsed.positionals[0]!;
@@ -89,7 +91,8 @@ async function integrateUpstream(
     throw usageError(`Task has no authoritative main clone: ${task.id}.`);
   }
 
-  const service = new GitIntegrationService(store.rootDirectory(), store, git, now);
+  const service = new GitIntegrationService(store.rootDirectory(), store, git, now,
+    options.environment, undefined, options.jobPort);
   const results = [];
 
   for (const binding of task.projectBindings) {
@@ -130,24 +133,33 @@ async function integrateUpstream(
           taskBaseCommit: binding.baseCommit!,
           strategy: "rebase"
         },
-        checkCommands: parsed.many.get("--check") ?? []
+        checkCommands: parsed.many.get("--check") ?? [],
+        rerunChecks: parsed.one.has("--rerun-checks")
       }, now());
       tx.saveIntegrationAttempt(task.id, created);
       return created;
     });
     const result = await service.integrate(task.id, attempt.id);
     results.push(result);
-    if (result.status !== "committed") break;
+    // Each Project has an independent candidate and Job. --latest admits all
+    // requested Projects, then the Agent continues the returned exact attempts.
+    if (result.status !== "committed" && result.status !== "checks-running") break;
   }
 
   if (projectRef !== undefined && results.length === 0) {
     throw usageError(`Task Project not found: ${task.id}/${projectRef}.`);
   }
-  const lines = results.map(({ attempt, status }) => (
-    `  ${attempt.projectId}: ${attempt.beforeCommit.slice(0, 12)} -> ${
-      (attempt.afterCommit ?? attempt.candidateCommit ?? attempt.beforeCommit).slice(0, 12)
-    } (${status})`
-  ));
+  const lines = results.flatMap(result => {
+    const { attempt, status } = result;
+    return [
+      `  ${attempt.id} ${attempt.projectId}: ${attempt.beforeCommit.slice(0, 12)} -> ${
+        (attempt.afterCommit ?? attempt.candidateCommit ?? attempt.beforeCommit).slice(0, 12)
+      } (${status})`,
+      ...(status === "checks-running" ? [
+        `    Job ${result.job.id}; continue with yui task integration continue ${task.id}/${attempt.id}`
+      ] : [])
+    ];
+  });
   return {
     output: `Upstream Integration results for Task ${task.id}:\n${lines.join("\n")}\n`,
     data: { taskId: task.id, integrations: results }

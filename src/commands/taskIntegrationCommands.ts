@@ -1,9 +1,6 @@
-import { NodeGitWorkspace } from "../repository/gitWorkspace.js";
-import { assertProjectActive, resolveProject } from "../repository/project.js";
-import { workspaceProjectEntry } from "../worktree/managedWorkspace.js";
+import { parseRepeatable } from "../cli/parseRepeatable.js";
 import { usageError } from "../errors/cliError.js";
-import { defaultTableWidth, renderTable } from "../output/table.js";
-import type { TaskStore } from "../storage/taskStore.js";
+import { GitIntegrationService, type IntegrationJobPort } from "../integration/gitIntegrationService.js";
 import {
   createIntegrationAttempt,
   recordResolutionDecision,
@@ -11,12 +8,15 @@ import {
   type IntegrationAttempt,
   type WorkItemIntegrationStrategy
 } from "../integration/integrationAttempt.js";
-import { GitIntegrationService, type IntegrationJobPort } from "../integration/gitIntegrationService.js";
+import { defaultTableWidth, renderTable } from "../output/table.js";
+import { NodeGitWorkspace } from "../repository/gitWorkspace.js";
+import { assertProjectActive, resolveProject } from "../repository/project.js";
 import { FileTaskWorkspacePreparer } from "../repository/taskWorkspacePreparer.js";
-import { runTaskIntegrationQueueCommand } from "./taskIntegrationQueueCommands.js";
-import { assertTaskDeliveryAuthority as taskLocalActor } from "./taskActor.js";
+import type { TaskStore } from "../storage/taskStore.js";
+import { assertTaskDeliveryAuthority as taskLocalActor } from "../task/taskAuthority.js";
 import { resolveTaskRecordReference } from "../task/taskRecordReference.js";
 import { governingWorkItemCandidate } from "../workItem/workItem.js";
+import { workspaceProjectEntry } from "../worktree/managedWorkspace.js";
 
 export type TaskIntegrationCommandOptions = Readonly<{
   now?: () => Date;
@@ -48,9 +48,6 @@ export async function runTaskIntegrationCommand(
   }
   if (command === "list") return list(rest, store);
   if (command === "show") return show(rest, store, options.environment);
-  if (command === "queue") {
-    return runTaskIntegrationQueueCommand(rest, store, home, options);
-  }
   throw usageError(command === undefined
     ? "Task Integration command is required."
     : `Unknown command: task integration ${command}`);
@@ -120,12 +117,13 @@ async function start(
   now: () => Date,
   options: TaskIntegrationCommandOptions
 ): Promise<Readonly<{ output: string; data: unknown }>> {
-  const usage = "Task Integration start usage: yui task integration start <task> --work-item <id> --strategy <ff|cherry-pick|merge|manual> [--project <project>] [--target <ref>] [--check <command> ...].";
+  const usage = "Task Integration start usage: yui task integration start <task> --work-item <id> --strategy <ff|cherry-pick|merge|manual> [--project <project>] [--target <ref>] [--check <command> ...] [--rerun-checks].";
   const parsed = parseRepeatable(
     args,
     new Set(["--check"]),
     new Set(["--work-item", "--strategy", "--project", "--target"]),
-    usage
+    usage,
+    new Set(["--rerun-checks"])
   );
   if (parsed.positionals.length !== 1) throw usageError(usage);
   let task = store.getTask(parsed.positionals[0]);
@@ -203,7 +201,8 @@ async function start(
         resultCommit,
         strategy
       },
-      checkCommands: parsed.many.get("--check") ?? []
+      checkCommands: parsed.many.get("--check") ?? [],
+      rerunChecks: parsed.one.has("--rerun-checks")
     }, now());
     tx.saveIntegrationAttempt(task.id, created);
     return created;
@@ -273,7 +272,7 @@ function resolveDecision(
   store: TaskStore,
   now: () => Date,
   environment: NodeJS.ProcessEnv | undefined,
-  home: string
+  _home: string
 ): Readonly<{ output: string; data: unknown }> {
   const usage = "Task Integration resolve usage: yui task integration resolve <task>/<integration> --option <manual-resolution|reject> --rationale <text>.";
   const parsed = parseRepeatable(args, new Set(), new Set(["--option", "--rationale"]), usage);
@@ -331,7 +330,7 @@ function supersedeIntegrationCommand(
   store: TaskStore,
   now: Date,
   environment: NodeJS.ProcessEnv | undefined,
-  home: string
+  _home: string
 ): Readonly<{ output: string; data: unknown }> {
   const usage = "Task Integration supersede usage: yui task integration supersede <task>/<integration> --reason <text>.";
   const parsed = parseRepeatable(args, new Set(), new Set(["--reason"]), usage);
@@ -348,19 +347,6 @@ function supersedeIntegrationCommand(
   // Superseding a committed Integration rewrites delivery-baseline evidence
   // and audit history, so it remains an explicit Task-control decision.
   taskLocalActor(store, environment, integration.taskId);
-  // A queue-backed committed Attempt cannot be superseded: the queue entry
-  // would remain in its current status while its Attempt becomes "superseded",
-  // leaving contradictory terminal records that never converge. This covers
-  // the crash window where the entry is still "running" or "conflicted" after
-  // the Attempt committed.
-  const queueBacked = store.listIntegrationQueueEntries(integration.taskId)
-    .some((entry) => entry.integrationAttemptId === integration.id);
-  if (queueBacked) {
-    throw usageError(
-      `Integration ${integration.id} is backed by a queue entry; `
-      + "reconcile the queue entry instead of superseding its Attempt."
-    );
-  }
   return store.transaction((tx) => {
     const current = tx.getIntegrationAttempt(integration.taskId, integration.id);
     if (current === null) {
@@ -444,6 +430,9 @@ function show(
       `Candidate: ${integration.candidateCommit ?? "-"}`,
       `After commit: ${integration.afterCommit ?? "-"}`,
       `Job: ${integration.jobId ?? "-"}`,
+      `Check execution: ${integration.rerunChecks ? "explicit rerun"
+        : integration.checkCommands.length > 0 ? "explicit check commands"
+          : "reuse exact successful evidence when available"}`,
       `Source: ${integrationSourceLabel(integration)}`,
       `Status: ${integration.status}`,
       `Summary: ${integration.summary ?? "-"}`,
@@ -497,40 +486,4 @@ function requireIntegration(
     );
   }
   return attempt;
-}
-
-export function parseRepeatable(
-  args: readonly string[],
-  repeatable: ReadonlySet<string>,
-  singular: ReadonlySet<string>,
-  usage: string
-): Readonly<{
-  positionals: string[];
-  many: Map<string, string[]>;
-  one: Map<string, string>;
-}> {
-  const positionals: string[] = [];
-  const many = new Map<string, string[]>();
-  const one = new Map<string, string>();
-  for (let index = 0; index < args.length; index += 1) {
-    const value = args[index];
-    if (!value.startsWith("--")) {
-      positionals.push(value);
-      continue;
-    }
-    if (!repeatable.has(value) && !singular.has(value)) {
-      throw usageError(`Unsupported option: ${value}.`, usage);
-    }
-    if (singular.has(value) && one.has(value)) {
-      throw usageError(`Option may only be specified once: ${value}.`, usage);
-    }
-    const optionValue = args[index + 1];
-    if (optionValue === undefined || optionValue.startsWith("--")) {
-      throw usageError(`${value} is required.`, usage);
-    }
-    if (repeatable.has(value)) many.set(value, [...(many.get(value) ?? []), optionValue]);
-    else one.set(value, optionValue);
-    index += 1;
-  }
-  return { positionals, many, one };
 }

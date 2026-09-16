@@ -7,21 +7,26 @@ import test from "node:test";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import {
   sendTaskMessageCommand,
+  runTaskCommand,
   submitOperatorMessage
 } from "../../dist/commands/taskCommands.js";
 import { activateTask, createTask } from "../../dist/task/task.js";
 import { stopTaskExecutionCommand } from "../../dist/commands/taskExecutionCommands.js";
-import { activationRequestIsControllerAdoptable } from "../../dist/task/taskActivation.js";
+import { admitStoredTaskActivation, cancelTaskActivation } from "../../dist/task/taskActivationService.js";
 import { createConfiguredAgent } from "../../dist/agent/agent.js";
-import { createGlobalRole, createRoleAgentBinding } from "../../dist/role/role.js";
+import { createGlobalRole, createRole, createRoleAgentBinding } from "../../dist/role/role.js";
 import { sanitizedTestEnv } from "../helpers/sanitizedEnv.mjs";
+import { pendingCompletionMessages } from "../../dist/task/completionReadiness.js";
+import { enqueueWork } from "../../dist/coordination/workMailboxQueue.js";
+import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
+import { processLeaderWakeups } from "../../dist/scheduler/leaderWakeupProcessor.js";
 
 /**
  * Integration coverage for the task-32 Requirement A shared submission service,
  * driven end to end through the public commands on a real SqliteTaskStore. The
  * pure decision layer is exhausted in submit-intent-routing.test.js; this file
  * proves the transaction actually saves the message, writes (or withholds) the
- * planning-entered fact, records a develop activation with the right origin and
+ * planning-entered fact, records a develop activation with the right authority and
  * identity, and never pre-enqueues a Draft Leader when it activates (§2.1–2.5).
  */
 
@@ -56,7 +61,7 @@ function provisionLeader(store, workspace) {
 }
 
 function userSubmit(store, taskId, body, intent) {
-  return sendTaskMessageCommand(store, taskId, body, undefined,
+  return sendTaskMessageCommand(store, taskId, body,
     { environment: userEnv, now }, undefined, intent);
 }
 
@@ -96,6 +101,16 @@ test("record submission saves only: no planning-entered event, no Leader wake", 
   const saved = findMessage(store, task.id, result.message.id);
   assert.equal(saved.intent, "record");
   assert.equal(saved.kind, "user");
+  runTaskCommand(["message", "update", `${task.id}/${saved.id}`, "edited context"],
+    store, { environment: userEnv, now });
+  assert.equal(findMessage(store, task.id, saved.id).intent, "record");
+  assert.equal(leaderHasPending(store, task.id), false, "Editing save-only context cannot authorize a Leader wake.");
+  assert.equal(events(store, task.id, "task.planning-entered").length, 0);
+  // A later explicit handoff may queue the saved context. Completion reads
+  // that pending reference rather than treating record intent as a permanent veto.
+  enqueueWork(store, { kind: "role", taskId: task.id, roleName: "leader" },
+    "explicit-handoff", now(), [{ type: "message", taskId: task.id, id: saved.id }]);
+  assert.deepEqual(pendingCompletionMessages(store, task.id).map(message => message.id), [saved.id]);
 });
 
 test("discuss submission enters planning: one planning-entered event, Leader queued", (t) => {
@@ -153,23 +168,51 @@ test("develop on an unplanned Draft records a submit-develop activation and queu
 
   const request = store.getTask(task.id).activationRequest;
   assert.notEqual(request, undefined);
-  assert.equal(request.origin, "submit-develop");
   assert.equal(request.disposition, "pending");
   assert.equal(request.startMode, "immediate");
   assert.equal(request.environmentPlan.kind, "empty");
   assert.equal(request.operation.requestId, `submit-${result.message.id}`);
-  // A submit-develop immediate request is Controller-adoptable (§2.4).
-  assert.equal(activationRequestIsControllerAdoptable(request), true);
-});
-
-test("develop stays a Draft: it never activates the Task itself", (t) => {
-  const store = newStore(t);
-  const task = newDraft(store);
-  userSubmit(store, task.id, "build it", "develop");
+  assert.equal(admitStoredTaskActivation(store, task.id).disposition, "ready");
   // The request is recorded but Task.status is still the only lifecycle: the
   // shared service records the request and queues processing; it does not flip
   // the Task to active inside the submission transaction.
   assert.equal(store.getTask(task.id).status, "draft");
+});
+
+test("Draft message edits preserve activation routing and only discuss edits may start planning", async t => {
+  const store = newStore(t);
+  const task = newDraft(store);
+  const agent = createConfiguredAgent("codex", "codex", "codex", [], [], now());
+  store.saveConfiguredAgent(agent);
+  store.saveRole(task.id, createRole(task.id, "leader", [createRoleAgentBinding(agent)],
+    agent.id, store.workspaceRoot, now()));
+  const edit = (id, body) => runTaskCommand(["message", "update", `${task.id}/${id}`, body],
+    store, { environment: userEnv, now });
+  const reconcile = () => processLeaderWakeups(new FileSchedulerStoreAdapter(store), {
+    prepareRoleSession: async () => assert.fail("This fixture must not launch a Provider.")
+  }, new Date(now().getTime() + 120_000), { full: false, taskIds: new Set([task.id]) });
+
+  const develop = userSubmit(store, task.id, "Implement this", "develop");
+  const activation = store.getTask(task.id).activationRequest;
+  edit(develop.message.id, "Implement this with clarified wording");
+  await reconcile();
+  assert.deepEqual(store.listRuns(task.id), [], "A develop edit must not create a planning Run.");
+  assert.equal(leaderHasPending(store, task.id), false);
+  assert.deepEqual(store.getTask(task.id).activationRequest, activation);
+
+  const waiting = userSubmit(store, task.id, "Discussion after activation", "discuss");
+  edit(waiting.message.id, "Clarified discussion after activation");
+  assert.equal(leaderHasPending(store, task.id), false, "Discuss edits must respect pending activation too.");
+  assert.equal(events(store, task.id, "task.planning-entered").length, 0);
+
+  cancelTaskActivation(store, task.id, activation.operation.requestId, "Return to planning", now());
+  edit(develop.message.id, "Keep the amended implementation requirement");
+  assert.equal(leaderHasPending(store, task.id), false, "Editing develop cannot restart a cancelled activation or plan.");
+  edit(waiting.message.id, "Discuss the plan now");
+  assert.equal(events(store, task.id, "task.planning-entered").length, 1);
+  await reconcile();
+  assert.deepEqual(store.listRuns(task.id).map(run => run.purpose), ["planning"],
+    "An ordinary editable discussion must still reach the real planning path.");
 });
 
 test("a repeated develop submission never creates a second activation request", (t) => {
@@ -214,29 +257,20 @@ test("develop on a stopped-gate Draft saves the message but records no activatio
   assert.equal(store.getTask(task.id).activationRequest, undefined);
 });
 
-test("discuss on an active Task is delivery context and never downgrades to Draft", (t) => {
+test("active Task submissions preserve execution state for both discuss and develop", (t) => {
   const store = newStore(t);
   const active = activateTask(createTask(store.nextTaskId(), "Active task", now()), now());
   store.saveTask(active);
-  const result = userSubmit(store, active.id, "a delivery note", "discuss");
-
-  assert.equal(result.feedback.phase, "active");
-  assert.equal(result.feedback.planning, "none");
-  assert.equal(result.feedback.delivery, "queued");
-  assert.equal(result.queuedForLeader, true);
-  assert.equal(store.getTask(active.id).status, "active");
-  assert.equal(events(store, active.id, "task.planning-entered").length, 0);
-});
-
-test("develop on an active Task never re-activates it", (t) => {
-  const store = newStore(t);
-  const active = activateTask(createTask(store.nextTaskId(), "Active task", now()), now());
-  store.saveTask(active);
-  const result = userSubmit(store, active.id, "keep building", "develop");
-
-  assert.equal(result.feedback.phase, "active");
-  assert.equal(result.feedback.delivery, "queued");
-  assert.equal(store.getTask(active.id).activationRequest, undefined);
+  for (const intent of ["discuss", "develop"]) {
+    const result = userSubmit(store, active.id, "a delivery note", intent);
+    assert.equal(result.feedback.phase, "active");
+    assert.equal(result.feedback.planning, "none");
+    assert.equal(result.feedback.delivery, "queued");
+    assert.equal(result.queuedForLeader, true);
+    assert.equal(store.getTask(active.id).status, "active");
+    assert.equal(events(store, active.id, "task.planning-entered").length, 0);
+    assert.equal(store.getTask(active.id).activationRequest, undefined);
+  }
 });
 
 test("an operator submission carries user authority and enters planning like a user discuss", (t) => {
@@ -280,7 +314,7 @@ test("a managed Task Session cannot carry a develop submission and persists noth
     YUI_TASK_ID: task.id,
     YUI_ROLE: "leader"
   });
-  assert.throws(() => sendTaskMessageCommand(store, task.id, "sneaky", undefined,
+  assert.throws(() => sendTaskMessageCommand(store, task.id, "sneaky",
     { environment: leaderEnv, now }, undefined, "develop"));
   assert.equal(store.getTask(task.id).activationRequest, undefined);
   assert.equal(store.listMessages(task.id).length, 0);

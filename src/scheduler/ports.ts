@@ -1,12 +1,6 @@
+import type { AgentAdapterId } from "../agent/adapterCatalog.js";
+import type { AgentRun, AgentRunFailureReason, AgentRunPurpose } from "../agentRun/agentRun.js";
 import type { TaskBrief } from "../brief/taskBrief.js";
-import type { Decision } from "../decision/decision.js";
-import type { InputRequest } from "../input/inputRequest.js";
-import type { Milestone } from "../milestone/milestone.js";
-import type { LeaderFailure } from "./leaderFailure.js";
-import type { PendingWakeup } from "./pendingWakeup.js";
-import type { AgentRun } from "../agentRun/agentRun.js";
-import type { AgentRunFailureReason, AgentRunPurpose } from "../agentRun/agentRun.js";
-import type { AgentRunInput } from "../context/runInputContract.js";
 import type {
   MailboxEntityRef,
   MailboxTarget,
@@ -17,16 +11,12 @@ import type {
   RoleRunDispatchSettlement,
   RoleRunDispatchToken
 } from "../coordination/workMailboxQueue.js";
-import type {
-  RuntimeLifecycleTarget,
-  RuntimeRoleOwner
-} from "../runtime/lifecycleReservation.js";
-import type { AgentAdapterId } from "../agent/adapterCatalog.js";
-import type { Task } from "../task/task.js";
+import type { Decision } from "../decision/decision.js";
 import type { TaskEvent } from "../event/taskEvent.js";
-import type { EffectiveLaunchSnapshot } from "../executor/effectiveLaunch.js";
 import type { AgentSessionStatus } from "../executor/agentExecutor.js";
-import type { RuntimeLaunchPreStart } from "../runtime/ports.js";
+import type { EffectiveLaunchSnapshot } from "../executor/effectiveLaunch.js";
+import type { InputRequest } from "../input/inputRequest.js";
+import type { Milestone } from "../milestone/milestone.js";
 import type {
   AgentErrorInputDisposition,
   AgentErrorPhase,
@@ -35,16 +25,24 @@ import type {
   AgentErrorSource,
   ProviderDeliveryFailure
 } from "../runtime/agentError.js";
-import {
-  isTaskOwnedWorkspace,
-  type ManagedWorkspace
-} from "../worktree/managedWorkspace.js";
-import { taskOwnsManagedWorkspace } from "../task/task.js";
-import type { TaskRuntimeLaunchPolicy } from "../runtime/taskRuntimeIsolation.js";
+import type {
+  RuntimeLifecycleTarget,
+  RuntimeRoleOwner
+} from "../runtime/lifecycleReservation.js";
+import type { RuntimeLaunchPreStart } from "../runtime/ports.js";
 import type {
   RuntimeSessionCandidate,
   RuntimeSessionCandidateQuery
 } from "../runtime/runtimeSessionCandidate.js";
+import type { TaskRuntimeLaunchPolicy } from "../runtime/taskRuntimeIsolation.js";
+import type { Task } from "../task/task.js";
+import { taskOwnsManagedWorkspace } from "../task/task.js";
+import {
+  isTaskOwnedWorkspace,
+  type ManagedWorkspace
+} from "../worktree/managedWorkspace.js";
+import type { LeaderFailure } from "./leaderFailure.js";
+import type { PendingWakeup } from "./pendingWakeup.js";
 
 export type { RuntimeSessionCandidate } from "../runtime/runtimeSessionCandidate.js";
 
@@ -260,19 +258,15 @@ export type AgentRunProgressFacts = Readonly<{
 export interface SchedulerStorePort {
   listTasks(): readonly SchedulerTask[];
   /**
-   * Indexed active-Task selection for full Controller reconciliation. Stores
-   * that do not expose the projection retain their existing selection path;
-   * production SQLite storage provides it directly from `tasks_catalog`.
+   * Indexed active-Task selection for full Controller reconciliation.
    */
-  listActiveTaskIds?(): readonly string[];
+  listActiveTaskIds(): readonly string[];
   /**
    * Draft Task ids that already carry an active planning Turn. Planning is the
    * one purpose admitted before activation, so the phases that keep an admitted
    * Turn converging can resolve those Drafts without scanning Task history.
-   * Optional: a store without the projection falls back to the full scan, which
-   * still consults the durable Turn before admitting anything.
    */
-  listPlanningDraftTaskIds?(): readonly string[];
+  listPlanningDraftTaskIds(): readonly string[];
   /**
    * Draft Task ids whose activation request is still pending. A deferral is
    * released by its planning Turn ending, which enqueues a mailbox signal — but
@@ -280,12 +274,9 @@ export interface SchedulerStorePort {
    * is acted on, has no dirty key to reconcile from. Full reconciliation reads
    * this projection instead, so a released request is recovered rather than
    * waiting for unrelated traffic on the Task.
-   *
-   * Optional: a store without the projection falls back to the full scan. The
-   * request itself is still re-read at the adoption boundary, so this only
-   * decides which Tasks are looked at, never whether one is adopted.
+   * The request is re-read at adoption; this index grants no authority.
    */
-  listPendingActivationRequestTaskIds?(): readonly string[];
+  listPendingActivationRequestTaskIds(): readonly string[];
   getTask(taskId: string): SchedulerTask | null;
   /** Durable Task-owned main workspace used to fence every active launch. */
   getTaskWorkspace(taskId: string): ManagedWorkspace | null;
@@ -303,7 +294,7 @@ export interface SchedulerStorePort {
     taskIds?: ReadonlySet<string>
   ): readonly AutoResolvedInput[];
   /** Persist exact tmux remain-on-exit evidence before rebuilding an Agent Host. */
-  saveRoleHostExitObservation?(input: Readonly<{
+  saveRoleHostExitObservation(input: Readonly<{
     taskId: string;
     roleName: string;
     runId: string;
@@ -317,24 +308,20 @@ export interface SchedulerStorePort {
     agentId?: string
   ): SchedulerRoleSession | null;
   /** Read-only Session projection used by orchestration observability. */
-  getTaskRoleSessionSet?(
+  getTaskRoleSessionSet(
     taskId: string,
     roleName: string
   ): import("../executor/agentExecutor.js").TaskRoleSessionSet | null;
   /** Immutable runtime facts used by the low-frequency stall projection. */
-  listEvents?(taskId: string): readonly TaskEvent[];
-  /**
-   * Optional durable-record reads used by the actionability projection
-   * (Issue 05). Absent implementations fall back to an empty family, which
-   * yields a coarser digest; the fail-open rule covers computation errors.
-   */
-  listRuns?(taskId: string): readonly SchedulerRun[];
-  listWorkItems?(taskId: string): readonly import("../workItem/workItem.js").WorkItem[];
-  listReviewRounds?(taskId: string): readonly import("../review/reviewRound.js").ReviewRound[];
-  listIntegrationAttempts?(taskId: string): readonly import("../integration/integrationAttempt.js").IntegrationAttempt[];
-  listDurableJobs?(taskId: string): readonly import("../job/durableJob.js").DurableJob[];
-  listInputRequests?(taskId: string): readonly import("../input/inputRequest.js").InputRequest[];
-  listMessages?(taskId: string): readonly import("../message/message.js").TaskMessage[];
+  listEvents(taskId: string): readonly TaskEvent[];
+  /** Required authoritative reads; an unavailable reader is not an empty family. */
+  listRuns(taskId: string): readonly SchedulerRun[];
+  listWorkItems(taskId: string): readonly import("../workItem/workItem.js").WorkItem[];
+  listReviewRounds(taskId: string): readonly import("../review/reviewRound.js").ReviewRound[];
+  listIntegrationAttempts(taskId: string): readonly import("../integration/integrationAttempt.js").IntegrationAttempt[];
+  listDurableJobs(taskId: string): readonly import("../job/durableJob.js").DurableJob[];
+  listInputRequests(taskId: string): readonly import("../input/inputRequest.js").InputRequest[];
+  listMessages(taskId: string): readonly import("../message/message.js").TaskMessage[];
   /** Current fold of WorkItem/Review/Integration progress for a AgentRun. */
   getRunDurableProgress(taskId: string, roleName: string, runId: string): SchedulerRunProgress | null;
   /**
@@ -343,13 +330,13 @@ export interface SchedulerStorePort {
    */
   getRunProgressFacts(taskId: string, runId: string): AgentRunProgressFacts | undefined;
   /** Materializes a newly observed related-record fold as one turn.progress fact. */
-  recordRoleRunProgress?(input: RoleRunProgressPersistence): "recorded" | "already-recorded" | "state-changed";
+  recordRoleRunProgress(input: RoleRunProgressPersistence): "recorded" | "already-recorded" | "state-changed";
   /** Closes one coalesced read-only runtime diagnostic window. */
-  recordRoleRunDiagnostic?(input: RoleRunDiagnosticPersistence): "recorded" | "already-recorded" | "state-changed";
+  recordRoleRunDiagnostic(input: RoleRunDiagnosticPersistence): "recorded" | "already-recorded" | "state-changed";
   /** Atomically records one advisory no-progress episode. */
-  recordRoleRunStall?(input: RoleRunStallPersistence): "raised" | "already-raised" | "state-changed";
+  recordRoleRunStall(input: RoleRunStallPersistence): "raised" | "already-raised" | "state-changed";
   /** Exact durable Provider writer; human/unknown ownership blocks Controller writes. */
-  getProviderAuthorityFence?(input: Readonly<{
+  getProviderAuthorityFence(input: Readonly<{
     taskId: string;
     roleName: string;
     runId: string;
@@ -370,7 +357,7 @@ export interface SchedulerStorePort {
    * ready-work projection. Production Controller full passes use this method
    * so empty historical mailboxes never enter reconciliation.
    */
-  listReadyWorkMailboxes?(): readonly WorkMailbox[];
+  listReadyWorkMailboxes(): readonly WorkMailbox[];
   claimWorkMailbox(input: SchedulerMailboxClaimInput): SchedulerMailboxClaimResult;
   /** Settles the exact ordinary Role dispatch after acceptance or terminalization. */
   settleRoleRunDispatch(input: Readonly<{
@@ -385,7 +372,7 @@ export interface SchedulerStorePort {
    * After a successful targeted stop, atomically clears both a launch
    * reservation and every coalesced cleanup request in its dedicated lane.
    */
-  completeRuntimeCleanup?(
+  completeRuntimeCleanup(
     target: Extract<
       MailboxTarget,
       { kind: "role-runtime" | "global-role-runtime" }
@@ -393,28 +380,28 @@ export interface SchedulerStorePort {
     now: Date
   ): boolean;
   /** Queues durable owner cleanup, optionally fenced by one dormant Session fact. */
-  enqueueRuntimeCleanup?(
+  enqueueRuntimeCleanup(
     owner: RuntimeRoleOwner,
     now?: Date,
     expectedDormantCandidate?: DormantRuntimeOwnerCandidate
   ): RuntimeLifecycleTarget | null;
   /** Queues physical Host cleanup while preserving its resumable Session. */
-  enqueueRuntimeHostDetach?(
+  enqueueRuntimeHostDetach(
     owner: RuntimeRoleOwner,
     now?: Date,
     expectedDormantCandidate?: DormantRuntimeOwnerCandidate
   ): RuntimeLifecycleTarget | null;
   /** Non-stopped native sessions with no active Task AgentRun or lifecycle work. */
-  listDormantRuntimeOwners?(): readonly DormantRuntimeOwnerCandidate[];
+  listDormantRuntimeOwners(): readonly DormantRuntimeOwnerCandidate[];
   /**
    * Current non-stopped Role Sessions from a storage-owned hot projection.
    * Historical RoleSessionSets must never be scanned to answer this query.
    */
-  listRuntimeSessionCandidates?(
+  listRuntimeSessionCandidates(
     query?: RuntimeSessionCandidateQuery
   ): readonly RuntimeSessionCandidate[];
   /** Persists one provider-neutral failure fact and wakes the responsible Agent. */
-  recordAgentError?(input: Readonly<{
+  recordAgentError(input: Readonly<{
     taskId: string;
     roleName: string;
     runId: string;
@@ -442,13 +429,13 @@ export interface SchedulerStorePort {
   getPendingWakeup(taskId: string): PendingWakeup | null;
   listPendingWakeups(): readonly PendingWakeup[];
   /** Atomically appends one Leader signal without a read/merge/write race. */
-  enqueueLeaderWakeup?(taskId: string, reason: string, now: Date): PendingWakeup | null;
+  enqueueLeaderWakeup(taskId: string, reason: string, now: Date): PendingWakeup | null;
   /**
    * Atomically releases a stranded Leader execution and appends its recovery
    * signal. This prevents a concurrent signal from being lost between those
    * two mailbox transitions.
    */
-  releaseLeaderWakeupAndEnqueue?(
+  releaseLeaderWakeupAndEnqueue(
     taskId: string,
     batchId: string,
     reason: string,
@@ -461,25 +448,15 @@ export interface SchedulerStorePort {
    * (the Role runtime lifecycle lane was busy). The wake stays durable and
    * is retried after the lane settles.
    */
-  recordWakeSuppression?(taskId: string, reason: string, now: Date): void;
+  recordWakeSuppression(taskId: string, reason: string, now: Date): void;
 
   getLeaderFailure(taskId: string): LeaderFailure | null;
   getTaskBrief(taskId: string): TaskBrief | null;
   listDecisions(taskId: string): readonly Decision[];
   listMilestones(taskId: string): readonly Milestone[];
-  /**
-   * Issue 04 (long-term): the minimal wake envelope for a Leader wake —
-   * aggregated reason tags, the delta window, and read pointers. The Agent
-   * reads delta content on demand with `yui task wake show`. Returns null
-   * when no wake is pending. Optional so adapters without the feature keep
-   * the full-context prompt.
-   */
-  getTaskWakeEnvelope?(
-    taskId: string
-  ): import("../context/wakeNotification.js").WakeEnvelope | null;
   claimLeaderNotification(taskId: string, now: Date): LeaderNotification | null;
-  prepareMessageContinuations?(taskId: string, now: Date): void;
-  prepareDraftPlanning?(taskId: string, now: Date): boolean;
+  prepareMessageContinuations(taskId: string, now: Date): void;
+  prepareDraftPlanning(taskId: string, now: Date): boolean;
   settleLeaderNotification(taskId: string, attemptId: string,
     outcome: "accepted" | "deferred" | "rejected" | "unknown", now: Date, detail?: string): void;
   /** Persist a fixed Session discovered while preparing an undelivered AgentRun. */
@@ -574,7 +551,7 @@ export function selectedSchedulerTasks(
 export function selectedActiveSchedulerTasks(
   store: Pick<
     SchedulerStorePort,
-    "listTasks" | "listActiveTaskIds" | "getTask" | "listPlanningDraftTaskIds"
+    "listActiveTaskIds" | "getTask" | "listPlanningDraftTaskIds" | "listRoles" | "getActiveRun"
   >,
   selection?: SchedulerReconcileSelection,
   options?: Readonly<{ includePlanningDrafts?: boolean }>
@@ -586,16 +563,11 @@ export function selectedActiveSchedulerTasks(
     return planningDrafts && hasActivePlanningRun(store, task);
   };
   if (selection === undefined || selection.full) {
-    const indexedTaskIds = store.listActiveTaskIds?.();
-    if (indexedTaskIds === undefined) {
-      return store.listTasks().filter((task) => (
-        admits(task) && !selection?.blockedTaskIds?.has(task.id)
-      ));
-    }
+    const indexedTaskIds = store.listActiveTaskIds();
     // The active index is bounded and authoritative for active Tasks; planning
     // Drafts come from their own bounded index rather than a full-history scan.
     const taskIds = planningDrafts
-      ? [...indexedTaskIds, ...(store.listPlanningDraftTaskIds?.() ?? [])]
+      ? [...indexedTaskIds, ...store.listPlanningDraftTaskIds()]
       : [...indexedTaskIds];
     const seen = new Set<string>();
     return taskIds.flatMap((taskId) => {
@@ -619,14 +591,13 @@ export function selectedActiveSchedulerTasks(
  * status alone.
  */
 function hasActivePlanningRun(
-  store: Pick<SchedulerStorePort, "getTask">
-    & Partial<Pick<SchedulerStorePort, "listRoles" | "getActiveRun">>,
+  store: Pick<SchedulerStorePort, "listRoles" | "getActiveRun">,
   task: SchedulerTask
 ): boolean {
   if (task.status !== "draft") return false;
-  const roles = store.listRoles?.(task.id) ?? [];
+  const roles = store.listRoles(task.id);
   return roles.some((role) => {
-    const run = store.getActiveRun?.(task.id, role.name) ?? null;
+    const run = store.getActiveRun(task.id, role.name);
     return run !== null
       && run.status === "active"
       && isSchedulerPlanningDraft(task, run.purpose);

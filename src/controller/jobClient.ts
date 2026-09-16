@@ -12,7 +12,7 @@ import type {
   DurableJobStep
 } from "../job/durableJob.js";
 import type { DurableJobCaller } from "./jobControl.js";
-import { resolveJobCaller } from "../commands/taskActor.js";
+import { resolveJobCaller } from "../task/taskAuthority.js";
 import {
   callFileTaskController,
   type FileControllerClientOptions
@@ -27,7 +27,7 @@ export type ControllerDurableJobStartParams = Readonly<{
   env: Readonly<Record<string, string>>;
   steps: readonly DurableJobStep[];
   retryOf?: string;
-  requestId?: string;
+  requestId: string;
   /** rr8: The caller identity the declared owner is bound to. */
   caller: DurableJobCaller;
 }>;
@@ -59,12 +59,13 @@ export async function getDurableJob(
   home: string,
   taskId: string,
   jobId: string,
+  caller: DurableJobCaller,
   clientOptions: FileControllerClientOptions = {}
 ): Promise<DurableJob> {
   const result = await callFileTaskController(
     home,
     "job.get",
-    { taskId, jobId },
+    { taskId, jobId, caller },
     clientOptions
   );
   return parseJobResult(result);
@@ -193,7 +194,7 @@ export function createControllerIntegrationJobPort(
       return job;
     },
     async getJob(taskId, jobId) {
-      return getDurableJob(home, taskId, jobId, clientOptions);
+      return getDurableJob(home, taskId, jobId, resolveJobCaller(clientOptions.environment, taskId), clientOptions);
     },
     async cancelJob(taskId, jobId) {
       // rr8/rr12: Bind the cancel request to the caller's managed identity.

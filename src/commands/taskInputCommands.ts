@@ -1,3 +1,6 @@
+import type { AgentRun } from "../agentRun/agentRun.js";
+import type { MailboxTarget } from "../coordination/workMailbox.js";
+import { enqueueWork } from "../coordination/workMailboxQueue.js";
 import {
   dataError,
   roleNotFound,
@@ -6,7 +9,6 @@ import {
 } from "../errors/cliError.js";
 import { createTaskEvent, type TaskEventPayload } from "../event/taskEvent.js";
 import {
-  activeLiveRoleAgentSession,
   type TaskRoleSessionSet
 } from "../executor/agentExecutor.js";
 import {
@@ -17,22 +19,19 @@ import {
   type InputBlockedRef,
   type InputChoice,
   type InputRequest,
-  type InputRequestPolicy,
-  type InputRequester
+  type InputRequester,
+  type InputRequestPolicy
 } from "../input/inputRequest.js";
 import { defaultTableWidth, renderTable } from "../output/table.js";
 import { formatTimestamp } from "../output/timePresentation.js";
 import { type Role } from "../role/role.js";
-import type { AgentRun } from "../agentRun/agentRun.js";
-import { enqueueWork } from "../coordination/workMailboxQueue.js";
-import type { MailboxTarget } from "../coordination/workMailbox.js";
+import { requireManagedTaskCaller, requireManagedGlobalCaller } from "../runtime/managedCaller.js";
 import {
   isRoleRunStalled,
   RUN_RECOVERED_EVENT
 } from "../scheduler/roleRunStall.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import type { Task } from "../task/task.js";
-import { requireManagedTaskCaller } from "../runtime/managedCaller.js";
 import {
   resolveTaskRecordReference
 } from "../task/taskRecordReference.js";
@@ -41,8 +40,7 @@ const LEADER_ROLE = "leader";
 
 type TaskInputCommandOptions = Readonly<{
   runtime?: {
-    notifyStateChanged(taskId: string): void;
-    notifyMailboxChanged?(target: MailboxTarget): void;
+    notifyMailboxChanged(target: MailboxTarget): void;
   };
   now?: () => Date;
   environment?: NodeJS.ProcessEnv;
@@ -154,7 +152,7 @@ function createRequest(
     }, now);
     return created;
   });
-  notifyMailbox(options, { kind: "operator" }, request.taskId);
+  notifyMailbox(options, { kind: "operator" });
   return output(`Created input request ${request.id} for ${request.taskId}\n`, { request });
 }
 
@@ -263,7 +261,7 @@ function answerRequest(
     );
     return answered;
   });
-  notifyMailbox(options, { kind: "role", taskId: request.taskId, roleName: LEADER_ROLE }, request.taskId);
+  notifyMailbox(options, { kind: "role", taskId: request.taskId, roleName: LEADER_ROLE });
   return output(`Answered input request ${request.id} for ${request.taskId}\n`, { request });
 }
 
@@ -302,7 +300,7 @@ function cancelRequest(
     );
     return cancelled;
   });
-  notifyMailbox(options, { kind: "role", taskId: request.taskId, roleName: LEADER_ROLE }, request.taskId);
+  notifyMailbox(options, { kind: "role", taskId: request.taskId, roleName: LEADER_ROLE });
   return output(`Cancelled input request ${request.id} for ${request.taskId}\n`, { request });
 }
 
@@ -364,27 +362,10 @@ export function isCurrentGlobalOperator(
     || (environment.YUI_ROLE !== undefined && environment.YUI_ROLE !== "operator")
     || environment.YUI_TASK_ID !== undefined
   ) return false;
-  const role = store.getGlobalRole("operator");
-  if (role === null) return false;
-  const binding = role.agentBindings[role.activeAgentId];
-  if (binding === undefined) return false;
-  const sessions = store.getGlobalRoleSessionSet(role.name);
-  const session = activeLiveRoleAgentSession(sessions);
-  if (sessions === null || session === null || sessions.activeAgentId !== role.activeAgentId) {
-    return false;
-  }
-  // The provider's conversation survives Host restarts and entry-point changes.
-  // Prefer its command-time identity over a launch-time environment snapshot.
-  // A launch reservation alone is not a registered Operator conversation.
-  const nativeSessionId = exactIdentity(
-    binding.adapterId === "codex"
-      ? environment.CODEX_THREAD_ID ?? environment.YUI_NATIVE_SESSION_ID
-      : environment.YUI_NATIVE_SESSION_ID
-  );
-  return binding.agentId === session.agentId
-    && binding.adapterId === session.adapterId
-    && nativeSessionId !== undefined
-    && nativeSessionId === session.nativeSessionId;
+  try {
+    requireManagedGlobalCaller(store, { ...environment, YUI_SESSION_SCOPE: "global", YUI_ROLE: "operator" });
+    return true;
+  } catch { return false; }
 }
 
 function inputAnswerer(environment: NodeJS.ProcessEnv | undefined): "user" | "operator" {
@@ -556,16 +537,6 @@ function requiredText(value: string | undefined, label: string): string {
   return normalized;
 }
 
-function trimmed(value: string | undefined): string | undefined {
-  const normalized = value?.trim();
-  return normalized === undefined || normalized.length === 0 ? undefined : normalized;
-}
-
-function exactIdentity(value: string | undefined): string | undefined {
-  if (value === undefined || value.includes("\0")) return undefined;
-  const normalized = value.trim();
-  return normalized.length === 0 || normalized !== value ? undefined : normalized;
-}
 
 function timeoutAfter(now: Date, value: string): string {
   if (!/^[1-9][0-9]*$/.test(value)) {
@@ -669,12 +640,7 @@ function parseMultiValueTail(
 
 function notifyMailbox(
   options: TaskInputCommandOptions,
-  target: MailboxTarget,
-  compatibilityTaskId: string
+  target: MailboxTarget
 ): void {
-  if (options.runtime?.notifyMailboxChanged !== undefined) {
-    options.runtime.notifyMailboxChanged(target);
-  } else {
-    options.runtime?.notifyStateChanged(compatibilityTaskId);
-  }
+  options.runtime?.notifyMailboxChanged(target);
 }

@@ -2,7 +2,7 @@ import { usageError } from "../errors/cliError.js";
 import { createTaskEvent, type TaskEvent, type TaskEventPayload } from "../event/taskEvent.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import type { Task, TaskProjectBinding } from "../task/task.js";
-import { workspaceProjectEntry, type ManagedWorkspace } from "../worktree/managedWorkspace.js";
+import { workspaceProjectEntry } from "../worktree/managedWorkspace.js";
 import { NodeGitWorkspace, type GitRemoteBaseline, type GitWorkspacePort } from "./gitWorkspace.js";
 import type { Project } from "./project.js";
 
@@ -17,7 +17,7 @@ export type TaskBaseFreshnessStatus =
 export type TaskBaseFreshnessSource =
   | "local-tracking"
   | "remote-refresh"
-  | "compatibility-projection"
+  | "unknown"
   | "not-applicable";
 
 export type TaskBaseProvenanceSource =
@@ -198,7 +198,7 @@ export async function inspectTaskBaseFreshness(
       baseRef: binding.baseRef,
       baseCommit,
       status,
-      source: tracked?.source ?? (project.remoteUrl === undefined ? "not-applicable" : "compatibility-projection"),
+      source: tracked?.source ?? (project.remoteUrl === undefined ? "not-applicable" : "unknown"),
       workspacePath,
       workspaceClean,
       ...(physicalHead === undefined ? {} : { physicalHead }),

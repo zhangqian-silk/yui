@@ -7,7 +7,7 @@ import test from "node:test";
 
 import { runProjectCommand } from "../../dist/commands/projectCommands.js";
 import { runTaskCommand } from "../../dist/commands/taskCommands.js";
-import { createTaskRemoteDeliveryProof } from "../../dist/commands/taskRemoteDeliveryCommand.js";
+import { createTaskRemoteDeliveryProof } from "../../dist/task/remoteDeliveryService.js";
 import { runTaskUpstreamCommand } from "../../dist/commands/taskUpstreamCommands.js";
 import { GitIntegrationService } from "../../dist/integration/gitIntegrationService.js";
 import {
@@ -60,6 +60,12 @@ function newStore(t, home) {
   const store = new SqliteTaskStore(home);
   t.after(() => store.close());
   return store;
+}
+
+function requestActivation(store, taskId) {
+  runTaskCommand(["activation", "request", taskId,
+    "--request-id", `start-${taskId}`, "--environment", "empty"],
+  store, { now: () => now, environment: userEnv });
 }
 
 /**
@@ -115,6 +121,8 @@ test("competing Task activations each clone the remote exactly once into indepen
     projectBindings: task.projectBindings
   });
   store.saveTask(secondTask);
+  requestActivation(store, task.id);
+  requestActivation(store, secondTask.id);
   const workspaceGit = new NodeGitWorkspace();
   const clone = workspaceGit.clone.bind(workspaceGit);
   let notifyEntered;
@@ -199,6 +207,7 @@ test("Task activation rolls back every fresh clone when one remote cannot be clo
   });
   store.saveTask(task);
 
+  requestActivation(store, task.id);
   await assert.rejects(
     new FileTaskWorkspacePreparer(home, store).activateTaskWorkspace(task.id),
     /clone|repository|remote|missing/iu
@@ -227,6 +236,7 @@ test("WorkItem no-op Integration records the decision and archive removes all co
   });
   store.saveTask(task);
   const preparer = new FileTaskWorkspacePreparer(home, store);
+  requestActivation(store, task.id);
   await preparer.activateTaskWorkspace(task.id);
   const taskWorkspace = store.getTaskWorkspace(task.id);
   const taskEntry = taskWorkspace.entries[0];
@@ -306,6 +316,7 @@ test("WorkItem no-op Integration records the decision and archive removes all co
   );
   const coordinator = new TaskWorkspaceCoordinator(store, preparer, {
     async stopTaskRoleSessions() {},
+    async releaseTaskTerminals() {},
     async assertTaskPhysicalResourcesReleased() {}
   });
   const cleaned = await coordinator.cleanupTaskForArchive(task.id, "integrated");
@@ -336,6 +347,7 @@ test("upstream rebase uses the unified Integration lifecycle without ChangeSets"
   });
   store.saveTask(task);
   const preparer = new FileTaskWorkspacePreparer(home, store);
+  requestActivation(store, task.id);
   await preparer.activateTaskWorkspace(task.id);
   const taskEntry = store.getTaskWorkspace(task.id).entries[0];
   commitFile(taskEntry.path, "task.txt", "task\n", "task change");

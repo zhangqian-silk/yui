@@ -28,25 +28,21 @@
  * `telemetry` scoped by its primary key — it never rewrites global
  * state and never touches another Task's rows (§4.4).
  *
- * The in-process store is phase 1 of §6. It does not re-run the heavy record
- * validators on write (the domain layer that constructs records already does,
- * and the design places record validation in the persistence worker, phase 2);
- * it performs the same cheap structural checks the file store relies on
- * (identity presence, taskId matching, referential lookups).
+ * The same current record validators apply to direct and worker-backed access,
+ * including writes, reads and explicit Home diagnostics. There is no weaker
+ * in-process contract or deferred validation phase.
  */
+import Database from "better-sqlite3";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import Database from "better-sqlite3";
-import { queryTaskCatalog, type TaskCatalogQuery } from "./taskCatalog.js";
-import { validatePluginValidation, type PluginValidation } from "../plugins/pluginPackage.js";
-import { validatePluginIntent, validatePluginIntentFailure, type PluginIntent, type PluginIntentFailure } from "../plugins/pluginIntent.js";
-import {
-  validateLocalResource, validateEnvironmentPreparation,
-  type LocalResource, type EnvironmentPreparation
-} from "../resources/projectResource.js";
-import { validateConfiguredAgent, type ConfiguredAgent } from "../agent/agent.js";
+import type { ConfiguredAgent } from "../agent/agent.js";
+import { runPurposeAdmitsTaskState, type AgentRun } from "../agentRun/agentRun.js";
 import { validateTaskBrief, type TaskBrief } from "../brief/taskBrief.js";
+import {
+  validateContextSnapshot,
+  type ContextSnapshot
+} from "../context/contextSnapshot.js";
 import type { MailboxTarget, WorkMailbox } from "../coordination/workMailbox.js";
 import {
   consumePendingBatch,
@@ -54,17 +50,44 @@ import {
   validateWorkMailbox
 } from "../coordination/workMailbox.js";
 import type { Decision } from "../decision/decision.js";
-import {
-  validateContextSnapshot,
-  type ContextSnapshot
-} from "../context/contextSnapshot.js";
 import type { TaskEvent } from "../event/taskEvent.js";
-import type { InputRequest } from "../input/inputRequest.js";
 import type { GlobalRoleSessionSet, RoleAgentSession, TaskRoleSessionSet } from "../executor/agentExecutor.js";
+import type { CapabilityGrant } from "../grant/capabilityGrant.js";
+import type { InputRequest } from "../input/inputRequest.js";
+import type { ChangeSet } from "../integration/changeSet.js";
+import type { IntegrationAttempt } from "../integration/integrationAttempt.js";
+import {
+  validateDurableJob,
+  validDurableJobTransition,
+  type DurableJob
+} from "../job/durableJob.js";
 import type { TaskMessage } from "../message/message.js";
 import { validateGlobalRoleMessage, type GlobalRoleMessage } from "../message/message.js";
 import type { Milestone } from "../milestone/milestone.js";
-import { runPurposeAdmitsTaskState, type AgentRun } from "../agentRun/agentRun.js";
+import {
+  validatePluginIntent,
+  validatePluginIntentFailure,
+  type PluginIntent,
+  type PluginIntentFailure
+} from "../plugins/pluginIntent.js";
+import { validatePluginValidation, type PluginValidation } from "../plugins/pluginPackage.js";
+import type { AgentProfile } from "../profile/agentProfile.js";
+import type { ReleaseWorkflow } from "../release/releaseWorkflow.js";
+import {
+  generateHomeIdentity,
+  validateHomeIdentity,
+  type HomeIdentity
+} from "../repository/homeIdentity.js";
+import { validateProject, type Project, type ProjectReferenceSummary } from "../repository/project.js";
+import {
+  validateEnvironmentPreparation,
+  validateLocalResource,
+  type EnvironmentPreparation,
+  type LocalResource
+} from "../resources/projectResource.js";
+import type { ReviewConfig } from "../review/reviewConfig.js";
+import { validateReviewRound, type ReviewRound } from "../review/reviewRound.js";
+import type { GlobalRole, TaskRole } from "../role/role.js";
 import type { RuntimeOwner } from "../runtime/runtimeOwner.js";
 import {
   compareRuntimeSessionCandidates,
@@ -73,65 +96,22 @@ import {
   type RuntimeSessionCandidateQuery
 } from "../runtime/runtimeSessionCandidate.js";
 import { sessionOwnerProcessKey, type SessionOwnerIdentity } from "../runtime/sessionOwnerIdentity.js";
-import type { ReviewConfig } from "../review/reviewConfig.js";
-import { validateReviewRound, type ReviewRound } from "../review/reviewRound.js";
-import { validateProject, type Project, type ProjectReferenceSummary } from "../repository/project.js";
-import {
-  generateHomeIdentity,
-  validateHomeIdentity,
-  type HomeIdentity
-} from "../repository/homeIdentity.js";
-import type { AgentProfile } from "../profile/agentProfile.js";
-import type { ChangeSet } from "../integration/changeSet.js";
-import type { IntegrationAttempt } from "../integration/integrationAttempt.js";
-import {
-  validateIntegrationQueueEntry,
-  type IntegrationQueueEntry,
-  type IntegrationQueueStatus
-} from "../integration/integrationQueueEntry.js";
-import {
-  validDurableJobTransition,
-  validateDurableJob,
-  type DurableJob
-} from "../job/durableJob.js";
-import { validateGlobalRole, validateTaskRole, type GlobalRole, type TaskRole } from "../role/role.js";
 import type { LeaderFailure } from "../scheduler/leaderFailure.js";
 import type { PendingWakeup } from "../scheduler/pendingWakeup.js";
 import { validateTaskWake, type TaskWake } from "../scheduler/taskWake.js";
-import { validateTask, type Task } from "../task/task.js";
-import type { NextActionFacts } from "../task/nextAction.js";
 import { pendingCompletionMessages, type CompletionReadinessFacts } from "../task/completionReadiness.js";
+import type { NextActionFacts } from "../task/nextAction.js";
+import type { PublicationReference } from "../task/publicationReference.js";
+import { publicationExternalKey } from "../task/publicationReference.js";
+import { validateTask, type Task } from "../task/task.js";
+import { TASK_RECORD_ID_PREFIXES, type TaskRecordKind } from "../task/taskRecordReference.js";
 import {
   operationalTaskRecords,
   TASK_RECORD_RETIRED_EVENT
 } from "../task/taskRecordRetirement.js";
-import { TASK_RECORD_ID_PREFIXES, type TaskRecordKind } from "../task/taskRecordReference.js";
-import { validateWorkItem, type WorkItem } from "../workItem/workItem.js";
-import { managedWorkspaceKey, type ManagedWorkspace, type ManagedWorkspaceOwner } from "../worktree/managedWorkspace.js";
-import {
-  CURRENT_CONFIG_SCHEMA_VERSION,
-  CURRENT_WORK_MAILBOX_SCHEMA_VERSION,
-  executionLaneActiveRunKey,
-  executionLaneActiveRunKeyParts,
-  StorageConflictError,
-  StorageCancelledError,
-  StorageRecordError,
-  storedCapabilityGrant,
-  storedPublicationReference,
-  storedReleaseWorkflow,
-  isValidCapabilityGrantTransition,
-  isValidReleaseWorkflowTransition,
-  pendingWakeupProjection,
-  type ConfiguredAgentPatch,
-  type ConfiguredAgentUpdateResult,
-  type TaskStore,
-  type YuiConfig,
-  validateYuiConfig
-} from "./taskStore.js";
-import { publicationExternalKey } from "../task/publicationReference.js";
-import type { CapabilityGrant } from "../grant/capabilityGrant.js";
-import type { ReleaseWorkflow } from "../release/releaseWorkflow.js";
-import type { PublicationReference } from "../task/publicationReference.js";
+import { writeTelemetryBatch } from "../telemetry/sqliteTelemetryBatch.js";
+import { STORED_RECORD_TABLES, validateStoredRecord, type StoredRecordTable } from "./recordValidation.js";
+import type { TelemetryProgressEntry } from "../telemetry/telemetryStore.js";
 import {
   gateArtifactKey,
   validateGateArtifact,
@@ -140,6 +120,18 @@ import {
   type GateArtifactPruneOptions,
   type GateArtifactPruneResult
 } from "../verification/gateArtifact.js";
+import { validateWorkItem, type WorkItem } from "../workItem/workItem.js";
+import {
+  managedWorkspaceKey,
+  type ManagedWorkspace,
+  type ManagedWorkspaceOwner
+} from "../worktree/managedWorkspace.js";
+import {
+  contextInputReferences,
+  queryContextRecords,
+  type ContextInputScope,
+  type ContextRecordQuery
+} from "./contextRecords.js";
 import {
   inspectSqliteSchemaMigrations,
   migrateSqliteSchema,
@@ -148,6 +140,27 @@ import {
   TELEMETRY_RUN_CAP
 } from "./sqliteSchema.js";
 import { StorageSchemaError } from "./storageSchema.js";
+import { queryTaskCatalog, type TaskCatalogQuery } from "./taskCatalog.js";
+import {
+  CURRENT_CONFIG_SCHEMA_VERSION,
+  CURRENT_WORK_MAILBOX_SCHEMA_VERSION,
+  executionLaneActiveRunKey,
+  executionLaneActiveRunKeyParts,
+  isValidCapabilityGrantTransition,
+  isValidReleaseWorkflowTransition,
+  pendingWakeupProjection,
+  StorageCancelledError,
+  StorageConflictError,
+  StorageRecordError,
+  storedCapabilityGrant,
+  storedPublicationReference,
+  storedReleaseWorkflow,
+  validateYuiConfig,
+  type ConfiguredAgentPatch,
+  type ConfiguredAgentUpdateResult,
+  type TaskStore,
+  type YuiConfig
+} from "./taskStore.js";
 
 /** Options for {@link SqliteTaskStore}. */
 export type SqliteTaskStoreOptions = Readonly<{
@@ -359,7 +372,88 @@ export class SqliteTaskStore implements TaskStore {
 
   #now(): string { return new Date().toISOString(); }
   #json(value: unknown): string { return JSON.stringify(value); }
+
+  #recordJson(table: StoredRecordTable, value: unknown): string {
+    validateStoredRecord(table, value);
+    return this.#json(value);
+  }
+
+  /** Explicit full-Home diagnosis; ordinary reads validate only their records. */
+  validateCurrentRecords(): void {
+    this.getConfig();
+    for (const table of STORED_RECORD_TABLES) {
+      for (const row of this.#db.prepare(`SELECT payload FROM ${table}`).iterate() as Iterable<{ payload: string }>) {
+        this.#validateTaskPayload(table, row.payload);
+      }
+    }
+    for (const row of this.#db.prepare("SELECT brief FROM task_records WHERE brief IS NOT NULL").iterate() as Iterable<{ brief: string }>) {
+      validateTaskBrief(this.#parse<TaskBrief>(row.brief));
+    }
+  }
   #parse<T>(text: string): T { return JSON.parse(text) as T; }
+
+  queryContextRecords(taskId: string, query: ContextRecordQuery) {
+    return queryContextRecords(this.#db, taskId, query);
+  }
+
+  contextInputReferences(taskId: string, scope: ContextInputScope) {
+    return contextInputReferences(this.#db, taskId, scope);
+  }
+
+  listActiveRuns(taskId: string): AgentRun[] {
+    return this.#sortById(this.#listPayload<AgentRun>("turns", "task_id = ? AND status = 'active'", [taskId]), run => run.id);
+  }
+
+  latestEventSequence(taskId: string): number {
+    return (this.#db.prepare(
+      "SELECT COALESCE(MAX(CAST(substr(event_id, 7) AS INTEGER)), 0) AS seq FROM events WHERE task_id = ?"
+    ).get(taskId) as { seq: number }).seq;
+  }
+
+  listEventsByType(taskId: string, types: readonly string[]): TaskEvent[] {
+    return this.#sortById(this.#listPayload<TaskEvent>(
+      "events", "task_id = ? AND type IN (SELECT value FROM json_each(?))",
+      [taskId, JSON.stringify(types)]
+    ), event => event.id);
+  }
+
+  /** Delivery needs original workspace bases, never complete Run reports. */
+  listTaskRunWorkspaceBases(taskId: string): Pick<AgentRun, "id" | "createdAt" | "workspace">[] {
+    return (this.#db.prepare(`SELECT json_object(
+      'id', turn_id, 'createdAt', json_extract(payload, '$.createdAt'),
+      'workspace', json_extract(payload, '$.workspace')) AS payload
+      FROM turns WHERE task_id = ? AND json_extract(payload, '$.workspace.owner.type') = 'task'`
+    ).all(taskId) as { payload: string }[]).map(row => JSON.parse(row.payload));
+  }
+
+  /** A pinned read snapshot never reserves the database's single writer slot.
+   * Nested reads share an existing transaction; standalone reads also prohibit
+   * accidental writes at SQLite's boundary.
+   */
+  readTransaction<T>(execute: (store: TaskStore) => T): T {
+    if (this.#inTransaction) return execute(this);
+    const previous = this.#db.pragma("query_only", { simple: true });
+    this.#db.pragma("query_only = ON");
+    this.#db.exec("BEGIN");
+    this.#inTransaction = true;
+    try {
+      this.#prepareWrite();
+      const result = execute(this);
+      this.#commit();
+      return result;
+    } catch (error) {
+      this.#rollback();
+      throw error;
+    } finally {
+      this.#db.pragma(`query_only = ${previous === 1 ? "ON" : "OFF"}`);
+    }
+  }
+
+  /** Diagnostic worker write; deliberately outside Task revision/outbox state. */
+  flushTelemetry(entries: readonly TelemetryProgressEntry[], runCap: number): void {
+    this.#prepareWrite();
+    writeTelemetryBatch(this.#db, entries, runCap);
+  }
 
   #begin(): void {
     this.#db.exec("BEGIN IMMEDIATE");
@@ -737,16 +831,7 @@ export class SqliteTaskStore implements TaskStore {
 
   #validateTaskPayload<T>(table: string, payload: string): T {
     const record = this.#parse<T>(payload);
-    if (table === "task_records") validateTask(record as Task);
-    if (table === "work_items") validateWorkItem(record as WorkItem);
-    // Agents and Roles carry the execution component, and their validators
-    // refuse a record that lost it. Reading them unchecked defeated that: a
-    // component-less row reached display and rendered `undefined` as if it
-    // were a product, and reached launch as a binding nothing had vetted.
-    if (table === "configured_agents") validateConfiguredAgent(record as ConfiguredAgent);
-    if (table === "task_roles") validateTaskRole(record as TaskRole);
-    if (table === "global_roles") validateGlobalRole(record as GlobalRole);
-    if (table === "global_role_messages") validateGlobalRoleMessage(record as GlobalRoleMessage);
+    validateStoredRecord(table, record);
     return record;
   }
 
@@ -790,7 +875,7 @@ export class SqliteTaskStore implements TaskStore {
       this.#db.prepare(
         `INSERT INTO configured_agents (id, payload, updated_at) VALUES (?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`
-      ).run(agent.id, this.#json(agent), this.#now());
+      ).run(agent.id, this.#recordJson("configured_agents", agent), this.#now());
     });
   }
 
@@ -798,7 +883,7 @@ export class SqliteTaskStore implements TaskStore {
     return this.#mutate(() => {
       const result = this.#db.prepare(
         "INSERT OR IGNORE INTO configured_agents (id, payload, updated_at) VALUES (?, ?, ?)"
-      ).run(agent.id, this.#json(agent), this.#now());
+      ).run(agent.id, this.#recordJson("configured_agents", agent), this.#now());
       return result.changes > 0 ? agent : null;
     });
   }
@@ -841,7 +926,7 @@ export class SqliteTaskStore implements TaskStore {
         return;
       }
       this.#db.prepare("INSERT INTO plugin_validations (task_id, id, payload) VALUES (?, ?, ?)")
-        .run(validation.taskId, validation.id, this.#json(validation));
+        .run(validation.taskId, validation.id, this.#recordJson("plugin_validations", validation));
     });
   }
 
@@ -858,7 +943,7 @@ export class SqliteTaskStore implements TaskStore {
       }
       this.#db.prepare(`INSERT INTO plugin_intents (task_id, plugin_id, payload) VALUES (?, ?, ?)
         ON CONFLICT(task_id, plugin_id) DO UPDATE SET payload = excluded.payload`)
-        .run(intent.taskId, intent.pluginId, this.#json(intent));
+        .run(intent.taskId, intent.pluginId, this.#recordJson("plugin_intents", intent));
     });
   }
 
@@ -878,7 +963,7 @@ export class SqliteTaskStore implements TaskStore {
       if (current === null || current.revision !== revision) return false;
       this.#mutate(() => {
         this.#db.prepare("UPDATE plugin_intents SET payload = ? WHERE task_id = ? AND plugin_id = ?")
-          .run(this.#json({ ...current, lastFailure: failure }), taskId, pluginId);
+          .run(this.#recordJson("plugin_intents", { ...current, lastFailure: failure }), taskId, pluginId);
       });
       return true;
     });
@@ -898,7 +983,7 @@ export class SqliteTaskStore implements TaskStore {
         return;
       }
       this.#db.prepare("INSERT INTO local_resources (id, canonical_identity, payload) VALUES (?, ?, ?)")
-        .run(resource.id, `${resource.device}:${resource.inode}`, this.#json(resource));
+        .run(resource.id, `${resource.device}:${resource.inode}`, this.#recordJson("local_resources", resource));
     });
   }
 
@@ -928,7 +1013,7 @@ export class SqliteTaskStore implements TaskStore {
       }
       this.#db.prepare(`INSERT INTO environment_preparations (task_id, id, payload) VALUES (?, ?, ?)
         ON CONFLICT(task_id, id) DO UPDATE SET payload = excluded.payload`)
-        .run(preparation.taskId, preparation.id, this.#json(preparation));
+        .run(preparation.taskId, preparation.id, this.#recordJson("environment_preparations", preparation));
     });
   }
 
@@ -951,7 +1036,7 @@ export class SqliteTaskStore implements TaskStore {
       this.#db.prepare(
         `INSERT INTO projects (id, name, path, payload, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET name = excluded.name, path = excluded.path, payload = excluded.payload, updated_at = excluded.updated_at`
-      ).run(project.id, project.name, project.path, this.#json(project), project.createdAt, project.updatedAt);
+      ).run(project.id, project.name, project.path, this.#recordJson("projects", project), project.createdAt, project.updatedAt);
     });
   }
 
@@ -960,7 +1045,7 @@ export class SqliteTaskStore implements TaskStore {
     return this.#mutate(() => {
       const result = this.#db.prepare(
         "INSERT OR IGNORE INTO projects (id, name, path, payload, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
-      ).run(project.id, project.name, project.path, this.#json(project), project.createdAt, project.updatedAt);
+      ).run(project.id, project.name, project.path, this.#recordJson("projects", project), project.createdAt, project.updatedAt);
       return result.changes > 0 ? project : null;
     });
   }
@@ -1025,7 +1110,7 @@ export class SqliteTaskStore implements TaskStore {
       this.#db.prepare(
         `INSERT INTO agent_profiles (id, payload, updated_at) VALUES (?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`
-      ).run(profile.id, this.#json(profile), this.#now());
+      ).run(profile.id, this.#recordJson("agent_profiles", profile), this.#now());
     });
   }
 
@@ -1033,7 +1118,7 @@ export class SqliteTaskStore implements TaskStore {
     return this.#mutate(() => {
       const result = this.#db.prepare(
         "INSERT OR IGNORE INTO agent_profiles (id, payload, updated_at) VALUES (?, ?, ?)"
-      ).run(profile.id, this.#json(profile), this.#now());
+      ).run(profile.id, this.#recordJson("agent_profiles", profile), this.#now());
       return result.changes > 0 ? profile : null;
     });
   }
@@ -1057,7 +1142,7 @@ export class SqliteTaskStore implements TaskStore {
       this.#db.prepare(
         `INSERT INTO global_roles (name, payload, updated_at) VALUES (?, ?, ?)
          ON CONFLICT(name) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`
-      ).run(role.name, this.#json(role), this.#now());
+      ).run(role.name, this.#recordJson("global_roles", role), this.#now());
     });
   }
 
@@ -1066,12 +1151,12 @@ export class SqliteTaskStore implements TaskStore {
       this.#db.prepare(
         `INSERT INTO global_roles (name, payload, updated_at) VALUES (?, ?, ?)
          ON CONFLICT(name) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`
-      ).run(role.name, this.#json(role), this.#now());
+      ).run(role.name, this.#recordJson("global_roles", role), this.#now());
       if (sessions !== null) {
         this.#db.prepare(
           `INSERT INTO global_role_session_sets (name, payload, updated_at) VALUES (?, ?, ?)
            ON CONFLICT(name) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`
-        ).run(role.name, this.#json(sessions), this.#now());
+        ).run(role.name, this.#recordJson("global_role_session_sets", sessions), this.#now());
         this.#saveRuntimeSessionCandidate(sessions);
       } else {
         this.#db.prepare(
@@ -1086,7 +1171,7 @@ export class SqliteTaskStore implements TaskStore {
     return this.#mutate(() => {
       const result = this.#db.prepare(
         "INSERT OR IGNORE INTO global_roles (name, payload, updated_at) VALUES (?, ?, ?)"
-      ).run(role.name, this.#json(role), this.#now());
+      ).run(role.name, this.#recordJson("global_roles", role), this.#now());
       return result.changes > 0 ? role : null;
     });
   }
@@ -1121,7 +1206,7 @@ export class SqliteTaskStore implements TaskStore {
       this.#db.prepare(
         `INSERT INTO global_role_session_sets (name, payload, updated_at) VALUES (?, ?, ?)
          ON CONFLICT(name) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`
-      ).run(sessions.owner.roleName, this.#json(sessions), this.#now());
+      ).run(sessions.owner.roleName, this.#recordJson("global_role_session_sets", sessions), this.#now());
       this.#saveRuntimeSessionCandidate(sessions);
     });
   }
@@ -1137,7 +1222,7 @@ export class SqliteTaskStore implements TaskStore {
       const seq = this.#globalMessageSequence(message.id);
       this.#db.prepare(
         `INSERT INTO global_role_messages (name, message_id, seq, payload, created_at) VALUES (?, ?, ?, ?, ?)`
-      ).run(message.roleName, message.id, seq, this.#json(message), message.createdAt);
+      ).run(message.roleName, message.id, seq, this.#recordJson("global_role_messages", message), message.createdAt);
     });
   }
 
@@ -1155,7 +1240,7 @@ export class SqliteTaskStore implements TaskStore {
       const seq = this.#globalMessageSequence(message.id);
       const result = this.#db.prepare(
         `UPDATE global_role_messages SET seq = ?, payload = ? WHERE name = ? AND message_id = ?`
-      ).run(seq, this.#json(message), message.roleName, message.id);
+      ).run(seq, this.#recordJson("global_role_messages", message), message.roleName, message.id);
       if (result.changes === 0) {
         throw new StorageRecordError(`Global message not found: ${message.roleName}/${message.id}`);
       }
@@ -1199,7 +1284,7 @@ export class SqliteTaskStore implements TaskStore {
       this.#db.prepare(
         `INSERT INTO task_records (task_id, payload, updated_at) VALUES (?, ?, ?)
          ON CONFLICT(task_id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`
-      ).run(task.id, this.#json(task), this.#now());
+      ).run(task.id, this.#recordJson("task_records", task), this.#now());
     });
   }
 
@@ -1271,14 +1356,6 @@ export class SqliteTaskStore implements TaskStore {
       integrationJobs: this.listDurableJobs(taskId)
         .filter(job => job.owner.kind === "integration-attempt")
         .map(job => ({ id: job.id, status: job.status })),
-      integrationQueueEntries: this.#sortById(
-        this.#listPayload<IntegrationQueueEntry>(
-          "integration_queue",
-          "task_id = ?",
-          [taskId]
-        ),
-        (entry) => entry.id
-      ),
       reviewRounds: this.#sortById(
         this.#listPayload<ReviewRound>("review_rounds", "task_id = ?", [taskId]),
         (round) => round.id
@@ -1320,14 +1397,6 @@ export class SqliteTaskStore implements TaskStore {
       durableJobs: this.#sortById(
         this.#listPayload<DurableJob>("durable_jobs", "task_id = ?", [taskId]),
         (job) => job.id
-      ),
-      integrationQueueEntries: this.#sortById(
-        this.#listPayload<IntegrationQueueEntry>(
-          "integration_queue",
-          "task_id = ?",
-          [taskId]
-        ),
-        (entry) => entry.id
       ),
     };
   }
@@ -1408,7 +1477,7 @@ export class SqliteTaskStore implements TaskStore {
          VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(task_id, change_set_id) DO UPDATE SET project_id = excluded.project_id,
            head_sha = excluded.head_sha, payload = excluded.payload`
-      ).run(taskId, changeSet.id, changeSet.projectId, changeSet.headCommit, this.#json(changeSet), changeSet.createdAt);
+      ).run(taskId, changeSet.id, changeSet.projectId, changeSet.headCommit, this.#recordJson("change_sets", changeSet), changeSet.createdAt);
     });
   }
 
@@ -1431,12 +1500,17 @@ export class SqliteTaskStore implements TaskStore {
     if (attempt.taskId !== taskId) throw new StorageRecordError(`Integration attempt belongs to another Task: ${attempt.taskId}`);
     this.#requireTask(taskId);
     this.#mutate(() => {
+      if (typeof attempt.rerunChecks !== "boolean") throw new StorageRecordError("Integration rerunChecks must be explicit.");
+      const existing = this.getIntegrationAttempt(taskId, attempt.id);
+      if (existing !== null && existing.rerunChecks !== attempt.rerunChecks) {
+        throw new StorageRecordError("Integration check execution intent is immutable; create a new attempt.");
+      }
       this.#db.prepare(
         `INSERT INTO integration_attempts (task_id, integration_id, status, payload, updated_at)
          VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(task_id, integration_id) DO UPDATE SET status = excluded.status,
            payload = excluded.payload, updated_at = excluded.updated_at`
-      ).run(taskId, attempt.id, attempt.status, this.#json(attempt), this.#now());
+      ).run(taskId, attempt.id, attempt.status, this.#recordJson("integration_attempts", attempt), this.#now());
     });
   }
 
@@ -1449,69 +1523,6 @@ export class SqliteTaskStore implements TaskStore {
 
   getIntegrationAttempt(taskId: string, integrationId: string): IntegrationAttempt | null {
     return this.#getPayload<IntegrationAttempt>("integration_attempts", "task_id = ? AND integration_id = ?", [taskId, integrationId]);
-  }
-
-  // -- integration queue -----------------------------------------------------
-
-  nextIntegrationQueueEntryId(taskId: string): string {
-    return this.#nextTaskRecordId(taskId, "integrationQueue");
-  }
-
-  saveIntegrationQueueEntry(taskId: string, entry: IntegrationQueueEntry): void {
-    if (entry.taskId !== taskId) {
-      throw new StorageRecordError(`Integration queue entry belongs to another Task: ${entry.taskId}`);
-    }
-    validateIntegrationQueueEntry(entry);
-    this.#requireTask(taskId);
-    const changeSet = this.getChangeSet(taskId, entry.changeSetId);
-    if (changeSet === null) {
-      throw new StorageRecordError(`Integration queue ChangeSet not found: ${entry.changeSetId}`);
-    }
-    if (changeSet.projectId !== entry.projectId) {
-      throw new StorageRecordError(`Integration queue ChangeSet belongs to another Project: ${entry.changeSetId}`);
-    }
-    const existing = this.getIntegrationQueueEntry(taskId, entry.id);
-    if (existing !== null) {
-      if (Date.parse(entry.updatedAt) < Date.parse(existing.updatedAt)) {
-        throw new StorageRecordError(`Integration queue entry updatedAt cannot move backwards: ${entry.id}`);
-      }
-      if (!validIntegrationQueueTransition(existing, entry)) {
-        throw new StorageRecordError(`Integration queue entry transition is invalid: ${entry.id}`);
-      }
-    }
-    this.#mutate(() => {
-      this.#db.prepare(
-        `INSERT INTO integration_queue (queue_id, task_id, project_id, change_set, status, payload, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(queue_id) DO UPDATE SET task_id = excluded.task_id,
-           project_id = excluded.project_id, change_set = excluded.change_set,
-           status = excluded.status, payload = excluded.payload, updated_at = excluded.updated_at`
-      ).run(
-        entry.id,
-        taskId,
-        entry.projectId,
-        entry.changeSetId,
-        entry.status,
-        this.#json(entry),
-        entry.createdAt,
-        entry.updatedAt
-      );
-    });
-  }
-
-  listIntegrationQueueEntries(taskId: string): IntegrationQueueEntry[] {
-    return this.#sortById(
-      this.#listPayload<IntegrationQueueEntry>("integration_queue", "task_id = ?", [taskId]),
-      (entry) => entry.id
-    );
-  }
-
-  getIntegrationQueueEntry(taskId: string, entryId: string): IntegrationQueueEntry | null {
-    return this.#getPayload<IntegrationQueueEntry>(
-      "integration_queue",
-      "task_id = ? AND queue_id = ?",
-      [taskId, entryId]
-    );
   }
 
   // -- durable jobs -----------------------------------------------------------
@@ -1547,7 +1558,7 @@ export class SqliteTaskStore implements TaskStore {
         taskId,
         job.idempotencyKey ?? null,
         job.status,
-        this.#json(job),
+        this.#recordJson("durable_jobs", job),
         job.createdAt,
         job.updatedAt
       );
@@ -1619,7 +1630,7 @@ export class SqliteTaskStore implements TaskStore {
         identity.agentId,
         identity.nativeSessionId ?? null,
         identity.providerRoot.pid,
-        this.#json(identity),
+        this.#recordJson("session_owners", identity),
         identity.recordedAt
       );
     });
@@ -1629,7 +1640,7 @@ export class SqliteTaskStore implements TaskStore {
     const row = this.#db.prepare(
       "SELECT payload FROM session_owners WHERE process_key = ?"
     ).get(processKey) as { payload: string } | undefined;
-    return row === undefined ? null : this.#parse<SessionOwnerIdentity>(row.payload);
+    return row === undefined ? null : this.#validateTaskPayload<SessionOwnerIdentity>("session_owners", row.payload);
   }
 
   listSessionOwners(): SessionOwnerIdentity[] {
@@ -1664,7 +1675,7 @@ export class SqliteTaskStore implements TaskStore {
       this.#db.prepare(
         `INSERT INTO task_roles (task_id, role_name, payload, updated_at) VALUES (?, ?, ?, ?)
          ON CONFLICT(task_id, role_name) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`
-      ).run(taskId, role.name, this.#json(role), this.#now());
+      ).run(taskId, role.name, this.#recordJson("task_roles", role), this.#now());
     });
   }
 
@@ -1685,11 +1696,11 @@ export class SqliteTaskStore implements TaskStore {
       this.#db.prepare(
         `INSERT INTO task_roles (task_id, role_name, payload, updated_at) VALUES (?, ?, ?, ?)
          ON CONFLICT(task_id, role_name) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`
-      ).run(sessions.owner.taskId, role.name, this.#json(role), this.#now());
+      ).run(sessions.owner.taskId, role.name, this.#recordJson("task_roles", role), this.#now());
       this.#db.prepare(
         `INSERT INTO role_session_sets (task_id, role_name, payload, updated_at) VALUES (?, ?, ?, ?)
          ON CONFLICT(task_id, role_name) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`
-      ).run(sessions.owner.taskId, sessions.owner.roleName, this.#json(sessions), this.#now());
+      ).run(sessions.owner.taskId, sessions.owner.roleName, this.#recordJson("role_session_sets", sessions), this.#now());
       this.#saveRuntimeSessionCandidate(sessions);
     });
   }
@@ -1724,7 +1735,7 @@ export class SqliteTaskStore implements TaskStore {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(owner_kind, owner_id) DO UPDATE SET task_id = excluded.task_id, path = excluded.path,
            payload = excluded.payload, status = excluded.status, updated_at = excluded.updated_at`
-      ).run(workspace.owner.type, ownerId, taskId, workspace.root, this.#json(workspace), "active", workspace.createdAt, workspace.updatedAt);
+      ).run(workspace.owner.type, ownerId, taskId, workspace.root, this.#recordJson("managed_workspaces", workspace), "active", workspace.createdAt, workspace.updatedAt);
     });
   }
 
@@ -1939,7 +1950,7 @@ export class SqliteTaskStore implements TaskStore {
       this.#db.prepare(
         `INSERT INTO role_session_sets (task_id, role_name, payload, updated_at) VALUES (?, ?, ?, ?)
          ON CONFLICT(task_id, role_name) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`
-      ).run(taskId, sessions.owner.roleName, this.#json(sessions), this.#now());
+      ).run(taskId, sessions.owner.roleName, this.#recordJson("role_session_sets", sessions), this.#now());
       this.#saveRuntimeSessionCandidate(sessions);
     });
   }
@@ -2020,7 +2031,7 @@ export class SqliteTaskStore implements TaskStore {
         `INSERT INTO work_items (task_id, work_item_id, status, payload, updated_at) VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(task_id, work_item_id) DO UPDATE SET status = excluded.status,
            payload = excluded.payload, updated_at = excluded.updated_at`
-      ).run(taskId, item.id, item.status, this.#json(item), this.#now());
+      ).run(taskId, item.id, item.status, this.#recordJson("work_items", item), this.#now());
     });
   }
 
@@ -2051,7 +2062,7 @@ export class SqliteTaskStore implements TaskStore {
       this.#db.prepare(
         `INSERT INTO capability_grants (task_id, grant_id, payload, updated_at) VALUES (?, ?, ?, ?)
          ON CONFLICT(task_id, grant_id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`
-      ).run(taskId, stored.id, this.#json(stored), this.#now());
+      ).run(taskId, stored.id, this.#recordJson("capability_grants", stored), this.#now());
     });
   }
 
@@ -2086,7 +2097,7 @@ export class SqliteTaskStore implements TaskStore {
       this.#db.prepare(
         `INSERT INTO release_workflows (task_id, workflow_id, payload, updated_at) VALUES (?, ?, ?, ?)
          ON CONFLICT(task_id, workflow_id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`
-      ).run(taskId, stored.id, this.#json(stored), this.#now());
+      ).run(taskId, stored.id, this.#recordJson("release_workflows", stored), this.#now());
     });
   }
 
@@ -2173,7 +2184,7 @@ export class SqliteTaskStore implements TaskStore {
         stored.localCommit ?? null,
         stored.remoteCommit ?? null,
         stored.supersedes ?? null,
-        this.#json(stored),
+        this.#recordJson("publication_references", stored),
         stored.mergedAt ?? null,
         this.#now(),
         stored.title ?? null,
@@ -2229,6 +2240,7 @@ export class SqliteTaskStore implements TaskStore {
            status = excluded.status,
            outcome = excluded.outcome,
            payload = excluded.payload,
+           created_at = excluded.created_at,
            completed_at = excluded.completed_at,
            last_used_at = excluded.last_used_at`
       ).run(
@@ -2241,7 +2253,7 @@ export class SqliteTaskStore implements TaskStore {
         targetRef,
         artifact.status,
         artifact.outcome,
-        this.#json(artifact),
+        this.#recordJson("gate_artifacts", artifact),
         artifact.createdAt,
         completedAt,
         artifact.lastUsedAt
@@ -2267,11 +2279,19 @@ export class SqliteTaskStore implements TaskStore {
   touchGateArtifact(artifact: GateArtifact): void {
     validateGateArtifact(artifact);
     this.#mutate(() => {
+      const current = this.getGateArtifact(artifact.projectId, artifact.key);
+      if (current === null || !isDeepStrictEqual(current, {
+        ...artifact, reuseCount: current.reuseCount, lastUsedAt: current.lastUsedAt
+      })) {
+        throw new StorageConflictError("Gate artifact changed while consuming evidence; retry the exact lookup.");
+      }
+      const updated = { ...current, reuseCount: Math.max(current.reuseCount, artifact.reuseCount),
+        lastUsedAt: Date.parse(artifact.lastUsedAt) > Date.parse(current.lastUsedAt) ? artifact.lastUsedAt : current.lastUsedAt };
       const result = this.#db.prepare(
         `UPDATE gate_artifacts SET payload = ?, last_used_at = ? WHERE key = ?`
       ).run(
-        this.#json(artifact),
-        artifact.lastUsedAt,
+        this.#recordJson("gate_artifacts", updated),
+        updated.lastUsedAt,
         artifact.key
       );
       if (result.changes === 0) {
@@ -2303,19 +2323,10 @@ export class SqliteTaskStore implements TaskStore {
     const rows = this.#listPayload<GateArtifact>(
       "gate_artifacts",
       `project_id = ? AND commit_sha = ? AND level = 'L2'
-       AND plan_digest = ? AND toolchain_digest = ? AND target_ref = ?
-       AND status = 'complete' AND outcome = 'succeeded'`,
+       AND plan_digest = ? AND toolchain_digest = ? AND target_ref = ?`,
       [query.projectId, query.commit, query.planDigest, query.toolchainDigest, query.targetRef]
     );
-    const valid: GateArtifact[] = [];
-    for (const row of rows) {
-      try {
-        valid.push(validateGateArtifact(row));
-      } catch {
-        // Skip corrupt rows; a direct lookup fails closed.
-      }
-    }
-    return valid;
+    return rows.map(validateGateArtifact);
   }
 
   getGateArtifactLogs(artifactKey: string): ReadonlyMap<string, Buffer> {
@@ -2416,7 +2427,7 @@ export class SqliteTaskStore implements TaskStore {
         stored.scopeRef ?? null,
         stored.sequence,
         stored.digest,
-        this.#json(stored),
+        this.#recordJson("context_snapshots", stored),
         stored.frozenAt
       );
     });
@@ -2458,7 +2469,7 @@ export class SqliteTaskStore implements TaskStore {
         `INSERT INTO turns (task_id, turn_id, role_name, status, payload, updated_at) VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(task_id, turn_id) DO UPDATE SET role_name = excluded.role_name, status = excluded.status,
            payload = excluded.payload, updated_at = excluded.updated_at`
-      ).run(run.taskId, run.id, run.roleName, run.status, this.#json(run), this.#now());
+      ).run(run.taskId, run.id, run.roleName, run.status, this.#recordJson("turns", run), this.#now());
     });
   }
 
@@ -2486,7 +2497,7 @@ export class SqliteTaskStore implements TaskStore {
         `INSERT INTO review_rounds (task_id, review_round_id, status, payload, updated_at) VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(task_id, review_round_id) DO UPDATE SET status = excluded.status,
            payload = excluded.payload, updated_at = excluded.updated_at`
-      ).run(taskId, round.id, round.status, this.#json(round), this.#now());
+      ).run(taskId, round.id, round.status, this.#recordJson("review_rounds", round), this.#now());
     });
   }
 
@@ -2706,7 +2717,7 @@ export class SqliteTaskStore implements TaskStore {
       const seq = this.#idSequence(message.id, "message");
       this.#db.prepare(
         `INSERT INTO messages (task_id, message_id, seq, payload, created_at) VALUES (?, ?, ?, ?, ?)`
-      ).run(taskId, message.id, seq, this.#json(message), message.createdAt);
+      ).run(taskId, message.id, seq, this.#recordJson("messages", message), message.createdAt);
       this.#observeHighWater(taskId, "message", seq);
     });
   }
@@ -2719,7 +2730,7 @@ export class SqliteTaskStore implements TaskStore {
     this.#mutate(() => {
       const result = this.#db.prepare(
         `UPDATE messages SET payload = ? WHERE task_id = ? AND message_id = ?`
-      ).run(this.#json(message), taskId, message.id);
+      ).run(this.#recordJson("messages", message), taskId, message.id);
       if (result.changes !== 1) {
         throw new StorageRecordError(`Message does not exist: ${taskId}/${message.id}`);
       }
@@ -2744,7 +2755,7 @@ export class SqliteTaskStore implements TaskStore {
       this.#db.prepare(
         `INSERT INTO input_requests (task_id, input_id, status, payload, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(task_id, input_id) DO UPDATE SET status = excluded.status, payload = excluded.payload, updated_at = excluded.updated_at`
-      ).run(taskId, request.id, request.status, this.#json(request), request.createdAt, this.#now());
+      ).run(taskId, request.id, request.status, this.#recordJson("input_requests", request), request.createdAt, this.#now());
     });
   }
 
@@ -2795,7 +2806,7 @@ export class SqliteTaskStore implements TaskStore {
       this.#db.prepare(
         `INSERT INTO decisions (task_id, decision_id, payload, created_at) VALUES (?, ?, ?, ?)
          ON CONFLICT(task_id, decision_id) DO UPDATE SET payload = excluded.payload`
-      ).run(taskId, decision.id, this.#json(decision), decision.createdAt);
+      ).run(taskId, decision.id, this.#recordJson("decisions", decision), decision.createdAt);
     });
   }
 
@@ -2821,7 +2832,7 @@ export class SqliteTaskStore implements TaskStore {
       this.#db.prepare(
         `INSERT INTO milestones (task_id, milestone_id, payload, created_at) VALUES (?, ?, ?, ?)
          ON CONFLICT(task_id, milestone_id) DO UPDATE SET payload = excluded.payload`
-      ).run(taskId, milestone.id, this.#json(milestone), milestone.createdAt);
+      ).run(taskId, milestone.id, this.#recordJson("milestones", milestone), milestone.createdAt);
     });
   }
 
@@ -2848,7 +2859,7 @@ export class SqliteTaskStore implements TaskStore {
       // Events are terminal/semantic: retained individually, never pruned (§9).
       this.#db.prepare(
         `INSERT INTO events (task_id, event_id, type, occurred_at, payload) VALUES (?, ?, ?, ?, ?)`
-      ).run(taskId, event.id, event.type, event.createdAt, this.#json(event));
+      ).run(taskId, event.id, event.type, event.createdAt, this.#recordJson("events", event));
       this.#observeHighWater(taskId, "event", seq);
     });
   }
@@ -2886,11 +2897,10 @@ export class SqliteTaskStore implements TaskStore {
       const seq = this.#idSequence(wake.id, "taskWake");
       this.#db.prepare(
         `INSERT INTO task_wakes
-          (task_id, wake_id, seq, status, turn_id, from_cursor, to_cursor, reasons, payload, created_at, consumed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          (task_id, wake_id, seq, status, from_cursor, to_cursor, reasons, payload, created_at, consumed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
        + ` ON CONFLICT(task_id, wake_id) DO UPDATE SET
            status = excluded.status,
-           turn_id = excluded.turn_id,
            reasons = excluded.reasons,
            payload = excluded.payload,
            consumed_at = excluded.consumed_at`
@@ -2899,11 +2909,10 @@ export class SqliteTaskStore implements TaskStore {
         wake.id,
         wake.seq,
         wake.status,
-        wake.runId ?? null,
         wake.fromCursor,
         wake.toCursor,
         this.#json([...wake.reasons]),
-        this.#json(wake),
+        this.#recordJson("task_wakes", wake),
         wake.createdAt,
         wake.consumedAt ?? null
       );
@@ -3234,31 +3243,6 @@ export class SqliteTaskStore implements TaskStore {
   }
 }
 
-function validIntegrationQueueTransition(
-  before: IntegrationQueueEntry,
-  after: IntegrationQueueEntry
-): boolean {
-  if (
-    before.id !== after.id
-    || before.taskId !== after.taskId
-    || before.projectId !== after.projectId
-    || before.changeSetId !== after.changeSetId
-    || before.targetRef !== after.targetRef
-    || !isDeepStrictEqual(before.checkCommands, after.checkCommands)
-    || !isDeepStrictEqual(before.evidenceRefs, after.evidenceRefs)
-    || before.createdAt !== after.createdAt
-  ) return false;
-  const allowed: Readonly<Record<IntegrationQueueStatus, readonly IntegrationQueueStatus[]>> = {
-    queued: ["queued", "running", "superseded"],
-    running: ["running", "conflicted", "committed"],
-    conflicted: ["conflicted", "running", "committed", "queued", "superseded"],
-    committed: ["committed"],
-    superseded: ["superseded"]
-  };
-  return allowed[before.status].includes(after.status);
-}
-
-
 // -- current Store composition ----------------------------------------------
 
 /** The product has one storage backend. */
@@ -3281,6 +3265,6 @@ export function resolveTaskStoreBackendForHome(
 export function openConfiguredTaskStore(
   home: string,
   options?: TaskStoreOptions
-): TaskStore {
+): SqliteTaskStore {
   return new SqliteTaskStore(home, options);
 }

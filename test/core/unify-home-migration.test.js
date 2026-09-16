@@ -22,7 +22,6 @@ import { migrateSqliteSchema } from "../../dist/storage/sqliteSchema.js";
 import {
   managedRuntimeRoot,
   managedTaskRoot,
-  managedWorktreeRoot,
   storageBackupRoot
 } from "../../dist/storage/homeLayout.js";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
@@ -38,6 +37,7 @@ import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
 import { createRun, validateRun } from "../../dist/agentRun/agentRun.js";
 import { createRunInput } from "../../dist/context/runInputContract.js";
 import { sanitizedTestEnv } from "../helpers/sanitizedEnv.mjs";
+import { rebuildHistoricalFixture } from "../helpers/historicalHome.mjs";
 
 // This file exercises the 18->19 unify-home migration IN ISOLATION. Once storage
 // grew a 19->20 step (collapse-worktree-layout), "prior version" is no longer
@@ -62,9 +62,8 @@ function git(args, cwd) {
 }
 
 /**
- * A Home whose SQLite schema is bootstrapped to the current version, then its
- * migration ledger truncated back to the prior version so the real runner has
- * exactly the 18->19 step pending. Foreign keys are OFF on this raw connection
+ * A Home built from the real prior schema prefix with current singleton fixtures.
+ * The real runner has the 23->24 step pending. Foreign keys are OFF on this raw connection
  * (the store enables them per-connection), so old-layout rows can be seeded
  * without a full domain graph.
  */
@@ -73,14 +72,13 @@ function openPriorVersionHome(t, prefix) {
   t.after(() => rmSync(home, { recursive: true, force: true }));
   // Bootstrap the real schema + singleton rows, then close.
   new SqliteTaskStore(home).close();
+  rebuildHistoricalFixture(home, PRIOR_VERSION);
   const db = new Database(join(home, "yui.db"));
   t.after(() => db.close());
-  db.prepare("DELETE FROM schema_migrations WHERE version > ?").run(PRIOR_VERSION);
-  db.exec("DROP INDEX idx_task_provider_retry; DROP INDEX idx_global_provider_retry;");
   const head = db
     .prepare("SELECT MAX(version) AS version FROM schema_migrations")
     .get();
-  assert.equal(head.version, PRIOR_VERSION, "ledger truncated to the prior version");
+  assert.equal(head.version, PRIOR_VERSION, "real historical schema prefix");
   return { home, db };
 }
 
@@ -340,7 +338,7 @@ test("unify-home relocates managed trees into Home and rewrites live pointers", 
   // (1) The durable worktree tree is COPIED into Home; the original is PRESERVED
   // as the rollback anchor. The disposable runtime and the regenerable task views
   // are pointer-only — their trees are never physically moved by the migration.
-  const newWorktreeRoot = managedWorktreeRoot(home);
+  const newWorktreeRoot = join(home, "workspaces", "worktree");
   const newMain = join(newWorktreeRoot, "app", "main-abcd");
   const newLinked = join(newWorktreeRoot, "app", "work-item-1-efgh");
   assert.equal(existsSync(newMain), true, "main clone copied into Home");
@@ -506,7 +504,7 @@ test("unify-home refuses when a non-terminal durable Job is under a relocating r
 
   // Fail-closed: nothing moved, nothing rewritten, ledger unchanged.
   assert.equal(existsSync(join(workspace, "worktree")), true, "trees untouched on refusal");
-  assert.equal(existsSync(managedWorktreeRoot(home)), false, "no partial relocation");
+  assert.equal(existsSync(join(home, "workspaces", "worktree")), false, "no partial relocation");
   const row = db
     .prepare("SELECT path FROM managed_workspaces WHERE owner_kind = 'task'")
     .get();
@@ -557,7 +555,7 @@ test("unify-home is a no-op on an already-unified Home and writes no manifest", 
 
 const RUN_CLOCK = new Date("2026-09-01T00:00:00.000Z");
 
-/** A bootstrapped Home left exactly at the prior version, opened as a live store. */
+/** Current APIs seed valid records before reconstructing the prior schema. */
 function openPriorVersionStore(t, prefix) {
   const home = mkdtempSync(join(tmpdir(), prefix));
   t.after(() => rmSync(home, { recursive: true, force: true }));
@@ -566,13 +564,11 @@ function openPriorVersionStore(t, prefix) {
   return { home, store };
 }
 
-/** Truncate the migration ledger back to the prior version on a live store. */
-function rewindLedgerToPriorVersion(store) {
-  const db = store.databaseHandle();
-  db.prepare("DELETE FROM schema_migrations WHERE version > ?").run(PRIOR_VERSION);
-  db.exec("DROP INDEX idx_task_provider_retry; DROP INDEX idx_global_provider_retry;");
-  const head = db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get();
-  assert.equal(head.version, PRIOR_VERSION, "ledger rewound to the prior version");
+/** Close all writes, then build the prior physical schema around those facts. */
+function rebuildPriorVersionHome(store) {
+  const home = store.rootDirectory();
+  store.close();
+  rebuildHistoricalFixture(home, PRIOR_VERSION);
 }
 
 /**
@@ -642,8 +638,7 @@ test("real upgrade path: active run effective+workspace move together and pass t
   // Rewind so the real orchestrator sees the full pending chain (18->19->20),
   // then drive the ACTUAL upgrade (backup + migrate + gate). Close our handle
   // first so the orchestrator opens the database cleanly.
-  rewindLedgerToPriorVersion(store);
-  store.close();
+  rebuildPriorVersionHome(store);
 
   const result = await runStorageUpgrade({ home, mode: "execute", now: RUN_CLOCK });
   assert.equal(
@@ -695,7 +690,7 @@ test("real upgrade path: active run effective+workspace move together and pass t
 function worktreeRoots(workspace, home) {
   return {
     oldWorktreeRoot: join(workspace, "worktree"),
-    newWorktreeRoot: managedWorktreeRoot(home)
+    newWorktreeRoot: join(home, "workspaces", "worktree")
   };
 }
 
@@ -864,8 +859,7 @@ test("P2: a clean migrating Home reports migration-ready with the unify step (up
 
   const taskId = "task-1";
   seedWorktrees(workspaceRoot, "app", "main-abcd", "linked-efgh");
-  rewindLedgerToPriorVersion(store);
-  store.close();
+  rebuildPriorVersionHome(store);
 
   const preflight = await runStorageUpgrade({ home, mode: "update-preflight", now: RUN_CLOCK });
   assert.equal(preflight.outcome, "update-preflight");
@@ -896,12 +890,11 @@ test("P2: dry-run and update-preflight surface the same blockers as execute {rea
 
   // Plant a FOREIGN directory at the relocation target (differs from the source):
   // a real target conflict the preflight must detect WITHOUT touching the store.
-  const newWorktreeRoot = managedWorktreeRoot(home);
+  const newWorktreeRoot = join(home, "workspaces", "worktree");
   mkdirSync(newWorktreeRoot, { recursive: true });
   writeFileSync(join(newWorktreeRoot, "SOMEONE-ELSES-FILE.txt"), "not ours\n");
 
-  rewindLedgerToPriorVersion(store);
-  store.close();
+  rebuildPriorVersionHome(store);
 
   for (const mode of ["update-preflight", "dry-run"]) {
     const result = await runStorageUpgrade({ home, mode, now: RUN_CLOCK });
@@ -1057,8 +1050,8 @@ test("P4: the preserved source keeps an independent, working Git after the migra
   assert.deepEqual(result.applied, [UNIFY_TARGET_VERSION]);
 
   // The NEW copy exists and is a valid, repaired worktree pair.
-  const newMain = join(managedWorktreeRoot(home), "app", "main-abcd");
-  const newLinked = join(managedWorktreeRoot(home), "app", "work-item-1-efgh");
+  const newMain = join(join(home, "workspaces", "worktree"), "app", "main-abcd");
+  const newLinked = join(join(home, "workspaces", "worktree"), "app", "work-item-1-efgh");
   assert.equal(existsSync(newMain), true, "main clone copied into Home");
   assert.equal(
     git(["-C", newLinked, "rev-parse", "--is-inside-work-tree"]),
@@ -1082,8 +1075,8 @@ test("P4: the preserved source keeps an independent, working Git after the migra
 
   // (2) The OLD tree is fully independent: hide the NEW copy entirely, then prove
   // the OLD worktrees still read HEAD, index, and status without it.
-  const hidden = `${managedWorktreeRoot(home)}.hidden`;
-  renameSync(managedWorktreeRoot(home), hidden);
+  const hidden = `${join(home, "workspaces", "worktree")}.hidden`;
+  renameSync(join(home, "workspaces", "worktree"), hidden);
   t.after(() => rmSync(hidden, { recursive: true, force: true }));
 
   assert.equal(

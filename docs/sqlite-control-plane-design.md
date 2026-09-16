@@ -34,6 +34,12 @@ model. A newer, below-minimum, incomplete, or malformed Home fails closed.
 There is no runtime normalization, repair worker, file-Store fallback, dual
 read/write path, or second migration authority.
 
+Typed domain payloads use one current validator registry on writes, ordinary
+reads, bounded Context pages and full-Home diagnostics. Direct and worker-backed
+Stores do not have different validation strength. Invalid records are rejected
+without advancing the revision; an invalid stored record remains available for
+explicit diagnosis, never normalized into a valid-looking replacement.
+
 ## Write and concurrency contract
 
 - Each mutation is one SQLite transaction.
@@ -69,8 +75,8 @@ Every persistent schema or payload change appends one immutable, contiguous
 storage migration. The CLI publishes both `storageVersion` and
 `minimumStorageVersion`; every valid Home in that inclusive range can upgrade
 directly to the current version without installing intermediate releases.
-The current source declares storage version **25**, with minimum supported
-migration version **1**, in `src/storage/storageVersions.ts`. Homes below that
+The current version and migration floor are declared only in
+`src/storage/storageVersions.ts` and exposed by CLI identity. Homes below that
 floor are not migration inputs and remain untouched.
 The target binary's `upgrade --update-preflight` and `--update-apply` result
 shapes and parent-owned handover-lock proof remain backward compatible with
@@ -123,7 +129,7 @@ unifying the root does not weaken control-data or cross-owner isolation.
 **not** a second authority for internal managed paths, and is intentionally not
 an input to `homeLayout.ts`. A Yui-auto-created Global Role that carries no
 user-chosen cwd no longer falls back to it (or to `process.cwd()`): `yui setup`'s
-built-in Operator/Leader and `yui role add` without `--workspace` now default to
+built-in Operator/Leader and `yui config role add` without `--workspace` now default to
 the Home-internal `managedGlobalRoleWorkspace(home)` (`<home>/workspaces/global`),
 and `setup` no longer fabricates an external Home-sibling `workspace/` — a
 `default-workspace` is persisted only if the user configured one. A user who

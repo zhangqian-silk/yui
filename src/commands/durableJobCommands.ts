@@ -9,7 +9,7 @@ import {
 } from "../controller/jobClient.js";
 import type { DurableJobOwner, DurableJobStep } from "../job/durableJob.js";
 import type { TaskStore } from "../storage/taskStore.js";
-import { resolveJobCaller, taskLocalActor } from "./taskActor.js";
+import { resolveJobCaller, taskLocalActor } from "../task/taskAuthority.js";
 
 /**
  * The textual `--owner` forms accepted by `job start`. The public help text in
@@ -22,7 +22,7 @@ export type DurableJobCommandOptions = Readonly<{
   json?: boolean;
   environment?: NodeJS.ProcessEnv;
   /** Required for `job acknowledge` to validate Task-local control identity. */
-  store?: Pick<TaskStore, "getRole" | "getActiveRun" | "getTaskRoleSessionSet" | "listEvents">;
+  store?: Pick<TaskStore, "getRole" | "getActiveRun" | "getTaskRoleSessionSet" | "listEventsByType">;
 }>;
 
 /**
@@ -44,7 +44,7 @@ export async function runDurableJobCommand(
       ? "Job command is required: start, get, cancel, or acknowledge."
       : `Unknown command: job ${command}`,
     "yui job start --task <id> --project <project> --head <sha> --workspace <dir> "
-      + "--step <name>=<command> [--step ...] [--env K=V ...] "
+      + "--request-id <id> --step <name>=<command> [--step ...] [--env K=V ...] "
       + `[--owner ${JOB_OWNER_USAGE}] [--retry-of <job-id>]\n`
       + "yui job get --task <id> --job <job-id>\n"
       + "yui job cancel --task <id> --job <job-id>\n"
@@ -60,6 +60,7 @@ async function startJob(
   await ensureFileTaskController(options.home, { environment: options.environment });
   const caller = resolveJobCaller(options.environment, parsed.taskId);
   const params: ControllerDurableJobStartParams = {
+    requestId: parsed.requestId,
     taskId: parsed.taskId,
     owner: parsed.owner,
     projectId: parsed.projectId,
@@ -81,8 +82,9 @@ async function getJob(
   options: DurableJobCommandOptions
 ): Promise<string> {
   const ref = parseRefArgs(args, "get");
+  const caller = resolveJobCaller(options.environment, ref.taskId);
   await ensureFileTaskController(options.home, { environment: options.environment });
-  const job = await getDurableJob(options.home, ref.taskId, ref.jobId);
+  const job = await getDurableJob(options.home, ref.taskId, ref.jobId, caller);
   if (options.json === true) return `${JSON.stringify(job, null, 2)}\n`;
   const lines = [
     `Job ${job.id} (task ${job.taskId})`,
@@ -141,6 +143,7 @@ async function acknowledgeJob(
 }
 
 function parseStartArgs(args: string[]): Readonly<{
+  requestId: string;
   taskId: string;
   owner: DurableJobOwner;
   projectId: string;
@@ -151,6 +154,7 @@ function parseStartArgs(args: string[]): Readonly<{
   retryOf?: string;
 }> {
   let taskId: string | undefined;
+  let requestId: string | undefined;
   let projectId: string | undefined;
   let head: string | undefined;
   let workspace: string | undefined;
@@ -167,6 +171,7 @@ function parseStartArgs(args: string[]): Readonly<{
     index += 1;
     switch (flag) {
       case "--task": taskId = value; break;
+      case "--request-id": requestId = value; break;
       case "--project": projectId = value; break;
       case "--head": head = value; break;
       case "--workspace": workspace = value; break;
@@ -193,13 +198,13 @@ function parseStartArgs(args: string[]): Readonly<{
     }
   }
   if (taskId === undefined || projectId === undefined || head === undefined
-    || workspace === undefined || steps.length === 0) {
+    || workspace === undefined || requestId === undefined || requestId.trim().length === 0 || steps.length === 0) {
     throw usageError(
-      "job start requires --task, --project, --head, --workspace, and at least one --step.",
+      "job start requires --request-id, --task, --project, --head, --workspace, and at least one --step.",
       "yui job start ..."
     );
   }
-  return { taskId, owner, projectId, head, workspace, env, steps, retryOf };
+  return { taskId, requestId, owner, projectId, head, workspace, env, steps, retryOf };
 }
 
 export function parseJobOwner(value: string): DurableJobOwner {

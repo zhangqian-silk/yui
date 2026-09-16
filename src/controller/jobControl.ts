@@ -3,15 +3,17 @@
  * record is created or cancel-requested. The Controller socket layer calls
  * this port for `job.*` requests; nothing else writes queued jobs.
  *
- * Creation is idempotent per (owner, project, head, steps, workspace, env):
- * a repeated `job.start` with the same inputs returns the existing job with
- * `created: false`, so a Leader retry can never spawn duplicate runners.
+ * Creation is idempotent per authenticated actor and explicit request ID.
+ * Repeating that request with identical inputs returns the original Job;
+ * changing its input is a conflict. Integration owner identity additionally
+ * preserves its admitted Job across authorized Session replacement.
  */
 import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { resolve, sep } from "node:path";
 
 import type { JsonValue } from "../core/protocol.js";
+import { activeLiveRoleAgentSession } from "../executor/agentExecutor.js";
 import {
   acknowledgeUnknownDurableJob,
   createDurableJob,
@@ -23,12 +25,14 @@ import {
   type DurableJobOwner,
   type DurableJobStep
 } from "../job/durableJob.js";
-import type { TaskStore } from "../storage/taskStore.js";
-import type { ManagedWorkspace } from "../worktree/managedWorkspace.js";
-import { activeLiveRoleAgentSession } from "../executor/agentExecutor.js";
 import { CallAuthority } from "../kernel/callAuthority.js";
 import { redactLaunchText } from "../runtime/launchDiagnostics.js";
-import { requireManagedTaskCaller } from "../runtime/managedCaller.js";
+import { requireManagedTaskCaller, ManagedRuntimeDriftError } from "../runtime/managedCaller.js";
+import { CliError } from "../errors/cliError.js";
+import type { TaskStore } from "../storage/taskStore.js";
+import type { ManagedWorkspace } from "../worktree/managedWorkspace.js";
+import { assertJobAssignmentScope, JobAssignmentScopeError } from "../job/jobAssignmentScope.js";
+import { assertContextRecordReadable } from "../context/taskContext.js";
 
 /**
  * rr8: The caller identity a `job.start`/`job.cancel` request is bound to.
@@ -64,8 +68,8 @@ export type DurableJobStartParams = Readonly<{
   env: Readonly<Record<string, string>>;
   steps: readonly DurableJobStep[];
   retryOf?: string;
-  /** Explicit request identity; omission uses the canonical content identity. */
-  requestId?: string;
+  /** Explicit operation identity; command content never authorizes a new request. */
+  requestId: string;
   /** rr8: The caller identity the declared owner is bound to. */
   caller: DurableJobCaller;
 }>;
@@ -78,7 +82,7 @@ export type DurableJobStartResult = Readonly<{
 
 export type DurableJobControlPort = Readonly<{
   startJob(params: DurableJobStartParams, now: Date): DurableJobStartResult;
-  getJob(taskId: string, jobId: string): DurableJob | null;
+  getJob(taskId: string, jobId: string, caller: DurableJobCaller): DurableJob | null;
   cancelJob(
     taskId: string,
     jobId: string,
@@ -103,6 +107,7 @@ export function createDurableJobControl(store: TaskStore): DurableJobControlPort
       // startJob with the same key create a duplicate job.
       return store.transaction((tx) => {
         const context = authority.authenticate(Object.freeze({ ...params.caller }), params.taskId);
+        requireJobAssignment(tx, params, params.caller);
         assertNonSecretJobInput(params);
         const baseKey = durableJobIdempotencyKey({
           owner: params.owner,
@@ -115,8 +120,7 @@ export function createDurableJobControl(store: TaskStore): DurableJobControlPort
         const inputDigest = params.retryOf === undefined
           ? baseKey
           : retryDurableJobIdempotencyKey(baseKey, params.retryOf);
-        const requestId = params.requestId === undefined ? inputDigest
-          : requiredId(params.requestId, "job.start requestId");
+        const requestId = requiredId(params.requestId, "job.start requestId");
         // An IntegrationAttempt already is a durable operation identity.
         // Recovery by another authorized Role must find its original Job,
         // including the window before Integration persisted the returned id.
@@ -148,12 +152,6 @@ export function createDurableJobControl(store: TaskStore): DurableJobControlPort
           }
           return { job: existing, created: false };
         }
-        // A historical content-addressed request has no attributable caller.
-        // Do not silently execute it again under a newly attributed identity.
-        const historical = tx.findDurableJobByIdempotencyKey(params.taskId, inputDigest);
-        if (params.requestId === undefined && historical !== null) {
-          throw jobDomainError(`Historical request already exists: ${historical.id}; inspect it or select an explicit new requestId.`);
-        }
         authority.authorize(context, params.taskId);
         validateStartParams(tx, params);
         const id = tx.nextDurableJobId(params.taskId);
@@ -177,7 +175,19 @@ export function createDurableJobControl(store: TaskStore): DurableJobControlPort
         return { job, created: true };
       });
     },
-    getJob(taskId, jobId) {
+    getJob(taskId, jobId, caller) {
+      if (caller === undefined) throw jobControlError("UNAUTHORIZED", "Job reads require an explicit caller.");
+      try {
+        assertContextRecordReadable(store, taskId, "job", jobId, caller.scope === "user" ? {} : {
+          YUI_SESSION_SCOPE: caller.scope, YUI_TASK_ID: caller.taskId, YUI_ROLE: caller.role,
+          YUI_AGENT_ID: caller.agentId, YUI_ADAPTER_ID: caller.adapterId, YUI_NATIVE_SESSION_ID: caller.nativeSessionId
+        });
+      } catch (error) {
+        if (error instanceof ManagedRuntimeDriftError || (error instanceof CliError && error.code === "USAGE_ERROR")) {
+          throw jobControlError("UNAUTHORIZED", error.message);
+        }
+        throw error;
+      }
       return store.getDurableJob(taskId, jobId);
     },
     cancelJob(taskId, jobId, now, caller) {
@@ -187,6 +197,7 @@ export function createDurableJobControl(store: TaskStore): DurableJobControlPort
         // rr8: Bind the cancel request to the caller's managed identity. The
         // same rules as job.start apply, checked against the job's owner.
         assertCallerAuthorized(tx, caller, taskId);
+        requireJobAssignment(tx, current, caller);
         const next = requestDurableJobCancel(current, now);
         if (next !== current) tx.saveDurableJob(taskId, next);
         return next;
@@ -197,6 +208,7 @@ export function createDurableJobControl(store: TaskStore): DurableJobControlPort
         const current = tx.getDurableJob(taskId, jobId);
         if (current === null) return null;
         assertCallerAuthorized(tx, caller, taskId);
+        requireJobAssignment(tx, current, caller);
         const next = acknowledgeUnknownDurableJob(current, now);
         if (next !== current) tx.saveDurableJob(taskId, next);
         return next;
@@ -229,7 +241,20 @@ export function authorizeJobStart(store: TaskStore, job: DurableJob): void {
   if (jobAuthorityBinding(store, scope, role, job.taskId) !== job.operation.authorityRef) {
     throw jobDomainError("Job caller binding was revoked; no execution was started.");
   }
+  requireJobAssignment(store, job, { scope, role });
   validateJobTarget(store, job);
+}
+
+function requireJobAssignment(
+  store: TaskStore,
+  target: Pick<DurableJob, "taskId" | "owner" | "projectId" | "workspace">,
+  caller: Pick<DurableJobCaller, "scope" | "role">
+): void {
+  try { assertJobAssignmentScope(store, target, caller); }
+  catch (error) {
+    if (error instanceof JobAssignmentScopeError) throw jobControlError("UNAUTHORIZED", error.message);
+    throw error;
+  }
 }
 
 function jobAuthorityBinding(store: TaskStore, scope: string, roleName: string, taskId: string): string {
@@ -305,7 +330,7 @@ function validateStartParams(store: TaskStore, params: DurableJobStartParams): v
   }
 }
 
-function validateJobTarget(store: TaskStore, params: Omit<DurableJobStartParams, "caller">): void {
+function validateJobTarget(store: TaskStore, params: Omit<DurableJobStartParams, "caller" | "requestId">): void {
   // The Task must be active — a terminal Task cannot run jobs.
   const task = store.getTask(params.taskId);
   if (task === null) {
@@ -446,8 +471,8 @@ function validateJobTarget(store: TaskStore, params: Omit<DurableJobStartParams,
  * - `task` + mismatched taskId: rejected.
  * - A non-Leader Task caller requires its current active Assignment.
  * - A Leader Task caller requires its current, unrevoked native Session.
- * - `task`: authority inside the matching Task after current Session and
- *   native Session verification; Role does not narrow it.
+ * - Non-Leader Task callers additionally pass the shared exact Assignment
+ *   check for every Job operation and before a queued Job starts.
  */
 /**
  * Verify the caller's current native Session and Task scope. This local Home
@@ -457,7 +482,7 @@ function validateJobTarget(store: TaskStore, params: Omit<DurableJobStartParams,
 function assertCallerAuthorized(
   store: Pick<
     TaskStore,
-    "getRun" | "getActiveRun" | "getRole" | "getTaskRoleSessionSet" | "listEvents"
+    "getRun" | "getActiveRun" | "getRole" | "getTaskRoleSessionSet" | "listEventsByType"
       | "getGlobalRole" | "getGlobalRoleSessionSet"
   >,
   caller: DurableJobCaller,
@@ -525,7 +550,7 @@ function assertCallerAuthorized(
  */
 function resolveManagedWorkspace(
   store: TaskStore,
-  params: Omit<DurableJobStartParams, "caller">
+  params: Pick<DurableJobStartParams, "taskId" | "owner">
 ): ManagedWorkspace | null {
   if (params.owner.kind === "work-item") {
     return store.getManagedWorkspace({
@@ -610,9 +635,7 @@ export function parseDurableJobStartParams(value: JsonValue): DurableJobStartPar
     env,
     steps,
     caller,
-    ...(record.requestId === undefined ? {} : {
-      requestId: requiredId(record.requestId, "job.start requestId")
-    }),
+    requestId: requiredId(record.requestId, "job.start requestId"),
     ...(retryOf === undefined ? {} : { retryOf })
   };
 }
@@ -620,25 +643,26 @@ export function parseDurableJobStartParams(value: JsonValue): DurableJobStartPar
 export function parseDurableJobRefParams(value: JsonValue): Readonly<{
   taskId: string;
   jobId: string;
+  caller: DurableJobCaller;
 }> {
   if (
     typeof value !== "object" || value === null || Array.isArray(value)
-    || Object.keys(value).length !== 2
+    || Object.keys(value).length !== 3
   ) {
     throw jobControlError("INVALID_PARAMS", "DurableJob ref params are invalid.");
   }
   const record = value as Readonly<Record<string, JsonValue>>;
   return {
     taskId: requiredId(record.taskId, "DurableJob taskId"),
-    jobId: requiredId(record.jobId, "DurableJob jobId")
+    jobId: requiredId(record.jobId, "DurableJob jobId"),
+    caller: parseCaller(record.caller)
   };
 }
 
 /**
  * rr8: `job.cancel` params carry the caller identity so the Controller can
- * bind the cancel request to the caller's managed scope. Distinct from
- * `parseDurableJobRefParams` (used by `job.get`) because cancel requires the
- * third `caller` key.
+ * bind the cancel request to the caller's managed scope. Reads also carry
+ * an explicit caller but use Context's read authority rather than write authority.
  */
 export function parseDurableJobCancelParams(value: JsonValue): Readonly<{
   taskId: string;
@@ -713,7 +737,7 @@ function parseSteps(value: JsonValue | undefined): readonly DurableJobStep[] {
       throw jobControlError("INVALID_PARAMS", "job.start steps are invalid.");
     }
     const record = entry as Readonly<Record<string, JsonValue>>;
-    const allowed = new Set(["name", "command", "timeoutMs"]);
+    const allowed = new Set(["name", "command", "argv", "cwd", "env", "timeoutMs"]);
     for (const key of Object.keys(record)) {
       if (!allowed.has(key)) {
         throw jobControlError("INVALID_PARAMS", "job.start steps are invalid.");
@@ -721,6 +745,15 @@ function parseSteps(value: JsonValue | undefined): readonly DurableJobStep[] {
     }
     const name = requiredId(record.name, "job.start step name");
     const command = requiredId(record.command, "job.start step command");
+    const argv = record.argv === undefined ? undefined : record.argv;
+    if (argv !== undefined && (!Array.isArray(argv) || argv.length === 0
+      || argv.some(value => typeof value !== "string" || value.length === 0 || value.includes("\0")))) {
+      throw jobControlError("INVALID_PARAMS", `job.start step argv is invalid: ${name}.`);
+    }
+    const cwd = record.cwd === undefined ? undefined : requiredId(record.cwd, "job.start step cwd");
+    if (cwd !== undefined && !cwd.startsWith("/")) {
+      throw jobControlError("INVALID_PARAMS", `job.start step cwd must be absolute: ${name}.`);
+    }
     if (names.has(name)) {
       throw jobControlError("INVALID_PARAMS", `job.start step names must be unique: ${name}.`);
     }
@@ -738,6 +771,9 @@ function parseSteps(value: JsonValue | undefined): readonly DurableJobStep[] {
     const step: DurableJobStep = {
       name,
       command,
+      ...(argv === undefined ? {} : { argv: argv as string[] }),
+      ...(cwd === undefined ? {} : { cwd }),
+      ...(record.env === undefined ? {} : { env: parseStringMap(record.env, "job.start step env") }),
       ...(record.timeoutMs === undefined ? {} : { timeoutMs: record.timeoutMs })
     };
     steps.push(step);

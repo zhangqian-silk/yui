@@ -105,6 +105,18 @@ failure contract.
 
 ## CLI and Web
 
+Ordinary Global CLI operations require the Role's current native Session;
+an old Manifest is a context pointer, not continuing write authority. Historical
+self-context reads and the explicit offline diagnostic/recovery routes remain
+available. Home configuration and resource-GC mutations belong to the user or
+current Operator, never a Task Worker. Configuration reads remain available.
+
+Managed Task commands cannot name a different Task. Independent Brief,
+Decision, Milestone, Event and Job reads share Context's readable references;
+an Assignment does not gain a wider view by selecting another query command.
+Job read RPCs carry an explicit caller, and the Controller enforces the scope.
+Current WorkItem Jobs remain visible to their assigned Worker.
+
 A Surface contribution is derived from the Registry's currently authorized
 catalog; there is no second catalog or Host. A CLI contribution uses the
 capability's original name. A Web panel accepts only controlled text, an HTTP(S)
@@ -125,8 +137,8 @@ a way for an Agent or plugin to bypass those boundaries.
 Read-only dashboard, Context and query-panel projections remain separate from
 these mutations. A query panel cannot borrow the browser's user authority to
 mutate state or manage plugins. Task controls share the public CLI's domain
-commands; Global Role controls share the Global handler but currently lack a
-registered top-level CLI path. Message submission intent
+commands; Global Role controls share the Global handler with
+`yui role message queue/steer` and `yui role interrupt`. Message submission intent
 (`record / discuss / develop`, default `discuss`) is
 separate from [input timing](../managed-turn-and-session-runtime.md#input-timing-queue-steer-and-interrupt).
 Transport acceptance does not establish implementation or Task acceptance.

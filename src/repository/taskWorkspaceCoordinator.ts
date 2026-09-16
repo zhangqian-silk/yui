@@ -1,16 +1,20 @@
-import { isDeepStrictEqual } from "node:util";
 import { lstat } from "node:fs/promises";
-import { isArchivePersistenceFailure, recordArchiveCleanup, type ArchiveDiagnostic } from "../task/archiveDiagnostics.js";
-import { projectTaskRemoteDeliveryFromStore } from "../commands/taskRemoteDeliveryCommand.js";
-import { WorkItemChangeSetManager } from "../workspace/workItemChangeSetManager.js";
-import { archiveSettlementChecks, archiveExecutionChecks } from "../task/archivePreflight.js";
+import { isDeepStrictEqual } from "node:util";
+import {
+  isArchivePersistenceFailure,
+  recordArchiveCleanup,
+  type ArchiveDiagnostic
+} from "../task/archiveDiagnostics.js";
+import { archiveExecutionChecks, archiveSettlementChecks } from "../task/archivePreflight.js";
+import { projectTaskRemoteDeliveryFromStore } from "../task/remoteDeliveryService.js";
 import { CleanupInspectionError } from "../workspace/cleanupInspection.js";
+import { WorkItemChangeSetManager } from "../workspace/workItemChangeSetManager.js";
 
+import type { ReviewRound } from "../review/reviewRound.js";
 import {
   hasRuntimeLifecycleWork,
   runtimeLifecycleTarget
 } from "../runtime/lifecycleReservation.js";
-import type { ReviewRound } from "../review/reviewRound.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import type { Task } from "../task/task.js";
 import type {
@@ -33,6 +37,8 @@ export { WorkspaceCleanupBlockedError } from "./taskWorkspacePreparer.js";
 
 export type TaskRoleRuntimeStopper = Readonly<{
   stopTaskRoleSessions(taskId: string, roleNames: readonly string[]): Promise<void>;
+  /** Prove quiescence, then remove this Task's terminals, including exited panes. */
+  releaseTaskTerminals(taskId: string): Promise<void>;
   inspectTaskRolePanes?(taskId: string): readonly Readonly<{
     roleName: string;
     dead: boolean;
@@ -290,7 +296,7 @@ export class TaskWorkspaceCoordinator {
       if (checks.length > 0) throw new CleanupInspectionError(checks);
       const roleNames = this.store.listRoles(taskId).map(({ name }) => name);
       await this.#stopLiveRoles(taskId, roleNames);
-      await this.runtime.assertTaskPhysicalResourcesReleased?.(task.id);
+      await this.runtime.releaseTaskTerminals(task.id);
       this.#assertTaskArchiveSnapshot(snapshot);
       for (const workspace of laneWorkspaces) {
         this.#assertTaskArchiveLifecycle(task);
@@ -399,10 +405,7 @@ export class TaskWorkspaceCoordinator {
       const checks = archiveExecutionChecks(this.store, taskId);
       if (checks.length > 0) throw new CleanupInspectionError(checks);
       if (!runtimeReleased) throw new Error("One or more Role runtimes could not be safely released.");
-      if (this.runtime.assertTaskPhysicalResourcesReleased === undefined) {
-        throw new Error("Physical resource release inspection is unavailable; workspace references retained.");
-      }
-      await this.runtime.assertTaskPhysicalResourcesReleased(taskId);
+      await this.runtime.releaseTaskTerminals(taskId);
       return "released";
     });
     if (physicalReleased) {
@@ -526,8 +529,7 @@ export class TaskWorkspaceCoordinator {
    * human/Leader has taken responsibility for the outcome.
    */
   #assertNoActiveWorkItemDurableJobs(item: WorkItem): void {
-    const jobs = this.store.listDurableJobs?.(item.taskId);
-    if (jobs === undefined) return;
+    const jobs = this.store.listDurableJobs(item.taskId);
     const blocking = jobs.filter((job) => (
       job.owner.kind === "work-item"
       && job.owner.workItemId === item.id
@@ -559,19 +561,17 @@ export class TaskWorkspaceCoordinator {
   #reviewRoundRoleNames(round: ReviewRound): readonly string[] {
     return [
       round.reviewerRoleName,
-      ...(round.executionGroup?.lanes.map(({ roleName }) => roleName) ?? []),
       ...(round.executionGroup?.lanes.map(({ roleName }) => roleName) ?? [])
     ];
   }
 
   async #stopLiveRoles(taskId: string, roleNames: readonly string[]): Promise<void> {
     const targets = [...new Set(roleNames)];
-    const getActiveRun = this.store.getActiveRun?.bind(this.store);
     for (const roleName of targets) {
-      if (getActiveRun !== undefined && getActiveRun(taskId, roleName) !== null) {
+      if (this.store.getActiveRun(taskId, roleName) !== null) {
         throw new Error(`Role has an active AgentRun: ${taskId}/${roleName}.`);
       }
-      if (this.store.getWorkMailbox !== undefined && hasRuntimeLifecycleWork(
+      if (hasRuntimeLifecycleWork(
         this.store.getWorkMailbox(
           runtimeLifecycleTarget({ scope: "task", taskId, roleName })
         )
@@ -594,11 +594,9 @@ export class TaskWorkspaceCoordinator {
     });
     if (live.length > 0) await this.runtime.stopTaskRoleSessions(taskId, live);
 
-    // The aggregate-16 dormant Claude placeholder is the sole exception to
-    // strict workspace-session retirement. The synchronous pane inspection is
-    // performed while holding the Task store transaction so a normal launch
-    // cannot reserve a AgentRun/Session between absence proof and terminalization.
-    if (inspect === undefined || this.store.transaction === undefined) return;
+    // Recheck exact runtime quiescence under the Task transaction when this
+    // runtime exposes physical panes. Store reads are always authoritative.
+    if (inspect === undefined) return;
     this.store.transaction((tx) => {
       const panes = inspect(taskId);
       for (const roleName of targets) {
@@ -608,7 +606,7 @@ export class TaskWorkspaceCoordinator {
         if (tx.getActiveRun(taskId, roleName) !== null) {
           throw new Error(`Role has an active AgentRun: ${taskId}/${roleName}.`);
         }
-        if (tx.getWorkMailbox !== undefined && hasRuntimeLifecycleWork(
+        if (hasRuntimeLifecycleWork(
           tx.getWorkMailbox(
             runtimeLifecycleTarget({ scope: "task", taskId, roleName })
           )

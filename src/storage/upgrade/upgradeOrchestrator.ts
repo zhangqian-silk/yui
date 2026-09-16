@@ -23,12 +23,6 @@ import {
   validateRuntimeProcessExitObservation,
   type RuntimeProcessExitObservation
 } from "../../runtime/processExitObservation.js";
-import { validateAgentProfile } from "../../profile/agentProfile.js";
-import { validateRoleSessionSet } from "../../executor/agentExecutor.js";
-import { validateReviewRound } from "../../review/reviewRound.js";
-import { validateRun } from "../../agentRun/agentRun.js";
-import { validateDurableJob } from "../../job/durableJob.js";
-import { validateWorkItem } from "../../workItem/workItem.js";
 import { SqliteTaskStore } from "../sqliteStore.js";
 import { storageBackupRoot } from "../homeLayout.js";
 import {
@@ -39,6 +33,9 @@ import {
   preflightCollapseWorktreeLayout,
   type CollapseWorktreePreflightBlocker
 } from "../migrations/collapseWorktreeLayout.js";
+import { preflightNotificationOnlyWakes } from "../migrations/notificationOnlyWakes.js";
+import { preflightVerificationPolicy } from "../migrations/verificationPolicy.js";
+import { preflightCurrentInputContract } from "../migrations/currentInputContract.js";
 import {
   migrateSqliteSchema,
   storageMigrationPlan,
@@ -321,7 +318,6 @@ export async function runStorageUpgrade(options: RunStorageUpgradeOptions): Prom
       database.close();
     }
     validateCurrentStore(options.home);
-    rmSync(join(options.home, "schema.json"), { force: true });
   } catch (error) {
     const restoration = migrationCommitted
       ? tryRestoreDatabaseBackup(options.home, backupPath)
@@ -375,24 +371,8 @@ export async function runStorageUpgrade(options: RunStorageUpgradeOptions): Prom
 function validateCurrentStore(home: string): void {
   const store = new SqliteTaskStore(home);
   try {
-    store.getConfig();
-    for (const profile of store.listAgentProfiles()) validateAgentProfile(profile);
-    for (const sessions of store.listGlobalRoleSessionSets()) {
-      validateRoleSessionSet(sessions);
-    }
-    for (const owner of store.listSessionOwners()) {
-      if (owner.schemaVersion !== 2 || Object.hasOwn(owner, "launchId")) {
-        throw new Error("Session owner runtime identity is invalid.");
-      }
-    }
+    store.validateCurrentRecords();
     for (const taskId of store.listTasks().map(({ id }) => id)) {
-      for (const job of store.listDurableJobs(taskId)) validateDurableJob(job);
-      for (const item of store.listWorkItems(taskId)) validateWorkItem(item);
-      for (const round of store.listReviewRounds(taskId)) validateReviewRound(round);
-      for (const run of store.listRuns(taskId)) validateRun(run);
-      for (const sessions of store.listRoleSessionSets(taskId)) {
-        validateRoleSessionSet(sessions);
-      }
       for (const event of store.listEvents(taskId)) {
         if (event.type === RUNTIME_OBSERVATION_TASK_EVENT) {
           createRuntimeObservation(
@@ -534,16 +514,17 @@ function blocked(
 }
 
 /**
- * Run each path-relocating data migration's READ-ONLY preflight against the
+ * Run each data migration's registered READ-ONLY preflight against the
  * current (pre-upgrade) database and, when any finds a blocker, return a
  * `blocked` result the caller surfaces before touching the Controller or the
- * Home. Returns `null` when the plan carries no path-relocating data migration,
+ * Home. Returns `null` when the plan carries no registered readiness check,
  * or when every preflight is clear.
  *
- * Both the 18->19 unify and the 19->20 collapse migrations physically relocate
+ * Both the 23->24 unify and the 24->25 collapse migrations physically relocate
  * managed worktrees and share the same blocker shape (in-flight Job, conflicting
  * relocation target). When a Home is upgraded across both in one run, their
- * blockers are aggregated so the operator sees every readiness problem at once.
+ * blockers are aggregated so the operator sees their readiness problems together.
+ * Notification retirement separately rejects unsettled execution references.
  *
  * The database is opened read-only so the checks cannot mutate the authoritative
  * store, and the handle is always closed. An unexpected failure to evaluate a
@@ -557,8 +538,10 @@ function preflightMigrationBlockers(
 ): Extract<UpgradeResult, { outcome: "blocked" }> | null {
   const relocatesUnify = plan.some((step) => step.name === "unify-home-layout");
   const relocatesCollapse = plan.some((step) => step.name === "collapse-worktree-layout");
-  // Only meaningful when the plan actually includes a path-relocating migration.
-  if (!relocatesUnify && !relocatesCollapse) return null;
+  const retiresRunWakes = plan.some((step) => step.name === "notification-only-wakes");
+  const changesVerification = plan.some(step => step.name === "advisory-and-verification-policy");
+  const changesInput = plan.some(step => step.name === "current-input-contract");
+  if (!relocatesUnify && !relocatesCollapse && !retiresRunWakes && !changesVerification && !changesInput) return null;
 
   type MigrationBlocker = UnifyHomePreflightBlocker | CollapseWorktreePreflightBlocker;
   let blockers: MigrationBlocker[];
@@ -571,6 +554,9 @@ function preflightMigrationBlockers(
       blockers = [];
       if (relocatesUnify) blockers.push(...preflightUnifyHomeLayout(database).blockers);
       if (relocatesCollapse) blockers.push(...preflightCollapseWorktreeLayout(database).blockers);
+      if (retiresRunWakes) preflightNotificationOnlyWakes(database);
+      if (changesVerification) preflightVerificationPolicy(database);
+      if (changesInput) preflightCurrentInputContract(database);
     } finally {
       database.close();
     }
@@ -580,8 +566,8 @@ function preflightMigrationBlockers(
         classification,
         "in-flight",
         `The storage migration readiness check could not be completed: ${messageOf(error)}`,
-        "Resolve the reported problem, confirm no Job is queued or running against a managed "
-          + "workspace, then rerun the upgrade."
+        "Resolve the named execution or resource boundary, preserving original input and results. "
+          + "Confirm the relevant Runs and Jobs are settled, then rerun the upgrade."
       )
     };
   }

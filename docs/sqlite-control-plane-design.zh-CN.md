@@ -28,6 +28,11 @@ Yui 只有一个权威产品 Store：WAL 模式下的 `YUI_HOME/yui.db`。`schem
 不完整的或损坏的 Home 一律 fail closed。不存在运行时归一化、修复 worker、
 文件 Store 回退、双读写路径或第二套迁移权威。
 
+类型化领域记录在写入、普通读取、有界 Context 分页和全 Home 检查时，共用一份
+现行校验注册表。直接 Store 与 worker-backed Store 不存在不同强度的校验。
+无效写入不会推进 revision；已存在的无效记录只会报错并保留供明确诊断，
+不会被自动规范化成看似有效的替代记录。
+
 ## 写入与并发合同
 
 - 每次修改是一个 SQLite 事务。
@@ -54,8 +59,8 @@ WorkItem 与 Task 的验收权威仍归 Leader。
 
 每次持久 schema 或负载变更都追加一条不可变、连续的存储迁移。CLI 同时发布
 `storageVersion` 与 `minimumStorageVersion`；处在该闭区间内的每个有效 Home 都能
-直接升级到当前版本，无需安装中间发行版。当前源码在
-`src/storage/storageVersions.ts` 中声明存储版本 **18**、最低支持迁移版本 **1**。
+直接升级到当前版本，无需安装中间发行版。当前版本及最低支持版本统一由
+`src/storage/storageVersions.ts` 声明，并由 CLI 身份读取暴露。
 低于该下限的 Home 不是迁移输入，保持原样不动。目标二进制的
 `upgrade --update-preflight` 与 `--update-apply` 结果形态，以及由父进程持有的
 交接锁证明，对从存储版本 1 起发布的每个 updater 都保持向后兼容，因此一个旧的

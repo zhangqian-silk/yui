@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, open, rm, stat } from "node:fs/promises";
+import { mkdir, open, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { jobStepDirectory } from "../job/stepDirectory.js";
 
 import type { CheckResult } from "../integration/checkResult.js";
 import type { DurableJob, DurableJobStep } from "../job/durableJob.js";
@@ -12,8 +13,6 @@ import {
   gateArtifactRef,
   isReusableGateArtifact,
   parseGateArtifactRef,
-  recordGateArtifactReuse,
-  validateGateArtifact,
   verifyGateArtifactLogs,
   type GateArtifact,
   type GateArtifactIdentity,
@@ -25,19 +24,14 @@ import {
   importGateArtifactSteps,
   loadGateArtifact,
   saveGateArtifact,
-  touchGateArtifact,
   type GateArtifactStepInput
 } from "./gateArtifactStore.js";
 import {
-  planL1JobSteps,
   resolveProjectVerificationPlan,
   resolveToolchain,
-  selectL1Checks,
   toolchainDigest,
   verificationPlanDigest,
-  verificationStepCommand,
   type ResolvedToolchain,
-  type VerificationMode,
   type VerificationPlan
 } from "./verificationPlan.js";
 
@@ -46,14 +40,13 @@ import {
  *
  * One place owns the gate lifecycle: identity tuple computation, reuse
  * lookup, artifact recording from a DurableJob or an in-process run, Review
- * verification, and exact artifact reuse. Integration, the queue, Review, and
+ * verification, and exact artifact reuse. Integration, Review, and
  * release consume through these functions; unconfigured Projects keep the
  * existing explicit check path untouched.
  */
 
 export type ResolvedVerificationGate = Readonly<{
   plan: VerificationPlan;
-  mode: VerificationMode;
   toolchain: ResolvedToolchain;
   planDigest: string;
   toolchainDigest: string;
@@ -69,7 +62,6 @@ export function resolveVerificationGate(
   const toolchain = resolveToolchain();
   return Object.freeze({
     plan,
-    mode: plan.mode,
     toolchain,
     planDigest: verificationPlanDigest(plan),
     toolchainDigest: toolchainDigest(plan, toolchain)
@@ -84,10 +76,13 @@ export function gateIdentityForCandidate(input: Readonly<{
   targetRef?: string;
   baseHead?: string;
 }>): GateArtifactIdentity {
+  if (input.level === "L2" && (input.targetRef === undefined || input.baseHead === undefined)) {
+    throw new Error("L2 verification requires its exact target ref and base head.");
+  }
   const boundary = input.level === "L2"
     ? {
-        targetRef: input.targetRef ?? "master",
-        baseHead: input.baseHead ?? input.commit
+        targetRef: input.targetRef!,
+        baseHead: input.baseHead!
       }
     : undefined;
   return Object.freeze({
@@ -114,6 +109,20 @@ export async function lookupReusableGateArtifact(
   const logs = store.getGateArtifactLogs(artifact.key);
   const verification = verifyGateArtifactLogs(artifact, logs);
   return verification.ok ? artifact : null;
+}
+
+/** Withdraw prior reusable evidence before execution. An interrupted attempt
+ * remains incomplete, never an excuse to return the previous success. */
+export function beginGateVerification(
+  store: GateArtifactStorePort, identity: GateArtifactIdentity, plan: VerificationPlan, now: Date
+): GateArtifact {
+  const existing = findGateArtifact(store, identity);
+  const artifact = {
+    ...createGateArtifact(identity, { planId: plan.id, planVersion: plan.version, generator: "yui" }, now),
+    reuseCount: existing?.reuseCount ?? 0
+  };
+  saveGateArtifact(store, artifact, new Map());
+  return artifact;
 }
 
 /**
@@ -200,35 +209,15 @@ async function recordGateArtifact(
   succeeded: boolean,
   now: Date
 ): Promise<GateArtifact> {
-  const created = createGateArtifact(identity, {
-    planId: plan.id,
-    planVersion: plan.version,
-    generator: "yui"
-  }, now);
+  const created = beginGateVerification(store, identity, plan, now);
   const { steps: importedSteps, logs } = await importGateArtifactSteps(steps);
-  let artifact = completeGateArtifact(
+  const artifact = completeGateArtifact(
     created,
     importedSteps,
-    succeeded ? "succeeded" : "failed",
+    succeeded && importedSteps.length > 0 && importedSteps.every(step => step.outcome === "passed")
+      ? "succeeded" : "failed",
     now
   );
-  // Preserve shadow/reuse counters when re-recording the same identity tuple
-  // (e.g. record mode always re-runs the gate but must not lose the potential
-  // reuse observations from earlier runs).
-  const existing = findGateArtifact(store, identity);
-  if (existing !== null) {
-    if (isReusableGateArtifact(existing) && !succeeded) {
-      // A failed re-run must not downgrade a proven successful artifact.
-      touchGateArtifact(store, existing);
-      return existing;
-    }
-    artifact = validateGateArtifact({
-      ...artifact,
-      potentialReuseCount: existing.potentialReuseCount,
-      reuseCount: existing.reuseCount,
-      createdAt: existing.createdAt
-    });
-  }
   saveGateArtifact(store, artifact, logs);
   return artifact;
 }
@@ -272,9 +261,9 @@ export async function runGateStepsInProcess(
     const output = await open(absoluteLogPath, "w", 0o600);
     let timedOut = false;
     let child: ReturnType<typeof spawn>;
-    const stepCwd = step.cwd ?? cwd;
     const stepEnv = step.env === undefined ? env : { ...env, ...step.env };
     try {
+      const stepCwd = jobStepDirectory(cwd, step.cwd);
       if (step.argv !== undefined) {
         const [file, ...args] = step.argv;
         child = spawn(file, args, {
@@ -354,7 +343,7 @@ function sanitizeLogName(name: string): string {
  * environment/registry failure is never recorded as a Candidate test
  * failure; the Integration gate has not started when bootstrap fails.
  */
-export function checkResultsFromGateJob(job: DurableJob, home: string): CheckResult[] {
+export function checkResultsFromGateJob(job: DurableJob, _home: string): CheckResult[] {
   const results = new Map((job.result?.steps ?? []).map((step) => [step.name, step]));
   const checks: CheckResult[] = [];
   for (const step of job.steps) {
@@ -417,6 +406,10 @@ export function checkResultsFromGateArtifact(
     outcome: step.outcome,
     ...(step.logPath === undefined ? {} : { logPath: step.logPath })
   }));
+  if (!isReusableGateArtifact(artifact) && !checks.some(check => check.outcome === "failed")) {
+    checks.push({ name: "verification-result", outcome: "failed",
+      details: `Verification is ${artifact.status}/${artifact.outcome}; successful evidence is not established.` });
+  }
   if (reused) {
     checks.push({
       name: gateArtifactRef(artifact.key),
@@ -474,86 +467,6 @@ export async function verifyGateArtifactForReview(
     };
   }
   return { ok: true, artifact };
-}
-
-/**
- * Enforce mode (rollout step 4): reject ad-hoc full-suite shell checks that
- * duplicate the plan's L2 steps for a configured Project. Explicit targeted
- * diagnostic checks (anything that is not an L2 step command) stay allowed.
- */
-export function assertNoAdHocFullSuiteChecks(
-  plan: VerificationPlan,
-  checkCommands: readonly string[]
-): void {
-  const l2Commands = new Set(plan.l2.steps.map((step) => verificationStepCommand(step)));
-  for (const command of checkCommands) {
-    if (l2Commands.has(command)) {
-      throw new Error(
-        `Ad-hoc full-suite check is rejected for plan-enabled Project `
-        + `${plan.id}: use the VerificationPlan L2 gate (or pass a targeted `
-        + `diagnostic command that is not an L2 step): ${command}`
-      );
-    }
-  }
-}
-
-/**
- * Run an L1 gate for a change: select the affected categories' checks, run
- * them in-process, and record the L1 artifact. Reuse mode returns an existing
- * successful artifact for the same tuple.
- */
-export async function runL1Gate(input: Readonly<{
-  store: GateArtifactStorePort;
-  projectId: string;
-  gate: ResolvedVerificationGate;
-  commit: string;
-  changedPaths: readonly string[];
-  workspace: string;
-  environment: Readonly<Record<string, string>>;
-  logsDirectory: string;
-  now: Date;
-}>): Promise<{ artifact: GateArtifact; reused: boolean; checks: CheckResult[] }> {
-  const identity = gateIdentityForCandidate({
-    projectId: input.projectId,
-    gate: input.gate,
-    level: "L1",
-    commit: input.commit
-  });
-  if (input.gate.mode !== "record") {
-    const existing = await lookupReusableGateArtifact(input.store, identity);
-    if (existing !== null) {
-      const reused = recordGateArtifactReuse(existing, input.now);
-      touchGateArtifact(input.store, reused);
-      return {
-        artifact: reused,
-        reused: true,
-        checks: checkResultsFromGateArtifact(reused, true)
-      };
-    }
-  }
-  const selected = selectL1Checks(input.gate.plan, input.changedPaths);
-  const outcomes = await runGateStepsInProcess(
-    input.workspace,
-    planL1JobSteps(selected),
-    input.environment,
-    input.logsDirectory,
-    input.commit
-  );
-  const succeeded = outcomes.length > 0
-    && outcomes.every((outcome) => outcome.exitCode === 0 && outcome.signal === null && !outcome.timedOut);
-  const artifact = await recordGateArtifactFromStepOutcomes(
-    input.store,
-    identity,
-    input.gate.plan,
-    outcomes,
-    succeeded,
-    input.now
-  );
-  return {
-    artifact,
-    reused: false,
-    checks: checkResultsFromGateArtifact(artifact, false)
-  };
 }
 
 /** Stable digest of a log file, for ad-hoc evidence binding. */

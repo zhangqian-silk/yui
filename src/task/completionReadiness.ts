@@ -1,16 +1,13 @@
-import type { DurableJob } from "../job/durableJob.js";
-import type { IntegrationQueueEntry } from "../integration/integrationQueueEntry.js";
-import type { IntegrationAttempt } from "../integration/integrationAttempt.js";
 import {
   governingWorkItemDeliveries,
   integrationAttemptRequiresSettlement,
   workItemDeliverySettled
 } from "../integration/deliveryObligation.js";
-import type { ManagedWorkspace } from "../worktree/managedWorkspace.js";
-import type { WorkItem } from "../workItem/workItem.js";
-import type { NextActionFacts, NextActionRef } from "./nextAction.js";
-import type { TaskStore } from "../storage/taskStore.js";
+import type { DurableJob } from "../job/durableJob.js";
 import type { TaskMessage } from "../message/message.js";
+import type { TaskStore } from "../storage/taskStore.js";
+import type { ManagedWorkspace } from "../worktree/managedWorkspace.js";
+import type { NextActionFacts, NextActionRef } from "./nextAction.js";
 import { operationalTaskRecords } from "./taskRecordRetirement.js";
 
 /**
@@ -36,7 +33,6 @@ export type CompletionBlockerCode =
   | "active-durable-job"
   | "integration-evidence-missing"
   | "unresolved-integration"
-  | "unsettled-integration-queue-entry"
   | "work-item-workspace-undisposed"
   | "review-workspace-undisposed"
   | "integration-workspace-undisposed"
@@ -83,7 +79,6 @@ export type CompletionReadinessFacts = NextActionFacts & Readonly<{
   pendingUserMessages?: readonly Pick<TaskMessage, "id">[];
   managedWorkspaces: readonly ManagedWorkspace[];
   durableJobs: readonly DurableJob[];
-  integrationQueueEntries: readonly IntegrationQueueEntry[];
 }>;
 
 /** Mailbox refs locate original durable user intent. No separate acknowledgement
@@ -103,19 +98,13 @@ export function pendingCompletionMessages(store: TaskStore, taskId: string): Tas
   const ids = new Set(refs.filter(ref => ref.type === "message" && ref.taskId === taskId).map(ref => ref.id));
   return operationalTaskRecords(store.listMessages(taskId), store.listEvents(taskId), "message")
     .filter(message => ids.has(message.id)
-      && (message.kind === "user" || message.kind === "operator") && message.wakePolicy !== "none");
+      && (message.kind === "user" || message.kind === "operator"));
 }
 
 const ACTIVE_JOB_STATUSES = new Set([
   "queued",
   "running",
   "unknown-needs-attention"
-]);
-
-const UNRESOLVED_INTEGRATION_STATUSES = new Set([
-  "running",
-  "blocked",
-  "validating"
 ]);
 
 const TERMINAL_REVIEW_STATUSES = new Set(["completed", "failed"]);
@@ -139,7 +128,7 @@ export function projectCompletionReadiness(
 
   // A pending/running Task-final Review must be resumed or blocked first.
   for (const round of facts.reviewRounds) {
-    if ((round.scope ?? "work-item") !== "task") continue;
+    if (round.scope !== "task") continue;
     if (round.status !== "pending" && round.status !== "running") continue;
     blockers.push({
       code: "active-task-review",
@@ -200,28 +189,15 @@ export function projectCompletionReadiness(
     });
   }
 
-  // Current delivery Attempts and any Attempt that may still be writing must
-  // settle. Historical blocked Attempts remain audit evidence only.
+  // Unsettled attempts must be explicitly resolved; terminal history remains
+  // evidence and is not a second delivery workflow.
   for (const integration of facts.integrations) {
-    if (!UNRESOLVED_INTEGRATION_STATUSES.has(integration.status)) continue;
     if (!integrationAttemptRequiresSettlement(integration)) continue;
     blockers.push({
       code: "unresolved-integration",
       ref: ref("integration-attempt", integration.id),
       reason: `Integration Attempt ${integration.id} is ${integration.status}.`,
       fix: `yui task integration continue ${task.id}/${integration.id}`
-    });
-  }
-
-  // Legacy queue entries may still launch an Integration and therefore must
-  // settle even though ChangeSets are no longer delivery authority.
-  for (const entry of facts.integrationQueueEntries) {
-    if (entry.status === "committed" || entry.status === "superseded") continue;
-    blockers.push({
-      code: "unsettled-integration-queue-entry",
-      ref: ref("integration-queue-entry", entry.id),
-      reason: `Integration queue entry ${entry.id} is ${entry.status}.`,
-      fix: `settle integration queue entry ${entry.id} (continue or supersede)`
     });
   }
 
@@ -301,7 +277,7 @@ function workspaceCompletionDisposition(
       const integration = facts.integrations.find(
         (entry) => entry.id === owner.integrationAttemptId
       );
-      if (integration !== undefined && UNRESOLVED_INTEGRATION_STATUSES.has(integration.status)) {
+      if (integration !== undefined && integrationAttemptRequiresSettlement(integration)) {
         return null;
       }
       const value = {

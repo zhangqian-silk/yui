@@ -109,11 +109,39 @@ Resolve releases the claim after native-effect fences are clear. It neither
 replays the notification nor invents acceptance or completion. Independent
 Role work and legal local facts are not a Task-wide recovery lock.
 
+Wake status records notification delivery, not Message implementation. For
+ordinary Leader notifications, `consumed` means native acceptance. Native Turn
+completion and Task delivery need their own runtime evidence and durable results.
+A rejected or released wake may remain `dispatched` without an active mailbox claim.
+Session replacement preserves queued input for a new wake and current Context;
+it does not retroactively mark an old wake accepted. Late receipts cannot settle
+the successor's batch. While Session cleanup is pending, new input remains queued.
+Inspect the wake, `notification.delivery` events, current mailbox and Session
+together; do not require one final response per historical wake.
+
+Current wakes are notification-only. Run completion cannot consume a wake, and
+the first notification window starts at Task creation. Retired Run-linked wake
+records remain in Task events with their original ID and payload, not as a
+second active wake format.
+
 ## Input timing: queue, steer and interrupt
 
 Submission intent (`record / discuss / develop`) decides how a requirement is
 routed. Input timing decides when an already-authorized input reaches a Role;
 it does not activate a Task, expand an Assignment or upgrade planning authority.
+Save-only input uses `message send --intent record`; `--wake-policy` is removed.
+Unkeyed Draft Message edits preserve submission intent. `record` and `develop`
+edits never start planning or create/retry activation; `discuss` edits use the
+same activation/planning routing as a discussion submission. A pending or failed
+activation therefore keeps the edited discussion waiting.
+
+A Message with a submission key, queue/steer request, or interrupt-then handoff
+has immutable content: submit a new Message with a new request ID to change it.
+This preserves the original retry comparison and receipt without adding a
+second stored representation of input. Updating to the identical body is a
+no-op, with no event, queue change or Controller notification. Current stored
+user/operator Messages always have an intent; changing that intent also requires
+a new explicit submission.
 The [authenticated Web controls](architecture/capabilities-and-resources.md#cli-and-web)
 use the same three operations as the CLI.
 
@@ -127,13 +155,16 @@ Inspect the Session before selecting a live target:
 
 ```sh
 yui task role session inspect <task> <role>
-yui task message queue <task> "<continuation>" --request-id <id> --to leader
+yui task message queue <task> "<continuation>" --request-id <id>
 yui task message steer <task> "<correction>" --request-id <id> --to leader --expected-target <turn>
 yui task role interrupt <task> <role> --expected-target <turn> --request-id <id> [--then-message <task/message>]
 ```
 
-Worker/Reviewer messages retain their existing `--work-item` or `--review-round`
-association. Reusing a request ID with different content or a different target
+Ordinary Leader `queue` input omits `--to`. An explicit `--to <role>` (including
+`leader`) addresses an existing Assignment and requires `--work-item` or
+`--review-round`; a Message cannot establish that Assignment. `steer` still
+requires an explicit Role and exact live target.
+Reusing a request ID with different content or a different target
 is a conflict. `steer` and `interrupt` never silently retarget, replace a Session,
 kill a process or fall back to another action. No live managed Turn yields
 `NO_ACTIVE_TURN`; stale targets and unsupported control remain explicit outcomes.
@@ -147,12 +178,12 @@ uncertainty cannot.
 
 Global Roles use the same three actions with their own owner and Session,
 without inventing a Task or Run. The local-user Web surface exposes them through
-the shared Global Role handler. There is a current CLI availability gap:
-`src/cli.ts` implements `yui role message queue|steer` and `yui role interrupt`,
-but `src/cli/commandCatalog.ts` does not register the top-level `role` command,
-so public CLI routing rejects these paths as unknown. They are not usable CLI
-examples; report this gap rather than fabricating a Task/Run or borrowing the
-browser's user authority. New controlled Global Sessions use the Host console.
+the shared Global Role handler. The public CLI exposes
+`yui role message queue|steer <role> <text>` and `yui role interrupt <role>`.
+Queue/steer require `--request-id`; steer/interrupt require `--expected-target`.
+These commands retain the caller's existing Session authority; do not fabricate
+a Task/Run or borrow the browser's user authority. Configuration remains under
+`config role`, lifecycle under `session`. New controlled Global Sessions use the Host console.
 A live unmanaged Session is not silently adopted; an explicit Session lifecycle
 action is needed first.
 
@@ -188,7 +219,7 @@ preserve execution history; external edits notify the Leader, while its own
 planning edits do not create a self-wake.
 
 New Draft Roles use a Task-specific planning directory under
-`<YUI_HOME>.task-runtimes/planning`, outside the control Home and delivery trees.
+`<YUI_HOME>/runtime/task-runtimes/planning`, separate from durable control data and delivery trees.
 A planning Run can use `task activation request` to persist intent and return an
 `afterPlanningRun` reference immediately. Its terminal releases the request for
 Controller admission; cancelled intent is not resurrected.
@@ -200,6 +231,10 @@ For bound Git Projects, `--environment empty` means no additional environment:
 the Projects still receive managed worktrees. `scratch` selects a Task-owned
 directory. `local` requires a registered local Resource and its grant; a Project
 ID is not a local Resource ID.
+
+`task activate` is foreground adoption of an existing request, not an alternative
+way to create activation intent. A request-free Draft is rejected before resource
+preparation; the command does not invent an environment plan or request ID.
 
 Resource preparation precedes the atomic adoption of Task status and workspace
 ownership. A failed adoption records a failed request and notifies the Leader

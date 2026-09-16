@@ -20,12 +20,169 @@ Two task-level record families back it:
   exact source (repository + pinned commit, optionally an artifact), an
   immutable ordered step plan, and one persisted record per step.
 
-The engine (`src/release/releaseWorkflowEngine.ts`) is a pure library; the
+The engine (`src/release/releaseWorkflowEngine.ts`) owns persisted transitions and the workflow lock; the
 `yui task workflow` and `yui task grant` commands drive it. Every external
 system sits behind `ReleaseWorkflowPorts`
-(`src/release/releaseWorkflowPorts.ts`), so the whole workflow is testable
-with deterministic fakes and no real GitHub, npm, git, Controller, or process
-side effect.
+(`src/release/releaseWorkflowPorts.ts`). Disposable SQLite and deterministic
+external ports exercise recovery without real GitHub, npm, git, Controller,
+or model effects.
+
+## Pre-1.0 contract cleanup
+
+The current development step retires runtime compatibility before the final
+1.0 baseline cutover. It does not publish a release or reset storage numbering.
+Storage 27→28 normalizes only provable singleton Role dispatch dedupe keys;
+the old migration ledger, Messages, Task results and unconfirmed effects remain
+unchanged. Ordinary opens require storage 34. Existing Homes advance only through
+the explicit upgrade boundary; no runtime dual-reader is added.
+
+This is a breaking pre-1.0 change:
+
+- `message send` uses `--intent`; `--wake-policy` is no longer accepted by the
+  CLI or capability API. Draft edits preserve intent.
+- Internal command integrations implement `notifyMailboxChanged`; the Task-only
+  notification adapter has been removed with its callers updated.
+- ACP peers must report `configOptions`; there is no `modes`/`set_mode` path.
+- Release recovery requires a pinned Home and installation prefix. Unpinned
+  identities remain unknown, and incomplete handover locks remain fenced.
+- Development link/unlink requires the current registry. It does not discover
+  or adopt older NVM registrations or reconstruct orphan links.
+- GC no longer discovers retired deployment layouts or reconstructs removed
+  worktrees. Unsupported quarantine evidence is retained, never purged as if
+  it were a current move receipt.
+- `task activate` consumes an existing request; no request means no resource
+  adoption. Request creation, deferred admission and atomic workspace adoption
+  remain separate, using the same current boundary.
+- `task integration queue` and its state machine are removed. The Agent chooses
+  each WorkItem result's order and strategy and calls the atomic Integration
+  operations; exact checks, target CAS and completion obligations remain.
+
+Storage 28→29 preserves every former queue payload verbatim in a Task event
+`integration.queue-retired`, with its original queue ID, before dropping the
+active table. Event IDs advance past both the stored counter and existing
+history. This does not accept delivery, generate an Integration or replay work.
+Existing Integrations and Jobs stay intact. Inspect `task event list <task>`
+and the referenced WorkItem/Integration before deciding what remains to do;
+retiring the queue does not settle an unfinished Integration.
+
+Storage 29→30 retires Run-linked wakes into `wake.run-link-retired` Task events
+with the complete original payload. Current notification IDs, delivery status
+and references remain intact, using wake schema 2; Run termination no longer
+consumes notifications. Live Runs, owned retries and unresolved claims referring
+to a retiring wake block both preflight and migration. The migration does not
+stop execution or fabricate acceptance. Global Session sets use an explicit
+`providerBinding: null` when no controlled binding exists.
+
+Storage 30→31 makes every Review's scope explicit. Missing/null scope in a valid
+older WorkItem Review becomes `work-item`; Task-final candidate evidence and
+the old ledger are unchanged. New and retried Reviews always write their scope.
+
+Storage 31→32 removes WorkItem `historicalState` from the current record.
+Before removal, the entire original payload is preserved verbatim in a
+`work-item.execution-state-retired` Task event. Current status, scope, Candidates
+and execution groups are unchanged; no Run or acceptance is created. Unrecognized
+historical shapes fail without changing the record or advancing the ledger.
+
+Storage 32→33 retires the Leader rollout/budget settings and VerificationPlan
+rollout modes. Active plan bodies gain an explicit schema version; their checks
+remain unchanged, while retired Knowledge bodies are preserved. Integration
+records gain explicit `rerunChecks: false`, and shadow reuse counters are removed
+from cached artifacts. Original settings remain recoverable from the explicit
+upgrade backup. This is an approved behavior change, not an assertion that
+`record`, `reuse` and `enforce` meant the same thing.
+
+Admitted `running`/`validating` plan gates block preflight and migration; settle
+them with the old release first. No in-flight Job is relabelled under the new
+proof contract. That cutover's v3 verification-plan digest excluded older cache entries from
+automatic reuse without rewriting historical Job/Integration results or deleting
+their logs. Historical plan interpretation is frozen inside the migration
+directory so earlier migrations keep their original semantics.
+
+The current clean-candidate proof uses a v4 execution digest. Both local and
+Job-backed verification check candidate cleanliness, branch and exact HEAD
+before publishing reusable success; pre-v4 cache entries cannot silently pass
+this boundary. Existing records/logs remain readable and admitted Jobs are not
+relabeled under a new digest. Settle old attempts with their matching contract,
+or explicitly abandon them before starting another operation.
+
+The unused L1 runner/path selector is removed, with current cache regressions
+covering the shared proof primitives and actual Integration path instead.
+Persisted plan metadata and historical L1 artifacts are retained; this does not
+reset the Home version or remove the supported migration chain.
+
+Storage 33→34 removes Message `wakePolicy` and activation `origin` from current
+records, preserving their original representations in audit Events. Historical
+save-only Messages become `intent: record`; other user/operator Messages without
+intent become `discuss`. Runtime readers never infer a missing stored intent.
+Editing record-only context does not wake the Leader. Completion reads actual
+pending message references, including an explicit handoff of previously saved context.
+
+Draft editing also preserves request identity: messages bound to submission,
+queue/steer or handoff requests cannot change body in place. Use a new Message
+and request ID; identical-body updates are no-ops. Unkeyed discussion edits
+honor pending/failed activation, while develop edits never start planning or
+create/retry activation. These are operation-boundary fixes, not a new storage
+format or a repair of previously edited historical content.
+
+An origin-less pending immediate Draft activation blocks preflight and migration,
+including on a stopped Task. Activate or cancel it explicitly with the old release
+first. An admitted current request needs no second origin gate: cancellation,
+planning deferral, execution state and exact Session authority remain enforced.
+Old origin metadata, including settled-request history, remains in
+`task.activation-origin-retired` Events; this never fabricates authorization.
+
+New `job start` calls require `--request-id`; RPC callers supply `requestId`, and
+the capability boundary supplies its invocation identity. There is no implicit
+content-addressed request or anonymous Job constructor. Existing Jobs retain
+their operation evidence and remain addressable by ID. Retrying the same explicit
+request is idempotent, changed input conflicts, and Integration recovery still
+finds its original Job across Session replacement. Choosing a new request ID is
+an explicit new operation, not recovery of an uncertain earlier result.
+
+Core Scheduler readers and persistence operations are required ports. A missing
+Session/event reader cannot be interpreted as empty evidence or skipped error
+persistence. Task execution and Web projections read the current store directly;
+queue admission requires its Task lifecycle read. Exact dispatch settlement
+remains separate and does not gain an archive gate that could lose late evidence.
+Observer, config, Knowledge and workspace-cleanup Store readers are also required;
+test doubles implement those contracts rather than selecting production fallbacks.
+
+Task listing and `/api/dashboard` now expose only the bounded catalog; remove
+`--view compact` from callers and use per-Task reads for detail. Scheduler
+catalog projections are required internal ports, not optional full-scan adapters.
+Extra `schema.json`/`state.json` files cannot override SQLite's version or be
+used to reset a development Home; upgrades leave unrelated files untouched.
+A missing database in a non-empty Home remains a refusal to initialize.
+Unrecognized writer leases are diagnosed without adoption or deletion.
+
+`controller status` always reports identity and retains the nonzero health exit
+for contradictory storage. `YUI_STATUS_IDENTITY` no longer selects another
+contract. Update-owned lifecycle capture uses the same resource collector
+directly, without requiring the old Home to pass current-schema health.
+
+Additional current boundaries:
+
+- Project/artifact file locks and handover locks require exact process-generation
+  evidence. Missing/invalid owners or unreadable OS identity remain fenced;
+  age alone never proves a creator exited. No PID-only positive fallback remains.
+- PR head lookup uses one `gh pr list --head ... --state open` query. Only an
+  empty, valid array proves absence. Transport errors, malformed identities and
+  multiple matches fail without attempting creation.
+- Existing Git operations cannot be adopted without the Integration's original
+  progress receipt. Preserve their files and diagnose explicitly; current
+  receipt-backed conflict/Job continuation remains supported.
+
+Before rollout, settle old executions and use explicit cleanup for unsupported
+locks, links or quarantines. Preserve those records until their owner and
+disposition are established; the runtime does not choose recovery for them.
+
+The later baseline cutover must first establish a verified bridge/export to the
+chosen current format, then replace the old initialization/migration chain with
+one clean baseline. Only then remove pre-baseline migrations and their historical
+fixtures. Reset the storage baseline once; do not reset it again when tagging
+1.0.0. Keep unknown-version rejection, exact process/Host identity checks and
+durable audit evidence. Version tags and real migration/publication effects
+require their separate release authorization.
 
 ## Authorization model
 
@@ -214,9 +371,11 @@ The key is passed to every `executeStep` call for that step, including
 retries after a confirmed-absent timeout. The port contract requires
 `executeStep` to be idempotent under the same key: a retried attempt must not
 produce a second side effect. The engine side of the contract is stricter
-still — it never calls `executeStep` for a step it has marked `unknown`; it
-re-queries by the recorded identity instead. The fakes record every key, so
-the test suite proves at-most-once execution directly.
+still — it never blindly calls `executeStep` for an `unknown` step; it first
+re-queries by the recorded identity. A deterministic core scenario checks
+uncertain-effect queries, confirmed-step reuse and grant exhaustion against
+real SQLite. This proves those engine boundaries, not the idempotency of real
+external services or every release adapter.
 
 ## Operator guide
 

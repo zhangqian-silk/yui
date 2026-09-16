@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 
 import {
   requireIdentity,
@@ -24,18 +25,6 @@ export const VERIFICATION_PLAN_KIND = "verification-plan";
 
 /** The reserved knowledge marker that carries a Project's VerificationPlan. */
 export const VERIFICATION_PLAN_KNOWLEDGE_KIND = VERIFICATION_PLAN_KIND;
-
-/**
- * Rollout switch for a configured Project.
- *
- * - `record`: always run the plan gate; record the GateArtifact and count
- *   potential reuses (shadow metrics) without skipping execution.
- * - `reuse`: return an existing successful artifact for the same identity
- *   tuple instead of re-running the gate.
- * - `enforce`: `reuse` plus rejecting ad-hoc full-suite shell checks that
- *   duplicate the plan's L2 steps (targeted diagnostic checks stay allowed).
- */
-export type VerificationMode = "record" | "reuse" | "enforce";
 
 /**
  * A structured verification step. `argv` is executed without a shell so a
@@ -72,7 +61,6 @@ export type VerificationPlan = Readonly<{
   kind: typeof VERIFICATION_PLAN_KIND;
   id: string;
   version: string;
-  mode: VerificationMode;
   toolchain: VerificationToolchain;
   /** Workspace preparation (e.g. `npm ci`) run before any gate step. */
   bootstrap: readonly VerificationStep[];
@@ -104,22 +92,18 @@ export function normalizeVerificationPlan(raw: unknown): VerificationPlan {
   if (record.kind !== VERIFICATION_PLAN_KIND) {
     throw new Error(`VerificationPlan kind must be "${VERIFICATION_PLAN_KIND}".`);
   }
-  const schemaVersion = record.schemaVersion ?? VERIFICATION_PLAN_SCHEMA_VERSION;
+  const schemaVersion = record.schemaVersion;
   if (schemaVersion !== VERIFICATION_PLAN_SCHEMA_VERSION) {
     throw new Error(
       `VerificationPlan schemaVersion must be ${VERIFICATION_PLAN_SCHEMA_VERSION}.`
     );
   }
-  const mode = record.mode ?? "record";
-  if (mode !== "record" && mode !== "reuse" && mode !== "enforce") {
-    throw new Error(`VerificationPlan mode is invalid: ${String(mode)}.`);
-  }
+  if (Object.hasOwn(record, "mode")) throw new Error("VerificationPlan mode is retired; request an explicit rerun on the operation.");
   const plan: VerificationPlan = {
     schemaVersion: VERIFICATION_PLAN_SCHEMA_VERSION,
     kind: VERIFICATION_PLAN_KIND,
     id: requireIdentity(record.id as string, "VerificationPlan id"),
     version: requireText(record.version as string, "VerificationPlan version"),
-    mode,
     toolchain: normalizeToolchain(record.toolchain),
     bootstrap: normalizeSteps(record.bootstrap, "bootstrap"),
     l1: {
@@ -268,11 +252,14 @@ function normalizedTextList(raw: unknown, label: string): readonly string[] {
 
 /**
  * The stable digest of the gate contract. It deliberately excludes the
- * rollout `mode`, retention window, and documentation fields: changing the
- * rollout switch must not invalidate proven gate evidence.
+ * retention window and documentation fields. Execution semantics belong to
+ * the identity so evidence from a prior contract is never silently reused.
  */
 export function verificationPlanDigest(plan: VerificationPlan): string {
   const canonical = canonicalJson({
+    // Old artifacts may have skipped shell commands or run in the wrong cwd.
+    // Keep that history, but never reuse it as proof under corrected semantics.
+    executionContract: "workspace-argv-or-shell/clean-candidate/v4",
     id: plan.id,
     version: plan.version,
     toolchain: plan.toolchain,
@@ -310,52 +297,31 @@ export function toolchainDigest(plan: VerificationPlan, toolchain: ResolvedToolc
   return createHash("sha256").update(canonical).digest("hex");
 }
 
-/**
- * Select the L1 checks for a change: every category whose path prefixes match
- * a changed path. A category with no path prefixes matches nothing (it must
- * be selected explicitly by the caller).
- */
-export function selectL1Checks(
-  plan: VerificationPlan,
-  changedPaths: readonly string[]
-): readonly VerificationStep[] {
-  const selected = new Map<string, VerificationStep>();
-  for (const category of plan.l1.categories) {
-    if (category.paths.length === 0) continue;
-    const matches = changedPaths.some((path) =>
-      category.paths.some((prefix) => path === prefix || path.startsWith(`${prefix}/`))
-    );
-    if (!matches) continue;
-    for (const check of category.checks) {
-      if (!selected.has(check.name)) selected.set(check.name, check);
-    }
-  }
-  return Object.freeze([...selected.values()]);
-}
-
 /** Bootstrap steps as DurableJob steps, named `bootstrap-N`. */
-export function planBootstrapJobSteps(plan: VerificationPlan): readonly DurableJobStep[] {
-  return plan.bootstrap.map((step, index) => toDurableJobStep(step, `bootstrap-${index + 1}`));
+export function planBootstrapJobSteps(plan: VerificationPlan, workspace: string): readonly DurableJobStep[] {
+  return plan.bootstrap.map((step, index) => toDurableJobStep(step, `bootstrap-${index + 1}`, workspace));
 }
 
 /** L2 gate steps as DurableJob steps, named `gate-N`. */
-export function planL2JobSteps(plan: VerificationPlan): readonly DurableJobStep[] {
-  return plan.l2.steps.map((step, index) => toDurableJobStep(step, `gate-${index + 1}`));
+export function planL2JobSteps(plan: VerificationPlan, workspace: string): readonly DurableJobStep[] {
+  return plan.l2.steps.map((step, index) => toDurableJobStep(step, `gate-${index + 1}`, workspace));
 }
 
-/** L1 steps as DurableJob steps, named `l1-N`. */
-export function planL1JobSteps(steps: readonly VerificationStep[]): readonly DurableJobStep[] {
-  return steps.map((step, index) => toDurableJobStep(step, `l1-${index + 1}`));
-}
-
-function toDurableJobStep(step: VerificationStep, name: string): DurableJobStep {
+function toDurableJobStep(step: VerificationStep, name: string, workspace: string): DurableJobStep {
+  if (!isAbsolute(workspace)) throw new Error("Verification workspace must be absolute.");
+  const cwd = step.cwd === undefined ? undefined : resolve(workspace, step.cwd);
+  const nested = cwd === undefined ? "" : relative(workspace, cwd);
+  if (step.cwd !== undefined && (isAbsolute(step.cwd) || nested === ".."
+    || nested.startsWith(`..${sep}`) || isAbsolute(nested))) {
+    throw new Error(`Verification step cwd is outside its workspace: ${step.name}.`);
+  }
   return {
     name,
     // The shell-equivalent command stays as the human-readable fallback and
     // the coverage-matching string; argv is the executable form.
     command: step.shell === true ? step.argv.join(" ") : shellQuote(step.argv),
-    argv: step.argv,
-    ...(step.cwd === undefined ? {} : { cwd: step.cwd }),
+    ...(step.shell === true ? {} : { argv: step.argv }),
+    ...(cwd === undefined ? {} : { cwd }),
     ...(step.env === undefined ? {} : { env: step.env })
   };
 }
