@@ -82,10 +82,13 @@ how the Agent ordered them.
 
 A configured VerificationPlan reuses only complete, successful, log-verified
 evidence for the exact Project, commit, plan, toolchain and target/base boundary.
-A plan with no reusable evidence executes normally. The unused L1 execution and
-path-selector helpers have been removed; stored L1 plan data and historical
-artifacts remain readable, not an automatic execution path.
-Plans require `schemaVersion: 1`; there is no `record/reuse/enforce` mode.
+A plan with no reusable evidence executes normally. Plans require
+`schemaVersion: 2` and contain no `l1` or `record/reuse/enforce` mode.
+Storage 34→35 preserves the original Project declarations, L1 artifacts and
+binary logs in migration audit storage, outside current execution and cache
+lookup. Historical `historical-change-sets` Integrations must be settled and
+free of execution/delivery references before their exact payloads become
+`integration.source-retired` Task Events. Their IDs are never reused.
 
 Request fresh checks when creating an operation:
 
@@ -106,7 +109,7 @@ Unstructured checks do not search historical Jobs for a substitute result.
 Fresh execution withdraws the old success before starting. Failure is recorded
 as failure; interruption, missing logs or a mutated candidate leave no reusable
 success. Both Job and local execution verify the exact clean candidate before
-publishing successful proof. The v4 execution digest excludes older proof without
+publishing successful proof. The v5 L2-only execution digest excludes older proof without
 deleting its history. A stale
 cache consumer cannot restore an older result. Release lookup considers the
 newest recorded matching proof rather than searching past a failure for an
@@ -263,6 +266,8 @@ the parent receipt owns recovery of its contents, and redundant child registry
 entries are removed in the same registry transaction. Independently owned Git
 worktrees or retained descendants prevent moving their enclosing directory.
 Task records and results are never removed by this consolidation.
+Session process custody comes from SQLite `session_owners`, with live PID and
+start-identity checks. The retired JSON owner directory is not a parallel source.
 
 The plan is not cleanup authority. Apply and purge re-read Task status, managed
 workspaces, active Runs and unsettled Jobs under the existing SQLite writer

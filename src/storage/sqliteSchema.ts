@@ -33,6 +33,7 @@ import { migrateNotificationOnlyWakes } from "./migrations/notificationOnlyWakes
 import { migrateWorkItemHistory } from "./migrations/workItemHistory.js";
 import { migrateVerificationPolicy } from "./migrations/verificationPolicy.js";
 import { migrateCurrentInputContract } from "./migrations/currentInputContract.js";
+import { CURRENT_RUNTIME_CONTRACT_SQL, migrateCurrentRuntimeContract } from "./migrations/currentRuntimeContract.js";
 import {
   UNIFY_HOME_LAYOUT_SQL,
   migrateUnifyHomeLayout
@@ -1450,6 +1451,13 @@ WHERE json_type(payload, '$.scope') IS NULL
     introducedIn: "0.16.0",
     sql: "SELECT 1; -- Archive retired Message wake policies and activation origin gates",
     migrateData: migrateCurrentInputContract
+  },
+  {
+    version: 35,
+    name: "current-verification-and-owner-contract",
+    introducedIn: "0.16.0",
+    sql: CURRENT_RUNTIME_CONTRACT_SQL,
+    migrateData: migrateCurrentRuntimeContract
   }
 ]);
 
@@ -1895,6 +1903,7 @@ export function migrateSqliteSchema(
 
 /** The names of every table the schema creates (for tests/introspection). */
 export const SQLITE_SCHEMA_TABLES: readonly string[] = [
+  "storage_migration_archive",
   "plugin_intents",
   "plugin_validations",
   "local_resources",

@@ -175,6 +175,11 @@ is required.
     Real local runtime directories move once through quarantine/restore/purge;
     current durable ownership overrides a stale cleanup plan and prevents
     purging a reopened Task.
+34. Current CLI rejects `task turn`; completion has one identity and preserves
+    unrelated shell content through install/uninstall. GC protects exact live
+    SQLite Session custody without consulting old JSON. The 34→35 cutover
+    preserves raw retired payloads/log bytes and identity counters, blocks
+    unsettled gates/custody, and rolls back malformed conversions.
 
 Keep the test phase seconds-scale; measure TypeScript build separately. Record
 incremental runtime when adding a critical regression. The seven recovery boundary

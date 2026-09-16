@@ -1,4 +1,3 @@
-import type { CliIdentity } from "../cli/completion.js";
 import type {
   CompletionInstallRequest,
   CompletionOverview,
@@ -20,31 +19,27 @@ import {
 export class FileCompletionManager implements CompletionPort {
   readonly #store: CompletionStore;
   readonly #env: NodeJS.ProcessEnv;
-  readonly #identity: CliIdentity;
 
   constructor(
     store: CompletionStore,
-    env: NodeJS.ProcessEnv,
-    identity: CliIdentity
+    env: NodeJS.ProcessEnv
   ) {
     this.#store = store;
     this.#env = { ...env };
-    this.#identity = identity;
   }
 
   inspect(): CompletionOverview {
     const config = this.#store.getConfig();
     const currentShell = currentCompletionShell(this.#env);
     const states = COMPLETION_SHELLS.map((shell): CompletionPortState => {
-      const suggested = suggestedCompletionInstallation(shell, this.#env, this.#identity);
+      const suggested = suggestedCompletionInstallation(shell, this.#env);
       const stored = config.completionInstallations?.[shell];
       const installation = stored ?? suggested;
-      const scriptCurrent = completionScriptIsCurrent(shell, installation, this.#identity);
+      const scriptCurrent = completionScriptIsCurrent(shell, installation);
       const activationCurrent = completionActivationIsCurrent(
         shell,
         installation,
-        this.#env,
-        this.#identity
+        this.#env
       );
       const status: CompletionStatus = scriptCurrent && activationCurrent
         ? "Installed"
@@ -64,7 +59,7 @@ export class FileCompletionManager implements CompletionPort {
       });
     });
     return Object.freeze({
-      identity: this.#identity,
+      identity: "yui",
       ...(currentShell === undefined ? {} : { currentShell }),
       states: Object.freeze(states)
     });
@@ -76,12 +71,7 @@ export class FileCompletionManager implements CompletionPort {
       request.shell,
       request.installation,
       this.#env,
-      this.#identity,
       request.activate
     );
   }
-}
-
-export function resolveCliIdentity(env: NodeJS.ProcessEnv): CliIdentity {
-  return env.YUI_CLI_NAME === "yui-dev" ? "yui-dev" : "yui";
 }

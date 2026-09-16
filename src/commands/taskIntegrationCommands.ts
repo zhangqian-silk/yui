@@ -459,9 +459,7 @@ function integrationSourceLabel(integration: IntegrationAttempt): string {
       integration.source.resultCommit.slice(0, 12)
     }`;
   }
-  return integration.source.kind === "upstream"
-    ? `upstream:${integration.source.branch}@${integration.source.remoteCommit.slice(0, 12)}`
-    : `historical:${integration.source.changeSetIds.join(",")}`;
+  return `upstream:${integration.source.branch}@${integration.source.remoteCommit.slice(0, 12)}`;
 }
 
 function requireIntegration(

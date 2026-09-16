@@ -1087,11 +1087,6 @@ function integrationSummary(attempt: IntegrationAttempt): string {
       ? `Upstream ${attempt.source.remoteCommit} was already represented; Task head was unchanged.`
       : `Rebased Task changes onto upstream ${attempt.source.remoteCommit}.`;
   }
-  if (attempt.source.kind === "historical-change-sets") {
-    return unchanged
-      ? "Historical Integration was already represented; Task head was unchanged."
-      : "Historical Integration advanced the Task head.";
-  }
   if (attempt.source.strategy === "manual") {
     const decision = attempt.resolution;
     if (decision?.action !== "manual-resolution") {

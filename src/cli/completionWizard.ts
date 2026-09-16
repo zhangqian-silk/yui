@@ -74,7 +74,7 @@ export async function runCompletionWizard(
   let activationReady = automatic;
   if (!automatic) {
     const activationAnswer = normalize(await io.question(
-      `${activationBlock(state.shell, installation, overview.identity)}\n`
+      `${activationBlock(state.shell, installation)}\n`
         + `Update ${installation.activationPath} with this managed Yui block? [Y/n]: `
     ));
     if (

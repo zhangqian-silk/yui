@@ -76,22 +76,16 @@ export function gateIdentityForCandidate(input: Readonly<{
   targetRef?: string;
   baseHead?: string;
 }>): GateArtifactIdentity {
-  if (input.level === "L2" && (input.targetRef === undefined || input.baseHead === undefined)) {
+  if (input.level !== "L2" || input.targetRef === undefined || input.baseHead === undefined) {
     throw new Error("L2 verification requires its exact target ref and base head.");
   }
-  const boundary = input.level === "L2"
-    ? {
-        targetRef: input.targetRef!,
-        baseHead: input.baseHead!
-      }
-    : undefined;
   return Object.freeze({
     projectId: input.projectId,
     level: input.level,
     commit: input.commit,
     planDigest: input.gate.planDigest,
     toolchainDigest: input.gate.toolchainDigest,
-    ...(boundary === undefined ? {} : { boundary })
+    boundary: { targetRef: input.targetRef, baseHead: input.baseHead }
   });
 }
 
@@ -163,7 +157,7 @@ export async function recordGateArtifactFromJob(
   return recordGateArtifact(store, identity, plan, steps, job.result?.outcome === "succeeded", now);
 }
 
-/** One in-process step outcome (L1 or the jobless L2 fallback). */
+/** One local L2 step outcome. */
 export type GateStepOutcome = Readonly<{
   name: string;
   command: string;
@@ -226,8 +220,7 @@ const GATE_STEP_TIMEOUT_MS = 30 * 60_000;
 const SIGKILL_GRACE_MS = 2_000;
 
 /**
- * Run structured gate steps in-process (L1 targeted checks and the jobless
- * L2 fallback). Each step gets its own log file; argv steps run without a
+ * Run structured gate steps in-process. Each step gets its own log file; argv steps run without a
  * shell. This is the local form of the gate; the DurableJob form is the
  * Controller-owned one used by production Integration.
  */

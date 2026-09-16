@@ -317,7 +317,6 @@ export function latestRunDurableProgressAt(
       source: Readonly<
         | { kind: "work-item"; workItemId: string }
         | { kind: "upstream" }
-        | { kind: "historical-change-sets" }
       >;
     }>[];
     listInputRequests(taskId: string): readonly Readonly<{

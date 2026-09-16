@@ -7,8 +7,6 @@ import {
 } from "./commandCatalog.js";
 import { findInteractionPolicy } from "./interactionPolicy.js";
 
-export type CliIdentity = "yui" | "yui-dev";
-
 type Entry = Readonly<{
   path: string;
   immediate: readonly string[];
@@ -17,15 +15,12 @@ type Entry = Readonly<{
   dynamicOptions: readonly string[];
 }>;
 
-export function renderCompletion(
-  shell: string | undefined,
-  identity: CliIdentity = "yui"
-): string {
+export function renderCompletion(shell: string | undefined): string {
   const entries = collectEntries(ROOT_COMMAND);
   switch (shell) {
-    case "bash": return renderBash(entries, identity);
-    case "zsh": return renderZsh(entries, identity);
-    case "fish": return renderFish(entries, identity);
+    case "bash": return renderBash(entries);
+    case "zsh": return renderZsh(entries);
+    case "fish": return renderFish(entries);
     default: throw new Error("Completion shell must be one of bash, zsh, fish.");
   }
 }
@@ -55,8 +50,8 @@ function manifest(prefix: string): string {
   return listPublicCommandPaths().map((path) => `${prefix} ${path}`).join("\n");
 }
 
-function renderBash(entries: readonly Entry[], identity: CliIdentity): string {
-  const functionName = identity === "yui" ? "_yui" : "_yui_dev";
+function renderBash(entries: readonly Entry[]): string {
+  const functionName = "_yui";
   return `${manifest("# yui command:")}
 ${functionName}() {
   local current path previous dynamic_candidate dynamic=false
@@ -80,7 +75,7 @@ ${bashDynamicOptionCases(entries)}
   if [[ "$dynamic" == true ]]; then
     while IFS= read -r dynamic_candidate; do
       [[ -n "$dynamic_candidate" ]] && dynamic_candidates+=("$dynamic_candidate")
-    done < <(command ${identity} config completion candidates "$current" -- "\${COMP_WORDS[@]:1:COMP_CWORD-1}" 2>/dev/null)
+    done < <(command yui config completion candidates "$current" -- "\${COMP_WORDS[@]:1:COMP_CWORD-1}" 2>/dev/null)
     candidates=("\${dynamic_candidates[@]}")
   elif [[ "$current" == -* ]]; then
     case "$path" in
@@ -95,12 +90,12 @@ ${entries.map((entry) => `      ${bashPattern(entry.path)}) candidates=(${[...en
   fi
   COMPREPLY=( $(compgen -W "\${candidates[*]}" -- "$current") )
 }
-complete -F ${functionName} ${identity}
+complete -F ${functionName} yui
 `;
 }
 
-function renderZsh(entries: readonly Entry[], identity: CliIdentity): string {
-  return `#compdef ${identity}
+function renderZsh(entries: readonly Entry[]): string {
+  return `#compdef yui
 ${manifest("# yui command:")}
 local current command_path previous dynamic_output dynamic=false
 local -a candidates
@@ -121,7 +116,7 @@ ${zshDynamicOptionCases(entries)}
   esac
 fi
 if [[ "$dynamic" == true ]]; then
-  dynamic_output="$(command ${identity} config completion candidates "$current" -- "\${(@)words[2,CURRENT-1]}" 2>/dev/null)"
+  dynamic_output="$(command yui config completion candidates "$current" -- "\${(@)words[2,CURRENT-1]}" 2>/dev/null)"
   candidates=("\${(@f)dynamic_output}")
 elif [[ "$current" == -* ]]; then
   case "$command_path" in
@@ -138,8 +133,8 @@ fi
 `;
 }
 
-function renderFish(entries: readonly Entry[], identity: CliIdentity): string {
-  const prefix = `__${identity.replaceAll("-", "_")}`;
+function renderFish(entries: readonly Entry[]): string {
+  const prefix = "__yui";
   const lines = [
     manifest("# yui command:"),
     `function ${prefix}_at_path`,
@@ -178,20 +173,20 @@ function renderFish(entries: readonly Entry[], identity: CliIdentity): string {
     "end",
     `function ${prefix}_dynamic`,
     "  set -l words (commandline -opc)",
-    `  ${identity} config completion candidates (commandline -ct) -- $words[2..-1] 2>/dev/null`,
+    "  yui config completion candidates (commandline -ct) -- $words[2..-1] 2>/dev/null",
     "end"
   ];
   for (const entry of entries) {
     for (const argument of entry.dynamicArguments) {
       const condition = `${prefix}_needs_dynamic argument ${argument} ${fishPath(entry.path)}`;
       lines.push(
-        `complete -c ${identity} -f -n ${fishQuote(condition)} -a '(${prefix}_dynamic)'`
+        `complete -c yui -f -n ${fishQuote(condition)} -a '(${prefix}_dynamic)'`
       );
     }
     for (const option of entry.dynamicOptions) {
       const condition = `${prefix}_needs_dynamic option ${option} ${fishPath(entry.path)}`;
       lines.push(
-        `complete -c ${identity} -f -n ${fishQuote(condition)} -a '(${prefix}_dynamic)'`
+        `complete -c yui -f -n ${fishQuote(condition)} -a '(${prefix}_dynamic)'`
       );
     }
   }
@@ -201,7 +196,7 @@ function renderFish(entries: readonly Entry[], identity: CliIdentity): string {
         ? "__fish_use_subcommand"
         : `${prefix}_at_path ${fishPath(entry.path)}${fishInitialDynamicExclusion(entry, prefix)}`;
       lines.push(
-        `complete -c ${identity} -f -n ${fishQuote(condition)} -a '${escapeSingle(entry.immediate.join(" "))}'`
+        `complete -c yui -f -n ${fishQuote(condition)} -a '${escapeSingle(entry.immediate.join(" "))}'`
       );
     }
     if (entry.options.length > 0) {
@@ -209,7 +204,7 @@ function renderFish(entries: readonly Entry[], identity: CliIdentity): string {
       const exact = `${prefix}_at_path ${path}${fishInitialDynamicExclusion(entry, prefix)}`;
       const condition = `begin; ${exact}; end; or ${prefix}_at_command_options ${path}`;
       lines.push(
-        `complete -c ${identity} -f -n ${fishQuote(condition)} -a '${escapeSingle(entry.options.join(" "))}'`
+        `complete -c yui -f -n ${fishQuote(condition)} -a '${escapeSingle(entry.options.join(" "))}'`
       );
     }
   }

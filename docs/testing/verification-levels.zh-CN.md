@@ -131,6 +131,10 @@ Job 读取在 Controller 入口执行 Context 范围检查。真实本地 runtim
 只移动一次，隔离、恢复与清除可闭环；最新持久所有权优先于旧清理计划，
 Task 重新打开后不能被 purge。
 
+当前合同回归还覆盖：拒绝 `task turn`，单一补全身份在安装／卸载后保留无关
+shell 内容；GC 读取精确的 SQLite Session 归属而不读取旧 JSON；`34→35` 保留
+退休 payload、日志字节和身份计数，阻止未结算 gate／旧归属，并完整回滚无效转换。
+
 ## Skill 与指令变更
 
 一并审阅共享的 Runtime 合同和受影响的 Role/Project Skill。用几个相关场景检查指令

@@ -1106,7 +1106,6 @@ function renderEnvironment(rootExpression, homeFromRoot, binExpression) {
   return `if [ -z "\${YUI_HOME:-}" ]; then
   export YUI_HOME=${rootExpression}/${shellQuote(homeFromRoot)}
 fi
-export YUI_CLI_NAME=yui
 case ":$PATH:" in
   *:${binExpression}:*) ;;
   *) export PATH=${binExpression}:"$PATH" ;;

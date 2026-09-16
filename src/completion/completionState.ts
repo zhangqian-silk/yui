@@ -1,7 +1,6 @@
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
-import type { CliIdentity } from "../cli/completion.js";
 import { renderCompletion } from "../cli/completion.js";
 import { dataError } from "../errors/cliError.js";
 import { defaultTableWidth, renderTable } from "../output/table.js";
@@ -42,8 +41,7 @@ export function currentCompletionShell(env: NodeJS.ProcessEnv): CompletionShell 
 
 export function suggestedCompletionInstallation(
   shell: CompletionShell,
-  env: NodeJS.ProcessEnv,
-  identity: CliIdentity
+  env: NodeJS.ProcessEnv
 ): CompletionInstallation {
   const home = absoluteEnvRoot("HOME", env.HOME);
   if (shell === "bash") {
@@ -51,7 +49,7 @@ export function suggestedCompletionInstallation(
       ? join(home, ".local", "share")
       : absoluteEnvRoot("XDG_DATA_HOME", env.XDG_DATA_HOME);
     return {
-      scriptPath: join(data, "bash-completion", "completions", identity),
+      scriptPath: join(data, "bash-completion", "completions", "yui"),
       activationPath: join(home, ".bashrc")
     };
   }
@@ -60,7 +58,7 @@ export function suggestedCompletionInstallation(
       ? home
       : absoluteEnvRoot("ZDOTDIR", env.ZDOTDIR);
     return {
-      scriptPath: join(zshRoot, ".zfunc", `_${identity}`),
+      scriptPath: join(zshRoot, ".zfunc", "_yui"),
       activationPath: join(zshRoot, ".zshrc")
     };
   }
@@ -68,15 +66,14 @@ export function suggestedCompletionInstallation(
     ? join(home, ".config")
     : absoluteEnvRoot("XDG_CONFIG_HOME", env.XDG_CONFIG_HOME);
   return {
-    scriptPath: join(config, "fish", "completions", `${identity}.fish`),
+    scriptPath: join(config, "fish", "completions", "yui.fish"),
     activationPath: join(config, "fish", "config.fish")
   };
 }
 
 export function inspectCompletionStates(
   config: CompletionConfig,
-  env: NodeJS.ProcessEnv,
-  identity: CliIdentity
+  env: NodeJS.ProcessEnv
 ): CompletionState[] {
   const current = currentCompletionShell(env);
   return COMPLETION_SHELLS.map((shell) => {
@@ -89,8 +86,8 @@ export function inspectCompletionStates(
         current: shell === current
       };
     }
-    const installed = completionScriptIsCurrent(shell, installation, identity)
-      && completionActivationIsCurrent(shell, installation, env, identity);
+    const installed = completionScriptIsCurrent(shell, installation)
+      && completionActivationIsCurrent(shell, installation, env);
     return {
       shell,
       status: installed ? "Installed" : "Needs repair",
@@ -127,48 +124,43 @@ export function renderCompletionStateTable(
   );
 }
 
-export function managedCompletionScript(
-  shell: CompletionShell,
-  identity: CliIdentity
-): string {
-  return `${completionMarker(shell, identity)}\n${renderCompletion(shell, identity)}`;
+export function managedCompletionScript(shell: CompletionShell): string {
+  return `${completionMarker(shell)}\n${renderCompletion(shell)}`;
 }
 
-export function completionMarker(shell: CompletionShell, identity: CliIdentity): string {
-  return `# yui-completion: managed shell=${shell} identity=${identity} format=1`;
+export function completionMarker(shell: CompletionShell): string {
+  return `# yui-completion: managed shell=${shell} identity=yui format=1`;
 }
 
 export function activationBlock(
   shell: CompletionShell,
-  installation: CompletionInstallation,
-  identity: CliIdentity
+  installation: CompletionInstallation
 ): string {
-  const start = activationStart(shell, identity);
-  const end = activationEnd(shell, identity);
+  const start = activationStart(shell);
+  const end = activationEnd(shell);
   const source = `source ${shellQuote(installation.scriptPath)}`;
   const functionName = basename(installation.scriptPath);
   const body = shell === "zsh"
-    ? `fpath=(${shellQuote(dirname(installation.scriptPath))} $fpath)\nautoload -Uz compinit\n(( $+functions[compdef] )) || compinit\nautoload -Uz -- ${shellQuote(functionName)}\ncompdef ${shellQuote(functionName)} ${shellQuote(identity)}`
+    ? `fpath=(${shellQuote(dirname(installation.scriptPath))} $fpath)\nautoload -Uz compinit\n(( $+functions[compdef] )) || compinit\nautoload -Uz -- ${shellQuote(functionName)}\ncompdef ${shellQuote(functionName)} 'yui'`
     : source;
   return `${start}\n${body}\n${end}`;
 }
 
-export function activationStart(shell: CompletionShell, identity: CliIdentity): string {
-  return `# >>> yui completion shell=${shell} identity=${identity} >>>`;
+export function activationStart(shell: CompletionShell): string {
+  return `# >>> yui completion shell=${shell} identity=yui >>>`;
 }
 
-export function activationEnd(shell: CompletionShell, identity: CliIdentity): string {
-  return `# <<< yui completion shell=${shell} identity=${identity} <<<`;
+export function activationEnd(shell: CompletionShell): string {
+  return `# <<< yui completion shell=${shell} identity=yui <<<`;
 }
 
 export function activationIsAutomatic(
   shell: CompletionShell,
   installation: CompletionInstallation,
-  env: NodeJS.ProcessEnv,
-  identity: CliIdentity
+  env: NodeJS.ProcessEnv
 ): boolean {
   return shell === "fish"
-    && installation.scriptPath === suggestedCompletionInstallation(shell, env, identity).scriptPath;
+    && installation.scriptPath === suggestedCompletionInstallation(shell, env).scriptPath;
 }
 
 export function shellQuote(value: string): string {
@@ -177,23 +169,21 @@ export function shellQuote(value: string): string {
 
 export function completionScriptIsCurrent(
   shell: CompletionShell,
-  installation: CompletionInstallation,
-  identity: CliIdentity
+  installation: CompletionInstallation
 ): boolean {
   return safeRegularFile(installation.scriptPath)
-    && readFileSync(installation.scriptPath, "utf8") === managedCompletionScript(shell, identity);
+    && readFileSync(installation.scriptPath, "utf8") === managedCompletionScript(shell);
 }
 
 export function completionActivationIsCurrent(
   shell: CompletionShell,
   installation: CompletionInstallation,
-  env: NodeJS.ProcessEnv,
-  identity: CliIdentity
+  env: NodeJS.ProcessEnv
 ): boolean {
-  if (activationIsAutomatic(shell, installation, env, identity)) return true;
+  if (activationIsAutomatic(shell, installation, env)) return true;
   if (!safeRegularFile(installation.activationPath)) return false;
   const contents = readFileSync(installation.activationPath, "utf8");
-  const block = activationBlock(shell, installation, identity);
+  const block = activationBlock(shell, installation);
   return contents.split(block).length === 2;
 }
 

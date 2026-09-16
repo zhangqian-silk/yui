@@ -68,7 +68,7 @@ async function runGcCommand(
   const home = resolve(store.rootDirectory());
   const mode = resolveGcMode(store);
 
-  const { projects, managedWorkspaces, taskStatusById, activeWorkspaceOwnerPaths } = readResourceGcState(store);
+  const { projects, managedWorkspaces, taskStatusById, activeWorkspaceOwnerPaths, sessionOwners } = readResourceGcState(store);
 
   if (action === "restore") {
     const result = await restoreAllResourceGc(home, { now });
@@ -95,6 +95,7 @@ async function runGcCommand(
 
   const plan = await planResourceGc({
     home,
+    sessionOwners,
     projects,
     managedWorkspaces,
     taskStatusById,
@@ -107,6 +108,7 @@ async function runGcCommand(
   if (action === "apply" && mode === "quarantine") {
     const result = await applyResourceGc({
       home,
+      sessionOwners,
       projects,
       managedWorkspaces,
       taskStatusById,

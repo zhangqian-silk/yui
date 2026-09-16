@@ -11,7 +11,6 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
-import type { CliIdentity } from "../cli/completion.js";
 import { dataError } from "../errors/cliError.js";
 import {
   activationBlock,
@@ -36,11 +35,10 @@ export function installCompletion(
   shell: CompletionShell,
   installation: CompletionInstallation,
   env: NodeJS.ProcessEnv,
-  identity: CliIdentity,
   activate: boolean
 ): void {
   validateInstallation(installation);
-  writeManagedScript(shell, installation.scriptPath, identity);
+  writeManagedScript(shell, installation.scriptPath);
   store.transaction((tx) => {
     const config = tx.getConfig();
     tx.saveConfig({
@@ -51,25 +49,24 @@ export function installCompletion(
       }
     });
   });
-  if (!activationIsAutomatic(shell, installation, env, identity) && activate) {
-    writeActivationBlock(shell, installation, identity);
+  if (!activationIsAutomatic(shell, installation, env) && activate) {
+    writeActivationBlock(shell, installation);
   }
 }
 
 export function uninstallCompletion(
   store: CompletionStore,
-  shell: CompletionShell,
-  identity: CliIdentity
+  shell: CompletionShell
 ): void {
   store.transaction((tx) => {
     const config = tx.getConfig();
     const installation = config.completionInstallations?.[shell];
     if (installation === undefined) return;
 
-    assertManagedScriptRemovable(shell, installation.scriptPath, identity);
-    assertActivationRemovable(shell, installation, identity);
-    removeManagedScript(shell, installation.scriptPath, identity);
-    removeActivationBlock(shell, installation, identity);
+    assertManagedScriptRemovable(shell, installation.scriptPath);
+    assertActivationRemovable(shell, installation);
+    removeManagedScript(shell, installation.scriptPath);
+    removeActivationBlock(shell, installation);
     const installations = { ...config.completionInstallations };
     delete installations[shell];
     if (Object.keys(installations).length > 0) {
@@ -83,15 +80,14 @@ export function uninstallCompletion(
 
 function assertManagedScriptRemovable(
   shell: CompletionShell,
-  path: string,
-  identity: CliIdentity
+  path: string
 ): void {
   if (!existsSync(path)) return;
   const stat = lstatSync(path);
   if (
     !stat.isFile()
     || stat.isSymbolicLink()
-    || !readFileSync(path, "utf8").startsWith(completionMarker(shell, identity))
+    || !readFileSync(path, "utf8").startsWith(completionMarker(shell))
   ) {
     throw dataError(`Refusing to remove unmanaged completion script: ${path}`);
   }
@@ -99,8 +95,7 @@ function assertManagedScriptRemovable(
 
 function assertActivationRemovable(
   shell: CompletionShell,
-  installation: CompletionInstallation,
-  identity: CliIdentity
+  installation: CompletionInstallation
 ): void {
   const path = installation.activationPath;
   if (!existsSync(path)) return;
@@ -109,8 +104,8 @@ function assertActivationRemovable(
     throw dataError(`Refusing to modify unsafe activation file: ${path}`);
   }
   const contents = readFileSync(path, "utf8");
-  const starts = occurrences(contents, activationStart(shell, identity));
-  const ends = occurrences(contents, activationEnd(shell, identity));
+  const starts = occurrences(contents, activationStart(shell));
+  const ends = occurrences(contents, activationEnd(shell));
   if (starts !== ends || starts > 1) {
     throw dataError(`Refusing to remove ambiguous Yui activation block: ${path}`);
   }
@@ -118,25 +113,23 @@ function assertActivationRemovable(
 
 function writeManagedScript(
   shell: CompletionShell,
-  path: string,
-  identity: CliIdentity
+  path: string
 ): void {
   if (existsSync(path)) {
     const stat = lstatSync(path);
     if (!stat.isFile() || stat.isSymbolicLink()) {
       throw dataError(`Refusing to overwrite unsafe completion script: ${path}`);
     }
-    if (!readFileSync(path, "utf8").startsWith(completionMarker(shell, identity))) {
+    if (!readFileSync(path, "utf8").startsWith(completionMarker(shell))) {
       throw dataError(`Refusing to overwrite unmanaged completion script: ${path}`);
     }
   }
-  writeAtomic(path, managedCompletionScript(shell, identity), 0o644);
+  writeAtomic(path, managedCompletionScript(shell), 0o644);
 }
 
 function writeActivationBlock(
   shell: CompletionShell,
-  installation: CompletionInstallation,
-  identity: CliIdentity
+  installation: CompletionInstallation
 ): void {
   const path = installation.activationPath;
   let contents = "";
@@ -149,14 +142,14 @@ function writeActivationBlock(
     contents = readFileSync(path, "utf8");
     mode = stat.mode & 0o777;
   }
-  const start = activationStart(shell, identity);
-  const end = activationEnd(shell, identity);
+  const start = activationStart(shell);
+  const end = activationEnd(shell);
   const starts = occurrences(contents, start);
   const ends = occurrences(contents, end);
   if (starts > 1 || ends > 1 || starts !== ends) {
     throw dataError(`Refusing to modify ambiguous Yui activation block: ${path}`);
   }
-  const block = activationBlock(shell, installation, identity);
+  const block = activationBlock(shell, installation);
   const next = starts === 1
     ? replaceManagedBlock(contents, start, end, block)
     : `${contents}${contents.length === 0 || contents.endsWith("\n") ? "" : "\n"}${block}\n`;
@@ -165,15 +158,14 @@ function writeActivationBlock(
 
 function removeManagedScript(
   shell: CompletionShell,
-  path: string,
-  identity: CliIdentity
+  path: string
 ): void {
   if (!existsSync(path)) return;
   const stat = lstatSync(path);
   if (
     !stat.isFile()
     || stat.isSymbolicLink()
-    || !readFileSync(path, "utf8").startsWith(completionMarker(shell, identity))
+    || !readFileSync(path, "utf8").startsWith(completionMarker(shell))
   ) {
     throw dataError(`Refusing to remove unmanaged completion script: ${path}`);
   }
@@ -182,8 +174,7 @@ function removeManagedScript(
 
 function removeActivationBlock(
   shell: CompletionShell,
-  installation: CompletionInstallation,
-  identity: CliIdentity
+  installation: CompletionInstallation
 ): void {
   const path = installation.activationPath;
   if (!existsSync(path)) return;
@@ -192,8 +183,8 @@ function removeActivationBlock(
     throw dataError(`Refusing to modify unsafe activation file: ${path}`);
   }
   const contents = readFileSync(path, "utf8");
-  const start = activationStart(shell, identity);
-  const end = activationEnd(shell, identity);
+  const start = activationStart(shell);
+  const end = activationEnd(shell);
   const starts = occurrences(contents, start);
   const ends = occurrences(contents, end);
   if (starts !== ends || starts > 1) {

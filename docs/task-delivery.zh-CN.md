@@ -65,10 +65,12 @@ Integration 在候选 worktree 中套用固定来源提交，运行已配置的�
 ### 验证复用与显式重跑
 
 配置了 VerificationPlan 的项目，默认只复用完整成功、日志可校验，且 Project、
-提交、计划、工具链、目标 ref／基线都精确匹配的证据。未接入生产的 L1 执行入口
-和路径选择器已移除；已有 L1 计划数据及历史证据保持可读，不是自动执行路径。
+提交、计划、工具链、目标 ref／基线都精确匹配的证据。存储 `34→35` 将原始 Project
+计划、L1 artifact 和二进制日志保存在迁移审计存档，不再进入当前执行与缓存读取。
+`historical-change-sets` Integration 必须先结算且不存在执行／交付引用，才能将
+完整 payload 转为 `integration.source-retired` Task 事件；旧 ID 不会复用。
 无匹配证据时正常执行。
-计划必须提供 `schemaVersion: 1`，不再包含 `record/reuse/enforce` 模式。
+计划必须提供 `schemaVersion: 2`，不再包含 `l1` 或 `record/reuse/enforce` 模式。
 
 新建操作时显式要求重跑：
 
@@ -86,7 +88,7 @@ yui task upstream integrate <task> --project <project> --rerun-checks
 
 新执行开始前撤下旧成功。失败如实记录；中断、缺失日志或候选被改写时，
 不会保留可复用成功。Job 和本地执行在发布成功证据前，共同检查候选的精确提交、
-分支和干净状态。v4 执行摘要隔离旧证据，不删除原有历史。
+分支和干净状态。v5 L2-only 执行摘要隔离旧证据，不删除原有历史。
 过期的缓存使用者不能恢复旧结果。发布查询查看最新匹配证据，不跳过失败去找旧绿灯。
 缓存只表示当前可复用证据，不充当 Task 执行历史；原 Job 和 Integration 记录独立保留。
 
@@ -203,6 +205,8 @@ Force 不验证合并、不验收工作、不证明物理静止、不丢弃脏�
 资源 GC 是独立、显式启用的隔离路径。同一 runtime 子树只移动一次，由父目录
 回执负责恢复完整内容；重复的子目录 registry 记录在同一事务内移除。
 独立 Git worktree 或仍需保留的子资源会阻止移动其父目录，不删除 Task 记录或成果。
+Session 进程归属只读取 SQLite `session_owners`，并校验存活 PID 和启动身份；
+旧 JSON owner 目录不再作为并行来源。
 
 清理计划不是执行授权。Apply 与 purge 在现有 SQLite 写锁内重读 Task 状态、
 受管工作区、active Run 和未结算 Job，并保持写锁直到有界文件操作与 registry

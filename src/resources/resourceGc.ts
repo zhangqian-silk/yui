@@ -30,6 +30,7 @@ import type { TaskStore } from "../storage/taskStore.js";
 
 import {
   scanLiveReferences,
+  readSessionOwnerClaims,
   type LiveReferencePorts,
   type LiveReferenceScan
 } from "./liveReferences.js";
@@ -80,6 +81,7 @@ export type ResourceGcInput = Readonly<{
   home: string;
   /** Registry store; when omitted the GC engine creates one from the Home. */
   registryStore?: ResourceRegistryStore;
+  sessionOwners: readonly import("../runtime/sessionOwnerIdentity.js").SessionOwnerIdentity[];
   projects: readonly import("../repository/project.js").Project[];
   managedWorkspaces: readonly import("../worktree/managedWorkspace.js").ManagedWorkspace[];
   taskStatusById: ReadonlyMap<string, string>;
@@ -109,6 +111,7 @@ export function readResourceGcState(store: TaskStore) {
     const tasks = reader.listTasks();
     return {
       projects: reader.listProjects(),
+      sessionOwners: reader.listSessionOwners(),
       managedWorkspaces: tasks.flatMap(task => reader.listManagedWorkspaces(task.id)),
       taskStatusById: new Map(tasks.map(task => [task.id, task.status])),
       activeWorkspaceOwnerPaths: tasks.flatMap(task => [
@@ -141,6 +144,11 @@ function currentDurableRefs(record: ResourceRecord, state: ReturnType<typeof rea
     ...state.activeWorkspaceOwnerPaths
   ];
   if (paths.some(path => within(path, record.path) || within(record.path, path))) refs.push("durable-owner");
+  const custody = readSessionOwnerClaims(state.sessionOwners);
+  if (custody.diagnostics.some(diagnostic => diagnostic.severity === "error")) refs.push("session-owner-unproven");
+  if (custody.claims.some(claim => within(claim.path, record.path) || within(record.path, claim.path))) {
+    refs.push("live-session-owner");
+  }
   return refs;
 }
 
@@ -165,6 +173,7 @@ export async function planResourceGc(input: ResourceGcInput): Promise<GcPlan> {
   appendRegistryScanPaths(registry, paths, home);
   const scan = await scanLiveReferences({
     home,
+    sessionOwners: input.sessionOwners,
     paths,
     environment: input.environment,
     tmuxServerName: input.tmuxServerName,
@@ -421,7 +430,7 @@ export async function applyResourceGc(
       continue;
     }
     const scan = await scanLiveReferences({
-      home, paths: [candidate.path, ...descendants.map(record => record.path)],
+      home, sessionOwners: store.listSessionOwners(), paths: [candidate.path, ...descendants.map(record => record.path)],
       environment: input.environment, tmuxServerName: input.tmuxServerName,
       ports: input.liveReferencePorts
     });
@@ -672,6 +681,7 @@ export async function purgeResourceQuarantine(
   }
   const scan = await scanLiveReferences({
     home: resolvedHome,
+    sessionOwners: store.listSessionOwners(),
     paths,
     environment: options.environment,
     tmuxServerName: options.tmuxServerName,

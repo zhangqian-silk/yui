@@ -23,8 +23,8 @@ function fixture(t) {
   const at = new Date("2026-09-15T00:00:00Z");
   const script = 'console.log("actual-check");';
   const check = { name: "check", argv: [process.execPath, "-e", script] };
-  const raw = { schemaVersion: 1, kind: "verification-plan", id: "checks", version: "1",
-    bootstrap: [], l1: { categories: [] },
+  const raw = { schemaVersion: 2, kind: "verification-plan", id: "checks", version: "1",
+    bootstrap: [],
     l2: { steps: [check] } };
   const project = addProjectKnowledge(createProject("project-1", "Fixture", workspace,
     { stable: "main", development: "main" }, at), "knowledge-1", "Checks", JSON.stringify(raw), at);

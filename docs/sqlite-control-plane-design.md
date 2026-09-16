@@ -40,6 +40,13 @@ Stores do not have different validation strength. Invalid records are rejected
 without advancing the revision; an invalid stored record remains available for
 explicit diagnosis, never normalized into a valid-looking replacement.
 
+Storage 35 also has a migration-only `storage_migration_archive` table:
+`migration_version / family / record_key / payload / content`. It retains exact
+retired Project/gate payloads and binary logs without interpreting them in the
+current model. It is not scheduling state, a second cache or a runtime fallback.
+Task-scoped historical Integration retirement uses ordinary Task Events.
+Backups retain both current records and this audit archive.
+
 ## Write and concurrency contract
 
 - Each mutation is one SQLite transaction.

@@ -2223,7 +2223,7 @@ export class SqliteTaskStore implements TaskStore {
   saveGateArtifact(artifact: GateArtifact, logs: ReadonlyMap<string, Buffer>): void {
     validateGateArtifact(artifact);
     this.#mutate(() => {
-      const targetRef = artifact.boundary?.targetRef ?? null;
+      const targetRef = artifact.boundary.targetRef;
       const completedAt = artifact.completedAt ?? null;
       this.#db.prepare(
         `INSERT INTO gate_artifacts

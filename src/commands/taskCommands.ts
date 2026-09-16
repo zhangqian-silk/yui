@@ -5645,7 +5645,7 @@ function taskRunCommand(
   if (command === "checkpoint") return output(checkpointRun(rest, store, options));
   if (command === "retire") return retireRun(rest, store, options);
   throw usageError(command === undefined
-    ? "Task turn command is required."
+    ? "Task run command is required."
     : `Unknown command: task run ${command}`);
 }
 
@@ -5654,7 +5654,7 @@ function settleRun(
   store: TaskWorkflowStore,
   options: TaskCommandOptions
 ): TaskCommandExecution {
-  exactPositionals(args, 1, "Task turn settle usage: yui task run settle <task>/<run>.");
+  exactPositionals(args, 1, "Task run settle usage: yui task run settle <task>/<run>.");
   const previous = store.transaction((tx) => requireRun(tx, args[0], options));
   if (previous.purpose === "review") {
     if (previous.executionGroupId !== undefined
@@ -5845,7 +5845,7 @@ function retireRun(
   store: TaskWorkflowStore,
   options: TaskCommandOptions
 ): TaskCommandExecution {
-  const usage = "Task turn retire usage: yui task run retire <task>/<run> --reason <text> [--expected-progress-at <timestamp>] [--agent-id <id>] [--adapter-id <id>] [--native-session-id <id>].";
+  const usage = "Task run retire usage: yui task run retire <task>/<run> --reason <text> [--expected-progress-at <timestamp>] [--agent-id <id>] [--adapter-id <id>] [--native-session-id <id>].";
   const parsed = parseTail(args, new Set([
     "--reason",
     "--expected-progress-at",
@@ -5954,7 +5954,7 @@ function runContextCommand(
 ): TaskCommandExecution {
   const [first, ...rest] = args;
   if (first === "expand") {
-    const usage = "Task turn context expand usage: yui task run context expand <task>/<run> <ref-id> [--store <store>] [--mode full].";
+    const usage = "Task run context expand usage: yui task run context expand <task>/<run> <ref-id> [--store <store>] [--mode full].";
     const parsed = parseTail(rest, new Set(["--store", "--mode"]), usage);
     exactPositionals(parsed.positionals, 2, usage);
     const mode = parsed.options.get("--mode");
@@ -5975,7 +5975,7 @@ function runContextCommand(
   if (first === "delta") {
     if (rest.length !== 3 || rest[1] !== "--after") {
       throw usageError(
-        "Task turn context delta usage: yui task run context delta <task>/<run> --after <cursor>."
+        "Task run context delta usage: yui task run context delta <task>/<run> --after <cursor>."
       );
     }
     const { taskId, runId } = parseRunContextReference(rest[0]!);
@@ -5986,7 +5986,7 @@ function runContextCommand(
     return output(`${JSON.stringify(delta, null, 2)}\n`, { contextDelta: delta });
   }
   if (first === undefined || rest.length !== 0) {
-    throw usageError("Task turn context usage: yui task run context <task>/<run>.");
+    throw usageError("Task run context usage: yui task run context <task>/<run>.");
   }
   const { taskId, runId } = parseRunContextReference(first);
   authorizeRunContext(store, taskId, runId, options.environment);
@@ -6040,7 +6040,7 @@ function listRuns(
   store: TaskWorkflowStore,
   options: TaskCommandOptions
 ): string {
-  const usage = "Task turn list usage: yui task run list <task|task/work>.";
+  const usage = "Task run list usage: yui task run list <task|task/work>.";
   exactPositionals(args, 1, usage);
   const reference = args[0]!;
   const task = store.getTask(reference);
@@ -6096,7 +6096,7 @@ function settleStaleFinalReviewRun(
   store: TaskWorkflowStore,
   options: TaskCommandOptions
 ): TaskCommandExecution {
-  exactPositionals(args, 1, "Task turn settle usage: yui task run settle <task>/<run>.");
+  exactPositionals(args, 1, "Task run settle usage: yui task run settle <task>/<run>.");
   const now = clock(options);
   const previous = store.transaction((tx) => requireRun(tx, args[0], options));
   const result = store.transaction((tx) => {
@@ -6247,7 +6247,7 @@ function retryRunOperation(
   store: TaskWorkflowStore,
   options: TaskCommandOptions
 ): TaskCommandExecution {
-  exactPositionals(args, 1, "Task turn retry usage: yui task run retry <task>/<run>.");
+  exactPositionals(args, 1, "Task run retry usage: yui task run retry <task>/<run>.");
   const now = clock(options);
   const previous = store.transaction((tx) => requireRun(tx, args[0], options));
   if (previous.purpose === "review") {
@@ -7289,7 +7289,7 @@ function showRun(
   store: TaskWorkflowStore,
   options: TaskCommandOptions
 ): TaskCommandExecution {
-  const usage = "Task turn show usage: yui task run show <task>/<run> [--json].";
+  const usage = "Task run show usage: yui task run show <task>/<run> [--json].";
   const asJson = args.includes("--json");
   const positionals = args.filter((arg) => arg !== "--json");
   exactPositionals(positionals, 1, usage);
@@ -7355,7 +7355,7 @@ function checkpointRun(
   store: TaskWorkflowStore,
   options: TaskCommandOptions
 ): string {
-  const usage = "Task turn checkpoint usage: yui task run checkpoint <run> (--note <text>|--note-file <path|->).";
+  const usage = "Task run checkpoint usage: yui task run checkpoint <run> (--note <text>|--note-file <path|->).";
   const parsed = parseTail(args, new Set(["--note", "--note-file"]), usage);
   exactPositionals(parsed.positionals, 1, usage);
   const note = readCommandText(

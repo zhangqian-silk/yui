@@ -108,9 +108,6 @@ export {
   type SessionOwnerIdentityInput
 } from "./sessionOwnerIdentity.js";
 export {
-  FileSessionOwnerRegistry
-} from "./sessionOwnerRegistry.js";
-export {
   formatRuntimeLaunchDiagnostic,
   redactLaunchArgument,
   redactLaunchText,

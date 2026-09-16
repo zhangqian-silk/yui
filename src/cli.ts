@@ -21,7 +21,7 @@ import {
   renderAgentConfigurationResolutionNotice
 } from "./cli/agentConfigurationPicker.js";
 import { describeCommandTree, findCommandNode } from "./cli/commandCatalog.js";
-import { renderCompletion, type CliIdentity } from "./cli/completion.js";
+import { renderCompletion } from "./cli/completion.js";
 import { runCompletionWizard } from "./cli/completionWizard.js";
 import { resolveCompletionCandidates } from "./cli/dynamicCompletion.js";
 import { renderCommandHelp } from "./cli/helpRenderer.js";
@@ -134,7 +134,7 @@ import { runTaskUpstreamCommand } from "./commands/taskUpstreamCommands.js";
 import { runTaskWorkspaceCommand } from "./commands/taskWorkspaceCommands.js";
 import { runTelemetryCommand } from "./commands/telemetryCommands.js";
 import { runWorkflowCommandAsync } from "./commands/workflowCommands.js";
-import { FileCompletionManager, resolveCliIdentity } from "./completion/fileCompletionManager.js";
+import { FileCompletionManager } from "./completion/fileCompletionManager.js";
 import { CONFIG_DOMAINS, type ConfigDomain } from "./config/configCatalog.js";
 import { resolveTmuxBin, resolveTmuxHistoryLimit } from "./config/yuiConfig.js";
 import {
@@ -891,7 +891,6 @@ export async function main(): Promise<void> {
           resolved.slice(2),
           store,
           process.env,
-          resolveCliIdentity(process.env),
           roleOptions
         );
         emit(result.output, false, result.data);
@@ -3133,7 +3132,7 @@ async function completionCommand(
   const store = openCurrentTaskStore(home);
   const ioHandle = terminalIo();
   try {
-    const manager = new FileCompletionManager(store, process.env, resolveCliIdentity(process.env));
+    const manager = new FileCompletionManager(store, process.env);
     emit(await runCompletionWizard(
       manager,
       ioHandle.io,
@@ -3639,15 +3638,8 @@ function agentEnvironmentRefreshScope(
   };
 }
 
-export function cliIdentity(env: NodeJS.ProcessEnv): CliIdentity {
-  return env.YUI_CLI_NAME === "yui-dev" ? "yui-dev" : "yui";
-}
-
 function normalizeAliases(input: readonly string[]): string[] {
   const normalized = [...input];
-  // Existing immutable Session Manifests (through 0.15.8) name this entry.
-  // Remove once those Sessions are retired; both names share one handler.
-  if (normalized[0] === "task" && normalized[1] === "turn") normalized[1] = "run";
   if (normalized.length === 1 && (normalized[0] === "-v" || normalized[0] === "--version")) {
     return ["version"];
   }

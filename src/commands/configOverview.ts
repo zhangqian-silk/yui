@@ -1,5 +1,4 @@
 import { inspectCompletionStates, renderCompletionStateTable } from "../completion/completionState.js";
-import type { CliIdentity } from "../cli/completion.js";
 import { usageError } from "../errors/cliError.js";
 import { SYSTEM_ROLE_NAMES } from "../role/systemRoles.js";
 import type { TaskStore } from "../storage/taskStore.js";
@@ -33,7 +32,6 @@ export function runConfigOverview(
   args: readonly string[],
   store: TaskStore,
   environment: NodeJS.ProcessEnv,
-  identity: CliIdentity,
   roleOptions: GlobalRoleCommandOptions
 ): ConfigOverviewResult {
   if (args.length !== 0) throw usageError("Config show usage: yui config show.");
@@ -52,7 +50,7 @@ export function runConfigOverview(
   const profiles = (
     profileResult.data as Readonly<{ profiles: readonly AgentProfileView[] }>
   ).profiles;
-  const completion = inspectCompletionStates(store.getConfig(), environment, identity);
+  const completion = inspectCompletionStates(store.getConfig(), environment);
   const roleOutput = runGlobalRoleCommand(
     ["list"],
     store as unknown as Parameters<typeof runGlobalRoleCommand>[1],

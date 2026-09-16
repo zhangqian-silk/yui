@@ -33,7 +33,7 @@ The current development step retires runtime compatibility before the final
 1.0 baseline cutover. It does not publish a release or reset storage numbering.
 Storage 27→28 normalizes only provable singleton Role dispatch dedupe keys;
 the old migration ledger, Messages, Task results and unconfirmed effects remain
-unchanged. Ordinary opens require storage 34. Existing Homes advance only through
+unchanged. Ordinary opens require storage 35. Existing Homes advance only through
 the explicit upgrade boundary; no runtime dual-reader is added.
 
 This is a breaking pre-1.0 change:
@@ -98,17 +98,32 @@ automatic reuse without rewriting historical Job/Integration results or deleting
 their logs. Historical plan interpretation is frozen inside the migration
 directory so earlier migrations keep their original semantics.
 
-The current clean-candidate proof uses a v4 execution digest. Both local and
+The current clean-candidate proof uses a v5 L2-only execution digest. Both local and
 Job-backed verification check candidate cleanliness, branch and exact HEAD
-before publishing reusable success; pre-v4 cache entries cannot silently pass
+before publishing reusable success; older cache identities cannot silently pass
 this boundary. Existing records/logs remain readable and admitted Jobs are not
 relabeled under a new digest. Settle old attempts with their matching contract,
 or explicitly abandon them before starting another operation.
 
-The unused L1 runner/path selector is removed, with current cache regressions
-covering the shared proof primitives and actual Integration path instead.
-Persisted plan metadata and historical L1 artifacts are retained; this does not
-reset the Home version or remove the supported migration chain.
+The L1 runner, selector and current plan/artifact type branches are removed.
+Storage 34→35 archives the original Project plan payloads and L1 artifacts/logs
+in `storage_migration_archive`, then adopts VerificationPlan schema 2 without L1.
+The archive is raw audit data, not an alternate execution reader or cache.
+Settled historical ChangeSet-source Integrations become full-payload Task Events;
+live workspaces, unsettled Jobs and adoption references block their retirement.
+The complete earlier migration ledger remains unchanged.
+
+Session custody now has one source, SQLite. Legacy `launch-env` owner rows or
+files in `runtime/session-owners` block this cutover: use the old release to
+inspect and settle their exact resources, then explicitly archive obsolete
+files outside the active Home. The migration does not kill, infer ownership,
+repair malformed records or rewrite immutable Session Manifests.
+
+`task turn` and the `yui-dev` completion identity are no longer supported.
+Before rollout, replace Sessions whose old Manifest still names `task turn`,
+and explicitly remove/archive old `yui-dev` completion blocks before installing
+current `yui` completion. User shell files are never rewritten by storage migration.
+Host control/event compatibility and updater handover safety remain unchanged.
 
 Storage 33→34 removes Message `wakePolicy` and activation `origin` from current
 records, preserving their original representations in audit Events. Historical
