@@ -22,7 +22,7 @@ import {
 
 export const GATE_ARTIFACT_SCHEMA_VERSION = 1 as const;
 
-export type GateArtifactLevel = "L1" | "L2";
+export type GateArtifactLevel = "L2";
 
 export type GateArtifactStatus = "incomplete" | "complete";
 export type GateArtifactOutcome = "unknown" | "succeeded" | "failed";
@@ -40,8 +40,8 @@ export type GateArtifactIdentity = Readonly<{
   commit: string;
   planDigest: string;
   toolchainDigest: string;
-  /** L2 only: the boundary the candidate integrated onto. */
-  boundary?: GateArtifactBoundary;
+  /** The exact boundary the candidate integrated onto. */
+  boundary: GateArtifactBoundary;
 }>;
 
 export type GateArtifactStep = Readonly<{
@@ -71,7 +71,7 @@ export type GateArtifact = Readonly<{
   planVersion: string;
   planDigest: string;
   toolchainDigest: string;
-  boundary?: GateArtifactBoundary;
+  boundary: GateArtifactBoundary;
   steps: readonly GateArtifactStep[];
   generator: string;
   status: GateArtifactStatus;
@@ -119,7 +119,7 @@ export function createGateArtifact(
     planVersion: requireText(metadata.planVersion, "GateArtifact planVersion"),
     planDigest: identity.planDigest,
     toolchainDigest: identity.toolchainDigest,
-    ...(identity.boundary === undefined ? {} : { boundary: identity.boundary }),
+    boundary: identity.boundary,
     steps: Object.freeze([]),
     generator: requireText(metadata.generator, "GateArtifact generator"),
     status: "incomplete",
@@ -175,7 +175,7 @@ export function validateGateArtifact(artifact: GateArtifact): GateArtifact {
     );
   }
   requireIdentity(artifact.projectId, "GateArtifact projectId");
-  if (artifact.level !== "L1" && artifact.level !== "L2") {
+  if (artifact.level !== "L2") {
     throw new Error(`GateArtifact level is invalid: ${String(artifact.level)}.`);
   }
   requireCommit(artifact.commit, "GateArtifact commit");
@@ -188,17 +188,15 @@ export function validateGateArtifact(artifact: GateArtifact): GateArtifact {
     commit: artifact.commit,
     planDigest: artifact.planDigest,
     toolchainDigest: artifact.toolchainDigest,
-    ...(artifact.boundary === undefined ? {} : { boundary: artifact.boundary })
+    boundary: artifact.boundary
   })) {
     throw new Error("GateArtifact key does not match its identity tuple.");
   }
-  if (artifact.level === "L2" && artifact.boundary === undefined) {
+  if (artifact.boundary === undefined) {
     throw new Error("An L2 GateArtifact requires a target boundary.");
   }
-  if (artifact.boundary !== undefined) {
-    requireText(artifact.boundary.targetRef, "GateArtifact boundary targetRef");
-    requireCommit(artifact.boundary.baseHead, "GateArtifact boundary baseHead");
-  }
+  requireText(artifact.boundary.targetRef, "GateArtifact boundary targetRef");
+  requireCommit(artifact.boundary.baseHead, "GateArtifact boundary baseHead");
   if (!["incomplete", "complete"].includes(artifact.status)) {
     throw new Error(`GateArtifact status is invalid: ${String(artifact.status)}.`);
   }
@@ -349,8 +347,7 @@ export type GateArtifactPruneResult = Readonly<{
 }>;
 
 /**
- * The persistence seam for GateArtifacts. Both the SQLite and file-backed
- * TaskStore implementations satisfy this port. The artifact record and its
+ * The persistence seam for current SQLite GateArtifacts. The artifact record and its
  * step logs are saved atomically so a crash never leaves a complete record
  * without its evidence.
  */
@@ -361,7 +358,7 @@ export type GateArtifactStorePort = Readonly<{
   ): void;
   /**
    * Update only the artifact record (counters, timestamps) without touching
-   * its step logs.  Used for reuse/potential-reuse counter updates where the
+   * its step logs. Used for reuse counter updates where the
    * evidence is unchanged.
    */
   touchGateArtifact(artifact: GateArtifact): void;

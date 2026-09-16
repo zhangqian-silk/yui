@@ -30,7 +30,7 @@ test("GC owns one physical subtree and rechecks durable ownership before moving 
   const prepared = isolation.preflight({ workspace });
   isolation.activate(prepared);
   const ports = { processCwdRefs: () => new Map(), tmuxPaneCwds: async () => [] };
-  const input = { home, projects: [], managedWorkspaces: [workspace], taskStatusById: new Map([[task.id, task.status]]),
+  const input = { home, sessionOwners: [], projects: [], managedWorkspaces: [workspace], taskStatusById: new Map([[task.id, task.status]]),
     mode: "quarantine", now, liveReferencePorts: ports, activeWorkspaceOwnerPaths: [] };
   const plan = await planResourceGc(input);
   assert.ok(plan.releasable.length > 0);

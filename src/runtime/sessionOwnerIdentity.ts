@@ -37,11 +37,7 @@ export type SessionOwnerIdentity = Readonly<{
     startIdentity: string;
     processGroupId?: number;
     processSessionId?: number;
-    /**
-     * Current records use the created pane PID. `launch-env` is retained only
-     * as attribution of historical recorded processes, never as a live scanner.
-     */
-    attribution: "launch-env" | "pane-pid" | "owned-child";
+    attribution: "pane-pid" | "owned-child";
   }>;
   runtimeRoot?: string;
   recordedAt: string;
@@ -78,7 +74,7 @@ export type SessionOwnerIdentityInput = Readonly<{
     startIdentity: string;
     processGroupId?: number;
     processSessionId?: number;
-    attribution: "launch-env" | "pane-pid" | "owned-child";
+    attribution: "pane-pid" | "owned-child";
   }>;
   runtimeRoot?: string;
   recordedAt: Date;
@@ -99,7 +95,7 @@ export function createSessionOwnerIdentity(
     throw new TypeError("Global session owner must not carry a task id.");
   }
   const providerRoot = input.providerRoot;
-  if (!["launch-env", "pane-pid", "owned-child"].includes(providerRoot.attribution)) {
+  if (!["pane-pid", "owned-child"].includes(providerRoot.attribution)) {
     throw new TypeError("Session owner process attribution is invalid.");
   }
   if (!Number.isSafeInteger(providerRoot.pid) || providerRoot.pid <= 0) {

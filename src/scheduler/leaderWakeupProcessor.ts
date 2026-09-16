@@ -5,6 +5,10 @@ import { isSchedulerTaskWorkspaceReady } from "./ports.js";
 import { taskOwnsManagedWorkspace } from "../task/task.js";
 import { hasImmediateWakeReason } from "./wakeReason.js";
 import { providerRetryPending } from "../runtime/providerRetry.js";
+import { RuntimeLaunchError } from "../runtime/ports.js";
+import { RuntimeLifecycleBusyError } from "../runtime/lifecycleReservation.js";
+import { redactAgentErrorText } from "../runtime/agentError.js";
+import type { EffectiveLaunchSnapshot } from "../executor/effectiveLaunch.js";
 
 export type LeaderWakeupProcessingResult = Readonly<{
   taskId: string;
@@ -63,12 +67,16 @@ export async function processLeaderWakeups(
         ...(notification.disposition === "unknown" ? {
           error: `Notification acceptance is unknown; the fixed wake is retained and will not be replayed. `
             + `After establishing native quiescence, release only this claim with yui task wake resolve ${task.id} ${notification.wakeId} --reason <evidence>.`
+        } : notification.disposition === "rejected" ? {
+          error: `Notification was rejected; inspect yui task wake show ${task.id} ${notification.wakeId}. `
+            + `After correcting the cause, retry with yui task wake retry ${task.id} ${notification.wakeId} --reason <correction>.`
         } : {}) }); continue;
     }
     let attempted = false;
+    let effective: EffectiveLaunchSnapshot = role.effective;
     try {
       const session = store.getRoleSession(task.id, role.name, role.effective.agentId);
-      const effective = session?.status === "active" ? session.effective : role.effective;
+      effective = session?.status === "active" ? session.effective : role.effective;
       if (session?.status === "active" && !roleSessionMayContinue(session.effective, role.effective)) {
         throw new Error("Leader Session configuration changed; explicitly apply it before notification delivery.");
       }
@@ -103,12 +111,20 @@ export async function processLeaderWakeups(
         : outcome.status === "rejected" ? "rejected"
         : outcome.status === "pending" ? null : "deferred";
       if (disposition !== null) store.settleLeaderNotification(
-        task.id, notification.attemptId, disposition, now, outcome.failure?.detail);
+        task.id, notification.attemptId, disposition, now, outcome.failure?.detail,
+        { effective, raw: outcome.failure?.raw ?? outcome.failure?.detail ?? `Notification ${disposition}.`,
+          phase: "turn-submit" });
       results.push({ ...base, status: accepted ? "dispatched" : "skipped", reason: accepted ? undefined : "not-ready" });
     } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
+      const detail = redactAgentErrorText(error instanceof Error ? error.message : String(error));
+      // Match explicit AgentRun admission: only positive, typed backpressure
+      // permits another automatic launch. A config/auth/executable failure
+      // needs correction; an exception after submit cannot authorize replay.
+      const retryable = error instanceof RuntimeLifecycleBusyError
+        || (error instanceof RuntimeLaunchError && error.retryable);
       store.settleLeaderNotification(task.id, notification.attemptId,
-        attempted ? "unknown" : "deferred", now, detail);
+        attempted ? "unknown" : retryable ? "deferred" : "rejected", now, detail,
+        { effective, raw: detail, phase: attempted ? "turn-submit" : "session-start" });
       results.push({ ...base, status: "failed", reason: "not-ready", error: detail });
     } finally {
       delivery.forgetPrepared?.({ taskId: task.id, roleName: role.name });

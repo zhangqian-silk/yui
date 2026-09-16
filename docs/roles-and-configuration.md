@@ -93,10 +93,20 @@ services. Isolating `YUI_HOME` or replacing a Session does not require a fresh
 native account directory. Managed Task execution uses Claude's non-interactive
 stream-json path with the same native configuration ownership.
 
+Model catalogs are native observations, not a universal Provider whitelist.
+Yui displays the selectable ID/alias and its reported resolved model. An explicit
+custom ID is passed unchanged when the native model field allows custom values;
+this does not prove that the Provider will accept it. Known model-specific effort
+limits are still validated. Configuration rejection reports the observed model
+options and how to inspect the full catalog; an unavailable catalog is not
+replaced by a fabricated list.
+
 ## Commands
 
 ```sh
 yui config agent capabilities <agent-id>
+yui task role capabilities <task> <role> --refresh
+yui task role capabilities <task> <role> --error <error-event-id> --refresh
 yui config role show <global-role>
 yui config profile show <profile>
 yui task role add <task> <role> --profile <profile>
@@ -106,6 +116,25 @@ yui task role update <task> <role> --managed-environment
 yui task role session inspect <task> <role>
 yui task role session new <task> <role> --reason "<why a fresh Session is useful>"
 ```
+
+The global query uses the calling process's default native context. Task-scoped
+queries use the Controller's native account environment and the selected Role
+configuration; they never forward the caller's credentials to another Provider.
+Omitting `--error` selects the current desired Role. With `--error`, the recorded
+failed request supplies model, workspace and profile/settings options even after
+the Role changes. A changed configured Agent command/environment binding or an
+unrecorded historical context produces a diagnosis, not a default substitution.
+Task-scoped metadata queries require a running Controller and do not start one.
+
+`--refresh` explicitly re-probes metadata. A failed probe may show a clearly
+marked cached catalog, not claim it is current. Native files and credentials
+are read currently; their secret contents are never snapshotted in error history.
+The lookup reports metadata only, without running a model to test a candidate ID.
+
+Completed in-memory catalogs have a bounded least-recently-used cache. Concurrent
+requests for the same scope share the active probe, including refresh requests;
+once it settles, an explicit refresh probes again. Retained results are labelled
+as cached rather than as a new live response. No cleanup timer or worker is added.
 
 On Role creation, explicit Agent settings require `--agent`. On update, omitted
 `--agent` targets the active binding; a named binding is updated without being

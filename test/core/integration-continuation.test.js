@@ -182,8 +182,8 @@ test("a check that mutates its candidate cannot publish reusable successful evid
   git(f.repo, "commit", "--allow-empty", "-m", "candidate");
   const candidate = git(f.repo, "rev-parse", "HEAD");
   git(f.repo, "checkout", "main");
-  const plan = { schemaVersion: 1, kind: "verification-plan", id: "checks", version: "1",
-    bootstrap: [], l1: { categories: [] }, l2: { steps: [{
+  const plan = { schemaVersion: 2, kind: "verification-plan", id: "checks", version: "1",
+    bootstrap: [], l2: { steps: [{
       name: "mutating-check", argv: [process.execPath, "-e", "require('fs').writeFileSync('file','mutated\\n')"]
     }] } };
   const project = addProjectKnowledge(f.store.getProject("project-1"), "knowledge-1", "Checks", JSON.stringify(plan), now);
@@ -254,8 +254,8 @@ test("Integration reuses exact checks, reruns explicitly, and cannot bypass equi
   const script = `const fs=require("fs"); const p=${JSON.stringify(count)};
     fs.writeFileSync(p,String((fs.existsSync(p)?Number(fs.readFileSync(p)):0)+1));
     console.log("actual gate"); process.exit(fs.existsSync(${JSON.stringify(fail)})?1:0);`;
-  const plan = { schemaVersion: 1, kind: "verification-plan", id: "checks", version: "1",
-    bootstrap: [], l1: { categories: [] }, l2: { steps: [{ name: "check", argv: [process.execPath, "-e", script] }] } };
+  const plan = { schemaVersion: 2, kind: "verification-plan", id: "checks", version: "1",
+    bootstrap: [], l2: { steps: [{ name: "check", argv: [process.execPath, "-e", script] }] } };
   const project = addProjectKnowledge(f.store.getProject("project-1"), "knowledge-1", "Checks", JSON.stringify(plan), now);
   f.store.saveProject(project);
   const service = new GitIntegrationService(f.home, f.store, undefined, () => now, { PATH: process.env.PATH });

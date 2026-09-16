@@ -1,4 +1,3 @@
-import type { CliIdentity } from "../cli/completion.js";
 import type {
   CompletionAction,
   CompletionInstallation,
@@ -18,7 +17,7 @@ export type CompletionPortState = Readonly<{
 }>;
 
 export type CompletionOverview = Readonly<{
-  identity: CliIdentity;
+  identity: "yui";
   currentShell?: CompletionShell;
   states: readonly CompletionPortState[];
 }>;

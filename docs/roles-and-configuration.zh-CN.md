@@ -75,10 +75,17 @@ Claude 自身加载原生设置，并按其生效配置在 API key、既有 help
 服务。隔离 `YUI_HOME` 或替换 Session 都不要求一个全新的原生账号目录。受管的 Task
 执行使用 Claude 的非交互 stream-json 路径，并沿用同样的原生配置归属。
 
+模型目录是原生观测结果，不是整个 Provider 的模型白名单。Yui 显示可选择的 ID/别名
+及原生报告的实际模型映射。原生模型字段允许自定义值时，显式模型 ID 会原样透传；
+这不代表 Provider 已接受该模型。已知模型的 effort 限制仍会校验。配置校验拒绝会显示
+已观测到的模型选项和完整目录查询方式；目录不可用时，不编造“合法模型列表”。
+
 ## 命令
 
 ```sh
 yui config agent capabilities <agent-id>
+yui task role capabilities <task> <role> --refresh
+yui task role capabilities <task> <role> --error <error-event-id> --refresh
 yui config role show <global-role>
 yui config profile show <profile>
 yui task role add <task> <role> --profile <profile>
@@ -88,6 +95,20 @@ yui task role update <task> <role> --managed-environment
 yui task role session inspect <task> <role>
 yui task role session new <task> <role> --reason "<why a fresh Session is useful>"
 ```
+
+全局查询使用调用进程的默认原生环境；Task 查询使用 Controller 的原生账户环境及
+所选 Role 配置，不把调用方的凭据转交给其他 Provider。省略 `--error` 查看当前期望
+配置；指定错误记录时，使用失败时保存的模型、工作区、profile/settings 选项，不受
+之后的 Role 修改影响。若配置的 Agent 命令／环境绑定已变化，或历史错误未记录配置，
+返回明确诊断，不替换成默认配置。Task 查询要求 Controller 已运行，不自动启动它。
+
+`--refresh` 显式重新查询元数据；查询失败后返回缓存时会标明缓存来源，不冒充当前
+结果。原生文件及凭据仍按当前值读取，秘密内容不会复制进错误历史。这里只查询
+元数据，不通过真实模型调用来试验候选名称。
+
+已完成目录使用有容量上限的近期使用缓存；相同上下文的并发请求（包括刷新）共享
+正在进行的查询，结束后显式刷新才重新查询。缓存命中标为缓存，不冒充新的实时响应。
+这不增加清理定时器或后台 worker。
 
 创建 Role 时，显式的 Agent 设置需要 `--agent`。更新时，省略 `--agent` 针对活动
 绑定；一个具名绑定会被更新但不被激活。`task role bind` 更改选择。在更改期望设置

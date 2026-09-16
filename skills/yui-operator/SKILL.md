@@ -142,9 +142,11 @@ For Agent-dependent settings, also read:
 yui --json config agent capabilities <agent-id>
 ```
 
-Use the live or cached capability catalog as authority for model, effort,
-permission, settings source, search, and service-tier values. Do not invent a
-provider value from memory.
+For a Task Role or a reported launch failure, use the scoped query from
+[runtime recovery](../yui-runtime/references/recovery.md#configuration-and-model-name-failures)
+instead of the global defaults above. The catalog reports native options and
+whether custom values are allowed; it is not a complete service-side whitelist.
+Distinguish current and cached metadata, and do not invent provider values from memory.
 
 A Profile combines portable behavior with either a dynamic Global Worker
 runtime source or an explicit Agent with optional model and effort. Applying it

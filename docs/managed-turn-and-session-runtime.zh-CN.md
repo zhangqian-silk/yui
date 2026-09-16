@@ -84,6 +84,33 @@ owner Run。当 Role 忙碌时，保存会返回而不打断它。一旦它可�
 显式 handoff 只针对同一工作已派发的后继。复制的 Producer/综合血缘不会被一条消息
 静默改写。
 
+被拒绝的 Leader 通知保留原始输入和失败原因。确定性的启动错误不再自动重试，
+只有明确的运行时资源争用可以延后再试。新消息和 Controller 重启不会重放被拒绝
+的认领。修正原因后，显式重试对应的 wake：
+
+```sh
+yui task wake show <task> <wake>
+yui task wake retry <task> <wake> --reason "<已修正的原因>"
+```
+
+retry 把被拒绝批次及后续排队输入交回现有 mailbox，不把旧 wake 改成已接受，
+也不替换 Session；当前运行权限和就绪检查仍然生效。模型／effort 校验拒绝会显示原生
+报告的模型选项，并提供查询完整当前目录的命令。
+
+没有 Run 的启动失败与原生 Provider 拒绝都保留规范的 `runtime.agent-error` 事实。
+通知投递引用该原始错误，而不复制第二份原因。`task event show` 的人类和 JSON 输出
+都提供有作用域的能力查询入口，`wake show` 也链接同一事实。无法接收的 Leader 将
+错误通过既有 Operator 通道通知一次；Worker／Reviewer 仍通知 Leader。不启动新的
+恢复 Agent，也不为了记录错误制造 Run 或 Session。
+
+存储 `35→36` 迁移保留历史错误原始 payload，并将当时未记录的启动配置标为不可用，
+不会从当前 Role 猜测过去的模型、账户或 settings 选择。
+
+存储 `36→37` 将该上下文收窄为原生元数据查询选项和请求的模型／effort。旧完整快照
+留在迁移审计中，不由运行时双读。查看模型选项不再校验 Task 权限、Review 状态、
+工作区条目或当前 Session 引导协议。三类错误入口保留各自的原生身份检查与分类，
+错误创建、去重统一一个写入入口，上级通知统一使用事件路由边界。
+
 未知的 Leader 通知保留其唤醒和输入窗口：
 
 ```sh
@@ -96,7 +123,9 @@ Role 工作和合法的本地事实不是一把 Task 范围的恢复锁。
 
 wake 状态记录通知投递，不记录 Message 的实施结果。普通 Leader 通知的 `consumed`
 表示原生接受；原生 Turn 完成与 Task 交付应分别依据运行证据和持久结果判断。
-被拒绝或释放的 wake 可以保留为 `dispatched`，但已不再占用 mailbox claim。Session 替换把待投递输入
+被拒绝的 wake 保持 `dispatched` 并保留 claim，直到显式重试或 Session 替换；
+已显式释放的历史 wake 可以保持 `dispatched` 而不占用 claim。
+接受状态未知的通知不能用 `wake retry` 重放。Session 替换把待投递输入
 保留给新 wake 与当前 Context，不会追溯把旧 wake 标成已接受；旧回执也不能结算
 新批次。Session 清理期间，新输入保持排队。检查时应结合 wake、
 `notification.delivery` 事件、当前 mailbox 与 Session，不应要求每个历史 wake

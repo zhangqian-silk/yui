@@ -1,7 +1,5 @@
 import { enqueueWork, type WorkMailboxQueueStore } from "../coordination/workMailboxQueue.js";
 import { createTaskEvent, type TaskEvent, type TaskEventPayload } from "../event/taskEvent.js";
-import type { PendingWakeup } from "./pendingWakeup.js";
-import { queueLeaderWakeup } from "./wakeupQueue.js";
 
 export const LEADER_ATTENTION_REQUIRED_EVENT = "leader.attention-required";
 
@@ -10,10 +8,20 @@ type OperatorEventStore = WorkMailboxQueueStore & Readonly<{
   saveEvent(taskId: string, event: TaskEvent): void;
 }>;
 
-type RoleEventStore = WorkMailboxQueueStore & Readonly<{
-  getPendingWakeup(taskId: string): PendingWakeup | null;
-  savePendingWakeup(wakeup: PendingWakeup): void;
-}>;
+type RoleEventStore = WorkMailboxQueueStore;
+
+/** One event, one supervisor signal; the Leader wake is this mailbox's projection. */
+export function enqueueSupervisorEvent(
+  store: WorkMailboxQueueStore, event: TaskEvent,
+  recipient: "leader" | "operator", reason: string, now: Date
+): void {
+  if (store.getTask(event.taskId)?.status === "archived") return;
+  const target = recipient === "operator" ? { kind: "operator" } as const
+    : { kind: "role", taskId: event.taskId, roleName: "leader" } as const;
+  enqueueWork(store, target, reason, now, [
+    { type: "event", taskId: event.taskId, id: event.id }
+  ], { source: "task-event", dedupeKey: `${recipient}-event:${event.taskId}:${event.id}` });
+}
 
 /** The sole Task-event boundary into the global Operator mailbox. */
 export function enqueueOperatorEvent(
@@ -22,13 +30,7 @@ export function enqueueOperatorEvent(
   reason: string,
   now: Date
 ): void {
-  if (store.getTask(event.taskId)?.status === "archived") return;
-  enqueueWork(store, { kind: "operator" }, reason, now, [
-    { type: "event", taskId: event.taskId, id: event.id }
-  ], {
-    source: "task-event",
-    dedupeKey: `operator-event:${event.taskId}:${event.id}`
-  });
+  enqueueSupervisorEvent(store, event, "operator", reason, now);
 }
 
 /** Routes one Role fact to its supervisor without exposing Provider details to Operator code. */
@@ -39,23 +41,7 @@ export function routeRoleEvent(
   reason: string,
   now: Date
 ): void {
-  if (store.getTask(event.taskId)?.status === "archived") return;
-  if (roleName === "leader") {
-    enqueueOperatorEvent(store, event, reason, now);
-    return;
-  }
-  enqueueWork(
-    store,
-    { kind: "role", taskId: event.taskId, roleName: "leader" },
-    reason,
-    now,
-    [{ type: "event", taskId: event.taskId, id: event.id }],
-    {
-      source: "task-event",
-      dedupeKey: `leader-event:${event.taskId}:${event.id}`
-    }
-  );
-  queueLeaderWakeup(store, event.taskId, reason, now);
+  enqueueSupervisorEvent(store, event, roleName === "leader" ? "operator" : "leader", reason, now);
 }
 
 /** Records the semantic boundary used when a Leader can no longer continue. */

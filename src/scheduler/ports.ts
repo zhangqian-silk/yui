@@ -204,7 +204,7 @@ export type SchedulerReconcileSelection = Readonly<{
 export type LeaderNotification = Readonly<{
   wakeId: string;
   attemptId: string;
-  disposition: "submit" | "pending" | "unknown";
+  disposition: "submit" | "pending" | "unknown" | "rejected";
 }>;
 
 export type SchedulerMailboxClaimInput = Readonly<{
@@ -404,7 +404,9 @@ export interface SchedulerStorePort {
   recordAgentError(input: Readonly<{
     taskId: string;
     roleName: string;
-    runId: string;
+    runId?: string;
+    effective?: EffectiveLaunchSnapshot;
+    /** A notification may have no Run or Session yet. */
     source: AgentErrorSource;
     phase: AgentErrorPhase;
     message: string;
@@ -458,7 +460,8 @@ export interface SchedulerStorePort {
   prepareMessageContinuations(taskId: string, now: Date): void;
   prepareDraftPlanning(taskId: string, now: Date): boolean;
   settleLeaderNotification(taskId: string, attemptId: string,
-    outcome: "accepted" | "deferred" | "rejected" | "unknown", now: Date, detail?: string): void;
+    outcome: "accepted" | "deferred" | "rejected" | "unknown", now: Date, detail?: string,
+    failure?: Readonly<{ effective: EffectiveLaunchSnapshot; raw: string; phase: AgentErrorPhase }>): void;
   /** Persist a fixed Session discovered while preparing an undelivered AgentRun. */
   saveRoleRunPrepared(input: RoleRunDeliveryPersistence): void;
   /** Atomically fail one exact AgentRun after a conclusive Provider failure. */

@@ -33,6 +33,12 @@ Yui 只有一个权威产品 Store：WAL 模式下的 `YUI_HOME/yui.db`。`schem
 无效写入不会推进 revision；已存在的无效记录只会报错并保留供明确诊断，
 不会被自动规范化成看似有效的替代记录。
 
+存储 35 新增仅由迁移写入的 `storage_migration_archive`：
+`migration_version / family / record_key / payload / content`。它保留退休的
+Project／gate 原始 payload 和二进制日志，不在当前模型中解释这些历史格式，
+也不是调度状态、第二份缓存或运行时回退。Task 内的历史 Integration 使用普通
+Task 事件保存。数据库备份同时保留当前记录与这份审计存档。
+
 ## 写入与并发合同
 
 - 每次修改是一个 SQLite 事务。

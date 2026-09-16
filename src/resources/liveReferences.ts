@@ -26,6 +26,7 @@ import type { ManagedWorkspace } from "../worktree/managedWorkspace.js";
 import { isControllerSocketPathForHome } from "../core/controllerEndpoint.js";
 import { parseControllerDiscovery } from "../core/protocol.js";
 import { readHomeFilesystemId } from "../core/homeFilesystemIdentity.js";
+import type { SessionOwnerIdentity } from "../runtime/sessionOwnerIdentity.js";
 
 const executeFile = promisify(execFile);
 
@@ -58,6 +59,8 @@ export type LiveReferencePorts = Readonly<{
 
 export type LiveReferenceInput = Readonly<{
   home: string;
+  /** Current Store custody, never a second on-disk owner registry. */
+  sessionOwners: readonly SessionOwnerIdentity[];
   paths: readonly string[];
   environment?: NodeJS.ProcessEnv;
   tmuxServerName?: string;
@@ -163,7 +166,7 @@ export async function scanLiveReferences(
   diagnostics.push(...runtimeClaims.diagnostics);
   const activeReleaseClaims = readActiveReleaseClaims(home);
   diagnostics.push(...activeReleaseClaims.diagnostics);
-  const sessionOwnerClaims = readSessionOwnerClaims(home);
+  const sessionOwnerClaims = readSessionOwnerClaims(input.sessionOwners);
   diagnostics.push(...sessionOwnerClaims.diagnostics);
   for (const claim of [
     ...runtimeClaims.claims,
@@ -292,63 +295,15 @@ function readActiveReleaseClaims(home: string): ClaimReadResult {
   }
 }
 
-/**
- * Read Session owner records (`runtime/session-owners/<pid-startIdentity>.json`). A
- * record whose Provider root is physically alive with a matching start
- * identity protects its runtime root. A dead PID is stale (reconciliation
- * removes those records); an identity conflict or unreadable record fails
- * closed because liveness can no longer be proven.
- */
-function readSessionOwnerClaims(home: string): ClaimReadResult {
-  const directory = join(home, "runtime", "session-owners");
-  let entries: readonly import("node:fs").Dirent[];
-  try {
-    entries = readdirSync(directory, { withFileTypes: true });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return Object.freeze({ claims: Object.freeze([]), diagnostics: Object.freeze([]) });
-    }
-    return Object.freeze({
-      claims: Object.freeze([]),
-      diagnostics: Object.freeze([{
-        source: "controller" as const,
-        severity: "error" as const,
-        message: `session owner records are unreadable: ${error instanceof Error ? error.message : "unknown error"}`
-      }])
-    });
-  }
-
+/** SQLite supplies durable custody; exact OS generation proves current life.
+ * The same check is used during scanning and under the GC writer fence. */
+export function readSessionOwnerClaims(records: readonly SessionOwnerIdentity[]): ClaimReadResult {
   const claims: PathClaim[] = [];
   const diagnostics: LiveReferenceDiagnostic[] = [];
-  for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-    const path = join(directory, entry.name);
-    let record: {
-      runtimeRoot?: unknown;
-      providerRoot?: { pid?: unknown; startIdentity?: unknown };
-    };
-    try {
-      record = JSON.parse(readFileSync(path, "utf8")) as typeof record;
-    } catch (error) {
-      diagnostics.push({
-        source: "controller" as const,
-        severity: "error" as const,
-        message: `session owner record is unreadable at ${path}: ${error instanceof Error ? error.message : "unknown error"}`
-      });
-      continue;
-    }
-    const pid = record.providerRoot?.pid;
-    const startIdentity = record.providerRoot?.startIdentity;
-    if (typeof pid !== "number" || pid <= 0 || typeof startIdentity !== "string") {
-      diagnostics.push({
-        source: "controller" as const,
-        severity: "error" as const,
-        message: `session owner record at ${path} has no valid provider root identity`
-      });
-      continue;
-    }
+  for (const record of records) {
+    const { pid, startIdentity } = record.providerRoot;
     if (!isProcessAlive(pid)) {
-      // Dead Provider root: the record is stale; reconciliation removes it.
+      // The normal reconciliation owner releases dead custody records.
       continue;
     }
     const currentIdentity = readLinuxProcessStartIdentity(pid);

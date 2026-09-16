@@ -52,11 +52,6 @@ export type IntegrationSource =
       remoteCommit: string;
       taskBaseCommit: string;
       strategy: "rebase";
-    }>
-  | Readonly<{
-      /** Pre-v6 audit provenance; never accepted for a new Integration. */
-      kind: "historical-change-sets";
-      changeSetIds: readonly string[];
     }>;
 
 export type IntegrationAttempt = Readonly<{
@@ -412,20 +407,6 @@ function validateIntegrationSource(taskId: string, source: IntegrationSource): v
     const strategy = (source as Readonly<{ strategy?: unknown }>).strategy;
     if (strategy !== "rebase") {
       throw new Error(`Upstream Integration strategy is invalid: ${String(strategy)}.`);
-    }
-    return;
-  }
-  if (source.kind === "historical-change-sets") {
-    if (!Array.isArray(source.changeSetIds) || source.changeSetIds.length === 0) {
-      throw new Error("Historical Integration source requires ChangeSet ids.");
-    }
-    const seen = new Set<string>();
-    for (const changeSetId of source.changeSetIds) {
-      validateTaskRecordReference({ taskId, localId: changeSetId }, "changeSet");
-      if (seen.has(changeSetId)) {
-        throw new Error(`Historical Integration ChangeSet is duplicated: ${changeSetId}.`);
-      }
-      seen.add(changeSetId);
     }
     return;
   }

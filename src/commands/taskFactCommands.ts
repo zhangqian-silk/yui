@@ -31,6 +31,7 @@ import {
   taskRef
 } from "./taskCommandSupport.js";
 import type { TaskCommandExecution, TaskCommandOptions, TaskWorkflowStore } from "./taskCommandTypes.js";
+import { failureCapabilitiesCommand } from "../runtime/agentFailureContext.js";
 export function taskBriefCommand(
   args: string[],
   store: TaskWorkflowStore,
@@ -372,16 +373,20 @@ export function taskEventCommand(
     const event = events.find((e) => e.id === rest[1]) ?? null;
     if (event === null) throw dataError(`Event not found: ${rest[1]}.`);
     const timeZone = store.getConfig().timeZone;
+    const capabilitiesCommand = event.type === "runtime.agent-error" && event.payload.roleName
+      ? failureCapabilitiesCommand(task.id, event.payload.roleName, event.id) : undefined;
     return output([
       `Event: ${event.id}`,
       `Task: ${task.id}`,
       `Type: ${event.type}`,
       `Created: ${presentTime(event.createdAt, timeZone)}`,
+      ...(capabilitiesCommand === undefined ? [] : [`Inspect capabilities: ${capabilitiesCommand}`]),
       `Payload:`,
       ...(Object.keys(event.payload).length === 0
         ? ["  (none)"]
         : Object.entries(event.payload).map(([k, v]) => `  ${k}: ${v}`))
-    ].join("\n").concat("\n"), { taskId: task.id, event });
+    ].join("\n").concat("\n"), { taskId: task.id, event,
+      ...(capabilitiesCommand === undefined ? {} : { diagnostics: { capabilitiesCommand } }) });
   }
   throw usageError(command === undefined
     ? "Task event command is required."

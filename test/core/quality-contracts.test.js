@@ -31,8 +31,8 @@ test("structured verification survives RPC and both executors preserve cwd, argv
   const workspace = join(root, "workspace");
   mkdirSync(join(workspace, "nested"), { recursive: true });
   const plan = normalizeVerificationPlan({
-    schemaVersion: 1, kind: "verification-plan", id: "normal-checks", version: "1",
-    bootstrap: [], l1: { categories: [] },
+    schemaVersion: 2, kind: "verification-plan", id: "normal-checks", version: "1",
+    bootstrap: [],
     l2: { steps: [
       { name: "argv-env-cwd", cwd: "nested", env: { CHECK_VALUE: "literal" },
         argv: [process.execPath, "-e",
@@ -121,7 +121,7 @@ test("GC planning closes its own registry on success and failure without closing
     rmSync(home, { recursive: true, force: true });
   });
   const input = {
-    home, projects: [], managedWorkspaces: [], taskStatusById: new Map(),
+    home, sessionOwners: [], projects: [], managedWorkspaces: [], taskStatusById: new Map(),
     mode: "report", now,
     liveReferencePorts: { processCwdRefs: () => new Map(), tmuxPaneCwds: async () => [] }
   };

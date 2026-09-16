@@ -48,9 +48,6 @@ export async function applyIntegrationSource(input: Readonly<{
     });
     return pending;
   };
-  if (source.kind === "historical-change-sets") {
-    throw new Error("Historical Integration source has no current application proof; preserve evidence and abort explicitly.");
-  }
   if (source.kind === "work-item" && source.strategy === "manual") {
     if (current.candidateCommit !== undefined) {
       await assertIntegrationCandidate(path, current.candidateCommit);

@@ -20,7 +20,7 @@ import type { Project } from "../repository/project.js";
  * reusable across stages.
  */
 
-export const VERIFICATION_PLAN_SCHEMA_VERSION = 1 as const;
+export const VERIFICATION_PLAN_SCHEMA_VERSION = 2 as const;
 export const VERIFICATION_PLAN_KIND = "verification-plan";
 
 /** The reserved knowledge marker that carries a Project's VerificationPlan. */
@@ -42,13 +42,6 @@ export type VerificationStep = Readonly<{
   shell?: boolean;
 }>;
 
-/** L1: a change category (matched by changed path prefix) and its checks. */
-export type VerificationL1Category = Readonly<{
-  id: string;
-  paths: readonly string[];
-  checks: readonly VerificationStep[];
-}>;
-
 /** Toolchain identity requirements the plan declares. */
 export type VerificationToolchain = Readonly<{
   node?: string;
@@ -64,8 +57,6 @@ export type VerificationPlan = Readonly<{
   toolchain: VerificationToolchain;
   /** Workspace preparation (e.g. `npm ci`) run before any gate step. */
   bootstrap: readonly VerificationStep[];
-  /** L1 change-related targeted checks. */
-  l1: Readonly<{ categories: readonly VerificationL1Category[] }>;
   /** L2 exact-SHA hermetic gate steps. */
   l2: Readonly<{ steps: readonly VerificationStep[] }>;
   /** L3 package/release smoke steps (release-unique only). */
@@ -99,6 +90,7 @@ export function normalizeVerificationPlan(raw: unknown): VerificationPlan {
     );
   }
   if (Object.hasOwn(record, "mode")) throw new Error("VerificationPlan mode is retired; request an explicit rerun on the operation.");
+  if (Object.hasOwn(record, "l1")) throw new Error("VerificationPlan l1 is retired; declare current checks in l2.");
   const plan: VerificationPlan = {
     schemaVersion: VERIFICATION_PLAN_SCHEMA_VERSION,
     kind: VERIFICATION_PLAN_KIND,
@@ -106,9 +98,6 @@ export function normalizeVerificationPlan(raw: unknown): VerificationPlan {
     version: requireText(record.version as string, "VerificationPlan version"),
     toolchain: normalizeToolchain(record.toolchain),
     bootstrap: normalizeSteps(record.bootstrap, "bootstrap"),
-    l1: {
-      categories: normalizeL1Categories(record.l1)
-    },
     l2: {
       steps: normalizeSteps(
         (record.l2 as Record<string, unknown> | undefined)?.steps,
@@ -209,34 +198,6 @@ function normalizeStepEnv(raw: unknown, label: string): Readonly<Record<string, 
   return Object.freeze(env);
 }
 
-function normalizeL1Categories(raw: unknown): readonly VerificationL1Category[] {
-  if (raw === undefined) return Object.freeze([]);
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    throw new Error("VerificationPlan l1 must be an object.");
-  }
-  const categoriesRaw = (raw as Record<string, unknown>).categories;
-  if (!Array.isArray(categoriesRaw)) {
-    throw new Error("VerificationPlan l1 categories must be an array.");
-  }
-  const ids = new Set<string>();
-  return Object.freeze(categoriesRaw.map((entry) => {
-    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-      throw new Error("VerificationPlan l1 category must be an object.");
-    }
-    const record = entry as Record<string, unknown>;
-    const id = requireIdentity(record.id as string, "VerificationPlan l1 category id");
-    if (ids.has(id)) {
-      throw new Error(`VerificationPlan l1 category ids must be unique: ${id}.`);
-    }
-    ids.add(id);
-    return Object.freeze({
-      id,
-      paths: normalizedTextList(record.paths, `VerificationPlan l1 category ${id} paths`),
-      checks: normalizeSteps(record.checks, `l1 ${id}`)
-    });
-  }));
-}
-
 function normalizedTextList(raw: unknown, label: string): readonly string[] {
   if (!Array.isArray(raw)) {
     throw new Error(`${label} must be an array.`);
@@ -259,12 +220,11 @@ export function verificationPlanDigest(plan: VerificationPlan): string {
   const canonical = canonicalJson({
     // Old artifacts may have skipped shell commands or run in the wrong cwd.
     // Keep that history, but never reuse it as proof under corrected semantics.
-    executionContract: "workspace-argv-or-shell/clean-candidate/v4",
+    executionContract: "workspace-argv-or-shell/clean-candidate/l2-only/v5",
     id: plan.id,
     version: plan.version,
     toolchain: plan.toolchain,
     bootstrap: plan.bootstrap,
-    l1: plan.l1,
     l2: plan.l2,
     ...(plan.l3 === undefined ? {} : { l3: plan.l3 })
   });
