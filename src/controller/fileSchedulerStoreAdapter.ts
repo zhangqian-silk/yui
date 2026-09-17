@@ -26,7 +26,6 @@ import {
   appendRunInput,
   createRun,
   runPurposeAdmitsTaskState,
-  withRunContextSnapshot,
   type AgentRun
 } from "../agentRun/agentRun.js";
 import { createRunInput } from "../context/runInputContract.js";
@@ -1135,6 +1134,10 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
     return this.store.getActiveRun(taskId, roleName);
   }
 
+  getContextSnapshot(taskId: string, snapshotId: string) {
+    return this.store.getContextSnapshot(taskId, snapshotId);
+  }
+
   hasOpenInputRequest(taskId: string): boolean {
     return this.store.listOpenInputRequests([taskId]).length > 0;
   }
@@ -2227,16 +2230,18 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       const target = { kind: "role", taskId, roleName: "leader" } as const;
       const mailbox = store.getWorkMailbox(target);
       if (mailbox?.pending == null || mailbox.processing !== null) return false;
+      const snapshot = freezeRunContextSnapshot(store, {
+        taskId, roleName: "leader", purpose: "planning"
+      }, now);
       const run = createRun(store.nextRunId(taskId), taskId, "leader", "new",
         createRunInput({ source: { type: "yui", channel: "task-dispatch" },
           directive: `Plan Task ${taskId} with the user. Persist requirements and decisions. Request activation explicitly; planning grants no delivery authority.`,
+          contextSnapshotRef: contextSnapshotRef(snapshot),
           deltaRefIds: [] }), now, {
           purpose: "planning", effective: resolveEffectiveLaunch({ role, purpose: "planning" })
         });
-      const snapshot = freezeRunContextSnapshot(store, run, now);
-      const frozen = withRunContextSnapshot(run, contextSnapshotRef(snapshot));
-      store.saveRun(frozen);
-      store.saveActiveRun(frozen);
+      store.saveRun(run);
+      store.saveActiveRun(run);
       // Freeze the initial notification prefix against this planning Run.
       // Later messages remain pending; acceptance or an exact terminal settles
       // only this batch, so a failed initial launch cannot replay it forever.

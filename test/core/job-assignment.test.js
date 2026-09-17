@@ -13,7 +13,7 @@ import { createConfiguredAgent } from "../../dist/agent/agent.js";
 import { createRole, createRoleAgentBinding } from "../../dist/role/role.js";
 import { createRoleSessionSet, recordRoleAgentSession } from "../../dist/executor/agentExecutor.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
-import { createRun } from "../../dist/agentRun/agentRun.js";
+import { createFixtureRun } from "../helpers/runFixture.mjs";
 import { createRunInput } from "../../dist/context/runInputContract.js";
 import { createDurableJobControl, authorizeJobStart } from "../../dist/controller/jobControl.js";
 import { createBuiltinCapabilities } from "../../dist/kernel/builtinCapabilities.js";
@@ -56,7 +56,7 @@ test("Job admission, management and spawn keep a Worker inside its current Assig
     const effective = resolveEffectiveLaunch({ role, purpose: "execution", workspace: space, workItemWriteProjectIds: [project.id] });
     store.saveTaskRoleSessionSet(recordRoleAgentSession(createRoleSessionSet({ scope: "task", taskId: task.id, roleName: name }, agent.id, at),
       { agentId: agent.id, adapterId: agent.adapterId, nativeSessionId: `session-${name}`, status: "active", policy: "fixed", effective }, at));
-    if (name === "worker") store.saveActiveRun(createRun("run-1", task.id, name, "new",
+    if (name === "worker") store.saveActiveRun(createFixtureRun(store, "run-1", task.id, name, "new",
       createRunInput({ source: { type: "yui", channel: "workitem-dispatch" }, directive: "Work only in this Assignment.", deltaRefIds: [] }), at,
       { workItemId: item.id, workspace, effective }));
   }

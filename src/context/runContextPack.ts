@@ -3,7 +3,8 @@ import { providerRetryProjection } from "../runtime/providerRetry.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import { operationalTaskRecords } from "../task/taskRecordRetirement.js";
 import { TASK_COMPLETION_PUBLISHED_TREE_AUTHORIZED_EVENT } from "../task/publicationReference.js";
-import { RUN_INPUT_MAX_DELTAS } from "./runInputContract.js";
+import { RUN_INPUT_MAX_DELTAS, requireRunContextSnapshotRef } from "./runInputContract.js";
+import { requireIdentity } from "../domain/validation.js";
 import { assertWorkItemDependenciesCompleted } from "../workItem/dependencyGate.js";
 import { governingWorkItemCandidate, workItemExecutionGroupById, type WorkItem } from "../workItem/workItem.js";
 import {
@@ -53,7 +54,7 @@ export type AgentRunContextPack = Readonly<{
     adapterId: string;
     workspace: string;
   }>;
-  snapshot?: ContextSnapshotRef;
+  snapshot: ContextSnapshotRef;
   input: AgentRun["inputs"][number]["input"];
   authority: Readonly<{
     view: AgentRunContextView;
@@ -346,25 +347,14 @@ export function contextSnapshotDeltaRefIds(
 
 export function buildRunContextPack(store: TaskStore, taskId: string, runId: string): AgentRunContextPack {
   const run = requireExactRun(store, taskId, runId);
-  const current = collectAuthorizedContext(store, run);
-  let pointers: readonly ContextRef[] = current.map(({ ref }) => ref);
-  let snapshotRef: ContextSnapshotRef | undefined;
-  if (run.inputs[0]!.input.contextSnapshotRef !== undefined) {
-    const expected = run.inputs[0]!.input.contextSnapshotRef;
-    const snapshot = store.getContextSnapshot(taskId, expected.id);
-    if (snapshot === null) throw new Error(`AgentRun Context Snapshot is missing: ${expected.id}.`);
-    validateContextSnapshot(snapshot);
-    if (snapshot.digest !== expected.digest || snapshot.taskId !== taskId) {
-      throw new Error(`AgentRun Context Snapshot identity drifted: ${expected.id}.`);
-    }
-    pointers = snapshot.refs;
-    snapshotRef = contextSnapshotRef(snapshot);
-  }
+  const snapshot = readRunContextSnapshot(store, run);
+  const pointers = snapshot.refs;
   if (pointers.length > RUN_CONTEXT_PACK_MAX_REFS) {
     throw new Error(`AgentRun Context exceeds ${RUN_CONTEXT_PACK_MAX_REFS} authorized refs.`);
   }
   const view = contextView(run);
-  const writableProjectIds = writableProjects(store, run, view);
+  const writableProjectIds = run.effective.executionAuthority === "planning"
+    ? [] : run.effective.writeProjectIds;
   const summaries = pointers.map((ref) => Object.freeze({
     refId: ref.refId,
     store: ref.store,
@@ -382,7 +372,7 @@ export function buildRunContextPack(store: TaskStore, taskId: string, runId: str
       adapterId: run.effective.adapterId,
       workspace: run.effective.workspace.root
     }),
-    ...(snapshotRef === undefined ? {} : { snapshot: snapshotRef }),
+    snapshot: contextSnapshotRef(snapshot),
     input: run.inputs[0]!.input,
     authority: Object.freeze({ view, readableRefs: pointers, writableProjectIds }),
     pointers,
@@ -446,25 +436,21 @@ export function expandRunContextRef(
   taskId: string,
   runId: string,
   refId: string,
-  refStore?: string
+  refStore: string
 ): Readonly<{ ref: ContextRef; value: unknown; digest: string }> {
-  const pack = buildRunContextPack(store, taskId, runId);
-  const authorized = pack.pointers.filter((ref) => (
-    ref.refId === refId && (refStore === undefined || ref.store === refStore)
+  requireIdentity(refStore, "Context ref store");
+  const run = requireExactRun(store, taskId, runId);
+  const snapshot = readRunContextSnapshot(store, run);
+  const authorized = snapshot.refs.filter((ref) => (
+    ref.refId === refId && ref.store === refStore
   ));
-  const selector = refStore === undefined ? refId : `${refStore}/${refId}`;
+  const selector = `${refStore}/${refId}`;
   if (authorized.length !== 1) {
     throw new Error(`AgentRun Context ref is not uniquely authorized: ${selector}.`);
   }
-  const run = requireExactRun(store, taskId, runId);
-  const snapshotRef = run.inputs[0]!.input.contextSnapshotRef;
-  const materialized = snapshotRef === undefined
-    ? collectAuthorizedContext(store, run).find(({ ref }) => (
-        contextRefIdentity(ref) === contextRefIdentity(authorized[0]!)
-      ))
-    : store.getContextSnapshot(taskId, snapshotRef.id)?.resources.find(({ ref }) => (
-        contextRefIdentity(ref) === contextRefIdentity(authorized[0]!)
-      ));
+  const materialized = snapshot.resources.find(({ ref }) => (
+    contextRefIdentity(ref) === contextRefIdentity(authorized[0]!)
+  ));
   if (materialized === undefined || materialized.ref.digest !== authorized[0]!.digest) {
     throw new Error(`AgentRun Context ref is unavailable or drifted: ${selector}.`);
   }
@@ -487,15 +473,12 @@ export function buildRunContextDelta(
   after: string
 ): Readonly<{ schemaVersion: 1; after: string; cursor: string; refs: readonly ContextRef[] }> {
   const pack = buildRunContextPack(store, taskId, runId);
-  if (after === pack.digest || after === pack.snapshot?.digest) {
+  if (after === pack.digest || after === pack.snapshot.digest) {
     return Object.freeze({ schemaVersion: 1, after, cursor: pack.digest, refs: [] });
   }
   const run = requireExactRun(store, taskId, runId);
-  const snapshotRef = run.inputs[0]!.input.contextSnapshotRef;
-  const snapshot = snapshotRef === undefined
-    ? null
-    : store.getContextSnapshot(taskId, snapshotRef.id);
-  const parentDigest = snapshot?.parentRef?.digest;
+  const snapshot = readRunContextSnapshot(store, run);
+  const parentDigest = snapshot.parentRef?.digest;
   if (!((parentDigest !== undefined && after === parentDigest)
     || (parentDigest === undefined && after === "none"))) {
     throw new Error("AgentRun Context delta cursor is outside the frozen Snapshot lineage.");
@@ -514,6 +497,22 @@ function requireExactRun(store: TaskStore, taskId: string, runId: string): Agent
     throw new Error(`AgentRun not found: ${taskId}/${runId}.`);
   }
   return run;
+}
+
+export function readRunContextSnapshot(
+  store: Pick<TaskStore, "getContextSnapshot">,
+  run: AgentRun
+): ContextSnapshot {
+  const expected = requireRunContextSnapshotRef(run.inputs[0]!.input);
+  const snapshot = store.getContextSnapshot(run.taskId, expected.id);
+  if (snapshot === null) throw new Error(`AgentRun Context Snapshot is missing: ${expected.id}.`);
+  if (snapshot.id !== expected.id || snapshot.taskId !== run.taskId
+    || expected.taskId !== run.taskId || snapshot.digest !== expected.digest
+    || snapshot.sequence !== expected.sequence || snapshot.scope !== expected.scope
+    || snapshot.scopeRef !== expected.scopeRef) {
+    throw new Error(`AgentRun Context Snapshot identity drifted: ${expected.id}.`);
+  }
+  return validateContextSnapshot(snapshot);
 }
 
 function collectAuthorizedContext(
@@ -788,15 +787,7 @@ export function synthesisSourceRunIds(
   store: Pick<TaskStore, "getContextSnapshot">,
   run: AgentRun
 ): readonly string[] {
-  const ref = run.inputs[0]!.input.contextSnapshotRef;
-  if (ref === undefined) throw new Error(`Synthesis AgentRun has no Context Snapshot: ${run.id}.`);
-  const snapshot = store.getContextSnapshot(run.taskId, ref.id);
-  if (snapshot === null || snapshot.digest !== ref.digest
-    || snapshot.sequence !== ref.sequence || snapshot.scope !== ref.scope
-    || snapshot.scopeRef !== ref.scopeRef || snapshot.taskId !== run.taskId) {
-    throw new Error(`Synthesis Context Snapshot is missing or drifted: ${ref.id}.`);
-  }
-  validateContextSnapshot(snapshot);
+  const snapshot = readRunContextSnapshot(store, run);
   return snapshot.resources.filter(({ ref: entry, value }) => (
     entry.store === "source-run"
     && (value as { executionGroupId?: string }).executionGroupId === run.sourceExecutionGroupId
@@ -834,16 +825,6 @@ function contextView(run: Readonly<Pick<AgentRun, "roleName" | "purpose">>): Age
   if (run.roleName === "leader") return "leader";
   if (run.roleName === "operator") return "operator";
   return "worker";
-}
-
-function writableProjects(store: TaskStore, run: AgentRun, view: AgentRunContextView): readonly string[] {
-  if (run.effective.executionAuthority === "planning") return Object.freeze([]);
-  if (view === "leader") return Object.freeze(store.getTask(run.taskId)?.projectBindings.map(({ projectId }) => projectId) ?? []);
-  if (view === "reviewer") {
-    return Object.freeze(run.workspace?.entries.filter(({ access }) => access === "write").map(({ projectId }) => projectId) ?? []);
-  }
-  if (run.workItemId === undefined) return Object.freeze([]);
-  return Object.freeze(store.getWorkItem(run.taskId, run.workItemId)?.writeProjectIds ?? []);
 }
 
 function completionActions(

@@ -49,9 +49,11 @@ For every explicitly dispatched managed Task AgentRun:
    "$YUI_SESSION_CLI" task run context expand "$YUI_TASK_ID/<run-id>" <ref-id> --store <store> --mode full --json
    ```
 
-   A bare `<ref-id>` remains supported only when it identifies exactly one
-   authorized pointer. If multiple stores use that id, bare expansion fails
-   closed; never guess which store was intended.
+   `--store` is required, even when the ref id is unique. Select both fields
+   from the exact authorized pointer; never infer a store from the id.
+   Dispatched Runs require an explicit frozen Snapshot. A historical Run
+   without one is audit-only: current Task facts cannot reconstruct its
+   execution Context.
 
    A pointer or summary is not the request's body. Before planning or executing,
    read the relevant WorkItem/Task requirements and referenced user/Operator

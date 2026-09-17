@@ -6,7 +6,6 @@ import {
   createRun,
   runExecutionObservation,
   runPurposeAdmitsTaskState,
-  withRunContextSnapshot,
   type AgentRun
 } from "../agentRun/agentRun.js";
 import {
@@ -23,6 +22,7 @@ import {
   freezeReviewStageContextSnapshot,
   freezeRunContextSnapshot,
   freezeWorkItemExecutionAssignmentContextSnapshot,
+  readRunContextSnapshot,
   synthesisSourceRunIds
 } from "../context/runContextPack.js";
 import { createRunInput } from "../context/runInputContract.js";
@@ -4463,7 +4463,15 @@ function dispatchWork(
         workspace,
         workItemWriteProjectIds: item.writeProjectIds
       });
+      tx.saveWorkItem(task.id, workItemForDispatch);
       const runId = tx.nextRunId(task.id);
+      const snapshot = freezeRunContextSnapshot(tx, {
+        taskId: task.id,
+        roleName: role.name,
+        purpose: "execution",
+        workItemId: item.id,
+        workspace
+      }, now, "controller");
       const run = createRun(
         runId,
         task.id,
@@ -4476,7 +4484,8 @@ function dispatchWork(
         createRunInput({
           source: { type: "yui", channel: "workitem-dispatch" },
           directive: rawInput,
-          deltaRefIds: []
+          contextSnapshotRef: contextSnapshotRef(snapshot),
+          deltaRefIds: contextSnapshotDeltaRefIds(tx, snapshot)
         }),
         now,
         {
@@ -4485,32 +4494,17 @@ function dispatchWork(
           effective
         }
       );
-      const snapshot = freezeRunContextSnapshot(tx, {
-        taskId: task.id,
-        roleName: run.roleName,
-        purpose: "execution",
-        workItemId: item.id
-      }, now, "controller");
-      const withContext = withRunContextSnapshot(
-        run,
-        contextSnapshotRef(snapshot),
-        contextSnapshotDeltaRefIds(tx, snapshot)
-      );
-      if (workItemForDispatch.status !== "open") {
-        workItemForDispatch = updateWorkItemStatus(workItemForDispatch, "open", now);
-      }
-      tx.saveWorkItem(task.id, workItemForDispatch);
-      tx.saveRun(withContext);
-      tx.saveActiveRun(withContext);
+      tx.saveRun(run);
+      tx.saveActiveRun(run);
       enqueueRoleRunDispatch(tx, {
         taskId: task.id,
         roleName: role.name,
-        runId: withContext.id,
+        runId: run.id,
         reason: "turn-dispatched",
         occurredAt: now
       });
-      recordTaskEvent(tx, task.id, "run.dispatched", runLaunchEventPayload(withContext), now);
-      return { kind: "direct" as const, runs: [withContext] };
+      recordTaskEvent(tx, task.id, "run.dispatched", runLaunchEventPayload(run), now);
+      return { kind: "direct" as const, runs: [run] };
     }
     const groupId = `execution-group-${tx.peekNextRunId(task.id)}`;
     if (workItemForDispatch !== item) {
@@ -4600,6 +4594,13 @@ function dispatchWork(
     }
     tx.saveWorkItem(task.id, workItemForDispatch);
     const runs = plans.map((plan, index) => {
+      const snapshot = freezeRunContextSnapshot(tx, {
+        taskId: task.id,
+        roleName: plan.role.name,
+        purpose: "execution",
+        workItemId: item.id,
+        workspace: plan.managedWorkspace
+      }, now, "controller", assignment.contextSnapshotRef);
       const run = createRun(
         plan.runId,
         task.id,
@@ -4608,7 +4609,8 @@ function dispatchWork(
         createRunInput({
           source: { type: "yui", channel: "workitem-dispatch" },
           directive: assignment.input,
-          deltaRefIds: []
+          contextSnapshotRef: contextSnapshotRef(snapshot),
+          deltaRefIds: contextSnapshotDeltaRefIds(tx, snapshot)
         }),
         now,
         {
@@ -4619,32 +4621,21 @@ function dispatchWork(
           effective: plan.effective
         }
       );
-      const snapshot = freezeRunContextSnapshot(tx, {
-        taskId: task.id,
-        roleName: run.roleName,
-        purpose: "execution",
-        workItemId: item.id
-      }, now, "controller", assignment.contextSnapshotRef);
-      const withContext = withRunContextSnapshot(
-        run,
-        contextSnapshotRef(snapshot),
-        contextSnapshotDeltaRefIds(tx, snapshot)
-      );
       const prepared = options.executionLaneWorkspaces?.get(group.lanes[index]!.id);
       if (prepared !== undefined && tx.getManagedWorkspace(prepared.owner) === null) {
         tx.saveManagedWorkspace(prepared);
       }
-      tx.saveRun(withContext);
-      tx.saveActiveRun(withContext);
+      tx.saveRun(run);
+      tx.saveActiveRun(run);
       enqueueRoleRunDispatch(tx, {
         taskId: task.id,
         roleName: plan.role.name,
-        runId: withContext.id,
+        runId: run.id,
         reason: "turn-dispatched",
         occurredAt: now
       });
-      recordTaskEvent(tx, task.id, "run.dispatched", runLaunchEventPayload(withContext), now);
-      return withContext;
+      recordTaskEvent(tx, task.id, "run.dispatched", runLaunchEventPayload(run), now);
+      return run;
     });
     return { kind: "replicated" as const, runs };
   });
@@ -5877,7 +5868,6 @@ function retireRun(
   const parsed = parseTail(args, new Set([
     "--reason",
     "--expected-progress-at",
-    "--progress-at",
     "--agent-id",
     "--adapter-id",
     "--native-session-id"
@@ -5902,18 +5892,7 @@ function retireRun(
       return { task, run: run, changed: false } as const;
     }
     if (run.status === "active") {
-      const expectedProgressAt = requiredOption(
-        parsed.options,
-        parsed.options.has("--expected-progress-at")
-          ? "--expected-progress-at"
-          : "--progress-at"
-      );
-      if (parsed.options.has("--expected-progress-at") && parsed.options.has("--progress-at")) {
-        throw usageError(
-          "--expected-progress-at and --progress-at are mutually exclusive.",
-          usage
-        );
-      }
+      const expectedProgressAt = requiredOption(parsed.options, "--expected-progress-at");
       const agentId = requiredOption(parsed.options, "--agent-id");
       const adapterId = requiredOption(parsed.options, "--adapter-id");
       const nativeSessionId = parsed.options.get("--native-session-id");
@@ -5945,11 +5924,9 @@ function retireRun(
       runId: run.id,
       reason,
       ...(parsed.options.get("--expected-progress-at") === undefined
-        && parsed.options.get("--progress-at") === undefined
         ? {}
         : {
-            expectedProgressAt: parsed.options.get("--expected-progress-at")
-              ?? parsed.options.get("--progress-at")!
+            expectedProgressAt: parsed.options.get("--expected-progress-at")!
           }),
       ...(parsed.options.get("--native-session-id") === undefined
         ? {}
@@ -5982,9 +5959,10 @@ function runContextCommand(
 ): TaskCommandExecution {
   const [first, ...rest] = args;
   if (first === "expand") {
-    const usage = "Task run context expand usage: yui task run context expand <task>/<run> <ref-id> [--store <store>] [--mode full].";
+    const usage = "Task run context expand usage: yui task run context expand <task>/<run> <ref-id> --store <store> [--mode full].";
     const parsed = parseTail(rest, new Set(["--store", "--mode"]), usage);
     exactPositionals(parsed.positionals, 2, usage);
+    const refStore = requiredOption(parsed.options, "--store");
     const mode = parsed.options.get("--mode");
     if (mode !== undefined && mode !== "full") {
       throw usageError("AgentRun Context expansion mode must be full.", usage);
@@ -5996,7 +5974,7 @@ function runContextCommand(
       taskId,
       runId,
       parsed.positionals[1]!,
-      optionalNonEmptyOption(parsed.options, "--store")
+      refStore
     ));
     return output(`${JSON.stringify(expanded, null, 2)}\n`, { context: expanded });
   }
@@ -6277,7 +6255,11 @@ function retryRunOperation(
 ): TaskCommandExecution {
   exactPositionals(args, 1, "Task run retry usage: yui task run retry <task>/<run>.");
   const now = clock(options);
-  const previous = store.transaction((tx) => requireRun(tx, args[0], options));
+  const previous = store.transaction((tx) => {
+    const run = requireRun(tx, args[0], options);
+    readRunContextSnapshot(tx, run);
+    return run;
+  });
   if (previous.purpose === "review") {
     return retryFailedReviewRun(previous, store, options, now);
   }
@@ -6396,13 +6378,6 @@ function retryRunOperation(
       throw usageError(`Work Item ${retryItem.id} is not retryable from ${retryItem.status}.`);
     }
     if (retryItem !== null) assertWorkItemDependenciesCompletedForCommand(tx, retryItem);
-    const runWorkspace = previous.workspace
-      ?? (retryItem === null
-        ? tx.getTaskWorkspace(task.id)
-        : retryItem.assignee === "leader"
-          ? tx.getTaskWorkspace(task.id)
-          : tx.getWorkItemWorkspace(task.id, retryItem.id))
-      ?? undefined;
     const retryGroup = retryItem === null || previous.executionGroupId === undefined
       ? undefined
       : workItemExecutionGroupById(retryItem, previous.executionGroupId);
@@ -6417,7 +6392,7 @@ function retryRunOperation(
           || retryLane === undefined))) {
       throw dataError(`AgentRun ${previous.id} execution lineage no longer matches its Work Item.`);
     }
-    const retryManagedWorkspace = retryLane === undefined ? runWorkspace : previous.workspace;
+    const retryManagedWorkspace = previous.workspace;
     if (retryLane !== undefined) {
       const storedLaneWorkspace = previous.workspace === undefined
         ? null
@@ -6507,6 +6482,7 @@ function retryRunOperation(
             taskId: task.id,
             roleName: role.name,
             purpose: previous.purpose,
+            ...(retryManagedWorkspace === undefined ? {} : { workspace: retryManagedWorkspace }),
             ...(previous.workItemId === undefined ? {} : { workItemId: previous.workItemId })
           }, now, "controller", retryGroup?.assignment.contextSnapshotRef);
           return createRunInput({
@@ -7880,7 +7856,8 @@ export function dispatchPreparedReviewRound(
         roleName: reviewer.name,
         purpose: "review",
         ...(item === undefined ? {} : { workItemId: item.id }),
-        reviewRoundId: round.id
+        reviewRoundId: round.id,
+        workspace: round.workspace
       }, now, "controller");
       const created = createRun(
         runId,
@@ -7953,6 +7930,14 @@ export function dispatchPreparedReviewRound(
         reviewBaseCommit: round.reviewBaseCommit
       });
       const runId = tx.nextRunId(taskId);
+      const snapshot = freezeRunContextSnapshot(tx, {
+        taskId,
+        roleName: laneReviewer.name,
+        purpose: "review",
+        ...(item === undefined ? {} : { workItemId: item.id }),
+        reviewRoundId: round.id,
+        workspace: laneManagedWorkspace
+      }, now, "controller", runningGroup.assignment.contextSnapshotRef);
       const input = createRunInput({
         source: {
           type: "yui",
@@ -7972,7 +7957,8 @@ export function dispatchPreparedReviewRound(
             assignment: runningGroup.assignment
           }, null, 2)
         ].join("\n"),
-        deltaRefIds: []
+        contextSnapshotRef: contextSnapshotRef(snapshot),
+        deltaRefIds: contextSnapshotDeltaRefIds(tx, snapshot)
       });
       runningGroup = updateUnifiedExecutionLane(runningGroup, lane.id, {
         currentRunId: runId,
@@ -8017,27 +8003,12 @@ export function dispatchPreparedReviewRound(
         if (tx.getManagedWorkspace(prepared.owner) === null) tx.saveManagedWorkspace(prepared);
       }
     }
-    for (let index = 0; index < createdRuns.length; index += 1) {
-      const unboundRun = createdRuns[index]!;
-      const snapshot = freezeRunContextSnapshot(tx, {
-        taskId,
-        roleName: unboundRun.roleName,
-        purpose: "review",
-        ...(item === undefined ? {} : { workItemId: item.id }),
-        reviewRoundId: round.id
-      }, now, "controller", runningGroup.assignment.contextSnapshotRef);
-      const created = withRunContextSnapshot(
-        unboundRun,
-        contextSnapshotRef(snapshot),
-        contextSnapshotDeltaRefIds(tx, snapshot)
-      );
-      createdRuns[index] = created;
-      const laneReviewer = requireRole(tx, taskId, unboundRun.roleName);
+    for (const created of createdRuns) {
       tx.saveRun(created);
       tx.saveActiveRun(created);
       enqueueRoleRunDispatch(tx, {
         taskId,
-        roleName: laneReviewer.name,
+        roleName: created.roleName,
         runId: created.id,
         reason: "review-requested",
         occurredAt: now

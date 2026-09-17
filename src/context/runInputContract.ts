@@ -49,6 +49,7 @@ export type AgentRunInput = Readonly<{
   schemaVersion: typeof RUN_INPUT_PROTOCOL_VERSION;
   source: AgentRunInputSource;
   directive?: string;
+  /** Required at dispatch; absent only in audit history or subsequent observed inputs. */
   contextSnapshotRef?: ContextSnapshotRef;
   deltaRefIds: readonly string[];
 }>;
@@ -95,6 +96,16 @@ export function validateRunInput(value: AgentRunInput): AgentRunInput {
   return value;
 }
 
+/** Execution must never substitute current Task facts for missing frozen evidence. */
+export function requireRunContextSnapshotRef(
+  input: Pick<AgentRunInput, "contextSnapshotRef">
+): ContextSnapshotRef {
+  if (input.contextSnapshotRef === undefined) {
+    throw new Error("AgentRun Context Snapshot is required for execution; the record remains audit-only.");
+  }
+  return validateContextSnapshotRef(input.contextSnapshotRef);
+}
+
 export function createRunInputEnvelope(
   context: AgentRunInputEnvelopeContext,
   input: AgentRunInput
@@ -134,6 +145,7 @@ export function serializeRunInputEnvelope(value: AgentRunInputEnvelope): string 
     throw new Error("AgentRun input protocol is unsupported.");
   }
   const normalized = normalizeEnvelope(value);
+  if (normalized.purpose !== "global") requireRunContextSnapshotRef(normalized);
   const subject = Object.entries(normalized.subject)
     .map(([key, id]) => `${key}:${id}`)
     .join(",");

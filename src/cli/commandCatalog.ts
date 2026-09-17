@@ -980,7 +980,7 @@ const taskChildren: readonly NodeInput[] = [
           {
             name: "expand",
             summary: "Expand one authorized AgentRun context reference.",
-            usage: "yui task run context expand <task>/<run> <ref-id> [--store <store>] [--mode full]",
+            usage: "yui task run context expand <task>/<run> <ref-id> --store <store> [--mode full]",
             options: ["--store", "--mode"]
           },
           {
@@ -1003,7 +1003,7 @@ const taskChildren: readonly NodeInput[] = [
         name: "retire",
         summary: "Retire an incorrect historical AgentRun without deleting its audit record.",
         usage: "yui task run retire <task>/<run> --reason <text> [--expected-progress-at <timestamp>] [--agent-id <id>] [--adapter-id <id>] [--native-session-id <id>]",
-        options: ["--reason", "--expected-progress-at", "--progress-at", "--agent-id", "--adapter-id", "--native-session-id"]
+        options: ["--reason", "--expected-progress-at", "--agent-id", "--adapter-id", "--native-session-id"]
       }
     ]
   },
@@ -1467,8 +1467,8 @@ export const ROOT_COMMAND = buildNode({
         {
           name: "clone",
           summary: "Clone and bind a Project after user confirmation.",
-          usage: "yui project clone <name> <remote> [--alias <name> ...] [--stable <ref>] [--development <ref>]",
-          options: ["--alias", "--stable", "--development"]
+          usage: "yui project clone <name> <remote> [--alias <name> ...] [--stable <ref>] [--development <ref>] [--external]",
+          options: ["--alias", "--stable", "--development", "--external"]
         },
         {
           name: "refresh",

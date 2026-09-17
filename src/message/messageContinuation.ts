@@ -1,9 +1,10 @@
 import { isDeepStrictEqual } from "node:util";
 import type { TaskStore } from "../storage/taskStore.js";
 import type { TaskMessage, TaskMessageRecipient } from "./message.js";
-import { createRun, withRunContextSnapshot, type AgentRun } from "../agentRun/agentRun.js";
+import { createRun, type AgentRun } from "../agentRun/agentRun.js";
 import { createRunInput } from "../context/runInputContract.js";
 import { contextContentDigest, contextSnapshotRef, createContextSnapshot } from "../context/contextSnapshot.js";
+import { readRunContextSnapshot } from "../context/runContextPack.js";
 import { roleSessionMayContinue } from "../executor/effectiveLaunch.js";
 import { enqueueRoleRunDispatch } from "../coordination/workMailboxQueue.js";
 import { createTaskEvent } from "../event/taskEvent.js";
@@ -254,12 +255,9 @@ export function prepareMessageContinuations(store: TaskStore, taskId: string, no
     if (batch.length === 0) continue;
     const previous = store.listRuns(taskId).filter((run) => run.roleName === owner.roleName
       && run.workItemId === owner.workItemId && run.reviewRoundId === owner.reviewRoundId).at(-1)!;
-    const baselineRef = previous.inputs[0]?.input.contextSnapshotRef;
-    const baseline = baselineRef === undefined ? null : store.getContextSnapshot(taskId, baselineRef.id);
-    if (baseline === null || baseline.digest !== baselineRef!.digest) {
-      markNotDelivered(store, message, "assignment-context-unavailable");
-      continue;
-    }
+    // Missing or drifted evidence is diagnosed by the caller; never reconstruct
+    // an Assignment from today's Task facts.
+    const baseline = readRunContextSnapshot(store, previous);
     const runId = store.nextRunId(taskId);
     const round = owner.reviewRoundId === undefined ? null : store.getReviewRound(taskId, owner.reviewRoundId);
     const continuingRound = round === null ? null : (() => {
@@ -291,11 +289,11 @@ export function prepareMessageContinuations(store: TaskStore, taskId: string, no
       resources, refs: resources.map(({ ref }) => ref)
     });
     store.saveContextSnapshot(snapshot);
-    const run = withRunContextSnapshot(createRun(runId, taskId, recipient.roleName, "resume",
+    const run = createRun(runId, taskId, recipient.roleName, "resume",
       createRunInput({ source: { type: "yui", channel: "message-continuation" },
         directive: `Continue the same Assignment in its existing workspace. Read Messages ${batch.map((m) => m.id).join(", ")} from this exact Context. Message receipt is not implementation or acceptance.`,
-        deltaRefIds: batch.map((entry) => entry.id) }), now, copyAssignment(owner)),
-    contextSnapshotRef(snapshot), batch.map((entry) => entry.id));
+        contextSnapshotRef: contextSnapshotRef(snapshot),
+        deltaRefIds: batch.map((entry) => entry.id) }), now, copyAssignment(owner));
     store.saveRun(run);
     store.saveActiveRun(run);
     if (continuingRound !== null) store.saveReviewRound(taskId, continuingRound);

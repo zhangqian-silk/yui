@@ -25,7 +25,7 @@ import { createRole, createRoleAgentBinding } from "../../dist/role/role.js";
 import { bindTaskRoleProviderRuntime, createRoleSessionSet, recordRoleAgentSession } from "../../dist/executor/agentExecutor.js";
 import { acceptProviderTurn, beginProviderTurn, createProviderRuntimeBinding } from "../../dist/runtime/providerRuntimeIdentity.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
-import { createRun } from "../../dist/agentRun/agentRun.js";
+import { createFixtureRun } from "../helpers/runFixture.mjs";
 import { createRunInput } from "../../dist/context/runInputContract.js";
 import { createDurableJob, durableJobIdempotencyKey } from "../../dist/job/durableJob.js";
 import { createTaskRemoteDeliveryProof } from "../../dist/task/remoteDeliveryService.js";
@@ -275,7 +275,7 @@ test("force retains active Runs and queued Jobs, while plain settled archive sti
   store.saveConfiguredAgent(agent);
   const role = createRole(task.id, "worker", [createRoleAgentBinding(agent)], "codex", task.cwd, now);
   store.saveRole(task.id, role);
-  const run = createRun("turn-1", task.id, role.name, "new", createRunInput({
+  const run = createFixtureRun(store, "turn-1", task.id, role.name, "new", createRunInput({
     source: { type: "yui", channel: "task-dispatch" }, directive: "Original execution", deltaRefIds: []
   }), now, { effective: resolveEffectiveLaunch({ role, purpose: "execution" }) });
   store.saveActiveRun(run);
@@ -319,7 +319,7 @@ test("archive committed at observation transaction admission preserves the exact
   const role = createRole(task.id, "leader", [createRoleAgentBinding(agent)], "codex", task.cwd, now);
   store.saveRole(task.id, role);
   const effective = resolveEffectiveLaunch({ role, purpose: "execution" });
-  const run = createRun("turn-1", task.id, role.name, "new", createRunInput({
+  const run = createFixtureRun(store, "turn-1", task.id, role.name, "new", createRunInput({
     source: { type: "yui", channel: "task-dispatch" }, directive: "Original execution", deltaRefIds: []
   }), now, { effective });
   store.saveActiveRun(run);
