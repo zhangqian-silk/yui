@@ -245,7 +245,10 @@ artifact and provenance boundaries. This validates runtime integration, not
 real-model behavior. Pure contract and safety tests remain in `test/core`;
 production wiring is exercised here rather than only through mocked ports.
 The package smoke also checks unconditional status identity and update-owned
-resource/identity capture through the assembled package, without an installation
+resource/identity capture through the assembled package. Real lifecycle children
+stop the exact Controller and restore its captured launch identity while their
+parent holds the handover lock. Unrelated callers remain fenced, the lock stays
+owned by the parent, and durable input survives. These checks have no installation
 or publication effect.
 
 Configured Agents acting as developers or reviewers are ordinary execution

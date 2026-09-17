@@ -20,6 +20,18 @@ Agent 选择一个预先声明的计划，设施从持久状态驱动该计划�
 （`src/release/releaseWorkflowPorts.ts`）之后。可用临时 SQLite 和确定性的外部端口测试
 恢复逻辑，无需真实 GitHub、npm、git、Controller 或模型效果。
 
+## 0.16.1 的 Controller 交接修复
+
+升级器的停止与精确身份恢复子进程，现在显式接收父升级进程的交接锁归属身份，
+不再等待自己父进程持有的锁；无关调用仍被阻止。存储版本保持 37。
+
+已经安装的旧升级器（包括 0.15.12、0.16.0）不会因为暂存新包而提前获得此修复。
+若其在激活前报告 `CONTROLLER_HANDOVER_TIMEOUT`，先检查原 Controller 和锁的归属。
+确认失败的升级器已释放自己的锁、原 Controller 仍健康后，使用已安装版本的
+`yui controller stop` 正常停止 Controller，再重试 `yui update`。此操作保留受管
+Agent Session，仍完整执行预检、备份、迁移和验证；不要删除活动锁或强杀 Controller
+来绕过失败。
+
 ## 1.0 前的契约清理
 
 版本 `0.16.0` 先清退运行时兼容分支，尚未执行最终 1.0 基线切换，也不重置
