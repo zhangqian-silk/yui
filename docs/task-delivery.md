@@ -143,6 +143,33 @@ infer that unrecorded WorkItems mean direct execution was requested.
 
 ## Completion and remote delivery
 
+`task complete` is offline by default and never integrates upstream commits or
+changes Git HEAD. `--refresh-remote` only fetches remote objects in Task-owned
+repositories to report freshness; it does not rebase, start Integration checks,
+or update the stable Project checkout. A behind/diverged/unknown remote remains
+an advisory for local completion, not a claim of remote delivery. Refresh failure
+is reported as unknown with its error and never as fresh success. To inspect
+without completing or preparing Review, use `task base status <task> [--refresh]`.
+
+Choose any necessary upstream integration explicitly before completion.
+`task upstream integrate <task> (--latest|--project <project>)` requests a fixed
+rebase/check/CAS sequence. It returns each Integration and admitted Job, separating
+the candidate from the committed HEAD. A blocked batch preserves prior results,
+the failing Project/phase, any uncertain attempt and unattempted Projects; inspect
+and continue exact attempts instead of replaying the whole batch. It neither
+requests Review nor completes the Task.
+
+Completion still prepares/dispatches an already-established final Review without
+another approval. Without that contract it does not create a Reviewer.
+JSON `stage` distinguishes `completed`, `already-completed`, `review-pending`,
+`review-running`, and `review-blocked`; Review stages leave the Task active.
+`projectHeads` identifies the inspected heads, and the ReviewRound carries its
+separate frozen candidate and exact Run reference. After dispatch, the top-level
+stage reflects its result while `command` retains the earlier preparation result.
+`baseFreshness` and `warnings` expose the observation and its limitations;
+freshness is null when skipped for a completed Task or existing Review.
+An already-completed response does not re-observe or invent delivery heads.
+
 Completion checks the current WorkItems, latest captured/integrated results,
 applicable Review contract and exact clean committed Task-main snapshot.
 It also refuses completion while a new user/Operator message is still awaiting

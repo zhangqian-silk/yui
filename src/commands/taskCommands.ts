@@ -562,6 +562,7 @@ export function parseTaskCompletionRequest(
   taskId: string;
   summary: string;
   artifactRefs: readonly string[];
+  refreshRemote: boolean;
   acceptedPublishedTreePublicationId?: string;
 }> {
   const usage = "Task complete usage: yui task complete <id> (--summary <text>|--summary-file <path|->) [--refresh-remote] [--accept-published-tree <publication-id>].";
@@ -589,6 +590,7 @@ export function parseTaskCompletionRequest(
     taskId: parsed.positionals[0]!,
     summary,
     artifactRefs: parsed.multiOptions.get("--artifact-ref") ?? [],
+    refreshRemote: parsed.options.has("--refresh-remote"),
     ...(acceptedPublishedTreePublicationId === undefined
       ? {}
       : { acceptedPublishedTreePublicationId })
@@ -596,10 +598,10 @@ export function parseTaskCompletionRequest(
 }
 
 /**
- * Check every read-only completion blocker before a caller resolves remote
- * baselines or creates an Integration Attempt.  The transactional completion
+ * Check every read-only completion blocker before a caller observes remote
+ * baselines. The transactional completion
  * path invokes this same preflight and then repeats its checks while holding
- * the store write fence, so remote reconciliation can never get ahead of the
+ * the store write fence, so remote observation can never get ahead of the
  * local lifecycle/readiness gate.
  *
  * Issue 06: the blocker enumeration is the pure `projectCompletionReadiness`
@@ -623,7 +625,7 @@ export function preflightTaskCompletion(
   if (task.status !== "active") throw usageError(`Task is not active: ${task.id}.`);
 
   // Resolve the durable Task-local Reviewer policy before any remote fetch or
-  // Integration write. Historical control-plane identity is audit evidence,
+  // final Review preparation. Historical control-plane identity is audit evidence,
   // not a capability that every compatible CLI must reproduce.
   const taskFinalReviewContract = taskFinalReviewContractForMutation(
     store,
@@ -640,7 +642,7 @@ export function preflightTaskCompletion(
   const readiness = projectCompletionReadiness(readinessFacts);
   // An active Task-final Review is not a preflight failure: the transactional
   // path resumes a pending Round (or reports the running one) via
-  // `prepareFinalTaskReview`, and the CLI skips remote reconciliation while
+  // `prepareFinalTaskReview`, and the CLI skips remote observation while
   // `activeTaskReview` is true.  The blocker stays in the shared projection
   // so other surfaces (next-action, future readers) see the full rule set.
   const blockers = readiness.blockers.filter((blocker) => blocker.code !== "active-task-review");
@@ -1653,6 +1655,7 @@ function completeTaskCommand(
       return {
         task,
         changed: false,
+        projectHeads: undefined,
         completionAdvisories: [] as CompletionAdvisory[],
         finalReview: undefined
       } as const;
@@ -1686,6 +1689,7 @@ function completeTaskCommand(
       return {
         task,
         changed: false,
+        projectHeads: actualTaskCandidate?.projects ?? [],
         completionAdvisories: [] as CompletionAdvisory[],
         finalReview,
       } as const;
@@ -1777,6 +1781,7 @@ function completeTaskCommand(
     return {
       task: completed,
       changed: true,
+      projectHeads: actualTaskCandidate?.projects ?? [],
       completionAdvisories: readiness.advisories,
       finalReview: undefined
     } as const;
@@ -1784,15 +1789,23 @@ function completeTaskCommand(
   if (result.changed) {
     notifyMailbox(options.runtime, { kind: "operator" });
   }
+  const headOutput = (result.projectHeads ?? []).map(({ projectId, commit }) => (
+    `Task HEAD ${projectId}: ${commit}\n`
+  )).join("");
   if (result.finalReview !== undefined) {
-    const status = result.finalReview.status === "pending"
-      ? `Final Task Review requested as ${result.finalReview.id}.`
-      : `Final Task Review is blocked: ${
-          result.finalReview.failure?.message ?? result.finalReview.id
-        }.`;
-    return output(`${status}\n`, {
+    const round = result.finalReview;
+    const stage = round.status === "pending" ? "review-pending"
+      : round.status === "running" ? "review-running" : "review-blocked";
+    const status = round.status === "pending"
+      ? `Final Task Review requested as ${round.id}.`
+      : round.status === "running"
+        ? `Final Task Review is still running: ${round.id}.`
+        : `Final Task Review ${round.id} is blocked: ${round.failure?.message ?? round.status}.`;
+    return output(`${status}\nTask ${result.task.id} remains active.\n${headOutput}`, {
+      stage,
       task: result.task,
-      reviewRound: result.finalReview
+      projectHeads: result.projectHeads,
+      reviewRound: round
     });
   }
   const completionOutput = result.changed
@@ -1804,8 +1817,10 @@ function completeTaskCommand(
       + result.completionAdvisories.map((advisory) => (
         `- ${advisory.code} (${advisory.ref.kind} ${advisory.ref.id}): ${advisory.fix}`
       )).join("\n").concat("\n");
-  return output(completionOutput + advisoryOutput, {
+  return output(completionOutput + headOutput + advisoryOutput, {
+    stage: result.changed ? "completed" : "already-completed",
     task: result.task,
+    ...(result.projectHeads === undefined ? {} : { projectHeads: result.projectHeads }),
     completionAdvisories: result.completionAdvisories
   });
 }
@@ -6859,7 +6874,7 @@ function prepareFinalTaskReview(
 
   const latest = establishedRound;
   if (latest?.status === "running") {
-    throw usageError(`Final Task Review is still active: ${latest.id}/${latest.status}.`);
+    return latest;
   }
   if (latest?.status === "pending") {
     return resumablePendingFinalTaskReview(

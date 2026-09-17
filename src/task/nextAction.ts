@@ -218,26 +218,7 @@ export function projectNextAction(facts: NextActionFacts): NextAction {
             ref: refs[1]
           }
         ],
-        recommendedCommand:
-          `yui task work edit ${task.id}/${dependencyIssue.workItemId} --clear-dependencies`
-      });
-    }
-    const draftWork = selectOpenWorkItem(facts.workItems);
-    if (draftWork.kind === "blocked") {
-      const refs = [
-        ref("work-item", draftWork.itemId),
-        ref("work-item", draftWork.blockedBy)
-      ];
-      return buildAction(facts, {
-        kind: "repair-protocol-inconsistency",
-        reason: `Draft Work Item ${draftWork.itemId} depends on ${draftWork.blockedBy}, which is missing, retired, or not completed. Edit the Draft before activation.`,
-        refs,
-        conflicts: refs,
-        preconditions: [
-          { fact: `Draft dependency ${draftWork.blockedBy} is valid`, satisfied: false, ref: refs[1] }
-        ],
-        recommendedCommand:
-          `yui task work edit ${task.id}/${draftWork.itemId} --clear-dependencies`
+        ...dependencyJudgment(task.id, dependencyIssue.workItemId)
       });
     }
     return buildAction(facts, {
@@ -469,18 +450,24 @@ export function projectNextAction(facts: NextActionFacts): NextAction {
 
   const openWork = selectOpenWorkItem(facts.workItems);
   if (openWork?.kind === "blocked") {
+    const issue = draftWorkItemDependencyIssue(facts.workItems);
+    const itemId = issue?.workItemId ?? openWork.itemId;
+    const dependencyId = issue?.dependencyId ?? openWork.blockedBy;
     const refs = [
-      ref("work-item", openWork.itemId),
-      ref("work-item", openWork.blockedBy)
+      ref("work-item", itemId),
+      ref("work-item", dependencyId)
     ];
     return buildAction(facts, {
       kind: "repair-protocol-inconsistency",
-      reason: `Work Item ${openWork.itemId} depends on ${openWork.blockedBy}, which is not completed or available.`,
+      reason: issue?.kind === "cycle"
+        ? `Work Item dependency cycle includes ${itemId}/${dependencyId}.`
+        : `Work Item ${itemId} depends on ${dependencyId}, which is ${issue === undefined ? "not completed" : "missing or retired"}.`,
       refs,
       conflicts: refs,
       preconditions: [
-        { fact: `Dependency ${openWork.blockedBy} is completed`, satisfied: false, ref: refs[1] }
-      ]
+        { fact: `Dependency ${dependencyId} is valid and completed`, satisfied: false, ref: refs[1] }
+      ],
+      ...dependencyJudgment(task.id, itemId)
     });
   }
   if (openWork?.kind === "ready") {
@@ -996,6 +983,28 @@ type OpenWorkItemSelection =
   | { kind: "ready"; item: WorkItem }
   | { kind: "blocked"; itemId: string; blockedBy: string }
   | { kind: "none" };
+
+function dependencyJudgment(taskId: string, workItemId: string) {
+  return {
+    recommendedCommand: `yui task work show ${taskId}/${workItemId}`,
+    alternatives: [
+      {
+        kind: "inspect-dependencies",
+        reason: "Read the related requirements and dependency records before choosing a repair.",
+        recommendedCommand: `yui task work list ${taskId}`
+      },
+      {
+        kind: "revise-dependencies",
+        reason: "If the intended dependency graph is wrong, edit the affected WorkItem with --after for the complete intended set, preserving unrelated valid dependencies."
+      },
+      {
+        kind: "retire-obsolete-work",
+        reason: "Only if the requirement is no longer needed, deliberately retire it and reconcile its dependents."
+      }
+    ],
+    judgmentRequired: "The records identify a blocked dependency, not which business requirement or edge is wrong. Determine the intended graph from Task requirements; do not infer permission to delete dependencies."
+  };
+}
 
 function selectOpenWorkItem(workItems: readonly WorkItem[]): OpenWorkItemSelection {
   const byId = new Map(workItems.map((item) => [item.id, item]));

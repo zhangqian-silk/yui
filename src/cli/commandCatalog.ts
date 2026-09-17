@@ -431,7 +431,7 @@ const taskChildren: readonly NodeInput[] = [
   },
   {
     name: "complete",
-    summary: "Complete an active Task and stop automatic wakeups.",
+    summary: "Complete locally, or prepare/dispatch the configured final Review and remain active. --refresh-remote only fetches freshness observations; it never rebases, changes HEAD or starts Integration checks.",
     usage: "yui task complete <id> (--summary <text>|--summary-file <path|->) [--artifact-ref <artifact-id|turn:id|url> ...] [--refresh-remote] [--accept-published-tree <publication-id>]",
     options: ["--summary", "--summary-file", "--artifact-ref", "--refresh-remote", "--accept-published-tree"],
     fileOptions: ["--summary-file"]
@@ -443,7 +443,7 @@ const taskChildren: readonly NodeInput[] = [
     children: [
       {
         name: "status",
-        summary: "Classify Task Project bases against local or refreshed remote refs.",
+        summary: "Observe Task Project bases against local refs; --refresh fetches remote objects without changing HEAD, starting checks or creating Integration/Review.",
         usage: "yui task base status <task> [--refresh]",
         options: ["--refresh"]
       }
@@ -489,7 +489,7 @@ const taskChildren: readonly NodeInput[] = [
   },
   {
     name: "next-action",
-    summary: "Project the durable Task records into one protocol-level next action.",
+    summary: "Read Task facts, mechanical prerequisites and legal alternatives; semantic choices remain with the Leader.",
     usage: "yui task next-action <task> [--json]",
     options: ["--json"]
   },
@@ -519,7 +519,7 @@ const taskChildren: readonly NodeInput[] = [
     children: [
       {
         name: "integrate",
-        summary: "Rebase Task changes onto the remote development head through Integration.",
+        summary: "Explicitly rebase Task changes onto the remote development head, run configured/additional checks (possibly as Jobs), then advance HEAD through Integration CAS. Returns exact attempts and partial results; does not request Review or complete the Task.",
         usage: "yui task upstream integrate <task> (--latest|--project <project>) [--check <command> ...] [--rerun-checks]",
         options: ["--latest", "--project", "--check", "--rerun-checks"]
       }

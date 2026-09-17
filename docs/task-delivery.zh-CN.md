@@ -113,6 +113,27 @@ Reviewer Run 持有报告；执行成功不等于语义通过。验收归 Leader
 
 ## 完成与远程交付
 
+`task complete` 默认离线，绝不集成上游提交或改变 Git HEAD。
+`--refresh-remote` 仅在 Task 自有仓库中获取远端对象并报告新鲜度，不会 rebase、
+启动 Integration 检查或更新稳定 Project checkout。远端落后、分叉或未知仍是本地
+完成的提示，不是远端交付证明；刷新失败返回 unknown 和原始错误，不伪装成最新成功。
+只想查询而不完成或准备 Review 时，使用 `task base status <task> [--refresh]`。
+
+需要上游集成时，由 Agent 在完成前显式选择。
+`task upstream integrate <task> (--latest|--project <project>)` 请求固定的
+rebase／检查／CAS 步骤，返回每个 Integration 和已接纳的 Job，并区分候选与已提交
+HEAD。批处理中途受阻仍保留先前结果、失败的 Project／阶段、效果需查证的尝试以及
+尚未尝试的 Project；应检查和续作确切尝试，不重放整个批次。此命令既不请求 Review，
+也不完成 Task。
+
+完成仍会按已建立的 final Review 合同准备／派发 Review，不要求重复批准；
+没有该合同时不会创建 Reviewer。JSON 的 `stage` 区分 `completed`、
+`already-completed`、`review-pending`、`review-running` 和 `review-blocked`，
+Review 阶段保持 Task active。`projectHeads` 标明本次检查的 head，ReviewRound
+独立携带冻结候选及确切 Run 引用。派发后顶层阶段反映实际结果，`command` 保留先前
+准备阶段的部分结果。`baseFreshness` 和 `warnings` 暴露观察与限制；已完成或已有
+Review 时跳过刷新，该新鲜度字段为 null。重复完成不重新观察或补造交付 head。
+
 完成会检查当前的 WorkItem、最新捕获/集成的结果、适用的 Review 合同以及确切的、
 干净且已提交的 Task-main 快照。当有一条新的 user/Operator 消息仍在等待 Leader
 投递时，它也会拒绝完成。当前原生轮次必须结束，待处理的通知才能到达；随后 Leader

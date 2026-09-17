@@ -15,7 +15,9 @@ import {
   acceptProviderTurn, beginProviderTurn, cancelQuiescentProviderInput,
   createProviderRuntimeBinding, settleProviderTurn
 } from "../../dist/runtime/providerRuntimeIdentity.js";
-import { runTaskCommand } from "../../dist/commands/taskCommands.js";
+import { dispatchPreparedReviewRound, runTaskCommand } from "../../dist/commands/taskCommands.js";
+import { attachReviewRoundWorkspace } from "../../dist/review/reviewRound.js";
+import { terminalizeExactTaskRun } from "../../dist/lifecycle/exactRunTerminalization.js";
 import { runTaskInputCommand } from "../../dist/commands/taskInputCommands.js";
 import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
 import { createManagedWorkspace } from "../../dist/worktree/managedWorkspace.js";
@@ -326,6 +328,52 @@ test("Task-final review uses the Task-local Reviewer without requiring a global 
   assert.equal(round.reviewerRoleName, "reviewer");
   assert.equal(round.status, "pending");
   assert.equal(round.scope, "task");
+});
+
+test("completion executes its established final Review contract once and reports pending, running and completed stages", t => {
+  const { store, home, agent } = fixture(t);
+  const taskId = "task-1";
+  const commit = "1".repeat(40);
+  store.saveProject(createProject("project-1", "lab", join(home, "reference"),
+    { stable: "main", development: "main" }, at));
+  store.saveTask({ ...store.getTask(taskId), projectBindings: [{
+    projectId: "project-1", directory: "lab", baseRef: "main", baseCommit: commit, currentCommit: commit
+  }] });
+  store.saveRole(taskId, createRole(taskId, "reviewer", [createRoleAgentBinding(agent)], "codex", home, at));
+  const options = {
+    now: () => later, environment: {},
+    taskFinalReviewContract: { taskId, reviewerRoleName: "reviewer" },
+    actualTaskReviewCandidate: { schemaVersion: 1, projects: [{ projectId: "project-1", commit }] }
+  };
+  const complete = () => runTaskCommand(["complete", taskId, "--summary", "Outcome and self-review"], store, options);
+  const pending = complete();
+  assert.equal(pending.data.stage, "review-pending");
+  assert.deepEqual(pending.data.projectHeads, options.actualTaskReviewCandidate.projects);
+  assert.equal(store.getTask(taskId).status, "active");
+  assert.equal(complete().data.reviewRound.id, pending.data.reviewRound.id);
+  const round = pending.data.reviewRound;
+  const workspace = createManagedWorkspace({
+    owner: { type: "review-round", taskId, reviewRoundId: round.id }, root: join(home, "review"),
+    entries: [{ projectId: "project-1", directory: "lab", access: "write",
+      path: join(home, "review/lab"), branch: "review", baseRef: commit, baseCommit: commit }]
+  }, at);
+  store.saveManagedWorkspace(workspace);
+  store.saveReviewRound(taskId, attachReviewRoundWorkspace(round, workspace));
+  const run = dispatchPreparedReviewRound(taskId, round.id, store, options);
+  const running = complete();
+  assert.equal(running.data.stage, "review-running");
+  assert.equal(running.data.reviewRound.reviewerRunId, run.id);
+  assert.equal(store.listReviewRounds(taskId).length, 1);
+  assert.equal(store.listRuns(taskId).length, 1);
+  const terminal = store.transaction(tx => terminalizeExactTaskRun(tx, {
+    taskId, roleName: run.roleName, agentId: run.effective.agentId, runId: run.id,
+    outcome: { status: "completed", output: "Deterministic Review evidence; no model was invoked." }
+  }, later));
+  assert.equal(terminal.disposition, "applied");
+  assert.equal(complete().data.stage, "completed");
+  assert.equal(store.getTask(taskId).status, "completed");
+  assert.equal(complete().data.stage, "already-completed");
+  assert.equal(store.listReviewRounds(taskId).length, 1);
 });
 
 test("native systemError with a proven terminal Turn is replaceable without starting model work", async () => {

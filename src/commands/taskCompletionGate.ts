@@ -1,17 +1,8 @@
 import { usageError } from "../errors/cliError.js";
 import {
-  GitIntegrationService,
-  type IntegrationJobPort
-} from "../integration/gitIntegrationService.js";
-import {
-  createIntegrationAttempt
-} from "../integration/integrationAttempt.js";
-import {
   NodeGitWorkspace,
-  type GitRemoteHead,
   type GitWorkspacePort
 } from "../repository/gitWorkspace.js";
-import type { Project } from "../repository/project.js";
 import { isCompletedTaskReviewEvidence } from "../review/reviewAcceptance.js";
 import type { ReviewRound, TaskReviewCandidate } from "../review/reviewRound.js";
 import type { TaskStore } from "../storage/taskStore.js";
@@ -19,20 +10,11 @@ import { publicationExternalKey } from "../task/publicationReference.js";
 import type { Task } from "../task/task.js";
 import {
   workspaceProjectEntry,
-  type ManagedWorkspace,
-  type WorkspaceProjectEntry
+  type ManagedWorkspace
 } from "../worktree/managedWorkspace.js";
 
 type CompletionGateOptions = Readonly<{
-  now?: () => Date;
-  environment?: NodeJS.ProcessEnv;
   git?: GitWorkspacePort;
-  /**
-   * f7: The Controller IntegrationJobPort so non-empty checks run as
-   * DurableJobs instead of in the Leader/CLI process. Required for the
-   * remote-baseline path to avoid leaving running/no-check zombies.
-   */
-  jobPort?: IntegrationJobPort;
 }>;
 
 export type TaskCompletionPublishedTreeProof = Readonly<{
@@ -254,168 +236,6 @@ function sameTaskCandidate(
       project.projectId === right.projects[index]?.projectId
       && project.commit === right.projects[index]?.commit
     ));
-}
-
-export type RemoteReconciliation = Readonly<{
-  projectId: string;
-  remote: GitRemoteHead;
-  fromCommit: string;
-  toCommit: string;
-  integrationId: string;
-}>;
-
-type RemotePlan = Readonly<{
-  project: Project;
-  entry: WorkspaceProjectEntry;
-  remote: GitRemoteHead;
-  currentCommit: string;
-  taskBaseCommit: string;
-}>;
-
-/**
- * Reconcile configured remote baselines before a Task completion attempt.
- *
- * Remote resolution and fetches happen from the Task's managed worktree.  A
- * moved remote is represented by a normal upstream Integration Attempt. The
- * normal check and CAS path advances only the Task clone; stable Project
- * checkouts are never refreshed or otherwise mutated here.
- */
-export async function reconcileTaskRemoteBaselines(
-  taskId: string,
-  store: TaskStore,
-  home: string,
-  options: CompletionGateOptions = {}
-): Promise<readonly RemoteReconciliation[]> {
-  const task = store.getTask(taskId);
-  if (task === null) throw usageError(`Task not found: ${taskId}.`);
-  if (task.projectBindings.length === 0) {
-    return [];
-  }
-  const workspace = requireTaskWorkspace(store, task);
-  const git = options.git ?? new NodeGitWorkspace();
-  if (git.fetchRemoteHeadIntoWorktree === undefined) {
-    throw usageError(
-      `Task ${task.id} cannot verify remote baselines: managed Git workspace support is unavailable.`
-    );
-  }
-
-  const plans: RemotePlan[] = [];
-  for (const binding of task.projectBindings) {
-    const project = store.getProject(binding.projectId);
-    if (project === null) {
-      throw usageError(`Project not found for Task ${task.id}: ${binding.projectId}.`);
-    }
-    if (project.remoteUrl === undefined) continue;
-    const entry = workspaceProjectEntry(workspace, project.id);
-    if (entry === undefined || entry.access !== "write") {
-      throw usageError(
-        `Task ${task.id} has no writable managed main workspace for remote Project ${project.id}.`
-      );
-    }
-    const currentCommit = (await git.inspect(entry.path, "HEAD")).baseCommit;
-    if (binding.currentCommit !== currentCommit || binding.baseCommit === undefined) {
-      throw usageError(
-        `Project ${project.id} Task commit record does not match its authoritative main clone.`
-      );
-    }
-    const remote = await fetchRemote(git, entry, project);
-    if (remote.commit === currentCommit) continue;
-    if (await git.isAncestor(entry.path, remote.commit, currentCommit)) continue;
-
-    if (!await git.isClean(entry.path)) {
-      throw usageError(
-        `Project ${project.id} managed Task workspace is dirty; commit or clean it before remote reconciliation.`
-      );
-    }
-    plans.push({
-      project,
-      entry,
-      remote,
-      currentCommit,
-      taskBaseCommit: binding.baseCommit
-    });
-  }
-
-  const reconciled: RemoteReconciliation[] = [];
-  for (const plan of plans) {
-    const attempt = store.transaction((tx) => {
-      const created = createIntegrationAttempt({
-        id: tx.nextIntegrationAttemptId(task.id),
-        taskId: task.id,
-        projectId: plan.project.id,
-        targetRef: plan.entry.branch,
-        beforeCommit: plan.currentCommit,
-        source: {
-          kind: "upstream",
-          branch: plan.remote.branch,
-          remoteCommit: plan.remote.commit,
-          taskBaseCommit: plan.taskBaseCommit,
-          strategy: "rebase"
-        },
-        checkCommands: []
-      }, options.now?.() ?? new Date());
-      tx.saveIntegrationAttempt(task.id, created);
-      return created;
-    });
-    const result = await new GitIntegrationService(
-      home,
-      store,
-      git,
-      options.now ?? (() => new Date()),
-      options.environment,
-      undefined,
-      options.jobPort
-    ).integrate(task.id, attempt.id);
-    // rr6/f3: A moved remote with non-empty checks spawns a DurableJob. This
-    // is a pending completion outcome, not a failure: name the exact
-    // Integration and Job and the exact continuation command (mirroring the
-    // `task integration` checks-running message) so the caller can resume the
-    // same remote-reconciliation attempt instead of being blocked by the
-    // preflight's active-job/unresolved-Integration gates.
-    if (result.status === "checks-running") {
-      throw usageError(
-        `Remote baseline reconciliation for ${task.id}/${plan.project.id} is running checks as `
-        + `Integration ${result.attempt.id} (DurableJob ${result.job.id}); run `
-        + `'yui task integration continue ${task.id}/${result.attempt.id}' when the job finishes, `
-        + `then retry task complete.`
-      );
-    }
-    if (result.status !== "committed" || result.attempt.candidateCommit === undefined) {
-      const detail = result.attempt.checks?.find(({ outcome }) => outcome === "failed")?.details
-        ?? result.attempt.conflict?.summary
-        ?? result.attempt.status;
-      throw usageError(
-        `Remote baseline reconciliation failed for ${task.id}/${plan.project.id}: ${detail}`
-      );
-    }
-    reconciled.push({
-      projectId: plan.project.id,
-      remote: plan.remote,
-      fromCommit: plan.currentCommit,
-      toCommit: result.attempt.candidateCommit,
-      integrationId: attempt.id
-    });
-  }
-  return reconciled;
-}
-
-async function fetchRemote(
-  git: GitWorkspacePort,
-  entry: WorkspaceProjectEntry,
-  project: Project
-): Promise<GitRemoteHead> {
-  try {
-    return await git.fetchRemoteHeadIntoWorktree!({
-      repositoryPath: entry.path,
-      remoteUrl: project.remoteUrl!,
-      branch: project.developmentBranch
-    });
-  } catch (error) {
-    throw usageError(
-      `Project ${project.id} remote target could not be resolved; completion is fail-closed: `
-      + `${error instanceof Error ? error.message : String(error)}`
-    );
-  }
 }
 
 function requireTaskWorkspace(store: TaskStore, task: Task): ManagedWorkspace {
