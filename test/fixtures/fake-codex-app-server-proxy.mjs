@@ -80,10 +80,11 @@ function handleMessage(message) {
       respond({ codexHome: process.env.CODEX_HOME ?? "/tmp/fake-codex-home" });
       break;
     case "thread/start":
-      respond({ thread: { id: threadId } });
+      respond({ thread: { id: threadId, status: { type: "idle" }, turns: [] } });
       break;
     case "thread/resume":
-      respond({ thread: { id: message.params.threadId, status: { type: "idle" }, turns: [] } });
+      respond({ thread: { id: message.params.threadId, status: { type: "idle" },
+        turns: JSON.parse(process.env.YUI_FAKE_RESUMED_TURNS ?? "[]") } });
       break;
     case "thread/name/set":
       respond({});
@@ -110,11 +111,15 @@ function handleMessage(message) {
       turnSequence += 1;
       const turnId = `fake-turn-${turnSequence}`;
       if (controlled) activeTurnId = turnId;
-      respond({ turn: { id: turnId } });
+      respond({ turn: { id: turnId, status: "inProgress", items: [], error: null } });
       setImmediate(() => {
+        if (process.env.YUI_FAKE_PROTOCOL_EVENTS !== undefined) {
+          for (const event of JSON.parse(process.env.YUI_FAKE_PROTOCOL_EVENTS)) sendJson(event);
+          return;
+        }
         sendJson({
           method: "turn/started",
-          params: { threadId, turn: { id: turnId } }
+          params: { threadId, turn: { id: turnId, status: "inProgress", items: [] } }
         });
         if (controlled) return;
         sendJson({

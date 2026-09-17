@@ -559,6 +559,7 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
     private readonly onGoal: ((goal: StructuredProviderGoal | null) => void) | undefined,
     private readonly onInput: ((input: StructuredProviderInputObserved) => void) | undefined,
     private readonly onActivity: ((activity: StructuredProviderActivity) => void) | undefined,
+    private readonly mirror: (stream: "stdout" | "stderr", text: string) => void,
     readonly nativeAccountHome?: string
   ) {}
 
@@ -629,6 +630,7 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
       onGoal,
       onInput,
       onActivity,
+      mirror,
       optionalId(initialized.codexHome)
     );
     session.#activeTurnId = resumedActiveTurnId;
@@ -692,8 +694,20 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
   ): StructuredProviderTurnTerminal | undefined {
       const method = typeof message.method === "string" ? message.method : "";
       const params = object(message.params) ?? {};
-      if (optionalId(params.threadId) !== this.conversationId) return undefined;
-      const goal = codexGoalNotification({ method, params });
+      const threadId = optionalId(params.threadId);
+      if (threadId !== this.conversationId) {
+        if (threadId === undefined && (method === "turn/started" || method === "turn/completed")) {
+          this.mirror("stderr", `Codex protocol: ${method} has no thread identity; ignored.\n`);
+        }
+        return undefined;
+      }
+      let goal;
+      try {
+        goal = codexGoalNotification({ method, params });
+      } catch {
+        this.mirror("stderr", "Codex protocol: invalid Goal notification; ignored.\n");
+        return undefined;
+      }
       if (goal !== undefined) {
         if (emit) this.onGoal?.(goal);
         return undefined;
@@ -701,17 +715,20 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
       if (emit && (method === "item/started" || method === "item/completed"
         || method === "item/agentMessage/delta" || method === "item/reasoning/summaryTextDelta")) {
         const item = object(params.item);
-        const id = optionalId(item?.id) ?? optionalId(params.itemId);
+        const delta = method === "item/agentMessage/delta" || method === "item/reasoning/summaryTextDelta";
+        const id = optionalId(delta ? params.itemId : item?.id);
         const nativeTurnId = optionalId(params.turnId);
-        const tool = ["commandExecution", "mcpToolCall", "dynamicToolCall", "fileChange"].includes(String(item?.type));
-        const model = ["agentMessage", "reasoning"].includes(String(item?.type)) || method.endsWith("Delta") || method.endsWith("/delta");
-        if (id !== undefined && nativeTurnId !== undefined && (tool || model)) {
+        const tool = typeof item?.type === "string"
+          && ["commandExecution", "mcpToolCall", "dynamicToolCall", "fileChange"].includes(item.type);
+        const model = delta || item?.type === "agentMessage" || item?.type === "reasoning";
+        const phase = model ? "model" as const : tool ? codexToolPhase(item!, method === "item/started") : undefined;
+        if (tool && phase === undefined) {
+          this.mirror("stderr", "Codex protocol: tool item has no valid lifecycle status; ignored.\n");
+        }
+        if (id !== undefined && nativeTurnId !== undefined && phase !== undefined) {
           const activity = {
             conversationId: this.conversationId, nativeSessionId: this.conversationId,
-            nativeTurnId, id, observedAt: new Date().toISOString(),
-            phase: model ? "model" as const : method === "item/started" ? "started" as const
-              : item?.status === "failed" || (typeof item?.exitCode === "number" && item.exitCode !== 0)
-                ? "failed" as const : "completed" as const
+            nativeTurnId, id, observedAt: new Date().toISOString(), phase
           };
           if (this.#submissionPending) this.#bufferedActivities.push(activity);
           else this.#emitActivity(activity);
@@ -729,10 +746,10 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
         return undefined;
       }
       if (method === "turn/started") {
-        const turnId = nestedId(params, "turn") ?? optionalId(params.turnId);
-        if (turnId !== undefined) {
+        const turn = object(params.turn);
+        const turnId = optionalId(turn?.id);
+        if (turnId !== undefined && turn?.status === "inProgress") {
           this.#activeTurnId = turnId;
-          const turn = object(params.turn) ?? {};
           const input = codexTurnInput(turn);
           const started = {
             conversationId: this.conversationId,
@@ -743,13 +760,19 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
           };
           if (this.#submissionPending && emit) this.#bufferedStarts.push(started);
           else if (emit) this.#emitStarted(started);
+        } else {
+          this.mirror("stderr", "Codex protocol: turn/started has no valid Turn identity/status; ignored.\n");
         }
         return undefined;
       }
       if (method !== "turn/completed") return undefined;
-      const turn = object(params.turn) ?? {};
-      const nativeTurnId = optionalId(turn.id) ?? optionalId(params.turnId);
-      if (nativeTurnId === undefined) return undefined;
+      const turn = object(params.turn);
+      const nativeTurnId = optionalId(turn?.id);
+      if (nativeTurnId === undefined || turn === null
+        || (turn.status !== "completed" && turn.status !== "failed" && turn.status !== "interrupted")) {
+        this.mirror("stderr", "Codex protocol: turn/completed has no valid terminal Turn identity/status; ignored.\n");
+        return undefined;
+      }
       const status = turn.status === "failed"
         ? "failed"
         : turn.status === "interrupted" ? "cancelled" : "completed";
@@ -948,7 +971,8 @@ class ClaudeStructuredProviderSession implements StructuredProviderSession {
     readonly processInstanceId: string,
     readonly conversationId: string,
     private readonly channel: JsonLineChannel,
-    private readonly onGoal: ((goal: StructuredProviderGoal | null) => void) | undefined
+    private readonly onGoal: ((goal: StructuredProviderGoal | null) => void) | undefined,
+    private readonly mirror: (stream: "stdout" | "stderr", text: string) => void
   ) {}
 
   static async open(
@@ -973,7 +997,8 @@ class ClaudeStructuredProviderSession implements StructuredProviderSession {
       processInstanceId,
       nativeSessionId,
       channel,
-      onGoal
+      onGoal,
+      mirror
     );
     channel.onMessage((message) => session.#receive(message, onTerminal, onAccepted, onActivity));
     // This client owns the whole Claude execution process, unlike a Codex
@@ -1144,21 +1169,32 @@ class ClaudeStructuredProviderSession implements StructuredProviderSession {
       }
       return;
     }
-    if (message.type !== "result"
-      || optionalId(message.session_id) !== this.conversationId) return;
+    if (message.type !== "result") return;
+    const sessionId = optionalId(message.session_id);
+    if (sessionId !== this.conversationId) {
+      if (sessionId === undefined) this.mirror("stderr", "Claude protocol: result has no Session identity; ignored.\n");
+      return;
+    }
     // A result UUID identifies this message, not the Provider execution.
     // Retain its local association so a delayed duplicate cannot be assigned
     // to a successor request on the same long-lived process.
     const resultId = optionalId(message.uuid);
-    const priorAttempt = resultId === undefined ? undefined : this.#resultAttempts.get(resultId);
+    const subtype = message.subtype;
+    const failed = subtype === "success" ? message.is_error
+      : ["error_during_execution", "error_max_turns", "error_max_budget_usd",
+          "error_max_structured_output_retries"].includes(String(subtype)) ? true : undefined;
+    if (resultId === undefined || typeof message.is_error !== "boolean" || failed === undefined) {
+      this.mirror("stderr", "Claude protocol: result has no valid identity/status; ignored.\n");
+      return;
+    }
+    const priorAttempt = this.#resultAttempts.get(resultId);
     const attemptId = priorAttempt ?? this.#activeAttemptId;
     if (attemptId === undefined) return;
-    if (resultId !== undefined) this.#resultAttempts.set(resultId, attemptId);
+    this.#resultAttempts.set(resultId, attemptId);
     if (attemptId === this.#activeAttemptId) {
       this.#activeAttemptId = undefined;
       this.#openToolIds.clear();
     }
-    const failed = message.is_error === true || message.subtype === "error_during_execution";
     const result = typeof message.result === "string" && message.result.length > 0
       ? message.result
       : providerErrorEvidence(message).error;
@@ -1178,64 +1214,41 @@ class ClaudeStructuredProviderSession implements StructuredProviderSession {
   }
 }
 
+function codexToolPhase(
+  item: JsonObject,
+  started: boolean
+): "started" | "completed" | "failed" | undefined {
+  if (started) return item.status === "inProgress" ? "started" : undefined;
+  if (item.status === "failed") return "failed";
+  if (item.status === "declined"
+    && (item.type === "commandExecution" || item.type === "fileChange")) return "failed";
+  if (item.status !== "completed") return undefined;
+  if (item.type === "commandExecution" && typeof item.exitCode === "number" && item.exitCode !== 0) {
+    return "failed";
+  }
+  if (item.type === "dynamicToolCall" && item.success === false) return "failed";
+  return "completed";
+}
+
 function claudeActiveGoal(
   message: JsonObject,
   conversationId: string
 ): StructuredProviderGoal | null | undefined {
-  if (!Object.hasOwn(message, "active_goal")) return undefined;
-  if (message.active_goal === null) return null;
-  const raw = object(message.active_goal);
+  if (message.type !== "active_goal" || optionalId(message.session_id) !== conversationId) return undefined;
+  if (message.value === null) return null;
+  const raw = object(message.value);
   if (raw === null) return undefined;
-  const objective = typeof raw.objective === "string" ? raw.objective.trim() : "";
+  const objective = typeof raw.condition === "string" ? raw.condition.trim() : "";
   if (objective.length === 0) return undefined;
-  const status = providerGoalStatus(raw.status);
-  if (status === undefined) return undefined;
-  const tokenBudget = positiveOptionalInteger(raw.token_budget ?? raw.tokenBudget);
   return Object.freeze({
     conversationId,
-    status,
+    // Claude emits a live goal or clears it. There is no Codex-style Goal
+    // status/budget/Turn field on this event, and clearing is not success.
+    status: "active",
     objective,
-    updatedAt: providerTimestamp(raw.updated_at ?? raw.updatedAt),
-    ...(optionalId(raw.turn_id ?? raw.turnId) === undefined
-      ? {}
-      : { nativeTurnId: optionalId(raw.turn_id ?? raw.turnId) }),
-    ...(tokenBudget === undefined ? {} : { tokenBudget })
+    // set_at is creation time, not a last-update timestamp.
+    updatedAt: new Date().toISOString()
   });
-}
-
-function providerGoalStatus(value: unknown): StructuredProviderGoal["status"] | undefined {
-  switch (value) {
-    case "active":
-    case "paused":
-    case "blocked":
-    case "complete":
-      return value;
-    case "usageLimited":
-    case "usage_limited":
-    case "usage-limited":
-      return "usage-limited";
-    case "budgetLimited":
-    case "budget_limited":
-    case "budget-limited":
-      return "budget-limited";
-    default:
-      return undefined;
-  }
-}
-
-function providerTimestamp(value: unknown): string {
-  if (typeof value === "string" && Number.isFinite(Date.parse(value))) {
-    return new Date(value).toISOString();
-  }
-  if (Number.isSafeInteger(value) && (value as number) >= 0) {
-    const epoch = value as number;
-    return new Date(epoch < 1_000_000_000_000 ? epoch * 1_000 : epoch).toISOString();
-  }
-  return new Date().toISOString();
-}
-
-function positiveOptionalInteger(value: unknown): number | undefined {
-  return Number.isSafeInteger(value) && (value as number) > 0 ? value as number : undefined;
 }
 
 function childExit(
@@ -1267,11 +1280,8 @@ function object(value: unknown): JsonObject | null {
 }
 
 function optionalId(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
-
-function nestedId(value: JsonObject, key: string): string | undefined {
-  return optionalId(object(value[key])?.id);
+  return typeof value === "string" && !value.includes("\0") && value.length > 0
+    && value.trim() === value ? value : undefined;
 }
 
 function providerErrorEvidence(value: unknown): Readonly<{

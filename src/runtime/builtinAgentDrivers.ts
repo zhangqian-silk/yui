@@ -117,8 +117,9 @@ export const BUILTIN_AGENT_DRIVERS: readonly AgentDriver[] = Object.freeze([
       nativeSessionId: ({ payload }: AgentDriverNativeHook) => (
         optionalIdentityFrom(payload, ["session_id"])
       ),
-      nativeTurnId: ({ payload }: AgentDriverNativeHook) => (
-        optionalIdentityFrom(payload, ["prompt_id", "turn_id"])
+      nativeTurnId: ({ hookEventName, payload }: AgentDriverNativeHook) => (
+        optionalIdentityFrom(payload, hookEventName === "MessageDisplay"
+          ? ["prompt_id", "turn_id"] : ["prompt_id"])
       ),
       mapError: mapClaudeAgentError,
       mapHook: ({ hookEventName, payload, occurrenceId }: AgentDriverNativeHook) => (
@@ -130,7 +131,7 @@ export const BUILTIN_AGENT_DRIVERS: readonly AgentDriver[] = Object.freeze([
           : {}),
         terminal: isTerminalHook(hookEventName),
         ...(hookEventName !== "SubagentStop" ? {} : {
-          continuationId: subagentId(payload),
+          continuationId: firstIdentity(payload, ["agent_id"], "Claude subagent id"),
         })
       }),
       observer: Object.freeze({
@@ -344,20 +345,6 @@ function mapClaudeHook(
   payload: Readonly<Record<string, unknown>>,
   occurrenceId?: string
 ): MappedHook | readonly MappedHook[] {
-  const lifecycle = mapClaudeLifecycleHook(name, payload, occurrenceId);
-  const goal = claudeGoalObservation(payload, occurrenceId);
-  if (goal === undefined) return lifecycle;
-  return Object.freeze([
-    ...(Array.isArray(lifecycle) ? lifecycle : [lifecycle]),
-    goal
-  ]);
-}
-
-function mapClaudeLifecycleHook(
-  name: string,
-  payload: Readonly<Record<string, unknown>>,
-  occurrenceId?: string
-): MappedHook | readonly MappedHook[] {
   switch (name) {
     case "SessionStart":
       return [
@@ -369,15 +356,15 @@ function mapClaudeLifecycleHook(
     case "UserPromptSubmit":
       return mapped("turn.accepted");
     case "PreToolUse":
-      return operation("operation.started", "tool", toolId(payload));
+      return operation("operation.started", "tool", firstIdentity(payload, ["tool_use_id"], "Claude tool id"));
     case "PostToolUse":
-      return operation("operation.completed", "tool", toolId(payload));
+      return operation("operation.completed", "tool", firstIdentity(payload, ["tool_use_id"], "Claude tool id"));
     case "PostToolUseFailure":
-      return operation("operation.failed", "tool", toolId(payload));
+      return operation("operation.failed", "tool", firstIdentity(payload, ["tool_use_id"], "Claude tool id"));
     case "PermissionRequest":
       return mapped("turn.waiting", {
         reason: "permission",
-        waitId: optionalIdentityFrom(payload, ["tool_use_id", "call_id"]) ?? requireOccurrence(occurrenceId)
+        waitId: requireOccurrence(occurrenceId)
       });
     case "MessageDisplay": {
       const messageId = optionalIdentityFrom(payload, ["message_id"]);
@@ -391,48 +378,60 @@ function mapClaudeLifecycleHook(
           : `${messageId}:${index ?? "message"}`
       });
     }
-    case "SubagentStart":
+    case "SubagentStart": {
+      const continuationId = firstIdentity(payload, ["agent_id"], "Claude subagent id");
       return [
-        operation("operation.started", "subagent", subagentId(payload)),
-        continuationObservation("continuation.started", payload, {
+        operation("operation.started", "subagent", continuationId),
+        mapped("continuation.started", {
           execution: "active",
           outcome: "pending",
           attachment: "attached",
           observationQuality: "exact",
           mayWriteWorkspace: true
-        })
+        }, { continuationId })
       ];
-    case "SubagentStop":
+    }
+    case "SubagentStop": {
+      const continuationId = firstIdentity(payload, ["agent_id"], "Claude subagent id");
+      const summary = claudeSummary(payload);
       return [
-        operation("operation.completed", "subagent", subagentId(payload)),
-        ...(optionalSummary(payload).summary === undefined ? [] : [
-          continuationObservation("continuation.reported", payload, {
+        operation("operation.completed", "subagent", continuationId),
+        ...(summary.summary === undefined ? [] : [
+          mapped("continuation.reported", {
             execution: "quiescent",
-            outcome: "succeeded",
+            outcome: "unknown",
             attachment: "attached",
             observationQuality: "exact",
             mayWriteWorkspace: false,
-            reportId: reportId(payload),
-            ...optionalSummary(payload)
-          })
+            reportId: continuationId,
+            ...summary
+          }, { continuationId })
         ]),
-        continuationObservation("continuation.settled", payload, {
+        mapped("continuation.settled", {
           execution: "quiescent",
-          outcome: continuationOutcome(payload),
+          // SubagentStop also fires on interrupted queries. Its current
+          // payload has no outcome/status field; a report is not success.
+          outcome: "unknown",
           attachment: "attached",
           observationQuality: "exact",
           mayWriteWorkspace: false,
-          ...optionalSummary(payload)
-        })
+          ...summary
+        }, { continuationId })
       ];
-    case "Stop":
+    }
+    case "Stop": {
+      const complete = claudeBackgroundEmpty(payload);
       return [
         mapped("turn.completed", optionalResultOutput(payload)),
         mapped("native-work.snapshot", {
-          snapshotComplete: payload.background_tasks_complete === true,
-          observationQuality: payload.background_tasks_complete === true ? "exact" : "partial"
+          // Current Stop fields are optional lists, never the invented
+          // background_tasks_complete boolean. Only explicit empty lists
+          // prove that no background work or scheduled wake remains.
+          snapshotComplete: complete,
+          observationQuality: complete ? "exact" : "partial"
         })
       ];
+    }
     case "StopFailure":
       return mapped("turn.failed", claudeFailure(payload));
     case "SessionEnd":
@@ -445,77 +444,14 @@ function mapClaudeLifecycleHook(
   }
 }
 
-function claudeGoalObservation(
-  payload: Readonly<Record<string, unknown>>,
-  occurrenceId?: string
-): MappedHook | undefined {
-  if (!Object.hasOwn(payload, "active_goal")) return undefined;
-  if (payload.active_goal === null) return mapped("goal.cleared");
-  const goal = objectValue(payload.active_goal);
-  if (goal === undefined) return undefined;
-  const objective = textValue(goal.objective);
-  const status = normalizedGoalStatus(goal.status);
-  const updatedAt = timestampValue(goal.updated_at ?? goal.updatedAt)
-    ?? timestampValue(payload.timestamp)
-    ?? occurrenceTimestamp(occurrenceId);
-  if (objective === undefined || status === undefined || updatedAt === undefined) return undefined;
-  const tokenBudget = positiveIntegerValue(goal.token_budget ?? goal.tokenBudget);
-  return mapped("goal.updated", {
-    goalStatus: status,
-    goalObjective: objective,
-    goalUpdatedAt: updatedAt,
-    ...(optionalIdentityFrom(goal, ["turn_id", "turnId"]) === undefined
-      ? {}
-      : { goalNativeTurnId: optionalIdentityFrom(goal, ["turn_id", "turnId"]) }),
-    ...(tokenBudget === undefined ? {} : { goalTokenBudget: tokenBudget })
-  });
+function claudeSummary(payload: Readonly<Record<string, unknown>>): RuntimeObservationPayload {
+  const summary = optionalText(payload.last_assistant_message);
+  return summary === undefined ? {} : { summary };
 }
 
-function normalizedGoalStatus(
-  value: unknown
-): RuntimeObservationPayload["goalStatus"] | undefined {
-  if (value === "active" || value === "paused" || value === "blocked" || value === "complete") {
-    return value;
-  }
-  if (value === "usageLimited" || value === "usage_limited" || value === "usage-limited") {
-    return "usage-limited";
-  }
-  if (value === "budgetLimited" || value === "budget_limited" || value === "budget-limited") {
-    return "budget-limited";
-  }
-  return undefined;
-}
-
-function objectValue(value: unknown): Readonly<Record<string, unknown>> | undefined {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as Readonly<Record<string, unknown>>
-    : undefined;
-}
-
-function textValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
-
-function positiveIntegerValue(value: unknown): number | undefined {
-  return Number.isSafeInteger(value) && (value as number) > 0 ? value as number : undefined;
-}
-
-function timestampValue(value: unknown): string | undefined {
-  if (typeof value === "string" && Number.isFinite(Date.parse(value))) {
-    return new Date(value).toISOString();
-  }
-  if (Number.isSafeInteger(value) && (value as number) >= 0) {
-    const epoch = value as number;
-    return new Date(epoch < 1_000_000_000_000 ? epoch * 1_000 : epoch).toISOString();
-  }
-  return undefined;
-}
-
-function occurrenceTimestamp(value: string | undefined): string | undefined {
-  const prefix = value?.slice(0, 24);
-  return prefix !== undefined && Number.isFinite(Date.parse(prefix))
-    ? new Date(prefix).toISOString()
-    : undefined;
+function claudeBackgroundEmpty(payload: Readonly<Record<string, unknown>>): boolean {
+  return Array.isArray(payload.background_tasks) && payload.background_tasks.length === 0
+    && Array.isArray(payload.session_crons) && payload.session_crons.length === 0;
 }
 
 function mapCodexHook(
@@ -612,17 +548,6 @@ function reportId(payload: Readonly<Record<string, unknown>>): string {
     ?? subagentId(payload);
 }
 
-function continuationOutcome(
-  payload: Readonly<Record<string, unknown>>
-): "succeeded" | "failed" | "cancelled" | "unknown" {
-  if (payload.cancelled === true || payload.status === "cancelled") return "cancelled";
-  if (payload.error !== undefined || payload.status === "failed") return "failed";
-  if (payload.status === undefined || payload.status === "completed" || payload.status === "succeeded") {
-    return "succeeded";
-  }
-  return "unknown";
-}
-
 function operation(
   kind: "operation.started" | "operation.completed" | "operation.failed",
   operationKind: "tool" | "subagent",
@@ -696,11 +621,6 @@ function claudeFailure(
   const lastOutput = optionalText(payload.last_assistant_message);
   const raw = serializeAgentErrorRaw(payload);
   const classification = mapClaudeAgentError({ message: code, raw });
-  const retryAfterMs = typeof payload.retry_after_ms === "number"
-    && Number.isSafeInteger(payload.retry_after_ms)
-    && payload.retry_after_ms > 0
-    ? payload.retry_after_ms
-    : undefined;
   return {
     failure: {
       error: standardAgentError({
@@ -709,13 +629,9 @@ function claudeFailure(
         classification,
         message: code,
         raw,
-        inputDisposition: "accepted",
-        ...(retryAfterMs === undefined ? {} : { retryAfterMs })
+        inputDisposition: "accepted"
       }),
-      ...(lastOutput === undefined ? {} : { lastOutput }),
-      ...(payload.run_terminal === true || payload.unrecoverable === true
-        ? { runTerminal: true }
-        : {})
+      ...(lastOutput === undefined ? {} : { lastOutput })
     },
     summary: [
       "Agent turn failed.",
