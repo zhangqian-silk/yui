@@ -2,6 +2,15 @@
 
 # Session, AgentRun and notifications
 
+Global Session stop/replacement uses the same exact native-execution quiescence
+boundary as Task Sessions. A departed Host or archived Session alone is not
+proof that an accepted input ended: its retained Provider binding is inspected
+and stopped before settling occupancy. Global stop evidence is retained as a
+record-only system Message, without submitting another native input. Pending
+notifications cannot restart an explicitly stopped Session; normal Host detach
+preserves an active Session and remains reconnectable. A switch after a partial
+failure still settles the retained input before selecting a new conversation.
+
 ## Authority
 
 Task, WorkItem, Message, Decision, Artifact and Project Knowledge preserve

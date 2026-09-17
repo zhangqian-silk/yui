@@ -66,7 +66,8 @@ import {
 } from "../worktree/managedWorkspace.js";
 import type { ClaudeAgentConfig, RoleAgentConfig } from "./agentAdapter.js";
 import { resolveAgentAdapter } from "./agentAdapter.js";
-import { activeLiveRoleAgentSession, taskRoleControlTarget } from "./agentExecutor.js";
+import { activeLiveRoleAgentSession, roleSessionControlTarget } from "./agentExecutor.js";
+import type { RuntimeRoleOwner } from "../runtime/lifecycleReservation.js";
 import {
   assertCodexLaunchOverridesAvailable,
   inspectCodexLaunchConfig
@@ -165,18 +166,22 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
 
   /** Recovery addresses the recorded Agent/Session, independent of delivery
    * admission, a missing worktree, or the old Endpoint code generation. */
-  planNativeControl(taskId: string, roleName: string): import("../runtime/nativeSessionControl.js").NativeControlConnection {
-    const set = this.store.getTaskRoleSessionSet(taskId, roleName);
-    const session = taskRoleControlTarget(set);
+  planNativeControl(owner: RuntimeRoleOwner): import("../runtime/nativeSessionControl.js").NativeControlConnection {
+    const set = owner.scope === "task"
+      ? this.store.getTaskRoleSessionSet(owner.taskId, owner.roleName)
+      : this.store.getGlobalRoleSessionSet(owner.roleName);
+    const session = roleSessionControlTarget(set);
     if (session?.adapterId !== "codex") throw new Error("Native metadata control requires a recorded Codex Session.");
     const configured = this.store.getConfiguredAgent(session.agentId);
     if (configured === null || configured.adapterId !== session.adapterId) {
       throw new Error("The recorded native Agent connection is unavailable.");
     }
     const agent = configuredAgentToDefinition(configured);
-    const connection = this.store.listEvents(taskId).find(event => event.type === "runtime.native-connection-bound"
-      && event.payload.roleName === roleName && event.payload.agentId === session.agentId
-      && event.payload.nativeSessionId === session.nativeSessionId)?.payload;
+    const connection = owner.scope === "task"
+      ? this.store.listEvents(owner.taskId).find(event => event.type === "runtime.native-connection-bound"
+        && event.payload.roleName === owner.roleName && event.payload.agentId === session.agentId
+        && event.payload.nativeSessionId === session.nativeSessionId)?.payload
+      : undefined;
     return {
       command: configured.command, args: [...agent.baseArgs, "app-server", "proxy"], cwd: this.home,
       expectedAccountHome: connection?.nativeAccountHome,

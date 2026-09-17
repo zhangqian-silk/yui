@@ -250,7 +250,7 @@ export async function startFileTaskControllerRuntime(
       store,
       environment: options.environment,
       tmux,
-      nativeConnection: (taskId, roleName) => planner.planNativeControl(taskId, roleName),
+      nativeConnection: (owner) => planner.planNativeControl(owner),
       onWarning: options.onError
     });
     // The runtime inbox is also the low-latency discovery source during a

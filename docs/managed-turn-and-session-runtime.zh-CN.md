@@ -2,6 +2,12 @@
 
 # Session、AgentRun 与通知
 
+Global Session 停止／替换与 Task Session 共用精确的原生执行静止确认边界。
+Host 消失或 Session 已入历史不代表已接受输入结束：须先检查并停止保留的
+Provider binding，再结算执行占用。Global 停止证据保存为仅记录的 system Message，
+不触发新的原生输入。待投递通知不能重启已明确停止的 Session；普通 Host 脱离仍
+保留 active Session，可正常重连。部分切换失败后，仍须先结算旧输入再选择新会话。
+
 ## 权威
 
 Task、WorkItem、Message、Decision、Artifact 和 Project Knowledge 保存持久工作。

@@ -9,7 +9,7 @@ import { createGlobalRole, createRoleAgentBinding } from "../../dist/role/role.j
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
 import {
   bindGlobalRoleProviderRuntime, createRoleSessionSet, recordRoleAgentSession,
-  rememberRoleAgentCompletedTurn, updateGlobalRoleProviderRuntime
+  rememberRoleAgentCompletedTurn, updateGlobalRoleProviderRuntime, updateRoleAgentSessionStatus
 } from "../../dist/executor/agentExecutor.js";
 import {
   acceptProviderTurn, beginProviderTurn, createProviderRuntimeBinding,
@@ -21,9 +21,107 @@ import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerSt
 import { deliverGlobalInputs } from "../../dist/controller/globalInputDelivery.js";
 import { FileRoleLaunchPlanner } from "../../dist/executor/fileRoleLaunchPlanner.js";
 import { createRuntimeObservation } from "../../dist/runtime/runtimeObservation.js";
+import { SessionOwnerReconciliation } from "../../dist/controller/sessionOwnerReconciliation.js";
+import { prepareOperatorNewSession } from "../../dist/operator/operatorSessionHistory.js";
 
 const at = new Date("2026-09-11T00:00:00Z");
 const later = new Date("2026-09-11T00:01:00Z");
+
+test("Global replacement settles retained input only after native quiescence and preserves its evidence", async t => {
+  const { home, store, role, command } = globalFixture(t);
+  recordGlobalSession(store, role);
+  const message = command(["message", "queue", role.name, "Keep this original input", "--request-id", "keep"]).message;
+  withGlobalControllerTurn(store, role.name, { attemptId: `global-input:${role.name}/${message.id}`, nativeTurnId: "old-turn" });
+  const scheduler = new FileSchedulerStoreAdapter(store);
+  const owner = { scope: "global", roleName: role.name };
+  const target = scheduler.enqueueRuntimeCleanup(owner);
+  // A prior failed switch already archived its Session. The exact Provider
+  // binding must still be stoppable without inventing a live Session grant.
+  const ended = updateRoleAgentSessionStatus(store.getGlobalRoleSessionSet(role.name), "codex", "ended", later, "stopped");
+  store.saveGlobalRoleSessionSet(prepareOperatorNewSession(ended, "codex", later));
+  const planner = new FileRoleLaunchPlanner(home, store, { cliPath: join(process.cwd(), "dist/cli.js") });
+  const connection = planner.planNativeControl(owner);
+  assert.equal(connection.command, store.getConfiguredAgent("codex").command);
+  assert.equal(connection.cwd, home, "Recovery does not need the departed Session's workspace.");
+  let inspected = false;
+  const reconciliation = new SessionOwnerReconciliation({ home, store,
+    tmux: { killRole() {}, probeRoleStatus: () => "exited",
+      inspectPane: () => ({ target: "fixture:assistant", dead: true, currentCommand: "" }) },
+    cancelInput: async () => { throw new Error("Host is gone"); },
+    nativeConnection: () => ({ command: "fixture", args: [], environment: {}, cwd: home }),
+    stopNative: async (_connection, input) => {
+      assert.equal(store.getGlobalRoleSessionSet(role.name).providerBinding.run.status, "accepted");
+      assert.deepEqual(input, { conversationId: `${role.name}-native`, nativeTurnId: "old-turn", clearGoal: true });
+      inspected = true;
+    }
+  });
+  assert.equal((await reconciliation.terminateOwner(owner)).outcome, "stop-confirmed");
+  assert.equal(inspected, true);
+  assert.equal(scheduler.completeRuntimeCleanup(target, new Date()), true);
+  const stopped = store.getGlobalRoleSessionSet(role.name);
+  assert.equal(stopped.providerBinding.run.status, "cancelled");
+  assert.match(stopped.providerBinding.run.terminalReason, /quiescence/i);
+  assert.equal(stopped.providerBinding.run.nativeTurnId, "old-turn");
+  assert.deepEqual(store.listGlobalRoleMessages(role.name).find(m => m.id === message.id), message);
+  assert.equal(Object.values(stopped.history).length, 1);
+  assert.ok(store.listGlobalRoleMessages(role.name).some(m => m.kind === "system"
+    && m.body.includes("old-turn") && m.inputControl === undefined), "Retain stop evidence without queuing another turn.");
+  assert.doesNotThrow(() => planner.planGlobalRole({
+    roleName: role.name, agentId: "codex", adapterId: "codex", mode: "new" }));
+});
+
+test("Global stop refuses unproven quiescence and concurrent input identity changes", async t => {
+  const { home, store, role } = globalFixture(t);
+  recordGlobalSession(store, role);
+  withGlobalControllerTurn(store, role.name, { attemptId: "exact-attempt", nativeTurnId: "exact-turn" });
+  const owner = { scope: "global", roleName: role.name };
+  const scheduler = new FileSchedulerStoreAdapter(store);
+  scheduler.enqueueRuntimeCleanup(owner);
+  const original = store.getGlobalRoleSessionSet(role.name);
+  let stopNative = async () => { throw new Error("Native execution is not quiescent"); };
+  const reconciliation = new SessionOwnerReconciliation({ home, store,
+    cancelInput: async () => { throw new Error("Host unavailable"); },
+    nativeConnection: () => ({ command: "fixture", args: [], environment: {}, cwd: home }),
+    stopNative: (...args) => stopNative(...args)
+  });
+  await assert.rejects(reconciliation.terminateOwner(owner), /not quiescent/);
+  assert.deepEqual(store.getGlobalRoleSessionSet(role.name), original);
+  stopNative = async () => {
+    const set = store.getGlobalRoleSessionSet(role.name);
+    store.saveGlobalRoleSessionSet({ ...set, providerBinding: { ...set.providerBinding,
+      run: { ...set.providerBinding.run, nativeTurnId: "different-turn" } } });
+  };
+  await assert.rejects(reconciliation.terminateOwner(owner), /identity changed/);
+  assert.equal(store.getGlobalRoleSessionSet(role.name).providerBinding.run.status, "accepted");
+  assert.equal(store.listGlobalRoleMessages(role.name).length, 0);
+});
+
+test("Global queued input cannot revive an explicitly ended Session or race its cleanup", async t => {
+  const { home, store, role, command } = globalFixture(t);
+  recordGlobalSession(store, role);
+  const binding = withGlobalControllerTurn(store, role.name, { attemptId: "done", nativeTurnId: "done-turn" });
+  store.saveGlobalRoleSessionSet(updateGlobalRoleProviderRuntime(store.getGlobalRoleSessionSet(role.name),
+    settleProviderTurn(binding, { attemptId: "done", nativeTurnId: "done-turn", status: "completed",
+      settledAt: new Date().toISOString() }), new Date()));
+  const message = command(["message", "queue", role.name, "Pending work", "--request-id", "pending"]).message;
+  const end = () => store.saveGlobalRoleSessionSet(updateRoleAgentSessionStatus(
+    store.getGlobalRoleSessionSet(role.name), "codex", "ended", new Date(), "stopped"));
+  const errors = [];
+  let ensureCalls = 0;
+  await deliverGlobalInputs(home, store, async () => { ensureCalls++; end(); }, error => errors.push(error));
+  assert.equal(ensureCalls, 1);
+  assert.deepEqual(errors, []);
+  await deliverGlobalInputs(home, store, async () => { ensureCalls++; }, error => errors.push(error));
+  assert.equal(ensureCalls, 1, "Background delivery must not resurrect a stopped Session.");
+  store.saveGlobalRoleSessionSet(updateRoleAgentSessionStatus(
+    store.getGlobalRoleSessionSet(role.name), "codex", "active", new Date()));
+  const scheduler = new FileSchedulerStoreAdapter(store);
+  await deliverGlobalInputs(home, store, async () => {
+    scheduler.enqueueRuntimeCleanup({ scope: "global", roleName: role.name });
+  }, error => errors.push(error));
+  assert.deepEqual(errors, [], "Cleanup admitted during ensure must fence the native submission.");
+  assert.deepEqual(store.listGlobalRoleMessages(role.name).find(m => m.id === message.id), message);
+});
 
 /**
  * A configured Global Role with an active native Session, so a live control can

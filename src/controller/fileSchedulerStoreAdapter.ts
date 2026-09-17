@@ -56,7 +56,7 @@ import {
   rememberRoleAgentCompletedTurn,
   replaceTaskRoleAgentSession,
   selectNewTaskRoleSession,
-  taskRoleControlTarget,
+  roleSessionControlTarget,
   updateGlobalRoleProviderRuntime,
   updateRoleAgentSessionStatus,
   updateTaskRoleProviderRuntime,
@@ -3767,7 +3767,7 @@ function dormantRuntimeCandidateIsCurrent(
   }
   const sessions = runtimeOwnerSessionSet(store, owner);
   const active = allowActiveRun && owner.scope === "task"
-    ? taskRoleControlTarget(store.getTaskRoleSessionSet(owner.taskId, owner.roleName))
+    ? roleSessionControlTarget(store.getTaskRoleSessionSet(owner.taskId, owner.roleName))
     : sessions?.sessions[sessions.activeAgentId];
   return active !== undefined && active.agentId === candidate.agentId && active.adapterId === candidate.adapterId
     && active.nativeSessionId === candidate.nativeSessionId && (allowActiveRun || active.updatedAt === candidate.sessionUpdatedAt);
