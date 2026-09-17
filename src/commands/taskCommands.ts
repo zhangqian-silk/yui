@@ -6378,13 +6378,6 @@ function retryRunOperation(
       throw usageError(`Work Item ${retryItem.id} is not retryable from ${retryItem.status}.`);
     }
     if (retryItem !== null) assertWorkItemDependenciesCompletedForCommand(tx, retryItem);
-    const runWorkspace = previous.workspace
-      ?? (retryItem === null
-        ? tx.getTaskWorkspace(task.id)
-        : retryItem.assignee === "leader"
-          ? tx.getTaskWorkspace(task.id)
-          : tx.getWorkItemWorkspace(task.id, retryItem.id))
-      ?? undefined;
     const retryGroup = retryItem === null || previous.executionGroupId === undefined
       ? undefined
       : workItemExecutionGroupById(retryItem, previous.executionGroupId);
@@ -6399,7 +6392,7 @@ function retryRunOperation(
           || retryLane === undefined))) {
       throw dataError(`AgentRun ${previous.id} execution lineage no longer matches its Work Item.`);
     }
-    const retryManagedWorkspace = retryLane === undefined ? runWorkspace : previous.workspace;
+    const retryManagedWorkspace = previous.workspace;
     if (retryLane !== undefined) {
       const storedLaneWorkspace = previous.workspace === undefined
         ? null

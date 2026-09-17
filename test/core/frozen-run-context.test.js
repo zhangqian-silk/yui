@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { createTask, activateTask } from "../../dist/task/task.js";
 import { createRole, createRoleAgentBinding } from "../../dist/role/role.js";
-import { createRun, runInputEnvelope, validateRun } from "../../dist/agentRun/agentRun.js";
+import { createRun, failRun, runInputEnvelope, validateRun } from "../../dist/agentRun/agentRun.js";
 import { createRunInput, serializeRunInputEnvelope } from "../../dist/context/runInputContract.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
 import { contextContentDigest, contextSnapshotRef, createContextSnapshot } from "../../dist/context/contextSnapshot.js";
@@ -17,6 +17,7 @@ import { createFixtureRun } from "../helpers/runFixture.mjs";
 import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
 import { processActiveRoleRunDeliveries } from "../../dist/scheduler/activeRoleRunDelivery.js";
 import { findCommandNode } from "../../dist/cli/commandCatalog.js";
+import { createManagedWorkspace } from "../../dist/worktree/managedWorkspace.js";
 
 test("Run Context uses only its exact frozen evidence and explicit store/refId", t => {
   const home = mkdtempSync(join(tmpdir(), "yui-frozen-context-"));
@@ -139,4 +140,29 @@ test("CLI rejects inferred Context stores and the retired progress flag before r
   const retire = findCommandNode(["task", "run", "retire"]);
   assert.ok(retire.options.includes("--expected-progress-at"));
   assert.equal(retire.options.includes("--progress-at"), false);
+});
+
+test("planning retry preserves absent delivery workspace after Task activation", t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-planning-retry-snapshot-"));
+  const store = new SqliteTaskStore(home);
+  t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
+  const now = new Date("2026-09-17T00:00:00Z");
+  const task = activateTask(createTask("task-1", "Preserve planning authority", now), now);
+  store.saveTask(task);
+  const binding = createRoleAgentBinding({ id: "codex", adapterId: "codex" });
+  const role = createRole(task.id, "leader", [binding], binding.agentId, home, now);
+  store.saveRole(task.id, role);
+  const previous = createFixtureRun(store, store.nextRunId(task.id), task.id, role.name, "new", createRunInput({
+    source: { type: "yui", channel: "task-dispatch" }, directive: "Plan only", deltaRefIds: []
+  }), now, { purpose: "planning", effective: resolveEffectiveLaunch({ role, purpose: "planning" }) });
+  store.saveRun(failRun(previous, "startup-failed", "Before delivery", now));
+  store.saveManagedWorkspace(createManagedWorkspace({
+    owner: { type: "task", taskId: task.id }, root: join(home, "new-delivery"), entries: []
+  }, now));
+  runTaskCommand(["run", "retry", `${task.id}/${previous.id}`], store,
+    { now: () => now, environment: sanitizedTestEnv() });
+  const retry = store.getActiveRun(task.id, role.name);
+  assert.equal(retry.workspace, undefined);
+  assert.equal(retry.effective.executionAuthority, "planning");
+  assert.deepEqual(buildRunContextPack(store, task.id, retry.id).authority.writableProjectIds, []);
 });
