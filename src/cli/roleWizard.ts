@@ -4,11 +4,13 @@ import { isAgentAdapterId } from "../agent/adapterCatalog.js";
 import { defaultRoleAgentConfig } from "../executor/agentAdapter.js";
 import type {
   AgentConfigurationCatalog,
+  AgentConfigurationField,
   ResolvedAgentConfigurationCatalog
 } from "../executor/agentConfigurationCatalog.js";
 import {
   selectAgentEffort,
-  selectAgentModelAndEffort
+  selectAgentModelAndEffort,
+  renderAgentConfigurationResolutionNotice
 } from "./agentConfigurationPicker.js";
 import type { SelectionIo } from "./interactiveSelection.js";
 import type { SelectionPorts } from "./selectionPorts.js";
@@ -351,6 +353,7 @@ async function configureNewAgentField(
           args: selection.effort === undefined ? args : [...args, "--effort", selection.effort]
         };
   }
+  if (resolved !== undefined) io.write(renderAgentConfigurationResolutionNotice(resolved));
   if (selected.value === "permission-strategy") {
     const strategy = await promptAgentFieldValue(selected, io);
     if (strategy === undefined || strategy.length === 0) return { kind: "cancelled", args };
@@ -603,6 +606,7 @@ async function updateAgentBindingSettings(
       ]
     };
   }
+  if (resolved !== undefined) io.write(renderAgentConfigurationResolutionNotice(resolved));
   if (selectedField.value === "permission-strategy") {
     const strategy = await promptAgentFieldValue(selectedField, io);
     if (strategy === undefined || strategy.length === 0) return { kind: "cancelled", args };
@@ -648,6 +652,8 @@ type AgentField = Readonly<{
   set: string;
   clear: readonly string[];
   choices?: readonly string[];
+  allowCustom?: boolean;
+  reason?: string;
 }>;
 
 function agentFields(
@@ -665,22 +671,17 @@ function agentFields(
       permission.strategy,
       "--permission-strategy",
       ["--permission-strategy", "default"],
-      catalogChoices(catalog, "permission.strategy", ["default", "bypass", "configured"])
+      catalogField(catalog, "permission.strategy")
     ),
     ...(binding.adapterId === "codex" && permission.strategy === "configured" ? [
       agentField("sandbox", "Sandbox", permission.sandbox, "--sandbox", ["--permission-strategy", "default"],
-        catalogChoices(catalog, "permission.sandbox", [
-          "read-only", "workspace-write", "danger-full-access"
-        ])),
+        catalogField(catalog, "permission.sandbox")),
       agentField("approval", "Approval", permission.approval, "--approval", ["--permission-strategy", "default"],
-        catalogChoices(catalog, "permission.approval", [
-          "untrusted", "on-request", "never"
-        ]))
+        catalogField(catalog, "permission.approval"))
     ] : []),
     ...(binding.adapterId === "codex" ? [
-      agentField("search", "Web search", config.search, "--search", ["--clear-search"], [
-        ...catalogChoices(catalog, "search", ["true"])
-      ])
+      agentField("search", "Web search", config.search, "--search", ["--clear-search"],
+        catalogField(catalog, "search"))
     ] : []),
     ...((binding.adapterId === "claude" || binding.adapterId === "acp")
       && permission.strategy === "configured" ? [
@@ -690,7 +691,7 @@ function agentFields(
         permission.mode,
         "--permission-mode",
         ["--permission-strategy", "default"],
-        catalogChoices(catalog, "permission.mode")
+        catalogField(catalog, "permission.mode")
       )
     ] : [])
   ];
@@ -714,13 +715,11 @@ async function loadAgentCatalog(
     : undefined;
 }
 
-function catalogChoices(
+function catalogField(
   catalog: AgentConfigurationCatalog | undefined,
-  key: string,
-  fallback: readonly string[] = []
-): string[] {
-  const field = catalog?.fields.find((candidate) => candidate.key === key);
-  return field === undefined ? [...fallback] : field.choices.map(({ value }) => value);
+  key: string
+): AgentConfigurationField | undefined {
+  return catalog?.fields.find((candidate) => candidate.key === key);
 }
 
 function appendModelEffortPatch(
@@ -745,9 +744,20 @@ function agentField(
   current: unknown,
   set: string,
   clear: readonly string[],
-  choices?: readonly string[]
+  capability?: AgentConfigurationField
 ): AgentField {
-  return { value, label, current: display(current), set, clear, ...(choices === undefined ? {} : { choices }) };
+  const reported = capability?.available === false ? [] : capability?.choices.map(choice => choice.value) ?? [];
+  const retained = (typeof current === "string" || typeof current === "boolean")
+    && !reported.includes(String(current)) ? [String(current)] : [];
+  return {
+    value, label, current: display(current), set, clear,
+    choices: [...reported, ...retained], allowCustom: capability?.allowCustom === true,
+    reason: [
+      capability?.reason ?? (capability === undefined
+        ? "No catalog field was reported; no choices inferred." : ""),
+      ...(retained.length === 0 ? [] : ["Current value is retained but not reported by this catalog."])
+    ].filter(Boolean).join(" ")
+  };
 }
 
 async function configuredPermissionArgs(
@@ -778,12 +788,8 @@ async function configuredPermissionArgs(
       option,
       ["--permission-strategy", "default"],
       field === "sandbox"
-        ? catalogChoices(catalog, "permission.sandbox", [
-            "read-only", "workspace-write", "danger-full-access"
-          ])
-        : catalogChoices(catalog, "permission.approval", [
-            "untrusted", "on-request", "never"
-          ])
+        ? catalogField(catalog, "permission.sandbox")
+        : catalogField(catalog, "permission.approval")
     ), io);
     return value === undefined
       ? undefined
@@ -793,15 +799,15 @@ async function configuredPermissionArgs(
     // An ACP Session's configured permission is one mode the Agent enumerated,
     // so there is nothing to choose between: ask for the mode directly rather
     // than offering tool rules the protocol has no place for. The choices come
-    // from the capability catalog, so a Session that offers no modes presents
-    // none instead of inviting a value the Agent would reject.
+    // from the catalog. An explicitly open field permits a custom mode before
+    // Session creation; it is checked against the native Session at launch.
     const value = await promptAgentFieldValue(agentField(
       "permission-mode",
       "Permission mode",
       undefined,
       "--permission-mode",
       ["--permission-strategy", "default"],
-      catalogChoices(catalog, "permission.mode")
+      catalogField(catalog, "permission.mode")
     ), io);
     return value === undefined || value.length === 0
       ? undefined
@@ -830,7 +836,7 @@ async function configuredPermissionArgs(
         undefined,
         option,
         ["--permission-strategy", "default"],
-        catalogChoices(catalog, "permission.mode")
+        catalogField(catalog, "permission.mode")
       ), io)
     : (await io.question(`${field === "allowed" ? "Allowed" : "Disallowed"} tool: `))?.trim();
   return value === undefined || value.length === 0
@@ -842,16 +848,21 @@ async function promptAgentFieldValue(
   field: AgentField,
   io: SelectionIo
 ): Promise<string | undefined> {
-  return field.choices === undefined
-    ? (await io.question(`${field.label}: `))?.trim()
-    : choose(
-      `Set ${field.label}`,
-      field.choices.map((choice) => ({ value: choice, cells: [choice] })),
-      [TEXT_COLUMN],
-      io,
-      field.choices[0],
-      "value"
-    );
+  if (field.reason) io.write(`${field.label}: ${field.reason}\n`);
+  if (field.choices === undefined) return (await io.question(`${field.label}: `))?.trim();
+  const custom = "\0yui:custom";
+  const selected = await choose(
+    `Set ${field.label}`,
+    [
+      ...field.choices.map(choice => ({ value: choice, cells: [choice] })),
+      ...(field.allowCustom ? [{ value: custom, cells: ["Custom value (native acceptance unverified)"] }] : [])
+    ],
+    [TEXT_COLUMN],
+    io,
+    field.choices.includes(field.current) ? field.current : field.choices[0],
+    "value"
+  );
+  return selected === custom ? (await io.question(`Custom ${field.label}: `))?.trim() : selected;
 }
 
 async function selectActiveAgent(

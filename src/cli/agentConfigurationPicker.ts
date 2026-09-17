@@ -90,13 +90,11 @@ export async function selectAgentPermission(
   io: SelectionIo,
   current: RoleAgentConfig["permission"]
 ): Promise<AgentPermissionSelection> {
+  renderResolutionNotice(resolved, io);
   const strategyField = configurationField(resolved.catalog, "permission.strategy");
+  if (strategyField?.reason !== undefined) io.write(`${strategyField.reason}\n`);
   const strategyChoices = uniqueChoices(
-    strategyField?.choices ?? [
-      { value: "default", label: "default" },
-      { value: "bypass", label: "bypass" },
-      { value: "configured", label: "configured" }
-    ],
+    strategyField?.available === false ? [] : strategyField?.choices ?? [],
     current.strategy
   );
   const strategy = await choose(
@@ -142,6 +140,10 @@ export async function selectAgentPermission(
     else permission.sandbox = sandbox.value;
     if (approval.value === undefined) delete permission.approval;
     else permission.approval = approval.value;
+    if (permission.sandbox === undefined && permission.approval === undefined) {
+      io.write("Configured permission requires an explicit native option; configuration unchanged.\n");
+      return { kind: "cancelled" };
+    }
     return {
       kind: "selected",
       permission: permission as CodexPermissionConfig
@@ -177,6 +179,11 @@ export async function selectAgentPermission(
   };
   if (mode.value === undefined) delete permission.mode;
   else permission.mode = mode.value;
+  if (permission.mode === undefined && permission.allowedTools === undefined
+    && permission.disallowedTools === undefined) {
+    io.write("Configured permission requires an explicit native option; configuration unchanged.\n");
+    return { kind: "cancelled" };
+  }
   return {
     kind: "selected",
     permission: permission as ClaudePermissionConfig
@@ -190,14 +197,19 @@ export function renderAgentConfigurationResolutionNotice(
   if (resolved.source === "cache") {
     lines.push(
       (resolved.failure === undefined ? "" : `! Runtime capability request failed (${resolved.failure.message}). `)
-      + `Showing cached options from ${resolved.fetchedAt ?? "an earlier request"}; they may be stale.`
+      + `Showing identity-matched cached options from ${resolved.fetchedAt ?? "an earlier request"}; they may be stale.`
     );
   } else if (resolved.source === "fallback") {
     lines.push(
       `! Runtime capability request failed (${resolved.failure?.message ?? "unknown failure"}). `
-      + "No matching cache is available; only fallback and custom values can be offered."
+      + "No matching cache is available; only declared static adapter contracts and explicit custom values can be offered."
     );
   }
+  lines.push(
+    `Metadata source: ${resolved.source}; last probe attempted ${resolved.attemptedAt}${
+      resolved.fetchedAt === undefined ? "" : `; fetched ${resolved.fetchedAt}`
+    }. Source describes the query, not native confirmation of every field.`
+  );
   lines.push(...resolved.catalog.warnings.map((warning) => `! Agent catalog warning: ${warning}`));
   return lines.length === 0 ? "" : `${lines.join("\n")}\n`;
 }
@@ -329,36 +341,28 @@ async function selectPermissionField(
   defaultValue: string | typeof OMIT | undefined
 ): Promise<PermissionFieldSelection> {
   const field = configurationField(resolved.catalog, key);
-  const fallback = key === "permission.sandbox"
-    ? ["read-only", "workspace-write", "danger-full-access"]
-    : key === "permission.approval"
-      ? ["untrusted", "on-request", "never"]
-      : ["acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"];
+  if (field?.reason !== undefined) io.write(`${key}: ${field.reason}\n`);
+  if (field === undefined) io.write(`${key}: no catalog field was reported; no choices inferred.\n`);
   const choices = uniqueChoices(
-    field === undefined
-      ? fallback.map((value) => ({ value, label: value }))
-      : field.choices,
+    field?.available === false ? [] : field?.choices ?? [],
     current
   );
-  const includeOmit = defaultValue === OMIT || current !== undefined;
   const pickerChoices: PickerChoice[] = [
-    ...(includeOmit
-      ? [{ value: OMIT, label: "Omit", detail: "Do not pass this provider option" }]
-      : []),
+    { value: OMIT, label: "Omit", detail: "Do not pass this provider option" },
     ...choices.map(({ value, label, description }) => ({
       value,
       label,
       detail: description ?? value
     })),
     ...(field?.allowCustom === true
-      ? [{ value: CUSTOM, label: "Custom…", detail: "Enter another provider value" }]
+      ? [{ value: CUSTOM, label: "Custom…", detail: "Explicit value; native acceptance unverified" }]
       : [])
   ];
   const selected = await choose(
     `Select ${key}`,
     pickerChoices,
     io,
-    current ?? defaultValue ?? pickerChoices[0]?.value ?? OMIT,
+    current ?? (choices.some(choice => choice.value === defaultValue) ? defaultValue! : OMIT),
     key
   );
   if (selected === undefined) return { kind: "cancelled" };

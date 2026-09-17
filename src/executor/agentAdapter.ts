@@ -22,6 +22,11 @@ import type { PreInputReadinessCapability } from "../lifecycle/canonicalLifecycl
 import { builtinAgentDriverRegistry } from "../runtime/builtinAgentDrivers.js";
 import type { CodexThreadOptions } from "../runtime/codexAppServerRuntime.js";
 import type { AcpSessionOptions } from "../runtime/acpProtocol.js";
+import {
+  CODEX_SANDBOXES as SANDBOXES, CODEX_APPROVALS as APPROVALS,
+  configurationFieldsFromHelp, configurationFieldWarnings,
+  staticAgentConfigurationFields, STATIC_CONFIGURATION_NOTICE
+} from "./agentConfigurationFields.js";
 
 export type AdvancedAgentConfig = Readonly<{ rawArgs?: readonly string[] }>;
 export type PermissionStrategy = "default" | "bypass" | "configured";
@@ -205,11 +210,11 @@ export interface AgentAdapter<TConfig extends RoleAgentConfig = RoleAgentConfig>
   discoverConfiguration(input: AgentConfigurationDiscoveryInput): Promise<AgentConfigurationCatalog>;
 }
 
-const SANDBOXES = ["read-only", "workspace-write", "danger-full-access"] as const;
-const APPROVALS = ["untrusted", "on-request", "never"] as const;
 const PROBE_TIMEOUT_MS = 2_000;
 const PROBE_MAX_BYTES = 1024 * 1024;
-const CODEX_TESTED_THROUGH_VERSION = "0.150.1";
+// Offline producer/type evidence, not a claim of live account/model testing.
+// Keep the existing minimum support floors separate: see provider-protocol-contracts.md.
+const AUDITED_PRODUCER_VERSIONS = { codex: "0.153.4", claude: "2.1.270" } as const;
 
 abstract class BaseAdapter<TConfig extends RoleAgentConfig> implements AgentAdapter<TConfig> {
   abstract readonly id: AgentAdapterId;
@@ -820,7 +825,7 @@ export function inspectAgentCapabilities(
   const at = now.toISOString();
   const adapter = resolveAgentAdapter(agent.adapterId);
   validateAgentBaseArguments(agent.adapterId, agent.baseArgs);
-  const versionRun = run(agent.command, ["--version"]);
+  const versionRun = run(agent.command, [...agent.baseArgs, "--version"]);
   const failure = failed(versionRun);
   if (failure !== undefined) {
     const missing = versionRun.error?.code === "ENOENT";
@@ -848,7 +853,7 @@ export function inspectAgentCapabilities(
     }, fields, at, [`Installed version ${version} is not supported by adapter ${adapter.id}.`]);
   }
 
-  const help = run(agent.command, ["--help"]);
+  const help = run(agent.command, [...agent.baseArgs, "--help"]);
   const helpFailure = failed(help);
   if (helpFailure !== undefined) {
     return snapshot(agent, adapter, {
@@ -858,20 +863,22 @@ export function inspectAgentCapabilities(
     }, fields, at);
   }
   const helpOutput = output(help.stdout, help.stderr);
-  fields = fromHelp(agent.adapterId, helpOutput);
+  const helpFields = configurationFieldsFromHelp(agent.adapterId, helpOutput);
+  fields = capabilityFields(helpFields);
+  warnings.push(...configurationFieldWarnings(helpFields));
   const missing = missingRequiredCapabilities(adapter.id, helpOutput);
   if (missing.length > 0) {
     return snapshot(agent, adapter, {
       status: "unsupported-version", command: agent.command, version,
       reason: `${adapter.label} CLI is missing required capabilities: ${missing.join(", ")}.`,
       probedAt: at
-    }, fields, at);
+    }, fields, at, warnings);
   }
-  if (adapter.id === "codex"
-    && compareVersions(version, CODEX_TESTED_THROUGH_VERSION) > 0) {
+  const audited = adapter.id === "acp" ? undefined : AUDITED_PRODUCER_VERSIONS[adapter.id];
+  if (audited !== undefined && compareVersions(version, audited) > 0) {
     warnings.push(
-      `Installed Codex version ${version} is newer than the latest tested version `
-      + `${CODEX_TESTED_THROUGH_VERSION}; required capabilities were detected.`
+      `Installed ${adapter.label} version ${version} is newer than the latest audited producer `
+      + `${audited}; required CLI flags were detected, not live protocol compatibility.`
     );
   }
   return snapshot(agent, adapter, {
@@ -880,105 +887,27 @@ export function inspectAgentCapabilities(
 }
 
 function baseline(id: AgentAdapterId): CapabilityField[] {
-  // ACP negotiates its whole configurable surface per Session, so a static
-  // baseline can only say which axes exist — never which values one Agent
-  // accepts. Model, effort and mode are all `degraded` for exactly that reason:
-  // they are configurable and the enumeration comes from the live Session, so
-  // promising values here would be inventing them.
-  if (id === "acp") return [
-    field("model", "enum", "degraded", true),
-    field("effort", "enum", "degraded", true),
-    field("permission.strategy", "enum", "available", false,
-      ["default", "bypass", "configured"]),
-    // The exact mode ids belong to the Agent, and only a live Session lists
-    // them. `configured` carries whichever id the user names.
-    field("permission.mode", "enum", "degraded", true),
-    // Configurable, but only reaches an Agent that advertises
-    // `sessionCapabilities.additionalDirectories` at `initialize`. A static
-    // baseline cannot see that handshake, so it reports the field as degraded
-    // rather than promising delivery it cannot guarantee.
-    field("additionalDirectories", "path-list", "degraded", true)
-  ];
-  if (id === "codex") return [
-    field("model", "enum", "degraded", true), field("effort", "enum", "unavailable", true),
-    field("permission.strategy", "enum", "available", false, ["default", "bypass", "configured"]),
-    field("permission.sandbox", "enum", "available", false, SANDBOXES),
-    field("permission.approval", "enum", "available", false, APPROVALS),
-    field("profile", "string", "available", true), field("search", "boolean", "available", false, ["true"]),
-    field("additionalDirectories", "path-list", "available", true)
-  ];
-  return [
-    field("model", "enum", "degraded", true, ["fable", "opus", "sonnet"]),
-    field("effort", "enum", "unavailable", true),
-    field("permission.strategy", "enum", "available", false, ["default", "bypass", "configured"]),
-    field("permission.mode", "enum", "unavailable", true),
-    field("permission.allowedTools", "string-list", "available", true),
-    field("permission.disallowedTools", "string-list", "available", true),
-    field("additionalDirectories", "path-list", "available", true), field("settingsFile", "path", "available", true),
-    field("settingsSources", "string-list", "degraded", false, ["user", "project", "local"])
-  ];
+  return capabilityFields(staticAgentConfigurationFields(id));
 }
 
-function fromHelp(id: AgentAdapterId, help: string): CapabilityField[] {
-  const fields = baseline(id);
-  // Nothing in an ACP Agent's `--help` describes the protocol it speaks, so
-  // there is nothing here to refine: the baseline is already the whole truth.
-  if (id === "acp") return fields;
-  const replacements = id === "codex"
-    ? [permissionStrategyField(help, "--dangerously-bypass-approvals-and-sandbox"),
-        choiceField("permission.sandbox", help, "--sandbox", SANDBOXES),
-        choiceField("permission.approval", help, "--ask-for-approval", APPROVALS)]
-    : [choiceField("model", help, "--model", ["fable", "opus", "sonnet"], true),
-        choiceField("effort", help, "--effort", [], true),
-        permissionStrategyField(help, "--dangerously-skip-permissions"),
-        choiceField("permission.mode", help, "--permission-mode", [], true),
-        choiceField("settingsSources", help, "--setting-sources", ["user", "project", "local"])];
-  const byKey = new Map(replacements.map((value) => [value.key, value]));
-  return fields.map((value) => byKey.get(value.key) ?? value);
-}
-
-function permissionStrategyField(help: string, bypassFlag: string): CapabilityField {
-  const choices = [
-    "default",
-    ...(help.includes(bypassFlag) ? ["bypass"] : []),
-    "configured"
-  ];
-  return field(
-    "permission.strategy",
-    "enum",
-    choices.includes("bypass") ? "available" : "degraded",
-    false,
-    choices
-  );
-}
-
-function choiceField(key: string, help: string, flag: string, fallback: readonly string[], custom = false): CapabilityField {
-  const choices = helpChoices(help, flag);
-  return field(key, key === "settingsSources" ? "string-list" : "enum",
-    choices.length > 0 ? "available" : fallback.length > 0 ? "degraded" : "unavailable",
-    custom, choices.length > 0 ? choices : fallback);
-}
-function field(key: string, kind: CapabilityField["kind"], status: CapabilityField["status"],
-  allowCustom: boolean, choices?: readonly string[]): CapabilityField {
-  return { key, kind, status, allowCustom, ...(choices === undefined ? {} : { choices: [...choices] }) };
-}
-function helpChoices(help: string, flag: string): string[] {
-  const lines = help.replace(/\r\n/g, "\n").split("\n");
-  const start = lines.findIndex((line) => line.includes(flag));
-  if (start < 0) return [];
-  let end = start + 1;
-  while (end < lines.length && !/^\s{2,}(?:-[A-Za-z](?:,\s*)?|--)[\w-]/.test(lines[end])) end += 1;
-  const body = /(?:\[possible values:\s*([^\]]+)\]|\(choices:\s*([^)]*)\)|\(([^)]*)\))/i
-    .exec(lines.slice(start, end).join("\n"));
-  return [...new Set((body?.[1] ?? body?.[2] ?? body?.[3] ?? "").replace(/["']/g, "").split(",")
-    .map((value) => value.trim().replace(/\.$/, "")).filter((value) => /^[\w.+-]+$/.test(value)))];
+function capabilityFields(fields: AgentConfigurationCatalog["fields"]): CapabilityField[] {
+  const kinds: Readonly<Record<string, CapabilityField["kind"]>> = {
+    profile: "string", search: "boolean", additionalDirectories: "path-list", settingsFile: "path",
+    settingsSources: "string-list", "permission.allowedTools": "string-list", "permission.disallowedTools": "string-list"
+  };
+  return fields.map(field => ({
+    key: field.key, kind: kinds[field.key] ?? "enum", allowCustom: field.allowCustom,
+    status: field.available === true ? "available" : field.available === false ? "unavailable" : "degraded",
+    choices: field.choices.map(choice => choice.value)
+  }));
 }
 
 function snapshot(agent: AgentDefinition, adapter: AgentAdapter, installation: AgentInstallation,
   fields: CapabilityField[], at: string, warnings: string[] = []): CapabilitySnapshot {
   return { schemaVersion: 1, agentId: agent.id, adapterId: agent.adapterId, installation,
     lifecycle: { start: true, resume: true, nativeSessionDiscovery: adapter.capabilities.nativeSessionDiscovery,
-      interrupt: true, preInputReadiness: adapter.capabilities.preInputReadiness }, fields, warnings, refreshedAt: at };
+      interrupt: true, preInputReadiness: adapter.capabilities.preInputReadiness }, fields,
+    warnings: [...new Set([STATIC_CONFIGURATION_NOTICE, ...warnings])], refreshedAt: at };
 }
 function runProbe(command: string, args: readonly string[]): AgentProbeResult {
   const result = spawnSync(command, [...args], { encoding: "utf8", shell: false, timeout: PROBE_TIMEOUT_MS,

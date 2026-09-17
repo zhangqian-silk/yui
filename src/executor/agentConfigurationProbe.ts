@@ -18,6 +18,9 @@ import {
 } from "../runtime/acpProtocol.js";
 import { handshakeObservationFrom } from "../runtime/agentRunConfiguration.js";
 import { YUI_VERSION } from "../version.js";
+import {
+  configurationFieldsFromHelp, configurationFieldWarnings, STATIC_CONFIGURATION_NOTICE
+} from "./agentConfigurationFields.js";
 import type {
   AgentConfigurationCatalog,
   AgentConfigurationChoice,
@@ -39,8 +42,6 @@ const NO_HANDSHAKE: AgentHandshakeObservation = Object.freeze({
 
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const PROCESS_TERMINATION_GRACE_MS = 100;
-const CODEX_SANDBOXES = ["read-only", "workspace-write", "danger-full-access"] as const;
-const CODEX_APPROVALS = ["untrusted", "on-request", "never"] as const;
 const ACP_PROBE_REQUEST_ID = 1;
 
 export async function discoverCodexConfiguration(
@@ -83,26 +84,38 @@ export async function discoverCodexConfiguration(
       client.request("configRequirements/read", {}),
       client.request("modelProvider/capabilities/read", {})
     ]);
-    const requirements = object(requirementsResult)?.requirements;
-    const requirementRecord = object(requirements);
+    const requirements = requiredObject(requirementsResult, "Codex configuration requirements response").requirements;
+    const requirementRecord = requirements === null ? undefined
+      : requiredObject(requirements, "Codex configuration requirements");
     const allowedSandboxes = optionalStrings(requirementRecord?.allowedSandboxModes);
-    const allowedApprovals = optionalStrings(requirementRecord?.allowedApprovalPolicies);
+    const allowedApprovals = optionalApprovalChoices(requirementRecord?.allowedApprovalPolicies);
     const allowedWebSearchModes = optionalStrings(requirementRecord?.allowedWebSearchModes);
-    const capabilityRecord = object(providerCapabilities);
-    const webSearch = capabilityRecord?.webSearch === true
+    const capabilityRecord = requiredObject(providerCapabilities, "Codex Provider capabilities");
+    if (typeof capabilityRecord.webSearch !== "boolean") {
+      throw new Error("Codex Provider capabilities did not report webSearch.");
+    }
+    const webSearch = capabilityRecord.webSearch
       && (allowedWebSearchModes === undefined || allowedWebSearchModes.includes("live"));
-    const bypass = configurationFlagAvailable(
-      help,
-      "--dangerously-bypass-approvals-and-sandbox"
-    );
-    const sandboxChoices = intersectChoices(
-      configurationHelpChoices(help, "--sandbox", CODEX_SANDBOXES),
-      allowedSandboxes
-    );
-    const approvalChoices = intersectChoices(
-      configurationHelpChoices(help, "--ask-for-approval", CODEX_APPROVALS),
-      allowedApprovals
-    );
+    const fields = configurationFieldsFromHelp("codex", help).map(candidate => {
+      const allowed = candidate.key === "permission.sandbox" ? allowedSandboxes
+        : candidate.key === "permission.approval" ? allowedApprovals : undefined;
+      if (allowed !== undefined) {
+        const choices = candidate.choices.filter(choice => allowed.includes(choice.value));
+        return {
+          ...candidate, choices, available: choices.length > 0,
+          reason: `${candidate.reason} Native configuration requirements applied.${
+            choices.length === 0 ? " No usable values were confirmed." : ""
+          }`
+        };
+      }
+      if (candidate.key === "search") return field(
+        "search", webSearch ? [choice("true")] : [], false, webSearch,
+        webSearch ? "Native Provider capability and configuration requirements permit live web search."
+          : "Live web search is unavailable or disallowed."
+      );
+      if (candidate.key === "profile") return codexProfileField(environment);
+      return candidate;
+    });
     return {
       schemaVersion: 1,
       agentId: input.agent.id,
@@ -110,22 +123,8 @@ export async function discoverCodexConfiguration(
       ...(semanticVersion(version) === undefined ? {} : { cliVersion: semanticVersion(version) }),
       handshake: NO_HANDSHAKE,
       models,
-      fields: [
-        field("model", [], true),
-        field("effort", [], true),
-        field("permission.strategy", [
-          choice("default"),
-          ...(bypass ? [choice("bypass")] : []),
-          choice("configured")
-        ], false, true, bypass ? undefined : "Codex bypass strategy is unavailable."),
-        field("permission.sandbox", sandboxChoices.map(choice), false),
-        field("permission.approval", approvalChoices.map(choice), false),
-        field("search", webSearch ? [choice("true")] : [], false, webSearch,
-          webSearch ? undefined : "Live web search is unavailable or disallowed."),
-        field("profile", codexProfileChoices(environment).map(choice), true),
-        field("additionalDirectories", [], true)
-      ],
-      warnings: client.warnings()
+      fields,
+      warnings: [...client.warnings(), ...configurationFieldWarnings(fields)]
     };
   } finally {
     client.close();
@@ -175,13 +174,7 @@ export async function discoverClaudeConfiguration(
   ]);
   const initialized = object(initialization);
   const models = array(initialized?.models, "Claude model catalog").map(claudeModel);
-  const permissionModes = configurationHelpChoices(help, "--permission-mode", []);
-  const bypass = configurationFlagAvailable(help, "--dangerously-skip-permissions");
-  const settingsSources = configurationHelpChoices(
-    help,
-    "--setting-sources",
-    ["user", "project", "local"]
-  );
+  const fields = configurationFieldsFromHelp("claude", help);
   return {
     schemaVersion: 1,
     agentId: input.agent.id,
@@ -189,22 +182,8 @@ export async function discoverClaudeConfiguration(
     ...(semanticVersion(version) === undefined ? {} : { cliVersion: semanticVersion(version) }),
     handshake: NO_HANDSHAKE,
     models,
-    fields: [
-      field("model", [], true),
-      field("effort", [], true),
-      field("permission.strategy", [
-        choice("default"),
-        ...(bypass ? [choice("bypass")] : []),
-        choice("configured")
-      ], false, true, bypass ? undefined : "Claude bypass strategy is unavailable."),
-      field("permission.mode", permissionModes.map(choice), true),
-      field("permission.allowedTools", [], true),
-      field("permission.disallowedTools", [], true),
-      field("settingsSources", settingsSources.map(choice), false),
-      field("settingsFile", [], true),
-      field("additionalDirectories", [], true)
-    ],
-    warnings: []
+    fields,
+    warnings: configurationFieldWarnings(fields)
   };
 }
 
@@ -371,7 +350,7 @@ export async function discoverAcpConfiguration(
     environment,
     input.signal
   );
-  const warnings: string[] = [];
+  const warnings: string[] = [STATIC_CONFIGURATION_NOTICE];
   if (!negotiated.capabilities.loadSession) {
     warnings.push(
       "This ACP Agent does not support `session/load`, so a managed Yui Turn "
@@ -427,7 +406,7 @@ export async function discoverAcpConfiguration(
         + "negotiated per Session and verified at launch rather than listed here."),
       field("permission.strategy", [choice("default"), choice("bypass"), choice("configured")],
         false, true,
-        "`default` sends no mode, so the Agent's own default stands. `configured` "
+        "Static Yui strategies: `default` sends no mode, so the Agent's own default stands. `configured` "
         + "selects one exact mode the Agent offers. `bypass` applies the mode that "
         + "grants unattended action, and only for an execution component Yui can "
         + "identify — it is never guessed from a mode's name. None of these change "
@@ -693,59 +672,34 @@ function terminateProcess(child: ChildProcess): void {
   child.kill("SIGTERM");
 }
 
-export function codexProfileChoices(environment: NodeJS.ProcessEnv): string[] {
+function codexProfileField(environment: NodeJS.ProcessEnv): AgentConfigurationField {
   const root = environment.CODEX_HOME
     ?? join(environment.HOME ?? homedir(), ".codex");
   try {
     const profiles = object(parse(readFileSync(join(root, "config.toml"), "utf8")).profiles);
-    return Object.keys(profiles ?? {}).filter((name) =>
+    const names = Object.keys(profiles ?? {}).filter((name) =>
       name.trim().length > 0 && !name.includes("\0")
     ).sort();
-  } catch {
-    return [];
+    return field("profile", names.map(choice), true, undefined,
+      "Local config.toml profile names, not a Provider enumeration; custom names remain explicit input.");
+  } catch (error) {
+    const absent = error instanceof Error && "code" in error && error.code === "ENOENT";
+    return field("profile", [], true, absent ? undefined : false, absent
+      ? "No local config.toml; no profile names observed. Custom names remain explicit input."
+      : "Local config.toml could not be read or parsed; profile enumeration unavailable.");
   }
 }
 
-export function configurationHelpChoices(
-  help: string,
-  flag: string,
-  fallback: readonly string[]
-): string[] {
-  const lines = help.replace(/\r\n/g, "\n").split("\n");
-  const start = lines.findIndex((line) => line.includes(flag));
-  if (start < 0) return [...fallback];
-  let end = start + 1;
-  while (end < lines.length && !/^\s{2,}(?:-[A-Za-z](?:,\s*)?|--)[\w-]/.test(lines[end] ?? "")) {
-    end += 1;
-  }
-  const section = lines.slice(start, end).join("\n");
-  const inline = /(?:\[possible values:\s*([^\]]+)\]|\(choices:\s*([^)]*)\))/i
-    .exec(section);
-  const declared = inline?.[1] ?? inline?.[2];
-  const bulletValues = declared === undefined && /Possible values:/i.test(section)
-    ? [...section.matchAll(/^\s*-\s*([\w.+-]+)\s*:/gm)].map((match) => match[1] ?? "")
-    : [];
-  const parsed = [...new Set((declared ?? bulletValues.join(","))
-    .replace(/["']/g, "")
-    .split(",")
-    .map((value) => value.trim().replace(/\.$/, ""))
-    .filter((value) => /^[\w.+-]+$/.test(value)))];
-  return parsed.length === 0 ? [...fallback] : parsed;
-}
-
-function configurationFlagAvailable(help: string, flag: string): boolean {
-  return help.replace(/\r\n/g, "\n").split("\n").some((line) =>
-    line.includes(flag)
-  );
-}
-
-function intersectChoices(
-  choices: readonly string[],
-  allowed: readonly string[] | undefined
-): string[] {
-  return allowed === undefined
-    ? [...choices]
-    : choices.filter((candidate) => allowed.includes(candidate));
+function optionalApprovalChoices(value: unknown): string[] | undefined {
+  if (value === null || value === undefined) return undefined;
+  // Current Codex also reports structured granular policies. They constrain
+  // configuration but cannot be selected by Yui's scalar approval input; do not
+  // reject the whole legitimate response or expand them into guessed aliases.
+  return array(value, "configuration approval requirements").flatMap(entry => {
+    if (typeof entry === "string") return [requiredString(entry, "approval requirement")];
+    if (object(object(entry)?.granular) !== undefined) return [];
+    throw new Error("Codex configuration approval requirement is invalid.");
+  });
 }
 
 function optionalStrings(value: unknown): string[] | undefined {
