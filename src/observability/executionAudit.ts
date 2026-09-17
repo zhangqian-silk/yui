@@ -188,12 +188,10 @@ export type AgentErrorsAudit = Readonly<{
 }>;
 
 export type StorageAudit = Readonly<{
-  stateJsonBytes: number | Unsupported;
   databaseBytes: number | Unsupported;
   databaseHealth: "ok" | "corrupt" | "unopenable" | Unsupported;
-  backend: "file" | "sqlite";
+  backend: "sqlite";
   runtimeDirBytes: number | Unsupported;
-  deploymentsBytes: number | Unsupported;
 }>;
 
 export type RuntimeProtocolAudit = Readonly<{
@@ -914,12 +912,6 @@ export function runExecutionAudit(
 
   const storage = ((): AuditSection<StorageAudit> => {
     try {
-      let stateJsonBytes: number | Unsupported = UNSUPPORTED;
-      try {
-        stateJsonBytes = statSync(join(home, "state.json")).size;
-      } catch {
-        stateJsonBytes = UNSUPPORTED;
-      }
       let databaseBytes: number | Unsupported = UNSUPPORTED;
       try {
         databaseBytes = statSync(join(home, "yui.db")).size;
@@ -927,16 +919,13 @@ export function runExecutionAudit(
         databaseBytes = UNSUPPORTED;
       }
       return ok({
-        stateJsonBytes,
         databaseBytes,
         // The audit aggregates history; live db integrity is the status
         // command's job (it runs PRAGMA quick_check). Report presence/size
         // and the authoritative backend, not a duplicate health probe.
         databaseHealth: UNSUPPORTED,
         backend: resolveTaskStoreBackendForHome(home),
-        runtimeDirBytes: ports.directorySize(join(home, "runtime")) ?? UNSUPPORTED,
-        deploymentsBytes:
-          ports.directorySize(join(home, "runtime", "deployments")) ?? UNSUPPORTED
+        runtimeDirBytes: ports.directorySize(join(home, "runtime")) ?? UNSUPPORTED
       });
     } catch (error) {
       return failed<StorageAudit>(error);

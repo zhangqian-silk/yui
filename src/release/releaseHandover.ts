@@ -225,14 +225,14 @@ async function activateLocked(
     catch (rollbackError) {
       return {
         outcome: "aborted", phase: "preflight",
-        message: `Host compatibility failed: ${messageOf(error)}; rollback failed: ${messageOf(rollbackError)}`,
+        message: `Storage preflight failed: ${messageOf(error)}; rollback failed: ${messageOf(rollbackError)}`,
         action: "No candidate was started and the release pointer is unchanged. Preserve the fence and inspect the old Controller.",
         recoverable: true
       };
     }
     return {
       outcome: "aborted", phase: "preflight",
-      message: `Fenced compatibility preflight failed: ${messageOf(error)}`,
+      message: `Fenced storage preflight failed: ${messageOf(error)}`,
       action: "The old Controller is serving again; the active release and Home are unchanged.",
       recoverable: true
     };

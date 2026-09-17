@@ -41,19 +41,11 @@ import type { ReleaseStepEffect } from "./releaseWorkflowPorts.js";
  * an unpersisted success into an ambiguous/fail-closed outcome; reporting
  * success for an effect whose dedup record did not land would let a crash
  * re-run the effect.
- *
- * Unsupported layouts
- * -------------------
- * The per-key `schemaVersion: 1` layout is the only supported format. A
- * legacy whole-map file (`release-idempotency.json`) from an unsupported
- * older layout is never auto-migrated: it fails closed with a bounded
- * diagnostic so the operator can inspect and clean it up deliberately.
  */
 
 export const RELEASE_IDEMPOTENCY_SCHEMA_VERSION = 1;
 
 const DIRECTORY_NAME = "release-idempotency";
-const LEGACY_FILE_NAME = "release-idempotency.json";
 
 type StoredReleaseIdempotencyRecord = Readonly<{
   schemaVersion: typeof RELEASE_IDEMPOTENCY_SCHEMA_VERSION;
@@ -78,7 +70,6 @@ export function createFileReleaseIdempotencyStore(
   now: () => Date = () => new Date()
 ): ReleaseIdempotencyStore {
   const directory = join(home, DIRECTORY_NAME);
-  const legacyPath = join(home, LEGACY_FILE_NAME);
 
   function recordPath(key: string): string {
     // encodeURIComponent is injective and leaves only Linux-filename-safe
@@ -86,25 +77,9 @@ export function createFileReleaseIdempotencyStore(
     return join(directory, `${encodeURIComponent(key)}.json`);
   }
 
-  /**
-   * Fail closed when an unsupported legacy whole-map file is present.
-   * The per-key layout is the only supported format; a whole-map file
-   * from an unsupported older layout must not be silently trusted.
-   */
-  function rejectLegacyLayout(): void {
-    if (existsSync(legacyPath)) {
-      throw new Error(
-        `unsupported legacy release idempotency layout: ${legacyPath} ` +
-        `(whole-map file). Remove it after inspecting its contents; ` +
-        `the per-key schemaVersion 1 layout is the only supported format.`
-      );
-    }
-  }
-
   return {
     async load(key) {
       try {
-        rejectLegacyLayout();
         const path = recordPath(key);
         if (!existsSync(path)) return undefined;
         const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
@@ -122,7 +97,6 @@ export function createFileReleaseIdempotencyStore(
         );
       }
       try {
-        rejectLegacyLayout();
         const record: StoredReleaseIdempotencyRecord = Object.freeze({
           schemaVersion: RELEASE_IDEMPOTENCY_SCHEMA_VERSION,
           key,

@@ -130,6 +130,12 @@ If exact native stop or inspection fails, read the persisted diagnostic and
 resolve that resource boundary; do not kill arbitrary processes, clear unknown
 execution records, or modify managed refs, tmux Sessions or state files.
 
+Breaking upgrades require a clean runtime environment; Yui does not discover,
+convert or inherit historical Hosts and processes. Storage migration is a
+separate explicit operation, not proof of runtime continuity. Do not interpret
+missing compatibility diagnostics as permission to reuse an old process,
+discard pending intent or bypass exact ownership and stop confirmation.
+
 After repeated failure of the same bounded recovery, report the observed
 cause, impact and smallest remaining options. Do not broaden cleanup or add
 a private retry loop. A failed recovery does not erase the pending requirement.

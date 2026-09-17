@@ -147,7 +147,7 @@ configuration, and explicitly retry the rejected notification.
 Before rollout, replace Sessions whose old Manifest still names `task turn`,
 and explicitly remove/archive old `yui-dev` completion blocks before installing
 current `yui` completion. User shell files are never rewritten by storage migration.
-Host control/event compatibility and updater handover safety remain unchanged.
+Current Host control/event validation and updater handover safety remain enforced.
 
 Storage 33→34 removes Message `wakePolicy` and activation `origin` from current
 records, preserving their original representations in audit Events. Historical
@@ -270,7 +270,7 @@ Candidate and Task-final ReviewRound records must all carry that one contract.
 Conflicting records fail closed; there is no rebind event, recovery command, or
 second contract state machine.
 
-## Persistent Agent Host compatibility
+## Current Agent Host boundary
 
 A running Host keeps its original Endpoint implementation. It records exact
 Session/attempt/native-Turn facts in the existing durable Inbox before contacting
@@ -284,24 +284,28 @@ the long-lived Session environment. This preserves pre-adoption evidence even
 when the frozen Run workspace differs from the Role's default; later activity
 and terminal facts still resolve solely by their own native input identities.
 
-The supported Host boundary is control `yui-agent-host/v5`, event source
-`yui-agent-host-events/v1`, and Controller RPC version 4. Hosts advertising
-`storage=controller-owned` do not open the Home database, including for process
-custody, native account locations, or execution-environment checks. Home 22
-declares the additive Inbox source envelope; valid older Inbox v1 facts and
-domain history remain readable. Future changes must retain this wire boundary
-or reject incompatible live producers before changing storage. CLI wrapper
-refresh and a successful new `doctor` are not Host compatibility proofs.
+The current Host boundary is control `yui-agent-host/v5`, event source
+`yui-agent-host-events/v1`, and Controller RPC version 4. Hosts do not open the
+Home database, including for process custody, native account locations, or
+execution-environment checks. Only the Controller owns storage and resolves
+durable facts; malformed current input fails at its normal protocol boundary.
 
-`upgrade`, the staged target's `update` preflight, and release activation inspect
-live Host capabilities independently. An old Host without this capability,
-including an idle Host or one whose response is unconfirmed, blocks adoption.
-Checks are repeated at the existing fenced/quiesced handover boundary before
-migration or promotion. No Host is killed, replaced, or reloaded by these checks.
-Let existing work settle and preserve original pending input/result evidence;
-then an authorized Operator can select a safe Session replacement/cleanup before
-retrying. Installing this change cannot repair already-loaded legacy Host code
-or collect a terminal that that code never durably emitted.
+Breaking upgrades do not inherit historical Hosts or processes. Runtime startup,
+`upgrade`, `update`, and release activation no longer scan old Host sockets or
+processes, infer their capabilities, or negotiate a compatibility handoff. Use a
+clean runtime environment; this is not permission to discard pending work or
+kill resources of uncertain ownership. Current Controller restart, exact
+process-generation checks, handover locks, Session authority and event replay
+protection remain enforced.
+
+Storage migration is separate: the complete 1..37 chain and updater
+`--update-preflight` / `--update-apply` contract remain. Storage preflight is
+rechecked at the fenced/quiesced boundary; no published migration is rewritten.
+Session CLI refresh only retargets the current two-argument quoted wrapper
+named by a valid Manifest. It does not convert retired wrapper forms. Runtime
+diagnostics do not interpret `schema.json`, `state.json`, or a whole-map release
+idempotency file; current SQLite data and per-key release receipts remain the
+authorities, and unrelated files are left untouched.
 
 `task role status`, `task role list`, and `task role session inspect` expose Host
 reporting alongside durable Run state. Pending native results or known reporting

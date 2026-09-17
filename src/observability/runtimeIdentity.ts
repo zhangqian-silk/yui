@@ -60,7 +60,6 @@ export type StorageIdentity = Readonly<{
   configuredBackend: "sqlite";
   /** Worker selected by THIS process environment (YUI_STORE_WORKER). */
   workerEnabled: boolean;
-  physicalStateJson: Readonly<{ present: boolean; bytes: number | Unsupported }>;
   physicalDatabase: Readonly<{
     present: boolean;
     bytes: number | Unsupported;
@@ -277,9 +276,6 @@ export function collectStorageIdentity(
     ? storage.currentVersion
     : UNSUPPORTED;
 
-  const statePath = join(home, "state.json");
-  const statePresent = ports.exists(statePath);
-  const stateBytes = ports.fileSize(statePath);
   const dbPath = join(home, "yui.db");
   const dbPresent = ports.exists(dbPath);
   const dbBytes = ports.fileSize(dbPath);
@@ -336,28 +332,12 @@ export function collectStorageIdentity(
       remediation: "Preserve this Home for diagnosis and restore a known-good backup."
     });
   }
-  if (ports.exists(join(home, "schema.json"))) {
-    findings.push({
-      code: "ignored-legacy-storage-manifest",
-      severity: "warning",
-      message: "schema.json is legacy metadata and is not a storage authority.",
-      remediation: "This file is not used. Preserve or archive it separately after inspecting its contents."
-    });
-  }
   if (dbPresent && dbHealth !== null && dbHealth !== "ok") {
     findings.push({
       code: "database-unhealthy",
       severity: "contradiction",
       message: `yui.db exists but failed integrity check (${dbHealth}).`,
       remediation: "Preserve this Home for diagnosis and initialize a new Home."
-    });
-  }
-  if (statePresent) {
-    findings.push({
-      code: "ignored-historical-store",
-      severity: "warning",
-      message: "state.json is present but is not read or written by the current store.",
-      remediation: "Keep it only as read-only historical evidence or archive it outside the active Home."
     });
   }
   const rawWorkerFlag = ports.env.YUI_STORE_WORKER;
@@ -377,10 +357,6 @@ export function collectStorageIdentity(
     minimumStorageVersion: MIN_SUPPORTED_STORAGE_VERSION,
     configuredBackend,
     workerEnabled,
-    physicalStateJson: {
-      present: statePresent,
-      bytes: stateBytes ?? UNSUPPORTED
-    },
     physicalDatabase: {
       present: dbPresent,
       bytes: dbBytes ?? UNSUPPORTED,

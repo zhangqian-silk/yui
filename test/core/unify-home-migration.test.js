@@ -329,6 +329,7 @@ test("unify-home relocates managed trees into Home and rewrites live pointers", 
   ).run(taskId, JSON.stringify(terminalJob));
 
   const oldRuntime = `${home}.task-runtimes`;
+  t.after(() => rmSync(oldRuntime, { recursive: true, force: true }));
   mkdirSync(join(oldRuntime, "planning", taskId), { recursive: true });
   writeFileSync(join(oldRuntime, "cache.bin"), "cache\n");
 

@@ -131,7 +131,7 @@ export function taskRoleHostDiagnostic(host: TaskRoleHostObservation): string {
   const delivery = snapshot.eventDelivery;
   return [
     `Provider Host=${snapshot.state}`,
-    delivery === undefined ? "event delivery=unreported (legacy Host)" :
+    delivery === undefined ? "event delivery=unreported" :
       `pending facts=${delivery.pending}; native terminals awaiting acknowledgement=${delivery.pendingTerminals}`,
     delivery?.failure === undefined ? undefined :
       `reporting failure (${delivery.failure.stage}, ${delivery.failure.observedAt}): ${delivery.failure.detail}`,

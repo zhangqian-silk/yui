@@ -64,12 +64,11 @@ Yui 是一个单用户本地产品。永久验证保护关键的 happy path 和�
     结果仍可追溯，归档不使保留资源自动变得可删除。归档预检不改变持久记录或
     Git index，区分冻结结果差异；清理重查 HEAD、owner 分支和新增脏状态。
     只读 Git 状态检查不执行配置的 clean filter。
-17. 即使 Host 编译版本的存储代码无法读取 Home，事实仍先进入现有 Inbox；
-    Controller 侧归属校验、ACK 丢失重放和 legacy Host 升级拒绝保护原始执行。
-    独立冻结的 v1 协议生产者在真实 19→22 迁移前后保持同一进程，通过新 discovery
-    分别向两个 Controller 发出认证 RPC，并在断线窗口保留事实。生产 launch 路径
-    在不向 Session 环境导出 Run ID 的前提下保留 scoped 启动证据。该 fixture 代表最低
-    支持的新线协议，不声称已发布的修复前 Host 可以原地热更新。
+17. Host 不打开 Controller 拥有的存储，事实仍先进入现有 Inbox；
+    Controller 侧归属校验和 ACK 丢失重放保护原始执行。生产 launch 路径
+    在不向 Session 环境导出 Run ID 的前提下保留 scoped 启动证据。
+    历史 Host 识别和跨版本存活运行时 fixture 不属于当前合同；
+    有效历史存储的迁移测试仍然保留。
     归档与 Host 消费交错时保留完整来源 envelope，不重新打开 Task 或结算原不确定输入。
 18. Project 维护锁等待不阻塞持锁者，使用共享的 60 秒单调时钟预算与每次独立的
     200–500ms 随机间隔；Controller 停止时取消等待，不丢失激活意图。
@@ -149,6 +148,10 @@ Agent 绑定，支持显式刷新并标明缓存。Controller 提供原生账户
 精简失败上下文不再依赖执行、Review 或 Session 协议；`36→37` 把原快照留在审计中。
 重复原生提交拒绝通过共同写入入口只产生一个错误和一条上级通知。小容量注入测试
 验证结果淘汰、进行中查询合并、显式刷新以及真实的缓存来源标记。
+
+当前 Session wrapper 只重定位明确生成的 Shell 形态，保留不可变 Manifest 与未知
+脚本。逐 key release 回执重开后可复用成功，非法当前记录仍明确报错。Controller
+停止后的存储阻塞恢复已捕获身份，不激活新包或迁移数据。
 
 ## Skill 与指令变更
 

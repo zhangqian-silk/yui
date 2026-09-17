@@ -107,7 +107,7 @@ Session 归属统一使用 SQLite。旧 `launch-env` owner 行或 `runtime/sessi
 
 不再支持 `task turn` 和 `yui-dev` 补全身份。上线前应替换仍依赖 `task turn`
 Manifest 的 Session；明确卸载／归档旧 `yui-dev` 补全块后，再安装现行 `yui` 补全。
-存储迁移不会修改用户 shell 文件。Host 控制／事件兼容与 updater 交接安全检查保持不变。
+存储迁移不会修改用户 shell 文件。当前 Host 控制／事件校验与 updater 交接安全检查继续生效。
 
 存储 `33→34` 从当前记录移除 Message `wakePolicy` 与激活 `origin`，原始表达
 保存在审计事件。旧的仅记录消息转换为 `intent: record`，其他缺少意图的
@@ -204,7 +204,7 @@ Session 使用普通的 `yui` 命令，兼容性由协议和存储身份检查�
 Task-final 的 ReviewRound 记录必须全部携带那唯一的合同。冲突的记录 fail closed；
 不存在重新绑定事件、恢复命令或第二套合同状态机。
 
-## 常驻 Agent Host 升级兼容
+## 当前 Agent Host 边界
 
 存活 Host 保持原 Endpoint 实现，先把准确的 Session/attempt/nativeTurn 事实写入现有
 持久 Inbox，再联系 Controller。只有当前 Controller 解析 Run 归属、校验权限、工作区、
@@ -215,18 +215,21 @@ ACK 不会重放用户输入或模型工作。
 环境。即使冻结的 Run 工作区不同于 Role 默认值，登记前的证据也能保留；后续活动和
 终态仍只按各自的原生输入身份解析归属。
 
-支持边界为控制协议 `yui-agent-host/v5`、事件来源协议 `yui-agent-host-events/v1`、
-Controller RPC 版本 4。声明 `storage=controller-owned` 的 Host 不打开 Home 数据库，
-包括进程归属、原生账号位置和执行环境校验。Home 22 声明 Inbox 的新增来源字段，
-不改写有效历史事实与业务记录。后续版本要么保留该线协议，要么在修改存储前拒绝不兼容
-的存活生产者。刷新 Session CLI wrapper 或新 `doctor` 成功都不能证明旧 Host 兼容。
+当前边界为控制协议 `yui-agent-host/v5`、事件来源协议 `yui-agent-host-events/v1`、
+Controller RPC 版本 4。Host 不打开 Home 数据库，包括进程归属、原生账号位置和
+执行环境校验。只有 Controller 拥有存储并解析持久事实；非法当前输入在正常协议
+边界得到明确错误。
 
-`upgrade`、`update` 的目标版本预检及 release activation 独立检查存活 Host。
-没有此能力的 legacy Host（包括 idle）以及兼容响应不确定的 Host 都阻止采用；
-在既有隔离/静默交接边界再次检查，先于迁移或发布切换。检查不会 kill、替换或 reload
-Host。先让原有工作结束并保留原始未决输入/结果证据，再由获授权的 Operator 在安全
-边界选择 Session 替换或清理，之后重试。安装新代码不能修改已加载的 legacy Host 内存，
-也不能回收它从未持久投递过的终态。
+破坏性升级不承接历史 Host 或进程。启动、`upgrade`、`update` 和 release activation
+不再扫描旧 Host socket／进程、推断旧能力或协商兼容交接。使用干净的运行时环境；
+这不授权丢弃未决工作或终止归属不确定的资源。当前 Controller 正常重启、准确进程
+代际校验、交接锁、Session 权限与事件防重放继续生效。
+
+存储迁移是独立边界：保留完整 1..37 迁移链和 updater 的 `--update-preflight`／
+`--update-apply` 合同，在隔离／静默边界重查存储预检，不改写已发布迁移。
+Session CLI 刷新只重定位有效 Manifest 指向的当前双参数引号 wrapper，不转换
+退役形态。运行时诊断不解释 `schema.json`、`state.json` 或整表 release 幂等文件；
+当前 SQLite 与逐 key release 回执仍是权威，无关文件保持原样。
 
 `task role status`、`task role list` 和 `task role session inspect` 在持久 Run 状态旁
 显示 Host 上报观测。原生结果待落库或已知上报故障需要关注，但不代表 Provider 失败、

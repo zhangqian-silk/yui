@@ -28,65 +28,12 @@ import { createRuntimeLifecycleDispatcher } from "../../dist/controller/runtime.
 import { startControllerServer } from "../../dist/core/controllerServer.js";
 import { runStorageUpgrade } from "../../dist/storage/upgrade/upgradeOrchestrator.js";
 import { migrateSqliteSchema } from "../../dist/storage/sqliteSchema.js";
-import { agentHostControlSocketPath } from "../../dist/runtime/agentHost.js";
-import { createServer } from "node:net";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync, statSync } from "node:fs";
-import { dirname } from "node:path";
+import { mkdirSync } from "node:fs";
 import { renameSync } from "node:fs";
-import { fork } from "node:child_process";
-import { once } from "node:events";
-import { fileURLToPath } from "node:url";
-import { runUpdate } from "../../dist/cli/updateOrchestrator.js";
 import { FileRoleLaunchPlanner } from "../../dist/executor/fileRoleLaunchPlanner.js";
 import { TmuxSessionHost } from "../../dist/runtime/tmuxAdapters.js";
 import { launchBrokerForHome } from "../../dist/runtime/launchBroker.js";
-import { randomBytes } from "node:crypto";
-import { createSessionOwnerIdentity, readLinuxProcessIdentity } from "../../dist/runtime/sessionOwnerIdentity.js";
-import { rebuildHistoricalFixture } from "../helpers/historicalHome.mjs";
-
-/** Independent minimum RPC-v4 Controller transport; intentionally no current
- * Controller/store parser on the Home-19 side. It authenticates the exact
- * discovery fence and defers persisted facts until the new Controller starts. */
-async function startFrozenControllerV4(home, homeId) {
-  const metadata = statSync(home, { bigint: true });
-  const discovery = {
-    schemaVersion: 1, protocolVersion: 4, homeId,
-    homeFilesystemId: `${metadata.dev}:${metadata.ino}`,
-    controllerInstanceId: randomBytes(16).toString("hex"),
-    pid: process.pid, processStartIdentity: readLinuxProcessIdentity(process.pid).startIdentity,
-    socketPath: join("/tmp", `yui-${process.getuid()}`, `${homeId}.sock`),
-    token: randomBytes(32).toString("hex")
-  };
-  const requests = [];
-  const server = createServer(client => {
-    let text = "";
-    client.on("data", bytes => {
-      text += bytes;
-      if (!text.includes("\n")) return;
-      const request = JSON.parse(text.trim());
-      const valid = request.protocolVersion === 4 && request.token === discovery.token
-        && request.homeId === homeId && request.homeFilesystemId === discovery.homeFilesystemId
-        && request.controllerInstanceId === discovery.controllerInstanceId
-        && request.method === "runtime.host-observation-apply";
-      if (!valid) {
-        client.end(`${JSON.stringify({ id: request.id, ok: false,
-          error: { code: "INVALID_REQUEST", message: "Old Controller fence mismatch" } })}\n`);
-        return;
-      }
-      requests.push(request);
-      client.end(`${JSON.stringify({ id: request.id, ok: true, result: { outcome: "deferred" } })}\n`);
-    });
-  });
-  mkdirSync(dirname(discovery.socketPath), { recursive: true, mode: 0o700 });
-  await new Promise(resolve => server.listen(discovery.socketPath, resolve));
-  chmodSync(discovery.socketPath, 0o600);
-  mkdirSync(join(home, "runtime"), { recursive: true, mode: 0o700 });
-  writeFileSync(join(home, "runtime", "controller.json"), JSON.stringify(discovery), { mode: 0o600 });
-  return { discovery, requests, close: async () => {
-    await new Promise(resolve => server.close(resolve));
-    rmSync(join(home, "runtime", "controller.json"));
-  } };
-}
+import { createSessionOwnerIdentity } from "../../dist/runtime/sessionOwnerIdentity.js";
 
 function executionFixture(t) {
   const home = mkdtempSync(join(tmpdir(), "yui-host-execution-"));
@@ -306,16 +253,13 @@ test("restoring an authorized Draft planning Session retains Host custody withou
   assert.equal(store.getRun("task-1", run.id).effective.executionAuthority, "planning");
 });
 
-test("Host saves exact provider facts before any Controller/storage compatibility check", async t => {
+test("Host saves exact provider facts without opening Controller-owned storage", async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-host-storage-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   new SqliteTaskStore(home).close();
-  const db = new Database(join(home, "yui.db"));
-  // A future ledger head makes this compiled store unsupported, as in a
-  // Controller upgrade beneath a still-running Host. No model is involved.
-  db.prepare("INSERT INTO schema_migrations(version, name, applied_at, checksum) VALUES (?, ?, ?, ?)")
-    .run(CURRENT_STORAGE_VERSION + 1, "future-controller-contract", new Date().toISOString(), "future");
-  db.close();
+  // An unavailable database must not prevent the Host from preserving facts
+  // for the Controller to resolve. This is not a cross-version runtime test.
+  renameSync(join(home, "yui.db"), join(home, "unavailable.db"));
   assert.throws(() => openCurrentTaskStore(home), /supported storage contract/);
   const environment = {
     YUI_HOME: home, YUI_SESSION_SCOPE: "task", YUI_TASK_ID: "task-1",
@@ -357,7 +301,7 @@ test("Host saves exact provider facts before any Controller/storage compatibilit
     terminal: { ...identity, clientOwned: true, status: "completed", output: "Global original report" }
   });
   const globalEvents = new FileRuntimeEventInbox(home).list().filter(event => event.scope === "global");
-  assert.equal(globalEvents.length, 2, "Global Host must also enqueue against an unreadable future store.");
+  assert.equal(globalEvents.length, 2, "Global Host must also enqueue without opening the store.");
   assert.ok(globalEvents.every(event => event.host && event.observation.fence.taskId === undefined
     && event.observation.fence.runId === undefined));
 });
@@ -473,144 +417,4 @@ test("Controller resolves Host facts, retains ACK-loss replay and rejects wrong/
   assert.equal(status.data.role.activeRun.id, successor.id);
   assert.equal(store.getRun("task-1", successor.id).status, "active", "A reporting failure is not a model or business terminal.");
   assert.match(status.output, /supported storage contract/);
-});
-
-test("upgrade rejects a live legacy Host before migration and preserves the scene", async t => {
-  const home = mkdtempSync(join(tmpdir(), "yui-legacy-host-"));
-  const db = new Database(join(home, "yui.db"));
-  migrateSqliteSchema(db, { mode: "apply", throughVersion: 19 });
-  db.close();
-  const socket = agentHostControlSocketPath({ home, scope: "task", taskId: "task-legacy", roleName: "worker" });
-  mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });
-  const server = createServer({ allowHalfOpen: true }, client => {
-    client.resume();
-    client.on("end", () => client.end(JSON.stringify({
-      protocol: "yui-agent-host/v5", outcome: "status",
-      snapshot: { schemaVersion: 2, state: "ready", nativeSessionId: "legacy-session",
-        attemptId: "legacy-attempt", updatedAt: new Date().toISOString() }
-    })));
-  });
-  await new Promise(resolve => server.listen(socket, resolve));
-  chmodSync(socket, 0o600);
-  t.after(async () => {
-    await new Promise(resolve => server.close(resolve));
-    rmSync(socket, { force: true });
-    rmSync(home, { recursive: true, force: true });
-  });
-  const before = readFileSync(join(home, "yui.db"));
-  for (const mode of ["update-preflight", "execute"]) {
-    const result = await runStorageUpgrade({ home, mode });
-    assert.equal(result.outcome, "blocked");
-    assert.equal(result.stage, "host-compatibility");
-    assert.equal(result.sceneUnchanged, true);
-    assert.match(result.message, /legacy-session/);
-    assert.deepEqual(readFileSync(join(home, "yui.db")), before);
-  }
-  const effects = [];
-  let preflights = 0;
-  const update = runUpdate({
-    stage: () => ({ binaryPath: "/fixture/target", version: "0.16.0" }),
-    preflight: () => ++preflights === 1
-      ? { status: "migration-ready", stepCount: 1 }
-      : { status: "blocked", message: "Legacy Host appeared during drain", action: "Preserve execution" },
-    beginControllerHandover: () => () => {},
-    controllerStatus: () => ({ running: true, pid: 42, identity: {
-      executablePath: "/fixture/node", args: ["/fixture/old/controllerMain.js"], version: "0.15.9"
-    } }),
-    stopController: (_home, pid) => { effects.push("stop"); return { stopped: true, pid }; },
-    activateBinary: () => effects.push("activate"),
-    migrateStorage: () => { effects.push("migrate"); return {}; },
-    verify: () => effects.push("verify"),
-    startController: () => effects.push("start"),
-    restoreController: () => effects.push("restore-old"),
-    cleanup: () => {}
-  }, { home });
-  assert.equal(update.outcome, "aborted");
-  assert.deepEqual(effects, ["stop", "restore-old"], "A late blocker cannot promote the install or mutate storage.");
-});
-
-test("frozen v1 Host process survives a Controller replacement and real Home 19→22 migration", { timeout: 10000 }, async t => {
-  const f = executionFixture(t);
-  const { home, run } = f;
-  const homeId = f.store.getHomeIdentity().homeId;
-  f.store.close();
-  // Build the historical ledger using the released migration prefix, then
-  // seed unchanged Task/Run records (the Host migration changes only ingress).
-  // This is a disposable version fixture, never a downgrade of a real Home.
-  rebuildHistoricalFixture(home, 19);
-  const socket = agentHostControlSocketPath({ home, scope: "task", taskId: "task-1", roleName: "worker" });
-  const child = fork(fileURLToPath(new URL("../fixtures/agent-host-events-v1.mjs", import.meta.url)), [home, socket, home], {
-    env: { PATH: process.env.PATH }, execArgv: [], stdio: ["ignore", "ignore", "pipe", "ipc"]
-  });
-  let childError = "";
-  child.stderr.on("data", bytes => { childError += bytes; });
-  t.after(async () => {
-    if (child.exitCode === null) {
-      const exited = once(child, "exit");
-      child.send({ kind: "stop" });
-      await exited;
-    }
-    rmSync(socket, { force: true });
-  });
-  const [ready] = await once(child, "message");
-  const hostPid = ready.pid;
-  const emit = async (kind, eventId) => {
-    const next = once(child, "message");
-    child.send({ kind, eventId, output: "Report from the retained old v1 Host\n完整结果" });
-    const [receipt] = await next;
-    assert.equal(receipt.error, undefined);
-    assert.equal(receipt.pid, hostPid);
-    return receipt;
-  };
-  const previous = await startFrozenControllerV4(home, homeId);
-  try {
-    const oldReceipt = await emit("turn.accepted");
-    assert.equal(oldReceipt.remote?.outcome, "deferred");
-    assert.equal(oldReceipt.remote.controllerInstanceId, previous.discovery.controllerInstanceId);
-    assert.equal(previous.requests.length, 1, "The retained producer must actually contact the old Controller.");
-  } finally { await previous.close(); }
-  const duringGap = await emit("activity.observed");
-  assert.equal(duringGap.remote.outcome, "pending");
-  const upgraded = await runStorageUpgrade({ home, mode: "execute" });
-  assert.equal(upgraded.outcome, "upgraded");
-  assert.equal(upgraded.report.sourceVersion, 19);
-  assert.equal(upgraded.report.targetVersion, CURRENT_STORAGE_VERSION);
-  const current = new SqliteTaskStore(home);
-  const scheduler = new FileSchedulerStoreAdapter(current);
-  const processor = new FileRuntimeEventProcessor(new FileRuntimeEventInbox(home), scheduler);
-  // Match the Controller's startup drain for facts retained during handover.
-  assert.deepEqual(processor.drain(new Date()).failed, []);
-  const dispatch = createRuntimeLifecycleDispatcher(current, scheduler, {});
-  const currentRequests = [];
-  const controller = await startControllerServer(home, async (method, params) => {
-    const result = await dispatch(method, params);
-    if (method === "runtime.host-observation-apply") {
-      currentRequests.push(params.eventId);
-      assert.deepEqual(processor.drain(new Date()).failed, []);
-    }
-    return result;
-  },
-    undefined, { release: null, storageBackend: "sqlite", workerEnabled: false });
-  try {
-    const activity = await emit("activity.observed");
-    const terminal = await emit("turn.completed");
-    assert.equal(activity.remote.outcome, "applied");
-    assert.equal(terminal.remote.outcome, "applied");
-    assert.equal(terminal.remote.controllerInstanceId, controller.discovery.controllerInstanceId);
-    assert.notEqual(controller.discovery.controllerInstanceId, previous.discovery.controllerInstanceId);
-    assert.deepEqual(currentRequests, [activity.emitted, terminal.emitted]);
-    assert.equal(current.getRun("task-1", run.id).status, "completed");
-    assert.equal(current.getRun("task-1", run.id).result.output, "Report from the retained old v1 Host\n完整结果");
-    const messageCount = current.listMessages("task-1").length;
-    const repeated = await emit("replay", terminal.emitted);
-    assert.equal(repeated.remote.outcome, "applied");
-    assert.equal(repeated.sequence, terminal.sequence, "Only the exact event hint is replayed, never Provider work.");
-    assert.equal(current.listMessages("task-1").length, messageCount);
-    assert.equal(new FileRuntimeEventInbox(home).list().length, 0);
-    assert.equal(child.exitCode, null, "The old-side Host was neither restarted nor hot-swapped.");
-    assert.equal(childError, "");
-  } finally {
-    await controller.close();
-    current.close();
-  }
 });

@@ -268,10 +268,9 @@ export function createUpdatePorts(
             + "different build than the one that passed preflight."
         );
       }
-      // Existing managed Sessions may have been created by an earlier release.
-      // Retarget those authenticated, Manifest-referenced wrappers to the
-      // activated control plane before the replacement Controller starts so
-      // the update cannot strand a live Session.
+      // Retarget current Manifest-referenced wrappers to the activated
+      // installation before the replacement Controller starts. This relocates
+      // the current shell form; it does not convert historical Session wrappers.
       const sessionCliRefresh = run(
         activeBinary,
         ["--json", "internal", "session-cli-refresh"],
@@ -1076,7 +1075,7 @@ function interpretPreflight(result: SpawnSyncReturns<Buffer>): UpdatePreflight {
   }
   const outcome = typeof data.outcome === "string" ? data.outcome : undefined;
   // EXIT/OUTCOME CONSISTENCY (P1-2): the one success-class internal preflight
-  // outcome must exit 0. A user dry-run, legacy direct classification outcome,
+  // outcome must exit 0. A user dry-run, a direct classification outcome,
   // or any other spelling is not this contract and is never promoted to green.
   if (outcome === "update-preflight" && result.status !== 0) {
     return {

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { scanLiveReferences } from "../../dist/resources/liveReferences.js";
 import { readResourceGcState } from "../../dist/resources/resourceGc.js";
@@ -13,6 +13,11 @@ import { normalizeVerificationPlan } from "../../dist/verification/verificationP
 import { createIntegrationAttempt } from "../../dist/integration/integrationAttempt.js";
 import { FileCompletionManager } from "../../dist/completion/fileCompletionManager.js";
 import { uninstallCompletion } from "../../dist/completion/completionInstaller.js";
+import {
+  materializeSessionBootstrap, refreshManagedSessionCliWrappers
+} from "../../dist/context/sessionBootstrapManifest.js";
+import { createFileReleaseIdempotencyStore } from "../../dist/release/releaseIdempotencyStore.js";
+import { runUpdate } from "../../dist/cli/updateOrchestrator.js";
 
 test("only current CLI and verification contracts are accepted", () => {
   const cli = resolve("dist/cli.js");
@@ -79,4 +84,69 @@ test("one completion identity installs and removes only its own shell block", t 
   uninstallCompletion(store, "bash");
   assert.equal(existsSync(installation.scriptPath), false);
   assert.equal(readFileSync(installation.activationPath, "utf8"), "export FIXTURE_KEEP=1\n");
+});
+
+test("Session CLI refresh retargets only the current two-argument wrapper and preserves its Manifest", t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-current-wrapper-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const bootstrap = materializeSessionBootstrap({
+    yuiHome: home,
+    role: { name: "leader", launchRevision: 1, defaultAccess: "write" },
+    owner: { scope: "task", taskId: "task-1" }, roleKind: "leader", skills: [],
+    entryPoint: { executable: "/fixture/node's binary", cliEntry: "/fixture/previous path/dist/cli.js" }
+  });
+  const manifest = readFileSync(bootstrap.manifestPath, "utf8");
+  const target = { executable: "/fixture/node", cliEntry: "/fixture/current/dist/cli.js" };
+  const current = '#!/bin/sh\nexec \'/fixture/node\' \'/fixture/current/dist/cli.js\' "$@"\n';
+  assert.deepEqual(refreshManagedSessionCliWrappers(home, target), { refreshed: 1, current: 0, skipped: 0 });
+  assert.equal(readFileSync(bootstrap.sessionCliPath, "utf8"), current);
+  assert.equal(statSync(bootstrap.sessionCliPath).mode & 0o777, 0o700);
+  assert.equal(readFileSync(bootstrap.manifestPath, "utf8"), manifest);
+  assert.deepEqual(refreshManagedSessionCliWrappers(home, target), { refreshed: 0, current: 1, skipped: 0 });
+  const unsupported = '#!/bin/sh\nexec \'/fixture/node\' \'/fixture/cli.js\' \'unexpected-argument\' "$@"\n';
+  writeFileSync(bootstrap.sessionCliPath, unsupported);
+  assert.deepEqual(refreshManagedSessionCliWrappers(home, target), { refreshed: 0, current: 0, skipped: 1 });
+  assert.equal(readFileSync(bootstrap.sessionCliPath, "utf8"), unsupported);
+});
+
+test("current release receipts replay success and reject invalid records without discarding evidence", async t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-current-release-receipt-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const key = "task-1/workflow-1/step";
+  const store = createFileReleaseIdempotencyStore(home);
+  const effect = { outcome: "succeeded", externalId: "confirmed-effect" };
+  assert.equal(await store.load(key), undefined);
+  await store.recordSuccess(key, effect);
+  assert.deepEqual(await createFileReleaseIdempotencyStore(home).load(key), effect);
+  await assert.rejects(store.recordSuccess(key, { outcome: "unknown" }), /only records succeeded/);
+  const path = join(home, "release-idempotency", `${encodeURIComponent(key)}.json`);
+  const corrupt = { ...JSON.parse(readFileSync(path, "utf8")), key: "another-operation" };
+  const original = JSON.stringify(corrupt);
+  writeFileSync(path, original);
+  await assert.rejects(store.load(key), /does not match/);
+  assert.equal(readFileSync(path, "utf8"), original);
+});
+
+test("a quiesced storage blocker restores the captured Controller without activating or migrating", () => {
+  const effects = [];
+  let preflights = 0;
+  const update = runUpdate({
+    stage: () => ({ binaryPath: "/fixture/target", version: "0.16.1" }),
+    preflight: () => ++preflights === 1
+      ? { status: "migration-ready", stepCount: 1 }
+      : { status: "blocked", message: "Storage changed during drain", action: "Preserve evidence" },
+    beginControllerHandover: () => () => {},
+    controllerStatus: () => ({ running: true, pid: 42, identity: {
+      executablePath: "/fixture/node", args: ["/fixture/controllerMain.js"], version: "0.16.1"
+    } }),
+    stopController: (_home, pid) => { effects.push("stop"); return { stopped: true, pid }; },
+    activateBinary: () => effects.push("activate"),
+    migrateStorage: () => { effects.push("migrate"); return {}; },
+    verify: () => effects.push("verify"),
+    startController: () => effects.push("start"),
+    restoreController: () => effects.push("restore"),
+    cleanup: () => {}
+  }, { home: "/fixture/home" });
+  assert.equal(update.outcome, "aborted");
+  assert.deepEqual(effects, ["stop", "restore"]);
 });

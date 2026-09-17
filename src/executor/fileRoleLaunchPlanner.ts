@@ -1010,10 +1010,7 @@ function managedClaudeControlPlaneConfig(
 
 function isManagedYuiBashRule(rule: string): boolean {
   const normalized = rule.trim();
-  return /^Bash\(yui(?:\s|:\*|\*|\))/u.test(normalized)
-    // Yui no longer writes a control-plane digest into a managed rule; this
-    // shape only clears one an earlier release left in a Provider config.
-    || /^Bash\(.*\s--yui-control\s/u.test(normalized);
+  return /^Bash\(yui(?:\s|:\*|\*|\))/u.test(normalized);
 }
 
 function canonicalPath(path: string): string {
