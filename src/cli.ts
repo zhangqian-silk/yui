@@ -114,7 +114,6 @@ import {
   validateTaskArchiveRequest
 } from "./commands/taskCommands.js";
 import {
-  reconcileTaskRemoteBaselines,
   verifyTaskCompletionPublishedTree,
   type TaskCompletionPublishedTreeProof
 } from "./commands/taskCompletionGate.js";
@@ -209,7 +208,8 @@ import {
 import { NodeGitWorkspace } from "./repository/gitWorkspace.js";
 import {
   assertTaskBaseFreshnessForCompletion,
-  inspectTaskBaseFreshness
+  inspectTaskBaseFreshness,
+  type TaskBaseFreshnessReport
 } from "./repository/taskBaseFreshness.js";
 import {
   TaskWorkspaceCoordinator,
@@ -1778,6 +1778,8 @@ export async function main(): Promise<void> {
       }
       let completionSummary: string | undefined;
       let completionPublishedTreeProof: TaskCompletionPublishedTreeProof | undefined;
+      let completionBaseFreshness: TaskBaseFreshnessReport | undefined;
+      let completionWarnings: readonly string[] = [];
       if (resolved[1] === "base" && resolved[2] === "status") {
         const result = await runTaskBaseStatusCommand(resolved.slice(3), store);
         emit(result.output, false, result.data);
@@ -1794,8 +1796,8 @@ export async function main(): Promise<void> {
       if (resolved[1] === "complete" && resolved[2] !== undefined) {
         const completionRequest = parseTaskCompletionRequest(resolved.slice(2));
         completionSummary = completionRequest.summary;
-        const refreshRemote = resolved.includes("--refresh-remote");
-        const completion = preflightTaskCompletion(resolved[2], store, {
+        const refreshRemote = completionRequest.refreshRemote;
+        const completion = preflightTaskCompletion(completionRequest.taskId, store, {
           environment: process.env,
           ...(taskFinalReviewContract === undefined
             ? {}
@@ -1806,7 +1808,7 @@ export async function main(): Promise<void> {
           // Publication proof resolves its exact commit. Without the flag the
           // command remains offline and preserves the existing proof-first path.
           const refreshedFreshness = refreshRemote
-            ? await inspectTaskBaseFreshness(resolved[2], store, { refresh: true })
+            ? await inspectTaskBaseFreshness(completionRequest.taskId, store, { refresh: true })
             : undefined;
           if (completionRequest.acceptedPublishedTreePublicationId !== undefined) {
             completionPublishedTreeProof = await verifyTaskCompletionPublishedTree(
@@ -1815,38 +1817,20 @@ export async function main(): Promise<void> {
               store
             );
           }
-          const freshness = refreshedFreshness
-            ?? await inspectTaskBaseFreshness(resolved[2], store);
-          for (const warning of assertTaskBaseFreshnessForCompletion(freshness, {
+          completionBaseFreshness = refreshedFreshness
+            ?? await inspectTaskBaseFreshness(completionRequest.taskId, store);
+          completionWarnings = assertTaskBaseFreshnessForCompletion(completionBaseFreshness, {
             ...(completionPublishedTreeProof === undefined
               ? {}
               : {
                   acceptedPublishedTreeProjectId: completionPublishedTreeProof.projectId
                 })
-          })) {
+          });
+          for (const warning of completionWarnings) {
             process.stderr.write(`Warning: ${warning}\n`);
           }
-          // Keep completion offline by default. An explicit refresh is the only
-          // path that may fetch and reconcile a moved remote baseline.
-          if (refreshRemote) {
-            const reconciled = await reconcileTaskRemoteBaselines(
-              resolved[2],
-              store,
-              home,
-              { environment: process.env, jobPort: createControllerIntegrationJobPort(home, { environment: process.env }) }
-            );
-            if (reconciled.length > 0) {
-              const updates = reconciled.map((entry) => (
-                `${entry.projectId}: ${entry.fromCommit} -> ${entry.toCommit} `
-                + `(Integration ${entry.integrationId})`
-              )).join("; ");
-              throw usageError(
-                `Remote baseline reconciliation advanced Task ${resolved[2]} (${updates}). `
-                + "The Task remains active so the Leader can inspect the new authoritative head, "
-                + "decide how prior Review evidence applies, and retry task complete."
-              );
-            }
-          }
+          // Refresh observes remote objects only. Choosing and executing an
+          // upstream Integration belongs to its explicit command, never completion.
         }
       }
       let releaseReviewHandoverLock: (() => void) | undefined;
@@ -2092,9 +2076,24 @@ export async function main(): Promise<void> {
             emitControlFailure(result.output, failureCode, result.data);
             return;
           }
-          emit(`${result.output}${reviewOutput}`, false, reviewData === undefined
+          const commandData = reviewData === undefined
             ? result.data
-            : { command: result.data, ...reviewData as object });
+            : { command: result.data, ...reviewData as object };
+          const completionData = resolved[1] === "complete" ? {
+            // Review dispatch may have advanced or failed after the command
+            // prepared its Round. Report that observed stage, not preparation.
+            ...(reviewData === undefined ? {} : {
+              stage: reviewRoundFromCommandData(reviewData)?.status === "running"
+                ? "review-running"
+                : "review-blocked",
+              projectHeads: (result.data as { projectHeads?: unknown }).projectHeads
+            }),
+            baseFreshness: completionBaseFreshness ?? null,
+            warnings: completionWarnings
+          } : undefined;
+          emit(`${result.output}${reviewOutput}`, false, completionData === undefined
+            ? commandData
+            : { ...commandData as object, ...completionData });
           return;
         }
         if (jsonOutput && result.kind !== "session-stop"

@@ -231,18 +231,37 @@ test("a check that mutates its candidate cannot publish reusable successful evid
   assert.equal(started, true);
 });
 
-test("upstream uses its supplied Job port and returns exact continuation references", async t => {
+test("upstream preserves admitted Jobs and exact partial results when a later Project cannot resolve its remote", async t => {
   const f = integrationFixture(t, "rebase");
   // Workspace adoption has independent lifecycle coverage. This fixture already
   // provides its exact managed Git records; exercise the upstream command/Job
   // composition without changing that separately tested layout.
   t.mock.method(FileTaskWorkspacePreparer.prototype, "prepareTaskWorkspace", async () => {});
+  const task = f.store.getTask("task-1");
+  const workspace = f.store.getTaskWorkspace(task.id);
+  f.store.saveProject({ ...createProject("project-2", "second", join(f.root, "second-stable"),
+    { stable: "main", development: "main" }, now), remoteUrl: join(f.root, "absent-remote") });
+  f.store.saveTask({ ...task, projectBindings: [
+    ...task.projectBindings,
+    { ...task.projectBindings[0], projectId: "project-2", directory: "second" }
+  ] });
+  f.store.saveManagedWorkspace({ ...workspace, entries: [
+    ...workspace.entries,
+    { ...workspace.entries[0], projectId: "project-2", directory: "second" }
+  ] });
   const result = await runTaskUpstreamCommand(["integrate", "task-1", "--latest", "--check", "true"],
     f.store, f.home, { now: () => now, environment: { PATH: process.env.PATH }, jobPort: f.jobs });
   assert.equal(result.data.integrations.length, 1);
   const integration = result.data.integrations[0];
   assert.equal(integration.status, "checks-running");
   assert.equal(f.starts(), 1);
+  assert.equal(result.data.stage, "integration-blocked");
+  assert.equal(result.data.strategy, "rebase");
+  assert.equal(result.data.failure.projectId, "project-2");
+  assert.equal(result.data.failure.phase, "resolve-remote");
+  assert.equal(result.data.failure.effect, "not-started");
+  assert.equal(result.data.failure.integrationId, undefined);
+  assert.equal(f.git("rev-parse", "HEAD"), f.before, "a check candidate is not the target HEAD");
   assert.ok(result.output.includes(`Job ${integration.job.id}`));
   assert.ok(result.output.includes(`yui task integration continue task-1/${integration.attempt.id}`));
 });

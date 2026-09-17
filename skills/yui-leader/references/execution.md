@@ -105,6 +105,11 @@ Honor explicit delegation and independent Review requirements in the user's
 messages and Task Brief. Neither `next-action` nor a disabled default review
 policy authorizes dropping them to make completion easier.
 
+Missing or cyclic dependencies identify conflicting records, not the correct
+business repair. Read the related requirements, preserve valid edges, then
+explicitly revise the intended dependency set or retire genuinely obsolete work.
+Do not clear all dependencies merely to make a mechanical gate pass.
+
 An Integration Job's success is not the final target update. For that
 notification, read [Integration](integration.md) and continue from its exact
 evidence; do not start a duplicate operation. Read that guidance also for an
@@ -371,6 +376,17 @@ yui task complete <task-id> \
 
 Completion records the exact Project heads. Archive is a separate,
 user-authorized Operator action.
+
+Completion is offline by default. `--refresh-remote` only refreshes remote
+freshness observations; neither path rebases or starts Integration checks.
+For observation alone use `task base status <task> [--refresh]`. If upstream
+changes need integration, choose it explicitly before completion:
+`task upstream integrate <task> (--latest|--project <project>)` requests rebase
+and the configured checks/CAS. Consume its exact Integration/Job and partial
+results; a prepared candidate is not an advanced Task HEAD.
+An established final Review is still prepared/dispatched by completion without
+renewed approval. Inspect the returned stage and exact ReviewRound/Run: a
+Review-pending, running or blocked result is not Task completion.
 
 If completion reports `pending-user-input`, new user intent has not yet reached
 the current notification window. End this native turn so the next notification

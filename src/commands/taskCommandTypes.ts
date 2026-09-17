@@ -136,7 +136,7 @@ export type TaskCommandOptions = Readonly<{
   now?: () => Date;
   environment?: NodeJS.ProcessEnv;
   yuiHome?: string;
-  /** Completion CLI parsing may read stdin/files before remote reconciliation. */
+  /** Completion CLI parsing may read stdin/files before remote observation. */
   completionSummary?: string;
   /** Explicit Git/publication proof prepared before completion mutation. */
   completionPublishedTreeProof?: TaskCompletionPublishedTreeProof;
