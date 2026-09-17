@@ -24,7 +24,7 @@ export function resolveAgentHostObservation(
     "conversation.observed", "goal.updated", "goal.cleared",
     "turn.accepted", "turn.completed", "turn.failed", "turn.cancelled",
     "input.accepted", "input.rejected", "input.delivery-unknown",
-    "operation.started", "operation.completed", "operation.failed", "activity.observed"
+    "operation.started", "operation.completed", "operation.failed", "activity.observed", "observer.health"
   ];
   if (!hostKinds.includes(kind)
     || (kind === "host.observed" ? input.authority !== "host"
@@ -50,7 +50,9 @@ export function resolveAgentHostObservation(
     fence.receiptId?.startsWith("native-input:") || fence.receiptId?.startsWith("turn-input:")
     || fence.receiptId?.startsWith("steer:")
   );
-  const terminal = ["turn.completed", "turn.failed", "turn.cancelled", "session.ended", "session.failed"].includes(kind);
+  // Post-execution diagnostics may describe an already-terminal exact input.
+  // This permits evidence collection, never a terminal transition.
+  const terminal = ["turn.completed", "turn.failed", "turn.cancelled", "session.ended", "session.failed", "observer.health"].includes(kind);
   if (fence.taskId === undefined) {
     if (host.startupRunId !== undefined) throw new RuntimeHookRunFenceError("Global Host cannot carry a startup Run.");
     const sessions = store.getGlobalRoleSessionSet(fence.roleName);

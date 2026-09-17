@@ -4,6 +4,7 @@ import {
   providerContinuationKey,
   type ProviderContinuation
 } from "./providerContinuation.js";
+import { serializeAgentErrorRaw, standardAgentError, type StandardAgentError } from "./agentError.js";
 
 export type ProviderContinuationQueryResult = Readonly<{
   quality: "exact" | "partial" | "unavailable";
@@ -41,6 +42,7 @@ export type ProviderReconcileResult = Readonly<{
   schedule: ProviderReconcileSchedule | null;
   quality: "exact" | "partial" | "unavailable";
   changed: boolean;
+  failure?: StandardAgentError;
 }>;
 
 const BASE_RECONCILE_MS = 2_000;
@@ -101,7 +103,10 @@ export async function reconcileKnownDetachedContinuations(input: Readonly<{
     result = validateQueryResult(raw, new Set(candidates.map((entry) => (
       providerContinuationKey(entry.identity)
     ))));
-  } catch {
+    if (result.quality === "unavailable") {
+      throw new Error(result.detail ?? "Provider continuation metadata is unavailable.");
+    }
+  } catch (error) {
     const errors = (input.previous?.consecutiveErrors ?? 0) + 1;
     const delay = backoff(input.previous?.attempts ?? 0);
     const circuitOpenUntil = errors >= CIRCUIT_ERROR_LIMIT
@@ -117,7 +122,13 @@ export async function reconcileKnownDetachedContinuations(input: Readonly<{
         ...(circuitOpenUntil === undefined ? {} : { circuitOpenUntil })
       },
       quality: "unavailable",
-      changed: false
+      changed: false,
+      failure: standardAgentError({
+        source: "driver", phase: "turn-reconcile",
+        message: error instanceof Error ? error.message : String(error),
+        raw: serializeAgentErrorRaw(error),
+        inputDisposition: "unknown", sessionDisposition: "unknown"
+      })
     };
   }
   const observations = new Map(result.continuations.map((entry) => [entry.key, entry]));

@@ -16,13 +16,14 @@ import {
 } from "../runtime/agentHost.js";
 import { hasRuntimeCleanupObligation, runtimeLifecycleTarget } from "../runtime/lifecycleReservation.js";
 import {
-  cancelProviderRetry, providerRetryAttemptId, providerRetryPending,
+  cancelProviderRetry, providerRetryAttemptId, providerRetryPending, providerRetryProjection,
   type ProviderRetry
 } from "../runtime/providerRetry.js";
 import { currentProviderConversation } from "../runtime/providerRuntimeIdentity.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import type { MailboxKey } from "./controller.js";
 import { retryIntentBlocker } from "./providerRetryAdmission.js";
+import { recordGlobalRuntimeAttention } from "./globalRuntimeAttention.js";
 
 type RetryDeliveryPorts = Readonly<{
   now?: () => Date;
@@ -66,7 +67,12 @@ export function createProviderRetryHooks(home: string, store: TaskStore, ports: 
       save({ ...current, providerBinding: exhausted
         ? { ...cancelled, retry: { ...cancelled.retry!, status: "exhausted" } } : cancelled });
       const owner = set.owner;
-      if (owner.scope === "global") settleGlobalRetryInput(store, owner.roleName, load(owner)?.providerBinding, new Date(at));
+      if (owner.scope === "global") {
+        const stopped = load(owner)?.providerBinding;
+        settleGlobalRetryInput(store, owner.roleName, stopped, new Date(at));
+        recordGlobalRuntimeAttention(store, owner.roleName, `${binding.retry!.chainId}:stopped`,
+          providerRetryProjection(stopped), new Date(at));
+      }
       if (owner.scope === "task") {
         const event = createTaskEvent(store.nextEventId(owner.taskId), owner.taskId, "provider.retry-stopped", {
           roleName: owner.roleName, chainId: binding.retry!.chainId, reason
@@ -142,6 +148,10 @@ export function createProviderRetryHooks(home: string, store: TaskStore, ports: 
                 || latest.providerBinding.run.status !== "delivery-unknown") return;
               save({ ...latest, providerBinding: { ...latest.providerBinding,
                 retry: { ...latest.providerBinding.retry!, reason: detail } } });
+              if (owner.scope === "global") {
+                recordGlobalRuntimeAttention(store, owner.roleName, `${retry.currentAttemptId}:unconfirmed`,
+                  providerRetryProjection(load(owner)?.providerBinding), new Date(at));
+              }
               if (owner.scope === "task") {
                 const event = createTaskEvent(store.nextEventId(owner.taskId), owner.taskId, "provider.retry-unconfirmed", {
                   roleName: owner.roleName, attemptId: retry.currentAttemptId!, nativeSessionId: retry.nativeSessionId, detail

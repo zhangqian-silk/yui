@@ -16,7 +16,8 @@ import type {
   StructuredProviderTurnReceipt,
   StructuredProviderTurnStarted,
   StructuredProviderTurnTerminal,
-  StructuredProviderGoal
+  StructuredProviderGoal,
+  StructuredProviderDiagnostic
 } from "../runtime/structuredProviderHost.js";
 import { runtimeLifecycleSignalKey } from "../runtime/lifecycleReservation.js";
 import { isForeignHandoverLockHeld } from "../release/runtimeRelease.js";
@@ -35,6 +36,36 @@ let deliveryFailure: AgentHostEventDelivery["failure"];
 const emittedEvents = new Map<string, Readonly<{
   home: string; taskId?: string; roleName: string; nativeSessionId?: string; terminal: boolean;
 }>>();
+
+/** Retained in the existing Host Inbox; it never settles a Turn or a resource. */
+export async function publishStructuredProviderDiagnostic(input: Readonly<{
+  home: string; environment: NodeJS.ProcessEnv; diagnostic: StructuredProviderDiagnostic;
+}>): Promise<void> {
+  const diagnostic = input.diagnostic;
+  const adapterId = requireIdentity(input.environment.YUI_ADAPTER_ID, "Agent adapter id");
+  const owner = describeHostIdentity(input.environment, adapterId, diagnostic.nativeSessionId);
+  const failure = diagnostic.failure;
+  await persistAndApply(input.home, [observation({
+    kind: diagnostic.attemptId === undefined ? "conversation.observed" : "observer.health",
+    sequence: nextStructuredSequence(), ordinal: 0,
+    observedAt: new Date().toISOString(),
+    fence: {
+      ...owner, driverId: builtinAgentDriverRegistry().requireByAdapterId(adapterId).id,
+      nativeSessionId: diagnostic.nativeSessionId, conversationId: diagnostic.nativeSessionId,
+      ...(diagnostic.attemptId === undefined ? {} : { receiptId: diagnostic.attemptId }),
+      ...(diagnostic.nativeTurnId === undefined ? {} : { nativeTurnId: diagnostic.nativeTurnId })
+    },
+    payload: {
+      ...(diagnostic.attemptId === undefined ? { recoverability: "unknown" as const } : {}),
+      sourceId: failure.phase === "host-stop" ? "host-cleanup" : "provider-channel",
+      observerStatus: "unavailable", observerDetail: failure.detail,
+      failure: { error: standardAgentError({
+        source: "host", phase: failure.phase, message: failure.detail, raw: failure.raw ?? failure.detail,
+        inputDisposition: failure.inputDisposition, sessionDisposition: failure.sessionDisposition
+      }) }
+    }
+  })], input.environment);
+}
 
 /** A live transport observation, independent of Provider state and Run truth. */
 export function structuredProviderEventDelivery(

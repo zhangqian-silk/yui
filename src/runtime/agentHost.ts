@@ -14,6 +14,7 @@ import {
   publishStructuredProviderActivity,
   publishStructuredProviderAttachmentExit,
   publishStructuredProviderConnection,
+  publishStructuredProviderDiagnostic,
   publishStructuredProviderGoal,
   publishStructuredProviderInputObserved,
   publishStructuredProviderInputSettlement,
@@ -52,6 +53,7 @@ import {
 } from "./agentError.js";
 import type { AgentHostEventDelivery } from "./agentHostProtocol.js";
 import { AGENT_HOST_CONTROL_PROTOCOL } from "./agentHostProtocol.js";
+import { closeAgentHostEndpoints } from "./agentHostCleanup.js";
 import {
   readAgentRunConfigurationObservation,
   unknownAgentRunConfiguration,
@@ -93,6 +95,7 @@ import {
 import { createSessionOwnerIdentity, readLinuxProcessIdentity } from "./sessionOwnerIdentity.js";
 import {
   type StructuredProviderActivity,
+  type StructuredProviderDiagnostic,
   type StructuredProviderGoal,
   type StructuredProviderTurnInput,
   type StructuredProviderTurnReceipt,
@@ -323,6 +326,13 @@ export async function runAgentHost(input: Readonly<{
   let conversationRecoverability: "unknown" | "recoverable" = "unknown";
   let authority: ProviderAuthorityFence | undefined;
   let hostStopRequested = false;
+
+  const reportDiagnostic = async (diagnostic: StructuredProviderDiagnostic): Promise<void> => {
+    const observedPayload = activeRunPayload ?? sessionPayload ?? payload;
+    await publishStructuredProviderDiagnostic({
+      home: input.home, environment: observedPayload.environment, diagnostic
+    });
+  };
   let snapshot = hostSnapshot("idle");
   let dispatchTail = Promise.resolve();
   let promptHuman = (): void => {};
@@ -587,6 +597,8 @@ export async function runAgentHost(input: Readonly<{
           else if (event.type === "activity") handleActivity(event.value);
           else if (event.type === "started") handleStarted(event.value, currentPayload);
           else if (event.type === "terminal") handleTerminal(event.value);
+          else if (event.type === "diagnostic") void enqueueSerialized(() => reportDiagnostic(event.value))
+            .catch(error => process.stderr.write(`Provider diagnostic delivery failed: ${serializeAgentErrorRaw(error)}\n`));
           else if (event.type === "goal") handleGoal(event.value);
           else void enqueueSerialized(() => publishStructuredProviderInputObserved({
             home: input.home, environment: currentPayload.environment, observed: event.value
@@ -834,6 +846,8 @@ export async function runAgentHost(input: Readonly<{
           else if (event.type === "activity") handleActivity(event.value);
           else if (event.type === "started") handleStarted(event.value, next);
           else if (event.type === "terminal") handleTerminal(event.value);
+          else if (event.type === "diagnostic") void enqueueSerialized(() => reportDiagnostic(event.value))
+            .catch(error => process.stderr.write(`Provider diagnostic delivery failed: ${serializeAgentErrorRaw(error)}\n`));
           else if (event.type === "goal") handleGoal(event.value);
           else void enqueueSerialized(() => publishStructuredProviderInputObserved({
             home: input.home, environment: next.environment, observed: event.value
@@ -1468,57 +1482,13 @@ export async function runAgentHost(input: Readonly<{
     for (const [signal, handler] of handlers) process.removeListener(signal, handler);
     if (forceKillTimer !== undefined) clearTimeout(forceKillTimer);
     humanConsole?.close();
-    // Ask the client to exit, then hand back the Session's hold. The reference
-    // is only actually returned once the client proves it exited, so the bounded
-    // stop below waits on the real dependency instead of an assumed one.
-    session?.detach();
-    const adapterId = endpointAdapterId;
-    await endpointLease?.release();
-    endpointLease = undefined;
-    if (adapterId !== undefined) {
-      // Stop new acquisition and wait a bounded time for what is already
-      // running. A timeout reports the references and pending effects that are
-      // genuinely still in use; it never escalates to killing a Provider this
-      // Endpoint does not own, and it never reports quiescence it cannot prove.
-      const drain = await endpointOwner.stop(adapterId, ENDPOINT_DRAIN_TIMEOUT_MS);
-      if (!drain.quiescent) {
-        const detail = `Endpoint stop ${drain.timedOut ? "timed out" : "returned"} after ${drain.waitedMs}ms`
-          + ` (bound ${ENDPOINT_DRAIN_TIMEOUT_MS}ms); ${drain.references} reference(s), `
-          + `${drain.opening} opening client(s) and `
-          + `${drain.sessions.reduce((total, held) => total + held.pending.length, 0)} pending effect(s) `
-          + "may still be in use. Owned client resources are unknown.";
-        updateSnapshot(hostSnapshot(snapshot.state, {
-          ...definedFields({
-            adapterId,
-            nativeSessionId: snapshot.nativeSessionId,
-            conversationId: snapshot.conversationId
-          }),
-          ...authorityFields(),
-          detail
-        }));
-        // The snapshot is about to stop being reachable, and a stop this process
-        // could not prove quiescent must remain diagnosable afterwards. Written
-        // to the Host's own stream, which its pane and logs retain.
-        process.stderr.write(`${detail}\n`);
-      }
-    }
-    // Final cleanup is bounded on its own deadline. The bounded stop above may
-    // already have given up on a client that never proves exit, and waiting for
-    // that same drain again would leave the control socket open and this function
-    // never returning. Anything still held is reported, not silently released.
-    const remaining = await endpointOwner.close(ENDPOINT_DRAIN_TIMEOUT_MS).catch(() => []);
-    const held = remaining.filter((drain) => !drain.quiescent);
-    if (held.length > 0) {
-      const references = held.reduce((total, drain) => total + drain.references, 0);
-      const opening = held.reduce((total, drain) => total + drain.opening, 0);
-      process.stderr.write(
-        `Endpoint cleanup returned with ${references} reference(s) and ${opening} opening client(s) `
-        + `still held across ${held.length} implementation(s) (bound ${ENDPOINT_DRAIN_TIMEOUT_MS}ms); `
-        + "those implementations stay detached and undisposed. Owned client resources are unknown.\n"
-      );
-    }
-    await control.close();
-    void sessionPayload;
+    await closeAgentHostEndpoints({
+      owner: endpointOwner, session, lease: endpointLease, adapterId: endpointAdapterId,
+      attemptId: activeRunAttemptId ?? lastTerminal?.attemptId,
+      nativeTurnId: activeNativeTurnId ?? lastTerminal?.nativeTurnId,
+      timeoutMs: ENDPOINT_DRAIN_TIMEOUT_MS,
+      report: reportDiagnostic, closeControl: () => control.close()
+    });
   }
 }
 

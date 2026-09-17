@@ -48,12 +48,14 @@ import {
   type JsonObject
 } from "./jsonLineChannel.js";
 import { ProviderDeliveryUnknownError, ProviderTurnRejectedError } from "./providerErrors.js";
+import { providerDeliveryFailureFrom } from "./agentError.js";
 import {
   type StructuredProviderProcessExit,
   type StructuredProviderSession,
   type StructuredProviderTurnInput,
   type StructuredProviderTurnReceipt,
-  type StructuredProviderTurnTerminal
+  type StructuredProviderTurnTerminal,
+  type StructuredProviderDiagnostic
 } from "./structuredProviderHost.js";
 
 export type AcpSessionOpenInput = Readonly<{
@@ -90,6 +92,7 @@ export type AcpSessionOpenInput = Readonly<{
   /** Present for resume; the Agent's own Session id from a previous launch. */
   nativeSessionId?: string;
   onTerminal?: (terminal: StructuredProviderTurnTerminal) => void;
+  onDiagnostic?: (diagnostic: StructuredProviderDiagnostic) => void;
   mirror: (stream: "stdout" | "stderr", text: string) => void;
 }>;
 
@@ -174,7 +177,17 @@ export class AcpStructuredProviderSession implements StructuredProviderSession {
   ) {}
 
   static async open(input: AcpSessionOpenInput): Promise<AcpStructuredProviderSession> {
-    const channel = new JsonLineChannel(input.child, input.mirror);
+    let receivingAttemptId: string | undefined;
+    const channel = new JsonLineChannel(input.child, input.mirror, error => {
+      // Before session/new has answered, the opening caller owns the failure.
+      if (!session.#sessionId) return;
+      input.onDiagnostic?.({
+        nativeSessionId: session.#sessionId,
+        ...((receivingAttemptId ?? session.#activeAttemptId) === undefined
+          ? {} : { attemptId: receivingAttemptId ?? session.#activeAttemptId }),
+        failure: providerDeliveryFailureFrom(error, { phase: "turn-reconcile", inputDisposition: "unknown" })
+      });
+    });
     const session = new AcpStructuredProviderSession(
       input.child,
       input.exit,
@@ -183,7 +196,11 @@ export class AcpStructuredProviderSession implements StructuredProviderSession {
       input.onTerminal,
       input.mirror
     );
-    channel.onMessage((message) => session.#receive(message));
+    channel.onMessage((message) => {
+      receivingAttemptId = session.#activeAttemptId;
+      session.#receive(message);
+      receivingAttemptId = undefined;
+    });
     channel.onClose((error) => session.#fail(error));
 
     const negotiated = readAcpInitializeResult(
@@ -614,7 +631,7 @@ export class AcpStructuredProviderSession implements StructuredProviderSession {
       return;
     }
     if (message.id === undefined) this.#notification(method, message.params);
-    else void this.#serve(method, message);
+    else void this.#serve(method, message).catch(error => this.#fail(error));
   }
 
   #response(message: JsonObject): void {
@@ -789,8 +806,8 @@ export class AcpStructuredProviderSession implements StructuredProviderSession {
         id,
         ...(error === undefined ? { result: result ?? {} } : { error })
       });
-    } catch {
-      // The pipe is gone; the closure path already reports that fact.
+    } catch (error) {
+      this.#fail(error instanceof Error ? error : new Error(String(error)));
     }
   }
 

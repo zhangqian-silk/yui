@@ -5,7 +5,7 @@ import { freezeRunContextSnapshot } from "../context/runContextPack.js";
 import { settleGlobalRetryInput } from "../message/globalProviderRetry.js";
 import { interruptThenTerminalState, prepareMessageContinuations } from "../message/messageContinuation.js";
 import { assertExecutionEnvironmentCurrent } from "../runtime/executionEnvironment.js";
-import { deferProviderRetry, providerRetryPending, recordProviderFailure } from "../runtime/providerRetry.js";
+import { deferProviderRetry, providerRetryPending, providerRetryProjection, recordProviderFailure } from "../runtime/providerRetry.js";
 import {
   AgentHostObservationDeferred,
   recordAgentHostConnection,
@@ -91,6 +91,7 @@ import { SYSTEM_OPERATOR_ROLE } from "../role/systemRoles.js";
 import type { AgentDriverRegistry } from "../runtime/agentDriver.js";
 import { standardAgentError } from "../runtime/agentError.js";
 import { recordTaskAgentError } from "./taskAgentError.js";
+import { recordGlobalRuntimeAttention, recordGlobalRuntimeFailure } from "./globalRuntimeAttention.js";
 import {
   builtinAgentDriverRegistry
 } from "../runtime/builtinAgentDrivers.js";
@@ -572,6 +573,15 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       const matches = receipt !== undefined && binding.run?.attemptId === receipt
         && (fence.nativeTurnId === undefined || binding.run.nativeTurnId === undefined
           || binding.run.nativeTurnId === fence.nativeTurnId);
+      if ((input.kind === "observer.health" || input.kind === "conversation.observed") && input.payload.failure !== undefined) {
+        if (receipt !== undefined && !matches) return "obsolete";
+        recordGlobalRuntimeAttention(store, fence.roleName, input.eventId, {
+          fence, failure: input.payload.failure,
+          confirmed: binding.run?.status ?? "no-owned-input",
+          unknown: "Native execution outcome and resource quiescence are not proven by this diagnostic."
+        }, now);
+        return "applied";
+      }
       if (input.kind === "turn.accepted") {
         if (input.authority === "transport" && matches) {
           const message = store.listGlobalRoleMessages(fence.roleName).find(entry =>
@@ -636,12 +646,27 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         binding = updateProviderConversationRecoverability(binding, input.payload.recoverability);
       }
       if (input.kind === "turn.failed" && matches && input.payload.failure !== undefined) {
+        const failureRef = recordGlobalRuntimeFailure(store, fence.roleName, input.eventId, {
+          fence, failure: input.payload.failure,
+          chainId: binding.retry?.chainId ?? receipt,
+          attempts: binding.retry?.attempts ?? 0,
+          confirmed: "Native Turn failed. Prior side effects are not undone.",
+          unknown: "External effects and remaining unfinished work."
+        }, now);
         binding = recordProviderFailure(binding, {
-          error: input.payload.failure.error, failureRef: input.eventId, at: now.getTime()
+          error: input.payload.failure.error, failureRef, at: now.getTime()
         });
       }
       store.saveGlobalRoleSessionSet(updateGlobalRoleProviderRuntime(sessions, binding, now));
       settleGlobalRetryInput(store, fence.roleName, binding, now);
+      if (input.kind === "turn.failed" && matches && input.payload.failure !== undefined
+        && !providerRetryPending(binding)) {
+        recordGlobalRuntimeAttention(store, fence.roleName, input.eventId, {
+          fence, failure: input.payload.failure, retry: providerRetryProjection(binding),
+          confirmed: "Native Turn failed; this does not prove absence of prior side effects.",
+          unknown: "External effects must be inspected before continuing."
+        }, now);
+      }
       return "applied";
     });
   }
@@ -700,13 +725,21 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
           && (native.nativeTurnId === undefined || native.nativeTurnId === input.fence.nativeTurnId)
           ? "applied" : "obsolete";
       }
-      const knownContinuation = input.kind.startsWith("continuation.") && projectProviderContinuations(store.listEvents(input.fence.taskId!)).some((entry) => (
+      const knownContinuation = (input.kind.startsWith("continuation.") || input.kind === "observer.health")
+        && projectProviderContinuations(store.listEvents(input.fence.taskId!)).some((entry) => (
           entry.runId === input.fence.runId
           && entry.identity.providerNamespace === input.fence.driverId
           && entry.identity.accountScope === input.fence.agentId
           && entry.identity.conversationId === input.fence.conversationId
           && entry.identity.continuationId === input.fence.continuationId
         ));
+      if (input.kind === "observer.health" && input.payload.failure !== undefined) {
+        const native = sessions?.providerBinding?.run;
+        return knownContinuation || session?.nativeSessionId === input.fence.nativeSessionId
+          && (input.fence.receiptId === undefined || native?.attemptId === input.fence.receiptId
+            && (input.fence.nativeTurnId === undefined || native.nativeTurnId === input.fence.nativeTurnId))
+          ? "applied" : "obsolete";
+      }
       const requiresCurrentRuntime = input.kind !== "turn.cancelled" && !knownContinuation;
       const valid = run !== null && (!requiresCurrentRuntime || (run.status === "active" && active?.id === run.id)) && run.roleName === input.fence.roleName && run.effective.agentId === input.fence.agentId && this.drivers.requireByAdapterId(run.effective.adapterId).id === input.fence.driverId && (knownContinuation || (session !== undefined && session.nativeSessionId === input.fence.nativeSessionId)) && runtimeReceiptBelongsToRun(store, input);
       if (!valid) {
@@ -971,7 +1004,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
           now
         );
       }
-      if (input.kind === "turn.failed" && input.payload.failure !== undefined) {
+      if (["turn.failed", "observer.health", "conversation.observed"].includes(input.kind) && input.payload.failure !== undefined) {
         const failure = input.payload.failure;
         const error = failure.error;
         const run = input.fence.runId === undefined
@@ -991,10 +1024,12 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
             runId: input.fence.runId,
             nativeSessionId: input.fence.nativeSessionId,
             nativeTurnId: input.fence.nativeTurnId,
+            attemptId: input.fence.receiptId,
             lastOutput: failure.lastOutput
           },
         }, now);
-        if (created && !providerRetryPending(store.getTaskRoleSessionSet(taskId, input.fence.roleName)?.providerBinding)) routeRoleEvent(
+        if (created && (input.kind !== "turn.failed"
+          || !providerRetryPending(store.getTaskRoleSessionSet(taskId, input.fence.roleName)?.providerBinding))) routeRoleEvent(
           store,
           errorEvent,
           input.fence.roleName,
@@ -1636,8 +1671,26 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         let resolved = settleProviderTurnSubmission(binding, { attemptId: input.attemptId, status: input.status,
           reason: input.reason, resolvedAt: input.now.toISOString() });
         resolved = this.retrySubmissionResolution(resolved, input, sessions.sessions[sessions.activeAgentId]?.adapterId);
+        if (input.status !== "deferred" && resolved.run?.failure !== undefined) {
+          const failureRef = recordGlobalRuntimeFailure(store, input.roleName, `${input.attemptId}:submission`, {
+            nativeSessionId: currentProviderConversation(resolved).conversationId,
+            attemptId: input.attemptId, status: input.status, failure: resolved.run.failure,
+            chainId: resolved.retry?.chainId ?? input.attemptId, attempts: resolved.retry?.attempts ?? 0
+          }, input.now);
+          resolved = { ...resolved, run: { ...resolved.run, failure: { ...resolved.run.failure, ref: failureRef } },
+            ...(resolved.retry?.failedAttemptId === input.attemptId
+              ? { retry: { ...resolved.retry, failureRef } } : {}) };
+        }
         store.saveGlobalRoleSessionSet(updateGlobalRoleProviderRuntime(sessions, resolved, input.now));
         settleGlobalRetryInput(store, input.roleName, resolved, input.now);
+        if (input.status !== "deferred" && !providerRetryPending(resolved)) {
+          recordGlobalRuntimeAttention(store, input.roleName, `${input.attemptId}:submission`, {
+            nativeSessionId: currentProviderConversation(resolved).conversationId,
+            attemptId: input.attemptId, status: input.status,
+            failure: resolved.run?.failure, retry: providerRetryProjection(resolved),
+            unknown: "External effects are not established by submission settlement."
+          }, input.now);
+        }
         const message = store.listGlobalRoleMessages(input.roleName).find(entry =>
           input.attemptId === `global-input:${input.roleName}/${entry.id}`);
         if (message !== undefined && message.delivery?.via !== "provider") {
@@ -2929,6 +2982,13 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       ))?.conversationId) {
         recordCanonicalObservationObsolete(store, input, "provider-conversation-mismatch", now);
         return "obsolete";
+      }
+      if (input.payload.failure !== undefined) {
+        // A diagnostic without an owned Turn describes this exact connection,
+        // not a new recoverability observation or proof of resource release.
+        return sessions.activeAgentId === input.fence.agentId
+          && sessions.sessions[input.fence.agentId]?.nativeSessionId === input.fence.nativeSessionId
+          ? "applied" : "obsolete";
       }
       try {
         if (input.kind === "conversation.observed") {

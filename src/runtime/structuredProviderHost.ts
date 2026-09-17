@@ -19,7 +19,7 @@ import type { AgentAdapterId } from "../agent/adapterCatalog.js";
 import { YUI_VERSION } from "../version.js";
 import { AcpStructuredProviderSession } from "./acpSession.js";
 import { acpDesiredSessionConfiguration } from "./acpSessionConfiguration.js";
-import { serializeAgentErrorRaw } from "./agentError.js";
+import { providerDeliveryFailureFrom, serializeAgentErrorRaw, type ProviderDeliveryFailure } from "./agentError.js";
 import {
   unsupportedAgentRunConfiguration,
   type AgentRunConfigurationObservation
@@ -138,6 +138,14 @@ export type StructuredProviderProcessExit = Readonly<{
   processInstanceId: string;
 }>;
 
+/** A lost observation/cleanup boundary is not a native terminal. */
+export type StructuredProviderDiagnostic = Readonly<{
+  nativeSessionId: string;
+  attemptId?: string;
+  nativeTurnId?: string;
+  failure: ProviderDeliveryFailure;
+}>;
+
 export interface StructuredProviderSession {
   /** Exact process whose exit proves the dedicated local execution drained. */
   readonly ownedProcessId?: number;
@@ -185,6 +193,7 @@ export async function startStructuredProviderSession(
     onTerminal?: (terminal: StructuredProviderTurnTerminal) => void;
     onGoal?: (goal: StructuredProviderGoal | null) => void;
     onInput?: (input: StructuredProviderInputObserved) => void;
+    onDiagnostic?: (diagnostic: StructuredProviderDiagnostic) => void;
     mirrorOutput?: (stream: "stdout" | "stderr", text: string) => void;
   }> = {}
 ): Promise<Readonly<{
@@ -241,6 +250,7 @@ export async function startStructuredProviderSession(
           ? {}
           : { nativeSessionId: control.nativeSessionId }),
         ...(input.onTerminal === undefined ? {} : { onTerminal: input.onTerminal }),
+        ...(input.onDiagnostic === undefined ? {} : { onDiagnostic: input.onDiagnostic }),
         mirror
       });
       return Object.freeze({ session });
@@ -276,6 +286,7 @@ export async function startStructuredProviderSession(
           input.onTerminal,
           input.onGoal,
           input.onActivity,
+          input.onDiagnostic,
           mirror
         );
     return Object.freeze({ session });
@@ -984,13 +995,20 @@ class ClaudeStructuredProviderSession implements StructuredProviderSession {
     onTerminal: ((terminal: StructuredProviderTurnTerminal) => void) | undefined,
     onGoal: ((goal: StructuredProviderGoal | null) => void) | undefined,
     onActivity: ((activity: StructuredProviderActivity) => void) | undefined,
+    onDiagnostic: ((diagnostic: StructuredProviderDiagnostic) => void) | undefined,
     mirror: (stream: "stdout" | "stderr", text: string) => void
   ): Promise<ClaudeStructuredProviderSession> {
-    const channel = new JsonLineChannel(child, mirror);
     const nativeSessionId = control.nativeSessionId;
     if (nativeSessionId === undefined) {
       throw new Error("Managed Claude launch requires a preallocated native Session id.");
     }
+    let receivingAttemptId: string | undefined;
+    const channel = new JsonLineChannel(child, mirror, error => onDiagnostic?.({
+      nativeSessionId,
+      ...((receivingAttemptId ?? session.#activeAttemptId) === undefined
+        ? {} : { attemptId: receivingAttemptId ?? session.#activeAttemptId }),
+      failure: providerDeliveryFailureFrom(error, { phase: "turn-reconcile", inputDisposition: "unknown" })
+    }));
     const session = new ClaudeStructuredProviderSession(
       child,
       exit,
@@ -1000,7 +1018,11 @@ class ClaudeStructuredProviderSession implements StructuredProviderSession {
       onGoal,
       mirror
     );
-    channel.onMessage((message) => session.#receive(message, onTerminal, onAccepted, onActivity));
+    channel.onMessage((message) => {
+      receivingAttemptId = session.#activeAttemptId;
+      session.#receive(message, onTerminal, onAccepted, onActivity);
+      receivingAttemptId = undefined;
+    });
     // This client owns the whole Claude execution process, unlike a Codex
     // proxy. An exit without a result ends the exact local input as failure,
     // not as continuing work merely because the supervising Host is alive.

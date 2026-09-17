@@ -38,7 +38,9 @@ export function retryIntentBlocker(
     if (role === null || sessions?.activeAgentId !== role.activeAgentId) return "role-changed";
     if (sessions.sessions[sessions.activeAgentId]?.effective.sourceDesiredRevision !== role.launchRevision) return "role-configuration-changed";
     if (store.listGlobalRoleMessages(input.roleName).some(message =>
-      Date.parse(message.createdAt) > Date.parse(retry.intentAt)
+      (message.kind === "user" || message.kind === "operator"
+        || message.inputControl !== undefined || message.interruptThen !== undefined)
+      && Date.parse(message.createdAt) > Date.parse(retry.intentAt)
       && message.delivery === undefined && message.notDelivered === undefined)) return "new-user-input";
     return undefined;
   }

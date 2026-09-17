@@ -11,6 +11,7 @@ import { ProviderDeliveryUnknownError, ProviderTurnBusyError, ProviderTurnReject
 import {
   startStructuredProviderSession,
   type StructuredProviderActivity,
+  type StructuredProviderDiagnostic,
   type StructuredProviderGoal,
   type StructuredProviderInputObserved,
   type StructuredProviderProcessExit,
@@ -51,6 +52,7 @@ export type AgentEndpointEvent = Readonly<{
   | Readonly<{ type: "terminal"; value: StructuredProviderTurnTerminal }>
   | Readonly<{ type: "goal"; value: StructuredProviderGoal | null }>
   | Readonly<{ type: "input"; value: StructuredProviderInputObserved }>
+  | Readonly<{ type: "diagnostic"; value: StructuredProviderDiagnostic }>
 );
 
 export type AgentEndpointConfiguration = Readonly<{
@@ -154,6 +156,7 @@ export function createAgentEndpointFactory(
       onStarted: (value) => emit({ type: "started", value }),
       onTerminal: (value) => emit({ type: "terminal", value }),
       onInput: (value) => emit({ type: "input", value }),
+      onDiagnostic: (value) => emit({ type: "diagnostic", value }),
       onGoal: (value) => emit({ type: "goal", value })
     });
     endpoint = new BuiltinAgentEndpoint(opened.session, configuration, opened.recoveredTerminal);
@@ -184,7 +187,8 @@ type EventValue =
   | Readonly<{ type: "started"; value: StructuredProviderTurnStarted }>
   | Readonly<{ type: "terminal"; value: StructuredProviderTurnTerminal }>
   | Readonly<{ type: "goal"; value: StructuredProviderGoal | null }>
-  | Readonly<{ type: "input"; value: StructuredProviderInputObserved }>;
+  | Readonly<{ type: "input"; value: StructuredProviderInputObserved }>
+  | Readonly<{ type: "diagnostic"; value: StructuredProviderDiagnostic }>;
 
 class BuiltinAgentEndpoint implements AgentEndpoint {
   get ownedProcessId(): number | undefined { return this.driver.ownedProcessId; }
@@ -318,7 +322,8 @@ class BuiltinAgentEndpoint implements AgentEndpoint {
   }
 
   observe(value: EventValue): void {
-    if (value.type !== "goal"
+    if (value.type === "diagnostic" && value.value.nativeSessionId !== this.nativeSessionId) return;
+    if (value.type !== "goal" && value.type !== "diagnostic"
       && (value.value.nativeSessionId !== this.nativeSessionId || value.value.conversationId !== this.conversationId)) return;
     if (value.type === "goal" && value.value !== null && value.value.conversationId !== this.conversationId) return;
     if (value.type === "accepted") {
