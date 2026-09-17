@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { createTaskEvent } from "../event/taskEvent.js";
+import { createGlobalRoleMessage } from "../message/message.js";
 import {
   createSessionOwnerIdentity,
   isLinuxProcessLive,
@@ -20,7 +21,10 @@ import {
 import { sessionOwnerProcessKey, type SessionOwnerIdentity } from "../runtime/sessionOwnerIdentity.js";
 import { AGENT_HOST_CONTROL_PROTOCOL, sendAgentHostCancelControl } from "../runtime/agentHost.js";
 import { settleProviderTurn, cancelQuiescentProviderInput, clearProviderGoal } from "../runtime/providerRuntimeIdentity.js";
-import { updateTaskRoleProviderRuntime, taskRoleControlTarget } from "../executor/agentExecutor.js";
+import {
+  updateTaskRoleProviderRuntime, updateGlobalRoleProviderRuntime, roleSessionControlTarget,
+  type TaskRoleSessionSet, type GlobalRoleSessionSet
+} from "../executor/agentExecutor.js";
 import { FileRoleLaunchPlanner } from "../executor/fileRoleLaunchPlanner.js";
 import { stopCodexNativeSession, type NativeControlConnection } from "../runtime/nativeSessionControl.js";
 import { routeRoleEvent } from "../scheduler/operatorEvent.js";
@@ -50,7 +54,7 @@ export type SessionOwnerReconciliationDeps = Readonly<{
   }>;
   onWarning?: (message: string) => void;
   cancelInput?: typeof sendAgentHostCancelControl;
-  nativeConnection?: (taskId: string, roleName: string) => NativeControlConnection;
+  nativeConnection?: (owner: RuntimeOwner) => NativeControlConnection;
   stopNative?: typeof stopCodexNativeSession;
 }>;
 
@@ -76,9 +80,9 @@ export class SessionOwnerReconciliation {
     this.#tmux = deps.tmux;
     this.#onWarning = deps.onWarning ?? (() => undefined);
     this.#cancelInput = deps.cancelInput ?? sendAgentHostCancelControl;
-    this.#nativeConnection = deps.nativeConnection ?? ((taskId, roleName) =>
+    this.#nativeConnection = deps.nativeConnection ?? ((owner) =>
       new FileRoleLaunchPlanner(this.#home, this.#store, { environment: this.#environment })
-        .planNativeControl(taskId, roleName));
+        .planNativeControl(owner));
     this.#stopNative = deps.stopNative ?? stopCodexNativeSession;
   }
 
@@ -230,31 +234,35 @@ export class SessionOwnerReconciliation {
   }
 
   async #quiesceInput(owner: RuntimeOwner): Promise<void> {
-    if (owner.scope !== "task") return;
-    if (runtimeCleanupDisposition(this.#store.getWorkMailbox(runtimeLifecycleTarget(owner))) === "detach-host") return;
-    const set = this.#store.getTaskRoleSessionSet(owner.taskId, owner.roleName);
+    const disposition = runtimeCleanupDisposition(this.#store.getWorkMailbox(runtimeLifecycleTarget(owner)));
+    if (disposition === "detach-host") return;
+    const set = owner.scope === "task"
+      ? this.#store.getTaskRoleSessionSet(owner.taskId, owner.roleName)
+      : this.#store.getGlobalRoleSessionSet(owner.roleName);
     const binding = set?.providerBinding;
     const input = binding?.run;
     const unsettled = input != null && ["submitting", "accepted", "delivery-unknown"].includes(input.status);
     const hasGoal = binding?.goal != null && binding.goal.status !== "complete";
-    const selected = taskRoleControlTarget(set);
+    const selected = roleSessionControlTarget(set);
     if (set == null || (!unsettled && !hasGoal && selected?.adapterId !== "codex")) return;
     if (selected === undefined) {
       throw new Error("Cannot identify the native execution to stop.");
     }
-    const request = this.#store.listEvents(owner.taskId).filter(event =>
+    const request = owner.scope === "task" ? this.#store.listEvents(owner.taskId).filter(event =>
       ["runtime.session-replacement-requested", "runtime.session-stop-requested"].includes(event.type)
       && event.payload.roleName === owner.roleName
-      && event.payload.nativeSessionId === selected.nativeSessionId).at(-1);
-    const operatorStop = this.#store.getTask(owner.taskId)?.executionGate.state === "stopped"
-      || (request !== undefined && ["user", "operator"].includes(request.payload.requestedBy));
+      && event.payload.nativeSessionId === selected.nativeSessionId).at(-1) : undefined;
+    const operatorStop = owner.scope === "global"
+      ? disposition === "end-session" || disposition === "replace-session"
+      : this.#store.getTask(owner.taskId)?.executionGate.state === "stopped"
+        || (request !== undefined && ["user", "operator"].includes(request.payload.requestedBy));
     if (binding?.authority.owner === "human" && !operatorStop) {
       throw new Error("This native Session is under human control; Operator/user must request its stop or replacement.");
     }
     let terminal: NonNullable<Awaited<ReturnType<typeof sendAgentHostCancelControl>>["cancellation"]>["terminal"];
     try {
       const result = unsettled && binding?.authority.owner === "controller" && binding.authority.holderId !== undefined ? await this.#cancelInput({
-      home: this.#home, scope: "task", taskId: owner.taskId, roleName: owner.roleName,
+      home: this.#home, ...owner,
       control: {
         protocol: AGENT_HOST_CONTROL_PROTOCOL, type: "cancel",
         nativeSessionId: selected.nativeSessionId,
@@ -273,7 +281,7 @@ export class SessionOwnerReconciliation {
     }
     if (terminal === undefined || hasGoal || selected.adapterId === "codex") {
       if (selected.adapterId === "codex") {
-        await this.#stopNative(this.#nativeConnection(owner.taskId, owner.roleName), {
+        await this.#stopNative(this.#nativeConnection(owner), {
           conversationId: selected.nativeSessionId,
           nativeTurnId: unsettled && terminal === undefined ? input?.nativeTurnId : undefined,
           clearGoal: true
@@ -287,7 +295,7 @@ export class SessionOwnerReconciliation {
           if (stopped.outcome !== "stop-confirmed") throw new Error("Dedicated native execution is still draining; no resource was released.");
         } else if (selected.status !== "ended"
           || records.some(ownerRootIsLive)
-          || this.#tmux?.probeRoleStatus(owner.taskId, owner.roleName) !== "exited") {
+          || this.#tmux?.probeRoleStatus(owner.scope === "task" ? owner.taskId : "operator", owner.roleName) !== "exited") {
           throw new Error("Native process custody is unavailable; inspect the exact local execution before reusing its workspace.");
         }
       } else {
@@ -295,9 +303,12 @@ export class SessionOwnerReconciliation {
       }
     }
     this.#store.transaction(tx => {
-      const current = tx.getTaskRoleSessionSet(owner.taskId, owner.roleName);
+      const current = owner.scope === "task"
+        ? tx.getTaskRoleSessionSet(owner.taskId, owner.roleName)
+        : tx.getGlobalRoleSessionSet(owner.roleName);
       const provider = current?.providerBinding;
       if (current == null || provider?.run?.attemptId !== input?.attemptId
+        || provider?.run?.nativeTurnId !== input?.nativeTurnId
         || (selected.fromBinding
           ? current.providerBinding?.conversations.find(entry => entry.status === "current")?.conversationId
           : current.sessions[current.activeAgentId]?.nativeSessionId) !== selected.nativeSessionId
@@ -316,15 +327,26 @@ export class SessionOwnerReconciliation {
                 reason: "Explicit Session stop; native execution quiescence independently verified." });
         }
         if (hasGoal || selected.adapterId === "codex") stopped = clearProviderGoal(stopped);
-        tx.saveTaskRoleSessionSet(updateTaskRoleProviderRuntime(current, stopped, now));
-        tx.saveEvent(owner.taskId, createTaskEvent(tx.nextEventId(owner.taskId), owner.taskId,
+        if (owner.scope === "global") {
+          tx.saveGlobalRoleSessionSet(updateGlobalRoleProviderRuntime(current as GlobalRoleSessionSet, stopped, now));
+          if (unsettled || hasGoal) tx.saveGlobalRoleMessage(createGlobalRoleMessage(
+            tx.nextGlobalRoleMessageId(), owner.roleName,
+            `Explicit Session stop confirmed: ${JSON.stringify({
+              nativeSessionId: selected.nativeSessionId, attemptId: input?.attemptId,
+              nativeTurnId: input?.nativeTurnId, status: stopped.run?.status ?? "quiescent",
+              evidence: terminal === undefined ? "native-resource-inspection" : "native-terminal"
+            })}`, "system", { type: "system" }, now));
+        } else {
+          tx.saveTaskRoleSessionSet(updateTaskRoleProviderRuntime(current as TaskRoleSessionSet, stopped, now));
+          tx.saveEvent(owner.taskId, createTaskEvent(tx.nextEventId(owner.taskId), owner.taskId,
           "runtime.input-stop-confirmed", {
             roleName: owner.roleName, ...(input == null ? {} : { attemptId: input.attemptId }),
             nativeSessionId: selected.nativeSessionId, status: stopped.run?.status ?? "quiescent",
             evidence: terminal === undefined ? "native-resource-inspection" : "native-terminal",
             ...(input?.nativeTurnId === undefined ? {} : { nativeTurnId: input.nativeTurnId })
           }, now));
-      } else if (selected.adapterId === "codex") {
+        }
+      } else if (selected.adapterId === "codex" && owner.scope === "task") {
         tx.saveEvent(owner.taskId, createTaskEvent(tx.nextEventId(owner.taskId), owner.taskId,
           "runtime.input-stop-confirmed", {
             roleName: owner.roleName, nativeSessionId: selected.nativeSessionId,

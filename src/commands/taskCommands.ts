@@ -77,7 +77,7 @@ import {
 import {
   createRoleSessionSet,
   roleAgentSessionResumeMode,
-  taskRoleControlTarget,
+  roleSessionControlTarget,
   updateTaskRoleProviderRuntime
 } from "../executor/agentExecutor.js";
 import {
@@ -3344,7 +3344,7 @@ function taskRoleSessionCommand(
         throw usageError("Use task role session new to request your own replacement and end this turn; synchronous self-stop cannot return.", usage);
       }
       const sessions = tx.getTaskRoleSessionSet(task.id, role.name);
-      const session = taskRoleControlTarget(sessions);
+      const session = roleSessionControlTarget(sessions);
       if (session === undefined || session.adapterId === undefined) {
         throw usageError(`Task Role has no active Session: ${task.id}/${role.name}.`, usage);
       }

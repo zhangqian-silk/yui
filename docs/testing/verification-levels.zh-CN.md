@@ -153,6 +153,11 @@ Agent 绑定，支持显式刷新并标明缓存。Controller 提供原生账户
 脚本。逐 key release 回执重开后可复用成功，非法当前记录仍明确报错。Controller
 停止后的存储阻塞恢复已捕获身份，不激活新包或迁移数据。
 
+Global Session 替换回归验证：即使旧 Session 已被先前失败的切换移入历史，也必须
+先确认原生执行静止再结算保留的输入；未知执行和并发 Turn 身份变化仍拒绝结算。
+原始 Message 与停止证据保留。队列通知不能重启已明确停止的 Session，也不能越过
+Host 准备期间新出现的 cleanup 义务。
+
 ## Skill 与指令变更
 
 一并审阅共享的 Runtime 合同和受影响的 Role/Project Skill。用几个相关场景检查指令

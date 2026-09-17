@@ -3086,6 +3086,9 @@ async function executeOperatorSessionControl(
       active !== undefined
       && active.status === "active"
     )
+    || (sessionSet?.providerBinding?.run != null
+      && ["submitting", "accepted", "delivery-unknown"].includes(sessionSet.providerBinding.run.status))
+    || (sessionSet?.providerBinding?.goal != null && sessionSet.providerBinding.goal.status !== "complete")
   ) {
     await runtime.stopGlobalRoleSession(role.name);
   }

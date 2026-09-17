@@ -98,7 +98,7 @@ export type RoleSessionSet = GlobalRoleSessionSet | TaskRoleSessionSet;
 /** Recovery addresses retained execution identity, not a live Session grant.
  * A released Session cache can be absent while its native binding still needs
  * to be stopped. No active Session record is fabricated by this projection. */
-export function taskRoleControlTarget(set: TaskRoleSessionSet | null | undefined) {
+export function roleSessionControlTarget(set: RoleSessionSet | null | undefined) {
   if (set == null) return undefined;
   const current = set.sessions[set.activeAgentId];
   const binding = set.providerBinding;
@@ -108,7 +108,10 @@ export function taskRoleControlTarget(set: TaskRoleSessionSet | null | undefined
   const nativeSessionId = fromBinding ? currentProviderConversation(binding!).conversationId : current?.nativeSessionId;
   const agentId = fromBinding ? binding!.accountScope : current?.agentId;
   if (nativeSessionId === undefined || agentId === undefined) return undefined;
-  const session = [...Object.values(set.sessions), ...(set.history ?? [])]
+  const history = set.owner.scope === "global"
+    ? Object.values((set as GlobalRoleSessionSet).history ?? {})
+    : (set as TaskRoleSessionSet).history ?? [];
+  const session = [...Object.values(set.sessions), ...history]
     .find(entry => entry.nativeSessionId === nativeSessionId && entry.agentId === agentId);
   const adapterId = session?.adapterId ?? (binding === null ? undefined : builtinAgentDriverRegistry().find(binding.providerNamespace)?.adapterId);
   return { nativeSessionId, agentId, adapterId, status: session?.status,

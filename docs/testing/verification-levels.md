@@ -199,6 +199,11 @@ is required.
     Per-key release receipts survive reopen and reject invalid current records.
     A storage blocker after Controller drain restores the captured identity
     without activating a package or migrating data.
+39. Global Session replacement proves native quiescence before settling retained
+    input, including when a prior attempt has already archived the Session.
+    Unknown execution and changed Turn identity remain fenced. Existing Messages
+    and stop evidence survive; queued notifications cannot revive an explicitly
+    stopped Session or submit across cleanup admitted during Host preparation.
 
 Keep the test phase seconds-scale; measure TypeScript build separately. Record
 incremental runtime when adding a critical regression. The seven recovery boundary

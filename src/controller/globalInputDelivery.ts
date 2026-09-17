@@ -21,6 +21,9 @@ export async function deliverGlobalInputs(
       if (pending.length === 0 || hasRuntimeCleanupObligation(store.getWorkMailbox(
         runtimeLifecycleTarget({ scope: "global", roleName: role.name })))) continue;
       let sessions = store.getGlobalRoleSessionSet(role.name);
+      // A detached Host keeps an active Session and may reconnect. An explicit
+      // Session stop/switch must not be undone by background notification work.
+      if (sessions !== null && sessions.sessions[sessions.activeAgentId]?.status !== "active") continue;
       if (sessions?.providerBinding?.retry !== undefined && !providerRetryPending(sessions.providerBinding)) {
         store.transaction(tx => settleGlobalRetryInput(tx, role.name,
           tx.getGlobalRoleSessionSet(role.name)?.providerBinding, new Date()));
@@ -71,6 +74,9 @@ export async function deliverGlobalInputs(
       }
       await ensure(role.name);
       sessions = store.getGlobalRoleSessionSet(role.name);
+      if (hasRuntimeCleanupObligation(store.getWorkMailbox(
+        runtimeLifecycleTarget({ scope: "global", roleName: role.name })))
+        || sessions?.sessions[sessions.activeAgentId]?.status !== "active") continue;
       const binding = sessions?.providerBinding;
       if (binding == null || binding.authority.owner !== "controller") continue;
       const nativeSessionId = currentProviderConversation(binding).conversationId;
