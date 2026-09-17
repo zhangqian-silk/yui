@@ -33,6 +33,46 @@ generated/shipped protocol evidence and deterministic fixtures do **not** prove
 live Provider execution. Recheck the native producer when changing this boundary;
 do not add guessed aliases to accommodate an unverified fixture.
 
+### Configuration discovery evidence and version scope
+
+The configuration-source follow-up on 2026-09-17 confirmed the installed package
+versions above by reading their package manifests, without launching either
+Provider Session. An additional offline `app-server generate-ts --experimental`
+run used a disposable native Home and produced `ConfigRequirementsReadResponse`,
+`ConfigRequirements`, `ModelProviderCapabilitiesReadResponse`, `AskForApproval`
+and `SandboxMode`. A missing requirements envelope is not the documented
+`requirements: null`; a missing `webSearch` is not an explicit false. The
+`AskForApproval` union also contains structured `granular` policies, which Yui's
+scalar picker cannot represent: valid structured entries narrow the choices
+without causing the entire metadata query to fail or inventing a scalar alias.
+Doctor now names the versions **audited producer versions**, not "latest tested
+versions": generated types and shipped protocol evidence are not live execution.
+The existing adapter admission floors remain Codex **0.150.1** and Claude
+**2.1.207**. This audit does not establish a higher minimum, prove every version
+above the floor, or establish that an older admitted version necessarily fails.
+Doctor checks required CLI flags; native discovery reports its own failures.
+ACP continues to negotiate protocol support, not a product version allowlist.
+
+The official OpenAI Configuration Reference was also retrieved through the
+documentation service during this follow-up:
+`https://learn.chatgpt.com/docs/config-file/config-reference#configtoml`.
+It documents the three sandbox modes and now describes `untrusted` approval as
+unsupported, while the locally generated 0.153.4 type still includes it. Neither
+fact alone proves account acceptance, and current documentation is not retroactive
+evidence about every older supported producer. Yui retains its explicit adapter
+configuration syntax, labels offline choices as static/unverified, and only
+offers help-reported, adapter-supported approval values on the observed path
+(further narrowed by native configuration requirements). It does not rewrite a
+user's stored approval policy.
+
+Model aliases are never supplied by static discovery. Claude's settings-source
+list remains the adapter's declared `user`/`project`/`local` contract, not a claim
+that a help parse or account query confirmed it. Missing permission enums are
+unavailable; custom native inputs stay explicit. Live model metadata, static
+inputs and unavailable fields may coexist, with their reasons and warnings
+preserved across cache and failed-query presentation. No real-model/account
+validation was performed for this follow-up.
+
 ## Codex App Server
 
 | Surface | Consumed current contract |

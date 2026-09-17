@@ -136,6 +136,36 @@ requests for the same scope share the active probe, including refresh requests;
 once it settles, an explicit refresh probes again. Retained results are labelled
 as cached rather than as a new live response. No cleanup timer or worker is added.
 
+Catalog `source` describes the metadata query: `live` is a successful current
+query, `cache` reuses an identity-matched observation, and `fallback` has no
+usable native observation. It does **not** confirm every configuration field.
+The same catalog can combine native model/help enumeration, local profile names,
+and declared static adapter inputs. Field `reason` and catalog `warnings` identify
+these boundaries; `available: false` marks an unavailable native enumeration or
+capability, not permission to guess values. `allowCustom` permits explicit input,
+not a promise of Provider acceptance.
+
+Missing or unparseable help enums stay empty. Known static contracts (such as
+Yui's permission strategies and supported configuration syntax) remain available
+with an explicit static label; they are not described as server-discovered options.
+The permission picker never supplies its own list when a field is absent, and
+retains an existing value as an explicitly unreported current setting. A query
+does not change configuration, permissions, model, or account.
+
+Cache responses retain the original `fetchedAt`, last probe `attemptedAt`, field
+reasons, warnings, and any failed refresh's error. Identity matching is not a
+freshness guarantee: native files, account entitlements and remote policy may
+change, so use explicit refresh when needed. The discovery contract is part of
+cache identity; older derived caches that could contain guessed help values are
+not reused by this contract. Durable Home schemas and migration history are
+unchanged.
+
+Doctor inspects installation and help only, using the same declared fields and
+enum parser. Its field counts distinguish help-observed, static/unverified, and
+unavailable fields; it does not enumerate account models. The retained minimum
+versions and latest offline producer evidence have different meanings; see
+the source repository's `docs/provider-protocol-contracts.md`.
+
 On Role creation, explicit Agent settings require `--agent`. On update, omitted
 `--agent` targets the active binding; a named binding is updated without being
 activated. `task role bind` changes selection. A live Session requires the

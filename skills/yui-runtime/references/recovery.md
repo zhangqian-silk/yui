@@ -35,8 +35,12 @@ configured Agent identity. Native settings files and credentials are still read
 currently, not copied into error history. A historical error without a recorded
 configuration, or a changed Agent command/bindings, returns a diagnosis instead
 of borrowing today's Role configuration. To inspect the desired next launch
-explicitly, omit `--error`. Distinguish live, cached and unavailable metadata.
-Do not treat an alias list as a complete Provider whitelist.
+explicitly, omit `--error`. Distinguish live enumeration, identity-matched cached
+observations, declared static adapter inputs, and unavailable fields. Read field
+reasons, warnings, observation/attempt times and the current query error: a live
+query can contain static or unavailable fields, and a cache hit is not current
+Provider confirmation. Do not treat an alias list as a complete Provider
+whitelist or a static/custom choice as proven native support.
 
 Reconcile the original user requirement with exact native IDs and alias
 mappings. Correcting the name of the same authorized model is routine recovery;

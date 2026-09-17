@@ -204,6 +204,11 @@ is required.
     Unknown execution and changed Turn identity remain fenced. Existing Messages
     and stop evidence survive; queued notifications cannot revive an explicitly
     stopped Session or submit across cleanup admitted during Host preparation.
+40. Configuration metadata distinguishes native help enumeration, static adapter
+    contracts and missing fields. A disposable metadata-only producer checks
+    partial discovery, exact cache reuse and failed-refresh provenance; the
+    permission picker cannot invent choices or erase explicit current values.
+    Doctor uses the same help interpretation without guessing model aliases.
 
 Keep the test phase seconds-scale; measure TypeScript build separately. Record
 incremental runtime when adding a critical regression. The seven recovery boundary

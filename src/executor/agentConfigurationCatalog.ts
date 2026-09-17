@@ -9,6 +9,7 @@ import { writeTextFileAtomically } from "../storage/durableFile.js";
 import { resolveAgentAdapter, type RoleAgentConfig } from "./agentAdapter.js";
 import { redactAgentErrorText } from "../runtime/agentError.js";
 import type { AgentCapabilityConfig } from "./agentCapabilityConfig.js";
+import { staticAgentConfigurationFields, STATIC_CONFIGURATION_NOTICE } from "./agentConfigurationFields.js";
 
 export type AgentConfigurationChoice = Readonly<{
   value: string;
@@ -99,6 +100,7 @@ export type AgentConfigurationFailure = Readonly<{
 }>;
 
 export type ResolvedAgentConfigurationCatalog = Readonly<{
+  /** Origin of the metadata query, not native confirmation of every field. */
   source: "live" | "cache" | "fallback";
   attemptedAt: string;
   fetchedAt?: string;
@@ -261,72 +263,14 @@ export class AgentConfigurationCatalogService {
 export function fallbackAgentConfigurationCatalog(
   agent: Pick<ConfiguredAgent, "id" | "adapterId">
 ): AgentConfigurationCatalog {
-  const choice = (value: string): AgentConfigurationChoice => ({ value, label: value });
-  const common = [
-    field("model", [], true),
-    field("effort", [], true)
-  ];
-  // The fallback exists for when the probe could not run, so it must still be
-  // this Agent's own shape. Falling through to Claude's fields handed the
-  // caller a catalog whose `adapterId` contradicted the Agent it described.
-  if (agent.adapterId === "acp") {
-    return {
-      schemaVersion: 1,
-      agentId: agent.id,
-      adapterId: "acp",
-      models: [],
-      fields: [
-        ...common,
-        field("permission.strategy",
-          [choice("default"), choice("bypass"), choice("configured")], false),
-        // The mode ids come from a live Session, so an offline catalog can only
-        // say the axis exists. Listing candidates here would invent an Agent's
-        // vocabulary from a build-time guess.
-        field("permission.mode", [], true)
-      ],
-      warnings: ["Runtime configuration catalog is unavailable."]
-    };
-  }
-  return agent.adapterId === "codex"
-    ? {
-        schemaVersion: 1,
-        agentId: agent.id,
-        adapterId: "codex",
-        models: [],
-        fields: [
-          ...common,
-          field("permission.strategy", ["default", "bypass", "configured"].map(choice), false),
-          field("permission.sandbox", [
-            "read-only", "workspace-write", "danger-full-access"
-          ].map(choice), false),
-          field("permission.approval", [
-            "untrusted", "on-request", "never"
-          ].map(choice), false),
-          field("search", [choice("true")], false),
-          field("profile", [], true),
-          field("additionalDirectories", [], true)
-        ],
-        warnings: ["Runtime configuration catalog is unavailable."]
-      }
-    : {
-        schemaVersion: 1,
-        agentId: agent.id,
-        adapterId: "claude",
-        models: [],
-        fields: [
-          ...common,
-          field("permission.strategy", ["default", "bypass", "configured"].map(choice), false),
-          field("permission.mode", [
-            "acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"
-          ].map(choice), true),
-          field("permission.allowedTools", [], true),
-          field("permission.disallowedTools", [], true),
-          field("settingsSources", ["user", "project", "local"].map(choice), false),
-          field("settingsFile", [], true),
-          field("additionalDirectories", [], true)
-        ],
-        warnings: ["Runtime configuration catalog is unavailable."]
-      };
+  return {
+    schemaVersion: 1,
+    agentId: agent.id,
+    adapterId: agent.adapterId,
+    models: [],
+    fields: staticAgentConfigurationFields(agent.adapterId),
+    warnings: ["Runtime configuration catalog is unavailable.", STATIC_CONFIGURATION_NOTICE]
+  };
 }
 
 export function configurationField(
@@ -403,14 +347,6 @@ export function validateAgentLaunchConfiguration(
   }
 }
 
-function field(
-  key: string,
-  choices: readonly AgentConfigurationChoice[],
-  allowCustom: boolean
-): AgentConfigurationField {
-  return { key, choices, allowCustom };
-}
-
 function catalogFingerprint(
   input: ResolveAgentConfigurationInput,
   environment: NodeJS.ProcessEnv
@@ -438,6 +374,10 @@ function catalogFingerprint(
         }
       : null;
   return createHash("sha256").update(JSON.stringify({
+    // Old derived caches may contain guessed help values. They cannot establish
+    // the current discovery contract. No durable record or cache shape changes.
+    discoveryContract: "explicit-native-enumeration",
+    agentId: input.agent.id,
     // The component, not just the plan: two ACP products answer the same
     // handshake differently, so a cache keyed on the plan alone would serve one
     // product's capabilities for the other.

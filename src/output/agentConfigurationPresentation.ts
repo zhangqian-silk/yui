@@ -28,7 +28,9 @@ export function renderAgentConfigurationCatalog(
       // query rather than a deliberate boundary, so it is shown either way.
       field.available === false
         ? `unavailable${field.reason === undefined ? "" : `: ${field.reason}`}`
-        : field.reason === undefined ? "available" : `available: ${field.reason}`,
+        : field.available === true
+          ? `available${field.reason === undefined ? "" : `: ${field.reason}`}`
+          : field.reason ?? "Native support not confirmed",
       field.allowCustom ? "yes" : "no"
     ]);
   const sections = [
@@ -50,7 +52,7 @@ export function renderAgentConfigurationCatalog(
     ...(fieldRows.length === 0
       ? []
       : [renderTable(
-          "Other runtime configuration",
+          "Configuration fields (native observations and static adapter contracts)",
           [
             { header: "Field", minWidth: 12, maxWidth: 30 },
             { header: "Values", minWidth: 18, maxWidth: 58 },

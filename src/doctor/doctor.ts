@@ -967,7 +967,8 @@ function checkAgent(
       detail: [
         `start resume interrupt nativeSession=${snapshot.lifecycle.nativeSessionDiscovery}`,
         `preInputReady=${snapshot.lifecycle.preInputReadiness.status}`,
-        `fields=${available}/${degraded}/${unavailable}`,
+        `fields(help-observed/static-or-unverified/unavailable)=${available}/${degraded}/${unavailable}`,
+        "installation/help inspection only; no model or account capability query",
         ...snapshot.warnings.map((warning) => `warning=${warning}`)
       ].join(" ")
     }
