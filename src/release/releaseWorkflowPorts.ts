@@ -3,6 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
 import { runUpdate, type StagedPackage, type UpdatePorts, type UpdateResult } from "../cli/updateOrchestrator.js";
+import { renderUpdateResult } from "../cli/updateCommand.js";
 import { activatedControllerEntrypoint } from "../cli/updatePorts.js";
 import {
   runProjectCommand,
@@ -228,11 +229,14 @@ export function createReleaseWorkflowPorts(
             // Best-effort persistence; the effect may still succeed.
           }
           const result: UpdateResult = runUpdate(inspectedPorts, { home: deps.home });
+          // Preserve cleanup/restore receipts in the existing step log, even
+          // when the binary result is success or a later phase is blocked.
+          const updateLog = renderUpdateResult(result);
           if (result.outcome === "updated" || result.outcome === "already-current") {
             return {
               outcome: "succeeded",
               externalId: result.version,
-              logs: [`cli-update: ${result.outcome} (${result.version})`]
+              logs: [updateLog]
             };
           }
           if (result.outcome === "aborted" && !result.recoverable) {
@@ -255,7 +259,7 @@ export function createReleaseWorkflowPorts(
             if (result.controllerOwnershipUnknown === true) {
               return {
                 outcome: "timeout",
-                logs: [`cli-update Controller ownership unknown at phase ${result.phase}: ${result.message}`]
+                logs: [updateLog]
               };
             }
             // P1-2 (rr22): persist the EXACT activation target (the resolved
@@ -266,13 +270,13 @@ export function createReleaseWorkflowPorts(
             return {
               outcome: "timeout",
               ...(identity === undefined ? {} : { externalIdentity: identity }),
-              logs: [`cli-update ambiguous at phase ${result.phase}: ${result.message}`]
+              logs: [updateLog]
             };
           }
           return {
             outcome: "failed",
             error: `cli-update aborted at phase ${result.phase}: ${result.message}`,
-            logs: [`cli-update: ${result.message}`]
+            logs: [updateLog]
           };
         }
         case "controller-replace": {

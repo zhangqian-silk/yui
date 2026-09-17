@@ -7,6 +7,11 @@
  * verified before the Controller is restarted.
  */
 
+import {
+  UpdateControllerReconciliationError,
+  type UpdateControllerReconciliationResult
+} from "../controller/updateReconciliation.js";
+
 /** A side-by-side staged package, isolated from the live global install. */
 export type StagedPackage = Readonly<{
   binaryPath: string;
@@ -73,6 +78,8 @@ export type UpdatePorts = Readonly<{
   cleanup: (staged: StagedPackage) => void;
   beginControllerHandover?: (home: string) => () => void;
   controllerStatus?: (home: string) => UpdateControllerLifecycleStatus;
+  /** Explicit, bounded cleanup inside an already-authorized update plan. */
+  reconcileController?: (home: string) => UpdateControllerReconciliationResult;
   stopController?: (home: string, expectedPid: number) => UpdateControllerStopResult;
   startController?: (home: string) => void;
   restoreController?: (home: string, identity: ControllerIdentity) => void;
@@ -95,7 +102,15 @@ export type UpdateResult = Readonly<
         controllerOwnershipUnknown?: true;
         backupPath?: string;
       }
-  ) & { cleanupWarning?: string }
+  ) & {
+    cleanupWarning?: string;
+    controllerReconciliation?: UpdateControllerReconciliationResult;
+    controllerRestore?: Readonly<{
+      identity: ControllerIdentity;
+      outcome: "restored" | "unknown";
+      error?: string;
+    }>;
+  }
 >;
 
 export type UpdatePhase =
@@ -140,7 +155,9 @@ export function runUpdate(
       cleanupWarning = `Staging cleanup could not be completed: ${messageOf(error)}`;
     }
   }
-  return cleanupWarning === undefined ? result : { ...result, cleanupWarning };
+  return cleanupWarning === undefined ? result : {
+    ...result, cleanupWarning: [result.cleanupWarning, cleanupWarning].filter(Boolean).join(" ")
+  };
 }
 
 function runStagedUpdate(
@@ -209,34 +226,65 @@ function runStagedUpdate(
     };
   }
 
+  let result: UpdateResult;
+  let cleanupWarning: string | undefined;
   try {
-    const captured = captureControllerLifecycle(ports, staged.version, home);
-    if ("outcome" in captured) return captured;
-    // Storage can change before the Controller drains. Recheck after its
-    // exact stop, before changing the install or storage.
-    let fencedPreflight: UpdatePreflight;
-    try { fencedPreflight = ports.preflight(staged, home); }
-    catch (error) {
-      return restoreControllerOrReport(ports, home, captured.lifecycle, {
-        outcome: "aborted", phase: "preflight",
-        message: `Quiesced storage preflight failed: ${messageOf(error)}`,
-        action: "The install and storage are unchanged; inspect the storage failure before retrying.",
-        recoverable: true, version: staged.version
-      });
-    }
-    if (fencedPreflight.status === "blocked") {
-      return restoreControllerOrReport(ports, home, captured.lifecycle, {
-        outcome: "aborted", phase: "preflight",
-        message: fencedPreflight.message, action: fencedPreflight.action,
-        recoverable: true, version: staged.version,
-        ...(fencedPreflight.blockers === undefined ? {} : { blockers: fencedPreflight.blockers }),
-        ...(fencedPreflight.sceneUnchanged === true ? { sceneUnchanged: true } : {})
-      });
-    }
-    return activateAndVerify(ports, staged, home, captured.lifecycle, fencedPreflight);
+    result = reconcileAndUpdate(ports, staged, home);
   } finally {
-    releaseHandover?.();
+    try { releaseHandover?.(); }
+    catch (error) {
+      cleanupWarning = `Controller handover lock release failed for ${home}: ${messageOf(error)}`;
+    }
   }
+  return cleanupWarning === undefined ? result : { ...result, cleanupWarning };
+}
+
+function reconcileAndUpdate(ports: UpdatePorts, staged: StagedPackage, home: string): UpdateResult {
+  let reconciliation: UpdateControllerReconciliationResult | undefined;
+  try {
+    reconciliation = ports.reconcileController?.(home);
+  } catch (error) {
+    const evidence = error instanceof UpdateControllerReconciliationError ? error.result : undefined;
+    const unknown = evidence === undefined || evidence.observationError !== undefined
+      || evidence.lockReleaseError !== undefined || evidence.attempts.some(attempt => attempt.outcome === "unknown");
+    return {
+      outcome: "aborted", phase: "coordination", version: staged.version,
+      message: `Controller reconciliation failed: ${messageOf(error)}`,
+      action: "Inspect the reported current-Home targets and partial effects; binary activation was not attempted.",
+      recoverable: !unknown,
+      ...(evidence === undefined ? {} : { controllerReconciliation: evidence }),
+      ...(unknown ? { controllerOwnershipUnknown: true } : {})
+    };
+  }
+  const coordinated = runCoordinatedUpdate(ports, staged, home);
+  return reconciliation === undefined ? coordinated : { ...coordinated, controllerReconciliation: reconciliation };
+}
+
+function runCoordinatedUpdate(ports: UpdatePorts, staged: StagedPackage, home: string): UpdateResult {
+  const captured = captureControllerLifecycle(ports, staged.version, home);
+  if ("outcome" in captured) return captured;
+  // Storage can change before the Controller drains. Recheck after its
+  // exact stop, before changing the install or storage. Its sceneUnchanged
+  // verdict does not describe the preceding runtime cleanup/stop/restore.
+  let fencedPreflight: UpdatePreflight;
+  try { fencedPreflight = ports.preflight(staged, home); }
+  catch (error) {
+    return restoreControllerOrReport(ports, home, captured.lifecycle, {
+      outcome: "aborted", phase: "preflight",
+      message: `Quiesced storage preflight failed: ${messageOf(error)}`,
+      action: "The install and storage are unchanged; inspect the storage failure before retrying.",
+      recoverable: true, version: staged.version
+    });
+  }
+  if (fencedPreflight.status === "blocked") {
+    return restoreControllerOrReport(ports, home, captured.lifecycle, {
+      outcome: "aborted", phase: "preflight",
+      message: fencedPreflight.message, action: fencedPreflight.action,
+      recoverable: true, version: staged.version,
+      ...(fencedPreflight.blockers === undefined ? {} : { blockers: fencedPreflight.blockers })
+    });
+  }
+  return activateAndVerify(ports, staged, home, captured.lifecycle, fencedPreflight);
 }
 
 function activateAndVerify(
@@ -379,7 +427,8 @@ function captureControllerLifecycle(
       phase: "preflight",
       message: `Controller status could not be verified: ${messageOf(error)}`,
       action: "Inspect Controller ownership and retry after its status is known.",
-      recoverable: true,
+      recoverable: false,
+      controllerOwnershipUnknown: true,
       version
     };
   }
@@ -405,7 +454,8 @@ function captureControllerLifecycle(
       phase: "preflight",
       message: `Controller stop/drain failed: ${messageOf(error)}`,
       action: "Inspect the captured Controller before retrying; binary activation was not attempted.",
-      recoverable: true,
+      recoverable: false,
+      controllerOwnershipUnknown: true,
       version
     };
   }
@@ -433,7 +483,8 @@ function malformedControllerResult(
     phase: "preflight",
     message,
     action: "Refusing an unfenced Controller handoff; inspect ownership and retry.",
-    recoverable: true,
+    recoverable: false,
+    controllerOwnershipUnknown: true,
     version
   };
 }
@@ -447,13 +498,15 @@ function restoreControllerOrReport(
   if (!lifecycle.wasRunning) return failure;
   try {
     ports.restoreController!(home, lifecycle.identity!);
-    return failure;
+    return { ...failure, controllerRestore: { identity: lifecycle.identity!, outcome: "restored" } };
   } catch (error) {
     return {
       ...failure,
       message: `${failure.message} Captured Controller restore failed: ${messageOf(error)}.`,
-      action: `${failure.action} Keep the Home quiesced and resolve the restore failure.`,
-      recoverable: false
+      action: `${failure.action} Controller liveness after the failed restore is unknown; inspect its exact identity before further action.`,
+      recoverable: false,
+      controllerOwnershipUnknown: true,
+      controllerRestore: { identity: lifecycle.identity!, outcome: "unknown", error: messageOf(error) }
     };
   }
 }

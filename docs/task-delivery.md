@@ -276,6 +276,27 @@ Task or new durable owner prevents quarantine/deletion; uncertainty retains the
 resource with a diagnosis. Reopened quarantined resources can be restored.
 This adds neither a retry worker nor another persistent ownership protocol.
 
+Current Resource records are read strictly: required safety fields, enum values,
+and every active reference must be valid. A malformed record or mismatched
+SQLite/payload identity is reported without supplying defaults, dropping refs,
+or rewriting stored evidence. This enforces the existing record contract;
+storage remains at version 37.
+
+Failed preparation compensates only its unadopted resources. Standalone Task
+clones use exact clone identity/cleanliness checks before direct deletion;
+linked worktrees use their captured path, branch, commit and own Git common
+directory. A Git error (including a lock) never falls through to recursive
+deletion. Same-operation temporary clone cleanup first proves its reserved
+directory identity. Already-adopted workspaces remain outside compensation.
+Failures preserve the original error, completed removals and exact remaining
+targets, whose failed-command effects may be unknown.
+
+An Agent may still choose direct `rm` for an exact resource within its existing
+authority after inspecting ownership and contents, including when Git metadata
+is unavailable. That is an explicit recovery choice, not a generic automatic
+fallback or a new approval workflow. Keep Task records, other owners' resources
+and unknown live processes outside that deletion.
+
 `yui task archive-preflight <task> (--integrated|--abandon) [--force] [--json]`
 reads current admission, delivery and exact-owner cleanup checks in one report.
 It is available before and after archive, including to the Task's authorized

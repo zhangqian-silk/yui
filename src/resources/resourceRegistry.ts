@@ -67,7 +67,7 @@ export function listResourceRecords(state: ResourceRegistryState): ResourceRecor
 }
 
 export function parseResourceRegistryState(value: unknown): ResourceRegistryState {
-  if (typeof value !== "object" || value === null) {
+  if (!isRecord(value)) {
     throw new Error("Resource registry root is not an object.");
   }
   const record = value as Record<string, unknown>;
@@ -77,15 +77,12 @@ export function parseResourceRegistryState(value: unknown): ResourceRegistryStat
         + `expected ${RESOURCE_REGISTRY_SCHEMA_VERSION}.`
     );
   }
-  if (typeof record.records !== "object" || record.records === null) {
+  if (!isRecord(record.records)) {
     throw new Error("Resource registry records is not an object.");
   }
   const records: Record<string, ResourceRecord> = {};
   for (const [key, entry] of Object.entries(record.records)) {
-    const parsed = parseResourceRecord(entry);
-    if (parsed === undefined) {
-      throw new Error(`Resource registry record ${key} is malformed.`);
-    }
+    const parsed = parseResourceRecord(entry, key);
     if (parsed.id !== key) {
       throw new Error(
         `Resource registry record key ${key} does not match id ${parsed.id}.`
@@ -99,43 +96,90 @@ export function parseResourceRegistryState(value: unknown): ResourceRegistryStat
   });
 }
 
-function parseResourceRecord(value: unknown): ResourceRecord | undefined {
-  if (typeof value !== "object" || value === null) return undefined;
-  const record = value as Record<string, unknown>;
-  if (record.schemaVersion !== RESOURCE_REGISTRY_SCHEMA_VERSION) return undefined;
-  if (typeof record.id !== "string" || typeof record.kind !== "string"
-    || typeof record.path !== "string" || typeof record.disposition !== "string"
-    || typeof record.updatedAt !== "string") {
-    return undefined;
+function parseResourceRecord(value: unknown, key: string): ResourceRecord {
+  const invalid = (field: string): never => {
+    throw new Error(`Resource registry record ${key} is malformed at ${field}; stored evidence was not repaired.`);
+  };
+  const object = (value: unknown, field: string): Record<string, unknown> =>
+    isRecord(value) ? value : invalid(field);
+  const text = (value: unknown, field: string): void => {
+    if (typeof value !== "string" || value.trim().length === 0) invalid(field);
+  };
+  const timestamp = (value: unknown, field: string): void => {
+    text(value, field);
+    if (!Number.isFinite(Date.parse(value as string))) invalid(field);
+  };
+  const member = (value: unknown, choices: readonly string[], field: string): void => {
+    if (typeof value !== "string" || !choices.includes(value)) invalid(field);
+  };
+  const optionalText = (record: Record<string, unknown>, fields: readonly string[], prefix = ""): void => {
+    for (const field of fields) {
+      if (record[field] !== undefined) text(record[field], `${prefix}${field}`);
+    }
+  };
+  const record = object(value, "record");
+  if (record.schemaVersion !== RESOURCE_REGISTRY_SCHEMA_VERSION) invalid("schemaVersion");
+  text(record.id, "id");
+  text(record.path, "path");
+  timestamp(record.updatedAt, "updatedAt");
+  member(record.kind, ["worktree", "deployment", "runtime-artifact"], "kind");
+  member(record.disposition, ["active", "releasable", "quarantined", "deleted",
+    "retained-dirty", "retained-unowned", "retained-unproven", "cleanup-failed"], "disposition");
+  member(record.cleanliness, ["clean", "dirty", "unknown", "n/a"], "cleanliness");
+  if (!Array.isArray(record.activeRefs)) invalid("activeRefs");
+  (record.activeRefs as unknown[]).forEach((ref, index) => text(ref, `activeRefs[${index}]`));
+  const owner = object(record.owner, "owner");
+  text(owner.home, "owner.home");
+  member(owner.basis, ["durable-record", "marker", "descriptor", "naming-convention", "unattributed"], "owner.basis");
+  optionalText(owner, ["projectId", "taskId", "workItemId", "reviewRoundId", "integrationAttemptId"], "owner.");
+  for (const field of ["createdAt", "lastReferencedAt"]) {
+    if (record[field] !== undefined) timestamp(record[field], field);
   }
-  if (!Number.isFinite(Date.parse(record.updatedAt))) return undefined;
-  if (typeof record.owner !== "object" || record.owner === null) return undefined;
-  const owner = record.owner as Record<string, unknown>;
-  if (typeof owner.home !== "string" || typeof owner.basis !== "string") {
-    return undefined;
+  if (record.sizeBytes !== undefined
+    && (typeof record.sizeBytes !== "number" || !Number.isFinite(record.sizeBytes) || record.sizeBytes < 0)) {
+    invalid("sizeBytes");
   }
+  if (record.blocker !== undefined && typeof record.blocker !== "string") invalid("blocker");
+  if (record.git !== undefined) {
+    const git = object(record.git, "git");
+    text(git.repositoryPath, "git.repositoryPath");
+    optionalText(git, ["commonDir", "branch", "head"], "git.");
+  }
+  if (record.quarantine !== undefined) {
+    const quarantine = object(record.quarantine, "quarantine");
+    text(quarantine.path, "quarantine.path");
+    text(quarantine.originalPath, "quarantine.originalPath");
+    timestamp(quarantine.movedAt, "quarantine.movedAt");
+    member(quarantine.method, ["move", "git-worktree-remove"], "quarantine.method");
+    if (quarantine.gitRestore !== undefined) {
+      const restore = object(quarantine.gitRestore, "quarantine.gitRestore");
+      text(restore.repositoryPath, "quarantine.gitRestore.repositoryPath");
+      optionalText(restore, ["branch", "head"], "quarantine.gitRestore.");
+    }
+  }
+  if (record.cleanupReceipt !== undefined) {
+    const receipt = object(record.cleanupReceipt, "cleanupReceipt");
+    timestamp(receipt.removedAt, "cleanupReceipt.removedAt");
+    member(receipt.method, ["git-worktree-remove", "quarantine-purge", "runtime-cleanup"], "cleanupReceipt.method");
+  }
+  // Validation enforces the existing persisted contract, without defaults,
+  // filtering, or a second historical reader. Constructors own new values.
+  const parsed = record as ResourceRecord;
   return Object.freeze({
-    schemaVersion: RESOURCE_REGISTRY_SCHEMA_VERSION,
-    id: record.id,
-    kind: record.kind as ResourceRecord["kind"],
-    path: record.path,
-    owner: Object.freeze({ ...owner }) as ResourceRecord["owner"],
-    ...(record.git === undefined ? {} : { git: record.git as ResourceRecord["git"] }),
-    ...(typeof record.createdAt === "string" ? { createdAt: record.createdAt } : {}),
-    ...(typeof record.lastReferencedAt === "string"
-      ? { lastReferencedAt: record.lastReferencedAt }
-      : {}),
-    ...(typeof record.sizeBytes === "number" ? { sizeBytes: record.sizeBytes } : {}),
-    cleanliness: (record.cleanliness ?? "unknown") as ResourceRecord["cleanliness"],
-    activeRefs: Array.isArray(record.activeRefs)
-      ? Object.freeze(record.activeRefs.filter((ref): ref is string => typeof ref === "string"))
-      : Object.freeze([]),
-    disposition: record.disposition as ResourceRecord["disposition"],
-    ...(typeof record.blocker === "string" ? { blocker: record.blocker } : {}),
-    ...(record.quarantine === undefined ? {} : { quarantine: record.quarantine as ResourceRecord["quarantine"] }),
-    ...(record.cleanupReceipt === undefined
-      ? {}
-      : { cleanupReceipt: record.cleanupReceipt as ResourceRecord["cleanupReceipt"] }),
-    updatedAt: record.updatedAt
+    ...parsed,
+    owner: Object.freeze({ ...parsed.owner }),
+    activeRefs: Object.freeze([...parsed.activeRefs]),
+    ...(parsed.git === undefined ? {} : { git: Object.freeze({ ...parsed.git }) }),
+    ...(parsed.quarantine === undefined ? {} : { quarantine: Object.freeze({
+      ...parsed.quarantine,
+      ...(parsed.quarantine.gitRestore === undefined ? {} : {
+        gitRestore: Object.freeze({ ...parsed.quarantine.gitRestore })
+      })
+    }) }),
+    ...(parsed.cleanupReceipt === undefined ? {} : { cleanupReceipt: Object.freeze({ ...parsed.cleanupReceipt }) })
   });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

@@ -11,7 +11,32 @@ import { scanControllerResourceInventory } from "./resourceInventoryLinux.js";
 const MAX_RECONCILIATION_PASSES = 4;
 
 export type UpdateControllerReconciliationResult = Readonly<{
+  home: string;
   cleaned: readonly string[];
+  attempts: readonly Readonly<{
+    resource: RuntimeResource;
+    outcome: "cleaned" | "absent" | "unknown";
+    error?: string;
+  }>[];
+  /** Last observed inventory, not a claim that unobserved resources stopped. */
+  remaining: readonly RuntimeResource[];
+  observedAt?: string;
+  observationError?: string;
+  lockReleaseError?: string;
+}>;
+
+export class UpdateControllerReconciliationError extends Error {
+  constructor(message: string, readonly result: UpdateControllerReconciliationResult, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "UpdateControllerReconciliationError";
+  }
+}
+
+/** The same bounded operation with disposable inventory/effect ports in tests. */
+export type UpdateControllerReconciliationPorts = Readonly<{
+  scan: typeof scanControllerResourceInventory;
+  clean: typeof cleanControllerResource;
+  acquireLock: typeof acquireHomeLifecycleLock;
 }>;
 
 /**
@@ -26,22 +51,50 @@ export type UpdateControllerReconciliationResult = Readonly<{
 export async function reconcileControllerResourcesForUpdate(
   home: string,
   environment: NodeJS.ProcessEnv = process.env,
-  tmuxBin?: string
+  tmuxBin?: string,
+  ports: UpdateControllerReconciliationPorts = {
+    scan: scanControllerResourceInventory,
+    clean: cleanControllerResource,
+    acquireLock: acquireHomeLifecycleLock
+  }
 ): Promise<UpdateControllerReconciliationResult> {
   const resolvedHome = resolve(home);
-  const releaseLock = await acquireHomeLifecycleLock(resolvedHome, {
-    removeStaleOwner: true
-  });
   const cleaned = new Set<string>();
-  try {
-    for (let pass = 0; pass < MAX_RECONCILIATION_PASSES; pass += 1) {
-      const snapshot = await scanControllerResourceInventory({
-        currentHome: resolvedHome,
-        scope: "current",
-        environment,
+  const attempts: UpdateControllerReconciliationResult["attempts"][number][] = [];
+  let remaining: RuntimeResource[] = [];
+  let observedAt: string | undefined;
+  let observationError: string | undefined;
+  let lockReleaseError: string | undefined;
+  const result = (): UpdateControllerReconciliationResult => ({
+    home: resolvedHome, cleaned: [...cleaned], attempts: [...attempts], remaining: [...remaining],
+    ...(observedAt === undefined ? {} : { observedAt }),
+    ...(observationError === undefined ? {} : { observationError }),
+    ...(lockReleaseError === undefined ? {} : { lockReleaseError })
+  });
+  const scan = async (): Promise<ControllerResourceInventory> => {
+    try {
+      const snapshot = await ports.scan({
+        currentHome: resolvedHome, scope: "current", environment,
         ...(tmuxBin === undefined ? {} : { tmuxBin })
       });
+      if (snapshot.scope === "current" && resolve(snapshot.currentHome) === resolvedHome) {
+        remaining = controllerResources(snapshot, resolvedHome);
+        observedAt = snapshot.observedAt;
+      }
       assertCertainSnapshot(snapshot, resolvedHome);
+      observationError = undefined;
+      return snapshot;
+    } catch (error) {
+      observationError = messageOf(error);
+      throw error;
+    }
+  };
+  let releaseLock: (() => Promise<void>) | undefined;
+  let failure: unknown;
+  try {
+    releaseLock = await ports.acquireLock(resolvedHome, { removeStaleOwner: true });
+    for (let pass = 0; pass < MAX_RECONCILIATION_PASSES; pass += 1) {
+      const snapshot = await scan();
 
       const resources = controllerResources(snapshot, resolvedHome);
       const controllers = resources.filter(({ kind }) => kind === "controller");
@@ -80,25 +133,27 @@ export async function reconcileControllerResourcesForUpdate(
 
       const candidates = [...historicalCleanup, ...staleArtifactCleanup];
       if (candidates.length === 0) {
-        return { cleaned: [...cleaned] };
+        break;
       }
 
       for (const candidate of candidates) {
         try {
-          await cleanControllerResource(candidate, { environment, ...(tmuxBin === undefined ? {} : { tmuxBin }) });
+          await ports.clean(candidate, { environment, ...(tmuxBin === undefined ? {} : { tmuxBin }) });
           cleaned.add(candidate.id);
+          attempts.push({ resource: candidate, outcome: "cleaned" });
+          remaining = remaining.filter(({ id }) => id !== candidate.id);
         } catch (error) {
           // A concurrent exact cleanup that already reached the desired state
           // is harmless. Anything still present or reclassified is a real
           // ownership change and must remain a user-visible blocker.
-          const afterFailure = await scanControllerResourceInventory({
-            currentHome: resolvedHome,
-            scope: "current",
-            environment
-          });
-          assertCertainSnapshot(afterFailure, resolvedHome);
+          const attempt = { resource: candidate, outcome: "unknown" as const, error: messageOf(error) };
+          attempts.push(attempt);
+          // If this observation also fails, keep BOTH failures and the exact
+          // attempted identity. Failure to observe absence is never success.
+          const afterFailure = await scan();
           if (!controllerResources(afterFailure, resolvedHome).some(({ id }) => id === candidate.id)) {
             cleaned.add(candidate.id);
+            attempts[attempts.length - 1] = { ...attempt, outcome: "absent" };
             continue;
           }
           throw reconciliationBlocked(
@@ -106,11 +161,23 @@ export async function reconcileControllerResourcesForUpdate(
           );
         }
       }
+      if (pass === MAX_RECONCILIATION_PASSES - 1) {
+        throw reconciliationBlocked("Controller resources did not converge after bounded cleanup");
+      }
     }
-    throw reconciliationBlocked("Controller resources did not converge after bounded cleanup");
+  } catch (error) {
+    failure = error;
   } finally {
-    await releaseLock();
+    try { await releaseLock?.(); }
+    catch (error) {
+      lockReleaseError = messageOf(error);
+      failure ??= error;
+    }
   }
+  if (failure !== undefined) throw new UpdateControllerReconciliationError(
+    messageOf(failure), result(), { cause: failure }
+  );
+  return result();
 }
 
 function assertCertainSnapshot(

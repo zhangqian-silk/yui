@@ -41,7 +41,11 @@ export function renderUpdateResult(result: UpdateResult): string {
       case "aborted":
         return [
           `Update aborted during ${result.phase}: ${result.message}`,
-          result.phase === "migrate-storage"
+          result.controllerOwnershipUnknown === true || result.controllerRestore?.outcome === "unknown"
+            || result.controllerReconciliation?.attempts.some(attempt => attempt.outcome === "unknown")
+            || result.controllerReconciliation?.observationError !== undefined
+            ? "Controller resource effects are uncertain; do not assume the Home is quiesced or usable."
+            : result.phase === "migrate-storage"
             || (result.phase === "post-verify" && result.recoverable)
             ? "The target binary is installed; the Home remains quiesced pending successful verification."
             : result.recoverable
@@ -56,7 +60,14 @@ export function renderUpdateResult(result: UpdateResult): string {
         ].join("\n");
     }
   })();
-  return result.cleanupWarning === undefined
-    ? rendered
-    : `${rendered}\nWarning: ${result.cleanupWarning}`;
+  return [
+    rendered,
+    ...(result.controllerReconciliation === undefined ? [] : [
+      `Controller reconciliation: ${JSON.stringify(result.controllerReconciliation)}`
+    ]),
+    ...(result.controllerRestore === undefined ? [] : [
+      `Controller restore: ${JSON.stringify(result.controllerRestore)}`
+    ]),
+    ...(result.cleanupWarning === undefined ? [] : [`Warning: ${result.cleanupWarning}`])
+  ].join("\n");
 }

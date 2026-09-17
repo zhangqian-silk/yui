@@ -755,7 +755,7 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
       currentCommit: string;
       provenance: TaskBaseProvenance;
     }>> = [];
-    const createdClonePaths = new Set<string>();
+    const createdClones: Array<Readonly<{ project: Project; entry: WorkspaceProjectEntry }>> = [];
     const baselines = new Map<string, TaskWorkspaceBaseline>();
     try {
       // Resolve every remote baseline before creating any Task clone. A later
@@ -806,7 +806,14 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
               localBranch: identity.branch
             })
           : await this.git.inspect(previous.path, "HEAD");
-        if (previous === undefined) createdClonePaths.add(physical.root);
+        if (previous === undefined) createdClones.push({
+          project,
+          entry: {
+            projectId: project.id, directory: binding.directory, access: "write",
+            path: destination, branch: identity.branch,
+            baseRef: baseline.recordedBaseRef, baseCommit: physical.baseCommit
+          }
+        });
         const physicalBranch = await this.git.headRef(physical.root);
         if (physical.root !== (previous?.path ?? destination)
           || physicalBranch !== (previous?.branch ?? identity.branch)) {
@@ -1045,17 +1052,7 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
       // A failed or conflicted preparation owns no durable record: drop the
       // branches too, so a retry mints a clean identity without half-created
       // refs behind. Adopted (already catalogued) worktrees are never touched.
-      await this.#discardUnadoptedEntries(task, taskSegment, prepared, MAIN_WORKTREE, true);
-      const recorded = new Set(prepared.map(({ entry }) => entry.path));
-      for (const path of createdClonePaths) {
-        if (recorded.has(path)) continue;
-        const removal = await this.git.removeStrandedWorktree(path);
-        if (removal === "dirty") {
-          throw new Error(
-            `Unadopted Task clone is dirty and was retained at ${path}; inspect it and retry.`
-          );
-        }
-      }
+      await this.#discardUnadoptedEntries(task, taskSegment, createdClones, MAIN_WORKTREE, true, undefined, error);
       if (activate) await removeWorkspaceView(root);
       throw error;
     }
@@ -1436,7 +1433,7 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
           return stored;
         });
       } catch (error) {
-        await this.#discardUnadoptedEntries(lockedTask, taskSegment, prepared, item.id);
+        await this.#discardUnadoptedEntries(lockedTask, taskSegment, prepared, item.id, false, undefined, error);
         throw error;
       }
     } finally {
@@ -1603,7 +1600,7 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
         }
         return workspace;
       } catch (error) {
-        await this.#discardUnadoptedEntries(lockedTask, taskSegment, prepared, managedWorktreeName(owner), true);
+        await this.#discardUnadoptedEntries(lockedTask, taskSegment, prepared, managedWorktreeName(owner), true, undefined, error);
         throw error;
       }
     } finally {
@@ -1698,49 +1695,40 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
     if (this.store.getManagedWorkspace(workspace.owner) !== null) return "missing";
     const task = requireTask(this.store, workspace.owner.taskId);
     const taskSegment = this.#taskSegment(task);
+    const root = this.#executionLaneWorkspaceRoot(
+      task.id, workspace.owner.executionGroupId, workspace.owner.executionLaneId
+    );
+    if (workspace.root !== root) throw new Error("Unadopted Lane root does not match its managed owner.");
     const writable = workspace.entries.filter(({ access }) => access === "write");
-    let state: GitWorkspaceState;
+    const completed: Array<{ path: string; result: GitWorkspaceRemoval }> = [];
+    let target = root;
     try {
-      state = await this.#inspectEntries(
-        task.id,
-        taskSegment,
-        managedWorktreeName(workspace.owner),
-        writable
-      );
-    } catch (error) {
-      // A `project migrate` between preparation and compensation switches the
-      // catalog, so the worktree's common-dir no longer matches the Project's
-      // current repository. Fall back to removing the stranded worktree
-      // through its own Git identity.
-      if (!(error instanceof Error && error.message.includes("belongs to another project"))) {
-        throw error;
-      }
-      let removed = false;
+      // This owner was never adopted. Its captured identity is sufficient to
+      // inspect its own Git; no catalog-error matching or filesystem fallback.
       for (const entry of writable) {
-        const result = await this.git.removeStrandedWorktree(entry.path);
-        if (result === "dirty") return "dirty";
-        removed ||= result === "removed";
+        target = entry.path;
+        const result = await this.git.removeStrandedWorktree(entry.path, {
+          container: root, directory: entry.directory, taskSegment,
+          roleName: managedWorktreeName(workspace.owner), expectedCommit: entry.baseCommit,
+          deleteBranch: true
+        });
+        if (result === "dirty") {
+          if (completed.length === 0) return "dirty";
+          throw new Error(`Unadopted Lane is dirty and retained at ${entry.path}.`);
+        }
+        completed.push({ path: entry.path, result });
       }
-      await removeWorkspaceView(workspace.root);
-      return removed ? "removed" : "missing";
+      target = root;
+      await removeWorkspaceView(root);
+      return completed.some(({ result }) => result === "removed") ? "removed" : "missing";
+    } catch (error) {
+      const result = { completed, failedPath: target,
+        remaining: writable.map(({ path }) => path).filter(path => !completed.some(done => done.path === path)) };
+      throw Object.assign(new Error(
+        `Unadopted Lane cleanup failed: ${errorText(error)}. Effects: ${JSON.stringify(result)}. `
+        + "Failed-command effects are unknown; inspect the exact target before continuing.", { cause: error }
+      ), { result });
     }
-    if (state === "dirty") return "dirty";
-    let removed = false;
-    for (const entry of writable) {
-      const project = requireProject(this.store, entry.projectId);
-      const result = await this.git.removeWorktree({
-        repositoryPath: this.#taskRepositoryPath(task.id, project.id),
-        container: dirname(entry.path),
-        directory: entry.directory,
-        taskSegment,
-        roleName: managedWorktreeName(workspace.owner),
-        deleteBranch: true
-      });
-      if (result === "dirty") return "dirty";
-      removed ||= result === "removed";
-    }
-    await removeWorkspaceView(workspace.root);
-    return removed ? "removed" : "missing";
   }
 
   async cleanupExecutionLaneWorkspacesForWorkItem(taskId: string, workItemId: string): Promise<GitWorkspaceRemoval> {
@@ -2182,7 +2170,8 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
         prepared,
         this.#reviewWorktreeName(round),
         existing === null,
-        new Set([...retained.values()].map(({ entry }) => entry.path))
+        new Set([...retained.values()].map(({ entry }) => entry.path)),
+        error
       );
       throw error;
     }
@@ -2783,35 +2772,48 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
     roleName: string,
     deleteBranch = false,
     adoptedPaths = new Set(this.store.listManagedWorkspaces(task.id)
-      .flatMap((workspace) => workspace.entries.map(({ path }) => path)))
+      .flatMap((workspace) => workspace.entries.map(({ path }) => path))),
+    originalError?: unknown
   ): Promise<void> {
-    for (const { project, entry } of prepared.filter(
+    const candidates = prepared.filter(
       ({ entry }) => entry.access === "write" && !adoptedPaths.has(entry.path)
-    )) {
-      if (roleName === MAIN_WORKTREE) {
-        const removal = await this.git.removeStrandedWorktree(entry.path);
+    );
+    const completed: Array<{ path: string; result: GitWorkspaceRemoval }> = [];
+    for (const { project, entry } of candidates) {
+      try {
+        const removal = roleName === MAIN_WORKTREE
+          ? await this.git.removeTaskClone({
+              path: entry.path, container: this.#taskWorkspaceRoot(task.id),
+              directory: entry.directory, taskSegment, branch: entry.branch,
+              expectedCommit: entry.baseCommit
+            })
+          : await this.git.removeWorktree({
+              repositoryPath: this.#taskRepositoryPath(task.id, project.id),
+              container: dirname(entry.path),
+              directory: entry.directory,
+              taskSegment,
+              roleName,
+              ...(deleteBranch ? { deleteBranch: true } : {})
+            });
         if (removal === "dirty") {
-          throw new Error(
-            `Unadopted Task clone is dirty and was retained at ${entry.path}; inspect it and retry.`
-          );
+          throw new Error(`Unadopted workspace is dirty and was retained at ${entry.path}.`);
         }
+        completed.push({ path: entry.path, result: removal });
         this.#resourceRegistrar().markPathsDeleted([entry.path]);
-        continue;
+      } catch (cleanupError) {
+        const remaining = candidates.map(({ entry }) => entry.path)
+          .filter(path => !completed.some(done => done.path === path));
+        const result = { completed, failedPath: entry.path, remaining };
+        throw Object.assign(new AggregateError([originalError, cleanupError],
+          `Workspace preparation failed: ${errorText(originalError)}. Compensation failed: ${errorText(cleanupError)}. `
+          + `Effects: ${JSON.stringify(result)}. Remaining paths may be partially changed; inspect before retrying.`
+        ), { result });
       }
-      const removal = await this.git.removeWorktree({
-        repositoryPath: this.#taskRepositoryPath(task.id, project.id),
-        container: dirname(entry.path),
-        directory: entry.directory,
-        taskSegment,
-        roleName,
-        ...(deleteBranch ? { deleteBranch: true } : {})
-      });
-      if (removal === "dirty") {
-        throw new Error(
-          `Unadopted managed worktree is dirty and was retained at ${entry.path}; inspect it and retry.`
-        );
-      }
-      this.#resourceRegistrar().markPathsDeleted([entry.path]);
+    }
+    if (originalError instanceof Error && completed.length > 0) {
+      // Preserve the original error class (notably a safe CAS retry), while
+      // making completed compensation visible to the caller's existing report.
+      originalError.message += ` Workspace compensation: ${JSON.stringify(completed)}.`;
     }
   }
 
@@ -3350,4 +3352,8 @@ function errorCode(error: unknown): string | undefined {
   return typeof error === "object" && error !== null && "code" in error
     ? String((error as { code?: unknown }).code)
     : undefined;
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

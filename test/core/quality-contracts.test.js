@@ -104,6 +104,19 @@ test("resource registry changes preserve concurrent owners and reject stale same
   }), old), /changed|conflict/i);
   assert.equal(a.load().records[first.id].disposition, "quarantined");
   assert.equal(a.load().records[second.id].disposition, "active");
+  // Ordinary registry reads/writes must not invent absent references or
+  // silently merge payloads stored under a different SQLite identity.
+  const current = a.load();
+  assert.throws(() => a.save(upsertResourceRecord(current, {
+    ...second, activeRefs: ["owned", null]
+  }), current), /activeRefs/);
+  const db = new Database(join(home, "yui.db"));
+  try {
+    const broken = JSON.stringify({ ...second, id: first.id });
+    db.prepare("UPDATE resource_registry SET payload = ? WHERE id = ?").run(broken, second.id);
+    assert.throws(() => a.load(), /does not match id/);
+    assert.equal(db.prepare("SELECT payload FROM resource_registry WHERE id = ?").get(second.id).payload, broken);
+  } finally { db.close(); }
 });
 
 test("GC planning closes its own registry on success and failure without closing a borrowed registry", async t => {

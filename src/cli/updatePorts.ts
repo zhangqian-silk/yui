@@ -51,6 +51,10 @@ import { STORAGE_DOCTOR_CHECK_NAMES } from "../doctor/doctor.js";
 import { acquireHandoverLock } from "../release/runtimeRelease.js";
 import { updateStagingRoot } from "../storage/homeLayout.js";
 import { resolveYuiHome } from "../storage/taskStore.js";
+import {
+  UpdateControllerReconciliationError,
+  type UpdateControllerReconciliationResult
+} from "../controller/updateReconciliation.js";
 import type {
   StagedPackage,
   ControllerIdentity,
@@ -291,12 +295,14 @@ export function createUpdatePorts(
 
     // `runUpdate` is intentionally synchronous because the npm/staged-binary
     // ports use spawnSync. A short-lived child owns the async, exactly fenced
-    // reconciliation first; lifecycle capture then uses structured live
+    // reconciliation explicitly; lifecycle capture uses only structured live
     // Controller commands. Tests can replace these seams with deterministic
     // fakes without touching a real Controller.
     controllerStatus(home: string): UpdateControllerLifecycleStatus {
-      reconcileControllerResourcesForUpdate(home, environment, spawn);
       return readControllerLifecycle(home, environment, spawn);
+    },
+    reconcileController(home: string): UpdateControllerReconciliationResult {
+      return reconcileControllerResourcesForUpdate(home, environment, spawn);
     },
     stopController(home: string, expectedPid: number): UpdateControllerStopResult {
       return stopControllerForUpdate(home, expectedPid, environment, spawn);
@@ -819,7 +825,7 @@ function reconcileControllerResourcesForUpdate(
   home: string,
   environment: NodeJS.ProcessEnv,
   spawn: UpdateSpawner
-): void {
+): UpdateControllerReconciliationResult {
   const helper = [
     "const values = process.argv.slice(1);",
     "const home = values.pop();",
@@ -830,7 +836,7 @@ function reconcileControllerResourcesForUpdate(
     "  process.stdout.write(JSON.stringify({ ok: true, data }));",
     "})().catch((error) => {",
     "  const message = error instanceof Error ? error.message : String(error);",
-    "  process.stderr.write(JSON.stringify({ ok: false, code: 'RUNTIME_ERROR', message }));",
+    "  process.stderr.write(JSON.stringify({ ok: false, code: 'RUNTIME_ERROR', message, result: error.result }));",
     "  process.exitCode = 5;",
     "});"
   ].join(" ");
@@ -841,11 +847,16 @@ function reconcileControllerResourcesForUpdate(
   );
   if (result.error !== undefined || result.status !== 0) {
     const detail = structuredErrorMessage(result) ?? result.stderr.toString("utf8").trim();
-    throw new Error(
-      `Controller reconciliation failed (exit ${result.status ?? "null"})${
-        detail.length === 0 ? "." : `: ${detail}`
-      }`
-    );
+    const message = `Controller reconciliation failed (exit ${result.status ?? "null"})${
+      detail.length === 0 ? "." : `: ${detail}`
+    }`;
+    let evidence: unknown;
+    try { evidence = (JSON.parse(result.stderr.toString("utf8")) as Record<string, unknown>).result; }
+    catch { /* Unknown child effects are reported below, never retried here. */ }
+    if (isReconciliationResult(evidence, home)) {
+      throw new UpdateControllerReconciliationError(message, evidence);
+    }
+    throw new Error(`${message} Cleanup effects are unknown; inspect the exact Home ${home} before retrying.`);
   }
   let parsed: unknown;
   try {
@@ -858,12 +869,27 @@ function reconcileControllerResourcesForUpdate(
   if (
     !isRecord(parsed)
     || parsed.ok !== true
-    || !isRecord(parsed.data)
-    || !Array.isArray(parsed.data.cleaned)
-    || parsed.data.cleaned.some((id) => typeof id !== "string")
+    || !isReconciliationResult(parsed.data, home)
   ) {
     throw new Error("Controller reconciliation returned an invalid structured result.");
   }
+  return parsed.data;
+}
+
+function isReconciliationResult(value: unknown, home: string): value is UpdateControllerReconciliationResult {
+  return isRecord(value) && value.home === resolve(home)
+    && Array.isArray(value.cleaned) && value.cleaned.every(id => typeof id === "string")
+    && Array.isArray(value.attempts) && value.attempts.every(attempt => (
+      isRecord(attempt) && isRecord(attempt.resource) && typeof attempt.resource.id === "string"
+      && ["cleaned", "absent", "unknown"].includes(String(attempt.outcome))
+      && (attempt.error === undefined || typeof attempt.error === "string")
+    ))
+    && Array.isArray(value.remaining) && value.remaining.every(resource => (
+      isRecord(resource) && typeof resource.id === "string"
+    ))
+    && ["observedAt", "observationError", "lockReleaseError"].every(key => (
+      value[key] === undefined || typeof value[key] === "string"
+    ));
 }
 
 function structuredErrorMessage(result: SpawnSyncReturns<Buffer>): string | undefined {
