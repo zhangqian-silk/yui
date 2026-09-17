@@ -423,56 +423,29 @@ export function createReleaseActivatePorts(
       }),
     runPreflight: overrides.runPreflight ?? ((releaseDir, home) => {
       const cli = join(releaseDir, "dist", "cli.js");
-      const result = spawnSync(process.execPath, [cli, "doctor", "--json"], {
+      // The target owns current-record and database integrity validation.
+      // Activation never migrates; a valid but older Home still blocks here.
+      const result = spawnSync(process.execPath, [cli, "--json", "upgrade", "--update-preflight"], {
         env: { ...process.env, YUI_HOME: home, NO_COLOR: "1" },
         encoding: "utf8",
         timeout: 60_000
       });
-      let report: unknown;
+      let report: { ok?: boolean; data?: { outcome?: string; status?: string; message?: string; action?: string } };
       try {
-        const envelope = JSON.parse(result.stdout) as { data?: unknown };
-        report = envelope.data;
+        report = JSON.parse(result.stdout);
       } catch (error) {
         throw new Error(
           `Release preflight produced no JSON (exit ${result.status}): `
             + `${messageOf(error)} ${result.stderr.trim()}`
         );
       }
-      // The handover preflight must prove the exact current Home contract.
-      // Older, newer, malformed, or incomplete Homes all fail closed and are
-      // never normalized by release activation.
-      const checks = (report as { checks?: readonly { name?: unknown; status?: unknown }[] } | undefined)?.checks;
-      if (!Array.isArray(checks)) {
-        throw new Error("Release preflight report has no storage checks.");
-      }
-      const required = ["storage compatibility"];
-      const failed = required.filter((name) => {
-        const check = checks.find(
-          (candidate) => candidate !== null
-            && typeof candidate === "object"
-            && (candidate as { name?: unknown }).name === name
-        );
-        return check === undefined
-          || (check as { status?: unknown }).status !== "ok";
-      });
-      if (failed.length > 0) {
+      if (result.status !== 0 || report?.ok !== true
+        || report.data?.outcome !== "update-preflight"
+        || report.data.status !== "already-current") {
         throw new Error(
-          `Release preflight storage compatibility checks failed: ${failed.join(", ")}.`
+          `Release storage preflight failed: ${report?.data?.message ?? report?.data?.status ?? "invalid response"}. `
+            + `${report?.data?.action ?? result.stderr.trim()}`
         );
-      }
-      // Doctor proves the target's storage, not the pinned code in existing
-      // Hosts. Ask the target's upgrade boundary for its independent Host
-      // protocol proof as well; release activation itself still never migrates.
-      const hostCheck = spawnSync(process.execPath, [cli, "--json", "upgrade", "--update-preflight"], {
-        env: { ...process.env, YUI_HOME: home, NO_COLOR: "1" },
-        encoding: "utf8", timeout: 60_000
-      });
-      let preflight: { outcome?: string; status?: string; message?: string; action?: string };
-      try { preflight = JSON.parse(hostCheck.stdout).data; }
-      catch { throw new Error(`Release Host preflight produced no JSON: ${hostCheck.stderr.trim()}`); }
-      if (hostCheck.status !== 0 || preflight?.outcome !== "update-preflight"
-        || preflight.status !== "already-current") {
-        throw new Error(`Release Host compatibility preflight failed: ${preflight?.message ?? preflight?.status ?? "unknown"}. ${preflight?.action ?? ""}`);
       }
     }),
     killOwnedProcess: overrides.killOwnedProcess ?? ((owner: HandoverOwner) => {

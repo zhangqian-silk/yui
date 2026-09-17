@@ -15,6 +15,7 @@ import { currentFileLockOwner } from "../../dist/core/fileLockOwner.js";
 import { isForeignHandoverLockHeld } from "../../dist/release/runtimeRelease.js";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { inspectStorageSchema } from "../../dist/storage/storageSchema.js";
+import { collectStorageIdentity } from "../../dist/observability/runtimeIdentity.js";
 import { initializeCurrentTaskStore, openCurrentTaskStore } from "../../dist/storage/currentTaskStore.js";
 import { TmuxManager, yuiTmuxSessionName } from "../../dist/tmux/tmuxManager.js";
 import { resetDevHome } from "../../scripts/manage-dev-launcher.mjs";
@@ -34,6 +35,8 @@ test("SQLite alone decides Home admission and reset; extra files never supply au
     finally { reopened.close(); }
     assert.equal(readFileSync(join(home, marker), "utf8"), "retained original evidence");
   }
+  assert.deepEqual(collectStorageIdentity(home).findings, [],
+    "Unrelated files are neither storage authority nor a runtime compatibility diagnosis.");
   assert.deepEqual(readFileSync(join(home, "yui.db")), before);
   const incomplete = join(home, "incomplete");
   mkdirSync(incomplete);

@@ -19,10 +19,6 @@ export const YUI_MANAGED_RUNTIME_ENVIRONMENT_NAMES = Object.freeze([
   "YUI_RUN_ID",
   "YUI_NATIVE_SESSION_ROOT",
   "YUI_NATIVE_SESSION_ID",
-  // Retired: Yui no longer publishes a frozen control-plane descriptor into a
-  // managed process. Sessions launched by an earlier release still carry it, so
-  // it stays in this sanitize list.
-  "YUI_CONTROL_PLANE_DESCRIPTOR",
   "YUI_TASK_RUNTIME_ISOLATION_DESCRIPTOR",
   "YUI_TASK_RUNTIME_SERVICE_NAMESPACE",
   "YUI_SESSION_TITLE",

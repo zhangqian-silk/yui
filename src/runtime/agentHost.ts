@@ -28,7 +28,7 @@ import {
   ControllerClientError
 } from "../core/controllerClient.js";
 import { readHomeFilesystemId } from "../core/homeFilesystemIdentity.js";
-import { FILE_TASK_CONTROLLER_PROTOCOL_VERSION, type JsonValue } from "../core/protocol.js";
+import type { JsonValue } from "../core/protocol.js";
 import type { ImplementationRef } from "../kernel/instanceHost.js";
 import { isForeignHandoverLockHeld } from "../release/runtimeRelease.js";
 import { yuiTmuxServerName, yuiTmuxSessionName } from "../tmux/tmuxManager.js";
@@ -50,8 +50,8 @@ import {
   type AgentErrorPhase,
   type ProviderDeliveryFailure
 } from "./agentError.js";
-import type { AgentHostCompatibility, AgentHostEventDelivery } from "./agentHostProtocol.js";
-import { AGENT_HOST_CONTROL_PROTOCOL, AGENT_HOST_EVENT_PROTOCOL } from "./agentHostProtocol.js";
+import type { AgentHostEventDelivery } from "./agentHostProtocol.js";
+import { AGENT_HOST_CONTROL_PROTOCOL } from "./agentHostProtocol.js";
 import {
   readAgentRunConfigurationObservation,
   unknownAgentRunConfiguration,
@@ -186,10 +186,6 @@ export type AgentHostSnapshot = Readonly<{
   endpointImplementation?: ImplementationRef;
   /** Live-only status reading, rebuilt on each query and never persisted. */
   runConfiguration?: AgentRunConfigurationObservation;
-  /** Live capabilities describe this pinned process, not the installed CLI. */
-  compatibility?: AgentHostCompatibility;
-  hostProcess?: Readonly<{ pid: number; startIdentity: string }>;
-  owner?: Readonly<{ scope: string; taskId?: string; roleName: string }>;
   eventDelivery?: AgentHostEventDelivery;
   detail?: string;
   updatedAt: string;
@@ -213,12 +209,7 @@ export type AgentHostControlResult = Readonly<{
   protocol: typeof AGENT_HOST_CONTROL_PROTOCOL;
   outcome: AgentHostControlOutcome;
   snapshot: AgentHostSnapshot;
-  /**
-   * Structured cause when the Host could not complete the request. Additive
-   * and optional: a Host from an older build omits it and every consumer
-   * falls back to `snapshot.detail`, so an in-flight Host survives an upgrade
-   * without a protocol break.
-   */
+  /** Structured cause when the Host could not complete the request. */
   failure?: ProviderDeliveryFailure;
   cancellation?: AgentEndpointCancellation;
 }>;
@@ -1851,16 +1842,6 @@ export async function openAgentHostControl(
             ...result,
             snapshot: {
               ...result.snapshot,
-              compatibility: {
-                control: AGENT_HOST_CONTROL_PROTOCOL, events: AGENT_HOST_EVENT_PROTOCOL,
-                rpc: FILE_TASK_CONTROLLER_PROTOCOL_VERSION, storage: "controller-owned"
-              },
-              hostProcess: { pid: process.pid, startIdentity: readLinuxProcessIdentity(process.pid)!.startIdentity },
-              owner: {
-                scope: payload.environment.YUI_SESSION_SCOPE ?? "task",
-                ...(payload.environment.YUI_TASK_ID === undefined ? {} : { taskId: payload.environment.YUI_TASK_ID }),
-                roleName: payload.environment.YUI_ROLE ?? "unknown-role"
-              },
               ...(payload.environment.YUI_SESSION_SCOPE !== "task" ? {} : {
                 eventDelivery: structuredProviderEventDelivery(home, payload.environment, result.snapshot.nativeSessionId)
               })

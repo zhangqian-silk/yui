@@ -1,15 +1,8 @@
 import { createSessionOwnerIdentity, type SessionOwnerIdentity } from "./sessionOwnerIdentity.js";
 
-/** Independent of CLI/RPC and Home schema. Keep v1 readable while v1 Hosts live. */
+/** Current Host event source contract, independent of Home storage access. */
 export const AGENT_HOST_EVENT_PROTOCOL = "yui-agent-host-events/v1" as const;
 export const AGENT_HOST_CONTROL_PROTOCOL = "yui-agent-host/v5" as const;
-
-export type AgentHostCompatibility = Readonly<{
-  control: typeof AGENT_HOST_CONTROL_PROTOCOL;
-  events: typeof AGENT_HOST_EVENT_PROTOCOL;
-  rpc: number;
-  storage: "controller-owned";
-}>;
 
 export type AgentHostEventDelivery = Readonly<{
   pending: number;

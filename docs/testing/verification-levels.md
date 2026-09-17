@@ -89,16 +89,12 @@ is required.
     Archive preflight preserves durable records and the Git index, distinguishes
     frozen-result differences, and cleanup rechecks moved heads, owner branches
     and new dirt. Read-only Git status never executes configured clean filters.
-17. Host facts reach the existing Inbox even when its compiled store cannot
-    read the Home; Controller-side fencing, ACK-loss replay, and legacy-Host
-    upgrade refusal preserve the original execution. A frozen independent v1
-    protocol producer remains the same process across a real 19→22 migration,
-    authenticates RPCs to both Controllers through refreshed discovery, and
-    retains facts during the disconnected window. Production launch planning
-    also preserves scoped startup evidence before native Session adoption
-    without exporting a Run ID into the Session environment.
-    This fixture is the minimum supported new wire contract, not a claim that
-    pre-fix released Hosts can be hot-patched.
+17. Host facts reach the existing Inbox without opening Controller-owned storage;
+    Controller-side fencing and ACK-loss replay preserve the original execution.
+    Production launch planning preserves scoped startup evidence before native
+    Session adoption without exporting a Run ID into the Session environment.
+    Historical Host detection and cross-version live-runtime fixtures are not
+    part of the current contract; supported historical storage migrations remain tested.
     Archive racing Host ingress retains the complete source envelope without
     reopening the Task or settling original uncertain input.
 18. Project maintenance waiters yield to the holder, use a shared 60-second
@@ -198,6 +194,11 @@ is required.
     submission rejection creates one error and one supervisor notice through
     the shared writer. A small injected cache proves completed-result eviction,
     pending-request coalescing, explicit refresh and truthful cache provenance.
+38. Current Session wrappers retarget only their exact generated shell form,
+    preserving immutable Manifests and leaving unknown scripts untouched.
+    Per-key release receipts survive reopen and reject invalid current records.
+    A storage blocker after Controller drain restores the captured identity
+    without activating a package or migrating data.
 
 Keep the test phase seconds-scale; measure TypeScript build separately. Record
 incremental runtime when adding a critical regression. The seven recovery boundary
