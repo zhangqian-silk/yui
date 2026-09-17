@@ -48,6 +48,41 @@ panel. `cancel` withdraws this recovery chain; `disable` also disables future
 chains on the current Provider binding. Neither interrupts an admitted Turn.
 `enable` does not replay historical failures. Existing Task/Role authority applies.
 
+## Failure evidence and Agent handoff
+
+The retry projection includes the original input reference (never copied console
+text), exact Session/attempt identities, the preserved error, the latest Turn
+failure and earlier chain references. A changed error that still satisfies the
+same safe retry rule continues within the original budget. Loss of that rule,
+authority or budget stops automatic submission.
+
+Task errors retain their original `runtime.agent-error` evidence and notify the
+Leader, or the Operator when the affected Role is the Leader. Global failures
+retain record-only Messages in their own Role inbox, including intermediate
+failed attempts; these are evidence, not new input that cancels recovery.
+When Global recovery stops or its effect is unknown, a deduplicated system
+Message carries the facts to the existing Operator. If the Operator itself
+failed, or no Operator is configured, the notice remains visible for the user
+or successor without submitting a self-recovery prompt.
+
+Malformed JSON frames and failing protocol listeners close the affected channel
+with the original cause. Unrelated valid protocol notifications remain ignorable.
+The existing Host Inbox carries the diagnostic to Task/Global consumers without
+inventing a native terminal, clearing a writer fence or replaying input.
+
+Endpoint cleanup preserves stop/close errors, the exact implementation and client
+identities, last observed drain facts and pending effects. A failed inspection is
+not an empty resource list. Later owned cleanup steps, including control-socket
+closure, still run; cleanup failures retain their causes and produce a failing
+Host exit rather than silent success. Timeout reports never claim quiescence.
+
+The optional detached-child metadata reconciler retains its existing bounded
+query, backoff and circuit pause. Unavailable observations preserve writer
+ownership and expose their original error, exact targets and sampling count.
+The first failure and circuit-limit crossing use existing deduplicated error
+events; metadata sampling does not start model work or declare a parent result.
+No new default metadata collector, retry worker or durable state schema is added.
+
 ## Supported boundary and adoption
 
 Current controlled Codex Hosts advertise exact recovery support. The native

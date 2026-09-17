@@ -390,7 +390,7 @@ export class CodexAppServerRuntime implements
       return {
         quality: "unavailable",
         continuations: [],
-        detail: error instanceof Error ? error.message : String(error)
+        detail: serializeAgentErrorRaw(error)
       };
     }
     return { quality: "exact", continuations: Object.freeze(observed) };

@@ -1,4 +1,5 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { serializeAgentErrorRaw } from "./agentError.js";
 
 export const PROVIDER_MESSAGE_MAX_BYTES = 16 * 1024 * 1024;
 
@@ -17,7 +18,8 @@ export class JsonLineChannel {
 
   constructor(
     private readonly child: ChildProcessWithoutNullStreams,
-    private readonly mirror: (stream: "stdout" | "stderr", text: string) => void
+    private readonly mirror: (stream: "stdout" | "stderr", text: string) => void,
+    private readonly onFailure?: (error: Error) => void
   ) {
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => this.#receive(chunk));
@@ -66,10 +68,11 @@ export class JsonLineChannel {
   }
 
   #receive(chunk: string): void {
+    if (this.#closedError !== undefined) return;
     this.mirror("stdout", chunk);
     this.#buffer += chunk;
     if (Buffer.byteLength(this.#buffer, "utf8") > PROVIDER_MESSAGE_MAX_BYTES) {
-      this.#close(new Error("Provider response line exceeds its message bound."));
+      this.#fail(new Error("Provider response line exceeds its message bound."));
       terminateProcessGroup(this.child, "SIGTERM");
       return;
     }
@@ -79,13 +82,36 @@ export class JsonLineChannel {
       const line = this.#buffer.slice(0, newline).trim();
       this.#buffer = this.#buffer.slice(newline + 1);
       if (line.length === 0) continue;
+      let parsed: unknown;
       try {
-        const parsed: unknown = JSON.parse(line);
-        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) continue;
-        for (const listener of this.#listeners) listener(parsed as JsonObject);
-      } catch {
-        continue;
+        parsed = JSON.parse(line);
+      } catch (cause) {
+        this.#fail(new Error("Provider response is not valid JSON.", { cause }));
+        return;
       }
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        this.#fail(new Error("Provider response must be a JSON object."));
+        return;
+      }
+      // Unknown protocol objects belong to the protocol listener. A listener
+      // throwing is not an unrelated notification or a parse error.
+      try {
+        for (const listener of this.#listeners) listener(parsed as JsonObject);
+      } catch (cause) {
+        this.#fail(new Error("Provider message listener failed.", { cause }));
+        return;
+      }
+    }
+  }
+
+  #fail(error: Error): void {
+    // Failing this pipe neither proves a native terminal nor permits replay.
+    // Keep the original cause for pending callers and the Host's durable sink.
+    try {
+      this.mirror("stderr", `${serializeAgentErrorRaw(error)}\n`);
+      this.onFailure?.(error);
+    } finally {
+      this.#close(error);
     }
   }
 

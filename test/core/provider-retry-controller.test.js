@@ -34,6 +34,12 @@ import { runGlobalRoleCommand } from "../../dist/commands/globalRoleCommands.js"
 import { createProject } from "../../dist/repository/project.js";
 import { createManagedWorkspace } from "../../dist/worktree/managedWorkspace.js";
 import { createTaskReviewRound, attachReviewRoundWorkspace } from "../../dist/review/reviewRound.js";
+import { publishStructuredProviderDiagnostic } from "../../dist/controller/structuredProviderObservation.js";
+import { FileRuntimeEventInbox } from "../../dist/controller/runtimeEventInbox.js";
+import { providerDeliveryFailureFrom } from "../../dist/runtime/agentError.js";
+import { ProviderContinuationReconciliationService } from "../../dist/runtime/providerContinuationReconciliationService.js";
+import { blockingProviderContinuations } from "../../dist/runtime/runtimeContinuationProjection.js";
+import { createInputRequest, answerInputRequest, cancelInputRequest } from "../../dist/input/inputRequest.js";
 
 const epoch = Date.parse("2026-09-13T00:00:00Z");
 const rawFailure = JSON.stringify({
@@ -92,7 +98,7 @@ function fixture(t, scope = "task", roleName = scope === "task" ? "leader" : "as
     }));
     originalAttempt = "notification:task-1/wake-1/initial";
   } else {
-    const message = createGlobalRoleMessage("global-message-1", roleName, body,
+    const message = createGlobalRoleMessage(store.nextGlobalRoleMessageId(), roleName, body,
       "user", { type: "user" }, now(), {
         inputControl: { action: "queue", requestId: "original-input" }
       });
@@ -263,7 +269,7 @@ test("Global original Message survives rejected delivery and same-Session retry 
   assert.match(f.submissions[0].control.run.boundedText, /role=assistant message=global-message-1/);
   assert.equal(f.store.listTasks().length, 0);
   assert.equal(f.read().run.runId, undefined);
-  const messages = f.store.listGlobalRoleMessages(f.roleName);
+  const messages = f.store.listGlobalRoleMessages(f.roleName).filter(message => message.kind === "user");
   assert.equal(messages.length, 1);
   assert.equal(messages[0].body, f.body);
   assert.equal(messages[0].delivery?.via, "provider",
@@ -319,6 +325,162 @@ test("cancel, authority revocation and deadline stop waiting recovery without di
     assert.equal(f.store.listMessages("task-1")[0].body, f.body);
     assert.equal(f.store.listRuns("task-1").length, 0);
   }
+});
+
+test("Global exhausted and unknown recovery hand off exact facts once without replay", async t => {
+  for (const outcome of ["deadline", "unknown", "new-input"]) {
+    const f = fixture(t, "global");
+    const agent = f.store.getConfiguredAgent("codex");
+    f.store.saveGlobalRole(createGlobalRole("operator", [createRoleAgentBinding(agent)], "codex", f.home, f.now()));
+    f.fail();
+    f.due();
+    if (outcome === "unknown") await f.hooks("unknown").reconcile();
+    if (outcome === "new-input") f.store.saveGlobalRoleMessage(createGlobalRoleMessage(
+      f.store.nextGlobalRoleMessageId(), f.roleName, "New explicit user intent", "user", { type: "user" }, f.now()));
+    f.advanceTo(Date.parse(f.read().retry.deadline) + 1);
+    const hooks = f.hooks();
+    await hooks.reconcile();
+    await hooks.reconcile();
+    const notices = f.store.listGlobalRoleMessages("operator");
+    assert.equal(notices.length, 1, outcome);
+    assert.match(notices[0].body, /Too many requests/);
+    assert.match(notices[0].body, /global-same-session/);
+    assert.match(notices[0].body, /failureRef/);
+    assert.equal(f.submissions.length, outcome === "unknown" ? 1 : 0);
+    assert.equal(f.read().retry.status, outcome === "unknown" ? "in-flight" : outcome === "new-input" ? "cancelled" : "exhausted");
+    const evidence = f.store.listGlobalRoleMessages(f.roleName).filter(m => m.kind === "system");
+    assert.ok(evidence.length > 0);
+    assert.ok(evidence.every(m => m.inputControl === undefined), "Failure history must not become queued input.");
+    assert.match(f.read().retry.failureRef, /^assistant\/global-message-/);
+  }
+});
+
+test("Host diagnostic Inbox preserves Task and Global errors without settling or replaying input", async t => {
+  for (const [scope, stage] of [
+    ["task", "idle"], ["task", "submitting"], ["global", "idle"], ["global", "submitting"]
+  ]) {
+    const f = fixture(t, scope);
+    if (stage === "submitting") f.begin();
+    const original = structuredClone(f.read().run);
+    const environment = {
+      YUI_SESSION_SCOPE: scope, YUI_ROLE: f.roleName, YUI_AGENT_ID: "codex",
+      YUI_ADAPTER_ID: "codex", YUI_WORKSPACE: f.home,
+      ...(scope === "task" ? { YUI_TASK_ID: "task-1" } : {})
+    };
+    await publishStructuredProviderDiagnostic({
+      home: f.home, environment,
+      diagnostic: {
+        nativeSessionId: f.nativeSessionId,
+        ...(stage === "idle" ? {} : { attemptId: f.originalAttempt }),
+        failure: providerDeliveryFailureFrom(new Error("listener failed", {
+          cause: new Error("socket refused; Authorization: Bearer secret-value-123")
+        }), { phase: stage === "idle" ? "host-stop" : "turn-reconcile", inputDisposition: "unknown" })
+      }
+    });
+    const inbox = new FileRuntimeEventInbox(f.home);
+    const event = inbox.list().find(e => e.observation.payload.failure !== undefined);
+    assert.ok(event);
+    const adapter = new FileSchedulerStoreAdapter(f.store);
+    for (let n = 0; n < 2; n++) {
+      assert.equal(adapter.observeAgentHostObservation(event, new Date()), "applied");
+    }
+    assert.deepEqual(f.read().run, original, "Diagnostics are not native terminal evidence.");
+    if (stage === "submitting") assert.throws(() => f.begin("duplicate"), /unsettled/i);
+    if (scope === "task") {
+      const errors = f.store.listEventsByType("task-1", ["runtime.agent-error"]);
+      assert.equal(errors.length, 1);
+      assert.match(errors[0].payload.raw, /socket refused/);
+      assert.doesNotMatch(errors[0].payload.raw, /secret-value-123/);
+      assert.equal(errors[0].payload.attemptId, stage === "idle" ? undefined : f.originalAttempt);
+      assert.ok(f.store.getWorkMailbox({ kind: "operator" }).pending);
+    } else {
+      const notices = f.store.listGlobalRoleMessages(f.roleName).filter(m => m.kind === "system");
+      assert.equal(notices.length, 1);
+      assert.match(notices[0].body, /socket refused/);
+      assert.doesNotMatch(notices[0].body, /secret-value-123/);
+      assert.ok(notices[0].notDelivered, "No Operator means visible evidence, not self-retry.");
+    }
+    inbox.acknowledge(event.id);
+  }
+});
+
+test("detached child observation failures hand off once, back off and retain writer ownership until exact evidence", async t => {
+  const f = fixture(t);
+  const run = createFixtureRun(f.store, f.store.nextRunId("task-1"), "task-1", f.roleName, "resume",
+    createRunInput({ source: { type: "yui", channel: "task-dispatch" },
+      directive: f.body, deltaRefIds: [] }), f.now(),
+    { effective: f.loadSessions().sessions.codex.effective });
+  f.store.saveRun(run);
+  f.store.saveActiveRun(run);
+  f.begin(`task-1/turn/${run.id}`, f.body, run.id);
+  f.observe("turn.accepted");
+  const adapter = new FileSchedulerStoreAdapter(f.store);
+  assert.equal(adapter.observeRuntimeObservation(createRuntimeObservation({
+    schemaVersion: 4, eventId: "child-started", semanticKey: "child-started",
+    kind: "continuation.started", authority: "provider-structured",
+    receivedAt: f.now().toISOString(), observedAt: f.now().toISOString(),
+    fence: { taskId: "task-1", roleName: f.roleName, agentId: "codex", driverId: "openai/codex",
+      runId: run.id, nativeSessionId: f.nativeSessionId, conversationId: f.nativeSessionId,
+      nativeTurnId: "native-original", receiptId: `task-1/turn/${run.id}`, continuationId: "child-1" },
+    payload: { attachment: "detached", execution: "active", outcome: "pending",
+      observationQuality: "exact", mayWriteWorkspace: true }
+  }), f.now()), "applied");
+  let calls = 0, available = false;
+  const failure = new Error("metadata offline", { cause: new Error("socket refused") });
+  const port = { queryKnownContinuations: async () => {
+    calls++;
+    if (!available) throw failure;
+    return { quality: "exact", continuations: [] };
+  } };
+  let service = new ProviderContinuationReconciliationService(f.store, adapter, port);
+  await service.reconcile(f.now());
+  await service.reconcile(f.now());
+  assert.equal(calls, 1);
+  assert.equal(blockingProviderContinuations(f.store.listEvents("task-1")).length, 1);
+  const errorEvents = () => f.store.listEventsByType("task-1", ["runtime.agent-error"]);
+  assert.equal(errorEvents().length, 1);
+  assert.match(errorEvents()[0].payload.raw, /socket refused/);
+  assert.match(errorEvents()[0].payload.raw, /child-1/);
+  assert.ok(f.store.getWorkMailbox({ kind: "operator" }).pending);
+  for (const offset of [2000, 6000, 14000, 30000]) {
+    f.advanceTo(epoch + offset);
+    await service.reconcile(f.now());
+  }
+  assert.equal(calls, 5);
+  assert.equal(errorEvents().length, 2, "Only the first error and circuit opening notify.");
+  f.advanceTo(epoch + 62000);
+  await service.reconcile(f.now());
+  assert.equal(calls, 5, "The existing circuit window still prevents a metadata call.");
+  service = new ProviderContinuationReconciliationService(f.store, adapter, port);
+  await service.reconcile(f.now()); // Restart permits metadata sampling, not a duplicate notice.
+  assert.equal(errorEvents().length, 2);
+  available = true;
+  f.advanceTo(epoch + 64000);
+  await service.reconcile(f.now());
+  assert.equal(blockingProviderContinuations(f.store.listEvents("task-1")).length, 0);
+  assert.equal(f.read().run.status, "accepted", "Child metadata never terminalizes the parent.");
+});
+
+test("recommended Input timeout remains a single prior-decision execution, never overriding resolved input", t => {
+  const f = fixture(t);
+  const make = (id, recommended = true) => createInputRequest(id, "task-1", {
+    taskId: "task-1", roleName: "leader", agentId: "codex", nativeSessionId: f.nativeSessionId
+  }, { question: "Choose", choices: [{ key: "a", label: "A" }, { key: "b", label: "B" }], blockedRefs: [],
+    policy: recommended ? { kind: "recommended", recommendedChoiceKey: "a", timeoutAt: new Date(epoch + 1000).toISOString() }
+      : { kind: "required" } }, f.now());
+  f.store.saveInputRequest("task-1", make("input-1"));
+  f.store.saveInputRequest("task-1", answerInputRequest(make("input-2"), { choiceKey: "b" }, "user", f.now()));
+  f.store.saveInputRequest("task-1", cancelInputRequest(make("input-3"), "cancelled", f.now()));
+  f.store.saveInputRequest("task-1", make("input-4", false));
+  const adapter = new FileSchedulerStoreAdapter(f.store);
+  assert.deepEqual(adapter.resolveExpiredInputRecommendations(f.now()), []);
+  f.advanceTo(epoch + 1000);
+  assert.equal(adapter.resolveExpiredInputRecommendations(f.now()).length, 1);
+  assert.deepEqual(adapter.resolveExpiredInputRecommendations(f.now()), []);
+  assert.equal(f.store.getInputRequest("task-1", "input-1").resolution.answer.choiceKey, "a");
+  assert.equal(f.store.getInputRequest("task-1", "input-2").resolution.answer.choiceKey, "b");
+  assert.equal(f.store.getInputRequest("task-1", "input-3").status, "cancelled");
+  assert.equal(f.store.getInputRequest("task-1", "input-4").status, "open");
 });
 
 test("an explicit no-Run input supersedes waiting automatic recovery at the same admission boundary", async t => {
@@ -402,7 +564,7 @@ test("Global exhaustion and cancellation settle the original queue entry without
     await inspectQueue();
     assert.equal(prepares, 0, "A stopped retry cannot silently return to ordinary delivery.");
     f.advanceTo(f.now().getTime() + 1);
-    f.store.saveGlobalRoleMessage(createGlobalRoleMessage("global-message-2", f.roleName,
+    f.store.saveGlobalRoleMessage(createGlobalRoleMessage(f.store.nextGlobalRoleMessageId(), f.roleName,
       "New authorized input", "user", { type: "user" }, f.now(), {
         inputControl: { action: "queue", requestId: "new-input" }
       }));

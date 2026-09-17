@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import type { ProviderLifecycleObservation } from "../controller/runtimeEventProcessor.js";
 import type { TaskStore } from "../storage/taskStore.js";
+import { serializeAgentErrorRaw, standardAgentError } from "./agentError.js";
 import {
   providerContinuationKey,
   type ProviderContinuation
@@ -10,6 +11,7 @@ import { projectProviderContinuations } from "./runtimeContinuationProjection.js
 import {
   reconcileKnownDetachedContinuations,
   type ProviderContinuationMetadataPort,
+  type ProviderReconcileResult,
   type ProviderReconcileSchedule
 } from "./providerRuntimeReconciler.js";
 import {
@@ -62,7 +64,7 @@ export class ProviderContinuationReconciliationService {
         if (previous !== undefined && Date.parse(previous.nextReconcileAt) > now.getTime()) {
           continue;
         }
-        let result;
+        let result: ProviderReconcileResult;
         try {
           result = await reconcileKnownDetachedContinuations({
             port: this.metadata,
@@ -70,15 +72,52 @@ export class ProviderContinuationReconciliationService {
             ...(previous === undefined ? {} : { previous }),
             now
           });
-        } catch {
+        } catch (error) {
           // One malformed identity group must not restart or block the
           // Controller. Keep it writer-owned and retry through the same
           // bounded, metadata-only schedule.
-          this.#schedules.set(groupKey, failureSchedule(groupKey, previous, now));
-          continue;
+          result = {
+            continuations: group, quality: "unavailable", changed: false,
+            schedule: failureSchedule(groupKey, previous, now),
+            failure: standardAgentError({
+              source: "yui", phase: "turn-reconcile",
+              message: error instanceof Error ? error.message : String(error),
+              raw: serializeAgentErrorRaw(error)
+            })
+          };
         }
         if (result.schedule === null) this.#schedules.delete(groupKey);
         else this.#schedules.set(groupKey, result.schedule);
+        if (result.failure !== undefined) {
+          const failure = result.failure;
+          // One original failure and one circuit-limit notice, not one wake per
+          // poll. Existing observations deduplicate across Controller restarts.
+          const digest = createHash("sha256").update(JSON.stringify([
+            task.id, candidates.map(entry => entry.fence), failure.raw,
+            result.schedule?.circuitOpenUntil === undefined ? "unavailable" : "circuit-open"
+          ])).digest("hex");
+          const eventId = `continuation-reconcile-error:${digest}`;
+          if (!events.some(event => event.payload.eventId === eventId
+            || event.type === "runtime.agent-error" && event.payload.sourceEventId === eventId)) {
+            const observation = createRuntimeObservation({
+              schemaVersion: 4, eventId, semanticKey: eventId,
+              kind: "observer.health", authority: "controller",
+              receivedAt: now.toISOString(), observedAt: now.toISOString(),
+              fence: candidates[0]!.fence,
+              payload: {
+                sourceId: "continuation-metadata", observerStatus: "unavailable",
+                observerDetail: failure.message,
+                failure: { error: { ...failure, raw: serializeAgentErrorRaw({
+                  failure, targets: group.map(entry => entry.identity),
+                  schedule: result.schedule,
+                  confirmed: "Metadata query did not prove quiescence; existing writer ownership is preserved.",
+                  unknown: "Continuation execution, result and external effects."
+                }) } }
+              }
+            });
+            if (this.sink.observeRuntimeObservation(observation, now) === "applied") changedTaskIds.add(task.id);
+          }
+        }
         for (let index = 0; index < group.length; index += 1) {
           const before = group[index]!;
           const after = result.continuations[index]!;

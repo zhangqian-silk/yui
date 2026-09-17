@@ -32,12 +32,12 @@ function binding() {
     attemptId: "original", nativeTurnId: "turn-0", acceptedAt: iso(epoch)
   });
 }
-function fail(value, at) {
+function fail(value, at, error = failure) {
   value = settleProviderTurn(value, {
     attemptId: value.run.attemptId, nativeTurnId: value.run.nativeTurnId,
     status: "failed", settledAt: iso(at)
   });
-  return recordProviderFailure(value, { error: failure, failureRef: value.run.attemptId, at, random: () => 0 });
+  return recordProviderFailure(value, { error, failureRef: value.run.attemptId, at, random: () => 0 });
 }
 
 test("five consecutive automatic attempts survive new Turns; only exact success resets the chain", () => {
@@ -52,7 +52,10 @@ test("five consecutive automatic attempts survive new Turns; only exact success 
       attemptId: `retry-${n}`, nativeTurnId: `turn-${n}`, acceptedAt: iso(due)
     });
     assert.equal(value.retry.attempts, n, "acceptance must not reset the failure streak");
-    value = fail(value, due + 1);
+    value = fail(value, due + 1, n === 2
+      ? { ...failure, category: "availability", code: "provider.temporary-unavailable", message: "Temporary unavailable" }
+      : failure);
+    assert.equal(value.retry.chainId, "original", "A changed but safely retryable error stays in the same budget.");
     value = JSON.parse(JSON.stringify(value)); // persisted/reloaded state is sufficient
   }
   assert.equal(value.retry.status, "exhausted");

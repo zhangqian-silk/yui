@@ -204,6 +204,21 @@ export function providerRetryProjection(binding: ProviderRuntimeBinding | null |
     category: retry.error.category, preservesWork: true, nativeSessionId: retry.nativeSessionId,
     ...(retry.reason === undefined ? {} : { reason: retry.reason }),
     failureRef: retry.failureRef,
+    error: retry.error,
+    inputRef: retry.input.kind === "text" ? { kind: "text" as const } : retry.input,
+    failedAttemptId: retry.failedAttemptId,
+    failureAttemptId: retry.failureAttemptId,
+    ...(retry.failedNativeTurnId === undefined ? {} : { failedNativeTurnId: retry.failedNativeTurnId }),
+    ...(retry.currentAttemptId === undefined ? {} : { currentAttemptId: retry.currentAttemptId }),
+    currentTurn: binding?.run == null ? null : {
+      attemptId: binding.run.attemptId, status: binding.run.status,
+      ...(binding.run.nativeTurnId === undefined ? {} : { nativeTurnId: binding.run.nativeTurnId }),
+      ...(binding.run.failure === undefined ? {} : { failure: binding.run.failure })
+    },
+    history: (binding?.retryHistory ?? []).map(entry => ({
+      chainId: entry.chainId, status: entry.status, attempts: entry.attempts,
+      failureRef: entry.failureRef, failedAttemptId: entry.failedAttemptId
+    })),
     ...(retry.previousRunId === undefined ? {} : { previousRunId: retry.previousRunId }),
     ...(retry.successorRunId === undefined ? {} : { successorRunId: retry.successorRunId })
   };
