@@ -158,6 +158,10 @@ Global Session 替换回归验证：即使旧 Session 已被先前失败的切�
 原始 Message 与停止证据保留。队列通知不能重启已明确停止的 Session，也不能越过
 Host 准备期间新出现的 cleanup 义务。
 
+配置元数据回归区分原生 help 枚举、静态 adapter 合同与缺失字段。一次性、仅返回
+元数据的测试程序验证部分发现、精确缓存复用和刷新失败来源；权限选择器不能猜测
+选项或抹去用户已有值，Doctor 共用 help 解析且不补造模型别名。
+
 ## Skill 与指令变更
 
 一并审阅共享的 Runtime 合同和受影响的 Role/Project Skill。用几个相关场景检查指令

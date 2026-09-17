@@ -24,6 +24,7 @@ import { standardAgentError } from "../../dist/runtime/agentError.js";
 import { mapCodexAgentError } from "../../dist/runtime/builtinAgentErrorMappers.js";
 import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
 import { createProviderRetryHooks } from "../../dist/controller/providerRetryDelivery.js";
+import { SessionOwnerReconciliation } from "../../dist/controller/sessionOwnerReconciliation.js";
 import { createRuntimeLifecycleDispatcher } from "../../dist/controller/runtime.js";
 import { deliverGlobalInputs } from "../../dist/controller/globalInputDelivery.js";
 import { providerRetryAttemptId } from "../../dist/runtime/providerRetry.js";
@@ -299,6 +300,55 @@ test("unknown admitted retry remains fenced after SQLite reopen and fresh Contro
   assert.equal(f.observe("turn.accepted", attemptId, "confirmed-retry"), "applied");
   assert.equal(f.observe("turn.completed", attemptId, "confirmed-retry", { output: "Confirmed" }), "applied");
   assert.equal(f.read().retry.status, "recovered");
+});
+
+test("Global retry diagnostics and explicit stop preserve unknown input until exact quiescence", async t => {
+  const f = fixture(t, "global");
+  f.fail();
+  f.due();
+  await f.hooks("unknown").reconcile();
+  const unknown = structuredClone(f.read().run);
+  const originalMessage = f.store.listGlobalRoleMessages(f.roleName).find(m => m.kind === "user");
+  const scheduler = new FileSchedulerStoreAdapter(f.store);
+  const owner = { scope: "global", roleName: f.roleName };
+  const target = scheduler.enqueueRuntimeCleanup(owner, f.now());
+  const hooks = f.hooks();
+  await hooks.reconcile();
+  assert.equal(f.read().retry.status, "cancelled");
+  assert.deepEqual(f.read().run, unknown, "Cancelling recovery is not native stop evidence.");
+  let quiescent = false;
+  const reconciliation = new SessionOwnerReconciliation({
+    home: f.home, store: f.store,
+    tmux: { killRole() {}, probeRoleStatus: () => "exited",
+      inspectPane: () => ({ target: "fixture:assistant", dead: true, currentCommand: "" }) },
+    cancelInput: async () => { throw new Error("Host unavailable"); },
+    nativeConnection: () => ({ command: "fixture", args: [], environment: {}, cwd: f.home }),
+    stopNative: async (_connection, input) => {
+      assert.equal(input.conversationId, f.nativeSessionId);
+      assert.equal(input.clearGoal, true);
+      if (!quiescent) throw new Error("Native execution remains unknown");
+    }
+  });
+  await assert.rejects(reconciliation.terminateOwner(owner), /remains unknown/);
+  assert.deepEqual(f.read().run, unknown);
+  quiescent = true;
+  assert.equal((await reconciliation.terminateOwner(owner)).outcome, "stop-confirmed");
+  assert.equal(scheduler.completeRuntimeCleanup(target, f.now()), true);
+  assert.equal(f.read().run.status, "cancelled");
+  assert.equal(f.read().run.attemptId, unknown.attemptId);
+  const evidence = f.store.listGlobalRoleMessages(f.roleName).filter(m => m.kind === "system");
+  assert.ok(evidence.some(m => m.body.includes("Too many requests")));
+  assert.ok(evidence.some(m => m.body.includes("Explicit Session stop confirmed")
+    && m.body.includes(unknown.attemptId) && m.inputControl === undefined));
+  assert.deepEqual(f.store.listGlobalRoleMessages(f.roleName).find(m => m.id === originalMessage.id), originalMessage);
+  f.reopen();
+  await f.hooks().reconcile();
+  await deliverGlobalInputs(f.home, f.store,
+    async () => assert.fail("Queued input or diagnostics must not restart the stopped Session."),
+    error => { throw error; });
+  assert.equal(f.submissions.length, 1, "Unknown input is never replayed.");
+  assert.equal(f.loadSessions().sessions.codex.status, "ended");
+  assert.deepEqual(f.store.listGlobalRoleMessages(f.roleName).filter(m => m.kind === "system"), evidence);
 });
 
 test("cancel, authority revocation and deadline stop waiting recovery without discarding original work", async t => {
