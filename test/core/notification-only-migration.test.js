@@ -11,7 +11,8 @@ import { createConfiguredAgent } from "../../dist/agent/agent.js";
 import { createRole, createGlobalRole, createRoleAgentBinding } from "../../dist/role/role.js";
 import { createRoleSessionSet, validateRoleSessionSet } from "../../dist/executor/agentExecutor.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
-import { createRun, completeRun } from "../../dist/agentRun/agentRun.js";
+import { completeRun } from "../../dist/agentRun/agentRun.js";
+import { createFixtureRun } from "../helpers/runFixture.mjs";
 import { createRunInput } from "../../dist/context/runInputContract.js";
 import { rebuildHistoricalFixture } from "../helpers/historicalHome.mjs";
 import { runStorageUpgrade } from "../../dist/storage/upgrade/upgradeOrchestrator.js";
@@ -33,7 +34,7 @@ test("notification migration preserves delivery and history while refusing live 
     store.saveRole(task.id, role);
     store.saveGlobalRole(createGlobalRole("operator", [binding], agent.id, home, at));
     store.saveGlobalRoleSessionSet(createRoleSessionSet({ scope: "global", roleName: "operator" }, agent.id, at));
-    run = createRun("run-1", task.id, role.name, "new", createRunInput({
+    run = createFixtureRun(store, "run-1", task.id, role.name, "new", createRunInput({
       source: { type: "yui", channel: "task-dispatch" }, directive: "Original execution", deltaRefIds: []
     }), at, { effective: resolveEffectiveLaunch({ role, purpose: "execution" }) });
     store.saveActiveRun(run);

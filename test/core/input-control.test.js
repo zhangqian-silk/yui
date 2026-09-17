@@ -19,7 +19,8 @@ import {
 import { runTaskCommand } from "../../dist/commands/taskCommands.js";
 import { prepareMessageContinuations } from "../../dist/message/messageContinuation.js";
 import { createManagedWorkspace } from "../../dist/worktree/managedWorkspace.js";
-import { createRun, failRun } from "../../dist/agentRun/agentRun.js";
+import { failRun } from "../../dist/agentRun/agentRun.js";
+import { createFixtureRun } from "../helpers/runFixture.mjs";
 import { createRunInput } from "../../dist/context/runInputContract.js";
 import { createTaskEvent } from "../../dist/event/taskEvent.js";
 import { createAgentEndpointFactory } from "../../dist/runtime/agentEndpoint.js";
@@ -965,7 +966,7 @@ test("Leader then selects its own next notification ahead of ordinary queue", t 
 test("a Leader-owned AgentRun can claim then without inventing a WorkItem Assignment", t => {
   const { store, command } = fixture(t);
   const session = store.getTaskRoleSessionSet("task-1", "leader").sessions.codex;
-  const run = createRun("run-1", "task-1", "leader", "new", createRunInput({
+  const run = createFixtureRun(store, "run-1", "task-1", "leader", "new", createRunInput({
     source: { type: "yui", channel: "task-dispatch" }, directive: "Manage the Task.", deltaRefIds: []
   }), at, { effective: session.effective, purpose: "execution" });
   store.saveRun(run);

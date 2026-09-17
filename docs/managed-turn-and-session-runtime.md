@@ -28,6 +28,7 @@ yui task context <task> --json
 yui task context delta <task> --after <coreCursor>
 yui task context inspect <task> --store <store> --ref <id>
 yui task run context <task/run> --json
+yui task run context expand <task/run> <ref-id> --store <store> --mode full --json
 ```
 
 Task Context is a bounded authorized working set with a current core cursor.
@@ -42,6 +43,22 @@ Every managed input points to the exact Session Manifest and CLI entry. The
 Run Pack is a reference directory: read the relevant requirement and message
 bodies before acting, rather than treating a successful load as the deliverable.
 Planning Packs expose no Project write scope or Task-completion permission.
+
+Every new Run, including planning, Review and continuation, binds an explicit
+frozen Snapshot before dispatch. Context reads validate its full identity and
+content digest, then read its stored values without rebuilding current Task
+records. Synthesis reads the selected Producer results from that Snapshot.
+Writable Projects come from the Run's captured effective authority; live
+activity is a separate observation, not part of the frozen contract.
+Expansion always requires both `store` and `refId`, even for a unique id.
+
+Historical Run records without a Snapshot remain readable through `run show`
+for audit, but cannot supply execution Context, be submitted or retried.
+Missing/drifted Snapshot evidence fails explicitly; it is never synthesized
+from today's Task. Subsequent observed/steered input records may legitimately
+omit their own Snapshot because they do not establish a new Assignment.
+No stored layout or payload changes: storage remains 37 with the complete
+1→37 migration chain unchanged.
 
 Current Task reads also expose untargeted user/Operator messages to the Task's
 current Worker and Reviewer Sessions, including requirements added after their
@@ -293,6 +310,11 @@ yui task role session inspect <task> <role>
 yui task execution start <task>
 yui task execution stop <task> --force --reason <reason>
 ```
+
+`task run retire` accepts only `--expected-progress-at` for its progress fence;
+the former `--progress-at` alias is removed. Retiring an active Run still requires
+its exact progress, Agent/Adapter and, when bound, native Session identity;
+the renamed entry does not relax quiescence or retirement authority.
 
 Task execution start/stop controls Task admission, not Task acceptance.
 Stop first fences new Yui work, then interrupts each exact owned native input

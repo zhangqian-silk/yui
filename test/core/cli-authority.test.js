@@ -15,6 +15,8 @@ import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
 import { materializeSessionBootstrap } from "../../dist/context/sessionBootstrapManifest.js";
 import { createRun } from "../../dist/agentRun/agentRun.js";
 import { createRunInput } from "../../dist/context/runInputContract.js";
+import { freezeRunContextSnapshot } from "../../dist/context/runContextPack.js";
+import { contextSnapshotRef } from "../../dist/context/contextSnapshot.js";
 import { createWorkItem } from "../../dist/workItem/workItem.js";
 import { createDecision } from "../../dist/decision/decision.js";
 import { createDurableJob } from "../../dist/job/durableJob.js";
@@ -77,8 +79,12 @@ test("public CLI fences replaced Operators, Home configuration and cross-Task re
     scope: "task", taskId: "task-1", roleName: "worker"
   }, agent.id, now), session(worker, "worker-current"), now));
   store.saveWorkItem("task-1", createWorkItem("work-item-1", "task-1", { title: "Own work", assignee: "worker" }, now));
+  const snapshot = freezeRunContextSnapshot(store, {
+    taskId: "task-1", roleName: "worker", purpose: "execution", workItemId: "work-item-1"
+  }, now);
   store.saveActiveRun(createRun("run-1", "task-1", "worker", "new",
-    createRunInput({ source: { type: "yui", channel: "workitem-dispatch" }, directive: "Only own work.", deltaRefIds: [] }),
+    createRunInput({ source: { type: "yui", channel: "workitem-dispatch" }, directive: "Only own work.",
+      contextSnapshotRef: contextSnapshotRef(snapshot), deltaRefIds: [] }),
     now, { workItemId: "work-item-1", effective: session(worker, "worker-current").effective }));
   const env = environment(worker, { scope: "task", taskId: "task-1" }, "worker-current");
   const config = ["config", "resources", "set", "resources-gc-auto-quarantine", "true"];

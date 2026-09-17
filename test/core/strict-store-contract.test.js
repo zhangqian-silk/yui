@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { createTask, activateTask } from "../../dist/task/task.js";
 import { createRole, createRoleAgentBinding } from "../../dist/role/role.js";
-import { createRun } from "../../dist/agentRun/agentRun.js";
+import { createFixtureRun } from "../helpers/runFixture.mjs";
 import { createRunInput } from "../../dist/context/runInputContract.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
 import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
@@ -26,7 +26,7 @@ test("missing authoritative reads cannot become empty evidence or authorize Prov
   const binding = createRoleAgentBinding({ id: "codex", adapterId: "codex" });
   const role = createRole(task.id, "leader", [binding], binding.agentId, home, at);
   store.saveRole(task.id, role);
-  const run = createRun("run-1", task.id, role.name, "new", createRunInput({
+  const run = createFixtureRun(store, "run-1", task.id, role.name, "new", createRunInput({
     source: { type: "yui", channel: "task-dispatch" }, directive: "Original intent", deltaRefIds: []
   }), at, { effective: resolveEffectiveLaunch({ role, purpose: "execution" }) });
   store.saveActiveRun(run);

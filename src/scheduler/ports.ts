@@ -283,6 +283,7 @@ export interface SchedulerStorePort {
   listRoles(taskId: string): readonly SchedulerRole[];
   getRole(taskId: string, roleName: string): SchedulerRole | null;
   getActiveRun(taskId: string, roleName: string): SchedulerRun | null;
+  getContextSnapshot(taskId: string, snapshotId: string): import("../context/contextSnapshot.js").ContextSnapshot | null;
   hasOpenInputRequest(taskId: string): boolean;
   listOpenInputRequests(taskIds?: readonly string[]): readonly InputRequest[];
   getInputRequest(taskId: string, inputRequestId: string): InputRequest | null;

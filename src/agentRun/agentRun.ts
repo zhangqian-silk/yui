@@ -8,13 +8,12 @@ import {
   type ManagedWorkspace
 } from "../worktree/managedWorkspace.js";
 import {
-  createRunInput,
   createRunInputEnvelope,
+  requireRunContextSnapshotRef,
   validateRunInput,
   type AgentRunInput,
   type AgentRunInputEnvelope
 } from "../context/runInputContract.js";
-import type { ContextSnapshotRef } from "../context/contextSnapshot.js";
 import type { ExecutionLaneGitSnapshot } from "../repository/executionLaneGitSnapshot.js";
 import type { ProviderRuntimeBinding } from "../runtime/providerRuntimeIdentity.js";
 import { providerRetryProjection } from "../runtime/providerRetry.js";
@@ -155,6 +154,8 @@ export function createRun(
   }
   const timestamp = now.toISOString();
   const normalizedInput = validateRunInput(input);
+  const snapshot = requireRunContextSnapshotRef(normalizedInput);
+  if (snapshot.taskId !== taskId) throw new Error("AgentRun Context Snapshot belongs to another Task.");
   return {
     schemaVersion: 5,
     id: requireSafeIdentity(id, "AgentRun id"),
@@ -216,27 +217,6 @@ export function runPurposeAdmitsTaskState(
     : task.status === "active";
 }
 
-/** Binds a freshly created, not-yet-persisted Turn to its frozen Context. */
-export function withRunContextSnapshot(
-  run: AgentRun,
-  snapshot: ContextSnapshotRef,
-  deltaRefIds: readonly string[] = []
-): AgentRun {
-  const initial = run.inputs[0]!;
-  if (run.status !== "active" || initial.input.contextSnapshotRef !== undefined) {
-    throw new Error(`Cannot replace the AgentRun Context Snapshot: ${run.id}.`);
-  }
-  const input = createRunInput({
-    ...initial.input,
-    contextSnapshotRef: snapshot,
-    deltaRefIds
-  });
-  return validateRun(Object.freeze({
-    ...run,
-    inputs: [runInputRecord(input, 1, initial.submittedAt), ...run.inputs.slice(1)]
-  }));
-}
-
 export function appendRunInput(run: AgentRun, input: AgentRunInput, now: Date): AgentRun {
   validateRun(run);
   if (run.status !== "active") throw new Error(`Cannot append input to terminal AgentRun: ${run.id}.`);
@@ -254,6 +234,7 @@ export function appendRunInput(run: AgentRun, input: AgentRunInput, now: Date): 
 /** Derives Provider-visible identity from the AgentRun, the sole semantic owner. */
 export function runInputEnvelope(run: AgentRun, sequence = 1): AgentRunInputEnvelope {
   validateRun(run);
+  requireRunContextSnapshotRef(run.inputs[0]!.input);
   const record = run.inputs[sequence - 1];
   if (record === undefined) throw new Error(`AgentRun input does not exist: ${run.id}/${sequence}.`);
   return createRunInputEnvelope(runEnvelopeContext(run), record.input);
@@ -433,6 +414,8 @@ export function validateRun(run: AgentRun): AgentRun {
     throw new Error("Execution AgentRun cannot carry Review effective provenance.");
   }
   for (const record of run.inputs) {
+    // Structural validation keeps historical records and observed subsequent
+    // inputs readable. Creation/submission require the initial frozen Snapshot.
     createRunInputEnvelope(runEnvelopeContext(run), record.input);
   }
   if (!( ["active", "completed", "failed"] as const).includes(run.status)) {

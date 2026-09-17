@@ -338,7 +338,7 @@ async function cloneProject(
   // A remote-URL binding is Home-managed by default: its canonical repository
   // lives below the persistent Home, so the runtime never depends on a
   // user-controlled checkout path. --external is an explicit opt-in to the
-  // legacy clone-inside-the-workspace mode.
+  // user-owned clone-inside-the-workspace mode.
   let destination: string;
   let ownership: ProjectOwnership;
   if (parsed.external) {

@@ -25,6 +25,7 @@ yui task context <task> --json
 yui task context delta <task> --after <coreCursor>
 yui task context inspect <task> --store <store> --ref <id>
 yui task run context <task/run> --json
+yui task run context expand <task/run> <ref-id> --store <store> --mode full --json
 ```
 
 Task Context 是一个有界的、获授权的工作集，带有当前 core 游标。delta 在一个固定
@@ -36,6 +37,18 @@ Run Context 冻结 Assignment、来源引用、生效配置和工作区边界。
 确切的 Session Manifest 和 CLI 入口。Run Pack 是一个参考目录：动手前先读相关的需求
 和消息正文，而不是把加载成功当成交付物。规划 Pack 不暴露 Project 写范围或 Task 完成
 权限。
+
+新 Run（包括规划、Review 和消息续接）必须在派发前绑定明确冻结的 Snapshot。
+Context 读取校验完整身份与内容 digest，然后直接读取已保存的值，不重新收集当前
+Task 记录。聚合执行从该 Snapshot 读取已选择的 Producer 结果；可写 Project 来自
+Run 捕获的生效授权。当前活动状态仍是独立观察，不属于冻结合同。
+展开引用必须同时指定 `store` 与 `refId`，即使 id 唯一也不能省略 store。
+
+缺少 Snapshot 的历史 Run 仍可通过 `run show` 审计，但不能提供执行 Context、
+提交给 Provider 或用于重试。Snapshot 缺失或漂移时明确失败，不用今天的 Task
+事实补造历史。后续观察到的原生输入或 steer 记录可以没有独立 Snapshot，因为
+它们不建立新的 Assignment。本次不改变存储布局或记录载荷：storage 仍为 37，
+完整的 1→37 迁移链保持不变。
 
 当前 Task 读取也会把无定向目标的 user/Operator 消息暴露给该 Task 当前的 Worker 和
 Reviewer Session，包括在它们 Run 快照冻结之后新增的需求。用 `task message list/show`
@@ -238,6 +251,10 @@ yui task role session inspect <task> <role>
 yui task execution start <task>
 yui task execution stop <task> --force --reason <reason>
 ```
+
+`task run retire` 的进度围栏只接受 `--expected-progress-at`，移除旧的
+`--progress-at` 别名。退役活动 Run 仍要求精确进度、Agent/Adapter 及已绑定的
+原生 Session 身份，不放宽静止性检查或退役权限。
 
 Task execution start/stop 控制 Task 准入，而不是 Task 验收。stop 先围住新的 Yui 工作，
 然后中断每一条被拥有的确切原生输入，并在移除 attachment 之前确认其终态。这也覆盖没有
