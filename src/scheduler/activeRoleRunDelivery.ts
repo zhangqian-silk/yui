@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { serializeRunInputEnvelope } from "../context/runInputContract.js";
+import { readRunContextSnapshot } from "../context/runContextPack.js";
 import {
   roleSessionMayContinue,
   sameEffectiveLaunch
@@ -184,6 +185,9 @@ async function deliverActiveRun(
   let prepared: PreparedRoleDelivery | undefined;
   let submitted = false;
   try {
+    // Validate the dispatch contract before starting any Provider resources.
+    readRunContextSnapshot(store, run);
+    const text = serializeRunInputEnvelope(runInputEnvelope(run));
     const nativeSessionId = mode === "resume"
       ? requireResumeSession(role, run, existingSession)
       : undefined;
@@ -245,7 +249,7 @@ async function deliverActiveRun(
     const outcome = await delivery.sendOnce({
       delivery: ready,
       receiptId: attemptId,
-      text: serializeRunInputEnvelope(runInputEnvelope(run))
+      text
     });
 
     if (outcome.status === "pending") {

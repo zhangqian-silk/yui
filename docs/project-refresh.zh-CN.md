@@ -6,6 +6,14 @@
 规范 checkout。stable 与 development branch 必须一致。操作全程持有 per-Project
 maintenance fence；不会刷新 Task 工作区或改写其记录的基线。
 
+## Project 所有权
+
+`yui project clone <name> <remote>` 默认创建 Home 管理的 checkout。
+添加 `--external` 会克隆到 `<已配置的 defaultWorkspace>/<name>`，保留 external
+所有权。这是帮助和补全中公开支持的选项，不绕过现有确认、分支校验或工作区隔离
+边界。`project add` 可绑定已有 external checkout；`project migrate` 可明确将其
+迁入 Home 管理的存储。
+
 ## 两个独立事实
 
 checkout HEAD 与本地 remote-tracking ref 是不同的观察。refresh 将精确分支获取到

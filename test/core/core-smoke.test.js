@@ -65,7 +65,7 @@ import {
 import { RuntimeLaunchCoordinator } from "../../dist/controller/runtimeLaunchCoordinator.js";
 import { resolveManagedTaskCaller } from "../../dist/runtime/managedCaller.js";
 import { taskLocalActor } from "../../dist/task/taskAuthority.js";
-import { buildRunContextPack } from "../../dist/context/runContextPack.js";
+import { buildRunContextPack, expandRunContextRef } from "../../dist/context/runContextPack.js";
 import { createTaskWake } from "../../dist/scheduler/taskWake.js";
 import { startStructuredProviderSession } from "../../dist/runtime/structuredProviderHost.js";
 import {
@@ -86,9 +86,9 @@ import { terminalizeExactTaskRun } from "../../dist/lifecycle/exactRunTerminaliz
 import {
   MAX_RUN_RESULT_OUTPUT_BYTES,
   completeRun,
-  createRun,
   validateRun
 } from "../../dist/agentRun/agentRun.js";
+import { createFixtureRun } from "../helpers/runFixture.mjs";
 import { createRunInput } from "../../dist/context/runInputContract.js";
 import { processActiveRoleRunDeliveries } from "../../dist/scheduler/activeRoleRunDelivery.js";
 import { processOperatorInputNotifications } from "../../dist/scheduler/operatorInputNotificationProcessor.js";
@@ -765,7 +765,7 @@ test("native continuation results wake the supervisor only after the parent Turn
   const leader = createRole(task.id, "leader", [agent], agent.agentId, home, now);
   store.saveRole(task.id, worker);
   store.saveRole(task.id, leader);
-  const run = createRun(
+  const run = createFixtureRun(store,
     "turn-1",
     task.id,
     worker.name,
@@ -874,7 +874,7 @@ test("runtime pre-start persists the empty Session binding before Provider disco
   const agent = createRoleAgentBinding({ id: "codex", adapterId: "codex" });
   const role = createRole(task.id, "leader", [agent], agent.agentId, "/tmp/yui-prestart", now);
   store.saveRole(task.id, role);
-  const run = createRun(
+  const run = createFixtureRun(store,
     "turn-1",
     task.id,
     role.name,
@@ -910,7 +910,7 @@ test("Turns record provider-visible input without delivery handshake state", () 
     "/tmp/yui-run-boundary-smoke",
     now
   );
-  const run = createRun(
+  const run = createFixtureRun(null,
     "turn-1",
     "task-1",
     role.name,
@@ -1000,7 +1000,7 @@ test("Task-scoped Turn listing includes Leader Turns without a WorkItem", (t) =>
   const binding = createRoleAgentBinding({ id: "codex", adapterId: "codex" });
   const role = createRole(task.id, "leader", [binding], binding.agentId, "/tmp/yui-turn-list", now);
   store.saveRole(task.id, role);
-  store.saveActiveRun(createRun(
+  store.saveActiveRun(createFixtureRun(store,
     "turn-1",
     task.id,
     role.name,
@@ -1398,7 +1398,7 @@ test("a wake names a completed Turn even when that Turn predates the delta curso
     createdAt
   );
   store.saveRole(task.id, worker);
-  const run = completeRun(createRun(
+  const run = completeRun(createFixtureRun(store,
     "turn-1",
     task.id,
     worker.name,
@@ -1636,7 +1636,7 @@ test("active Role Turns deliver from durable state and Worker hints settle at ac
   });
   sessions = bindTaskRoleProviderRuntime(sessions, provider, startedAt);
   store.saveTaskRoleSessionSet(sessions);
-  const run = createRun(
+  const run = createFixtureRun(store,
     "turn-1",
     task.id,
     role.name,
@@ -1765,7 +1765,7 @@ test("active Role Turns deliver from durable state and Worker hints settle at ac
   );
   store.saveRole(leaderTask.id, leader);
   const leaderEffective = resolveEffectiveLaunch({ role: leader, purpose: "execution" });
-  const leaderRun = createRun(
+  const leaderRun = createFixtureRun(store,
     "turn-1",
     leaderTask.id,
     leader.name,
@@ -1919,7 +1919,7 @@ test("the exact Provider Turn terminal atomically completes its Turn once", asyn
     startedAt
   );
   store.saveRole(task.id, role);
-  const run = createRun(
+  const run = createFixtureRun(store,
     "turn-1",
     task.id,
     role.name,
@@ -2043,7 +2043,7 @@ test("Task execution stop/start atomically controls scheduler admission", (t) =>
     now
   );
   store.saveWorkItem(task.id, item);
-  const activeRun = createRun(
+  const activeRun = createFixtureRun(store,
     "turn-1",
     task.id,
     leader.name,
@@ -2096,7 +2096,7 @@ test("Task execution stop/start atomically controls scheduler admission", (t) =>
     "Edits retained."
   );
   store.saveWorkItem(task.id, completedItem);
-  const disposableRun = createRun(
+  const disposableRun = createFixtureRun(store,
     "turn-2",
     task.id,
     leader.name,
@@ -2187,6 +2187,8 @@ test("direct and replicated WorkItem execution converge through exact Lane retry
   const directRun = store.getActiveRun(task.id, "leader");
   assert.equal(directRun.executionGroupId, undefined);
   assert.equal(directRun.sourceExecutionGroupId, undefined);
+  assert.equal(expandRunContextRef(store, task.id, directRun.id, directItem.id, "work-item").value.revision,
+    store.getWorkItem(task.id, directItem.id).revision, "The direct Assignment freezes its admitted revision.");
   assert.equal(
     store.getWorkMailbox({ kind: "role", taskId: task.id, roleName: "leader" }),
     null
@@ -2300,6 +2302,15 @@ test("direct and replicated WorkItem execution converge through exact Lane retry
   assert.equal(mainRun.sourceExecutionGroupId, groupId);
   assert.equal(mainRun.executionGroupId, undefined);
   assert.match(mainRun.inputs[0].input.directive, new RegExp(groupId, "u"));
+  for (const dispatched of store.listRuns(task.id)) {
+    const pack = buildRunContextPack(store, task.id, dispatched.id);
+    assert.deepEqual(pack.snapshot, dispatched.inputs[0].input.contextSnapshotRef);
+    assert.deepEqual(pack.authority.writableProjectIds, dispatched.effective.writeProjectIds);
+    assert.deepEqual(expandRunContextRef(store, task.id, dispatched.id,
+      `${task.id}/${dispatched.roleName}`, "managed-workspace").value, dispatched.workspace);
+  }
+  assert.equal(expandRunContextRef(store, task.id, mainRun.id, producerA.id, "source-run").value.result.output,
+    "producer-a completed.");
 });
 
 test("direct and replicated Review keep Producer results non-authoritative", (t) => {
@@ -2620,6 +2631,15 @@ test("direct and replicated Review keep Producer results non-authoritative", (t)
   assert.equal(initialMain.executionLaneId, undefined);
   const mainSnapshotRef = initialMain.inputs[0].input.contextSnapshotRef;
   const mainSnapshot = store.getContextSnapshot(task.id, mainSnapshotRef.id);
+  for (const dispatched of [directRun, ...producerRuns, initialMain]) {
+    const pack = buildRunContextPack(store, task.id, dispatched.id);
+    assert.deepEqual(pack.snapshot, dispatched.inputs[0].input.contextSnapshotRef);
+    assert.deepEqual(pack.authority.writableProjectIds, [project.id]);
+    assert.deepEqual(expandRunContextRef(store, task.id, dispatched.id,
+      `${task.id}/${dispatched.roleName}`, "managed-workspace").value, dispatched.workspace);
+  }
+  assert.equal(expandRunContextRef(store, task.id, initialMain.id, producerRuns[0].id, "source-run").value.result.output,
+    producerOutputs[0]);
   const sourceRuns = mainSnapshot.resources
     .filter(({ ref }) => ref.store === "source-run")
     .map(({ value }) => value);
@@ -2990,7 +3010,7 @@ test("Core freezes writable Lane state without parsing the Producer output", (t)
     const groupedItem = attachWorkItemExecutionGroup(item, group, now);
     store.saveWorkItem(task.id, groupedItem);
     store.saveManagedWorkspace(laneWorkspaces[0]);
-    const run = createRun(
+    const run = createFixtureRun(store,
       firstRunId,
       task.id,
       roles[0].name,
@@ -3281,7 +3301,7 @@ test("runtime terminalization preserves Agent output across dirty and wrong-bran
     ), startedAt);
     store.saveWorkItem(task.id, item);
     store.saveManagedWorkspace(workspace);
-    const run = createRun(
+    const run = createFixtureRun(store,
       runId,
       task.id,
       role.name,
@@ -4176,7 +4196,7 @@ test("managed Session authority follows durable state, not a frozen environment"
   assert.equal(betweenRuns.currentRunId, undefined);
   assert.equal(taskLocalActor(store, environment, task.id), "leader");
 
-  store.saveActiveRun(createRun(
+  store.saveActiveRun(createFixtureRun(store,
     "turn-7",
     task.id,
     role.name,
@@ -4217,7 +4237,7 @@ test("a Turn Context Pack reports which of the Task's records are in flight", (t
   store.saveRole(task.id, reviewer);
   const worker = createRole(task.id, "worker", [binding], binding.agentId, workspace, now);
   store.saveRole(task.id, worker);
-  store.saveActiveRun(createRun(
+  store.saveActiveRun(createFixtureRun(store,
     "turn-22",
     task.id,
     leader.name,
@@ -4233,7 +4253,7 @@ test("a Turn Context Pack reports which of the Task's records are in flight", (t
   assert.deepEqual(alone.liveTaskState.activeRuns.map((entry) => entry.runId), ["turn-22"]);
 
   // Another Role starts executing while the Leader Turn runs on.
-  store.saveActiveRun(createRun(
+  store.saveActiveRun(createFixtureRun(store,
     "turn-21",
     task.id,
     worker.name,
@@ -4243,10 +4263,10 @@ test("a Turn Context Pack reports which of the Task's records are in flight", (t
     { effective: resolveEffectiveLaunch({ role: worker, purpose: "execution" }) }
   ));
 
-  // The Pack already carried peer Turns as readable refs, but a ref is a
-  // pointer with no status: it cannot tell the Leader that turn-21 is still
-  // running. That is what this block adds.
+  // Live activity can change without recollecting the frozen Context.
   const peer = buildRunContextPack(store, task.id, "turn-22");
+  assert.equal(peer.digest, alone.digest);
+  assert.deepEqual(peer.pointers, alone.pointers);
   assert.deepEqual(
     peer.liveTaskState.activeRuns.map((entry) => entry.runId).sort(),
     ["turn-21", "turn-22"]

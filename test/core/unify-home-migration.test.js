@@ -34,7 +34,8 @@ import { activateTask, createTask } from "../../dist/task/task.js";
 import { createRole, createRoleAgentBinding } from "../../dist/role/role.js";
 import { createManagedWorkspace } from "../../dist/worktree/managedWorkspace.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
-import { createRun, validateRun } from "../../dist/agentRun/agentRun.js";
+import { validateRun } from "../../dist/agentRun/agentRun.js";
+import { createFixtureRun } from "../helpers/runFixture.mjs";
 import { createRunInput } from "../../dist/context/runInputContract.js";
 import { sanitizedTestEnv } from "../helpers/sanitizedEnv.mjs";
 import { rebuildHistoricalFixture } from "../helpers/historicalHome.mjs";
@@ -601,7 +602,7 @@ function seedActiveRunAtOldWorkspace(store, taskId, oldRoot, oldEntryPath) {
   }, RUN_CLOCK);
   store.saveManagedWorkspace(workspace);
   const effective = resolveEffectiveLaunch({ role, purpose: "execution", workspace });
-  const run = createRun(
+  const run = createFixtureRun(store,
     "run-1",
     taskId,
     role.name,

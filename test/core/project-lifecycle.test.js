@@ -30,6 +30,7 @@ import {
   updateWorkItemStatus
 } from "../../dist/workItem/workItem.js";
 import { sanitizedTestEnv } from "../helpers/sanitizedEnv.mjs";
+import { findCommandNode } from "../../dist/cli/commandCatalog.js";
 
 const now = new Date("2026-08-27T00:00:00.000Z");
 const userEnv = sanitizedTestEnv();
@@ -100,6 +101,30 @@ function registerManagedProject(store, projectId, checkout, remote) {
   store.saveProject(project);
   return project;
 }
+
+test("public project clone preserves explicit external ownership and managed defaults", async t => {
+  const home = newHome(t);
+  const store = newStore(t, home);
+  const workspace = join(home, "external-workspace");
+  const remote = join(home, "local-source");
+  mkdirSync(workspace);
+  mkdirSync(remote);
+  git(["init", "--initial-branch=main"], remote);
+  commitFile(remote, "README.md", "# Local clone fixture\n", "initial");
+  store.saveConfig({ ...store.getConfig(), defaultWorkspace: workspace });
+  const catalog = findCommandNode(["project", "clone"]);
+  assert.equal(catalog.hidden, false);
+  assert.ok(catalog.options.includes("--external"));
+  const external = await runProjectCommand(["clone", "external-app", remote, "--external"], store,
+    { now: () => now, environment: userEnv });
+  assert.equal(external.data.project.ownership, "external");
+  assert.equal(external.data.project.path, join(workspace, "external-app"));
+  const managed = await runProjectCommand(["clone", "managed-app", remote], store,
+    { now: () => now, environment: userEnv });
+  assert.equal(managed.data.project.ownership, "managed");
+  assert.equal(managed.data.project.path, join(home, "projects", managed.data.project.id));
+  assert.equal(git(["rev-parse", "HEAD"], external.data.project.path), git(["rev-parse", "HEAD"], remote));
+});
 
 test("competing Task activations each clone the remote exactly once into independent repositories", async (t) => {
   const home = newHome(t);

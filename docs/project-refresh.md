@@ -7,6 +7,15 @@ the Project's configured remote and stable branch. Stable and development
 branches must match. The per-Project maintenance fence covers the operation;
 Task workspaces and their recorded bases are not refreshed by this command.
 
+## Project ownership
+
+`yui project clone <name> <remote>` creates a Home-managed checkout by default.
+Add `--external` to clone into `<configured defaultWorkspace>/<name>` and retain
+external ownership. This is a supported public option in help and completion;
+it does not remove the existing confirmation, branch verification or workspace
+isolation boundaries. `project add` can bind an existing external checkout;
+`project migrate` explicitly moves one into Home-managed storage.
+
 ## Two separate facts
 
 The checkout HEAD and a local remote-tracking ref are distinct observations.

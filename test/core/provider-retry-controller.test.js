@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { createConfiguredAgent } from "../../dist/agent/agent.js";
-import { createRun } from "../../dist/agentRun/agentRun.js";
+import { createFixtureRun } from "../helpers/runFixture.mjs";
 import { createRunInput } from "../../dist/context/runInputContract.js";
 import { createRole, createGlobalRole, createRoleAgentBinding } from "../../dist/role/role.js";
 import { activateTask, createTask, stopTaskExecution } from "../../dist/task/task.js";
@@ -338,7 +338,7 @@ test("an explicit no-Run input supersedes waiting automatic recovery at the same
 test("manual and automatic managed Run retries share one successor without charging manual work to the automatic limit", async t => {
   for (const manual of [false, true]) {
     const f = fixture(t);
-    const previous = createRun(f.store.nextRunId("task-1"), "task-1", f.roleName, "resume",
+    const previous = createFixtureRun(f.store, f.store.nextRunId("task-1"), "task-1", f.roleName, "resume",
       createRunInput({ source: { type: "yui", channel: "task-dispatch" },
         directive: f.body, deltaRefIds: [] }), f.now(), {
         effective: f.loadSessions().sessions.codex.effective
@@ -455,7 +455,7 @@ test("registration ACK replay and a cancellation racing its reply never strip th
 
 test("manual recovery after exhaustion retains the original automatic count and deadline until exact success", async t => {
   const f = fixture(t);
-  let run = createRun(f.store.nextRunId("task-1"), "task-1", f.roleName, "resume",
+  let run = createFixtureRun(f.store, f.store.nextRunId("task-1"), "task-1", f.roleName, "resume",
     createRunInput({ source: { type: "yui", channel: "task-dispatch" },
       directive: f.body, deltaRefIds: [] }), f.now(), {
       effective: f.loadSessions().sessions.codex.effective
