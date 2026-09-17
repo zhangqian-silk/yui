@@ -136,6 +136,10 @@ test("a quiesced storage blocker restores the captured Controller without activa
       ? { status: "migration-ready", stepCount: 1 }
       : { status: "blocked", message: "Storage changed during drain", action: "Preserve evidence" },
     beginControllerHandover: () => () => {},
+    reconcileController: () => {
+      effects.push("reconcile");
+      return { home: "/fixture/home", cleaned: ["old"], attempts: [], remaining: [] };
+    },
     controllerStatus: () => ({ running: true, pid: 42, identity: {
       executablePath: "/fixture/node", args: ["/fixture/controllerMain.js"], version: "0.16.1"
     } }),
@@ -148,5 +152,8 @@ test("a quiesced storage blocker restores the captured Controller without activa
     cleanup: () => {}
   }, { home: "/fixture/home" });
   assert.equal(update.outcome, "aborted");
-  assert.deepEqual(effects, ["stop", "restore"]);
+  assert.deepEqual(effects, ["reconcile", "stop", "restore"]);
+  assert.deepEqual(update.controllerReconciliation.cleaned, ["old"]);
+  assert.equal(update.controllerRestore.outcome, "restored");
+  assert.equal(update.sceneUnchanged, undefined);
 });

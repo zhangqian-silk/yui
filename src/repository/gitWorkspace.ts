@@ -23,6 +23,14 @@ export type PreparedGitWorktree = Readonly<{
 
 export type GitWorkspaceRemoval = "removed" | "missing" | "dirty";
 export type GitWorkspaceState = "missing" | "clean" | "dirty";
+export type UnadoptedWorktreeIdentity = Readonly<{
+  container: string;
+  directory: string;
+  taskSegment: string;
+  roleName: string;
+  expectedCommit: string;
+  deleteBranch?: boolean;
+}>;
 export type GitRefreshTracking =
   | Readonly<{ status: "unmanaged"; reason: string }>
   | Readonly<{
@@ -258,13 +266,14 @@ export interface GitWorkspacePort {
   /** Remove a stranded worktree whose common-dir no longer matches the
    * Project's current repository (e.g. after a catalog switch). Only for
    * unadopted worktrees that are safe to discard. */
-  removeStrandedWorktree(path: string): Promise<GitWorkspaceRemoval>;
+  removeStrandedWorktree(path: string, identity: UnadoptedWorktreeIdentity): Promise<GitWorkspaceRemoval>;
   /** Delete a clean, standalone Task clone only at its exact managed identity. */
   inspectTaskClone(input: Readonly<{
     path: string; container: string; directory: string; taskSegment: string; branch: string;
   }>): Promise<GitWorkspaceState>;
   removeTaskClone(input: Readonly<{
     path: string; container: string; directory: string; taskSegment: string; branch: string;
+    expectedCommit?: string;
   }>): Promise<GitWorkspaceRemoval>;
   /** Remove the exact clean worktree proven by inspectRecordedWorktree. If
    * the Project moved repositories, delete the obsolete source branch only
@@ -702,6 +711,11 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     }
     await canonicalContainer(dirname(destination), true);
     const branch = input.branch === undefined ? undefined : safeRef(input.branch);
+    // Reserve exactly this operation's directory before invoking Git. A clone
+    // rejection because somebody else created the destination cannot authorize
+    // removal of that other directory.
+    await mkdir(destination, { mode: 0o700 });
+    const createdDirectory = await lstat(destination);
     try {
       await git([
         "clone",
@@ -717,11 +731,28 @@ export class NodeGitWorkspace implements GitWorkspacePort {
         }
         await git(["-C", destination, "branch", "-M", "--", localBranch]);
       }
+      return await this.inspect(destination, "HEAD");
     } catch (error) {
-      await rm(destination, { recursive: true, force: true });
+      try {
+        const current = await lstat(destination).catch(failure => {
+          if (isErrno(failure, "ENOENT")) return undefined;
+          throw failure;
+        });
+        if (current !== undefined) {
+          if (!current.isDirectory() || current.dev !== createdDirectory.dev || current.ino !== createdDirectory.ino) {
+            throw new Error("Clone destination ownership changed; no direct deletion attempted.");
+          }
+          await rm(destination, { recursive: true });
+        }
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError],
+          `Clone failed at ${destination}: ${error instanceof Error ? error.message : String(error)}. `
+          + `Temporary compensation failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. `
+          + "Cleanup effects are unconfirmed; inspect this exact destination before retrying.");
+      }
+      if (error instanceof Error) error.message += ` Exact temporary clone directory removed or already absent: ${destination}.`;
       throw error;
     }
-    return this.inspect(destination, "HEAD");
   }
 
   async ensureLocalBranch(
@@ -1294,29 +1325,55 @@ export class NodeGitWorkspace implements GitWorkspacePort {
    * worktree's own Git identity instead. Only call for unadopted worktrees
    * that are safe to discard (e.g. Lane preparation compensation).
    */
-  async removeStrandedWorktree(path: string): Promise<GitWorkspaceRemoval> {
-    const kind = await pathKind(path);
-    if (kind === undefined) return "missing";
-    if (kind === "symlink") throw new Error("Stranded worktree path must not be a symbolic link.");
-    // Inspect dirty state through the worktree's own Git, bypassing the
-    // Project ownership check that fails after a catalog switch.
-    const porcelain = await git(["-C", path, "status", "--porcelain=v1", "--untracked-files=all"]);
-    if (porcelain.length > 0) return "dirty";
+  async removeStrandedWorktree(path: string, identity: UnadoptedWorktreeIdentity): Promise<GitWorkspaceRemoval> {
+    let worktreeRemoved = false;
     try {
-      await git(["-C", path, "worktree", "remove", "--force", "--", path]);
-    } catch {
-      // The worktree's common-dir (old external repo) may itself be gone.
-      // Remove the directory directly; the worktree is unadopted.
-      await rm(path, { recursive: true, force: true });
+      const expected = managedPath(resolve(identity.container), safeIdentity(identity.directory, "Project directory"));
+      if (path !== expected) throw new Error("Unadopted worktree does not match its exact managed path.");
+      const kind = await pathKind(path);
+      if (kind === undefined) return "missing";
+      if (kind === "symlink") throw new Error("Stranded worktree path must not be a symbolic link.");
+      await canonicalContainer(identity.container, false);
+      if (!(await lstat(join(path, ".git"))).isFile()) {
+        throw new Error("Expected a linked worktree, not a standalone clone.");
+      }
+      const project = await this.inspect(path, "HEAD");
+      await assertOwnedWorktree(project, resolve(identity.container), path);
+      const branch = worktreeIdentity(identity.taskSegment, identity.roleName).branch;
+      await assertExpectedBranch(path, branch);
+      if (project.baseCommit !== identity.expectedCommit) {
+        throw new Error("Unadopted worktree HEAD changed since preparation; retained.");
+      }
+      if (!await this.inspectClean(path)) return "dirty";
+      // Use the worktree's proven common directory, never the changed catalog.
+      // Git still enforces locks/submodule restrictions. A Git error is not
+      // authority for direct filesystem deletion, even for unadopted work.
+      await git(["--git-dir", project.gitDirectory, "worktree", "remove", "--", path]);
+      worktreeRemoved = true;
+      if (identity.deleteBranch === true) {
+        await git(["--git-dir", project.gitDirectory, "update-ref", "-d", `refs/heads/${branch}`, identity.expectedCommit]);
+      }
+      return "removed";
+    } catch (error) {
+      throw new Error(
+        `Unadopted worktree cleanup failed at ${path}: ${error instanceof Error ? error.message : String(error)} `
+        + `Confirmed worktree removal: ${worktreeRemoved}; failed-command effects remain unconfirmed. `
+        + "No direct deletion was attempted. Inspect this exact path and its Git registration before choosing recovery.",
+        { cause: error }
+      );
     }
-    return "removed";
   }
 
   async removeTaskClone(input: Readonly<{
     path: string; container: string; directory: string; taskSegment: string; branch: string;
+    expectedCommit?: string;
   }>): Promise<GitWorkspaceRemoval> {
     const state = await this.inspectTaskClone(input);
     if (state !== "clean") return state;
+    if (input.expectedCommit !== undefined
+      && await resolveRefCommit(input.path, "HEAD") !== input.expectedCommit) {
+      throw new Error(`Unadopted Task clone HEAD changed since preparation; retained at ${input.path}.`);
+    }
     await rm(managedPath(resolve(input.container), input.directory), { recursive: true });
     return "removed";
   }

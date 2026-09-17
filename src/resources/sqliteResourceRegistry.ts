@@ -56,8 +56,8 @@ export class SqliteResourceRegistry {
 
   load(): ResourceRegistryState {
     const rows = this.#db.prepare(
-      `SELECT payload FROM ${SQLITE_RESOURCE_REGISTRY_TABLE}`
-    ).all() as Array<{ payload: string }>;
+      `SELECT id, payload FROM ${SQLITE_RESOURCE_REGISTRY_TABLE}`
+    ).all() as Array<{ id: string; payload: string }>;
     if (rows.length === 0) return emptyResourceRegistry();
     const records: Record<string, ResourceRecord> = {};
     for (const row of rows) {
@@ -66,16 +66,14 @@ export class SqliteResourceRegistry {
         parsed = JSON.parse(row.payload);
       } catch (error) {
         throw new Error(
-          `SQLite resource registry has a corrupt payload: `
+          `SQLite resource registry record ${row.id} has a corrupt payload: `
             + `${error instanceof Error ? error.message : "unknown error"}.`,
           { cause: error }
         );
       }
       const state = parseResourceRegistryState({
         schemaVersion: RESOURCE_REGISTRY_SCHEMA_VERSION,
-        records: { [typeof parsed === "object" && parsed !== null && "id" in parsed
-          ? String((parsed as Record<string, unknown>).id)
-          : ""]: parsed }
+        records: { [row.id]: parsed }
       });
       Object.assign(records, state.records);
     }

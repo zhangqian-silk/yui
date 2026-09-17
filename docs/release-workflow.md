@@ -29,6 +29,20 @@ or model effects.
 
 ## Controller handover fix in 0.16.1
 
+Controller status and storage preflight are observations, not cleanup. The
+authorized updater explicitly runs its bounded current-Home reconciliation
+under the handover fence before capture/stop. It retains the existing four-pass
+rule and process-start/inode checks, preserving current Controllers and excluding
+Agent/tmux/app/foreign-Home resources.
+
+Update results and release-step logs retain reconciliation targets, completed
+actions, original cleanup errors, the last inventory with its observation time,
+and failed observations or lock release. Captured-identity restoration reports
+success or unknown effects separately. An uncertain cleanup/restore is not a
+stopped Controller or replayable failure; inspect the exact resource before
+choosing recovery. No new recovery worker or persistent protocol is introduced.
+The staged `--update-preflight` / `--update-apply` contract is unchanged.
+
 The updater's stop and exact-identity restoration children now explicitly receive
 the parent updater's handover-lock owner identity. They no longer wait on their
 own parent's lock; unrelated callers remain fenced. Storage remains at version 37.
