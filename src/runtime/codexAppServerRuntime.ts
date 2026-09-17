@@ -59,13 +59,12 @@ export type CodexThreadSnapshot = Readonly<{
   latestTurnStatus?: "completed" | "interrupted" | "failed" | "inProgress";
   turns: readonly CodexThreadTurnSnapshot[];
   parentThreadId?: string;
-  ancestorThreadIds: readonly string[];
   raw: JsonRpcObject;
 }>;
 
 export type CodexThreadTurnSnapshot = Readonly<{
   turnId: string;
-  status?: "completed" | "interrupted" | "failed" | "inProgress";
+  status: "completed" | "interrupted" | "failed" | "inProgress";
   output?: string;
   error?: string;
   rawError?: string;
@@ -150,8 +149,10 @@ export class CodexAppServerRuntime implements
   async readGoal(conversationId: string): Promise<CodexThreadGoal | null> {
     const id = text(conversationId, "Codex thread id");
     const result = await this.transport.request("thread/goal/get", { threadId: id });
+    if (result.goal === null) return null;
     const goal = objectMember(result, "goal");
-    return goal === null ? null : codexThreadGoal(goal, id);
+    if (goal === null) throw new Error("Codex thread/goal/get returned no Goal state.");
+    return codexThreadGoal(goal, id);
   }
 
   async inspectConversation(conversationId: string): Promise<ProviderConversationProbe> {
@@ -257,8 +258,7 @@ export class CodexAppServerRuntime implements
           text_elements: []
         }]
       });
-      const turnId = optionalId(result.turnId)
-        ?? optionalId(objectMember(result, "turn")?.id);
+      const turnId = optionalId(objectMember(result, "turn")?.id);
       return turnId === undefined
         ? { status: "unknown", reason: "turn/start returned no durable turn id" }
         : { status: "accepted", turnId };
@@ -353,7 +353,7 @@ export class CodexAppServerRuntime implements
     const result = await this.transport.request("thread/list", {
       ancestorThreadId: threadId
     });
-    const candidates = arrayMember(result, "threads")
+    const candidates = arrayMember(result, "data")
       .flatMap((entry) => optionalId(object(entry)?.id) === undefined
         ? []
         : [optionalId(object(entry)?.id)!]);
@@ -407,10 +407,12 @@ export function codexNotificationBoundary(input: Readonly<{
   conversationId?: string;
   turnId?: string;
 }> {
-  const conversationId = optionalId(input.params.threadId)
-    ?? optionalId(objectMember(input.params, "thread")?.id);
-  const turnId = optionalId(input.params.turnId)
-    ?? optionalId(objectMember(input.params, "turn")?.id);
+  const conversationId = input.method === "thread/started"
+    ? optionalId(objectMember(input.params, "thread")?.id)
+    : optionalId(input.params.threadId);
+  const turnId = input.method === "turn/started" || input.method === "turn/completed"
+    ? optionalId(objectMember(input.params, "turn")?.id)
+    : optionalId(input.params.turnId);
   if (input.method === "thread/closed") return { kind: "attachment-closed", conversationId };
   if (input.method === "thread/goal/updated") return { kind: "goal-updated", conversationId, turnId };
   if (input.method === "thread/goal/cleared") return { kind: "goal-cleared", conversationId };
@@ -428,7 +430,7 @@ export function codexGoalNotification(input: Readonly<{
   if (input.method === "thread/goal/cleared") return null;
   if (input.method !== "thread/goal/updated") return undefined;
   const goal = objectMember(input.params, "goal");
-  if (goal === null) return undefined;
+  if (goal === null) throw new Error("Codex Goal notification has no Goal state.");
   return codexThreadGoal(goal, conversationId);
 }
 
@@ -437,45 +439,43 @@ function parseThreadSnapshot(
   expectedThreadId: string,
   loaded: boolean | "unknown"
 ): CodexThreadSnapshot {
-  const thread = objectMember(result, "thread") ?? result;
-  const id = optionalId(thread.id) ?? expectedThreadId;
+  const thread = objectMember(result, "thread");
+  if (thread === null) throw new Error("Codex App Server returned no thread.");
+  const id = text(optionalId(thread.id), "Codex response thread id");
   if (id !== expectedThreadId) throw new Error("Codex App Server returned a different thread.");
-  const turns = arrayMember(thread, "turns").map(object).filter((entry): entry is JsonRpcObject => (
-    entry !== null
-  ));
-  const active = [...turns].reverse().find((turn) => (
-    ["inProgress", "in_progress", "running", "active"].includes(String(turn.status))
-  ));
-  const latestStatus = optionalTurnStatus(turns.at(-1)?.status);
-  const turnSnapshots = turns.flatMap((turn): CodexThreadTurnSnapshot[] => {
-    const turnId = optionalId(turn.id);
-    if (turnId === undefined) return [];
+  const status = threadStatus(thread.status);
+  if (status === "unknown") throw new Error("Codex thread status is missing or unsupported.");
+  if (!Array.isArray(thread.turns)) throw new Error("Codex thread turns are missing or invalid.");
+  const turnSnapshots = thread.turns.map((value): CodexThreadTurnSnapshot => {
+    const turn = object(value);
+    if (turn === null) throw new Error("Codex thread contains an invalid Turn.");
+    const turnId = text(optionalId(turn.id), "Codex response Turn id");
     const status = optionalTurnStatus(turn.status);
+    if (status === undefined) throw new Error("Codex Turn status is missing or unsupported.");
     const output = codexTurnOutput(turn);
     const error = providerError(turn.error);
-    return [{
+    return {
       turnId,
-      ...(status === undefined ? {} : { status }),
+      status,
       ...(output === undefined ? {} : { output }),
       ...(error === undefined ? {} : { error }),
       ...(turn.error === undefined || turn.error === null ? {} : {
         rawError: serializeAgentErrorRaw(turn.error)
       })
-    }];
+    };
   });
+  const active = [...turnSnapshots].reverse().find((turn) => turn.status === "inProgress");
+  const latestStatus = turnSnapshots.at(-1)?.status;
   return {
     threadId: id,
     loaded,
-    status: threadStatus(thread.status),
-    ...(optionalId(active?.id) === undefined ? {} : { activeTurnId: optionalId(active?.id) }),
+    status,
+    ...(active === undefined ? {} : { activeTurnId: active.turnId }),
     ...(latestStatus === undefined ? {} : { latestTurnStatus: latestStatus }),
     turns: Object.freeze(turnSnapshots),
     ...(optionalId(thread.parentThreadId) === undefined
       ? {}
       : { parentThreadId: optionalId(thread.parentThreadId) }),
-    ancestorThreadIds: Object.freeze(arrayMember(thread, "ancestorThreadIds").flatMap((entry) => (
-      optionalId(entry) === undefined ? [] : [optionalId(entry)!]
-    ))),
     raw: result
   };
 }
@@ -484,30 +484,8 @@ function parseThreadSnapshot(
 export function codexTurnOutput(turn: JsonRpcObject): string | undefined {
   for (const value of [...arrayMember(turn, "items")].reverse()) {
     const item = object(value);
-    if (item === null) continue;
-    const type = item.type;
-    const message = object(item.message);
-    const agentMessage = type === "agentMessage"
-      || type === "agent_message"
-      || (type === "message" && (item.role === "assistant" || message?.role === "assistant"));
-    if (!agentMessage) continue;
-    const text = messageOutput(item) ?? (message === null ? undefined : messageOutput(message));
-    if (text !== undefined) return text;
-  }
-  return undefined;
-}
-
-function messageOutput(message: JsonRpcObject): string | undefined {
-  for (const value of [message.text, message.content]) {
-    if (typeof value === "string" && value.trim().length > 0) return value;
-    if (!Array.isArray(value)) continue;
-    const parts = value.flatMap((part) => {
-      if (typeof part === "string" && part.trim().length > 0) return [part];
-      const record = object(part);
-      const text = record?.text ?? record?.content;
-      return typeof text === "string" && text.trim().length > 0 ? [text] : [];
-    });
-    if (parts.length > 0) return parts.join("\n");
+    if (item?.type === "agentMessage"
+      && typeof item.text === "string" && item.text.trim().length > 0) return item.text;
   }
   return undefined;
 }
@@ -516,28 +494,11 @@ function messageOutput(message: JsonRpcObject): string | undefined {
 export function codexTurnInput(turn: JsonRpcObject): string | undefined {
   for (const value of arrayMember(turn, "items")) {
     const item = object(value);
-    if (item === null) continue;
-    const type = item.type;
-    const message = object(item.message);
-    const userMessage = type === "userMessage"
-      || type === "user_message"
-      || (type === "message" && (item.role === "user" || message?.role === "user"));
-    if (!userMessage) continue;
-    const text = messageText(item) ?? (message === null ? undefined : messageText(message));
-    if (text !== undefined) return text;
-  }
-  return undefined;
-}
-
-function messageText(message: JsonRpcObject): string | undefined {
-  for (const value of [message.text, message.content]) {
-    if (typeof value === "string" && value.trim().length > 0) return value.trim();
-    if (!Array.isArray(value)) continue;
-    const parts = value.flatMap((part) => {
-      if (typeof part === "string" && part.trim().length > 0) return [part];
+    if (item?.type !== "userMessage") continue;
+    const parts = arrayMember(item, "content").flatMap((part) => {
       const record = object(part);
-      const text = record?.text ?? record?.content;
-      return typeof text === "string" && text.trim().length > 0 ? [text] : [];
+      return record?.type === "text" && typeof record.text === "string"
+        && record.text.trim().length > 0 ? [record.text] : [];
     });
     if (parts.length > 0) return parts.join("\n").trim();
   }
@@ -555,7 +516,7 @@ function providerError(value: unknown): string | undefined {
 }
 
 function codexThreadGoal(goal: JsonRpcObject, expectedThreadId: string): CodexThreadGoal {
-  const conversationId = text(goal.threadId, "Codex Goal thread id");
+  const conversationId = text(optionalId(goal.threadId), "Codex Goal thread id");
   if (conversationId !== expectedThreadId) {
     throw new Error("Codex Goal belongs to a different thread.");
   }
@@ -682,10 +643,7 @@ export function codexAppServerErrorIsMissing(error: unknown): boolean {
 }
 
 function threadId(result: JsonRpcObject): string {
-  return text(
-    optionalId(result.threadId) ?? optionalId(objectMember(result, "thread")?.id),
-    "Codex thread id"
-  );
+  return text(optionalId(objectMember(result, "thread")?.id), "Codex response thread id");
 }
 
 function object(value: unknown): JsonRpcObject | null {
@@ -703,7 +661,8 @@ function arrayMember(value: JsonRpcObject, key: string): readonly unknown[] {
 }
 
 function optionalId(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+  return typeof value === "string" && !value.includes("\0") && value.length > 0
+    && value.trim() === value ? value : undefined;
 }
 
 function text(value: unknown, label: string): string {
