@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -145,7 +145,11 @@ try {
     { ...environment, YUI_STATUS_IDENTITY: "0" })).data;
   assert.ok(status.identity, "Status identity is unconditional, not a rollout flag.");
   const { createUpdatePorts } = await import(pathToFileURL(join(root, "dist", "cli", "updatePorts.js")).href);
-  const lifecycle = createUpdatePorts(environment).controllerStatus(yuiHome);
+  // Real update lifecycle children, bounded so a self-wait regression does not
+  // spend the production 90-second handover deadline in CI. No npm operation.
+  const updatePorts = createUpdatePorts(environment, (command, args, options) =>
+    spawnSync(command, args, { ...options, timeout: 15_000 }));
+  const lifecycle = updatePorts.controllerStatus(yuiHome);
   const controller = status.resources.find(resource => resource.kind === "controller" && resource.state === "current");
   assert.equal(lifecycle.running, true);
   assert.equal(lifecycle.pid, controller.processes[0].pid);
@@ -197,6 +201,47 @@ try {
   const serverPid = Number(tmux("display-message", "-p", "-t", `=${neighbor}:`, "#{pid}").trim());
   tmux("kill-session", "-t", `=${neighbor}`);
   await waitFor(() => processExited(serverPid), "The empty fixture tmux server did not exit.");
+
+  const updateStarted = performance.now();
+  const beforeUpdate = updatePorts.controllerStatus(yuiHome);
+  assert.equal(beforeUpdate.running, true);
+  const beforeUpdateMessages = json("task", "message", "list", task.id);
+  const releaseHandover = updatePorts.beginControllerHandover(yuiHome);
+  try {
+    const lockPath = join(yuiHome, "runtime", "handover.lock");
+    const lock = readFileSync(lockPath, "utf8");
+    const runtimeModule = pathToFileURL(join(root, "dist", "controller", "clientRuntime.js")).href;
+    // A lifecycle caller without the updater's owner identity must still wait,
+    // even when the real OS parent happens to hold the lock.
+    const blocked = JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", `
+      import { stopFileTaskController } from ${JSON.stringify(runtimeModule)};
+      try {
+        await stopFileTaskController(process.env.YUI_HOME, {
+          expectedPid: ${beforeUpdate.pid}, handoverWaitTimeoutMs: 50, pollIntervalMs: 5
+        });
+        process.stdout.write(JSON.stringify({ stopped: true }));
+      } catch (error) {
+        process.stdout.write(JSON.stringify({ code: error.code }));
+      }
+    `], { env: environment, encoding: "utf8", timeout: 5000 }));
+    assert.equal(blocked.code, "CONTROLLER_HANDOVER_TIMEOUT");
+    assert.equal(processExited(beforeUpdate.pid), false);
+
+    const stopped = updatePorts.stopController(yuiHome, beforeUpdate.pid);
+    assert.equal(stopped.stopped, true);
+    assert.equal(stopped.pid, beforeUpdate.pid);
+    assert.equal(processExited(beforeUpdate.pid), true, "Update must drain its exact Controller.");
+    updatePorts.restoreController(yuiHome, beforeUpdate.identity);
+    const restored = updatePorts.controllerStatus(yuiHome);
+    assert.equal(restored.running, true);
+    assert.notEqual(restored.pid, beforeUpdate.pid);
+    assert.deepEqual(restored.identity, beforeUpdate.identity, "Rollback must restore the captured launch identity.");
+    assert.equal(readFileSync(lockPath, "utf8"), lock, "Lifecycle children cannot release the parent's lock.");
+  } finally {
+    releaseHandover();
+  }
+  assert.deepEqual(json("task", "message", "list", task.id), beforeUpdateMessages);
+  process.stdout.write(`Update handover lifecycle smoke passed (${Math.round(performance.now() - updateStarted)} ms).\n`);
   const stopped = runCli(cli, ["controller", "stop"], environment);
   if (!stopped.includes("Controller stopped.")) {
     throw new Error("Installed CLI controller did not stop cleanly.");

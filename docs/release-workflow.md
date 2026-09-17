@@ -27,6 +27,21 @@ system sits behind `ReleaseWorkflowPorts`
 external ports exercise recovery without real GitHub, npm, git, Controller,
 or model effects.
 
+## Controller handover fix in 0.16.1
+
+The updater's stop and exact-identity restoration children now explicitly receive
+the parent updater's handover-lock owner identity. They no longer wait on their
+own parent's lock; unrelated callers remain fenced. Storage remains at version 37.
+
+An already-installed older updater, including 0.15.12 or 0.16.0, cannot gain this
+fix merely by staging the new package. If it reports `CONTROLLER_HANDOVER_TIMEOUT`
+before activation, inspect the original Controller and lock ownership. Once the
+failed updater has released its own lock and the original Controller is confirmed
+healthy, normally stop it with that installed release's `yui controller stop`,
+then retry `yui update`. This preserves managed Agent Sessions and retains the
+normal preflight, backup, migration and verification boundaries. Do not delete
+an active lock or force-kill a Controller to bypass the failure.
+
 ## Pre-1.0 contract cleanup
 
 Version 0.16.0 retires runtime compatibility before the final

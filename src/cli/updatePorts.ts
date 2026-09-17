@@ -507,6 +507,7 @@ function runSchemaIndependentControllerStop(
 ): UpdateControllerStopResult {
   const helper = [
     "const values = process.argv.slice(1);",
+    "const handoverOwnerPid = Number(values.pop());",
     "const expectedPid = values.length === 3 ? Number(values.pop()) : undefined;",
     "const home = values.pop();",
     "const runtimeModule = values.pop();",
@@ -514,6 +515,7 @@ function runSchemaIndependentControllerStop(
     "  const { stopFileTaskController } = await import(runtimeModule);",
     "  const data = await stopFileTaskController(home, {",
     "    environment: process.env,",
+    "    handoverOwnerPid,",
     "    ...(expectedPid === undefined ? {} : { expectedPid })",
     "  });",
     "  process.stdout.write(JSON.stringify({ ok: true, data }));",
@@ -531,7 +533,10 @@ function runSchemaIndependentControllerStop(
       helper,
       UPDATE_CLIENT_RUNTIME_PATH,
       home,
-      ...(expectedPid === undefined ? [] : [String(expectedPid)])
+      ...(expectedPid === undefined ? [] : [String(expectedPid)]),
+      // The runtime validates the existing lock owner; the child must identify
+      // its owning updater instead of waiting on the parent's lock as foreign.
+      String(process.pid)
     ],
     { cwd: process.cwd(), env: { ...environment, YUI_HOME: home }, shell: false }
   );
@@ -710,10 +715,11 @@ function restoreControllerIdentity(
   // Spawn a detached child through a short-lived Node helper so the synchronous
   // update process can still use the authenticated, bounded readiness handshake
   // shared by Controller startup. No retry, sleep, or new identity inference is
-  // hidden here.
+  // hidden here. Restoration participates in the same parent-owned lock.
   const helper = [
     "const { spawn } = require('node:child_process');",
     "const values = process.argv.slice(1);",
+    "const handoverOwnerPid = Number(values.pop());",
     "const version = values.pop();",
     "const args = JSON.parse(values.pop());",
     "const executable = values.pop();",
@@ -723,6 +729,7 @@ function restoreControllerIdentity(
     "  const { ensureFileTaskControllerIdentity } = await import(runtimeModule);",
     "  await ensureFileTaskControllerIdentity(home, { executablePath: executable, args, version }, {",
     "    environment: process.env,",
+    "    handoverOwnerPid,",
     "    spawnController: (_home, launchEnv) => {",
     "      const child = spawn(executable, args, { detached: true, stdio: 'ignore', env: launchEnv });",
     "      child.unref();",
@@ -739,7 +746,8 @@ function restoreControllerIdentity(
       home,
       identity.executablePath,
       JSON.stringify(identity.args),
-      identity.version
+      identity.version,
+      String(process.pid)
     ],
     { cwd: process.cwd(), env: launchEnvironment, shell: false, stdio: "pipe" }
   );
