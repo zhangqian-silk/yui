@@ -518,21 +518,25 @@ function normalizeCursor(input: AgentRuntimeObserverCursor | undefined): JsonlCu
   if (!Number.isSafeInteger(offset) || (offset as number) < 0
     || typeof remainder !== "string"
     || state === null || typeof state !== "object" || Array.isArray(state)
-    || (continuityEpoch !== undefined
-      && (typeof continuityEpoch !== "string" || continuityEpoch.length === 0))
+    || typeof continuityEpoch !== "string" || continuityEpoch.length === 0
     || (fileFingerprint !== undefined
       && (typeof fileFingerprint !== "string" || fileFingerprint.length === 0))
     || (fileCtimeMs !== undefined
       && (typeof fileCtimeMs !== "number" || !Number.isFinite(fileCtimeMs) || fileCtimeMs < 0))) {
-    return undefined;
+    throw new Error("Transcript observer cursor is invalid or unsupported.");
+  }
+  // Only our unavailable-before-first-read cursor lacks file metadata. An old
+  // partially shaped cursor must not silently reset/replay a healthy source.
+  const unstarted = offset === 0 && remainder === "" && Object.keys(state).length === 0
+    && continuityEpoch === INITIAL_CONTINUITY_EPOCH;
+  if (!unstarted && (fileFingerprint === undefined || fileCtimeMs === undefined)) {
+    throw new Error("Transcript observer cursor has no current file identity.");
   }
   return Object.freeze({
     offset: offset as number,
     remainder,
     state: state as Readonly<Record<string, unknown>>,
-    continuityEpoch: typeof continuityEpoch === "string"
-      ? continuityEpoch
-      : INITIAL_CONTINUITY_EPOCH,
+    continuityEpoch,
     ...(typeof fileFingerprint === "string" ? { fileFingerprint } : {}),
     ...(typeof fileCtimeMs === "number" ? { fileCtimeMs } : {})
   });
