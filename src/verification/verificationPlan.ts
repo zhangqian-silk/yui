@@ -3,6 +3,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 
 import {
   requireIdentity,
+  requireKnownFields,
   requirePositiveInteger,
   requireText
 } from "../domain/validation.js";
@@ -89,8 +90,9 @@ export function normalizeVerificationPlan(raw: unknown): VerificationPlan {
       `VerificationPlan schemaVersion must be ${VERIFICATION_PLAN_SCHEMA_VERSION}.`
     );
   }
-  if (Object.hasOwn(record, "mode")) throw new Error("VerificationPlan mode is retired; request an explicit rerun on the operation.");
-  if (Object.hasOwn(record, "l1")) throw new Error("VerificationPlan l1 is retired; declare current checks in l2.");
+  requireKnownFields(record, [
+    "schemaVersion","kind","id","version","toolchain","bootstrap","l2","l3","excludedRealResourceChecks","artifactTtlDays"
+  ] satisfies readonly (keyof VerificationPlan)[], "VerificationPlan");
   const plan: VerificationPlan = {
     schemaVersion: VERIFICATION_PLAN_SCHEMA_VERSION,
     kind: VERIFICATION_PLAN_KIND,

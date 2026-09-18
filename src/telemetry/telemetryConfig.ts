@@ -13,8 +13,8 @@ import {
 } from "../storage/sqliteSchema.js";
 
 /**
- * These names predate Agent Drivers and now control only the optional
- * diagnostic sidecar. Canonical `runtime.observation` state is always durable
+ * These settings control only the optional diagnostic sidecar.
+ * Canonical `runtime.observation` state is always durable
  * and compacted independently; no mode changes lifecycle authority.
  */
 export type TelemetryMode = "off" | "on";

@@ -14,6 +14,7 @@ export async function loadRuntime(directory) {
   const { validateYuiConfig } = await load("storage/taskStore.js");
   const { validateTaskBrief } = await load("brief/taskBrief.js");
   const { validateWorkItemCandidate } = await load("workItem/workItem.js");
+  const { normalizeVerificationPlan } = await load("verification/verificationPlan.js");
   const { createRuntimeObservation } = await load("runtime/runtimeObservation.js");
   const { validateRuntimeProcessExitObservation } = await load("runtime/processExitObservation.js");
   const { parseResourceRegistryState } = await load("resources/resourceRegistry.js");
@@ -41,6 +42,14 @@ export async function loadRuntime(directory) {
       else if (table === "work_item_candidates") validateWorkItemCandidate(value);
       else if (table === "resource_registry") parseResourceRegistryState({ schemaVersion:1, records:{ [value.id]:value } });
       else validateStoredRecord(table,value);
+      if (table === "projects") {
+        for (const entry of value.knowledge) {
+          if (entry.status !== "active") continue;
+          let plan;
+          try { plan=JSON.parse(entry.body); } catch { continue; }
+          if (plan?.kind === "verification-plan") normalizeVerificationPlan(plan);
+        }
+      }
       if (table === "events" && value.type === "runtime.observation") createRuntimeObservation(JSON.parse(value.payload.observation));
       if (table === "events" && value.type === "runtime.process-exit-observed") validateRuntimeProcessExitObservation(JSON.parse(value.payload.observation));
     }

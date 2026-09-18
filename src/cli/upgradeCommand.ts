@@ -6,9 +6,9 @@ import {
 import {
   ensureFileTaskController,
   ensureFileTaskControllerIdentity,
-  type ControllerRuntimeProcessIdentity,
   stopFileTaskController
 } from "../controller/clientRuntime.js";
+import { parseControllerIdentity, type ControllerIdentity } from "../core/controllerIdentity.js";
 import { callController, ControllerClientError } from "../core/controllerClient.js";
 import { spawn } from "node:child_process";
 import { runtimeError, usageError } from "../errors/cliError.js";
@@ -124,7 +124,7 @@ async function runInteractiveUpgrade(
 }
 
 async function captureUpgradeController(home: string): Promise<Readonly<{
-  pid: number; identity: ControllerRuntimeProcessIdentity;
+  pid: number; identity: ControllerIdentity;
 }> | undefined> {
   let value;
   try { value = await callController(home, "controller.identity", {}); }
@@ -132,16 +132,11 @@ async function captureUpgradeController(home: string): Promise<Readonly<{
     if (error instanceof ControllerClientError && error.code === "CONTROLLER_NOT_RUNNING") return undefined;
     throw error;
   }
-  const identity = value as { pid?: number; executablePath?: string; args?: string[]; version?: string };
-  if (!Number.isSafeInteger(identity.pid) || identity.pid! < 1
-    || typeof identity.executablePath !== "string" || !identity.executablePath
-    || !Array.isArray(identity.args) || identity.args.some(arg => typeof arg !== "string")
-    || typeof identity.version !== "string" || !identity.version) {
+  const pid = (value as { pid?: unknown } | null)?.pid;
+  if (!Number.isSafeInteger(pid) || (pid as number) < 1) {
     throw runtimeError("Cannot capture the exact Controller for a reversible upgrade preflight.");
   }
-  return { pid: identity.pid!, identity: {
-    executablePath: identity.executablePath, args: identity.args, version: identity.version
-  } };
+  return { pid: pid as number, identity: parseControllerIdentity(value) };
 }
 
 async function runUpdateOwnedUpgrade(

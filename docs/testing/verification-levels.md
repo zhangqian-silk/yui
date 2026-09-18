@@ -64,7 +64,8 @@ Current coverage includes:
    repeat-call idempotence. The CLI fixture uses a disposable Home; it never
    converts a real account. The converter is not part of the runtime tarball.
 3. Exact-version staging, mismatched-target refusal, same-major contiguous
-   minor preflight, and explicit maintenance-owner identity across handover.
+   minor preflight, explicit maintenance-owner identity across handover, and
+   restoration against captured protocol/storage identity rather than omitted fields.
 4. Durable Task/Message/Decision context, draft activation authority, mailbox
    claims, notification idempotence, Session replacement and exact late results.
 5. Integration/Job request identity, immutable candidate proofs, conflict
@@ -79,6 +80,8 @@ existing assembled-package smoke for actual CLI/Controller/Host/tmux wiring,
 not a second daemon matrix. Converter schema fixtures preserve one frozen
 endpoint; do not reconstruct the entire historical chain in the new suite.
 Real-model or real-Home checks require explicit authorization.
+Current envelope checks reject arbitrary unknown fields, rather than maintaining
+a blacklist of retired field names.
 
 ## Skill and instruction changes
 

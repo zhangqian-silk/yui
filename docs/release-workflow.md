@@ -52,6 +52,15 @@ An unsupported Home remains unchanged; use the independent converter rather
 than replacing the global CLI first. Current update/activation children must
 explicitly identify their handover-lock owner.
 
+Restoration checks the captured executable/argv, package version, Controller
+protocol and both storage-version bounds against status and live identity.
+Missing contract fields are errors, not an older-Controller exception.
+
+The converter source, frozen endpoint fixture and converter-specific tests are
+release-only deliverables for 0.99.1. Remove them from the 1.0.0 development line
+only after the 0.99.1 release attachments and checksums are durably available
+and verified. Do not delete the only conversion path before publication.
+
 ## Authorization model
 
 Every (re)submission of a step passes `checkGrant(grant, request, now)`

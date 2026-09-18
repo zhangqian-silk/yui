@@ -47,6 +47,7 @@ import { fileURLToPath } from "node:url";
 
 import { runtimeError } from "../errors/cliError.js";
 import { isConcreteVersion } from "../domain/validation.js";
+import { parseControllerIdentity, type ControllerIdentity } from "../core/controllerIdentity.js";
 import { isMinorStorageUpgrade, isStorageVersion, storageVersionParts } from "../storage/storageVersions.js";
 import { STORAGE_DOCTOR_CHECK_NAMES } from "../doctor/doctor.js";
 import { acquireHandoverLock } from "../release/runtimeRelease.js";
@@ -58,7 +59,6 @@ import {
 } from "../controller/updateReconciliation.js";
 import type {
   StagedPackage,
-  ControllerIdentity,
   UpdateControllerLifecycleStatus,
   UpdateControllerStopResult,
   UpdateBlockerIdentity,
@@ -732,18 +732,16 @@ function restoreControllerIdentity(
     "const { spawn } = require('node:child_process');",
     "const values = process.argv.slice(1);",
     "const handoverOwnerPid = Number(values.pop());",
-    "const version = values.pop();",
-    "const args = JSON.parse(values.pop());",
-    "const executable = values.pop();",
+    "const identity = JSON.parse(values.pop());",
     "const home = values.pop();",
     "const runtimeModule = values.pop();",
     "(async () => {",
     "  const { ensureFileTaskControllerIdentity } = await import(runtimeModule);",
-    "  await ensureFileTaskControllerIdentity(home, { executablePath: executable, args, version }, {",
+    "  await ensureFileTaskControllerIdentity(home, identity, {",
     "    environment: process.env,",
     "    handoverOwnerPid,",
     "    spawnController: (_home, launchEnv) => {",
-    "      const child = spawn(executable, args, { detached: true, stdio: 'ignore', env: launchEnv });",
+    "      const child = spawn(identity.executablePath, identity.args, { detached: true, stdio: 'ignore', env: launchEnv });",
     "      child.unref();",
     "    }",
     "  });",
@@ -756,9 +754,7 @@ function restoreControllerIdentity(
       helper,
       UPDATE_CLIENT_RUNTIME_PATH,
       home,
-      identity.executablePath,
-      JSON.stringify(identity.args),
-      identity.version,
+      JSON.stringify(parseControllerIdentity(identity)),
       String(process.pid)
     ],
     { cwd: process.cwd(), env: launchEnvironment, shell: false, stdio: "pipe" }
@@ -911,26 +907,6 @@ function structuredErrorMessage(result: SpawnSyncReturns<Buffer>): string | unde
     }
   }
   return undefined;
-}
-
-function parseControllerIdentity(value: Record<string, unknown>): ControllerIdentity {
-  if (
-    typeof value.executablePath !== "string"
-    || value.executablePath.length === 0
-    || !Array.isArray(value.args)
-    || value.args.some((arg) => typeof arg !== "string")
-    || typeof value.version !== "string"
-    || value.version.length === 0
-  ) {
-    throw new Error(
-      "Authenticated Controller identity is malformed; treating ownership as unknown-active."
-    );
-  }
-  return {
-    executablePath: value.executablePath,
-    args: value.args as string[],
-    version: value.version
-  };
 }
 
 function controllerErrorCodeFromResult(result: SpawnSyncReturns<Buffer>): string | undefined {

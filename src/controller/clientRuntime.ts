@@ -6,6 +6,7 @@ import {
   type LiveControllerProcess
 } from "../core/controllerProcessIdentity.js";
 import { readHomeFilesystemId } from "../core/homeFilesystemIdentity.js";
+import { parseControllerIdentity, type ControllerIdentity } from "../core/controllerIdentity.js";
 
 import {
   AGENT_OPERATIONAL_ENVIRONMENT_NAMES,
@@ -74,8 +75,8 @@ export type FileControllerClientOptions = Readonly<{
    * Ordinary callers omit it; update/session maintenance passes its exact owner.
    */
   handoverOwnerPid?: number;
-  /** Override the expected version for an exact-identity restore handshake. */
-  expectedVersion?: string;
+  /** Exact captured launch and contract identity for restoration. */
+  expectedIdentity?: ControllerIdentity;
   /**
    * Fence a stop request to the exact Controller process observed by the
    * caller.  Used only by update's replacement-mismatch cleanup; ordinary
@@ -83,12 +84,6 @@ export type FileControllerClientOptions = Readonly<{
    */
   expectedPid?: number;
   onError?: (error: unknown) => void;
-}>;
-
-export type ControllerRuntimeProcessIdentity = Readonly<{
-  executablePath: string;
-  args: readonly string[];
-  version: string;
 }>;
 
 /**
@@ -125,7 +120,7 @@ export async function ensureFileTaskController(
   await waitForForeignHandover(home, options);
   try {
     const status = await call(home, "controller.status", {});
-    assertCompatibleControllerStatus(status, options.expectedVersion);
+    assertCompatibleControllerStatus(status, options.expectedIdentity);
     return status;
   } catch (error) {
     if (!isUnavailable(error)) throw error;
@@ -148,7 +143,7 @@ export async function ensureFileTaskController(
   for (;;) {
     try {
       const status = await call(home, "controller.status", {});
-      assertCompatibleControllerStatus(status, options.expectedVersion);
+      assertCompatibleControllerStatus(status, options.expectedIdentity);
       return status;
     } catch (error) {
       if (!isUnavailable(error)) throw error;
@@ -168,13 +163,13 @@ export async function ensureFileTaskController(
 /** Start and await readiness for a captured Controller identity. */
 export async function ensureFileTaskControllerIdentity(
   home: string,
-  identity: ControllerRuntimeProcessIdentity,
+  identity: ControllerIdentity,
   options: FileControllerClientOptions = {}
 ): Promise<JsonValue> {
-  assertExpectedControllerRuntimeProcessIdentity(identity);
+  const captured = parseControllerIdentity(identity);
   const status = await ensureFileTaskController(home, {
     ...options,
-    expectedVersion: identity.version
+    expectedIdentity: captured
   });
   // A same-version status is not an identity proof: another Controller binary
   // may own the Home after a restart or a stale discovery race. Authenticate
@@ -185,63 +180,35 @@ export async function ensureFileTaskControllerIdentity(
   const actual = await call(home, "controller.identity", {}, {
     timeoutMs: options.requestTimeoutMs
   });
-  assertControllerRuntimeProcessIdentity(actual, identity);
+  assertControllerRuntimeProcessIdentity(actual, captured);
   return status;
 }
 
-function assertExpectedControllerRuntimeProcessIdentity(
-  identity: ControllerRuntimeProcessIdentity
-): void {
-  if (
-    typeof identity.executablePath !== "string"
-    || identity.executablePath.length === 0
-    || !Array.isArray(identity.args)
-    || identity.args.some((arg) => typeof arg !== "string")
-    || typeof identity.version !== "string"
-    || identity.version.length === 0
-  ) {
-    throw new Error(
-      "Expected Controller runtime identity is malformed; refusing to start or accept a Controller."
-    );
-  }
-}
-
 function assertControllerRuntimeProcessIdentity(
-  actual: JsonValue,
-  expected: ControllerRuntimeProcessIdentity
+  value: JsonValue,
+  expected: ControllerIdentity
 ): void {
-  if (!isJsonRecord(actual)) {
-    throw new Error(
-      "Authenticated Controller runtime identity is malformed; refusing to accept readiness."
-    );
-  }
+  const actual = parseControllerIdentity(value);
   const actualArgs = actual.args;
-  if (
-    typeof actual.executablePath !== "string"
-    || !Array.isArray(actualArgs)
-    || actualArgs.some((arg) => typeof arg !== "string")
-    || typeof actual.version !== "string"
-  ) {
-    throw new Error(
-      "Authenticated Controller runtime identity is malformed; refusing to accept readiness."
-    );
-  }
   const argsMatch = actualArgs.length === expected.args.length
     && actualArgs.every((arg, index) => arg === expected.args[index]);
   if (
     actual.executablePath !== expected.executablePath
     || !argsMatch
     || actual.version !== expected.version
+    || actual.controllerProtocolVersion !== expected.controllerProtocolVersion
+    || actual.storageVersion !== expected.storageVersion
+    || actual.minimumStorageVersion !== expected.minimumStorageVersion
   ) {
     throw new Error(
-      "Authenticated Controller runtime identity does not match the captured executable, argv, and version; refusing readiness."
+      "Authenticated Controller runtime identity does not match the captured executable, argv, package, protocol and storage versions; refusing readiness."
     );
   }
 }
 
 function assertCompatibleControllerStatus(
   status: JsonValue,
-  expectedVersion?: string
+  expectedIdentity?: ControllerIdentity
 ): void {
   const statusRecord = isJsonRecord(status) && status.running === true ? status : null;
   const actual = statusRecord?.protocolVersion;
@@ -254,26 +221,11 @@ function assertCompatibleControllerStatus(
     );
   }
   const actualVersion = statusRecord.version;
-  if (expectedVersion !== undefined && actualVersion !== expectedVersion) {
-    throw new Error(
-      `Controller version is incompatible (expected ${expectedVersion}, found ${
-        typeof actualVersion === "string" ? actualVersion : "unknown"
-      }). `
-        + "Run `yui controller restart` before writing new task records."
-    );
-  }
-  // Ordinary callers must authenticate the complete control-plane identity.
-  // An update/upgrade restore instead targets a previously captured Controller
-  // binary, which may predate the current storage-layout status fields; that
-  // path authenticates its executable, argv, and version immediately after
-  // readiness in ensureFileTaskControllerIdentity.
-  if (expectedVersion === undefined) {
-    const identity = yuiVersionIdentity();
-    assertControllerStatusIdentity(status, {
-      ...identity,
-      version: typeof actualVersion === "string" ? actualVersion : identity.version
-    });
-  }
+  const current = yuiVersionIdentity();
+  assertControllerStatusIdentity(status, expectedIdentity === undefined ? {
+    ...current,
+    version: typeof actualVersion === "string" ? actualVersion : current.version
+  } : parseControllerIdentity(expectedIdentity));
 }
 
 function spawnDetachedFileTaskController(

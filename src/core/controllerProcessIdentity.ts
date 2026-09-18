@@ -11,7 +11,7 @@ export type LiveControllerProcess = Readonly<{
   processStartIdentity: string;
 }>;
 
-/** Exact live-process fence used only at Controller startup and v3 handoff. */
+/** Exact live-process fence used at Controller startup and handover. */
 export function inspectLiveControllerProcess(
   pid: number,
   homeFilesystemId: string,
@@ -57,7 +57,7 @@ export function inspectLiveControllerProcess(
   }
 }
 
-/** Finds an older/current Controller whose discovery record was lost. */
+/** Finds a Controller whose discovery record was lost. */
 export function findLiveControllerProcessForHome(
   homeFilesystemId: string
 ): LiveControllerProcess | undefined {

@@ -265,7 +265,7 @@ export function writeActiveReleasePointer(
 
 /**
  * Resolves the Home's active release. Returns null when no pointer exists
- * (legacy/dev Home). Fails closed when the pointer names a release that is
+ * (no immutable release selected). Fails closed when the pointer names a release that is
  * missing or drifted.
  */
 export function resolveActiveRelease(

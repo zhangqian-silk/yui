@@ -11,6 +11,7 @@ import {
   UpdateControllerReconciliationError,
   type UpdateControllerReconciliationResult
 } from "../controller/updateReconciliation.js";
+import { isControllerIdentity, type ControllerIdentity } from "../core/controllerIdentity.js";
 
 /** A side-by-side staged package, isolated from the live global install. */
 export type StagedPackage = Readonly<{
@@ -40,13 +41,6 @@ export type UpdateBlockerIdentity = Readonly<{
   runId?: string;
   nativeSessionId?: string;
   reason: string;
-}>;
-
-/** Exact identity captured before stopping a running Controller. */
-export type ControllerIdentity = Readonly<{
-  executablePath: string;
-  args: readonly string[];
-  version: string;
 }>;
 
 export type UpdateControllerLifecycleStatus = Readonly<{
@@ -549,16 +543,6 @@ function isStorageMigrationResult(value: unknown): value is UpdateStorageMigrati
 
 function isPositivePid(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-}
-
-function isControllerIdentity(value: unknown): value is ControllerIdentity {
-  return isRecord(value)
-    && typeof value.executablePath === "string"
-    && value.executablePath.length > 0
-    && Array.isArray(value.args)
-    && value.args.every((arg) => typeof arg === "string")
-    && typeof value.version === "string"
-    && value.version.length > 0;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

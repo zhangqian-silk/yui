@@ -285,7 +285,7 @@ async function startControllerServerLocked(
 }
 
 /**
- * Fence an older Controller whose socket name was derived by another protocol.
+ * Prevent a second Controller from claiming a Home with existing discovery.
  * A dead or PID-reused owner is stale and may be replaced; an unverifiable
  * live owner fails closed so an endpoint migration can never create dual
  * writers for one durable Home.
@@ -564,6 +564,8 @@ async function routeRequest(
         cliRealpath: controllerCliRealpath(),
         controllerRealpath: realpathSync(fileURLToPath(import.meta.url)),
         controllerProtocolVersion: FILE_TASK_CONTROLLER_PROTOCOL_VERSION,
+        storageVersion: yuiVersionIdentity().storageVersion,
+        minimumStorageVersion: yuiVersionIdentity().minimumStorageVersion,
         homeId,
         homeFilesystemId,
         controllerInstanceId,

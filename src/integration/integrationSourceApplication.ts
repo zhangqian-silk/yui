@@ -241,7 +241,7 @@ async function assertOperation(
   if (active !== kind) throw new Error(`Integration expected ${kind}, found ${active ?? "no active Git operation"}.`);
   if (kind === "rebase") {
     const directory = await gitPath(path, "rebase-merge");
-    // Yui invokes the merge backend explicitly. A legacy apply-backend
+    // Yui invokes the merge backend explicitly. An apply-backend
     // operation cannot be silently treated as the same execution.
     const [onto, original, headName] = await Promise.all(
       ["onto", "orig-head", "head-name"].map(name => readFile(resolve(directory, name), "utf8"))

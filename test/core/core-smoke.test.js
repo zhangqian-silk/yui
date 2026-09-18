@@ -360,7 +360,10 @@ test("update quiesces the exact Controller before replacing a current-contract b
         identity: {
           executablePath: process.execPath,
           args: ["/tmp/old-yui-controller"],
-          version: "0.14.1"
+          version: "0.14.1",
+          controllerProtocolVersion: 1,
+          storageVersion: "1.0",
+          minimumStorageVersion: "1.0"
         }
       };
     },

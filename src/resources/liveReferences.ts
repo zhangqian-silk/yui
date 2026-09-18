@@ -143,7 +143,7 @@ export async function scanLiveReferences(
 
   // 3. Controller discovery: a running Controller protects only its own
   //    discovery record. Its cwd and open files are covered by the /proc
-  //    scan above, so a live Controller does not blanket-protect legacy
+  //    scan above, so a live Controller does not blanket-protect unattributed
   //    deployments and worktrees that no descriptor references — automatic
   //    GC (which runs inside the Controller) would otherwise be a no-op.
   const discovery = readControllerDiscovery(home);

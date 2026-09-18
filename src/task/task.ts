@@ -126,7 +126,7 @@ export function createTask(id: string, title: string, now: Date, metadata: TaskM
 /**
  * Persist the Task's durable workspace identity. The identity is immutable on
  * the Task: a second binding is rejected so restart/reconcile/attach can never
- * silently adopt a different (foreign or legacy) ref namespace.
+ * silently adopt a different workspace ref namespace.
  */
 export function bindTaskWorkspaceIdentity(
   task: Task,
