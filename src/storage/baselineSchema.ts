@@ -67,14 +67,6 @@ CREATE TABLE context_snapshots (
   CHECK ((scope = 'task' AND scope_ref IS NULL) OR (scope <> 'task' AND scope_ref IS NOT NULL))
 );
 
-CREATE TABLE coordination_locks (
-  lock_key     TEXT PRIMARY KEY,
-  holder_task  TEXT NOT NULL,
-  holder_ref   TEXT NOT NULL,
-  acquired_at  TEXT NOT NULL,
-  expires_at   TEXT
-);
-
 CREATE TABLE decisions (
   task_id     TEXT NOT NULL,
   decision_id TEXT NOT NULL,
@@ -438,15 +430,6 @@ CREATE TABLE turns (
   PRIMARY KEY (task_id, turn_id)
 );
 
-CREATE TABLE work_item_candidates (
-  task_id      TEXT NOT NULL,
-  candidate_id TEXT NOT NULL,
-  work_item_id TEXT NOT NULL,
-  payload      TEXT NOT NULL,
-  created_at   TEXT NOT NULL,
-  PRIMARY KEY (task_id, candidate_id)
-);
-
 CREATE TABLE work_items (
   task_id      TEXT NOT NULL,
   work_item_id TEXT NOT NULL,
@@ -485,8 +468,6 @@ CREATE INDEX idx_global_provider_retry ON global_role_session_sets(
 ) WHERE json_extract(payload, '$.providerBinding.retry.status') IN ('waiting', 'in-flight');
 
 CREATE INDEX idx_global_role_messages_seq ON global_role_messages(name, seq);
-
-CREATE INDEX idx_input_open ON input_requests(task_id, status) WHERE status <> 'resolved';
 
 CREATE INDEX idx_input_requests_open_hot
   ON input_requests(task_id, input_id)
@@ -582,7 +563,6 @@ export const SQLITE_SCHEMA_TABLES = [
   "config",
   "configured_agents",
   "context_snapshots",
-  "coordination_locks",
   "decisions",
   "durable_jobs",
   "environment_preparations",
@@ -622,6 +602,5 @@ export const SQLITE_SCHEMA_TABLES = [
   "telemetry",
   "telemetry_aggregate",
   "turns",
-  "work_item_candidates",
   "work_items"
 ] as const;

@@ -116,16 +116,16 @@ export function validateSqliteSchema(db: Database.Database): SqliteSchemaState {
 }
 
 /** Fresh initialization, never a replay of previous schema definitions. */
-export function initializeSqliteSchema(db: Database.Database): void {
+export function initializeSqliteSchema(db: Database.Database): SqliteSchemaState {
   if (db.prepare("SELECT 1 FROM sqlite_master LIMIT 1").get() !== undefined) {
     throw new SqliteSchemaError("initialization requires an empty database.");
   }
   const { major, minor } = storageVersionParts(CURRENT_STORAGE_VERSION);
-  db.transaction(() => {
+  return db.transaction(() => {
     db.exec(BASELINE_SCHEMA_SQL);
     db.prepare("INSERT INTO storage_schema VALUES (1,?,?,?,?,?)")
       .run(STORAGE_FORMAT, major, minor, CURRENT_SCHEMA_CHECKSUM, new Date().toISOString());
-    validateSqliteSchema(db);
+    return validateSqliteSchema(db);
   })();
 }
 

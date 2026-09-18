@@ -50,6 +50,21 @@ export function convertDatabase(db, runtime) {
   const archive = db.prepare(`INSERT INTO storage_migration_archive
     (migration_version,family,record_key,payload,content) VALUES(37,?,?,?,NULL)`);
   archive.run("baseline-0.99.0/ledger", "all", JSON.stringify(db.prepare("SELECT * FROM schema_migrations ORDER BY version").all()));
+  // These tables have no current runtime authority. Preserve complete original
+  // rows without interpreting their payloads as active Candidates or locks.
+  let retiredRows = 0;
+  for (const [table, keys] of [
+    ["coordination_locks", ["lock_key"]],
+    ["work_item_candidates", ["task_id", "candidate_id"]]
+  ]) {
+    for (const row of db.prepare(`SELECT * FROM ${quote(table)}`).all()) {
+      archive.run(`baseline-0.99.0/retired-table/${table}`,
+        JSON.stringify(keys.map(key => row[key])), JSON.stringify(row));
+      retiredRows++;
+    }
+    db.exec(`DROP TABLE ${quote(table)}`);
+  }
+  db.exec("DROP INDEX idx_input_open");
   let changedRecords = 0;
   for (const table of RECORD_TABLES) {
     const primary = db.prepare(`PRAGMA table_info(${quote(table)})`).all()
@@ -85,5 +100,5 @@ export function convertDatabase(db, runtime) {
   if (db.pragma("quick_check", { simple: true }) !== "ok" || db.pragma("foreign_key_check").length !== 0) {
     throw new Error("Converted SQLite integrity or references are invalid.");
   }
-  return { source: "legacy:37", target: "1.0", changedRecords };
+  return { source: "legacy:37", target: "1.0", changedRecords, retiredRows };
 }

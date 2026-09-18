@@ -21,6 +21,8 @@ Yui 0.99.1 是纯净运行基线。软件版本 `0.99.1`、Home 存储版本 `1.
   不是 Schema 版本，不能重置。
 - `storage_migration_archive` 只保留不透明审计证据，不解释旧格式来执行工作。
   其中的旧版本数字与原始字节保持不变。
+- Candidate 的当前权威只有所属 WorkItem 的候选数组。基线不再创建无用的
+  `work_item_candidates`、`coordination_locks` 表或废弃的 `idx_input_open` 索引。
 
 运行 tarball 不包含历史迁移模块，也不包含独立转换器。旧 tag 和发布包用于
 显式诊断，不构成运行时回退。
@@ -61,6 +63,9 @@ Controller 交接或发现记录。登记所有者身份不可验证时仍阻塞
 Yui 记录封装及活动类型化验证计划，将每个改写前的原始负载和旧账本保存在审计中。
 用户文本、原生负载、冻结 Context、Git 数据、未提交文件、ID、计数和 Task
 结果保持原样。
+删除两张旧表之前，每一行原始内容都写入审计的
+`baseline-0.99.0/retired-table/<table>` 分类，不把其中的负载当作活动记录规范化。
+回执以 `retiredRows` 单独报告归档行数。
 
 旧 `active-release.json` 和 `runtime-identity.json` 归档到
 `retired-runtime/`，不改写成新运行事实。工具不恢复旧 Host、不改全局安装、

@@ -11,7 +11,7 @@ const versions = {
   events: 2, task_wakes: 2, capability_grants: 2, release_workflows: 1,
   publication_references: 1, local_resources: 1, environment_preparations: 1,
   plugin_intents: 1, plugin_validations: 1, session_owners: 2,
-  work_items: 15, work_item_candidates: 3, active_turns: 3,
+  work_items: 15, active_turns: 3,
   context_snapshots: 1, gate_artifacts: 1, resource_registry: 1
 };
 export const RECORD_TABLES = Object.freeze(Object.keys(versions));
@@ -72,9 +72,6 @@ export function convertRecord(table, original) {
     case "work_items":
       for (const item of value.executionGroups) group(item);
       for (const item of value.candidates) candidate(item);
-      break;
-    case "work_item_candidates":
-      workspace(value.workspace);
       break;
     case "events":
       if (value.type === "runtime.observation" || value.type === "runtime.process-exit-observed") {

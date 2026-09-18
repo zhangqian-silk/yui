@@ -70,15 +70,7 @@ export type StorageUpgradeReport = Readonly<{
   backupPath?: string;
 }>;
 
-export type UpgradeBlockerStage = "uninitialized" | "unsupported" | "corruption" | "in-flight";
-
-/**
- * A structured pre-migration blocker surfaced through the `blocked` result. Its
- * JSON shape is compatible with the updater's blocker contract (`reason` is the
- * field the updater preserves); `detail` carries the same operator-facing text
- * the migration would throw, and is also folded into the human `message`.
- */
-export type UpgradePreflightBlocker = Readonly<{ reason: string; detail: string }>;
+export type UpgradeBlockerStage = "uninitialized" | "unsupported" | "corruption";
 
 export type UpgradeResult = Readonly<
   | {
@@ -108,7 +100,6 @@ export type UpgradeResult = Readonly<
       stage: UpgradeBlockerStage;
       message: string;
       action: string;
-      blockers?: readonly UpgradePreflightBlocker[];
       classification: HomeClassification;
       sceneUnchanged: true;
     }

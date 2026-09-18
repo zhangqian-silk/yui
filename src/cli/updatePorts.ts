@@ -34,7 +34,8 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
-  rmSync
+  rmSync,
+  statSync
 } from "node:fs";
 import {
   delimiter,
@@ -61,7 +62,6 @@ import type {
   StagedPackage,
   UpdateControllerLifecycleStatus,
   UpdateControllerStopResult,
-  UpdateBlockerIdentity,
   UpdatePorts,
   UpdatePreflight,
   UpdateStorageMigrationResult
@@ -1040,16 +1040,8 @@ function assertActivatedControllerIdentity(
  * entrypoint derivation as the production startup identity check (P1-1, rr23).
  */
 export function activatedControllerEntrypoint(activatedBinary: string): string {
-  let resolvedBinary: string;
-  try {
-    resolvedBinary = realpathSync(activatedBinary);
-  } catch {
-    // `verify` already checked existsSync. Keep the fallback deterministic for
-    // test seams and fail closed later if the identity does not match it.
-    resolvedBinary = resolve(activatedBinary);
-  }
+  const resolvedBinary = realpathSync(activatedBinary);
   const direct = join(dirname(resolvedBinary), "controller", "controllerMain.js");
-  if (existsSync(direct)) return direct;
 
   // npm may expose a non-symlink launcher under <prefix>/bin. Resolve the
   // package's canonical global layout when it is present.
@@ -1063,7 +1055,15 @@ export function activatedControllerEntrypoint(activatedBinary: string): string {
     "controller",
     "controllerMain.js"
   );
-  return existsSync(packageEntrypoint) ? packageEntrypoint : direct;
+  for (const candidate of [direct, packageEntrypoint]) {
+    if (!existsSync(candidate)) continue;
+    const entrypoint = realpathSync(candidate);
+    if (!statSync(entrypoint).isFile()) {
+      throw runtimeError(`Controller entrypoint is not a regular file: ${entrypoint}.`);
+    }
+    return entrypoint;
+  }
+  throw runtimeError(`Controller entrypoint is missing for the activated binary: ${resolvedBinary}.`);
 }
 
 function interpretPreflight(result: SpawnSyncReturns<Buffer>): UpdatePreflight {
@@ -1116,7 +1116,6 @@ function interpretPreflight(result: SpawnSyncReturns<Buffer>): UpdatePreflight {
       action: "Use a staged binary that supports the update-preflight contract; do not force the update."
     };
   }
-  const blockers = parseUpdateBlockers(data.blockers);
   return {
     status: "blocked",
     stage: typeof data.stage === "string" ? data.stage : "preflight",
@@ -1124,8 +1123,6 @@ function interpretPreflight(result: SpawnSyncReturns<Buffer>): UpdatePreflight {
     action: typeof data.action === "string"
       ? data.action
       : "Resolve the reported condition and retry.",
-    ...(blockers === undefined ? {} : { blockers }),
-    ...(typeof data.retryCommand === "string" ? { retryCommand: data.retryCommand } : {}),
     ...(data.sceneUnchanged === true ? { sceneUnchanged: true } : {})
   };
 }
@@ -1209,31 +1206,6 @@ function isStorageMigrationStep(value: unknown): boolean {
     && storageVersionParts(value.toVersion).minor === storageVersionParts(value.fromVersion).minor + 1
     && typeof value.name === "string"
     && value.name.length > 0;
-}
-
-function parseUpdateBlockers(value: unknown): readonly UpdateBlockerIdentity[] | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value)) return undefined;
-  const parsed: UpdateBlockerIdentity[] = [];
-  for (const item of value) {
-    if (!isRecord(item) || typeof item.reason !== "string" || item.reason.length === 0) {
-      return undefined;
-    }
-    const optional = ["taskId", "roleName", "runId", "nativeSessionId"] as const;
-    if (optional.some((key) => item[key] !== undefined && typeof item[key] !== "string")) {
-      return undefined;
-    }
-    parsed.push({
-      ...(typeof item.taskId === "string" ? { taskId: item.taskId } : {}),
-      ...(typeof item.roleName === "string" ? { roleName: item.roleName } : {}),
-      ...(typeof item.runId === "string" ? { runId: item.runId } : {}),
-      ...(typeof item.nativeSessionId === "string"
-        ? { nativeSessionId: item.nativeSessionId }
-        : {}),
-      reason: item.reason
-    });
-  }
-  return parsed;
 }
 
 /**

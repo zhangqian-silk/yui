@@ -13,7 +13,6 @@ export async function loadRuntime(directory) {
   const { validateStoredRecord } = await load("storage/recordValidation.js");
   const { validateYuiConfig } = await load("storage/taskStore.js");
   const { validateTaskBrief } = await load("brief/taskBrief.js");
-  const { validateWorkItemCandidate } = await load("workItem/workItem.js");
   const { normalizeVerificationPlan } = await load("verification/verificationPlan.js");
   const { createRuntimeObservation } = await load("runtime/runtimeObservation.js");
   const { validateRuntimeProcessExitObservation } = await load("runtime/processExitObservation.js");
@@ -39,7 +38,6 @@ export async function loadRuntime(directory) {
     },
     validateRecord(table, value) {
       if (table === "config") validateYuiConfig(value);
-      else if (table === "work_item_candidates") validateWorkItemCandidate(value);
       else if (table === "resource_registry") parseResourceRegistryState({ schemaVersion:1, records:{ [value.id]:value } });
       else validateStoredRecord(table,value);
       if (table === "projects") {

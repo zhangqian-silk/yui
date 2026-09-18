@@ -12,6 +12,9 @@ test("fresh storage has one distinct 1.0 baseline, never a historical migration 
     assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.0");
     assert.equal(db.prepare("SELECT count(*) AS n FROM storage_schema").get().n, 1);
     assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='schema_migrations'").get(), undefined);
+    for (const name of ["coordination_locks", "work_item_candidates", "idx_input_open"]) {
+      assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name=?").get(name), undefined);
+    }
     assert.throws(() => schema.initializeSqliteSchema(db), /empty/i);
     schema.validateSqliteSchema(db);
     db.exec("CREATE TABLE sqliteX_extra(value TEXT)");

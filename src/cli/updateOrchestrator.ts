@@ -29,19 +29,9 @@ export type UpdatePreflight = Readonly<
       stage: string;
       message: string;
       action: string;
-      blockers?: readonly UpdateBlockerIdentity[];
-      retryCommand?: string;
       sceneUnchanged?: true;
     }
 >;
-
-export type UpdateBlockerIdentity = Readonly<{
-  taskId?: string;
-  roleName?: string;
-  runId?: string;
-  nativeSessionId?: string;
-  reason: string;
-}>;
 
 export type UpdateControllerLifecycleStatus = Readonly<{
   running: boolean;
@@ -90,8 +80,6 @@ export type UpdateResult = Readonly<
         action: string;
         recoverable: boolean;
         version?: string;
-        blockers?: readonly UpdateBlockerIdentity[];
-        retryCommand?: string;
         sceneUnchanged?: true;
         controllerOwnershipUnknown?: true;
         backupPath?: string;
@@ -180,8 +168,6 @@ function runStagedUpdate(
       action: preflight.action,
       recoverable: true,
       version: staged.version,
-      ...(preflight.blockers === undefined ? {} : { blockers: preflight.blockers }),
-      ...(preflight.retryCommand === undefined ? {} : { retryCommand: preflight.retryCommand }),
       ...(preflight.sceneUnchanged === true ? { sceneUnchanged: true } : {})
     };
   }
@@ -274,8 +260,7 @@ function runCoordinatedUpdate(ports: UpdatePorts, staged: StagedPackage, home: s
     return restoreControllerOrReport(ports, home, captured.lifecycle, {
       outcome: "aborted", phase: "preflight",
       message: fencedPreflight.message, action: fencedPreflight.action,
-      recoverable: true, version: staged.version,
-      ...(fencedPreflight.blockers === undefined ? {} : { blockers: fencedPreflight.blockers })
+      recoverable: true, version: staged.version
     });
   }
   return activateAndVerify(ports, staged, home, captured.lifecycle, fencedPreflight);

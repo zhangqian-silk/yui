@@ -47,10 +47,19 @@ test("one-time v37 conversion preserves intent, raw audits, identities and count
   const event={...createTaskEvent("event-1","task-1","user.requirement",{body:original},at),schemaVersion:2};
   db.prepare("INSERT INTO events VALUES(?,?,?,?,?)").run(event.taskId,event.id,event.type,event.createdAt,JSON.stringify(event));
   db.prepare("INSERT INTO id_sequences VALUES('task-1','event',19)").run();
+  db.prepare("INSERT INTO coordination_locks VALUES(?,?,?,?,?)")
+    .run("lock-1","task-1","old-owner",at.toISOString(),null);
+  db.prepare("INSERT INTO work_item_candidates VALUES(?,?,?,?,?)")
+    .run("task-1","candidate-1","work-item-1","opaque original candidate evidence",at.toISOString());
+  const retired = {
+    coordination_locks: db.prepare("SELECT * FROM coordination_locks").get(),
+    work_item_candidates: db.prepare("SELECT * FROM work_item_candidates").get()
+  };
   const home=db.prepare("SELECT * FROM home_meta").get();
   const plan=inspectLegacyDatabase(db);
   assert.deepEqual(plan,{source:"legacy:37",target:"1.0",ledgerEntries:37});
-  db.transaction(()=>convertDatabase(db,runtime))();
+  const converted = db.transaction(()=>convertDatabase(db,runtime))();
+  assert.equal(converted.retiredRows,2);
   runtime.validateSchema(db);
   assert.deepEqual(db.prepare("SELECT * FROM home_meta").get(),home);
   assert.equal(db.prepare("SELECT high_water FROM id_sequences").get().high_water,19);
@@ -60,6 +69,13 @@ test("one-time v37 conversion preserves intent, raw audits, identities and count
   assert.equal(JSON.parse(db.prepare("SELECT payload FROM events").get().payload).payload.body,original);
   assert.equal(db.prepare("SELECT payload FROM storage_migration_archive WHERE family='baseline-0.99.0/messages'").get().payload,original);
   assert.equal(JSON.parse(db.prepare("SELECT payload FROM storage_migration_archive WHERE family='baseline-0.99.0/ledger'").get().payload).length,37);
+  for (const [table,row] of Object.entries(retired)) {
+    assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name=?").get(table),undefined);
+    const audit=db.prepare("SELECT payload FROM storage_migration_archive WHERE family=?")
+      .get(`baseline-0.99.0/retired-table/${table}`);
+    assert.deepEqual(JSON.parse(audit.payload),row);
+  }
+  assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='idx_input_open'").get(),undefined);
   const before=db.serialize();
   assert.throws(()=>db.transaction(()=>convertDatabase(db,runtime))(),/exact 0.99.0/);
   assert.deepEqual(db.serialize(),before);

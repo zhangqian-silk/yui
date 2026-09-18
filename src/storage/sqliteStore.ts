@@ -133,7 +133,6 @@ import {
   type ContextRecordQuery
 } from "./contextRecords.js";
 import {
-  inspectSqliteSchema,
   initializeSqliteSchema,
   validateSqliteSchema,
   SqliteSchemaError,
@@ -294,15 +293,14 @@ export class SqliteTaskStore implements TaskStore {
     const databaseExisted = existsSync(databasePath);
     this.#db = new Database(databasePath, _options.readonly ? { readonly: true, fileMustExist: true } : {});
     try {
-      if (databaseExisted) validateSqliteSchema(this.#db);
+      const existingSchema = databaseExisted ? validateSqliteSchema(this.#db) : undefined;
       // §4.1 / §9: WAL, no fsync weakening, FKs on, busy timeout for CLI contention.
       if (!_options.readonly) this.#db.pragma("journal_mode = WAL");
       this.#db.pragma("synchronous = FULL");
       this.#db.pragma("foreign_keys = ON");
       this.#db.pragma("busy_timeout = 5000");
       this.#db.pragma("wal_autocheckpoint = 1000");
-      if (!databaseExisted) initializeSqliteSchema(this.#db);
-      const schema = inspectSqliteSchema(this.#db);
+      const schema = existingSchema ?? initializeSqliteSchema(this.#db);
       this.#openedSchemaHead = {
         version: schema.currentVersion,
         checksum: schema.currentChecksum

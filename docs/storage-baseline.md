@@ -25,6 +25,9 @@ contract; it must not reset it again.
   immutable Context resources are not schema versions. Never reset them.
 - `storage_migration_archive` is opaque audit evidence, not an executable
   compatibility reader. Old numbers and original bytes in audit remain intact.
+- Candidates have one current authority: the owning WorkItem's candidate array.
+  The baseline does not create the unused `work_item_candidates` or
+  `coordination_locks` tables, or the obsolete `idx_input_open` index.
 
 The runtime tarball contains neither historical migration modules nor the
 standalone converter. Source-level history and previous published packages
@@ -74,6 +77,10 @@ backup with checksum. It converts only named Yui envelopes and active typed
 verification plans, preserving each changed payload and the original ledger in
 audit. User text, native payloads, frozen Context bytes, Git data, dirty files,
 IDs, counters and Task outcomes are preserved.
+Before dropping the two unused source tables, every original row is retained
+under `baseline-0.99.0/retired-table/<table>` in the audit archive. Their payloads
+are opaque evidence, not active records to normalize. The receipt reports
+`retiredRows` separately from changed current records.
 
 Old `active-release.json` and `runtime-identity.json` are archived in
 `retired-runtime/`, not relabelled as observations of the new runtime. The tool

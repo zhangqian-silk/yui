@@ -3529,7 +3529,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       // this Global Role, settle it to the observed terminal so the scope-generic
       // resolver and the interrupt-then gate see the real stop on the live binding
       // — the same edge Task settles via settleStructuredProviderTurn. This is a
-      // strict guarded no-op for an older unmanaged Session or a
+      // strict guarded no-op for a Session without a controlled binding or a
       // binding holding a different/already-terminal Turn, and the
       // durable native terminal recorded just above remains the proof of record.
       current = settleGlobalRoleRuntimeTurn(current, input.nativeTurnId, input.providerStatus, now);
@@ -4568,7 +4568,7 @@ function settleStructuredProviderTurn(
  * It is a strict guarded no-op unless a controller-owned Turn with that exact
  * native id is bound and still in flight (`accepted`) — an absent binding, a
  * different/only-submitting Turn, or an already-terminal one is left untouched, so
- * an older unmanaged Session without a controlled binding settles nothing
+ * a Session without a controlled binding settles nothing
  * and the durable `recentCompletedTurnIds` terminal remains the proof of record.
  */
 function settleGlobalRoleRuntimeTurn(
@@ -4578,7 +4578,7 @@ function settleGlobalRoleRuntimeTurn(
   now: Date
 ): GlobalRoleSessionSet {
   const binding = sessions.providerBinding;
-  if (binding === null || binding === undefined || binding.run === null
+  if (binding === null || binding.run === null
     || binding.run.nativeTurnId !== nativeTurnId
     || binding.run.status !== "accepted") {
     return sessions;
