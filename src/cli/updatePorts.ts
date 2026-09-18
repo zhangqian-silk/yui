@@ -133,21 +133,21 @@ export function createUpdatePorts(
     beginControllerHandover(home: string): () => void {
       return acquireHandoverLock(home).release;
     },
-    stage(version?: string): StagedPackage {
+    stage(requestedVersion?: string): StagedPackage {
       // A caller that names a version (the release workflow, which freezes the
       // exact version in its plan) installs THAT version — never a moving
       // `latest` that could resolve to a different build than the one the
       // plan authorized. A non-concrete value fails closed rather than being
       // interpolated into an install spec. An omitted version keeps the
       // interactive `yui update` behavior of staging latest.
-      const spec = version === undefined
+      const spec = requestedVersion === undefined
         ? PACKAGE_SPEC
-        : isConcreteVersion(version)
-          ? `${PACKAGE_NAME}@${version.trim()}`
+        : isConcreteVersion(requestedVersion)
+          ? `${PACKAGE_NAME}@${requestedVersion.trim()}`
           : null;
       if (spec === null) {
         throw runtimeError(
-          `Refusing to stage a non-concrete version (${String(version)}): only an exact `
+          `Refusing to stage a non-concrete version (${String(requestedVersion)}): only an exact `
             + "major.minor.patch version can be pinned for an update."
         );
       }
@@ -175,6 +175,12 @@ export function createUpdatePorts(
             "Failed to resolve the exact staged package version (neither the staged package.json "
               + "nor `yui --json version` returned a concrete version). Refusing to proceed with a "
               + "`@latest` fallback that could promote a different build than the one preflighted."
+          );
+        }
+        if (requestedVersion !== undefined && version !== requestedVersion.trim()) {
+          throw runtimeError(
+            `Requested Yui ${requestedVersion.trim()}, but staged Yui ${version}. `
+              + "Refusing to activate a different release; the install and storage are unchanged."
           );
         }
         // Successful staging transfers cleanup ownership to runUpdate's finally

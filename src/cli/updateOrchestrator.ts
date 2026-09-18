@@ -129,11 +129,11 @@ type ControllerLifecycle = Readonly<{
 
 export function runUpdate(
   ports: UpdatePorts,
-  options: Readonly<{ home: string }>
+  options: Readonly<{ home: string; version?: string }>
 ): UpdateResult {
   let staged: StagedPackage;
   try {
-    staged = ports.stage();
+    staged = ports.stage(options.version);
   } catch (error) {
     return {
       outcome: "aborted",

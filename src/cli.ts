@@ -407,8 +407,7 @@ export async function main(): Promise<void> {
   }
   if (args[0] === "update") {
     if (jsonOutput) throw usageError("Update does not support --json.");
-    if (args.length !== 1) throw usageError("Update usage: yui update");
-    process.exitCode = runUpdateCommand();
+    process.exitCode = runUpdateCommand(args.slice(1));
     return;
   }
 

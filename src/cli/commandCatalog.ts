@@ -1230,7 +1230,12 @@ export const ROOT_COMMAND = buildNode({
     },
     { name: "help", summary: "Show root or scoped command help.", usage: "yui help [command ...]", commandPathArguments: true },
     { name: "version", summary: "Print the installed Yui version." },
-    { name: "update", summary: "Install the latest published Yui package globally." },
+    {
+      name: "update",
+      summary: "Install the latest or an exact published Yui version after storage preflight.",
+      usage: "yui update [--version <exact-version>]",
+      options: ["--version"]
+    },
     {
       name: "upgrade",
       summary: "Plan or apply supported storage migrations for this Home.",
@@ -1831,7 +1836,11 @@ export function validateCommandCatalog(root: CommandNode): void {
 
     const options = new Set<string>();
     for (const option of [...node.options, ...node.hiddenOptions]) {
-      if (reservedAliases.has(option)) throw new Error(`Reserved alias token is not allowed: ${[...node.path, option].join(" ")}`);
+      // --version is an alias only as the entire root invocation. Scoped
+      // commands may own a version selector; help aliases remain reserved.
+      if (reservedAliases.has(option) && option !== "--version") {
+        throw new Error(`Reserved alias token is not allowed: ${[...node.path, option].join(" ")}`);
+      }
       if (options.has(option) || immediate.has(option)) throw new Error(`Duplicate command token: ${[...node.path, option].join(" ")}`);
       options.add(option);
     }
