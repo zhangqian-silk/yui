@@ -27,6 +27,11 @@ import { AGENT_HOST_CONTROL_PROTOCOL, openAgentHostControl } from "../../dist/ru
 import { FileTaskController } from "../../dist/controller/controller.js";
 import { createInputRequest } from "../../dist/input/inputRequest.js";
 import { enqueueWork } from "../../dist/coordination/workMailboxQueue.js";
+import {
+  publishStructuredProviderAccepted, publishStructuredProviderTerminal
+} from "../../dist/controller/structuredProviderObservation.js";
+import { FileRuntimeEventInbox } from "../../dist/controller/runtimeEventInbox.js";
+import { FileRuntimeEventProcessor } from "../../dist/controller/runtimeEventProcessor.js";
 
 const now = new Date("2026-09-18T00:00:00Z");
 
@@ -282,6 +287,45 @@ test("a stale target does not let successor input bypass an uncertain original M
   await deliverGlobalInputs(f.home, f.store, async () => { ensured = true; }, error => { throw error; });
   assert.equal(ensured, false);
   assert.deepEqual(f.store.listGlobalRoleMessages("operator")[0], unknown);
+});
+
+test("Global native terminal survives a Controller outage and releases queued input only after exact Inbox replay", async t => {
+  const f = fixture(t);
+  f.enqueue();
+  const [notice] = await f.process();
+  const attemptId = `global-input:operator/${notice.messageId}`;
+  new FileSchedulerStoreAdapter(f.store).beginAgentHostProviderTurn({
+    roleName: "operator", agentId: "codex", nativeSessionId: "operator-native", attemptId,
+    authorityEpoch: 1, authorityOwner: "controller", holderId: "controller", now
+  });
+  const environment = { YUI_HOME: f.home, YUI_SESSION_SCOPE: "global", YUI_ROLE: "operator",
+    YUI_AGENT_ID: "codex", YUI_ADAPTER_ID: "codex", YUI_WORKSPACE: f.home };
+  const identity = { nativeSessionId: "operator-native", conversationId: "operator-native",
+    nativeTurnId: "exact-offline-turn", attemptId };
+  // There is deliberately no Controller socket: native completion is not yet
+  // Yui settlement, and must not unlock a second native writer.
+  await publishStructuredProviderAccepted({ home: f.home, environment,
+    receipt: { ...identity, acceptedAt: now.toISOString(), acceptance: "provider" } });
+  await publishStructuredProviderTerminal({ home: f.home, environment,
+    terminal: { ...identity, observedAt: now.toISOString(), clientOwned: true,
+      status: "completed", output: "Original natural result" } });
+  const next = f.user("Wait for the original terminal fact");
+  assert.equal(f.store.getGlobalRoleSessionSet("operator").providerBinding.run.status, "submitting");
+  await f.deliver();
+  assert.equal(f.store.listGlobalRoleMessages("operator").find(m => m.id === next.id).delivery, undefined);
+  f.reopen();
+  const inbox = new FileRuntimeEventInbox(f.home);
+  assert.equal(inbox.list().filter(event => event.observation.kind === "turn.completed").length, 1);
+  const processor = new FileRuntimeEventProcessor(inbox, new FileSchedulerStoreAdapter(f.store));
+  const result = processor.drain(new Date());
+  assert.deepEqual(result.failed, []);
+  assert.deepEqual(result.deferred, []);
+  assert.equal(f.store.getGlobalRoleSessionSet("operator").providerBinding.run.status, "completed");
+  assert.equal(inbox.list().length, 0);
+  const provider = await f.provider();
+  await f.deliver();
+  assert.deepEqual(provider.attempts, [`global-input:operator/${next.id}`]);
+  f.observe("turn.completed");
 });
 
 test("Controller handoff signals the existing Global queue without waiting for a full reconciliation", async t => {
