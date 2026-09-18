@@ -251,19 +251,37 @@ explicit recipients require an existing WorkItem/ReviewRound Assignment.
 External-effect authorization must be explicit: development does not grant
 push/PR/merge, and merge does not grant release, production update or archive.
 
-Current limitation: both ordinary submissions and `task message queue` refuse a
-completed Task before saving new input, including record-only submissions.
-Leader notifications run only for Draft/active, execution-enabled Tasks;
-`task execution start` requires an open Task and `task upstream integrate`
-requires active. Keeping the Leader Session alive does not provide an
-Operator-to-Leader post-completion execution route. Publication upsert,
-diff/adopt and verify are separate, authorized atomic operations for unarchived
-completed results; they do not start that execution. Report the missing handoff
-instead of pretending a message will run. `task reopen` explicitly returns to
-active and clears current completion metadata while preserving prior events;
-it is not the default delivery-only workaround. Preserve original acceptance
-heads and history, and do not use archived workspaces or Session replacement to
-bypass lifecycle.
+When the user explicitly requests further implementation or delivery of the same
+completed, unarchived result, the Operator may perform the necessary
+`task reopen <task>` before submitting the new scoped request. The user need not
+add a mechanical “reopen” confirmation. These existing operations suffice; no
+auto-reopen option or post-completion execution protocol is needed. Ordinary
+send/queue/submit, including `--intent develop`, still refuses a completed Task
+before saving new input. Queries, record-only input and discussion do not grant
+reopening authority.
+
+Reopen returns the Task to active and clears current completion metadata while
+preserving original events, fixed heads/reports and Publication history. The
+Leader separately verifies and accepts the new result; old validation does not
+automatically cover it. Reopen preserves an independent execution stop: only the
+authorized `task execution start` path can lift that gate after cleanup.
+Cancelled intent requires separate restoration authority; archived Tasks cannot
+reopen, and retained workspaces or Session replacement do not bypass lifecycle.
+
+Reopening and submitting are two atomic operations with separate outcomes.
+Inspect the lifecycle result and saved/queued receipt; if submission fails,
+read current state and continue only the unapplied step within the same authority.
+Keep the same key for a matching submission retry, never replay unknown effects,
+and do not reopen again merely to retry after another completion or cancellation.
+The reopen notification can arrive before the new Message: the Leader waits for
+the actual request, without rerunning accepted work or immediately completing
+again. Once the request arrives, it proceeds without another “continue.”
+
+Publication upsert, diff/adopt and verify remain separate, authorized atomic
+operations for completed, unarchived results. They need no reopening when no new
+execution is requested. After reopened work, record its new completion without
+rewriting the earlier baseline, then apply the existing candidate adoption and
+verification rules where relevant.
 
 An independently acceptable, deliverable and reversible new outcome, or an
 explicit user request for a new Task, can justify a new Task; explain that reason.

@@ -42,13 +42,21 @@ or planning work; the routes below do not override those restrictions.
   been authorized and is legal. A conversation does not reopen, reactivate or
   resume execution. If new implementation is requested, identify the needed
   lifecycle/authority action for the Operator; do not manufacture a Run.
-  For later PR/MR delivery, read the
+  An explicit same-result follow-up on a completed, unarchived Task can authorize
+  the Operator's necessary reopen and submission without a second mechanical
+  confirmation. Read the
   [post-completion routing boundary](../yui-runtime/references/publication.md#post-completion-routing-boundary).
   Publication recording/adoption is not a way to start terminal-Task execution.
 
 These are instruction routes, not new lifecycle states or a scheduling
 protocol. Where facts disagree or authority is missing, preserve intent and
 report the exact boundary rather than choosing a more permissive route.
+
+A `task-reopened` notification can arrive before its follow-up Message. Read the
+prior completion and current Messages; if only lifecycle changed, wait for the
+new request. Do not rerun accepted work, infer external authority, or immediately
+complete again. Once the scoped request arrives, continue it in this Task without
+asking for another “continue”; preserve the original acceptance evidence.
 
 Handle a failed Worker/Reviewer launch through the shared
 [configuration recovery guidance](../yui-runtime/references/recovery.md#configuration-and-model-name-failures).

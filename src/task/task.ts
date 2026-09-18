@@ -489,7 +489,8 @@ export function reopenTask(task: Task, now: Date): Task {
         }
       : {}),
     status: "active",
-    executionGate: { state: "enabled" },
+    // Reopening intent does not lift an independent execution stop. Only the
+    // explicit start operation may do that after its authority/cleanup checks.
     updatedAt: now.toISOString()
   });
 }

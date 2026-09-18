@@ -78,7 +78,9 @@ in its description or routed Message. The examples below are separate
 operations, not an automatic create/submit/activate sequence. For creation-only
 intent, save the Task without starting planning. Discussion does not authorize
 delivery; follow the Leader's [planning and activation boundary](../yui-leader/references/planning.md)
-before activation. Do not reopen terminal Tasks merely because new input arrives.
+before activation. Queries, record-only input and discussion do not authorize
+reopening. An explicit request to continue the same completed result can authorize
+the necessary reopening; follow the delivery guidance below.
 
 ```sh
 yui operator submit "<related request and delta>" --task <task-id> --intent discuss
@@ -132,10 +134,12 @@ a new integration/delivery Task, concurrent dependent publications or direct
 Global implementation. A successful send, native terminal or completed Task
 does not establish remote merge.
 
-Check lifecycle and actual CLI behavior first: current terminal Tasks do not
-accept ordinary Leader submissions. Do not promise that sending a Message will
-execute later delivery, silently reopen the Task, or use Session recovery to
-bypass that boundary.
+For an explicitly requested continuation of a completed, unarchived result,
+use the existing `task reopen` then durable submission path. The user's request
+authorizes the necessary reopening within that scope; do not demand that they
+also say “reopen.” Ordinary messages do not auto-reopen a Task. Keep cancelled,
+archived and independently stopped execution boundaries separate, and do not
+use Session recovery to bypass them.
 
 ## Prefer the lowest-complexity intervention
 

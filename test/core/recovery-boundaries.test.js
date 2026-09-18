@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { createConfiguredAgent } from "../../dist/agent/agent.js";
-import { activateTask, createTask } from "../../dist/task/task.js";
+import { activateTask, archiveTask, createTask, retireTask } from "../../dist/task/task.js";
 import { createRole, createRoleAgentBinding } from "../../dist/role/role.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
 import {
@@ -36,6 +36,8 @@ import { createRuntimeObservation } from "../../dist/runtime/runtimeObservation.
 import { createProject } from "../../dist/repository/project.js";
 import { startControllerServer } from "../../dist/core/controllerServer.js";
 import { stopCodexNativeSession } from "../../dist/runtime/nativeSessionControl.js";
+import { stopTaskExecutionCommand } from "../../dist/commands/taskExecutionCommands.js";
+import { processLeaderWakeups } from "../../dist/scheduler/leaderWakeupProcessor.js";
 
 const at = new Date("2026-09-10T00:00:00Z");
 const later = new Date("2026-09-10T00:01:00Z");
@@ -69,6 +71,88 @@ function fixture(t) {
   };
   return { store, home, agent, command, leader, scheduler: new FileSchedulerStoreAdapter(store) };
 }
+
+test("explicit reopen and keyed input preserve acceptance history without replaying old work", async t => {
+  const { store, command, scheduler } = fixture(t);
+  command(["message", "send", "task-1", "Original requirement", "--intent", "record", "--request-id", "original"]);
+  command(["complete", "task-1", "--summary", "Original result accepted"]);
+  const completed = store.getTask("task-1");
+  const completion = store.listEvents("task-1").find(e => e.type === "task.completed");
+  const original = store.listMessages("task-1")[0];
+  const session = store.getTaskRoleSessionSet("task-1", "leader");
+  for (const intent of ["record", "discuss", "develop"]) {
+    assert.throws(() => command(["message", "send", "task-1", "Not an implicit reopen", "--intent", intent]), /completed/);
+  }
+  assert.deepEqual(store.getTask("task-1"), completed);
+  command(["reopen", "task-1"]);
+  const revision = store.getStateRevision();
+  command(["reopen", "task-1"]);
+  assert.equal(store.getStateRevision(), revision, "An active reopen is an idempotent no-op.");
+  assert.equal(store.getTask("task-1").status, "active");
+  assert.equal(store.getTask("task-1").completedAt, undefined);
+  assert.equal(store.getTask("task-1").completionSummary, undefined);
+  assert.deepEqual(store.listEvents("task-1").find(e => e.id === completion.id), completion);
+  assert.deepEqual(store.getTaskRoleSessionSet("task-1", "leader"), session);
+  assert.equal(store.listEvents("task-1").filter(e => e.type === "task.reopened").length, 1);
+
+  // The lifecycle notification may arrive before the second command. It has no
+  // new requirement and must not replay a previously accepted Message.
+  const reopened = scheduler.claimLeaderNotification("task-1", later);
+  assert.equal(reopened.disposition, "submit");
+  assert.ok(!store.getTaskWake("task-1", reopened.wakeId).refs.some(ref => ref.type === "message"));
+  scheduler.settleLeaderNotification("task-1", reopened.attemptId, "accepted", later);
+  const input = ["message", "send", "task-1", "Authorized follow-up", "--intent", "develop", "--request-id", "follow-up"];
+  command(input);
+  command(input);
+  assert.throws(() => command(["message", "send", "task-1", "Changed request",
+    "--intent", "develop", "--request-id", "follow-up"]), /different submission/);
+  const messages = store.listMessages("task-1");
+  assert.equal(messages.length, 2);
+  assert.deepEqual(messages[0], original);
+  assert.equal(messages[1].submissionReceipt.feedback.delivery, "queued");
+  assert.deepEqual(pendingCompletionMessages(store, "task-1").map(m => m.id), [messages[1].id]);
+  assert.throws(() => command(["complete", "task-1", "--summary", "Not delivered yet"]), /pending-user-input/);
+  const followup = scheduler.claimLeaderNotification("task-1", later);
+  assert.equal(followup.disposition, "submit");
+  assert.deepEqual(store.getTaskWake("task-1", followup.wakeId).refs
+    .filter(ref => ref.type === "message").map(ref => ref.id), [messages[1].id]);
+  scheduler.settleLeaderNotification("task-1", followup.attemptId, "unknown", later);
+  const unknown = store.getWorkMailbox({ kind: "role", taskId: "task-1", roleName: "leader" });
+  command(["reopen", "task-1"]);
+  command(input);
+  assert.deepEqual(store.getWorkMailbox(unknown.target), unknown);
+  await processLeaderWakeups(scheduler, {
+    prepareRoleSession: async () => assert.fail("Unknown input must not be replayed.")
+  }, later);
+  assert.equal(store.getWorkMailbox(unknown.target).processing.batchId, followup.attemptId);
+  assert.deepEqual(store.listRuns("task-1"), [], "Notifications do not fabricate AgentRuns.");
+});
+
+test("reopen preserves an independent execution stop and cannot revive archived intent", async t => {
+  const { store, command, scheduler } = fixture(t);
+  stopTaskExecutionCommand({ taskId: "task-1", reason: "Explicit safety stop" }, store,
+    { now: () => at, environment: {} });
+  command(["complete", "task-1", "--summary", "Local result accepted while stopped"]);
+  const completed = store.getTask("task-1");
+  assert.equal(completed.executionGate.state, "stopped", "This is a reachable completed/stopped Task.");
+  command(["reopen", "task-1"]);
+  assert.equal(store.getTask("task-1").executionGate.state, "stopped");
+  command(["message", "send", "task-1", "Saved follow-up is not restart authority", "--intent", "develop"]);
+  const result = await processLeaderWakeups(scheduler, {
+    prepareRoleSession: async () => assert.fail("Reopen/input must not start stopped execution.")
+  }, later);
+  assert.equal(result[0].reason, "unavailable");
+  assert.equal(store.listMessages("task-1").length, 1);
+
+  store.saveTask(retireTask(store.getTask("task-1"), { by: "user", summary: "Do not resume" }, later));
+  assert.throws(() => command(["message", "send", "task-1", "No implicit restore", "--intent", "develop"]), /retired/);
+  command(["reopen", "task-1"]);
+  assert.equal(store.getTask("task-1").executionGate.state, "stopped",
+    "Even explicitly restoring cancelled intent does not lift a separate stop.");
+  store.saveTask(archiveTask(completed, later));
+  assert.throws(() => command(["reopen", "task-1"]), /archived/);
+  assert.throws(() => command(["message", "send", "task-1", "No archived execution"]), /archived/);
+});
 
 test("Session replacement preserves durable intent and releases only its own engineering attempt", t => {
   const { store, home, command, leader, scheduler } = fixture(t);

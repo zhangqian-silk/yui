@@ -181,6 +181,53 @@ try {
   json("task", "complete", task.id, "--summary", "The deterministic Provider result is accepted.");
   assert.equal(json("task", "show", task.id).task.status, "completed");
 
+  // Exercise the public reopen -> Operator submission path in the same Home
+  // and conversation. Deliberately let the lifecycle-only notification finish
+  // first, so a second, exact Message must reach the Host on its own wake.
+  const followupStarted = performance.now();
+  const events = () => json("task", "event", "list", task.id).events;
+  const originalCompletion = events().find(event => event.type === "task.completed");
+  assert.throws(() => runCli(cli, ["operator", "submit", "Not an automatic reopen",
+    "--task", task.id, "--intent", "discuss"], environment), error => {
+    assert.match(String(error.stderr), /completed/);
+    return true;
+  });
+  json("task", "reopen", task.id);
+  json("task", "reopen", task.id);
+  assert.equal(json("task", "show", task.id).task.completedAt, undefined);
+  const terminalForWake = wake => events().some(event => {
+    if (event.type !== "runtime.observation" || event.payload.kind !== "turn.completed") return false;
+    const observation = JSON.parse(event.payload.observation);
+    return observation.fence.receiptId?.startsWith(`notification:${task.id}/${wake.id}/`) === true;
+  });
+  await waitFor(() => {
+    const wake = json("task", "wake", "list", task.id).wakes.find(w => w.reasons.includes("task-reopened"));
+    return wake !== undefined && terminalForWake(wake);
+  }, "Reopen notification did not finish through the existing Host.");
+  const request = ["operator", "submit", "Continue this same accepted result; local fixture only.",
+    "--task", task.id, "--intent", "develop", "--request-id", "authorized-followup"];
+  runCli(cli, request, environment);
+  runCli(cli, request, environment);
+  const inputs = json("task", "context", task.id).records
+    .filter(record => record.ref.store === "task-message").map(record => record.value);
+  const followups = inputs.filter(message => message?.submissionKey === "authorized-followup");
+  assert.equal(followups.length, 1, "Matching Operator retries must retain one original Message.");
+  const followup = followups[0];
+  assert.equal(followup.submissionReceipt.routing.kind, "active-context");
+  assert.equal(followup.submissionReceipt.feedback.delivery, "queued");
+  await waitFor(() => {
+    const wake = json("task", "wake", "list", task.id).wakes.find(w =>
+      w.refs?.some(ref => ref.type === "message" && ref.id === followup.id));
+    return wake !== undefined && terminalForWake(wake);
+  }, "The exact follow-up Message did not traverse CLI/Controller/Host/native terminal.");
+  assert.equal(events().filter(event => event.type === "task.reopened").length, 1);
+  assert.deepEqual(events().find(event => event.id === originalCompletion.id), originalCompletion);
+  json("task", "complete", task.id, "--summary", "The authorized follow-up is separately accepted.");
+  assert.equal(json("task", "show", task.id).task.status, "completed");
+  assert.equal(events().filter(event => event.type === "task.completed").length, 2);
+  assert.deepEqual(events().find(event => event.id === originalCompletion.id), originalCompletion);
+  process.stdout.write(`Reopen and follow-up delivery smoke passed (${Math.round(performance.now() - followupStarted)} ms).\n`);
+
   const session = `yui-${tmuxServer.slice(4, 16)}-${task.id}`;
   const neighbor = `yui-${tmuxServer.slice(4, 16)}-${task.id}0`;
   // These are this fixture's terminal resources, not additional Agent work.

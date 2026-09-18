@@ -35,19 +35,22 @@ Separate lifecycle, execution gate and Session authority:
   after exact cleanup, not another message or Session replacement to bypass the
   stop. Starting execution is available only for open Tasks.
 - A completed, unarchived Task has separate local acceptance and remote delivery
-  facts. Read the [current post-completion boundary](../../yui-runtime/references/publication.md#post-completion-routing-boundary):
-  ordinary submission is currently refused, even if the Leader Session remains.
+  facts. An explicit user request to continue the same result authorizes the
+  necessary `task reopen` before submitting that bounded request. Follow the
+  [authorized two-step path](../../yui-runtime/references/publication.md#post-completion-routing-boundary);
+  do not require a second mechanical “reopen” confirmation.
 - Cancelled/retired intent is not active work. An archived Task cannot be reopened;
   retained workspaces and historical Sessions do not authorize execution.
 - Session loss or replacement is not a new result or an automatic lifecycle
   change. Recover only within the Task's current authority, preserving its intent.
 
-If the required same-Task continuation is unsupported, report the exact rejected
-command, retained intent and smallest missing capability or authorization.
-Do not silently reopen, create a substitute delivery Task, reuse an archived
-workspace, or claim a message was saved when it was rejected. A genuinely new
-result or an explicit user request can justify a new Task; a missing entry point
-alone cannot.
+Use the existing reopen and submission operations, not an invented auto-reopen
+option or a new delivery Task. Reopening and saving input have separate receipts;
+inspect current state after a failure and retain the original request identity.
+Only a real missing authority, resource or unresolved execution boundary calls
+for escalation. Do not reopen for a query, implicitly restore cancelled intent,
+use archived workspaces, restart a separate execution stop, or claim rejected
+input was saved.
 
 ## Advance one owning Leader at a time
 
@@ -76,8 +79,8 @@ target-branch facts. For a serial multi-Task delivery request:
    specific boundary. Do not launch the dependent delivery or emit unchanged
    waiting messages; future durable updates supply the next opportunity.
 
-For an eligible active Task, either of these is an ordinary durable Leader
-submission; choose one, do not send both:
+After any necessary authorized reopening, either of these is an ordinary durable
+Leader submission for the active Task; choose one, do not send both:
 
 ```sh
 yui operator submit "<delivery request with authority and boundaries>" \
