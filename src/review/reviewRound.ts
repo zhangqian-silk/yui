@@ -57,8 +57,8 @@ export type ReviewRoundFailure = Readonly<{
 }>;
 
 export type ReviewRound = {
-  /** v8 keeps only Core-owned identity, lifecycle, and objective evidence. */
-  schemaVersion: 8;
+  /** Core-owned identity, lifecycle, and objective evidence. */
+  schemaVersion: 1;
   id: string;
   taskId: string;
   workItemId?: string;
@@ -100,7 +100,7 @@ export function createReviewRound(
   executionGroup?: ReviewExecutionGroup
 ): ReviewRound {
   return validateReviewRound({
-    schemaVersion: 8,
+    schemaVersion: 1,
     id: requireIdentity(id, "ReviewRound id"),
     taskId: requireIdentity(taskId, "Task id"),
     workItemId: requireIdentity(workItemId, "Work Item id"),
@@ -127,7 +127,7 @@ export function createTaskReviewRound(
 ): ReviewRound {
   const candidate = validateTaskReviewCandidate(taskCandidate);
   return validateReviewRound({
-    schemaVersion: 8,
+    schemaVersion: 1,
     id: requireIdentity(id, "ReviewRound id"),
     taskId: requireIdentity(taskId, "Task id"),
     reviewerRoleName: requireIdentity(reviewerRoleName, "Reviewer Role"),
@@ -164,7 +164,7 @@ export function createTaskDeltaReviewRound(
 ): ReviewRound {
   const candidate = validateTaskReviewCandidate(taskCandidate);
   return validateReviewRound({
-    schemaVersion: 8,
+    schemaVersion: 1,
     id: requireIdentity(id, "ReviewRound id"),
     taskId: requireIdentity(taskId, "Task id"),
     reviewerRoleName: requireIdentity(reviewerRoleName, "Reviewer Role"),
@@ -445,7 +445,7 @@ export function validateReviewRound(round: ReviewRound): ReviewRound {
     "createdAt",
     "endedAt"
   ], "ReviewRound");
-  if (round.schemaVersion !== 8) throw new Error("ReviewRound must use schemaVersion 8.");
+  if (round.schemaVersion !== 1) throw new Error("ReviewRound must use schemaVersion 1.");
   validateTaskRecordReference({ taskId: round.taskId, localId: round.id }, "reviewRound");
   requireIdentity(round.reviewerRoleName, "Reviewer Role");
   requireCommit(round.reviewBaseCommit, "Review base commit");

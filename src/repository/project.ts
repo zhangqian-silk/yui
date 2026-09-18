@@ -128,7 +128,7 @@ export type ProjectRetirement = Readonly<{
 
 /** A durable Project Catalog entry maintained by Yui. */
 export type Project = Readonly<{
-  schemaVersion: 6;
+  schemaVersion: 1;
   id: string;
   name: string;
   aliases: readonly string[];
@@ -169,7 +169,7 @@ export function createProject(
 ): Project {
   const timestamp = now.toISOString();
   return validateProject({
-    schemaVersion: 6,
+    schemaVersion: 1,
     id: requireIdentity(id, "Project id"),
     name: validateProjectName(name),
     aliases: normalizeAliases(metadata.aliases ?? [], name),
@@ -545,8 +545,8 @@ export function assertProjectCatalog(
 }
 
 export function validateProject(project: Project): Project {
-  if (project.schemaVersion !== 6) {
-    throw new Error("Project must use schemaVersion 6.");
+  if (project.schemaVersion !== 1) {
+    throw new Error("Project must use schemaVersion 1.");
   }
   if (!Array.isArray(project.resourceRefs)) throw new Error("Project resourceRefs must be an array.");
   for (const id of project.resourceRefs) requireIdentity(id, "Project resource");

@@ -49,186 +49,36 @@ is required.
 
 ## Permanent core smoke
 
-`npm test` and `npm run test:core` build the checkout and run one permanent suite:
+`npm test` and `npm run test:core` build the checkout and run the maintained suite.
+The baseline cutover retires tests owned solely by the removed v1..v37
+implementation. Their source/evidence remains in the frozen 0.99.0 release;
+mixed tests retain current behavior, such as Review scope and Integration
+completion boundaries.
 
-1. the built CLI starts and its catalog exposes setup/update/upgrade/Task commands;
-2. one normal SQLite Task and Message survive a reopen;
-3. a supported historical Home migrates through the linear storage chain to current;
-4. the built-in Codex and Claude Drivers are registered;
-5. one independent declarative plugin is created, validated, called and disabled
-   through authenticated ingress, with its selection and validation preserved.
-6. a Task starts from durable Operator input, exposes planning Context and enters
-   delivery with its original intent and captured planning authority preserved;
-   scratch workspace release does not require a fabricated Git identity.
-7. Session replacement preserves pending original Messages and independent work;
-   cleanup blocks new notification claims, and successor acceptance cannot
-   settle an old wake or later queued input. Old Sessions keep scoped reads
-   but cannot regain write authority;
-8. InputRequests survive Session replacement without a synthetic AgentRun;
-9. late native terminals cannot settle successor input or invent acceptance;
-10. remote Operator startup carries its reserved workspace, Role instructions
-    and scoped CLI identity, while offline diagnostics/recovery remain reachable.
-11. durably queued native results survive Controller outages and replay without
-    poisoning the Host; known terminal inputs do not become active merely by aging;
-12. Task-final review can use its Task-local Reviewer without a global template.
-13. a native error label permits replacement only with latest-Turn terminal
-    evidence and drained background execution; a wrong native account cannot
-    authorize cleanup.
-14. Claude receives its native environment and settings paths without injected
-    authentication helpers, rewritten approval records, or secrets forwarded
-    to unrelated adapters; native authentication selection stays with Claude. Environment refresh
-    removes revoked keys and keeps values out of durable Task/Role records.
-15. ordinary Integration conflicts continue without a decision gate; exact Git
-    receipts and an admitted Job resume interrupted delivery without replay.
-    Validation settlement distinguishes current check conditions from an
-    already-applied CAS. Migration preserves provable old bound FF Jobs and
-    classifies old conflicts without inventing successful checks.
-16. explicit force archive commits before cleanup and preserves uncertain
-    delivery/runtime evidence; partial cleanup and late results remain traceable,
-    while archived runtime resources never become automatically safe to delete.
-    Archive preflight preserves durable records and the Git index, distinguishes
-    frozen-result differences, and cleanup rechecks moved heads, owner branches
-    and new dirt. Read-only Git status never executes configured clean filters.
-17. Host facts reach the existing Inbox without opening Controller-owned storage;
-    Controller-side fencing and ACK-loss replay preserve the original execution.
-    Production launch planning preserves scoped startup evidence before native
-    Session adoption without exporting a Run ID into the Session environment.
-    Historical Host detection and cross-version live-runtime fixtures are not
-    part of the current contract; supported historical storage migrations remain tested.
-    Archive racing Host ingress retains the complete source envelope without
-    reopening the Task or settling original uncertain input.
-18. Project maintenance waiters yield to the holder, use a shared 60-second
-    monotonic budget with independent 200–500ms jitter, and cancel on Controller
-    stop without losing activation intent. Disposable lock/SQLite/Git fixtures
-    cover exclusion, partial release and under-lock revalidation; injected time
-    checks the minute-long deadline without sleeping for a minute. Competing
-    activations each adopt their own workspace without replaying Git work.
-19. Task usage distinguishes zero, partial and unknown across exact requests,
-    cumulative baselines, Session replacement and native child overlap. A small
-    event fixture checks direct Leader/parallel time semantics and the shared
-    CLI/Web/audit lifetime projection without collecting Provider data.
-20. explicit cleanup releases retained terminals without affecting other Tasks
-    or claiming that live resources are gone; Controller replacement waits for
-    the old process to exit.
-21. structured verification preserves argv, explicit shell failure, environment
-    and workspace-relative cwd through the actual RPC parser and both local
-    executors. Corrected execution semantics invalidate old gate reuse without
-    rewriting historical artifacts or migrations.
-22. concurrent resource registration preserves unrelated rows and rejects
-    stale same-record writes; GC closes owned connections on success/failure.
-23. Context counts, exact inspection and bounded event deltas work without
-    materializing complete history or acquiring a writer lock. Telemetry
-    ingestion yields to the event loop and drains its worker on close.
-24. Release resume re-queries uncertain effects, retains confirmed work and
-    refuses exhausted grants, using disposable SQLite and fake external ports.
-    These checks do not claim validation of real release services.
-25. The pre-1.0 contract cleanup normalizes old singleton dispatches only through
-    explicit storage migration. Unsupported CLI/ACP input, unregistered development
-    links, unpinned release identities and unsupported quarantine receipts are
-    refused without inventing acceptance or discarding evidence. Current link,
-    configuration and quarantine operations remain usable.
-26. Activation refuses absent intent before resource adoption and still honors
-    planning deferral and cancellation. Retiring the integration queue preserves
-    exact records and active attempts in one rollback-safe migration, without
-    inventing delivery. Conflicted Integrations remain completion blockers.
-27. Unknown lock ownership stays fenced, including unavailable OS evidence.
-    PR lookup distinguishes absence, malformed/ambiguous results and transport
-    failure through injected ports. Receipt-free Git operations remain unchanged,
-    while normal receipt-backed continuation still works. Notification-only
-    migration preserves current delivery and audit history and refuses live links.
-28. SQLite admission ignores unrelated side files but refuses a non-empty Home
-    without its database. Default CLI/HTTP discovery stays bounded and retains
-    off-page Task detail; unknown writer leases diagnose without mutation.
-    Review migration preserves candidate evidence while making scope explicit.
-29. Missing authoritative readers fail before Provider preparation or queue
-    admission instead of becoming empty evidence. WorkItem history retirement
-    preserves the original payload and current work, advances event IDs safely,
-    and refuses unknown old shapes without advancing the migration ledger.
-30. WorkItem overlap is a read-only advisory; exact permission/dependency guards
-    remain. Real local verification proves default reuse, explicit rerun failure,
-    incomplete evidence and stale-consumer rejection through the current proof path.
-    An Integration rerun cannot bypass an equivalent unfinished gate. Policy
-    migration preserves historical execution and blocks an admitted old gate.
-31. Message edits preserve submission intent and immutable request identity;
-    no-op edits do not enqueue work, and an edited develop request cannot create
-    a planning Run. Unkeyed discussions still plan after activation is resolved.
-    Queue identity remains frozen through an interrupt-then handoff; completion sees explicitly
-    queued input. Input migration preserves raw audit evidence, refuses to
-    auto-authorize old pending immediate activations and keeps the prior ledger.
-    The actual Controller continues admitted requests but not cancellations.
-    Required Store reads fail before config mutation or full-scan fallback.
-    Explicit Job requests replay one operation and reject changed or missing keys.
-32. Worker Job admission/management and the pre-spawn gate reject a different
-    owner/workspace; legitimate Worker and Leader Jobs remain usable. Candidate
-    mutation blocks publication of reusable success, including after explicit
-    abort/retry. Upstream wiring returns its admitted Job and continuation IDs.
-    Plugin replacement retains delayed old-generation cleanup errors without
-    undoing a newer selection. A shared validator rejects bad record writes,
-    ordinary/Context reads and full-Home health checks without repairing data.
-33. Built CLI calls refuse replaced Operator writes, Task-owned Home mutations
-    and foreign-Task queries while retaining legitimate reads and current
-    Operator actions. Job reads enforce Context scope at the Controller port.
-    Real local runtime directories move once through quarantine/restore/purge;
-    current durable ownership overrides a stale cleanup plan and prevents
-    purging a reopened Task.
-34. Current CLI rejects `task turn`; completion has one identity and preserves
-    unrelated shell content through install/uninstall. GC protects exact live
-    SQLite Session custody without consulting old JSON. The 34→35 cutover
-    preserves raw retired payloads/log bytes and identity counters, blocks
-    unsettled gates/custody, and rolls back malformed conversions.
-35. Native model aliases/resolved IDs and open custom-model fields retain their
-    distinct contracts; configuration errors display the observed choices.
-    Rejected Leader startup stays quiet across Store reopen and repeated passes,
-    preserves original/later input and blocks premature completion. Explicit
-    retry requeues the exact rejected claim once without rewriting its history;
-    typed contention remains retryable and unknown acceptance cannot be replayed.
-36. Failure-scoped capability reads preserve the recorded model/workspace/settings
-    selection after Role edits, reject changed Agent bindings, honor explicit
-    metadata refresh and identify cached fallback. The Controller supplies native
-    account context without accepting caller credentials. Task/Role/record reads
-    stay fenced. Runless startup and native rejection reuse one error/notification.
-    Migration 35→36 preserves historical error bytes and the earlier ledger while
-    marking absent historical configuration unavailable, never reconstructing it.
-37. Narrow failure context survives independently of execution/Review/Session
-    protocols; 36→37 preserves the original snapshot in audit. Repeated native
-    submission rejection creates one error and one supervisor notice through
-    the shared writer. A small injected cache proves completed-result eviction,
-    pending-request coalescing, explicit refresh and truthful cache provenance.
-38. Current Session wrappers retarget only their exact generated shell form,
-    preserving immutable Manifests and leaving unknown scripts untouched.
-    Per-key release receipts survive reopen and reject invalid current records.
-    A storage blocker after Controller drain restores the captured identity
-    without activating a package or migrating data.
-39. Global Session replacement proves native quiescence before settling retained
-    input, including when a prior attempt has already archived the Session.
-    Unknown execution and changed Turn identity remain fenced. Existing Messages
-    and stop evidence survive; queued notifications cannot revive an explicitly
-    stopped Session or submit across cleanup admitted during Host preparation.
-40. Configuration metadata distinguishes native help enumeration, static adapter
-    contracts and missing fields. A disposable metadata-only producer checks
-    partial discovery, exact cache reuse and failed-refresh provenance; the
-    permission picker cannot invent choices or erase explicit current values.
-    Doctor uses the same help interpretation without guessing model aliases.
-41. Operator attention transfers atomically to one Global Message per batch,
-    without overlapping new events while busy. SQLite reopen, rollback and exact
-    receipt reuse preserve the pending suffix and undelivered evidence. A local
-    fake Host control port checks unknown/rejected delivery, successor inputs,
-    and the Controller's dirty signal without a live model. Existing Global
-    control tests retain interrupt-then and exact Session/authority coverage.
+Current coverage includes:
 
-Keep the test phase seconds-scale; measure TypeScript build separately. Record
-incremental runtime when adding a critical regression. The seven recovery boundary
-cases initially add about 0.4 seconds of test bodies (about 0.6 seconds standalone,
-including module startup) on the development host. Keep real-model launches out
-of this suite. Real tmux/CLI lifecycle checks belong to the bounded package smoke
-below, not a second core daemon matrix.
-The Integration continuation regressions use disposable Git repositories,
-SQLite and fake Jobs, without a provider or shared Home. Their test bodies
-take about 3 seconds on the development host; validation settlement adds
-about 1.4 seconds to the initial 1.5-second coverage.
-Archive preflight adds three small disposable Git/SQLite scenarios (about
-one second of test bodies); broader owner/diagnostic combinations remain
-temporary validation evidence, not a second permanent matrix.
+1. Fresh storage 1.0, exact schema/record validation, no initialization over
+   unknown data, and rejection of old integer formats without mutation.
+2. Independent v37 conversion: original intent/audit/counters, nested Session
+   envelopes, opaque Context, rollback on invalid input, offline backup and
+   repeat-call idempotence. The CLI fixture uses a disposable Home; it never
+   converts a real account. The converter is not part of the runtime tarball.
+3. Exact-version staging, mismatched-target refusal, same-major contiguous
+   minor preflight, and explicit maintenance-owner identity across handover.
+4. Durable Task/Message/Decision context, draft activation authority, mailbox
+   claims, notification idempotence, Session replacement and exact late results.
+5. Integration/Job request identity, immutable candidate proofs, conflict
+   continuation, Review scope and final acceptance without fabricated delivery.
+6. Runtime/Host isolation, Provider protocol parsing and bounded retry using
+   fake producers, current configuration provenance and native-account boundaries.
+7. Workspace/GC authority, archive cleanup, resource CAS, telemetry, Web
+   projections and authorized release recovery without real external effects.
+
+Keep the test phase seconds-scale and measure build separately. Use the
+existing assembled-package smoke for actual CLI/Controller/Host/tmux wiring,
+not a second daemon matrix. Converter schema fixtures preserve one frozen
+endpoint; do not reconstruct the entire historical chain in the new suite.
+Real-model or real-Home checks require explicit authorization.
 
 ## Skill and instruction changes
 

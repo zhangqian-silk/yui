@@ -100,7 +100,7 @@ export class ProviderContinuationReconciliationService {
           if (!events.some(event => event.payload.eventId === eventId
             || event.type === "runtime.agent-error" && event.payload.sourceEventId === eventId)) {
             const observation = createRuntimeObservation({
-              schemaVersion: 4, eventId, semanticKey: eventId,
+              schemaVersion: 1, eventId, semanticKey: eventId,
               kind: "observer.health", authority: "controller",
               receivedAt: now.toISOString(), observedAt: now.toISOString(),
               fence: candidates[0]!.fence,
@@ -216,7 +216,7 @@ function reconciliationObservation(
   const settled = continuation.execution === "quiescent"
     && continuation.observation === "exact";
   return createRuntimeObservation({
-    schemaVersion: 4,
+    schemaVersion: 1,
     eventId: `continuation-reconcile:${digest}`,
     semanticKey: `continuation-reconcile:${digest}`,
     kind: settled ? "continuation.settled" : "continuation.started",

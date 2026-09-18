@@ -87,7 +87,7 @@ export type AgentRunSystemEvidence = Readonly<{
  * separate authorities.
  */
 export type AgentRunResult = Readonly<{
-  schemaVersion: 2;
+  schemaVersion: 1;
   /** Exact Agent-authored terminal result, when one was transportable. */
   output?: string;
   /** Bounded Core-owned explanation for a failed AgentRun. */
@@ -106,8 +106,8 @@ export type AgentRunInputRecord = Readonly<{
 }>;
 
 export type AgentRun = {
-  /** v5 stores Agent output opaquely and only Core-authored system evidence. */
-  schemaVersion: 5;
+  /** Opaque Agent output and Core-authored system evidence. */
+  schemaVersion: 1;
   id: string;
   taskId: string;
   roleName: string;
@@ -157,7 +157,7 @@ export function createRun(
   const snapshot = requireRunContextSnapshotRef(normalizedInput);
   if (snapshot.taskId !== taskId) throw new Error("AgentRun Context Snapshot belongs to another Task.");
   return {
-    schemaVersion: 5,
+    schemaVersion: 1,
     id: requireSafeIdentity(id, "AgentRun id"),
     taskId: requireSafeIdentity(taskId, "Task id"),
     roleName: requireSafeIdentity(roleName, "Role name"),
@@ -261,7 +261,7 @@ export function validateRun(run: AgentRun): AgentRun {
     "createdAt",
     "updatedAt"
   ], "AgentRun");
-  if (run.schemaVersion !== 5) throw new Error("AgentRun must use schemaVersion 5.");
+  if (run.schemaVersion !== 1) throw new Error("AgentRun must use schemaVersion 1.");
   validateTaskRecordReference({ taskId: run.taskId, localId: run.id }, "run");
   requireSafeIdentity(run.roleName, "Role name");
   if (run.mode !== "new" && run.mode !== "resume") {
@@ -497,7 +497,7 @@ function finishRun(
     ...run,
     status,
     result: {
-      schemaVersion: 2,
+      schemaVersion: 1,
       ...(output === undefined ? {} : { output: requireResultText(output, "AgentRun result output") }),
       ...(diagnostic === undefined
         ? {}
@@ -515,8 +515,8 @@ function finishRun(
 }
 
 function validateRunResult(result: AgentRunResult | undefined): AgentRunResult {
-  if (result === undefined || result.schemaVersion !== 2) {
-    throw new Error("A terminal AgentRun requires AgentRunResult schemaVersion 2.");
+  if (result === undefined || result.schemaVersion !== 1) {
+    throw new Error("A terminal AgentRun requires AgentRunResult schemaVersion 1.");
   }
   rejectUnknownFields(result as unknown as Record<string, unknown>, [
     "schemaVersion",

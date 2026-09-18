@@ -2,7 +2,7 @@ import { createSessionOwnerIdentity, type SessionOwnerIdentity } from "./session
 
 /** Current Host event source contract, independent of Home storage access. */
 export const AGENT_HOST_EVENT_PROTOCOL = "yui-agent-host-events/v1" as const;
-export const AGENT_HOST_CONTROL_PROTOCOL = "yui-agent-host/v5" as const;
+export const AGENT_HOST_CONTROL_PROTOCOL = "yui-agent-host-control/v1" as const;
 
 export type AgentHostEventDelivery = Readonly<{
   pending: number;
@@ -40,7 +40,7 @@ export function readAgentHostObservationSource(value: unknown): AgentHostObserva
     throw new Error("Agent Host connection evidence is invalid.");
   }
   if (source.connection?.processOwner !== undefined
-    && (source.connection.processOwner.schemaVersion !== 2
+    && (source.connection.processOwner.schemaVersion !== 1
       || source.connection.processOwner.kind !== "yui-session-owner")) {
     throw new Error("Agent Host process custody wire contract is invalid.");
   }

@@ -7,7 +7,7 @@ import {
 import { TASK_RECORD_ID_PREFIXES } from "../task/taskRecordReference.js";
 import { copyRef, type MailboxEntityRef } from "../coordination/workMailbox.js";
 
-export const CURRENT_TASK_WAKE_SCHEMA_VERSION = 2 as const;
+export const CURRENT_TASK_WAKE_SCHEMA_VERSION = 1 as const;
 
 export type TaskWakeStatus = "dispatched" | "consumed";
 

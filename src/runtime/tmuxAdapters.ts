@@ -499,8 +499,8 @@ export class TmuxSessionHost implements SessionHostPort {
     const yuiHome = planned.launch.env.YUI_HOME;
     const childLifecycle = planned.launch.childLifecycle;
     // Global Codex retains the native TUI inside a thin Host that acknowledges
-    // its own App Server startup response. Existing live TUIs (including
-    // 0.15.0 Sessions) remain directly attachable without replacing them.
+    // its own App Server startup response. Current live TUIs remain directly
+    // attachable without replacing their native conversation.
     if (
       reuseInteractivePane
       || (!interactiveCodex && (
@@ -576,7 +576,7 @@ export class TmuxSessionHost implements SessionHostPort {
       );
     }
     const reservation = broker.reserve(Object.freeze({
-      schemaVersion: 2,
+      schemaVersion: 1,
       ...(request.runId === undefined ? {} : { startupRunId: request.runId }),
       command: planned.launch.command,
       args: [...planned.launch.args],

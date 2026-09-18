@@ -18,7 +18,7 @@ const set = (status = "accepted") => ({
 let id = 0;
 function event(kind, n, payload = {}, fence = {}) {
   const observation = createRuntimeObservation({
-    schemaVersion: 4, eventId: `web-${++id}`, semanticKey: `web-${id}`,
+    schemaVersion: 1, eventId: `web-${++id}`, semanticKey: `web-${id}`,
     kind, authority: kind === "host.observed" ? "host" : "provider-structured", receivedAt: at(n),
     fence: { taskId: "task-1", roleName: "leader", agentId: "codex", driverId: "openai/codex",
       nativeSessionId: "session-1", conversationId: "session-1", nativeTurnId: "turn-2", receiptId: "notification-2", ...fence },

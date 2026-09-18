@@ -2,73 +2,6 @@
 
 # 获授权的发布操作
 
-## 最后的历史桥接版：0.99.0
-
-| 版本 | Home 存储 | 职责 |
-| --- | --- | --- |
-| **0.99.0** | 旧 v37，最低支持旧 v1 | 最后一次保留完整 v1→v37 历史升级链。 |
-| **0.99.1**（计划） | 身份独立的新 v1 | 只提供严格验证后的旧 v37→新 v1 离线转换。 |
-| **1.0.0**（计划） | 与 0.99.1 完全相同的新 v1 | 删除过渡转换代码，不再修改存储。 |
-
-0.99.0 将旧链终点冻结在 **37**，不追加空迁移、不改写已发布 SQL 或
-数据迁移，也不重置记录内的 schemaVersion、运行协议和审计版本。
-新建及升级后的 Home 使用同一当前契约；普通读取不解释历史格式，
-只有显式 `upgrade` / `update` 可以迁移。
-
-### 明确选择桥接版本
-
-从 0.99.0 起，`yui update --version 0.99.0` 选择精确的已发布版本；
-无参数仍选择 `latest`。显式版本不接受标签或范围。暂存包的实际版本必须
-等于指定版本，才可进入预检和 Controller 交接；不匹配时只清理本次暂存目录，
-不改变当前安装和数据库。
-
-旧 CLI 尚不支持此参数。0.99.0 发布后，可先独立暂存精确的 0.99.0 CLI，
-再由它针对明确指定的 `YUI_HOME` 执行升级。例如用 npm 暂存 CLI，
-而不是先覆盖全局安装：
-
-```sh
-YUI_HOME=/absolute/path/to/home npm exec --yes --package=@zq-silk/yui@0.99.0 -- \
-  yui update --version 0.99.0
-```
-
-不要假定未来的 `latest` 仍指向桥接版。保留目标包驱动的
-`upgrade --update-preflight` / `--update-apply` 契约：拒绝发生在激活前，
-并在 handover fence 内、精确 Controller 停止后重新预检。
-若仍使用旧 updater，下文旧版本的交接恢复说明依然适用。
-
-### 检查并保留旧链终点
-
-用已发布的 0.99.0 CLI 和明确的 `YUI_HOME` 读取：
-`yui --json version`、`yui --json upgrade --dry-run`、
-`yui --json doctor`、`yui --json controller status`、
-`yui session reconcile --report`。
-旧链升级完成后，upgrade 报告应为存储 37 的 `already-current`；
-`upgrade-plan` 只表示尚待执行的旧链迁移。两者都不证明运行资源静止，
-更不表示已通过尚未实现的新 v1 转换预检。不新增“可进入 1.0”持久化标记
-或第二套版本权威。
-
-后续离线切换前，先按原契约结算正在执行的工作。
-`yui session stop --all` 是停止空闲受管 Session 和 Controller 的显式操作，
-不是强制停止，也不证明所有独立 Job 或未知资源已退出。必须检查精确所有权
-和待确认效果，不能为了升级而伪造 Task 完成、确认未知工作或删除资源；
-未来转换器仍须在 fence 内重新检查静止条件。
-
-长期保留**精确的 0.99.0 发布包**、已有 release manifest、registry integrity、
-tag/源码提交及本指南。现有包清单会固定编译后的迁移实现和辅助模块；
-会过期的 CI artifact 不能作为唯一长期分发渠道。本版不新增 Home 元数据
-或迁移注册表。
-
-0.99.1 的一次性转换必须保留旧账本和审计原始内容、Home 身份、业务 ID、
-记录、Knowledge、工作区（含未提交文件）及未确认的外部效果。
-旧布局迁移还涉及文件系统和 Git，单独备份数据库不足以证明完整可回滚。
-未知或损坏格式直接阻塞，不猜测修复。新 v1 必须具有独立身份，
-不能复用旧 `v0.15.0-baseline`。新 SQL/指纹及最终转换工具属于 0.99.1，
-**不在本版提前实现**；它只接受已验证的旧 v37，不再携带整条旧链。
-
-0.99.1 到 1.0.0 之间冻结持久化契约。1.0.0 从实际 tarball 和源码中删除
-旧转换代码，保留当前初始化、校验、未知格式拒绝、精确运行身份和正常安全恢复。
-跳过桥接版的用户仍需使用冻结工具，1.0.0 不解释旧格式。
-
 发布工作流是一段被显式选择、获授权的外部发布效果序列——pull request、CI 确认、
 合并、版本 tag、npm 发布、全新安装冒烟、CLI 更新、Controller 替换、Project 迁移和
 后置验证。它是一个专用的外部效果设施，而不是 Yui 的 Task 规划或 Agent 执行模型。
@@ -87,161 +20,23 @@ Agent 选择一个预先声明的计划，设施从持久状态驱动该计划�
 （`src/release/releaseWorkflowPorts.ts`）之后。可用临时 SQLite 和确定性的外部端口测试
 恢复逻辑，无需真实 GitHub、npm、git、Controller 或模型效果。
 
-## 0.16.1 的 Controller 交接修复
+## 纯净基线版本：0.99.1
 
-Controller 状态与存储预检只负责观测，不暗中清理。已授权的升级流程在交接保护下、
-捕获和停止当前 Controller 之前，显式执行当前 Home 的有界 reconciliation。
-保留最多四轮和进程启动身份/inode 检查；当前 Controller、Agent/tmux/app 和其他
-Home 的资源不在此清理范围。
+0.99.0 保留为冻结历史桥接版。0.99.1 运行包启用独立的存储 **1.0**，
+不携带旧迁移链或一次性转换工具；之后的 1.0.0 沿用相同持久化契约。
 
-升级结果与发布步骤日志保留清理目标、已完成动作、原始清理错误、带观测时间的最后
-资源现场，以及观测或锁释放失败。原 Controller 的精确身份恢复单独报告成功或效果
-未知。清理/恢复效果未知不等于 Controller 已停止，也不是可直接重放的失败；先检查
-确切对象再选择恢复。不新增后台恢复或持久协议，暂存二进制的
-`--update-preflight` / `--update-apply` 合同不变。
+存储采用主版本、小版本两级编号，默认更新只允许同主版本内连续的小版本升级。
+指定软件版本不代表授权跨存储主版本。当前 Yui 自有格式和协议从 1 开始，
+但不重置业务 revision、epoch 或审计证据。
 
-升级器的停止与精确身份恢复子进程，现在显式接收父升级进程的交接锁归属身份，
-不再等待自己父进程持有的锁；无关调用仍被阻止。存储版本保持 37。
+旧 v37 转换器独立分发；来源与目标校验、离线边界、完整备份、原始负载审计、
+冷启动和回滚见[存储基线 1.0](./storage-baseline.zh-CN.md)。
+发布时将转换包及校验和作为 0.99.1 的长期附件，与确切测试过的运行包一同保留；
+不能只依赖会过期的 CI artifact。运行 tarball 不得包含 tools/ 或旧迁移目录。
 
-已经安装的旧升级器（包括 0.15.12、0.16.0）不会因为暂存新包而提前获得此修复。
-若其在激活前报告 `CONTROLLER_HANDOVER_TIMEOUT`，先检查原 Controller 和锁的归属。
-确认失败的升级器已释放自己的锁、原 Controller 仍健康后，使用已安装版本的
-`yui controller stop` 正常停止 Controller，再重试 `yui update`。此操作保留受管
-Agent Session，仍完整执行预检、备份、迁移和验证；不要删除活动锁或强杀 Controller
-来绕过失败。
-
-## 1.0 前的契约清理
-
-版本 `0.16.0` 先清退运行时兼容分支，尚未执行最终 1.0 基线切换，也不重置
-存储编号。存储 `27→28` 只规范化可明确识别的单条 Role 调度去重键，旧迁移账本、
-Message、Task 结果和不确定外部效果保持不变。普通打开要求存储 37；已有 Home 只通过
-显式升级入口前进，不增加运行时双读。
-
-这是一次 1.0 前的破坏性变更：
-
-- `message send` 统一使用 `--intent`；CLI 与 capability API 不再接受 `--wake-policy`
-  或 `wakePolicy` 参数，Draft 编辑保留原提交意图。
-- 内部命令集成实现 `notifyMailboxChanged`；Task-only 通知适配器及其调用已统一。
-- ACP peer 必须回报 `configOptions`，不再走 `modes`／`set_mode` 路径。
-- Release 恢复要求精确 Home 与安装 prefix。缺少固定目标的效果保持 unknown，
-  身份不完整的 handover lock 保持围栏。
-- 开发 link/unlink 要求当前登记文件，不搜索或接管旧 NVM 登记，不重建孤立链接。
-- GC 不再发现旧 deployment 布局或重建已删除 worktree；不受支持的 quarantine
-  证据保留，不会被当成当前 move 回执清除。
-- `task activate` 只消费已有请求；没有请求就不采用资源。请求创建、延后准入和
-  原子工作区采用仍分开，并复用同一个现行执行边界。
-- 删除 `task integration queue` 及其状态机。Agent 选择每个 WorkItem 结果的顺序与
-  策略，逐项调用原子 Integration；保留精确检查、目标 CAS 和完成义务。
-
-存储 `28→29` 在删除活动队列表前，将每条旧 payload 原样保存在
-`integration.queue-retired` Task 事件中，并保留原队列 ID。事件编号越过已有计数器
-和历史最大 ID。此操作不验收交付、不生成 Integration、不重放工作；已有 Integration
-与 Job 保持不变。通过 `task event list <task>` 和引用的 WorkItem/Integration
-判断剩余工作；队列退役不代表未完成的 Integration 已结算。
-
-存储 `29→30` 将 Run-linked wake 的完整原文移入 `wake.run-link-retired` Task 事件。
-现有通知保留 ID、投递状态和引用，使用 wake schema 2；Run 终态不再消费通知。
-引用待退役 wake 的活动 Run、受管重试或未决 claim 会同时阻止预检和迁移；
-迁移不停止执行、不编造接受。Global Session 没有受控 binding 时统一显式保存
-`providerBinding: null`。
-
-存储 `30→31` 将 Review scope 统一为显式值：有效旧 WorkItem Review 的缺失／null
-scope 转为 `work-item`，Task-final 候选证据和原迁移账本不变。新建和重试均显式写入 scope。
-
-存储 `31→32` 从当前 WorkItem 移除 `historicalState`，移除前将完整原始 payload
-原样保存在 `work-item.execution-state-retired` Task 事件。当前状态、工作范围、
-Candidate 和执行组不变，不生成 Run 或验收。未知历史形态会报错，记录和迁移账本不前进。
-
-存储 `32→33` 清退 Leader 过渡／预算配置以及 VerificationPlan 的模式。
-活动计划显式补上 schema 版本，实际检查保持不变；已退役 Knowledge 原文保留。
-Integration 显式补入 `rerunChecks: false`，缓存 Artifact 移除试运行复用计数。
-原配置可从显式升级备份恢复。这是已确认的行为变更，不将三种旧模式声称为等价。
-
-已接纳且仍为 `running/validating` 的计划验证会阻止预检和迁移，需先用旧版本完成
-结算；不会把运行中的 Job 改标为新证据契约。该次切换使用 v3 验证摘要，使更早缓存不再被
-自动复用，不重写历史 Job／Integration 结果或删除其日志。旧计划解析冻结在迁移
-目录中，早期迁移保持原有语义。
-
-现行干净候选证明采用 v5 L2-only 执行摘要。Job 和本地验证都在发布可复用成功前，
-检查候选工作区的干净状态、分支和精确 HEAD；旧缓存身份不能绕过这一边界。
-旧记录和日志保持可读，已接纳 Job 不会被改标为新摘要。应先按原契约结算旧尝试，
-或明确放弃后再开始新操作。
-
-L1 执行入口、选择器及当前计划／artifact 类型分支已移除。存储 `34→35` 将
-原始 Project 计划、L1 artifact 与日志保存在 `storage_migration_archive`，
-当前计划改为不含 L1 的 schema 2。存档只是原始审计数据，不是执行 reader 或缓存。
-已结算的旧 ChangeSet-source Integration 转为完整 payload 的 Task 事件；
-仍有工作区、未结算 Job 或 adoption 引用时阻止退休。旧迁移账本不变。
-
-Session 归属统一使用 SQLite。旧 `launch-env` owner 行或 `runtime/session-owners`
-中的文件会阻止切换：先使用旧版本检查并释放精确资源，再明确将旧文件归档到
-活动 Home 之外。迁移不杀进程、不推断归属、不修复损坏数据，也不重写不可变 Manifest。
-
-存储 `35→36` 保留历史 Agent 错误，并将缺失的失败配置明确标为不可用。
-存储 `36→37` 将已记录的失败上下文缩小为原生元数据查询所需输入，原始快照和
-空的可选身份占位值保存在迁移审计中。当前错误读取不依赖执行快照协议，也不
-重建缺失历史。配置拒绝保留原始输入但不自动重试；有权限的 Agent 可查询该次
-失败的模型能力、修正原本要求的配置，再显式重试被拒绝的通知。
-
-不再支持 `task turn` 和 `yui-dev` 补全身份。上线前应替换仍依赖 `task turn`
-Manifest 的 Session；明确卸载／归档旧 `yui-dev` 补全块后，再安装现行 `yui` 补全。
-存储迁移不会修改用户 shell 文件。当前 Host 控制／事件校验与 updater 交接安全检查继续生效。
-
-存储 `33→34` 从当前记录移除 Message `wakePolicy` 与激活 `origin`，原始表达
-保存在审计事件。旧的仅记录消息转换为 `intent: record`，其他缺少意图的
-user/operator 消息转换为 `discuss`；运行时不再解释缺失的持久化意图。
-编辑仅记录内容不会唤醒 Leader。完成检查读取实际待投递消息引用，也涵盖显式交接
-此前仅保存的内容。
-
-Draft 编辑同时保护请求身份：已经绑定 submission、queue/steer 或交接请求的消息
-不能原地改正文，需新建消息并使用新请求 ID；相同正文更新为无操作。未绑定请求
-身份的讨论编辑仍遵守 pending/failed 激活状态，develop 编辑不启动规划或创建／
-重试激活。这是操作边界修复，不改变存储格式，也不猜测修复过去已被编辑的原文。
-
-Draft 中缺少 origin 且仍 pending 的旧 immediate 激活请求会阻止预检和迁移，即使 Task
-已停止执行。必须先用旧版本显式激活或取消；升级不替用户做这个决定。当前已接纳
-请求不再经过第二次来源门槛，但取消、planning 延后、执行状态与精确 Session 权限
-仍需检查。旧来源及 settled 请求历史保留在 `task.activation-origin-retired` 事件。
-
-新 `job start` 必须带 `--request-id`；RPC 必须提供 `requestId`，capability
-入口使用 invocation 身份。不再从命令内容隐式生成请求，也不再构造匿名 Job。
-已有 Job 的操作证据和按 ID 读取保持不变；相同请求重试防重、不同输入冲突，
-Integration 在 Session 替换后仍找回原 Job。新 request ID 表示明确的新操作，
-不是对旧未知结果的自动重放。
-
-Scheduler 核心读取和持久化操作成为必需接口，缺少 Session／Event 读取不再被当作
-空证据，也不能跳过错误持久化。执行及 Web 投影直接读取当前 Store；
-消息入队必须读取 Task 生命周期。精确投递结算仍独立，不增加会丢失迟到证据的归档门槛。
-Observer、配置、Knowledge 与工作区清理所需 Store 读取也成为必需接口；
-测试替身实现现行合同，不再令生产代码降级。
-
-Task 列表及 `/api/dashboard` 只保留有界目录；调用方去掉 `--view compact`，
-详情使用单 Task 读取。Scheduler 目录索引是必需接口，不再兼容缺失时的全量扫描。
-额外 `schema.json`／`state.json` 不覆盖 SQLite 版本，也不用于开发 Home reset；
-升级保留无关文件。非空 Home 缺少数据库时仍拒绝初始化。
-不认识的 writer lease 明确诊断，不接管、不删除。
-
-`controller status` 固定输出身份信息，存储矛盾仍返回非零健康退出码；
-`YUI_STATUS_IDENTITY` 不再选择另一套契约。升级侧直接复用资源采集器读取生命周期，
-无需让旧 Home 先通过当前 schema 的健康校验。
-
-现行边界进一步收敛：
-
-- Project／Artifact 文件锁及 handover lock 要求精确进程代际证据。owner 缺失、
-  格式不完整或 OS 身份不可读时保持围栏；仅凭年龄不能证明创建者退出，不再用
-  PID-only 存活判断代替身份确认。
-- PR head 查询只调用 `gh pr list --head ... --state open`。仅有效空数组证明不存在；
-  传输失败、身份格式错误和多个匹配都不允许继续创建。
-- 已有 Git 操作缺少原 Integration 进度回执时不再被接管。保留文件并明确诊断；
-  有精确回执的正常冲突／Job 续作仍受支持。
-
-发布前应先收敛旧执行，对不受支持的锁、链接和隔离资源做显式清理。归属与处置尚未
-确定时保留原记录，运行时不替 Agent 选择恢复方案。
-
-后续基线切换必须先验证到目标格式的桥接或导出，再用一个干净基线替换旧初始化和迁移链，
-之后才能删除基线之前的迁移及历史夹具。存储基线只重置一次，不在发布 `1.0.0` 时再次
-重置。未知版本拒绝、精确进程／Host 身份检查与持久审计证据仍应保留。版本 tag、真实
-Home 迁移和发布效果需要各自的发布授权。
+`yui update --version <exact-version>` 选择精确发布包，实际暂存版本必须匹配。
+激活前及维护锁内分别执行目标包的存储预检。不支持的 Home 保持不变，应使用
+独立转换工具，不能先覆盖全局 CLI。当前交接子进程必须显式提供锁持有者身份。
 
 ## 授权模型
 
@@ -293,8 +88,8 @@ ACK 不会重放用户输入或模型工作。
 环境。即使冻结的 Run 工作区不同于 Role 默认值，登记前的证据也能保留；后续活动和
 终态仍只按各自的原生输入身份解析归属。
 
-当前边界为控制协议 `yui-agent-host/v5`、事件来源协议 `yui-agent-host-events/v1`、
-Controller RPC 版本 4。Host 不打开 Home 数据库，包括进程归属、原生账号位置和
+当前边界为控制协议 `yui-agent-host-control/v1`、事件来源协议 `yui-agent-host-events/v1`、
+Controller RPC 版本 1。Host 不打开 Home 数据库，包括进程归属、原生账号位置和
 执行环境校验。只有 Controller 拥有存储并解析持久事实；非法当前输入在正常协议
 边界得到明确错误。
 
@@ -303,8 +98,8 @@ Controller RPC 版本 4。Host 不打开 Home 数据库，包括进程归属、�
 这不授权丢弃未决工作或终止归属不确定的资源。当前 Controller 正常重启、准确进程
 代际校验、交接锁、Session 权限与事件防重放继续生效。
 
-存储迁移是独立边界：保留完整 1..37 迁移链和 updater 的 `--update-preflight`／
-`--update-apply` 合同，在隔离／静默边界重查存储预检，不改写已发布迁移。
+存储升级仅包含同主版本内明确的小版本步骤。跨主版本转换独立授权，
+不构成运行时回退。
 Session CLI 刷新只重定位有效 Manifest 指向的当前双参数引号 wrapper，不转换
 退役形态。运行时诊断不解释 `schema.json`、`state.json` 或整表 release 幂等文件；
 当前 SQLite 与逐 key release 回执仍是权威，无关文件保持原样。

@@ -70,7 +70,7 @@ Integration 在候选 worktree 中套用固定来源提交，运行已配置的�
 `historical-change-sets` Integration 必须先结算且不存在执行／交付引用，才能将
 完整 payload 转为 `integration.source-retired` Task 事件；旧 ID 不会复用。
 无匹配证据时正常执行。
-计划必须提供 `schemaVersion: 2`，不再包含 `l1` 或 `record/reuse/enforce` 模式。
+计划必须提供 `schemaVersion: 1`，不再包含 `l1` 或 `record/reuse/enforce` 模式。
 
 新建操作时显式要求重跑：
 
@@ -88,7 +88,7 @@ yui task upstream integrate <task> --project <project> --rerun-checks
 
 新执行开始前撤下旧成功。失败如实记录；中断、缺失日志或候选被改写时，
 不会保留可复用成功。Job 和本地执行在发布成功证据前，共同检查候选的精确提交、
-分支和干净状态。v5 L2-only 执行摘要隔离旧证据，不删除原有历史。
+分支和干净状态。baseline-v1 L2-only 执行摘要隔离旧证据，不删除原有历史。
 过期的缓存使用者不能恢复旧结果。发布查询查看最新匹配证据，不跳过失败去找旧绿灯。
 缓存只表示当前可复用证据，不充当 Task 执行历史；原 Job 和 Integration 记录独立保留。
 

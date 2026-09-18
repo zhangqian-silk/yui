@@ -91,7 +91,7 @@ export type ControllerServerOptions = Readonly<{
   /** Test seam: override the detected running release (null = dev checkout). */
   release?: { releaseDir: string; manifest: RuntimeReleaseManifest } | null;
   /** Test seam: override the storage backend reported in the identity receipt. */
-  storageBackend?: "file" | "sqlite";
+  storageBackend?: "sqlite";
   /** Test seam: override the worker-enabled flag reported in the identity receipt. */
   workerEnabled?: boolean;
 }>;
@@ -957,7 +957,7 @@ function controllerCliRealpath(): string {
 type RuntimeIdentityInput = Readonly<{
   home: string;
   release: { releaseDir: string; manifest: RuntimeReleaseManifest } | null;
-  storageBackend: "file" | "sqlite";
+  storageBackend: "sqlite";
   workerEnabled: boolean;
   processStartIdentity: string;
   mode: "primary" | "candidate";
@@ -973,7 +973,7 @@ export function buildRuntimeIdentityReceipt(input: RuntimeIdentityInput): Runtim
     }
   })();
   return Object.freeze({
-    schemaVersion: 2,
+    schemaVersion: 1,
     version: YUI_VERSION,
     executablePath: process.execPath,
     args: process.argv.slice(1),

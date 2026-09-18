@@ -47,7 +47,7 @@ export type EffectiveLaunchWorkspace = Readonly<{
 export type EffectiveLaunchContext = Readonly<RoleProfile>;
 
 type EffectiveLaunchBase = Readonly<{
-  schemaVersion: 4;
+  schemaVersion: 1;
   executionAuthority: "planning" | "delivery";
   sourceDesiredRevision: number;
   agentId: string;
@@ -338,8 +338,8 @@ function sessionContinuitySnapshot(snapshot: EffectiveLaunchSnapshot): unknown {
 export function validateEffectiveLaunchSnapshot<T extends EffectiveLaunchSnapshot>(
   snapshot: T
 ): T {
-  if (snapshot.schemaVersion !== 4) {
-    throw new Error("Effective launch snapshot must use schemaVersion 4.");
+  if (snapshot.schemaVersion !== 1) {
+    throw new Error("Effective launch snapshot must use schemaVersion 1.");
   }
   if (snapshot.executionAuthority !== "planning" && snapshot.executionAuthority !== "delivery") {
     throw new Error("Effective launch requires its captured execution authority.");
@@ -466,7 +466,7 @@ function snapshotFromConfig(input: Readonly<{
         reviewBaseCommit: commit(input.reviewBaseCommit ?? "", "Review base commit")
       };
   const common = {
-    schemaVersion: 4 as const,
+    schemaVersion: 1 as const,
     executionAuthority: input.executionAuthority,
     sourceDesiredRevision: positiveInteger(
       input.sourceDesiredRevision,

@@ -111,7 +111,7 @@ export function renderControllerResourceStatus(
       ],
       visibleDomains.map((domain) => [
         domain.yuiHome,
-        domain.domainKind ?? "legacy",
+        domain.domainKind ?? "unmarked",
         domain.liveness === undefined
           ? "—"
           : `${domain.liveness}/${domain.disposition ?? "review"}`,

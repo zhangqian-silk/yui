@@ -223,7 +223,7 @@ function versionHeader(result: UpgradeResult): string {
 }
 
 function renderSteps(
-  steps: readonly Readonly<{ fromVersion: number; toVersion: number; name: string }>[]
+  steps: readonly Readonly<{ fromVersion: string; toVersion: string; name: string }>[]
 ): string {
   if (steps.length === 0) return "no migrations";
   return steps

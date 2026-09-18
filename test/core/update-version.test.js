@@ -71,3 +71,23 @@ test("pinned npm staging rejects a different installed version and removes only 
   }
   assert.deepEqual(readdirSync(stagingRoot), []);
 });
+
+test("target preflight admits only contiguous same-major storage upgrades", ()=>{
+  let from="1.0",to="1.1";
+  const ports=createUpdatePorts({},()=>{
+    const data={outcome:"update-preflight",status:"migration-ready",stepCount:1,
+      steps:[{fromVersion:from,toVersion:to,name:"minor"}],
+      classification:{storageVersion:from,currentStorageVersion:to,
+        classification:{verdict:"MIGRATABLE",status:"migration-ready"}}};
+    const stdout=Buffer.from(JSON.stringify({ok:true,data}));
+    return {pid:1,output:[null,stdout,Buffer.alloc(0)],stdout,stderr:Buffer.alloc(0),status:0,signal:null};
+  });
+  const staged={binaryPath:"/unused/yui",version:"0.99.1"};
+  assert.equal(ports.preflight(staged,"/unused/home").status,"migration-ready");
+  to="2.0";
+  assert.equal(ports.preflight(staged,"/unused/home").status,"blocked");
+  to="1.2";
+  assert.equal(ports.preflight(staged,"/unused/home").status,"blocked");
+  from=37;to=1;
+  assert.equal(ports.preflight(staged,"/unused/home").status,"blocked");
+});

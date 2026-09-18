@@ -6,7 +6,7 @@ import {
 } from "../domain/validation.js";
 import { validateTaskRecordReference } from "../task/taskRecordReference.js";
 
-export const CAPABILITY_GRANT_SCHEMA_VERSION = 2 as const;
+export const CAPABILITY_GRANT_SCHEMA_VERSION = 1 as const;
 
 export type CapabilityGrantIrreversibilityCeiling = "none" | "reversible" | "irreversible";
 export type CapabilityGrantIrreversibility = CapabilityGrantIrreversibilityCeiling;
@@ -205,7 +205,7 @@ export function revokeGrant(
 
 export function validateCapabilityGrant(grant: CapabilityGrant): CapabilityGrant {
   if (grant.schemaVersion !== CAPABILITY_GRANT_SCHEMA_VERSION) {
-    throw new Error("Capability grant must use schemaVersion 2.");
+    throw new Error("Capability grant must use schemaVersion 1.");
   }
   validateTaskRecordReference({ taskId: grant.taskId, localId: grant.id }, "capabilityGrant");
   requireIdentity(grant.taskId, "Task id");

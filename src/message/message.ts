@@ -161,7 +161,7 @@ export type TaskMessageRecipient = Readonly<{
 }>;
 
 export type TaskMessage = {
-  schemaVersion: 3;
+  schemaVersion: 1;
   id: string;
   taskId: string;
   kind: TaskMessageKind;
@@ -248,7 +248,7 @@ export function createTaskMessage(
 ): TaskMessage {
   validateKindAndAuthor(kind, author);
   const message: TaskMessage = {
-    schemaVersion: 3,
+    schemaVersion: 1,
     id: requireSafeIdentity(id, "Message id"),
     taskId: requireSafeIdentity(taskId, "Message Task id"),
     kind,
@@ -439,7 +439,7 @@ export function withSubmissionReceipt(
 }
 
 export function validateTaskMessage(message: TaskMessage): void {
-  if (message.schemaVersion !== 3) throw new Error("Task Message must use schemaVersion 3.");
+  if (message.schemaVersion !== 1) throw new Error("Task Message must use schemaVersion 1.");
   validateTaskRecordReference({ taskId: message.taskId, localId: message.id }, "message");
   requireText(message.body, "Message body");
   validateKindAndAuthor(message.kind, message.author);

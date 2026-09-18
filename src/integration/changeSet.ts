@@ -22,7 +22,7 @@ type ChangeSetIdentity = Readonly<{
 }>;
 
 export type WorkItemChangeSet = ChangeSetIdentity & Readonly<{
-  schemaVersion: 4;
+  schemaVersion: 1;
   workItemId: string;
   manifest: ChangeSetManifest;
 }>;
@@ -38,7 +38,7 @@ export function createWorkItemChangeSet(
   now: Date
 ): WorkItemChangeSet {
   return validateChangeSet({
-    schemaVersion: 4,
+    schemaVersion: 1,
     ...input,
     changedPaths: [...input.changedPaths],
     manifest: validateChangeSetManifest(input.manifest),
@@ -47,7 +47,7 @@ export function createWorkItemChangeSet(
 }
 
 export function validateChangeSet<T extends ChangeSet>(changeSet: T): T {
-  if (changeSet.schemaVersion !== 4) throw new Error("ChangeSet must use schemaVersion 4.");
+  if (changeSet.schemaVersion !== 1) throw new Error("ChangeSet must use schemaVersion 1.");
   validateTaskRecordReference({ taskId: changeSet.taskId, localId: changeSet.id }, "changeSet");
   validateTaskRecordReference({
     taskId: changeSet.taskId,

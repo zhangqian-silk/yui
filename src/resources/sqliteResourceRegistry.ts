@@ -17,7 +17,7 @@ import { isDeepStrictEqual } from "node:util";
 
 import Database from "better-sqlite3";
 
-import { migrateSqliteSchema } from "../storage/sqliteSchema.js";
+import { validateSqliteSchema } from "../storage/sqliteSchema.js";
 import {
   emptyResourceRegistry,
   parseResourceRegistryState
@@ -44,10 +44,10 @@ export class SqliteResourceRegistry {
     }
     this.#db = new Database(dbPath);
     try {
+      validateSqliteSchema(this.#db);
       this.#db.pragma("journal_mode = WAL");
       this.#db.pragma("foreign_keys = ON");
       this.#db.pragma("busy_timeout = 5000");
-      migrateSqliteSchema(this.#db, { mode: "validate" });
     } catch (error) {
       this.#db.close();
       throw error;

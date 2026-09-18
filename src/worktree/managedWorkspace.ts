@@ -35,7 +35,7 @@ export type WorkspaceProjectEntry = Readonly<{
 }>;
 
 export type ManagedWorkspace = Readonly<{
-  schemaVersion: 2;
+  schemaVersion: 1;
   owner: ManagedWorkspaceOwner;
   root: string;
   entries: readonly WorkspaceProjectEntry[];
@@ -107,7 +107,7 @@ export function createManagedWorkspace(
 ): ManagedWorkspace {
   const timestamp = now.toISOString();
   return validateManagedWorkspace({
-    schemaVersion: 2,
+    schemaVersion: 1,
     owner: validateOwner(input.owner),
     root: resolve(requireText(input.root, "Managed workspace root")),
     entries: normalizeEntries(input.entries),
@@ -119,8 +119,8 @@ export function createManagedWorkspace(
 export function validateManagedWorkspace(
   workspace: ManagedWorkspace
 ): ManagedWorkspace {
-  if (workspace.schemaVersion !== 2) {
-    throw new Error("Managed workspace must use schemaVersion 2.");
+  if (workspace.schemaVersion !== 1) {
+    throw new Error("Managed workspace must use schemaVersion 1.");
   }
   validateOwner(workspace.owner);
   if (

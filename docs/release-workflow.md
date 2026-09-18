@@ -27,290 +27,30 @@ system sits behind `ReleaseWorkflowPorts`
 external ports exercise recovery without real GitHub, npm, git, Controller,
 or model effects.
 
-## Final historical bridge: 0.99.0
+## Clean baseline release: 0.99.1
 
-| Release | Home storage | Responsibility |
-| --- | --- | --- |
-| **0.99.0** | Historical v37, supported floor v1 | Last complete historical upgrade chain (v1 through v37). |
-| **0.99.1** (planned) | A distinct new v1 baseline | One explicit offline conversion from verified historical v37. |
-| **1.0.0** (planned) | Exactly the same new v1 as 0.99.1 | Remove transitional conversion code, without another storage change. |
+0.99.0 remains the frozen historical bridge. The 0.99.1 runtime starts the
+distinct storage **1.0** baseline and carries no old migration chain or
+conversion tool. Package 1.0.0 will use this same persistent contract.
 
-0.99.0 freezes the historical endpoint at **37**. It does not append a no-op
-migration, rewrite released SQL/data migrations, reset record-local schema or
-protocol versions, or reinterpret historical evidence. Fresh and upgraded Homes
-use the same contract. Ordinary opens still reject historical formats; only
-explicit `upgrade` / `update` may migrate them.
+Storage versions have two levels. Default updates may advance only contiguous
+minor versions within the same major; pinning a package does not authorize a
+cross-major conversion. Current Yui-owned envelopes and protocols start at 1,
+without resetting business revisions, epochs or audit evidence.
 
-### Select the bridge explicitly
+The old-v37 converter is a separate archive. Its source/target verification,
+offline boundary, full backup, original-payload audit, cold startup and rollback
+are specified in [Storage baseline 1.0](./storage-baseline.md).
+Publish its archive and checksum as durable 0.99.1 release attachments alongside
+the exact tested runtime package. Expiring CI artifacts alone are insufficient.
+The runtime tarball must contain neither tools/ nor dist/storage/migrations/.
 
-Starting in 0.99.0, `yui update --version 0.99.0` selects an exact published
-package; no argument still selects `latest`. Tags and ranges are not accepted
-as explicit selectors. The actual staged version must equal the requested
-version before preflight or Controller handover. A mismatch cleans only the
-owned staging prefix, leaving the installed binary and database unchanged.
-
-Older CLIs do not acquire this option until updated. Once 0.99.0 is published,
-use a separately staged, exact 0.99.0 CLI to drive the update against an explicit
-`YUI_HOME`. For example, npm can stage it without replacing the global install:
-
-```sh
-YUI_HOME=/absolute/path/to/home npm exec --yes --package=@zq-silk/yui@0.99.0 -- \
-  yui update --version 0.99.0
-```
-
-Do not replace the live global binary first or assume `latest` will continue
-to select the bridge. Preserve target-owned `upgrade --update-preflight` /
-`--update-apply`: refusal happens before activation, and preflight is repeated
-under the handover fence after draining the exact Controller. The older-updater
-recovery guidance below still applies when invoking an older updater.
-
-### Inspect and preserve the old endpoint
-
-With the published 0.99.0 CLI and the intended `YUI_HOME`, use the existing
-`yui --json version`, `yui --json upgrade --dry-run`, `yui --json doctor`,
-`yui --json controller status`, and `yui session reconcile --report` reads.
-After the old-chain upgrade, the upgrade report must be `already-current` at
-storage 37; `upgrade-plan` only describes pending migrations. Neither report
-proves physical quiescence or readiness for the not-yet-implemented new v1.
-Do not add a durable "ready for 1.0" flag or a second version authority.
-
-Before the later offline cutover, settle active work using its original
-contract. `yui session stop --all` explicitly stops idle managed Sessions and
-the Controller; it is not a force stop or proof that detached Jobs and unknown
-resources have exited. Inspect exact ownership and pending effects. Never mark
-Tasks complete, acknowledge uncertain work, or delete resources just to pass an
-upgrade. The future converter must recheck quiescence under its fence.
-
-Retain the **exact published 0.99.0 package**, its existing release manifest,
-registry integrity, tag/source commit, and this guide as the historical bridge.
-The existing package inventory pins compiled migrations and their helpers;
-an expiring CI artifact alone is not a long-term distribution. This release
-introduces no additional Home metadata or migration registry.
-
-The 0.99.1 converter must preserve old ledger/audit bytes, Home identity,
-business IDs, records, Knowledge, workspaces (including dirty files), and
-unconfirmed external effects. A database-only backup cannot fully roll back old
-layout migrations with filesystem/Git effects. Unknown or malformed old formats
-remain blockers. New v1 must have a distinct baseline identity, never the old
-`v0.15.0-baseline`. Its SQL/fingerprint and final conversion tool belong to
-0.99.1, **not this release**; it accepts verified old v37 rather than carrying
-the complete old chain.
-
-Freeze the new persistent contract between 0.99.1 and 1.0.0. Remove old conversion
-code from the actual tarball as well as runtime imports, retaining current
-initialization, validation, unknown-format rejection, exact runtime identity and
-normal safety/recovery. Users skipping the bridge must still use the frozen
-tools; 1.0.0 must never guess an old format.
-
-## Controller handover fix in 0.16.1
-
-Controller status and storage preflight are observations, not cleanup. The
-authorized updater explicitly runs its bounded current-Home reconciliation
-under the handover fence before capture/stop. It retains the existing four-pass
-rule and process-start/inode checks, preserving current Controllers and excluding
-Agent/tmux/app/foreign-Home resources.
-
-Update results and release-step logs retain reconciliation targets, completed
-actions, original cleanup errors, the last inventory with its observation time,
-and failed observations or lock release. Captured-identity restoration reports
-success or unknown effects separately. An uncertain cleanup/restore is not a
-stopped Controller or replayable failure; inspect the exact resource before
-choosing recovery. No new recovery worker or persistent protocol is introduced.
-The staged `--update-preflight` / `--update-apply` contract is unchanged.
-
-The updater's stop and exact-identity restoration children now explicitly receive
-the parent updater's handover-lock owner identity. They no longer wait on their
-own parent's lock; unrelated callers remain fenced. Storage remains at version 37.
-
-An already-installed older updater, including 0.15.12 or 0.16.0, cannot gain this
-fix merely by staging the new package. If it reports `CONTROLLER_HANDOVER_TIMEOUT`
-before activation, inspect the original Controller and lock ownership. Once the
-failed updater has released its own lock and the original Controller is confirmed
-healthy, normally stop it with that installed release's `yui controller stop`,
-then retry `yui update`. This preserves managed Agent Sessions and retains the
-normal preflight, backup, migration and verification boundaries. Do not delete
-an active lock or force-kill a Controller to bypass the failure.
-
-## Pre-1.0 contract cleanup
-
-Version 0.16.0 retires runtime compatibility before the final
-1.0 baseline cutover. It does not reset storage numbering.
-Storage 27→28 normalizes only provable singleton Role dispatch dedupe keys;
-the old migration ledger, Messages, Task results and unconfirmed effects remain
-unchanged. Ordinary opens require storage 37. Existing Homes advance only through
-the explicit upgrade boundary; no runtime dual-reader is added.
-
-This is a breaking pre-1.0 change:
-
-- `message send` uses `--intent`; `--wake-policy` is no longer accepted by the
-  CLI or capability API. Draft edits preserve intent.
-- Internal command integrations implement `notifyMailboxChanged`; the Task-only
-  notification adapter has been removed with its callers updated.
-- ACP peers must report `configOptions`; there is no `modes`/`set_mode` path.
-- Release recovery requires a pinned Home and installation prefix. Unpinned
-  identities remain unknown, and incomplete handover locks remain fenced.
-- Development link/unlink requires the current registry. It does not discover
-  or adopt older NVM registrations or reconstruct orphan links.
-- GC no longer discovers retired deployment layouts or reconstructs removed
-  worktrees. Unsupported quarantine evidence is retained, never purged as if
-  it were a current move receipt.
-- `task activate` consumes an existing request; no request means no resource
-  adoption. Request creation, deferred admission and atomic workspace adoption
-  remain separate, using the same current boundary.
-- `task integration queue` and its state machine are removed. The Agent chooses
-  each WorkItem result's order and strategy and calls the atomic Integration
-  operations; exact checks, target CAS and completion obligations remain.
-
-Storage 28→29 preserves every former queue payload verbatim in a Task event
-`integration.queue-retired`, with its original queue ID, before dropping the
-active table. Event IDs advance past both the stored counter and existing
-history. This does not accept delivery, generate an Integration or replay work.
-Existing Integrations and Jobs stay intact. Inspect `task event list <task>`
-and the referenced WorkItem/Integration before deciding what remains to do;
-retiring the queue does not settle an unfinished Integration.
-
-Storage 29→30 retires Run-linked wakes into `wake.run-link-retired` Task events
-with the complete original payload. Current notification IDs, delivery status
-and references remain intact, using wake schema 2; Run termination no longer
-consumes notifications. Live Runs, owned retries and unresolved claims referring
-to a retiring wake block both preflight and migration. The migration does not
-stop execution or fabricate acceptance. Global Session sets use an explicit
-`providerBinding: null` when no controlled binding exists.
-
-Storage 30→31 makes every Review's scope explicit. Missing/null scope in a valid
-older WorkItem Review becomes `work-item`; Task-final candidate evidence and
-the old ledger are unchanged. New and retried Reviews always write their scope.
-
-Storage 31→32 removes WorkItem `historicalState` from the current record.
-Before removal, the entire original payload is preserved verbatim in a
-`work-item.execution-state-retired` Task event. Current status, scope, Candidates
-and execution groups are unchanged; no Run or acceptance is created. Unrecognized
-historical shapes fail without changing the record or advancing the ledger.
-
-Storage 32→33 retires the Leader rollout/budget settings and VerificationPlan
-rollout modes. Active plan bodies gain an explicit schema version; their checks
-remain unchanged, while retired Knowledge bodies are preserved. Integration
-records gain explicit `rerunChecks: false`, and shadow reuse counters are removed
-from cached artifacts. Original settings remain recoverable from the explicit
-upgrade backup. This is an approved behavior change, not an assertion that
-`record`, `reuse` and `enforce` meant the same thing.
-
-Admitted `running`/`validating` plan gates block preflight and migration; settle
-them with the old release first. No in-flight Job is relabelled under the new
-proof contract. That cutover's v3 verification-plan digest excluded older cache entries from
-automatic reuse without rewriting historical Job/Integration results or deleting
-their logs. Historical plan interpretation is frozen inside the migration
-directory so earlier migrations keep their original semantics.
-
-The current clean-candidate proof uses a v5 L2-only execution digest. Both local and
-Job-backed verification check candidate cleanliness, branch and exact HEAD
-before publishing reusable success; older cache identities cannot silently pass
-this boundary. Existing records/logs remain readable and admitted Jobs are not
-relabeled under a new digest. Settle old attempts with their matching contract,
-or explicitly abandon them before starting another operation.
-
-The L1 runner, selector and current plan/artifact type branches are removed.
-Storage 34→35 archives the original Project plan payloads and L1 artifacts/logs
-in `storage_migration_archive`, then adopts VerificationPlan schema 2 without L1.
-The archive is raw audit data, not an alternate execution reader or cache.
-Settled historical ChangeSet-source Integrations become full-payload Task Events;
-live workspaces, unsettled Jobs and adoption references block their retirement.
-The complete earlier migration ledger remains unchanged.
-
-Session custody now has one source, SQLite. Legacy `launch-env` owner rows or
-files in `runtime/session-owners` block this cutover: use the old release to
-inspect and settle their exact resources, then explicitly archive obsolete
-files outside the active Home. The migration does not kill, infer ownership,
-repair malformed records or rewrite immutable Session Manifests.
-
-Storage 35→36 preserves historical Agent errors and explicitly marks missing
-failure configuration as unavailable. Storage 36→37 narrows recorded failure
-context to native metadata-query inputs, preserving the original snapshot and
-empty optional identity placeholders in migration audit. Current error readers
-do not depend on the execution snapshot protocol or reconstruct missing history.
-Configuration rejection preserves input without automatic retry; an authorized
-Agent can inspect failure-scoped model capabilities, correct the intended
-configuration, and explicitly retry the rejected notification.
-
-`task turn` and the `yui-dev` completion identity are no longer supported.
-Before rollout, replace Sessions whose old Manifest still names `task turn`,
-and explicitly remove/archive old `yui-dev` completion blocks before installing
-current `yui` completion. User shell files are never rewritten by storage migration.
-Current Host control/event validation and updater handover safety remain enforced.
-
-Storage 33→34 removes Message `wakePolicy` and activation `origin` from current
-records, preserving their original representations in audit Events. Historical
-save-only Messages become `intent: record`; other user/operator Messages without
-intent become `discuss`. Runtime readers never infer a missing stored intent.
-Editing record-only context does not wake the Leader. Completion reads actual
-pending message references, including an explicit handoff of previously saved context.
-
-Draft editing also preserves request identity: messages bound to submission,
-queue/steer or handoff requests cannot change body in place. Use a new Message
-and request ID; identical-body updates are no-ops. Unkeyed discussion edits
-honor pending/failed activation, while develop edits never start planning or
-create/retry activation. These are operation-boundary fixes, not a new storage
-format or a repair of previously edited historical content.
-
-An origin-less pending immediate Draft activation blocks preflight and migration,
-including on a stopped Task. Activate or cancel it explicitly with the old release
-first. An admitted current request needs no second origin gate: cancellation,
-planning deferral, execution state and exact Session authority remain enforced.
-Old origin metadata, including settled-request history, remains in
-`task.activation-origin-retired` Events; this never fabricates authorization.
-
-New `job start` calls require `--request-id`; RPC callers supply `requestId`, and
-the capability boundary supplies its invocation identity. There is no implicit
-content-addressed request or anonymous Job constructor. Existing Jobs retain
-their operation evidence and remain addressable by ID. Retrying the same explicit
-request is idempotent, changed input conflicts, and Integration recovery still
-finds its original Job across Session replacement. Choosing a new request ID is
-an explicit new operation, not recovery of an uncertain earlier result.
-
-Core Scheduler readers and persistence operations are required ports. A missing
-Session/event reader cannot be interpreted as empty evidence or skipped error
-persistence. Task execution and Web projections read the current store directly;
-queue admission requires its Task lifecycle read. Exact dispatch settlement
-remains separate and does not gain an archive gate that could lose late evidence.
-Observer, config, Knowledge and workspace-cleanup Store readers are also required;
-test doubles implement those contracts rather than selecting production fallbacks.
-
-Task listing and `/api/dashboard` now expose only the bounded catalog; remove
-`--view compact` from callers and use per-Task reads for detail. Scheduler
-catalog projections are required internal ports, not optional full-scan adapters.
-Extra `schema.json`/`state.json` files cannot override SQLite's version or be
-used to reset a development Home; upgrades leave unrelated files untouched.
-A missing database in a non-empty Home remains a refusal to initialize.
-Unrecognized writer leases are diagnosed without adoption or deletion.
-
-`controller status` always reports identity and retains the nonzero health exit
-for contradictory storage. `YUI_STATUS_IDENTITY` no longer selects another
-contract. Update-owned lifecycle capture uses the same resource collector
-directly, without requiring the old Home to pass current-schema health.
-
-Additional current boundaries:
-
-- Project/artifact file locks and handover locks require exact process-generation
-  evidence. Missing/invalid owners or unreadable OS identity remain fenced;
-  age alone never proves a creator exited. No PID-only positive fallback remains.
-- PR head lookup uses one `gh pr list --head ... --state open` query. Only an
-  empty, valid array proves absence. Transport errors, malformed identities and
-  multiple matches fail without attempting creation.
-- Existing Git operations cannot be adopted without the Integration's original
-  progress receipt. Preserve their files and diagnose explicitly; current
-  receipt-backed conflict/Job continuation remains supported.
-
-Before rollout, settle old executions and use explicit cleanup for unsupported
-locks, links or quarantines. Preserve those records until their owner and
-disposition are established; the runtime does not choose recovery for them.
-
-The later baseline cutover must first establish a verified bridge/export to the
-chosen current format, then replace the old initialization/migration chain with
-one clean baseline. Only then remove pre-baseline migrations and their historical
-fixtures. Reset the storage baseline once; do not reset it again when tagging
-1.0.0. Keep unknown-version rejection, exact process/Host identity checks and
-durable audit evidence. Version tags and real migration/publication effects
-require their separate release authorization.
+Use `yui update --version <exact-version>` for an exact published package.
+Staged metadata must match the requested version, and target-owned storage
+preflight runs before activation and again under the maintenance fence.
+An unsupported Home remains unchanged; use the independent converter rather
+than replacing the global CLI first. Current update/activation children must
+explicitly identify their handover-lock owner.
 
 ## Authorization model
 
@@ -373,8 +113,8 @@ the long-lived Session environment. This preserves pre-adoption evidence even
 when the frozen Run workspace differs from the Role's default; later activity
 and terminal facts still resolve solely by their own native input identities.
 
-The current Host boundary is control `yui-agent-host/v5`, event source
-`yui-agent-host-events/v1`, and Controller RPC version 4. Hosts do not open the
+The current Host boundary is control `yui-agent-host-control/v1`, event source
+`yui-agent-host-events/v1`, and Controller RPC version 1. Hosts do not open the
 Home database, including for process custody, native account locations, or
 execution-environment checks. Only the Controller owns storage and resolves
 durable facts; malformed current input fails at its normal protocol boundary.
@@ -387,9 +127,8 @@ kill resources of uncertain ownership. Current Controller restart, exact
 process-generation checks, handover locks, Session authority and event replay
 protection remain enforced.
 
-Storage migration is separate: the complete 1..37 chain and updater
-`--update-preflight` / `--update-apply` contract remain. Storage preflight is
-rechecked at the fenced/quiesced boundary; no published migration is rewritten.
+Storage upgrades are limited to the current major's explicit minor steps.
+Cross-major conversion is independently authorized and is not a runtime fallback.
 Session CLI refresh only retargets the current two-argument quoted wrapper
 named by a valid Manifest. It does not convert retired wrapper forms. Runtime
 diagnostics do not interpret `schema.json`, `state.json`, or a whole-map release

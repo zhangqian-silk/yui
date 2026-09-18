@@ -18,6 +18,8 @@ const required = [
   "docs/task-discovery.md",
   "docs/task-discovery.zh-CN.md",
   "docs/provider-retry.md",
+  "docs/storage-baseline.md",
+  "docs/storage-baseline.zh-CN.md",
   "skills/yui-leader/SKILL.md",
   "skills/yui-worker/SKILL.md",
   "skills/yui-operator/SKILL.md",
@@ -33,7 +35,8 @@ for (const path of required) {
   if (!files.has(path)) throw new Error(`runtime package is missing ${path}`);
 }
 for (const path of files) {
-  if (/^(?:test|scripts|node_modules)\//u.test(path)) {
+  if (/^(?:test|scripts|tools|node_modules)\//u.test(path)
+    || path.startsWith("dist/storage/migrations/")) {
     throw new Error(`runtime package contains forbidden path ${path}`);
   }
 }

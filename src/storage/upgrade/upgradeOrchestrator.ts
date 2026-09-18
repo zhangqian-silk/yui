@@ -22,21 +22,9 @@ import {
 import { SqliteTaskStore } from "../sqliteStore.js";
 import { storageBackupRoot } from "../homeLayout.js";
 import {
-  preflightUnifyHomeLayout,
-  type UnifyHomePreflightBlocker
-} from "../migrations/unifyHomeLayout.js";
-import {
-  preflightCollapseWorktreeLayout,
-  type CollapseWorktreePreflightBlocker
-} from "../migrations/collapseWorktreeLayout.js";
-import { preflightNotificationOnlyWakes } from "../migrations/notificationOnlyWakes.js";
-import { preflightVerificationPolicy } from "../migrations/verificationPolicy.js";
-import { preflightCurrentInputContract } from "../migrations/currentInputContract.js";
-import { preflightCurrentRuntimeContract } from "../migrations/currentRuntimeContract.js";
-import {
-  migrateSqliteSchema,
-  storageMigrationPlan,
-  type StorageMigrationStep
+  applySqliteMinorUpgrades,
+  storageMinorUpgradePlan,
+  type StorageMinorUpgrade
 } from "../sqliteSchema.js";
 import {
   CURRENT_DATABASE_FILENAME,
@@ -44,6 +32,7 @@ import {
   type StorageSchemaState
 } from "../storageSchema.js";
 import {
+  type StorageVersion,
   CURRENT_STORAGE_VERSION,
   MIN_SUPPORTED_STORAGE_VERSION
 } from "../storageVersions.js";
@@ -52,31 +41,32 @@ export type HomeClassification = Readonly<{
   classification:
     | Readonly<{ verdict: "USABLE"; status: "current" }>
     | Readonly<{ verdict: "MIGRATABLE"; status: "migration-ready" }>
+    | Readonly<{ verdict: "UNSUPPORTED_FORMAT"; status: "unsupported"; detail: string }>
     | Readonly<{
         verdict: "NEEDS_NEW_VERSION";
         status: "unsupported";
         blocker: Readonly<{
           reason: "future-version" | "below-minimum";
-          found: number;
-          current: number;
-          minimum: number;
+          found: StorageVersion;
+          current: StorageVersion;
+          minimum: StorageVersion;
           message: string;
           action: string;
         }>;
       }>
     | Readonly<{ verdict: "CORRUPTED"; status: "unsupported"; detail: string }>;
-  storageVersion?: number;
-  currentStorageVersion: number;
-  minimumSupportedStorageVersion: number;
+  storageVersion?: StorageVersion;
+  currentStorageVersion: StorageVersion;
+  minimumSupportedStorageVersion: StorageVersion;
   uninitialized?: true;
 }>;
 
 export type StorageUpgradeReport = Readonly<{
   outcome: "already-current" | "upgrade-plan" | "upgraded";
   mode: "dry-run" | "execute";
-  sourceVersion: number;
-  targetVersion: number;
-  steps: readonly StorageMigrationStep[];
+  sourceVersion: StorageVersion;
+  targetVersion: StorageVersion;
+  steps: readonly StorageMinorUpgrade[];
   backupPath?: string;
 }>;
 
@@ -110,7 +100,7 @@ export type UpgradeResult = Readonly<
       outcome: "update-preflight";
       status: "already-current" | "migration-ready";
       stepCount: number;
-      steps: readonly StorageMigrationStep[];
+      steps: readonly StorageMinorUpgrade[];
       classification: HomeClassification;
     }
   | {
@@ -140,7 +130,7 @@ export type RunStorageUpgradeOptions = Readonly<{
 }>;
 
 /**
- * Upgrade one valid Home through the complete linear migration chain.
+ * Upgrade only recognized minor versions within the current Home major.
  *
  * Supported earlier versions are readable only here. Ordinary stores still
  * admit exactly {@link CURRENT_STORAGE_VERSION}; no old-shape normalizer or
@@ -159,6 +149,14 @@ export async function runStorageUpgrade(options: RunStorageUpgradeOptions): Prom
     );
   }
   if (state.status === "invalid") {
+    if (state.reason === "format") {
+      return blocked({
+        classification: { verdict: "UNSUPPORTED_FORMAT", status: "unsupported", detail: state.detail },
+        currentStorageVersion: CURRENT_STORAGE_VERSION,
+        minimumSupportedStorageVersion: MIN_SUPPORTED_STORAGE_VERSION
+      }, "unsupported", state.detail,
+      "Keep this Home unchanged and use its matching release or the independent explicit conversion tool. Ordinary upgrades never cross storage formats.");
+    }
     return blocked(
       corruptedClassification(state.detail),
       "corruption",
@@ -214,7 +212,7 @@ export async function runStorageUpgrade(options: RunStorageUpgradeOptions): Prom
     };
   }
 
-  const plan = storageMigrationPlan(state.currentVersion);
+  const plan = storageMinorUpgradePlan(state.currentVersion);
   if (plan === null) {
     return blocked(
       corruptedClassification(
@@ -223,25 +221,10 @@ export async function runStorageUpgrade(options: RunStorageUpgradeOptions): Prom
       ),
       "corruption",
       "The storage migration registry is incomplete.",
-      "Install a Yui release that carries the complete migration chain."
+      "Use a release with an explicit same-major minor upgrade path; cross-major conversion is separate."
     );
   }
   const classification = migratableClassification(state.currentVersion);
-
-  // Genuine pre-migration safety check, shared by ALL migrating modes. The
-  // unify-home data migration (18->19) physically relocates on-disk trees and
-  // rewrites live launch pointers, so before any mode proceeds we run its READ-
-  // ONLY preflight and refuse up front on the same conditions the migration would
-  // throw on inside the apply transaction: a queued/running Job bound under a
-  // relocating root, or a conflicting relocation target. The migration is applied
-  // offline (after the operator has stopped this Home's writers), so the preflight
-  // does not scan for live processes. Surfacing these here — before the Controller
-  // is stopped or a backup is taken — is what makes `--dry-run` and the updater's
-  // `--update-preflight` a genuine readiness signal rather than a mere list of
-  // schema steps, while the in-transaction checks remain the authoritative guard
-  // against anything that starts after this point.
-  const migrationBlocked = preflightMigrationBlockers(options.home, plan, classification);
-  if (migrationBlocked !== null) return migrationBlocked;
 
   if (options.mode === "update-preflight") {
     return {
@@ -293,7 +276,7 @@ export async function runStorageUpgrade(options: RunStorageUpgradeOptions): Prom
       database.pragma("synchronous = FULL");
       database.pragma("foreign_keys = ON");
       database.pragma("busy_timeout = 5000");
-      migrateSqliteSchema(database, { mode: "apply" });
+      applySqliteMinorUpgrades(database);
       migrationCommitted = true;
     } finally {
       database.close();
@@ -350,7 +333,7 @@ export async function runStorageUpgrade(options: RunStorageUpgradeOptions): Prom
 }
 
 function validateCurrentStore(home: string): void {
-  const store = new SqliteTaskStore(home);
+  const store = new SqliteTaskStore(home, { readonly: true });
   try {
     store.validateCurrentRecords();
     for (const taskId of store.listTasks().map(({ id }) => id)) {
@@ -377,7 +360,7 @@ function validateCurrentStore(home: string): void {
 
 async function createDatabaseBackup(
   home: string,
-  sourceVersion: number,
+  sourceVersion: StorageVersion,
   now: Date
 ): Promise<string> {
   const source = join(home, CURRENT_DATABASE_FILENAME);
@@ -429,7 +412,7 @@ function currentClassification(): HomeClassification {
   };
 }
 
-function migratableClassification(storageVersion: number): HomeClassification {
+function migratableClassification(storageVersion: StorageVersion): HomeClassification {
   return {
     classification: { verdict: "MIGRATABLE", status: "migration-ready" },
     storageVersion,
@@ -450,7 +433,7 @@ function unsupportedClassification(
   const action = future
     ? "Use a newer Yui release."
     : "Preserve this Home for use with its matching historical Yui release, "
-      + "or initialize a new Home with Yui 0.15.0 or later.";
+      + "or use the independent explicit converter for a different storage major.";
   return {
     classification: {
       verdict: "NEEDS_NEW_VERSION",
@@ -489,85 +472,6 @@ function blocked(
     stage,
     message,
     action,
-    classification,
-    sceneUnchanged: true
-  };
-}
-
-/**
- * Run each data migration's registered READ-ONLY preflight against the
- * current (pre-upgrade) database and, when any finds a blocker, return a
- * `blocked` result the caller surfaces before touching the Controller or the
- * Home. Returns `null` when the plan carries no registered readiness check,
- * or when every preflight is clear.
- *
- * Both the 23->24 unify and the 24->25 collapse migrations physically relocate
- * managed worktrees and share the same blocker shape (in-flight Job, conflicting
- * relocation target). When a Home is upgraded across both in one run, their
- * blockers are aggregated so the operator sees their readiness problems together.
- * Notification retirement separately rejects unsettled execution references.
- *
- * The database is opened read-only so the checks cannot mutate the authoritative
- * store, and the handle is always closed. An unexpected failure to evaluate a
- * preflight is itself a fail-closed blocker: we must not advance to an
- * irreversible migration on an unverifiable readiness signal.
- */
-function preflightMigrationBlockers(
-  home: string,
-  plan: readonly StorageMigrationStep[],
-  classification: HomeClassification
-): Extract<UpgradeResult, { outcome: "blocked" }> | null {
-  const relocatesUnify = plan.some((step) => step.name === "unify-home-layout");
-  const relocatesCollapse = plan.some((step) => step.name === "collapse-worktree-layout");
-  const retiresRunWakes = plan.some((step) => step.name === "notification-only-wakes");
-  const changesVerification = plan.some(step => step.name === "advisory-and-verification-policy");
-  const changesInput = plan.some(step => step.name === "current-input-contract");
-  const retiresRuntime = plan.some(step => step.name === "current-verification-and-owner-contract");
-  if (!relocatesUnify && !relocatesCollapse && !retiresRunWakes && !changesVerification && !changesInput && !retiresRuntime) return null;
-
-  type MigrationBlocker = UnifyHomePreflightBlocker | CollapseWorktreePreflightBlocker;
-  let blockers: MigrationBlocker[];
-  try {
-    const database = new Database(join(home, CURRENT_DATABASE_FILENAME), {
-      readonly: true,
-      fileMustExist: true
-    });
-    try {
-      blockers = [];
-      if (relocatesUnify) blockers.push(...preflightUnifyHomeLayout(database).blockers);
-      if (relocatesCollapse) blockers.push(...preflightCollapseWorktreeLayout(database).blockers);
-      if (retiresRunWakes) preflightNotificationOnlyWakes(database);
-      if (changesVerification) preflightVerificationPolicy(database);
-      if (changesInput) preflightCurrentInputContract(database);
-      if (retiresRuntime) preflightCurrentRuntimeContract(database);
-    } finally {
-      database.close();
-    }
-  } catch (error) {
-    return {
-      ...blocked(
-        classification,
-        "in-flight",
-        `The storage migration readiness check could not be completed: ${messageOf(error)}`,
-        "Resolve the named execution or resource boundary, preserving original input and results. "
-          + "Confirm the relevant Runs and Jobs are settled, then rerun the upgrade."
-      )
-    };
-  }
-  if (blockers.length === 0) return null;
-
-  return {
-    outcome: "blocked",
-    stage: "in-flight",
-    message:
-      "Refusing to migrate: the Home is not safe to relocate under the current layout yet. "
-      + blockers.map((entry) => entry.detail).join("; ") + ".",
-    action:
-      "Resolve the reported condition(s) — let a queued/running Job finish or cancel it, and "
-      + "clear any conflicting relocation target — then rerun the upgrade. The migration is applied "
-      + "offline, so first confirm the Controller and any execution writers for this Home are "
-      + "stopped. The authoritative Home is unchanged.",
-    blockers: blockers.map((entry) => ({ reason: entry.reason, detail: entry.detail })),
     classification,
     sceneUnchanged: true
   };

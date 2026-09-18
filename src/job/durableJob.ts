@@ -10,7 +10,7 @@ import {
   recordOperationEvidence, validateOperationFacts, type OperationFacts
 } from "../kernel/operationFacts.js";
 
-export const CURRENT_DURABLE_JOB_SCHEMA_VERSION = 2 as const;
+export const CURRENT_DURABLE_JOB_SCHEMA_VERSION = 1 as const;
 export const JOB_RUNNER_IMPLEMENTATION = Object.freeze({ id: "yui:job-runner", generation: "1" });
 
 export type DurableJobStatus =

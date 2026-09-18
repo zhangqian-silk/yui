@@ -83,7 +83,7 @@ export type DirectTaskMainSnapshot = Readonly<{
 }>;
 
 export type WorkItemCandidate = Readonly<{
-  schemaVersion: 3;
+  schemaVersion: 1;
   id: string;
   taskId: string;
   workItemId: string;
@@ -113,8 +113,8 @@ export type WorkItemCandidate = Readonly<{
 }>;
 
 export type WorkItem = {
-  /** v15 removes retired pre-unified execution history from the current contract. */
-  schemaVersion: 15;
+  /** Current WorkItem envelope; execution history lives in Groups and Events. */
+  schemaVersion: 1;
   id: string;
   taskId: string;
   title: string;
@@ -175,7 +175,7 @@ export function createWorkItem(
 ): WorkItem {
   const timestamp = now.toISOString();
   return validateWorkItem({
-    schemaVersion: 15,
+    schemaVersion: 1,
     id: requireIdentity(id, "Work Item id"),
     taskId: requireIdentity(taskId, "Task id"),
     title: requireText(input.title, "Work item title"),
@@ -282,7 +282,7 @@ export function submitWorkItemCandidate(
   const revision = workItem.revision + 1;
   const sequence = workItem.candidates.length + 1;
   const candidate = validateWorkItemCandidate({
-    schemaVersion: 3,
+    schemaVersion: 1,
     id: `candidate-${sequence}`,
     taskId: workItem.taskId,
     workItemId: workItem.id,
@@ -553,7 +553,7 @@ export function validateWorkItem(workItem: WorkItem): WorkItem {
     "acceptedCandidateId",
     "currentCandidateId"
   ], "WorkItem");
-  if (workItem.schemaVersion !== 15) throw new Error("WorkItem must use schemaVersion 15.");
+  if (workItem.schemaVersion !== 1) throw new Error("WorkItem must use schemaVersion 1.");
   validateTaskRecordReference({ taskId: workItem.taskId, localId: workItem.id }, "workItem");
   requireIdentity(workItem.taskId, "Task id");
   requireText(workItem.title, "Work item title");
@@ -718,8 +718,8 @@ export function validateWorkItemCandidate(
   if (typeof candidate !== "object" || candidate === null) {
     throw new Error("Work Item candidate is required.");
   }
-  if (candidate.schemaVersion !== 3) {
-    throw new Error("Work Item candidate must use schemaVersion 3.");
+  if (candidate.schemaVersion !== 1) {
+    throw new Error("Work Item candidate must use schemaVersion 1.");
   }
   requireIdentity(candidate.taskId, "Work Item candidate Task id");
   validateTaskRecordReference({

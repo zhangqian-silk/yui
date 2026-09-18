@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { isStorageVersion, compareStorageVersions, type StorageVersion } from "../storage/storageVersions.js";
 
 import { callController as defaultCallController } from "../core/controllerClient.js";
 import type { JsonValue } from "../core/protocol.js";
@@ -15,7 +16,7 @@ export type RuntimeCoherenceOptions = Readonly<{
   identity?: YuiVersionIdentity;
   inspectStorage?: (home: string) => StorageSchemaState | Readonly<{
     status: string;
-    currentVersion?: number;
+    currentVersion?: StorageVersion;
     direction?: "older" | "newer";
   }>;
   callController?: (
@@ -91,15 +92,12 @@ function validateVersionIdentity(value: unknown): YuiVersionIdentity {
     value.controllerProtocolVersion,
     "Controller protocol version"
   );
-  const storageVersion = requireVersion(
-    value.storageVersion,
-    "Storage version"
-  );
-  const minimumStorageVersion = requireVersion(
-    value.minimumStorageVersion,
-    "Minimum storage migration version"
-  );
-  if (minimumStorageVersion > storageVersion) {
+  const storageVersion = value.storageVersion;
+  const minimumStorageVersion = value.minimumStorageVersion;
+  if (!isStorageVersion(storageVersion) || !isStorageVersion(minimumStorageVersion)) {
+    throw new Error("Storage version must be a major.minor identity.");
+  }
+  if (compareStorageVersions(minimumStorageVersion, storageVersion) > 0) {
     throw new Error(
       "Minimum storage migration version cannot exceed the current storage version."
     );

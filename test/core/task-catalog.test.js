@@ -168,7 +168,7 @@ test("catalog byte budget includes escaped Unicode and continues; HTTP preserves
   // historical and replacement Session evidence from the lifetime projection.
   for (const [index, tokens] of [12, 18].entries()) {
     const observation = createRuntimeObservation({
-      schemaVersion: 4, eventId: `usage-${index}`, semanticKey: `usage-${index}`,
+      schemaVersion: 1, eventId: `usage-${index}`, semanticKey: `usage-${index}`,
       kind: "activity.observed", authority: "provider-structured",
       receivedAt: now.toISOString(),
       fence: { taskId: "task-60", roleName: "leader", agentId: "codex",

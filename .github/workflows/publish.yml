@@ -109,6 +109,21 @@ jobs:
             cat yui-runtime.sha256
           } | tee release-provenance.txt
 
+      - name: Package independent one-time converter
+        if: github.ref_name == 'v0.99.1'
+        run: node scripts/package-baseline-converter.mjs --output yui-baseline-cutover.tgz
+
+      - name: Preserve independent converter
+        if: github.ref_name == 'v0.99.1'
+        uses: actions/upload-artifact@v7
+        with:
+          name: yui-baseline-cutover
+          path: |
+            yui-baseline-cutover.tgz
+            yui-baseline-cutover.tgz.sha256
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Upload tested package
         uses: actions/upload-artifact@v7
         with:

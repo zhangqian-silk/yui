@@ -66,10 +66,10 @@ type RoleAgentOwner = RoleProfile & {
 };
 
 export type GlobalRole = RoleAgentOwner & {
-  schemaVersion: 3;
+  schemaVersion: 1;
 };
 export type TaskRole = RoleAgentOwner & {
-  schemaVersion: 4;
+  schemaVersion: 1;
   taskId: string;
   /** Explicitly adopted environment for the next native Session. */
   executionEnvironment?: ExecutionEnvironmentSnapshot;
@@ -129,7 +129,7 @@ export function createRole(
   const owner = createRoleOwner(name, bindings, activeAgentId, workspace, now, profile, defaultAccess);
   return validateTaskRole({
     ...owner,
-    schemaVersion: 4,
+    schemaVersion: 1,
     taskId: requireSafeIdentity(taskId, "Task id")
   });
 }
@@ -145,7 +145,7 @@ export function createGlobalRole(
 ): GlobalRole {
   return validateGlobalRole({
     ...createRoleOwner(name, bindings, activeAgentId, workspace, now, profile, defaultAccess),
-    schemaVersion: 3
+    schemaVersion: 1
   });
 }
 
@@ -159,7 +159,7 @@ export function copyGlobalRoleToTaskRole(
   const timestamp = now.toISOString();
   return validateTaskRole({
     ...cloneProfile(globalRole),
-    schemaVersion: 4,
+    schemaVersion: 1,
     launchRevision: 1,
     defaultAccess: globalRole.defaultAccess,
     taskId: requireSafeIdentity(taskId, "Task id"),
@@ -393,6 +393,7 @@ export function unbindRoleAgent(
 }
 
 export function validateGlobalRole(role: GlobalRole): GlobalRole {
+  if (Object.hasOwn(role, "taskId")) throw new Error("Global Role cannot carry a Task identity.");
   return validateRoleOwner(role);
 }
 
@@ -433,8 +434,7 @@ function createRoleOwner(
 }
 
 function validateRoleOwner<T extends GlobalRole | TaskRole>(role: T): T {
-  const expectedSchemaVersion = "taskId" in role ? 4 : 3;
-  if (role.schemaVersion !== expectedSchemaVersion) {
+  if (role.schemaVersion !== 1) {
     throw new Error("Role schema version is invalid.");
   }
   if (!Number.isSafeInteger(role.launchRevision) || role.launchRevision < 1) {
@@ -470,9 +470,7 @@ function validateRoleOwner<T extends GlobalRole | TaskRole>(role: T): T {
 function validateRoleAgentBinding(binding: RoleAgentBinding): RoleAgentBinding {
   const agentId = requireSafeIdentity(binding.agentId, "Role Agent id");
   const adapterId = requireSupportedAdapterId(binding.adapterId);
-  // Storage 10 backfilled every stored binding, so a missing component here is
-  // a corrupt record rather than an old one. Defaulting it would invent a
-  // product identity for data that never lost one.
+  // The current contract requires an explicit execution component.
   if (binding.component === undefined) {
     throw new Error(`Role Agent binding is missing its execution component: ${agentId}.`);
   }

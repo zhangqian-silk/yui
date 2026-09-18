@@ -302,7 +302,7 @@ test("late native terminals cannot settle successor input or fabricate acceptanc
   let projection = createRuntimeProjection(fence, at.toISOString());
   for (const [index, kind] of ["turn.accepted", "turn.completed"].entries()) {
     projection = projectRuntimeObservation(projection, createRuntimeObservation({
-      schemaVersion: 4, eventId: `event-${index}`, semanticKey: `event-${index}`,
+      schemaVersion: 1, eventId: `event-${index}`, semanticKey: `event-${index}`,
       kind, authority: "provider-structured", receivedAt: later.toISOString(),
       sequence: index + 1, ordinal: 0, fence, payload: {}
     }));

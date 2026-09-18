@@ -29,7 +29,15 @@ const registrySchemaVersion = 3;
 const recoverySchemaVersion = 1;
 const controllerDiscoveryName = "controller.json";
 const controllerProbeTimeoutMs = 500;
-const controllerProtocolVersion = 4;
+const controllerProtocolVersion = 1;
+function validStorageVersion(value) {
+  return typeof value === "string" && /^[1-9]\d*\.(0|[1-9]\d*)$/.test(value)
+    && value.split(".").every(part=>Number.isSafeInteger(Number(part)));
+}
+function compareStorageVersion(left,right) {
+  const [a,b]=left.split(".").map(Number),[c,d]=right.split(".").map(Number);
+  return Math.sign(a-c || b-d);
+}
 
 export function installDevLauncher(options = {}) {
   const projectRoot = resolve(options.projectRoot ?? process.cwd());
@@ -718,10 +726,9 @@ function probeController(discovery) {
           || result.homeFilesystemId !== discovery.homeFilesystemId
           || result.controllerInstanceId !== discovery.controllerInstanceId
           || !Number.isSafeInteger(result.pid) || result.pid <= 0
-          || !Number.isSafeInteger(result.storageVersion) || result.storageVersion <= 0
-          || !Number.isSafeInteger(result.minimumStorageVersion)
-          || result.minimumStorageVersion <= 0
-          || result.minimumStorageVersion > result.storageVersion
+          || !validStorageVersion(result.storageVersion)
+          || !validStorageVersion(result.minimumStorageVersion)
+          || compareStorageVersion(result.minimumStorageVersion,result.storageVersion) > 0
           || (
             Object.hasOwn(result, "protocolVersion")
             && (!Number.isSafeInteger(result.protocolVersion) || result.protocolVersion <= 0)

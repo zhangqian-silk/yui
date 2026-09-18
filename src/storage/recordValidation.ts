@@ -39,8 +39,14 @@ const validators = {
   projects: check(validateProject),
   task_roles: check(validateTaskRole),
   global_roles: check(validateGlobalRole),
-  role_session_sets: check<RoleSessionSet>(validateRoleSessionSet),
-  global_role_session_sets: check<RoleSessionSet>(validateRoleSessionSet),
+  role_session_sets: check<RoleSessionSet>(record => {
+    if (record.owner?.scope !== "task") throw new Error("Task Session set requires task scope.");
+    validateRoleSessionSet(record);
+  }),
+  global_role_session_sets: check<RoleSessionSet>(record => {
+    if (record.owner?.scope !== "global") throw new Error("Global Session set requires global scope.");
+    validateRoleSessionSet(record);
+  }),
   messages: check(validateTaskMessage),
   global_role_messages: check(validateGlobalRoleMessage),
   turns: check(validateRun),
@@ -64,7 +70,7 @@ const validators = {
   plugin_intents: check(validatePluginIntent),
   plugin_validations: check(validatePluginValidation),
   session_owners: check((record: SessionOwnerIdentity) => {
-    if (record.schemaVersion !== 2 || record.kind !== "yui-session-owner" || Object.hasOwn(record, "launchId")) {
+    if (record.schemaVersion !== 1 || record.kind !== "yui-session-owner" || Object.hasOwn(record, "launchId")) {
       throw new Error("Session owner identity is invalid.");
     }
     createSessionOwnerIdentity({ ...record, recordedAt: new Date(record.recordedAt) });

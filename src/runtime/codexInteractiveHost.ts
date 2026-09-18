@@ -37,7 +37,7 @@ export async function runCodexInteractiveHost(
   }
   const expectedId = environment.YUI_NATIVE_SESSION_ID;
   let snapshot: AgentHostSnapshot = {
-    schemaVersion: 2, state: "starting", adapterId: "codex", updatedAt: new Date().toISOString()
+    schemaVersion: 1, state: "starting", adapterId: "codex", updatedAt: new Date().toISOString()
   };
   const control = await openAgentHostControl(home, payload, () => snapshot, async (request) => {
     if (request.type !== "status") {

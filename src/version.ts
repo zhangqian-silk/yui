@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import { FILE_TASK_CONTROLLER_PROTOCOL_VERSION } from "./core/protocol.js";
 import {
   CURRENT_STORAGE_VERSION,
-  MIN_SUPPORTED_STORAGE_VERSION
+  MIN_SUPPORTED_STORAGE_VERSION,
+  type StorageVersion
 } from "./storage/storageVersions.js";
 
 export const YUI_VERSION = readPackageVersion();
@@ -11,8 +12,8 @@ export const YUI_VERSION = readPackageVersion();
 export type YuiVersionIdentity = Readonly<{
   version: string;
   controllerProtocolVersion: number;
-  storageVersion: number;
-  minimumStorageVersion: number;
+  storageVersion: StorageVersion;
+  minimumStorageVersion: StorageVersion;
 }>;
 
 export function yuiVersionIdentity(): YuiVersionIdentity {

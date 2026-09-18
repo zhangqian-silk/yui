@@ -834,7 +834,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         const key = providerContinuationKey(continuation.identity);
         const identityDigest = createHash("sha256").update(key).digest("hex");
         const detached = createRuntimeObservation({
-          schemaVersion: 4,
+          schemaVersion: 1,
           eventId: `derived-continuation-detached:${identityDigest}`,
           semanticKey: `continuation-detached:${identityDigest}`,
           kind: "continuation.started",
@@ -937,7 +937,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
             .update(`${input.semanticKey}\u0000${identityKey}`)
             .digest("hex");
           const settled = createRuntimeObservation({
-            schemaVersion: 4,
+            schemaVersion: 1,
             eventId: `native-snapshot-settled:${digest}`,
             semanticKey: `native-snapshot-settled:${digest}`,
             kind: "continuation.settled",
@@ -2930,7 +2930,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         && event.payload.observationId === observationId
       ))) return;
       const observation = validateRuntimeProcessExitObservation({
-        schemaVersion: 2,
+        schemaVersion: 1,
         observationId,
         hostSequence: 1,
         hostInstanceId: `tmux-${input.roleName}`,

@@ -53,7 +53,7 @@ export type TaskMetadataUpdate = Partial<{
 }>;
 
 export type Task = {
-  schemaVersion: 7;
+  schemaVersion: 1;
   id: string;
   title: string;
   /** Project-defined intent; it describes the request, never its execution topology. */
@@ -67,7 +67,7 @@ export type Task = {
   /**
    * Durable cross-Home-unique workspace identity, minted once on first workspace
    * preparation and reused forever. Absent only for Tasks that never had a
-   * managed Git workspace (or pre-v4 Tasks awaiting the controlled rebuild).
+   * managed Git workspace.
    */
   workspaceIdentity?: TaskWorkspaceIdentity;
   status: TaskStatus;
@@ -112,7 +112,7 @@ export type Task = {
 export function createTask(id: string, title: string, now: Date, metadata: TaskMetadata = {}): Task {
   const timestamp = now.toISOString();
   return {
-    schemaVersion: 7,
+    schemaVersion: 1,
     id: requireSafeIdentity(id, "Task id"),
     title: requireText(title, "Task title"),
     ...cloneMetadata(metadata),
@@ -615,7 +615,17 @@ export function startTaskExecution(task: Task, now: Date): Task {
 }
 
 export function validateTask(task: Task): Task {
-  if (task.schemaVersion !== 7) throw new Error("Task must use schemaVersion 7.");
+  if (task.schemaVersion !== 1) throw new Error("Task must use schemaVersion 1.");
+  const fields: readonly (keyof Task)[] = [
+    "schemaVersion","id","title","type","description","priority","tags","dueAt",
+    "projectBindings","cwd","workspaceIdentity","status","executionGate","activationRequest",
+    "settledActivationRequests","completedAt","completedBy","completionSummary","completionArtifactRefs",
+    "retiredAt","retiredBy","retirementSummary","retirementIsolation","replacementTaskId",
+    "archivedAt","archivedBy","archiveReason","archiveSummary","createdAt","updatedAt"
+  ];
+  for (const field of Object.keys(task)) {
+    if (!fields.includes(field as keyof Task)) throw new Error(`Task contains an unsupported field: ${field}.`);
+  }
   requireSafeIdentity(task.id, "Task id");
   requireText(task.title, "Task title");
   if (task.type !== undefined) requireSafeIdentity(task.type, "Task type");
@@ -698,9 +708,6 @@ export function validateTask(task: Task): Task {
   if (task.dueAt !== undefined) requireTimestamp(task.dueAt, "Task dueAt");
   normalizeProjectBindings(task.projectBindings);
   if (task.cwd !== undefined) requireText(task.cwd, "Task workspace");
-  if (Object.hasOwn(task, "legacyDeliveryPath")) {
-    throw new Error("Task contains the removed delivery-path field.");
-  }
   const completionFields = [task.completedAt, task.completedBy, task.completionSummary];
   const hasAnyCompletion = completionFields.some((value) => value !== undefined);
   const hasAllCompletion = completionFields.every((value) => value !== undefined);

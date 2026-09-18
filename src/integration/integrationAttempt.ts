@@ -55,7 +55,7 @@ export type IntegrationSource =
     }>;
 
 export type IntegrationAttempt = Readonly<{
-  schemaVersion: 6;
+  schemaVersion: 1;
   id: string;
   taskId: string;
   projectId: string;
@@ -120,7 +120,7 @@ export function createIntegrationAttempt(
 ): IntegrationAttempt {
   const timestamp = now.toISOString();
   return validateIntegrationAttempt({
-    schemaVersion: 6,
+    schemaVersion: 1,
     id: input.id,
     taskId: input.taskId,
     projectId: input.projectId,
@@ -294,8 +294,8 @@ export function supersedeIntegration(
 }
 
 export function validateIntegrationAttempt(attempt: IntegrationAttempt): IntegrationAttempt {
-  if (attempt.schemaVersion !== 6) {
-    throw new Error("IntegrationAttempt must use schemaVersion 6.");
+  if (attempt.schemaVersion !== 1) {
+    throw new Error("IntegrationAttempt must use schemaVersion 1.");
   }
   validateTaskRecordReference({
     taskId: attempt.taskId,

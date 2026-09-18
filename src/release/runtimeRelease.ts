@@ -16,6 +16,7 @@
  */
 
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { isStorageVersion, compareStorageVersions, type StorageVersion } from "../storage/storageVersions.js";
 import {
   existsSync,
   lstatSync,
@@ -62,7 +63,7 @@ export type ActiveReleasePointer = Readonly<{
 }>;
 
 export type RuntimeIdentityReceipt = Readonly<{
-  schemaVersion: 2;
+  schemaVersion: 1;
   version: string;
   /** Executable that owns the Controller process (for example `node`). */
   executablePath: string;
@@ -76,9 +77,9 @@ export type RuntimeIdentityReceipt = Readonly<{
   cliRealpath: string;
   controllerRealpath: string;
   controllerProtocolVersion: number;
-  storageVersion: number;
-  minimumStorageVersion: number;
-  storageBackend: "file" | "sqlite";
+  storageVersion: StorageVersion;
+  minimumStorageVersion: StorageVersion;
+  storageBackend: "sqlite";
   workerEnabled: boolean;
   pid: number;
   processStartIdentity: string;
@@ -688,7 +689,7 @@ function validateRuntimeIdentity(value: unknown): RuntimeIdentityReceipt {
   if (
     value === null
     || typeof value !== "object"
-    || (value as { schemaVersion?: unknown }).schemaVersion !== 2
+    || (value as { schemaVersion?: unknown }).schemaVersion !== 1
     || typeof (value as { version?: unknown }).version !== "string"
     || typeof (value as { executablePath?: unknown }).executablePath !== "string"
     || (value as { executablePath?: unknown }).executablePath === ""
@@ -697,15 +698,17 @@ function validateRuntimeIdentity(value: unknown): RuntimeIdentityReceipt {
     || typeof (value as { cliRealpath?: unknown }).cliRealpath !== "string"
     || typeof (value as { controllerRealpath?: unknown }).controllerRealpath !== "string"
     || !isPositiveInteger((value as { controllerProtocolVersion?: unknown }).controllerProtocolVersion)
-    || !isPositiveInteger((value as { storageVersion?: unknown }).storageVersion)
-    || !isPositiveInteger((value as { minimumStorageVersion?: unknown }).minimumStorageVersion)
-    || ((value as { minimumStorageVersion?: number }).minimumStorageVersion as number)
-      > ((value as { storageVersion?: number }).storageVersion as number)
+    || !isStorageVersion((value as { storageVersion?: unknown }).storageVersion)
+    || !isStorageVersion((value as { minimumStorageVersion?: unknown }).minimumStorageVersion)
+    || compareStorageVersions((value as RuntimeIdentityReceipt).minimumStorageVersion,
+      (value as RuntimeIdentityReceipt).storageVersion) > 0
     || typeof (value as { pid?: unknown }).pid !== "number"
     || typeof (value as { processStartIdentity?: unknown }).processStartIdentity !== "string"
     || ((value as { mode?: unknown }).mode !== "primary"
       && (value as { mode?: unknown }).mode !== "candidate")
     || typeof (value as { dualOwner?: unknown }).dualOwner !== "boolean"
+    || (value as { storageBackend?: unknown }).storageBackend !== "sqlite"
+    || typeof (value as { workerEnabled?: unknown }).workerEnabled !== "boolean"
   ) {
     throw new Error("Runtime identity receipt is invalid.");
   }

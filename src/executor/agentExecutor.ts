@@ -42,7 +42,7 @@ export type RoleSessionOwner = GlobalRoleSessionOwner | TaskRoleSessionOwner;
 
 /** One independently resumable native session for one Agent binding on a Role. */
 export type RoleAgentSession = {
-  schemaVersion: 6;
+  schemaVersion: 1;
   agentId: string;
   adapterId: string;
   nativeSessionId: string;
@@ -68,7 +68,7 @@ type RoleSessionSetBase<TOwner extends RoleSessionOwner> = {
 };
 
 export type GlobalRoleSessionSet = RoleSessionSetBase<GlobalRoleSessionOwner> & {
-  schemaVersion: 5;
+  schemaVersion: 1;
   /** Immutable terminal native Sessions keyed by an opaque Yui reference. */
   history?: Record<string, RoleAgentSession>;
   /**
@@ -87,7 +87,7 @@ export type GlobalRoleSessionSet = RoleSessionSetBase<GlobalRoleSessionOwner> & 
 };
 
 export type TaskRoleSessionSet = RoleSessionSetBase<TaskRoleSessionOwner> & {
-  schemaVersion: 12;
+  schemaVersion: 1;
   /** Immutable terminal native Sessions superseded by a fresh effective launch. */
   history?: readonly RoleAgentSession[];
   /** Provider-native conversation and Turn observations only. */
@@ -159,10 +159,10 @@ export function createRoleSessionSet(
     updatedAt: now.toISOString()
   };
   return owner.scope === "global"
-    ? { ...base, schemaVersion: 5, providerBinding: null } as GlobalRoleSessionSet
+    ? { ...base, schemaVersion: 1, providerBinding: null } as GlobalRoleSessionSet
     : {
         ...base,
-        schemaVersion: 12,
+        schemaVersion: 1,
         providerBinding: null
       } as TaskRoleSessionSet;
 }
@@ -244,7 +244,7 @@ export function recordRoleAgentSession<TSet extends RoleSessionSet>(
     throw new Error("A native Session cannot change its Endpoint implementation in place.");
   }
   const session: RoleAgentSession = {
-    schemaVersion: 6,
+    schemaVersion: 1,
     agentId,
     adapterId,
     nativeSessionId,
@@ -694,7 +694,7 @@ export function validateRoleSessionSet<TSet extends RoleSessionSet>(set: TSet): 
     validateRoleAgentSession(session, agentId);
   }
   if (set.owner.scope === "global") {
-    if (set.schemaVersion !== 5) {
+    if (set.schemaVersion !== 1) {
       throw new Error("Global Role session set schema version is invalid.");
     }
     const globalSet = set as GlobalRoleSessionSet;
@@ -731,7 +731,7 @@ export function validateRoleSessionSet<TSet extends RoleSessionSet>(set: TSet): 
       }
     }
   } else {
-    if (set.schemaVersion !== 12) {
+    if (set.schemaVersion !== 1) {
       throw new Error("Task Role session set schema version is invalid.");
     }
     if (!Object.hasOwn(set, "providerBinding")) {
@@ -782,7 +782,7 @@ export function validateRoleAgentSession(
   session: RoleAgentSession,
   expectedAgentId = session.agentId
 ): RoleAgentSession {
-  if (session.schemaVersion !== 6) {
+  if (session.schemaVersion !== 1) {
     throw new Error(`Role Agent session schema version is invalid: ${expectedAgentId}.`);
   }
   const agentId = requireSafeIdentity(session.agentId, "Agent id");

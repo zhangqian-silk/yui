@@ -145,7 +145,7 @@ export class AgentRuntimeObserver implements AgentRuntimeObserverPort {
               ? tokenObservationIdentity("baseline", fence, source.sourceId, baselineKey)
               : usageObservationIdentity(fence, source.sourceId, latestOccurrence!);
             this.inbox.enqueueObservation(createRuntimeObservation({
-              schemaVersion: 4,
+              schemaVersion: 1,
               eventId: identity.eventId,
               semanticKey: identity.semanticKey,
               kind: "activity.observed",
@@ -178,7 +178,7 @@ export class AgentRuntimeObserver implements AgentRuntimeObserverPort {
         const health = JSON.stringify([sample.status, sample.detail ?? null]);
         if (state.health !== health) {
           this.inbox.enqueueObservation(createRuntimeObservation({
-            schemaVersion: 4,
+            schemaVersion: 1,
             eventId: observationId("health", fence, source.sourceId, health),
             semanticKey: observationId("health", fence, source.sourceId, health),
             kind: "observer.health",
@@ -225,7 +225,7 @@ export class AgentRuntimeObserver implements AgentRuntimeObserverPort {
         usages.forEach((occurrence, usageIndex) => {
           const identity = usageObservationIdentity(fence, source.sourceId, occurrence);
           this.inbox.enqueueObservation(createRuntimeObservation({
-            schemaVersion: 4,
+            schemaVersion: 1,
             eventId: identity.eventId,
             semanticKey: identity.semanticKey,
             kind: "activity.observed",
@@ -255,7 +255,7 @@ export class AgentRuntimeObserver implements AgentRuntimeObserverPort {
         });
         if (activityChanged && state.cursor !== undefined) {
           this.inbox.enqueueObservation(createRuntimeObservation({
-            schemaVersion: 4,
+            schemaVersion: 1,
             eventId: observationId("activity", fence, source.sourceId, sample.activityId!),
             semanticKey: observationId("activity", fence, source.sourceId, sample.activityId!),
             kind: "activity.observed",

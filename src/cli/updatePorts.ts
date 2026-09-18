@@ -47,6 +47,7 @@ import { fileURLToPath } from "node:url";
 
 import { runtimeError } from "../errors/cliError.js";
 import { isConcreteVersion } from "../domain/validation.js";
+import { isMinorStorageUpgrade, isStorageVersion, storageVersionParts } from "../storage/storageVersions.js";
 import { STORAGE_DOCTOR_CHECK_NAMES } from "../doctor/doctor.js";
 import { acquireHandoverLock } from "../release/runtimeRelease.js";
 import { updateStagingRoot } from "../storage/homeLayout.js";
@@ -1161,9 +1162,12 @@ function parseUpdatePreflightResult(data: Record<string, unknown>): UpdatePrefli
     || data.steps.length !== data.stepCount) return null;
   const homeClassification = data.classification;
   if (!isRecord(homeClassification) || !isRecord(homeClassification.classification)) return null;
+  const from = homeClassification.storageVersion;
+  const to = homeClassification.currentStorageVersion;
+  if (!isStorageVersion(from) || !isStorageVersion(to)) return null;
   const classification = homeClassification.classification;
   if (data.status === "already-current") {
-    if (data.stepCount !== 0
+    if (data.stepCount !== 0 || from !== to
       || classification.verdict !== "USABLE"
       || classification.status !== "current") return null;
     return { status: "already-current", stepCount: 0 };
@@ -1171,7 +1175,14 @@ function parseUpdatePreflightResult(data: Record<string, unknown>): UpdatePrefli
   if ((data.stepCount as number) <= 0
     || classification.verdict !== "MIGRATABLE"
     || classification.status !== "migration-ready"
+    || !isMinorStorageUpgrade(from, to)
     || !data.steps.every(isStorageMigrationStep)) return null;
+  let previous = from;
+  for (const step of data.steps as Array<{ fromVersion: typeof from; toVersion: typeof to }>) {
+    if (step.fromVersion !== previous) return null;
+    previous = step.toVersion;
+  }
+  if (previous !== to) return null;
   return { status: "migration-ready", stepCount: data.stepCount as number };
 }
 
@@ -1216,9 +1227,10 @@ function interpretStorageMigration(
 
 function isStorageMigrationStep(value: unknown): boolean {
   return isRecord(value)
-    && Number.isSafeInteger(value.fromVersion)
-    && Number.isSafeInteger(value.toVersion)
-    && (value.toVersion as number) === (value.fromVersion as number) + 1
+    && isStorageVersion(value.fromVersion)
+    && isStorageVersion(value.toVersion)
+    && isMinorStorageUpgrade(value.fromVersion, value.toVersion)
+    && storageVersionParts(value.toVersion).minor === storageVersionParts(value.fromVersion).minor + 1
     && typeof value.name === "string"
     && value.name.length > 0;
 }

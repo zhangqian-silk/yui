@@ -46,7 +46,7 @@ test("frozen result inspection distinguishes record, commit and HEAD differences
     repositoryPath: root, container, directory: "app", taskSegment: "task-1",
     roleName: "work-item-1", baseRef: "HEAD"
   });
-  const workspace = { schemaVersion: 2, owner: { type: "work-item", taskId: "task-1", workItemId: "work-item-1" },
+  const workspace = { schemaVersion: 1, owner: { type: "work-item", taskId: "task-1", workItemId: "work-item-1" },
     root: container, entries: [{ projectId: "project-1", directory: "app", access: "write",
       ...prepared, baseRef: "HEAD" }], createdAt: "2026-09-13T00:00:00Z", updatedAt: "2026-09-13T00:00:00Z" };
   let candidate = { id: "candidate-1", workspace: structuredClone(workspace),

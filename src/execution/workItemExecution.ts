@@ -18,8 +18,8 @@ import {
 } from "../executor/effectiveLaunch.js";
 import { MAX_SYNTHESIS_SOURCE_RUNS } from "../context/sourceRunContext.js";
 
-export const WORK_ITEM_EXECUTION_GROUP_SCHEMA_VERSION = 2 as const;
-export const WORK_ITEM_EXECUTION_LANE_SCHEMA_VERSION = 2 as const;
+export const WORK_ITEM_EXECUTION_GROUP_SCHEMA_VERSION = 1 as const;
+export const WORK_ITEM_EXECUTION_LANE_SCHEMA_VERSION = 1 as const;
 export const WORK_ITEM_EXECUTION_ASSIGNMENT_SCHEMA_VERSION = 1 as const;
 export const MINIMUM_EXECUTION_GROUP_LANES = 2;
 export const EXECUTION_GROUP_SCHEMA_VERSION = WORK_ITEM_EXECUTION_GROUP_SCHEMA_VERSION;

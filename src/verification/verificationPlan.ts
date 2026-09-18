@@ -20,7 +20,7 @@ import type { Project } from "../repository/project.js";
  * reusable across stages.
  */
 
-export const VERIFICATION_PLAN_SCHEMA_VERSION = 2 as const;
+export const VERIFICATION_PLAN_SCHEMA_VERSION = 1 as const;
 export const VERIFICATION_PLAN_KIND = "verification-plan";
 
 /** The reserved knowledge marker that carries a Project's VerificationPlan. */
@@ -220,7 +220,7 @@ export function verificationPlanDigest(plan: VerificationPlan): string {
   const canonical = canonicalJson({
     // Old artifacts may have skipped shell commands or run in the wrong cwd.
     // Keep that history, but never reuse it as proof under corrected semantics.
-    executionContract: "workspace-argv-or-shell/clean-candidate/l2-only/v5",
+    executionContract: "yui-baseline/clean-candidate/l2-only/v1",
     id: plan.id,
     version: plan.version,
     toolchain: plan.toolchain,

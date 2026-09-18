@@ -4,10 +4,12 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 
 import {
-  inspectSqliteSchemaMigrations,
-  storageMigrationPlan
+  inspectSqliteSchema,
+  storageMinorUpgradePlan,
+  SqliteSchemaError
 } from "./sqliteSchema.js";
 import {
+  compareStorageVersions, type StorageVersion,
   CURRENT_STORAGE_VERSION,
   MIN_SUPPORTED_STORAGE_VERSION
 } from "./storageVersions.js";
@@ -20,23 +22,23 @@ export {
 export const CURRENT_DATABASE_FILENAME = "yui.db";
 
 type StorageVersionFields = Readonly<{
-  currentVersion: number;
-  latestVersion: number;
-  minimumSupportedVersion: number;
+  currentVersion: StorageVersion;
+  latestVersion: StorageVersion;
+  minimumSupportedVersion: StorageVersion;
   databasePath: string;
 }>;
 
 export type StorageSchemaState =
   | Readonly<{
       status: "uninitialized";
-      latestVersion: number;
-      minimumSupportedVersion: number;
+      latestVersion: StorageVersion;
+      minimumSupportedVersion: StorageVersion;
       databasePath: string;
     }>
   | (StorageVersionFields & Readonly<{ status: "current" }>)
   | (StorageVersionFields & Readonly<{
       status: "upgradeable";
-      pendingVersions: readonly number[];
+      pendingVersions: readonly StorageVersion[];
     }>)
   | (StorageVersionFields & Readonly<{
       status: "unsupported";
@@ -44,10 +46,11 @@ export type StorageSchemaState =
     }>)
   | Readonly<{
       status: "invalid";
-      latestVersion: number;
-      minimumSupportedVersion: number;
+      latestVersion: StorageVersion;
+      minimumSupportedVersion: StorageVersion;
       databasePath: string;
       detail: string;
+      reason?: "format" | "corruption";
     }>;
 
 export class StorageSchemaError extends Error {
@@ -104,7 +107,7 @@ export function inspectStorageSchema(rootDir: string): StorageSchemaState {
   }
 
   try {
-    const migration = inspectSqliteSchemaMigrations(database);
+    const migration = inspectSqliteSchema(database);
     const fields: StorageVersionFields = {
       currentVersion: migration.currentVersion,
       latestVersion: CURRENT_STORAGE_VERSION,
@@ -114,13 +117,13 @@ export function inspectStorageSchema(rootDir: string): StorageSchemaState {
     if (migration.currentVersion === CURRENT_STORAGE_VERSION) {
       return { status: "current", ...fields };
     }
-    if (migration.currentVersion > CURRENT_STORAGE_VERSION) {
+    if (compareStorageVersions(migration.currentVersion, CURRENT_STORAGE_VERSION) > 0) {
       return { status: "unsupported", direction: "newer", ...fields };
     }
-    if (migration.currentVersion < MIN_SUPPORTED_STORAGE_VERSION) {
+    if (compareStorageVersions(migration.currentVersion, MIN_SUPPORTED_STORAGE_VERSION) < 0) {
       return { status: "unsupported", direction: "older", ...fields };
     }
-    const plan = storageMigrationPlan(migration.currentVersion);
+    const plan = storageMinorUpgradePlan(migration.currentVersion);
     if (plan === null) {
       return {
         status: "invalid",
@@ -184,6 +187,7 @@ function invalid(databasePath: string, error: unknown): StorageSchemaState {
     latestVersion: CURRENT_STORAGE_VERSION,
     minimumSupportedVersion: MIN_SUPPORTED_STORAGE_VERSION,
     databasePath,
-    detail: error instanceof Error ? error.message : String(error)
+    detail: error instanceof Error ? error.message : String(error),
+    reason: error instanceof SqliteSchemaError && error.code === "STORAGE_FORMAT_UNSUPPORTED" ? "format" : "corruption"
   };
 }

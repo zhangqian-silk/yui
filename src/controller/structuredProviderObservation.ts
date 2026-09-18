@@ -505,7 +505,7 @@ function observation(input: Readonly<{
     payload: input.payload ?? {}
   };
   return createRuntimeObservation({
-    schemaVersion: 4,
+    schemaVersion: 1,
     eventId,
     semanticKey: runtimeObservationSemanticKey(partial),
     kind: input.kind,

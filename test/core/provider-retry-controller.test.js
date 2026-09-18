@@ -122,7 +122,7 @@ function fixture(t, scope = "task", roleName = scope === "task" ? "leader" : "as
     payload = {}, runId = read().run?.runId) => {
     const eventId = `observation-${++sequence}`;
     return adapter().observeRuntimeObservation(createRuntimeObservation({
-      schemaVersion: 4, eventId, semanticKey: eventId,
+      schemaVersion: 1, eventId, semanticKey: eventId,
       kind, authority: "provider-structured",
       observedAt: now().toISOString(), receivedAt: now().toISOString(), payload,
       fence: { ...scoped, agentId: agent.id, driverId: "openai/codex",
@@ -466,7 +466,7 @@ test("detached child observation failures hand off once, back off and retain wri
   f.observe("turn.accepted");
   const adapter = new FileSchedulerStoreAdapter(f.store);
   assert.equal(adapter.observeRuntimeObservation(createRuntimeObservation({
-    schemaVersion: 4, eventId: "child-started", semanticKey: "child-started",
+    schemaVersion: 1, eventId: "child-started", semanticKey: "child-started",
     kind: "continuation.started", authority: "provider-structured",
     receivedAt: f.now().toISOString(), observedAt: f.now().toISOString(),
     fence: { taskId: "task-1", roleName: f.roleName, agentId: "codex", driverId: "openai/codex",
