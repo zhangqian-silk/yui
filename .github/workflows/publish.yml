@@ -184,4 +184,11 @@ jobs:
           sha256sum -c yui-runtime.sha256
 
       - name: Publish tested package
-        run: npm publish ./release-artifact/yui-runtime.tgz --access public --provenance
+        # Stable releases explicitly select latest, even when replacing a
+        # higher-numbered withdrawn release. Prereleases must never promote it.
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          dist_tag=latest
+          if [[ "$RELEASE_TAG" == *-* ]]; then dist_tag=next; fi
+          npm publish ./release-artifact/yui-runtime.tgz --access public --provenance --tag "$dist_tag"
