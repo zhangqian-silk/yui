@@ -22,7 +22,7 @@ test("update accepts an exact bridge version and retains target-owned preflight 
         status: "blocked",
         stage: "unsupported",
         message: "This Home requires the bridge release.",
-        action: "Install 0.99.0 first.",
+        action: "Install 0.16.2 first.",
         sceneUnchanged: true
       };
     },
@@ -31,16 +31,16 @@ test("update accepts an exact bridge version and retains target-owned preflight 
     verify: () => assert.fail("must not verify an unactivated package"),
     cleanup: () => calls.push(["cleanup"])
   };
-  assert.equal(runUpdateCommand(["--version", "0.99.0"], { YUI_HOME: "/unused/home" },
+  assert.equal(runUpdateCommand(["--version", "0.16.2"], { YUI_HOME: "/unused/home" },
     undefined, text => { output += text; }, ports), 5);
-  assert.deepEqual(calls, [["stage", "0.99.0"], ["preflight"], ["cleanup"]]);
-  assert.match(output, /Install 0\.99\.0 first/);
+  assert.deepEqual(calls, [["stage", "0.16.2"], ["preflight"], ["cleanup"]]);
+  assert.match(output, /Install 0\.16\.2 first/);
   calls.length = 0;
   runUpdateCommand([], { YUI_HOME: "/unused/home" }, undefined, () => {}, ports);
   assert.deepEqual(calls, [["stage", undefined], ["preflight"], ["cleanup"]]);
   calls.length = 0;
-  for (const args of [["--version"], ["--version", "latest"], ["--version", "^0.99.0"],
-    ["--version", "0.99.0", "--version", "1.0.0"], ["--unknown"]]) {
+  for (const args of [["--version"], ["--version", "latest"], ["--version", "^0.16.2"],
+    ["--version", "0.16.2", "--version", "1.0.0"], ["--unknown"]]) {
     assert.throws(() => runUpdateCommand(args, { YUI_HOME: "/unused/home" },
       undefined, () => {}, ports), /Update usage/);
   }
@@ -58,13 +58,13 @@ test("pinned npm staging rejects a different installed version and removes only 
     return { pid: 1, output: [null, stdout, Buffer.alloc(0)], stdout,
       stderr: Buffer.alloc(0), status: 0, signal: null };
   }, stagingRoot);
-  assert.throws(() => ports.stage("0.99.0"), /requested.*0\.99\.0.*staged.*1\.0\.0/i);
+  assert.throws(() => ports.stage("0.16.2"), /requested.*0\.16\.2.*staged.*1\.0\.0/i);
   assert.deepEqual(readdirSync(stagingRoot), []);
-  assert.equal(calls[0].args.at(-1), "@zq-silk/yui@0.99.0");
-  observedVersion = "0.99.0";
-  const staged = ports.stage("0.99.0");
+  assert.equal(calls[0].args.at(-1), "@zq-silk/yui@0.16.2");
+  observedVersion = "0.16.2";
+  const staged = ports.stage("0.16.2");
   try {
-    assert.equal(staged.version, "0.99.0");
+    assert.equal(staged.version, "0.16.2");
     assert.equal(readdirSync(stagingRoot).length, 1);
   } finally {
     ports.cleanup(staged);

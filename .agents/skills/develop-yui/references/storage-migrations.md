@@ -31,15 +31,17 @@ checks that would block healthy Tasks.
 
 ## Final historical release
 
-0.99.0 freezes this historical line at v37 with its complete v1..37 chain.
+0.16.2 freezes this historical line at v37 with its complete v1..37 chain.
 Do not add a no-op migration for the package version or change the existing
 definitions. Keep the published artifact and its release manifest/source tag
 as the frozen historical upgrader.
 
-The approved sequence reserves the one-time old-v37 to distinct-new-v1 cutover
-for 0.99.1, with its own explicit converter and verified backup/rollback
-boundary. It is not a rewrite of old migration 1. Only after that bridge is
-verified may 1.0.0 remove the old conversion implementation; 0.99.1 and 1.0.0
-must share exactly the same new persistent contract. See the release workflow
-for the complete product boundary. Do not implement that reset in 0.99.0 or
+The approved sequence reserves the one-time old-v37 to distinct-new-1.0 cutover
+for 1.0.0-alpha.1, with its own explicit converter and verified backup/rollback
+boundary. It is not a rewrite of old migration 1. The converter stays outside
+the runtime package and must be durably published before its source is removed.
+New storage uses major.minor versions; persistent changes during prereleases
+require explicit same-major minor migrations. 1.0.0 reuses the final verified
+prerelease contract without resetting storage again. See the release workflow
+for the complete product boundary. Do not implement that reset in 0.16.2 or
 claim its current-schema preflight proves future cutover readiness.
