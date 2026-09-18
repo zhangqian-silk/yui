@@ -42,6 +42,9 @@ or planning work; the routes below do not override those restrictions.
   been authorized and is legal. A conversation does not reopen, reactivate or
   resume execution. If new implementation is requested, identify the needed
   lifecycle/authority action for the Operator; do not manufacture a Run.
+  For later PR/MR delivery, read the
+  [post-completion routing boundary](../yui-runtime/references/publication.md#post-completion-routing-boundary).
+  Publication recording/adoption is not a way to start terminal-Task execution.
 
 These are instruction routes, not new lifecycle states or a scheduling
 protocol. Where facts disagree or authority is missing, preserve intent and

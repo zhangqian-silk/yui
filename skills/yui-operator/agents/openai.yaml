@@ -1,4 +1,4 @@
 interface:
   display_name: "Yui Operator"
-  short_description: "Route and advance Yui tasks simply"
-  default_prompt: "Use $yui-operator to route or advance this outcome through the simplest legal Yui action."
+  short_description: "Route outcomes through their owning Task Leaders"
+  default_prompt: "Use $yui-operator to route this outcome and its authorized follow-up delivery through the owning Task Leader."

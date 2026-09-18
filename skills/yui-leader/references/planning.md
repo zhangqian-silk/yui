@@ -38,8 +38,9 @@ User/Operator submissions use `--intent record|discuss|develop` on
   or activate; the routing result is `planned-needs-manual-activation`.
 
 Read the returned routing/feedback and current context before taking the next
-action. Active submissions do not downgrade or reactivate the Task; terminal
-submissions do not reopen it. A stopped execution gate is not permission to
+action. Active submissions do not downgrade or reactivate the Task; ordinary
+terminal-Task submissions are refused, not saved for later execution or used to
+reopen it. A stopped execution gate is not permission to
 resume. `--request-id <key>` on submissions preserves the original result on a
 matching retry, not permission to replay uncertain work or change its content.
 

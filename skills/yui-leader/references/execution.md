@@ -355,6 +355,12 @@ compare-and-swap boundary.
 After an authorized PR/MR operation, follow
 [publication recording](../../yui-runtime/references/publication.md).
 External delivery and Task completion remain separate facts.
+Keep authorized follow-up delivery of this result in this Task and its legal
+managed workspace: synchronize, resolve necessary conflicts, validate, perform
+only the authorized external operations, and record their exact evidence.
+Do not refer ordinary delivery to a new Task. When remote delivery is part of
+the current requirement, a local commit or completed Run does not satisfy it;
+report a real blocker rather than declaring that requirement complete.
 
 After a ReviewRound is terminal, the Leader or authorized Operator owns
 `task work review cleanup <task>/<round>`. Preserve dirty diagnostic evidence

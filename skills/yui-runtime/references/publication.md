@@ -4,9 +4,40 @@ Use this after creating, updating, closing, reopening or merging a PR/MR
 within existing user authorization. This procedure does not grant permission
 to push, publish, merge, query an external provider or archive.
 
+## Post-completion routing boundary
+
+Local completion is not remote delivery, and a retained Leader Session is not
+an open notification lane. In the current CLI, `operator submit --task <task>`
+and unaddressed `task message send|queue` refuse a completed Task before saving
+new input. `--intent record` does not bypass this. Leader notification scheduling
+admits only Draft/active, execution-enabled Tasks. `--to leader` requires an
+existing WorkItem/ReviewRound Assignment; it is not a terminal-Task workaround.
+`task execution start` and `task upstream integrate` do not continue completed
+Tasks either.
+
+The current API therefore has no ordinary Operator-to-Leader delivery-message
+path that both keeps the Task completed and starts follow-up execution.
+Report this precise gap when that handoff is needed. Do not fabricate a Run,
+silently reopen, replace a Session to bypass lifecycle, or create a second
+delivery Task merely to avoid the refusal. `task reopen` is an explicit return
+to active work, not delivery-only messaging: it clears current completion fields
+while retaining prior completion events. It is not the default for publishing
+an already-accepted result; a genuinely authorized reopening must preserve that
+history and state its acceptance impact.
+
+This does not revoke a current Leader Session or prohibit separately authorized
+atomic Publication operations supported for completed, unarchived Tasks.
+Recording, diff/adopt and verification preserve acceptance evidence; none
+provides the missing execution handoff or authorizes code changes. Direct
+conversation still follows the Leader's lifecycle, Session and scope boundaries.
+
+## Record and verify the owning Task's publication
+
 Immediately record the confirmed operation with `yui task publication upsert`.
 Supply only facts already known from the operation; do not defer recording to
-another Role or depend on provider-specific discovery.
+another Role or depend on provider-specific discovery. Keep it with the Task
+whose result is delivered; do not duplicate the same PR/MR across Tasks to
+substitute for missing ownership or acceptance evidence.
 
 Track PR/MR identity, state, commits, URL, merge time and evidence, not CI or
 deployment status. After merge, use `yui task publication verify` only when
@@ -35,6 +66,8 @@ decision. Archived history is read-only to these adopt/verify operations.
 
 Use `yui task remote-delivery <task>` to explain external delivery. Publication
 is not Candidate acceptance, Review, Integration or Task completion.
+
+## Archive separately
 
 Completion does not authorize archive. The Operator obtains authorization for
 the exact Task, checks archive eligibility, then uses `--integrated` for verified

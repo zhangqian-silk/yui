@@ -228,6 +228,49 @@ Cancelled intent does not prove the runtime stopped. User/Operator may reopen
 cancelled Tasks; Leader may reopen completed Tasks. Reopening requires fresh
 explicit input/work selection and never replays previous delivery requests.
 
+### Route follow-up delivery to the owning Leader
+
+Development, local acceptance, PR/MR submission, merge and ordinary corrections
+are normally stages of the same result, not reasons for new Tasks. The Operator
+routes the authorized request to the owning Leader, verifies evidence and reports
+to the user. For several serial deliveries, inspect each Task's original request,
+current authority, Publication and dependencies; send only the current Leader its
+repository/target branch, authorized effects, limits and expected proof. That
+Leader synchronizes and validates in its own legal managed workspace, performs
+the authorized delivery, and records Publication there. Advance the next Leader
+only after verifying the exact merge and accepted-result coverage. Do not default
+to a common delivery Task, Global implementation, or duplicate PR registration
+across Tasks. Submission acceptance, a Run terminal and Task completion are not
+merge evidence.
+
+For an active, execution-enabled Task, use
+`operator submit "<request>" --task <task> --intent develop --request-id <id>` or
+unaddressed `task message send <task> "<request>" --intent develop --request-id <id>`.
+Choose one and retain its receipt. Ordinary Leader input omits `--to leader`;
+explicit recipients require an existing WorkItem/ReviewRound Assignment.
+External-effect authorization must be explicit: development does not grant
+push/PR/merge, and merge does not grant release, production update or archive.
+
+Current limitation: both ordinary submissions and `task message queue` refuse a
+completed Task before saving new input, including record-only submissions.
+Leader notifications run only for Draft/active, execution-enabled Tasks;
+`task execution start` requires an open Task and `task upstream integrate`
+requires active. Keeping the Leader Session alive does not provide an
+Operator-to-Leader post-completion execution route. Publication upsert,
+diff/adopt and verify are separate, authorized atomic operations for unarchived
+completed results; they do not start that execution. Report the missing handoff
+instead of pretending a message will run. `task reopen` explicitly returns to
+active and clears current completion metadata while preserving prior events;
+it is not the default delivery-only workaround. Preserve original acceptance
+heads and history, and do not use archived workspaces or Session replacement to
+bypass lifecycle.
+
+An independently acceptable, deliverable and reversible new outcome, or an
+explicit user request for a new Task, can justify a new Task; explain that reason.
+Completed status, revalidation, shared files or the need for a PR alone cannot.
+Configuration, authorized lifecycle actions and urgent safety interventions
+remain Operator responsibilities and do not each require a new Task.
+
 ## Archive
 
 Archive requires independent user/Operator authorization for an exact completed

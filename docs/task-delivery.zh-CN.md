@@ -176,6 +176,38 @@ CLI、当前 Leader Context 和 Web 从同一组事实推导覆盖，不联网�
 取消意图不证明运行时已停止。user/Operator 可以重开已取消的 Task；Leader 可以重开
 已完成的 Task。重开需要全新的显式输入/工作选择，绝不重放先前的交付请求。
 
+### 后续交付路由给原 Task Leader
+
+开发、本地验收、提交 PR/MR、合并和普通修正，通常是同一成果的不同阶段，不是
+新建 Task 的理由。Operator 将获授权的请求交给原 Task Leader，核验结果并向用户
+汇报。多个 Task 串行交付时，先读各自原始请求、当前权限、Publication 与依赖，
+只给当前那一个 Leader 发送仓库/目标分支、授权效果、边界和预期证据。Leader 在自己
+合法的受管工作区同步、验证、执行获授权交付，并在原 Task 记录 Publication。
+核实精确合并与已验收成果覆盖后，才推进下一个 Leader。不要默认新建统一交付 Task、
+由 Global 接管实现，或跨 Task 重复登记同一 PR。投递接受、Run 终态与 Task 完成
+都不等于合并证据。
+
+对于 active 且 execution enabled 的 Task，使用
+`operator submit "<请求>" --task <task> --intent develop --request-id <id>` 或
+不带收件人的 `task message send <task> "<请求>" --intent develop --request-id <id>`。
+二选一并保留回执。普通 Leader 输入省略 `--to leader`；显式收件人要求已有
+WorkItem/ReviewRound Assignment。外部效果必须明确获授权：开发不授予
+push/PR/merge，合并不授予发版、生产升级或归档。
+
+当前限制：普通提交和 `task message queue` 都会在保存新输入前拒绝 completed Task，
+record-only 提交也不例外。Leader 通知只调度 Draft/active 且 execution enabled 的
+Task；`task execution start` 要求 open，`task upstream integrate` 要求 active。
+保留 Leader Session 不代表存在 Operator 向已完成 Task Leader 交付执行请求的入口。
+Publication upsert、diff/adopt、verify 是对未归档已完成成果分别获授权的原子操作，
+不会启动该执行。应报告缺失的交接入口，不宣称消息会执行。`task reopen` 是显式回到
+active，会清除当前完成元数据而保留原事件，不是默认的“仅交付”绕行手段。保留原始
+验收 head 与历史，不借已归档工作区或 Session 替换绕过生命周期。
+
+真正可独立验收、交付、回滚的新成果，或用户明确要求新建 Task，可以成为例外，
+但应说明实质理由。仅因 completed、重新验证、共用文件或需要 PR 都不成立。
+配置、获授权的生命周期动作与紧急安全干预仍由 Operator 负责，不要求每个原子管理
+操作都新建 Task。
+
 ## 归档
 
 归档需要针对确切的 completed 或 cancelled（retired）Task 获得独立的 user/Operator
