@@ -11,7 +11,7 @@ export type OperatorPresentation = Readonly<{
 }>;
 
 /**
- * One mailbox batch becomes one short synthetic user message. The durable
+ * One mailbox batch becomes one short system notification. The durable
  * records remain the context authority; this wake text carries only stable
  * identities and exact CLI reads, never copied Task or Provider narrative.
  */
@@ -25,6 +25,7 @@ export function createOperatorBatchPresentation(
     text: [
       "[Yui updates]",
       "Yui recorded the following durable updates. Inspect the referenced records and present only information that changes the user's understanding, authorization, or next action.",
+      "This notification is not a new execution assignment or authorization to replay prior operations.",
       ...items.flatMap(renderItem)
     ].join("\n")
   };

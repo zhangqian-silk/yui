@@ -53,6 +53,14 @@ AgentRun 记录一次明确请求的执行，带有冻结的 Context 和生效�
 mailbox 批次；AgentHost 通过 AgentEndpoint 串行化提交。Provider 绑定记录实际接受和原生
 关联。一条通知可以在接受时结算，而不要求最终执行报告。
 
+Operator attention 有独立的本地交接边界：同一事务把精确批次保存为 Global 系统 Message，
+并且只消费该 mailbox claim。`queued`（带 Message id）表示持久队列已接管，不代表 Provider
+接受或 Agent 已处理。后到事件形成新批次，不重复已经交出的 refs。后续原生投递仅由
+Global Message 负责，包括拒绝、接受结果未知和 Session 目标失效；这些结果都不会自动换键
+重发。一轮可将多个已明确未提交且目标失效的条目标为未投递，再处理后继输入，但不能越过
+不确定尝试或 interrupt-then 预约。原始 Message 和来源 Task/Input/Event 仍可查阅。通知
+只要求 Agent 重读事实，不授予重放先前操作的权限。
+
 忙碌且已证明未接受会为后续尝试保留输入。仅有传输提交不证明接受。未知效果保持可见且被
 围栏隔离：不盲目重发，也不推断成功。显式替换先解决实际的原生执行，再丢弃其工程占用。
 在一个已认领批次期间到达的输入，留待下一个批次。读取 Context 不消费投递。

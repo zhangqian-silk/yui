@@ -46,6 +46,9 @@ export async function deliverGlobalInputs(
       pending = pending.filter(message => !obsolete.includes(message));
       if (pending.length === 0) continue;
       if (current != null && ["submitting", "accepted", "delivery-unknown"].includes(current.status)) continue;
+      const matchesTarget = (message: GlobalRoleMessage) => message.deliveryTarget === undefined
+        || sessions?.activeAgentId === message.deliveryTarget.agentId
+          && sessions.sessions[message.deliveryTarget.agentId]?.nativeSessionId === message.deliveryTarget.nativeSessionId;
       const claims = pending.filter(message => message.interruptThen !== undefined);
       let next: GlobalRoleMessage | undefined;
       if (claims.length > 0) {
@@ -61,14 +64,24 @@ export async function deliverGlobalInputs(
             && binding.authority.holderId === claim.targetAuthorityHolderId;
         });
         if (next === undefined) continue;
-      } else next = pending[0];
+      } else {
+        // Retain each stale original with its exact failure, but do not spend
+        // one reconciliation interval per unsent notice before reaching user
+        // input for the successor. An existing attempt/uncertain control still
+        // fences the queue; target mismatch alone is not non-acceptance.
+        next = pending.find(message => {
+          if (matchesTarget(message)
+            || current?.attemptId === `global-input:${role.name}/${message.id}`
+            || message.control !== undefined && message.control.outcome !== "rejected") return true;
+          store.updateGlobalRoleMessage(markGlobalRoleMessageNotDelivered(message, "native-session-changed", new Date()));
+          return false;
+        });
+      }
+      if (next === undefined) continue;
       const attemptId = `global-input:${role.name}/${next.id}`;
       if (current?.attemptId === attemptId) continue;
       if (next.control !== undefined && next.control.outcome !== "rejected") continue;
-      const matchesTarget = () => next!.deliveryTarget === undefined
-        || sessions?.activeAgentId === next!.deliveryTarget.agentId
-          && sessions.sessions[next!.deliveryTarget.agentId]?.nativeSessionId === next!.deliveryTarget.nativeSessionId;
-      if (!matchesTarget()) {
+      if (!matchesTarget(next)) {
         store.updateGlobalRoleMessage(markGlobalRoleMessageNotDelivered(next, "native-session-changed", new Date()));
         continue;
       }
@@ -83,7 +96,7 @@ export async function deliverGlobalInputs(
       const persisted = store.listGlobalRoleMessages(role.name).find(message => message.id === next!.id);
       if (persisted === undefined || JSON.stringify(persisted) !== JSON.stringify(next)) continue;
       const claim = next.interruptThen;
-      if (!matchesTarget() || claim !== undefined
+      if (!matchesTarget(next) || claim !== undefined
         && (sessions?.activeAgentId !== claim.targetAgentId
           || nativeSessionId !== claim.targetNativeSessionId
           || binding.authority.epoch !== claim.targetAuthorityEpoch

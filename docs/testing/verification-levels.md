@@ -209,6 +209,12 @@ is required.
     partial discovery, exact cache reuse and failed-refresh provenance; the
     permission picker cannot invent choices or erase explicit current values.
     Doctor uses the same help interpretation without guessing model aliases.
+41. Operator attention transfers atomically to one Global Message per batch,
+    without overlapping new events while busy. SQLite reopen, rollback and exact
+    receipt reuse preserve the pending suffix and undelivered evidence. A local
+    fake Host control port checks unknown/rejected delivery, successor inputs,
+    and the Controller's dirty signal without a live model. Existing Global
+    control tests retain interrupt-then and exact Session/authority coverage.
 
 Keep the test phase seconds-scale; measure TypeScript build separately. Record
 incremental runtime when adding a critical regression. The seven recovery boundary

@@ -184,6 +184,10 @@ export type SchedulerOperatorDeliveryTarget = Readonly<{
   adapterId: string;
 }>;
 
+export type OperatorNotificationQueueResult =
+  | Readonly<{ status: "queued" | "already-queued"; messageId: string }>
+  | Readonly<{ status: "unavailable" }>;
+
 export type AutoResolvedInput = Readonly<{
   inputRequestId: string;
   taskId: string;
@@ -288,8 +292,11 @@ export interface SchedulerStorePort {
   listOpenInputRequests(taskIds?: readonly string[]): readonly InputRequest[];
   getInputRequest(taskId: string, inputRequestId: string): InputRequest | null;
   getOperatorDeliveryTarget(): SchedulerOperatorDeliveryTarget | null;
-  /** Marks a submitted Operator turn busy until its exact native completion. */
-  markOperatorRunStarted(now: Date): void;
+  /** Atomically transfer the exact mailbox claim to a durable Global Message. */
+  queueOperatorNotification(
+    input: Readonly<{ batchId: string; receiptId: string; text: string }>,
+    now: Date
+  ): OperatorNotificationQueueResult;
   resolveExpiredInputRecommendations(
     now: Date,
     taskIds?: ReadonlySet<string>
@@ -729,13 +736,6 @@ export interface TmuxDeliveryPort {
     roleName: string;
     runId?: string;
   }>): void;
-  /** Best-effort nudge to an already-running global Operator process. */
-  notifyOperatorInputOnce?(input: Readonly<{
-    roleName: "operator";
-    adapterId: string;
-    receiptId: string;
-    text: string;
-  }>): Promise<"sent" | "already-sent" | "unavailable" | "not-ready">;
   inspectRole(input: Readonly<{
     taskId: string;
     roleName: string;

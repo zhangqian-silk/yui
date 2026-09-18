@@ -19,14 +19,35 @@ import { deliverGlobalInputs } from "../../dist/controller/globalInputDelivery.j
 import { runGlobalRoleCommand } from "../../dist/commands/globalRoleCommands.js";
 import { FileRuntimeEventInbox } from "../../dist/controller/runtimeEventInbox.js";
 import { publishStructuredProviderTerminal } from "../../dist/controller/structuredProviderObservation.js";
+import { createTask } from "../../dist/task/task.js";
+import { createTaskEvent } from "../../dist/event/taskEvent.js";
+import { enqueueOperatorEvent } from "../../dist/scheduler/operatorEvent.js";
+import { processOperatorInputNotifications } from "../../dist/scheduler/operatorInputNotificationProcessor.js";
+import { FileTaskController } from "../../dist/controller/controller.js";
+import { FileRuntimeEventProcessor } from "../../dist/controller/runtimeEventProcessor.js";
 
-async function globalHostFixture(t, adapterId = "codex") {
+async function globalHostFixture(t, adapterId = "codex", {
+  controlled = true, roleName = "assistant", autoDeliver = false
+} = {}) {
   const home = mkdtempSync(join(tmpdir(), "yui-global-host-"));
   const store = new SqliteTaskStore(home);
+  let controller;
+  let host;
+  let schedulerRuntime;
+  t.after(async () => {
+    await schedulerRuntime?.shutdownAndDrain();
+    if (host !== undefined) {
+      host.kill("SIGTERM");
+      if (host.exitCode === null && host.signalCode === null) await once(host, "exit");
+    }
+    await controller?.close();
+    store.close();
+    rmSync(home, { recursive: true, force: true });
+  });
   const now = new Date();
   const agent = createConfiguredAgent(adapterId, adapterId, adapterId, [], [], now);
   store.saveConfiguredAgent(agent);
-  const role = createGlobalRole("assistant", [createRoleAgentBinding(agent)], agent.id, home, now);
+  const role = createGlobalRole(roleName, [createRoleAgentBinding(agent)], agent.id, home, now);
   store.createGlobalRoleIfAbsent(role);
   const effective = resolveEffectiveLaunch({ role, purpose: "execution" });
   const planned = new FileRoleLaunchPlanner(home, store, {
@@ -51,7 +72,11 @@ async function globalHostFixture(t, adapterId = "codex") {
     if (outcome !== "deferred") inbox.acknowledge(event.id);
     return outcome;
   };
-  const controller = await startControllerServer(home, (method, params) => {
+  controller = await startControllerServer(home, (method, params) => {
+    if (method === "scheduler.signal") {
+      schedulerRuntime?.signal(params.key);
+      return {};
+    }
     if (method === "runtime.launch-redeem") return launchBrokerForHome(home).redeem(params.ticket);
     if (method === "runtime.provider-turn-begin") {
       scheduler.beginAgentHostProviderTurn({ ...params, now: new Date(params.observedAt) });
@@ -75,10 +100,10 @@ async function globalHostFixture(t, adapterId = "codex") {
       : [resolve("test/fixtures/fake-claude-stream.mjs"), nativeSessionId],
     cwd: planned.role.cwd ?? planned.role.workspace,
     childLifecycle: planned.launch.childLifecycle, startMode: "provider",
-    environment: { ...planned.launch.env, YUI_FAKE_CONTROLLED: "1" },
+    environment: { ...planned.launch.env, YUI_FAKE_CONTROLLED: controlled ? "1" : "0" },
     providerControl: planned.launch.providerControl
   });
-  const host = spawn(process.execPath, ["--input-type=module", "-e",
+  host = spawn(process.execPath, ["--input-type=module", "-e",
     `import {runAgentHost} from ${JSON.stringify(new URL("../../dist/runtime/agentHost.js", import.meta.url).href)};
      Object.defineProperty(process.stdin, "isTTY", {value: true});
      await runAgentHost(${JSON.stringify({ home, ticket })});`], {
@@ -88,13 +113,6 @@ async function globalHostFixture(t, adapterId = "codex") {
   let output = "";
   host.stdout.on("data", chunk => { output += chunk; });
   host.stderr.on("data", chunk => { logs += chunk; });
-  t.after(async () => {
-    host.kill("SIGTERM");
-    if (host.exitCode === null && host.signalCode === null) await once(host, "exit");
-    await controller.close();
-    store.close();
-    rmSync(home, { recursive: true, force: true });
-  });
   const wait = async predicate => {
     const deadline = Date.now() + 5000;
     while (Date.now() < deadline) {
@@ -119,11 +137,45 @@ async function globalHostFixture(t, adapterId = "codex") {
     assert.equal(owners[0].nativeSessionId, nativeSessionId);
   }
   const submitNext = () => deliverGlobalInputs(home, store, async () => {}, error => errors.push(error));
+  if (autoDeliver) schedulerRuntime = new FileTaskController(scheduler, {}, {
+    signalWindowMs: 1,
+    globalInputDelivery: submitNext,
+    runtimeEventProcessor: new FileRuntimeEventProcessor(inbox, scheduler),
+    onError: error => errors.push(error)
+  });
   const native = () => store.getGlobalRoleSessionSet(role.name).providerBinding.run;
   return { store, home, role, command, submitNext, native, wait, host, errors, scheduler,
     environment: planned.launch.env,
     nativeSessionId, output: () => output };
 }
+
+test("Operator natural terminals settle through Host and Inbox and automatically wake the next Global input", async t => {
+  const f = await globalHostFixture(t, "codex", {
+    controlled: false, roleName: "operator", autoDeliver: true
+  });
+  const now = new Date();
+  f.store.saveTask(createTask("task-1", "Notification source", now));
+  const event = createTaskEvent("event-1", "task-1", "task.completed", { summary: "Source result" }, now);
+  f.store.saveEvent("task-1", event);
+  enqueueOperatorEvent(f.store, event, "task-terminal", now);
+  const [notice] = await processOperatorInputNotifications(f.scheduler, undefined, now);
+  assert.equal(notice.status, "queued");
+  const next = f.command(["message", "queue", "operator", "After the natural terminal",
+    "--request-id", "after-terminal"]).message;
+  await f.submitNext();
+  // No second manual delivery call and no periodic full pump: only the real
+  // Host's post-terminal signal can admit the queued successor here.
+  await f.wait(() => f.native()?.attemptId === `global-input:operator/${next.id}`
+    && f.native().status === "completed");
+  assert.equal(f.store.listGlobalRoleMessages("operator")[0].delivery.via, "provider");
+  await f.wait(async () => (await inspectAgentHost({
+    home: f.home, scope: "global", roleName: "operator"
+  })).state === "idle");
+  f.host.stdin.write("Normal console conversation\n");
+  await f.wait(() => f.native().attemptId.startsWith("human:") && f.native().status === "completed");
+  assert.deepEqual(f.errors, []);
+  assert.equal(new FileRuntimeEventInbox(f.home).list().length, 0);
+});
 
 test("Global planner, console and durable inputs traverse real Host begin, acceptance, steer, cancel and ordered then", async t => {
   const { store, home, role, command, submitNext, native, wait, host, errors, output, environment } = await globalHostFixture(t);

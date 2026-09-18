@@ -451,7 +451,7 @@ export async function runControllerSchedulerPass(
       exactTaskSelection(laterWakeupTaskIds)
     );
     const inputNotifications = includeOperator
-      ? await processOperatorInputNotifications(store, delivery, selection, now)
+      ? await processOperatorInputNotifications(store, selection, now)
       : [];
     return {
       activeRunDeliveries,
@@ -1971,11 +1971,8 @@ export class FileTaskController {
       else if (wakeup.status === "dispatched") settled.add(key);
     }
     const operatorRetries = result.inputNotifications.filter(
-      (notification) => notification.reason === "operator-not-ready"
-        || (
-          notification.reason === "operator-unavailable"
-          && this.#operatorStartupRetryArmed
-        )
+      (notification) => notification.reason === "operator-unavailable"
+        && this.#operatorStartupRetryArmed
     );
     if (operatorRetries.length > 0) {
       retry.set("operator", {
@@ -1984,11 +1981,14 @@ export class FileTaskController {
         )).join("|")
       });
     } else if (result.inputNotifications.some(
-      (notification) => notification.status === "sent"
-        || notification.status === "already-sent"
+      (notification) => notification.status === "queued"
+        || notification.status === "already-queued"
     )) {
       this.#operatorStartupRetryArmed = false;
       settled.add("operator");
+      // The Global queue owns delivery now. Request its next pass without
+      // retaining a second attention retry loop while the Provider is busy.
+      resignal.add("global-role:operator");
     }
     for (const key of settled) this.#clearDeliveryRetry(key);
     for (const key of writerBlocked) this.#clearDeliveryRetry(key);
