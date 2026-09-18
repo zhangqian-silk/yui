@@ -1,6 +1,8 @@
 import { resolveYuiHome } from "../storage/taskStore.js";
 import { createUpdatePorts, type UpdateSpawner } from "./updatePorts.js";
 import { runUpdate, type UpdatePorts, type UpdateResult } from "./updateOrchestrator.js";
+import { isConcreteVersion } from "../domain/validation.js";
+import { usageError } from "../errors/cliError.js";
 
 export type { UpdateSpawner } from "./updatePorts.js";
 
@@ -15,17 +17,27 @@ export type { UpdateSpawner } from "./updatePorts.js";
  * Returns a process exit code: 0 on success or already-current, 5 on abort.
  */
 export function runUpdateCommand(
+  args: readonly string[] = [],
   environment: NodeJS.ProcessEnv = process.env,
   spawn?: UpdateSpawner,
   write: (text: string) => void = (text) => process.stdout.write(text),
   ports?: UpdatePorts
 ): number {
+  const version = parseUpdateVersion(args);
   const home = resolveYuiHome(environment);
   const resolvedPorts = ports ?? createUpdatePorts(environment, spawn);
-  const result = runUpdate(resolvedPorts, { home });
+  const result = runUpdate(resolvedPorts, { home, version });
   write(`${renderUpdateResult(result)}\n`);
   if (result.outcome === "aborted") return 5;
   return 0;
+}
+
+function parseUpdateVersion(args: readonly string[]): string | undefined {
+  if (args.length === 0) return undefined;
+  if (args.length === 2 && args[0] === "--version" && isConcreteVersion(args[1]!)) {
+    return args[1]!.trim();
+  }
+  throw usageError("Update usage: yui update [--version <exact-version>]");
 }
 
 /** Render an {@link UpdateResult} as concise, CLI-style text. */

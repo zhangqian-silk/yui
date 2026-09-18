@@ -27,6 +27,81 @@ system sits behind `ReleaseWorkflowPorts`
 external ports exercise recovery without real GitHub, npm, git, Controller,
 or model effects.
 
+## Final historical bridge: 0.99.0
+
+| Release | Home storage | Responsibility |
+| --- | --- | --- |
+| **0.99.0** | Historical v37, supported floor v1 | Last complete historical upgrade chain (v1 through v37). |
+| **0.99.1** (planned) | A distinct new v1 baseline | One explicit offline conversion from verified historical v37. |
+| **1.0.0** (planned) | Exactly the same new v1 as 0.99.1 | Remove transitional conversion code, without another storage change. |
+
+0.99.0 freezes the historical endpoint at **37**. It does not append a no-op
+migration, rewrite released SQL/data migrations, reset record-local schema or
+protocol versions, or reinterpret historical evidence. Fresh and upgraded Homes
+use the same contract. Ordinary opens still reject historical formats; only
+explicit `upgrade` / `update` may migrate them.
+
+### Select the bridge explicitly
+
+Starting in 0.99.0, `yui update --version 0.99.0` selects an exact published
+package; no argument still selects `latest`. Tags and ranges are not accepted
+as explicit selectors. The actual staged version must equal the requested
+version before preflight or Controller handover. A mismatch cleans only the
+owned staging prefix, leaving the installed binary and database unchanged.
+
+Older CLIs do not acquire this option until updated. Once 0.99.0 is published,
+use a separately staged, exact 0.99.0 CLI to drive the update against an explicit
+`YUI_HOME`. For example, npm can stage it without replacing the global install:
+
+```sh
+YUI_HOME=/absolute/path/to/home npm exec --yes --package=@zq-silk/yui@0.99.0 -- \
+  yui update --version 0.99.0
+```
+
+Do not replace the live global binary first or assume `latest` will continue
+to select the bridge. Preserve target-owned `upgrade --update-preflight` /
+`--update-apply`: refusal happens before activation, and preflight is repeated
+under the handover fence after draining the exact Controller. The older-updater
+recovery guidance below still applies when invoking an older updater.
+
+### Inspect and preserve the old endpoint
+
+With the published 0.99.0 CLI and the intended `YUI_HOME`, use the existing
+`yui --json version`, `yui --json upgrade --dry-run`, `yui --json doctor`,
+`yui --json controller status`, and `yui session reconcile --report` reads.
+After the old-chain upgrade, the upgrade report must be `already-current` at
+storage 37; `upgrade-plan` only describes pending migrations. Neither report
+proves physical quiescence or readiness for the not-yet-implemented new v1.
+Do not add a durable "ready for 1.0" flag or a second version authority.
+
+Before the later offline cutover, settle active work using its original
+contract. `yui session stop --all` explicitly stops idle managed Sessions and
+the Controller; it is not a force stop or proof that detached Jobs and unknown
+resources have exited. Inspect exact ownership and pending effects. Never mark
+Tasks complete, acknowledge uncertain work, or delete resources just to pass an
+upgrade. The future converter must recheck quiescence under its fence.
+
+Retain the **exact published 0.99.0 package**, its existing release manifest,
+registry integrity, tag/source commit, and this guide as the historical bridge.
+The existing package inventory pins compiled migrations and their helpers;
+an expiring CI artifact alone is not a long-term distribution. This release
+introduces no additional Home metadata or migration registry.
+
+The 0.99.1 converter must preserve old ledger/audit bytes, Home identity,
+business IDs, records, Knowledge, workspaces (including dirty files), and
+unconfirmed external effects. A database-only backup cannot fully roll back old
+layout migrations with filesystem/Git effects. Unknown or malformed old formats
+remain blockers. New v1 must have a distinct baseline identity, never the old
+`v0.15.0-baseline`. Its SQL/fingerprint and final conversion tool belong to
+0.99.1, **not this release**; it accepts verified old v37 rather than carrying
+the complete old chain.
+
+Freeze the new persistent contract between 0.99.1 and 1.0.0. Remove old conversion
+code from the actual tarball as well as runtime imports, retaining current
+initialization, validation, unknown-format rejection, exact runtime identity and
+normal safety/recovery. Users skipping the bridge must still use the frozen
+tools; 1.0.0 must never guess an old format.
+
 ## Controller handover fix in 0.16.1
 
 Controller status and storage preflight are observations, not cleanup. The
