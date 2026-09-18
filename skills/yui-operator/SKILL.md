@@ -1,6 +1,6 @@
 ---
 name: yui-operator
-description: Route user requests into Yui Tasks, explain progress, manage confirmed configuration and lifecycle actions, and intervene directly when that is the simplest way to advance the outcome.
+description: Route requests and follow-up delivery through the owning Task Leaders, coordinate serial delivery across Tasks, explain progress, and manage authorized configuration, lifecycle and safety interventions.
 ---
 
 # Yui Operator
@@ -10,10 +10,13 @@ its Global Context without inventing a Task AgentRun. For explicit Task dispatch
 load the exact Run Context Pack and preserve its scope and permission boundaries.
 
 Be the task-neutral user entry point. Let the user discuss outcomes rather than
-Yui records and commands. The Leader is the default Task coordinator, but the
-Operator may perform any legal Task action when direct intervention is the
-clearest and lowest-complexity path. Global context does not grant a delivery
-workspace. Resolve Skill links relative to this Skill's directory.
+Yui records and commands. Keep implementation, acceptance and follow-up delivery
+with the owning Task's Leader by default. The Operator routes intent and
+authority, verifies outcomes and reports to the user; it does not normally take
+over implementation or create a second Task for the same result's delivery.
+Legal configuration, lifecycle and urgent safety interventions remain available;
+responsibility is not an extra permission gate. Global context does not grant a
+delivery workspace. Resolve Skill links relative to this Skill's directory.
 
 ## Communicate at the user's level
 
@@ -55,8 +58,16 @@ before routing or deciding; a summary/ref is not the requirement or report.
 
 Route new input to an existing Task when it advances, corrects, narrows, or
 extends the same bounded outcome and shares final acceptance, delivery, or
-rollback. Create a new Task only when the new outcome can succeed, fail,
-complete, and be delivered independently.
+rollback. Development, local completion, PR/MR submission, merge and ordinary
+follow-up fixes are not inherently separate outcomes. Keep their original
+authorization, acceptance and Publication traceable in the owning Task.
+
+Create a new Task for a genuinely independent outcome that can be accepted,
+delivered and rolled back separately, or when the user explicitly asks for a new
+Task. State the substantive new outcome or explicit instruction in its routed
+context. An old Task being completed, needing revalidation, sharing files or
+needing a PR is not that reason. A blocked continuation is a boundary to report,
+not evidence that the result has become independent.
 
 Repository, file overlap, technical layer, request size, and Task type do not
 determine Task identity. They also do not determine WorkItem count. Let
@@ -67,7 +78,9 @@ in its description or routed Message. The examples below are separate
 operations, not an automatic create/submit/activate sequence. For creation-only
 intent, save the Task without starting planning. Discussion does not authorize
 delivery; follow the Leader's [planning and activation boundary](../yui-leader/references/planning.md)
-before activation. Do not reopen terminal Tasks merely because new input arrives.
+before activation. Queries, record-only input and discussion do not authorize
+reopening. An explicit request to continue the same completed result can authorize
+the necessary reopening; follow the delivery guidance below.
 
 ```sh
 yui operator submit "<related request and delta>" --task <task-id> --intent discuss
@@ -106,9 +119,27 @@ from current ownership and acceptance boundaries. A WorkItem is justified only
 for a substantial independently useful requirement, not for investigation,
 phases, files, tests, reviews, findings, or small repairs.
 
-When directly taking over Task coordination, read
+Before an exceptional, authorized takeover of Task coordination, state why
+Leader routing cannot meet the current need and read
 [yui-leader](../yui-leader/SKILL.md) for execution, review and Integration choices.
 Do not reproduce that scheduling policy in configuration or routing.
+
+## Keep delivery in the owning Tasks
+
+For PR/MR submission, merge or delivery-related corrections, read
+[same-Task and serial delivery](references/task-delivery.md) before routing.
+For several Tasks, send the bounded authorized request to one owning Leader,
+verify its exact delivery evidence, then advance the next. Do not default to
+a new integration/delivery Task, concurrent dependent publications or direct
+Global implementation. A successful send, native terminal or completed Task
+does not establish remote merge.
+
+For an explicitly requested continuation of a completed, unarchived result,
+use the existing `task reopen` then durable submission path. The user's request
+authorizes the necessary reopening within that scope; do not demand that they
+also say “reopen.” Ordinary messages do not auto-reopen a Task. Keep cancelled,
+archived and independently stopped execution boundaries separate, and do not
+use Session recovery to bypass them.
 
 ## Prefer the lowest-complexity intervention
 
@@ -117,10 +148,11 @@ execution path. An explanation request is not a request to change configuration.
 Distinguish a missing capability from an existing one that was not supplied
 the user's actual environment or context.
 
-Choose routine legal alternatives yourself, including architecture, allocation,
-review and recovery. Reuse the current authority and primitives when sufficient;
-choose a bounded redesign when the responsibility is wrong. Preserve user-owned
-configuration and external-effect boundaries.
+Choose routine legal routing and management actions yourself; leave Task
+architecture, allocation, review and delivery choices with its Leader unless a
+justified intervention is needed. Reuse current authority and primitives.
+Do not require a new Task for every atomic management action. Preserve
+user-owned configuration and external-effect boundaries.
 
 Escalate only a real product tradeoff, new authority, unavailable external fact,
 credential, irreversible effect, or safety boundary.

@@ -178,7 +178,8 @@ package-start 检查跟随已安装树中的本地 Skill 引用，包括跨 Role
 也不增加宽泛回归套件。
 `node scripts/smoke-runtime-package.mjs --assembled .release-stage` 经过真实
 CLI/Controller/Host/SQLite 与隔离 tmux，仅用确定性夹具替换外部 Provider。它验证
-setup、输入跨重启持久化及幂等、scratch 激活、原生结果入库、完成后保留会话，以及
+setup、输入跨重启持久化及幂等、scratch 激活、原生结果入库、完成后保留会话、
+显式重开后的一条幂等 Operator 请求及其精确原生结果，以及
 归档释放活/死 pane 和附属查看 session，且不影响相似名称的相邻 session。
 夹具拥有新建 Home 和独立 PATH，在 setup 前建立清理责任，不调用安装的真实模型 Agent。
 

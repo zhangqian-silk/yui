@@ -176,6 +176,51 @@ CLI、当前 Leader Context 和 Web 从同一组事实推导覆盖，不联网�
 取消意图不证明运行时已停止。user/Operator 可以重开已取消的 Task；Leader 可以重开
 已完成的 Task。重开需要全新的显式输入/工作选择，绝不重放先前的交付请求。
 
+### 后续交付路由给原 Task Leader
+
+开发、本地验收、提交 PR/MR、合并和普通修正，通常是同一成果的不同阶段，不是
+新建 Task 的理由。Operator 将获授权的请求交给原 Task Leader，核验结果并向用户
+汇报。多个 Task 串行交付时，先读各自原始请求、当前权限、Publication 与依赖，
+只给当前那一个 Leader 发送仓库/目标分支、授权效果、边界和预期证据。Leader 在自己
+合法的受管工作区同步、验证、执行获授权交付，并在原 Task 记录 Publication。
+核实精确合并与已验收成果覆盖后，才推进下一个 Leader。不要默认新建统一交付 Task、
+由 Global 接管实现，或跨 Task 重复登记同一 PR。投递接受、Run 终态与 Task 完成
+都不等于合并证据。
+
+对于 active 且 execution enabled 的 Task，使用
+`operator submit "<请求>" --task <task> --intent develop --request-id <id>` 或
+不带收件人的 `task message send <task> "<请求>" --intent develop --request-id <id>`。
+二选一并保留回执。普通 Leader 输入省略 `--to leader`；显式收件人要求已有
+WorkItem/ReviewRound Assignment。外部效果必须明确获授权：开发不授予
+push/PR/merge，合并不授予发版、生产升级或归档。
+
+用户明确要求继续同一个已完成、未归档成果的实现或交付时，Operator 可以先执行必要的
+`task reopen <task>`，再提交这次有界请求。用户无需机械地额外确认“重开”。
+现有两步即可满足目标，不需要自动重开开关或后完成执行协议。普通 send/queue/submit
+（包括 `--intent develop`）仍会在保存新输入前拒绝 completed Task；只读查询、
+record-only 输入和讨论本身不授予重开权限。
+
+重开回到 active，撤下当前完成元数据，同时保留原事件、固定 head/报告和 Publication
+历史。Leader 对新结果单独验证与验收，不能把旧验证直接宣称为新结果的证据。
+重开保留独立的执行停止决定；只有获授权且完成清理的 `task execution start` 路径
+可以解除 gate。恢复 cancelled 意图需要单独明确授权；archived Task 不能重开，
+保留工作区或 Session 替换都不能绕过生命周期。
+
+重开与提交是两个有独立结果的原子操作。分别检查生命周期结果和 saved/queued 回执；
+提交失败时读取当前状态，仅在权限未变时继续尚未生效的那一步。相同提交重试保留原 key，
+不重放效果未知的操作，也不因重试而再次重开已经重新完成或取消的 Task。
+重开通知可能先于新 Message 到达：Leader 等待具体新请求，不重跑已验收工作，
+也不立即再次 complete；请求到达后不再要求额外“继续”。
+
+Publication upsert、diff/adopt、verify 仍是未归档已完成成果的独立授权原子操作，
+没有新执行请求时不必重开。重开后的工作记录自己的新完成证据，不改写旧基线，
+再按需应用现有 candidate 采用与验证规则。
+
+真正可独立验收、交付、回滚的新成果，或用户明确要求新建 Task，可以成为例外，
+但应说明实质理由。仅因 completed、重新验证、共用文件或需要 PR 都不成立。
+配置、获授权的生命周期动作与紧急安全干预仍由 Operator 负责，不要求每个原子管理
+操作都新建 Task。
+
 ## 归档
 
 归档需要针对确切的 completed 或 cancelled（retired）Task 获得独立的 user/Operator

@@ -38,10 +38,14 @@ User/Operator submissions use `--intent record|discuss|develop` on
   or activate; the routing result is `planned-needs-manual-activation`.
 
 Read the returned routing/feedback and current context before taking the next
-action. Active submissions do not downgrade or reactivate the Task; terminal
-submissions do not reopen it. A stopped execution gate is not permission to
+action. Active submissions do not downgrade or reactivate the Task; ordinary
+terminal-Task submissions are refused, not saved for later execution or used to
+reopen it. A stopped execution gate is not permission to
 resume. `--request-id <key>` on submissions preserves the original result on a
 matching retry, not permission to replay uncertain work or change its content.
+For expressly requested continuation of a completed result, use the existing
+[authorized reopen and submission path](../../yui-runtime/references/publication.md#post-completion-routing-boundary),
+not Draft activation or an implicit transition inferred from `--intent develop`.
 
 Once planning has been entered, starting delivery requires a distinct,
 explicit activation authorization. A development remark during discussion,

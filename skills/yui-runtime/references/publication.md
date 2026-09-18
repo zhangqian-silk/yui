@@ -1,20 +1,69 @@
 # Record external delivery
 
-Use this after creating, updating, closing, reopening or merging a PR/MR
-within existing user authorization. This procedure does not grant permission
+Use this when routing authorized follow-up delivery or after creating, updating,
+closing, reopening or merging a PR/MR. This procedure does not grant permission
 to push, publish, merge, query an external provider or archive.
+
+## Post-completion routing boundary
+
+An explicit user request to continue implementation or delivery of the same
+completed, unarchived result authorizes its necessary reopening within that
+request's scope. The Operator need not ask the user to additionally say “reopen.”
+Read the original completion, fixed heads/reports, Publication and current
+authority first, then use the existing two operations:
+
+```sh
+yui task reopen <task>
+yui operator submit "<new request, authority, boundaries and prior evidence>" \
+  --task <task> --intent develop --request-id <id>
+```
+
+Unaddressed `task message send` with the same intent/key options is an alternative
+to the second command, not an additional send. Ordinary send/queue/submit still
+refuses completed Tasks before saving new input; no intent implicitly changes
+lifecycle and there is no auto-reopen option. `--to leader` instead requires an existing
+WorkItem/ReviewRound Assignment.
+
+Reopen returns the Task to active and clears its current completion fields;
+original completion events, fixed commits/artifacts and Publication history stay
+intact. The Leader must assess the new request and separately accept any new
+result, not pretend old validation proves changed work. Reopen does not replay
+historical Messages/Runs, change the Role's Agent/model/permissions, or lift an
+independent execution stop. Queries, ordinary record/discussion input and Session
+recovery do not authorize resumption. Cancelled intent needs its own explicit
+restoration authority; archived Tasks cannot reopen. A stopped gate still needs
+the separately authorized start/cleanup path.
+
+These are two atomic operations, not one transaction. Read the reopen result and
+the submission's saved/queued receipt separately. If the second step fails,
+inspect current Task/Message facts and continue only the unapplied step within
+unchanged authority. Keep the same submission key on a matching retry; unknown
+native or external effects are never replay permission. Do not reopen again just
+to retry input after another completion, cancellation or stop. A lifecycle-only
+notification may precede the new Message: the Leader waits for the actual request,
+without rerunning old work or immediately completing the reopened Task.
+
+Publication recording, diff/adopt and verification remain separately authorized
+atomic operations on completed, unarchived results. They need no reopening when
+no further execution is requested, and never grant authority for code changes.
+
+## Record and verify the owning Task's publication
 
 Immediately record the confirmed operation with `yui task publication upsert`.
 Supply only facts already known from the operation; do not defer recording to
-another Role or depend on provider-specific discovery.
+another Role or depend on provider-specific discovery. Keep it with the Task
+whose result is delivered; do not duplicate the same PR/MR across Tasks to
+substitute for missing ownership or acceptance evidence.
 
 Track PR/MR identity, state, commits, URL, merge time and evidence, not CI or
 deployment status. After merge, use `yui task publication verify` only when
 current authorization covers that external provider read. Otherwise retain
 reported evidence and state the verification gap.
 
-Keep the completion head as the original acceptance evidence. If an authorized
-post-completion integration produced a different publication candidate, record
+Preserve each completion head as that acceptance's evidence. After an authorized
+reopen, finish the new work and record its own completion; retain the earlier
+event and report rather than rewriting them. For a still-completed Task whose
+authorized post-completion integration produced a different candidate, record
 its exact local commit, then read `task publication diff <task>/<publication>`.
 Inspect the complete delta against the original acceptance, including removals,
 conflict resolutions and additional changes. Only when that candidate still
@@ -35,6 +84,8 @@ decision. Archived history is read-only to these adopt/verify operations.
 
 Use `yui task remote-delivery <task>` to explain external delivery. Publication
 is not Candidate acceptance, Review, Integration or Task completion.
+
+## Archive separately
 
 Completion does not authorize archive. The Operator obtains authorization for
 the exact Task, checks archive eligibility, then uses `--integrated` for verified

@@ -245,7 +245,8 @@ on every PR, without another lint or broad regression suite.
 the actual CLI/Controller/Host/SQLite and isolated tmux, replacing only the
 external Provider with a deterministic fixture. It covers setup, durable input
 and idempotency across restart, scratch activation, native result ingestion,
-completion preserving the conversation, and archive releasing live/dead panes
+completion preserving the conversation, explicit reopen followed by one
+idempotent Operator request and its exact native result, and archive releasing live/dead panes
 and grouped viewers without affecting a similarly named neighboring session.
 The fixture owns a fresh Home and its PATH, installs cleanup before setup,
 and never calls an installed model Agent.
