@@ -56,6 +56,53 @@ Claude execution process dying closes its exact input and marks its Session
 failed, even while the supervising Host remains alive. A deliberately stopped
 Session with settled native input is idle rather than a false runtime failure.
 
+## Web attention and progress
+
+Task detail prioritizes **needs your input**, **Session activity**, **Task progress**
+and **key conclusions**. InputRequests retain their original answer controls and
+bounded Context counts; a partial read is not an empty inbox. Technical attention
+names the owner from the existing execution projection. An assigned owner does
+not imply work started, and a diagnostic hint is not new user authorization.
+
+Session observations include direct chat and notifications without an AgentRun.
+The selected native identity is counted once; foreground activity must match its
+exact current input. Earlier Turns and replaced Sessions cannot supply its
+activity. Waiting, quiet, diagnostic-needed, unknown, stopped, ended and unsettled
+background work remain distinct. An operation without a terminal is not an
+everlasting heartbeat. Quiet/diagnostic windows come from the existing runtime
+policy; the read time is not a new activity timestamp. This is a recorded selected
+Session view, not a live process probe or an inventory of historical resources.
+Controller-owned bounded Provider retry waits remain waiting, not stopped or
+waiting for user approval. A successor's activity uses its own exact input.
+
+Progress comes from the original Brief and completion record, with source time;
+activity and tokens do not create a percentage, ETA or semantic checkpoint.
+Current Decisions show their rationale/source; superseded ones remain in history.
+Reports and recommendations are not relabelled as user approval. Core Context
+remains readable when its independent observation fails.
+
+**Results and evidence** reads files only on request. A selected commit-pinned
+text survives refresh and newer file listings; switching versions is explicit.
+A missing revision fails visibly, never substitutes HEAD. HTML/scripts stay
+text, never an executing preview. Copying a source sends nothing; discussion
+uses the original Message form, explicit intent and receipt. Unsent inputs remain
+protected across automatic refresh.
+
+Delivery reuses Publication coverage, including adoption, and keeps
+reported/verified, missing/stale/head-unavailable distinct. On-demand evidence
+shows original Integration checks, fixed Review candidates and original Reviewer
+reports. Review completion is not semantic approval; skipped/missing checks are
+not passes. Workspace ownership does not prove cleanup safety: the existing
+read-only `task archive-preflight` is referenced, not automatically run. There
+are no new accept, publish or archive buttons. Usage retains known/partial/unknown.
+
+All routes use the local Web token and Task boundary.
+`GET /api/tasks/<id>/artifacts` lists a fixed repository revision;
+`?path=<relative-path>&commit=<full-commit>` reads its exact text file.
+`GET /api/tasks/<id>/evidence` reads original check/Review/workspace records.
+These reads do not start a runtime, fetch a remote, write business state, require
+a migration, or introduce a new persistent protocol.
+
 ## Execution audit
 
 `execution audit` aggregates existing Task, Run, wake, Session, Review,

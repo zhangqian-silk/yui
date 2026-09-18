@@ -1,6 +1,7 @@
 export const TASK_SURFACE_SCRIPT = `
 import { node, clear } from "/assets/js/dom.js";
 import { anchorSection, sectionHead, richText, inputCard, roleCard, runCard, pill } from "/assets/js/components.js";
+import { renderTaskSummary, renderEvidence } from "/assets/js/task-summary.js";
 
 // All business facts below retain their Context reference. Expanded values
 // are current reads, not mutations of a historical Context snapshot.
@@ -16,6 +17,10 @@ export function renderTaskSurface(container, data, t, locale, actions) {
   const scaffold = node("div", "detail-scaffold task-surface");
   const summary = node("div", "section-body");
   summary.append(node("span", "detail-kicker", task.id), node("h2", "detail-title", task.title), pill(t, "status", task.status));
+  renderTaskSummary(summary, data, t, locale, actions, recordCard);
+  const discuss = node("details", "record-card");
+  discuss.dataset.viewKey = "discussion";
+  discuss.append(node("summary", "", say("Discuss this Task", "讨论此任务")));
   const conversation = node("button", "record-open", say("View Leader Session (read-only)", "查看 Leader Session（只读）"));
   conversation.type = "button";
   // A Draft's planning Session is a real Leader Session, so it is viewable once it
@@ -26,7 +31,7 @@ export function renderTaskSurface(container, data, t, locale, actions) {
   const hasLeaderSession = Boolean(leaderRole?.runtimeSession?.nativeSessionId);
   conversation.disabled = task.status === "archived" || !hasLeaderSession;
   conversation.addEventListener("click", () => actions.openTerminal({ scope: "task", taskId: task.id, roleName: "leader" }));
-  summary.append(conversation);
+  discuss.append(conversation);
   const chat = node("form", "record-card");
   const chatLabel = node("label", "", say("Message to Task Leader", "发送给 Task Leader"));
   const message = node("textarea", "");
@@ -90,13 +95,15 @@ export function renderTaskSurface(container, data, t, locale, actions) {
         "提交结果未知。请重新加载并检查已保存消息，不要盲目重发 · ") + requestId;
     }
   });
-  summary.append(chat);
+  discuss.append(chat);
+  summary.append(discuss);
   // decision-3 three-action input control (queue / steer / interrupt). This is
   // the same application-layer path the CLI drives; the Web surface adds no
   // fourth action and no auto-fallback. Steer/interrupt name an exact current
   // Turn (expected-target); a mismatch or missing Turn is a visible failure
   // receipt, never a silent downgrade to a queue.
   const control = node("details", "record-card");
+  control.dataset.viewKey = "control";
   control.append(node("summary", "", say("Redirect a running Role (queue / steer / interrupt)",
     "改向运行中的 Role（排队／即时插话／打断）")));
   const controlForm = node("form", "record-block");
@@ -207,8 +214,8 @@ export function renderTaskSurface(container, data, t, locale, actions) {
     // durable read and the one that drives re-rendering. The runtime observation
     // is explicitly optional (it may time out and only ever enriches a live
     // Session), so it must not decide whether a planning Turn is reported.
-    const turnEntries = records("turn");
-    const planningTurns = values("turn").filter((turn) =>
+    const turnEntries = records("run");
+    const planningTurns = values("run").filter((turn) =>
       turn.roleName === "leader" && turn.purpose === "planning");
     // The latest planning Turn, whatever state it reached. A completed planning
     // Turn is still the real observed fact; reporting only active ones would call
@@ -224,19 +231,19 @@ export function renderTaskSurface(container, data, t, locale, actions) {
       ? planningTurn.status
       : withheldTurns ? "withheld" : "not-dispatched";
     planning.append(node("p", "muted", withheldTurns
-      ? say("This bounded snapshot withholds Turn detail; read the Turn directly to see planning state.",
-        "当前受限快照未展开 Turn 详情；请直接读取 Turn 查看规划状态。")
+      ? say("This bounded snapshot withholds AgentRun detail; read the original planning Run.",
+        "当前受限快照未展开 AgentRun 详情；请读取原始 planning Run。")
       : planningTurn === null
-      ? say("No planning Turn has been dispatched yet. Sending a message queues the Leader.",
-        "尚未派发 planning Turn；发送消息会为 Leader 排队。")
+      ? say("No planning AgentRun is included. Direct Session activity is shown separately.",
+        "本次读取未包含 planning AgentRun；直接 Session 活动单独展示。")
       : planningTurn.status === "active"
-      ? say("Planning Turn is active; messages reach the Task Leader.",
-        "planning Turn 正在进行；消息会送达 Task Leader。")
-      : say("Planning Turn reached " + planningTurn.status
+      ? say("The planning AgentRun is open; this is not proof of native activity.",
+        "planning AgentRun 尚未结清；这不证明原生会话仍有活动。")
+      : say("Planning AgentRun reached " + planningTurn.status
         + "; messages reach the same Task Leader and queue the next Turn.",
-        "planning Turn 已" + planningTurn.status + "；消息仍送达同一 Task Leader 并为下一个 Turn 排队。")));
+        "planning AgentRun 已" + planningTurn.status + "；消息仍送达同一 Task Leader 并为下一个 Turn 排队。")));
     const facts = [
-      [say("Planning Turn", "planning Turn"), planningTurn
+      [say("Planning AgentRun", "planning AgentRun"), planningTurn
         ? planningTurn.id + " (" + planningTurn.status + ")"
         : withheldTurns ? say("withheld by this snapshot", "本快照未展开") : say("none", "无")],
       [say("Provider terminal", "Provider 终态"),
@@ -251,7 +258,7 @@ export function renderTaskSurface(container, data, t, locale, actions) {
           ?? say("not currently running", "当前未在运行")],
       [say("Environment", "环境"), environment?.environmentRef
         ?? say("empty (legal for planning)", "空环境（规划阶段合法）")],
-      [say("Turn observed at", "Turn 观测时间"),
+      [say("Run record updated", "Run 记录更新时间"),
         planningTurn?.result?.completedAt ?? planningTurn?.updatedAt ?? say("unknown", "未知")]
     ];
     for (const [label, value] of facts) {
@@ -259,8 +266,13 @@ export function renderTaskSurface(container, data, t, locale, actions) {
     }
     summary.append(planning);
   }
-  if (task.description) summary.append(richText(say("Current requirements", "当前要求"), task.description, t));
-  if (task.completionSummary) summary.append(richText(t("detail.conclusion"), task.completionSummary, t));
+  if (task.description) {
+    const requirements = node("details", "record-card");
+    requirements.dataset.viewKey = "requirements";
+    requirements.append(node("summary", "", say("Original requirements and boundaries", "原始要求与边界")),
+      richText(null, task.description, t));
+    summary.append(requirements);
+  }
   const edit = node("details", "record-card");
   edit.append(node("summary", "", say("Edit Task title", "修改任务标题")));
   const form = node("form", "record-block");
@@ -316,6 +328,9 @@ export function renderTaskSurface(container, data, t, locale, actions) {
       const value = entry.value;
       const text = value.content || value.summary || value.body || value.objective || value.title || value.leaderSummary;
       if (text) card.append(richText(null, text, t));
+      if (entry.ref.store === "task-decision" && value.rationale) {
+        card.append(richText(say("Reason and boundaries", "理由与边界"), value.rationale, t));
+      }
       if (value.status) card.append(node("p", "muted", value.status));
       if (value.roleName) card.append(node("p", "muted", value.roleName));
       if (entry.ref.store === "work-item") {
@@ -357,7 +372,10 @@ export function renderTaskSurface(container, data, t, locale, actions) {
     if (!entries.length) body.append(node("p", "muted", core.omitted.records
       ? say("Not included in this compact read", "此紧凑读取未包含该记录")
       : say("No records", "暂无记录")));
-    scaffold.append(anchorSection(id, sectionHead(name, { count: entries.length }), body));
+    const folded = node("details", "record-card");
+    folded.dataset.viewKey = id;
+    folded.append(node("summary", "", name + " · " + entries.length), body);
+    scaffold.append(anchorSection(id, null, folded));
     return body;
   }
   const focus = section("detail-focus", say("Goal and current focus", "目标与当前关注"), records("task-brief"));
@@ -366,13 +384,10 @@ export function renderTaskSurface(container, data, t, locale, actions) {
     focus.prepend(richText(t("detail.focus"), brief.currentFocus, t));
     if (brief.boundaries.length) focus.append(richText(say("Boundaries", "边界"), brief.boundaries.join("\\n"), t));
   }
-  const questions = node("div", "section-body");
-  records("input-request").filter((entry) => entry.omitted || entry.value.status === "open").forEach((entry) => {
-    questions.append(entry.omitted ? recordCard(entry) : inputCard(entry.value, { single: true }, t, locale, actions));
-  });
-  scaffold.append(anchorSection("detail-attention", sectionHead(t("detail.attention")), questions));
   section("detail-work", say("Responsibilities and acceptance", "工作责任与验收"), records("work-item"));
-  section("detail-results", say("Saved results and provenance", "已保存结果与来源"), records("artifact").concat(records("candidate")));
+  const evidence = node("div", "section-body");
+  renderEvidence(evidence, data, t, locale, actions);
+  scaffold.append(anchorSection("detail-results", sectionHead(say("Results and evidence", "成果与证据")), evidence));
   section("detail-messages", t("detail.messages"), records("task-message"));
   section("detail-history", say("Decisions and milestones", "决策与里程碑"), records("task-decision").concat(records("task-milestone")));
   section("detail-reviews", t("detail.reviews"), records("review-round"));
@@ -381,10 +396,9 @@ export function renderTaskSurface(container, data, t, locale, actions) {
     if (entry.omitted) { roles.append(recordCard(entry)); return; }
     const role = entry.value;
     const active = values("run").find((run) => run.roleName === role.name && run.status === "active");
-    const incomplete = core.omitted.records > 0 || records("run").some((entry) => entry.omitted);
     roles.append(roleCard({
       ...role, providerRetry: entry.providerRetry,
-      status: entry.providerRetry?.status === "waiting" ? "waiting" : active || incomplete ? "unknown" : "idle",
+      status: entry.providerRetry?.status === "waiting" ? "waiting" : "unknown",
       effectiveLaunch: active ? active.effective : null,
       launchDrift: active && active.effective.sourceDesiredRevision !== role.launchRevision
     }, task, t, locale, actions));
@@ -392,8 +406,12 @@ export function renderTaskSurface(container, data, t, locale, actions) {
       "No active AgentRun in this read; Session activity is a separate observation.",
       "此读取中没有活跃 AgentRun；Session 活动属于独立观察。")));
   });
-  scaffold.append(anchorSection("detail-roles", sectionHead(t("detail.roles")), roles));
+  const roleDetails = node("details", "record-card");
+  roleDetails.dataset.viewKey = "roles";
+  roleDetails.append(node("summary", "", t("detail.roles")), roles);
+  scaffold.append(anchorSection("detail-roles", null, roleDetails));
   const execution = node("details", "record-card");
+  execution.dataset.viewKey = "execution";
   execution.append(node("summary", "", say("Execution and observations", "展开执行与观察")));
   execution.append(node("p", "muted", say(
     "An open execution record is not proof of Agent activity. Native admission and Task progress are separate facts.",

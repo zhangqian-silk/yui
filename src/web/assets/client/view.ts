@@ -3,6 +3,7 @@ export const VIEW_SCRIPT = `
 // All reusable widgets and cards come from components.js.
 import { clear, node } from "/assets/js/dom.js";
 import { renderTaskSurface } from "/assets/js/task-surface.js";
+import { renderSessionSummary } from "/assets/js/task-summary.js";
 import { byNewest, formatDateTime } from "/assets/js/format.js";
 import {
   anchorSection,
@@ -162,6 +163,10 @@ export function renderOverview(detail, state, t, locale, onSelect) {
   const counts = state.counts;
 
   const total = counts ? counts.total : 0;
+  const say = (en, cn) => locale.startsWith("zh") ? cn : en;
+  wrap.append(node("p", "muted", say(
+    "Attention counts cover the authorized catalog before search/status filters; task lists below cover this page.",
+    "关注计数覆盖搜索／状态过滤前的可见目录；下方任务列表仅覆盖当前页。")));
   const rail = node("div", "command-rail");
   rail.append(
     metricTile(t("metrics.active"), counts ? counts.active : "—", { hot: true }),
@@ -208,6 +213,32 @@ export function renderOverview(detail, state, t, locale, onSelect) {
   }
   wrap.append(inbox);
   if (state.catalogScope) wrap.append(node("p", "", t("catalog.pageScope")));
+  const sessions = node("section", "overview-block");
+  sessions.append(sectionHead(say("Session activity · current page only", "会话活动 · 仅当前页")));
+  sessions.append(node("p", "muted", say(
+    "Not loaded by the compact list. Active Task / AgentRun counts cannot establish how many native Sessions are running.",
+    "紧凑列表不加载会话观察。Active Task／AgentRun 数不能说明有几个原生会话在运行。")));
+  const observe = node("button", "record-open", say("Read this page's Sessions", "读取本页会话"));
+  observe.type = "button";
+  observe.dataset.observeSessions = "";
+  observe.disabled = state.sessionLoading || !state.tasks.length;
+  sessions.append(observe);
+  if (state.sessionError) sessions.append(node("p", "muted", state.sessionError));
+  if (state.sessionOverview) {
+    sessions.append(node("p", "muted", say("Read at: ", "读取于：") + formatDateTime(state.sessionOverview.readAt, locale)));
+    for (const task of state.sessionOverview.tasks) {
+      const card = node("article", "record-card");
+      const open = node("button", "record-open", task.taskId + " · " + task.title);
+      open.type = "button";
+      open.addEventListener("click", () => onSelect(task.taskId));
+      card.append(open);
+      const body = node("div", "");
+      renderSessionSummary(body, task, locale);
+      card.append(body);
+      sessions.append(card);
+    }
+  }
+  wrap.append(sessions);
 
   // Tasks whose Task-first projection says they need attention: blocked,
   // recovering, or in an attention state. This replaces the raw stalled-AgentRun
@@ -228,6 +259,8 @@ export function renderOverview(detail, state, t, locale, onSelect) {
         task,
         t("exec.status." + task.executionStatus),
         "has-inputs",
+        t,
+        locale,
         onSelect
       ));
     });

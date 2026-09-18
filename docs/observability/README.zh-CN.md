@@ -49,6 +49,43 @@ AgentRun，Role 状态也包含其原生准入/活动；当某个 WorkItem 处�
 监督它的 Host 仍存活。一个已被有意停止、且原生输入已结算的 Session 是空闲状态，
 而不是虚假的运行时失败。
 
+## Web 用户关注与进展
+
+Task 详情优先展示「需要你处理」「会话活动」「任务进展」「关键结论」。
+InputRequest 保留原回答入口和有界 Context 计数；部分读取不等于空待办。
+技术关注从既有执行投影取得负责人；有负责人不代表已开始处理，诊断提示
+也不自动成为新的用户授权。
+
+会话观察包含没有 AgentRun 的直聊与通知。选用的原生身份只计一次，前台活动
+必须匹配当前精确输入；旧 Turn、旧 Session 的活动不能借给新输入。
+等待、安静、需诊断、未知、停止、该轮结束和后台未结清保持区分；
+没有终态的操作不是永久心跳。时间窗复用既有 runtime policy，读取时间不冒充
+活动时间。这是已记录选用会话的视图，不是实时进程探测或历史资源盘点。
+Controller 已负责的有界 Provider 重试显示为等待，不误称停止或等待用户审批；
+后继输入的活动仍须匹配它自己的精确身份。
+
+进度来自原 Brief 和完成记录，标注来源时间；活动、token 不产生百分比、
+ETA 或实质检查点。当前 Decision 展示理由与来源，已替代决定留在历史；
+报告与建议不改称用户批准。独立观察失败时，核心 Context 仍可读取。
+
+「成果与证据」仅按需读文件。固定提交的文本阅读在刷新和读取新列表后仍保留，
+切换版本必须显式选择；固定版本缺失就报错，不回退 HEAD。
+HTML／脚本只作为文本，不执行预览。复制来源不发送内容，讨论仍走原 Message
+表单、显式意图及回执；自动刷新保留未提交输入。
+
+交付复用 Publication 覆盖及采用记录，区分 reported/verified 和
+missing/stale/head-unavailable。按需证据展示原 Integration 检查、
+固定 Review 候选及原始 Reviewer 报告；Review completed 不等于语义通过，
+skipped／缺失检查不算通过。工作区所有权不证明可清理；既有只读
+`task archive-preflight` 仅作为操作指引，不自动运行。没有新增验收、发布、
+归档按钮，用量仍保留 known/partial/unknown。
+
+所有入口沿用本地 Web token 与 Task 边界。
+`GET /api/tasks/<id>/artifacts` 列出固定仓库版本；
+`?path=<relative-path>&commit=<full-commit>` 读取该版本文本；
+`GET /api/tasks/<id>/evidence` 读取原检查／Review／工作区记录。
+读取不启动运行时、不访问远端、不写业务状态、不引入迁移或新持久协议。
+
 ## 执行审计
 
 `execution audit` 汇总既有的 Task、Run、wake、Session、Review、Integration、

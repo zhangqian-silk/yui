@@ -14,6 +14,15 @@ same query at `GET /api/dashboard`. The per-Task detail endpoint retains
 execution, observability, usage and remote-delivery fields. Discovery itself
 does not change persistent records.
 
+Web labels catalog-wide attention separately from filtered/page-local lists.
+Native Session activity is an explicit optional read at
+`GET /api/dashboard/sessions` with the same compact page parameters. It observes
+only that returned page, includes direct inputs without AgentRuns and shows its
+own read time. It is not part of the compact query or its 32 KiB budget, and never
+claims a global running-Session count. Changing page membership clears this
+observation. Task status counts and raw signals remain separate from activity
+and semantic progress.
+
 ## Query and page contract
 
 ```sh

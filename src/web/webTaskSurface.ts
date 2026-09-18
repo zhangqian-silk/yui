@@ -1,3 +1,5 @@
+import { readArtifactCapability } from "../artifacts/artifactCapability.js";
+import { openTaskArtifactRepository } from "../artifacts/taskArtifactRepository.js";
 import { applyGlobalInputControl } from "../commands/globalRoleCommands.js";
 import { applyTaskInputControl, sendTaskMessageCommand, updateTaskMetadataCommand } from "../commands/taskCommands.js";
 import { type TaskCommandExecution, type TaskCommandOptions } from "../commands/taskCommandTypes.js";
@@ -86,6 +88,24 @@ export function createWebTaskSurface(
       ? { kind: "role", taskId, roleName: "leader" } : { kind: "task", taskId });
   };
   return {
+    evidence: (taskId: string) => store.transaction(reader => {
+      if (reader.getTask(taskId) === null) throw new WebRequestRejected("Task not found.");
+      return { taskId, integrations: reader.listIntegrationAttempts(taskId),
+        reviews: reader.listReviewRounds(taskId), workspaces: reader.listManagedWorkspaces(taskId) };
+    }),
+    artifacts: async (taskId: string) => {
+      if (store.getTask(taskId) === null) throw new WebRequestRejected("Task not found.");
+      const repo = openTaskArtifactRepository(store.rootDirectory(), taskId);
+      const commit = await repo.head();
+      const entries = commit === null ? [] : await repo.list(commit);
+      return { taskId, commit, entries };
+    },
+    artifact: async (taskId: string, relativePath: string, commit: string) => {
+      if (store.getTask(taskId) === null) throw new WebRequestRejected("Task not found.");
+      // The browser always names a fixed revision. Never substitute HEAD after
+      // a missing object, and never execute/render artifact HTML as an app.
+      return readArtifactCapability(store.rootDirectory(), taskId, { relativePath, commit });
+    },
     globalState: (roleName: string) => {
       const role = store.getGlobalRole(roleName);
       if (role === null) throw new WebRequestRejected("Global Role not found.");

@@ -23,6 +23,27 @@ export const CARD_STYLES = `
 .task-surface button { min-height:40px; }
 .task-surface summary { cursor:pointer; padding:8px 0; font-weight:600; }
 .task-surface [role=status] { overflow-wrap:anywhere; }
+.summary-block h3 { margin:0 0 12px; font-size:16px; }
+.summary-block h4 { margin:12px 0 4px; }
+.summary-block p { overflow-wrap:anywhere; }
+.task-summary-grid { display:grid; gap:12px; min-width:0; align-items:start; }
+.task-summary-grid .summary-block { display:block; }
+.task-summary-grid .summary-block p { margin:8px 0; }
+.task-surface .record-pills { flex-wrap:wrap; max-width:100%; }
+@media (min-width:1100px) {
+  .task-summary-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+.session-counts { display:flex; flex-wrap:wrap; gap:8px; }
+.session-count { padding:6px 10px; background:var(--bg-3); border:1px solid var(--border); border-radius:var(--radius); }
+.session-row { padding:12px 0; border-top:1px solid var(--border); overflow-wrap:anywhere; }
+.artifact-choice { text-align:left; white-space:normal; overflow-wrap:anywhere; }
+.task-surface .artifact-text { max-height:32rem; padding:16px; border:1px solid var(--border); background:var(--bg-1); }
+.task-surface .mono { overflow-wrap:anywhere; }
+.task-surface .muted { overflow-wrap:anywhere; min-width:0; }
+.task-surface .observability-metrics { grid-template-columns:repeat(auto-fit,minmax(min(100%,12rem),1fr)); }
+.task-surface .observability-metrics .metric { flex-direction:column; align-items:flex-start; min-width:0; }
+.task-surface .observability-metrics .metric-value { overflow-wrap:anywhere; max-width:100%; }
+.task-surface button { min-height:44px; }
 /* Overview scaffolding */
 .overview{display:grid;gap:14px;padding-top:2px}
 .overview-duo{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
