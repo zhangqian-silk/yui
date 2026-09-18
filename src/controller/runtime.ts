@@ -40,7 +40,6 @@ import {
 } from "../executor/executorRegistry.js";
 import { FileRoleLaunchPlanner } from "../executor/fileRoleLaunchPlanner.js";
 import { createKernelPorts } from "../kernel/kernelPorts.js";
-import { createGlobalRoleMessage } from "../message/message.js";
 import {
   FileTaskWorkspacePreparer,
   type TaskWorkspacePreparer
@@ -415,29 +414,6 @@ export async function startFileTaskControllerRuntime(
         sessionHost,
         promptPush,
         launchCoordinator,
-        notifyOperatorInputOnce: async (input) => {
-          // The original attention mailbox remains pending until this one
-          // Global Message has an actual Provider receipt. Never inject keys
-          // into a busy Host console and mistake that for accepted attention.
-          const message = store.transaction(tx => {
-            const requestId = `operator-notice:${encodeURIComponent(input.receiptId)}`;
-            const previous = tx.listGlobalRoleMessages("operator").find(entry =>
-              (entry.inputControl ?? entry.interruptThen?.reusedInput)?.requestId === requestId);
-            if (previous !== undefined) return previous;
-            const sessions = tx.getGlobalRoleSessionSet("operator");
-            const session = sessions?.sessions[sessions.activeAgentId];
-            if (session?.status !== "active" || sessions?.providerBinding == null) return null;
-            const created = { ...createGlobalRoleMessage(tx.nextGlobalRoleMessageId(), "operator", input.text,
-              "system", { type: "system" }, new Date(), { inputControl: { action: "queue", requestId } }),
-              deliveryTarget: { agentId: session.agentId, nativeSessionId: session.nativeSessionId } };
-            tx.saveGlobalRoleMessage(created);
-            return created;
-          });
-          if (message === null) return "unavailable";
-          if (message.delivery?.via === "provider") return "already-sent";
-          runningRuntime?.signal("global-role:operator");
-          return "not-ready";
-        },
         roleResourceInventory: async (panes, inputs) => {
           const inventory = await scanInventory(panes);
           return inventory.resources.flatMap((resource) => {

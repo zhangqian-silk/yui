@@ -92,6 +92,7 @@ import type { AgentDriverRegistry } from "../runtime/agentDriver.js";
 import { standardAgentError } from "../runtime/agentError.js";
 import { recordTaskAgentError } from "./taskAgentError.js";
 import { recordGlobalRuntimeAttention, recordGlobalRuntimeFailure } from "./globalRuntimeAttention.js";
+import { queueOperatorNotification } from "./operatorNotification.js";
 import {
   builtinAgentDriverRegistry
 } from "../runtime/builtinAgentDrivers.js";
@@ -1197,8 +1198,11 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
     } as const;
   }
 
-  markOperatorRunStarted(now: Date): void {
-    void now;
+  queueOperatorNotification(
+    input: Parameters<SchedulerStorePort["queueOperatorNotification"]>[0],
+    now: Date
+  ) {
+    return queueOperatorNotification(this.store, input, now);
   }
 
   resolveExpiredInputRecommendations(now: Date, taskIds?: ReadonlySet<string>) {

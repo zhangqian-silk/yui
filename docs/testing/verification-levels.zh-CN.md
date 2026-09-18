@@ -162,6 +162,11 @@ Host 准备期间新出现的 cleanup 义务。
 元数据的测试程序验证部分发现、精确缓存复用和刷新失败来源；权限选择器不能猜测
 选项或抹去用户已有值，Doctor 共用 help 解析且不补造模型别名。
 
+Operator attention 按批次原子交接给一条 Global Message，忙时新事件不与已交出事件重叠。
+SQLite 重开、回滚和精确 receipt 重用保留后到批次及未投递证据。本地假 Host control 入口
+检查 unknown/rejected 投递、后继输入及 Controller dirty signal，不调用真实模型；既有
+Global 控制测试继续保护 interrupt-then 和精确 Session/authority。
+
 ## Skill 与指令变更
 
 一并审阅共享的 Runtime 合同和受影响的 Role/Project Skill。用几个相关场景检查指令

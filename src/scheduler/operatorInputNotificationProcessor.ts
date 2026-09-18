@@ -6,8 +6,7 @@ import {
 } from "../interaction/operatorPresentation.js";
 import type {
   SchedulerReconcileSelection,
-  SchedulerStorePort,
-  TmuxDeliveryPort
+  SchedulerStorePort
 } from "./ports.js";
 import { mailboxHasWork, nextPendingBatch } from "../coordination/workMailbox.js";
 
@@ -15,8 +14,9 @@ type OperatorDeliveryOutcome = Readonly<{
   sourceKind: "input" | "event";
   sourceId: string;
   taskId: string;
-  status: "sent" | "already-sent" | "skipped" | "failed";
-  reason?: "operator-unavailable" | "operator-not-ready" | "delivery-unsupported";
+  status: "queued" | "already-queued" | "skipped" | "failed";
+  messageId?: string;
+  reason?: "operator-unavailable";
   error?: string;
 }>;
 
@@ -28,7 +28,6 @@ type PendingOperatorAttention =
 
 export async function processOperatorInputNotifications(
   store: SchedulerStorePort,
-  delivery: TmuxDeliveryPort,
   selection?: SchedulerReconcileSelection,
   now = new Date()
 ): Promise<OperatorInputNotificationResult[]> {
@@ -64,33 +63,23 @@ export async function processOperatorInputNotifications(
     store.completeWorkMailbox(targetMailbox, processing.batchId);
     return [];
   }
-  const target = store.getOperatorDeliveryTarget();
-  if (target === null || delivery.notifyOperatorInputOnce === undefined) {
-    const reason = target === null ? "operator-unavailable" : "delivery-unsupported";
-    store.releaseWorkMailbox(targetMailbox, processing.batchId);
-    return attentions.map((attention) => skipped(attention, reason));
-  }
-
   try {
     const presentation = createOperatorBatchPresentation(
       processing.batchId,
       attentions.map(toPresentationItem)
     );
-    const outcome = await delivery.notifyOperatorInputOnce({
-      ...target,
+    const outcome = store.queueOperatorNotification({
+      batchId: processing.batchId,
       receiptId: presentation.receiptId,
       text: presentation.text
-    });
-    if (outcome === "unavailable" || outcome === "not-ready") {
+    }, now);
+    if (outcome.status === "unavailable") {
       store.releaseWorkMailbox(targetMailbox, processing.batchId);
-      const reason = outcome === "unavailable" ? "operator-unavailable" : "operator-not-ready";
-      return attentions.map((attention) => skipped(attention, reason));
+      return attentions.map((attention) => skipped(attention, "operator-unavailable"));
     }
-    if (outcome === "sent") store.markOperatorRunStarted(now);
-    store.completeWorkMailbox(targetMailbox, processing.batchId);
     return attentions.map((attention) => ({
       ...attentionIdentity(attention),
-      status: outcome
+      ...outcome
     }));
   } catch (error) {
     store.releaseWorkMailbox(targetMailbox, processing.batchId);

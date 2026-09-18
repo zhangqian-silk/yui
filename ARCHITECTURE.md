@@ -67,6 +67,18 @@ AgentHost serializes submission through AgentEndpoint. The Provider binding
 records actual acceptance and native correlation. A notification can settle
 on acceptance without requiring a final execution report.
 
+Operator attention has a separate, local handoff boundary: one transaction
+saves the exact batch as a Global system Message and consumes only that mailbox
+claim. `queued` (with the Message id) means durable queue ownership, not Provider
+acceptance or Agent processing. Later events form a new batch without repeating
+the handed-off refs. Global Messages alone own subsequent native delivery,
+including rejection, unknown acceptance and Session-target mismatch; none causes
+automatic reissuance under a different key. A pass can mark multiple definitively
+unsent stale-target entries undelivered before reaching successor input, but never
+bypass an uncertain attempt or an interrupt-then reservation. Original Messages
+and source Task/Input/Event records remain inspectable. Notifications ask Agents
+to reread facts; they do not authorize replaying prior operations.
+
 Busy with proven non-acceptance preserves the input for a subsequent attempt.
 Transport submission alone does not prove acceptance. Unknown effects remain
 visible and fenced: no blind resend or inferred success. Explicit replacement

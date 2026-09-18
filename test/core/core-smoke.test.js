@@ -8,11 +8,9 @@ import Database from "better-sqlite3";
 
 import {
   claimPending,
-  completeProcessing,
   consumePendingBatch,
   createWorkMailbox,
-  enqueueSignal,
-  releaseProcessing
+  enqueueSignal
 } from "../../dist/coordination/workMailbox.js";
 import {
   captureRoleRunDispatch,
@@ -91,7 +89,6 @@ import {
 import { createFixtureRun } from "../helpers/runFixture.mjs";
 import { createRunInput } from "../../dist/context/runInputContract.js";
 import { processActiveRoleRunDeliveries } from "../../dist/scheduler/activeRoleRunDelivery.js";
-import { processOperatorInputNotifications } from "../../dist/scheduler/operatorInputNotificationProcessor.js";
 import {
   LEADER_WAKE_AGGREGATION_MS,
   processLeaderWakeups
@@ -3965,71 +3962,6 @@ test("Agent errors preserve provider classification and the complete native Erro
   assert.equal(unknown.category, "unknown");
   assert.equal(unknown.code, "unknown");
   assert.equal(unknown.raw, '{"shape":"unrecognized"}');
-});
-
-test("Operator batches durable refs and defers the whole batch while busy", async () => {
-  const now = new Date("2026-08-28T00:00:00.000Z");
-  const event = createTaskEvent(
-    "event-1",
-    "task-1",
-    "task.completed",
-    { by: "leader", summary: "Done." },
-    now
-  );
-  let mailbox = enqueueSignal(createWorkMailbox({ kind: "operator" }), {
-    reason: "task-terminal",
-    refs: [{ type: "event", taskId: event.taskId, id: event.id }],
-    occurredAt: now.toISOString()
-  });
-  let startedRuns = 0;
-  const store = {
-    getWorkMailbox: () => mailbox,
-    claimWorkMailbox: ({ batchId, owner, now: claimedAt }) => {
-      mailbox = claimPending(mailbox, { batchId, owner, startedAt: claimedAt.toISOString() });
-      return { status: "claimed", processing: mailbox.processing };
-    },
-    completeWorkMailbox: (_target, batchId) => {
-      mailbox = completeProcessing(mailbox, batchId);
-      return true;
-    },
-    releaseWorkMailbox: (_target, batchId) => {
-      mailbox = releaseProcessing(mailbox, batchId);
-      return true;
-    },
-    getInputRequest: () => null,
-    listEvents: () => [event],
-    getOperatorDeliveryTarget: () => ({ roleName: "operator", adapterId: "codex" }),
-    markOperatorRunStarted: () => {
-      startedRuns += 1;
-    }
-  };
-  const delivered = [];
-  const result = await processOperatorInputNotifications(store, {
-    notifyOperatorInputOnce: async (input) => {
-      delivered.push(input);
-      return "sent";
-    }
-  }, undefined, now);
-
-  assert.equal(delivered.length, 1);
-  assert.match(delivered[0].text, /yui task event show task-1 event-1/u);
-  assert.equal(result[0].status, "sent");
-  assert.equal(startedRuns, 1);
-  assert.equal(mailbox.processing, null);
-  assert.equal(mailbox.pending, null);
-
-  mailbox = enqueueSignal(mailbox, {
-    reason: "task-terminal",
-    refs: [{ type: "event", taskId: event.taskId, id: event.id }],
-    occurredAt: now.toISOString()
-  });
-  const deferred = await processOperatorInputNotifications(store, {
-    notifyOperatorInputOnce: async () => "not-ready"
-  }, undefined, now);
-  assert.equal(deferred[0].reason, "operator-not-ready");
-  assert.equal(startedRuns, 1);
-  assert.equal(mailbox.processing, null);
-  assert.notEqual(mailbox.pending, null);
 });
 
 test("the async runtime observer preserves terminal classification", async () => {
