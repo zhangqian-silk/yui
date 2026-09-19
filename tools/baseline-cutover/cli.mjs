@@ -45,7 +45,7 @@ export function assertOffline(home, owners=[]) {
       const status = readFileSync(join(root,"status"),"utf8");
       if (Number(/^Uid:\s+(\d+)/m.exec(status)?.[1]) !== uid) continue;
       const env = readable(join(root,"environ")).split("\0");
-      if (env.some(value=>value === `YUI_HOME=${home}`)) throw new Error(`Home still has a live process: ${id}. Stop it with 0.99.0.`);
+      if (env.some(value=>value === `YUI_HOME=${home}`)) throw new Error(`Home still has a live process: ${id}. Stop it with 0.16.2.`);
       const argv=readable(join(root,"cmdline")).split("\0");
       if(argv.some(value=>isAbsolute(value) && inside(home,value))) {
         throw new Error(`Process ${id} still references this Home.`);
@@ -68,11 +68,11 @@ export function assertOffline(home, owners=[]) {
   for (const name of ["runtime/inbox", "runtime/inbox-invalid"]) {
     const path=join(home,name);
     if (existsSync(path) && readdirSync(path).length) {
-      throw new Error(`Pending runtime evidence remains at ${path}; settle it with 0.99.0.`);
+      throw new Error(`Pending runtime evidence remains at ${path}; settle it with 0.16.2.`);
     }
   }
   for(const name of ["runtime/controller.json","runtime/controller-candidate.json","runtime/handover-fence.json"]) {
-    if(existsSync(join(home,name))) throw new Error(`Unsettled runtime evidence: ${name}. Inspect with 0.99.0; the converter does not infer ownership.`);
+    if(existsSync(join(home,name))) throw new Error(`Unsettled runtime evidence: ${name}. Inspect with 0.16.2; the converter does not infer ownership.`);
   }
 }
 

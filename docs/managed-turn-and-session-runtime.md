@@ -61,13 +61,13 @@ Writable Projects come from the Run's captured effective authority; live
 activity is a separate observation, not part of the frozen contract.
 Expansion always requires both `store` and `refId`, even for a unique id.
 
-Historical Run records without a Snapshot remain readable through `run show`
-for audit, but cannot supply execution Context, be submitted or retried.
-Missing/drifted Snapshot evidence fails explicitly; it is never synthesized
-from today's Task. Subsequent observed/steered input records may legitimately
-omit their own Snapshot because they do not establish a new Assignment.
-No stored layout or payload changes: storage remains 37 with the complete
-1→37 migration chain unchanged.
+Current Run records require a Snapshot reference on their first input, including
+terminal Runs. Missing/drifted evidence fails explicitly; it is never synthesized
+from today's Task. Subsequent observed/steered input records may omit their own
+Snapshot because they do not establish a new Assignment. Storage uses the 1.0
+baseline. The independent v37 converter refuses Homes containing Runs without
+an initial Snapshot reference, retaining their original records and references
+for audit with the frozen bridge.
 
 Current Task reads also expose untargeted user/Operator messages to the Task's
 current Worker and Reviewer Sessions, including requirements added after their
@@ -148,13 +148,10 @@ channel once; Worker/Reviewer failures use the existing Leader channel. No new
 recovery Agent is started, and there need not be a Run or Session to record the
 failure.
 
-Storage 35→36 archives original historical error payloads and marks their
-unrecorded launch configuration as unavailable. It never reconstructs old model,
-account or settings choices from current Roles.
-
-Storage 36→37 narrows that context to native metadata selectors and the requested
-model/effort. Full old snapshots remain in migration audit, not in the active
-reader. Reading a failure's model options does not validate Task permissions,
+Failure context records native metadata selectors and the requested model/effort.
+Unrecorded configuration stays unavailable; it is never reconstructed from current
+Roles. Opaque audit bytes are not read as current configuration.
+Reading a failure's model options does not validate Task permissions,
 Review state, workspace entries or the current Session bootstrap protocol.
 The three failure ingresses retain their native fencing/classification, while
 record creation and deduplication share one writer and supervisor notices use

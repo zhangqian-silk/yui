@@ -367,8 +367,7 @@ This adds neither a retry worker nor another persistent ownership protocol.
 Current Resource records are read strictly: required safety fields, enum values,
 and every active reference must be valid. A malformed record or mismatched
 SQLite/payload identity is reported without supplying defaults, dropping refs,
-or rewriting stored evidence. This enforces the existing record contract;
-storage remains at version 37.
+or rewriting stored evidence. This enforces the current storage 1.0 record contract.
 
 Failed preparation compensates only its unadopted resources. Standalone Task
 clones use exact clone identity/cleanliness checks before direct deletion;

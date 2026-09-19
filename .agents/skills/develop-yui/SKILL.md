@@ -47,8 +47,9 @@ Follow the exact local-launcher procedure in AGENTS.md: `make install-local`,
 then the absolute `<checkout>/output/dev/bin/yui` path. It selects this checkout
 and its isolated default data home; initialize it with `setup` when needed.
 Rebuild after code updates, and restart only this isolated Controller when an
-older build is running. Never use `make link` or assume bare `yui` selects the
-current checkout. Additional fixtures need their own explicit `YUI_HOME`.
+older build is running. Development tools never replace the global command;
+do not assume bare `yui` selects the current checkout. Additional fixtures need
+their own explicit `YUI_HOME`.
 
 ## Keep Yui validation lean
 

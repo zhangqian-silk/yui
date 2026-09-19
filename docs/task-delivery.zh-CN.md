@@ -282,7 +282,7 @@ Session 进程归属只读取 SQLite `session_owners`，并校验存活 PID 和�
 
 当前 Resource 记录严格验证必需安全字段、枚举和每条活动引用。损坏记录或 SQLite
 主键与 payload 身份不符会明确报错，不补默认值、不丢弃坏引用、不改写原始证据。
-这是执行既有记录合同，存储版本保持 37。
+这是执行当前存储 1.0 的记录合同。
 
 准备失败只补偿未采用的资源：独立 Task clone 经精确身份、干净状态检查后直接
 删除；linked worktree 使用准备时捕获的路径、分支、提交和自身 Git common directory。

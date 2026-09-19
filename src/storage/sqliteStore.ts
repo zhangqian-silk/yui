@@ -12,7 +12,7 @@
  *                                    the write transaction; conflict ->
  *                                    StorageConflictError (transactionWithRevisionCas).
  *   - Atomic durable write ........ WAL + synchronous=FULL; COMMIT == fsync.
- *   - Mailbox per-target ordering . WorkMailbox v2 sequence/cursors in one row.
+ *   - Mailbox per-target ordering . WorkMailbox sequence/cursors in one row.
  *   - Exactly-once terminal state . conditional updates + UNIQUE(request_id)
  *                                    on the durable outbox.
  *   - Crash recovery .............. WAL rollback of uncommitted transactions;

@@ -51,7 +51,7 @@ is required.
 
 `npm test` and `npm run test:core` build the checkout and run the maintained suite.
 The baseline cutover retires tests owned solely by the removed v1..v37
-implementation. Their source/evidence remains in the frozen 0.99.0 release;
+implementation. Their source/evidence remains in the frozen 0.16.2 release;
 mixed tests retain current behavior, such as Review scope and Integration
 completion boundaries.
 
@@ -74,6 +74,10 @@ Current coverage includes:
    fake producers, current configuration provenance and native-account boundaries.
 7. Workspace/GC authority, archive cleanup, resource CAS, telemetry, Web
    projections and authorized release recovery without real external effects.
+8. Idempotent per-checkout launcher installation, exact argument/Home forwarding,
+   refusal to overwrite unrelated files, and rejection of removed global-link
+   commands before side effects. Development Home reset retains its independent
+   identity checks and backup behavior.
 
 Keep the test phase seconds-scale and measure build separately. Use the
 existing assembled-package smoke for actual CLI/Controller/Host/tmux wiring,

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { createTask, activateTask } from "../../dist/task/task.js";
 import { createRole, createRoleAgentBinding } from "../../dist/role/role.js";
-import { createRun, failRun, runInputEnvelope, validateRun } from "../../dist/agentRun/agentRun.js";
+import { appendRunInput, createRun, failRun, runInputEnvelope, validateRun } from "../../dist/agentRun/agentRun.js";
 import { createRunInput, serializeRunInputEnvelope } from "../../dist/context/runInputContract.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
 import { contextContentDigest, contextSnapshotRef, createContextSnapshot } from "../../dist/context/contextSnapshot.js";
@@ -86,15 +86,23 @@ test("Run Context uses only its exact frozen evidence and explicit store/refId",
   const { contextSnapshotRef: _snapshot, ...missing } = input;
   assert.throws(() => createRun("run-2", task.id, role.name, "new", createRunInput(missing), now, context),
     /Context Snapshot.*required/i);
-  const historical = { ...run, id: "run-2", inputs: [{ ...run.inputs[0], input: createRunInput(missing) }] };
-  assert.equal(validateRun(historical), historical, "Historical records remain audit-readable without invented context.");
-  store.saveRun(historical);
-  assert.throws(() => buildRunContextPack(store, task.id, historical.id), /Context Snapshot.*required/i);
-  assert.throws(() => runInputEnvelope(historical), /Context Snapshot.*required/i);
+  const invalid = { ...run, id: "run-2", inputs: [{ ...run.inputs[0], input: createRunInput(missing) }] };
+  assert.throws(() => validateRun(invalid), /Context Snapshot.*required/i);
+  assert.throws(() => store.saveRun(invalid), /Context Snapshot.*required/i);
+  assert.equal(store.getRun(task.id, invalid.id), null);
+  assert.throws(() => runInputEnvelope(invalid), /Context Snapshot.*required/i);
+  const continued = appendRunInput(run, createRunInput(missing), now);
+  store.saveRun(continued);
+  assert.equal(store.getRun(task.id, run.id).inputs.length, 2);
+  assert.equal(runInputEnvelope(continued, 2).contextSnapshotRef, undefined,
+    "Subsequent input does not establish a new Assignment.");
   assert.throws(() => serializeRunInputEnvelope({
-    protocol: "yui-run/v1", runId: historical.id, roleName: role.name, purpose: "execution",
+    protocol: "yui-run/v1", runId: invalid.id, roleName: role.name, purpose: "execution",
     subject: { taskId: task.id }, source: input.source, deltaRefIds: []
   }), /Context Snapshot.*required/i);
+  store.databaseHandle().prepare("UPDATE turns SET payload=json_remove(payload,'$.inputs[0].input.contextSnapshotRef')").run();
+  assert.throws(() => store.getRun(task.id, run.id), /Context Snapshot.*required/i,
+    "Current reads cannot accept a missing first Snapshot either.");
 });
 
 test("missing Snapshot stops Provider preparation and cannot be repaired by retry", async t => {

@@ -2,7 +2,7 @@ NPM_INSTALL_STAMP := node_modules/.package-lock.json
 
 .DEFAULT_GOAL := all
 
-.PHONY: all help deps build lint test check install-local link unlink dev-reset
+.PHONY: all help deps build lint test check install-local dev-reset
 
 all: build
 
@@ -16,8 +16,6 @@ help:
 	@printf '%s\n' '  make test          Build and run the seconds-scale core smoke'
 	@printf '%s\n' '  make check         Run the same lean core verification'
 	@printf '%s\n' '  make install-local Build and create only this checkout'\''s isolated yui launcher (no global change)'
-	@printf '%s\n' '  make link          Reversibly point the user-level yui command at this checkout'
-	@printf '%s\n' '  make unlink        Restore the previous user-level yui command'
 	@printf '%s\n' '  make dev-reset     Move the isolated development home aside for a clean start'
 
 deps: $(NPM_INSTALL_STAMP)
@@ -38,12 +36,6 @@ check: test
 
 install-local: build
 	node scripts/manage-dev-launcher.mjs install-local
-
-link: build
-	node scripts/manage-dev-launcher.mjs link
-
-unlink:
-	node scripts/manage-dev-launcher.mjs unlink
 
 dev-reset:
 	node scripts/manage-dev-launcher.mjs reset-home

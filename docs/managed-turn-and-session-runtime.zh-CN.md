@@ -50,11 +50,11 @@ Task 记录。聚合执行从该 Snapshot 读取已选择的 Producer 结果；�
 Run 捕获的生效授权。当前活动状态仍是独立观察，不属于冻结合同。
 展开引用必须同时指定 `store` 与 `refId`，即使 id 唯一也不能省略 store。
 
-缺少 Snapshot 的历史 Run 仍可通过 `run show` 审计，但不能提供执行 Context、
-提交给 Provider 或用于重试。Snapshot 缺失或漂移时明确失败，不用今天的 Task
-事实补造历史。后续观察到的原生输入或 steer 记录可以没有独立 Snapshot，因为
-它们不建立新的 Assignment。本次不改变存储布局或记录载荷：storage 仍为 37，
-完整的 1→37 迁移链保持不变。
+当前 Run 的首个输入必须有 Snapshot 引用，包括已结束的 Run。证据缺失或漂移时
+明确失败，不用今天的 Task 事实补造历史。后续原生输入或 steer 可以没有独立
+Snapshot，因为它们不建立新的 Assignment。存储采用 1.0 基线；独立 v37 转换器
+拒绝包含缺少首个 Snapshot 引用的 Run 的 Home，原始记录及引用保持不变，
+继续通过冻结桥接版审计。
 
 当前 Task 读取也会把无定向目标的 user/Operator 消息暴露给该 Task 当前的 Worker 和
 Reviewer Session，包括在它们 Run 快照冻结之后新增的需求。用 `task message list/show`
@@ -122,11 +122,9 @@ retry 把被拒绝批次及后续排队输入交回现有 mailbox，不把旧 wa
 错误通过既有 Operator 通道通知一次；Worker／Reviewer 仍通知 Leader。不启动新的
 恢复 Agent，也不为了记录错误制造 Run 或 Session。
 
-存储 `35→36` 迁移保留历史错误原始 payload，并将当时未记录的启动配置标为不可用，
-不会从当前 Role 猜测过去的模型、账户或 settings 选择。
-
-存储 `36→37` 将该上下文收窄为原生元数据查询选项和请求的模型／effort。旧完整快照
-留在迁移审计中，不由运行时双读。查看模型选项不再校验 Task 权限、Review 状态、
+错误上下文记录原生元数据查询选项和请求的模型／effort。未记录的配置保持不可用，
+不会从当前 Role 猜测过去的选择，也不会把不透明审计字节当作当前配置读取。
+查看模型选项不校验 Task 权限、Review 状态、
 工作区条目或当前 Session 引导协议。三类错误入口保留各自的原生身份检查与分类，
 错误创建、去重统一一个写入入口，上级通知统一使用事件路由边界。
 

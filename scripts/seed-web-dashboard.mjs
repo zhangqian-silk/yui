@@ -1,399 +1,92 @@
-import { resolve } from "node:path";
+// Disposable dashboard data only: never starts a Controller or Provider.
+import { existsSync, lstatSync, mkdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
 import { createConfiguredAgent } from "../dist/agent/agent.js";
+import { createRun, completeRun, failRun } from "../dist/agentRun/agentRun.js";
 import { createTaskBrief } from "../dist/brief/taskBrief.js";
-import { createTurnInput } from "../dist/context/turnInputContract.js";
-import { createDecision, supersedeDecision } from "../dist/decision/decision.js";
-import {
-  createWorkItemExecutionAssignment,
-  createWorkItemExecutionGroup
-} from "../dist/execution/workItemExecution.js";
-import { createTaskEvent } from "../dist/event/taskEvent.js";
+import { contextContentDigest, contextSnapshotRef, createContextSnapshot } from "../dist/context/contextSnapshot.js";
+import { createRunInput } from "../dist/context/runInputContract.js";
+import { createDecision } from "../dist/decision/decision.js";
 import { resolveEffectiveLaunch } from "../dist/executor/effectiveLaunch.js";
-import {
-  answerInputRequest,
-  cancelInputRequest,
-  createInputRequest
-} from "../dist/input/inputRequest.js";
+import { createInputRequest } from "../dist/input/inputRequest.js";
 import { createTaskMessage } from "../dist/message/message.js";
-import { createMilestone } from "../dist/milestone/milestone.js";
-import { createProject } from "../dist/repository/project.js";
-import {
-  createRole,
-  createRoleAgentBinding
-} from "../dist/role/role.js";
-import {
-  completeTurn,
-  createTurn,
-  failTurn
-} from "../dist/turn/turn.js";
-import { recordLeaderFailure } from "../dist/scheduler/leaderFailure.js";
-import { mergePendingWakeup } from "../dist/scheduler/pendingWakeup.js";
-import { initializeCurrentTaskStore } from "../dist/storage/currentTaskStore.js";
-import {
-  activateTask,
-  archiveTask,
-  completeTask,
-  createTask,
-  retireTask
-} from "../dist/task/task.js";
-import {
-  attachWorkItemExecutionGroup,
-  createWorkItem,
-  retireWorkItem,
-  submitWorkItemCandidate,
-  updateWorkItemStatus
-} from "../dist/workItem/workItem.js";
-import { createReviewRound } from "../dist/review/reviewRound.js";
+import { createRole, createRoleAgentBinding } from "../dist/role/role.js";
+import { SqliteTaskStore } from "../dist/storage/sqliteStore.js";
+import { CURRENT_CONFIG_SCHEMA_VERSION } from "../dist/storage/taskStore.js";
+import { activateTask, archiveTask, completeTask, createTask, retireTask } from "../dist/task/task.js";
+import { createWorkItem } from "../dist/workItem/workItem.js";
 
-const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const yuiHome = resolve(process.env.YUI_HOME ?? resolve(projectRoot, "output"));
-const at = (value) => new Date(value);
-const COMMIT = "a".repeat(40);
-const seedTurnInput = (directive, workItemId) => createTurnInput({
-  source: {
-    type: "yui",
-    channel: workItemId === undefined ? "leader-wakeup" : "workitem-dispatch"
-  },
-  directive,
-  deltaRefIds: []
-});
-
-const store = initializeCurrentTaskStore(yuiHome);
-
-if (store.listTasks().length > 0) {
-  throw new Error(`Refusing to seed non-empty YUI_HOME: ${yuiHome}`);
+const projectRoot = fileURLToPath(new URL("..", import.meta.url));
+const yuiHome = resolve(process.env.YUI_HOME ?? resolve(projectRoot, "output/dev/web-home"));
+// Refuse even an empty pre-existing Home (and dangling symlinks): seeding is
+// not an update operation, and has no authority over existing data.
+if (existsSync(yuiHome) || lstatSync(yuiHome, { throwIfNoEntry: false }) !== undefined) {
+  throw new Error(`Refusing to seed existing YUI_HOME: ${yuiHome}. Choose a new disposable directory.`);
 }
-
-const codex = createConfiguredAgent("codex", "codex", "codex", [], [], at("2026-07-01T08:00:00Z"));
-const claude = createConfiguredAgent("claude", "claude", "claude", [], [], at("2026-07-01T08:05:00Z"));
-const codexBinding = createRoleAgentBinding(codex);
-const claudeBinding = createRoleAgentBinding(claude);
-
-const task1 = activateTask(createTask("task-1", "Ship the Yui web dashboard", at("2026-07-18T01:00:00Z"), {
-  description: "Deliver a polished read-only control room for local Yui tasks.",
-  priority: "high",
-  tags: ["web", "release", "ux"],
-  dueAt: "2026-07-28T10:00:00Z",
-  projectBindings: [{ projectId: "project-1", directory: "yui-web", baseRef: "master" }],
-  cwd: resolve(projectRoot)
-}), at("2026-07-18T02:00:00Z"));
-const task2 = activateTask(createTask("task-2", "Resolve deployment approval", at("2026-07-19T02:00:00Z"), {
-  description: "A blocked urgent task with open user input and an overdue date.",
-  priority: "urgent",
-  tags: ["ops", "blocked"],
-  dueAt: "2026-07-22T12:00:00Z"
-}), at("2026-07-19T02:30:00Z"));
-const task3 = createTask("task-3", "Draft onboarding guide", at("2026-07-20T03:00:00Z"), {
-  description: "A draft task used to verify empty and not-yet-started states.",
-  priority: "medium",
-  tags: ["docs", "onboarding"]
-});
-const task4 = completeTask(activateTask(createTask("task-4", "Restore native terminal scrolling", at("2026-07-15T02:00:00Z"), {
-  priority: "low",
-  tags: ["terminal", "completed"]
-}), at("2026-07-15T03:00:00Z")), at("2026-07-21T09:00:00Z"), {
-  by: "leader",
-  summary: "Native tmux scrollback was restored and verified."
-});
-const task5 = archiveTask(retireTask(createTask("task-5", "Retired prototype", at("2026-06-10T01:00:00Z"), {
-  description: "An archived task retained to exercise historical filtering.",
-  tags: ["archive", "prototype"]
-}), {
-  by: "leader",
-  summary: "Prototype retired in favor of the production dashboard."
-}, at("2026-07-09T08:00:00Z")), at("2026-07-10T08:00:00Z"), {
-  by: "user",
-  reason: "Superseded by the production dashboard.",
-  summary: "Prototype findings were folded into task-1."
-});
-const task6 = activateTask(createTask("task-6", "Recover failed release worker", at("2026-07-22T04:00:00Z"), {
-  description: "Exercises failed Role, WorkItem, Turn, and recovery diagnostics.",
-  priority: "high",
-  tags: ["recovery", "failure"]
-}), at("2026-07-22T04:10:00Z"));
-
-store.transaction((writer) => {
-  writer.saveConfiguredAgent(codex);
-  writer.saveConfiguredAgent(claude);
-  writer.saveConfig({
-    schemaVersion: 6,
-    defaultAgent: "codex",
-    defaultWorkspace: resolve(yuiHome, "workspace"),
-    currentTaskId: "task-1",
-    lastTaskId: "task-6"
-  });
-  writer.saveProject(createProject(
-    "project-1",
-    "Yui Web",
-    projectRoot,
-    { stable: "master", development: "develop" },
-    at("2026-07-01T08:10:00Z")
-  ));
-  for (const task of [task1, task2, task3, task4, task5, task6]) writer.saveTask(task);
-
-  writer.saveTaskBrief("task-1", createTaskBrief({
-    objective: "Ship a local dashboard that makes every active thread legible at a glance.",
-    boundaries: ["Read-only Web surface", "Loopback access only", "SQLite remains authoritative"],
-    currentFocus: "Verify responsive layout and task detail states.",
-    leaderSummary: "Server, API, filters, details, and release packaging are implemented.",
-    updatedBy: "leader"
-  }, at("2026-07-23T07:25:00Z")));
-  writer.saveTaskBrief("task-2", createTaskBrief({
-    objective: "Obtain an explicit deployment decision from the operator.",
-    boundaries: ["No automatic production deployment"],
-    currentFocus: "Waiting for approval.",
-    leaderSummary: "All preflight checks pass; user input is the remaining blocker.",
-    updatedBy: "leader"
-  }, at("2026-07-23T07:30:00Z")));
-
-  const roles = [
-    createRole("task-1", "leader", [codexBinding, claudeBinding], "codex", resolve(yuiHome, "workspace/task-1/leader"), at("2026-07-18T02:00:00Z"), {
-      description: "Owns the dashboard delivery.",
-      responsibilities: ["Coordinate work", "Verify release evidence"]
-    }),
-    createRole("task-1", "frontend", [codexBinding], "codex", resolve(yuiHome, "workspace/task-1/frontend"), at("2026-07-18T02:05:00Z"), {
-      description: "Builds the responsive dashboard interface.",
-      expectedOutput: "Accessible production UI"
-    }),
-    createRole("task-1", "reviewer", [claudeBinding], "claude", resolve(yuiHome, "workspace/task-1/reviewer"), at("2026-07-18T02:10:00Z")),
-    createRole("task-2", "leader", [codexBinding], "codex", resolve(yuiHome, "workspace/task-2/leader"), at("2026-07-19T02:30:00Z")),
-    createRole("task-6", "leader", [codexBinding], "codex", resolve(yuiHome, "workspace/task-6/leader"), at("2026-07-22T04:10:00Z")),
-    createRole("task-6", "release-worker", [claudeBinding], "claude", resolve(yuiHome, "workspace/task-6/release-worker"), at("2026-07-22T04:15:00Z"))
-  ];
-  for (const role of roles) writer.saveRole(role.taskId, role);
-
-  // --- Work items with execution groups, candidates, and review rounds ---
-
-  // work-item-1: completed direct main Turn with a Candidate and review round.
-  const work1 = updateWorkItemStatus(createWorkItem("work-item-1", "task-1", {
-    title: "Build HTTP and snapshot API",
-    objective: "Serve a read-only dashboard snapshot and task detail over loopback HTTP.",
-    acceptance: ["Snapshot and detail endpoints return validated JSON", "Security headers are set on every response"],
-    assignee: "leader",
-    writeProjectIds: ["project-1"]
-  }, at("2026-07-18T03:00:00Z")), "running", at("2026-07-18T03:01:00Z"));
-  const effective1 = resolveEffectiveLaunch({ role: roles[0], purpose: "execution" });
-  const turn1 = completeTurn(createTurn("turn-1", "task-1", "leader", "new", seedTurnInput("Implement the HTTP snapshot API.", "work-item-1"), at("2026-07-18T03:05:00Z"), {
-    workItemId: "work-item-1",
-    effective: effective1
-  }), "API implemented and focused tests pass.", at("2026-07-22T08:00:00Z"));
-  const work1Candidate = submitWorkItemCandidate(work1, {
-    summary: "API implemented and focused tests pass.",
-    source: { type: "turn", turnId: "turn-1" }
-  }, at("2026-07-22T08:05:00Z"));
-  const review1 = createReviewRound(
-    "review-round-1", "task-1", "work-item-1", "candidate-1",
-    "reviewer", "policy", COMMIT, at("2026-07-22T08:10:00Z")
-  );
-  const work1Done = updateWorkItemStatus(work1Candidate, "completed", at("2026-07-22T08:20:00Z"), "API and security headers verified.");
-
-  // work-item-2: replicated execution with one running and one recoverable Lane.
-  const work2 = updateWorkItemStatus(createWorkItem("work-item-2", "task-1", {
-    title: "Polish responsive dashboard",
-    objective: "Make every task legible from mobile to wide desktop.",
-    acceptance: ["Master-detail collapses below 900px", "No horizontal overflow at 320px"],
-    dependsOn: ["work-item-1"],
-    assignee: "frontend",
-    writeProjectIds: ["project-1"]
-  }, at("2026-07-20T03:00:00Z")), "running", at("2026-07-23T06:30:00Z"));
-  const effective2 = resolveEffectiveLaunch({ role: roles[0], purpose: "execution" });
-  const effective5 = resolveEffectiveLaunch({ role: roles[2], purpose: "execution" });
-  const assignment2 = createWorkItemExecutionAssignment({
-    input: "Finish responsive states and overflow handling.",
-    objective: work2.objective,
-    acceptance: work2.acceptance,
-    contextSnapshotRef: {
-      schemaVersion: 1,
-      id: "context-snapshot-1",
-      taskId: "task-1",
-      scope: "task",
-      sequence: 1,
-      digest: "b".repeat(64)
-    },
-    taskId: "task-1",
-    workItemId: "work-item-2",
-    workItemRevision: work2.revision,
-    projects: [],
-    dependencyFacts: [{ workItemId: "work-item-1", revision: work1Done.revision }]
-  });
-  const group2 = createWorkItemExecutionGroup("exec-group-2", "task-1", assignment2, [
-    {
-      roleName: "leader",
-      effective: effective2,
-      workspace: { root: resolve(yuiHome, "workspace/task-1/lane-1"), writableProjectIds: [] },
-      currentTurnId: "turn-2"
-    },
-    {
-      roleName: "reviewer",
-      effective: effective5,
-      workspace: { root: resolve(yuiHome, "workspace/task-1/lane-2"), writableProjectIds: [] },
-      currentTurnId: "turn-5"
+mkdirSync(dirname(yuiHome), { recursive: true });
+mkdirSync(yuiHome); // Exclusive claim: a concurrent seed cannot open the same Home.
+const now = new Date();
+const store = new SqliteTaskStore(yuiHome);
+try {
+  store.transaction(writer => {
+    const agent = createConfiguredAgent("codex", "codex", "codex", [], [], now);
+    writer.saveConfiguredAgent(agent);
+    writer.saveConfig({ schemaVersion: CURRENT_CONFIG_SCHEMA_VERSION,
+      defaultAgent: agent.id, defaultWorkspace: resolve(yuiHome, "workspaces/global") });
+    const tasks = [
+      activateTask(createTask("task-1", "Ship the dashboard", now,
+        { description: "Disposable current-contract preview data.", priority: "high", tags: ["web"] }), now),
+      activateTask(createTask("task-2", "Review deployment decision", now,
+        { priority: "urgent", tags: ["input"] }), now),
+      createTask("task-3", "Draft onboarding guide", now, { tags: ["docs"] }),
+      completeTask(activateTask(createTask("task-4", "Verify terminal scrolling", now), now), now,
+        { by: "leader", summary: "Demo completion." }),
+      archiveTask(retireTask(createTask("task-5", "Retired prototype", now),
+        { by: "leader", summary: "Demo retirement." }, now), now,
+        { by: "user", reason: "Superseded.", summary: "Demo archive." }),
+      activateTask(createTask("task-6", "Inspect a failed execution", now,
+        { priority: "high", tags: ["failure"] }), now)
+    ];
+    for (const task of tasks) {
+      writer.saveTask(task);
+      const role = createRole(task.id, "leader", [createRoleAgentBinding(agent)],
+        agent.id, resolve(yuiHome, "workspaces", task.id), now);
+      writer.saveRole(task.id, role);
+      writer.saveMessage(task.id, createTaskMessage("message-1", task.id,
+        `Demo requirement: ${task.title}.`, "user", { type: "user" }, now));
+      writer.saveTaskBrief(task.id, createTaskBrief({ objective: task.title,
+        boundaries: ["Disposable fixture; no external actions"], currentFocus: "Inspect the dashboard",
+        leaderSummary: "Synthetic preview, not execution evidence.", updatedBy: "leader" }, now));
+      if (!["task-1", "task-2", "task-6"].includes(task.id)) continue;
+      const item = createWorkItem("work-item-1", task.id,
+        { title: "Inspect demo evidence", assignee: "leader" }, now);
+      writer.saveWorkItem(task.id, item);
+      const ref = { layer: "L2", store: "task", refId: task.id,
+        revision: task.updatedAt, digest: contextContentDigest(task) };
+      const snapshot = createContextSnapshot({ id: "snapshot-1", taskId: task.id,
+        scope: "task", sequence: 1, refs: [ref], resources: [{ ref, value: task }],
+        acceptRefs: [], frozenAt: now, frozenBy: "controller" });
+      writer.saveContextSnapshot(snapshot);
+      const run = createRun("run-1", task.id, role.name, "new", createRunInput({
+        source: { type: "yui", channel: "workitem-dispatch" },
+        contextSnapshotRef: contextSnapshotRef(snapshot), deltaRefIds: []
+      }), now, { workItemId: item.id, effective: resolveEffectiveLaunch({ role, purpose: "execution" }) });
+      writer.saveRun(task.id === "task-6"
+        ? failRun(run, "runtime-failed", "Synthetic failure for dashboard preview.", now)
+        : completeRun(run, "Synthetic result for dashboard preview.", now));
     }
-  ], at("2026-07-23T06:31:00Z"));
-  const work2Running = attachWorkItemExecutionGroup(work2, group2, at("2026-07-23T06:32:00Z"));
-  const turn2 = createTurn("turn-2", "task-1", "leader", "resume", seedTurnInput(assignment2.input, "work-item-2"), at("2026-07-23T06:30:00Z"), {
-    workItemId: "work-item-2",
-    executionGroupId: "exec-group-2",
-    executionLaneId: "exec-group-2-lane-1",
-    effective: effective2
+    writer.saveInputRequest("task-2", createInputRequest("input-1", "task-2",
+      { taskId: "task-2", roleName: "leader", agentId: agent.id, runId: "run-1" }, {
+        question: "Which demo direction should we inspect?",
+        choices: [{ key: "dense", label: "Dense overview" }, { key: "detail", label: "Task detail" }],
+        blockedRefs: []
+      }, now));
+    writer.saveDecision("task-1", createDecision("decision-1", "task-1",
+      "Keep one durable authority", "SQLite owns Task facts; the dashboard projects them.", now));
   });
-  const turn5 = failTurn(createTurn("turn-5", "task-1", "reviewer", "new", seedTurnInput(assignment2.input, "work-item-2"), at("2026-07-23T06:31:00Z"), {
-    workItemId: "work-item-2",
-    executionGroupId: "exec-group-2",
-    executionLaneId: "exec-group-2-lane-2",
-    effective: effective5
-  }), "runtime-failed", "Native process exited before producing a result.", at("2026-07-23T06:40:00Z"));
-
-  // work-item-3: pending, blocked by dependency on work-item-2.
-  const work3 = createWorkItem("work-item-3", "task-1", {
-    title: "Run accessibility review",
-    objective: "Confirm keyboard and screen-reader access across the dashboard.",
-    acceptance: ["All controls reachable by keyboard", "Live regions announce updates"],
-    dependsOn: ["work-item-2"],
-    assignee: "reviewer"
-  }, at("2026-07-22T04:00:00Z"));
-
-  // work-item-4: retired with disposition.
-  const work4 = retireWorkItem(createWorkItem("work-item-4", "task-1", {
-    title: "Try abandoned card-grid concept",
-    assignee: "frontend"
-  }, at("2026-07-19T04:00:00Z")), {
-    by: "leader",
-    summary: "Replaced by the control-room composition.",
-    replacementWorkItemId: "work-item-2"
-  }, at("2026-07-20T04:00:00Z"));
-
-  // work-item-5: retired without replacement.
-  const work5 = retireWorkItem(createWorkItem("work-item-5", "task-1", {
-    title: "Capture obsolete screenshot set",
-    assignee: "reviewer"
-  }, at("2026-07-20T05:00:00Z")), {
-    by: "leader",
-    summary: "Browser runtime was unavailable at the time."
-  }, at("2026-07-20T06:00:00Z"));
-
-  // work-item-6: running with a failed direct main Turn ready for retry.
-  const work6 = updateWorkItemStatus(createWorkItem("work-item-6", "task-6", {
-    title: "Publish release artifact",
-    objective: "Upload the verified build to the release channel.",
-    acceptance: ["Artifact checksum matches the build"],
-    assignee: "release-worker"
-  }, at("2026-07-22T05:00:00Z")), "running", at("2026-07-23T04:30:00Z"));
-  const effective6 = resolveEffectiveLaunch({ role: roles[5], purpose: "execution" });
-  const turn3 = failTurn(createTurn("turn-3", "task-6", "release-worker", "new", seedTurnInput("Publish the verified artifact.", "work-item-6"), at("2026-07-23T04:30:00Z"), {
-    workItemId: "work-item-6",
-    effective: effective6
-  }), "runtime-failed", "Native process exited with status 1.", at("2026-07-23T04:55:00Z"));
-
-  // work-item-7: waiting for user input.
-  const work7 = createWorkItem("work-item-7", "task-2", {
-    title: "Wait for deployment approval",
-    assignee: "leader"
-  }, at("2026-07-23T03:00:00Z"));
-
-  // Phase 1: persist Work Items in their pre-candidate state so Turns and
-  // Candidates can reference them through the storage boundary.
-  for (const item of [work1, work2Running, work3, work4, work5, work6, work7]) {
-    writer.saveWorkItem(item.taskId, item);
-  }
-
-  // Phase 2: persist Turns once their owning Work Items and ExecutionGroups exist.
-  writer.saveTurn(turn1);
-  writer.saveActiveTurn(turn2);
-  writer.saveTurn(turn5);
-  writer.saveTurn(turn3);
-
-  // task-2 Leader Turn waiting on input (no execution lineage, so no Work Item dependency).
-  const effective4 = resolveEffectiveLaunch({ role: roles[3], purpose: "execution" });
-  const turn4 = createTurn("turn-4", "task-2", "leader", "resume", seedTurnInput("Wait for explicit operator approval.", "work-item-7"), at("2026-07-23T07:00:00Z"), {
-    workItemId: "work-item-7",
-    effective: effective4
-  });
-  writer.saveActiveTurn(turn4);
-
-  // Phase 3: advance work-item-1 through Candidate submission and completion
-  // in consecutive revisions (the store requires +1 per save).
-  writer.saveWorkItem(work1Candidate.taskId, work1Candidate);
-  writer.saveWorkItem(work1Done.taskId, work1Done);
-
-  // Phase 4: ReviewRound once its Candidate and source Turn exist.
-  writer.saveReviewRound("task-1", review1);
-
-  const requiredInput = createInputRequest("input-1", "task-2", {
-    taskId: "task-2",
-    roleName: "leader",
-    agentId: "codex",
-    turnId: "turn-4"
-  }, {
-    question: "Deploy the verified build to production now?",
-    choices: [{ key: "deploy", label: "Deploy now" }, { key: "hold", label: "Hold release" }],
-    blockedRefs: [{ type: "work-item", taskId: "task-2", id: "work-item-7" }]
-  }, at("2026-07-23T07:05:00Z"));
-  const recommendedInput = createInputRequest("input-2", "task-1", {
-    taskId: "task-1",
-    roleName: "leader",
-    agentId: "codex",
-    turnId: "turn-1"
-  }, {
-    question: "Use port 4173 for local dashboard documentation?",
-    choices: [{ key: "default", label: "Use 4173" }, { key: "alternate", label: "Use 4180" }],
-    blockedRefs: [],
-    policy: { kind: "recommended", recommendedChoiceKey: "default", timeoutAt: "2026-07-25T08:00:00Z" }
-  }, at("2026-07-23T06:00:00Z"));
-  const answeredInput = createInputRequest("input-3", "task-1", {
-    taskId: "task-1",
-    roleName: "leader",
-    agentId: "codex",
-    turnId: "turn-1"
-  }, {
-    question: "Which visual direction should the dashboard use?",
-    choices: [{ key: "control-room", label: "Control room" }, { key: "cards", label: "Card grid" }],
-    blockedRefs: []
-  }, at("2026-07-20T06:00:00Z"));
-  const cancelledInput = createInputRequest("input-4", "task-1", {
-    taskId: "task-1",
-    roleName: "leader",
-    agentId: "codex",
-    turnId: "turn-1"
-  }, {
-    question: "Should we add a second persistence layer?",
-    choices: [],
-    blockedRefs: []
-  }, at("2026-07-20T06:10:00Z"));
-  for (const [taskId, request] of [["task-2", requiredInput], ["task-1", recommendedInput], ["task-1", answeredInput], ["task-1", cancelledInput]]) {
-    writer.saveInputRequest(taskId, request);
-  }
-  writer.saveInputRequest("task-1", answerInputRequest(answeredInput, { choiceKey: "control-room" }, "user", at("2026-07-20T06:20:00Z")));
-  writer.saveInputRequest("task-1", cancelInputRequest(cancelledInput, "SQLite remains the only authority.", at("2026-07-20T06:25:00Z")));
-
-  const messages = [
-    ["task-1", createTaskMessage("message-1", "task-1", "Please make the dashboard dense, calm, and easy to scan.", "user", { type: "user" }, at("2026-07-18T01:05:00Z"))],
-    ["task-1", createTaskMessage("message-2", "task-1", "The dashboard task is active and work has been dispatched.", "operator", { type: "operator" }, at("2026-07-18T02:05:00Z"))],
-    ["task-1", createTaskMessage("message-3", "task-1", "HTTP API implemented; security headers and focused tests pass.", "role-result", { type: "role", roleName: "leader" }, at("2026-07-22T08:00:00Z"), { turnId: "turn-1", workItemId: "work-item-1" })],
-    ["task-6", createTaskMessage("message-4", "task-6", "Release worker exited; inspect partial artifact before retry.", "system", { type: "system" }, at("2026-07-23T04:56:00Z"))]
-  ];
-  for (const [taskId, message] of messages) writer.saveMessage(taskId, message);
-
-  const activeDecision = createDecision("decision-1", "task-1", "Keep the Web surface read-only", "Mutations remain explicit CLI operations and SQLite stays authoritative.", at("2026-07-18T04:00:00Z"));
-  const oldDecision = createDecision("decision-2", "task-1", "Use a uniform card grid", "An early direction before operational density was tested.", at("2026-07-18T04:10:00Z"));
-  writer.saveDecision("task-1", activeDecision);
-  writer.saveDecision("task-1", oldDecision);
-  writer.saveDecision("task-1", supersedeDecision(oldDecision, "The control-room composition scans better at operational density.", at("2026-07-20T04:00:00Z")));
-  writer.saveMilestone("task-1", createMilestone("milestone-1", "task-1", "Read-only API complete", "Dashboard and task detail endpoints pass HTTP contract tests.", "leader", at("2026-07-22T08:05:00Z")));
-  writer.saveMilestone("task-1", createMilestone("milestone-2", "task-1", "Release package verified", "The Web modules are present in the npm dry-run package.", "leader", at("2026-07-23T07:10:00Z")));
-
-  const events = [
-    createTaskEvent("event-1", "task-1", "task.created", { taskId: "task-1", title: task1.title }, at("2026-07-18T01:00:00Z")),
-    createTaskEvent("event-2", "task-1", "task.activated", { taskId: "task-1" }, at("2026-07-18T02:00:00Z")),
-    createTaskEvent("event-3", "task-1", "work.completed", { taskId: "task-1", workItemId: "work-item-1" }, at("2026-07-22T08:00:00Z"))
-  ];
-  for (const event of events) writer.saveEvent("task-1", event);
-
-  writer.savePendingWakeup(mergePendingWakeup("task-6", "leader-recovery", at("2026-07-23T05:01:00Z"), null));
-  writer.saveLeaderFailure(recordLeaderFailure("task-6", "native-session-failed", "Leader pane exited during recovery.", at("2026-07-23T05:02:00Z"), null));
-});
-
-console.log(`Seeded web dashboard at ${yuiHome}`);
-store.close?.();
+  store.validateCurrentRecords();
+  console.log(`Seeded disposable web dashboard at ${yuiHome}`);
+} finally {
+  store.close();
+}

@@ -11,9 +11,9 @@ export function inspectLegacyDatabase(db) {
   const objects = db.prepare(`SELECT type,name,sql FROM sqlite_master
     WHERE name NOT GLOB 'sqlite_*' ORDER BY type,name`).all();
   const digest = createHash("sha256").update(JSON.stringify(objects)).digest("hex");
-  if (digest !== SCHEMA_DIGEST) throw new Error("Expected the exact 0.99.0 v37 schema. Use the frozen bridge for older formats; never repair or guess a source.");
+  if (digest !== SCHEMA_DIGEST) throw new Error("Expected the exact 0.16.2 v37 schema. Use the frozen bridge for older formats; never repair or guess a source.");
   const actual = db.prepare("SELECT version,name,checksum FROM schema_migrations ORDER BY version").all();
-  if (!isDeepStrictEqual(actual, ledger)) throw new Error("The v37 ledger differs from the frozen 0.99.0 contract.");
+  if (!isDeepStrictEqual(actual, ledger)) throw new Error("The v37 ledger differs from the frozen 0.16.2 contract.");
   if (db.pragma("quick_check", { simple: true }) !== "ok" || db.pragma("foreign_key_check").length !== 0) {
     throw new Error("Source SQLite integrity or references are invalid.");
   }
@@ -28,7 +28,14 @@ export function inspectLegacyDatabase(db) {
     ["in-flight Integration verification", "SELECT 1 FROM integration_attempts WHERE status IN ('running','validating') LIMIT 1"]
   ];
   for (const [label, sql] of blockers) {
-    if (db.prepare(sql).get()) throw new Error(`Cutover blocked by ${label}; settle it with 0.99.0 without fabricating success.`);
+    if (db.prepare(sql).get()) throw new Error(`Cutover blocked by ${label}; settle it with 0.16.2 without fabricating success.`);
+  }
+  const missingSnapshot = db.prepare(`SELECT task_id,turn_id FROM turns
+    WHERE json_type(payload,'$.inputs[0].input.contextSnapshotRef') IS NOT 'object' LIMIT 1`).get();
+  if (missingSnapshot) {
+    throw new Error(`Cutover blocked by ${missingSnapshot.task_id}/${missingSnapshot.turn_id}: initial Context Snapshot is missing. `
+      + "Keep this Home on 0.16.2 for audit, or start a separate new Home. "
+      + "The converter never invents Context or removes referenced Runs.");
   }
   for (const table of ["role_session_sets", "global_role_session_sets"]) {
     for (const { payload } of db.prepare(`SELECT payload FROM ${table}`).iterate()) {
@@ -49,7 +56,7 @@ export function convertDatabase(db, runtime) {
   inspectLegacyDatabase(db);
   const archive = db.prepare(`INSERT INTO storage_migration_archive
     (migration_version,family,record_key,payload,content) VALUES(37,?,?,?,NULL)`);
-  archive.run("baseline-0.99.0/ledger", "all", JSON.stringify(db.prepare("SELECT * FROM schema_migrations ORDER BY version").all()));
+  archive.run("baseline-v37/ledger", "all", JSON.stringify(db.prepare("SELECT * FROM schema_migrations ORDER BY version").all()));
   // These tables have no current runtime authority. Preserve complete original
   // rows without interpreting their payloads as active Candidates or locks.
   let retiredRows = 0;
@@ -58,7 +65,7 @@ export function convertDatabase(db, runtime) {
     ["work_item_candidates", ["task_id", "candidate_id"]]
   ]) {
     for (const row of db.prepare(`SELECT * FROM ${quote(table)}`).all()) {
-      archive.run(`baseline-0.99.0/retired-table/${table}`,
+      archive.run(`baseline-v37/retired-table/${table}`,
         JSON.stringify(keys.map(key => row[key])), JSON.stringify(row));
       retiredRows++;
     }
@@ -78,7 +85,7 @@ export function convertDatabase(db, runtime) {
       runtime.validateRecord(table, converted);
       if (isDeepStrictEqual(original, converted)) continue;
       const key = primary.map(column => row[column]);
-      archive.run(`baseline-0.99.0/${table}`, JSON.stringify(key), row.payload);
+      archive.run(`baseline-v37/${table}`, JSON.stringify(key), row.payload);
       update.run(JSON.stringify(converted), ...key);
       changedRecords++;
     }
@@ -86,7 +93,7 @@ export function convertDatabase(db, runtime) {
   for (const row of db.prepare("SELECT task_id,brief FROM task_records WHERE brief IS NOT NULL").all()) {
     const brief = convertBrief(JSON.parse(row.brief));
     runtime.validateBrief(brief);
-    archive.run("baseline-0.99.0/task-brief", row.task_id, row.brief);
+    archive.run("baseline-v37/task-brief", row.task_id, row.brief);
     db.prepare("UPDATE task_records SET brief=? WHERE task_id=?").run(JSON.stringify(brief),row.task_id);
     changedRecords++;
   }

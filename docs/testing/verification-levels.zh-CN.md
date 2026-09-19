@@ -36,7 +36,7 @@ Yui 是一个单用户本地产品。永久验证保护关键的 happy path 和�
 ## 永久 core smoke
 
 `npm test` 和 `npm run test:core` 构建当前 checkout 并运行维护中的套件。
-基线切换移除仅属于旧 v1→v37 实现的测试，源码和证据保留在冻结的 0.99.0。
+基线切换移除仅属于旧 v1→v37 实现的测试，源码和证据保留在冻结的 0.16.2。
 混合测试中的当前行为继续保留，例如 Review scope 和 Integration 完成边界。
 
 当前覆盖包括：
@@ -52,6 +52,9 @@ Yui 是一个单用户本地产品。永久验证保护关键的 happy path 和�
 5. Integration／Job 请求身份、冻结候选证据、冲突延续、Review scope 和最终验收。
 6. Runtime／Host 隔离、假生产者的 Provider 协议和有界重试、配置来源与账号边界。
 7. 工作区／GC 权威、归档清理、资源 CAS、telemetry、Web 投影与无真实外部效果的发布恢复。
+8. checkout 隔离启动器的幂等安装、参数与 Home 精确传递、禁止覆盖无关文件，
+   以及已移除的全局链接命令在任何副作用前拒绝。开发 Home 重置保留独立的身份检查
+   和备份行为。
 
 测试阶段保持秒级，构建单独计时。真实 CLI／Controller／Host／tmux 接线复用现有
 组装包冒烟，不新增守护进程矩阵。转换样本只保留一个冻结终点，不在新套件里

@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   chmodSync,
@@ -8,25 +7,18 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
-  readlinkSync,
   renameSync,
   rmSync,
   statSync,
-  symlinkSync,
   writeFileSync
 } from "node:fs";
-import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createConnection } from "node:net";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 
 export const DEV_LAUNCHER_NAME = "yui";
 
 const managedMarker = "# yui-local-dev: managed";
-const globalBackupName = ".yui-link-original";
-const globalRecoveryName = ".yui-link-recovery.json";
-const registrySchemaVersion = 3;
-const recoverySchemaVersion = 1;
 const controllerDiscoveryName = "controller.json";
 const controllerProbeTimeoutMs = 500;
 const controllerProtocolVersion = 1;
@@ -52,219 +44,6 @@ export function installDevLauncher(options = {}) {
   chmodSync(launcherPath, 0o755);
 
   return { launcherPath, projectRoot, outputDir, binDir, yuiHome };
-}
-
-export function uninstallDevLauncher(options = {}) {
-  const projectRoot = resolve(options.projectRoot ?? process.cwd());
-  const outputDir = resolve(options.outputDir ?? join(projectRoot, "output", "dev"));
-  const launcherPath = join(outputDir, "bin", DEV_LAUNCHER_NAME);
-  const existing = inspectManagedFile(launcherPath);
-
-  if (existing !== null && !existing.managed) {
-    throw new Error(`Refusing to remove a file not managed by this checkout: ${launcherPath}`);
-  }
-  if (existing !== null) rmSync(launcherPath);
-  return { launcherPath, removed: existing !== null };
-}
-
-export async function linkDevLauncher(options = {}) {
-  const projectRoot = resolve(options.projectRoot ?? process.cwd());
-  const outputDir = resolve(options.outputDir ?? join(projectRoot, "output", "dev"));
-  const yuiHome = join(outputDir, "home");
-  await assertCompatibleDevHome(yuiHome);
-  const local = installDevLauncher({ projectRoot, outputDir });
-  const globalBinDir = resolve(options.globalBinDir ?? resolveNpmGlobalBinDir());
-  const globalLauncherPath = join(globalBinDir, DEV_LAUNCHER_NAME);
-  const backupPath = join(globalBinDir, globalBackupName);
-  const statePath = resolveRegistryPath(options);
-
-  mkdirSync(globalBinDir, { recursive: true });
-  const releaseRegistryLock = acquireRegistryLock(statePath);
-  try {
-    return linkDevLauncherLocked({
-      local,
-      projectRoot,
-      globalBinDir,
-      globalLauncherPath,
-      backupPath,
-      statePath
-    });
-  } finally {
-    releaseRegistryLock();
-  }
-}
-
-function linkDevLauncherLocked({
-  local,
-  projectRoot,
-  globalBinDir,
-  globalLauncherPath,
-  backupPath,
-  statePath
-}) {
-  const existingState = readGlobalState(statePath);
-  if (existingState !== null) {
-    if (existingState.globalLauncherPath === globalLauncherPath) {
-      ensureManagedGlobalLinkActive(existingState);
-      if (existingState.localLauncherPath !== local.launcherPath) {
-        const nextState = {
-          ...existingState,
-          activeProjectRoot: projectRoot,
-          localLauncherPath: local.launcherPath
-        };
-        replaceActiveDevelopmentLink(globalLauncherPath, existingState.localLauncherPath, local.launcherPath);
-        try {
-          writeGlobalState(statePath, nextState);
-          writeManagedRecoveryState(nextState);
-        } catch (error) {
-          try {
-            replaceActiveDevelopmentLink(
-              globalLauncherPath,
-              local.launcherPath,
-              existingState.localLauncherPath
-            );
-            writeGlobalState(statePath, existingState);
-            writeManagedRecoveryState(existingState);
-          } catch (rollbackError) {
-            throw new AggregateError(
-              [error, rollbackError],
-              `Failed to update ${globalLauncherPath} and failed to restore its previous managed state.`
-            );
-          }
-          throw error;
-        }
-      } else {
-        writeManagedRecoveryState(existingState);
-      }
-      return globalLinkResult(
-        local,
-        globalLauncherPath,
-        existingState.backupPath,
-        statePath,
-        existingState.hadOriginal
-      );
-    }
-
-    if (pathExists(backupPath)) {
-      throw new Error(`Refusing to overwrite an existing development backup: ${backupPath}`);
-    }
-    restoreManagedGlobalLink(existingState);
-    let previousStateRemoved = false;
-    try {
-      removeManagedRecoveryState(existingState);
-      rmSync(statePath);
-      previousStateRemoved = true;
-      const result = createManagedGlobalLink({
-        local,
-        projectRoot,
-        globalLauncherPath,
-        backupPath,
-        statePath
-      });
-      return result;
-    } catch (error) {
-      try {
-        if (previousStateRemoved) {
-          createManagedGlobalLinkFromState(existingState, statePath);
-        } else {
-          activateManagedGlobalLink(existingState);
-          writeManagedRecoveryState(existingState);
-        }
-      } catch (rollbackError) {
-        throw new AggregateError(
-          [error, rollbackError],
-          `Failed to link ${globalLauncherPath} and failed to restore the previous development link.`
-        );
-      }
-      throw error;
-    }
-  }
-
-  assertUnregisteredGlobalLinkAbsent(globalBinDir);
-  if (pathExists(backupPath)) {
-    throw new Error(`Refusing to overwrite an existing development backup: ${backupPath}`);
-  }
-  return createManagedGlobalLink({
-    local,
-    projectRoot,
-    globalLauncherPath,
-    backupPath,
-    statePath
-  });
-}
-
-function createManagedGlobalLink({ local, projectRoot, globalLauncherPath, backupPath, statePath }) {
-  const hadOriginal = pathExists(globalLauncherPath);
-  const state = {
-    schemaVersion: registrySchemaVersion,
-    activeProjectRoot: projectRoot,
-    localLauncherPath: local.launcherPath,
-    globalLauncherPath,
-    backupPath,
-    hadOriginal
-  };
-  createManagedGlobalLinkFromState(state, statePath);
-  return globalLinkResult(local, globalLauncherPath, backupPath, statePath, hadOriginal);
-}
-
-function createManagedGlobalLinkFromState(state, statePath) {
-  writeGlobalState(statePath, state, true);
-  let recoveryWritten = false;
-  try {
-    activateManagedGlobalLink(state);
-    writeManagedRecoveryState(state);
-    recoveryWritten = true;
-  } catch (error) {
-    try {
-      restoreManagedGlobalLink(state);
-      if (recoveryWritten) removeManagedRecoveryState(state);
-      rmSync(statePath, { force: true });
-    } catch (rollbackError) {
-      throw new AggregateError(
-        [error, rollbackError],
-        `Failed to create ${state.globalLauncherPath} and failed to restore its previous state.`
-      );
-    }
-    throw error;
-  }
-}
-
-function activateManagedGlobalLink(state) {
-  if (state.hadOriginal) renameSync(state.globalLauncherPath, state.backupPath);
-  symlinkSync(state.localLauncherPath, state.globalLauncherPath);
-}
-
-export function unlinkDevLauncher(options = {}) {
-  const projectRoot = resolve(options.projectRoot ?? process.cwd());
-  const statePath = resolveRegistryPath(options);
-  const releaseRegistryLock = acquireRegistryLock(statePath);
-  try {
-    return unlinkDevLauncherLocked({ options, projectRoot, statePath });
-  } finally {
-    releaseRegistryLock();
-  }
-}
-
-function unlinkDevLauncherLocked({ options, projectRoot, statePath }) {
-  const state = readGlobalState(statePath);
-  if (state === null) {
-    const globalBinDir = resolve(options.globalBinDir ?? resolveNpmGlobalBinDir());
-    assertUnregisteredGlobalLinkAbsent(globalBinDir);
-    const globalLauncherPath = join(globalBinDir, DEV_LAUNCHER_NAME);
-    const backupPath = join(globalBinDir, globalBackupName);
-    uninstallDevLauncher({ projectRoot, ...(options.outputDir === undefined ? {} : { outputDir: options.outputDir }) });
-    return { globalLauncherPath, backupPath, statePath, restored: false };
-  }
-  restoreManagedGlobalLink(state);
-  removeManagedRecoveryState(state);
-  removeManagedLauncherIfPresent(state.localLauncherPath);
-  rmSync(statePath);
-  return {
-    globalLauncherPath: state.globalLauncherPath,
-    backupPath: state.backupPath,
-    statePath,
-    restored: true
-  };
 }
 
 export async function resetDevHome(options = {}) {
@@ -330,12 +109,6 @@ export async function resetDevHome(options = {}) {
   }
 }
 
-export function resolveNpmGlobalBinDir() {
-  const prefix = execFileSync("npm", ["prefix", "-g"], { encoding: "utf8" }).trim();
-  if (prefix.length === 0) throw new Error("npm did not report a global prefix.");
-  return join(prefix, "bin");
-}
-
 function assertCanReplace(path) {
   const existing = inspectManagedFile(path);
   if (existing !== null && !existing.managed) {
@@ -351,95 +124,6 @@ function inspectManagedFile(path) {
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") return null;
     throw error;
-  }
-}
-
-function globalLinkResult(local, globalLauncherPath, backupPath, statePath, replaced) {
-  return {
-    localLauncherPath: local.launcherPath,
-    yuiHome: local.yuiHome,
-    globalLauncherPath,
-    backupPath,
-    statePath,
-    replaced
-  };
-}
-
-function readGlobalState(statePath) {
-  if (!pathExists(statePath)) return null;
-  let value;
-  try {
-    value = JSON.parse(readFileSync(statePath, "utf8"));
-  } catch {
-    throw new Error(`Invalid managed global yui state: ${statePath}`);
-  }
-  if (
-    typeof value !== "object" || value === null
-    || value.schemaVersion !== registrySchemaVersion
-    || typeof value.activeProjectRoot !== "string"
-    || typeof value.localLauncherPath !== "string"
-    || typeof value.globalLauncherPath !== "string"
-    || typeof value.backupPath !== "string"
-    || typeof value.hadOriginal !== "boolean"
-    || !isValidManagedStatePaths(value)
-  ) {
-    throw new Error(`Invalid managed global yui state: ${statePath}`);
-  }
-  return value;
-}
-
-function isValidManagedStatePaths(state) {
-  return isAbsolute(state.activeProjectRoot)
-    && isAbsolute(state.localLauncherPath)
-    && basename(state.localLauncherPath) === DEV_LAUNCHER_NAME
-    && isAbsolute(state.globalLauncherPath)
-    && basename(state.globalLauncherPath) === DEV_LAUNCHER_NAME
-    && state.backupPath === join(dirname(state.globalLauncherPath), globalBackupName);
-}
-
-function acquireRegistryLock(statePath) {
-  mkdirSync(dirname(statePath), { recursive: true });
-  const lockPath = `${statePath}.lock`;
-  const token = randomUUID();
-  const writeLock = () => writeFileSync(
-    lockPath,
-    `${JSON.stringify({ pid: process.pid, token, createdAt: new Date().toISOString() })}\n`,
-    { flag: "wx" }
-  );
-
-  try {
-    writeLock();
-    return () => releaseRegistryLock(lockPath, token);
-  } catch (error) {
-    if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
-  }
-
-  const owner = readRegistryLockOwner(lockPath);
-  if (isProcessAlive(owner.pid)) {
-    throw new Error(`Another yui development link operation is already running: ${lockPath}`);
-  }
-  throw new Error(
-    `A previous yui development link operation left a stale lock: ${lockPath}. `
-      + `If no link/unlink command is running, remove this exact lock file and retry.`
-  );
-}
-
-function readRegistryLockOwner(lockPath) {
-  try {
-    const owner = JSON.parse(readFileSync(lockPath, "utf8"));
-    if (
-      typeof owner !== "object" || owner === null
-      || !Number.isInteger(owner.pid) || owner.pid <= 0
-    ) {
-      throw new Error("invalid owner");
-    }
-    return owner;
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") throw error;
-    throw new Error(
-      `Cannot verify the existing yui development link lock: ${lockPath}. `
-        + `If no link/unlink command is running, remove this exact lock file and retry.`
-    );
   }
 }
 
@@ -534,17 +218,6 @@ function releaseHomeLifecycleLock(lockPath, token) {
     return;
   }
   if (owner.token === token && owner.pid === process.pid) rmSync(lockPath, { force: true });
-}
-
-function releaseRegistryLock(lockPath, token) {
-  let owner;
-  try {
-    owner = JSON.parse(readFileSync(lockPath, "utf8"));
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return;
-    return;
-  }
-  if (owner?.token === token) rmSync(lockPath, { force: true });
 }
 
 function readControllerDiscoveryForReset(homePath, homeId, discoveryPath) {
@@ -760,322 +433,6 @@ function probeController(discovery) {
   });
 }
 
-function writeGlobalState(statePath, state, exclusive = false) {
-  mkdirSync(dirname(statePath), { recursive: true });
-  const contents = `${JSON.stringify(state, null, 2)}\n`;
-  if (exclusive) {
-    writeFileSync(statePath, contents, { flag: "wx" });
-    return;
-  }
-  const temporaryPath = `${statePath}.tmp-${process.pid}`;
-  writeFileSync(temporaryPath, contents, { flag: "wx" });
-  try {
-    renameSync(temporaryPath, statePath);
-  } catch (error) {
-    rmSync(temporaryPath, { force: true });
-    throw error;
-  }
-}
-
-function managedRecoveryPath(globalLauncherPath) {
-  return join(dirname(globalLauncherPath), globalRecoveryName);
-}
-
-function readManagedRecoveryState(globalBinDir) {
-  const recoveryPath = join(globalBinDir, globalRecoveryName);
-  if (!pathExists(recoveryPath)) return null;
-  let value;
-  try {
-    const metadata = lstatSync(recoveryPath);
-    if (
-      !metadata.isFile()
-      || (metadata.mode & 0o077) !== 0
-      || metadata.size === 0
-      || metadata.size > 4_096
-    ) {
-      throw new Error("invalid metadata");
-    }
-    value = JSON.parse(readFileSync(recoveryPath, "utf8"));
-  } catch (error) {
-    throw new Error(`Invalid managed global yui recovery state: ${recoveryPath}`, {
-      cause: error
-    });
-  }
-  if (
-    typeof value !== "object" || value === null
-    || Reflect.ownKeys(value).length !== 3
-    || !Object.hasOwn(value, "schemaVersion")
-    || !Object.hasOwn(value, "localLauncherPath")
-    || !Object.hasOwn(value, "hadOriginal")
-    || value.schemaVersion !== recoverySchemaVersion
-    || typeof value.localLauncherPath !== "string"
-    || !isAbsolute(value.localLauncherPath)
-    || basename(value.localLauncherPath) !== DEV_LAUNCHER_NAME
-    || typeof value.hadOriginal !== "boolean"
-  ) {
-    throw new Error(`Invalid managed global yui recovery state: ${recoveryPath}`);
-  }
-  return {
-    localLauncherPath: resolve(value.localLauncherPath),
-    hadOriginal: value.hadOriginal,
-    recoveryPath
-  };
-}
-
-function writeManagedRecoveryState(state) {
-  const recoveryPath = managedRecoveryPath(state.globalLauncherPath);
-  // Never silently replace an unrelated or corrupted reserved file.
-  readManagedRecoveryState(dirname(state.globalLauncherPath));
-  const value = {
-    schemaVersion: recoverySchemaVersion,
-    localLauncherPath: resolve(state.localLauncherPath),
-    hadOriginal: state.hadOriginal
-  };
-  const temporaryPath = `${recoveryPath}.tmp-${process.pid}-${randomUUID()}`;
-  writeFileSync(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, {
-    flag: "wx",
-    mode: 0o600
-  });
-  try {
-    renameSync(temporaryPath, recoveryPath);
-  } catch (error) {
-    rmSync(temporaryPath, { force: true });
-    throw error;
-  }
-}
-
-function removeManagedRecoveryState(state) {
-  const recovery = readManagedRecoveryState(dirname(state.globalLauncherPath));
-  if (recovery === null) return;
-  // Every caller first restores the global command from the authoritative
-  // registry state. A valid but older witness can remain after a crash while
-  // switching checkouts, so it is stale once that restore has succeeded.
-  rmSync(recovery.recoveryPath);
-}
-
-function replaceActiveDevelopmentLink(globalLauncherPath, previousTarget, nextTarget) {
-  rmSync(globalLauncherPath);
-  try {
-    symlinkSync(nextTarget, globalLauncherPath);
-  } catch (error) {
-    symlinkSync(previousTarget, globalLauncherPath);
-    throw error;
-  }
-}
-
-function ensureManagedGlobalLinkActive(state) {
-  const globalExists = pathExists(state.globalLauncherPath);
-  const activeTarget = managedDevelopmentLinkTarget(
-    state.globalLauncherPath,
-    state.localLauncherPath
-  );
-  const backupExists = pathExists(state.backupPath);
-  if (state.hadOriginal) {
-    if (backupExists) {
-      if (!isRestorableCommand(state.backupPath)) {
-        throw new Error(`Cannot safely restore an invalid yui backup: ${state.backupPath}`);
-      }
-      if (!globalExists) {
-        symlinkSync(state.localLauncherPath, state.globalLauncherPath);
-        return;
-      }
-      if (activeTarget === null) {
-        throw new Error(
-          `Refusing to replace a global yui command not managed by this checkout: `
-            + state.globalLauncherPath
-        );
-      }
-      if (resolve(activeTarget) !== resolve(state.localLauncherPath)) {
-        replaceActiveDevelopmentLink(
-          state.globalLauncherPath,
-          activeTarget,
-          state.localLauncherPath
-        );
-      }
-      return;
-    }
-    if (!globalExists) {
-      throw new Error(`Cannot restore the original yui command; backup is missing: ${state.backupPath}`);
-    }
-    if (activeTarget !== null) {
-      throw new Error(`Cannot restore the original yui command; backup is missing: ${state.backupPath}`);
-    }
-    renameSync(state.globalLauncherPath, state.backupPath);
-    try {
-      symlinkSync(state.localLauncherPath, state.globalLauncherPath);
-    } catch (error) {
-      renameSync(state.backupPath, state.globalLauncherPath);
-      throw error;
-    }
-    return;
-  }
-
-  if (backupExists) {
-    throw new Error(`Managed global yui state has an unexpected backup: ${state.backupPath}`);
-  }
-  if (!globalExists) {
-    symlinkSync(state.localLauncherPath, state.globalLauncherPath);
-    return;
-  }
-  if (activeTarget === null) {
-    throw new Error(
-      `Refusing to replace a global yui command not managed by this checkout: `
-        + state.globalLauncherPath
-    );
-  }
-  if (resolve(activeTarget) !== resolve(state.localLauncherPath)) {
-    replaceActiveDevelopmentLink(
-      state.globalLauncherPath,
-      activeTarget,
-      state.localLauncherPath
-    );
-  }
-}
-
-function restoreManagedGlobalLink(state) {
-  const globalExists = pathExists(state.globalLauncherPath);
-  const activeTarget = managedDevelopmentLinkTarget(
-    state.globalLauncherPath,
-    state.localLauncherPath
-  );
-  const backupExists = pathExists(state.backupPath);
-  if (!state.hadOriginal) {
-    if (backupExists) {
-      throw new Error(`Managed global yui state has an unexpected backup: ${state.backupPath}`);
-    }
-    if (!globalExists) return;
-    if (activeTarget === null) {
-      throw new Error(
-        `Refusing to replace a global yui command not managed by this checkout: `
-          + state.globalLauncherPath
-      );
-    }
-    rmSync(state.globalLauncherPath);
-    return;
-  }
-
-  if (!backupExists) {
-    if (!globalExists || activeTarget !== null) {
-      throw new Error(`Cannot restore the original yui command; backup is missing: ${state.backupPath}`);
-    }
-    // The original command is already back in place. This is the durable state
-    // left between restore and registry cleanup.
-    return;
-  }
-  if (!isRestorableCommand(state.backupPath)) {
-    throw new Error(`Cannot safely restore an invalid yui backup: ${state.backupPath}`);
-  }
-  if (globalExists && activeTarget === null) {
-    throw new Error(
-      `Refusing to replace a global yui command not managed by this checkout: `
-        + state.globalLauncherPath
-    );
-  }
-  if (globalExists) rmSync(state.globalLauncherPath);
-  try {
-    renameSync(state.backupPath, state.globalLauncherPath);
-  } catch (error) {
-    if (globalExists && activeTarget !== null) {
-      try {
-        symlinkSync(activeTarget, state.globalLauncherPath);
-      } catch (rollbackError) {
-        throw new AggregateError(
-          [error, rollbackError],
-          `Failed to restore the original yui command and failed to reinstate the development link: `
-            + state.globalLauncherPath
-        );
-      }
-    }
-    throw error;
-  }
-}
-
-function managedDevelopmentLinkTarget(path, knownTarget) {
-  try {
-    if (!lstatSync(path).isSymbolicLink()) return null;
-    const target = resolve(dirname(path), readlinkSync(path));
-    if (knownTarget !== undefined && target === resolve(knownTarget)) return target;
-    return inspectManagedFile(target)?.managed === true ? target : null;
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return null;
-    throw error;
-  }
-}
-
-function isRestorableCommand(path) {
-  try {
-    const metadata = lstatSync(path);
-    return metadata.isFile() || metadata.isSymbolicLink();
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
-    throw error;
-  }
-}
-
-function removeManagedLauncherIfPresent(path) {
-  const existing = inspectManagedFile(path);
-  if (existing?.managed === true) rmSync(path);
-}
-
-function resolveRegistryPath(options) {
-  if (options.registryPath !== undefined) return resolve(options.registryPath);
-  const stateRoot = process.env.XDG_STATE_HOME === undefined || process.env.XDG_STATE_HOME.length === 0
-    ? join(homedir(), ".local", "state")
-    : resolve(process.env.XDG_STATE_HOME);
-  return join(stateRoot, "yui", "dev-launcher.json");
-}
-
-/** Missing authority is not permission to reconstruct or replace a global link. */
-function assertUnregisteredGlobalLinkAbsent(globalBinDir) {
-  const launcher = join(globalBinDir, DEV_LAUNCHER_NAME);
-  const reserved = [globalBackupName, globalRecoveryName, ".yui-link-state.json"]
-    .find(name => pathExists(join(globalBinDir, name)));
-  const localTarget = managedDevelopmentLinkTarget(launcher);
-  if (reserved !== undefined || localTarget !== null) {
-    throw new Error(`Unregistered global yui link requires explicit inspection: ${launcher}. `
-      + "No registry was adopted and no original command was restored.");
-  }
-}
-
-async function assertCompatibleDevHome(homePath) {
-  if (!pathExists(homePath)) return;
-  const { inspectStorageSchema } = await import("../dist/storage/storageSchema.js");
-  const state = inspectStorageSchema(homePath);
-  if (state.status === "current") return;
-  if (state.status === "uninitialized") {
-    if (readdirSync(homePath).length === 0) return;
-    throw incompatibleDevHomeError(state.databasePath, "authoritative yui.db is missing");
-  }
-  if (state.status === "invalid") {
-    throw incompatibleDevHomeError(state.databasePath, state.detail);
-  }
-  if (state.status === "upgradeable") {
-    const localLauncher = join(dirname(homePath), "bin", DEV_LAUNCHER_NAME);
-    throw incompatibleDevHomeError(
-      state.databasePath,
-      `storage ${state.currentVersion} can migrate to ${state.latestVersion}`,
-      `Run 'make install-local', then '${localLauncher} upgrade', then retry 'make link'.`
-    );
-  }
-  throw incompatibleDevHomeError(
-    state.databasePath,
-    `expected current storage ${state.latestVersion} `
-      + `(minimum migratable ${state.minimumSupportedVersion}); `
-      + `found storage ${state.currentVersion} (${state.status})`
-  );
-}
-
-function incompatibleDevHomeError(
-  databasePath,
-  detail,
-  action = "Run 'make dev-reset' to move the existing home aside, then retry 'make link'."
-) {
-  return new Error(
-    `Development home storage is incompatible at ${databasePath}: ${detail}. `
-      + action
-  );
-}
-
 function pathExists(path) {
   try {
     lstatSync(path);
@@ -1126,22 +483,10 @@ function shellQuote(value) {
 
 async function runCli() {
   const action = process.argv[2];
-  if (action === "link") {
-    const result = await linkDevLauncher();
-    console.log(`Linked global yui to this checkout: ${result.globalLauncherPath}`);
-    console.log(`Original yui ${result.replaced ? `saved at ${result.backupPath}` : "was not present"}.`);
-    console.log(`Isolated YUI_HOME default: ${result.yuiHome}`);
-    return;
-  }
   if (action === "install-local") {
     const result = installDevLauncher();
     console.log(`Local yui launcher ready (global yui unchanged): ${result.launcherPath}`);
     console.log(`Isolated YUI_HOME default: ${result.yuiHome}`);
-    return;
-  }
-  if (action === "unlink") {
-    const result = unlinkDevLauncher();
-    console.log(result.restored ? `Restored the previous global yui command: ${result.globalLauncherPath}` : "This checkout did not own the global yui command.");
     return;
   }
   if (action === "reset-home") {
@@ -1153,7 +498,7 @@ async function runCli() {
     );
     return;
   }
-  throw new Error("Usage: node scripts/manage-dev-launcher.mjs install-local|link|unlink|reset-home");
+  throw new Error("Usage: node scripts/manage-dev-launcher.mjs install-local|reset-home");
 }
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

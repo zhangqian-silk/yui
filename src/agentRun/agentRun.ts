@@ -234,7 +234,6 @@ export function appendRunInput(run: AgentRun, input: AgentRunInput, now: Date): 
 /** Derives Provider-visible identity from the AgentRun, the sole semantic owner. */
 export function runInputEnvelope(run: AgentRun, sequence = 1): AgentRunInputEnvelope {
   validateRun(run);
-  requireRunContextSnapshotRef(run.inputs[0]!.input);
   const record = run.inputs[sequence - 1];
   if (record === undefined) throw new Error(`AgentRun input does not exist: ${run.id}/${sequence}.`);
   return createRunInputEnvelope(runEnvelopeContext(run), record.input);
@@ -278,6 +277,7 @@ export function validateRun(run: AgentRun): AgentRun {
       throw new Error("AgentRun input timestamps moved backwards.");
     }
   }
+  requireRunContextSnapshotRef(run.inputs[0]!.input);
   if (!["execution", "review", "planning"].includes(run.purpose)) {
     throw new Error(`AgentRun purpose is invalid: ${String(run.purpose)}.`);
   }
@@ -414,8 +414,8 @@ export function validateRun(run: AgentRun): AgentRun {
     throw new Error("Execution AgentRun cannot carry Review effective provenance.");
   }
   for (const record of run.inputs) {
-    // Structural validation keeps historical records and observed subsequent
-    // inputs readable. Creation/submission require the initial frozen Snapshot.
+    // The first input owns the frozen Assignment; subsequent observations and
+    // steer inputs may omit their own Snapshot.
     createRunInputEnvelope(runEnvelopeContext(run), record.input);
   }
   if (!( ["active", "completed", "failed"] as const).includes(run.status)) {

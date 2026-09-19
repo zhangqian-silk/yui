@@ -19,20 +19,27 @@ Home upgrade axes. Changes to persistent payloads must still declare the
 appropriate Home version transition. Preserve transactions, identity fences,
 exact execution authority, pending intent and irreversible-effect evidence.
 
-0.99.0 is the frozen historical bridge (old integer v1..v37). The 0.99.1 runtime
+0.16.2 is the frozen historical bridge (old integer v1..v37). The 1.0.0-alpha runtime
 must not import or package that chain, an old-format reader, or the one-time
 converter. `tools/baseline-cutover` is an independently packaged, explicit
 old-v37 to new-1.0 converter. It accepts only proven source structure and keeps
 full backup, original audit bytes and quiescence boundaries. Malformed or
 unsettled state is a diagnosis, not permission for heuristic repair.
+The unpublished v37 → 1.0 cutover requires an initial Snapshot reference on every
+Run. A source Home lacking it remains on the bridge, unchanged; do not fabricate
+Context or remove Runs still named by durable references.
 
 The new baseline resets current Yui-owned envelopes and protocols to version 1,
 using distinct identities where old version-1 formats could collide. Never
 reset business IDs, revisions, epochs, event counters, user/native payloads,
 frozen Context digests or external Provider protocols.
 
-Freeze this persistent contract between 0.99.1 and 1.0.0. Do not reset again
-when tagging 1.0.0. Real Home conversion and publication require explicit user
+After the first alpha publication, persistent changes require an explicit
+same-major minor transition; never rewrite a published baseline. The stable
+1.0.0 release reuses the final verified prerelease contract without another
+reset. Keep current bounded retry, lock waiting, transactions, replay protection
+and exact-identity caches: they are not historical compatibility.
+Real Home conversion and publication require explicit user
 authority; development uses isolated fixtures. See
 [the operator guide](../../../../docs/storage-baseline.md) for conversion and
 recovery, and verify both the runtime tarball and independent converter archive.

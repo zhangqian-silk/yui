@@ -1,9 +1,10 @@
 # Storage baseline 1.0
 
-Yui 0.99.1 is the clean runtime baseline. Package version `0.99.1`, Home
+Yui 1.0.0-alpha is the clean runtime baseline. Package version `1.0.0-alpha`, Home
 storage version `1.0`, record envelope version `1`, and Controller protocol `1`
-have different responsibilities. The later 1.0.0 package uses this same storage
-contract; it must not reset it again.
+have different responsibilities. The later 1.0.0 package reuses the final
+verified prerelease storage contract; it must not reset it again. Persistent
+changes after the first alpha publication require explicit minor transitions.
 
 ## Current runtime
 
@@ -33,17 +34,28 @@ The runtime tarball contains neither historical migration modules nor the
 standalone converter. Source-level history and previous published packages
 remain available for explicit diagnosis, not automatic runtime fallback.
 
-## One-time conversion from 0.99.0
+## One-time conversion from 0.16.2
 
 The independent `yui-baseline-cutover` archive accepts only the exact frozen
-0.99.0 schema and its complete v37 ledger. Older Homes must first use 0.99.0.
+0.16.2 schema and its complete v37 ledger. Older Homes must first use 0.16.2.
+Admission is based on this exact storage contract, not an installed package
+version: an already-valid v37 Home does not need a cosmetic rewrite.
 It never runs the old migration chain itself.
 
-1. Using 0.99.0, settle active Runs, Jobs, claimed notifications, in-flight
+The unpublished v37 → 1.0 transition also requires every current Run to have
+an initial Context Snapshot reference. A Home containing a historical Run
+without that evidence is refused during preflight, even when the Run is terminal.
+Keep that Home with 0.16.2 for audit or start a separate new Home. The converter
+does not invent snapshots or move referenced Runs out of the current tables:
+doing so would break durable Candidate, Review and Session references.
+This tightens the not-yet-published 1.0 baseline, not an upgrade of a published
+1.0 contract.
+
+1. Using 0.16.2, settle active Runs, Jobs, claimed notifications, in-flight
    retries and unconfirmed effects. Preserve queued intent rather than marking
    it completed. Stop managed Sessions and the Controller. `session stop --all`
    refuses busy Sessions; it is not authority to force-stop or discard work.
-2. Stage the published 0.99.1 package in a separate installation prefix, with
+2. Stage the published 1.0.0-alpha package in a separate installation prefix, with
    its native dependencies installed. Do not overwrite the global CLI or try to
    run the new Controller against the old Home.
 3. Verify the converter archive checksum, unpack it, then use its entrypoint.
@@ -78,7 +90,7 @@ verification plans, preserving each changed payload and the original ledger in
 audit. User text, native payloads, frozen Context bytes, Git data, dirty files,
 IDs, counters and Task outcomes are preserved.
 Before dropping the two unused source tables, every original row is retained
-under `baseline-0.99.0/retired-table/<table>` in the audit archive. Their payloads
+under `baseline-v37/retired-table/<table>` in the audit archive. Their payloads
 are opaque evidence, not active records to normalize. The receipt reports
 `retiredRows` separately from changed current records.
 
@@ -89,7 +101,7 @@ runtime inventory paths, retaining their originals and recomputing only the
 format-dependent fingerprint. Resource paths, namespace and port allocations
 do not change. Unknown markers or links remain blockers. The tool
 does not resume old Hosts, update the global installation, start a Controller,
-or submit model input. After a successful conversion, use the staged 0.99.1 CLI
+or submit model input. After a successful conversion, use the staged 1.0.0-alpha CLI
 to install the exact package and start only the new runtime. Start new managed
 Sessions through the ordinary explicit lifecycle; history is not live authority.
 
@@ -110,7 +122,7 @@ creating another backup or rewriting records.
   automatic repair worker or speculative replay.
 - To roll back, stop all new writers, preserve the failed/new Home separately,
   and restore the old Home tree plus the standalone `yui.db` at the **same**
-  original Home path, without mixing in newer WAL/SHM files. Use only 0.99.0.
+  original Home path, without mixing in newer WAL/SHM files. Use only 0.16.2.
   Review the converter-owned lock in the snapshot by exact process identity.
 - After new business writes, restoring the old backup loses those writes.
   Recovery then needs an explicit disposition; never restore automatically.

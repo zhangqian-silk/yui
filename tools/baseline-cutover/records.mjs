@@ -1,4 +1,4 @@
-// One-time 0.99.0 contract reader. This directory is never a runtime dependency.
+// One-time 0.16.2 contract reader. This directory is never a runtime dependency.
 // Only named Yui-owned envelopes are converted. User JSON, frozen Context
 // resources, native payloads, counters, hashes and revision fields are opaque.
 const versions = {
@@ -18,7 +18,7 @@ export const RECORD_TABLES = Object.freeze(Object.keys(versions));
 
 function reset(value, expected, label) {
   if (!value || typeof value !== "object" || Array.isArray(value) || value.schemaVersion !== expected) {
-    throw new Error(`Unsupported 0.99.0 ${label} envelope; preserve the original record.`);
+    throw new Error(`Unsupported 0.16.2 ${label} envelope; preserve the original record.`);
   }
   value.schemaVersion = 1;
   return value;

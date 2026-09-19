@@ -4,7 +4,7 @@
 
 Yui has one authoritative product Store: `YUI_HOME/yui.db`, in WAL mode.
 `storage_schema` contains its single **major.minor** version and schema
-checksum. The clean baseline is **1.0**, introduced by package 0.99.1.
+checksum. The clean baseline is **1.0**, introduced by package 1.0.0-alpha.
 
 ## Authority
 

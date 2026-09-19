@@ -27,22 +27,37 @@ system sits behind `ReleaseWorkflowPorts`
 external ports exercise recovery without real GitHub, npm, git, Controller,
 or model effects.
 
-## Clean baseline release: 0.99.1
+## Clean baseline release: 1.0.0-alpha
 
-0.99.0 remains the frozen historical bridge. The 0.99.1 runtime starts the
+0.16.2 remains the frozen historical bridge. The 1.0.0-alpha runtime starts the
 distinct storage **1.0** baseline and carries no old migration chain or
-conversion tool. Package 1.0.0 will use this same persistent contract.
+conversion tool. Package 1.0.0 will reuse the final verified prerelease storage
+contract without another reset.
 
 Storage versions have two levels. Default updates may advance only contiguous
 minor versions within the same major; pinning a package does not authorize a
 cross-major conversion. Current Yui-owned envelopes and protocols start at 1,
 without resetting business revisions, epochs or audit evidence.
+Any persistent change after an alpha is published requires an explicit new
+minor transition; published schema definitions must not be silently replaced.
+Current bounded automatic recovery, lock waiting, transactions, replay
+protection and valid exact-identity caches remain normal runtime behavior.
+
+Use the exact package version `1.0.0-alpha` to opt into this baseline. Stable
+releases use npm `latest`; prereleases use `next`, never the stable default.
 
 The old-v37 converter is a separate archive. Its source/target verification,
 offline boundary, full backup, original-payload audit, cold startup and rollback
 are specified in [Storage baseline 1.0](./storage-baseline.md).
-Publish its archive and checksum as durable 0.99.1 release attachments alongside
+Publish its archive and checksum as durable 1.0.0-alpha release attachments alongside
 the exact tested runtime package. Expiring CI artifacts alone are insufficient.
+The alpha-only `baseline-release` job runs after npm publication, uploads missing
+attachments to a draft without overwriting existing files, downloads and compares
+every attachment against the tested artifact, then publishes the prerelease.
+A retry verifies matching existing attachments; a different byte or an incomplete
+already-published Release is an error, not permission to replace release evidence.
+If this job fails after npm publication, resume only this job with the same
+retained artifacts rather than republishing or rebuilding the package.
 The runtime tarball must contain neither tools/ nor dist/storage/migrations/.
 
 Use `yui update --version <exact-version>` for an exact published package.
@@ -57,8 +72,8 @@ protocol and both storage-version bounds against status and live identity.
 Missing contract fields are errors, not an older-Controller exception.
 
 The converter source, frozen endpoint fixture and converter-specific tests are
-release-only deliverables for 0.99.1. Remove them from the 1.0.0 development line
-only after the 0.99.1 release attachments and checksums are durably available
+release-only deliverables for 1.0.0-alpha. Remove them from the 1.0.0 development line
+only after the 1.0.0-alpha release attachments and checksums are durably available
 and verified. Do not delete the only conversion path before publication.
 
 ## Authorization model

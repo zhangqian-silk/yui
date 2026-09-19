@@ -10,7 +10,6 @@ import { acquireHandoverLock, isForeignHandoverLockHeld } from "../../dist/relea
 import { createReleaseWorkflowPorts } from "../../dist/release/releaseWorkflowPorts.js";
 import Database from "better-sqlite3";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
-import { linkDevLauncher, unlinkDevLauncher } from "../../scripts/manage-dev-launcher.mjs";
 import { runTaskCommand } from "../../dist/commands/taskCommands.js";
 import { createTask } from "../../dist/task/task.js";
 import { verifyAcpConfiguration } from "../../dist/runtime/acpSessionConfiguration.js";
@@ -18,28 +17,6 @@ import { SqliteResourceRegistry } from "../../dist/resources/sqliteResourceRegis
 import { createResourceRecord } from "../../dist/resources/resourceTypes.js";
 import { upsertResourceRecord } from "../../dist/resources/resourceRegistry.js";
 import { purgeResourceQuarantine, restoreAllResourceGc } from "../../dist/resources/resourceGc.js";
-
-test("local link uses its current registry and leaves unregistered state untouched", async t => {
-  const root = mkdtempSync(join(tmpdir(), "yui-contract-link-"));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  const bin = join(root, "bin");
-  mkdirSync(bin);
-  const original = "#!/bin/sh\nexit 0\n";
-  const launcher = join(bin, "yui");
-  writeFileSync(launcher, original, { mode: 0o755 });
-  const options = { projectRoot: join(root, "checkout"), globalBinDir: bin,
-    registryPath: join(root, "state", "dev-launcher.json") };
-  await linkDevLauncher(options);
-  assert.equal(unlinkDevLauncher(options).restored, true);
-  assert.equal(readFileSync(launcher, "utf8"), original);
-  const oldPath = join(bin, ".yui-link-state.json");
-  const oldState = JSON.stringify({ schemaVersion: 1, activeProjectRoot: options.projectRoot });
-  writeFileSync(oldPath, oldState);
-  await assert.rejects(linkDevLauncher(options), /Unregistered/);
-  assert.throws(() => unlinkDevLauncher(options), /Unregistered/);
-  assert.equal(readFileSync(oldPath, "utf8"), oldState);
-  assert.equal(readFileSync(launcher, "utf8"), original);
-});
 
 test("ACP requires configOptions and verifies final reported values rather than acknowledgements", () => {
   assert.throws(() => readAcpSessionConfiguration({
