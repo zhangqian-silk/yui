@@ -78,6 +78,9 @@ Current coverage includes:
    refusal to overwrite unrelated files, and rejection of removed global-link
    commands before side effects. Development Home reset retains its independent
    identity checks and backup behavior.
+9. Failure isolation for optional Controller maintenance, individual retry
+   Sessions and Task continuation observation, with scoped errors and no
+   fabricated delivery, cancellation or quiescence.
 
 Keep the test phase seconds-scale and measure build separately. Use the
 existing assembled-package smoke for actual CLI/Controller/Host/tmux wiring,

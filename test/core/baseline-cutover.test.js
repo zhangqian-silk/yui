@@ -184,14 +184,12 @@ test("v37 nested execution and active plans convert while frozen evidence and re
   const withoutSnapshot=structuredClone(oldRun);
   delete withoutSnapshot.inputs[0].input.contextSnapshotRef;
   db.prepare("UPDATE turns SET payload=?").run(JSON.stringify(withoutSnapshot));
-  const before=db.serialize();
-  assert.throws(()=>inspectLegacyDatabase(db),/task-1\/run-1.*Snapshot/);
-  assert.throws(()=>db.transaction(()=>convertDatabase(db,runtime))(),/task-1\/run-1.*Snapshot/);
-  assert.deepEqual(db.serialize(),before,"Refuse before moving records or leaving dangling references.");
-  db.prepare("UPDATE turns SET payload=?").run(JSON.stringify(oldRun));
+  assert.equal(inspectLegacyDatabase(db).target,"1.0");
+  const incompleteRun=structuredClone(run);
+  delete incompleteRun.inputs[0].input.contextSnapshotRef;
   db.transaction(()=>convertDatabase(db,runtime))();
   for(const [table,expected,original] of [
-    ["work_items",item,oldItem],["turns",run,oldRun],["review_rounds",review,oldReview]
+    ["work_items",item,oldItem],["turns",incompleteRun,withoutSnapshot],["review_rounds",review,oldReview]
   ]){
     const actual=JSON.parse(db.prepare(`SELECT payload FROM ${table}`).get().payload);
     assert.deepEqual(actual,expected);

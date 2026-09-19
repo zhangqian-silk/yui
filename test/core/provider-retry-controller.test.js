@@ -176,6 +176,34 @@ function fixture(t, scope = "task", roleName = scope === "task" ? "leader" : "as
   };
 }
 
+test("a failed retry admission read preserves that Session and lets another Session proceed", async t => {
+  const f = fixture(t, "global");
+  f.fail(); f.due();
+  const healthy = f.loadSessions();
+  const broken = { ...healthy, owner: { scope: "global", roleName: "broken" } };
+  const failures = [], submitted = [];
+  const source = f.store;
+  const store = new Proxy(source, { get(target, key) {
+    if (key === "listProviderRetrySessions") return () => [broken, healthy];
+    if (key === "getGlobalRole") return role => {
+      if (role === "broken") throw new Error("Role storage unavailable");
+      return target.getGlobalRole(role);
+    };
+    const value = target[key];
+    return typeof value === "function" ? value.bind(target) : value;
+  } });
+  const hooks = createProviderRetryHooks(f.home, store, {
+    now: f.now, onError: error => failures.push(error),
+    submit: async request => { submitted.push(request); return { outcome: "delivered", snapshot: { state: "ready" } }; }
+  });
+  await hooks.reconcile();
+  assert.equal(submitted.length, 1);
+  assert.equal(submitted[0].roleName, f.roleName);
+  assert.deepEqual(f.loadSessions(), healthy, "No failed read may cancel intent or fabricate delivery.");
+  assert.equal(failures.length, 1);
+  assert.match(failures[0].message, /broken.*Role storage unavailable/);
+});
+
 function reviewFixture(t) {
   const f = fixture(t, "task", "reviewer");
   const commit = "a".repeat(40);
@@ -610,7 +638,10 @@ test("Global exhaustion and cancellation settle the original queue entry without
     const inspectQueue = () => deliverGlobalInputs(f.home, f.store, async () => {
       prepares++;
       throw beforeNative;
-    }, error => { assert.equal(error, beforeNative); });
+    }, error => {
+      assert.equal(error.cause, beforeNative);
+      assert.match(error.message, new RegExp(f.roleName));
+    });
     await inspectQueue();
     assert.equal(prepares, 0, "A stopped retry cannot silently return to ordinary delivery.");
     f.advanceTo(f.now().getTime() + 1);

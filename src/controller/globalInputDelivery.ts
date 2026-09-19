@@ -140,6 +140,11 @@ export async function deliverGlobalInputs(
             result.failure?.detail ?? result.snapshot.detail ?? "provider-input-rejected", new Date()));
         });
       }
-    } catch (error) { onError(error); }
+    } catch (error) {
+      onError(new Error(`Global input delivery failed for ${role.name}: `
+        + `${error instanceof Error ? error.message : String(error)}. `
+        + "Inspect the persisted Message and attempt before retrying; delivery is not inferred.",
+      { cause: error }));
+    }
   }
 }

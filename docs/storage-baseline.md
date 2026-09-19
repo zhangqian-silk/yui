@@ -42,14 +42,14 @@ Admission is based on this exact storage contract, not an installed package
 version: an already-valid v37 Home does not need a cosmetic rewrite.
 It never runs the old migration chain itself.
 
-The unpublished v37 → 1.0 transition also requires every current Run to have
-an initial Context Snapshot reference. A Home containing a historical Run
-without that evidence is refused during preflight, even when the Run is terminal.
-Keep that Home with 0.16.2 for audit or start a separate new Home. The converter
-does not invent snapshots or move referenced Runs out of the current tables:
-doing so would break durable Candidate, Review and Session references.
-This tightens the not-yet-published 1.0 baseline, not an upgrade of a published
-1.0 contract.
+The unpublished v37 → 1.0 transition preserves Runs with missing optional Snapshot
+references, including their original references and results. A retained record
+need not be ready to execute: missing evidence must not block Home conversion.
+The Leader/Operator can inspect and retire the affected Run; an explicit ordinary
+retry creates a new Run and Snapshot from current authorized facts without
+rewriting the old evidence. Exact Review/synthesis reuse still requires its
+frozen evidence. Unknown formats, structural corruption and unsettled external
+effects remain separate conversion blockers.
 
 1. Using 0.16.2, settle active Runs, Jobs, claimed notifications, in-flight
    retries and unconfirmed effects. Preserve queued intent rather than marking

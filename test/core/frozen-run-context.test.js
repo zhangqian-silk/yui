@@ -87,9 +87,10 @@ test("Run Context uses only its exact frozen evidence and explicit store/refId",
   assert.throws(() => createRun("run-2", task.id, role.name, "new", createRunInput(missing), now, context),
     /Context Snapshot.*required/i);
   const invalid = { ...run, id: "run-2", inputs: [{ ...run.inputs[0], input: createRunInput(missing) }] };
-  assert.throws(() => validateRun(invalid), /Context Snapshot.*required/i);
-  assert.throws(() => store.saveRun(invalid), /Context Snapshot.*required/i);
-  assert.equal(store.getRun(task.id, invalid.id), null);
+  assert.equal(validateRun(invalid), invalid);
+  store.saveRun(invalid);
+  assert.deepEqual(store.getRun(task.id, invalid.id), invalid,
+    "Incomplete execution evidence remains readable for supervision.");
   assert.throws(() => runInputEnvelope(invalid), /Context Snapshot.*required/i);
   const continued = appendRunInput(run, createRunInput(missing), now);
   store.saveRun(continued);
@@ -101,11 +102,11 @@ test("Run Context uses only its exact frozen evidence and explicit store/refId",
     subject: { taskId: task.id }, source: input.source, deltaRefIds: []
   }), /Context Snapshot.*required/i);
   store.databaseHandle().prepare("UPDATE turns SET payload=json_remove(payload,'$.inputs[0].input.contextSnapshotRef')").run();
-  assert.throws(() => store.getRun(task.id, run.id), /Context Snapshot.*required/i,
-    "Current reads cannot accept a missing first Snapshot either.");
+  assert.equal(store.getRun(task.id, run.id).inputs[0].input.contextSnapshotRef, undefined,
+    "Missing execution evidence must not prevent inspection of the Run.");
 });
 
-test("missing Snapshot stops Provider preparation and cannot be repaired by retry", async t => {
+test("missing Snapshot fails only its execution; supervision can retire and explicitly retry from current facts", async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-missing-run-snapshot-"));
   const store = new SqliteTaskStore(home);
   t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
@@ -115,11 +116,12 @@ test("missing Snapshot stops Provider preparation and cannot be repaired by retr
   const binding = createRoleAgentBinding({ id: "codex", adapterId: "codex" });
   const role = createRole(task.id, "leader", [binding], binding.agentId, home, now);
   store.saveRole(task.id, role);
-  const run = createFixtureRun(store, "run-1", task.id, role.name, "new", createRunInput({
+  const run = createFixtureRun(store, store.nextRunId(task.id), task.id, role.name, "new", createRunInput({
     source: { type: "yui", channel: "task-dispatch" }, directive: "Original intent", deltaRefIds: []
   }), now, { effective: resolveEffectiveLaunch({ role, purpose: "execution" }) });
   store.saveActiveRun(run);
   const adapter = new FileSchedulerStoreAdapter(store);
+  const originalGetSnapshot = store.getContextSnapshot.bind(store);
   store.getContextSnapshot = () => null;
   const outcomes = await processActiveRoleRunDeliveries(adapter, {
     prepareRoleSession: async () => assert.fail("Missing evidence must fail before Provider preparation")
@@ -128,14 +130,22 @@ test("missing Snapshot stops Provider preparation and cannot be repaired by retr
   assert.match(outcomes[0].error, /Context Snapshot is missing/i);
   assert.deepEqual(store.getRun(task.id, run.id).inputs, run.inputs);
   const options = { now: () => now, environment: sanitizedTestEnv() };
-  const revision = store.getRevision();
-  assert.throws(() => runTaskCommand(["run", "retry", `${task.id}/${run.id}`], store, options),
-    /Context Snapshot is missing/i);
-  assert.equal(store.getRevision(), revision, "Retry cannot synthesize absent original evidence.");
+  store.getContextSnapshot = originalGetSnapshot;
+  // Missing reference is also an operational failure, not a reason to reject
+  // the entire Home or hide the record from Leader/Operator.
+  store.databaseHandle().prepare("UPDATE turns SET payload=json_remove(payload,'$.inputs[0].input.contextSnapshotRef')").run();
+  const original = store.getRun(task.id, run.id);
+  assert.ok(runTaskCommand(["run", "show", `${task.id}/${run.id}`], store, options));
+  store.validateCurrentRecords();
   runTaskCommand(["run", "retire", `${task.id}/${run.id}`, "--reason", "Evidence unavailable",
     "--expected-progress-at", now.toISOString()], store, options);
   assert.equal(store.listEvents(task.id).find(event => event.type === "run.retired").payload.expectedProgressAt,
     now.toISOString(), "The current retirement argument preserves the exact recorded fence.");
+  runTaskCommand(["run", "retry", `${task.id}/${run.id}`], store, options);
+  const successor = store.getActiveRun(task.id, role.name);
+  assert.notEqual(successor.id, run.id);
+  assert.ok(buildRunContextPack(store, task.id, successor.id).snapshot);
+  assert.deepEqual(store.getRun(task.id, run.id), original, "Retry never rewrites missing original evidence.");
 });
 
 test("CLI rejects inferred Context stores and the retired progress flag before record lookup", () => {

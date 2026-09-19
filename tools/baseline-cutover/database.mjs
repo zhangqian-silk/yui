@@ -30,13 +30,6 @@ export function inspectLegacyDatabase(db) {
   for (const [label, sql] of blockers) {
     if (db.prepare(sql).get()) throw new Error(`Cutover blocked by ${label}; settle it with 0.16.2 without fabricating success.`);
   }
-  const missingSnapshot = db.prepare(`SELECT task_id,turn_id FROM turns
-    WHERE json_type(payload,'$.inputs[0].input.contextSnapshotRef') IS NOT 'object' LIMIT 1`).get();
-  if (missingSnapshot) {
-    throw new Error(`Cutover blocked by ${missingSnapshot.task_id}/${missingSnapshot.turn_id}: initial Context Snapshot is missing. `
-      + "Keep this Home on 0.16.2 for audit, or start a separate new Home. "
-      + "The converter never invents Context or removes referenced Runs.");
-  }
   for (const table of ["role_session_sets", "global_role_session_sets"]) {
     for (const { payload } of db.prepare(`SELECT payload FROM ${table}`).iterate()) {
       const set = JSON.parse(payload);

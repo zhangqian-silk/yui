@@ -50,11 +50,21 @@ Task 记录。聚合执行从该 Snapshot 读取已选择的 Producer 结果；�
 Run 捕获的生效授权。当前活动状态仍是独立观察，不属于冻结合同。
 展开引用必须同时指定 `store` 与 `refId`，即使 id 唯一也不能省略 store。
 
-当前 Run 的首个输入必须有 Snapshot 引用，包括已结束的 Run。证据缺失或漂移时
-明确失败，不用今天的 Task 事实补造历史。后续原生输入或 steer 可以没有独立
-Snapshot，因为它们不建立新的 Assignment。存储采用 1.0 基线；独立 v37 转换器
-拒绝包含缺少首个 Snapshot 引用的 Run 的 Home，原始记录及引用保持不变，
-继续通过冻结桥接版审计。
+新的 Task 执行需要首个 Snapshot。保留的 Run 缺失执行证据时，仍可供
+Leader／Operator 查看、结算失败或显式废弃，无关工作继续推进。提交执行和读取
+确切冻结上下文在证据缺失、漂移时局部失败。显式普通重试根据当前授权事实创建
+新的 Run 和 Snapshot，不补造旧快照；Review／结果汇总的确切复用仍需冻结证据。
+后续原生输入或 steer 可以没有独立 Snapshot，因为它们不建立新的 Assignment。
+存储采用 1.0 基线；独立转换器保留这些记录，不把可选执行证据缺失扩大为
+整个 Home 的转换阻塞。
+
+运行异常按所属对象限制影响，不等同于整个 Controller 必须停摆。可选的资源回收
+和 continuation 元数据检查失败会报告诊断，不阻断正常调度；Provider 重试准入
+按 Session 隔离，continuation 观察按 Task 隔离。Job 和全局输入错误包含
+Task／Job 或 Role 身份，并保留原始原因。已提交的观察仍然有效，失败的观察不代表
+输入已确认、进程已停止，也不授权再次发送或删除。对受影响对象使用既有的查看、
+停止／取消、废弃、确认和显式重试入口。存储结构损坏、权限失败及未知外部效果，
+仍在各自边界明确诊断，不用统一兜底值或伪造成功绕过。
 
 当前 Task 读取也会把无定向目标的 user/Operator 消息暴露给该 Task 当前的 Worker 和
 Reviewer Session，包括在它们 Run 快照冻结之后新增的需求。用 `task message list/show`

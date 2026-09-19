@@ -35,17 +35,17 @@ try {
     writer.saveConfig({ schemaVersion: CURRENT_CONFIG_SCHEMA_VERSION,
       defaultAgent: agent.id, defaultWorkspace: resolve(yuiHome, "workspaces/global") });
     const tasks = [
-      activateTask(createTask("task-1", "Ship the dashboard", now,
+      activateTask(createTask(writer.nextTaskId(), "Ship the dashboard", now,
         { description: "Disposable current-contract preview data.", priority: "high", tags: ["web"] }), now),
-      activateTask(createTask("task-2", "Review deployment decision", now,
+      activateTask(createTask(writer.nextTaskId(), "Review deployment decision", now,
         { priority: "urgent", tags: ["input"] }), now),
-      createTask("task-3", "Draft onboarding guide", now, { tags: ["docs"] }),
-      completeTask(activateTask(createTask("task-4", "Verify terminal scrolling", now), now), now,
+      createTask(writer.nextTaskId(), "Draft onboarding guide", now, { tags: ["docs"] }),
+      completeTask(activateTask(createTask(writer.nextTaskId(), "Verify terminal scrolling", now), now), now,
         { by: "leader", summary: "Demo completion." }),
-      archiveTask(retireTask(createTask("task-5", "Retired prototype", now),
+      archiveTask(retireTask(createTask(writer.nextTaskId(), "Retired prototype", now),
         { by: "leader", summary: "Demo retirement." }, now), now,
         { by: "user", reason: "Superseded.", summary: "Demo archive." }),
-      activateTask(createTask("task-6", "Inspect a failed execution", now,
+      activateTask(createTask(writer.nextTaskId(), "Inspect a failed execution", now,
         { priority: "high", tags: ["failure"] }), now)
     ];
     for (const task of tasks) {
@@ -53,22 +53,22 @@ try {
       const role = createRole(task.id, "leader", [createRoleAgentBinding(agent)],
         agent.id, resolve(yuiHome, "workspaces", task.id), now);
       writer.saveRole(task.id, role);
-      writer.saveMessage(task.id, createTaskMessage("message-1", task.id,
+      writer.saveMessage(task.id, createTaskMessage(writer.nextMessageId(task.id), task.id,
         `Demo requirement: ${task.title}.`, "user", { type: "user" }, now));
       writer.saveTaskBrief(task.id, createTaskBrief({ objective: task.title,
         boundaries: ["Disposable fixture; no external actions"], currentFocus: "Inspect the dashboard",
         leaderSummary: "Synthetic preview, not execution evidence.", updatedBy: "leader" }, now));
       if (!["task-1", "task-2", "task-6"].includes(task.id)) continue;
-      const item = createWorkItem("work-item-1", task.id,
+      const item = createWorkItem(writer.nextWorkItemId(task.id), task.id,
         { title: "Inspect demo evidence", assignee: "leader" }, now);
       writer.saveWorkItem(task.id, item);
       const ref = { layer: "L2", store: "task", refId: task.id,
         revision: task.updatedAt, digest: contextContentDigest(task) };
-      const snapshot = createContextSnapshot({ id: "snapshot-1", taskId: task.id,
+      const snapshot = createContextSnapshot({ id: writer.nextContextSnapshotId(task.id), taskId: task.id,
         scope: "task", sequence: 1, refs: [ref], resources: [{ ref, value: task }],
         acceptRefs: [], frozenAt: now, frozenBy: "controller" });
       writer.saveContextSnapshot(snapshot);
-      const run = createRun("run-1", task.id, role.name, "new", createRunInput({
+      const run = createRun(writer.nextRunId(task.id), task.id, role.name, "new", createRunInput({
         source: { type: "yui", channel: "workitem-dispatch" },
         contextSnapshotRef: contextSnapshotRef(snapshot), deltaRefIds: []
       }), now, { workItemId: item.id, effective: resolveEffectiveLaunch({ role, purpose: "execution" }) });
@@ -76,13 +76,13 @@ try {
         ? failRun(run, "runtime-failed", "Synthetic failure for dashboard preview.", now)
         : completeRun(run, "Synthetic result for dashboard preview.", now));
     }
-    writer.saveInputRequest("task-2", createInputRequest("input-1", "task-2",
+    writer.saveInputRequest("task-2", createInputRequest(writer.nextInputRequestId("task-2"), "task-2",
       { taskId: "task-2", roleName: "leader", agentId: agent.id, runId: "run-1" }, {
         question: "Which demo direction should we inspect?",
         choices: [{ key: "dense", label: "Dense overview" }, { key: "detail", label: "Task detail" }],
         blockedRefs: []
       }, now));
-    writer.saveDecision("task-1", createDecision("decision-1", "task-1",
+    writer.saveDecision("task-1", createDecision(writer.nextDecisionId("task-1"), "task-1",
       "Keep one durable authority", "SQLite owns Task facts; the dashboard projects them.", now));
   });
   store.validateCurrentRecords();

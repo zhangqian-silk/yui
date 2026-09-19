@@ -16,7 +16,7 @@ test("dashboard seed creates current records once without starting runtime or re
     { env: { ...sanitizedTestEnv(), YUI_HOME: home }, encoding: "utf8", timeout: 10000 });
   const result = seed();
   assert.equal(result.status, 0, result.stderr);
-  const store = new SqliteTaskStore(home, { readonly: true });
+  const store = new SqliteTaskStore(home);
   try {
     store.validateCurrentRecords();
     assert.equal(store.getConfig().schemaVersion, 1);
@@ -29,5 +29,8 @@ test("dashboard seed creates current records once without starting runtime or re
     assert.match(again.stderr, /Refusing to seed existing/);
     assert.equal(store.getRevision(), revision);
     assert.equal(existsSync(join(home, "runtime/controller.json")), false);
+    assert.equal(store.nextTaskId(), "task-7");
+    assert.equal(store.nextRunId("task-6"), "run-2",
+      "Continuing or retrying demo work must never reuse the seeded Run id.");
   } finally { store.close(); }
 });

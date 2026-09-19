@@ -61,13 +61,28 @@ Writable Projects come from the Run's captured effective authority; live
 activity is a separate observation, not part of the frozen contract.
 Expansion always requires both `store` and `refId`, even for a unique id.
 
-Current Run records require a Snapshot reference on their first input, including
-terminal Runs. Missing/drifted evidence fails explicitly; it is never synthesized
-from today's Task. Subsequent observed/steered input records may omit their own
-Snapshot because they do not establish a new Assignment. Storage uses the 1.0
-baseline. The independent v37 converter refuses Homes containing Runs without
-an initial Snapshot reference, retaining their original records and references
-for audit with the frozen bridge.
+New Task execution requires an initial Snapshot. Missing evidence does not make
+a retained Run unreadable: inspection, failure settlement and explicit retirement
+remain available to Leader/Operator, and unrelated work can proceed. Submission
+and exact frozen-context reads fail locally when that evidence is absent or has
+drifted. An explicit ordinary retry creates a new Run and Snapshot from current
+authorized facts, without reconstructing the old snapshot; Review and synthesis
+reuse still require exact frozen evidence. Subsequent observed/steered input may
+omit its own Snapshot because it does not establish a new Assignment.
+Storage uses the 1.0 baseline; the independent converter preserves these records
+without making missing optional execution evidence a Home-wide blocker.
+
+Operational failures are scoped to their owner, not treated as proof that the
+whole Controller must stop. Optional resource reaping and continuation metadata
+checks report failures without blocking normal scheduling. Provider retry
+admission is isolated per Session; continuation observation is isolated per Task.
+Job and Global input errors identify their Task/Job or Role and retain the
+original cause. Committed observations stay committed; failed observations do
+not acknowledge input, imply quiescence, or authorize another send or deletion.
+Use the existing status, stop/cancel, retire, acknowledge and explicit retry
+operations for the affected owner. Structural storage corruption, authority
+failure and unconfirmed external effects still require diagnosis at their
+respective boundaries, not a catch-all default or synthetic successful result.
 
 Current Task reads also expose untargeted user/Operator messages to the Task's
 current Worker and Reviewer Sessions, including requirements added after their
