@@ -3,8 +3,8 @@
 # SQLite 控制面存储
 
 Yui 唯一的权威产品 Store 是 WAL 模式的 `YUI_HOME/yui.db`。
-`storage_schema` 单行记录唯一的**主版本.小版本**与 Schema 摘要；
-1.0.0-alpha 软件包引入的纯净基线为 **1.0**。
+`storage_schema` 单行记录唯一的**主版本.小版本**与 Schema 摘要。
+1.0.0 使用已经过预发布验证的纯净存储基线 **1.0**。
 
 ## 权威
 
@@ -42,10 +42,10 @@ AgentRun 记录显式执行请求、可见输入和原始结果，不记录隐�
 
 版本 API 返回 `"1.0"` 字符串，不用浮点数。默认 `upgrade/update`
 只接受同一存储主版本内完整且连续的小版本路径；初始基线尚无升级步骤。
-跨主版本和旧整数格式只由独立显式转换器处理，运行包没有回退。
+跨主版本和旧整数格式不受支持，运行包没有回退或启发式修复路径。
 updater 先检查精确暂存包，再在维护锁内重查；未知所有权始终阻塞。
 
-独立旧 v37 转换、备份恢复、产物边界和冷启动流程见
+当前格式准入、备份恢复、产物边界和冷启动流程见
 [存储基线 1.0](./storage-baseline.zh-CN.md)。
 
 ## Home 布局
@@ -54,4 +54,3 @@ updater 先检查精确暂存包，再在维护锁内重查；未知所有权始
 `workspaces/tasks/<task>/<owner>/<project>`，Global scratch 在
 `workspaces/global`，运行数据在 `runtime`，备份在 `backups`。
 显式外部 Project 保留外部资源语义；只有受限长度的 IPC socket 可位于 Home 外。
-一次性转换不搬迁工作区，也不改写 Git 身份。

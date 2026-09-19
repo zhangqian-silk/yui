@@ -20,7 +20,7 @@ export function initializeCurrentTaskStore(home: string): TaskStore {
   return openCurrentTaskStore(home);
 }
 
-/** Open only the current SQLite contract. Historical Homes are never normalized. */
+/** Open only the current SQLite contract. Unsupported Homes are never normalized. */
 export function openCurrentTaskStore(home: string): SqliteTaskStore {
   const schema = inspectStorageSchema(home);
   if (schema.status !== "current") {

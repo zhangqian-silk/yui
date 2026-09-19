@@ -147,7 +147,7 @@ export function inspectStorageSchema(rootDir: string): StorageSchemaState {
   }
 }
 
-/** Require the current storage contract without normalizing historical data. */
+/** Require the current storage contract without normalizing unsupported data. */
 export function requireCurrentStorageSchema(rootDir: string): void {
   const state = inspectStorageSchema(rootDir);
   switch (state.status) {

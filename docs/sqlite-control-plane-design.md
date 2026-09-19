@@ -4,7 +4,8 @@
 
 Yui has one authoritative product Store: `YUI_HOME/yui.db`, in WAL mode.
 `storage_schema` contains its single **major.minor** version and schema
-checksum. The clean baseline is **1.0**, introduced by package 1.0.0-alpha.
+checksum. Package 1.0.0 uses the clean storage **1.0** baseline established and
+verified by its prereleases.
 
 ## Authority
 
@@ -55,12 +56,12 @@ native evidence settles one. WorkItem and Task acceptance remain Agent-owned.
 Version APIs expose `"1.0"` strings, not floats. Default `upgrade` / `update`
 supports only a known contiguous minor path within the same storage major.
 The initial baseline has no such steps. Cross-major and old integer formats
-require an independent explicit converter; they never enter a runtime fallback.
+are unsupported; they never enter a runtime fallback or heuristic repair path.
 The updater preflights the exact staged package before activation, then rechecks
 under its maintenance fence. Unknown ownership remains a blocker.
 
-See [Storage baseline 1.0](./storage-baseline.md) for the independent old-v37
-conversion, backup/rollback, artifact boundaries and cold startup procedure.
+See [Storage baseline 1.0](./storage-baseline.md) for current admission,
+backup/rollback, artifact boundaries and cold startup procedure.
 
 ## Unified Home layout
 
@@ -69,4 +70,3 @@ Self-managed data stays under one canonical Home: Task worktrees under
 `workspaces/global`, runtime data under `runtime`, and backups under `backups`.
 Explicit external Project inputs keep their external-resource semantics.
 Only deliberately short IPC socket paths may live outside Home.
-The converter does not relocate workspaces or rewrite their Git identities.

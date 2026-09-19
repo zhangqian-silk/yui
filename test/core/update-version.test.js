@@ -7,7 +7,7 @@ import { runUpdateCommand } from "../../dist/cli/updateCommand.js";
 import { activatedControllerEntrypoint, createUpdatePorts } from "../../dist/cli/updatePorts.js";
 import { findCommandNode } from "../../dist/cli/commandCatalog.js";
 
-test("update accepts an exact bridge version and retains target-owned preflight refusal", () => {
+test("update accepts an exact version and retains target-owned preflight refusal", () => {
   assert.ok(findCommandNode(["update"]).options.includes("--version"));
   const calls = [];
   let output = "";
@@ -21,8 +21,8 @@ test("update accepts an exact bridge version and retains target-owned preflight 
       return {
         status: "blocked",
         stage: "unsupported",
-        message: "This Home requires the bridge release.",
-        action: "Install 0.16.2 first.",
+        message: "This Home is not supported by the staged release.",
+        action: "Inspect storage compatibility before retrying.",
         sceneUnchanged: true
       };
     },
@@ -31,20 +31,20 @@ test("update accepts an exact bridge version and retains target-owned preflight 
     verify: () => assert.fail("must not verify an unactivated package"),
     cleanup: () => calls.push(["cleanup"])
   };
-  assert.equal(runUpdateCommand(["--version", "0.16.2"], { YUI_HOME: "/unused/home" },
+  assert.equal(runUpdateCommand(["--version", "1.0.0"], { YUI_HOME: "/unused/home" },
     undefined, text => { output += text; }, ports), 5);
-  assert.deepEqual(calls, [["stage", "0.16.2"], ["preflight"], ["cleanup"]]);
-  assert.match(output, /Install 0\.16\.2 first/);
+  assert.deepEqual(calls, [["stage", "1.0.0"], ["preflight"], ["cleanup"]]);
+  assert.match(output, /Inspect storage compatibility before retrying/);
   calls.length = 0;
-  runUpdateCommand(["--version", "1.0.0-alpha"], { YUI_HOME: "/unused/home" },
+  runUpdateCommand(["--version", "1.0.1"], { YUI_HOME: "/unused/home" },
     undefined, () => {}, ports);
-  assert.deepEqual(calls, [["stage", "1.0.0-alpha"], ["preflight"], ["cleanup"]]);
+  assert.deepEqual(calls, [["stage", "1.0.1"], ["preflight"], ["cleanup"]]);
   calls.length = 0;
   runUpdateCommand([], { YUI_HOME: "/unused/home" }, undefined, () => {}, ports);
   assert.deepEqual(calls, [["stage", undefined], ["preflight"], ["cleanup"]]);
   calls.length = 0;
-  for (const args of [["--version"], ["--version", "latest"], ["--version", "^0.16.2"],
-    ["--version", "0.16.2", "--version", "1.0.0"], ["--unknown"]]) {
+  for (const args of [["--version"], ["--version", "latest"], ["--version", "^1.0.0"],
+    ["--version", "1.0.0", "--version", "1.0.1"], ["--unknown"]]) {
     assert.throws(() => runUpdateCommand(args, { YUI_HOME: "/unused/home" },
       undefined, () => {}, ports), /Update usage/);
   }
@@ -62,13 +62,13 @@ test("pinned npm staging rejects a different installed version and removes only 
     return { pid: 1, output: [null, stdout, Buffer.alloc(0)], stdout,
       stderr: Buffer.alloc(0), status: 0, signal: null };
   }, stagingRoot);
-  assert.throws(() => ports.stage("0.16.2"), /requested.*0\.16\.2.*staged.*1\.0\.0/i);
+  assert.throws(() => ports.stage("1.0.1"), /requested.*1\.0\.1.*staged.*1\.0\.0/i);
   assert.deepEqual(readdirSync(stagingRoot), []);
-  assert.equal(calls[0].args.at(-1), "@zq-silk/yui@0.16.2");
-  observedVersion = "0.16.2";
-  const staged = ports.stage("0.16.2");
+  assert.equal(calls[0].args.at(-1), "@zq-silk/yui@1.0.1");
+  observedVersion = "1.0.1";
+  const staged = ports.stage("1.0.1");
   try {
-    assert.equal(staged.version, "0.16.2");
+    assert.equal(staged.version, "1.0.1");
     assert.equal(readdirSync(stagingRoot).length, 1);
   } finally {
     ports.cleanup(staged);
@@ -86,13 +86,13 @@ test("target preflight admits only contiguous same-major storage upgrades", ()=>
     const stdout=Buffer.from(JSON.stringify({ok:true,data}));
     return {pid:1,output:[null,stdout,Buffer.alloc(0)],stdout,stderr:Buffer.alloc(0),status:0,signal:null};
   });
-  const staged={binaryPath:"/unused/yui",version:"1.0.0-alpha"};
+  const staged={binaryPath:"/unused/yui",version:"1.0.0"};
   assert.equal(ports.preflight(staged,"/unused/home").status,"migration-ready");
   to="2.0";
   assert.equal(ports.preflight(staged,"/unused/home").status,"blocked");
   to="1.2";
   assert.equal(ports.preflight(staged,"/unused/home").status,"blocked");
-  from=37;to=1;
+  from=1;to=1;
   assert.equal(ports.preflight(staged,"/unused/home").status,"blocked");
 });
 

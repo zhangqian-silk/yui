@@ -69,8 +69,8 @@ drifted. An explicit ordinary retry creates a new Run and Snapshot from current
 authorized facts, without reconstructing the old snapshot; Review and synthesis
 reuse still require exact frozen evidence. Subsequent observed/steered input may
 omit its own Snapshot because it does not establish a new Assignment.
-Storage uses the 1.0 baseline; the independent converter preserves these records
-without making missing optional execution evidence a Home-wide blocker.
+Storage uses the 1.0 baseline. Missing optional execution evidence remains a
+run-scoped condition and does not become a Home-wide blocker.
 
 Operational failures are scoped to their owner, not treated as proof that the
 whole Controller must stop. Optional resource reaping and continuation metadata

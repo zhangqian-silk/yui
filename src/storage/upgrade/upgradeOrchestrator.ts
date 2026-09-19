@@ -123,9 +123,9 @@ export type RunStorageUpgradeOptions = Readonly<{
 /**
  * Upgrade only recognized minor versions within the current Home major.
  *
- * Supported earlier versions are readable only here. Ordinary stores still
- * admit exactly {@link CURRENT_STORAGE_VERSION}; no old-shape normalizer or
- * dual read path enters runtime code. Execute mode is an offline primitive:
+ * Declared source versions are readable only here. Ordinary stores still
+ * admit exactly {@link CURRENT_STORAGE_VERSION}; no alternate-shape normalizer
+ * or dual read path enters runtime code. Execute mode is an offline primitive:
  * its caller must own the maintenance fence and keep the Controller quiesced
  * for the whole backup, migration, and validation interval.
  */
@@ -423,8 +423,7 @@ function unsupportedClassification(
       + `migration version ${MIN_SUPPORTED_STORAGE_VERSION}.`;
   const action = future
     ? "Use a newer Yui release."
-    : "Preserve this Home for use with its matching historical Yui release, "
-      + "or use the independent explicit converter for a different storage major.";
+    : "Preserve this Home unchanged and let an Agent or Operator decide its disposition.";
   return {
     classification: {
       verdict: "NEEDS_NEW_VERSION",
