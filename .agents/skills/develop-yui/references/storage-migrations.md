@@ -25,7 +25,7 @@ converter. `tools/baseline-cutover` is an independently packaged, explicit
 old-v37 to new-1.0 converter. It accepts only proven source structure and keeps
 full backup, original audit bytes and quiescence boundaries. Malformed or
 unsettled state is a diagnosis, not permission for heuristic repair.
-The unpublished v37 → 1.0 cutover preserves missing optional execution evidence.
+The v37 → 1.0 cutover preserves missing optional execution evidence.
 It does not require every retained Run to be ready for execution. Keep incomplete
 Runs readable for supervision; enforce Snapshot prerequisites only at execution
 or exact-evidence reuse. Never fabricate Context or remove referenced Runs.

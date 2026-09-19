@@ -6,11 +6,25 @@ import { RECORD_TABLES, convertBrief, convertRecord } from "./records.mjs";
 const ledger = JSON.parse(readFileSync(new URL("./legacy-ledger.json", import.meta.url), "utf8"));
 const SCHEMA_DIGEST = "32cc8cd0a1eb47c5a08f0b3767245da3bde1e262b949b5a299e31c1e67e9f1f4";
 const quote = value => `"${value.replaceAll('"', '""')}"`;
+// v37 Homes can retain an equivalent, differently indented home_meta DDL.
+// This table has no quoted strings; only leading/trailing line whitespace is
+// ignored. Every field, token and constraint still matches the frozen schema.
+const HOME_META_SQL = `CREATE TABLE home_meta (
+  id            INTEGER PRIMARY KEY CHECK (id = 1),
+  home_identity TEXT NOT NULL,
+  revision      INTEGER NOT NULL,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL
+)`;
+const withoutIndentation = sql => sql.split("\n").map(line => line.trim()).join("\n");
 
 export function inspectLegacyDatabase(db) {
   const objects = db.prepare(`SELECT type,name,sql FROM sqlite_master
     WHERE name NOT GLOB 'sqlite_*' ORDER BY type,name`).all();
-  const digest = createHash("sha256").update(JSON.stringify(objects)).digest("hex");
+  const comparable = objects.map(object => object.type === "table" && object.name === "home_meta"
+    && withoutIndentation(object.sql) === withoutIndentation(HOME_META_SQL)
+    ? { ...object, sql: HOME_META_SQL } : object);
+  const digest = createHash("sha256").update(JSON.stringify(comparable)).digest("hex");
   if (digest !== SCHEMA_DIGEST) throw new Error("Expected the exact 0.16.2 v37 schema. Use the frozen bridge for older formats; never repair or guess a source.");
   const actual = db.prepare("SELECT version,name,checksum FROM schema_migrations ORDER BY version").all();
   if (!isDeepStrictEqual(actual, ledger)) throw new Error("The v37 ledger differs from the frozen 0.16.2 contract.");
@@ -89,6 +103,19 @@ export function convertDatabase(db, runtime) {
     archive.run("baseline-v37/task-brief", row.task_id, row.brief);
     db.prepare("UPDATE task_records SET brief=? WHERE task_id=?").run(JSON.stringify(brief),row.task_id);
     changedRecords++;
+  }
+  const homeMetaSql = db.prepare("SELECT sql FROM sqlite_master WHERE name='home_meta'").get().sql;
+  if (homeMetaSql !== HOME_META_SQL) {
+    archive.run("baseline-v37/schema", "home_meta", homeMetaSql);
+    const original = db.prepare("SELECT * FROM home_meta ORDER BY id").all();
+    db.exec("ALTER TABLE home_meta RENAME TO baseline_old_home_meta");
+    db.exec(HOME_META_SQL);
+    db.exec(`INSERT INTO home_meta (id,home_identity,revision,created_at,updated_at)
+      SELECT id,home_identity,revision,created_at,updated_at FROM baseline_old_home_meta`);
+    if (!isDeepStrictEqual(db.prepare("SELECT * FROM home_meta ORDER BY id").all(), original)) {
+      throw new Error("Home identity changed during DDL canonicalization.");
+    }
+    db.exec("DROP TABLE baseline_old_home_meta");
   }
   // The new baseline supplies its own identity DDL; none of the historical
   // ledger is re-labelled as a current minor upgrade.

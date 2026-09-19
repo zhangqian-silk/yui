@@ -4,6 +4,11 @@ This archive is separate from the Yui runtime. It accepts only the frozen
 0.16.2 storage v37 contract and converts it to the distinct storage 1.0 baseline.
 It does not contain or execute the full historical upgrade chain.
 
+Equivalent indentation in `home_meta` is accepted without relaxing its columns
+or constraints. Conversion archives the original DDL and recreates only that
+table with the target's canonical definition, preserving its rows exactly.
+Other schema objects and the complete ledger still require exact matches.
+
 Use Node.js 20.17+, 22.9+, or 24 on Linux. Supply a separately installed new
 Yui package directory, including its native dependencies:
 

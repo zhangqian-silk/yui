@@ -110,11 +110,11 @@ jobs:
           } | tee release-provenance.txt
 
       - name: Package independent one-time converter
-        if: github.ref_name == 'v1.0.0-alpha'
+        if: github.ref_name == 'v1.0.0-alpha' || startsWith(github.ref_name, 'v1.0.0-alpha.')
         run: node scripts/package-baseline-converter.mjs --output yui-baseline-cutover.tgz
 
       - name: Preserve independent converter
-        if: github.ref_name == 'v1.0.0-alpha'
+        if: github.ref_name == 'v1.0.0-alpha' || startsWith(github.ref_name, 'v1.0.0-alpha.')
         uses: actions/upload-artifact@v7
         with:
           name: yui-baseline-cutover
@@ -208,7 +208,7 @@ jobs:
           npm publish ./release-artifact/yui-runtime.tgz --access public --provenance --tag "$dist_tag"
 
   baseline-release:
-    if: github.ref_name == 'v1.0.0-alpha'
+    if: github.ref_name == 'v1.0.0-alpha' || startsWith(github.ref_name, 'v1.0.0-alpha.')
     needs: publish
     runs-on: ubuntu-latest
     permissions:
