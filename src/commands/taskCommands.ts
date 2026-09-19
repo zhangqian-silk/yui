@@ -6272,7 +6272,14 @@ function retryRunOperation(
   const now = clock(options);
   const previous = store.transaction((tx) => {
     const run = requireRun(tx, args[0], options);
-    readRunContextSnapshot(tx, run);
+    // Review, synthesis and bounded automatic recovery reuse exact evidence.
+    // Explicit ordinary retries below
+    // create a new Run and Snapshot from current authorized facts; missing old
+    // evidence must not prevent that explicit recovery.
+    if (run.purpose === "review" || run.sourceExecutionGroupId !== undefined
+      || options.providerRetryChainId !== undefined) {
+      readRunContextSnapshot(tx, run);
+    }
     return run;
   });
   if (previous.purpose === "review") {

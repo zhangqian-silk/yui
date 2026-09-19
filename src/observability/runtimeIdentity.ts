@@ -17,7 +17,8 @@ import Database from "better-sqlite3";
 
 import {
   CURRENT_STORAGE_VERSION,
-  MIN_SUPPORTED_STORAGE_VERSION
+  MIN_SUPPORTED_STORAGE_VERSION,
+  type StorageVersion
 } from "../storage/storageVersions.js";
 import {
   inspectStorageSchema,
@@ -54,8 +55,8 @@ export type StorageIdentityFinding = Readonly<{
 export type StorageIdentity = Readonly<{
   home: string;
   storageStatus: StorageSchemaState["status"];
-  storageVersion: number | Unsupported;
-  minimumStorageVersion: number;
+  storageVersion: StorageVersion | Unsupported;
+  minimumStorageVersion: StorageVersion;
   /** The one backend ordinary startup opens. */
   configuredBackend: "sqlite";
   /** Worker selected by THIS process environment (YUI_STORE_WORKER). */

@@ -27,7 +27,8 @@ npm test        # 或：npm run test:core
 
 ## 在隔离环境中验证你的 checkout
 
-绝不要用全局 `yui` 或 `make link` 来验证本地修改。应改为：
+绝不要用全局 `yui` 来验证本地修改。开发工具只创建 checkout 内的隔离启动器，
+不修改已有的全局命令、链接或备份。使用：
 
 ```sh
 make install-local

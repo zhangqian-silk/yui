@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
-import { migrateSqliteSchema } from "../../dist/storage/sqliteSchema.js";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { createProject } from "../../dist/repository/project.js";
 import { createTask, activateTask, completeTask } from "../../dist/task/task.js";
@@ -230,31 +229,4 @@ test("exact historical coverage remains valid while multi-Project delivery stays
   assert.equal(delivery.mergedProjectCount, 1);
   assert.equal(delivery.projects[1].coverage, "missing");
   assert.equal(delivery.integratedCoverageSatisfied, false);
-});
-
-test("storage 25 to 26 preserves historical completion and Publication bytes without inferred adoption", () => {
-  const db = new Database(":memory:");
-  try {
-    migrateSqliteSchema(db, { mode: "apply", throughVersion: 25 });
-    const publication = createPublicationReference("publication-1", "task-1", {
-      projectId: "project-1", provider: "github", repository: "fixture/app", externalKind: "pull-request",
-      externalId: "1", localCommit: "a".repeat(40), state: "merged",
-      verification: "verified", remoteCommit: "b".repeat(40)
-    }, now);
-    const original = JSON.stringify(publication);
-    db.prepare(`INSERT INTO publication_references
-      (task_id, publication_id, project_id, provider, repository, external_kind, external_id,
-       external_key, state, verification, local_commit, remote_commit, payload, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      "task-1", "publication-1", "project-1", "github", "fixture/app", "pull-request", "1",
-      "github/fixture/app/1", "merged", "verified", publication.localCommit, publication.remoteCommit, original,
-      now.toISOString());
-    const completion = JSON.stringify(createTaskEvent("event-1", "task-1", "task.completed",
-      { projectHeads: `project-1@${publication.localCommit}` }, now));
-    db.prepare("INSERT INTO events VALUES (?, ?, ?, ?, ?)").run(
-      "task-1", "event-1", "task.completed", now.toISOString(), completion);
-    assert.equal(migrateSqliteSchema(db, { mode: "apply", throughVersion: 26 }).applied.length, 1);
-    assert.equal(db.prepare("SELECT payload FROM publication_references").get().payload, original);
-    assert.deepEqual(db.prepare("SELECT payload FROM events").all(), [{ payload: completion }]);
-  } finally { db.close(); }
 });

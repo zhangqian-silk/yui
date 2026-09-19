@@ -274,9 +274,8 @@ export type AcpConfigOption = Readonly<{
 /**
  * Read a `configOptions` array from a session setup or set-option result.
  *
- * Returns undefined when the field is absent, which is how an Agent that
- * predates config options answers; that is a different fact from an Agent
- * answering with an empty list, which offers nothing configurable. Callers must
+ * Returns undefined when the field is absent: configuration support is then
+ * unobserved. An explicit empty list instead offers nothing configurable. Callers must
  * be able to tell those apart, so the absence is not flattened to `[]`.
  */
 export function readAcpConfigOptions(value: unknown): readonly AcpConfigOption[] | undefined {

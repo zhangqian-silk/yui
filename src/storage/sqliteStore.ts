@@ -12,7 +12,7 @@
  *                                    the write transaction; conflict ->
  *                                    StorageConflictError (transactionWithRevisionCas).
  *   - Atomic durable write ........ WAL + synchronous=FULL; COMMIT == fsync.
- *   - Mailbox per-target ordering . WorkMailbox v2 sequence/cursors in one row.
+ *   - Mailbox per-target ordering . WorkMailbox sequence/cursors in one row.
  *   - Exactly-once terminal state . conditional updates + UNIQUE(request_id)
  *                                    on the durable outbox.
  *   - Crash recovery .............. WAL rollback of uncommitted transactions;
@@ -133,13 +133,14 @@ import {
   type ContextRecordQuery
 } from "./contextRecords.js";
 import {
-  inspectSqliteSchemaMigrations,
-  migrateSqliteSchema,
-  SqliteSchemaMigrationError,
+  initializeSqliteSchema,
+  validateSqliteSchema,
+  SqliteSchemaError,
   TELEMETRY_KEEP_PER_RUN,
   TELEMETRY_RUN_CAP
 } from "./sqliteSchema.js";
 import { StorageSchemaError } from "./storageSchema.js";
+import { STORAGE_FORMAT, type StorageVersion } from "./storageVersions.js";
 import { queryTaskCatalog, type TaskCatalogQuery } from "./taskCatalog.js";
 import {
   CURRENT_CONFIG_SCHEMA_VERSION,
@@ -166,6 +167,8 @@ import {
 export type SqliteTaskStoreOptions = Readonly<{
   /** Override the database filename (defaults to "yui.db"). */
   databaseFilename?: string;
+  /** Existing current Home diagnostics, with SQLite itself prohibiting writes. */
+  readonly?: boolean;
 }>;
 
 /** Options for {@link SqliteTaskStore.transaction}. */
@@ -274,13 +277,13 @@ function assertRunAdmission(task: Task | null, run: AgentRun): void {
 export class SqliteTaskStore implements TaskStore {
   readonly #db: Database.Database;
   readonly #rootDir: string;
-  readonly #openedSchemaHead: Readonly<{ version: number; checksum: string }>;
+  readonly #openedSchemaHead: Readonly<{ version: StorageVersion; checksum: string }>;
   #inTransaction = false;
   #dirty = false;
 
   constructor(rootDir: string, _options: SqliteTaskStoreOptions = {}) {
     this.#rootDir = rootDir;
-    mkdirSync(rootDir, { recursive: true, mode: 0o700 });
+    if (!_options.readonly) mkdirSync(rootDir, { recursive: true, mode: 0o700 });
     const filename = _options.databaseFilename ?? "yui.db";
     const databasePath = join(rootDir, filename);
     // Remember whether the database file existed before this connection opened
@@ -288,18 +291,16 @@ export class SqliteTaskStore implements TaskStore {
     // may seed its singleton rows; a store that opens an existing file missing
     // those rows has found corruption, not a bootstrap opportunity.
     const databaseExisted = existsSync(databasePath);
-    this.#db = new Database(databasePath);
+    this.#db = new Database(databasePath, _options.readonly ? { readonly: true, fileMustExist: true } : {});
     try {
+      const existingSchema = databaseExisted ? validateSqliteSchema(this.#db) : undefined;
       // §4.1 / §9: WAL, no fsync weakening, FKs on, busy timeout for CLI contention.
-      this.#db.pragma("journal_mode = WAL");
+      if (!_options.readonly) this.#db.pragma("journal_mode = WAL");
       this.#db.pragma("synchronous = FULL");
       this.#db.pragma("foreign_keys = ON");
       this.#db.pragma("busy_timeout = 5000");
       this.#db.pragma("wal_autocheckpoint = 1000");
-      migrateSqliteSchema(this.#db, {
-        mode: !databaseExisted ? "apply" : "validate"
-      });
-      const schema = inspectSqliteSchemaMigrations(this.#db);
+      const schema = existingSchema ?? initializeSqliteSchema(this.#db);
       this.#openedSchemaHead = {
         version: schema.currentVersion,
         checksum: schema.currentChecksum
@@ -476,17 +477,17 @@ export class SqliteTaskStore implements TaskStore {
   /** Verify the SQLite schema head at the single write boundary. */
   #prepareWrite(): void {
     const current = this.#db.prepare(
-      "SELECT version, checksum FROM schema_migrations ORDER BY version DESC LIMIT 1"
-    ).get() as { version?: unknown; checksum?: unknown } | undefined;
+      "SELECT format, major || '.' || minor AS version, checksum FROM storage_schema WHERE id=1"
+    ).get() as { format?: unknown; version?: unknown; checksum?: unknown } | undefined;
     if (
-      current?.version !== this.#openedSchemaHead.version
+      current?.format !== STORAGE_FORMAT
+      || current.version !== this.#openedSchemaHead.version
       || current.checksum !== this.#openedSchemaHead.checksum
     ) {
-      throw new SqliteSchemaMigrationError(
-        `open Store schema head ${this.#openedSchemaHead.version}/${this.#openedSchemaHead.checksum} `
+      throw new SqliteSchemaError(
+        `open Store format ${STORAGE_FORMAT} found ${String(current?.format)}; schema head ${this.#openedSchemaHead.version}/${this.#openedSchemaHead.checksum} `
           + `changed to ${String(current?.version)}/${String(current?.checksum)}; `
-          + "reopen the Store with the active Yui version before writing",
-        "admission"
+          + "reopen the Store with the active Yui version before writing"
       );
     }
   }
@@ -2505,7 +2506,7 @@ export class SqliteTaskStore implements TaskStore {
 
   #saveActiveRun(taskId: string, pointer: string, runId: string): void {
     this.#mutate(() => {
-      const payload = this.#json({ schemaVersion: 3, runId });
+      const payload = this.#json({ schemaVersion: 1, runId });
       this.#db.prepare(
         `INSERT INTO active_turns (task_id, pointer, turn_id, payload, updated_at) VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(task_id, pointer) DO UPDATE SET turn_id = excluded.turn_id, payload = excluded.payload, updated_at = excluded.updated_at`

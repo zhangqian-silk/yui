@@ -20,7 +20,7 @@ import { agentTransportForAdapter, type AgentTransport } from "../agent/connecti
 import { resolveAgentAdapter } from "../executor/agentAdapter.js";
 
 export type AgentHostLaunchPayload = Readonly<{
-  schemaVersion: 2;
+  schemaVersion: 1;
   command: string;
   args: readonly string[];
   environment: Readonly<Record<string, string>>;
@@ -142,7 +142,7 @@ export function validateAgentHostLaunchPayload(value: unknown): AgentHostLaunchP
 }
 
 function validatePayload(payload: AgentHostLaunchPayload): AgentHostLaunchPayload {
-  if (payload.schemaVersion !== 2) throw new Error("Agent Host launch payload version is invalid.");
+  if (payload.schemaVersion !== 1) throw new Error("Agent Host launch payload version is invalid.");
   text(payload.command, "command");
   text(payload.cwd, "cwd");
   if (payload.startupRunId !== undefined) {

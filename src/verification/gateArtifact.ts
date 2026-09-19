@@ -3,6 +3,7 @@ import { isAbsolute } from "node:path";
 
 import {
   requireIdentity,
+  requireKnownFields,
   requirePositiveInteger,
   requireText,
   requireTimestamp
@@ -169,6 +170,10 @@ export function recordGateArtifactReuse(
 }
 
 export function validateGateArtifact(artifact: GateArtifact): GateArtifact {
+  requireKnownFields(artifact, [
+    "schemaVersion","key","projectId","level","commit","planId","planVersion","planDigest","toolchainDigest",
+    "boundary","steps","generator","status","outcome","reuseCount","createdAt","completedAt","lastUsedAt"
+  ] satisfies readonly (keyof GateArtifact)[], "GateArtifact");
   if (artifact.schemaVersion !== GATE_ARTIFACT_SCHEMA_VERSION) {
     throw new Error(
       `GateArtifact must use schemaVersion ${GATE_ARTIFACT_SCHEMA_VERSION}.`
@@ -230,7 +235,6 @@ export function validateGateArtifact(artifact: GateArtifact): GateArtifact {
       throw new Error(`GateArtifact step ${step.name} logBytes is invalid.`);
     }
   }
-  if (Object.hasOwn(artifact, "potentialReuseCount")) throw new Error("GateArtifact contains retired shadow metrics.");
   requirePositiveInteger(artifact.reuseCount + 1, "GateArtifact reuseCount");
   requireTimestamp(artifact.createdAt, "GateArtifact createdAt");
   requireTimestamp(artifact.lastUsedAt, "GateArtifact lastUsedAt");

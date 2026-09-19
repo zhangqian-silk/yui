@@ -27,7 +27,6 @@ import { terminalizeExactTaskRun } from "../../dist/lifecycle/exactRunTerminaliz
 import { createRuntimeLifecycleDispatcher } from "../../dist/controller/runtime.js";
 import { startControllerServer } from "../../dist/core/controllerServer.js";
 import { runStorageUpgrade } from "../../dist/storage/upgrade/upgradeOrchestrator.js";
-import { migrateSqliteSchema } from "../../dist/storage/sqliteSchema.js";
 import { mkdirSync } from "node:fs";
 import { renameSync } from "node:fs";
 import { FileRoleLaunchPlanner } from "../../dist/executor/fileRoleLaunchPlanner.js";
@@ -77,36 +76,6 @@ function executionFixture(t) {
   const scheduler = new FileSchedulerStoreAdapter(store);
   return { home, store, scheduler, environment, identity, run, command };
 }
-
-test("Host migration appends after the published v21 ledger without rewriting its prefix", async t => {
-  const home = mkdtempSync(join(tmpdir(), "yui-host-upgrade-v21-"));
-  t.after(() => {
-    rmSync(home, { recursive: true, force: true });
-    rmSync(`${home}-backups`, { recursive: true, force: true });
-  });
-  // Initialize valid singleton records; their layouts are unchanged by 22.
-  // Build the historical schema from its real registry, not a downgraded ledger.
-  new SqliteTaskStore(home).close();
-  const seed = join(home, "singleton-seed.db");
-  renameSync(join(home, "yui.db"), seed);
-  const source = new Database(join(home, "yui.db"));
-  migrateSqliteSchema(source, { mode: "apply", throughVersion: 21 });
-  source.prepare("ATTACH DATABASE ? AS seed").run(seed);
-  source.exec("INSERT INTO home_meta SELECT * FROM seed.home_meta; INSERT INTO config SELECT * FROM seed.config;");
-  const prefix = source.prepare("SELECT * FROM schema_migrations ORDER BY version").all();
-  source.close();
-  const result = await runStorageUpgrade({ home, mode: "execute" });
-  assert.equal(result.outcome, "upgraded", JSON.stringify(result));
-  assert.equal(result.report.sourceVersion, 21);
-  assert.equal(result.report.targetVersion, CURRENT_STORAGE_VERSION);
-  assert.deepEqual(result.report.steps.map(({ fromVersion, toVersion, name }) => ({ fromVersion, toVersion, name }))[0], {
-    fromVersion: 21, toVersion: 22, name: "controller-owned-agent-host-ingress"
-  });
-  const upgraded = new Database(join(home, "yui.db"), { readonly: true });
-  try {
-    assert.deepEqual(upgraded.prepare("SELECT * FROM schema_migrations WHERE version <= 21 ORDER BY version").all(), prefix);
-  } finally { upgraded.close(); }
-});
 
 test("production launch preserves scoped startup facts before native Session adoption", async t => {
   const { home, store, scheduler, run: createdRun } = executionFixture(t);
@@ -409,7 +378,7 @@ test("Controller resolves Host facts, retains ACK-loss replay and rejects wrong/
   assert.ok(store.listEvents("task-1").some(e => JSON.stringify(e.payload).includes("workspace does not match")));
   const status = runTaskCommand(["role", "status", "task-1", "worker"], store, {
     environment: {}, liveHostObservations: { worker: { snapshot: {
-      schemaVersion: 2, state: "failed", adapterId: "codex", nativeSessionId: identity.nativeSessionId,
+      schemaVersion: 1, state: "failed", adapterId: "codex", nativeSessionId: identity.nativeSessionId,
       detail: "This Home does not use a supported storage contract.", updatedAt: new Date().toISOString()
     } } }
   });

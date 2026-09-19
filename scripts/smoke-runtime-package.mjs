@@ -154,6 +154,9 @@ try {
   assert.equal(lifecycle.running, true);
   assert.equal(lifecycle.pid, controller.processes[0].pid);
   assert.equal(lifecycle.identity.version, packageJson.version);
+  assert.equal(lifecycle.identity.controllerProtocolVersion, status.identity.runtime.protocolVersion);
+  assert.equal(lifecycle.identity.storageVersion, status.identity.storage.storageVersion);
+  assert.equal(lifecycle.identity.minimumStorageVersion, status.identity.storage.minimumStorageVersion);
   const { task } = json("task", "create", "runtime smoke");
   assert.equal(task.status, "draft");
   assert.throws(() => runCli(cli, ["task", "activate", task.id], environment), error => {

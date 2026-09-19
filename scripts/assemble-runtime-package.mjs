@@ -52,6 +52,8 @@ const RUNTIME_DOCUMENTS = [
   "docs/roles-and-configuration.zh-CN.md",
   "docs/sqlite-control-plane-design.md",
   "docs/sqlite-control-plane-design.zh-CN.md",
+  "docs/storage-baseline.md",
+  "docs/storage-baseline.zh-CN.md",
   "docs/task-dag-semantics.md",
   "docs/task-dag-semantics.zh-CN.md",
   "docs/task-delivery.md",

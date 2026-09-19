@@ -71,7 +71,7 @@ export type ProviderTurn = Readonly<{
 }>;
 
 export type ProviderRuntimeBinding = Readonly<{
-  schemaVersion: 5;
+  schemaVersion: 1;
   providerNamespace: string;
   accountScope: string;
   currentConversationEpoch: number;
@@ -93,7 +93,7 @@ export function createProviderRuntimeBinding(input: Readonly<{
 }>): ProviderRuntimeBinding {
   const startedAt = timestamp(input.startedAt, "Provider Conversation startedAt");
   return validateProviderRuntimeBinding({
-    schemaVersion: 5,
+    schemaVersion: 1,
     providerNamespace: identity(input.providerNamespace, "Provider namespace"),
     accountScope: identity(input.accountScope, "Provider account scope"),
     currentConversationEpoch: 1,
@@ -484,7 +484,7 @@ export function supersedeProviderConversation(
 }
 
 export function validateProviderRuntimeBinding(value: ProviderRuntimeBinding): ProviderRuntimeBinding {
-  if (value.schemaVersion !== 5) throw new Error("Provider Runtime Binding schemaVersion must be 5.");
+  if (value.schemaVersion !== 1) throw new Error("Provider Runtime Binding schemaVersion must be 1.");
   identity(value.providerNamespace, "Provider namespace");
   identity(value.accountScope, "Provider account scope");
   integer(value.currentConversationEpoch, 1, "Current Provider Conversation epoch");

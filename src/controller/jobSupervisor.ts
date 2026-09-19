@@ -191,9 +191,10 @@ export class DurableJobSupervisor {
       try {
         this.#reconcileJob(job, now);
       } catch (error) {
-        this.#onError(error instanceof Error
-          ? error
-          : new Error(`DurableJob supervision failed for ${job.id}: ${String(error)}`));
+        this.#onError(new Error(`DurableJob supervision failed for ${job.taskId}/${job.id}: `
+          + `${error instanceof Error ? error.message : String(error)}. `
+          + "Inspect retained process/artifact evidence before retry or cancellation; effects remain unconfirmed.",
+        { cause: error }));
       }
     }
   }

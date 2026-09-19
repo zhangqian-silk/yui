@@ -77,7 +77,7 @@ function observation(
   const eventId = hookEventId(input, mapped, requestOccurrenceId);
   const fence = { ...input.fence, ...mapped.fence };
   return createRuntimeObservation({
-    schemaVersion: 4,
+    schemaVersion: 1,
     eventId,
     semanticKey: requestOccurrenceId === undefined
       ? runtimeObservationSemanticKey({

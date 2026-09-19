@@ -152,8 +152,8 @@ export async function runDurableJobRunner(
       let child: ReturnType<typeof spawn>;
       try {
         // Issue 08: a structured argv step executes without a shell so its
-        // tokens can never be reinterpreted; a legacy command step keeps the
-        // shell form. A per-step cwd/env override applies to either form.
+        // tokens can never be reinterpreted; an explicit command step uses
+        // the shell. A per-step cwd/env override applies to either form.
         const stepCwd = jobStepDirectory(spec.workspace, step.cwd);
         const stepEnv = step.env === undefined
           ? spec.env

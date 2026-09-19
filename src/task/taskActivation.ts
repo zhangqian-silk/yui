@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { requireIdentity, requireTimestamp } from "../domain/validation.js";
+import { requireIdentity, requireTimestamp, requireKnownFields } from "../domain/validation.js";
 import type { TaskEvent } from "../event/taskEvent.js";
 import {
   recordOperationEvidence,
@@ -360,15 +360,16 @@ export function validateTaskActivationRequest(
   if (request.schemaVersion !== 1) {
     throw new Error("Activation request must use schemaVersion 1.");
   }
+  requireKnownFields(request, [
+    "schemaVersion","operation","startMode","afterPlanningRun","environmentPlan","disposition",
+    "preparationId","outcome","requestedAt","updatedAt"
+  ] satisfies readonly (keyof TaskActivationRequest)[], "Activation request");
   validateOperationFacts(request.operation);
   if (request.operation.capability !== TASK_ACTIVATION_CAPABILITY) {
     throw new Error("Activation request capability is invalid.");
   }
   if (!["immediate", "after-planning-turn"].includes(request.startMode)) {
     throw new Error(`Activation start mode is invalid: ${String(request.startMode)}.`);
-  }
-  if (Object.hasOwn(request, "origin")) {
-    throw new Error("Activation contains retired origin metadata; use the storage upgrade boundary.");
   }
   if ((request.startMode === "after-planning-turn")
     !== (request.afterPlanningRun !== undefined)) {

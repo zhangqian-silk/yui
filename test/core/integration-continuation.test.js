@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
-import { migrateSqliteSchema } from "../../dist/storage/sqliteSchema.js";
 import { CURRENT_STORAGE_VERSION } from "../../dist/storage/storageVersions.js";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { createProject, addProjectKnowledge } from "../../dist/repository/project.js";
@@ -182,7 +181,7 @@ test("a check that mutates its candidate cannot publish reusable successful evid
   git(f.repo, "commit", "--allow-empty", "-m", "candidate");
   const candidate = git(f.repo, "rev-parse", "HEAD");
   git(f.repo, "checkout", "main");
-  const plan = { schemaVersion: 2, kind: "verification-plan", id: "checks", version: "1",
+  const plan = { schemaVersion: 1, kind: "verification-plan", id: "checks", version: "1",
     bootstrap: [], l2: { steps: [{
       name: "mutating-check", argv: [process.execPath, "-e", "require('fs').writeFileSync('file','mutated\\n')"]
     }] } };
@@ -273,7 +272,7 @@ test("Integration reuses exact checks, reruns explicitly, and cannot bypass equi
   const script = `const fs=require("fs"); const p=${JSON.stringify(count)};
     fs.writeFileSync(p,String((fs.existsSync(p)?Number(fs.readFileSync(p)):0)+1));
     console.log("actual gate"); process.exit(fs.existsSync(${JSON.stringify(fail)})?1:0);`;
-  const plan = { schemaVersion: 2, kind: "verification-plan", id: "checks", version: "1",
+  const plan = { schemaVersion: 1, kind: "verification-plan", id: "checks", version: "1",
     bootstrap: [], l2: { steps: [{ name: "check", argv: [process.execPath, "-e", script] }] } };
   const project = addProjectKnowledge(f.store.getProject("project-1"), "knowledge-1", "Checks", JSON.stringify(plan), now);
   f.store.saveProject(project);
@@ -430,84 +429,4 @@ test("validating settlement distinguishes new check conditions from an already-a
     assert.equal(f.starts(), 1);
     assert.equal(f.store.getIntegrationWorkspace(...ids).root, conflict.workspace.path);
   });
-});
-
-test("storage 20 classifies old Git conflicts without fabricating recovery evidence", () => {
-  const db = new Database(":memory:");
-  try {
-    migrateSqliteSchema(db, { mode: "apply", throughVersion: 19 });
-    const base = createIntegrationAttempt({
-      id: "integration-1", taskId: "task-1", projectId: "project-1",
-      targetRef: "main", beforeCommit: "a".repeat(40),
-      source: { kind: "upstream", strategy: "rebase", remoteCommit: "b".repeat(40), taskBaseCommit: "c".repeat(40), branch: "main" }
-    }, now);
-    const old = {
-      ...base, status: "blocked", conflict: { affectedPaths: ["file"], summary: "Upstream rebase conflicts in main." },
-      resolution: { action: "manual-resolution", rationale: "resolved", decidedBy: "leader", decidedAt: now.toISOString() }
-    };
-    const insert = db.prepare("INSERT INTO integration_attempts VALUES (?, ?, ?, ?, ?)");
-    const payloads = [
-      old,
-      { ...old, id: "integration-2", conflict: { affectedPaths: [], summary: "Target moved" } },
-      { ...old, id: "integration-3",
-        source: { kind: "work-item", workItemId: "work-item-1", startCommit: "a".repeat(40), resultCommit: "b".repeat(40), strategy: "manual" },
-        conflict: { affectedPaths: [], summary: "Manual WorkItem integration" } }
-    ];
-    for (const value of payloads) insert.run("task-1", value.id, "blocked", JSON.stringify(value), now.toISOString());
-    // Snapshot of the v19 record contract observed using the actual baseline
-    // service in the temporary compatibility regression: no new receipt or
-    // digest is seeded. This unit keeps the migration itself seconds-scale.
-    const ff = { ...createIntegrationAttempt({
-      ...base, id: "integration-4", checkCommands: ["true"],
-      source: { kind: "work-item", workItemId: "work-item-1", strategy: "ff",
-        startCommit: base.beforeCommit, resultCommit: "b".repeat(40) }
-    }, now), jobId: "job-1" };
-    const project = createProject("project-1", "app", "/fixture/stable", { stable: "main", development: "main" }, now);
-    const task = activateTask(createTask("task-1", "Legacy FF", now, {
-      projectBindings: [{ projectId: project.id, directory: "app", baseRef: "main",
-        baseCommit: ff.beforeCommit, currentCommit: ff.beforeCommit }]
-    }), now);
-    db.prepare("INSERT INTO tasks_catalog (task_id,status,lifecycle,is_active,created_at,updated_at) VALUES (?,?,?,?,?,?)")
-      .run(task.id, "active", "delivery", 1, task.createdAt, task.updatedAt);
-    db.prepare("INSERT INTO task_records (task_id,payload,updated_at) VALUES (?,?,?)").run(task.id, JSON.stringify(task), task.updatedAt);
-    db.prepare("INSERT INTO projects VALUES (?,?,?,?,?,?)").run(project.id, project.name, project.path, JSON.stringify(project), project.createdAt, project.updatedAt);
-    const main = createManagedWorkspace({
-      owner: { type: "task", taskId: task.id }, root: "/fixture/main",
-      entries: [{ projectId: project.id, directory: "app", access: "write", path: "/fixture/main",
-        branch: "main", baseRef: "main", baseCommit: ff.beforeCommit }]
-    }, now);
-    const workspace = createManagedWorkspace({
-      owner: { type: "integration-attempt", taskId: task.id, integrationAttemptId: ff.id },
-      root: "/fixture/integration",
-      entries: [{ ...main.entries[0], path: "/fixture/integration", branch: "integration" }]
-    }, now);
-    for (const w of [main, workspace]) db.prepare("INSERT INTO managed_workspaces VALUES (?,?,?,?,?,?,?,?)")
-      .run(w.owner.type, managedWorkspaceKey(w.owner), task.id, w.root, JSON.stringify(w), "active", w.createdAt, w.updatedAt);
-    const jobInput = {
-      id: "job-1", taskId: task.id, owner: { kind: "integration-attempt", integrationAttemptId: ff.id },
-      projectId: project.id, head: ff.source.resultCommit, workspace: workspace.root,
-      env: {}, steps: [{ name: "check-1", command: "true", timeoutMs: 1800000 }], artifactsLocator: "artifacts/job-1"
-    };
-    const job = createDurableJob({ ...jobInput, operation: {
-      requestId: "fixture-request", actorId: "fixture:leader", authorityRef: "fixture:leader",
-      inputDigest: durableJobIdempotencyKey(jobInput)
-    } }, now);
-    db.prepare("INSERT INTO durable_jobs (job_id,task_id,idempotency_key,status,payload,created_at,updated_at) VALUES (?,?,?,?,?,?,?)")
-      .run(job.id, task.id, job.idempotencyKey, job.status, JSON.stringify(job), job.createdAt, job.updatedAt);
-    insert.run(task.id, ff.id, ff.status, JSON.stringify(ff), ff.updatedAt);
-    const result = migrateSqliteSchema(db, { mode: "apply", throughVersion: 20 });
-    assert.deepEqual(result.applied, [20]);
-    const rows = db.prepare("SELECT status, payload FROM integration_attempts ORDER BY integration_id").all();
-    assert.deepEqual(rows.map(row => row.status), ["conflicted", "blocked", "blocked", "running"]);
-    assert.deepEqual(rows.slice(0, 3).map(row => JSON.parse(row.payload)), [
-      { ...old, status: "conflicted" }, payloads[1], payloads[2]
-    ]);
-    const upgraded = JSON.parse(rows[3].payload);
-    assert.equal(upgraded.sourceProgress.head, ff.source.resultCommit);
-    assert.equal(upgraded.candidateCommit, job.head);
-    assert.equal(upgraded.checkInputDigest, durableJobIdempotencyKey(job));
-    assert.equal(upgraded.sourceProgress.activeAction, undefined);
-    assert.equal(upgraded.checks, undefined); // no fabricated successful checks
-    assert.deepEqual(migrateSqliteSchema(db, { mode: "apply", throughVersion: 20 }).applied, []);
-  } finally { db.close(); }
 });

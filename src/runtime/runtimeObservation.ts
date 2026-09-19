@@ -120,7 +120,7 @@ export type RuntimeObservationPayload = Readonly<{
 }>;
 
 export type RuntimeObservation = Readonly<{
-  schemaVersion: 4;
+  schemaVersion: 1;
   eventId: string;
   semanticKey: string;
   kind: RuntimeObservationKind;
@@ -224,7 +224,7 @@ const PROVIDER_STATE: ReadonlySet<RuntimeObservationKind> = new Set([
 ]);
 
 export function createRuntimeObservation(input: RuntimeObservation): RuntimeObservation {
-  if (input.schemaVersion !== 4) throw new Error("Runtime observation schemaVersion must be 4.");
+  if (input.schemaVersion !== 1) throw new Error("Runtime observation schemaVersion must be 1.");
   if (!KINDS.includes(input.kind)) throw new Error("Runtime observation kind is invalid.");
   if (!AUTHORITIES.includes(input.authority)) throw new Error("Runtime observation authority is invalid.");
   if (input.kind === "host.observed" && input.authority !== "host" && input.authority !== "controller") {
@@ -263,7 +263,7 @@ export function createRuntimeObservation(input: RuntimeObservation): RuntimeObse
     throw new Error("Runtime observation ordinal must be a non-negative safe integer.");
   }
   return Object.freeze({
-    schemaVersion: 4,
+    schemaVersion: 1,
     eventId: requireIdentity(input.eventId, "Runtime observation event id"),
     semanticKey: requireIdentity(input.semanticKey, "Runtime observation semantic key"),
     kind: input.kind,

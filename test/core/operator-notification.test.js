@@ -73,7 +73,7 @@ function fixture(t) {
       const run = sessions.providerBinding.run;
       const eventId = `provider-${++sequence}`;
       assert.equal(new FileSchedulerStoreAdapter(store).observeRuntimeObservation(createRuntimeObservation({
-        schemaVersion: 4, eventId, semanticKey: eventId, kind, authority: "provider-structured",
+        schemaVersion: 1, eventId, semanticKey: eventId, kind, authority: "provider-structured",
         receivedAt: now.toISOString(), observedAt: now.toISOString(),
         payload: kind === "turn.completed" ? { output: "Fixture complete" } : {},
         fence: { roleName: "operator", agentId: "codex", driverId: "openai/codex",
@@ -88,7 +88,7 @@ function fixture(t) {
     async provider() {
       const attempts = [];
       let outcome = "accepted";
-      const snapshot = state => ({ schemaVersion: 2, state, updatedAt: now.toISOString() });
+      const snapshot = state => ({ schemaVersion: 1, state, updatedAt: now.toISOString() });
       let host;
       cleanup.push(async () => { await host?.close(); });
       host = await openAgentHostControl(home, {

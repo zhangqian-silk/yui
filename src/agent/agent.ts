@@ -15,7 +15,7 @@ export type EnvironmentBinding = Readonly<{
 
 /** Durable Agent configuration. There is deliberately no probe runtime state here. */
 export type ConfiguredAgent = Readonly<{
-  schemaVersion: 3;
+  schemaVersion: 1;
   id: string;
   /**
    * Which execution component this Agent runs. Several products share one
@@ -51,7 +51,7 @@ export function createConfiguredAgent(
   validateAgentBaseArguments(adapterId, baseArgs);
   const timestamp = now.toISOString();
   return {
-    schemaVersion: 3,
+    schemaVersion: 1,
     id: normalizedId,
     // An unnamed component resolves from the plan, which for ACP means the
     // unidentified entry rather than a guess at which product is installed.
@@ -93,16 +93,11 @@ export function resolveAgentEnvironment(
 }
 
 export function validateConfiguredAgent(agent: ConfiguredAgent): void {
-  if (agent.schemaVersion !== 3) throw new Error("Agent schema version is invalid.");
+  if (agent.schemaVersion !== 1) throw new Error("Agent schema version is invalid.");
   requireSafeIdentity(agent.id, "Agent id");
   if (!isAgentAdapterId(agent.adapterId)) throw new Error(`Agent adapter is unsupported: ${agent.adapterId}.`);
-  // A schema 3 record always carries a component: storage 10 backfilled every
-  // stored Agent, and the constructor resolves one for every new Agent. So an
-  // absent value here is a corrupt record, not an old one, and resolving it to
-  // the plan default would invent a product identity for data that never lost
-  // one. That default belongs to the constructor, where an operator naming
-  // only a plan is a real and supported request — this validator reads records
-  // that were already written, where the same silence means something else.
+  // Creation resolves an omitted component before persistence. Reading a
+  // stored record must not invent a missing product identity.
   if (agent.component === undefined) {
     throw new Error(`Agent is missing its execution component: ${agent.id}.`);
   }

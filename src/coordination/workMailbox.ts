@@ -60,7 +60,7 @@ export type ProcessingBatch = Readonly<{
 }>;
 
 export type WorkMailbox = Readonly<{
-  schemaVersion: 5;
+  schemaVersion: 1;
   target: MailboxTarget;
   nextSequence: number;
   processing: ProcessingBatch | null;
@@ -78,7 +78,7 @@ const RECENT_DEDUPE_KEY_LIMIT = 256;
 
 export function createWorkMailbox(target: MailboxTarget): WorkMailbox {
   return {
-    schemaVersion: 5,
+    schemaVersion: 1,
     target: copyTarget(target),
     nextSequence: 1,
     processing: null,
@@ -94,7 +94,7 @@ export function validateWorkMailbox(value: unknown): WorkMailbox {
     ["schemaVersion", "target", "nextSequence", "processing", "pending", "recentDedupeKeys"],
     "WorkMailbox"
   );
-  if (mailbox.schemaVersion !== 5) throw new Error("WorkMailbox must use schemaVersion 5");
+  if (mailbox.schemaVersion !== 1) throw new Error("WorkMailbox must use schemaVersion 1");
   const target = parseTarget(mailbox.target);
   const nextSequence = requireInteger(mailbox.nextSequence, 1, "WorkMailbox nextSequence");
   const processing = mailbox.processing === null ? null : parseProcessing(mailbox.processing);
@@ -120,7 +120,7 @@ export function validateWorkMailbox(value: unknown): WorkMailbox {
     }
   }
   return {
-    schemaVersion: 5,
+    schemaVersion: 1,
     target,
     nextSequence,
     processing,

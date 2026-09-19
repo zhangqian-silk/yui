@@ -1,47 +1,46 @@
-# Yui storage and update compatibility
+# Yui storage and update boundaries
 
-Read this before changing persistent records, schemas, payloads or the update
-handshake. Ordinary behavior changes use the current contract directly.
+Read this before changing persistent records, schema or the update handshake.
 
-Yui Home has one storage version. A persistent contract change appends exactly
-one immutable contiguous migration. Retain the complete forward chain from the
-minimum supported version, currently 1, through the current version. Homes
-below that floor remain untouched and need initialization, not a below-floor
-adapter.
+Yui Home has one authoritative **major.minor** storage version, currently 1.0.
+It is independent of software releases, record schema tags and business
+revisions. `storage_schema` identifies the format and schema checksum. New
+Homes initialize the complete current schema directly.
 
-Ordinary stores do not dual-read, normalize or write historical shapes.
-Only `yui upgrade` and the migration phase of `yui update` interpret them.
-Do not add separate layout, aggregate, record-family or configuration
-compatibility versions. Record-local protocol tags can validate current data,
-but changes to persisted payloads still belong to the Home migration.
-Never rewrite a released migration or lower the floor to discard valid history.
+Ordinary readers accept only the current version and never normalize data.
+Default `upgrade` / `update` may advance only along a complete, contiguous minor
+path within the same major. Each future minor change declares its exact source
+and target checksums and transforms; published definitions are immutable.
+Unknown versions, downgrades and cross-major transitions fail closed. A pinned
+software version does not grant cross-major conversion.
 
-Preserve the target-driven update handshake with released updaters.
-`upgrade --update-preflight` and `upgrade --update-apply` must retain their
-success/blocker semantics and parent-owned handover-lock proof. Add fields
-rather than renaming or removing those consumed by older supported updaters;
-otherwise the migration chain becomes unreachable through `yui update`.
+Record-local schema tags validate current values; they are not independent
+Home upgrade axes. Changes to persistent payloads must still declare the
+appropriate Home version transition. Preserve transactions, identity fences,
+exact execution authority, pending intent and irreversible-effect evidence.
 
-Migrations preserve valid historical data. They do not heuristically repair
-malformed, partial, manually modified or leaked Sessions, workspaces, runtime
-artifacts or state. Return a bounded diagnosis and let an authorized Agent
-choose cleanup or retry. An explicitly retired Task remains an isolation
-boundary: preserve its history while skipping only runtime cross-reference
-checks that would block healthy Tasks.
+0.16.2 is the frozen historical bridge (old integer v1..v37). The 1.0.0-alpha runtime
+must not import or package that chain, an old-format reader, or the one-time
+converter. `tools/baseline-cutover` is an independently packaged, explicit
+old-v37 to new-1.0 converter. It accepts only proven source structure and keeps
+full backup, original audit bytes and quiescence boundaries. Malformed or
+unsettled state is a diagnosis, not permission for heuristic repair.
+The unpublished v37 → 1.0 cutover preserves missing optional execution evidence.
+It does not require every retained Run to be ready for execution. Keep incomplete
+Runs readable for supervision; enforce Snapshot prerequisites only at execution
+or exact-evidence reuse. Never fabricate Context or remove referenced Runs.
 
-## Final historical release
+The new baseline resets current Yui-owned envelopes and protocols to version 1,
+using distinct identities where old version-1 formats could collide. Never
+reset business IDs, revisions, epochs, event counters, user/native payloads,
+frozen Context digests or external Provider protocols.
 
-0.16.2 freezes this historical line at v37 with its complete v1..37 chain.
-Do not add a no-op migration for the package version or change the existing
-definitions. Keep the published artifact and its release manifest/source tag
-as the frozen historical upgrader.
-
-The approved sequence reserves the one-time old-v37 to distinct-new-1.0 cutover
-for 1.0.0-alpha.1, with its own explicit converter and verified backup/rollback
-boundary. It is not a rewrite of old migration 1. The converter stays outside
-the runtime package and must be durably published before its source is removed.
-New storage uses major.minor versions; persistent changes during prereleases
-require explicit same-major minor migrations. 1.0.0 reuses the final verified
-prerelease contract without resetting storage again. See the release workflow
-for the complete product boundary. Do not implement that reset in 0.16.2 or
-claim its current-schema preflight proves future cutover readiness.
+After the first alpha publication, persistent changes require an explicit
+same-major minor transition; never rewrite a published baseline. The stable
+1.0.0 release reuses the final verified prerelease contract without another
+reset. Keep current bounded retry, lock waiting, transactions, replay protection
+and exact-identity caches: they are not historical compatibility.
+Real Home conversion and publication require explicit user
+authority; development uses isolated fixtures. See
+[the operator guide](../../../../docs/storage-baseline.md) for conversion and
+recovery, and verify both the runtime tarball and independent converter archive.

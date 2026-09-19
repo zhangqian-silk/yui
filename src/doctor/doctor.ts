@@ -36,6 +36,7 @@ import {
 import { defaultTableWidth, renderTable } from "../output/table.js";
 import type { ReviewConfig } from "../review/reviewConfig.js";
 import type { GlobalRole } from "../role/role.js";
+import type { StorageVersion } from "../storage/storageVersions.js";
 import {
   CURRENT_DATABASE_FILENAME,
   openCurrentTaskStore
@@ -104,9 +105,9 @@ export type StorageHealthSummary = Readonly<{
  */
 export type StorageDetails = Readonly<{
   /** The authoritative SQLite migration head (null when unreadable). */
-  storageVersion: number | null;
+  storageVersion: StorageVersion | null;
   /** Oldest version for which this CLI carries a complete migration chain. */
-  minimumSupportedVersion: number;
+  minimumSupportedVersion: StorageVersion;
   /** The backend ordinary startup opens for this Home. */
   authoritativeBackend: "sqlite";
   /** The absolute `yui.db` path when it exists, else null. */

@@ -94,7 +94,7 @@ async function globalHostFixture(t, adapterId = "codex", {
     return {};
   }, undefined, { release: null, storageBackend: "sqlite", workerEnabled: false });
   const { ticket } = launchBrokerForHome(home).reserve({
-    schemaVersion: 2, command: process.execPath,
+    schemaVersion: 1, command: process.execPath,
     args: adapterId === "codex"
       ? [resolve("test/fixtures/fake-codex-app-server-proxy.mjs")]
       : [resolve("test/fixtures/fake-claude-stream.mjs"), nativeSessionId],
@@ -212,7 +212,7 @@ test("Global planner, console and durable inputs traverse real Host begin, accep
   const steer = command(["message", "steer", role.name, "steer", "--request-id", "steer",
     "--expected-target", native().nativeTurnId]);
   const steerResult = await sendAgentHostSteerControl({ home, scope: "global", roleName: role.name,
-    control: { protocol: "yui-agent-host/v5", type: "steer-turn", nativeSessionId: steer.target.nativeSessionId,
+    control: { protocol: "yui-agent-host-control/v1", type: "steer-turn", nativeSessionId: steer.target.nativeSessionId,
       nativeTurnId: steer.target.nativeTurnId, authority: steer.target.authority,
       run: { attemptId: steer.receiptId, boundedText: steer.text } } });
   assert.equal(steerResult.outcome, "accepted", JSON.stringify(steerResult));
@@ -224,7 +224,7 @@ test("Global planner, console and durable inputs traverse real Host begin, accep
   await submitNext();
   assert.equal(native().attemptId, `global-input:${role.name}/${first.id}`);
   await sendAgentHostCancelControl({ home, scope: "global", roleName: role.name,
-    control: { protocol: "yui-agent-host/v5", type: "cancel", nativeOnly: true, nativeSessionId: cancel.target.nativeSessionId,
+    control: { protocol: "yui-agent-host-control/v1", type: "cancel", nativeOnly: true, nativeSessionId: cancel.target.nativeSessionId,
       attemptId: cancel.target.attemptId, authority: cancel.target.authority } });
   await wait(() => native().status === "cancelled");
   await submitNext();
@@ -233,13 +233,13 @@ test("Global planner, console and durable inputs traverse real Host begin, accep
   assert.equal(store.listGlobalRoleMessages(role.name).find(m => m.id === queue.id).delivery, undefined);
   const stopNext = command(["interrupt", role.name, "--expected-target", native().nativeTurnId, "--request-id", "stop-m"]);
   await sendAgentHostCancelControl({ home, scope: "global", roleName: role.name,
-    control: { protocol: "yui-agent-host/v5", type: "cancel", nativeOnly: true, nativeSessionId: stopNext.target.nativeSessionId,
+    control: { protocol: "yui-agent-host-control/v1", type: "cancel", nativeOnly: true, nativeSessionId: stopNext.target.nativeSessionId,
       attemptId: stopNext.target.attemptId, authority: stopNext.target.authority } });
   await wait(() => native().status === "cancelled");
   await submitNext();
   await wait(() => native().attemptId === `global-input:${role.name}/${queue.id}` && native().status === "accepted");
   await sendAgentHostCancelControl({ home, scope: "global", roleName: role.name,
-    control: { protocol: "yui-agent-host/v5", type: "cancel", nativeOnly: true,
+    control: { protocol: "yui-agent-host-control/v1", type: "cancel", nativeOnly: true,
       nativeSessionId: "fake-thread-1", attemptId: native().attemptId,
       authority: { epoch: 1, owner: "controller", holderId: "controller" } } });
   await wait(() => native().status === "cancelled");
@@ -258,7 +258,7 @@ test("the real Host refuses public native-only interrupt on an owned-process End
   await wait(() => native()?.status === "accepted");
   const attemptId = native().attemptId;
   const result = await sendAgentHostCancelControl({ home, scope: "global", roleName: role.name,
-    control: { protocol: "yui-agent-host/v5", type: "cancel", nativeOnly: true, nativeSessionId, attemptId,
+    control: { protocol: "yui-agent-host-control/v1", type: "cancel", nativeOnly: true, nativeSessionId, attemptId,
       authority: { epoch: 1, owner: "controller", holderId: "controller" } } });
   assert.equal(result.outcome, "rejected");
   assert.match(result.failure.detail, /cannot natively interrupt/);

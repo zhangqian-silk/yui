@@ -56,10 +56,7 @@ export function cleanupFailure(reason: string, detail: string, expected: unknown
     detail, expected, observed, sources: [], actions: [] }]);
 }
 
-/** Describe exact differences without disclosing paths outside this Task.
- * Legacy locations are displayed only for this Task's exact branch identity;
- * displaying a historical location is not accepting it as migration proof.
- */
+/** Describe exact differences without disclosing paths outside this Task. */
 export function workspacePathValue(workspace: ManagedWorkspace, path: string): string {
   const inside = (root: string) => {
     const value = relative(root, path);
@@ -71,10 +68,6 @@ export function workspacePathValue(workspace: ManagedWorkspace, path: string): s
     const home = workspace.root.slice(0, index);
     const taskPath = inside(join(home, "workspaces", "tasks", workspace.owner.taskId));
     if (taskPath !== undefined) return `<task>/${taskPath}`;
-    const legacyPath = inside(join(home, "workspaces", "worktree"));
-    const parts = legacyPath?.split("/");
-    const taskSegment = workspace.entries.find(e => e.access === "write")?.branch.split("/")[1];
-    if (parts?.length === 3 && parts[1] === taskSegment) return `<legacy-worktree>/${legacyPath}`;
   }
   const local = inside(workspace.root);
   return local === undefined ? "[outside authorized Task paths]" : `<owner>/${local}`;

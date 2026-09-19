@@ -215,7 +215,7 @@ test("publication evidence changes stay exact across upsert and remote delivery"
   const originalRemoteCommit = "3".repeat(40);
   const replacementRemoteCommit = "4".repeat(40);
   const task = {
-    schemaVersion: 6,
+    schemaVersion: 1,
     id: "task-1",
     title: "Publish exact head",
     status: "active",
@@ -293,7 +293,7 @@ test("publication evidence changes stay exact across upsert and remote delivery"
   const events = changedResult.events;
 
   const managedWorkspaces = [{
-    schemaVersion: 2,
+    schemaVersion: 1,
     owner: { type: "task", taskId: task.id },
     root: "/tmp/task-1",
     entries: [{
@@ -360,7 +360,10 @@ test("update quiesces the exact Controller before replacing a current-contract b
         identity: {
           executablePath: process.execPath,
           args: ["/tmp/old-yui-controller"],
-          version: "0.14.1"
+          version: "0.14.1",
+          controllerProtocolVersion: 1,
+          storageVersion: "1.0",
+          minimumStorageVersion: "1.0"
         }
       };
     },
@@ -467,12 +470,14 @@ test("update ports delegate the planned migration to the exact staged binary", (
         status: "migration-ready",
         stepCount: 1,
         steps: [{
-          fromVersion: 1,
-          toVersion: 2,
+          fromVersion: "1.0",
+          toVersion: "1.1",
           name: "future-storage-change",
           introducedIn: "0.16.0"
         }],
         classification: {
+          storageVersion: "1.0",
+          currentStorageVersion: "1.1",
           classification: { verdict: "MIGRATABLE", status: "migration-ready" }
         }
       });
@@ -510,7 +515,7 @@ test("Managed Codex shares the native App Server used by interactive clients", (
   const adapter = resolveAgentAdapter("codex");
   const launch = adapter.compileManagedControl({
     agent: {
-      schemaVersion: 2,
+      schemaVersion: 1,
       id: "codex",
       adapterId: "codex",
       command: "codex",
@@ -533,7 +538,7 @@ test("Managed Codex shares the native App Server used by interactive clients", (
   assert.deepEqual(launch.argv.slice(-2), ["app-server", "proxy"]);
   assert.throws(() => adapter.compileManagedControl({
     agent: {
-      schemaVersion: 2,
+      schemaVersion: 1,
       id: "codex",
       adapterId: "codex",
       command: "codex",
@@ -798,7 +803,7 @@ test("native continuation results wake the supervisor only after the parent Turn
     continuationId: "child-1",
   };
   const observation = (kind, payload, minute) => createRuntimeObservation({
-    schemaVersion: 4,
+    schemaVersion: 1,
     eventId: `continuation-${kind}-${minute}`,
     semanticKey: `continuation-${kind}-${minute}`,
     kind,
@@ -928,15 +933,15 @@ test("Turns record provider-visible input without delivery handshake state", () 
   );
   const mailbox = createWorkMailbox({ kind: "role", taskId: "task-1", roleName: role.name });
 
-  assert.equal(run.schemaVersion, 5);
+  assert.equal(run.schemaVersion, 1);
   assert.deepEqual(run.inputs[0].input.source, { type: "yui", channel: "task-dispatch" });
   assert.equal(run.inputs[0].input.directive, "Read the durable Task context and continue.");
   for (const legacyField of ["pushedAt", "deliveredAt", "deliveryReceiptId", "controlRequest"]) {
     assert.equal(Object.hasOwn(run, legacyField), false);
   }
-  assert.equal(sessions.schemaVersion, 12);
+  assert.equal(sessions.schemaVersion, 1);
   assert.equal(Object.hasOwn(sessions, "inFlight"), false);
-  assert.equal(mailbox.schemaVersion, 5);
+  assert.equal(mailbox.schemaVersion, 1);
   assert.equal(mailbox.pending, null);
   assert.equal(mailbox.processing, null);
   assert.deepEqual(mailbox.recentDedupeKeys, []);
@@ -1269,7 +1274,7 @@ test("a direct Provider Turn records visible input and output without workflow s
     nativeSessionId: "thread-1"
   };
   const observation = (kind, ordinal, extra = {}) => ({
-    schemaVersion: 4,
+    schemaVersion: 1,
     eventId: `direct-run-${ordinal}`,
     semanticKey: `direct-run-${kind}-${ordinal}`,
     kind,
@@ -1689,7 +1694,7 @@ test("active Role Turns deliver from durable state and Worker hints settle at ac
     },
     waitUntilReady: async () => {
       assert.equal(adapter.observeRuntimeObservation({
-        schemaVersion: 4,
+        schemaVersion: 1,
         eventId: "new-session-ready",
         semanticKey: "new-session-ready",
         kind: "session.ready",
@@ -3384,7 +3389,7 @@ test("runtime terminalization preserves Agent output across dirty and wrong-bran
   );
 });
 
-test("a packaged Controller restart inherits its direct parent's handover", (t) => {
+test("a packaged Controller restart uses its explicitly identified handover owner", (t) => {
   const home = mkdtempSync(join(tmpdir(), "yui-controller-handover-smoke-"));
   const environment = { ...bareEnv, YUI_HOME: home };
   t.after(() => {
@@ -3403,7 +3408,7 @@ test("a packaged Controller restart inherits its direct parent's handover", (t) 
     restarted = JSON.parse(execFileSync(
       process.execPath,
       [join(root, "dist", "cli.js"), "--json", "controller", "restart"],
-      { cwd: root, encoding: "utf8", env: environment }
+      { cwd: root, encoding: "utf8", env: { ...environment, YUI_UPDATE_HANDOVER_OWNER_PID: String(process.pid) } }
     ));
   } finally {
     handover.release();
@@ -3452,8 +3457,8 @@ test("Controller begin-handover accepts a null fromReleaseId", async (t) => {
 });
 
 test("production storage exposes one current version and one migration floor", () => {
-  assert.equal(MIN_SUPPORTED_STORAGE_VERSION, 1);
-  assert.equal(CURRENT_STORAGE_VERSION, 37);
+  assert.equal(MIN_SUPPORTED_STORAGE_VERSION, "1.0");
+  assert.equal(CURRENT_STORAGE_VERSION, "1.0");
   for (const retiredExport of [
     "FileTaskStore",
     "STORAGE_STATE_FILE",
@@ -3475,15 +3480,10 @@ test("a new current Home initializes its SQLite authority exactly once", (t) => 
   const database = new Database(join(home, "yui.db"), { readonly: true });
   try {
     assert.deepEqual(
-      database.prepare("SELECT version FROM schema_migrations ORDER BY version").all(),
-      Array.from({ length: CURRENT_STORAGE_VERSION }, (_, index) => ({ version: index + 1 }))
+      database.prepare("SELECT major, minor FROM storage_schema").all(),
+      [{ major: 1, minor: 0 }]
     );
-    // The storage 18->19 migration retires the DB-owned immutable Artifact
-    // table: file/directory artifacts now live in each Task's local Git repo.
-    // A fresh Home runs v5 (which creates `artifacts`) and then v19 (which drops
-    // it), so the initialized authority must NOT expose the retired table. This
-    // locks the "no dual DB-Artifact/Git read/write surface" contract end-to-end
-    // through the real runner, not only through the direct migration regression.
+    // The baseline has one Git-artifact authority, not a second DB artifact store.
     assert.deepEqual(
       database.prepare(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='artifacts'"
@@ -3491,8 +3491,8 @@ test("a new current Home initializes its SQLite authority exactly once", (t) => 
       []
     );
     assert.deepEqual(
-      database.prepare("PRAGMA table_info(schema_migrations)").all().map(({ name }) => name),
-      ["version", "name", "applied_at", "checksum"]
+      database.prepare("PRAGMA table_info(storage_schema)").all().map(({ name }) => name),
+      ["id", "format", "major", "minor", "checksum", "created_at"]
     );
     const homeMetaColumns = database
       .prepare("PRAGMA table_info(home_meta)")
@@ -3802,12 +3802,12 @@ test("an unrecognized SQLite ledger is rejected without interpreting side files 
   const before = readFileSync(databasePath);
   const inspected = inspectStorageSchema(home);
   assert.equal(inspected.status, "invalid");
-  assert.match(inspected.detail, /schema_migrations columns/);
+  assert.match(inspected.detail, /storage_schema is missing/);
   assert.equal(inspected.latestVersion, CURRENT_STORAGE_VERSION);
 
   const dryRun = await runStorageUpgrade({ home, mode: "dry-run" });
   assert.equal(dryRun.outcome, "blocked");
-  assert.equal(dryRun.stage, "corruption");
+  assert.equal(dryRun.stage, "unsupported");
   assert.equal(dryRun.sceneUnchanged, true);
   assert.deepEqual(readFileSync(databasePath), before);
   assert.equal(existsSync(manifestPath), true);

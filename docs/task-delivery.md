@@ -83,7 +83,7 @@ how the Agent ordered them.
 A configured VerificationPlan reuses only complete, successful, log-verified
 evidence for the exact Project, commit, plan, toolchain and target/base boundary.
 A plan with no reusable evidence executes normally. Plans require
-`schemaVersion: 2` and contain no `l1` or `record/reuse/enforce` mode.
+`schemaVersion: 1` and contain no `l1` or `record/reuse/enforce` mode.
 Storage 34→35 preserves the original Project declarations, L1 artifacts and
 binary logs in migration audit storage, outside current execution and cache
 lookup. Historical `historical-change-sets` Integrations must be settled and
@@ -109,7 +109,7 @@ Unstructured checks do not search historical Jobs for a substitute result.
 Fresh execution withdraws the old success before starting. Failure is recorded
 as failure; interruption, missing logs or a mutated candidate leave no reusable
 success. Both Job and local execution verify the exact clean candidate before
-publishing successful proof. The v5 L2-only execution digest excludes older proof without
+publishing successful proof. The baseline-v1 L2-only execution digest excludes older proof without
 deleting its history. A stale
 cache consumer cannot restore an older result. Release lookup considers the
 newest recorded matching proof rather than searching past a failure for an
@@ -367,8 +367,7 @@ This adds neither a retry worker nor another persistent ownership protocol.
 Current Resource records are read strictly: required safety fields, enum values,
 and every active reference must be valid. A malformed record or mismatched
 SQLite/payload identity is reported without supplying defaults, dropping refs,
-or rewriting stored evidence. This enforces the existing record contract;
-storage remains at version 37.
+or rewriting stored evidence. This enforces the current storage 1.0 record contract.
 
 Failed preparation compensates only its unadopted resources. Standalone Task
 clones use exact clone identity/cleanliness checks before direct deletion;

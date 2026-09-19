@@ -3,7 +3,7 @@ import type { TaskCompletedBy } from "../task/task.js";
 import { requireTimestamp } from "../domain/validation.js";
 
 export type Milestone = {
-  schemaVersion: 2;
+  schemaVersion: 1;
   id: string;
   taskId: string;
   title: string;
@@ -13,7 +13,7 @@ export type Milestone = {
 };
 
 export function validateMilestone(milestone: Milestone): Milestone {
-  if (milestone.schemaVersion !== 2) throw new Error("Milestone must use schemaVersion 2.");
+  if (milestone.schemaVersion !== 1) throw new Error("Milestone must use schemaVersion 1.");
   validateTaskRecordReference({ taskId: milestone.taskId, localId: milestone.id }, "milestone");
   requireText(milestone.title, "Milestone title");
   requireText(milestone.summary, "Milestone summary");
@@ -31,7 +31,7 @@ export function createMilestone(
   now: Date
 ): Milestone {
   return {
-    schemaVersion: 2,
+    schemaVersion: 1,
     id: validateTaskRecordReference({ taskId, localId: id }, "milestone").localId,
     taskId: requireSafeIdentity(taskId, "Task id"),
     title: requireText(title, "Milestone title"),

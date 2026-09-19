@@ -29,7 +29,9 @@ the seconds-scale core suite (`test/core/*.test.js`).
 
 ## Exercise your checkout in isolation
 
-Never use the global `yui` or `make link` to validate local changes. Instead:
+Never use the global `yui` to validate local changes. Development tooling only
+creates an isolated checkout launcher; existing global commands, links and
+backups are left untouched. Use:
 
 ```sh
 make install-local

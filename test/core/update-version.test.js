@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { runUpdateCommand } from "../../dist/cli/updateCommand.js";
-import { createUpdatePorts } from "../../dist/cli/updatePorts.js";
+import { activatedControllerEntrypoint, createUpdatePorts } from "../../dist/cli/updatePorts.js";
 import { findCommandNode } from "../../dist/cli/commandCatalog.js";
 
 test("update accepts an exact bridge version and retains target-owned preflight refusal", () => {
@@ -35,6 +35,10 @@ test("update accepts an exact bridge version and retains target-owned preflight 
     undefined, text => { output += text; }, ports), 5);
   assert.deepEqual(calls, [["stage", "0.16.2"], ["preflight"], ["cleanup"]]);
   assert.match(output, /Install 0\.16\.2 first/);
+  calls.length = 0;
+  runUpdateCommand(["--version", "1.0.0-alpha"], { YUI_HOME: "/unused/home" },
+    undefined, () => {}, ports);
+  assert.deepEqual(calls, [["stage", "1.0.0-alpha"], ["preflight"], ["cleanup"]]);
   calls.length = 0;
   runUpdateCommand([], { YUI_HOME: "/unused/home" }, undefined, () => {}, ports);
   assert.deepEqual(calls, [["stage", undefined], ["preflight"], ["cleanup"]]);
@@ -70,4 +74,47 @@ test("pinned npm staging rejects a different installed version and removes only 
     ports.cleanup(staged);
   }
   assert.deepEqual(readdirSync(stagingRoot), []);
+});
+
+test("target preflight admits only contiguous same-major storage upgrades", ()=>{
+  let from="1.0",to="1.1";
+  const ports=createUpdatePorts({},()=>{
+    const data={outcome:"update-preflight",status:"migration-ready",stepCount:1,
+      steps:[{fromVersion:from,toVersion:to,name:"minor"}],
+      classification:{storageVersion:from,currentStorageVersion:to,
+        classification:{verdict:"MIGRATABLE",status:"migration-ready"}}};
+    const stdout=Buffer.from(JSON.stringify({ok:true,data}));
+    return {pid:1,output:[null,stdout,Buffer.alloc(0)],stdout,stderr:Buffer.alloc(0),status:0,signal:null};
+  });
+  const staged={binaryPath:"/unused/yui",version:"1.0.0-alpha"};
+  assert.equal(ports.preflight(staged,"/unused/home").status,"migration-ready");
+  to="2.0";
+  assert.equal(ports.preflight(staged,"/unused/home").status,"blocked");
+  to="1.2";
+  assert.equal(ports.preflight(staged,"/unused/home").status,"blocked");
+  from=37;to=1;
+  assert.equal(ports.preflight(staged,"/unused/home").status,"blocked");
+});
+
+test("Controller entrypoint resolution requires real files in a supported install layout", t=>{
+  const root=mkdtempSync(join(tmpdir(),"yui-controller-entrypoint-"));
+  t.after(()=>rmSync(root,{recursive:true,force:true}));
+  assert.throws(()=>activatedControllerEntrypoint(join(root,"missing","yui")),/ENOENT|entrypoint/);
+  const cli=join(root,"package","dist","cli.js");
+  const controller=join(root,"package","dist","controller","controllerMain.js");
+  mkdirSync(join(root,"package","dist","controller"),{recursive:true});
+  writeFileSync(cli,"// fixture CLI\n");
+  assert.throws(()=>activatedControllerEntrypoint(cli),/entrypoint/i);
+  writeFileSync(controller,"// fixture Controller\n");
+  assert.equal(activatedControllerEntrypoint(cli),controller);
+  const linked=join(root,"linked-yui");
+  symlinkSync(cli,linked);
+  assert.equal(activatedControllerEntrypoint(linked),controller);
+  const shim=join(root,"npm","bin","yui");
+  const shimController=join(root,"npm","lib","node_modules","@zq-silk","yui","dist","controller","controllerMain.js");
+  mkdirSync(join(root,"npm","bin"),{recursive:true});
+  mkdirSync(join(root,"npm","lib","node_modules","@zq-silk","yui","dist","controller"),{recursive:true});
+  writeFileSync(shim,"#!/bin/sh\n");
+  writeFileSync(shimController,"// fixture Controller\n");
+  assert.equal(activatedControllerEntrypoint(shim),shimController);
 });

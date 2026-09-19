@@ -27,7 +27,7 @@ test("only current CLI and verification contracts are accepted", () => {
   assert.match(renderCompletion("bash"), /complete -F _yui yui/);
   assert.doesNotMatch(renderCompletion("bash", "yui-dev"), /yui-dev|_yui_dev/,
     "An obsolete second argument cannot select another completion identity.");
-  const plan = { schemaVersion: 2, kind: "verification-plan", id: "checks", version: "1",
+  const plan = { schemaVersion: 1, kind: "verification-plan", id: "checks", version: "1",
     bootstrap: [], l2: { steps: [{ name: "check", argv: ["true"] }] } };
   assert.equal(Object.hasOwn(normalizeVerificationPlan(plan), "l1"), false);
   assert.throws(() => normalizeVerificationPlan({ ...plan, l1: { categories: [] } }), /retired|L1|l1/);
@@ -141,7 +141,8 @@ test("a quiesced storage blocker restores the captured Controller without activa
       return { home: "/fixture/home", cleaned: ["old"], attempts: [], remaining: [] };
     },
     controllerStatus: () => ({ running: true, pid: 42, identity: {
-      executablePath: "/fixture/node", args: ["/fixture/controllerMain.js"], version: "0.16.1"
+      executablePath: "/fixture/node", args: ["/fixture/controllerMain.js"], version: "0.16.1",
+      controllerProtocolVersion: 1, storageVersion: "1.0", minimumStorageVersion: "1.0"
     } }),
     stopController: (_home, pid) => { effects.push("stop"); return { stopped: true, pid }; },
     activateBinary: () => effects.push("activate"),

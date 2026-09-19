@@ -110,113 +110,121 @@ export function createProviderRetryHooks(home: string, store: TaskStore, ports: 
       for (const id of inspectedUnknown) if (!pendingAttempts.has(id)) inspectedUnknown.delete(id);
       for (const set of current) {
         const owner = set.owner;
-        const binding = set.providerBinding!;
-        const retry = binding.retry!;
-        const at = now(retry);
-        const scoped = { ...(owner.scope === "task" ? { taskId: owner.taskId } : {}), roleName: owner.roleName };
-        const session = set.sessions[set.activeAgentId];
-        const blocker = retryIntentBlocker(store, scoped, retry);
-        if (blocker !== undefined && blocker !== "background-work-unsettled") {
-          stop(set, blocker, at); continue;
-        }
-        if (binding.retryDisabled && retry.successorAutomatic !== false || binding.authority.owner !== "controller"
-          || binding.authority.epoch !== retry.authorityEpoch
-          || currentProviderConversation(binding).conversationId !== retry.nativeSessionId
-          || session?.status !== "active" || session.nativeSessionId !== retry.nativeSessionId
-          || hasRuntimeCleanupObligation(store.getWorkMailbox(runtimeLifecycleTarget(owner)))) {
-          stop(set, "session-or-authority-changed", at); continue;
-        }
-        // Never replay an admitted attempt. Existing exact runtime queries and
-        // terminal ingress resolve it, even across Controller restart.
-        if (retry.status === "in-flight") {
-          if (binding.run?.status === "delivery-unknown" && retry.currentAttemptId !== undefined
-            && !inspectedUnknown.has(retry.currentAttemptId)) {
-            inspectedUnknown.add(retry.currentAttemptId);
-            let detail: string;
-            try {
-              const host = await inspect({ home, ...scoped, scope: owner.scope });
-              detail = host.nativeSessionId === retry.nativeSessionId && host.attemptId === retry.currentAttemptId
-                ? `Exact Host query: ${host.state}; awaiting original canonical Provider evidence.`
-                : "Host query did not prove the original Session/input identity; no replay.";
-            } catch (error) {
-              detail = `Original Host query unavailable; no replay: ${redactAgentErrorText(error instanceof Error ? error.message : String(error))}`;
-            }
-            store.transaction(() => {
-              const latest = load(owner);
-              if (latest === null || latest.providerBinding == null || latest.providerBinding.run === null
-                || latest.providerBinding.run.attemptId !== retry.currentAttemptId
-                || latest.providerBinding.run.status !== "delivery-unknown") return;
-              save({ ...latest, providerBinding: { ...latest.providerBinding,
-                retry: { ...latest.providerBinding.retry!, reason: detail } } });
-              if (owner.scope === "global") {
-                recordGlobalRuntimeAttention(store, owner.roleName, `${retry.currentAttemptId}:unconfirmed`,
-                  providerRetryProjection(load(owner)?.providerBinding), new Date(at));
-              }
-              if (owner.scope === "task") {
-                const event = createTaskEvent(store.nextEventId(owner.taskId), owner.taskId, "provider.retry-unconfirmed", {
-                  roleName: owner.roleName, attemptId: retry.currentAttemptId!, nativeSessionId: retry.nativeSessionId, detail
-                }, new Date(at));
-                store.saveEvent(owner.taskId, event);
-                enqueueWork(store, owner.roleName === "leader" ? { kind: "operator" }
-                  : { kind: "role", taskId: owner.taskId, roleName: "leader" },
-                "provider-retry-needs-attention", new Date(at), [{ type: "event", taskId: owner.taskId, id: event.id }]);
-              }
-            });
-          }
-          continue;
-        }
-        if (retry.successorAutomatic !== false && at >= Date.parse(retry.deadline)) { stop(set, "deadline-exhausted", at, true); continue; }
-        if (at < Date.parse(retry.nextEligibleAt) || blocker !== undefined || binding.goal?.status === "active") continue;
-        if (binding.run?.attemptId !== retry.failedAttemptId) { stop(set, "superseded-input", at); continue; }
         try {
-          if (owner.scope === "task" && retry.previousRunId !== undefined) {
-            if (retry.successorRunId !== undefined || retry.successorReviewRoundId !== undefined) continue;
-            const previous = store.getRun(owner.taskId, retry.previousRunId);
-            if (previous?.status === "active") continue; // ordinary rejected-delivery terminal fold
-            if (previous?.status !== "failed") { stop(set, "run-no-longer-failed", at); continue; }
-            const actualTaskReviewCandidate = await ports.snapshotTaskCandidate?.(previous);
-            store.transaction(() => {
-              const latest = load(owner)?.providerBinding?.retry;
-              if (latest?.chainId !== retry.chainId || latest.failedAttemptId !== retry.failedAttemptId
-                || latest.status !== "waiting") return;
-              const reason = retryIntentBlocker(store, scoped, latest);
-              if (reason !== undefined) throw new Error(reason);
-              runTaskCommand(["run", "retry", `${owner.taskId}/${previous.id}`], store, {
-                now: () => new Date(at), environment: {}, providerRetryChainId: retry.chainId,
-                ...(actualTaskReviewCandidate === undefined ? {} : { actualTaskReviewCandidate })
-              });
-            });
-          } else {
-            const original = retry.input.kind === "text" ? retry.input.text
-              : retry.input.kind === "wake"
-                ? `Yui Task notification: task=${retry.input.taskId} wake=${retry.input.wakeId}.\nRead current Task context and that fixed wake window, including original Messages in full. This is not an execution assignment.`
-                : retry.input.kind === "message"
-                  ? `Yui Global Message: role=${retry.input.roleName} message=${retry.input.messageId}.\nRead your Session Context and referenced original Message in full.`
-                  : undefined;
-            if (original === undefined) { stop(set, "original-input-unavailable", at); continue; }
-            const result = await (ports.submit ?? sendAgentHostRunControl)({
-              home, ...scoped, scope: owner.scope,
-              control: {
-                protocol: AGENT_HOST_CONTROL_PROTOCOL, type: "submit-turn", nativeSessionId: retry.nativeSessionId,
-                authority: { epoch: binding.authority.epoch, owner: "controller", holderId: binding.authority.holderId! },
-                run: { attemptId: providerRetryAttemptId(retry), boundedText: original }
+          const binding = set.providerBinding!;
+          const retry = binding.retry!;
+          const at = now(retry);
+          const scoped = { ...(owner.scope === "task" ? { taskId: owner.taskId } : {}), roleName: owner.roleName };
+          const session = set.sessions[set.activeAgentId];
+          const blocker = retryIntentBlocker(store, scoped, retry);
+          if (blocker !== undefined && blocker !== "background-work-unsettled") {
+            stop(set, blocker, at); continue;
+          }
+          if (binding.retryDisabled && retry.successorAutomatic !== false || binding.authority.owner !== "controller"
+            || binding.authority.epoch !== retry.authorityEpoch
+            || currentProviderConversation(binding).conversationId !== retry.nativeSessionId
+            || session?.status !== "active" || session.nativeSessionId !== retry.nativeSessionId
+            || hasRuntimeCleanupObligation(store.getWorkMailbox(runtimeLifecycleTarget(owner)))) {
+            stop(set, "session-or-authority-changed", at); continue;
+          }
+          // Never replay an admitted attempt. Existing exact runtime queries and
+          // terminal ingress resolve it, even across Controller restart.
+          if (retry.status === "in-flight") {
+            if (binding.run?.status === "delivery-unknown" && retry.currentAttemptId !== undefined
+              && !inspectedUnknown.has(retry.currentAttemptId)) {
+              inspectedUnknown.add(retry.currentAttemptId);
+              let detail: string;
+              try {
+                const host = await inspect({ home, ...scoped, scope: owner.scope });
+                detail = host.nativeSessionId === retry.nativeSessionId && host.attemptId === retry.currentAttemptId
+                  ? `Exact Host query: ${host.state}; awaiting original canonical Provider evidence.`
+                  : "Host query did not prove the original Session/input identity; no replay.";
+              } catch (error) {
+                detail = `Original Host query unavailable; no replay: ${redactAgentErrorText(error instanceof Error ? error.message : String(error))}`;
               }
-            });
-            // Durable settlement belongs to Host/Controller ingress. In
-            // particular a lost response is never a reason to replay.
-            if (result.outcome === "rejected" && result.failure?.registrationDisposition === "not-committed"
-              && result.failure.errorName !== "ProviderTurnBusyError") {
-              stop(set, result.failure.detail, at);
+              store.transaction(() => {
+                const latest = load(owner);
+                if (latest === null || latest.providerBinding == null || latest.providerBinding.run === null
+                  || latest.providerBinding.run.attemptId !== retry.currentAttemptId
+                  || latest.providerBinding.run.status !== "delivery-unknown") return;
+                save({ ...latest, providerBinding: { ...latest.providerBinding,
+                  retry: { ...latest.providerBinding.retry!, reason: detail } } });
+                if (owner.scope === "global") {
+                  recordGlobalRuntimeAttention(store, owner.roleName, `${retry.currentAttemptId}:unconfirmed`,
+                    providerRetryProjection(load(owner)?.providerBinding), new Date(at));
+                }
+                if (owner.scope === "task") {
+                  const event = createTaskEvent(store.nextEventId(owner.taskId), owner.taskId, "provider.retry-unconfirmed", {
+                    roleName: owner.roleName, attemptId: retry.currentAttemptId!, nativeSessionId: retry.nativeSessionId, detail
+                  }, new Date(at));
+                  store.saveEvent(owner.taskId, event);
+                  enqueueWork(store, owner.roleName === "leader" ? { kind: "operator" }
+                    : { kind: "role", taskId: owner.taskId, roleName: "leader" },
+                  "provider-retry-needs-attention", new Date(at), [{ type: "event", taskId: owner.taskId, id: event.id }]);
+                }
+              });
             }
+            continue;
+          }
+          if (retry.successorAutomatic !== false && at >= Date.parse(retry.deadline)) { stop(set, "deadline-exhausted", at, true); continue; }
+          if (at < Date.parse(retry.nextEligibleAt) || blocker !== undefined || binding.goal?.status === "active") continue;
+          if (binding.run?.attemptId !== retry.failedAttemptId) { stop(set, "superseded-input", at); continue; }
+          try {
+            if (owner.scope === "task" && retry.previousRunId !== undefined) {
+              if (retry.successorRunId !== undefined || retry.successorReviewRoundId !== undefined) continue;
+              const previous = store.getRun(owner.taskId, retry.previousRunId);
+              if (previous?.status === "active") continue; // ordinary rejected-delivery terminal fold
+              if (previous?.status !== "failed") { stop(set, "run-no-longer-failed", at); continue; }
+              const actualTaskReviewCandidate = await ports.snapshotTaskCandidate?.(previous);
+              store.transaction(() => {
+                const latest = load(owner)?.providerBinding?.retry;
+                if (latest?.chainId !== retry.chainId || latest.failedAttemptId !== retry.failedAttemptId
+                  || latest.status !== "waiting") return;
+                const reason = retryIntentBlocker(store, scoped, latest);
+                if (reason !== undefined) throw new Error(reason);
+                runTaskCommand(["run", "retry", `${owner.taskId}/${previous.id}`], store, {
+                  now: () => new Date(at), environment: {}, providerRetryChainId: retry.chainId,
+                  ...(actualTaskReviewCandidate === undefined ? {} : { actualTaskReviewCandidate })
+                });
+              });
+            } else {
+              const original = retry.input.kind === "text" ? retry.input.text
+                : retry.input.kind === "wake"
+                  ? `Yui Task notification: task=${retry.input.taskId} wake=${retry.input.wakeId}.\nRead current Task context and that fixed wake window, including original Messages in full. This is not an execution assignment.`
+                  : retry.input.kind === "message"
+                    ? `Yui Global Message: role=${retry.input.roleName} message=${retry.input.messageId}.\nRead your Session Context and referenced original Message in full.`
+                    : undefined;
+              if (original === undefined) { stop(set, "original-input-unavailable", at); continue; }
+              const result = await (ports.submit ?? sendAgentHostRunControl)({
+                home, ...scoped, scope: owner.scope,
+                control: {
+                  protocol: AGENT_HOST_CONTROL_PROTOCOL, type: "submit-turn", nativeSessionId: retry.nativeSessionId,
+                  authority: { epoch: binding.authority.epoch, owner: "controller", holderId: binding.authority.holderId! },
+                  run: { attemptId: providerRetryAttemptId(retry), boundedText: original }
+                }
+              });
+              // Durable settlement belongs to Host/Controller ingress. In
+              // particular a lost response is never a reason to replay.
+              if (result.outcome === "rejected" && result.failure?.registrationDisposition === "not-committed"
+                && result.failure.errorName !== "ProviderTurnBusyError") {
+                stop(set, result.failure.detail, at);
+              }
+            }
+          } catch (error) {
+            // A send failure may have applied. A durable submitting/unknown
+            // identity fences it; do not manufacture a successor to uncertainty.
+            const latest = load(owner);
+            if (latest?.providerBinding?.run?.attemptId === retry.failedAttemptId) {
+              stop(set, error instanceof Error ? error.message : String(error), at);
+            }
+            throw error;
           }
         } catch (error) {
-          // A send failure may have applied. A durable submitting/unknown
-          // identity fences it; do not manufacture a successor to uncertainty.
-          const latest = load(owner);
-          if (latest?.providerBinding?.run?.attemptId === retry.failedAttemptId) {
-            stop(set, error instanceof Error ? error.message : String(error), at);
-          }
-          ports.onError?.(error);
+          const failure = new Error(`Provider retry failed for ${owner.scope === "task" ? owner.taskId : "global"}/${owner.roleName}: `
+            + `${error instanceof Error ? error.message : String(error)}. `
+            + "Inspect the current attempt; failed observation does not authorize replay.", { cause: error });
+          if (ports.onError === undefined) throw failure;
+          ports.onError(failure);
         }
       }
     }

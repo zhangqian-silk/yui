@@ -61,13 +61,28 @@ Writable Projects come from the Run's captured effective authority; live
 activity is a separate observation, not part of the frozen contract.
 Expansion always requires both `store` and `refId`, even for a unique id.
 
-Historical Run records without a Snapshot remain readable through `run show`
-for audit, but cannot supply execution Context, be submitted or retried.
-Missing/drifted Snapshot evidence fails explicitly; it is never synthesized
-from today's Task. Subsequent observed/steered input records may legitimately
-omit their own Snapshot because they do not establish a new Assignment.
-No stored layout or payload changes: storage remains 37 with the complete
-1→37 migration chain unchanged.
+New Task execution requires an initial Snapshot. Missing evidence does not make
+a retained Run unreadable: inspection, failure settlement and explicit retirement
+remain available to Leader/Operator, and unrelated work can proceed. Submission
+and exact frozen-context reads fail locally when that evidence is absent or has
+drifted. An explicit ordinary retry creates a new Run and Snapshot from current
+authorized facts, without reconstructing the old snapshot; Review and synthesis
+reuse still require exact frozen evidence. Subsequent observed/steered input may
+omit its own Snapshot because it does not establish a new Assignment.
+Storage uses the 1.0 baseline; the independent converter preserves these records
+without making missing optional execution evidence a Home-wide blocker.
+
+Operational failures are scoped to their owner, not treated as proof that the
+whole Controller must stop. Optional resource reaping and continuation metadata
+checks report failures without blocking normal scheduling. Provider retry
+admission is isolated per Session; continuation observation is isolated per Task.
+Job and Global input errors identify their Task/Job or Role and retain the
+original cause. Committed observations stay committed; failed observations do
+not acknowledge input, imply quiescence, or authorize another send or deletion.
+Use the existing status, stop/cancel, retire, acknowledge and explicit retry
+operations for the affected owner. Structural storage corruption, authority
+failure and unconfirmed external effects still require diagnosis at their
+respective boundaries, not a catch-all default or synthetic successful result.
 
 Current Task reads also expose untargeted user/Operator messages to the Task's
 current Worker and Reviewer Sessions, including requirements added after their
@@ -148,13 +163,10 @@ channel once; Worker/Reviewer failures use the existing Leader channel. No new
 recovery Agent is started, and there need not be a Run or Session to record the
 failure.
 
-Storage 35→36 archives original historical error payloads and marks their
-unrecorded launch configuration as unavailable. It never reconstructs old model,
-account or settings choices from current Roles.
-
-Storage 36→37 narrows that context to native metadata selectors and the requested
-model/effort. Full old snapshots remain in migration audit, not in the active
-reader. Reading a failure's model options does not validate Task permissions,
+Failure context records native metadata selectors and the requested model/effort.
+Unrecorded configuration stays unavailable; it is never reconstructed from current
+Roles. Opaque audit bytes are not read as current configuration.
+Reading a failure's model options does not validate Task permissions,
 Review state, workspace entries or the current Session bootstrap protocol.
 The three failure ingresses retain their native fencing/classification, while
 record creation and deduplication share one writer and supervisor notices use

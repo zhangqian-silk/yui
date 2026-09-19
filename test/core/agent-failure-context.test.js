@@ -19,8 +19,6 @@ import { parseTaskAgentCapabilityQuery } from "../../dist/commands/taskAgentCapa
 import { AgentConfigurationCatalogService } from "../../dist/executor/agentConfigurationCatalog.js";
 import { configuredAgentFingerprint, readAgentFailureContext } from "../../dist/runtime/agentFailureContext.js";
 import { createTaskEvent } from "../../dist/event/taskEvent.js";
-import { migrateSqliteSchema } from "../../dist/storage/sqliteSchema.js";
-import { rebuildHistoricalFixture } from "../helpers/historicalHome.mjs";
 import { capabilityReaderIdentity, readTaskAgentCapabilities } from "../../dist/controller/agentCapabilities.js";
 import { recordTaskAgentError } from "../../dist/controller/taskAgentError.js";
 import { standardAgentError } from "../../dist/runtime/agentError.js";
@@ -219,67 +217,4 @@ test("catalog memory retention is bounded without duplicating active probes or d
   gate = null;
   await service.resolve(request("slow", true));
   assert.equal(calls.get(join(home, "slow")), 2, "After settlement an explicit refresh starts a fresh probe.");
-});
-
-test("35 to 36 preserves historical errors without inventing launch configuration or changing the old ledger", t => {
-  const home = mkdtempSync(join(tmpdir(), "yui-error-context-migration-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
-  const store = new SqliteTaskStore(home);
-  store.saveTask(createTask("task-1", "Original error", at));
-  const old = createTaskEvent("event-1", "task-1", "runtime.agent-error",
-    { roleName: "leader", message: "Original native cause", raw: "original bytes" }, at);
-  store.saveEvent("task-1", old);
-  store.close();
-  rebuildHistoricalFixture(home, 35);
-  const db = new Database(join(home, "yui.db"));
-  try {
-    const original = db.prepare("SELECT payload FROM events WHERE event_id='event-1'").get().payload;
-    const ledger = db.prepare("SELECT * FROM schema_migrations ORDER BY version").all();
-    migrateSqliteSchema(db, { mode: "apply" });
-    assert.ok(db.prepare("SELECT 1 FROM schema_migrations WHERE version=36").get());
-    assert.deepEqual(db.prepare("SELECT * FROM schema_migrations WHERE version<=35 ORDER BY version").all(), ledger);
-    assert.equal(db.prepare("SELECT payload FROM storage_migration_archive WHERE migration_version=36").get().payload, original);
-    const updated = JSON.parse(db.prepare("SELECT payload FROM events WHERE event_id='event-1'").get().payload);
-    const { capabilityContext, ...payload } = updated.payload;
-    assert.deepEqual(payload, old.payload);
-    assert.equal(readAgentFailureContext(capabilityContext).status, "unavailable");
-  } finally { db.close(); }
-  const current = new SqliteTaskStore(home);
-  try {
-    assert.throws(() => resolveTaskAgentCapabilities(["task-1", "leader", "--error", "event-1"], current),
-      /No historical configuration was inferred/);
-  } finally { current.close(); }
-});
-
-test("36 to 37 narrows metadata history without losing the original snapshot or revalidating execution protocols", t => {
-  const { home, store, role, agent, workspace } = fixture(t);
-  const old = JSON.stringify({ status: "recorded", effective: resolveEffectiveLaunch({ role, purpose: "execution" }),
-    agentFingerprint: configuredAgentFingerprint(agent) });
-  store.saveEvent("task-1", createTaskEvent("event-1", "task-1", "runtime.agent-error", {
-    roleName: "leader", message: "Original cause", capabilityContext: old,
-    runId: "", nativeSessionId: "", nativeTurnId: ""
-  }, at));
-  store.close();
-  rebuildHistoricalFixture(home, 36);
-  const db = new Database(join(home, "yui.db"));
-  try {
-    const ledger = db.prepare("SELECT * FROM schema_migrations ORDER BY version").all();
-    migrateSqliteSchema(db, { mode: "apply" });
-    const value = JSON.parse(db.prepare("SELECT payload FROM events WHERE event_id='event-1'").get().payload);
-    const narrowed = readAgentFailureContext(value.payload.capabilityContext);
-    assert.deepEqual(narrowed, {
-      status: "recorded", agentId: agent.id, cwd: workspace,
-      config: { adapterId: "claude", model: "exact-request", effort: "low",
-        settingsFile: join(home, "original-settings.json"), settingsSources: ["user", "local"] },
-      agentFingerprint: configuredAgentFingerprint(agent),
-    });
-    assert.equal(value.payload.message, "Original cause");
-    assert.equal(db.prepare("SELECT payload FROM storage_migration_archive WHERE migration_version=37 AND family='agent-error-context'").get().payload, old);
-    assert.deepEqual(JSON.parse(db.prepare("SELECT payload FROM storage_migration_archive WHERE migration_version=37 AND family='agent-error-empty-identities'").get().payload),
-      { runId: "", nativeSessionId: "", nativeTurnId: "" });
-    for (const field of ["runId", "nativeSessionId", "nativeTurnId"]) assert.equal(Object.hasOwn(value.payload, field), false);
-    assert.deepEqual(db.prepare("SELECT * FROM schema_migrations WHERE version<=36 ORDER BY version").all(), ledger);
-    assert.throws(() => readAgentFailureContext(old), /invalid|unsupported/i,
-      "Only the centralized migration reads the old wide snapshot.");
-  } finally { db.close(); }
 });

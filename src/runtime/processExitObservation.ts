@@ -1,4 +1,4 @@
-export const RUNTIME_PROCESS_EXIT_SCHEMA_VERSION = 2 as const;
+export const RUNTIME_PROCESS_EXIT_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_PROCESS_EXIT_TASK_EVENT = "runtime.process-exit-observed";
 
 export type RuntimeProcessExitObservation = Readonly<{

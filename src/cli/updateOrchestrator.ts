@@ -11,6 +11,7 @@ import {
   UpdateControllerReconciliationError,
   type UpdateControllerReconciliationResult
 } from "../controller/updateReconciliation.js";
+import { isControllerIdentity, type ControllerIdentity } from "../core/controllerIdentity.js";
 
 /** A side-by-side staged package, isolated from the live global install. */
 export type StagedPackage = Readonly<{
@@ -28,26 +29,9 @@ export type UpdatePreflight = Readonly<
       stage: string;
       message: string;
       action: string;
-      blockers?: readonly UpdateBlockerIdentity[];
-      retryCommand?: string;
       sceneUnchanged?: true;
     }
 >;
-
-export type UpdateBlockerIdentity = Readonly<{
-  taskId?: string;
-  roleName?: string;
-  runId?: string;
-  nativeSessionId?: string;
-  reason: string;
-}>;
-
-/** Exact identity captured before stopping a running Controller. */
-export type ControllerIdentity = Readonly<{
-  executablePath: string;
-  args: readonly string[];
-  version: string;
-}>;
 
 export type UpdateControllerLifecycleStatus = Readonly<{
   running: boolean;
@@ -96,8 +80,6 @@ export type UpdateResult = Readonly<
         action: string;
         recoverable: boolean;
         version?: string;
-        blockers?: readonly UpdateBlockerIdentity[];
-        retryCommand?: string;
         sceneUnchanged?: true;
         controllerOwnershipUnknown?: true;
         backupPath?: string;
@@ -186,8 +168,6 @@ function runStagedUpdate(
       action: preflight.action,
       recoverable: true,
       version: staged.version,
-      ...(preflight.blockers === undefined ? {} : { blockers: preflight.blockers }),
-      ...(preflight.retryCommand === undefined ? {} : { retryCommand: preflight.retryCommand }),
       ...(preflight.sceneUnchanged === true ? { sceneUnchanged: true } : {})
     };
   }
@@ -280,8 +260,7 @@ function runCoordinatedUpdate(ports: UpdatePorts, staged: StagedPackage, home: s
     return restoreControllerOrReport(ports, home, captured.lifecycle, {
       outcome: "aborted", phase: "preflight",
       message: fencedPreflight.message, action: fencedPreflight.action,
-      recoverable: true, version: staged.version,
-      ...(fencedPreflight.blockers === undefined ? {} : { blockers: fencedPreflight.blockers })
+      recoverable: true, version: staged.version
     });
   }
   return activateAndVerify(ports, staged, home, captured.lifecycle, fencedPreflight);
@@ -549,16 +528,6 @@ function isStorageMigrationResult(value: unknown): value is UpdateStorageMigrati
 
 function isPositivePid(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-}
-
-function isControllerIdentity(value: unknown): value is ControllerIdentity {
-  return isRecord(value)
-    && typeof value.executablePath === "string"
-    && value.executablePath.length > 0
-    && Array.isArray(value.args)
-    && value.args.every((arg) => typeof arg === "string")
-    && typeof value.version === "string"
-    && value.version.length > 0;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

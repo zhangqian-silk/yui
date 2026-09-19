@@ -1,6 +1,7 @@
 import { validateTaskRecordReference } from "../task/taskRecordReference.js";
 import type { AgentRun } from "../agentRun/agentRun.js";
 import type { SubmissionReceipt } from "../task/taskSubmission.js";
+import { requireKnownFields } from "../domain/validation.js";
 
 export const TASK_MESSAGE_KINDS = ["user", "operator", "role-result", "system"] as const;
 
@@ -161,7 +162,7 @@ export type TaskMessageRecipient = Readonly<{
 }>;
 
 export type TaskMessage = {
-  schemaVersion: 3;
+  schemaVersion: 1;
   id: string;
   taskId: string;
   kind: TaskMessageKind;
@@ -248,7 +249,7 @@ export function createTaskMessage(
 ): TaskMessage {
   validateKindAndAuthor(kind, author);
   const message: TaskMessage = {
-    schemaVersion: 3,
+    schemaVersion: 1,
     id: requireSafeIdentity(id, "Message id"),
     taskId: requireSafeIdentity(taskId, "Message Task id"),
     kind,
@@ -439,14 +440,15 @@ export function withSubmissionReceipt(
 }
 
 export function validateTaskMessage(message: TaskMessage): void {
-  if (message.schemaVersion !== 3) throw new Error("Task Message must use schemaVersion 3.");
+  if (message.schemaVersion !== 1) throw new Error("Task Message must use schemaVersion 1.");
+  requireKnownFields(message, [
+    "schemaVersion","id","taskId","kind","author","body","intent","submissionKey","submissionReceipt",
+    "inputControl","interruptThen","control","runId","resultRef","workItemId","recipient","continuation","handovers","createdAt"
+  ] satisfies readonly (keyof TaskMessage)[], "Task Message");
   validateTaskRecordReference({ taskId: message.taskId, localId: message.id }, "message");
   requireText(message.body, "Message body");
   validateKindAndAuthor(message.kind, message.author);
   normalizeAuthor(message.author);
-  if (Object.hasOwn(message, "wakePolicy")) {
-    throw new Error("Message contains a retired wake policy; use the storage upgrade boundary.");
-  }
   if ((message.kind === "user" || message.kind === "operator") && message.intent === undefined) {
     throw new Error("User/operator Message intent is required.");
   }

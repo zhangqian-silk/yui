@@ -187,10 +187,10 @@ export function displayExecutionComponent(
 /**
  * Resolve the component for a connection plan, given what the caller stated.
  *
- * An absent component is not an error: it means the caller named only the plan,
- * which is how every binding made before this axis existed reads. It resolves
- * to the plan's default, which for ACP is the unidentified entry — the value is
- * never inferred from a command, an argument or an environment variable.
+ * Creation may name only a connection plan. Resolve its default before
+ * persistence; current stored Agents and bindings require an explicit component.
+ * ACP defaults to the unidentified entry, never a product inferred from command,
+ * arguments or environment.
  */
 export function resolveAgentExecutionComponent(
   adapterId: AgentAdapterId,

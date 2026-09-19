@@ -1414,6 +1414,17 @@ export class FileTaskController {
     void this.pump().catch(this.#onError);
   }
 
+  /** Optional maintenance is not execution admission. Keep its failure visible
+   * without bypassing the scheduler's own ownership and delivery fences. */
+  async #observeMaintenance<T>(phase: string, action: () => Promise<T>): Promise<T | undefined> {
+    try { return await action(); }
+    catch (error) {
+      this.#onError(new Error(`${phase} failed: ${error instanceof Error ? error.message : String(error)}. `
+        + "No successful cleanup or quiescence is inferred; inspect the original failure.", { cause: error }));
+      return undefined;
+    }
+  }
+
   async #runCoalesced(): Promise<ControllerSchedulerResult> {
     let result = emptyControllerSchedulerResult();
     let pendingRuntimeDrain = false;
@@ -1431,8 +1442,8 @@ export class FileTaskController {
         try {
           if (scope.kind === "full") this.reloadReconciliationInterval();
           if (scope.kind === "full" && this.#resourceReaper !== undefined) {
-            const reap = await this.#resourceReaper();
-            for (const failure of reap.failed) {
+            const reap = await this.#observeMaintenance("Ephemeral runtime reap", this.#resourceReaper);
+            for (const failure of reap?.failed ?? []) {
               this.#onError(new Error(
                 `Ephemeral runtime reap failed for ${failure.id}: ${failure.message}`
               ));
@@ -1441,7 +1452,7 @@ export class FileTaskController {
             // domain converges, let the detached Controller close itself on a
             // later turn; never close while this reconciliation pass is still
             // the in-flight server request.
-            if (reap.failed.length === 0 && (reap.expiredDomains?.length ?? 0) > 0) {
+            if (reap !== undefined && reap.failed.length === 0 && (reap.expiredDomains?.length ?? 0) > 0) {
               for (const domain of reap.expiredDomains ?? []) {
                 queueMicrotask(() => {
                   this.#onExpiredEphemeralDomain?.(domain);
@@ -1459,7 +1470,8 @@ export class FileTaskController {
           // full pass. It queries only identities already present in Task
           // facts and cannot start a model AgentRun or scan unknown children.
           if (scope.kind === "full" && this.#continuationReconciler !== undefined) {
-            await this.#continuationReconciler.reconcile(this.#now());
+            await this.#observeMaintenance("Continuation reconciliation",
+              () => this.#continuationReconciler!.reconcile(this.#now()));
           }
           // DurableJob reconciliation runs before the scheduler pass so a
           // terminal job's Leader wakeup is enqueued in the same pass that

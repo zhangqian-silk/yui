@@ -64,6 +64,12 @@ export function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+/** Current envelopes accept only declared fields; no historical-field denylist. */
+export function requireKnownFields(value: object, fields: readonly string[], label: string): void {
+  const unknown = Object.keys(value).find(key => !fields.includes(key));
+  if (unknown !== undefined) throw new Error(`${label} has unsupported field: ${unknown}.`);
+}
+
 /**
  * True for a concrete, pinnable package version — a semver-shaped `X.Y.Z` with
  * an optional pre-release/build suffix. Rejects dist-tag sentinels (`latest`,

@@ -27,7 +27,7 @@ export type AgentProfileRuntime =
     }>;
 
 export type AgentProfile = Readonly<{
-  schemaVersion: 3;
+  schemaVersion: 1;
   id: string;
   revision: number;
   defaultAccess: WorkerAccess;
@@ -51,7 +51,7 @@ export type AgentProfileInput = Readonly<{
 export function createAgentProfile(input: AgentProfileInput, now: Date): AgentProfile {
   const timestamp = now.toISOString();
   return validateAgentProfile({
-    schemaVersion: 3,
+    schemaVersion: 1,
     id: requireIdentity(input.id, "Agent Profile id"),
     revision: 1,
     ...normalizeInput(input),
@@ -79,8 +79,8 @@ export function updateAgentProfile(
 }
 
 export function validateAgentProfile(profile: AgentProfile): AgentProfile {
-  if (profile.schemaVersion !== 3) {
-    throw new Error("AgentProfile must use schemaVersion 3.");
+  if (profile.schemaVersion !== 1) {
+    throw new Error("AgentProfile must use schemaVersion 1.");
   }
   requireIdentity(profile.id, "Agent Profile id");
   requirePositiveInteger(profile.revision, "Agent Profile revision");

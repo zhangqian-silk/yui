@@ -4,16 +4,10 @@ import { createHash } from "node:crypto";
 /**
  * The single authority for every Yui self-managed path derived from a Home.
  *
- * Historically the managed Git worktrees and provider runtimes escaped Home
- * through two different mechanisms: worktree/task roots were derived from the
- * user-facing `defaultWorkspace` (an out-of-Home directory), and provider
- * runtimes/backups were written to string-built siblings of Home
- * (`${home}.task-runtimes`, `${home}-backups`). Both are unified here so that a
- * single canonical YUI_HOME contains all self-managed data, with only the
+ * A single canonical YUI_HOME contains all self-managed data, with only the
  * approved short-path IPC sockets (Controller, tmux, Agent Host, integration
  * runtime) remaining outside it for the `sockaddr_un` length budget. Within the
- * managed workspace root, storage v25 further collapses the former
- * physical-worktree/symlink-view split into a single layer of real worktrees
+ * managed workspace root contains a single layer of real worktrees
  * under `tasks/` (see {@link managedTaskRoot}).
  *
  * `defaultWorkspace` is intentionally NOT an input to this module: it remains a
@@ -31,11 +25,8 @@ function homeRoot(home: string): string {
 }
 
 /**
- * Root that contains every managed Git workspace. Since storage v25 this holds a
- * single layer of real worktrees under `tasks/` (plus the legacy `worktree/`
- * root, preserved by the 24->25 migration as its rollback anchor). A single
- * parent keeps the managed families adjacent and lets the storage migrations
- * relocate them as one subtree.
+ * Root that contains every managed Git workspace, with a single layer of real
+ * worktrees under `tasks/`.
  */
 export function managedWorkspacesRoot(home: string): string {
   return join(homeRoot(home), "workspaces");
@@ -45,9 +36,7 @@ export function managedWorkspacesRoot(home: string): string {
  * Managed Git worktrees, one real worktree per Task owner and Project at
  * `<home>/workspaces/tasks/<taskId>/<owner>/<projectDirectory>` (owner being
  * `main`, `work-items/<id>`, `reviews/<name>`, `integrations/<id>`, or
- * `execution-lanes/<g>/<l>`). Before storage v25 these were symlink views over
- * the physical `worktree/` root; the 24->25 migration makes them the worktrees
- * themselves, so the logical entry path and the physical Git worktree coincide.
+ * `execution-lanes/<g>/<l>`). The logical entry path and physical Git worktree coincide.
  */
 export function managedTaskRoot(home: string): string {
   return join(managedWorkspacesRoot(home), "tasks");

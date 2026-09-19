@@ -600,7 +600,8 @@ export async function startFileTaskControllerRuntime(
       : new ProviderContinuationReconciliationService(
           store,
           schedulerStore,
-          options.continuationMetadata
+          options.continuationMetadata,
+          options.onError
         );
     const running = await startFileTaskController(
       home,

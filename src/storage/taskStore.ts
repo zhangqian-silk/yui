@@ -89,30 +89,10 @@ import type { WorkItem } from "../workItem/workItem.js";
 import type { ManagedWorkspace, ManagedWorkspaceOwner } from "../worktree/managedWorkspace.js";
 import type { ContextRecordPage, ContextRecordQuery, ContextInputScope } from "./contextRecords.js";
 
-export const CURRENT_CONFIG_SCHEMA_VERSION = 6 as const;
-/** Current SQLite payload-family versions owned by this storage boundary. */
-export const CURRENT_CONFIGURED_AGENT_SCHEMA_VERSION = 2 as const;
-export const CURRENT_PROJECT_SCHEMA_VERSION = 6 as const;
-export const CURRENT_AGENT_PROFILE_SCHEMA_VERSION = 3 as const;
-export const CURRENT_GLOBAL_ROLE_SCHEMA_VERSION = 3 as const;
-export const CURRENT_GLOBAL_ROLE_SESSION_SET_SCHEMA_VERSION = 5 as const;
-export const CURRENT_TASK_SCHEMA_VERSION = 7 as const;
-export const CURRENT_TASK_BRIEF_SCHEMA_VERSION = 2 as const;
-export const CURRENT_CONTEXT_SNAPSHOT_SCHEMA_VERSION = 1 as const;
-export const CURRENT_TASK_ROLE_SCHEMA_VERSION = 4 as const;
-export const CURRENT_MANAGED_WORKSPACE_SCHEMA_VERSION = 2 as const;
-export const CURRENT_WORK_ITEM_SCHEMA_VERSION = 15 as const;
-export const CURRENT_REVIEW_ROUND_SCHEMA_VERSION = 8 as const;
-export const CURRENT_CHANGE_SET_SCHEMA_VERSION = 4 as const;
-export const CURRENT_INTEGRATION_ATTEMPT_SCHEMA_VERSION = 6 as const;
-export const CURRENT_MESSAGE_SCHEMA_VERSION = 3 as const;
-export const CURRENT_INPUT_REQUEST_SCHEMA_VERSION = 3 as const;
-export const CURRENT_DECISION_SCHEMA_VERSION = 1 as const;
-export const CURRENT_MILESTONE_SCHEMA_VERSION = 2 as const;
-export const CURRENT_EVENT_SCHEMA_VERSION = 2 as const;
-export const CURRENT_CAPABILITY_GRANT_SCHEMA_VERSION = 2 as const;
+export const CURRENT_CONFIG_SCHEMA_VERSION = 1 as const;
+export const CURRENT_CAPABILITY_GRANT_SCHEMA_VERSION = 1 as const;
 export const CURRENT_RELEASE_WORKFLOW_SCHEMA_VERSION = 1 as const;
-export const CURRENT_WORK_MAILBOX_SCHEMA_VERSION = 5 as const;
+export const CURRENT_WORK_MAILBOX_SCHEMA_VERSION = 1 as const;
 export const CURRENT_PUBLICATION_REFERENCE_SCHEMA_VERSION = 1 as const;
 export const CURRENT_PENDING_WAKEUP_SCHEMA_VERSION = 1 as const;
 export const COMPLETION_SHELLS = ["bash", "zsh", "fish"] as const;
@@ -200,12 +180,6 @@ export function executionLaneActiveRunKeyParts(key: string):
   }
 }
 
-/**
- * Nested-record versions consumed by the current SQLite payload validators.
- */
-export const CURRENT_TASK_ROLE_SESSION_SET_SCHEMA_VERSION = 12 as const;
-export const CURRENT_RUN_SCHEMA_VERSION = 5 as const;
-export const CURRENT_INTEGRATION_QUEUE_SCHEMA_VERSION = 1 as const;
 export type TaskStore = {
   savePluginIntent(intent: PluginIntent): void;
   getPluginIntent(taskId: string, pluginId: string): PluginIntent | null;

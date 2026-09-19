@@ -1,5 +1,5 @@
 export type TaskBrief = {
-  schemaVersion: 2;
+  schemaVersion: 1;
   objective: string;
   boundaries: string[];
   technicalApproach: string;
@@ -26,7 +26,7 @@ export type TaskBriefPatch = Partial<Pick<
 
 export function createTaskBrief(input: TaskBriefContent, now: Date): TaskBrief {
   return {
-    schemaVersion: 2,
+    schemaVersion: 1,
     objective: requireText(input.objective, "Task objective"),
     boundaries: normalizeBoundaries(input.boundaries),
     technicalApproach: optionalText(input.technicalApproach, "Task technical approach"),
@@ -55,8 +55,8 @@ export function updateTaskBrief(
 }
 
 export function validateTaskBrief(brief: TaskBrief): TaskBrief {
-  if (brief.schemaVersion !== 2) {
-    throw new Error("Task Brief requires schemaVersion 2.");
+  if (brief.schemaVersion !== 1) {
+    throw new Error("Task Brief requires schemaVersion 1.");
   }
   if (!Array.isArray(brief.boundaries) || typeof brief.technicalApproach !== "string"
     || typeof brief.updatedAt !== "string" || !Number.isFinite(Date.parse(brief.updatedAt))) {

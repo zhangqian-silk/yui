@@ -122,7 +122,7 @@ function fixture(t, scope = "task", roleName = scope === "task" ? "leader" : "as
     payload = {}, runId = read().run?.runId) => {
     const eventId = `observation-${++sequence}`;
     return adapter().observeRuntimeObservation(createRuntimeObservation({
-      schemaVersion: 4, eventId, semanticKey: eventId,
+      schemaVersion: 1, eventId, semanticKey: eventId,
       kind, authority: "provider-structured",
       observedAt: now().toISOString(), receivedAt: now().toISOString(), payload,
       fence: { ...scoped, agentId: agent.id, driverId: "openai/codex",
@@ -175,6 +175,34 @@ function fixture(t, scope = "task", roleName = scope === "task" ? "leader" : "as
     reopen() { store.close(); store = new SqliteTaskStore(home); }
   };
 }
+
+test("a failed retry admission read preserves that Session and lets another Session proceed", async t => {
+  const f = fixture(t, "global");
+  f.fail(); f.due();
+  const healthy = f.loadSessions();
+  const broken = { ...healthy, owner: { scope: "global", roleName: "broken" } };
+  const failures = [], submitted = [];
+  const source = f.store;
+  const store = new Proxy(source, { get(target, key) {
+    if (key === "listProviderRetrySessions") return () => [broken, healthy];
+    if (key === "getGlobalRole") return role => {
+      if (role === "broken") throw new Error("Role storage unavailable");
+      return target.getGlobalRole(role);
+    };
+    const value = target[key];
+    return typeof value === "function" ? value.bind(target) : value;
+  } });
+  const hooks = createProviderRetryHooks(f.home, store, {
+    now: f.now, onError: error => failures.push(error),
+    submit: async request => { submitted.push(request); return { outcome: "delivered", snapshot: { state: "ready" } }; }
+  });
+  await hooks.reconcile();
+  assert.equal(submitted.length, 1);
+  assert.equal(submitted[0].roleName, f.roleName);
+  assert.deepEqual(f.loadSessions(), healthy, "No failed read may cancel intent or fabricate delivery.");
+  assert.equal(failures.length, 1);
+  assert.match(failures[0].message, /broken.*Role storage unavailable/);
+});
 
 function reviewFixture(t) {
   const f = fixture(t, "task", "reviewer");
@@ -466,7 +494,7 @@ test("detached child observation failures hand off once, back off and retain wri
   f.observe("turn.accepted");
   const adapter = new FileSchedulerStoreAdapter(f.store);
   assert.equal(adapter.observeRuntimeObservation(createRuntimeObservation({
-    schemaVersion: 4, eventId: "child-started", semanticKey: "child-started",
+    schemaVersion: 1, eventId: "child-started", semanticKey: "child-started",
     kind: "continuation.started", authority: "provider-structured",
     receivedAt: f.now().toISOString(), observedAt: f.now().toISOString(),
     fence: { taskId: "task-1", roleName: f.roleName, agentId: "codex", driverId: "openai/codex",
@@ -610,7 +638,10 @@ test("Global exhaustion and cancellation settle the original queue entry without
     const inspectQueue = () => deliverGlobalInputs(f.home, f.store, async () => {
       prepares++;
       throw beforeNative;
-    }, error => { assert.equal(error, beforeNative); });
+    }, error => {
+      assert.equal(error.cause, beforeNative);
+      assert.match(error.message, new RegExp(f.roleName));
+    });
     await inspectQueue();
     assert.equal(prepares, 0, "A stopped retry cannot silently return to ordinary delivery.");
     f.advanceTo(f.now().getTime() + 1);

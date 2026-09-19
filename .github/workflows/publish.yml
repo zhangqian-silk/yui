@@ -109,6 +109,21 @@ jobs:
             cat yui-runtime.sha256
           } | tee release-provenance.txt
 
+      - name: Package independent one-time converter
+        if: github.ref_name == 'v1.0.0-alpha'
+        run: node scripts/package-baseline-converter.mjs --output yui-baseline-cutover.tgz
+
+      - name: Preserve independent converter
+        if: github.ref_name == 'v1.0.0-alpha'
+        uses: actions/upload-artifact@v7
+        with:
+          name: yui-baseline-cutover
+          path: |
+            yui-baseline-cutover.tgz
+            yui-baseline-cutover.tgz.sha256
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Upload tested package
         uses: actions/upload-artifact@v7
         with:
@@ -184,11 +199,72 @@ jobs:
           sha256sum -c yui-runtime.sha256
 
       - name: Publish tested package
-        # Stable releases explicitly select latest, even when replacing a
-        # higher-numbered withdrawn release. Prereleases must never promote it.
+        # Preserve the stable/prerelease channel boundary from 0.16.2.
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           dist_tag=latest
           if [[ "$RELEASE_TAG" == *-* ]]; then dist_tag=next; fi
           npm publish ./release-artifact/yui-runtime.tgz --access public --provenance --tag "$dist_tag"
+
+  baseline-release:
+    if: github.ref_name == 'v1.0.0-alpha'
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    concurrency:
+      group: baseline-release-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Download tested runtime
+        uses: actions/download-artifact@v8
+        with:
+          name: yui-runtime-tarball
+          path: release-artifact
+
+      - name: Download independent converter
+        uses: actions/download-artifact@v8
+        with:
+          name: yui-baseline-cutover
+          path: release-artifact
+
+      - name: Preserve and verify durable alpha attachments
+        shell: bash
+        working-directory: release-artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          sha256sum -c yui-runtime.sha256
+          sha256sum -c yui-baseline-cutover.tgz.sha256
+          grep -Fx "commit=$RELEASE_COMMIT" release-provenance.txt
+          grep -Fx "tag=$RELEASE_TAG" release-provenance.txt
+          if ! gh release view "$RELEASE_TAG" --json isDraft,isPrerelease > release.json; then
+            gh release create "$RELEASE_TAG" --verify-tag --draft --prerelease --latest=false \
+              --title "$RELEASE_TAG" \
+              --notes "Clean storage 1.0 baseline. Read docs/storage-baseline.md in the attached runtime package before using the separate v37 converter. Existing Homes are not automatically converted."
+            gh release view "$RELEASE_TAG" --json isDraft,isPrerelease > release.json
+          fi
+          test "$(jq -r .isPrerelease release.json)" = true
+          draft="$(jq -r .isDraft release.json)"
+          assets="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
+          verified="$(mktemp -d)"
+          trap 'rmdir "$verified" 2>/dev/null || true' EXIT
+          for asset in yui-runtime.tgz yui-runtime.sha256 release-provenance.txt yui-baseline-cutover.tgz yui-baseline-cutover.tgz.sha256; do
+            if ! grep -Fxq "$asset" <<< "$assets"; then
+              # Never change a published release or clobber an existing asset.
+              test "$draft" = true
+              gh release upload "$RELEASE_TAG" "$asset"
+            fi
+            gh release download "$RELEASE_TAG" --pattern "$asset" --dir "$verified"
+            cmp "$asset" "$verified/$asset"
+            rm "$verified/$asset"
+          done
+          if [ "$draft" = true ]; then
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false --verify-tag
+          fi

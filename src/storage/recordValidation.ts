@@ -24,13 +24,14 @@ import { validateGateArtifact } from "../verification/gateArtifact.js";
 import { validateWorkItem } from "../workItem/workItem.js";
 import { validateManagedWorkspace } from "../worktree/managedWorkspace.js";
 import { StorageRecordError, storedCapabilityGrant, storedPublicationReference, storedReleaseWorkflow } from "./taskStore.js";
+import { requireKnownFields } from "../domain/validation.js";
 
 const check = <T>(validate: (record: T) => unknown): ((record: unknown) => void) =>
   record => { validate(record as T); };
 
 /** One current domain contract for saves, reads and explicit Home diagnostics.
  * Protocol-specific metadata/outbox/telemetry have their own readers. This is
- * validation only: historical formats belong exclusively to migrations. */
+ * validation only: other storage formats require an independent converter. */
 const validators = {
   task_records: check(validateTask),
   work_items: check(validateWorkItem),
@@ -39,8 +40,14 @@ const validators = {
   projects: check(validateProject),
   task_roles: check(validateTaskRole),
   global_roles: check(validateGlobalRole),
-  role_session_sets: check<RoleSessionSet>(validateRoleSessionSet),
-  global_role_session_sets: check<RoleSessionSet>(validateRoleSessionSet),
+  role_session_sets: check<RoleSessionSet>(record => {
+    if (record.owner?.scope !== "task") throw new Error("Task Session set requires task scope.");
+    validateRoleSessionSet(record);
+  }),
+  global_role_session_sets: check<RoleSessionSet>(record => {
+    if (record.owner?.scope !== "global") throw new Error("Global Session set requires global scope.");
+    validateRoleSessionSet(record);
+  }),
   messages: check(validateTaskMessage),
   global_role_messages: check(validateGlobalRoleMessage),
   turns: check(validateRun),
@@ -64,7 +71,10 @@ const validators = {
   plugin_intents: check(validatePluginIntent),
   plugin_validations: check(validatePluginValidation),
   session_owners: check((record: SessionOwnerIdentity) => {
-    if (record.schemaVersion !== 2 || record.kind !== "yui-session-owner" || Object.hasOwn(record, "launchId")) {
+    requireKnownFields(record, [
+      "schemaVersion","kind","owner","agentId","adapterId","nativeSessionId","tmux","providerRoot","runtimeRoot","recordedAt"
+    ] satisfies readonly (keyof SessionOwnerIdentity)[], "Session owner identity");
+    if (record.schemaVersion !== 1 || record.kind !== "yui-session-owner") {
       throw new Error("Session owner identity is invalid.");
     }
     createSessionOwnerIdentity({ ...record, recordedAt: new Date(record.recordedAt) });

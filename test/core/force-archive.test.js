@@ -212,7 +212,7 @@ test("late events retain complete source evidence without replaying or acknowled
   const stored = store.listEvents(task.id).find(e => e.payload.eventId === terminal.id);
   assert.deepEqual(JSON.parse(stored.payload.originalEvent), terminal);
   const observation = inbox.enqueueObservation({
-    schemaVersion: 4, eventId: "late-acceptance", semanticKey: "late-acceptance",
+    schemaVersion: 1, eventId: "late-acceptance", semanticKey: "late-acceptance",
     kind: "turn.accepted", authority: "provider-structured", receivedAt: now.toISOString(),
     sequence: 1, ordinal: 0, fence: {
       taskId: task.id, roleName: "leader", agentId: "codex", driverId: "openai/codex",
@@ -238,7 +238,7 @@ test("archive racing Host ingress retains the complete envelope without settling
   const originalMailbox = store.getWorkMailbox(target);
   const inbox = new FileRuntimeEventInbox(home, () => now);
   const event = inbox.enqueueObservation({
-    schemaVersion: 4, eventId: "late-host-result", semanticKey: "late-host-result",
+    schemaVersion: 1, eventId: "late-host-result", semanticKey: "late-host-result",
     kind: "turn.completed", authority: "provider-structured", receivedAt: now.toISOString(),
     sequence: 1, ordinal: 0,
     fence: { taskId: task.id, roleName: "leader", agentId: "codex", driverId: "openai/codex",
@@ -346,7 +346,7 @@ test("archive committed at observation transaction admission preserves the exact
     return transaction.call(this, fn, options);
   };
   const observation = {
-    schemaVersion: 4, eventId: "late-steer", semanticKey: "late-steer", kind: "input.accepted",
+    schemaVersion: 1, eventId: "late-steer", semanticKey: "late-steer", kind: "input.accepted",
     authority: "provider-structured", receivedAt: now.toISOString(), sequence: 1, ordinal: 0,
     fence: { taskId: task.id, roleName: "leader", runId: run.id, agentId: "codex", driverId: "openai/codex",
       nativeSessionId: "original-session", nativeTurnId: "original-turn",

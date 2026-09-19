@@ -4,7 +4,7 @@ import { requireTimestamp } from "../domain/validation.js";
 export type TaskEventPayload = Record<string, string>;
 
 export type TaskEvent = {
-  schemaVersion: 2;
+  schemaVersion: 1;
   id: string;
   taskId: string;
   type: string;
@@ -20,7 +20,7 @@ export function createTaskEvent(
   now: Date
 ): TaskEvent {
   const event: TaskEvent = {
-    schemaVersion: 2,
+    schemaVersion: 1,
     id: requireText(id, "Task event id"),
     taskId: requireText(taskId, "Task event Task id"),
     type: requireText(type, "Task event type"),
@@ -31,7 +31,7 @@ export function createTaskEvent(
 }
 
 export function validateTaskEvent(event: TaskEvent): TaskEvent {
-  if (event.schemaVersion !== 2) throw new Error("Task Event must use schemaVersion 2.");
+  if (event.schemaVersion !== 1) throw new Error("Task Event must use schemaVersion 1.");
   validateTaskRecordReference({ taskId: event.taskId, localId: event.id }, "event");
   requireText(event.type, "Task event type");
   if (event.payload === null || typeof event.payload !== "object" || Array.isArray(event.payload)) {

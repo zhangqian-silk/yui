@@ -14,7 +14,7 @@ export function sessionOwnerProcessKey(record: Pick<SessionOwnerIdentity, "provi
  * descendant application. The record survives Controller restarts.
  */
 export type SessionOwnerIdentity = Readonly<{
-  schemaVersion: 2;
+  schemaVersion: 1;
   kind: "yui-session-owner";
   owner: Readonly<{
     scope: "task" | "global";
@@ -118,7 +118,7 @@ export function createSessionOwnerIdentity(
   }
   const tmux = input.tmux;
   return Object.freeze({
-    schemaVersion: 2 as const,
+    schemaVersion: 1 as const,
     kind: "yui-session-owner" as const,
     owner: Object.freeze({
       scope: owner.scope,

@@ -258,7 +258,7 @@ import {
   openCurrentTaskStore,
   validateCurrentTaskStore
 } from "./storage/currentTaskStore.js";
-import { SqliteSchemaMigrationError } from "./storage/sqliteSchema.js";
+import { SqliteSchemaError } from "./storage/sqliteSchema.js";
 import { inspectStorageSchema } from "./storage/storageSchema.js";
 import { resolveYuiHome, type TaskStore } from "./storage/taskStore.js";
 import { renderArchiveDiagnostics, taskArchiveDiagnostics } from "./task/archiveDiagnostics.js";
@@ -311,7 +311,7 @@ void main().catch((error: unknown) => {
 
 function runtimeFailureMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
-  if (!(error instanceof SqliteSchemaMigrationError)) return message;
+  if (!(error instanceof SqliteSchemaError)) return message;
   try {
     return `${message}\n${describeCliHomeInvocation({
       home: resolveYuiHome(process.env),
@@ -751,12 +751,9 @@ export async function main(): Promise<void> {
     if (method === "restart") validateCurrentTaskStore(home);
     const controllerMethod: "stop" | "restart" = method;
     const updateHandoverOwner = process.env.YUI_UPDATE_HANDOVER_OWNER_PID;
-    // A pre-fix updater cannot pass the owner environment variable to the
-    // activated restart child, but it remains that child's direct parent while
-    // holding the exact handover lock. Inherit only that OS-backed relationship;
-    // every unrelated live lock still compares foreign and fails closed.
+    // Maintenance children must explicitly name their exact lock owner.
     const updateHandoverOwnerPid = updateHandoverOwner === undefined
-      ? (Number.isSafeInteger(process.ppid) && process.ppid > 0 ? process.ppid : undefined)
+      ? undefined
       : Number(updateHandoverOwner);
     if (
       updateHandoverOwnerPid !== undefined

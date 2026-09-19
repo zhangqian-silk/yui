@@ -19,13 +19,13 @@ const task = { id: "task-1", status: "completed", createdAt: at(0), completedAt:
 let sequence = 0;
 function event(kind, seconds, payload = {}, fence = {}) {
   const observation = createRuntimeObservation({
-    schemaVersion: 4, eventId: `fixture-${++sequence}`, semanticKey: `fixture-${sequence}`,
+    schemaVersion: 1, eventId: `fixture-${++sequence}`, semanticKey: `fixture-${sequence}`,
     kind, authority: "provider-structured", receivedAt: at(seconds), observedAt: at(seconds),
     fence: { taskId: task.id, roleName: "leader", agentId: "codex",
       driverId: "openai/codex", nativeSessionId: "session-1", nativeTurnId: "turn-1", ...fence },
     payload
   });
-  return { schemaVersion: 2, id: `event-${sequence}`, taskId: observation.fence.taskId,
+  return { schemaVersion: 1, id: `event-${sequence}`, taskId: observation.fence.taskId,
     type: "runtime.observation", createdAt: at(seconds),
     payload: runtimeObservationTaskEventPayload(observation) };
 }

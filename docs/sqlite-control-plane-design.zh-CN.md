@@ -2,72 +2,56 @@
 
 # SQLite 控制面存储
 
-Yui 只有一个权威产品 Store：WAL 模式下的 `YUI_HOME/yui.db`。`schema_migrations`
-中连续且带校验和的最高一行，就是当前发行版接受的那一个 Home 存储版本。
+Yui 唯一的权威产品 Store 是 WAL 模式的 `YUI_HOME/yui.db`。
+`storage_schema` 单行记录唯一的**主版本.小版本**与 Schema 摘要；
+1.0.0-alpha 软件包引入的纯净基线为 **1.0**。
 
 ## 权威
 
-- `yui.db` 拥有 Task、WorkItem、AgentRun、Message、Decision、结果、Project
-  Knowledge 引用、受管工作区记录、运行时绑定、mailbox、持久事件和配置。
-- Provider Session、transcript、进程、缓存、telemetry 和运行时观察服务于执行
-  与诊断，不替代持久的 Task 事实。
-- 数据库之外的配置和诊断不定义另一个存储版本，也不允许启发式地重建 Task 真相。
+SQLite 拥有 Task、WorkItem、AgentRun、Message、Decision、结果、Project
+Knowledge、工作区、运行绑定、mailbox、事件及配置。Provider Session、
+transcript、进程、缓存和 telemetry 服务于执行诊断，不替代持久 Task 真相。
+记录的 `schemaVersion` 仅校验当前格式，不构成独立升级轴。
+`storage_migration_archive` 保留不透明原始负载和二进制审计证据，
+不是旧格式读取器、调度器或缓存。
 
 ## 准入
 
-普通命令只有在同时满足以下条件时才打开 Home：
-
-1. `yui.db` 存在，且其迁移账本是一个有效的不可变前缀。
-2. 账本头恰好等于运行中 CLI 的当前存储版本。
-3. 当前记录校验与引用完整性均通过。
-
-落在 CLI 支持区间内的更旧 Home 无法通过普通准入，但被归类为可升级。
-`yui doctor` 和 `yui upgrade --dry-run` 会报告有序的升级路径而不改动 Home。
-显式的 `yui upgrade` 是唯一的独立变更边界：它让 Controller 静止、备份
-`yui.db`、以事务方式套用所有缺失迁移，并校验当前模型。更新的、低于最低版本的、
-不完整的或损坏的 Home 一律 fail closed。不存在运行时归一化、修复 worker、
-文件 Store 回退、双读写路径或第二套迁移权威。
-
-类型化领域记录在写入、普通读取、有界 Context 分页和全 Home 检查时，共用一份
-现行校验注册表。直接 Store 与 worker-backed Store 不存在不同强度的校验。
-无效写入不会推进 revision；已存在的无效记录只会报错并保留供明确诊断，
-不会被自动规范化成看似有效的替代记录。
-
-存储 35 新增仅由迁移写入的 `storage_migration_archive`：
-`migration_version / family / record_key / payload / content`。它保留退休的
-Project／gate 原始 payload 和二进制日志，不在当前模型中解释这些历史格式，
-也不是调度状态、第二份缓存或运行时回退。Task 内的历史 Integration 使用普通
-Task 事件保存。数据库备份同时保留当前记录与这份审计存档。
+普通打开要求精确的当前格式、版本、摘要、物理结构与类型化记录。
+非空 Home 缺少数据库或版本身份时拒绝初始化。新 Home 一次创建最终 DDL，
+不重放旧迁移。写入、普通读取、Context 分页及全 Home 诊断共享当前校验器；
+无效记录只报错，不规范化修复；失败写入不推进 revision。
+已打开的写连接在每次修改前重查它捕获的 Schema 身份。
 
 ## 写入与并发合同
 
-- 每次修改是一个 SQLite 事务。
-- WAL 加 `synchronous=FULL` 提供持久提交边界。
-- `home_meta.revision` 是全 Home 范围的 CAS/revision，供需要冻结
-  read/modify/write 边界的调用者使用。
-- 类型化列支持按身份和状态建索引查询；完整且经校验的记录负载仍是持久的领域表示。
-- mailbox 认领、精确的 AgentRun 终结、活动指针移除、结果持久化以及下游唤醒创建，
-  在它们构成同一条产品事实时以事务方式耦合。
-- 幂等键与唯一约束保护可重复的外部效果确认，不构成第二套工作流状态机。
+每次修改是 SQLite 事务，WAL 和 `synchronous=FULL` 保护持久提交。
+`home_meta.revision` 是 Home 范围的 CAS/revision，不是格式版本。
+索引列支持精确查询，完整且经过校验的负载仍是领域表示。
+mailbox 认领、精确 Run 终结、活动指针移除、结果持久化及下游通知，
+在构成同一产品事实时一并提交。幂等键和唯一约束保护外部效果，
+不另建规划协议。
 
 ## AgentRun 与 Session 边界
 
-AgentRun 是一次明确请求的执行。它记录相关的可见输入和原始结果，而不是隐藏的
-推理过程或完整工具轨迹。一个 Provider Session 可以包含多个 Run、普通原生对话
-和通知。原生对话和通知不会自动创建 Run。只有精确关联的原生终态才结算该 Run；
-WorkItem 与 Task 的验收权威仍归 Leader。
+AgentRun 记录显式执行请求、可见输入和原始结果，不记录隐藏推理。
+一个原生 Session 可以包含多个 Run 和普通对话。通知本身不创建 Run，
+只有精确原生证据才能结算；WorkItem、Task 的验收仍由 Agent 判断。
 
 ## 更新行为
 
-`yui update` 暂存一个确切的包，并要求那个暂存二进制把 Home 判定为当前、可迁移
-或受阻。随后它停止那个确切的 Controller、激活同一个包、在需要时运行暂存发行版
-的完整迁移链、校验已安装二进制与当前 Home，再启动替换后的 Controller。
+版本 API 返回 `"1.0"` 字符串，不用浮点数。默认 `upgrade/update`
+只接受同一存储主版本内完整且连续的小版本路径；初始基线尚无升级步骤。
+跨主版本和旧整数格式只由独立显式转换器处理，运行包没有回退。
+updater 先检查精确暂存包，再在维护锁内重查；未知所有权始终阻塞。
 
-每次持久 schema 或负载变更都追加一条不可变、连续的存储迁移。CLI 同时发布
-`storageVersion` 与 `minimumStorageVersion`；处在该闭区间内的每个有效 Home 都能
-直接升级到当前版本，无需安装中间发行版。当前版本及最低支持版本统一由
-`src/storage/storageVersions.ts` 声明，并由 CLI 身份读取暴露。
-低于该下限的 Home 不是迁移输入，保持原样不动。目标二进制的
-`upgrade --update-preflight` 与 `--update-apply` 结果形态，以及由父进程持有的
-交接锁证明，对从存储版本 1 起发布的每个 updater 都保持向后兼容，因此一个旧的
-源码 CLI 仍能驱动一个新得多的目标的完整迁移链。
+独立旧 v37 转换、备份恢复、产物边界和冷启动流程见
+[存储基线 1.0](./storage-baseline.zh-CN.md)。
+
+## Home 布局
+
+自管理数据位于规范 Home 内：Task worktree 在
+`workspaces/tasks/<task>/<owner>/<project>`，Global scratch 在
+`workspaces/global`，运行数据在 `runtime`，备份在 `backups`。
+显式外部 Project 保留外部资源语义；只有受限长度的 IPC socket 可位于 Home 外。
+一次性转换不搬迁工作区，也不改写 Git 身份。

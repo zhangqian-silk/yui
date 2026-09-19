@@ -70,7 +70,7 @@ Integration 在候选 worktree 中套用固定来源提交，运行已配置的�
 `historical-change-sets` Integration 必须先结算且不存在执行／交付引用，才能将
 完整 payload 转为 `integration.source-retired` Task 事件；旧 ID 不会复用。
 无匹配证据时正常执行。
-计划必须提供 `schemaVersion: 2`，不再包含 `l1` 或 `record/reuse/enforce` 模式。
+计划必须提供 `schemaVersion: 1`，不再包含 `l1` 或 `record/reuse/enforce` 模式。
 
 新建操作时显式要求重跑：
 
@@ -88,7 +88,7 @@ yui task upstream integrate <task> --project <project> --rerun-checks
 
 新执行开始前撤下旧成功。失败如实记录；中断、缺失日志或候选被改写时，
 不会保留可复用成功。Job 和本地执行在发布成功证据前，共同检查候选的精确提交、
-分支和干净状态。v5 L2-only 执行摘要隔离旧证据，不删除原有历史。
+分支和干净状态。baseline-v1 L2-only 执行摘要隔离旧证据，不删除原有历史。
 过期的缓存使用者不能恢复旧结果。发布查询查看最新匹配证据，不跳过失败去找旧绿灯。
 缓存只表示当前可复用证据，不充当 Task 执行历史；原 Job 和 Integration 记录独立保留。
 
@@ -282,7 +282,7 @@ Session 进程归属只读取 SQLite `session_owners`，并校验存活 PID 和�
 
 当前 Resource 记录严格验证必需安全字段、枚举和每条活动引用。损坏记录或 SQLite
 主键与 payload 身份不符会明确报错，不补默认值、不丢弃坏引用、不改写原始证据。
-这是执行既有记录合同，存储版本保持 37。
+这是执行当前存储 1.0 的记录合同。
 
 准备失败只补偿未采用的资源：独立 Task clone 经精确身份、干净状态检查后直接
 删除；linked worktree 使用准备时捕获的路径、分支、提交和自身 Git common directory。

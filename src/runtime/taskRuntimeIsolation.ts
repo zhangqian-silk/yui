@@ -44,7 +44,7 @@ export type TaskRuntimeLaunchPolicy = Readonly<{
 }>;
 
 export type TaskRuntimeIsolationDescriptor = Readonly<{
-  schemaVersion: 2;
+  schemaVersion: 1;
   kind: "yui-task-runtime-isolation";
   taskId: string;
   workspace: Readonly<{
@@ -320,7 +320,7 @@ export function createTaskRuntimeIsolationDescriptor(input: Readonly<{
   const portPreference = ports(input.policy?.portPreference ?? [], "Port preference");
   const portAllocations = allocations(input.policy?.portAllocations ?? []);
   return Object.freeze({
-    schemaVersion: 2,
+    schemaVersion: 1,
     kind: "yui-task-runtime-isolation",
     taskId,
     workspace: Object.freeze({ owner, root: canonicalPath(workspace.root, "Workspace root") }),
@@ -357,7 +357,7 @@ export function parseTaskRuntimeIsolationDescriptor(
       }.`
     );
   }
-  if (value.schemaVersion !== 2) {
+  if (value.schemaVersion !== 1) {
     throw new Error("Task runtime isolation descriptor schema version is invalid.");
   }
   const workspace = requireRecord(value.workspace, "Task runtime workspace");
@@ -370,7 +370,7 @@ export function parseTaskRuntimeIsolationDescriptor(
     requireRecord(workspace.owner, "Task runtime workspace owner") as ManagedWorkspaceOwner
   );
   const descriptor: TaskRuntimeIsolationDescriptor = {
-    schemaVersion: 2,
+    schemaVersion: 1,
     kind: "yui-task-runtime-isolation",
     taskId: requireIdentity(value.taskId, "Task id"),
     workspace: {

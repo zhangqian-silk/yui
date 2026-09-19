@@ -34,7 +34,8 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
-  rmSync
+  rmSync,
+  statSync
 } from "node:fs";
 import {
   delimiter,
@@ -47,6 +48,8 @@ import { fileURLToPath } from "node:url";
 
 import { runtimeError } from "../errors/cliError.js";
 import { isConcreteVersion } from "../domain/validation.js";
+import { parseControllerIdentity, type ControllerIdentity } from "../core/controllerIdentity.js";
+import { isMinorStorageUpgrade, isStorageVersion, storageVersionParts } from "../storage/storageVersions.js";
 import { STORAGE_DOCTOR_CHECK_NAMES } from "../doctor/doctor.js";
 import { acquireHandoverLock } from "../release/runtimeRelease.js";
 import { updateStagingRoot } from "../storage/homeLayout.js";
@@ -57,10 +60,8 @@ import {
 } from "../controller/updateReconciliation.js";
 import type {
   StagedPackage,
-  ControllerIdentity,
   UpdateControllerLifecycleStatus,
   UpdateControllerStopResult,
-  UpdateBlockerIdentity,
   UpdatePorts,
   UpdatePreflight,
   UpdateStorageMigrationResult
@@ -731,18 +732,16 @@ function restoreControllerIdentity(
     "const { spawn } = require('node:child_process');",
     "const values = process.argv.slice(1);",
     "const handoverOwnerPid = Number(values.pop());",
-    "const version = values.pop();",
-    "const args = JSON.parse(values.pop());",
-    "const executable = values.pop();",
+    "const identity = JSON.parse(values.pop());",
     "const home = values.pop();",
     "const runtimeModule = values.pop();",
     "(async () => {",
     "  const { ensureFileTaskControllerIdentity } = await import(runtimeModule);",
-    "  await ensureFileTaskControllerIdentity(home, { executablePath: executable, args, version }, {",
+    "  await ensureFileTaskControllerIdentity(home, identity, {",
     "    environment: process.env,",
     "    handoverOwnerPid,",
     "    spawnController: (_home, launchEnv) => {",
-    "      const child = spawn(executable, args, { detached: true, stdio: 'ignore', env: launchEnv });",
+    "      const child = spawn(identity.executablePath, identity.args, { detached: true, stdio: 'ignore', env: launchEnv });",
     "      child.unref();",
     "    }",
     "  });",
@@ -755,9 +754,7 @@ function restoreControllerIdentity(
       helper,
       UPDATE_CLIENT_RUNTIME_PATH,
       home,
-      identity.executablePath,
-      JSON.stringify(identity.args),
-      identity.version,
+      JSON.stringify(parseControllerIdentity(identity)),
       String(process.pid)
     ],
     { cwd: process.cwd(), env: launchEnvironment, shell: false, stdio: "pipe" }
@@ -912,26 +909,6 @@ function structuredErrorMessage(result: SpawnSyncReturns<Buffer>): string | unde
   return undefined;
 }
 
-function parseControllerIdentity(value: Record<string, unknown>): ControllerIdentity {
-  if (
-    typeof value.executablePath !== "string"
-    || value.executablePath.length === 0
-    || !Array.isArray(value.args)
-    || value.args.some((arg) => typeof arg !== "string")
-    || typeof value.version !== "string"
-    || value.version.length === 0
-  ) {
-    throw new Error(
-      "Authenticated Controller identity is malformed; treating ownership as unknown-active."
-    );
-  }
-  return {
-    executablePath: value.executablePath,
-    args: value.args as string[],
-    version: value.version
-  };
-}
-
 function controllerErrorCodeFromResult(result: SpawnSyncReturns<Buffer>): string | undefined {
   for (const buffer of [result.stdout, result.stderr]) {
     try {
@@ -1063,16 +1040,8 @@ function assertActivatedControllerIdentity(
  * entrypoint derivation as the production startup identity check (P1-1, rr23).
  */
 export function activatedControllerEntrypoint(activatedBinary: string): string {
-  let resolvedBinary: string;
-  try {
-    resolvedBinary = realpathSync(activatedBinary);
-  } catch {
-    // `verify` already checked existsSync. Keep the fallback deterministic for
-    // test seams and fail closed later if the identity does not match it.
-    resolvedBinary = resolve(activatedBinary);
-  }
+  const resolvedBinary = realpathSync(activatedBinary);
   const direct = join(dirname(resolvedBinary), "controller", "controllerMain.js");
-  if (existsSync(direct)) return direct;
 
   // npm may expose a non-symlink launcher under <prefix>/bin. Resolve the
   // package's canonical global layout when it is present.
@@ -1086,7 +1055,15 @@ export function activatedControllerEntrypoint(activatedBinary: string): string {
     "controller",
     "controllerMain.js"
   );
-  return existsSync(packageEntrypoint) ? packageEntrypoint : direct;
+  for (const candidate of [direct, packageEntrypoint]) {
+    if (!existsSync(candidate)) continue;
+    const entrypoint = realpathSync(candidate);
+    if (!statSync(entrypoint).isFile()) {
+      throw runtimeError(`Controller entrypoint is not a regular file: ${entrypoint}.`);
+    }
+    return entrypoint;
+  }
+  throw runtimeError(`Controller entrypoint is missing for the activated binary: ${resolvedBinary}.`);
 }
 
 function interpretPreflight(result: SpawnSyncReturns<Buffer>): UpdatePreflight {
@@ -1139,7 +1116,6 @@ function interpretPreflight(result: SpawnSyncReturns<Buffer>): UpdatePreflight {
       action: "Use a staged binary that supports the update-preflight contract; do not force the update."
     };
   }
-  const blockers = parseUpdateBlockers(data.blockers);
   return {
     status: "blocked",
     stage: typeof data.stage === "string" ? data.stage : "preflight",
@@ -1147,8 +1123,6 @@ function interpretPreflight(result: SpawnSyncReturns<Buffer>): UpdatePreflight {
     action: typeof data.action === "string"
       ? data.action
       : "Resolve the reported condition and retry.",
-    ...(blockers === undefined ? {} : { blockers }),
-    ...(typeof data.retryCommand === "string" ? { retryCommand: data.retryCommand } : {}),
     ...(data.sceneUnchanged === true ? { sceneUnchanged: true } : {})
   };
 }
@@ -1161,9 +1135,12 @@ function parseUpdatePreflightResult(data: Record<string, unknown>): UpdatePrefli
     || data.steps.length !== data.stepCount) return null;
   const homeClassification = data.classification;
   if (!isRecord(homeClassification) || !isRecord(homeClassification.classification)) return null;
+  const from = homeClassification.storageVersion;
+  const to = homeClassification.currentStorageVersion;
+  if (!isStorageVersion(from) || !isStorageVersion(to)) return null;
   const classification = homeClassification.classification;
   if (data.status === "already-current") {
-    if (data.stepCount !== 0
+    if (data.stepCount !== 0 || from !== to
       || classification.verdict !== "USABLE"
       || classification.status !== "current") return null;
     return { status: "already-current", stepCount: 0 };
@@ -1171,7 +1148,14 @@ function parseUpdatePreflightResult(data: Record<string, unknown>): UpdatePrefli
   if ((data.stepCount as number) <= 0
     || classification.verdict !== "MIGRATABLE"
     || classification.status !== "migration-ready"
+    || !isMinorStorageUpgrade(from, to)
     || !data.steps.every(isStorageMigrationStep)) return null;
+  let previous = from;
+  for (const step of data.steps as Array<{ fromVersion: typeof from; toVersion: typeof to }>) {
+    if (step.fromVersion !== previous) return null;
+    previous = step.toVersion;
+  }
+  if (previous !== to) return null;
   return { status: "migration-ready", stepCount: data.stepCount as number };
 }
 
@@ -1216,36 +1200,12 @@ function interpretStorageMigration(
 
 function isStorageMigrationStep(value: unknown): boolean {
   return isRecord(value)
-    && Number.isSafeInteger(value.fromVersion)
-    && Number.isSafeInteger(value.toVersion)
-    && (value.toVersion as number) === (value.fromVersion as number) + 1
+    && isStorageVersion(value.fromVersion)
+    && isStorageVersion(value.toVersion)
+    && isMinorStorageUpgrade(value.fromVersion, value.toVersion)
+    && storageVersionParts(value.toVersion).minor === storageVersionParts(value.fromVersion).minor + 1
     && typeof value.name === "string"
     && value.name.length > 0;
-}
-
-function parseUpdateBlockers(value: unknown): readonly UpdateBlockerIdentity[] | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value)) return undefined;
-  const parsed: UpdateBlockerIdentity[] = [];
-  for (const item of value) {
-    if (!isRecord(item) || typeof item.reason !== "string" || item.reason.length === 0) {
-      return undefined;
-    }
-    const optional = ["taskId", "roleName", "runId", "nativeSessionId"] as const;
-    if (optional.some((key) => item[key] !== undefined && typeof item[key] !== "string")) {
-      return undefined;
-    }
-    parsed.push({
-      ...(typeof item.taskId === "string" ? { taskId: item.taskId } : {}),
-      ...(typeof item.roleName === "string" ? { roleName: item.roleName } : {}),
-      ...(typeof item.runId === "string" ? { runId: item.runId } : {}),
-      ...(typeof item.nativeSessionId === "string"
-        ? { nativeSessionId: item.nativeSessionId }
-        : {}),
-      reason: item.reason
-    });
-  }
-  return parsed;
 }
 
 /**

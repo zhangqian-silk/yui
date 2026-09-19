@@ -49,7 +49,7 @@ export type AgentRunInput = Readonly<{
   schemaVersion: typeof RUN_INPUT_PROTOCOL_VERSION;
   source: AgentRunInputSource;
   directive?: string;
-  /** Required at dispatch; absent only in audit history or subsequent observed inputs. */
+  /** Required for new Task execution. Missing evidence remains readable for supervision. */
   contextSnapshotRef?: ContextSnapshotRef;
   deltaRefIds: readonly string[];
 }>;
@@ -101,7 +101,7 @@ export function requireRunContextSnapshotRef(
   input: Pick<AgentRunInput, "contextSnapshotRef">
 ): ContextSnapshotRef {
   if (input.contextSnapshotRef === undefined) {
-    throw new Error("AgentRun Context Snapshot is required for execution; the record remains audit-only.");
+    throw new Error("AgentRun Context Snapshot is required for this execution. Inspect the Run and retire or explicitly retry it; original evidence is never reconstructed.");
   }
   return validateContextSnapshotRef(input.contextSnapshotRef);
 }

@@ -34,8 +34,9 @@ not from terminal windows you juggle or details you have to remember.
 - **Isolated by default** — repository work happens in managed Git worktrees;
   the stable checkout stays read-only.
 
-> **Status:** pre-1.0 (0.15.x). CLI surfaces and configuration may still change
-> between releases; each upgrade migrates valid existing Homes.
+> **Status:** 1.0.0-alpha, with a clean storage 1.0 baseline. Default updates
+> support only declared minor upgrades within one storage major. Existing v37
+> Homes require the separate [one-time conversion](docs/storage-baseline.md).
 
 [Quick start](#quick-start) · [Working through conversation](#working-through-conversation) · [Architecture](#architecture) · [Design principles](#design-principles)
 
@@ -383,8 +384,9 @@ npm users do not need to compile it.
 
 To exercise your checkout, run `make install-local`, then use the absolute
 `<checkout>/output/dev/bin/yui` launcher. It defaults to an isolated Home under
-that checkout; run its `setup` before stateful use. Do not use the global `yui`
-or `make link` to validate local changes. Live-model, paid or shared-resource
+that checkout; run its `setup` before stateful use. Development tooling does not
+manage global installations; do not use the global `yui` to validate local changes.
+Live-model, paid or shared-resource
 tests require an explicit request for those resources.
 
 ## Community and support

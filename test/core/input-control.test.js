@@ -320,7 +320,7 @@ function withRunBoundTurn(store, roleName, { runId, attemptId, nativeTurnId, nat
 function steerSettlement({ kind, receiptId, roleName, agentId, runId, nativeSessionId, nativeTurnId = "t-1", key }) {
   const id = key ?? `${kind}:${receiptId}`;
   return createRuntimeObservation({
-    schemaVersion: 4, eventId: id, semanticKey: id, kind,
+    schemaVersion: 1, eventId: id, semanticKey: id, kind,
     authority: "provider-structured", receivedAt: later.toISOString(), sequence: 0,
     fence: {
       taskId: "task-1", roleName, agentId, driverId: "openai/codex",
@@ -1036,7 +1036,7 @@ function fakeEndpoint(cancelResult) {
   };
   const control = { schemaVersion: 1, adapterId: "codex", transport: "codex-app-server-proxy",
     kind: "start", mode: "new", authority: { epoch: 1, owner: "controller", holderId: "test" } };
-  const payload = { schemaVersion: 2, command: "x", args: [], environment: {}, cwd: tmpdir(),
+  const payload = { schemaVersion: 1, command: "x", args: [], environment: {}, cwd: tmpdir(),
     childLifecycle: "persistent", startMode: "provider", providerControl: control };
   const factory = createAgentEndpointFactory(async (_payload, callbacks) => {
     onTerminal = (attemptId) => callbacks.onTerminal({ conversationId: "conv-1", nativeSessionId: "sess-1",
@@ -1102,8 +1102,8 @@ function fakeWebHostControl() {
   const steers = [];
   const cancels = [];
   const result = (outcome) => ({
-    protocol: "yui-agent-host/v5", outcome,
-    snapshot: { protocol: "yui-agent-host/v5", state: "ready", nativeSessionId: "worker-native" }
+    protocol: "yui-agent-host-control/v1", outcome,
+    snapshot: { protocol: "yui-agent-host-control/v1", state: "ready", nativeSessionId: "worker-native" }
   });
   return {
     steers, cancels,
@@ -1353,12 +1353,12 @@ test("Global Web inputs use the authenticated shared primitive and state reads n
 // a non-delivered steer or an unproven cancel is REPORTED, never retried.
 
 const hostSnapshot = (detail) => ({
-  protocol: "yui-agent-host/v5", state: "ready", nativeSessionId: "worker-native",
+  protocol: "yui-agent-host-control/v1", state: "ready", nativeSessionId: "worker-native",
   ...(detail === undefined ? {} : { detail }) });
 const steerControl = (outcome, extra = {}) => ({
-  protocol: "yui-agent-host/v5", outcome, snapshot: hostSnapshot(), ...extra });
+  protocol: "yui-agent-host-control/v1", outcome, snapshot: hostSnapshot(), ...extra });
 const cancelControl = (cancellation, extra = {}) => ({
-  protocol: "yui-agent-host/v5", outcome: "cancel-requested", snapshot: hostSnapshot(),
+  protocol: "yui-agent-host-control/v1", outcome: "cancel-requested", snapshot: hostSnapshot(),
   ...(cancellation === undefined ? {} : { cancellation }), ...extra });
 
 test("foldSteerLiveReceipt maps only accepted to steered; pending is delivery-unknown (gap G)", () => {
@@ -1385,7 +1385,7 @@ test("foldSteerLiveReceipt carries a redacted failure/snapshot detail on non-suc
     "provider refused");
   // Otherwise the snapshot detail is surfaced so the operator sees the cause.
   assert.equal(foldSteerLiveReceipt({
-    protocol: "yui-agent-host/v5", outcome: "pending", snapshot: hostSnapshot("still settling") }).detail,
+    protocol: "yui-agent-host-control/v1", outcome: "pending", snapshot: hostSnapshot("still settling") }).detail,
     "still settling");
   // A clean accepted receipt carries no detail noise.
   assert.equal(foldSteerLiveReceipt(steerControl("accepted")).detail, undefined);
@@ -1414,7 +1414,7 @@ test("interrupt receipt without cancellation evidence remains unknown", () => {
   // An outcome that is not cancel-requested at all means the cancel edge could
   // not run; surface it (with detail) rather than claim an interrupt.
   assert.deepEqual(foldInterruptLiveReceipt({
-    protocol: "yui-agent-host/v5", outcome: "busy", snapshot: hostSnapshot("host busy") }),
+    protocol: "yui-agent-host-control/v1", outcome: "busy", snapshot: hostSnapshot("host busy") }),
     { state: "interrupt-unavailable", outcome: "busy", detail: "host busy" });
 });
 

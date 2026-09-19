@@ -174,7 +174,7 @@ export type AgentHostProviderState =
   | "exited";
 
 export type AgentHostSnapshot = Readonly<{
-  schemaVersion: 2;
+  schemaVersion: 1;
   state: AgentHostProviderState;
   adapterId?: AgentAdapterId;
   processInstanceId?: string;
@@ -716,7 +716,7 @@ export async function runAgentHost(input: Readonly<{
       const failures: string[] = [];
       try {
         await persistAndSubmitExit(input.home, validateRuntimeProcessExitObservation({
-          schemaVersion: 2,
+          schemaVersion: 1,
           observationId: `${hostInstanceId}-${hostSequence}`,
           hostSequence,
           hostInstanceId,
@@ -2048,7 +2048,7 @@ function isProviderDeliveryFailure(value: unknown): value is ProviderDeliveryFai
 }
 
 function validateSnapshot(snapshot: AgentHostSnapshot): AgentHostSnapshot {
-  if (snapshot.schemaVersion !== 2
+  if (snapshot.schemaVersion !== 1
     || !["idle", "starting", "ready", "settling", "delivery-unknown", "busy", "rejected", "failed", "exited"]
       .includes(snapshot.state)) {
     throw new Error("Agent Host snapshot is invalid.");
@@ -2095,7 +2095,7 @@ function hostSnapshot(
   fields: Partial<Omit<AgentHostSnapshot, "schemaVersion" | "state" | "updatedAt">> = {}
 ): AgentHostSnapshot {
   return validateSnapshot({
-    schemaVersion: 2,
+    schemaVersion: 1,
     state,
     ...definedFields(fields),
     updatedAt: new Date().toISOString()

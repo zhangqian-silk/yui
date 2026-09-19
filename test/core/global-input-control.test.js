@@ -731,7 +731,7 @@ test("Global unknown survives restart, late evidence settles it, and conclusive 
     nativeSessionId: "assistant-native", attemptId, authorityEpoch: 1, authorityOwner: "controller",
     holderId: "controller", now: later });
   scheduler.observeRuntimeObservation(createRuntimeObservation({
-    schemaVersion: 4, eventId: "transport-only", semanticKey: "transport-only",
+    schemaVersion: 1, eventId: "transport-only", semanticKey: "transport-only",
     kind: "turn.accepted", authority: "transport", receivedAt: later.toISOString(),
     observedAt: later.toISOString(), payload: {},
     fence: { roleName: role.name, agentId: "codex", driverId: "openai/codex",
@@ -751,7 +751,7 @@ test("Global unknown survives restart, late evidence settles it, and conclusive 
   assert.equal(pending.delivery.via, "transport");
   const reloadedScheduler = new FileSchedulerStoreAdapter(reopened);
   const accepted = createRuntimeObservation({
-    schemaVersion: 4, eventId: "late-global-receipt", semanticKey: "late-global-receipt",
+    schemaVersion: 1, eventId: "late-global-receipt", semanticKey: "late-global-receipt",
     kind: "turn.accepted", authority: "provider-structured", receivedAt: later.toISOString(),
     observedAt: later.toISOString(), payload: {},
     fence: { roleName: role.name, agentId: "codex", driverId: "openai/codex",

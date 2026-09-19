@@ -3,6 +3,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 
 import {
   requireIdentity,
+  requireKnownFields,
   requirePositiveInteger,
   requireText
 } from "../domain/validation.js";
@@ -20,7 +21,7 @@ import type { Project } from "../repository/project.js";
  * reusable across stages.
  */
 
-export const VERIFICATION_PLAN_SCHEMA_VERSION = 2 as const;
+export const VERIFICATION_PLAN_SCHEMA_VERSION = 1 as const;
 export const VERIFICATION_PLAN_KIND = "verification-plan";
 
 /** The reserved knowledge marker that carries a Project's VerificationPlan. */
@@ -89,8 +90,9 @@ export function normalizeVerificationPlan(raw: unknown): VerificationPlan {
       `VerificationPlan schemaVersion must be ${VERIFICATION_PLAN_SCHEMA_VERSION}.`
     );
   }
-  if (Object.hasOwn(record, "mode")) throw new Error("VerificationPlan mode is retired; request an explicit rerun on the operation.");
-  if (Object.hasOwn(record, "l1")) throw new Error("VerificationPlan l1 is retired; declare current checks in l2.");
+  requireKnownFields(record, [
+    "schemaVersion","kind","id","version","toolchain","bootstrap","l2","l3","excludedRealResourceChecks","artifactTtlDays"
+  ] satisfies readonly (keyof VerificationPlan)[], "VerificationPlan");
   const plan: VerificationPlan = {
     schemaVersion: VERIFICATION_PLAN_SCHEMA_VERSION,
     kind: VERIFICATION_PLAN_KIND,
@@ -220,7 +222,7 @@ export function verificationPlanDigest(plan: VerificationPlan): string {
   const canonical = canonicalJson({
     // Old artifacts may have skipped shell commands or run in the wrong cwd.
     // Keep that history, but never reuse it as proof under corrected semantics.
-    executionContract: "workspace-argv-or-shell/clean-candidate/l2-only/v5",
+    executionContract: "yui-baseline/clean-candidate/l2-only/v1",
     id: plan.id,
     version: plan.version,
     toolchain: plan.toolchain,

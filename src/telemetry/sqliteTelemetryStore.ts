@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { CURRENT_DATABASE_FILENAME as COMMITTED_DATABASE_FILENAME } from "../storage/currentTaskStore.js";
-import { migrateSqliteSchema } from "../storage/sqliteSchema.js";
+import { validateSqliteSchema } from "../storage/sqliteSchema.js";
 import { AsyncTaskStoreClient } from "../storage/storeRpc.js";
 import {
   DEFAULT_RUN_CAP,
@@ -315,13 +315,13 @@ export class SqliteTelemetryStore implements TelemetryStore {
         throw new Error(`Telemetry database not found: ${this.#path}`);
       }
       const db = opening = new Database(this.#path);
+      validateSqliteSchema(db);
       db.pragma("journal_mode = WAL");
       db.pragma("synchronous = FULL");
       db.pragma("foreign_keys = ON");
       // Cold diagnostic reads/retention must not wait behind a semantic writer.
       db.pragma("busy_timeout = 0");
       db.pragma("wal_autocheckpoint = 1000");
-      migrateSqliteSchema(db, { mode: "validate" });
       this.#db = db;
       return db;
     } catch (error) {

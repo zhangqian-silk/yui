@@ -10,8 +10,6 @@ import { acquireHandoverLock, isForeignHandoverLockHeld } from "../../dist/relea
 import { createReleaseWorkflowPorts } from "../../dist/release/releaseWorkflowPorts.js";
 import Database from "better-sqlite3";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
-import { migrateSqliteSchema } from "../../dist/storage/sqliteSchema.js";
-import { linkDevLauncher, unlinkDevLauncher } from "../../scripts/manage-dev-launcher.mjs";
 import { runTaskCommand } from "../../dist/commands/taskCommands.js";
 import { createTask } from "../../dist/task/task.js";
 import { verifyAcpConfiguration } from "../../dist/runtime/acpSessionConfiguration.js";
@@ -19,70 +17,6 @@ import { SqliteResourceRegistry } from "../../dist/resources/sqliteResourceRegis
 import { createResourceRecord } from "../../dist/resources/resourceTypes.js";
 import { upsertResourceRecord } from "../../dist/resources/resourceRegistry.js";
 import { purgeResourceQuarantine, restoreAllResourceGc } from "../../dist/resources/resourceGc.js";
-import { rebuildHistoricalFixture } from "../helpers/historicalHome.mjs";
-
-test("only explicit migration normalizes an old dispatch without consuming its input or changing history", t => {
-  const mailbox = enqueueSignal(createWorkMailbox({
-    kind: "role", taskId: "task-1", roleName: "worker"
-  }), {
-    reason: "turn-dispatched", refs: [{ type: "run", taskId: "task-1", id: "run-1" }],
-    occurredAt: "2026-09-14T00:00:00Z"
-  });
-  assert.equal(captureRoleRunDispatch(mailbox, {
-    taskId: "task-1", roleName: "worker", runId: "run-1"
-  }), null, "Only the explicit storage migration may interpret old dedupe keys.");
-  const home = mkdtempSync(join(tmpdir(), "yui-contract-migration-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
-  const store = new SqliteTaskStore(home);
-  try {
-    store.saveTask(createTask("task-1", "Keep original input", new Date("2026-09-14T00:00:00Z")));
-    store.saveWorkMailbox(mailbox);
-    assert.throws(() => runTaskCommand(["message", "send", "task-1", "old option", "--wake-policy", "none"],
-      store, { environment: {} }), /option|usage/i);
-  } finally { store.close(); }
-  rebuildHistoricalFixture(home, 27);
-  const db = new Database(join(home, "yui.db"));
-  try {
-    const oldLedger = db.prepare("SELECT * FROM schema_migrations ORDER BY version").all();
-    const facts = db.prepare("SELECT payload FROM task_records").all();
-    assert.throws(() => new SqliteTaskStore(home), /upgrade|version|contract/i);
-    migrateSqliteSchema(db, { mode: "apply" });
-    assert.deepEqual(db.prepare("SELECT * FROM schema_migrations WHERE version <= 27 ORDER BY version").all(), oldLedger);
-    assert.deepEqual(db.prepare("SELECT payload FROM task_records").all(), facts);
-  } finally { db.close(); }
-  const reopened = new SqliteTaskStore(home);
-  try {
-    const migrated = reopened.getWorkMailbox(mailbox.target);
-    assert.deepEqual(migrated.pending.refs, mailbox.pending.refs);
-    assert.equal(migrated.pending.requestCount, 1);
-    assert.equal(migrated.processing, null);
-    assert.deepEqual(captureRoleRunDispatch(migrated, {
-      taskId: "task-1", roleName: "worker", runId: "run-1"
-    }), { kind: "pending", fromSequence: 1, toSequence: 1 });
-  } finally { reopened.close(); }
-});
-
-test("local link uses its current registry and leaves unregistered state untouched", async t => {
-  const root = mkdtempSync(join(tmpdir(), "yui-contract-link-"));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  const bin = join(root, "bin");
-  mkdirSync(bin);
-  const original = "#!/bin/sh\nexit 0\n";
-  const launcher = join(bin, "yui");
-  writeFileSync(launcher, original, { mode: 0o755 });
-  const options = { projectRoot: join(root, "checkout"), globalBinDir: bin,
-    registryPath: join(root, "state", "dev-launcher.json") };
-  await linkDevLauncher(options);
-  assert.equal(unlinkDevLauncher(options).restored, true);
-  assert.equal(readFileSync(launcher, "utf8"), original);
-  const oldPath = join(bin, ".yui-link-state.json");
-  const oldState = JSON.stringify({ schemaVersion: 2, activeProjectRoot: options.projectRoot });
-  writeFileSync(oldPath, oldState);
-  await assert.rejects(linkDevLauncher(options), /Unregistered/);
-  assert.throws(() => unlinkDevLauncher(options), /Unregistered/);
-  assert.equal(readFileSync(oldPath, "utf8"), oldState);
-  assert.equal(readFileSync(launcher, "utf8"), original);
-});
 
 test("ACP requires configOptions and verifies final reported values rather than acknowledgements", () => {
   assert.throws(() => readAcpSessionConfiguration({

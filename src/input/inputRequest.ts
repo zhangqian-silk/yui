@@ -40,7 +40,7 @@ export type InputCancellation = Readonly<{
 }>;
 
 type InputRequestBase = Readonly<{
-  schemaVersion: 3;
+  schemaVersion: 1;
   id: string;
   taskId: string;
   requester: InputRequester;
@@ -85,7 +85,7 @@ export function createInputRequest(
   const timestamp = requireDate(now, "Input request creation time");
   const choices = normalizeChoices(input.choices);
   return validateInputRequest({
-    schemaVersion: 3,
+    schemaVersion: 1,
     id: requireIdentity(id, "Input request id"),
     taskId: requireIdentity(taskId, "Input request Task id"),
     requester: normalizeRequester(requester),
@@ -151,11 +151,11 @@ export function validateInputRequest(value: unknown): InputRequest {
     "schemaVersion", "id", "taskId", "requester", "question", "choices",
     "blockedRefs", "policy", "status", "createdAt", "updatedAt", ...terminalField
   ], "Input request");
-  if (request.schemaVersion !== 3) throw new Error("Input request must use schemaVersion 3.");
+  if (request.schemaVersion !== 1) throw new Error("Input request must use schemaVersion 1.");
   const choices = validateChoices(request.choices);
   const createdAt = requireTimestamp(request.createdAt, "Input request createdAt");
   const base: InputRequestBase = {
-    schemaVersion: 3,
+    schemaVersion: 1,
     id: requireIdentity(request.id, "Input request id"),
     taskId: requireIdentity(request.taskId, "Input request Task id"),
     requester: normalizeRequester(request.requester as InputRequester),

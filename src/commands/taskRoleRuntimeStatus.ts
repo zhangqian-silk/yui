@@ -656,7 +656,7 @@ function projectTaskRoleRuntime(
   const fence = { ...basicFence, ...(nativeTurnId === undefined ? {} : { nativeTurnId }) };
   let projection = projectRuntimeTaskEvents(fence, createdAt, events);
   projection = projectRuntimeObservation(projection, createRuntimeObservation({
-    schemaVersion: 4,
+    schemaVersion: 1,
     eventId: `runtime-host-${receiptId}`,
     semanticKey: `runtime-host-${receiptId}`,
     kind: "host.observed",
