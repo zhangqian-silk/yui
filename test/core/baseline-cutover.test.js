@@ -86,6 +86,31 @@ test("one-time v37 conversion preserves intent, raw audits, identities and count
   assert.deepEqual(db.serialize(),before);
 });
 
+test("equivalent home_meta indentation converts without changing identity or accepting different constraints", t=>{
+  const db=fixture(t);
+  const original=db.prepare("SELECT * FROM home_meta").all();
+  const canonical=db.prepare("SELECT sql FROM sqlite_master WHERE name='home_meta'").get().sql;
+  const indented=canonical.replaceAll("\n  ","\n      ").replace(/\n\)$/,"\n    )");
+  db.exec("ALTER TABLE home_meta RENAME TO saved_home_meta");
+  db.exec(indented);
+  db.exec("INSERT INTO home_meta SELECT * FROM saved_home_meta; DROP TABLE saved_home_meta");
+  const before=db.serialize();
+  assert.equal(inspectLegacyDatabase(db).target,"1.0");
+  assert.deepEqual(db.serialize(),before,"Preflight cannot rewrite schema text.");
+  assert.throws(()=>db.transaction(()=>convertDatabase(db,{
+    ...runtime,validateSchema:()=>{throw new Error("target validation failed");}
+  }))(),/target validation failed/);
+  assert.deepEqual(db.serialize(),before,"Failure after rebuilding metadata restores original DDL and all rows.");
+  db.transaction(()=>convertDatabase(db,runtime))();
+  runtime.validateSchema(db);
+  assert.deepEqual(db.prepare("SELECT * FROM home_meta").all(),original);
+  assert.equal(db.prepare("SELECT payload FROM storage_migration_archive WHERE family='baseline-v37/schema' AND record_key='home_meta'").get().payload,indented);
+  const invalid=fixture(t);
+  invalid.exec("DROP TABLE home_meta");
+  invalid.exec(indented.replace("revision      INTEGER NOT NULL","revision      INTEGER"));
+  assert.throws(()=>inspectLegacyDatabase(invalid),/exact 0.16.2/);
+});
+
 test("malformed source and unsettled work never advance the format or partially convert records", t=>{
   const db=fixture(t);
   const item={...createWorkItem("work-item-1","task-1",{title:"Invalid format"},at),schemaVersion:999};

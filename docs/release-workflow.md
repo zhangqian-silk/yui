@@ -27,7 +27,15 @@ system sits behind `ReleaseWorkflowPorts`
 external ports exercise recovery without real GitHub, npm, git, Controller,
 or model effects.
 
-## Clean baseline release: 1.0.0-alpha
+## Clean baseline prereleases: 1.0.0-alpha series
+
+`1.0.0-alpha.1` fixes the independent converter's rejection of equivalent
+`home_meta` indentation. It archives the original DDL and recreates the exact
+target table while preserving every row. The runtime storage 1.0 definition
+and checksum are unchanged; already-converted Homes need no new conversion.
+Each alpha version has a new immutable package/tag and its own verified
+converter attachments. Continue using npm `next`; never replace an existing tag
+or overwrite a previously published package or attachment.
 
 0.16.2 remains the frozen historical bridge. The 1.0.0-alpha runtime starts the
 distinct storage **1.0** baseline and carries no old migration chain or
@@ -43,13 +51,13 @@ minor transition; published schema definitions must not be silently replaced.
 Current bounded automatic recovery, lock waiting, transactions, replay
 protection and valid exact-identity caches remain normal runtime behavior.
 
-Use the exact package version `1.0.0-alpha` to opt into this baseline. Stable
+Use the exact package version `1.0.0-alpha.1` to opt into this baseline. Stable
 releases use npm `latest`; prereleases use `next`, never the stable default.
 
 The old-v37 converter is a separate archive. Its source/target verification,
 offline boundary, full backup, original-payload audit, cold startup and rollback
 are specified in [Storage baseline 1.0](./storage-baseline.md).
-Publish its archive and checksum as durable 1.0.0-alpha release attachments alongside
+Publish its archive and checksum as durable attachments to each alpha release alongside
 the exact tested runtime package. Expiring CI artifacts alone are insufficient.
 The alpha-only `baseline-release` job runs after npm publication, uploads missing
 attachments to a draft without overwriting existing files, downloads and compares
@@ -72,8 +80,8 @@ protocol and both storage-version bounds against status and live identity.
 Missing contract fields are errors, not an older-Controller exception.
 
 The converter source, frozen endpoint fixture and converter-specific tests are
-release-only deliverables for 1.0.0-alpha. Remove them from the 1.0.0 development line
-only after the 1.0.0-alpha release attachments and checksums are durably available
+release-only deliverables for the alpha series. Remove them from the 1.0.0 development line
+only after the final corrected alpha release attachments and checksums are durably available
 and verified. Do not delete the only conversion path before publication.
 
 ## Authorization model
