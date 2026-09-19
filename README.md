@@ -34,9 +34,9 @@ not from terminal windows you juggle or details you have to remember.
 - **Isolated by default** — repository work happens in managed Git worktrees;
   the stable checkout stays read-only.
 
-> **Status:** 1.0.0-alpha.1, with a clean storage 1.0 baseline. Default updates
-> support only declared minor upgrades within one storage major. Existing v37
-> Homes require the separate [one-time conversion](docs/storage-baseline.md).
+> **Status:** 1.0.0, with a clean storage 1.0 baseline. Default updates
+> support only declared minor upgrades within one storage major. Homes with
+> any other storage identity are rejected without mutation.
 
 [Quick start](#quick-start) · [Working through conversation](#working-through-conversation) · [Architecture](#architecture) · [Design principles](#design-principles)
 

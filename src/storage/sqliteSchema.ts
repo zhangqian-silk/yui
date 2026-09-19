@@ -134,7 +134,7 @@ export function applySqliteMinorUpgrades(db: Database.Database): void {
   db.transaction(() => {
     const before = inspectSqliteSchema(db);
     const plan = storageMinorUpgradePlan(before.currentVersion);
-    if (plan === null) throw new SqliteSchemaError("cross-major or unknown upgrades require an independent explicit converter.");
+    if (plan === null) throw new SqliteSchemaError("cross-major or unknown storage upgrades are unsupported.");
     for (const step of plan) {
       const state = inspectSqliteSchema(db);
       if (state.currentVersion !== step.fromVersion || state.currentChecksum !== step.sourceChecksum) {

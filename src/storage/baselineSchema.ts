@@ -1,4 +1,4 @@
-/** Current Home schema. Fresh initialization executes this once; no historical DDL is replayed. */
+/** Current Home schema. Fresh initialization executes this once. */
 export const BASELINE_SCHEMA_SQL = String.raw`CREATE TABLE storage_schema (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   format TEXT NOT NULL,

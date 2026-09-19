@@ -31,7 +31,7 @@ const check = <T>(validate: (record: T) => unknown): ((record: unknown) => void)
 
 /** One current domain contract for saves, reads and explicit Home diagnostics.
  * Protocol-specific metadata/outbox/telemetry have their own readers. This is
- * validation only: other storage formats require an independent converter. */
+ * validation only: unsupported storage formats are rejected without mutation. */
 const validators = {
   task_records: check(validateTask),
   work_items: check(validateWorkItem),

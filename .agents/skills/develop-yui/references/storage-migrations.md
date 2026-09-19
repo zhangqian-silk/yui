@@ -19,28 +19,23 @@ Home upgrade axes. Changes to persistent payloads must still declare the
 appropriate Home version transition. Preserve transactions, identity fences,
 exact execution authority, pending intent and irreversible-effect evidence.
 
-0.16.2 is the frozen historical bridge (old integer v1..v37). The 1.0.0-alpha runtime
-must not import or package that chain, an old-format reader, or the one-time
-converter. `tools/baseline-cutover` is an independently packaged, explicit
-old-v37 to new-1.0 converter. It accepts only proven source structure and keeps
-full backup, original audit bytes and quiescence boundaries. Malformed or
-unsettled state is a diagnosis, not permission for heuristic repair.
-The v37 → 1.0 cutover preserves missing optional execution evidence.
-It does not require every retained Run to be ready for execution. Keep incomplete
-Runs readable for supervision; enforce Snapshot prerequisites only at execution
-or exact-evidence reuse. Never fabricate Context or remove referenced Runs.
+The 1.0.0 source tree and runtime contain only the current contract and its
+declared same-major minor transition mechanism. A Home whose
+storage identity is not supported by the current same-major transition graph
+is rejected without mutation. Malformed or unsettled state is a diagnosis, not
+permission for heuristic repair; preserve the evidence and let the Agent or
+Operator choose cleanup, retry or abandonment.
 
-The new baseline resets current Yui-owned envelopes and protocols to version 1,
-using distinct identities where old version-1 formats could collide. Never
+The baseline sets current Yui-owned envelopes and protocols to version 1,
+using distinct identities for each contract. Never
 reset business IDs, revisions, epochs, event counters, user/native payloads,
 frozen Context digests or external Provider protocols.
 
-After the first alpha publication, persistent changes require an explicit
-same-major minor transition; never rewrite a published baseline. The stable
-1.0.0 release reuses the final verified prerelease contract without another
-reset. Keep current bounded retry, lock waiting, transactions, replay protection
-and exact-identity caches: they are not historical compatibility.
-Real Home conversion and publication require explicit user
-authority; development uses isolated fixtures. See
-[the operator guide](../../../../docs/storage-baseline.md) for conversion and
-recovery, and verify both the runtime tarball and independent converter archive.
+Persistent changes after the published 1.0 baseline require an explicit
+same-major minor transition; never rewrite the baseline. Keep current bounded
+retry, lock waiting, transactions, replay protection and exact-identity caches:
+they are current runtime behavior.
+Real Home operations and publication require explicit user authority;
+development uses isolated fixtures. See
+[the storage baseline](../../../../docs/storage-baseline.md) for current
+admission and recovery boundaries, and verify the runtime tarball.

@@ -27,62 +27,44 @@ system sits behind `ReleaseWorkflowPorts`
 external ports exercise recovery without real GitHub, npm, git, Controller,
 or model effects.
 
-## Clean baseline prereleases: 1.0.0-alpha series
+## Stable 1.0 baseline and release evidence
 
-`1.0.0-alpha.1` fixes the independent converter's rejection of equivalent
-`home_meta` indentation. It archives the original DDL and recreates the exact
-target table while preserving every row. The runtime storage 1.0 definition
-and checksum are unchanged; already-converted Homes need no new conversion.
-Each alpha version has a new immutable package/tag and its own verified
-converter attachments. Continue using npm `next`; never replace an existing tag
-or overwrite a previously published package or attachment.
-
-0.16.2 remains the frozen historical bridge. The 1.0.0-alpha runtime starts the
-distinct storage **1.0** baseline and carries no old migration chain or
-conversion tool. Package 1.0.0 will reuse the final verified prerelease storage
-contract without another reset.
+Package 1.0.0 defines the storage **1.0** contract directly. The runtime and
+current source carry no historical migration chain, old-format reader,
+conversion tool, fixture or compatibility test. A fresh Home initializes the
+current schema; any unsupported storage identity is rejected without mutation.
 
 Storage versions have two levels. Default updates may advance only contiguous
 minor versions within the same major; pinning a package does not authorize a
 cross-major conversion. Current Yui-owned envelopes and protocols start at 1,
 without resetting business revisions, epochs or audit evidence.
-Any persistent change after an alpha is published requires an explicit new
-minor transition; published schema definitions must not be silently replaced.
+Any future persistent change requires an explicit new minor transition;
+published schema definitions must not be silently replaced.
 Current bounded automatic recovery, lock waiting, transactions, replay
 protection and valid exact-identity caches remain normal runtime behavior.
 
-Use the exact package version `1.0.0-alpha.1` to opt into this baseline. Stable
-releases use npm `latest`; prereleases use `next`, never the stable default.
+Stable releases use npm `latest`; prereleases use `next`, never the stable
+default. The release workflow builds one runtime archive, verifies it across
+supported Node versions, publishes that exact archive to npm, then creates the
+matching GitHub Release. Every release carries the runtime archive, checksum and
+provenance. A stable tag becomes GitHub latest; a prerelease does not.
 
-The old-v37 converter is a separate archive. Its source/target verification,
-offline boundary, full backup, original-payload audit, cold startup and rollback
-are specified in [Storage baseline 1.0](./storage-baseline.md).
-Publish its archive and checksum as durable attachments to each alpha release alongside
-the exact tested runtime package. Expiring CI artifacts alone are insufficient.
-The alpha-only `baseline-release` job runs after npm publication, uploads missing
-attachments to a draft without overwriting existing files, downloads and compares
-every attachment against the tested artifact, then publishes the prerelease.
-A retry verifies matching existing attachments; a different byte or an incomplete
-already-published Release is an error, not permission to replace release evidence.
-If this job fails after npm publication, resume only this job with the same
-retained artifacts rather than republishing or rebuilding the package.
-The runtime tarball must contain neither tools/ nor dist/storage/migrations/.
+The GitHub Release job uploads only missing assets to a draft, downloads and
+compares every asset against the tested artifact, and never overwrites a
+published asset. A retry accepts only byte-identical existing evidence. If npm
+has already published and the Release job fails, rerun that failed job with the
+retained artifact rather than rebuilding or republishing the package. The
+runtime tarball must contain neither tools/ nor historical storage migrations.
 
 Use `yui update --version <exact-version>` for an exact published package.
 Staged metadata must match the requested version, and target-owned storage
 preflight runs before activation and again under the maintenance fence.
-An unsupported Home remains unchanged; use the independent converter rather
-than replacing the global CLI first. Current update/activation children must
+An unsupported Home remains unchanged. Current update/activation children must
 explicitly identify their handover-lock owner.
 
 Restoration checks the captured executable/argv, package version, Controller
 protocol and both storage-version bounds against status and live identity.
 Missing contract fields are errors, not an older-Controller exception.
-
-The converter source, frozen endpoint fixture and converter-specific tests are
-release-only deliverables for the alpha series. Remove them from the 1.0.0 development line
-only after the final corrected alpha release attachments and checksums are durably available
-and verified. Do not delete the only conversion path before publication.
 
 ## Authorization model
 

@@ -50,43 +50,37 @@ is required.
 ## Permanent core smoke
 
 `npm test` and `npm run test:core` build the checkout and run the maintained suite.
-The baseline cutover retires tests owned solely by the removed v1..v37
-implementation. Their source/evidence remains in the frozen 0.16.2 release;
-mixed tests retain current behavior, such as Review scope and Integration
-completion boundaries.
+The stable suite owns only current storage 1.0 and future declared minor
+transitions. It contains no historical conversion implementation, fixture or
+compatibility test.
 
 Current coverage includes:
 
 1. Fresh storage 1.0, exact schema/record validation, no initialization over
    unknown data, and rejection of old integer formats without mutation.
-2. Independent v37 conversion: original intent/audit/counters, nested Session
-   envelopes, opaque Context, rollback on invalid input, offline backup and
-   repeat-call idempotence. The CLI fixture uses a disposable Home; it never
-   converts a real account. The converter is not part of the runtime tarball.
-3. Exact-version staging, mismatched-target refusal, same-major contiguous
+2. Exact-version staging, mismatched-target refusal, same-major contiguous
    minor preflight, explicit maintenance-owner identity across handover, and
    restoration against captured protocol/storage identity rather than omitted fields.
-4. Durable Task/Message/Decision context, draft activation authority, mailbox
+3. Durable Task/Message/Decision context, draft activation authority, mailbox
    claims, notification idempotence, Session replacement and exact late results.
-5. Integration/Job request identity, immutable candidate proofs, conflict
+4. Integration/Job request identity, immutable candidate proofs, conflict
    continuation, Review scope and final acceptance without fabricated delivery.
-6. Runtime/Host isolation, Provider protocol parsing and bounded retry using
+5. Runtime/Host isolation, Provider protocol parsing and bounded retry using
    fake producers, current configuration provenance and native-account boundaries.
-7. Workspace/GC authority, archive cleanup, resource CAS, telemetry, Web
+6. Workspace/GC authority, archive cleanup, resource CAS, telemetry, Web
    projections and authorized release recovery without real external effects.
-8. Idempotent per-checkout launcher installation, exact argument/Home forwarding,
+7. Idempotent per-checkout launcher installation, exact argument/Home forwarding,
    refusal to overwrite unrelated files, and rejection of removed global-link
    commands before side effects. Development Home reset retains its independent
    identity checks and backup behavior.
-9. Failure isolation for optional Controller maintenance, individual retry
+8. Failure isolation for optional Controller maintenance, individual retry
    Sessions and Task continuation observation, with scoped errors and no
    fabricated delivery, cancellation or quiescence.
 
 Keep the test phase seconds-scale and measure build separately. Use the
 existing assembled-package smoke for actual CLI/Controller/Host/tmux wiring,
-not a second daemon matrix. Converter schema fixtures preserve one frozen
-endpoint; do not reconstruct the entire historical chain in the new suite.
-Real-model or real-Home checks require explicit authorization.
+not a second daemon matrix. Do not reconstruct retired storage paths in the
+stable suite. Real-model or real-Home checks require explicit authorization.
 Current envelope checks reject arbitrary unknown fields, rather than maintaining
 a blacklist of retired field names.
 
