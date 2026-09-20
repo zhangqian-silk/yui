@@ -566,7 +566,12 @@ export async function runAgentHost(input: Readonly<{
         kind: "restore",
         mode: "resume",
         nativeSessionId: disconnectedSession.nativeSessionId,
+        // The dated Operator title is a one-shot effect of creating the
+        // Conversation. Reattaching this client must not replay metadata whose
+        // earlier outcome may be unknown.
         ...(previousControl.sessionTitle === undefined
+          || (currentPayload.environment.YUI_SESSION_SCOPE === "global"
+            && currentPayload.environment.YUI_ROLE === "operator")
           ? {}
           : { sessionTitle: previousControl.sessionTitle }),
         codexThread: disconnectedSession.configuration.threadOptions!,

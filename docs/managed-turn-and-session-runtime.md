@@ -11,6 +11,13 @@ notifications cannot restart an explicitly stopped Session; normal Host detach
 preserves an active Session and remains reconnectable. A switch after a partial
 failure still settles the retained input before selecting a new conversation.
 
+A newly created global Operator conversation requests the native title
+`Yui · Operator · MMdd`, using Yui's configured time zone. The request is made
+only after the provider returns the exact new conversation identity; restore
+and reconnect paths never replay it. Providers without a post-create rename
+capability keep the usable Session and expose a diagnostic instead of treating
+metadata failure as Session-creation failure.
+
 ## Authority
 
 Task, WorkItem, Message, Decision, Artifact and Project Knowledge preserve

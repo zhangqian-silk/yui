@@ -49,7 +49,10 @@ import type { ProviderAuthorityFence } from "../runtime/providerAuthorityFence.j
 import {
   assertProviderConversationReplaceable
 } from "../runtime/providerRuntimeIdentity.js";
-import { resolveTaskRoleSessionTitle } from "../runtime/sessionTitle.js";
+import {
+  operatorSessionTitle,
+  resolveTaskRoleSessionTitle
+} from "../runtime/sessionTitle.js";
 import {
   parseTaskRuntimeIsolationDescriptor,
   taskRuntimeIsolationEnvironment,
@@ -88,6 +91,7 @@ import {
 export type FileRoleLaunchPlannerOptions = Readonly<{
   environment?: NodeJS.ProcessEnv;
   createNativeSessionId?: () => string;
+  now?: () => Date;
   cliPath?: string;
   inspectWorkspacePhysicalState?: WorkspacePhysicalInspector;
 }>;
@@ -112,6 +116,7 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
   #agentEnvironment: NodeJS.ProcessEnv;
   #nativeAgentEnvironment: NodeJS.ProcessEnv;
   readonly #createNativeSessionId: () => string;
+  readonly #now: () => Date;
   readonly #cliPath: string;
   readonly #inspectWorkspacePhysicalState: WorkspacePhysicalInspector;
   readonly #entryPoint: SessionEntryPoint;
@@ -137,6 +142,7 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
       sourceEnvironment
     );
     this.#createNativeSessionId = options.createNativeSessionId ?? randomUUID;
+    this.#now = options.now ?? (() => new Date());
     this.#inspectWorkspacePhysicalState = options.inspectWorkspacePhysicalState
       ?? inspectWorkspacePhysicalState;
     this.#cliPath = canonicalPath(options.cliPath
@@ -386,7 +392,9 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
       role,
       input,
       { scope: "global" },
-      undefined,
+      input.mode === "new" && role.name === "operator"
+        ? operatorSessionTitle(this.#now(), this.store.getConfig().timeZone)
+        : undefined,
       input.mode === "resume" && compatibleExisting ? existing.nativeSessionId : undefined,
       undefined,
       effective,
@@ -561,11 +569,16 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
         ? nativeAdditionalDirectories(effective.workspace, agentWorkspace)
         : []
     );
+    const postCreateOperatorTitle = owner.scope === "global"
+      && role.name === "operator"
+      && sessionTitle !== undefined;
     const compileInput = {
       agent,
       config: effectiveConfig,
       workspace: agentWorkspace,
-      ...(sessionTitle === undefined ? {} : { sessionTitle }),
+      ...(sessionTitle === undefined || postCreateOperatorTitle
+        ? {}
+        : { sessionTitle }),
       ...sessionContext
     };
     if (
