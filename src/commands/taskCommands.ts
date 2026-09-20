@@ -1382,9 +1382,8 @@ function createTaskCommand(
     `Created Draft task ${created.task.id}: ${created.task.title}\n`
       + `Assigned role: ${created.leader.name}\n`
       + `Type: ${created.task.type ?? "unspecified"}\n`
-      + (created.task.projectBindings.length > 0
-        ? "Execution: Leader decides whether independent WorkItems are warranted\n"
-        : "Execution: no Project delivery evidence required\n"),
+      + "Status: Draft; discussion and development have not started\n"
+      + "Next: explicitly submit with intent discuss or develop when the Task should start\n",
     {
       task: created.task,
       leader: created.leader

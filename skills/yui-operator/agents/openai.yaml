@@ -1,4 +1,4 @@
 interface:
   display_name: "Yui Operator"
-  short_description: "Route outcomes through their owning Task Leaders"
-  default_prompt: "Use $yui-operator to route this outcome and its authorized follow-up delivery through the owning Task Leader."
+  short_description: "Record Tasks and route only explicitly started work"
+  default_prompt: "Use $yui-operator to preserve the user's exact Task intent. A creation-only request creates an unstarted Draft; route discussion or development through the owning Task Leader only when the user explicitly asks to start it."
