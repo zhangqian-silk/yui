@@ -87,7 +87,20 @@ function handleMessage(message) {
         turns: JSON.parse(process.env.YUI_FAKE_RESUMED_TURNS ?? "[]") } });
       break;
     case "thread/name/set":
-      respond({});
+      if (process.env.YUI_FAKE_EXPECT_THREAD_NAME !== undefined
+        && message.params.name !== process.env.YUI_FAKE_EXPECT_THREAD_NAME) {
+        sendJson({
+          id: message.id,
+          error: { code: -32602, message: "unexpected thread name" }
+        });
+      } else if (process.env.YUI_FAKE_REJECT_THREAD_NAME === "1") {
+        sendJson({
+          id: message.id,
+          error: { code: -32601, message: "thread naming is unavailable" }
+        });
+      } else {
+        respond({});
+      }
       break;
     case "thread/read":
       respond({

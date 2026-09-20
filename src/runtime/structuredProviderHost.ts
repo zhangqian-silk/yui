@@ -253,6 +253,17 @@ export async function startStructuredProviderSession(
         ...(input.onDiagnostic === undefined ? {} : { onDiagnostic: input.onDiagnostic }),
         mirror
       });
+      if (isPostCreateOperatorTitle(payload)) {
+        input.onDiagnostic?.({
+          nativeSessionId: session.nativeSessionId,
+          failure: {
+            detail: "This Agent protocol does not support setting a native Session title.",
+            phase: "session-start",
+            inputDisposition: "not-accepted",
+            sessionDisposition: "recoverable"
+          }
+        });
+      }
       return Object.freeze({ session });
     }
     if (control.adapterId === "codex") {
@@ -267,6 +278,7 @@ export async function startStructuredProviderSession(
           input.onGoal,
           input.onInput,
           input.onActivity,
+          input.onDiagnostic,
           mirror
         );
       return Object.freeze({
@@ -289,11 +301,29 @@ export async function startStructuredProviderSession(
           input.onDiagnostic,
           mirror
         );
+    if (isPostCreateOperatorTitle(payload)) {
+      input.onDiagnostic?.({
+        nativeSessionId: session.nativeSessionId,
+        failure: {
+          detail: "This Agent provider does not support renaming a Session after creation.",
+          phase: "session-start",
+          inputDisposition: "not-accepted",
+          sessionDisposition: "recoverable"
+        }
+      });
+    }
     return Object.freeze({ session });
   } catch (error) {
     terminateProcessGroup(child, "SIGTERM");
     throw error;
   }
+}
+
+function isPostCreateOperatorTitle(payload: AgentHostLaunchPayload): boolean {
+  return payload.providerControl?.sessionTitle !== undefined
+    && payload.providerControl.mode === "new"
+    && payload.environment.YUI_SESSION_SCOPE === "global"
+    && payload.environment.YUI_ROLE === "operator";
 }
 
 /**
@@ -585,6 +615,7 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
     onGoal: ((goal: StructuredProviderGoal | null) => void) | undefined,
     onInput: ((input: StructuredProviderInputObserved) => void) | undefined,
     onActivity: ((activity: StructuredProviderActivity) => void) | undefined,
+    onDiagnostic: ((diagnostic: StructuredProviderDiagnostic) => void) | undefined,
     mirror: (stream: "stdout" | "stderr", text: string) => void
   ): Promise<Readonly<{
     session: CodexStructuredProviderSession;
@@ -625,10 +656,21 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
       }
     }
     if (control.sessionTitle !== undefined) {
-      await runtime.setConversationName({
-        conversationId,
-        name: control.sessionTitle
-      });
+      try {
+        await runtime.setConversationName({
+          conversationId,
+          name: control.sessionTitle
+        });
+      } catch (error) {
+        onDiagnostic?.({
+          nativeSessionId: conversationId,
+          failure: providerDeliveryFailureFrom(error, {
+            phase: "session-start",
+            inputDisposition: "not-accepted",
+            sessionDisposition: "recoverable"
+          })
+        });
+      }
     }
     const session = new CodexStructuredProviderSession(
       child,

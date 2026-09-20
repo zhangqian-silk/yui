@@ -8,6 +8,11 @@ Provider binding，再结算执行占用。Global 停止证据保存为仅记录
 不触发新的原生输入。待投递通知不能重启已明确停止的 Session；普通 Host 脱离仍
 保留 active Session，可正常重连。部分切换失败后，仍须先结算旧输入再选择新会话。
 
+新建 global Operator 对话会按 Yui 当前配置时区请求原生标题
+`Yui · Operator · MMdd`。只有 Provider 返回新对话的确切身份后才执行该请求；
+恢复与重连路径不会重放。若 Provider 不支持创建后改名，已创建的 Session 仍保持
+可用，并留下诊断，而不会把元数据失败冒充为 Session 创建失败。
+
 ## 权威
 
 Task、WorkItem、Message、Decision、Artifact 和 Project Knowledge 保存持久工作。

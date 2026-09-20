@@ -1,3 +1,5 @@
+import { resolveTimeZone } from "../config/timeZone.js";
+
 const TITLE_SEPARATOR = " · ";
 export const MAX_SESSION_TITLE_LENGTH = 80;
 const TASK_TITLE_MAX_LENGTH = 20;
@@ -37,6 +39,24 @@ export function resolveTaskRoleSessionTitle(
     return existingTitle;
   }
   return taskRoleSessionTitle(task, roleName);
+}
+
+export function operatorSessionTitle(
+  now: Date,
+  configuredTimeZone?: unknown
+): string {
+  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+    throw new TypeError("Operator session title date is invalid.");
+  }
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
+    timeZone: resolveTimeZone(configuredTimeZone),
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(now).map(({ type, value }) => [type, value]));
+  if (parts.month === undefined || parts.day === undefined) {
+    throw new TypeError("Operator session title date is unavailable.");
+  }
+  return `Yui${TITLE_SEPARATOR}Operator${TITLE_SEPARATOR}${parts.month}${parts.day}`;
 }
 
 function displayTitle(value: string, maxLength: number): string {
