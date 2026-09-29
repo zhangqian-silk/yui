@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
+import { nativeExecutable } from "../../dist/runtime/nativeExecutable.js";
 
 import {
   currentProcessStartIdentity, processGenerationIsLive, processOwnerIsLive,
@@ -235,7 +236,7 @@ test("macOS Claude owner reports a detached orphan as unconfirmed", async t => {
     "writeFileSync(process.argv[1], String(child.pid));",
     "child.unref();"
   ].join("\n");
-  const owner = spawn(join(process.cwd(), "dist/runtime/claude-process-owner"),
+  const owner = spawn(nativeExecutable("claude-process-owner"),
     [process.execPath, "-e", code, pidFile], { stdio: "ignore" });
   let detachedPid;
   try {

@@ -19,7 +19,37 @@ permissions:
   id-token: write
 
 jobs:
+  native:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+          - os: macos-14
+            target: darwin-arm64
+          - os: macos-15-intel
+            target: darwin-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - name: Build platform native executables
+        env:
+          NATIVE_TARGET: ${{ matrix.target }}
+        run: |
+          node scripts/build-runtime-native.mjs
+          tar -cf "native-$NATIVE_TARGET.tar" -C dist/runtime/native "$NATIVE_TARGET"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-${{ matrix.target }}
+          path: native-${{ matrix.target }}.tar
+          if-no-files-found: error
+
   build:
+    needs: native
     runs-on: ubuntu-latest
 
     steps:
@@ -71,15 +101,28 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Download native executables from this exact source run
+        uses: actions/download-artifact@v8
+        with:
+          pattern: native-*
+          path: native-artifacts
+          merge-multiple: true
+
+      - name: Collect all supported platforms
+        run: |
+          for target in linux-x64 darwin-x64 darwin-arm64; do
+            tar -xf "native-artifacts/native-$target.tar" -C dist/runtime/native
+          done
+
       - name: Assemble and pack
         run: |
-          node scripts/assemble-runtime-package.mjs --output .release-stage
+          node scripts/assemble-runtime-package.mjs --output .release-stage --all-platforms
           npm pack ./.release-stage --json > pack-result.json
           node -e 'const fs=require("node:fs"); const result=JSON.parse(fs.readFileSync("pack-result.json","utf8")); fs.renameSync(result[0].filename, "yui-runtime.tgz");'
 
       - name: Verify package contents
         run: |
-          node scripts/check-runtime-package-structure.mjs pack-result.json
+          YUI_PACKAGE_ALL_PLATFORMS=1 node scripts/check-runtime-package-structure.mjs pack-result.json
           tar -tf yui-runtime.tgz > package-files.txt
           node -e 'const {execFileSync}=require("node:child_process"); const pkg=JSON.parse(execFileSync("tar",["-xOf","yui-runtime.tgz","package/package.json"],{encoding:"utf8"})); if (pkg.private !== false || "scripts" in pkg || "devDependencies" in pkg) throw new Error("runtime manifest must be publishable and lifecycle-free");'
           grep -qx 'package/dist/cli.js' package-files.txt
@@ -122,11 +165,12 @@ jobs:
 
   smoke:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: true
       matrix:
         node: [20, 22, 24]
+        os: [ubuntu-latest, macos-14, macos-15-intel]
 
     steps:
       - name: Checkout
@@ -139,8 +183,12 @@ jobs:
 
       - name: Install tmux
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes tmux
+          if [ "$RUNNER_OS" = macOS ]; then
+            brew install tmux
+          else
+            sudo apt-get update
+            sudo apt-get install --yes tmux
+          fi
 
       - name: Download tested package
         uses: actions/download-artifact@v8
@@ -151,7 +199,7 @@ jobs:
       - name: Verify artifact provenance
         run: |
           cd release-artifact
-          sha256sum -c yui-runtime.sha256
+          shasum -a 256 -c yui-runtime.sha256
 
       - name: Install and exercise the package
         run: |

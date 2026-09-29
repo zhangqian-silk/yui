@@ -8,11 +8,16 @@ if (manifestPath === undefined || process.argv.length !== 3) {
 const result = JSON.parse(readFileSync(manifestPath, "utf8"));
 const entries = result[0]?.files ?? [];
 const files = new Set(entries.map(({ path }) => path));
+const nativeTargets = process.env.YUI_PACKAGE_ALL_PLATFORMS === "1"
+  ? ["linux-x64", "darwin-x64", "darwin-arm64"] : [`${process.platform}-${process.arch}`];
+const nativeFiles = nativeTargets.flatMap(target => [
+  `dist/runtime/native/${target}/claude-process-owner`,
+  ...(target.startsWith("darwin-") ? [`dist/runtime/native/${target}/process-identity`] : [])
+]);
 const required = [
   "dist/cli.js",
   "dist/cli/commandCatalog.js",
-  "dist/runtime/claude-process-owner",
-  ...(process.platform === "darwin" ? ["dist/runtime/process-identity"] : []),
+  ...nativeFiles,
   "ARCHITECTURE.md",
   "docs/project-refresh.md",
   "docs/project-refresh.zh-CN.md",
@@ -41,8 +46,7 @@ for (const path of files) {
     throw new Error(`runtime package contains forbidden path ${path}`);
   }
 }
-for (const executable of ["dist/cli.js", "dist/runtime/claude-process-owner",
-  ...(process.platform === "darwin" ? ["dist/runtime/process-identity"] : [])]) {
+for (const executable of ["dist/cli.js", ...nativeFiles]) {
   const entry = entries.find(({ path }) => path === executable);
   if (entry?.mode !== 0o755) {
     throw new Error(

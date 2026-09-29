@@ -34,7 +34,7 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   fromVersion: "1.0",
   toVersion: "1.1",
   name: "task-main-workspace",
-  introducedIn: "1.0.1",
+  introducedIn: "1.1.0",
   sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
   targetChecksum: CURRENT_SCHEMA_CHECKSUM,
   sql: "",

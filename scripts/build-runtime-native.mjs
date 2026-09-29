@@ -12,7 +12,11 @@ const compilerFlags = process.platform === "linux"
 if (compilerFlags === null) {
   throw new Error(`Yui's native process owner does not support ${process.platform}.`);
 }
-const output = fileURLToPath(new URL("../dist/runtime/", import.meta.url));
+const targetPlatform = `${process.platform}-${process.arch}`;
+if (!["linux-x64", "darwin-x64", "darwin-arm64"].includes(targetPlatform)) {
+  throw new Error(`Unsupported native build target: ${targetPlatform}.`);
+}
+const output = fileURLToPath(new URL(`../dist/runtime/native/${targetPlatform}/`, import.meta.url));
 const dist = fileURLToPath(new URL("../dist/", import.meta.url));
 const source = fileURLToPath(new URL("../src/", import.meta.url));
 // tsc does not remove outputs of deleted/moved source files. Remove only those

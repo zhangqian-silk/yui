@@ -34,7 +34,7 @@ not from terminal windows you juggle or details you have to remember.
 - **Isolated by default** — repository work happens in managed Git worktrees;
   the stable checkout stays read-only.
 
-> **Status:** 1.0.1, with storage 1.1 and a declared upgrade from the 1.0 baseline. Default updates
+> **Status:** 1.1.0, with storage 1.1 and a declared upgrade from the 1.0 baseline. Default updates
 > support only declared minor upgrades within one storage major. Homes with
 > any other storage identity are rejected without mutation.
 
@@ -48,10 +48,9 @@ Node.js `^20.17.0`, `^22.9.0` or `^24.0.0`. On macOS install tmux with
 installed and ready to use with your own account. Yui coordinates those
 Agents; it does not supply model access.
 
-The current npm release pipeline produces Linux x64 packages. macOS support
-in this change is for source builds: follow the checkout setup under
-[Contributing](#contributing) and use its absolute local launcher.
-Runtime archives are platform-specific; a Linux archive cannot run on macOS.
+The npm package includes prebuilt Yui helpers for Linux x64, Mac Intel and
+Apple Silicon. The same package is tested on all three platforms before
+publication; Yui selects only the helper for the running platform.
 
 For Claude, Yui passes through your authentication environment and native
 configuration directory; Claude selects the API key or login method using its

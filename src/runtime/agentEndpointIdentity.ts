@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { ImplementationRef } from "../kernel/instanceHost.js";
 import { detectRunningRelease } from "../release/runtimeRelease.js";
 import { isAgentAdapterId } from "../agent/adapterCatalog.js";
+import { nativeExecutable } from "./nativeExecutable.js";
 
 /**
  * The generation of the Endpoint code this process is actually executing.
@@ -31,7 +32,7 @@ const ENDPOINT_CHECKOUT_MODULES = Object.freeze([
   "agentEndpoint.js",
   "agentEndpointIdentity.js",
   "structuredProviderHost.js",
-  "claude-process-owner",
+  "nativeExecutable.js",
   "codexAppServerRuntime.js",
   "acpSession.js",
   "acpProtocol.js",
@@ -51,6 +52,8 @@ function resolveEndpointGeneration(): string {
     // to an identity that would silently match a different build.
     hash.update(module).update("\0").update(readFileSync(new URL(module, import.meta.url))).update("\0");
   }
+  hash.update("claude-process-owner").update("\0")
+    .update(readFileSync(nativeExecutable("claude-process-owner"))).update("\0");
   return `checkout-${hash.digest("hex").slice(0, 23)}`;
 }
 

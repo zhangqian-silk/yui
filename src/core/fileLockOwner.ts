@@ -1,7 +1,7 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { nativeExecutable } from "../runtime/nativeExecutable.js";
 
 /** One process generation, shared by file-lock producers and reclaim checks. */
 export function currentFileLockOwner(): string {
@@ -26,7 +26,7 @@ export function readProcessStartIdentity(pid: number): string | undefined {
   if (process.platform !== "darwin") return undefined;
   try {
     const identity = execFileSync(
-      fileURLToPath(new URL("../runtime/process-identity", import.meta.url)),
+      nativeExecutable("process-identity"),
       [String(pid)],
       { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }
     ).trim();

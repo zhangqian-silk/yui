@@ -5,7 +5,7 @@ import {
 import { randomUUID } from "node:crypto";
 import type { Socket } from "node:net";
 import { Duplex } from "node:stream";
-import { fileURLToPath } from "node:url";
+import { nativeExecutable } from "./nativeExecutable.js";
 import { startMissingCodexSharedDaemon, type CodexProxyLaunch } from "./codexSharedDaemon.js";
 import {
   ProviderConversationMissingError,
@@ -229,7 +229,7 @@ export async function startStructuredProviderSession(
   }
   const ownedClaude = control.adapterId === "claude" && control.transport !== "acp-stdio";
   const child = spawn(
-    ownedClaude ? fileURLToPath(new URL("./claude-process-owner", import.meta.url)) : payload.command,
+    ownedClaude ? nativeExecutable("claude-process-owner") : payload.command,
     ownedClaude ? [payload.command, ...payload.args] : [...payload.args], {
     cwd: payload.cwd,
     env: { ...payload.environment },
