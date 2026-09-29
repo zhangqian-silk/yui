@@ -35,7 +35,7 @@ export const TOKEN_STYLES = `
   --font-mono:"JetBrains Mono","SFMono-Regular",Consolas,monospace;
   --font-display:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
   --font-body:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
-  --page-space:clamp(18px,2.6vw,40px);--sidebar-w:clamp(232px,18vw,288px);--terminal-w:clamp(420px,34vw,640px);
+  --page-space:clamp(18px,2.6vw,40px);--sidebar-w:clamp(232px,18vw,288px);--terminal-w:clamp(420px,34vw,640px);--pane-w:clamp(300px,29vw,500px);
   --motion-fast:150ms;--motion-slow:320ms;--ease:cubic-bezier(.16,.84,.44,1);
 }
 :root,[data-theme="control-room"]{

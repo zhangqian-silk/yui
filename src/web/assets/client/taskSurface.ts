@@ -18,9 +18,10 @@ export function renderTaskSurface(container, data, t, locale, actions) {
   const summary = node("div", "section-body");
   summary.append(node("span", "detail-kicker", task.id), node("h2", "detail-title", task.title), pill(t, "status", task.status));
   renderTaskSummary(summary, data, t, locale, actions, recordCard);
-  const discuss = node("details", "record-card");
+  const discuss = node(actions.conversationHost ? "section" : "details",
+    actions.conversationHost ? "conversation-compose record-card" : "record-card");
   discuss.dataset.viewKey = "discussion";
-  discuss.append(node("summary", "", say("Discuss this Task", "讨论此任务")));
+  discuss.append(node(actions.conversationHost ? "h3" : "summary", "", say("Discuss this Task", "讨论此任务")));
   const conversation = node("button", "record-open", say("View Leader Session (read-only)", "查看 Leader Session（只读）"));
   conversation.type = "button";
   // A Draft's planning Session is a real Leader Session, so it is viewable once it
@@ -96,7 +97,43 @@ export function renderTaskSurface(container, data, t, locale, actions) {
     }
   });
   discuss.append(chat);
-  summary.append(discuss);
+  if (actions.conversationHost) {
+    const feed = node("div", "conversation-feed");
+    feed.setAttribute("aria-label", say("Recorded Task messages", "已记录的 Task 消息"));
+    const messages = records("task-message");
+    messages.forEach((entry) => {
+      if (entry.omitted) {
+        feed.append(recordCard(entry));
+        return;
+      }
+      const value = entry.value;
+      const item = node("article", "conversation-item");
+      if (value.author?.type === "user") item.classList.add("is-user");
+      const head = node("div", "conversation-item-head");
+      const author = value.author?.roleName || t("author." + (value.author?.type || "system"));
+      head.append(node("strong", "", author));
+      if (value.createdAt) {
+        const when = node("time", "", new Intl.DateTimeFormat(locale, {
+          month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"
+        }).format(new Date(value.createdAt)));
+        when.dateTime = value.createdAt;
+        head.append(when);
+      }
+      item.append(head, richText(null, value.body || "", t));
+      feed.append(item);
+    });
+    if (!messages.length) feed.append(node("p", "muted", core.omitted.records
+      ? say("Compact read omits some messages. Open History & messages for source references.",
+        "紧凑读取省略了部分消息；可在「历史与消息」查看来源引用。")
+      : say("No recorded Task messages yet.", "尚无已记录的 Task 消息。")));
+    if (core.omitted.records && messages.length) feed.append(node("p", "muted",
+      say("Compact read may omit older messages; see History & messages for source references.",
+        "紧凑读取可能省略较早消息；可在「历史与消息」查看来源引用。")));
+    actions.conversationHost.replaceChildren(feed, discuss);
+    actions.conversationHost.dataset.taskId = task.id;
+  } else {
+    summary.append(discuss);
+  }
   // decision-3 three-action input control (queue / steer / interrupt). This is
   // the same application-layer path the CLI drives; the Web surface adds no
   // fourth action and no auto-fallback. Steer/interrupt name an exact current
@@ -430,6 +467,14 @@ export function renderTaskSurface(container, data, t, locale, actions) {
   execution.append(raw);
   scaffold.append(anchorSection("detail-exec", sectionHead(t("detail.execution")), execution));
   section("detail-operations", say("Original operation facts (no automatic retry)", "原始操作事实（不自动重试）"), records("job"));
+  // Four reading groups; the source sections keep their stable deep-link IDs.
+  const readingOrder = ["detail-top", "detail-focus", "detail-work", "detail-results",
+    "detail-exec", "detail-reviews", "detail-roles", "detail-history",
+    "detail-messages", "detail-operations"];
+  readingOrder.forEach((id) => {
+    const target = scaffold.querySelector("#" + id);
+    if (target) scaffold.append(target);
+  });
   const refs = node("details", "record-card");
   refs.append(node("summary", "", say("Context cursor and omitted references", "Context 游标与省略引用")));
   refs.append(node("pre", "surface-json", JSON.stringify({

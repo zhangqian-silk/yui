@@ -75,30 +75,40 @@ export const DASHBOARD_HTML = `<!doctype html>
           </div>
         </div>
         <div class="topbar-actions">
+          <button id="conversation-toggle" class="operator-open" type="button" aria-controls="conversation-panel" aria-expanded="false" data-i18n="conversation.show" hidden>Task discussion</button>
           <div class="clock">
             <span data-i18n="sync.label">Last sync</span>
             <time id="last-sync">—</time>
           </div>
-          <button id="operator-terminal" class="operator-open" type="button">
+          <button id="operator-terminal" class="operator-open" type="button" aria-label="Operator session" data-i18n-aria-label="actions.operator">
             <span class="operator-title" data-i18n="actions.operator">Operator session</span>
             <span class="operator-shortcuts" aria-hidden="true"><kbd>O</kbd></span>
           </button>
-          <button id="refresh" class="refresh" type="button" title="Refresh tasks"><span data-i18n="actions.refresh">Refresh</span> <kbd>R</kbd></button>
+          <button id="refresh" class="refresh" type="button" title="Refresh tasks" aria-label="Refresh" data-i18n-aria-label="actions.refresh"><span data-i18n="actions.refresh">Refresh</span> <kbd>R</kbd></button>
         </div>
       </header>
       <nav id="detail-tabs" class="detail-tabs" aria-label="Task sections" data-i18n-aria-label="tabs.label" hidden>
-        <button class="tab" type="button" data-target="detail-top" data-i18n="tabs.summary">Summary</button>
-        <button class="tab" type="button" data-target="detail-focus" data-i18n="tabs.focus">Focus</button>
-        <button class="tab" type="button" data-target="detail-results" data-i18n="tabs.results">Results</button>
-        <button class="tab" type="button" data-target="detail-work" data-i18n="tabs.work">Work items</button>
-        <button class="tab" type="button" data-target="detail-exec" data-i18n="tabs.exec">AgentRuns</button>
-        <button class="tab" type="button" data-target="detail-reviews" data-i18n="tabs.reviews">Reviews</button>
-        <button class="tab" type="button" data-target="detail-roles" data-i18n="tabs.roles">Roles</button>
-        <button class="tab" type="button" data-target="detail-history" data-i18n="tabs.history">History</button>
-        <button class="tab" type="button" data-target="detail-messages" data-i18n="tabs.messages">Messages</button>
+        <button class="tab" type="button" data-target="detail-top" data-i18n="tabs.summary">Overview</button>
+        <button class="tab" type="button" data-target="detail-work" data-i18n="tabs.workResults">Work &amp; results</button>
+        <button class="tab" type="button" data-target="detail-exec" data-i18n="tabs.executionReviews">Execution &amp; reviews</button>
+        <button class="tab" type="button" data-target="detail-history" data-i18n="tabs.historyMessages">History &amp; messages</button>
       </nav>
       <main id="detail" class="detail" aria-labelledby="page-title" tabindex="-1"></main>
     </div>
+    <div id="pane-divider" class="pane-divider" role="separator" tabindex="0" aria-label="Resize task discussion" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="640" aria-valuenow="400" data-i18n-aria-label="conversation.resize" hidden><span aria-hidden="true"></span></div>
+    <aside id="conversation-panel" class="conversation-panel" aria-labelledby="conversation-title" hidden>
+      <header class="conversation-head">
+        <div>
+          <span class="conversation-eyebrow" data-i18n="conversation.source">Recorded Task messages · not a Session transcript</span>
+          <h2 id="conversation-title" data-i18n="conversation.title">Task discussion</h2>
+        </div>
+        <div class="conversation-head-actions">
+          <button id="conversation-swap" class="pane-action" type="button" title="Move discussion to the other side" data-i18n-aria-label="conversation.swap" aria-label="Move discussion to the other side">⇄</button>
+          <button id="conversation-close" class="pane-action" type="button" title="Hide discussion" data-i18n-aria-label="conversation.hide" aria-label="Hide discussion">×</button>
+        </div>
+      </header>
+      <div id="conversation-content" class="conversation-content task-surface"></div>
+    </aside>
     <dialog id="global-input-dialog" class="global-input-dialog" aria-labelledby="global-input-title">
       <h2 id="global-input-title">Global Role input · 全局 Role 消息</h2>
       <p class="muted">Queue is the default. A cancel request does not prove the Turn stopped.<br>默认排队；取消请求不代表执行已停止。</p>

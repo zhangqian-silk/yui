@@ -30,6 +30,12 @@ const elements = {
   topbar: document.querySelector(".topbar"),
   detailBack: document.querySelector("#detail-back"),
   detailTabs: document.querySelector("#detail-tabs"),
+  conversationToggle: document.querySelector("#conversation-toggle"),
+  conversationPanel: document.querySelector("#conversation-panel"),
+  conversationContent: document.querySelector("#conversation-content"),
+  conversationClose: document.querySelector("#conversation-close"),
+  conversationSwap: document.querySelector("#conversation-swap"),
+  paneDivider: document.querySelector("#pane-divider"),
   pageTitle: document.querySelector("#page-title"),
   toast: document.querySelector("#toast"),
   lastSync: document.querySelector("#last-sync"),
@@ -68,6 +74,10 @@ const VALID_ATTENTION = ["openInputs", "pendingOperations", "unknownOperations",
 let terminalSession = null;
 let terminalStateKey = "terminal.closed";
 const submittedRequests = new Set();
+let conversationVisible = true;
+let paneWidth = Number(localStorage.getItem("yui.conversation.width")) || 400;
+const paneSide = localStorage.getItem("yui.conversation.side") === "left" ? "left" : "right";
+document.body.classList.toggle("pane-left", paneSide === "left");
 
 const i18n = createI18n(elements.locale);
 createThemeController(elements.theme);
@@ -146,6 +156,7 @@ function syncUrlFromState(options) {
 
 function detailActions() {
   return {
+    conversationHost: elements.conversationContent,
     answerInput: answerInput,
     openTerminal: openTerminal,
     inspect: inspectRecord,
@@ -190,6 +201,33 @@ function setDetailActive(active) {
       elements.pageTitle.dataset.i18n = "page.title";
     }
   }
+  updateConversationLayout();
+}
+
+function maxPaneWidth() {
+  return Math.max(280, Math.min(640,
+    window.innerWidth - elements.tasks.closest(".sidebar").offsetWidth - 460 - 8));
+}
+
+function setPaneWidth(width, persist, keepPreference) {
+  const effectiveWidth = Math.max(280, Math.min(maxPaneWidth(), width));
+  if (!keepPreference) paneWidth = effectiveWidth;
+  document.documentElement.style.setProperty("--pane-w", effectiveWidth + "px");
+  elements.paneDivider.setAttribute("aria-valuemax", String(maxPaneWidth()));
+  elements.paneDivider.setAttribute("aria-valuenow", String(effectiveWidth));
+  if (persist) localStorage.setItem("yui.conversation.width", String(effectiveWidth));
+}
+
+function updateConversationLayout() {
+  const visible = !!state.selected && conversationVisible && !terminalPanelOpen();
+  document.body.classList.toggle("conversation-active", visible);
+  elements.conversationPanel.hidden = !visible;
+  elements.paneDivider.hidden = !visible;
+  elements.conversationToggle.hidden = !state.selected || terminalPanelOpen();
+  elements.conversationToggle.setAttribute("aria-expanded", String(visible));
+  elements.conversationToggle.textContent = i18n.t(visible ? "conversation.hide" : "conversation.show");
+  elements.conversationToggle.setAttribute("aria-label", elements.conversationToggle.textContent);
+  setPaneWidth(paneWidth, false, true);
 }
 
 function showOverview() {
@@ -237,12 +275,17 @@ function renderCurrentDetail(force) {
     if (elements.detail.dataset.taskId === state.detail.task.id
       && (elements.detail.querySelector('[data-unsent="true"]')
         || elements.detail.querySelector('[data-reading="true"]')
-        || elements.detail.contains(document.activeElement))) return;
+        || elements.detail.contains(document.activeElement)
+        || elements.conversationContent.querySelector('[data-unsent="true"]')
+        || elements.conversationContent.contains(document.activeElement))) return;
     const key = i18n.getLocale() + "|" + state.detailKey
       + "|" + runtimeSignatureOf(state.detail);
     if (!force && key === renderedDetailKey) return;
     const openSections = Array.from(elements.detail.querySelectorAll("details[data-view-key][open]"))
       .map(element => element.dataset.viewKey);
+    const oldFeed = elements.conversationContent.querySelector(".conversation-feed");
+    const feedScroll = oldFeed ? oldFeed.scrollTop : 0;
+    const atFeedEnd = oldFeed && oldFeed.scrollHeight - oldFeed.clientHeight - feedScroll < 32;
     renderTaskDetail(
       elements.detail,
       state.detail,
@@ -253,6 +296,8 @@ function renderCurrentDetail(force) {
     elements.detail.querySelectorAll("details[data-view-key]").forEach(element => {
       element.open = openSections.includes(element.dataset.viewKey);
     });
+    const newFeed = elements.conversationContent.querySelector(".conversation-feed");
+    if (newFeed) newFeed.scrollTop = atFeedEnd ? newFeed.scrollHeight : feedScroll;
     renderedDetailKey = key;
   } else if (!state.selected) {
     renderedDetailKey = null;
@@ -342,6 +387,7 @@ function clearSelection() {
   state.selected = null;
   state.detail = null;
   setDetailActive(false);
+  elements.conversationContent.replaceChildren();
   syncUrlFromState({ replace: !urlTaskId() });
   showOverview();
   const savedTaskScroll = elements.tasks.scrollTop;
@@ -477,6 +523,8 @@ async function selectTask(taskId) {
   }
   state.selected = taskId;
   state.detail = null;
+  conversationVisible = true;
+  elements.conversationContent.replaceChildren();
   renderedDetailKey = null;
   // When the selection is driven by the URL (initial load or popstate), the
   // URL already reflects the task id, so replace instead of pushing a
@@ -496,12 +544,14 @@ async function selectTask(taskId) {
 }
 
 function canLeaveDetail() {
-  return !elements.detail.querySelector('[data-unsent="true"]') || window.confirm(
+  return !(elements.detail.querySelector('[data-unsent="true"]')
+    || elements.conversationContent.querySelector('[data-unsent="true"]')) || window.confirm(
     i18n.getLocale().startsWith("zh") ? "此任务有未提交或结果尚不确定的输入。仍要离开？"
       : "This Task has unsent input or an unresolved submission. Leave anyway?");
 }
 window.addEventListener("beforeunload", event => {
-  if (!elements.detail.querySelector('[data-unsent="true"]')) return;
+  if (!elements.detail.querySelector('[data-unsent="true"]')
+    && !elements.conversationContent.querySelector('[data-unsent="true"]')) return;
   event.preventDefault();
   event.returnValue = "";
 });
@@ -621,6 +671,7 @@ function openTerminalPanel() {
   elements.terminalPanel.hidden = false;
   elements.terminalPanel.setAttribute("aria-hidden", "false");
   document.body.classList.add("terminal-active");
+  updateConversationLayout();
 }
 
 function closeTerminalPanel() {
@@ -628,6 +679,7 @@ function closeTerminalPanel() {
   document.body.classList.remove("terminal-active");
   elements.terminalPanel.setAttribute("aria-hidden", "true");
   elements.terminalPanel.hidden = true;
+  updateConversationLayout();
 }
 
 function disposeTerminal() {
@@ -856,12 +908,64 @@ globalForm.addEventListener("submit", async event => {
 });
 elements.detailBack.addEventListener("click", clearSelection);
 elements.terminalClose.addEventListener("click", closeTerminalPanel);
+elements.conversationToggle.addEventListener("click", function () {
+  conversationVisible = !conversationVisible;
+  updateConversationLayout();
+});
+elements.conversationClose.addEventListener("click", function () {
+  conversationVisible = false;
+  updateConversationLayout();
+  elements.conversationToggle.focus();
+});
+elements.conversationSwap.addEventListener("click", function () {
+  const left = !document.body.classList.contains("pane-left");
+  document.body.classList.toggle("pane-left", left);
+  localStorage.setItem("yui.conversation.side", left ? "left" : "right");
+});
+let resizingPane = false;
+elements.paneDivider.addEventListener("pointerdown", function (event) {
+  if (event.button !== 0 || elements.paneDivider.hidden || window.innerWidth <= 900) return;
+  resizingPane = true;
+  elements.paneDivider.setPointerCapture(event.pointerId);
+  document.body.classList.add("pane-resizing");
+  event.preventDefault();
+});
+elements.paneDivider.addEventListener("pointermove", function (event) {
+  if (!resizingPane) return;
+  const left = document.body.classList.contains("pane-left");
+  const width = left ? event.clientX - elements.tasks.closest(".sidebar").offsetWidth
+    : window.innerWidth - event.clientX;
+  setPaneWidth(width - 4, false);
+});
+function finishPaneResize() {
+  if (!resizingPane) return;
+  resizingPane = false;
+  document.body.classList.remove("pane-resizing");
+  localStorage.setItem("yui.conversation.width", String(paneWidth));
+}
+elements.paneDivider.addEventListener("pointerup", finishPaneResize);
+elements.paneDivider.addEventListener("pointercancel", finishPaneResize);
+elements.paneDivider.addEventListener("keydown", function (event) {
+  const left = document.body.classList.contains("pane-left");
+  const delta = left ? (event.key === "ArrowRight" ? 20 : event.key === "ArrowLeft" ? -20 : 0)
+    : (event.key === "ArrowLeft" ? 20 : event.key === "ArrowRight" ? -20 : 0);
+  if (!delta && !["Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  setPaneWidth(event.key === "Home" ? 280 : event.key === "End" ? maxPaneWidth() : paneWidth + delta, true);
+});
+window.addEventListener("resize", function () { setPaneWidth(paneWidth, false, true); });
 document.addEventListener("keydown", function (event) {
   if (globalDialog.open) return;
   const active = document.activeElement;
   const typing = active && ["INPUT", "SELECT", "TEXTAREA"].includes(active.tagName);
   if (event.key === "Escape" && terminalPanelOpen()) {
     closeTerminalPanel();
+    return;
+  }
+  if (event.key === "Escape" && document.body.classList.contains("conversation-active")) {
+    conversationVisible = false;
+    updateConversationLayout();
+    elements.conversationToggle.focus();
     return;
   }
   if (event.key === "Escape" && state.selected) {
@@ -901,9 +1005,14 @@ function applyStateFromUrl() {
   if (taskId) {
     selectTask(taskId);
   } else {
+    if (state.selected && !canLeaveDetail()) {
+      syncUrlFromState({ replace: true });
+      return;
+    }
     state.selected = null;
     state.detail = null;
     setDetailActive(false);
+    elements.conversationContent.replaceChildren();
     showOverview();
   }
 }
@@ -916,6 +1025,7 @@ window.addEventListener("popstate", function () {
 i18n.subscribe(function () {
   renderDynamicContent();
   if (terminalSession) setTerminalState(terminalStateKey);
+  updateConversationLayout();
   if (!state.selected && elements.pageTitle) elements.pageTitle.textContent = i18n.t("page.title");
 });
 showOverview();
