@@ -432,12 +432,16 @@ async function submitMutation(key, path, body) {
   }
 }
 
-async function loadTaskDetail(taskId, showLoading) {
-  if (showLoading) {
+async function loadTaskDetail(taskId, navigate) {
+  // navigate marks an explicit user navigation (task selection, deep link,
+  // back/forward). Only a navigation may move the viewport; the 5s background
+  // refresh (navigate=false) preserves the current scroll, so a quiet tick
+  // never yanks the page back to the URL section.
+  if (navigate) {
     renderLoading(elements.detail, i18n.t, "loading.detail");
     elements.mainCol.scrollTop = 0;
   }
-  const savedScrollTop = showLoading ? 0 : elements.mainCol.scrollTop;
+  const savedScrollTop = elements.mainCol.scrollTop;
   const base = "/api/tasks/" + encodeURIComponent(taskId);
   // Rendering consumes the current snapshot, not event pages. Reconnect uses
   // this same read; the independent delta API retains its fixed-bound contract.
@@ -474,11 +478,17 @@ async function loadTaskDetail(taskId, showLoading) {
   // Reveal the tab bar before measuring/scroll so anchors land correctly.
   setDetailActive(true);
   updateStickyOffsets();
-  // A section in the URL wins over the preserved scroll offset.
-  const section = readQuery().get("section");
-  const anchor = section ? elements.detail.querySelector("#detail-" + section) : null;
-  if (anchor) {
-    anchor.scrollIntoView({ block: "start" });
+  // Only an explicit navigation may reposition the viewport. On navigation a
+  // section in the URL wins over the top; a background refresh keeps the reader
+  // where they are so the page does not jump on every poll.
+  if (navigate) {
+    const section = readQuery().get("section");
+    const anchor = section ? elements.detail.querySelector("#detail-" + section) : null;
+    if (anchor) {
+      anchor.scrollIntoView({ block: "start" });
+    } else {
+      elements.mainCol.scrollTop = savedScrollTop;
+    }
   } else {
     elements.mainCol.scrollTop = savedScrollTop;
   }
