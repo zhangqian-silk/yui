@@ -32,19 +32,27 @@ test("help and Doctor distinguish observed options from static inputs and absent
   assert.deepEqual(configurationHelpChoices("  --sandbox-extra <X> [possible values: wrong]",
     "--sandbox"), [], "Flag substrings are not declarations.");
   const agent = createConfiguredAgent("codex", "codex", "unused", ["wrapper-argument"], [], at);
-  const inspect = text => inspectAgentCapabilities(agent, {
+  const inspect = (text, version = "0.154.0") => inspectAgentCapabilities(agent, {
     now: at, run: (_command, args) => {
       assert.equal(args[0], "wrapper-argument", "Doctor must inspect the configured command identity.");
-      return { status: 0, stdout: args.includes("--version") ? "codex 0.153.4" : text, stderr: "" };
+      return { status: 0, stdout: args.includes("--version") ? `codex ${version}` : text, stderr: "" };
     }
   });
   const complete = inspect(help);
+  assert.equal(complete.installation.status, "installed");
+  assert.equal(complete.installation.version, "0.154.0");
   assert.deepEqual(complete.fields.find(f => f.key === "permission.sandbox").choices,
     ["read-only", "workspace-write"]);
   const missing = inspect("  --config <KEY=VALUE>\n  resume\n");
   assert.equal(missing.fields.find(f => f.key === "permission.sandbox").status, "unavailable");
   assert.match(missing.warnings.join(" "), /sandbox/);
-  assert.doesNotMatch(complete.warnings.join(" "), /newer than.*0\.150\.1/);
+  assert.doesNotMatch(complete.warnings.join(" "), /newer than|audited producer/i);
+  const missingRequired = inspect(help.replace("  resume\n", ""));
+  assert.equal(missingRequired.installation.status, "unsupported-version");
+  assert.match(missingRequired.installation.reason, /missing required capabilities: resume/);
+  const tooOld = inspect(help, "0.150.0");
+  assert.equal(tooOld.installation.status, "unsupported-version");
+  assert.match(tooOld.installation.reason, /Minimum supported version is 0\.150\.1/);
   const claude = inspectAgentCapabilities({ ...agent, adapterId: "claude" }, {
     now: at, run: () => ({ status: null, stdout: "", stderr: "", error: new Error("offline") })
   });
