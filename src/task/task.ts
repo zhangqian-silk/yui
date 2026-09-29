@@ -573,21 +573,6 @@ export function isTaskExecutionEnabled(task: Task): boolean {
   return task.executionGate.state === "enabled";
 }
 
-/**
- * Whether this Task owns a managed Git workspace at all.
- *
- * A Task activated with an empty environment plan legitimately owns none: it
- * binds no Project and adopted no directory, so there is no worktree to be
- * ready and no cwd to verify. Workspace fences use this to distinguish "not
- * prepared yet" from "correctly owns nothing", instead of creating a workspace
- * only to satisfy the fence.
- */
-export function taskOwnsManagedWorkspace(
-  task: Readonly<Pick<Task, "projectBindings" | "cwd">>
-): boolean {
-  return task.projectBindings.length > 0 || task.cwd !== undefined;
-}
-
 export function stopTaskExecution(task: Task, now: Date): Task {
   validateTask(task);
   if (task.status !== "active" && task.status !== "draft") {

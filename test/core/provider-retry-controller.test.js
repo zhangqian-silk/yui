@@ -25,6 +25,7 @@ import { mapCodexAgentError } from "../../dist/runtime/builtinAgentErrorMappers.
 import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
 import { createProviderRetryHooks } from "../../dist/controller/providerRetryDelivery.js";
 import { SessionOwnerReconciliation } from "../../dist/controller/sessionOwnerReconciliation.js";
+import { createSessionOwnerIdentity } from "../../dist/runtime/sessionOwnerIdentity.js";
 import { createRuntimeLifecycleDispatcher } from "../../dist/controller/runtime.js";
 import { deliverGlobalInputs } from "../../dist/controller/globalInputDelivery.js";
 import { providerRetryAttemptId } from "../../dist/runtime/providerRetry.js";
@@ -344,6 +345,15 @@ test("Global retry diagnostics and explicit stop preserve unknown input until ex
   await hooks.reconcile();
   assert.equal(f.read().retry.status, "cancelled");
   assert.deepEqual(f.read().run, unknown, "Cancelling recovery is not native stop evidence.");
+  // The native stop below settles the input. A separate historical Host
+  // identity proves its process is gone; pane disappearance alone does not.
+  f.store.saveSessionOwner(createSessionOwnerIdentity({
+    owner, agentId: "codex", adapterId: "codex", nativeSessionId: f.nativeSessionId,
+    tmux: { serverName: "fixture", socketPath: join(f.home, "tmux.sock"),
+      sessionName: "operator", windowName: f.roleName },
+    providerRoot: { pid: process.pid, startIdentity: "0", attribution: "pane-pid" },
+    recordedAt: f.now()
+  }));
   let quiescent = false;
   const reconciliation = new SessionOwnerReconciliation({
     home: f.home, store: f.store,

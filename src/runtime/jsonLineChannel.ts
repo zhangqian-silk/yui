@@ -133,7 +133,12 @@ export function terminateProcessGroup(
   try {
     process.kill(-child.pid, signal);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ESRCH" && code !== "EPERM") throw error;
+    // ESRCH: the group is already gone. EPERM: the group ID was reused by or
+    // inherited a process owned by another user (observed on macOS after the
+    // fixture child exits); the direct child is still ours to terminate.
+    // Node's ChildProcess.kill treats an already-exited child as a no-op.
     child.kill(signal);
   }
 }

@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { isStorageVersion, compareStorageVersions, type StorageVersion } from "../storage/storageVersions.js";
 
-import { callController as defaultCallController } from "../core/controllerClient.js";
+import { callController as defaultCallController, ControllerClientError } from "../core/controllerClient.js";
 import type { JsonValue } from "../core/protocol.js";
 import {
   inspectStorageSchema,
@@ -54,7 +54,17 @@ export async function assertRuntimeCoherence(
       const status = await call(home, "controller.status", {});
       assertControllerContinuityIdentity(status, identity);
     } catch (error) {
-      if (!isDefinitelyNotRunning(error)) throw error;
+      if (isDefinitelyNotRunning(error)) return identity;
+      if (error instanceof ControllerClientError
+        && ["CONTROLLER_UNAVAILABLE", "CONTROLLER_TIMEOUT", "CONTROLLER_DISCOVERY_INVALID", "INVALID_RESPONSE"].includes(error.code)) {
+        throw new Error(
+          `Managed Controller could not be verified before this command: ${error.message} `
+            + "Run `yui doctor` with this Session's YUI_HOME and CLI; ask the Operator or user "
+            + "to restore it with `yui start` or `yui controller restart` as diagnosed.",
+          { cause: error }
+        );
+      }
+      throw error;
     }
   }
   return identity;

@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
+import { processOwnerIsLive } from "../core/fileLockOwner.js";
 import { createTaskEvent } from "../event/taskEvent.js";
 import { createGlobalRoleMessage } from "../message/message.js";
 import {
@@ -8,6 +9,8 @@ import {
   isLinuxProcessLive,
   listOwnedProcessTree,
   readLinuxProcessIdentity,
+  readProcessIdentity,
+  type LinuxProcessIdentity,
   reconcileSessionOwners,
   terminateSessionOwners,
   type DurableSessionFact,
@@ -99,7 +102,7 @@ export class SessionOwnerReconciliation {
     runtimeRoot?: string;
   }>): void {
     const observed = input.panePid !== undefined
-      ? readLinuxProcessIdentity(input.panePid)
+      ? readOwnerProcessIdentity(input.panePid)
       : undefined;
     const root = observed === undefined
       ? undefined
@@ -192,7 +195,10 @@ export class SessionOwnerReconciliation {
         at: new Date() });
       throw error;
     }
-    const result = await terminateSessionOwners(owner, records, this.#terminationPorts(), options);
+    const result = await terminateSessionOwners(owner, records, this.#terminationPorts(), {
+      ...options,
+      requireProcessRecord: process.platform === "darwin"
+    });
     if (result.outcome === "stop-confirmed") {
       // A signalled Host exits into a retained tmux pane. Explicit release
       // removes that window too, after physical exit proof, not on observation.
@@ -218,14 +224,8 @@ export class SessionOwnerReconciliation {
         }
         return this.#tmux.probeRoleStatus(hostId, target.roleName) === "exited";
       },
-      processIdentity: readLinuxProcessIdentity,
-      procEntryExists: (pid) => {
-        try {
-          return existsSync(`/proc/${pid}`);
-        } catch {
-          return false;
-        }
-      },
+      processIdentity: readOwnerProcessIdentity,
+      procEntryExists: processEntryExists,
       signalProcess: (pid, signal) => process.kill(pid, signal),
       sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
       emit: (event) => this.#recordTerminationEvent(event),
@@ -460,8 +460,9 @@ export function observeSessionOwnerPhysical(
   record: SessionOwnerIdentity
 ): SessionPhysicalObservation | undefined {
   const { pid, startIdentity } = record.providerRoot;
-  const current = readLinuxProcessIdentity(pid);
+  const current = readOwnerProcessIdentity(pid);
   if (current === undefined) {
+    if (processEntryExists(pid)) return undefined;
     return {
       alive: false,
       identityConflict: false,
@@ -497,7 +498,8 @@ export function observeSessionOwnerPhysical(
       childCount: 0
     };
   }
-  const tree = listOwnedProcessTree(pid, current.processGroupId);
+  const tree = process.platform === "linux"
+    ? listOwnedProcessTree(pid, current.processGroupId) : [];
   return {
     alive: true,
     identityConflict: false,
@@ -505,8 +507,20 @@ export function observeSessionOwnerPhysical(
     startIdentity,
     rssBytes: current.rssBytes,
     ageMs: 0,
-    childCount: Math.max(0, tree.length - 1)
+    childCount: process.platform === "linux" ? Math.max(0, tree.length - 1) : 0
   };
+}
+
+function readOwnerProcessIdentity(pid: number): LinuxProcessIdentity | undefined {
+  if (process.platform === "linux") return readLinuxProcessIdentity(pid);
+  try { return readProcessIdentity(pid); }
+  catch { return undefined; }
+}
+
+function processEntryExists(pid: number): boolean {
+  if (process.platform === "linux") return existsSync(`/proc/${pid}`);
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
 }
 
 /** Reads the latest termination outcome recorded for one Role. */
@@ -527,7 +541,10 @@ export function lastSessionTerminationOutcome(
 
 /** True when one owner record's Provider root is still the exact live process. */
 export function ownerRootIsLive(record: SessionOwnerIdentity): boolean {
-  return isLinuxProcessLive(record.providerRoot.pid, record.providerRoot.startIdentity);
+  const { pid, startIdentity } = record.providerRoot;
+  return process.platform === "linux"
+    ? isLinuxProcessLive(pid, startIdentity)
+    : processOwnerIsLive(pid, startIdentity);
 }
 
 /** Exact tmux target for one owner, for reports and diagnostics. */

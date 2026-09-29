@@ -6,7 +6,7 @@ import { runtimeObservationFromTaskEvent } from "../runtime/runtimeObservation.j
 import type { ProviderTurnStatus } from "../runtime/providerRuntimeIdentity.js";
 import { providerRetryProjection } from "../runtime/providerRetry.js";
 import type { TaskStore } from "../storage/taskStore.js";
-import { taskOwnsManagedWorkspace, type Task, type TaskStatus } from "../task/task.js";
+import { type Task, type TaskStatus } from "../task/task.js";
 import type { TaskBrief } from "../brief/taskBrief.js";
 import type { PendingWakeup } from "./pendingWakeup.js";
 import type { LeaderFailure } from "./leaderFailure.js";
@@ -917,11 +917,7 @@ function collectBlockers(
       summary: request.question
     });
   }
-  // A Task activated with an empty environment plan owns no workspace and no
-  // cwd by design; only a Task that should own one is blocked by its absence.
-  if (task.status === "active"
-    && taskOwnsManagedWorkspace(task)
-    && task.cwd === undefined) {
+  if (task.status === "active" && task.cwd === undefined) {
     blockers.push({
       kind: "identity",
       id: `workspace:${task.id}`,

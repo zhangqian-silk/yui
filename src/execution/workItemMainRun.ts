@@ -92,7 +92,7 @@ export function dispatchWorkItemSynthesis(
   if (store.getActiveRun(taskId, role.name) !== null) {
     throw new Error(`WorkItem main Role already has an active AgentRun: ${role.name}.`);
   }
-  const workspace = role.name === "leader"
+  const workspace = role.name === "leader" || task.projectBindings.length === 0
     ? store.getTaskWorkspace(taskId)
     : store.getWorkItemWorkspace(taskId, item.id);
   if (workspace === null) {

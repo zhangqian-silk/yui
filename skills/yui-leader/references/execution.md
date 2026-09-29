@@ -409,7 +409,10 @@ Before ending authorized execution:
    with `yui task run show`, read each original result in full, and make the
    next decision.
 2. Persist actual WorkItem lifecycle and material Brief, Decision, Milestone,
-   Message, or Knowledge changes.
+   Message, or Knowledge changes. If an accepted result or authorized
+   correction has cleared a blocker still stated as current in Brief, update
+   that working summary before completing or yielding. Keep the original
+   failure and correction in their durable records.
 3. Choose one truthful outcome: continue through an owned native child, complete
    the Task, create a justified InputRequest, or leave the active Task waiting
    for a real durable event.

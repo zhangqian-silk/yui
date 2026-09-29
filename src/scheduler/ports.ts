@@ -36,7 +36,6 @@ import type {
 } from "../runtime/runtimeSessionCandidate.js";
 import type { TaskRuntimeLaunchPolicy } from "../runtime/taskRuntimeIsolation.js";
 import type { Task } from "../task/task.js";
-import { taskOwnsManagedWorkspace } from "../task/task.js";
 import {
   isTaskOwnedWorkspace,
   type ManagedWorkspace
@@ -481,10 +480,7 @@ export interface SchedulerStorePort {
 /**
  * Whether the Task's workspace state admits a launch.
  *
- * A Task that owns no managed workspace — activated with an empty environment
- * plan, binding no Project — is admitted with no workspace record at all. The
- * scheduler must not wait for a worktree that was deliberately never created.
- * Every Task that does own one still needs the full ownership proof.
+ * Active Tasks always need the full Task-owned workspace proof.
  *
  * A Draft planning conversation is a third case: the Task may already bind a
  * Project, yet activation has not run, so no worktree exists or is owed. It is
@@ -498,9 +494,6 @@ export function isSchedulerTaskWorkspaceReady(
   purpose?: AgentRunPurpose
 ): boolean {
   if (isSchedulerPlanningDraft(task, purpose)) {
-    return workspace === null || workspace === undefined;
-  }
-  if (!taskOwnsManagedWorkspace(task)) {
     return workspace === null || workspace === undefined;
   }
   return isTaskOwnedWorkspace(
@@ -700,7 +693,7 @@ export interface TmuxDeliveryPort {
     effective: EffectiveLaunchSnapshot;
     workspace: string;
     managedWorkspace?: ManagedWorkspace;
-    /** The Task owns no workspace by design; see RuntimeLaunchPreparationRequest. */
+    /** A Draft planning launch has no delivery workspace. */
     workspaceFree?: true;
     runtimePolicy?: TaskRuntimeLaunchPolicy;
     mode: RoleSessionLaunchMode;

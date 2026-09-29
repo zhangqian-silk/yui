@@ -1299,7 +1299,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
   }>): Promise<GitWorkspaceRemoval> {
     const state = await this.inspectWorktree(input);
     if (state === "dirty") return state;
-    const container = resolve(input.container);
+    const container = await canonicalContainer(input.container, false);
     const branch = worktreeIdentity(input.taskSegment, input.roleName).branch;
     const path = managedPath(container, input.directory);
     const project = await this.inspect(input.repositoryPath);
@@ -1478,7 +1478,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     /** Integration uses a separate branch identity, still supplied by its owner. */
     expectedBranch?: string;
   }>): Promise<GitWorkspaceState> {
-    const container = resolve(input.container);
+    const container = await canonicalContainer(input.container, false);
     const path = managedPath(container, input.directory);
     const kind = await pathKind(path);
     const branch = input.expectedBranch ?? worktreeIdentity(input.taskSegment, input.roleName).branch;
@@ -1525,7 +1525,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     allowCommittedChanges?: boolean;
     discardChanges?: boolean;
   }>): Promise<GitWorkspaceRemoval> {
-    const container = resolve(input.container);
+    const container = await canonicalContainer(input.container, false);
     const path = managedPath(container, input.identity.directory);
     const kind = await pathKind(path);
     if (kind === "symlink") throw new Error("Managed worktree path must not be a symbolic link.");
@@ -1693,7 +1693,7 @@ async function inspectExactRecordedWorktree(input: Readonly<{
   taskSegment: string;
   roleName: string;
 }>): Promise<ExactRecordedWorktree | undefined> {
-  const container = resolve(input.container);
+  const container = await canonicalContainer(input.container, false);
   const expectedBranch = worktreeIdentity(input.taskSegment, input.roleName).branch;
   const expectedPath = managedPath(container, input.directory);
   if (resolve(input.path) !== expectedPath || input.branch !== expectedBranch) {
@@ -1813,9 +1813,11 @@ async function retainCommitRef(
 async function canonicalContainer(path: string, create: boolean): Promise<string> {
   const lexical = resolve(path);
   if (create) await mkdir(lexical, { recursive: true, mode: 0o700 });
-  const canonical = await canonicalDirectory(lexical, "Worktree container");
-  if (canonical !== lexical) throw new Error("Worktree container resolves through a symbolic link.");
-  return canonical;
+  // Resolve once into the physical path used for every containment and
+  // identity comparison below. System-owned prefix symlinks are normal on
+  // macOS (e.g. /var -> /private/var); symlinks at or below the container
+  // stay rejected by the managed-path lstat checks.
+  return canonicalDirectory(lexical, "Worktree container");
 }
 
 async function canonicalDirectory(path: string, label: string): Promise<string> {

@@ -92,7 +92,7 @@ import {
   ENDPOINT_DRAIN_TIMEOUT_MS,
   PROVIDER_ACCEPT_TIMEOUT_MS
 } from "./runtimeDeadlines.js";
-import { createSessionOwnerIdentity, readLinuxProcessIdentity } from "./sessionOwnerIdentity.js";
+import { createSessionOwnerIdentity, readProcessIdentity } from "./sessionOwnerIdentity.js";
 import {
   type StructuredProviderActivity,
   type StructuredProviderDiagnostic,
@@ -1500,10 +1500,8 @@ export async function runAgentHost(input: Readonly<{
 /** Host-restart-independent OS custody. No secret or launch payload is stored. */
 async function recordProviderConnection(home: string, payload: AgentHostLaunchPayload, endpoint: AgentEndpoint): Promise<void> {
   const environment = payload.environment;
-  const identity = endpoint.ownedProcessId === undefined ? undefined : readLinuxProcessIdentity(endpoint.ownedProcessId);
-  if (endpoint.ownedProcessId !== undefined && identity === undefined) {
-    throw new Error("Dedicated Provider process identity was lost before registration.");
-  }
+  const identity = endpoint.ownedProcessId === undefined ? undefined
+    : readProcessIdentity(endpoint.ownedProcessId);
   const taskId = environment.YUI_TASK_ID!;
   const roleName = environment.YUI_ROLE!;
   const userHome = resolve(payload.cwd, environment.HOME ?? homedir());
@@ -1552,10 +1550,11 @@ export function agentHostControlSocketPath(input: Readonly<{
     .digest("hex")
     .slice(0, 16);
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
-  // Linux sockaddr_un paths have a small fixed budget. Keep the endpoint
-  // independent of a potentially deep YUI_HOME while fencing aliases and
-  // copied Homes by their physical filesystem identity.
-  const root = process.platform === "linux" ? "/tmp" : tmpdir();
+  // sockaddr_un paths have a small fixed budget (104 bytes on macOS, 108 on
+  // Linux). Keep the endpoint under the short system root, independent of a
+  // potentially deep YUI_HOME or the long per-user TMPDIR macOS assigns,
+  // while fencing aliases and copied Homes by physical filesystem identity.
+  const root = process.platform === "win32" ? tmpdir() : "/tmp";
   return join(root, `yui-${uid}`, "agent-host", `${homeDigest}-${ownerDigest}.sock`);
 }
 

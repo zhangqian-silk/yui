@@ -6,7 +6,6 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { runPurposeAdmitsTaskState } from "../agentRun/agentRun.js";
 import { assertExecutionEnvironmentCurrent } from "../runtime/executionEnvironment.js";
-import { taskOwnsManagedWorkspace } from "../task/task.js";
 
 import {
   configuredAgentToDefinition,
@@ -213,32 +212,14 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
     if (!runPurposeAdmitsTaskState(purpose, task)) {
       throw new Error(`Task execution is not enabled: ${input.taskId}.`);
     }
-    // A launch owns no managed workspace in two cases: a Draft planning
-    // conversation, and a Task activated with an empty environment plan. Both
-    // run with no Project entries, so there is nothing to preflight and no
-    // worktree to wait for. Every other fence — live Session, replaceable
-    // Conversation, configured Agent, Context protocol identity, adopted
-    // execution environment — still applies.
+    // Draft planning has no delivery workspace. Active Tasks always have one.
     const planningDraft = purpose === "planning" && task.status === "draft";
     // A planning cwd is a disposable per-Task runtime resource, not a delivery
     // workspace. Materialize only the exact directory selected at creation.
     if (planningDraft && resolve(role.workspace) === resolve(planningRuntimeCwd(this.home, task.id))) {
       mkdirSync(role.workspace, { recursive: true, mode: 0o700 });
     }
-    const workspaceFree = planningDraft || !taskOwnsManagedWorkspace(task);
-    // An empty resource plan is a legal Task shape, but it does not make a
-    // shared directory a legal cwd. Once such a Task is active it can name the
-    // directory it means through the existing environment plan, so require that
-    // instead of silently running in whatever workspace the Role inherited with
-    // isolation skipped.
-    if (workspaceFree && !planningDraft && role.executionEnvironment === undefined) {
-      throw new Error(
-        `Task ${task.id} owns no workspace and no adopted execution environment, so Role `
-        + `${role.name} has no directory of its own to run in. Request activation with a `
-        + "`scratch` or `local` environment plan, or bind an adopted environment with "
-        + "`environment.bind`, instead of inheriting a shared workspace."
-      );
-    }
+    const workspaceFree = planningDraft;
     const runWorkspace = activeRun?.workspace;
     const main = this.store.getTaskWorkspace(task.id);
     // Quick Win (EXE-04/EXE-08): classify workspace preflight failures so
@@ -921,9 +902,7 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
 export function nativeAgentWorkspace(
   workspace: EffectiveLaunchSnapshot["workspace"]
 ): string {
-  return workspace.entries.length === 1
-    ? workspace.entries[0].path
-    : workspace.root;
+  return workspace.root;
 }
 
 export function nativeAdditionalDirectories(

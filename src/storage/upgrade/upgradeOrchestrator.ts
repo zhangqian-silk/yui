@@ -5,6 +5,7 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  rmdirSync,
   rmSync
 } from "node:fs";
 
@@ -260,6 +261,7 @@ export async function runStorageUpgrade(options: RunStorageUpgradeOptions): Prom
     };
   }
   let migrationCommitted = false;
+  const createdWorkspaceDirectories: string[] = [];
   try {
     const database = new Database(join(options.home, CURRENT_DATABASE_FILENAME));
     try {
@@ -267,7 +269,7 @@ export async function runStorageUpgrade(options: RunStorageUpgradeOptions): Prom
       database.pragma("synchronous = FULL");
       database.pragma("foreign_keys = ON");
       database.pragma("busy_timeout = 5000");
-      applySqliteMinorUpgrades(database);
+      applySqliteMinorUpgrades(database, options.home, createdWorkspaceDirectories);
       migrationCommitted = true;
     } finally {
       database.close();
@@ -277,10 +279,17 @@ export async function runStorageUpgrade(options: RunStorageUpgradeOptions): Prom
     const restoration = migrationCommitted
       ? tryRestoreDatabaseBackup(options.home, backupPath)
       : { restored: true as const };
+    let directoryCleanupError: string | undefined;
+    try {
+      for (const path of createdWorkspaceDirectories.reverse()) rmdirSync(path);
+    } catch (cleanupError) {
+      directoryCleanupError = messageOf(cleanupError);
+    }
     return {
       outcome: "failed",
       stage: "migration",
-      message: `Storage migration failed: ${messageOf(error)}`,
+      message: `Storage migration failed: ${messageOf(error)}`
+        + (directoryCleanupError === undefined ? "" : ` Directory cleanup failed: ${directoryCleanupError}`),
       action: restoration.restored
         ? "The original database was restored from the timestamped backup. "
           + "Resolve the reported problem and rerun `yui upgrade`."
@@ -288,17 +297,24 @@ export async function runStorageUpgrade(options: RunStorageUpgradeOptions): Prom
           + `${backupPath} manually before retrying. Restore error: ${restoration.error}`,
       backupPath,
       classification,
-      sceneUnchanged: restoration.restored
+      sceneUnchanged: restoration.restored && directoryCleanupError === undefined
     };
   }
 
   const finalState = inspectStorageSchema(options.home);
   if (finalState.status !== "current") {
     const restoration = tryRestoreDatabaseBackup(options.home, backupPath);
+    let directoryCleanupError: string | undefined;
+    try {
+      for (const path of createdWorkspaceDirectories.reverse()) rmdirSync(path);
+    } catch (cleanupError) {
+      directoryCleanupError = messageOf(cleanupError);
+    }
     return {
       outcome: "failed",
       stage: "migration",
-      message: `Storage migration did not reach version ${CURRENT_STORAGE_VERSION}.`,
+      message: `Storage migration did not reach version ${CURRENT_STORAGE_VERSION}.`
+        + (directoryCleanupError === undefined ? "" : ` Directory cleanup failed: ${directoryCleanupError}`),
       action: restoration.restored
         ? "The original database was restored from the timestamped backup. "
           + "Inspect the migration registry before retrying."
@@ -306,7 +322,7 @@ export async function runStorageUpgrade(options: RunStorageUpgradeOptions): Prom
           + `${backupPath} manually before retrying. Restore error: ${restoration.error}`,
       backupPath,
       classification,
-      sceneUnchanged: restoration.restored
+      sceneUnchanged: restoration.restored && directoryCleanupError === undefined
     };
   }
   return {

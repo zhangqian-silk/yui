@@ -12,6 +12,7 @@ const required = [
   "dist/cli.js",
   "dist/cli/commandCatalog.js",
   "dist/runtime/claude-process-owner",
+  ...(process.platform === "darwin" ? ["dist/runtime/process-identity"] : []),
   "ARCHITECTURE.md",
   "docs/project-refresh.md",
   "docs/project-refresh.zh-CN.md",
@@ -40,7 +41,8 @@ for (const path of files) {
     throw new Error(`runtime package contains forbidden path ${path}`);
   }
 }
-for (const executable of ["dist/cli.js", "dist/runtime/claude-process-owner"]) {
+for (const executable of ["dist/cli.js", "dist/runtime/claude-process-owner",
+  ...(process.platform === "darwin" ? ["dist/runtime/process-identity"] : [])]) {
   const entry = entries.find(({ path }) => path === executable);
   if (entry?.mode !== 0o755) {
     throw new Error(

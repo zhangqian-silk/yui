@@ -6,8 +6,10 @@ import {
   readdirSync,
   type Stats
 } from "node:fs";
+import { createConnection } from "node:net";
 import { basename, join, resolve } from "node:path";
 
+import { processOwnerIsLive, readProcessStartIdentity } from "../core/fileLockOwner.js";
 import { activeLiveRoleAgentSession } from "../executor/agentExecutor.js";
 import type { Task } from "../task/task.js";
 import type { TaskRole } from "../role/role.js";
@@ -48,8 +50,7 @@ import {
   CONTROLLER_DOMAIN_PATH,
   EPHEMERAL_DOMAIN_GRACE_MS,
   ephemeralDomainFingerprint,
-  readEphemeralDomainIdentity,
-  readLinuxProcessStartIdentity
+  readEphemeralDomainIdentity
 } from "./domainIdentity.js";
 
 export type ControllerInventoryScanOptions = Readonly<{
@@ -97,15 +98,29 @@ export const INVENTORY_EVENT_LOOP_RUN_BUDGET_MS = 25;
 export async function scanControllerResourceInventory(
   options: ControllerInventoryScanOptions
 ): Promise<ControllerResourceInventory> {
+  if (options.scope === "all" && process.platform !== "linux") {
+    throw new Error("Controller inventory --all requires cross-Home process discovery, which is unavailable on this platform. Use the current-Home scope.");
+  }
   const currentHome = resolve(options.currentHome);
   const environment = options.environment ?? process.env;
   const observedAt = (options.now ?? (() => new Date()))();
   const warnings: string[] = [];
-  const activeSockets = readActiveUnixSocketPaths(warnings);
-  const processes = normalizePhysicalHomeAliases(
-    (await listLinuxProcesses(warnings)).filter(({ pid }) => pid !== process.pid),
-    currentHome
-  );
+  const tmuxDirectory = tmuxSocketDirectory(environment);
+  // /proc-backed process and socket enumeration is Linux-only. On macOS the
+  // current Controller is synthesized from its exact discovery identity.
+  let activeSockets: ReadonlySet<string>;
+  let processes: readonly RuntimeProcessFact[];
+  if (process.platform === "linux") {
+    activeSockets = readActiveUnixSocketPaths(warnings);
+    processes = normalizePhysicalHomeAliases(
+      (await listLinuxProcesses(warnings)).filter(({ pid }) => pid !== process.pid),
+      currentHome
+    );
+  } else {
+    const observed = await observeCurrentController(currentHome, tmuxDirectory);
+    activeSockets = observed.activeSockets;
+    processes = observed.process;
+  }
   const homes = new Set<string>([currentHome]);
   if (options.scope === "all") {
     for (const process of processes) {
@@ -113,7 +128,6 @@ export async function scanControllerResourceInventory(
     }
   }
 
-  const tmuxDirectory = tmuxSocketDirectory(environment);
   const listTmuxSocketArtifacts = options.listTmuxSocketArtifacts
     ?? listSharedTmuxSocketArtifacts;
   // scope=current owns exactly one YUI_HOME, so only its exact tmux server
@@ -188,7 +202,7 @@ export async function scanControllerResourceInventory(
         // and strand the still-running server without a callable endpoint.
         || (
           discovery.pid === process.pid
-          && readLinuxProcessStartIdentity(process.pid) === discovery.processStartIdentity
+          && readProcessStartIdentity(process.pid) === discovery.processStartIdentity
         )
       );
     const discoveryPath = join(home, CONTROLLER_DISCOVERY_PATH);
@@ -304,6 +318,80 @@ export function classifyRuntimeProcess(
   }
   if (executable === "codex" || executable === "claude") return "agent";
   return "other";
+}
+
+/**
+ * Non-Linux inventory observations. There is no /proc to enumerate, so the
+ * current Home's Controller is reconstructed from its discovery record when
+ * its process-generation identity is still live, and listening Unix sockets are proven with
+ * a direct connection (the equivalent of reading /proc/net/unix). Only the
+ * current Home is observable without /proc; scope=all is rejected at entry.
+ */
+async function observeCurrentController(
+  currentHome: string,
+  tmuxDirectory: string
+): Promise<{ activeSockets: Set<string>; process: readonly RuntimeProcessFact[] }> {
+  const activeSockets = new Set<string>();
+  for (const path of listProbeableSocketPaths(tmuxDirectory)) {
+    if (await unixSocketListens(path)) activeSockets.add(path);
+  }
+  let discovery;
+  try {
+    discovery = await readControllerDiscovery(currentHome);
+  } catch {
+    return { activeSockets, process: [] };
+  }
+  if (await unixSocketListens(discovery.socketPath)) {
+    activeSockets.add(discovery.socketPath);
+  }
+  if (!processOwnerIsLive(discovery.pid, discovery.processStartIdentity)) {
+    return { activeSockets, process: [] };
+  }
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  const processFact: RuntimeProcessFact = {
+    pid: discovery.pid,
+    ppid: 1,
+    uid,
+    startIdentity: discovery.processStartIdentity,
+    yuiHome: currentHome,
+    ...(discovery.homeFilesystemId === undefined
+      ? {}
+      : { homeFilesystemId: discovery.homeFilesystemId }),
+    kind: "controller",
+    command: "yui-controller",
+    args: [],
+    rssBytes: 0,
+    cpuTimeMs: 0,
+    ageMs: 0
+  };
+  return { activeSockets, process: [processFact] };
+}
+
+function listProbeableSocketPaths(tmuxDirectory: string): string[] {
+  try {
+    return readdirSync(tmuxDirectory, { encoding: "utf8" })
+      .filter((entry) => /^yui-[a-f0-9]{24}$/u.test(entry))
+      .map((entry) => join(tmuxDirectory, entry));
+  } catch {
+    return [];
+  }
+}
+
+function unixSocketListens(path: string): Promise<boolean> {
+  return new Promise((resolveProbe) => {
+    const socket = createConnection(path);
+    let settled = false;
+    const finish = (listens: boolean): void => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolveProbe(listens);
+    };
+    socket.once("connect", () => finish(true));
+    socket.once("error", () => finish(false));
+    const timer = setTimeout(() => finish(false), 200);
+    timer.unref();
+  });
 }
 
 async function listLinuxProcesses(warnings: string[]): Promise<RuntimeProcessFact[]> {
@@ -691,8 +779,8 @@ function inspectRuntimeDomain(
       graceMs: EPHEMERAL_DOMAIN_GRACE_MS
     };
   }
-  const hostStartIdentity = readLinuxProcessStartIdentity(identity.hostPid);
-  const hostPathExists = existsSync(`/proc/${identity.hostPid}`);
+  const hostStartIdentity = readProcessStartIdentity(identity.hostPid);
+  const hostPathExists = processExists(identity.hostPid);
   const hostActive = hostStartIdentity === identity.hostProcessStartIdentity;
   const storageSafe = storageStatus === "current";
   if (hostActive) {
@@ -801,6 +889,15 @@ function inspectRuntimeDomain(
     ageMs,
     graceMs: EPHEMERAL_DOMAIN_GRACE_MS
   };
+}
+
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
 }
 
 function loadHomeState(

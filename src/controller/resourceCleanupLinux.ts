@@ -1,5 +1,7 @@
 import { lstatSync, readFileSync, unlinkSync, type Stats } from "node:fs";
+import { createConnection } from "node:net";
 import { basename, dirname, join, resolve } from "node:path";
+import { readProcessStartIdentity } from "../core/fileLockOwner.js";
 
 import { NodeCommandExecutor } from "../tmux/commandExecutor.js";
 import { TmuxManager } from "../tmux/tmuxManager.js";
@@ -26,7 +28,7 @@ export type ControllerCleanupPorts = Readonly<{
   signal(pid: number, signal: NodeJS.Signals): void;
   sleep(milliseconds: number): Promise<void>;
   artifactFingerprint(path: string): string | undefined;
-  socketActive(path: string): boolean;
+  socketActive(path: string): boolean | Promise<boolean>;
   removeArtifact(path: string): void;
   killPane(resource: RuntimeResource): Promise<void>;
   inspectTmuxServerPanes(resource: RuntimeResource): Promise<readonly string[]>;
@@ -56,7 +58,7 @@ export async function cleanControllerResource(
   const ports = options.ports ?? linuxCleanupPorts(environment, options.tmuxBin ?? "tmux");
   const cleanup = async (): Promise<void> => {
     if (resource.artifact !== undefined) {
-      cleanArtifact(resource, ports, environment);
+      await cleanArtifact(resource, ports, environment);
       return;
     }
     if (resource.kind === "agent-session") {
@@ -151,11 +153,11 @@ function assertEphemeralDomainFence(resource: RuntimeResource): void {
   }
 }
 
-function cleanArtifact(
+async function cleanArtifact(
   resource: RuntimeResource,
   ports: ControllerCleanupPorts,
   environment: NodeJS.ProcessEnv
-): void {
+): Promise<void> {
   const artifact = resource.artifact;
   if (artifact === undefined) throw new Error(`Artifact is unavailable: ${resource.id}.`);
   assertOwnedArtifactPath(resource, environment);
@@ -185,9 +187,15 @@ function cleanArtifact(
   }
   if (
     artifact.artifactKind.endsWith("-socket")
-    && ports.socketActive(artifact.path)
+    && await ports.socketActive(artifact.path)
   ) {
     throw new Error(`Resource socket is active: ${artifact.path}.`);
+  }
+  // The listener probe is asynchronous on macOS. A concurrent owner may
+  // replace the path while it runs; the pre-probe fingerprint no longer
+  // authorizes unlinking that new socket.
+  if (ports.artifactFingerprint(artifact.path) !== artifact.fingerprint) {
+    throw new Error(`Resource changed since scan: ${resource.id}.`);
   }
   ports.removeArtifact(artifact.path);
 }
@@ -241,7 +249,7 @@ async function waitForProcesses(
 
 function linuxCleanupPorts(environment: NodeJS.ProcessEnv, tmuxBin: string): ControllerCleanupPorts {
   return {
-    processStartIdentity: readProcessStartIdentity,
+    processStartIdentity: readOwnedProcessStartIdentity,
     signal: (pid, signal) => process.kill(pid, signal),
     sleep: (milliseconds) => new Promise((resolveSleep) => {
       setTimeout(resolveSleep, milliseconds);
@@ -253,7 +261,8 @@ function linuxCleanupPorts(environment: NodeJS.ProcessEnv, tmuxBin: string): Con
         return undefined;
       }
     },
-    socketActive: unixSocketIsActive,
+    socketActive: process.platform === "darwin"
+      ? darwinUnixSocketIsActive : unixSocketIsActive,
     removeArtifact: (path) => unlinkSync(path),
     inspectTmuxServerPanes: async (resource) => {
       const manager = tmuxManagerForResource(resource, environment, tmuxBin);
@@ -322,18 +331,8 @@ function tmuxManagerForResource(
   );
 }
 
-function readProcessStartIdentity(pid: number): string | undefined {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    const closing = stat.lastIndexOf(")");
-    if (closing < 0) return undefined;
-    const identity = stat.slice(closing + 1).trim().split(/\s+/u)[19];
-    return identity !== undefined && /^[0-9]{1,32}$/u.test(identity)
-      ? identity
-      : undefined;
-  } catch {
-    return undefined;
-  }
+function readOwnedProcessStartIdentity(pid: number): string | undefined {
+  return readProcessStartIdentity(pid);
 }
 
 function unixSocketIsActive(expectedPath: string): boolean {
@@ -344,6 +343,25 @@ function unixSocketIsActive(expectedPath: string): boolean {
     // Without a liveness proof, refuse socket deletion.
     return true;
   }
+}
+
+function darwinUnixSocketIsActive(path: string): Promise<boolean> {
+  return new Promise((resolveActive) => {
+    const socket = createConnection(path);
+    let settled = false;
+    const finish = (active: boolean): void => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolveActive(active);
+    };
+    socket.once("connect", () => finish(true));
+    socket.once("error", (error: NodeJS.ErrnoException) => {
+      finish(error.code !== "ENOENT" && error.code !== "ECONNREFUSED");
+    });
+    socket.once("close", () => finish(true));
+    socket.setTimeout(1_000, () => finish(true));
+  });
 }
 
 function assertOwnedArtifactPath(

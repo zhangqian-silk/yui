@@ -107,10 +107,6 @@ function withHumanHeldTurn(store, roleName, { attemptId, nativeTurnId }) {
 
 function dispatchWorker(store, command, home, adapterId = "codex") {
   command(["work", "create", "task-1", "Bounded work", "--role", "worker"]);
-  store.saveManagedWorkspace(createManagedWorkspace({
-    owner: { type: "work-item", taskId: "task-1", workItemId: "work-item-1" },
-    root: join(home, "worker"), entries: []
-  }, at));
   command(["work", "dispatch", "task-1/work-item-1"]);
   // Record the Worker's active Session from the run's own effective, so its
   // pinned workspace matches the dispatched WorkItem (a legal resume).

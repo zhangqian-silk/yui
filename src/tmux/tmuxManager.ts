@@ -9,6 +9,7 @@ import {
   type CommandExecutor,
   type CommandRunOptions
 } from "./commandExecutor.js";
+import { tmuxInvocationEnvironment } from "./tmuxSocketEndpoint.js";
 
 const DEFAULT_READINESS_TIMEOUT_MS = 15_000;
 const DEFAULT_READINESS_POLL_MS = 50;
@@ -1345,14 +1346,19 @@ export class TmuxManager {
   private run(args: string[], options?: CommandRunOptions): string {
     const bounded = options?.inheritStdio === true
       ? options
-      : { ...options, timeoutMs: options?.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS };
+      : {
+        ...options,
+        timeoutMs: options?.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
+        environment: tmuxInvocationEnvironment({ ...process.env, ...options?.environment })
+      };
     return this.executor.run(this.tmuxBin, ["-L", this.#serverName, ...args], bounded);
   }
 
   private runAsync(args: string[], options?: CommandRunOptions): Promise<string> {
     const bounded = {
       ...options,
-      timeoutMs: options?.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS
+      timeoutMs: options?.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
+      environment: tmuxInvocationEnvironment({ ...process.env, ...options?.environment })
     };
     if (this.executor.runAsync !== undefined) {
       return this.executor.runAsync(this.tmuxBin, ["-L", this.#serverName, ...args], bounded);

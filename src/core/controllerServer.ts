@@ -38,6 +38,10 @@ import {
 import { controllerSocketPath } from "./controllerEndpoint.js";
 import { readHomeFilesystemId } from "./homeFilesystemIdentity.js";
 import { findLiveControllerProcessForHome } from "./controllerProcessIdentity.js";
+import {
+  currentProcessStartIdentity,
+  processGenerationIsLive
+} from "./fileLockOwner.js";
 import { validateHomeId } from "../repository/homeIdentity.js";
 import { readCurrentHomeIdentity } from "../storage/currentTaskStore.js";
 import { YUI_VERSION, yuiVersionIdentity } from "../version.js";
@@ -209,7 +213,9 @@ async function startControllerServerLocked(
 
   try {
     await chmod(socketPath, 0o600);
-    const processStartIdentity = await readLinuxProcessStartIdentity(process.pid);
+    const processStartIdentity = process.platform === "linux"
+      ? await readLinuxProcessStartIdentity(process.pid)
+      : currentProcessStartIdentity();
     const discovery: ControllerDiscovery = Object.freeze({
       schemaVersion: 1,
       protocolVersion: FILE_TASK_CONTROLLER_PROTOCOL_VERSION,
@@ -316,6 +322,14 @@ async function assertExistingDiscoveryReplaceable(discoveryPath: string): Promis
     || !/^[0-9]{1,32}$/u.test(value.processStartIdentity)
   ) {
     throw unsafeExistingDiscovery(discoveryPath);
+  }
+  if (process.platform !== "linux") {
+    // The native helper proves the exact macOS generation; a live PID with
+    // unreadable identity cannot authorize discovery replacement.
+    if (processGenerationIsLive(pid, value.processStartIdentity)) {
+      throw controllerAlreadyRunning();
+    }
+    return;
   }
   let currentIdentity: string;
   try {
@@ -543,14 +557,7 @@ async function routeRequest(
         releaseDrifted = true;
       }
     }
-    let processStartIdentity: string | undefined;
-    try {
-      processStartIdentity = readLinuxProcessStartIdentitySync(process.pid);
-    } catch {
-      // Non-Linux or an unreadable /proc: the owner cannot be fenced, so the
-      // handover path treats it as absent. The rest of the identity stays
-      // available for read-only consumers.
-    }
+    const processStartIdentity = currentProcessStartIdentity();
     send({
       id: request.id,
       ok: true,
@@ -903,7 +910,9 @@ function currentHandoverOwner(): HandoverOwner {
   const release = detectRunningRelease(fileURLToPath(import.meta.url));
   return Object.freeze({
     pid: process.pid,
-    processStartIdentity: readLinuxProcessStartIdentitySync(process.pid),
+    processStartIdentity: process.platform === "linux"
+      ? readLinuxProcessStartIdentitySync(process.pid)
+      : currentProcessStartIdentity(),
     buildId: release?.manifest.buildId ?? "dev",
     version: YUI_VERSION
   });

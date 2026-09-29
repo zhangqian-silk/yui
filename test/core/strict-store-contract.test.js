@@ -15,14 +15,19 @@ import { buildTaskExecutionProjection } from "../../dist/scheduler/taskExecution
 import { enqueueWork } from "../../dist/coordination/workMailboxQueue.js";
 import { AgentRuntimeObserver } from "../../dist/controller/agentRuntimeObserver.js";
 import { runConfigCommand } from "../../dist/commands/configCommands.js";
+import { createManagedWorkspace } from "../../dist/worktree/managedWorkspace.js";
 
 test("missing authoritative reads cannot become empty evidence or authorize Provider delivery", async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-strict-store-"));
   const store = new SqliteTaskStore(home);
   t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
   const at = new Date("2026-09-15T00:00:00Z");
-  const task = activateTask(createTask("task-1", "Keep delivery authority", at), at);
+  const task = activateTask(createTask("task-1", "Keep delivery authority", at,
+    { cwd: home }), at);
   store.saveTask(task);
+  store.saveManagedWorkspace(createManagedWorkspace({
+    owner: { type: "task", taskId: task.id }, root: home, entries: []
+  }, at));
   const binding = createRoleAgentBinding({ id: "codex", adapterId: "codex" });
   const role = createRole(task.id, "leader", [binding], binding.agentId, home, at);
   store.saveRole(task.id, role);

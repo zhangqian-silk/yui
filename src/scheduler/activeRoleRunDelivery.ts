@@ -19,7 +19,6 @@ import {
   type RuntimeLaunchPreflight
 } from "../runtime/ports.js";
 import { formatRunReceiptId } from "../task/taskRecordReference.js";
-import { taskOwnsManagedWorkspace } from "../task/task.js";
 import { runInputEnvelope } from "../agentRun/agentRun.js";
 import {
   captureRoleRunDispatch,
@@ -199,16 +198,8 @@ async function deliverActiveRun(
       effective: run.effective,
       workspace: run.effective.workspace.root,
       ...(run.workspace === undefined ? {} : { managedWorkspace: run.workspace }),
-      // A Task owning no workspace by design states that explicitly, so the
-      // launch does not read the absent workspace as a missing one and fail
-      // closed (S27). Two distinct cases qualify: a Task activated with an
-      // empty plan and binding no Project, and a Draft planning conversation,
-      // which may already bind a Project but has not activated, so no worktree
-      // exists or is owed yet. Declaring it free is what keeps the isolation
-      // fence honest instead of letting it fail on a workspace nobody promised.
-      ...(run.workspace === undefined
-        && (isSchedulerPlanningDraft(task, run.purpose)
-          || !taskOwnsManagedWorkspace(task))
+      // Draft planning has no delivery workspace or worktree to isolate.
+      ...(run.workspace === undefined && isSchedulerPlanningDraft(task, run.purpose)
         ? { workspaceFree: true as const }
         : {}),
       mode,

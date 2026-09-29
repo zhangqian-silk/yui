@@ -225,7 +225,6 @@ import {
   createTask,
   reopenTask,
   retireTask,
-  taskOwnsManagedWorkspace,
   updateTaskMetadata,
   type Task,
   type TaskMetadata,
@@ -1070,8 +1069,8 @@ function routeUserSubmission(
     enteredPlanning,
     activation,
     executionEnabled: task.executionGate.state === "enabled",
-    // develop adopts no extra resource by guessing: the workspace is still built
-    // from the Task's own Project bindings when it activates (§2.3).
+    // develop adopts no extra environment by guessing; activation always
+    // prepares the Task's managed main workspace (§2.3).
     developEnvironmentPlan: { kind: "empty" }
   });
 
@@ -1606,23 +1605,11 @@ function activateTaskCommand(
         || activation.path !== task.cwd) {
         throw usageError(`Task workspace activation proof does not match ${task.id}.`);
       }
-      // An empty environment plan over no bound Project is a legal Task shape,
-      // so the proof of adoption is the *absence* of a workspace rather than a
-      // ManagedWorkspace record. Demanding one here would have forced every
-      // such activation to create a worktree purely to satisfy this check.
-      if (taskOwnsManagedWorkspace(task)) {
-        if (workspace === null
-          || workspace.owner.type !== "task"
-          || workspace.owner.taskId !== task.id
-          || workspace.root !== task.cwd) {
-          throw usageError(`Task workspace activation proof does not match ${task.id}.`);
-        }
-      } else if (workspace !== null
-        || task.workspaceIdentity !== undefined
-        || activation.path !== undefined) {
-        throw usageError(
-          `Workspace-free Task activation proof claims a workspace: ${task.id}.`
-        );
+      if (workspace === null
+        || workspace.owner.type !== "task"
+        || workspace.owner.taskId !== task.id
+        || workspace.root !== task.cwd) {
+        throw usageError(`Task workspace activation proof does not match ${task.id}.`);
       }
       return { task, changed: activation.changed } as const;
     }
@@ -4437,14 +4424,14 @@ function dispatchWork(
       );
     }
     assertWorkItemDependenciesCompletedForCommand(tx, item);
-    const leaderOwned = item.assignee === "leader";
-    const workspace = leaderOwned
+    const usesTaskMain = item.assignee === "leader" || task.projectBindings.length === 0;
+    const workspace = usesTaskMain
       ? tx.getTaskWorkspace(task.id)
       : tx.getWorkItemWorkspace(task.id, item.id);
     if (workspace === null) {
       throw usageError(
-        leaderOwned
-          ? `Leader-owned Work Item ${item.id} requires the Task main workspace.`
+        usesTaskMain
+          ? `Work Item ${item.id} requires the Task main workspace.`
           : `Work Item ${item.id} must be isolated with its approved Project scope before dispatch.`
       );
     }
@@ -6438,7 +6425,8 @@ function retryRunOperation(
       const storedMainWorkspace = previous.workspace === undefined
         ? null
         : tx.getManagedWorkspace(previous.workspace.owner);
-      const currentMainWorkspace = retryItem?.assignee === "leader"
+      const currentMainWorkspace = retryItem !== null
+        && (retryItem.assignee === "leader" || task.projectBindings.length === 0)
         ? tx.getTaskWorkspace(task.id)
         : retryItem === null
           ? null
@@ -6455,7 +6443,8 @@ function retryRunOperation(
       const storedDirectWorkspace = previous.workspace === undefined
         ? null
         : tx.getManagedWorkspace(previous.workspace.owner);
-      const currentDirectWorkspace = retryItem?.assignee === "leader"
+      const currentDirectWorkspace = retryItem !== null
+        && (retryItem.assignee === "leader" || task.projectBindings.length === 0)
         ? tx.getTaskWorkspace(task.id)
         : retryItem === null
           ? null

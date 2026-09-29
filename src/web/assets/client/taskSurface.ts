@@ -415,10 +415,14 @@ export function renderTaskSurface(container, data, t, locale, actions) {
     scaffold.append(anchorSection(id, null, folded));
     return body;
   }
-  const focus = section("detail-focus", say("Goal and current focus", "目标与当前关注"), records("task-brief"));
+  const working = task.status === "active" || task.status === "draft";
+  const focus = section("detail-focus", working
+    ? say("Goal and current focus", "目标与当前关注")
+    : say("Goal and last working focus", "目标与结束前的工作重点"), records("task-brief"));
   const brief = values("task-brief")[0];
   if (brief) {
-    focus.prepend(richText(t("detail.focus"), brief.currentFocus, t));
+    focus.prepend(richText(working
+      ? t("detail.focus") : say("Last working focus", "结束前的工作重点"), brief.currentFocus, t));
     if (brief.boundaries.length) focus.append(richText(say("Boundaries", "边界"), brief.boundaries.join("\\n"), t));
   }
   section("detail-work", say("Responsibilities and acceptance", "工作责任与验收"), records("work-item"));

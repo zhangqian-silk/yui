@@ -12,6 +12,8 @@ import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { activateTask, createTask } from "../../dist/task/task.js";
 import { projectNextAction } from "../../dist/task/nextAction.js";
 import { createWorkItem } from "../../dist/workItem/workItem.js";
+import { createManagedWorkspace } from "../../dist/worktree/managedWorkspace.js";
+import { createRole, createRoleAgentBinding } from "../../dist/role/role.js";
 
 const now = new Date("2026-09-12T00:00:00.000Z");
 
@@ -70,4 +72,32 @@ test("a read-only direct Candidate needs no Git workspace or AgentRun; writable 
     snapshotWorkItemCandidate(store, noGit, task.id, writable.id),
     /isolate/u
   );
+});
+
+test("a no-Project Worker dispatch uses the Task main workspace", (t) => {
+  const home = mkdtempSync(join(tmpdir(), "yui-projectless-worker-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const store = new SqliteTaskStore(home);
+  t.after(() => store.close());
+  const task = activateTask(createTask("task-1", "Worker result", now, { cwd: home }), now);
+  store.saveTask(task);
+  const workspace = createManagedWorkspace({
+    owner: { type: "task", taskId: task.id }, root: home, entries: []
+  }, now);
+  store.saveManagedWorkspace(workspace);
+  const binding = createRoleAgentBinding({ id: "codex", adapterId: "codex" });
+  store.saveRole(task.id, createRole(task.id, "worker", [binding], binding.agentId, home, now));
+  const item = createWorkItem("work-item-1", task.id, {
+    title: "Exact result", assignee: "worker"
+  }, now);
+  store.saveWorkItem(task.id, item);
+
+  runTaskCommand(["work", "dispatch", `${task.id}/${item.id}`], store,
+    { now: () => now, environment: {} });
+  const run = store.getActiveRun(task.id, "worker");
+  assert.ok(run);
+  assert.deepEqual(run.workspace, workspace);
+  assert.deepEqual(run.effective.writeProjectIds, []);
+  assert.equal(run.workItemId, item.id);
+  assert.equal(store.getWorkItem(task.id, item.id).status, "open");
 });

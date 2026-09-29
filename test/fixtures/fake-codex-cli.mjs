@@ -9,6 +9,8 @@ if (args.includes("--version")) {
   console.log("--model --config --profile --add-dir --search --dangerously-bypass-approvals-and-sandbox\n"
     + "  --sandbox [possible values: read-only, workspace-write, danger-full-access]\n"
     + "  --ask-for-approval [possible values: untrusted, on-request, never]");
+} else if (args.includes("app-server") && args.includes("daemon") && args.includes("version")) {
+  console.log(JSON.stringify({ status: "running", appServerVersion: "0.150.1" }));
 } else if (args.includes("app-server") && args.includes("proxy")) {
   process.env.YUI_FAKE_THREAD_ID = `fixture-${process.env.YUI_TASK_ID ?? "global"}-${process.env.YUI_ROLE ?? "reader"}`;
   await import("./fake-codex-app-server-proxy.mjs");

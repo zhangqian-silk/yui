@@ -389,13 +389,13 @@ const taskChildren: readonly NodeInput[] = [
     children: [
       {
         name: "request",
-        summary: "Record an Activation request. empty adds no extra environment (bound Projects still get managed worktrees); scratch creates a Task directory; local requires a registered Resource and grant, not a Project ID.",
+        summary: "Record an Activation request. Every active Task gets a managed main workspace. empty adds no execution environment; scratch adopts a separate scratch environment; local requires a registered Resource and grant, not a Project ID.",
         usage: "yui task activation request <task> --request-id <id> "
           + "--environment <empty|scratch|local:<resource>:<read|write>>",
         options: ["--request-id", "--environment"],
         examples: [
           "yui task activation request <task> --request-id start-1 --environment empty",
-          "yui task activation request <gitless-task> --request-id start-1 --environment scratch"
+          "yui task activation request <task> --request-id start-1 --environment scratch"
         ]
       },
       {
@@ -1188,10 +1188,10 @@ export const ROOT_COMMAND = buildNode({
   name: "yui",
   summary: "Coordinate durable, isolated Agent work.",
   usage: "yui [--json] <command>",
-  examples: ["yui setup", "yui operator enter", "yui config show", "yui task list"],
+  examples: ["yui setup", "yui start", "yui operator enter", "yui task list"],
   sections: [
     { id: "general", title: "General", entries: [
-      "help", "version", "update", "upgrade", "setup", "doctor"
+      "help", "version", "update", "upgrade", "setup", "start", "doctor"
     ] },
     { id: "workflow", title: "Workflow", entries: ["operator", "role", "project", "task"] },
     { id: "configuration", title: "Configuration", entries: ["config"] },
@@ -1247,6 +1247,7 @@ export const ROOT_COMMAND = buildNode({
       summary: "Initialize the minimum Operator and Leader configuration required to execute Tasks.",
       examples: "yui setup"
     },
+    { name: "start", summary: "Start the Controller and Codex shared runtime needed by active Roles." },
     { name: "doctor", summary: "Check Yui dependencies and file state." },
     {
       name: "web",
@@ -1260,7 +1261,7 @@ export const ROOT_COMMAND = buildNode({
       sections: [{
         id: "lifecycle",
         title: "Commands",
-        entries: ["status", "cleanup", "identity", "live-identity", "stop", "restart"]
+        entries: ["status", "cleanup", "identity", "live-identity", "start", "stop", "restart"]
       }],
       children: [
         {
@@ -1285,6 +1286,7 @@ export const ROOT_COMMAND = buildNode({
           summary: "Read the authenticated live Controller runtime identity.",
           hidden: true
         },
+        { name: "start", summary: "Start the Controller for this Home without preparing Agent runtimes." },
         { name: "stop", summary: "Stop the Controller." },
         { name: "restart", summary: "Restart internal services without stopping tmux sessions." }
       ]

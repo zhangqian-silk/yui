@@ -143,6 +143,13 @@ Failure to drain remains a live ownership dependency, not false quiescence.
 This is OS process custody, not a Task workflow or a claim about unrelated
 external services.
 
+macOS has no child subreaper. The owner stops descendants it can still prove
+through ancestry or the original process group. If the Claude root forks,
+`setsid` and reparenting can hide a child from both checks; the owner therefore
+reports cleanup as unconfirmed instead of returning a successful exit. This
+also covers ordinary forked tools whose exit cannot be proven after the root
+is gone. A detached child may still need explicit inspection and termination.
+
 The dedicated process's PID/start identity is retained as engineering control
 data independently of AgentHost. Recovery never needs the old Host's in-memory
 connection. For Codex, a separate metadata/control client can inspect and stop

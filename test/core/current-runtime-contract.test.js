@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { scanLiveReferences } from "../../dist/resources/liveReferences.js";
 import { readResourceGcState } from "../../dist/resources/resourceGc.js";
-import { createSessionOwnerIdentity, readLinuxProcessIdentity } from "../../dist/runtime/sessionOwnerIdentity.js";
+import { createSessionOwnerIdentity, readProcessIdentity } from "../../dist/runtime/sessionOwnerIdentity.js";
 import { renderCompletion } from "../../dist/cli/completion.js";
 import { normalizeVerificationPlan } from "../../dist/verification/verificationPlan.js";
 import { createIntegrationAttempt } from "../../dist/integration/integrationAttempt.js";
@@ -43,7 +43,7 @@ test("GC reads exact process custody from SQLite and ignores the retired JSON so
   t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
   const runtimeRoot = join(home, "owned-runtime");
   mkdirSync(runtimeRoot);
-  const processIdentity = readLinuxProcessIdentity(process.pid);
+  const processIdentity = readProcessIdentity(process.pid);
   assert.ok(processIdentity);
   const owner = createSessionOwnerIdentity({
     owner: { scope: "global", roleName: "operator" }, agentId: "fixture", adapterId: "codex",

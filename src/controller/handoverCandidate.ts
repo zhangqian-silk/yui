@@ -16,6 +16,7 @@
 import { fileURLToPath } from "node:url";
 
 import { buildRuntimeIdentityReceipt } from "../core/controllerServer.js";
+import { currentProcessStartIdentity } from "../core/fileLockOwner.js";
 import { resolveStoreWorkerEnabledForHome } from "../storage/storeRpc.js";
 import { resolveTaskStoreBackendForHome } from "../storage/sqliteStore.js";
 import {
@@ -32,7 +33,6 @@ import {
   type HandoverFence
 } from "../release/runtimeRelease.js";
 import { startFileTaskControllerRuntime } from "./runtime.js";
-import { readLinuxProcessStartIdentity } from "./domainIdentity.js";
 import { RELEASE_HANDOVER_OLD_OWNER_GRACE_MS } from "../runtime/runtimeDeadlines.js";
 
 export const CONTROLLER_CANDIDATE_ENV = "YUI_CONTROLLER_CANDIDATE";
@@ -92,12 +92,7 @@ export async function runHandoverCandidate(
   const dualOwnerGraceMs = options.dualOwnerGraceMs ?? DEFAULT_DUAL_OWNER_GRACE_MS;
   const now = options.now ?? (() => new Date());
   const release = detectRunningRelease(fileURLToPath(import.meta.url));
-  const startIdentity = readLinuxProcessStartIdentity(process.pid);
-  if (startIdentity === undefined) {
-    throw new Error(
-      `Cannot read process start identity for handover candidate PID ${process.pid}.`
-    );
-  }
+  const startIdentity = currentProcessStartIdentity();
 
   const fence = readHandoverFence(home);
   if (fence === null || fence.handoverId !== handoverId) {

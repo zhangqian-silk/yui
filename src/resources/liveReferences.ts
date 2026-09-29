@@ -6,7 +6,7 @@
  * fails closed: the resource is treated as referenced and retained.
  */
 
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -16,6 +16,8 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
+
+import { processOwnerIsLive } from "../core/fileLockOwner.js";
 
 import {
   readRuntimeIdentity,
@@ -236,8 +238,10 @@ function readRuntimeIdentityClaims(home: string): ClaimReadResult {
     if (!isProcessAlive(identity.pid)) {
       return Object.freeze({ claims: Object.freeze([]), diagnostics: Object.freeze([]) });
     }
-    const currentIdentity = readLinuxProcessStartIdentity(identity.pid);
-    if (currentIdentity === undefined || currentIdentity !== identity.processStartIdentity) {
+    const sameGeneration = process.platform === "linux"
+      ? readLinuxProcessStartIdentity(identity.pid) === identity.processStartIdentity
+      : processOwnerIsLive(identity.pid, identity.processStartIdentity);
+    if (!sameGeneration) {
       return Object.freeze({
         claims: Object.freeze([]),
         diagnostics: Object.freeze([{
@@ -306,8 +310,10 @@ export function readSessionOwnerClaims(records: readonly SessionOwnerIdentity[])
       // The normal reconciliation owner releases dead custody records.
       continue;
     }
-    const currentIdentity = readLinuxProcessStartIdentity(pid);
-    if (currentIdentity === undefined || currentIdentity !== startIdentity) {
+    const sameGeneration = process.platform === "linux"
+      ? readLinuxProcessStartIdentity(pid) === startIdentity
+      : processOwnerIsLive(pid, startIdentity);
+    if (!sameGeneration) {
       diagnostics.push({
         source: "controller" as const,
         severity: "error" as const,
@@ -342,6 +348,7 @@ export type ProcessScanResult = Readonly<{
 export function scanProcessPathRefs(
   paths: readonly string[]
 ): ProcessScanResult {
+  if (process.platform === "darwin") return scanDarwinProcessPathRefs(paths);
   const refs = new Map<string, Set<string>>();
   const diagnostics: LiveReferenceDiagnostic[] = [];
   const add = (path: string, token: string): void => {
@@ -398,6 +405,48 @@ export function scanProcessPathRefs(
     }
   }
   return freezeResult(refs, diagnostics);
+}
+
+/** lsof supplies the same-user cwd and open-file observations on macOS. */
+function scanDarwinProcessPathRefs(paths: readonly string[]): ProcessScanResult {
+  const refs = new Map<string, Set<string>>();
+  try {
+    const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+    const output = execFileSync("/usr/sbin/lsof", [
+      "-nP", "-w", "-F0pfn", "-u", String(uid)
+    ], { encoding: "utf8", timeout: 10_000, maxBuffer: 16 * 1024 * 1024 });
+    if (output.includes("\ufffd")) throw new Error("lsof returned an undecodable path.");
+    let pid = "";
+    let descriptor = "";
+    let sawProcess = false;
+    for (const raw of output.split("\0")) {
+      const field = raw.replace(/^\n+/u, "");
+      if (field.startsWith("p") && /^[1-9][0-9]*$/u.test(field.slice(1))) {
+        pid = field.slice(1);
+        descriptor = "";
+        sawProcess = true;
+      } else if (field.startsWith("f")) {
+        descriptor = field.slice(1);
+      } else if (field.startsWith("n") && pid !== "" && field[1] === "/") {
+        const observed = field.slice(1);
+        for (const path of paths) {
+          if (!isPathWithin(observed, path)) continue;
+          const tokens = refs.get(path) ?? new Set<string>();
+          tokens.add(`lsof:${descriptor}:${pid}`);
+          refs.set(path, tokens);
+        }
+      }
+    }
+    if (!sawProcess) throw new Error("lsof did not return a process inventory.");
+    return freezeResult(refs, []);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    const diagnostics: LiveReferenceDiagnostic[] = [{
+      source: "proc", severity: "error", message: `macOS process path scan failed: ${detail}`
+    }];
+    for (const path of paths) refs.set(path, new Set(["lsof:unverified"]));
+    return freezeResult(refs, diagnostics);
+  }
 }
 
 function freezeResult(
@@ -524,8 +573,10 @@ export function readControllerDiscovery(home: string): ControllerDiscoveryResult
   }
   // PID is alive. When a start identity is recorded, verify it to guard
   // against PID reuse.
-  const currentIdentity = readLinuxProcessStartIdentity(record.pid);
-  if (currentIdentity === undefined || currentIdentity !== record.processStartIdentity) {
+  const sameGeneration = process.platform === "linux"
+    ? readLinuxProcessStartIdentity(record.pid) === record.processStartIdentity
+    : processOwnerIsLive(record.pid, record.processStartIdentity);
+  if (!sameGeneration) {
     return Object.freeze({
       protects: false,
       token: "",

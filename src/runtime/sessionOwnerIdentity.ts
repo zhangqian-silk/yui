@@ -1,4 +1,5 @@
 import { readFileSync, readdirSync } from "node:fs";
+import { readProcessStartIdentity } from "../core/fileLockOwner.js";
 
 import { requireSafeIdentity, requireText, requireTimestamp } from "./validation.js";
 
@@ -188,6 +189,25 @@ export function readLinuxProcessIdentity(pid: number): LinuxProcessIdentity | un
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Identity of a process for durable ownership records. Linux returns the
+ * exact /proc start-time identity; macOS uses libproc's process start time.
+ */
+export function readProcessIdentity(pid: number = process.pid): LinuxProcessIdentity {
+  if (process.platform === "linux") {
+    const identity = readLinuxProcessIdentity(pid);
+    if (identity === undefined) {
+      throw new Error(`Cannot read Linux process identity for PID ${pid}.`);
+    }
+    return identity;
+  }
+  const startIdentity = readProcessStartIdentity(pid);
+  if (startIdentity === undefined) {
+    throw new Error(`Dedicated Provider process identity could not be verified for PID ${pid}.`);
+  }
+  return { pid, startIdentity, rssBytes: 0 };
 }
 
 function readLinuxProcessRssBytes(pid: number): number | undefined {

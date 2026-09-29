@@ -102,7 +102,10 @@ export async function assertFileTaskControllerStorageCompatible(
     if (isDefinitelyNotRunning(error)) return;
     if (isUnavailable(error)) {
       throw new Error(
-        "Controller compatibility could not be verified. Retry or run `yui controller restart`.",
+        "Controller compatibility could not be verified before this command: "
+          + `${error instanceof Error ? error.message : String(error)} `
+          + "Run `yui doctor` with this Session's YUI_HOME and CLI; ask the Operator or user "
+          + "to restore it with `yui start` or `yui controller restart` as diagnosed.",
         { cause: error }
       );
     }
@@ -151,7 +154,9 @@ export async function ensureFileTaskController(
         throw new Error(
           `Controller did not become ready within ${timeoutMs} ms.`
           + (startupPid === undefined ? "" : ` Startup PID: ${startupPid}.`)
-          + " Read current process state before retrying; timeout does not prove it stopped.",
+          + " Read current process state before retrying; timeout does not prove it stopped."
+          + " Run `yui doctor` with this Session's YUI_HOME and CLI, then ask the Operator "
+          + "or user to restore the Controller if needed.",
           { cause: error }
         );
       }

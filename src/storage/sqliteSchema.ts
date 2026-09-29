@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 import { BASELINE_SCHEMA_SQL, SQLITE_SCHEMA_TABLES } from "./baselineSchema.js";
+import { migrateTaskMainWorkspaces } from "./upgrade/taskMainWorkspaceMigration.js";
 import {
   CURRENT_STORAGE_VERSION, MIN_SUPPORTED_STORAGE_VERSION, STORAGE_FORMAT,
   isMinorStorageUpgrade, isStorageVersion, storageVersionParts, type StorageVersion
@@ -25,11 +26,20 @@ export type StorageMinorUpgrade = Readonly<{
   sourceChecksum: string;
   targetChecksum: string;
   sql: string;
+  dataMigration?: "task-main-workspace";
 }>;
 
 // Only explicit, contiguous minor changes in this baseline may be added here.
-// The initial 1.0 release has no upgrade steps and carries no older format code.
-const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([]);
+const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
+  fromVersion: "1.0",
+  toVersion: "1.1",
+  name: "task-main-workspace",
+  introducedIn: "1.0.1",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  sql: "",
+  dataMigration: "task-main-workspace"
+}]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {
   if (from === CURRENT_STORAGE_VERSION) return [];
@@ -130,7 +140,11 @@ export function initializeSqliteSchema(db: Database.Database): SqliteSchemaState
 }
 
 /** Called only after an explicit minor upgrade has obtained its maintenance fence. */
-export function applySqliteMinorUpgrades(db: Database.Database): void {
+export function applySqliteMinorUpgrades(
+  db: Database.Database,
+  home: string,
+  createdRoots: string[] = []
+): void {
   db.transaction(() => {
     const before = inspectSqliteSchema(db);
     const plan = storageMinorUpgradePlan(before.currentVersion);
@@ -141,6 +155,9 @@ export function applySqliteMinorUpgrades(db: Database.Database): void {
         throw new SqliteSchemaError("minor upgrade source changed.");
       }
       db.exec(step.sql);
+      if (step.dataMigration === "task-main-workspace") {
+        migrateTaskMainWorkspaces(db, home, createdRoots);
+      }
       const { major, minor } = storageVersionParts(step.toVersion);
       db.prepare("UPDATE storage_schema SET major=?,minor=?,checksum=? WHERE id=1")
         .run(major, minor, step.targetChecksum);

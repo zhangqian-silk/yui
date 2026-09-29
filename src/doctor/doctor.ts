@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, lstatSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 
 import Database from "better-sqlite3";
@@ -11,6 +11,7 @@ import {
 import { operationalAgentEnvironment } from "../agent/launchEnvironment.js";
 import { resolveTmuxBin } from "../config/yuiConfig.js";
 import { compileRoleSessionContext } from "../context/roleSessionContext.js";
+import { callController, ControllerClientError } from "../core/controllerClient.js";
 import {
   EPHEMERAL_DOMAIN_GRACE_MS,
   readEphemeralDomainIdentity,
@@ -34,6 +35,15 @@ import {
   withNativeProjectDirectories
 } from "../executor/fileRoleLaunchPlanner.js";
 import { defaultTableWidth, renderTable } from "../output/table.js";
+import {
+  codexAppNeedsRestart,
+  codexAppProcessIds,
+  codexAppWebSocketUrl,
+  codexSharedSocketPath,
+  findMacCodexAppExecutable,
+  isCodexInspectionPermissionError
+} from "../runtime/codexSharedDaemon.js";
+import { codexAgentsInUse } from "../runtime/localStartup.js";
 import type { ReviewConfig } from "../review/reviewConfig.js";
 import type { GlobalRole } from "../role/role.js";
 import type { StorageVersion } from "../storage/storageVersions.js";
@@ -146,11 +156,11 @@ export function summarizeStorageHealth(
 }
 
 /** Build the full machine-readable doctor report (checks + storage health). */
-export function buildDoctorReport(
+export async function buildDoctorReport(
   env: NodeJS.ProcessEnv,
   executor: CommandExecutor
-): DoctorReport {
-  const inspection = inspectDoctor(env, executor);
+): Promise<DoctorReport> {
+  const inspection = await inspectDoctor(env, executor);
   const home = resolveYuiHome(env);
   return {
     checks: inspection.checks,
@@ -214,6 +224,7 @@ function inspectStorageDetails(
 type StorageInspection = Readonly<{
   check: DoctorCheck;
   agents: readonly ConfiguredAgent[];
+  activeCodexAgentIds: ReadonlySet<string>;
   review: ReviewSource;
 }>;
 
@@ -239,21 +250,21 @@ type CompatibilityInspection = Readonly<{
 }>;
 
 /** Runs the read-only current-storage diagnostics used by `yui doctor`. */
-export function runDoctorCommand(
+export async function runDoctorCommand(
   args: readonly string[],
   env: NodeJS.ProcessEnv,
   executor: CommandExecutor
-): string {
+): Promise<string> {
   if (args.length !== 0) throw usageError("Doctor usage: yui doctor");
-  const inspection = inspectDoctor(env, executor);
+  const inspection = await inspectDoctor(env, executor);
   return renderDoctor(inspection.checks, inspection.review);
 }
 
-export function getDoctorChecks(
+export async function getDoctorChecks(
   env: NodeJS.ProcessEnv,
   executor: CommandExecutor
-): DoctorCheck[] {
-  return inspectDoctor(env, executor).checks;
+): Promise<DoctorCheck[]> {
+  return (await inspectDoctor(env, executor)).checks;
 }
 
 type DoctorInspection = Readonly<{
@@ -261,10 +272,10 @@ type DoctorInspection = Readonly<{
   review: DoctorReviewReport;
 }>;
 
-function inspectDoctor(
+async function inspectDoctor(
   env: NodeJS.ProcessEnv,
   executor: CommandExecutor
-): DoctorInspection {
+): Promise<DoctorInspection> {
   const home = resolveYuiHome(env);
   const homeCheck = checkHome(home);
   const schema = readSchema(home);
@@ -276,13 +287,16 @@ function inspectDoctor(
     schema,
     compatibility
   );
+  const controller = await checkController(home);
   const domain = checkEphemeralDomain(home);
   const durableConfig = readDurableConfigSafely(home);
   const toolChecks = [
     checkExecutable("git", durableConfig.gitBin, ["--version"], executor),
     checkExecutable("tmux", durableConfig.tmuxBin, ["-V"], executor)
   ];
-  const agentChecks = storage.agents.flatMap((agent) => checkAgent(agent, executor, env));
+  const agentChecks = storage.agents.flatMap((agent) => checkAgent(
+    agent, executor, env, home, storage.activeCodexAgentIds.has(agent.id)
+  ));
   const review = inspectReview({ ...storage.review, home }, agentChecks, env);
   return {
     checks: [
@@ -290,6 +304,7 @@ function inspectDoctor(
       schemaCheck,
       compatibility.check,
       storage.check,
+      controller,
       ...(domain === undefined ? [] : [domain]),
       ...toolChecks,
       ...agentChecks,
@@ -297,6 +312,42 @@ function inspectDoctor(
     ],
     review: review.report
   };
+}
+
+/** Query the authenticated Controller endpoint without starting it. */
+export async function checkController(
+  home: string,
+  probe: typeof callController = callController
+): Promise<DoctorCheck> {
+  try {
+    const result = await probe(home, "controller.status", {}, { timeoutMs: 1_000 });
+    if (result !== null && typeof result === "object" && !Array.isArray(result)) {
+      const status = result as Record<string, unknown>;
+      if (status.running === true && Number.isSafeInteger(status.pid) && Number(status.pid) > 0) {
+        return { name: "controller", status: "ok", detail: `Controller is running pid=${status.pid}.` };
+      }
+    }
+    return {
+      name: "controller", status: "invalid",
+      detail: "Controller returned an invalid status; inspect yui controller status --verbose."
+    };
+  } catch (error) {
+    if (error instanceof ControllerClientError && error.code === "CONTROLLER_NOT_RUNNING") {
+      return { name: "controller", status: "missing", detail: `${error.message} Run yui start.` };
+    }
+    if (error instanceof ControllerClientError && error.code === "CONTROLLER_UNAVAILABLE") {
+      return {
+        name: "controller",
+        status: "invalid",
+        detail: `Controller is not reachable: ${error.message} Run yui start. Its process state is unverified.`
+      };
+    }
+    return {
+      name: "controller",
+      status: "invalid",
+      detail: `Controller status could not be verified: ${error instanceof Error ? error.message : String(error)}. Inspect yui controller status --verbose.`
+    };
+  }
 }
 
 function checkEphemeralDomain(home: string): DoctorCheck | undefined {
@@ -520,6 +571,7 @@ function inspectState(
         detail: `yui.db readable agents=${agents.length} tasks=${tasks.length} roles=${roleCount} globalRoles=${globalRoles.length} defaultAgent=${config.defaultAgent ?? "none"}`
       },
       agents,
+      activeCodexAgentIds: new Set(codexAgentsInUse(store).map((agent) => agent.id)),
       review: {
         storageReady: true,
         storageDetail: "yui.db is readable",
@@ -555,6 +607,7 @@ function blockedStorage(status: Exclude<DoctorStatus, "ok">, detail: string): St
   return {
     check: { name: "storage state", status, detail },
     agents: [],
+    activeCodexAgentIds: new Set(),
     review: {
       storageReady: false,
       storageDetail: detail
@@ -928,12 +981,17 @@ function checkExecutable(
 function checkAgent(
   agent: ConfiguredAgent,
   executor: CommandExecutor,
-  environment: NodeJS.ProcessEnv
+  environment: NodeJS.ProcessEnv,
+  home: string,
+  activeCodex: boolean
 ): DoctorCheck[] {
   let snapshot: CapabilitySnapshot;
+  let baseArgs: readonly string[];
+  let launchEnvironment: Record<string, string>;
   try {
     const definition = configuredAgentToDefinition(agent);
-    const launchEnvironment = resolveDoctorAgentEnvironment(definition, environment);
+    baseArgs = definition.baseArgs;
+    launchEnvironment = resolveDoctorAgentEnvironment(definition, environment);
     snapshot = inspectAgentCapabilities(definition, {
       run: (command, args) => runAgentProbe(executor, command, args, launchEnvironment)
     });
@@ -960,6 +1018,9 @@ function checkAgent(
   const available = snapshot.fields.filter((field) => field.status === "available").length;
   const degraded = snapshot.fields.filter((field) => field.status === "degraded").length;
   const unavailable = snapshot.fields.filter((field) => field.status === "unavailable").length;
+  const daemon = activeCodex && status === "ok"
+    ? checkCodexSharedDaemon(agent.command, baseArgs, launchEnvironment, executor, agent.id)
+    : undefined;
   return [
     { name: `agent:${agent.id}:command`, status, detail: commandDetail },
     {
@@ -972,8 +1033,183 @@ function checkAgent(
         "installation/help inspection only; no model or account capability query",
         ...snapshot.warnings.map((warning) => `warning=${warning}`)
       ].join(" ")
-    }
+    },
+    ...(daemon === undefined ? [] : [daemon]),
+    ...(daemon !== undefined && process.platform === "darwin"
+      ? checkMacCodexApp(agent.id, launchEnvironment, home, daemon, executor)
+      : [])
   ];
+}
+
+export function checkMacCodexApp(
+  agentId: string,
+  environment: NodeJS.ProcessEnv,
+  home: string,
+  daemon: DoctorCheck,
+  executor: CommandExecutor,
+  appExecutable = findMacCodexAppExecutable(environment)
+): DoctorCheck[] {
+  if (appExecutable === undefined) return [{
+    name: `agent:${agentId}:mac-app`, status: "ok",
+    detail: "Codex App was not detected; App sharing is not configured on this Mac."
+  }];
+  const expectedUrl = codexAppWebSocketUrl(environment, home);
+  let appPids: string[];
+  try {
+    appPids = codexAppProcessIds(executor.run("/bin/ps", ["-axo", "pid=,args="], {
+      timeoutMs: 5_000
+    }), appExecutable);
+  } catch (error) {
+    return [{
+      name: `agent:${agentId}:mac-app`, status: "invalid",
+      detail: `Cannot inspect Codex App processes: ${commandFailure(error)}`
+    }];
+  }
+  const processCheck: DoctorCheck = {
+    name: `agent:${agentId}:mac-app`,
+    status: appPids.length > 0 ? "ok" : "missing",
+    detail: appPids.length > 0
+      ? `Codex App is running pid=${appPids.join(",")}.`
+      : "Codex App is installed but not running."
+  };
+  let launchCheck: DoctorCheck;
+  try {
+    const launchUrl = executor.run("/bin/launchctl", ["getenv", "CODEX_APP_SERVER_WS_URL"], {
+      timeoutMs: 5_000
+    }).trim();
+    launchCheck = launchUrl === expectedUrl
+      ? {
+          name: `agent:${agentId}:mac-app-launch`, status: "ok",
+          detail: "Future Codex App launches are configured for this shared app-server."
+        }
+      : {
+          name: `agent:${agentId}:mac-app-launch`, status: "missing",
+          detail: "This login is not prepared for App sharing. Run yui start before opening or restarting App."
+        };
+  } catch (error) {
+    launchCheck = {
+      name: `agent:${agentId}:mac-app-launch`, status: "invalid",
+      detail: `Cannot inspect the App launch environment: ${commandFailure(error)}`
+    };
+  }
+  const connectionName = `agent:${agentId}:mac-app-connection`;
+  if (appPids.length === 0) {
+    return [processCheck, launchCheck, {
+      name: connectionName, status: "missing", detail: "No detected App process; connection is not verified."
+    }];
+  }
+  if (daemon.status !== "ok") {
+    return [processCheck, launchCheck, {
+      name: connectionName, status: daemon.status,
+      detail: "Shared daemon is unavailable or unverified; App connection to it cannot be confirmed."
+    }];
+  }
+  let configuredCount = 0;
+  for (const pid of appPids) {
+    try {
+      const command = executor.run("/bin/ps", ["eww", "-p", pid, "-o", "command="], {
+        timeoutMs: 5_000
+      });
+      if (!codexAppNeedsRestart(command, expectedUrl, false)) configuredCount += 1;
+    } catch (error) {
+      return [processCheck, launchCheck, {
+        name: connectionName, status: "invalid",
+        detail: `Cannot inspect running Codex App: ${commandFailure(error)}`
+      }];
+    }
+  }
+  try {
+    const socketTarget = realpathSync(codexSharedSocketPath(environment, home));
+    const sockets = parseMacUnixSockets(executor.run("/usr/sbin/lsof", ["-nP", "-U", "-F", "pfdn"], {
+      timeoutMs: 5_000
+    }));
+    const daemonSockets = sockets.filter((socket) => socket.name === socketTarget);
+    if (daemonSockets.length === 0) {
+      return [processCheck, launchCheck, {
+        name: connectionName, status: "invalid",
+        detail: "Daemon reports running, but its Unix socket endpoint was not observable."
+      }];
+    }
+    const peer = sockets.find((socket) => appPids.includes(socket.pid)
+      && daemonSockets.some((daemonSocket) => socket.name === `->${daemonSocket.device}`));
+    return [processCheck, launchCheck, peer === undefined
+      ? {
+          name: connectionName, status: "missing",
+          detail: configuredCount > 0
+            ? "App has the shared URL, but no live socket peer to this daemon was observed."
+            : "No live App socket peer to this daemon was observed; reopen App after Yui prepares sharing."
+        }
+      : {
+          name: connectionName, status: "ok",
+          detail: `App pid=${peer.pid} has a live Unix socket peer on shared daemon pid=${daemonSockets[0].pid}.`
+        }];
+  } catch (error) {
+    return [processCheck, launchCheck, {
+      name: connectionName, status: "invalid",
+      detail: `Cannot verify the live App-to-daemon socket: ${commandFailure(error)}`
+    }];
+  }
+}
+
+type MacUnixSocket = Readonly<{ pid: string; device: string; name: string }>;
+
+function parseMacUnixSockets(output: string): MacUnixSocket[] {
+  const sockets: MacUnixSocket[] = [];
+  let pid = "";
+  let device = "";
+  let name = "";
+  const finish = () => {
+    if (pid !== "" && /^0x[0-9a-f]+$/iu.test(device) && name !== "") {
+      sockets.push({ pid, device, name });
+    }
+    device = "";
+    name = "";
+  };
+  for (const line of output.split("\n")) {
+    if (line.startsWith("p")) { finish(); pid = line.slice(1); }
+    else if (line.startsWith("f")) finish();
+    else if (line.startsWith("d")) device = line.slice(1);
+    else if (line.startsWith("n")) name = line.slice(1);
+  }
+  finish();
+  return sockets;
+}
+
+export function checkCodexSharedDaemon(
+  command: string,
+  baseArgs: readonly string[],
+  environment: Readonly<Record<string, string>>,
+  executor: CommandExecutor,
+  agentId: string
+): DoctorCheck {
+  const name = `agent:${agentId}:daemon`;
+  const probe = runAgentProbe(executor, command,
+    [...baseArgs, "app-server", "daemon", "version"], environment);
+  if (probe.status !== 0) {
+    const detail = probe.stderr.trim() || probe.error?.message || "The Codex daemon could not be inspected.";
+    if (isCodexInspectionPermissionError(detail)) return {
+      name,
+      status: "invalid",
+      detail: `Shared Codex app-server state is unverified: this process was denied access during the daemon probe (${detail}). Run Doctor from a local terminal with access to the Codex socket.`
+    };
+    return {
+      name,
+      status: /No such file or directory|Connection refused/iu.test(detail) ? "missing" : "invalid",
+      detail: `Shared Codex app-server probe failed: ${detail}`
+    };
+  }
+  try {
+    const version: unknown = JSON.parse(probe.stdout);
+    if (version === null || typeof version !== "object" || Array.isArray(version)) throw new Error();
+    const state = version as Record<string, unknown>;
+    if (state.status !== "running") throw new Error();
+    return {
+      name, status: "ok",
+      detail: `Shared Codex app-server running version=${String(state.appServerVersion ?? "unknown")}`
+    };
+  } catch {
+    return { name, status: "invalid", detail: "Codex daemon version did not confirm a running app-server." };
+  }
 }
 
 function runAgentProbe(

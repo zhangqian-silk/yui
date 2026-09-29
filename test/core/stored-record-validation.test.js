@@ -43,7 +43,7 @@ test("current record validation rejects invalid writes, reads and current-Home h
   assert.equal(check.outcome, "blocked");
   assert.equal(check.stage, "corruption");
   assert.equal(check.sceneUnchanged, true);
-  const doctor = getDoctorChecks({ HOME: home, YUI_HOME: home, CODEX_HOME: home }, { run: () => "fixture" });
+  const doctor = await getDoctorChecks({ HOME: home, YUI_HOME: home, CODEX_HOME: home }, { run: () => "fixture" });
   assert.equal(doctor.find(check => check.name === "storage state").status, "invalid");
 });
 

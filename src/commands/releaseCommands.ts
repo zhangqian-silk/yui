@@ -16,9 +16,10 @@ import {
 import { join, resolve } from "node:path";
 
 import { callController, ControllerClientError } from "../core/controllerClient.js";
-import { readLinuxProcessStartIdentity } from "../controller/domainIdentity.js";
+import { processGenerationIsLive } from "../core/fileLockOwner.js";
 import {
   activateRelease,
+  ControllerStartUnconfirmedError,
   type ReleaseActivatePorts,
   type ReleaseActivateResult
 } from "../release/releaseHandover.js";
@@ -392,33 +393,39 @@ export function createReleaseActivatePorts(
     }),
     startControllerFromRelease: overrides.startControllerFromRelease
       ?? (async (home, releaseDir) => {
-        spawnDetachedController(home, releaseDir, {});
+        const pid = spawnDetachedController(home, releaseDir, {});
         const deadline = Date.now() + 30_000;
-        const expectedBuildId = readReleaseManifest(releaseDir).buildId;
-        for (;;) {
-          try {
-            const status = await callController(home, "controller.status", {});
-            if (typeof status === "object" && status !== null && (status as { running?: unknown }).running === true) {
-              // Verify the running Controller is the target release, not a
-              // stale/previous Controller that happened to answer.
-              const identity = await callController(home, "controller.identity", {}) as {
-                buildId?: unknown;
-              };
-              if (identity.buildId !== expectedBuildId) {
-                throw new Error(
-                  `Controller is running build ${String(identity.buildId)}, `
-                  + `not the target release build ${expectedBuildId}.`
-                );
+        try {
+          const expectedBuildId = readReleaseManifest(releaseDir).buildId;
+          for (;;) {
+            try {
+              const status = await callController(home, "controller.status", {});
+              if (typeof status === "object" && status !== null
+                && (status as { running?: unknown }).running === true) {
+                // Verify the running Controller is the target release, not a
+                // stale/previous Controller that happened to answer.
+                const identity = await callController(home, "controller.identity", {}) as {
+                  buildId?: unknown;
+                };
+                if (identity.buildId !== expectedBuildId) {
+                  throw new Error(
+                    `Controller is running build ${String(identity.buildId)}, `
+                    + `not the target release build ${expectedBuildId}.`
+                  );
+                }
+                return;
               }
-              return;
+            } catch (error) {
+              if (!isUnavailableError(error)) throw error;
             }
-          } catch (error) {
-            if (!isUnavailableError(error)) throw error;
+            if (Date.now() >= deadline) {
+              throw new Error("Controller did not become ready within 30000 ms.");
+            }
+            await sleep(100);
           }
-          if (Date.now() >= deadline) {
-            throw new Error("Controller did not become ready within 30000 ms.");
-          }
-          await sleep(100);
+        } catch (error) {
+          throw new ControllerStartUnconfirmedError(pid,
+            `Startup process may still be running: ${messageOf(error)}`);
         }
       }),
     runPreflight: overrides.runPreflight ?? ((releaseDir, home) => {
@@ -449,7 +456,7 @@ export function createReleaseActivatePorts(
       }
     }),
     killOwnedProcess: overrides.killOwnedProcess ?? ((owner: HandoverOwner) => {
-      if (readLinuxProcessStartIdentity(owner.pid) !== owner.processStartIdentity) return;
+      if (!processGenerationIsLive(owner.pid, owner.processStartIdentity)) return;
       process.kill(owner.pid, "SIGTERM");
     }),
     sleep,
@@ -478,7 +485,7 @@ function spawnDetachedController(
   home: string,
   releaseDir: string,
   extraEnv: Readonly<Record<string, string>>
-): void {
+): number {
   // Fail closed before launching: a release that drifted from its manifest
   // (corrupted or partially-deleted files) must never spawn a Controller.
   // `runReleaseActivate` verifies at resolve time; this closes the window
@@ -498,6 +505,8 @@ function spawnDetachedController(
     { env: environment, detached: true, stdio: "ignore" }
   );
   child.unref();
+  if (child.pid === undefined) throw new Error("Controller spawn did not return a PID.");
+  return child.pid;
 }
 
 function runInstallSmoke(releaseDir: string, expectedVersion: string): string | null {

@@ -2,7 +2,7 @@
 
 Read this before changing persistent records, schema or the update handshake.
 
-Yui Home has one authoritative **major.minor** storage version, currently 1.0.
+Yui Home has one authoritative **major.minor** storage version, currently 1.1.
 It is independent of software releases, record schema tags and business
 revisions. `storage_schema` identifies the format and schema checksum. New
 Homes initialize the complete current schema directly.

@@ -11,6 +11,7 @@ import {
   type EffectiveLaunchSnapshot
 } from "./effectiveLaunch.js";
 import {
+  assertProviderConversationReplaceable,
   validateProviderRuntimeBinding,
   currentProviderConversation,
   type ProviderRuntimeBinding
@@ -384,6 +385,9 @@ export function retireTaskRoleSessionsForWorkspace(
     throw new Error(
       `Task Role session must be stopped before workspace migration: ${live.agentId}.`
     );
+  }
+  if (set.providerBinding !== null) {
+    assertProviderConversationReplaceable(set.providerBinding);
   }
   const timestamp = now.toISOString();
   return validateRoleSessionSet({

@@ -85,7 +85,6 @@ import {
 } from "../storage/storeRpc.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import { SurfaceContributions } from "../surface/surfaceContributions.js";
-import { taskOwnsManagedWorkspace } from "../task/task.js";
 import { openSchedulerTelemetry } from "../telemetry/telemetryWiring.js";
 import { NodeCommandExecutor } from "../tmux/commandExecutor.js";
 import { TmuxManager, yuiTmuxServerName } from "../tmux/tmuxManager.js";
@@ -1025,13 +1024,10 @@ export function createRuntimeLifecycleDispatcher(
     const planningDraft = request.scope === "task"
       && activeRun?.purpose === "planning"
       && task?.status === "draft";
-    // A Task activated with an empty environment plan owns no managed
-    // workspace, so there is nothing to prove ready. Every Task that does own
-    // one keeps the full ownership fence.
+    // Draft planning precedes workspace adoption; active Tasks need ownership.
     if (request.scope === "task"
       && task !== null
-      && !planningDraft
-      && taskOwnsManagedWorkspace(task)) {
+      && !planningDraft) {
       const taskWorkspace = store.getTaskWorkspace(task.id);
       if (!isTaskOwnedWorkspace(
         taskWorkspace,
@@ -1073,16 +1069,11 @@ export function createRuntimeLifecycleDispatcher(
       ? activeRun?.workspace
         ?? currentDesiredManagedWorkspace(store, request.taskId, request.roleName)
       : undefined;
-    // Distinguish "this Task owns no workspace by design" from "the
-    // authoritative workspace is missing". Only the former may launch without
-    // one. Two cases qualify: an empty plan binding no Project, and a Draft
-    // planning conversation, which may bind a Project but has not activated, so
-    // no worktree exists or is owed. Without the planning term a Project-bound
-    // Draft fails closed on a workspace activation was never asked to create.
+    // Only Draft planning may launch without an adopted delivery workspace.
     const workspaceFree = request.scope === "task"
       && managedWorkspace === undefined
       && task !== null
-      && (planningDraft || !taskOwnsManagedWorkspace(task));
+      && planningDraft;
     const sessions = request.scope === "task"
       ? store.getTaskRoleSessionSet(request.taskId, request.roleName)
       : store.getGlobalRoleSessionSet(request.roleName);

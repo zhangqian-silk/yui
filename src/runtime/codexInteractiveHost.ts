@@ -70,7 +70,7 @@ export async function runCodexInteractiveHost(
     connection = await openCodexInteractiveConnection({
       command: payload.command, args: [...baseArgs, "app-server", "proxy"],
       environment, cwd: payload.cwd
-    });
+    }, true);
     connection.onClose(fail);
     const token = randomBytes(32).toString("hex");
     relay = new WebSocketServer({

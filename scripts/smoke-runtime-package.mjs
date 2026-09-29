@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   readFileSync,
   rmSync,
   statSync,
@@ -25,7 +26,18 @@ const sandbox = mkdtempSync(join(tmpdir(), "yui-runtime-package-smoke-"));
 const isolatedHome = join(sandbox, "home");
 const yuiHome = join(isolatedHome, ".yui");
 const fakeBin = join(sandbox, "bin");
-const tmuxServer = `yui-${createHash("sha256").update(resolve(yuiHome)).digest("hex").slice(0, 24)}`;
+// Yui canonicalizes YUI_HOME to its physical path before deriving the tmux
+// server name; /var is a system symlink to /private/var on macOS, so hash the
+// physical path here to stay on the same server.
+const canonicalYuiHome = (() => {
+  try {
+    mkdirSync(yuiHome, { recursive: true, mode: 0o700 });
+    return realpathSync(yuiHome);
+  } catch {
+    return resolve(yuiHome);
+  }
+})();
+const tmuxServer = `yui-${createHash("sha256").update(canonicalYuiHome).digest("hex").slice(0, 24)}`;
 let cli;
 let environment;
 const skills = [
@@ -45,7 +57,21 @@ try {
     { mode: 0o755 });
   symlinkSync(process.execPath, join(fakeBin, "node"));
 
+  // Linux places tmux in /usr/bin; macOS Homebrew uses /opt/homebrew/bin
+  // (Apple Silicon) or /usr/local/bin (Intel). Resolve the host's tmux and
+  // add its directory to the otherwise deterministic PATH.
+  const hostTmuxBin = (() => {
+    const resolved = spawnSync("/bin/sh", ["-c", "command -v tmux"], {
+      env: { ...process.env },
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    });
+    return resolved.status === 0 ? dirname(resolved.stdout.trim()) : undefined;
+  })();
+
   const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+  assert.deepEqual(packageJson.os, [process.platform]);
+  assert.deepEqual(packageJson.cpu, [process.arch]);
   // Follow the actual instructions' local Markdown links, including cross-Role
   // references, in the installed tree. Source-only references cannot satisfy
   // this check; prose/heading changes do not invalidate the contract.
@@ -99,7 +125,14 @@ try {
     HOME: isolatedHome,
     CODEX_HOME: join(isolatedHome, ".codex"),
     YUI_HOME: yuiHome,
-    PATH: [fakeBin, "/usr/bin", "/bin"].join(delimiter),
+    PATH: [
+      fakeBin,
+      "/usr/bin",
+      "/bin",
+      ...(hostTmuxBin !== undefined && hostTmuxBin !== "/usr/bin" && hostTmuxBin !== "/bin"
+        ? [hostTmuxBin]
+        : [])
+    ].join(delimiter),
     TMPDIR: join(sandbox, "tmp"),
     NO_COLOR: "1"
   };
@@ -313,7 +346,24 @@ try {
       if (!/no server running|No such file or directory/.test(String(error.stderr))) throw error;
     }
   }
-  rmSync(sandbox, { recursive: true, force: true });
+  // tmux kill-server tears its panes down asynchronously; a Host inside a
+  // dying pane can still flush one inbox file. Retry the removal briefly so
+  // teardown does not race that shutdown (observed on macOS).
+  const removeDeadline = Date.now() + 3000;
+  for (;;) {
+    try {
+      rmSync(sandbox, { recursive: true, force: true });
+      break;
+    } catch (error) {
+      if (
+        Date.now() >= removeDeadline
+        || (error.code !== "ENOTEMPTY" && error.code !== "EBUSY" && error.code !== "EPERM")
+      ) {
+        throw error;
+      }
+      await delay(100);
+    }
+  }
 }
 process.stdout.write("Runtime package smoke passed.\n");
 
@@ -333,6 +383,10 @@ function tmux(...args) {
 }
 
 function processExited(pid) {
+  if (process.platform !== "linux") {
+    try { process.kill(pid, 0); return false; }
+    catch (error) { return error.code === "EPERM" ? false : true; }
+  }
   try { return /^State:\s+Z/m.test(readFileSync(`/proc/${pid}/status`, "utf8")); }
   catch (error) { if (error.code === "ENOENT") return true; throw error; }
 }

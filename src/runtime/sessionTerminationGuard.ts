@@ -30,6 +30,8 @@ export type SessionTerminationOptions = Readonly<{
   gracefulGraceMs?: number;
   forcedGraceMs?: number;
   pollMs?: number;
+  /** A pane exit alone cannot confirm custody when this platform lacks a Host record. */
+  requireProcessRecord?: boolean;
 }>;
 export const DEFAULT_GRACEFUL_GRACE_MS = 3_000;
 export const DEFAULT_FORCED_GRACE_MS = 2_000;
@@ -66,11 +68,16 @@ export async function terminateSessionOwners(
   if (records.length === 0) {
     // Without a recorded root only the exact Role pane can be stopped.
     const stopped = await ports.gracefulStop(owner);
-    const outcome = stopped ? "stop-confirmed" : "stop-blocked";
+    const outcome = stopped && options.requireProcessRecord !== true
+      ? "stop-confirmed" : "stop-blocked";
     emit(outcome);
     return {
       outcome, owner, confirmed: [], remaining: [],
-      ...(stopped ? {} : { verificationGap: "Role pane stop is unconfirmed." })
+      ...(outcome === "stop-confirmed" ? {} : {
+        verificationGap: stopped
+          ? "No recorded Host process identity; pane exit cannot prove physical exit."
+          : "Role pane stop is unconfirmed."
+      })
     };
   }
   const pollMs = duration(options.pollMs, DEFAULT_TERMINATION_POLL_MS);
@@ -92,7 +99,9 @@ export async function terminateSessionOwners(
     }
     emit(signal === "SIGTERM" ? "graceful-stop" : "forced-stop");
     const deadline = Date.now() + grace;
-    while (records.some((record) => state(record) === "live") && Date.now() < deadline) {
+    // A process can be briefly unreadable while exiting. Wait for absence,
+    // not merely for the first unverified observation.
+    while (records.some((record) => state(record) !== "absent") && Date.now() < deadline) {
       await ports.sleep(Math.min(pollMs, Math.max(1, deadline - Date.now())));
     }
     if (records.every((record) => state(record) === "absent")) break;

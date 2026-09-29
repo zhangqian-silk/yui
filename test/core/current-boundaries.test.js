@@ -122,20 +122,24 @@ test("unverifiable lock owners never authorize reclaim or a protected operation"
     pid: process.pid, processStartIdentity: exactOwner.split(":")[1]
   }));
   const read = fs.readFileSync;
-  fs.readFileSync = (path, ...args) => {
-    if (String(path) === `/proc/${process.pid}/stat`) {
-      throw Object.assign(new Error("fixture: process identity unreadable"), { code: "EACCES" });
-    }
-    return read(path, ...args);
-  };
-  syncBuiltinESMExports();
-  try {
-    assert.equal(isProjectMaintenanceFenced(home, "project-1"), true);
-    assert.equal(isForeignHandoverLockHeld(home, process.pid), true,
-      "Unavailable OS evidence cannot admit even an apparent handover parent.");
-  } finally {
-    fs.readFileSync = read;
+  // The unreadable-/proc fail-closed contract is Linux-specific: other
+  // platforms have no /proc and track owner liveness by signal 0 instead.
+  if (process.platform === "linux") {
+    fs.readFileSync = (path, ...args) => {
+      if (String(path) === `/proc/${process.pid}/stat`) {
+        throw Object.assign(new Error("fixture: process identity unreadable"), { code: "EACCES" });
+      }
+      return read(path, ...args);
+    };
     syncBuiltinESMExports();
+    try {
+      assert.equal(isProjectMaintenanceFenced(home, "project-1"), true);
+      assert.equal(isForeignHandoverLockHeld(home, process.pid), true,
+        "Unavailable OS evidence cannot admit even an apparent handover parent.");
+    } finally {
+      fs.readFileSync = read;
+      syncBuiltinESMExports();
+    }
   }
 });
 

@@ -35,9 +35,10 @@ isolation and acceptance checks remain enforced independently.
 
 Stable Project checkouts are read-only references. Task main is a logical
 multi-Project root with independent per-Project Git clones; WorkItem, Review and
-Integration worktrees belong to those Task repositories. For one Project, the Agent's
-normal cwd is its managed Git root; for multiple Projects, the root and native
-additional-directory mechanism expose the explicit Project set.
+Integration worktrees belong to those Task repositories. By default, a Task's native cwd is
+its managed root with zero, one, or multiple Projects. The native
+additional-directory mechanism exposes each bound Project. Binding another
+Project while the Task is active does not move the Task cwd.
 
 An isolated WorkItem has independent worktrees for writable Projects and
 Task-main context for the others. Write scope is explicit and can only be
@@ -367,7 +368,7 @@ This adds neither a retry worker nor another persistent ownership protocol.
 Current Resource records are read strictly: required safety fields, enum values,
 and every active reference must be valid. A malformed record or mismatched
 SQLite/payload identity is reported without supplying defaults, dropping refs,
-or rewriting stored evidence. This enforces the current storage 1.0 record contract.
+or rewriting stored evidence. This enforces the current storage 1.1 record contract.
 
 Failed preparation compensates only its unadopted resources. Standalone Task
 clones use exact clone identity/cleanliness checks before direct deletion;

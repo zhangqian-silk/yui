@@ -44,7 +44,7 @@ import {
 import { recordOperationEvidence } from "../kernel/operationFacts.js";
 import { wakeReason } from "../scheduler/wakeReason.js";
 import { writeTextFileAtomically } from "../storage/durableFile.js";
-import { readLinuxProcessStartIdentity } from "./domainIdentity.js";
+import { readProcessStartIdentity } from "../core/fileLockOwner.js";
 
 const DEFAULT_STEP_TIMEOUT_MS = 30 * 60_000;
 const HEARTBEAT_STALE_MS = 2 * 60_000;
@@ -646,7 +646,7 @@ export function createLinuxProcessPort(): JobSupervisorProcessPort {
         { detached: true, stdio: "ignore" }
       );
       child.unref();
-      const startIdentity = readLinuxProcessStartIdentity(child.pid!);
+      const startIdentity = readProcessStartIdentity(child.pid!);
       return {
         pid: child.pid!,
         startIdentity,
@@ -661,7 +661,7 @@ export function createLinuxProcessPort(): JobSupervisorProcessPort {
       };
     },
     processStartIdentity(pid: number) {
-      return readLinuxProcessStartIdentity(pid);
+      return readProcessStartIdentity(pid);
     },
     isProcessAlive(pid: number) {
       try {
@@ -672,7 +672,7 @@ export function createLinuxProcessPort(): JobSupervisorProcessPort {
       }
     },
     signalIfOwned(pid: number, startIdentity: string, signal: NodeJS.Signals) {
-      if (readLinuxProcessStartIdentity(pid) !== startIdentity) return;
+      if (readProcessStartIdentity(pid) !== startIdentity) return;
       try {
         process.kill(pid, signal);
       } catch (error) {
