@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
+import { nativeExecutable } from "../../dist/runtime/nativeExecutable.js";
 
 import {
   claimPending,
@@ -3869,7 +3870,7 @@ test("fresh SQLite telemetry persists and aggregates by Turn", async (t) => {
 });
 
 test("the built-in Agent Drivers are available through the shared registry", () => {
-  assert.equal(execFileSync(join(root, "dist", "runtime", "claude-process-owner"),
+  assert.equal(execFileSync(nativeExecutable("claude-process-owner"),
     [process.execPath, "-e", "process.stdout.write('owner-ready')"], { encoding: "utf8" }), "owner-ready");
   const drivers = builtinAgentDriverRegistry();
   assert.equal(drivers.requireByAdapterId("codex").id, "openai/codex");
