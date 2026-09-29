@@ -47,14 +47,18 @@ export function taskBriefCommand(
       return output(`Task ${task.id} has no brief.\n`, { taskId: task.id, brief: null });
     }
     const timeZone = store.getConfig().timeZone;
+    const working = task.status === "draft" || task.status === "active";
     return output([
       `Task: ${task.id}`,
+      `Task status: ${task.status}`,
+      ...(task.completionSummary === undefined ? [] : [`Recorded completion: ${task.completionSummary}`]),
+      ...(task.retirementSummary === undefined ? [] : [`Recorded retirement: ${task.retirementSummary}`]),
       `Objective: ${brief.objective}`,
       `Boundaries:`,
       ...(brief.boundaries.length === 0 ? ["  (none)"] : brief.boundaries.map((b) => `  - ${b}`)),
       `Technical approach: ${brief.technicalApproach || "(not defined)"}`,
-      `Current focus: ${brief.currentFocus}`,
-      `Leader summary: ${brief.leaderSummary}`,
+      `${working ? "Current focus" : "Last working focus"}: ${brief.currentFocus}`,
+      `${working ? "Leader summary" : "Last working summary"}: ${brief.leaderSummary}`,
       `Updated by: ${brief.updatedBy}`,
       `Updated at: ${presentTime(brief.updatedAt, timeZone)}`
     ].join("\n").concat("\n"), { taskId: task.id, brief });

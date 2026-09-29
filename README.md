@@ -5,7 +5,7 @@
 [![Core CI](https://github.com/zhangqian-silk/yui/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/zhangqian-silk/yui/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Node](https://img.shields.io/badge/node-20%20%7C%2022%20%7C%2024-brightgreen.svg)
-![Platform](https://img.shields.io/badge/platform-Linux%20x64%20%28glibc%29-blue.svg)
+![Platform](https://img.shields.io/badge/platform-Linux%20x64%20%28glibc%29%20%7C%20macOS%20x64%2Farm64-blue.svg)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
 
 Give your Agents work to carry forward, not just another chat to answer.
@@ -34,7 +34,7 @@ not from terminal windows you juggle or details you have to remember.
 - **Isolated by default** — repository work happens in managed Git worktrees;
   the stable checkout stays read-only.
 
-> **Status:** 1.0.0, with a clean storage 1.0 baseline. Default updates
+> **Status:** 1.0.1, with storage 1.1 and a declared upgrade from the 1.0 baseline. Default updates
 > support only declared minor upgrades within one storage major. Homes with
 > any other storage identity are rejected without mutation.
 
@@ -42,10 +42,16 @@ not from terminal windows you juggle or details you have to remember.
 
 ## Quick start
 
-You need Linux x64 with glibc, Git, tmux, and Node.js `^20.17.0`, `^22.9.0` or
-`^24.0.0`. For the simplest setup, have Codex CLI or Claude Code CLI installed
-and ready to use with your own account. Yui coordinates those Agents; it does
-not supply model access.
+You need Linux x64 (glibc) or macOS (x64 or Apple Silicon), Git, tmux, and
+Node.js `^20.17.0`, `^22.9.0` or `^24.0.0`. On macOS install tmux with
+`brew install tmux`. For the simplest setup, have Codex CLI or Claude Code CLI
+installed and ready to use with your own account. Yui coordinates those
+Agents; it does not supply model access.
+
+The current npm release pipeline produces Linux x64 packages. macOS support
+in this change is for source builds: follow the checkout setup under
+[Contributing](#contributing) and use its absolute local launcher.
+Runtime archives are platform-specific; a Linux archive cannot run on macOS.
 
 For Claude, Yui passes through your authentication environment and native
 configuration directory; Claude selects the API key or login method using its
@@ -73,9 +79,17 @@ Or ask the coding Agent you already use:
 > Ask me about any account or setup choices you need.
 
 Setup establishes the Operator—the Agent you talk to—and a default Task Leader,
-then starts the local Controller. You can begin with those two roles and
+then starts the local Controller and any Codex shared daemon those active Roles need. You can begin with those two roles and
 configure Workers or Reviewers later. If your Agent cannot operate an interactive
 terminal, run setup yourself; it only handles the initial configuration.
+
+On later launches, run `yui start`. It starts the Controller if needed and prepares
+the Codex shared daemon only when an active Role uses Codex. On macOS, if Codex
+App is installed, it also configures future App launches to use that daemon.
+Open App after `yui start`; if App was already open, quit and reopen it when Yui
+asks. `yui doctor` checks the live App connection. `yui controller start` starts
+only the Controller. On Linux, the Codex daemon runs without App setup; with no
+active Codex Role, neither platform starts a Codex daemon.
 
 ### 3. Start a conversation
 
@@ -382,8 +396,9 @@ follow our [Code of Conduct](CODE_OF_CONDUCT.md). In short: in a source
 checkout, run `npm ci` and `npm test`. Read
 `.agents/skills/develop-yui/SKILL.md` and the
 [verification policy](docs/testing/verification-levels.md).
-Source builds also need a Linux C compiler and static libc development libraries
-for the Claude process owner. Published packages include that executable;
+Source builds also need a C compiler. Linux requires static libc development
+libraries for the Claude process owner; macOS builds the owner and a libproc
+process identity helper with the system SDK. Published packages include these executables;
 npm users do not need to compile it.
 
 To exercise your checkout, run `make install-local`, then use the absolute

@@ -5,7 +5,7 @@
 [![Core CI](https://github.com/zhangqian-silk/yui/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/zhangqian-silk/yui/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../LICENSE)
 ![Node](https://img.shields.io/badge/node-20%20%7C%2022%20%7C%2024-brightgreen.svg)
-![Platform](https://img.shields.io/badge/platform-Linux%20x64%20%28glibc%29-blue.svg)
+![Platform](https://img.shields.io/badge/platform-Linux%20x64%20%28glibc%29%20%7C%20macOS%20x64%2Farm64-blue.svg)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#参与开发)
 
 让 Agent 持续推进你的任务，而不只是回答一轮对话。
@@ -30,16 +30,22 @@ Yui 是面向编程 Agent 的本地控制面。你只需用自然语言把目标
   Web 仅本地回环，包含只读视图和经认证的用户控制。
 - **默认隔离** —— 仓库改动发生在受管 Git worktree 中，稳定 checkout 保持只读。
 
-> **状态：** 1.0.0，采用纯净的存储 1.0 基线。默认更新只执行同一存储
+> **状态：** 1.0.1，当前存储版本为 1.1，已声明从 1.0 基线升级。默认更新只执行同一存储
 > 主版本内已声明的小版本升级；其他存储身份会在不修改 Home 的前提下被拒绝。
 
 [快速开始](#快速开始) · [通过对话管理工作](#通过对话管理工作) · [架构](#架构) · [设计原则](#设计原则)
 
 ## 快速开始
 
-需要 Linux x64 / glibc、Git、tmux，以及 Node.js `^20.17.0`、`^22.9.0` 或
-`^24.0.0`。最简单的方式是先安装 Codex CLI 或 Claude Code CLI，并确保它
-已经可以使用你自己的账号正常工作。Yui 负责协调 Agent，不提供模型访问额度。
+当前 npm 发布流水线只生成 Linux x64 包。本次 macOS 支持面向源码构建：
+按下方贡献指南安装 checkout，并使用其绝对路径本地 launcher。
+运行包包含平台专属原生程序，Linux 包不能在 macOS 上运行。
+
+需要 Linux x64 / glibc 或 macOS（x64 或 Apple Silicon）、Git、tmux，以及
+Node.js `^20.17.0`、`^22.9.0` 或 `^24.0.0`。macOS 上可用
+`brew install tmux` 安装 tmux。最简单的方式是先安装 Codex CLI 或 Claude
+Code CLI，并确保它已经可以使用你自己的账号正常工作。Yui 负责协调 Agent，
+不提供模型访问额度。
 
 Yui 传递 Claude 的认证环境并保留原生配置目录，由 Claude 自身按本地配置
 选择 API key 或登录方式。更换 Session 不会重置登录或初始化记录。首次运行时，
@@ -64,9 +70,17 @@ yui setup
 > 我已经安装了 Yui。请在交互式终端中帮我执行 `yui setup`，选择可用的
 > Agent，并用 `yui doctor` 检查结果。遇到账号或需要我决定的配置时问我。
 
-Setup 会配置与你对话的 Operator 和默认任务 Leader，并启动本地 Controller。
+Setup 会配置与你对话的 Operator 和默认任务 Leader，并启动本地 Controller，
+以及这些活跃 Role 需要的 Codex 共享 daemon。
 先用这两个角色即可开始，Worker、Reviewer 可以之后再配置。如果 Agent
 没有操作交互式终端的能力，就自己运行 setup；它只负责初始配置。
+
+之后启动时运行 `yui start`。它会按需启动 Controller；只有活跃 Role 使用
+Codex 时才会启动 Codex 共享 daemon。在 macOS 上，如果安装了 Codex App，
+它还会配置 App 下次启动时连接该 daemon。先运行 `yui start` 再打开 App；
+如果 App 已经打开，按 Yui 的提示退出并重新打开。`yui doctor` 可以检查
+实时连接。`yui controller start` 只启动 Controller。Linux 不需要 App 配置；
+没有活跃 Codex Role 时不会启动 Codex daemon。
 
 ### 3. 开始对话
 

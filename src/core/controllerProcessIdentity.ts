@@ -1,4 +1,6 @@
 import { readFileSync, readdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import { readLinuxProcessStartIdentity } from "../controller/domainIdentity.js";
 import {
@@ -19,6 +21,16 @@ export function inspectLiveControllerProcess(
 ): LiveControllerProcess | undefined {
   if (!Number.isSafeInteger(pid) || pid < 1 || pid === process.pid) return undefined;
   const expectedFilesystemId = validateHomeFilesystemId(homeFilesystemId);
+  if (process.platform === "darwin") {
+    const candidate = inspectDarwinController(pid);
+    if (candidate === undefined) return undefined;
+    try {
+      if (readHomeFilesystemId(candidate.home) !== expectedFilesystemId) return undefined;
+    } catch { return undefined; }
+    if (expectedProcessStartIdentity !== undefined
+      && candidate.processStartIdentity !== expectedProcessStartIdentity) return undefined;
+    return Object.freeze({ pid, processStartIdentity: candidate.processStartIdentity });
+  }
   try {
     const uid = typeof process.getuid === "function" ? process.getuid() : 0;
     const status = readFileSync(`/proc/${pid}/status`, "utf8");
@@ -62,6 +74,18 @@ export function findLiveControllerProcessForHome(
   homeFilesystemId: string
 ): LiveControllerProcess | undefined {
   validateHomeFilesystemId(homeFilesystemId);
+  if (process.platform === "darwin") {
+    const output = runDarwinIdentityHelper(["--controllers"]);
+    if (output === undefined) return undefined;
+    for (const line of output.trim().split("\n")) {
+      const candidate = parseDarwinController(line);
+      if (candidate === undefined) continue;
+      const match = inspectLiveControllerProcess(candidate.pid, homeFilesystemId,
+        candidate.processStartIdentity);
+      if (match !== undefined) return match;
+    }
+    return undefined;
+  }
   if (process.platform !== "linux") return undefined;
   const entries = readdirSync("/proc", { encoding: "utf8" });
   for (const entry of entries) {
@@ -70,4 +94,30 @@ export function findLiveControllerProcessForHome(
     if (match !== undefined) return match;
   }
   return undefined;
+}
+
+type DarwinController = LiveControllerProcess & Readonly<{ home: string }>;
+
+function inspectDarwinController(pid: number): DarwinController | undefined {
+  const output = runDarwinIdentityHelper(["--controller", String(pid)]);
+  return output === undefined ? undefined : parseDarwinController(output.trim());
+}
+
+function parseDarwinController(line: string): DarwinController | undefined {
+  const match = /^([1-9][0-9]*)\t([1-9][0-9]{0,31})\t([^\t\n]+)$/u.exec(line);
+  if (match === null) return undefined;
+  const pid = Number(match[1]);
+  if (!Number.isSafeInteger(pid)) return undefined;
+  return { pid, processStartIdentity: match[2]!, home: match[3]! };
+}
+
+function runDarwinIdentityHelper(args: readonly string[]): string | undefined {
+  try {
+    return execFileSync(
+      fileURLToPath(new URL("../runtime/process-identity", import.meta.url)),
+      [...args],
+      { encoding: "utf8", timeout: 2000, maxBuffer: 1024 * 1024,
+        stdio: ["ignore", "pipe", "ignore"] }
+    );
+  } catch { return undefined; }
 }

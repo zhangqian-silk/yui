@@ -48,7 +48,6 @@ import {
   bindTaskProjectCommits,
   bindTaskWorkspaceIdentity,
   synchronizeTaskProjectCommits,
-  taskOwnsManagedWorkspace,
   type Task
 } from "../task/task.js";
 import type { TaskActivationRequest } from "../task/taskActivation.js";
@@ -147,7 +146,6 @@ export type TaskWorkspaceActivation = TaskWorkspacePreparation & Readonly<{
  * had no explicit activation request at all.
  */
 type AdoptedActivationEnvironment = Readonly<{
-  workspaceFree: boolean;
   preparationId?: string;
   request?: TaskActivationRequest;
 }>;
@@ -282,16 +280,14 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
         const actor = task.activationRequest?.operation.actorId === `task:${task.id}/role:leader`
           ? "leader" : caller;
         if (task.status === "active") {
-          if (taskOwnsManagedWorkspace(task)) {
-            const workspace = this.store.getTaskWorkspace(task.id);
-            if (!isTaskOwnedWorkspace(
-              workspace,
-              task.id,
-              task.cwd,
-              task.projectBindings.map(({ projectId, directory }) => ({ projectId, directory }))
-            )) {
-              throw new Error(`Active Task workspace adoption is invalid: ${task.id}.`);
-            }
+          const workspace = this.store.getTaskWorkspace(task.id);
+          if (!isTaskOwnedWorkspace(
+            workspace,
+            task.id,
+            task.cwd,
+            task.projectBindings.map(({ projectId, directory }) => ({ projectId, directory }))
+          )) {
+            throw new Error(`Active Task workspace adoption is invalid: ${task.id}.`);
           }
           return {
             task,
@@ -360,9 +356,7 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
       // Acquire before resource adoption: a timed-out/cancelled waiter must
       // not leave an adopted environment to be repeated on the next attempt.
       const adopted = await this.#adoptActivationEnvironment(current);
-      return adopted.workspaceFree
-        ? this.#activateWorkspaceFreeTask(current.id, adopted, actor)
-        : await this.#prepareTaskWorkspaceLocked(current.id, true, adopted, actor);
+      return await this.#prepareTaskWorkspaceLocked(current.id, true, adopted, actor);
     } finally {
       release();
     }
@@ -371,10 +365,6 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
   /**
    * Prepares and adopts the resource configuration an explicit activation
    * request named, before any status change.
-   *
-   * A request whose plan is empty and whose Task binds no Project owns nothing
-   * physical, and is reported as workspace-free
-   * so activation creates no directory at all.
    *
    * The exact request that was adopted travels with the result, so the later
    * status transaction can prove it is completing that request rather than
@@ -395,8 +385,6 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
     // rechecks. A failure here leaves the Task a continuable Draft.
     const adopted = adoptTaskActivationResources(this.store, task.id, this.now);
     return {
-      workspaceFree: admission.plan.kind === "empty"
-        && task.projectBindings.length === 0,
       // The request whose resources were actually adopted, re-checked at the
       // status transaction: a cancel or replacement landing during workspace
       // preparation must fail rather than silently swap requests.
@@ -407,57 +395,6 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
         ? {}
         : { preparationId: adopted.preparation.id })
     };
-  }
-
-  /**
-   * Moves a Task that owns nothing physical from Draft to active.
-   *
-   * An empty environment plan with no bound Project is a legal Task shape, so
-   * no workspace view, worktree or cwd is created to satisfy the framework's
-   * own model. The status change and the adopted request commit together.
-   */
-  #activateWorkspaceFreeTask(
-    taskId: string,
-    environment: AdoptedActivationEnvironment,
-    actor: "user" | "operator" | "leader"
-  ): TaskWorkspaceActivation {
-    const task = this.store.transaction((tx) => {
-      const latest = requireTask(tx, taskId);
-      if (latest.status !== "draft") {
-        throw new Error(`Task changed while activating it: ${taskId}/${latest.status}.`);
-      }
-      if (latest.projectBindings.length !== 0
-        || latest.cwd !== undefined
-        || latest.workspaceIdentity !== undefined
-        || tx.getTaskWorkspace(taskId) !== null) {
-        throw new Error(`Task acquired workspace state while activating it: ${taskId}.`);
-      }
-      validateDraftTaskForActivation(tx, latest);
-      const timestamp = this.now();
-      // Bind before the handover below: the desired environment must be the
-      // adopted one before the obligation that ends the old physical Host
-      // exists.
-      if (environment.preparationId !== undefined) {
-        this.#bindAdoptedActivationEnvironment(tx, taskId, environment.preparationId);
-      }
-      // The physical launch is unchanged, but "unchanged" is not "compatible":
-      // the Draft's planning Session runs in the Role's inherited workspace,
-      // which is exactly the shared cwd an active Task may not execute in. Hand
-      // the conversation over instead of asserting continuity, so the next
-      // launch is re-planned under the execution rules and must name a real
-      // environment. Its plan and grants are re-proven there, not assumed here.
-      handOverPlanningSession(tx, taskId, timestamp);
-      const activated = this.#recordAdoptedActivation(
-        tx,
-        activateTask(latest, timestamp),
-        environment,
-        timestamp
-      );
-      tx.saveTask(activated);
-      recordTaskActivation(tx, latest, activated, timestamp, actor);
-      return activated;
-    });
-    return { task, taskId, status: "ready", changed: true };
   }
 
   /**
@@ -596,7 +533,7 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
     taskId: string,
     activate: boolean,
     /** Environment and request identity the activation adopted, when one exists. */
-    activationEnvironment: AdoptedActivationEnvironment = { workspaceFree: false },
+    activationEnvironment: AdoptedActivationEnvironment = {},
     actor: "user" | "operator" | "leader" = "user"
   ): Promise<TaskWorkspaceActivation> {
     const task = requireTask(this.store, taskId);
@@ -918,6 +855,14 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
           );
         }
         const timestamp = this.now();
+        const mainWorkspaceChanged = current !== null
+          && (current.root !== workspace.root
+            || !isDeepStrictEqual(
+              current.entries.map(({ projectId, directory, access, path, branch }) =>
+                ({ projectId, directory, access, path, branch })),
+              workspace.entries.map(({ projectId, directory, access, path, branch }) =>
+                ({ projectId, directory, access, path, branch }))
+            ));
         let persistedTask = latest;
         if (activate) {
           // Activation moves the Leader out of the Draft planning cwd, so its
@@ -1036,6 +981,11 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
               retireWorkspaceBoundSession(tx, task.id, role.name, timestamp);
             }
             tx.saveRole(task.id, updateRole(role, { workspace: target }, timestamp));
+          } else if (target === root && mainWorkspaceChanged) {
+            // A newly bound Project changes the native directory grants even
+            // though the Task cwd stays at the same root. Do not resume a
+            // Session frozen before that Project was present.
+            retireWorkspaceBoundSession(tx, task.id, role.name, timestamp);
           }
         }
         if (activate) recordTaskActivation(tx, latest, persistedTask, timestamp, actor);

@@ -13,6 +13,8 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
+import { currentProcessStartIdentity, readProcessStartIdentity } from "../core/fileLockOwner.js";
+
 /** Durable identity written by an isolated integration-test runtime. */
 export const CONTROLLER_DOMAIN_PATH = "runtime/domain.json";
 const EPHEMERAL_DOMAIN_LOCK_PATH = "runtime/domain.identity.lock";
@@ -75,9 +77,11 @@ export function createEphemeralDomainIdentity(
 ): EphemeralDomainIdentity {
   const hostPid = options.hostPid ?? process.pid;
   const hostProcessStartIdentity = options.hostProcessStartIdentity
-    ?? readLinuxProcessStartIdentity(hostPid);
+    ?? (hostPid === process.pid
+      ? currentProcessStartIdentity()
+      : readProcessStartIdentity(hostPid));
   if (hostProcessStartIdentity === undefined) {
-    throw new Error(`Cannot read Linux process start identity for host PID ${hostPid}.`);
+    throw new Error(`Cannot read process start identity for host PID ${hostPid}.`);
   }
   const token = options.token ?? randomBytes(32).toString("hex");
   const identity: EphemeralDomainIdentity = {
@@ -510,10 +514,7 @@ function acquireEphemeralDomainIdentityLock(home: string): () => void {
   const directory = dirname(lockPath);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   chmodSync(directory, 0o700);
-  const processStartIdentity = readLinuxProcessStartIdentity(process.pid);
-  if (processStartIdentity === undefined) {
-    throw new Error(`Cannot read Linux process start identity for lock owner PID ${process.pid}.`);
-  }
+  const processStartIdentity = currentProcessStartIdentity();
   const owner: EphemeralDomainIdentityLockOwner = {
     pid: process.pid,
     processStartIdentity,
@@ -572,7 +573,7 @@ function reclaimStaleEphemeralDomainLock(lockPath: string): boolean {
   } catch {
     return false;
   }
-  const currentStartIdentity = readLinuxProcessStartIdentity(owner.pid);
+  const currentStartIdentity = readProcessStartIdentity(owner.pid);
   if (
     currentStartIdentity !== undefined
     && currentStartIdentity === owner.processStartIdentity

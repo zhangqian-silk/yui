@@ -87,6 +87,34 @@ test("compact discovery is bounded, paged before detail, and does not hide off-p
   assert.equal(read("--all", "--attention", "openInputs").tasks.length, 2);
 });
 
+test("completed Task presents its terminal summary while retaining the last working Brief", (t) => {
+  const home = mkdtempSync(join(tmpdir(), "yui-catalog-terminal-"));
+  const store = new SqliteTaskStore(home);
+  t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
+  const now = new Date("2026-09-13T00:00:00Z");
+  const task = activateTask(createTask("task-1", "Resolved blocker", now), now);
+  store.saveTask(task);
+  store.saveTaskBrief(task.id, createTaskBrief({
+    objective: "Complete the bounded task", boundaries: [],
+    currentFocus: "BLOCKED on first Worker result",
+    leaderSummary: "Awaiting a corrected result", updatedBy: "leader"
+  }, now));
+  const finished = completeTask(task, new Date("2026-09-13T00:01:00Z"), {
+    by: "leader", summary: "YUI_SEED_CHAIN_OK"
+  });
+  store.saveTask(finished);
+
+  const catalog = runTaskCommand(["list"], store, { environment: {} }).data;
+  assert.equal(catalog.tasks[0].status, "completed");
+  assert.equal(catalog.tasks[0].summary, "YUI_SEED_CHAIN_OK");
+  assert.equal(catalog.tasks[0].summaryStatus, "available");
+  const brief = runTaskCommand(["brief", "show", task.id], store, { environment: {} }).output;
+  assert.match(brief, /Task status: completed/);
+  assert.match(brief, /Recorded completion: YUI_SEED_CHAIN_OK/);
+  assert.match(brief, /Last working focus: BLOCKED on first Worker result/);
+  assert.equal(store.getTaskBrief(task.id).leaderSummary, "Awaiting a corrected result");
+});
+
 test("catalog scope, cursor and exact refs cannot widen a Session or Assignment", (t) => {
   const home = mkdtempSync(join(tmpdir(), "yui-catalog-scope-"));
   const store = new SqliteTaskStore(home);

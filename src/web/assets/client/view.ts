@@ -478,11 +478,16 @@ export function renderTaskDetail(detail, data, t, locale, actions) {
   const focusBody = node("div", "section-body");
   if (data.brief) {
     const focusCard = node("article", "record-card");
-    focusCard.append(richText(t("detail.focus"), data.brief.currentFocus || data.brief.objective, t));
+    const working = task.status === "active" || task.status === "draft";
+    focusCard.append(richText(working
+      ? t("detail.focus") : (locale.startsWith("zh") ? "结束前的工作重点" : "Last working focus"),
+      data.brief.currentFocus || data.brief.objective, t));
     if (data.brief.technicalApproach) {
       focusCard.append(richText(t("detail.technicalApproach"), data.brief.technicalApproach, t, { muted: true }));
     }
-    if (data.brief.leaderSummary) focusCard.append(richText(t("detail.leaderSummary"), data.brief.leaderSummary, t, { muted: true }));
+    if (data.brief.leaderSummary) focusCard.append(richText(working
+      ? t("detail.leaderSummary") : (locale.startsWith("zh") ? "结束前的进展摘要" : "Last working report"),
+    data.brief.leaderSummary, t, { muted: true }));
     focusBody.append(focusCard);
   } else {
     focusBody.append(emptyRow(t, "empty.brief"));

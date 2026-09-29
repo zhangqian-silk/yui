@@ -2,7 +2,7 @@
 
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
@@ -246,6 +246,8 @@ import {
   unknownAgentRunConfiguration,
   type AgentRunConfigurationObservation
 } from "./runtime/agentRunConfiguration.js";
+import { isCodexInspectionPermissionError } from "./runtime/codexSharedDaemon.js";
+import { prepareLocalCodexStartup } from "./runtime/localStartup.js";
 import {
   requireManagedTaskCaller,
   resolveManagedTaskReader
@@ -311,6 +313,12 @@ void main().catch((error: unknown) => {
 
 function runtimeFailureMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
+  if (error instanceof ControllerClientError
+    && ["CONTROLLER_NOT_RUNNING", "CONTROLLER_UNAVAILABLE", "CONTROLLER_DISCOVERY_INVALID"].includes(error.code)) {
+    return `${message} Run \`yui doctor\` with this Session's YUI_HOME and CLI; `
+      + "if the Controller is stopped, run `yui start`; if its process is present but unreachable, "
+      + "inspect it before `yui controller restart`. The Operator or user can perform recovery.";
+  }
   if (!(error instanceof SqliteSchemaError)) return message;
   try {
     return `${message}\n${describeCliHomeInvocation({
@@ -490,6 +498,12 @@ export async function main(): Promise<void> {
     // detached per-Home Controller even when setup began with no Controller;
     // read-only commands and failed setup still remain non-starting paths.
     await ensureFileTaskController(home, { environment: process.env });
+    const setupStore = openCurrentTaskStore(home);
+    try {
+      await prepareCodexForCurrentRoles(setupStore, home);
+    } finally {
+      setupStore.close();
+    }
     const refresh = await refreshRunningFileTaskControllerEnvironment(
       home,
       openCurrentTaskStore(home),
@@ -502,10 +516,10 @@ export async function main(): Promise<void> {
     const doctorArgs = args.slice(1);
     if (doctorArgs.length !== 0) {
       // Preserve the usage error for stray operands (parity with text mode).
-      runDoctorCommand(doctorArgs, process.env, new NodeCommandExecutor());
+      await runDoctorCommand(doctorArgs, process.env, new NodeCommandExecutor());
       return;
     }
-    const report = buildDoctorReport(process.env, new NodeCommandExecutor());
+    const report = await buildDoctorReport(process.env, new NodeCommandExecutor());
     if (jsonOutput) {
       // Machine-readable result: the full checks array + a storage-health verdict
       // the update post-verify parses (P1-3). Exit non-zero when storage is not
@@ -517,6 +531,41 @@ export async function main(): Promise<void> {
       return;
     }
     emit(renderDoctor(report.checks, report.review));
+    return;
+  }
+  if (args[0] === "start") {
+    if (args.length !== 1) throw usageError("Start usage: yui start.");
+    validateCurrentTaskStore(home);
+    const startupStore = openCurrentTaskStore(home);
+    try {
+      assertHomeStartupAuthority(startupStore);
+      const controller = await ensureFileTaskController(home, { environment: process.env });
+      let codex: Awaited<ReturnType<typeof prepareLocalCodexStartup>>;
+      try {
+        codex = await prepareLocalCodexStartup(startupStore, home, process.env);
+      } catch (error) {
+        throw runtimeError(
+          `Controller is ready, but Codex shared startup failed: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+      const lines = ["Yui Controller is ready."];
+      if (codex.daemons.length === 0) lines.push("No active Role needs Codex; no Codex daemon was started.");
+      else for (const daemon of codex.daemons) {
+        lines.push(`Codex shared daemon ${daemon.started ? "started" : "ready"}: ${daemon.socketPath}`);
+      }
+      if (codex.app === "restart-required") {
+        lines.push("Codex App is running with an older connection. Quit and reopen it to use Yui sessions.");
+      } else if (codex.app === "ready") {
+        lines.push("Codex App launch is configured for the shared daemon. Use yui doctor to verify its live connection.");
+      } else if (codex.app === "multiple-homes") {
+        lines.push("Active Codex Roles use multiple Codex homes; App sharing needs one selected Home.");
+      } else if (codex.app === "not-detected") {
+        lines.push("Codex App was not detected; the shared daemon is ready for Codex CLI sessions.");
+      }
+      emit(lines.join("\n"), false, { controller, codex });
+    } finally {
+      startupStore.close();
+    }
     return;
   }
   if (args[0] === "execution") {
@@ -613,6 +662,15 @@ export async function main(): Promise<void> {
 
   if (args[0] === "controller") {
     const method = args[1];
+    if (method === "start" && args.length === 2) {
+      validateCurrentTaskStore(home);
+      const startupStore = openCurrentTaskStore(home);
+      try { assertHomeStartupAuthority(startupStore); }
+      finally { startupStore.close(); }
+      const result = await ensureFileTaskController(home, { environment: process.env });
+      emit("Controller is ready.", false, result);
+      return;
+    }
     if (method === "live-identity" && args.length === 2) {
       try {
         const identity = await callController(home, "controller.identity", {});
@@ -743,7 +801,7 @@ export async function main(): Promise<void> {
     if ((method !== "stop" && method !== "restart") || args.length !== 2) {
       throw usageError(
         "Controller usage: yui controller status [--all] [--verbose] | "
-          + "cleanup [--all] | stop | restart."
+          + "cleanup [--all] | start | stop | restart."
       );
     }
     // Stopping an exactly identified Controller is a recovery operation:
@@ -1061,6 +1119,7 @@ export async function main(): Promise<void> {
       if (result.kind !== "enter") {
         throw new Error("Session commands cannot perform a live input control.");
       }
+      await prepareInteractiveCodexApp(result.role.activeAgentId, store, home);
       await ensureFileTaskController(home, { environment: process.env });
       await runtime.prepareGlobalRoleEnter(result.role.name);
       tmux.attachRole("operator", result.role.name, "auto");
@@ -1212,6 +1271,8 @@ export async function main(): Promise<void> {
     if (resolved[0] === "operator") {
       if (resolved[1] === "enter") {
         if (resolved.length !== 2) throw usageError("Operator enter usage: yui operator enter.");
+        const role = store.getGlobalRole("operator");
+        if (role !== null) await prepareInteractiveCodexApp(role.activeAgentId, store, home);
         await ensureFileTaskController(home, { environment: process.env });
         await runtime.prepareGlobalRoleEnter("operator");
         tmux.attachRole("operator", "operator", "auto");
@@ -2531,7 +2592,15 @@ function assertManagedSessionManifest(
     "session-manifests",
     `${manifest.digest}.json`
   );
-  if (resolve(manifestPath) !== expectedPath) {
+  // YUI_HOME is canonicalized (its macOS /var -> /private/var prefix is a
+  // system symlink), so compare the manifest in the same canonical space.
+  let canonicalManifestPath: string;
+  try {
+    canonicalManifestPath = realpathSync(resolve(manifestPath));
+  } catch {
+    canonicalManifestPath = resolve(manifestPath);
+  }
+  if (canonicalManifestPath !== expectedPath) {
     throw new Error("Managed Session Manifest path is outside this YUI_HOME.");
   }
   return manifest;
@@ -3017,6 +3086,7 @@ async function executeOperatorSessionControl(
     && active !== undefined
     && operatorSessionRef(active) === control.ref
   ) {
+    await prepareInteractiveCodexApp(control.targetAgentId, store, home);
     tmux.attachRole("operator", "operator", "auto");
     return;
   }
@@ -3074,6 +3144,7 @@ async function executeOperatorSessionControl(
     handle.close();
   }
 
+  await prepareInteractiveCodexApp(control.targetAgentId, store, home);
   await ensureFileTaskController(home, { environment: process.env });
   if (
     paneRunning
@@ -3090,6 +3161,62 @@ async function executeOperatorSessionControl(
   applyOperatorSessionControl(control, store);
   await runtime.prepareGlobalRoleEnter(role.name);
   tmux.attachRole("operator", role.name, "auto");
+}
+
+async function prepareInteractiveCodexApp(
+  agentId: string,
+  store: TaskStore,
+  home: string
+): Promise<void> {
+  await prepareCodexForCurrentRoles(store, home, agentId);
+}
+
+async function prepareCodexForCurrentRoles(
+  store: TaskStore,
+  home: string,
+  targetAgentId?: string
+): Promise<void> {
+  try {
+    const result = await prepareLocalCodexStartup(store, home, process.env, targetAgentId);
+    if (result.app === "restart-required") {
+      codexAppNotice(
+        "Codex App is already running without the current Yui shared app-server. "
+          + "Quit and reopen Codex App to see and continue Yui sessions.",
+        "Reopen Codex App to connect to Yui sessions."
+      );
+    }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    const permissionDenied = isCodexInspectionPermissionError(error);
+    codexAppNotice(
+      `${permissionDenied
+        ? "Codex sharing could not be prepared or verified from this process"
+        : "Codex shared runtime could not be prepared"}: ${detail}`,
+      permissionDenied
+        ? "macOS denied access while preparing Codex sharing; its state is unverified. See the Yui terminal."
+        : "Codex shared runtime could not be prepared; see the Yui terminal."
+    );
+  }
+}
+
+function assertHomeStartupAuthority(store: TaskStore): void {
+  if (process.env.YUI_SESSION_SCOPE === undefined && process.env.YUI_ROLE === undefined
+    && process.env.YUI_AGENT_ID === undefined && process.env.YUI_NATIVE_SESSION_ID === undefined) return;
+  if (process.env.YUI_SESSION_SCOPE !== "global" || process.env.YUI_ROLE !== "operator") {
+    throw usageError("Starting Home services requires the user or current Operator.");
+  }
+  requireManagedGlobalCaller(store, process.env);
+}
+
+function codexAppNotice(message: string, notification: string): void {
+  process.stderr.write(`\nYui: ${message}\n`);
+  if (process.platform !== "darwin") return;
+  // The native TUI clears terminal output on attach, so keep the actionable
+  // warning visible in Notification Center without interrupting Yui startup.
+  spawnSync("/usr/bin/osascript", [
+    "-e",
+    `display notification "${notification}" with title "Yui"`
+  ], { stdio: "ignore", timeout: 3_000 });
 }
 
 function renderControllerResult(method: "stop" | "restart", value: unknown): string {

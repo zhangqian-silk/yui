@@ -22,6 +22,7 @@ import { deliverGlobalInputs } from "../../dist/controller/globalInputDelivery.j
 import { FileRoleLaunchPlanner } from "../../dist/executor/fileRoleLaunchPlanner.js";
 import { createRuntimeObservation } from "../../dist/runtime/runtimeObservation.js";
 import { SessionOwnerReconciliation } from "../../dist/controller/sessionOwnerReconciliation.js";
+import { createSessionOwnerIdentity } from "../../dist/runtime/sessionOwnerIdentity.js";
 import { prepareOperatorNewSession } from "../../dist/operator/operatorSessionHistory.js";
 
 const at = new Date("2026-09-11T00:00:00Z");
@@ -43,6 +44,13 @@ test("Global replacement settles retained input only after native quiescence and
   const connection = planner.planNativeControl(owner);
   assert.equal(connection.command, store.getConfiguredAgent("codex").command);
   assert.equal(connection.cwd, home, "Recovery does not need the departed Session's workspace.");
+  store.saveSessionOwner(createSessionOwnerIdentity({
+    owner, agentId: "codex", adapterId: "codex", nativeSessionId: `${role.name}-native`,
+    tmux: { serverName: "fixture", socketPath: join(home, "tmux.sock"),
+      sessionName: "operator", windowName: role.name },
+    providerRoot: { pid: process.pid, startIdentity: "0", attribution: "pane-pid" },
+    recordedAt: at
+  }));
   let inspected = false;
   const reconciliation = new SessionOwnerReconciliation({ home, store,
     tmux: { killRole() {}, probeRoleStatus: () => "exited",

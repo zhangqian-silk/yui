@@ -2,7 +2,6 @@ import { roleSessionMayContinue } from "../executor/effectiveLaunch.js";
 import { roleAgentSessionResumeMode } from "../executor/agentExecutor.js";
 import type { SchedulerReconcileSelection, SchedulerStorePort, TmuxDeliveryPort } from "./ports.js";
 import { isSchedulerTaskWorkspaceReady } from "./ports.js";
-import { taskOwnsManagedWorkspace } from "../task/task.js";
 import { hasImmediateWakeReason } from "./wakeReason.js";
 import { providerRetryPending } from "../runtime/providerRetry.js";
 import { RuntimeLaunchError } from "../runtime/ports.js";
@@ -86,7 +85,7 @@ export async function processLeaderWakeups(
         taskId: task.id, roleName: role.name, agentId: effective.agentId,
         adapterId: effective.adapterId, effective, workspace: effective.workspace.root,
         ...(role.managedWorkspace === undefined ? {} : { managedWorkspace: role.managedWorkspace }),
-        ...(task.status === "draft" || !taskOwnsManagedWorkspace(task)
+        ...(task.status === "draft"
           ? { workspaceFree: true as const } : {}),
         mode, ...(mode === "resume" && session?.nativeSessionId !== undefined
           ? { nativeSessionId: session.nativeSessionId } : {})

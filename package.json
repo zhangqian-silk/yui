@@ -24,9 +24,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/build-runtime-native.mjs",
     "pretest:core": "npm run build",
-    "test:core": "node --test test/core/*.test.js",
+    "test:core": "node --import ./test/helpers/physical-tmpdir.mjs --test test/core/*.test.js",
     "pretest": "npm run build",
-    "test": "node --test test/core/*.test.js",
+    "test": "node --import ./test/helpers/physical-tmpdir.mjs --test test/core/*.test.js",
     "lint": "tsc -p tsconfig.json --noEmit",
     "seed:web": "npm run build && node scripts/seed-web-dashboard.mjs",
     "verify:release-tag": "node scripts/verify-release-tag.mjs",
@@ -37,13 +37,12 @@
     "node": "^20.17.0 || ^22.9.0 || ^24.0.0"
   },
   "os": [
-    "linux"
+    "linux",
+    "darwin"
   ],
   "cpu": [
-    "x64"
-  ],
-  "libc": [
-    "glibc"
+    "x64",
+    "arm64"
   ],
   "keywords": [
     "yui",

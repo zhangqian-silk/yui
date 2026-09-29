@@ -99,10 +99,15 @@ export function renderTaskSummary(container, data, t, locale, actions, recordCar
   const progress = block(say("Task progress", "任务进展"), "progress");
   const briefEntry = entries("task-brief")[0];
   const brief = available("task-brief")[0];
+  const working = data.task.status === "draft" || data.task.status === "active";
   if (data.task.completionSummary) progress.append(richText(say("Recorded completion", "已记录完成"), data.task.completionSummary, t));
   if (brief) {
-    progress.append(richText(say("Current focus", "当前工作"), brief.currentFocus, t));
-    progress.append(richText(say("Leader's progress report", "Leader 进展摘要"), brief.leaderSummary, t));
+    progress.append(richText(working
+      ? say("Current focus", "当前工作")
+      : say("Last working focus", "结束前的工作重点"), brief.currentFocus, t));
+    progress.append(richText(working
+      ? say("Leader's progress report", "Leader 进展摘要")
+      : say("Last working report", "结束前的进展摘要"), brief.leaderSummary, t));
     progress.append(node("small", "muted", say("Brief updated: ", "Brief 更新：") + formatDateTime(brief.updatedAt, locale)));
   } else if (briefEntry) progress.append(recordCard(briefEntry));
   else progress.append(node("p", "muted", say("No progress summary in this read; no percentage or ETA is inferred.",

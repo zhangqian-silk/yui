@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import type { Socket } from "node:net";
 import { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
+import { startMissingCodexSharedDaemon, type CodexProxyLaunch } from "./codexSharedDaemon.js";
 import {
   ProviderConversationMissingError,
   ProviderDeliveryUnknownError,
@@ -205,6 +206,27 @@ export async function startStructuredProviderSession(
   if (control === undefined) {
     throw new Error("Managed Agent Host launch requires Provider control metadata.");
   }
+  const mirror = input.mirrorOutput ?? defaultMirrorOutput;
+  if (control.adapterId === "codex" && control.transport === "codex-app-server-proxy") {
+    const proxy = await connectCodexProxy(payload, mirror, true);
+    try {
+      const opened = await CodexStructuredProviderSession.open(
+        proxy.child, proxy.exit, proxy.processInstanceId, payload, control, proxy.channel,
+        input.onStarted, input.onTerminal, input.onGoal, input.onInput,
+        input.onActivity, input.onDiagnostic, mirror
+      );
+      return Object.freeze({
+        session: opened.session,
+        ...(opened.recoveredTerminal === undefined
+          ? {}
+          : { recoveredTerminal: opened.recoveredTerminal }),
+        goal: opened.goal
+      });
+    } catch (error) {
+      terminateProcessGroup(proxy.child, "SIGTERM");
+      throw error;
+    }
+  }
   const ownedClaude = control.adapterId === "claude" && control.transport !== "acp-stdio";
   const child = spawn(
     ownedClaude ? fileURLToPath(new URL("./claude-process-owner", import.meta.url)) : payload.command,
@@ -215,7 +237,6 @@ export async function startStructuredProviderSession(
     detached: true
   });
   const processInstanceId = randomUUID();
-  const mirror = input.mirrorOutput ?? defaultMirrorOutput;
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk: string) => mirror("stderr", chunk));
   const exit = childExit(child, processInstanceId);
@@ -266,29 +287,6 @@ export async function startStructuredProviderSession(
       }
       return Object.freeze({ session });
     }
-    if (control.adapterId === "codex") {
-      const opened = await CodexStructuredProviderSession.open(
-          child,
-          exit,
-          processInstanceId,
-          payload,
-          control,
-          input.onStarted,
-          input.onTerminal,
-          input.onGoal,
-          input.onInput,
-          input.onActivity,
-          input.onDiagnostic,
-          mirror
-        );
-      return Object.freeze({
-        session: opened.session,
-        ...(opened.recoveredTerminal === undefined
-          ? {}
-          : { recoveredTerminal: opened.recoveredTerminal }),
-        goal: opened.goal
-      });
-    }
     const session = await ClaudeStructuredProviderSession.open(
           child,
           exit,
@@ -331,20 +329,47 @@ function isPostCreateOperatorTitle(payload: AgentHostLaunchPayload): boolean {
  * owns its requests; Yui observes only its exact startup response.
  */
 export async function openCodexInteractiveConnection(
-  launch: Pick<AgentHostLaunchPayload, "command" | "args" | "environment" | "cwd">
+  launch: Pick<AgentHostLaunchPayload, "command" | "args" | "environment" | "cwd">,
+  startMissingDaemon = false
 ): Promise<CodexProxyWebSocketChannel> {
-  const child = spawn(launch.command, [...launch.args], {
-    cwd: launch.cwd,
-    env: { ...launch.environment },
-    stdio: ["pipe", "pipe", "pipe"],
-    detached: true
-  });
-  child.stderr.resume();
+  return (await connectCodexProxy(launch, () => {}, startMissingDaemon)).channel;
+}
+
+async function connectCodexProxy(
+  launch: CodexProxyLaunch,
+  mirror: (stream: "stdout" | "stderr", text: string) => void,
+  startMissingDaemon: boolean
+): Promise<Readonly<{
+  child: ChildProcessWithoutNullStreams;
+  channel: CodexProxyWebSocketChannel;
+  exit: Promise<StructuredProviderProcessExit>;
+  processInstanceId: string;
+}>> {
+  const attempt = async () => {
+    const child = spawn(launch.command, [...launch.args], {
+      cwd: launch.cwd,
+      env: { ...launch.environment },
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: true
+    });
+    const processInstanceId = randomUUID();
+    const exit = childExit(child, processInstanceId);
+    void exit.catch(() => {});
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => mirror("stderr", chunk));
+    try {
+      const channel = await CodexProxyWebSocketChannel.connect(child, mirror);
+      return { child, channel, exit, processInstanceId };
+    } catch (error) {
+      terminateProcessGroup(child, "SIGTERM");
+      throw error;
+    }
+  };
   try {
-    return await CodexProxyWebSocketChannel.connect(child, () => {});
+    return await attempt();
   } catch (error) {
-    terminateProcessGroup(child, "SIGTERM");
-    throw error;
+    if (!startMissingDaemon || !await startMissingCodexSharedDaemon(launch)) throw error;
+    return await attempt();
   }
 }
 
@@ -610,6 +635,7 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
     processInstanceId: string,
     payload: AgentHostLaunchPayload,
     control: AgentHostProviderControl,
+    channel: CodexProxyWebSocketChannel,
     onStarted: ((started: StructuredProviderTurnStarted) => void) | undefined,
     onTerminal: ((terminal: StructuredProviderTurnTerminal) => void) | undefined,
     onGoal: ((goal: StructuredProviderGoal | null) => void) | undefined,
@@ -622,7 +648,6 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
     recoveredTerminal?: StructuredProviderTurnTerminal;
     goal: StructuredProviderGoal | null;
   }>> {
-    const channel = await CodexProxyWebSocketChannel.connect(child, mirror);
     const openingMessages: JsonObject[] = [];
     const stopOpeningBuffer = channel.onMessage((message) => openingMessages.push(message));
     const initialized = await channel.request("initialize", codexClientInitialization());

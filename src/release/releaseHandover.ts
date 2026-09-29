@@ -15,6 +15,7 @@
  */
 
 import type { JsonValue } from "../core/protocol.js";
+import { processGenerationIsLive } from "../core/fileLockOwner.js";
 import { RELEASE_HANDOVER_PROMOTION_TIMEOUT_MS } from "../runtime/runtimeDeadlines.js";
 import {
   acquireHandoverLock,
@@ -25,6 +26,7 @@ import {
   readHandoverFence,
   readHandoverReceipt,
   readRuntimeIdentity,
+  removeActiveReleasePointer,
   removeCandidateDiscovery,
   removeHandoverFence,
   writeActiveReleasePointer,
@@ -39,6 +41,12 @@ import {
 export const DEFAULT_CANDIDATE_READY_TIMEOUT_MS = 30_000;
 export const DEFAULT_PROMOTION_TIMEOUT_MS = RELEASE_HANDOVER_PROMOTION_TIMEOUT_MS;
 export const DEFAULT_POLL_INTERVAL_MS = 100;
+export class ControllerStartUnconfirmedError extends Error {
+  constructor(readonly pid: number, message: string) {
+    super(message);
+    this.name = "ControllerStartUnconfirmedError";
+  }
+}
 /**
  * Optional confirmation debounce after the candidate latches `dualOwner:
  * true`. Defaults to 0: the candidate's own exit grace
@@ -248,13 +256,17 @@ async function activateLocked(
     locked.pollIntervalMs
   );
   if (candidateReady === null) {
-    await rollbackHandover(ports, home, fence, "candidate did not become ready");
+    const rollbackError = await rollbackHandover(ports, home, fence);
     return {
       outcome: "aborted",
       phase: "candidate-ready",
-      message: "The new Controller candidate did not become ready in time.",
-      action: "The old Controller has resumed accepting mutations; retry the activation.",
-      recoverable: true
+      message: rollbackError === null
+        ? "The new Controller candidate did not become ready in time."
+        : `The new Controller candidate did not become ready; rollback is unconfirmed: ${rollbackError}`,
+      action: rollbackError === null
+        ? "The old Controller has resumed accepting mutations; retry the activation."
+        : "Preserve the handover fence and candidate discovery; inspect process owners before retrying.",
+      recoverable: rollbackError === null
     };
   }
 
@@ -337,9 +349,19 @@ async function activateWithoutOldController(
   try {
     await ports.startControllerFromRelease(home, releaseDir);
   } catch (error) {
-    // Restore the previous pointer so the launcher keeps resolving the old
-    // release.
+    if (error instanceof ControllerStartUnconfirmedError) {
+      return {
+        outcome: "aborted",
+        phase: "start-controller",
+        message: `New Controller startup is unconfirmed (PID ${error.pid}): ${error.message}`,
+        action: "Preserve the new release pointer and inspect the exact Controller process before retrying.",
+        recoverable: false
+      };
+    }
+    // A pre-spawn failure cannot have started a Controller. Restore the
+    // pointer's previous value, including its absence.
     if (active !== null) writeActiveReleasePointer(home, active);
+    else removeActiveReleasePointer(home);
     return {
       outcome: "aborted",
       phase: "start-controller",
@@ -373,7 +395,7 @@ async function readOldController(
       || identity === null
       || typeof (identity as { pid?: unknown }).pid !== "number"
     ) {
-      return null;
+      throw new Error("Running Controller returned an invalid identity; handover cannot be fenced.");
     }
     const record = identity as Record<string, unknown>;
     if (record.releaseDrifted === true) {
@@ -385,7 +407,9 @@ async function readOldController(
     const startIdentity = typeof record.processStartIdentity === "string"
       ? record.processStartIdentity
       : undefined;
-    if (startIdentity === undefined) return null;
+    if (startIdentity === undefined) {
+      throw new Error("Running Controller did not provide a process-generation identity; handover cannot be fenced.");
+    }
     return Object.freeze({
       pid: record.pid as number,
       processStartIdentity: startIdentity,
@@ -465,20 +489,28 @@ async function waitForPromotion(
 async function rollbackHandover(
   ports: ReleaseActivatePorts,
   home: string,
-  fence: HandoverFence,
-  reason: string
-): Promise<void> {
+  fence: HandoverFence
+): Promise<string | null> {
   const candidate = readCandidateDiscovery(home);
   if (candidate !== null) {
     try {
-      ports.killOwnedProcess({
-        pid: candidate.pid,
-        processStartIdentity: candidate.processStartIdentity,
-        buildId: "candidate",
-        version: "candidate"
-      });
-    } catch {
-      // A dead candidate is the desired end state; ignore kill failures.
+      if (processGenerationIsLive(candidate.pid, candidate.processStartIdentity)) {
+        ports.killOwnedProcess({
+          pid: candidate.pid,
+          processStartIdentity: candidate.processStartIdentity,
+          buildId: "candidate",
+          version: "candidate"
+        });
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          if (!processGenerationIsLive(candidate.pid, candidate.processStartIdentity)) break;
+          await ports.sleep(50);
+        }
+      }
+      if (processGenerationIsLive(candidate.pid, candidate.processStartIdentity)) {
+        return `candidate PID ${candidate.pid} is still live`;
+      }
+    } catch (error) {
+      return `candidate PID ${candidate.pid}: ${messageOf(error)}`;
     }
     removeCandidateDiscovery(home);
   }
@@ -486,8 +518,8 @@ async function rollbackHandover(
     await ports.call(home, "controller.rollback-handover", {
       handoverId: fence.handoverId
     });
-  } catch {
-    // The old Controller may have exited; the fence phase records the truth.
+  } catch (error) {
+    return `old Controller rollback: ${messageOf(error)}`;
   }
   writeHandoverFence(home, Object.freeze({
     ...fence,
@@ -505,7 +537,7 @@ async function rollbackHandover(
     startedAt: fence.createdAt,
     completedAt: new Date().toISOString()
   }));
-  void reason;
+  return null;
 }
 
 async function recoverInterruptedHandover(
@@ -590,7 +622,15 @@ async function recoverInterruptedHandover(
       locked.pollIntervalMs
     );
     if (candidateReady === null) {
-      await rollbackHandover(ports, home, fence, "candidate did not become ready");
+      const rollbackError = await rollbackHandover(ports, home, fence);
+      if (rollbackError !== null) {
+        return {
+          outcome: "aborted", phase: "recovery",
+          message: `Interrupted handover rollback is unconfirmed: ${rollbackError}`,
+          action: "Preserve the handover fence and candidate discovery; inspect process owners before retrying.",
+          recoverable: false
+        };
+      }
       return null;
     }
     const pointer: ActiveReleasePointer = Object.freeze({
@@ -634,10 +674,18 @@ async function recoverInterruptedHandover(
       await ports.call(home, "controller.rollback-handover", {
         handoverId: fence.handoverId
       });
-    } catch {
-      // Old Controller may be unresponsive; the fence phase records the truth.
+    } catch (error) {
+      return {
+        outcome: "aborted", phase: "recovery",
+        message: `Old Controller rollback is unconfirmed: ${messageOf(error)}`,
+        action: "Preserve the handover fence; inspect the old Controller before retrying.",
+        recoverable: false
+      };
     }
   }
+  // The exact candidate generation is gone; only now can its stale
+  // discovery be removed during interrupted-handover recovery.
+  if (readCandidateDiscovery(home) !== null) removeCandidateDiscovery(home);
   removeHandoverFence(home);
   return null;
 }

@@ -111,8 +111,12 @@ test("missing Snapshot fails only its execution; supervision can retire and expl
   const store = new SqliteTaskStore(home);
   t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
   const now = new Date("2026-09-17T00:00:00Z");
-  const task = activateTask(createTask("task-1", "Keep original execution evidence", now), now);
+  const task = activateTask(createTask("task-1", "Keep original execution evidence", now,
+    { cwd: home }), now);
   store.saveTask(task);
+  store.saveManagedWorkspace(createManagedWorkspace({
+    owner: { type: "task", taskId: task.id }, root: home, entries: []
+  }, now));
   const binding = createRoleAgentBinding({ id: "codex", adapterId: "codex" });
   const role = createRole(task.id, "leader", [binding], binding.agentId, home, now);
   store.saveRole(task.id, role);

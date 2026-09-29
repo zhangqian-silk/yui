@@ -7,9 +7,10 @@ export function controllerSocketPath(homeId: string): string {
   const identity = validateHomeId(homeId);
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   const socketName = `${identity}.sock`;
-  // Linux Unix-socket paths have a small fixed budget. A stable per-uid system
-  // root is both short and independent of each caller's isolated TMPDIR.
-  const root = process.platform === "linux" ? "/tmp" : tmpdir();
+  // Unix-socket paths have a small fixed budget (104 bytes on macOS, 108 on
+  // Linux). A stable per-uid system root is short and independent of each
+  // caller's isolated TMPDIR, which is a long /var/folders path on macOS.
+  const root = process.platform === "win32" ? tmpdir() : "/tmp";
   return join(root, `yui-${uid}`, socketName);
 }
 

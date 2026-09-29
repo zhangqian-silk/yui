@@ -72,10 +72,8 @@ export type RuntimeLaunchPreparationRequest = Readonly<{
   /** Authoritative runtime owner; a Role is only transport/session addressing. */
   managedWorkspace?: ManagedWorkspace;
   /**
-   * Set when the Task legitimately owns no workspace: an empty environment plan
-   * over no bound Project (S27). Absent `managedWorkspace` otherwise still means
-   * "the authoritative workspace is missing" and fails the launch closed, so
-   * the two cases stay distinguishable rather than collapsing into `undefined`.
+   * Set only for Draft planning before delivery workspace adoption. An active
+   * Task with no `managedWorkspace` fails the launch closed.
    */
   workspaceFree?: true;
   runtimePolicy?: TaskRuntimeLaunchPolicy;

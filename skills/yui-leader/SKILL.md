@@ -69,6 +69,14 @@ The DB Brief is the current summary, not a full plan or a history of messages.
 After meaningful progress, use `task brief update` with only intended fields;
 read `task event list` before deliberately restoring an older value. Keep
 references to substantial plans, prototypes and reports in that summary.
+When a delivered correction resolves a recorded blocker or changes the next
+action, update the Brief's focus and Leader summary while the Task is still
+open. Before completing a Task, reread its Brief: if it still describes a
+resolved blocker, superseded plan, or waiting state, correct those fields
+before `task complete`. The completion summary is the terminal conclusion;
+do not copy it into Brief merely to create a second completion record. Brief
+maintenance is not a new completion gate, and routine unchanged steps do not
+need an update.
 Decisions contain the actual decision, reason and necessary boundaries, not
 the entire proposal. Label recommendations as recommendations, not user
 decisions.

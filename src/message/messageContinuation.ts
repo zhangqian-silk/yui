@@ -54,7 +54,7 @@ export function messageContinuationBlocker(store: TaskStore, message: TaskMessag
     if (target.reviewRoundId === undefined && !isDeepStrictEqual(
       [...work.writeProjectIds].sort(), [...owner.effective.writeProjectIds].sort())) return "assignment-scope-changed";
     if (target.reviewRoundId === undefined && owner.workspace !== undefined) {
-      const workspace = target.roleName === "leader"
+      const workspace = target.roleName === "leader" || task.projectBindings.length === 0
         ? store.getTaskWorkspace(message.taskId) : store.getWorkItemWorkspace(message.taskId, target.workItemId);
       const identity = (entries: NonNullable<AgentRun["workspace"]>["entries"]) => entries.map((entry) => ({
         projectId: entry.projectId, path: entry.path, access: entry.access, branch: entry.branch

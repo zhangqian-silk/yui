@@ -80,10 +80,8 @@ export class RuntimeLaunchCoordinator implements RuntimeLaunchPreparationPort {
     let isolation;
     if (request.owner.scope === "task" && this.options.runtimeIsolation !== undefined) {
       const workspace = request.managedWorkspace;
-      // A Task that legitimately owns no workspace has nothing to isolate: an
-      // empty environment plan over no bound Project (S27). Skipping isolation
-      // here is what lets such a Leader launch at all; a *missing*
-      // authoritative workspace still fails closed below.
+      // Draft planning has no delivery workspace to isolate. Active Task
+      // launches require the exact authoritative ManagedWorkspace below.
       if (request.workspaceFree === true) {
         if (workspace !== undefined) {
           throw new Error("A workspace-free Task launch cannot carry a ManagedWorkspace.");

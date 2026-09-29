@@ -86,6 +86,14 @@ export function queryTaskCatalog(db: Database.Database, query: TaskCatalogQuery)
   }
   const count = (table: string, condition: string) =>
     `(SELECT count(*) FROM ${table} x WHERE x.task_id = c.task_id AND (${condition}))`;
+  const displaySummary = `CASE
+    WHEN page.status IN ('completed','archived')
+      AND json_extract(r.payload,'$.completionSummary') IS NOT NULL
+      THEN json_extract(r.payload,'$.completionSummary')
+    WHEN page.status IN ('cancelled','archived')
+      AND json_extract(r.payload,'$.retirementSummary') IS NOT NULL
+      THEN json_extract(r.payload,'$.retirementSummary')
+    ELSE json_extract(r.brief,'$.leaderSummary') END`;
   // Execution signals deliberately preserve raw inspectable conditions:
   // live runs (including unknown admission/identity/stall), unresolved work,
   // integrations, and pending Leader recovery. They are NOT a second
@@ -123,8 +131,8 @@ export function queryTaskCatalog(db: Database.Database, query: TaskCatalogQuery)
     (SELECT json_group_array(json_object(
       'id',page.id,'createdAt',page.createdAt,'updatedAt',page.updatedAt,'status',page.status,
       'title',substr(json_extract(r.payload,'$.title'),1,256),
-      'summary',substr(json_extract(r.brief,'$.leaderSummary'),1,512),
-      'summaryPresent',json(CASE WHEN r.brief IS NULL THEN 'false' ELSE 'true' END),
+      'summary',substr(${displaySummary},1,512),
+      'summaryPresent',json(CASE WHEN ${displaySummary} IS NULL THEN 'false' ELSE 'true' END),
       'workItems',page.workItems,'activeRuns',page.activeRuns,
       'openInputs',page.openInputs,'pendingOperations',page.pendingOperations,
       'unknownOperations',page.unknownOperations,'executionSignals',page.executionSignals)

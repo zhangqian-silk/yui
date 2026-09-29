@@ -6,6 +6,11 @@ import { dirname, join, relative } from "node:path";
 import test from "node:test";
 
 import { GitIntegrationService } from "../../dist/integration/gitIntegrationService.js";
+import { createConfiguredAgent } from "../../dist/agent/agent.js";
+import { FileRoleLaunchPlanner, nativeAgentWorkspace } from "../../dist/executor/fileRoleLaunchPlanner.js";
+import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
+import { createRoleSessionSet, recordRoleAgentSession, updateRoleAgentSessionStatus } from "../../dist/executor/agentExecutor.js";
+import { createRole, createRoleAgentBinding } from "../../dist/role/role.js";
 import { createIntegrationAttempt } from "../../dist/integration/integrationAttempt.js";
 import { createProject } from "../../dist/repository/project.js";
 import {
@@ -259,4 +264,55 @@ test("new Task multi-project lifecycle lands every worktree at the single-layer 
     existsSync(join(home, "workspaces", "worktree")), false,
     "the collapsed layout never creates the legacy worktree/ root"
   );
+});
+
+test("a Project-free Task keeps its native cwd when a Project is bound later", async (t) => {
+  const home = newHome(t);
+  const store = new SqliteTaskStore(home);
+  t.after(() => store.close());
+  const task = createTask(store.nextTaskId(), "Add a Project later", now);
+  store.saveTask(task);
+  const preparer = new FileTaskWorkspacePreparer(home, store);
+  runTaskCommand(["activation", "request", task.id, "--request-id", "start", "--environment", "empty"],
+    store, { now: () => now, environment: {} });
+  const activated = await preparer.activateTaskWorkspace(task.id);
+  const root = join(managedTaskRoot(home), task.id, "main");
+  assert.equal(activated.path, root);
+  assert.equal(store.getTask(task.id).cwd, root);
+  assert.deepEqual(store.getTaskWorkspace(task.id).entries, []);
+  assert.equal(nativeAgentWorkspace(store.getTaskWorkspace(task.id)), root);
+  const agent = createConfiguredAgent("claude", "claude", "claude", [], [], now);
+  store.saveConfiguredAgent(agent);
+  store.saveRole(task.id, createRole(task.id, "leader", [createRoleAgentBinding(agent)], agent.id, root, now));
+  const planner = new FileRoleLaunchPlanner(home, store, { environment: { HOME: home, PATH: process.env.PATH } });
+  const launch = () => planner.plan({ taskId: task.id, roleName: "leader", agentId: agent.id,
+    adapterId: agent.adapterId, mode: "new" });
+  assert.equal(launch().role.workspace, root);
+  assert.equal(launch().role.cwd, undefined);
+  const sessionSet = createRoleSessionSet({ scope: "task", taskId: task.id, roleName: "leader" }, agent.id, now);
+  store.saveTaskRoleSessionSet(recordRoleAgentSession(sessionSet, {
+    agentId: agent.id, adapterId: agent.adapterId, nativeSessionId: "before-project",
+    policy: "fixed", status: "active",
+    effective: resolveEffectiveLaunch({ role: store.getRole(task.id, "leader"),
+      workspace: store.getTaskWorkspace(task.id) })
+  }, now));
+
+  const project = seedManagedProject(home, "project-1", "app");
+  registerProject(store, "project-1", "app", project.checkout, project.remote);
+  runTaskCommand(["project", "add", task.id, "project-1"], store,
+    { now: () => now, environment: {} });
+  await assert.rejects(preparer.prepareTaskWorkspace(task.id), /session must be stopped/i);
+  assert.deepEqual(store.getTaskWorkspace(task.id).entries, []);
+  store.saveTaskRoleSessionSet(updateRoleAgentSessionStatus(
+    store.getTaskRoleSessionSet(task.id, "leader"), agent.id, "ended", now));
+  await preparer.prepareTaskWorkspace(task.id);
+  const expanded = store.getTaskWorkspace(task.id);
+  assert.equal(store.getTask(task.id).cwd, root);
+  assert.equal(expanded.root, root);
+  assertSingleLayerEntry(home, expanded.entries[0], root, "app");
+  assert.equal(nativeAgentWorkspace(expanded), root);
+  assert.equal(launch().role.workspace, root);
+  assert.equal(launch().role.cwd, undefined);
+  assert.equal(store.getTaskRoleSessionSet(task.id, "leader").history.length, 1);
+  assert.deepEqual(store.getTaskRoleSessionSet(task.id, "leader").sessions, {});
 });

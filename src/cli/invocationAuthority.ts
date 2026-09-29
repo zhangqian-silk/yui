@@ -30,6 +30,10 @@ export function assertConfigurationAuthority(
  * normal command-specific parser; an explicit foreign Task cannot pass it. */
 export function assertTaskInvocationScope(args: readonly string[], env: NodeJS.ProcessEnv): void {
   if (env.YUI_SESSION_SCOPE !== "task") return;
+  if (["setup", "start"].includes(args[0] ?? "")
+    || (args[0] === "controller" && args[1] === "start")) {
+    throw usageError("Starting Home services requires the user or current Operator, not a Task Assignment.");
+  }
   if (args[0] === "jobs" || (args[0] === "task" && ["create", "overlap"].includes(args[1] ?? ""))) {
     throw usageError("This global operation is outside the caller's Task; use its scoped Context.");
   }

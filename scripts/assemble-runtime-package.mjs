@@ -119,6 +119,14 @@ if (!lstatSync(processOwner).isFile() || lstatSync(processOwner).isSymbolicLink(
 }
 cpSync(processOwner, resolve(output, "dist/runtime/claude-process-owner"));
 chmodSync(resolve(output, "dist/runtime/claude-process-owner"), 0o755);
+if (process.platform === "darwin") {
+  const processIdentity = resolve(root, "dist/runtime/process-identity");
+  if (!lstatSync(processIdentity).isFile() || lstatSync(processIdentity).isSymbolicLink()) {
+    throw new Error("Build the regular native process identity helper before runtime assembly.");
+  }
+  cpSync(processIdentity, resolve(output, "dist/runtime/process-identity"));
+  chmodSync(resolve(output, "dist/runtime/process-identity"), 0o755);
+}
 for (const name of RUNTIME_DOCUMENTS) {
   const source = resolve(root, name);
   const sourceMetadata = lstatSync(source);
@@ -171,9 +179,10 @@ const runtimePackage = {
   bin: { yui: "./dist/cli.js" },
   files: RUNTIME_PACKAGE_FILES,
   engines: sourcePackage.engines,
-  os: sourcePackage.os,
-  cpu: sourcePackage.cpu,
-  libc: sourcePackage.libc,
+  // This archive contains host-built native executables, not a universal build.
+  os: [process.platform],
+  cpu: [process.arch],
+  ...(process.platform === "linux" ? { libc: ["glibc"] } : {}),
   keywords: sourcePackage.keywords,
   repository: sourcePackage.repository,
   bugs: sourcePackage.bugs,
@@ -221,7 +230,8 @@ if (JSON.stringify(stagedSkills) !== JSON.stringify(expectedSkills.sort())) {
 const stagedRuntime = listRegularFiles(resolve(output, "dist"));
 const expectedRuntime = [
   ...runtimeSources.map((name) => `${name.slice(0, -3)}.js`),
-  "runtime/claude-process-owner"
+  "runtime/claude-process-owner",
+  ...(process.platform === "darwin" ? ["runtime/process-identity"] : [])
 ].sort();
 if (JSON.stringify(stagedRuntime) !== JSON.stringify(expectedRuntime)) {
   throw new Error("Runtime package must contain exactly the current compiled runtime files.");

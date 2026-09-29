@@ -22,8 +22,8 @@ import {
 } from "./protocol.js";
 
 export class ControllerClientError extends Error {
-  constructor(readonly code: string, message: string) {
-    super(message);
+  constructor(readonly code: string, message: string, cause?: unknown) {
+    super(message, { cause });
     this.name = "ControllerClientError";
   }
 }
@@ -72,10 +72,14 @@ export async function readControllerDiscovery(home: string): Promise<ControllerD
     if (isNodeError(error) && error.code === "ENOENT") {
       throw new ControllerClientError(
         "CONTROLLER_NOT_RUNNING",
-        "Controller is not running."
+        withOriginalError("Controller is not running.", error),
+        error
       );
     }
-    throw invalidDiscovery();
+    if (isNodeError(error) && (error.code === "EPERM" || error.code === "EACCES")) {
+      throw controllerAccessDenied(error, "discovery record");
+    }
+    throw invalidDiscovery(error);
   }
 }
 
@@ -121,9 +125,13 @@ export async function callController(
     });
   } catch (error) {
     if (error instanceof ControllerProtocolError) {
-      throw new ControllerClientError(error.code, error.message);
+      throw new ControllerClientError(error.code, error.message, error);
     }
-    throw new ControllerClientError("INVALID_REQUEST", "Invalid controller request.");
+    throw new ControllerClientError(
+      "INVALID_REQUEST",
+      withOriginalError("Invalid controller request.", error),
+      error
+    );
   }
   return exchange(discovery.socketPath, requestLine, id, timeoutMs);
 }
@@ -250,39 +258,76 @@ function exchange(
         );
         if (response.ok) finish(response.result);
         else fail(new ControllerClientError(response.error.code, response.error.message));
-      } catch {
-        fail(invalidResponse());
+      } catch (error) {
+        fail(invalidResponse(error));
       }
     });
     socket.on("end", () => {
       if (!settled) fail(invalidResponse());
     });
-    socket.on("error", () => {
-      fail(deliveryStarted
-        ? new ControllerClientError(
-          "CONTROLLER_DELIVERY_UNKNOWN",
-          "Controller request delivery is unknown."
-        )
-        : new ControllerClientError(
-          "CONTROLLER_UNAVAILABLE",
-          "Controller is unavailable."
-        ));
+    socket.on("error", (error: Error) => {
+      fail(classifyControllerSocketError(error, deliveryStarted));
     });
   });
 }
 
-function invalidDiscovery(): ControllerClientError {
+export function classifyControllerSocketError(error: unknown, deliveryStarted: boolean): ControllerClientError {
+  if (deliveryStarted) {
+    return new ControllerClientError(
+      "CONTROLLER_DELIVERY_UNKNOWN",
+      withOriginalError("Controller request delivery is unknown.", error),
+      error
+    );
+  }
+  if (isNodeError(error) && (error.code === "EPERM" || error.code === "EACCES")) {
+    return controllerAccessDenied(error, "socket");
+  }
   return new ControllerClientError(
-    "CONTROLLER_DISCOVERY_INVALID",
-    "Controller discovery is invalid."
+    "CONTROLLER_UNAVAILABLE",
+    withOriginalError("Controller is unavailable.", error),
+    error
   );
 }
 
-function invalidResponse(): ControllerClientError {
+function controllerAccessDenied(error: NodeJS.ErrnoException, target: string): ControllerClientError {
+  return new ControllerClientError(
+    "CONTROLLER_ACCESS_DENIED",
+    `Controller ${target} access was denied (${error.code}) before any request was sent. `
+      + "In Codex, request sandbox escalation to rerun the same Yui CLI command outside the sandbox "
+      + `if authorized. If escalation is denied, report that to the user.${originalErrorDetail(error)}`,
+    error
+  );
+}
+
+function invalidDiscovery(error?: unknown): ControllerClientError {
+  return new ControllerClientError(
+    "CONTROLLER_DISCOVERY_INVALID",
+    error === undefined
+      ? "Controller discovery is invalid."
+      : withOriginalError("Controller discovery is invalid.", error),
+    error
+  );
+}
+
+function invalidResponse(error?: unknown): ControllerClientError {
   return new ControllerClientError(
     "INVALID_RESPONSE",
-    "Controller response is invalid."
+    error === undefined
+      ? "Controller response is invalid."
+      : withOriginalError("Controller response is invalid.", error),
+    error
   );
+}
+
+function withOriginalError(message: string, error: unknown): string {
+  return `${message}${originalErrorDetail(error)}`;
+}
+
+function originalErrorDetail(error: unknown): string {
+  const code = isNodeError(error) && typeof error.code === "string"
+    ? ` (${error.code})`
+    : "";
+  return ` Original error${code}: ${error instanceof Error ? error.message : String(error)}`;
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {

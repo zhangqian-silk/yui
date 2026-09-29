@@ -103,6 +103,7 @@ export {
   isLinuxProcessLive,
   listOwnedProcessTree,
   readLinuxProcessIdentity,
+  readProcessIdentity,
   type LinuxProcessIdentity,
   type SessionOwnerIdentity,
   type SessionOwnerIdentityInput

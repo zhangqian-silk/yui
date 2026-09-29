@@ -1,9 +1,39 @@
 import { lstatSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /** One process generation, shared by file-lock producers and reclaim checks. */
 export function currentFileLockOwner(): string {
-  return `${process.pid}:${readProcessStart(process.pid)}`;
+  return `${process.pid}:${currentProcessStartIdentity()}`;
+}
+
+/**
+ * Identity of the current process. Linux reads the /proc start-time field,
+ * which survives PID reuse. macOS uses libproc's process start timestamp.
+ */
+export function currentProcessStartIdentity(): string {
+  const identity = readProcessStartIdentity(process.pid);
+  if (identity === undefined) throw new Error(`Process start identity is unavailable for PID ${process.pid}.`);
+  return identity;
+}
+
+export function readProcessStartIdentity(pid: number): string | undefined {
+  if (!Number.isSafeInteger(pid) || pid < 1) return undefined;
+  if (process.platform === "linux") {
+    try { return readProcessStart(pid); } catch { return undefined; }
+  }
+  if (process.platform !== "darwin") return undefined;
+  try {
+    const identity = execFileSync(
+      fileURLToPath(new URL("../runtime/process-identity", import.meta.url)),
+      [String(pid)],
+      { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }
+    ).trim();
+    return /^(0|[1-9][0-9]{0,31})$/u.test(identity) ? identity : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -36,14 +66,23 @@ export function processGenerationIsLive(pid: number, startIdentity: string): boo
   if (!Number.isSafeInteger(pid) || pid < 1 || !/^(0|[1-9][0-9]{0,31})$/u.test(startIdentity)) {
     throw new Error(`Unverified process generation for PID ${pid}.`);
   }
-  try {
-    return readProcessStart(pid) === startIdentity;
-  } catch {
-    // PID liveness can prove a process is gone, never prove its generation.
-    try { process.kill(pid, 0); }
-    catch (error) { if (hasCode(error, "ESRCH")) return false; }
-    throw new Error(`Unverified process generation for PID ${pid}; OS identity could not be read.`);
+  const actual = readProcessStartIdentity(pid);
+  if (actual !== undefined) return actual === startIdentity;
+  // PID liveness can prove a process is gone, never prove its generation.
+  try { process.kill(pid, 0); }
+  catch (error) { if (hasCode(error, "ESRCH")) return false; }
+  throw new Error(`Unverified process generation for PID ${pid}; OS identity could not be read.`);
+}
+
+/**
+ * Owner liveness used by reconciliation. An unreadable identity for a live
+ * PID is unknown and must not authorize cleanup or release of durable custody.
+ */
+export function processOwnerIsLive(pid: number, startIdentity: string): boolean {
+  if (!Number.isSafeInteger(pid) || pid < 1 || !/^(0|[1-9][0-9]{0,31})$/u.test(startIdentity)) {
+    throw new Error(`Unverified process generation for PID ${pid}.`);
   }
+  return processGenerationIsLive(pid, startIdentity);
 }
 
 function readProcessStart(pid: number): string {

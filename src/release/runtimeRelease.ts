@@ -29,8 +29,10 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
-import { readLinuxProcessStartIdentity } from "../controller/domainIdentity.js";
-import { processGenerationIsLive } from "../core/fileLockOwner.js";
+import {
+  currentProcessStartIdentity,
+  processGenerationIsLive
+} from "../core/fileLockOwner.js";
 import { writeTextFileAtomically } from "../storage/durableFile.js";
 
 export const RELEASES_DIRECTORY = "runtime/releases";
@@ -263,6 +265,11 @@ export function writeActiveReleasePointer(
   );
 }
 
+/** Restore the absence of a pointer after a failed first activation. */
+export function removeActiveReleasePointer(home: string): void {
+  rmSync(join(resolve(home), ACTIVE_RELEASE_POINTER_PATH), { force: true });
+}
+
 /**
  * Resolves the Home's active release. Returns null when no pointer exists
  * (no immutable release selected). Fails closed when the pointer names a release that is
@@ -378,7 +385,7 @@ export function writeHandoverReceipt(home: string, receipt: HandoverReceipt): vo
 
 /** True when the exact process (PID + start identity) is still alive. */
 export function isOwnerLive(owner: HandoverOwner): boolean {
-  return readLinuxProcessStartIdentity(owner.pid) === owner.processStartIdentity;
+  return processGenerationIsLive(owner.pid, owner.processStartIdentity);
 }
 
 export function readCandidateDiscovery(
@@ -473,12 +480,7 @@ export function isForeignHandoverLockHeld(
 export function acquireHandoverLock(home: string): HandoverLock {
   const lockPath = join(resolve(home), "runtime", "handover.lock");
   mkdirSync(dirname(lockPath), { recursive: true, mode: 0o700 });
-  const startIdentity = readLinuxProcessStartIdentity(process.pid);
-  if (startIdentity === undefined) {
-    throw new Error(
-      `Cannot read Linux process start identity for activator PID ${process.pid}.`
-    );
-  }
+  const startIdentity = currentProcessStartIdentity();
   const owner = Object.freeze({
     pid: process.pid,
     processStartIdentity: startIdentity,
