@@ -142,6 +142,11 @@ kbd{background:var(--bg-3);border:1px solid var(--border);border-bottom-width:2p
 .metric.is-warning .metric-value{color:var(--warning)}
 /* Terminal panel */
 .terminal-panel{color:#e8eef6;background:#080b11;border-left:1px solid #263244;box-shadow:var(--shadow-pop)}
+.conversation-panel{color:var(--text);background:var(--bg-1);border-left:1px solid var(--border);box-shadow:var(--shadow-card)}
+.conversation-head{border-bottom:1px solid var(--border);background:var(--bg-2)}
+.conversation-eyebrow{color:var(--muted)}
+.pane-action{display:grid;place-items:center;width:34px;height:34px;padding:0;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-1);color:var(--text);font:inherit;font-size:20px;cursor:pointer}
+.pane-action:hover,.pane-action:focus-visible{border-color:var(--accent);color:var(--accent)}
 .terminal-head{background:#0c111a;border-bottom:1px solid #263244}
 .terminal-head h2{font-family:var(--font-display);font-size:15px;color:#e8eef6}
 .terminal-close{display:grid!important;color:#8b99ad;background:#111826;border-color:#263244}

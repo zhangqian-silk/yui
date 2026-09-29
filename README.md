@@ -141,6 +141,10 @@ For a visual overview, run `yui web` in another terminal. The local Web view
 shows the same tasks and pending questions and lets you send messages, answer
 questions and explicitly queue, steer or interrupt Task input. These authenticated
 Task controls use the same operations as the CLI; Web is not a separate task system.
+The task list remains at the left, task details occupy the primary reading area,
+and recorded Task messages live in a secondary discussion pane. You can resize,
+swap or hide that pane; on narrow screens it opens over the detail. Native Sessions
+remain separate from recorded Task messages.
 The detail prioritizes user input, native Session activity, Task progress and key
 conclusions; fixed file results and delivery evidence open on demand. See
 [attention and progress](docs/observability/README.md#web-attention-and-progress).

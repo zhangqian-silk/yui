@@ -6,10 +6,13 @@ export const LAYOUT_STYLES = `
 *{box-sizing:border-box}
 html{min-width:320px;font-family:var(--font-body)}
 body{margin:0;min-width:320px;height:100vh;overflow:hidden;font-size:14px}
-.app-shell{display:grid;grid-template-columns:var(--sidebar-w) minmax(0,1fr) 0;grid-template-rows:100vh;height:100vh;transition:grid-template-columns var(--motion-slow) var(--ease)}
-body.terminal-active .app-shell{grid-template-columns:var(--sidebar-w) minmax(0,1fr) var(--terminal-w)}
+.app-shell{display:grid;grid-template-areas:"sidebar main divider pane";grid-template-columns:var(--sidebar-w) minmax(0,1fr) 0 0;grid-template-rows:100vh;height:100vh;transition:grid-template-columns var(--motion-slow) var(--ease)}
+body.conversation-active .app-shell{grid-template-columns:var(--sidebar-w) minmax(0,1fr) 8px var(--pane-w)}
+body.conversation-active.pane-left .app-shell{grid-template-areas:"sidebar pane divider main";grid-template-columns:var(--sidebar-w) var(--pane-w) 8px minmax(0,1fr)}
+body.terminal-active .app-shell,body.terminal-active.pane-left .app-shell{grid-template-areas:"sidebar main divider pane";grid-template-columns:var(--sidebar-w) minmax(0,1fr) 0 var(--terminal-w)}
+body.pane-resizing .app-shell{transition:none}
 /* Sidebar = persistent work index */
-.sidebar{display:flex;flex-direction:column;min-width:0;min-height:0;height:100vh;padding:16px 14px 14px}
+.sidebar{grid-area:sidebar;display:flex;flex-direction:column;min-width:0;min-height:0;height:100vh;padding:16px 14px 14px}
 .sidebar-brand{display:flex;gap:10px;align-items:center;flex:none;margin-bottom:14px}
 .brand-text{display:grid;gap:3px;min-width:0;flex:1}
 .sidebar .search{flex:none;margin-bottom:10px}
@@ -27,7 +30,7 @@ body.terminal-active .app-shell{grid-template-columns:var(--sidebar-w) minmax(0,
 .catalog-pager button:disabled{opacity:.45;cursor:default}
 #catalog-attention-reset{grid-column:1/-1}
 /* Main column = top bar + optional section nav + reading surface */
-.main-col{display:flex;flex-direction:column;min-width:0;min-height:0;height:100vh;overflow-y:auto;scrollbar-gutter:stable}
+.main-col{grid-area:main;display:flex;flex-direction:column;min-width:0;min-height:0;height:100vh;overflow-y:auto;scrollbar-gutter:stable}
 .topbar{position:sticky;top:0;z-index:30;flex:none;display:flex;align-items:center;justify-content:space-between;gap:18px;padding:11px max(var(--page-space),calc((100% - 1100px) / 2));background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--border)}
 .topbar-leading{display:flex;align-items:center;gap:14px;min-width:0}
 .breadcrumb{display:flex;align-items:baseline;gap:8px;min-width:0}
@@ -43,8 +46,32 @@ body.detail-active .detail-tabs{display:flex}
 .detail{flex:1;min-height:0;padding:16px max(var(--page-space),calc((100% - 1100px) / 2)) 72px;min-width:0}
 .detail:focus-visible{outline:none}
 .anchor{scroll-margin-top:calc(var(--topbar-h,44px) + var(--tabs-h,38px))}
-/* Terminal panel */
-.terminal-panel{grid-column:3;min-width:0;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+/* Adjustable discussion panel; the separator belongs to the task view, not Task state. */
+.pane-divider{grid-area:divider;align-self:stretch;width:8px;min-width:0;cursor:col-resize;position:relative;touch-action:none;z-index:31}
+.pane-divider[hidden]{display:none}
+.pane-divider span{position:absolute;inset:0 3px;background:var(--border-strong);transition:background var(--motion-fast)}
+.pane-divider:hover span,.pane-divider:focus-visible span,body.pane-resizing .pane-divider span{background:var(--accent)}
+.pane-divider:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.conversation-panel{grid-area:pane;min-width:0;height:100vh;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.conversation-panel[hidden]{display:none}
+.conversation-head{flex:none;min-height:72px;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 16px}
+.conversation-head>div:first-child{min-width:0}
+.conversation-eyebrow{display:block;font-size:10px;line-height:1.4}
+.conversation-head h2{margin:4px 0 0;font-size:16px;font-family:var(--font-display);line-height:1.25}
+.conversation-head-actions{display:flex;gap:4px;align-items:center}
+.conversation-content{display:flex;flex:1;flex-direction:column;min-height:0;padding:14px;gap:14px}
+.conversation-feed{display:flex;flex:1;flex-direction:column;gap:10px;min-height:0;overflow-y:auto;scrollbar-gutter:stable;padding:2px 2px 12px}
+.conversation-item{flex:none;padding:11px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-2);min-width:0;overflow-wrap:anywhere}
+.conversation-item.is-user{border-color:var(--accent-line);background:var(--accent-soft)}
+.conversation-item-head{display:flex;justify-content:space-between;gap:10px;color:var(--muted);font-size:11px;margin-bottom:8px}
+.conversation-item-head time{white-space:nowrap}
+.conversation-item .rich-text{font-size:13px}
+.conversation-compose{flex:none;max-height:55%;overflow-y:auto}
+.conversation-compose h3{margin:2px 0;font-size:13px}
+.conversation-compose form{display:grid;gap:9px}
+.conversation-compose textarea{min-height:76px}
+/* Native Session occupies the pane temporarily; it is not the Task message feed. */
+.terminal-panel{grid-area:pane;min-width:0;height:100vh;display:flex;flex-direction:column;overflow:hidden}
 .terminal-panel[hidden]{display:none}
 .terminal-head{flex:none;height:62px;display:flex;align-items:center;justify-content:space-between;gap:14px;padding:10px 14px}
 .terminal-head>div{display:flex;align-items:center;gap:12px;min-width:0}
