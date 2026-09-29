@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { nativeExecutable } from "../runtime/nativeExecutable.js";
 
 import { readLinuxProcessStartIdentity } from "../controller/domainIdentity.js";
 import {
@@ -114,7 +114,7 @@ function parseDarwinController(line: string): DarwinController | undefined {
 function runDarwinIdentityHelper(args: readonly string[]): string | undefined {
   try {
     return execFileSync(
-      fileURLToPath(new URL("../runtime/process-identity", import.meta.url)),
+      nativeExecutable("process-identity"),
       [...args],
       { encoding: "utf8", timeout: 2000, maxBuffer: 1024 * 1024,
         stdio: ["ignore", "pipe", "ignore"] }

@@ -45,9 +45,15 @@ protection and valid exact-identity caches remain normal runtime behavior.
 
 Stable releases use npm `latest`; prereleases use `next`, never the stable
 default. The release workflow builds one runtime archive, verifies it across
-supported Node versions, publishes that exact archive to npm, then creates the
+supported Node versions on Linux x64, macOS x64 and macOS arm64, publishes that exact archive to npm, then creates the
 matching GitHub Release. Every release carries the runtime archive, checksum and
 provenance. A stable tag becomes GitHub latest; a prerelease does not.
+
+Platform jobs compile Yui's native helpers from the same source commit.
+The archive includes every supported helper under `dist/runtime/native/`;
+runtime selection uses the exact OS and architecture, without install scripts
+or downloading executable code on first use. Dependencies such as SQLite
+remain ordinary npm dependencies installed for the consumer's platform.
 
 The GitHub Release job uploads only missing assets to a draft, downloads and
 compares every asset against the tested artifact, and never overwrites a

@@ -98,8 +98,9 @@ do not add prose-matching tests or claim model validation from static checks.
 
 ## CI and release
 
-`ci.yml` builds once and runs core plus one assembled-package normal-path smoke
-on every PR, without another lint or broad regression suite.
+`ci.yml` runs core plus one assembled-package normal-path smoke per supported
+platform (Linux x64, Mac Intel and Apple Silicon) on every PR, without another
+lint or broad regression suite.
 `node scripts/smoke-runtime-package.mjs --assembled .release-stage` exercises
 the actual CLI/Controller/Host/SQLite and isolated tmux, replacing only the
 external Provider with a deterministic fixture. It covers setup, durable input
@@ -110,7 +111,9 @@ and grouped viewers without affecting a similarly named neighboring session.
 The fixture owns a fresh Home and its PATH, installs cleanup before setup,
 and never calls an installed model Agent.
 
-`publish.yml` runs the same smoke against the freshly installed package through
+`publish.yml` builds one archive containing all three native targets and runs
+the same smoke on each platform and supported Node version against that exact
+freshly installed package through
 `YUI_INSTALLED_ROOT`, adding actual npm-bin, dependency, supported Node version,
 artifact and provenance boundaries. This validates runtime integration, not
 real-model behavior. Pure contract and safety tests remain in `test/core`;

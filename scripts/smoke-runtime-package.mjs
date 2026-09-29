@@ -70,8 +70,16 @@ try {
   })();
 
   const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  assert.deepEqual(packageJson.os, [process.platform]);
-  assert.deepEqual(packageJson.cpu, [process.arch]);
+  assert.ok(packageJson.os.includes(process.platform));
+  assert.ok(packageJson.cpu.includes(process.arch));
+  // Exercise the installed binary, not a checkout helper or a fake Provider.
+  const nativeRoot = join(root, "dist/runtime/native", `${process.platform}-${process.arch}`);
+  assert.equal(execFileSync(join(nativeRoot, "claude-process-owner"),
+    ["/bin/echo", "native-ready"], { encoding: "utf8" }).trim(), "native-ready");
+  if (process.platform === "darwin") {
+    assert.match(execFileSync(join(nativeRoot, "process-identity"), [String(process.pid)],
+      { encoding: "utf8" }).trim(), /^[1-9][0-9]+$/u);
+  }
   // Follow the actual instructions' local Markdown links, including cross-Role
   // references, in the installed tree. Source-only references cannot satisfy
   // this check; prose/heading changes do not invalidate the contract.

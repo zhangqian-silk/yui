@@ -84,8 +84,9 @@ const outputIndex = process.argv.indexOf("--output");
 if (outputIndex < 0 || outputIndex + 1 >= process.argv.length) {
   throw new Error("assemble-runtime-package requires --output <directory>.");
 }
-if (process.argv.length !== 4) {
-  throw new Error("assemble-runtime-package accepts only --output <directory>.");
+const allPlatforms = process.argv[4] === "--all-platforms";
+if (process.argv.length !== (allPlatforms ? 5 : 4)) {
+  throw new Error("assemble-runtime-package accepts --output <directory> [--all-platforms].");
 }
 
 const output = resolve(root, process.argv[outputIndex + 1]);
@@ -113,19 +114,22 @@ for (const sourceName of runtimeSources) {
   cpSync(source, destination);
   chmodSync(destination, builtName === "cli.js" ? 0o755 : 0o644);
 }
-const processOwner = resolve(root, "dist/runtime/claude-process-owner");
-if (!lstatSync(processOwner).isFile() || lstatSync(processOwner).isSymbolicLink()) {
-  throw new Error("Build the regular native Claude process owner before runtime assembly.");
-}
-cpSync(processOwner, resolve(output, "dist/runtime/claude-process-owner"));
-chmodSync(resolve(output, "dist/runtime/claude-process-owner"), 0o755);
-if (process.platform === "darwin") {
-  const processIdentity = resolve(root, "dist/runtime/process-identity");
-  if (!lstatSync(processIdentity).isFile() || lstatSync(processIdentity).isSymbolicLink()) {
-    throw new Error("Build the regular native process identity helper before runtime assembly.");
+const nativeTargets = allPlatforms
+  ? ["linux-x64", "darwin-x64", "darwin-arm64"]
+  : [`${process.platform}-${process.arch}`];
+const nativeFiles = nativeTargets.flatMap(target => [
+  `runtime/native/${target}/claude-process-owner`,
+  ...(target.startsWith("darwin-") ? [`runtime/native/${target}/process-identity`] : [])
+]);
+for (const name of nativeFiles) {
+  const source = resolve(root, "dist", name);
+  if (!lstatSync(source).isFile() || lstatSync(source).isSymbolicLink()) {
+    throw new Error(`Build the regular native executable before runtime assembly: ${name}.`);
   }
-  cpSync(processIdentity, resolve(output, "dist/runtime/process-identity"));
-  chmodSync(resolve(output, "dist/runtime/process-identity"), 0o755);
+  const destination = resolve(output, "dist", name);
+  mkdirSync(dirname(destination), { recursive: true, mode: 0o755 });
+  cpSync(source, destination);
+  chmodSync(destination, 0o755);
 }
 for (const name of RUNTIME_DOCUMENTS) {
   const source = resolve(root, name);
@@ -179,10 +183,9 @@ const runtimePackage = {
   bin: { yui: "./dist/cli.js" },
   files: RUNTIME_PACKAGE_FILES,
   engines: sourcePackage.engines,
-  // This archive contains host-built native executables, not a universal build.
-  os: [process.platform],
-  cpu: [process.arch],
-  ...(process.platform === "linux" ? { libc: ["glibc"] } : {}),
+  os: allPlatforms ? ["linux", "darwin"] : [process.platform],
+  cpu: allPlatforms ? ["x64", "arm64"] : [process.arch],
+  ...(allPlatforms || process.platform === "linux" ? { libc: ["glibc"] } : {}),
   keywords: sourcePackage.keywords,
   repository: sourcePackage.repository,
   bugs: sourcePackage.bugs,
@@ -230,8 +233,7 @@ if (JSON.stringify(stagedSkills) !== JSON.stringify(expectedSkills.sort())) {
 const stagedRuntime = listRegularFiles(resolve(output, "dist"));
 const expectedRuntime = [
   ...runtimeSources.map((name) => `${name.slice(0, -3)}.js`),
-  "runtime/claude-process-owner",
-  ...(process.platform === "darwin" ? ["runtime/process-identity"] : [])
+  ...nativeFiles
 ].sort();
 if (JSON.stringify(stagedRuntime) !== JSON.stringify(expectedRuntime)) {
   throw new Error("Runtime package must contain exactly the current compiled runtime files.");

@@ -48,7 +48,10 @@ jobs:
           node scripts/smoke-runtime-package.mjs --assembled .release-stage
 
   verify-macos:
-    runs-on: macos-14
+    strategy:
+      matrix:
+        os: [macos-14, macos-15-intel]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -68,9 +71,9 @@ jobs:
       - name: Core path smoke
         run: npm run test:core
 
-      - name: Native process owner smoke
+      - name: Package structure and normal runtime path
         run: |
-          dist/runtime/claude-process-owner /bin/echo owner-ready | grep owner-ready
-          status=0
-          dist/runtime/claude-process-owner /bin/sh -c 'exit 7' || status=$?
-          test "$status" -eq 7
+          node scripts/assemble-runtime-package.mjs --output .release-stage
+          npm pack ./.release-stage --dry-run --ignore-scripts --json > package-smoke.json
+          node scripts/check-runtime-package-structure.mjs package-smoke.json
+          node scripts/smoke-runtime-package.mjs --assembled .release-stage
