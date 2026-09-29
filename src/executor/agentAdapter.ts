@@ -212,9 +212,6 @@ export interface AgentAdapter<TConfig extends RoleAgentConfig = RoleAgentConfig>
 
 const PROBE_TIMEOUT_MS = 2_000;
 const PROBE_MAX_BYTES = 1024 * 1024;
-// Offline producer/type evidence, not a claim of live account/model testing.
-// Keep the existing minimum support floors separate: see provider-protocol-contracts.md.
-const AUDITED_PRODUCER_VERSIONS = { codex: "0.153.4", claude: "2.1.270" } as const;
 
 abstract class BaseAdapter<TConfig extends RoleAgentConfig> implements AgentAdapter<TConfig> {
   abstract readonly id: AgentAdapterId;
@@ -873,13 +870,6 @@ export function inspectAgentCapabilities(
       reason: `${adapter.label} CLI is missing required capabilities: ${missing.join(", ")}.`,
       probedAt: at
     }, fields, at, warnings);
-  }
-  const audited = adapter.id === "acp" ? undefined : AUDITED_PRODUCER_VERSIONS[adapter.id];
-  if (audited !== undefined && compareVersions(version, audited) > 0) {
-    warnings.push(
-      `Installed ${adapter.label} version ${version} is newer than the latest audited producer `
-      + `${audited}; required CLI flags were detected, not live protocol compatibility.`
-    );
   }
   return snapshot(agent, adapter, {
     status: "installed", command: agent.command, version, probedAt: at

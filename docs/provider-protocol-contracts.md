@@ -45,12 +45,15 @@ and `SandboxMode`. A missing requirements envelope is not the documented
 `AskForApproval` union also contains structured `granular` policies, which Yui's
 scalar picker cannot represent: valid structured entries narrow the choices
 without causing the entire metadata query to fail or inventing a scalar alias.
-Doctor now names the versions **audited producer versions**, not "latest tested
-versions": generated types and shipped protocol evidence are not live execution.
+The versions above record historical producer evidence, not live execution or
+an upper support bound. Doctor does not warn merely because the installed
+version is newer than that evidence.
 The existing adapter admission floors remain Codex **0.150.1** and Claude
 **2.1.207**. This audit does not establish a higher minimum, prove every version
 above the floor, or establish that an older admitted version necessarily fails.
-Doctor checks required CLI flags; native discovery reports its own failures.
+Doctor reports the observed CLI version and checks required CLI flags, explicitly
+limiting this to installation/help inspection rather than model, account or full
+protocol validation; native discovery reports its own failures.
 ACP continues to negotiate protocol support, not a product version allowlist.
 
 The official OpenAI Configuration Reference was also retrieved through the
