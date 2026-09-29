@@ -185,7 +185,9 @@ const runtimePackage = {
   engines: sourcePackage.engines,
   os: allPlatforms ? ["linux", "darwin"] : [process.platform],
   cpu: allPlatforms ? ["x64", "arm64"] : [process.arch],
-  ...(allPlatforms || process.platform === "linux" ? { libc: ["glibc"] } : {}),
+  // npm applies libc constraints to macOS too, where libc is undefined.
+  // A combined archive must not carry the Linux-only installation constraint.
+  ...(!allPlatforms && process.platform === "linux" ? { libc: ["glibc"] } : {}),
   keywords: sourcePackage.keywords,
   repository: sourcePackage.repository,
   bugs: sourcePackage.bugs,
