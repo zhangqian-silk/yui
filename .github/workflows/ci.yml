@@ -23,6 +23,9 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    strategy:
+      matrix:
+        node: [24, 26]
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -30,7 +33,7 @@ jobs:
       - name: Install dependencies
         uses: ./.github/actions/install-repository-dependencies
         with:
-          node-version: "24"
+          node-version: ${{ matrix.node }}
 
       - name: Core path smoke
         run: npm run test:core

@@ -43,7 +43,7 @@ not from terminal windows you juggle or details you have to remember.
 ## Quick start
 
 You need Linux x64 (glibc) or macOS (x64 or Apple Silicon), Git, tmux, and
-Node.js `^20.17.0`, `^22.9.0` or `^24.0.0`. On macOS install tmux with
+Node.js `^20.17.0`, `^22.9.0`, `^24.0.0` or `^26.0.0`. On macOS install tmux with
 `brew install tmux`. For the simplest setup, have Codex CLI or Claude Code CLI
 installed and ready to use with your own account. Yui coordinates those
 Agents; it does not supply model access.

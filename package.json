@@ -1,6 +1,6 @@
 {
   "name": "@zq-silk/yui",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Local control plane for long-running native agent CLI sessions backed by tmux.",
   "license": "MIT",
   "private": true,
@@ -34,7 +34,7 @@
     "pack:dry-run": "npm run build && node scripts/assemble-runtime-package.mjs --output .release-stage && npm pack ./.release-stage --dry-run --ignore-scripts --cache ./.npm-cache"
   },
   "engines": {
-    "node": "^20.17.0 || ^22.9.0 || ^24.0.0"
+    "node": "^20.17.0 || ^22.9.0 || ^24.0.0 || ^26.0.0"
   },
   "os": [
     "linux",
@@ -70,7 +70,7 @@
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "better-sqlite3": "^12.11.1",
-    "node-pty": "^1.1.0",
+    "node-pty": "1.2.0-beta.15",
     "smol-toml": "1.8.0",
     "ws": "^8.21.1"
   }
