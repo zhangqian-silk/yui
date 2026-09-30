@@ -166,7 +166,14 @@ test("source-authorized ordinary archive survives ending its caller and records 
         ...f.set.sessions.codex, status: "ended", endReason: "stopped"
       } } });
     } },
-    cleanupTaskForArchive: async () => ({ taskId: "task-1", status: "removed" })
+    cleanupTaskForArchive: async () => {
+      const stoppedSet = f.store.getTaskRoleSessionSet("task-1", "leader");
+      assert.deepEqual(stoppedSet.sessions, {},
+        "retire the stopped caller before generic cleanup can stop it a second time");
+      assert.equal(stoppedSet.history.at(-1).nativeSessionId, "leader-current");
+      assert.equal(stoppedSet.history.at(-1).status, "ended");
+      return { taskId: "task-1", status: "removed" };
+    }
   };
   const request = { sourceMessage: source.id, purpose: source.body, requestId: "archive-once" };
   assert.throws(() => f.command(["archive", "task-1", "--integrated"]), /source-authorized/);

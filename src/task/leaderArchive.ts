@@ -7,6 +7,7 @@ import { archiveExecutionChecks, archiveSettlementChecks } from "./archivePrefli
 import { admitLeaderArchive, assertLeaderArchiveAdmission } from "./leaderArchiveAuthority.js";
 import { assertTaskRemoteDeliveryIntegrated, createTaskRemoteDeliveryProof } from "./remoteDeliveryService.js";
 import type { TaskReviewCandidate } from "../review/reviewRound.js";
+import { selectNewTaskRoleSession } from "../executor/agentExecutor.js";
 
 export type LeaderArchiveRequest = Readonly<{
   sourceMessage: string;
@@ -97,6 +98,19 @@ export async function archiveLeaderTask(
   if (!started) return { taskId, requestId: request.requestId, status: "unknown", replayed: true };
   try {
     await coordinator.runtime.stopTaskRoleSessions(taskId, ["leader"]);
+    store.transaction(tx => {
+      assertLeaderArchiveAdmission(tx, taskId, admission);
+      const stopped = tx.getTaskRoleSessionSet(taskId, "leader");
+      const current = stopped?.sessions[stopped.activeAgentId];
+      if (!stopped || current?.nativeSessionId !== admission.source.nativeSessionId
+        || current.status !== "ended" || current.endReason !== "stopped") {
+        throw new Error("Leader Session changed before archive runtime retirement.");
+      }
+      // Retain the exact stopped caller in history and clear its resumable
+      // binding. Generic workspace cleanup must not stop that caller again:
+      // the first verified stop already released its physical owner records.
+      tx.saveTaskRoleSessionSet(selectNewTaskRoleSession(stopped, stopped.activeAgentId, new Date()));
+    });
     const cleanup = await coordinator.cleanupTaskForArchive(taskId, "integrated");
     if (cleanup.status !== "removed") throw new Error(cleanup.error ?? `Archive cleanup ${cleanup.status}.`);
     runTaskCommand(["archive", taskId, "--integrated"], store, {
