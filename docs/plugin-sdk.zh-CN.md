@@ -66,7 +66,8 @@ Leader 先通过稳定 `capability search/describe` 读取当前目录和契约�
 Task-local 管理权限不等于执行信任：可执行包仍逐阶段核对下面定义的精确
 `plugin.execute` grant，源码改变后不会继承旧摘要授权。资源、网络、全局
 配置及核心 namespace 的边界不变；已有授权充分时不重复批准，缺少新权限则
-报告具体缺口，不冒充 Operator 或自己签发 grant。
+报告具体缺口，不冒充 Operator 或虚构授权。原始用户授权已覆盖时，可使用
+[有界 Leader Grant](../skills/yui-leader/references/authorization.md)，无需 Operator 再次签字。
 
 验证失败由 Agent 保存原错误并判断修复；不可把 unknown／部分效果自动重跑。
 使用新增能力取得实际业务结果后，通过 `artifact.save` 将独立内容保存为文件产物
@@ -245,7 +246,9 @@ package scope 替代资源授信。因 trusted-local 不约束直接宿主效果
 必须允许 `irreversibilityCeiling: irreversible`：这是能力上限，不表示每次调用
 实际产生不可逆效果。`none/reversible` 不得解释为无限本机执行权。
 
-由获用户明确授权的 Operator 使用原 grant 入口，例如只允许一次验证：
+获明确授权的 Operator 保留原 grant 入口；当前 delivery Leader 也可使用同一入口，
+附上 `--source-message`、逐字授权引文 `--purpose`、稳定 `--request-id`、有效期及有限次数，
+范围必须来自真实用户授权。以下是 Operator 只允许一次验证的示例：
 
 ```text
 <checkout>/output/dev/bin/yui task grant issue T --action plugin.execute --param pluginId=demo --param digest=SOURCE_SHA256 --param environmentRef=T/P --param trust=trusted-local --param phase=validate --max-uses 1 --irreversibility-ceiling irreversible

@@ -311,7 +311,8 @@ async function runReleaseWorkflowLocked(
     if (grant === null) {
       return finish(workflow, "unauthorized", "unauthorized:grant-missing", attempted);
     }
-    const params = resolveParams(workflow, plan);
+    const params = grant.authorizationSource === undefined ? resolveParams(workflow, plan)
+      : Object.freeze({ ...resolveParams(workflow, plan), sourceCommit: workflow.source.commit });
     const effectiveIrreversibility = effectiveStepIrreversibility(plan);
     const decision = checkGrant(grant, {
       action: grantAction(plan),

@@ -2,6 +2,11 @@
 
 # Storage baseline 1.0
 
+Current storage is 1.2. The declared 1.1 → 1.2 transition adds optional
+CapabilityGrant authorization-source evidence and native-human input/archive
+audit records. Existing valid Operator grants remain unchanged; migration does
+not infer or invent past user authority. The SQL layout is unchanged.
+
 Yui 1.0.0 starts from one clean persistent contract. The package version,
 storage schema, record envelopes and Controller protocol are separate
 identities; none is inferred from another.

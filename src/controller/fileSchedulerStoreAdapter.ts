@@ -6,6 +6,7 @@ import { settleGlobalRetryInput } from "../message/globalProviderRetry.js";
 import { interruptThenTerminalState, prepareMessageContinuations } from "../message/messageContinuation.js";
 import { assertExecutionEnvironmentCurrent } from "../runtime/executionEnvironment.js";
 import { deferProviderRetry, providerRetryPending, providerRetryProjection, recordProviderFailure } from "../runtime/providerRetry.js";
+import { createTaskMessage } from "../message/message.js";
 import {
   AgentHostObservationDeferred,
   recordAgentHostConnection,
@@ -1639,6 +1640,31 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         }
       }
       binding = admitOwnedProviderInput(store, binding, input);
+      // The Host's human console is a user ingress. Persist its original text
+      // before the Provider write; provider-visible userMessage items alone
+      // are NOT proof of human authorship (managed prompts use those too).
+      // This shares the exact writer/session admission and its transaction.
+      if (input.authorityOwner === "human" && input.roleName === "leader"
+        && input.runId === undefined && input.boundedText !== undefined) {
+        const prior = store.listEvents(input.taskId).find(event =>
+          event.type === "message.native-user-input" && event.payload.attemptId === input.attemptId);
+        if (prior !== undefined) {
+          const message = store.listMessages(input.taskId).find(entry => entry.id === prior.payload.messageId);
+          if (message?.body !== input.boundedText || prior.payload.nativeSessionId !== input.nativeSessionId) {
+            throw new AgentHostProviderTurnFenceError("Native user input identity was reused with different content.");
+          }
+        } else {
+          const message = createTaskMessage(store.nextMessageId(input.taskId), input.taskId,
+            input.boundedText, "user", { type: "user" }, input.now, { intent: "record" });
+          store.saveMessage(input.taskId, message);
+          store.saveEvent(input.taskId, createTaskEvent(store.nextEventId(input.taskId), input.taskId,
+            "message.native-user-input", {
+              messageId: message.id, attemptId: input.attemptId, nativeSessionId: input.nativeSessionId,
+              authorityEpoch: String(input.authorityEpoch), holderId: input.holderId
+            }, input.now));
+          // No mailbox enqueue: this very input is already being delivered.
+        }
+      }
       store.saveTaskRoleSessionSet(updateTaskRoleProviderRuntime(
         sessions,
         beginProviderTurn(binding, {

@@ -5,6 +5,7 @@ import {
   requirePositiveInteger
 } from "../domain/validation.js";
 import { validateTaskRecordReference } from "../task/taskRecordReference.js";
+import type { TaskAuthorizationSource } from "./taskAuthorization.js";
 
 export const CAPABILITY_GRANT_SCHEMA_VERSION = 1 as const;
 
@@ -42,6 +43,7 @@ export type CapabilityGrant = Readonly<{
   taskId: string;
   /** The authorizing user who granted the capability. */
   granter: string;
+  authorizationSource?: TaskAuthorizationSource;
   scope: CapabilityGrantScope;
   /** Opaque allowed action names; the release-workflow catalog arrives later. */
   actions: readonly string[];
@@ -81,6 +83,7 @@ export function createCapabilityGrant(
   taskId: string,
   input: Readonly<{
     granter: string;
+    authorizationSource?: TaskAuthorizationSource;
     scope?: CapabilityGrantScope;
     actions: readonly string[];
     parameterBounds?: Readonly<Record<string, readonly string[]>>;
@@ -96,6 +99,7 @@ export function createCapabilityGrant(
     id: validateTaskRecordReference({ taskId, localId: id }, "capabilityGrant").localId,
     taskId: requireIdentity(taskId, "Task id"),
     granter: requireText(input.granter, "Capability grant granter"),
+    ...(input.authorizationSource === undefined ? {} : { authorizationSource: input.authorizationSource }),
     scope: normalizeScope(input.scope, taskId),
     actions: normalizeActions(input.actions),
     parameterBounds: normalizeParameterBounds(input.parameterBounds),
@@ -210,6 +214,17 @@ export function validateCapabilityGrant(grant: CapabilityGrant): CapabilityGrant
   validateTaskRecordReference({ taskId: grant.taskId, localId: grant.id }, "capabilityGrant");
   requireIdentity(grant.taskId, "Task id");
   requireText(grant.granter, "Capability grant granter");
+  if (grant.authorizationSource !== undefined) {
+    const source = grant.authorizationSource;
+    if (typeof source !== "object" || source === null
+      || Object.keys(source).sort().join(",") !== "digest,messageId,nativeSessionId,purpose") {
+      throw new Error("Capability grant authorization source is invalid.");
+    }
+    validateTaskRecordReference({ taskId: grant.taskId, localId: source.messageId }, "message");
+    if (!/^[a-f0-9]{64}$/u.test(source.digest)) throw new Error("Authorization source digest is invalid.");
+    requireText(source.purpose, "Authorization purpose");
+    requireText(source.nativeSessionId, "Authorization native Session");
+  }
   validateScope(grant.scope, grant.taskId);
   normalizeActions(grant.actions);
   normalizeParameterBounds(grant.parameterBounds);

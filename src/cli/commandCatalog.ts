@@ -508,8 +508,8 @@ const taskChildren: readonly NodeInput[] = [
   {
     name: "archive",
     summary: "Archive a terminal Task; explicit --force commits despite delivery/cleanup warnings, retaining unsafe resources.",
-    usage: "yui task archive <id> (--integrated|--abandon) [--force]",
-    options: ["--integrated", "--abandon", "--force"]
+    usage: "yui task archive <id> (--integrated|--abandon) [--force] [--source-message <id> --purpose <verbatim-authorization> --request-id <id>]",
+    options: ["--integrated", "--abandon", "--force", "--source-message", "--purpose", "--request-id"]
   },
   { name: "reconcile", summary: "Run one immediate Controller reconciliation.", usage: "yui task reconcile <id>" },
   {
@@ -631,14 +631,14 @@ const taskChildren: readonly NodeInput[] = [
   },
   {
     name: "grant",
-    summary: "Manage capability grants for a Task. Issue and revoke require the authenticated global Operator session.",
+    summary: "Manage Task grants as Operator, or bounded source-authorized grants as the current delivery Leader.",
     sections: [{ id: "manage", title: "Commands", entries: ["issue", "show", "list", "revoke"] }],
     children: [
       {
         name: "issue",
-        summary: "Issue a capability grant to a Task. Requires the authenticated global Operator session; the granter is bound to it.",
+        summary: "Issue as Operator, or as current delivery Leader with --source-message, --purpose, --request-id, exact scope, expiry and finite uses.",
         usage: "yui task grant issue <task> --action <name> (repeatable) [--scope-project <id>...] [--scope-repo <owner/name>...] [--scope-package <name>...] [--scope-home <path>] [--param <name=v1,v2>...] [--expires-at <iso-8601>] [--max-uses <int>] [--irreversibility-ceiling <none|reversible|irreversible>]",
-        options: ["--action", "--scope-project", "--scope-repo", "--scope-package", "--scope-home", "--param", "--expires-at", "--max-uses", "--irreversibility-ceiling"]
+        options: ["--action", "--scope-project", "--scope-repo", "--scope-package", "--scope-home", "--param", "--expires-at", "--max-uses", "--irreversibility-ceiling", "--source-message", "--purpose", "--request-id"]
       },
       {
         name: "show",
@@ -652,7 +652,7 @@ const taskChildren: readonly NodeInput[] = [
       },
       {
         name: "revoke",
-        summary: "Revoke a capability grant. Requires the authenticated global Operator session; the revoker is bound to it.",
+        summary: "Revoke as Operator, or this Task's current delivery Leader for a Leader-issued grant.",
         usage: "yui task grant revoke <task> <grant-id>",
         options: []
       }

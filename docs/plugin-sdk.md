@@ -87,7 +87,9 @@ changed source does not inherit an old digest's authorization. The boundaries
 around resources, network, global configuration and the core namespace are
 unchanged; when existing authority is sufficient it is not re-approved, and when a
 new permission is missing the specific gap is reported rather than impersonating
-the Operator or self-issuing a grant.
+the Operator or inventing user authorization. An original user authorization
+can support a bounded [Leader grant](../skills/yui-leader/references/authorization.md)
+without another Operator signature.
 
 On validation failure the Agent preserves the original error and judges the fix;
 an unknown or partial effect must not be auto-rerun. After using a new capability
@@ -323,8 +325,10 @@ Because trusted-local does not bound direct host effects, this grant must allow
 statement that every call actually produces an irreversible effect. `none` or
 `reversible` must not be read as unlimited local execution authority.
 
-An Operator explicitly authorized by the user uses the original grant ingress,
-for example to allow a single validation:
+An Operator explicitly authorized by the user uses the original grant ingress.
+A current delivery Leader can use that same ingress with `--source-message`,
+a verbatim `--purpose`, stable `--request-id`, expiry and finite uses, limited
+to the user's actual authorization. For example, the Operator path for a single validation:
 
 ```text
 <checkout>/output/dev/bin/yui task grant issue T --action plugin.execute --param pluginId=demo --param digest=SOURCE_SHA256 --param environmentRef=T/P --param trust=trusted-local --param phase=validate --max-uses 1 --irreversibility-ceiling irreversible

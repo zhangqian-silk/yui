@@ -39,6 +39,16 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   targetChecksum: CURRENT_SCHEMA_CHECKSUM,
   sql: "",
   dataMigration: "task-main-workspace"
+}, {
+  fromVersion: "1.1",
+  toVersion: "1.2",
+  name: "task-authorization-source",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // New grants can carry source evidence. Valid historical Operator grants
+  // remain unchanged; migration must not invent authorization provenance.
+  sql: ""
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {

@@ -164,6 +164,7 @@ export type TaskCommandOptions = Readonly<{
   actualTaskReviewCandidate?: TaskReviewCandidate;
   /** CLI-frozen remote merge coverage checked before destructive archive cleanup. */
   archiveRemoteDeliveryProof?: TaskRemoteDeliveryProof;
+  archiveLeaderAdmission?: import("../task/leaderArchiveAuthority.js").LeaderArchiveAdmission;
   /** Issue 07: CLI-verified delta-recheck assessment for `task review request --delta-recheck`. */
   deltaRecheckPreflight?: DeltaRecheckPreflight;
   /** Issue 07: per-Project diff text for a delta-recheck dispatch, digest-verified. */

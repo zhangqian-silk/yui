@@ -87,7 +87,9 @@ is not Candidate acceptance, Review, Integration or Task completion.
 
 ## Archive separately
 
-Completion does not authorize archive. The Operator obtains authorization for
+Completion does not authorize archive. A delivery Leader with original user
+authorization may use [ordinary archive](../../yui-leader/references/authorization.md);
+this grants no force or abandonment authority. Otherwise the Operator obtains authorization for
 the exact Task, checks archive eligibility, then uses `--integrated` for verified
 merged delivery or `--abandon` for deliberate non-delivery. General archive
 approval never implies `--force` authority. Preserve the Task record.

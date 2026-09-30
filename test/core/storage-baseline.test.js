@@ -13,13 +13,14 @@ import { createConfiguredAgent } from "../../dist/agent/agent.js";
 import { createRole, createRoleAgentBinding } from "../../dist/role/role.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
 import { createRoleSessionSet, recordRoleAgentSession, updateRoleAgentSessionStatus } from "../../dist/executor/agentExecutor.js";
+import { createCapabilityGrant } from "../../dist/grant/capabilityGrant.js";
 
-test("fresh storage creates only the current 1.1 contract", () => {
-  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.1");
+test("fresh storage creates only the current 1.2 contract", () => {
+  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.2");
   const db = new Database(":memory:");
   try {
     schema.initializeSqliteSchema(db);
-    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.1");
+    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.2");
     assert.equal(db.prepare("SELECT count(*) AS n FROM storage_schema").get().n, 1);
     assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='schema_migrations'").get(), undefined);
     for (const name of ["coordination_locks", "work_item_candidates", "idx_input_open"]) {
@@ -45,6 +46,26 @@ test("foreign non-empty SQLite state cannot be initialized over", () => {
     assert.throws(() => schema.initializeSqliteSchema(db), /empty/i);
     assert.deepEqual(db.serialize(), before);
   } finally { db.close(); }
+});
+
+test("1.1 upgrade preserves valid Operator authority without inventing user provenance", async t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-source-upgrade-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const at = new Date("2026-09-01T00:00:00Z");
+  const store = new SqliteTaskStore(home);
+  store.saveTask(createTask("task-1", "Recorded authority", at));
+  const grant = createCapabilityGrant("capability-grant-1", "task-1", {
+    granter: "operator:codex", actions: ["post-verify"], maxUses: 2
+  }, at);
+  store.saveCapabilityGrant("task-1", grant);
+  store.close();
+  const old = new Database(join(home, "yui.db"));
+  old.prepare("UPDATE storage_schema SET minor=1 WHERE id=1").run();
+  old.close();
+  assert.equal((await runStorageUpgrade({ home, mode: "execute" })).outcome, "upgraded");
+  const current = new SqliteTaskStore(home);
+  try { assert.deepEqual(current.getCapabilityGrant("task-1", grant.id), grant); }
+  finally { current.close(); }
 });
 
 test("default storage upgrades advance only the minor version of the same major", () => {
