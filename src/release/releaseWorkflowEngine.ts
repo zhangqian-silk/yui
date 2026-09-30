@@ -734,6 +734,12 @@ function versionTagCheckoutDenial(
   params: Readonly<Record<string, string>>
 ): string | undefined {
   if (plan.kind !== "version-tag") return undefined;
+  // Leader authorization names a release version; the adapter pushes tag,
+  // not version. Validate that actual effect before consuming a grant use.
+  if (grant.authorizationSource !== undefined
+    && (!params.version || ![params.version, `v${params.version}`].includes(params.tag ?? ""))) {
+    return "grant-version-tag-mismatch";
+  }
   const repositories = grant.scope.repositories;
   if (repositories === undefined || repositories.length === 0) return undefined;
   const checkoutPath = params.repositoryPath;

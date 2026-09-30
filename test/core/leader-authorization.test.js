@@ -132,6 +132,25 @@ test("Leader release grants bind the workflow source rather than a claimed step 
     assert.equal((await runReleaseWorkflow(f.store, "task-1", id, ports, { now: () => now })).outcome, expected);
   }
   assert.equal(calls, 1);
+  const tagGrant = f.command(["grant", "issue", "task-1", "--source-message", source.id, "--purpose", source.body,
+    "--request-id", "tag-one", "--action", "version-tag", "--scope-project", "project-1",
+    "--scope-repo", "fixture/repo", "--param", `sourceCommit=${"a".repeat(40)}`, "--param", "version=1.2.3",
+    "--expires-at", "2026-10-01T00:00:00Z", "--max-uses", "1",
+    "--irreversibility-ceiling", "irreversible"]).data;
+  for (const [id, tag, expected] of [
+    ["release-workflow-3", "v9.9.9", "unauthorized"],
+    ["release-workflow-4", "v1.2.3", "succeeded"]
+  ]) {
+    f.store.saveReleaseWorkflow("task-1", createReleaseWorkflow(id, "task-1", {
+      grantId: tagGrant.id, source: { repository: { owner: "fixture", name: "repo" }, commit: "a".repeat(40) },
+      plan: [{ id: "tag", kind: "version-tag", params: {
+        version: "1.2.3", tag, repositoryPath: join(f.root, "project")
+      } }]
+    }, now));
+    assert.equal((await runReleaseWorkflow(f.store, "task-1", id, ports, { now: () => now })).outcome, expected);
+  }
+  assert.equal(calls, 2);
+  assert.equal(f.store.getCapabilityGrant("task-1", tagGrant.id).usesUsed, 1);
 });
 
 test("source-authorized ordinary archive survives ending its caller and records a durable result", async t => {

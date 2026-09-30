@@ -179,7 +179,8 @@ directly. There is no requirement to route every operation through a plugin.
 Validated Task-local plugins preserve explicit enabled intent in the Store and
 live instances in InstanceHost. Reading or restarting does not run author code.
 Leader management is limited to its Task; executable code still requires exact
-Operator-issued grants. Plugin validation is not a security certification.
+grants issued by Operator or by the current delivery Leader with original user
+authorization and bounded Task/resource scope. Plugin validation is not a security certification.
 
 CLI contributions and controlled Web panels are projections of the Registry.
 Web is loopback-only and Controller-owned. Its authenticated local-user controls
