@@ -347,7 +347,9 @@ try {
     YUI_NATIVE_SESSION_ID: connection.payload.nativeSessionId, YUI_SESSION_MANIFEST: manifestPath
   }));
   assert.equal(archiveReply.ok, true, JSON.stringify(archiveReply));
-  assert.equal(archiveReply.data.kind, "value", JSON.stringify(archiveReply));
+  assert.equal(archiveReply.data.kind, "value", JSON.stringify({
+    archiveReply, events: archiveReply.data.kind === "value" ? [] : events().slice(-20)
+  }));
   assert.equal(archiveReply.data.value.status, "archived", JSON.stringify(archiveReply));
   assert.equal(json("task", "show", task.id).task.status, "archived");
   assert.ok(events().some(event => event.type === "task.leader-archive-result"
