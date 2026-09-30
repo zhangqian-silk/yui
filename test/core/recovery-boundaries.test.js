@@ -23,7 +23,7 @@ import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerSt
 import { createManagedWorkspace } from "../../dist/worktree/managedWorkspace.js";
 import { claimPending } from "../../dist/coordination/workMailbox.js";
 import { createTaskWake } from "../../dist/scheduler/taskWake.js";
-import { readTaskContext } from "../../dist/context/taskContext.js";
+import { readTaskContext, inspectTaskContext } from "../../dist/context/taskContext.js";
 import { resolveManagedTaskCaller, resolveManagedTaskReader } from "../../dist/runtime/managedCaller.js";
 import { pendingCompletionMessages } from "../../dist/task/completionReadiness.js";
 import { codexInteractiveStartupParameters } from "../../dist/runtime/codexInteractiveHost.js";
@@ -200,7 +200,8 @@ test("Session replacement preserves durable intent and releases only its own eng
   });
   store.saveTaskWake("task-1", wake);
   const shown = command(["wake", "show", "task-1", wake.id]);
-  assert.match(JSON.stringify(shown), /Original user requirement must survive/);
+  assert.equal(shown.data.messages[0].read, "task message show task-1/message-1");
+  assert.equal(command(["message", "show", "task-1/message-1"]).data.body, "Original user requirement must survive");
   store.saveTaskRoleSessionSet(recordRoleAgentSession(createRoleSessionSet(
     { scope: "task", taskId: "task-1", roleName: "worker" }, "codex", later
   ), {
@@ -210,14 +211,16 @@ test("Session replacement preserves durable intent and releases only its own eng
   command(["work", "create", "task-1", "Leader coordination", "--role", "leader"]);
   command(["work", "dispatch", "task-1/work-item-2"]);
   command(["message", "send", "task-1", "Leader-only coordination", "--to", "leader", "--work-item", "work-item-2"]);
-  const workerContext = readTaskContext(store, "task-1", {
+  const workerEnvironment = {
     YUI_SESSION_SCOPE: "task", YUI_TASK_ID: "task-1", YUI_ROLE: "worker",
     YUI_NATIVE_SESSION_ID: "worker-current", YUI_WORKSPACE: unaffected.effective.workspace.root
-  });
-  assert.ok(workerContext.records.some(r => r.ref.store === "task-message"
-    && r.value?.body === "Original user requirement must survive"),
+  };
+  const workerContext = readTaskContext(store, "task-1", workerEnvironment);
+  const messages = workerContext.records.filter(r => r.ref.store === "task-message")
+    .map(r => inspectTaskContext(store, "task-1", r.ref, workerEnvironment).value);
+  assert.ok(messages.some(message => message.body === "Original user requirement must survive"),
   "The original shared user amendment is readable even though it arrived after the frozen Assignment.");
-  assert.ok(!workerContext.records.some(r => r.value?.body === "Leader-only coordination"));
+  assert.ok(!messages.some(message => message.body === "Leader-only coordination"));
 });
 
 test("Runless questions survive replacement and a successor can manage the original question", t => {

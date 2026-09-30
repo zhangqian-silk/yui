@@ -32,6 +32,7 @@ test("Global replacement settles retained input only after native quiescence and
   const { home, store, role, command } = globalFixture(t);
   recordGlobalSession(store, role);
   const message = command(["message", "queue", role.name, "Keep this original input", "--request-id", "keep"]).message;
+  const originalMessage = command(["message", "show", role.name, message.id]);
   withGlobalControllerTurn(store, role.name, { attemptId: `global-input:${role.name}/${message.id}`, nativeTurnId: "old-turn" });
   const scheduler = new FileSchedulerStoreAdapter(store);
   const owner = { scope: "global", roleName: role.name };
@@ -70,7 +71,7 @@ test("Global replacement settles retained input only after native quiescence and
   assert.equal(stopped.providerBinding.run.status, "cancelled");
   assert.match(stopped.providerBinding.run.terminalReason, /quiescence/i);
   assert.equal(stopped.providerBinding.run.nativeTurnId, "old-turn");
-  assert.deepEqual(store.listGlobalRoleMessages(role.name).find(m => m.id === message.id), message);
+  assert.deepEqual(command(["message", "show", role.name, message.id]), originalMessage);
   assert.equal(Object.values(stopped.history).length, 1);
   assert.ok(store.listGlobalRoleMessages(role.name).some(m => m.kind === "system"
     && m.body.includes("old-turn") && m.inputControl === undefined), "Retain stop evidence without queuing another turn.");
@@ -112,6 +113,7 @@ test("Global queued input cannot revive an explicitly ended Session or race its 
     settleProviderTurn(binding, { attemptId: "done", nativeTurnId: "done-turn", status: "completed",
       settledAt: new Date().toISOString() }), new Date()));
   const message = command(["message", "queue", role.name, "Pending work", "--request-id", "pending"]).message;
+  const originalMessage = command(["message", "show", role.name, message.id]);
   const end = () => store.saveGlobalRoleSessionSet(updateRoleAgentSessionStatus(
     store.getGlobalRoleSessionSet(role.name), "codex", "ended", new Date(), "stopped"));
   const errors = [];
@@ -128,7 +130,7 @@ test("Global queued input cannot revive an explicitly ended Session or race its 
     scheduler.enqueueRuntimeCleanup({ scope: "global", roleName: role.name });
   }, error => errors.push(error));
   assert.deepEqual(errors, [], "Cleanup admitted during ensure must fence the native submission.");
-  assert.deepEqual(store.listGlobalRoleMessages(role.name).find(m => m.id === message.id), message);
+  assert.deepEqual(command(["message", "show", role.name, message.id]), originalMessage);
 });
 
 /**
@@ -149,7 +151,7 @@ function globalFixture(t, adapterId = "codex") {
   store.createGlobalRoleIfAbsent(role);
   const command = (args) => {
     const result = runGlobalRoleCommand(args, store, { env: {}, jsonOutput: true });
-    return typeof result === "string" ? JSON.parse(result) : result;
+    return result.kind === "output" ? result.data : result;
   };
   return { store, home, command, agent, role };
 }
@@ -433,8 +435,8 @@ function selfReadEnv(roleName) {
 }
 
 function contextSelfRead(store, roleName) {
-  return JSON.parse(runGlobalRoleCommand(
-    ["context", roleName], store, { env: selfReadEnv(roleName), jsonOutput: true }));
+  return runGlobalRoleCommand(
+    ["context", roleName], store, { env: selfReadEnv(roleName), jsonOutput: true }).data;
 }
 
 // ── Bug-2: the corrected queue contract — no mark-delivered while busy ─────────
@@ -447,12 +449,12 @@ test("an idle self-read exposes intent but never fabricates a Provider receipt",
   // No live Turn: an idle self-read is the Role's real next legal opportunity, so
   // both queued Messages are delivered in order.
   const first = contextSelfRead(store, "assistant");
-  assert.deepEqual(first.pendingMessages.map(m => m.id), ["global-message-1", "global-message-2"]);
+  assert.deepEqual(first.pending.items.map(m => m.id), ["global-message-1", "global-message-2"]);
   const delivered = store.listGlobalRoleMessages("assistant").filter(m => m.delivery !== undefined);
   assert.equal(delivered.length, 0);
   // A repeated self-read is idempotent: the consumed queue is not re-delivered.
   const second = contextSelfRead(store, "assistant");
-  assert.deepEqual(second.pendingMessages, first.pendingMessages);
+  assert.deepEqual(second.pending.items, first.pending.items);
 });
 
 test("a self-read while the Role's own native Turn is in flight delivers nothing (busy-gate)", t => {
@@ -464,7 +466,7 @@ test("a self-read while the Role's own native Turn is in flight delivers nothing
   // busy-gate holds it undelivered until a read finds no in-flight Turn.
   withGlobalControllerTurn(store, "assistant", { attemptId: "a-1", nativeTurnId: "t-1" });
   const busy = contextSelfRead(store, "assistant");
-  assert.deepEqual(busy.pendingMessages.map(m => m.id), ["global-message-1"]);
+  assert.deepEqual(busy.pending.items.map(m => m.id), ["global-message-1"]);
   assert.equal(store.listGlobalRoleMessages("assistant").every(m => m.delivery === undefined), true);
   // The Message is neither delivered nor failed: it is held for the next legal turn.
   assert.equal(store.listGlobalRoleMessages("assistant")[0].notDelivered ?? null, null);
@@ -475,9 +477,9 @@ test("an inspection read never delivers the queue and reports it still pending",
   recordGlobalSession(store, role);
   command(["message", "queue", "assistant", "Waiting", "--request-id", "gq-1"]);
   // No Session env: an unmanaged/inspection read observes but never consumes.
-  const inspect = JSON.parse(runGlobalRoleCommand(
-    ["context", "assistant"], store, { env: {}, jsonOutput: true }));
-  assert.deepEqual(inspect.pendingMessages.map(m => m.id), ["global-message-1"]);
+  const inspect = runGlobalRoleCommand(
+    ["context", "assistant"], store, { env: {}, jsonOutput: true }).data;
+  assert.deepEqual(inspect.pending.items.map(m => m.id), ["global-message-1"]);
   assert.equal(store.listGlobalRoleMessages("assistant")[0].delivery ?? null, null);
 });
 
@@ -493,7 +495,7 @@ test("a then-handoff holds the whole queue while its interrupted Turn is still i
   // The interrupted Turn t-1 is still the live accepted Turn: requested != stopped.
   // The handoff waits AND holds the ordinary queue behind it, so nothing delivers.
   const held = contextSelfRead(store, "assistant");
-  assert.deepEqual(held.pendingMessages.map(m => m.id), [queued.message.id]);
+  assert.deepEqual(held.pending.items.map(m => m.id), [queued.message.id]);
   assert.equal(store.listGlobalRoleMessages("assistant")[0].delivery ?? null, null);
 });
 
@@ -516,7 +518,7 @@ test("a terminal fact does not make a Context read deliver the then input", t =>
   // Now the handoff's interrupted Turn has a proven terminal, so the then-Message
   // is released ahead of the ordinary queue in its own read (M before Q1).
   const released = contextSelfRead(store, "assistant");
-  assert.deepEqual(released.pendingMessages.map(m => m.id), [queued.message.id]);
+  assert.deepEqual(released.pending.items.map(m => m.id), [queued.message.id]);
   const handoff = store.listGlobalRoleMessages("assistant").find(m => m.id === queued.message.id);
   assert.equal(handoff.delivery ?? null, null);
 });
@@ -540,7 +542,7 @@ test("Context inspection never mutates a handoff whose interrupted Turn vanished
   assert.equal(handoff.notDelivered, undefined);
   assert.equal(handoff.delivery ?? null, null);
   // The ordinary queue behind the now-failed handoff drains at the same read.
-  assert.deepEqual(drained.pendingMessages.map(m => m.id), [queued.message.id, alsoQueued.message.id]);
+  assert.deepEqual(drained.pending.items.map(m => m.id), [queued.message.id, alsoQueued.message.id]);
 });
 
 test("a then-handoff persists its interrupted native Turn id for the durable fallback", t => {
@@ -613,7 +615,7 @@ test("a historical native terminal cannot release a handoff through Context whil
   store.saveGlobalRoleSessionSet(withTerminal);
   withGlobalReplacementTurn(store, "assistant", { nativeTurnId: "t-1" }, { attemptId: "a-2", nativeTurnId: "t-2" });
   const released = contextSelfRead(store, "assistant");
-  assert.deepEqual(released.pendingMessages.map(m => m.id), [queued.message.id]);
+  assert.deepEqual(released.pending.items.map(m => m.id), [queued.message.id]);
   const handoff = store.listGlobalRoleMessages("assistant").find(m => m.id === queued.message.id);
   assert.equal(handoff.delivery ?? null, null);
 });
@@ -783,8 +785,9 @@ test("Global unknown survives restart, late evidence settles it, and conclusive 
   reloadedScheduler.resolveAgentHostProviderTurnSubmission({ roleName: role.name, attemptId: rejectedAttempt,
     status: "rejected", reason: "Provider refused this input", raw: "Provider refused this input", now: later });
   const context = contextSelfRead(reopened, role.name);
-  assert.equal(context.messages.find(entry => entry.id === rejected.id).notDelivered.reason, "Provider refused this input");
-  assert.equal(context.messages.find(entry => entry.id === rejected.id).control.outcome, "rejected");
+  assert.equal(context.recent.items.find(entry => entry.id === rejected.id).notDelivered.summary, "Provider refused this input");
+  assert.equal(command(["message", "show", role.name, rejected.id]).notDelivered.reason, "Provider refused this input");
+  assert.equal(context.recent.items.find(entry => entry.id === rejected.id).control.outcome, "rejected");
   await deliverGlobalInputs(home, reopened, async () => { calls += 1; }, error => { throw error; });
   assert.equal(calls, 0);
 });

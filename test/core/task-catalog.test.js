@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { readDocument } from "../helpers/read-document.js";
 
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { activateTask, archiveTask, completeTask, createTask } from "../../dist/task/task.js";
@@ -71,7 +72,7 @@ test("compact discovery is bounded, paged before detail, and does not hide off-p
   assert.throws(() => read("--verbose"), /Task list/i);
   const ref = first.tasks[0].ref;
   store.listEvents = originalEvents;
-  const detail = inspectTaskContext(store, ref.taskId, ref);
+  const detail = readDocument(cursor => inspectTaskContext(store, ref.taskId, { ...ref, cursor }));
   assert.ok(detail.value.description.length > 10000);
   const archived = archiveTask(completeTask(activateTask(createTask("task-6", "Archived evidence", now), now),
     now, { by: "operator", summary: "Retained evidence" }), now);

@@ -654,7 +654,7 @@ test("Global Codex Sessions use the shared daemon and retain a process-independe
     ["-c", bootstrap.manifest.contextProtocol.loadCommand],
     { cwd: home, encoding: "utf8", env: bareEnv }
   ));
-  const directContextData = JSON.parse(directContext.output);
+  const directContextData = directContext.data;
   assert.equal(directContextData.identity.roleName, "operator");
   assert.equal(directContextData.identity.scope, "global");
 });
@@ -1017,7 +1017,8 @@ test("Task-scoped Turn listing includes Leader Turns without a WorkItem", (t) =>
 
   const result = runTaskCommand(["run", "list", task.id], store);
   assert.equal(result.kind, "output");
-  assert.match(result.output, /AgentRuns: task-1/u);
+  assert.equal(result.data.items[0].ref.refId, "turn-1");
+  assert.equal(result.data.items[0].roleName, "leader");
   assert.match(result.output, /turn-1/u);
   assert.match(result.output, /task/u);
 });

@@ -22,7 +22,9 @@ import {
   type InputRequester,
   type InputRequestPolicy
 } from "../input/inputRequest.js";
-import { defaultTableWidth, renderTable } from "../output/table.js";
+import { boundedDocument, recordPage, readOptions } from "../output/boundedRead.js";
+import { materialize, resolveContextReader } from "../context/taskContext.js";
+import { taskRecordList } from "./taskContextCommand.js";
 import { formatTimestamp } from "../output/timePresentation.js";
 import { type Role } from "../role/role.js";
 import { requireManagedTaskCaller, requireManagedGlobalCaller } from "../runtime/managedCaller.js";
@@ -60,7 +62,7 @@ export function runTaskInputCommand(
   const [command, ...rest] = args;
   switch (command) {
     case "request": return createRequest(rest, store, options);
-    case "list": return listRequests(rest, store);
+    case "list": return listRequests(rest, store, options);
     case "show": return showRequest(rest, store, options);
     case "answer": return answerRequest(rest, store, options);
     case "cancel": return cancelRequest(rest, store, options);
@@ -156,43 +158,26 @@ function createRequest(
   return output(`Created input request ${request.id} for ${request.taskId}\n`, { request });
 }
 
-function listRequests(args: string[], store: TaskStore): TaskInputCommandExecution {
-  const usage = "Task input list usage: yui task input list [task] [--all].";
-  const parsed = parseTail(args, new Set(), usage, new Set(["--all"]));
+function listRequests(args: string[], store: TaskStore, options: TaskInputCommandOptions): TaskInputCommandExecution {
+  const usage = "Task input list usage: yui task input list [task] [--all] [--limit <n>] [--cursor <cursor>].";
+  const all = args.includes("--all");
+  if (args.filter(arg => arg === "--all").length > 1) throw usageError(usage);
+  const parsed = readOptions(args.filter(arg => arg !== "--all"));
   if (parsed.positionals.length > 1) throw usageError(usage);
-  const taskId = parsed.positionals[0];
-  if (taskId !== undefined) requireTask(store, taskId);
-  const all = taskId === undefined
-    ? store.listAllInputRequests()
-    : store.listInputRequests(taskId);
-  const requests = parsed.options.has("--all")
-    ? all
-    : all.filter((request) => request.status === "open");
-  let rendered = "No input requests found.\n";
-  if (requests.length > 0) {
-    const timeZone = store.getConfig().timeZone;
-    rendered = `${renderTable(
-        taskId === undefined ? "Input inbox" : `Input requests: ${taskId}`,
-        [
-          { header: "Input", minWidth: 6, maxWidth: 18 },
-          { header: "Task", minWidth: 6, maxWidth: 18 },
-          { header: "Status", minWidth: 6, maxWidth: 10 },
-          { header: "Policy", minWidth: 8, maxWidth: 12 },
-          { header: "Question", minWidth: 8, maxWidth: 72 },
-          { header: "Created", minWidth: 10, maxWidth: 28 }
-        ],
-        requests.map((request) => [
-          taskId === undefined ? `${request.taskId}/${request.id}` : request.id,
-          request.taskId,
-          request.status,
-          request.policy.kind,
-          request.question,
-          formatTimestamp(request.createdAt, timeZone)
-        ]),
-        defaultTableWidth()
-      )}\n`;
+  const caller = resolveContextReader(store, options.environment ?? {});
+  const taskId = parsed.positionals[0] ?? caller?.taskId;
+  if (taskId !== undefined) {
+    return taskRecordList([taskId, ...(all ? [] : ["--status", "open"]),
+      ...(parsed.cursor === undefined ? [] : ["--cursor", parsed.cursor]),
+      ...(parsed.limit === undefined ? [] : ["--limit", String(parsed.limit)])],
+    store, "input-request", options.environment);
   }
-  return output(rendered, { requests });
+  const requests = store.listAllInputRequests().filter(request => all || request.status === "open");
+  const data = recordPage(requests.map(request => ({
+    taskId: request.taskId, ref: materialize("input-request", request.id, request).ref,
+    status: request.status, summary: request.question.slice(0, 400), policy: request.policy.kind
+  })), `input-inbox:${all ? "all" : "open"}`, parsed);
+  return output(`${JSON.stringify(data)}\n`, data);
 }
 
 function showRequest(
@@ -201,7 +186,7 @@ function showRequest(
   options: TaskInputCommandOptions
 ): TaskInputCommandExecution {
   const usage = "Task input show usage: yui task input show (<task>/<input> | <input> --task <task>).";
-  const parsed = parseTail(args, new Set(["--task"]), usage);
+  const parsed = parseTail(args, new Set(["--task", "--cursor"]), usage);
   exactPositionals(parsed.positionals, 1, usage);
   const reference = inputRequestReference(
     store,
@@ -213,7 +198,9 @@ function showRequest(
   if (request === null) {
     throw dataError(`Input request not found: ${reference.taskId}/${reference.localId}.`);
   }
-  return output(renderInputRequest(request, store.getConfig().timeZone), { request });
+  const data = boundedDocument({ request }, `input:${reference.taskId}/${reference.localId}`, parsed.options.get("--cursor"));
+  return output("contentPage" in data ? `${JSON.stringify(data)}\n`
+    : renderInputRequest(request, store.getConfig().timeZone), data);
 }
 
 function answerRequest(

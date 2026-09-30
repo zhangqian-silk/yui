@@ -1066,6 +1066,10 @@ export async function main(): Promise<void> {
         store as unknown as Parameters<typeof runGlobalRoleCommand>[1],
         roleOptions
       );
+      if (typeof result !== "string" && result.kind === "output") {
+        emit(result.output, false, result.data);
+        return;
+      }
       if (typeof result === "string") {
         emit(result);
         return;
@@ -1116,6 +1120,12 @@ export async function main(): Promise<void> {
           return;
         }
         emit(result);
+        return;
+      }
+      if (result.kind === "output") {
+        if (globalInputFailure !== undefined) {
+          emitControlFailure(globalInputFailure.detail, globalInputFailure.code, globalInputFailure.data);
+        } else emit(result.output, false, result.data);
         return;
       }
       if (result.kind === "input-steer") {
@@ -3445,12 +3455,11 @@ async function liveHostObservationsForTaskCommand(
   home: string
 ): Promise<Readonly<Record<string, TaskRoleHostObservation>> | undefined> {
   if (args[0] !== "task" || args[1] !== "role") return undefined;
-  const inspect = args[2] === "session" && args[3] === "inspect" && args.length === 6;
-  const status = args[2] === "status" && args.length === 5;
-  const list = args[2] === "list" && args.length === 4;
-  if (!inspect && !status && !list) return undefined;
+  const inspect = args[2] === "session" && args[3] === "inspect" && args.length >= 6;
+  const status = args[2] === "status" && args.length >= 5;
+  if (!inspect && !status) return undefined;
   const taskId = args[inspect ? 4 : 3]!;
-  const roles = list ? store.listRoles(taskId).map(role => role.name) : [args[inspect ? 5 : 4]!];
+  const roles = [args[inspect ? 5 : 4]!];
   const entries = await Promise.all(roles.map(async roleName => [
     roleName, await readLiveHostObservation(store, home, taskId, roleName)
   ] as const));

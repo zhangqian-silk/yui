@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 
 import { dataError, taskNotFound, usageError } from "../errors/cliError.js";
 import { createTaskEvent, type TaskEventPayload } from "../event/taskEvent.js";
-import { defaultTableWidth, renderTable } from "../output/table.js";
+import { taskRecordList } from "./taskContextCommand.js";
 import { formatTimestamp } from "../output/timePresentation.js";
 import { resolveProject } from "../repository/project.js";
 import {
@@ -44,7 +44,7 @@ export function runPublicationCommand(
   const [command, ...rest] = args;
   switch (command) {
     case "upsert": return upsertPublication(rest, store, options);
-    case "list": return listPublications(rest, store);
+    case "list": return taskRecordList(rest, store, "publication", options.environment);
     case "show": return showPublication(rest, store);
     default:
       throw usageError(command === undefined
@@ -187,40 +187,6 @@ export function upsertTaskPublication(
   return { reference, idempotent: false };
 }
 
-function listPublications(args: string[], store: TaskWorkflowStore): TaskCommandExecution {
-  const usage = "Task publication list usage: yui task publication list <task>.";
-  const parsed = parseTail(args, new Set(), usage);
-  exactPositionals(parsed.positionals, 1, usage);
-  const task = requireTask(store, parsed.positionals[0]);
-  const references = store.listPublicationReferences(task.id);
-  if (references.length === 0) {
-    return output("No publication references found.\n", []);
-  }
-  const rendered = `${renderTable(
-    `Publication references: ${task.id}`,
-    [
-      { header: "ID", minWidth: 12, maxWidth: 22 },
-      { header: "External", minWidth: 16, maxWidth: 40 },
-      { header: "Title", minWidth: 16, maxWidth: 40 },
-      { header: "State", minWidth: 7, maxWidth: 10 },
-      { header: "Verification", minWidth: 11, maxWidth: 14 },
-      { header: "Lineage", minWidth: 18, maxWidth: 58 },
-      { header: "Supersedes", minWidth: 12, maxWidth: 22 }
-    ],
-    references.map((reference) => [
-      reference.id,
-      `${reference.provider}/${reference.repository}/${reference.externalId}`,
-      reference.title ?? "-",
-      reference.state,
-      reference.verification,
-      lineageSummary(reference),
-      reference.supersedes ?? "-"
-    ]),
-    defaultTableWidth()
-  )}\n`;
-  return output(rendered, references);
-}
-
 function showPublication(args: string[], store: TaskWorkflowStore): TaskCommandExecution {
   const usage = "Task publication show usage: yui task publication show (<task>/<publication-id> | <task> <publication-id>).";
   const parsed = parseTail(args, new Set(), usage);
@@ -279,12 +245,6 @@ function renderPublication(
     `Source: ${reference.source}`,
     `Created: ${formatTimestamp(reference.createdAt, timeZone)}`
   ].join("\n").concat("\n");
-}
-
-function lineageSummary(reference: PublicationReference): string {
-  const local = reference.localCommit ?? "unknown";
-  const remote = reference.remoteCommit ?? "unknown";
-  return `${local.slice(0, 12)} -> ${reference.externalId} -> ${remote.slice(0, 12)}`;
 }
 
 function parseVerification(

@@ -383,6 +383,8 @@ The [architecture overview](ARCHITECTURE.md) explains the end-to-end design.
 The [documentation map](docs/architecture/README.md) links the current contracts
 for configuration, execution, delivery, storage and plugins. Use `yui --help`
 when you want to operate the CLI directly.
+The [CLI information contract](docs/cli-information-contract.md) describes
+current context, paginated discovery, full-original reads and mutation receipts.
 
 Yui stores its control-plane data under `~/.yui` by default; `YUI_HOME` selects
 another instance. See [storage and upgrades](docs/sqlite-control-plane-design.md)

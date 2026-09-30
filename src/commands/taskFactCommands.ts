@@ -1,5 +1,7 @@
 import { createTaskBrief, updateTaskBrief } from "../brief/taskBrief.js";
-import { assertContextRecordReadable, contextRecordReader } from "../context/taskContext.js";
+import { assertContextRecordReadable } from "../context/taskContext.js";
+import { taskRecordList } from "./taskContextCommand.js";
+import { materialize } from "../context/taskContext.js";
 import {
   enqueueWork
 } from "../coordination/workMailboxQueue.js";
@@ -9,7 +11,6 @@ import {
   usageError
 } from "../errors/cliError.js";
 import { createMilestone } from "../milestone/milestone.js";
-import { defaultTableWidth, renderTable } from "../output/table.js";
 import {
   assertTaskOpen,
   clock,
@@ -17,7 +18,6 @@ import {
   leaderActionEventPayload,
   leaderMailbox,
   notifyMailbox,
-  optionalNonEmptyOption,
   output,
   parseMultiValueTail,
   parseTail,
@@ -124,7 +124,9 @@ export function taskBriefCommand(
     if (result.task.status === "active") {
       notifyMailbox(options.runtime, leaderMailbox(result.task.id));
     }
-    return output(`Updated brief for ${result.task.id}\n`, { taskId: result.task.id, brief: result.brief });
+    return output(`Updated brief for ${result.task.id}\n`, {
+      taskId: result.task.id, effect: "saved", ref: materialize("task-brief", result.task.id, result.brief).ref
+    });
   }
   throw usageError(command === undefined
     ? "Task brief command is required."
@@ -167,34 +169,7 @@ export function taskDecisionCommand(
     return output(`Recorded decision ${result.decision.id} for ${result.task.id}\n`);
   }
   if (command === "list") {
-    const usage = "Task decision list usage: yui task decision list <task> [--status active|superseded].";
-    const parsed = parseTail(rest, new Set(["--status"]), usage);
-    exactPositionals(parsed.positionals, 1, usage);
-    const task = requireTask(store, parsed.positionals[0]);
-    const readable = contextRecordReader(store, task.id, options.environment);
-    let decisions = store.listDecisions(task.id).filter(record => readable("task-decision", record.id));
-    const status = parsed.options.get("--status");
-    if (status !== undefined) {
-      if (status !== "active" && status !== "superseded") {
-        throw usageError("--status must be active or superseded.", usage);
-      }
-      decisions = decisions.filter((d) => d.status === status);
-    }
-    if (decisions.length === 0) {
-      return output(`No decisions found for ${task.id}.\n`, { taskId: task.id, decisions: [] });
-    }
-    const timeZone = store.getConfig().timeZone;
-    return output(`${renderTable(
-      `Decisions: ${task.id}`,
-      [
-        { header: "Decision", minWidth: 8, maxWidth: 18 },
-        { header: "Status", minWidth: 6, maxWidth: 12 },
-        { header: "Title", minWidth: 8, maxWidth: 64 },
-        { header: "Created", minWidth: 10, maxWidth: 28 }
-      ],
-      decisions.map((d) => [d.id, d.status, d.title, presentTime(d.createdAt, timeZone)]),
-      defaultTableWidth()
-    )}\n`, { taskId: task.id, decisions });
+    return taskRecordList(rest, store, "task-decision", options.environment);
   }
   if (command === "show") {
     exactPositionals(rest, 2, "Task decision show usage: yui task decision show <task> <decision>.");
@@ -288,24 +263,7 @@ export function taskMilestoneCommand(
     return output(`Added milestone ${result.milestone.id} for ${result.task.id}\n`);
   }
   if (command === "list") {
-    exactPositionals(rest, 1, "Task milestone list usage: yui task milestone list <task>.");
-    const task = requireTask(store, rest[0]);
-    const readable = contextRecordReader(store, task.id, options.environment);
-    const milestones = store.listMilestones(task.id).filter(record => readable("task-milestone", record.id));
-    if (milestones.length === 0) {
-      return output(`No milestones found for ${task.id}.\n`, { taskId: task.id, milestones: [] });
-    }
-    const timeZone = store.getConfig().timeZone;
-    return output(`${renderTable(
-      `Milestones: ${task.id}`,
-      [
-        { header: "Milestone", minWidth: 9, maxWidth: 18 },
-        { header: "Title", minWidth: 8, maxWidth: 64 },
-        { header: "Created", minWidth: 10, maxWidth: 28 }
-      ],
-      milestones.map((m) => [m.id, m.title, presentTime(m.createdAt, timeZone)]),
-      defaultTableWidth()
-    )}\n`, { taskId: task.id, milestones });
+    return taskRecordList(rest, store, "task-milestone", options.environment);
   }
   if (command === "show") {
     exactPositionals(rest, 2, "Task milestone show usage: yui task milestone show <task> <milestone>.");
@@ -336,38 +294,7 @@ export function taskEventCommand(
 ): TaskCommandExecution {
   const [command, ...rest] = args;
   if (command === "list") {
-    const eventListUsage = "Task event list usage: yui task event list <task> [--after <timestamp>] [--limit <n>].";
-    const parsed = parseTail(rest, new Set(["--after", "--limit"]), eventListUsage);
-    exactPositionals(parsed.positionals, 1, eventListUsage);
-    const task = requireTask(store, parsed.positionals[0]);
-    const readable = contextRecordReader(store, task.id, options.environment);
-    let events = store.listEvents(task.id).filter(record => readable("task-event", record.id));
-    const after = optionalNonEmptyOption(parsed.options, "--after");
-    if (after !== undefined) {
-      const afterMs = Date.parse(after);
-      if (!Number.isFinite(afterMs)) throw usageError("--after must be a valid timestamp.", eventListUsage);
-      events = events.filter((e) => Date.parse(e.createdAt) > afterMs);
-    }
-    const limit = optionalNonEmptyOption(parsed.options, "--limit");
-    if (limit !== undefined) {
-      const n = Number(limit);
-      if (!Number.isSafeInteger(n) || n <= 0) throw usageError("--limit must be a positive integer.", eventListUsage);
-      events = events.slice(-n);
-    }
-    if (events.length === 0) {
-      return output(`No events found for ${task.id}.\n`, { taskId: task.id, events: [] });
-    }
-    const timeZone = store.getConfig().timeZone;
-    return output(`${renderTable(
-      `Events: ${task.id}`,
-      [
-        { header: "Event", minWidth: 8, maxWidth: 18 },
-        { header: "Type", minWidth: 8, maxWidth: 28 },
-        { header: "Created", minWidth: 10, maxWidth: 28 }
-      ],
-      events.map((e) => [e.id, e.type, presentTime(e.createdAt, timeZone)]),
-      defaultTableWidth()
-    )}\n`, { taskId: task.id, events });
+    return taskRecordList(rest, store, "task-event", options.environment);
   }
   if (command === "show") {
     exactPositionals(rest, 2, "Task event show usage: yui task event show <task> <event>.");

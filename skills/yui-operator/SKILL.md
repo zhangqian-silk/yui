@@ -227,8 +227,15 @@ a dormant Role and verify the complete binding before the next launch.
 
 ## Present current progress
 
-Use JSON reads and their top-level `data` field. Report the facts needed to
-understand the outcome:
+Use JSON reads and their top-level `data` field.
+Use Global Context's `pending`/`recent` pages to find Messages, then
+`role message show operator <id>` for the original. A successful send receipt
+contains saved identity and delivery/control facts, not another copy of the
+submitted body. Follow Runtime's bounded-read contract for list continuations
+and long `contentPage` details; do not decode `output` as nested JSON or print
+an entire Context again merely to extract one already-returned reference.
+
+Report the facts needed to understand the outcome:
 
 - Task ID, Projects, recorded bases, and lifecycle;
 - current WorkItems, ownership, dependencies, and acceptance state;

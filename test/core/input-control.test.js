@@ -29,7 +29,7 @@ import { processLeaderWakeups } from "../../dist/scheduler/leaderWakeupProcessor
 import { createRuntimeObservation } from "../../dist/runtime/runtimeObservation.js";
 import { taskMessageInputControlState } from "../../dist/message/message.js";
 import { recordTaskInterruptResult } from "../../dist/message/taskInterrupt.js";
-import { inspectTaskContext, listContextMessages } from "../../dist/context/taskContext.js";
+import { inspectTaskContext, listContextMessages, listTaskContext } from "../../dist/context/taskContext.js";
 import { createWebTaskSurface } from "../../dist/web/webTaskSurface.js";
 import { createYuiWebServer } from "../../dist/web/webServer.js";
 import { foldSteerLiveReceipt, foldInterruptLiveReceipt } from "../../dist/runtime/agentHost.js";
@@ -508,6 +508,10 @@ test("a Worker reconciles its own steer through the authorized Context read path
     { store: "task-message", refId: ordinary.data.message.id }, env),
     /unavailable in the caller's current scope/);
   assert.ok(!listContextMessages(store, "task-1", env).some(m => m.id === ordinary.data.message.id));
+  const discovered = listTaskContext(store, "task-1", "task-message", {}, env);
+  const authorized = listContextMessages(store, "task-1", env);
+  assert.equal(discovered.total, authorized.length, "Discovery counts cannot include an unauthorized Message.");
+  assert.deepEqual(discovered.items.map(item => item.ref.refId).sort(), authorized.map(item => item.id).sort());
 });
 
 test("a steer to another Role is not authorized to this Worker (message-5 gap E scope isolation)", t => {
@@ -1324,8 +1328,10 @@ test("Global Web inputs use the authenticated shared primitive and state reads n
   const receipt = await response.json();
   assert.equal(receipt.delivery.state, "queued");
   assert.equal(receipt.message.roleName, "assistant");
-  assert.equal(receipt.message.body, "--literal global input");
+  assert.equal(receipt.message.body, undefined, "A mutation receipt must not echo the submitted body");
+  assert.equal(receipt.message.bodyBytes, Buffer.byteLength("--literal global input"));
   const before = store.listGlobalRoleMessages("assistant");
+  assert.equal(before[0].body, "--literal global input");
   const state = await (await fetch(url, { headers })).json();
   assert.equal(state.messages[0].id, before[0].id);
   assert.deepEqual(store.listGlobalRoleMessages("assistant"), before);

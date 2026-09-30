@@ -3,7 +3,7 @@
 export function taskDiagnosticTarget(args: readonly string[]): string | undefined {
   if (args[0] !== "task") return undefined;
   if (["show", "context", "next-action", "archive-preflight"].includes(args[1] ?? "")) {
-    return args[1] === "context" && ["read", "inspect", "delta"].includes(args[2] ?? "")
+    return args[1] === "context" && ["read", "list", "inspect", "delta"].includes(args[2] ?? "")
       ? args[3] : args[2];
   }
   if (args[1] === "role" && ["list", "status", "show"].includes(args[2] ?? "")) return args[3];
@@ -20,6 +20,7 @@ export function operatorOfflineCommand(args: readonly string[]): boolean {
     || (args[0] === "execution" && args[1] === "audit")
     || (args[0] === "operator" && ["status", "list"].includes(args[1] ?? ""))
     || (args[0] === "session" && ["context", "reconcile"].includes(args[1] ?? ""))
+    || (args[0] === "role" && args[1] === "message" && ["list", "show"].includes(args[2] ?? ""))
     || (args[0] === "task" && args[1] === "list")
     || taskDiagnosticTarget(args) !== undefined;
 }

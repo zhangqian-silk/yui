@@ -24,6 +24,7 @@ not a claim that every real Provider scenario has been validated.
 | Who consumes results, synthesis and review? | [Result consumption](../agent-result-consumption.md) |
 | When is a WorkItem dependency satisfied? | [Task dependencies](../task-dag-semantics.md) |
 | How are records referenced inside a Task? | [Task-local identity](../task-local-identity.md) |
+| How do bounded discovery, full originals and mutation receipts work? | [CLI information contract](../cli-information-contract.md) |
 | How do Roles, Profiles and run configuration take effect? | [Roles and configuration](../roles-and-configuration.md) |
 | How do delivery, integration and archive work? | [Task delivery](../task-delivery.md) |
 | What does Project refresh synchronize, and how are partial failures reported? | [Project refresh](../project-refresh.md) |
