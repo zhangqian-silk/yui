@@ -196,7 +196,7 @@ try {
   assert.ok(ptyChecks.find(check => check.name === "node-pty").detail.includes(consumerRequire.resolve("node-pty")));
   console.log(`Default Doctor passed in ${Date.now() - doctorStarted}ms: ${JSON.stringify(ptyChecks)}`);
   if (!assembled) {
-    const consumerModules = resolve(root, "../..");
+    const consumerModules = realpathSync(resolve(root, "../.."));
     const resolvedPty = consumerRequire.resolve("node-pty");
     assert.ok(!relative(consumerModules, resolvedPty).startsWith(".."),
       `PTY must resolve inside the consumer install, not the checkout: ${resolvedPty}`);
