@@ -178,6 +178,40 @@ test("source-authorized ordinary archive survives ending its caller and records 
   assert.equal(f.store.listEvents("task-1").filter(event => event.type === "task.archived").length, 1);
 });
 
+test("Leader plugin grants are consumed by real isolated plugin validation, activation and calls", async t => {
+  const f = fixture(t);
+  const host = new InstanceHost();
+  t.after(() => host.close());
+  const capabilities = createBuiltinCapabilities(host, f.store, createDurableJobControl(f.store));
+  const caller = capabilities.authenticate({ scope: "task", taskId: "task-1", role: "leader",
+    nativeSessionId: "leader-current" }, "task-1");
+  let sequence = 0;
+  const raw = (name, input) => capabilities.registry.call(caller, { name, input, requestId: `plugin-${++sequence}` });
+  const call = async (name, input) => {
+    const result = await raw(name, input);
+    assert.equal(result.kind, "value", JSON.stringify(result));
+    return result.value;
+  };
+  const prepared = await call("environment.prepare", { taskId: "task-1", plan: { kind: "scratch" } });
+  await call("environment.adopt", { taskId: "task-1", preparationId: prepared.id });
+  const created = await call("plugin.create", { preparationId: prepared.id, id: "demo", kind: "trusted-local" });
+  const scan = await call("plugin.scan", { preparationId: prepared.id, directory: created.directory });
+  assert.notEqual((await raw("plugin.validate", { preparationId: prepared.id, directory: created.directory })).kind, "value");
+  const source = f.message("Execute the isolated demo plugin for this Task.");
+  const grant = f.command(["grant", "issue", "task-1", "--source-message", source.id, "--purpose", source.body,
+    "--request-id", "plugin-grant", "--action", "plugin.execute", "--param", "pluginId=demo",
+    "--param", `digest=${scan.digest}`, "--param", `environmentRef=task-1/${prepared.id}`,
+    "--param", "trust=trusted-local", "--param", "phase=validate,activate,call",
+    "--expires-at", new Date(Date.now() + 60_000).toISOString(), "--max-uses", "3",
+    "--irreversibility-ceiling", "irreversible"]).data;
+  const validation = await call("plugin.validate", { preparationId: prepared.id, directory: created.directory });
+  await call("plugin.activate", { validationId: validation.id });
+  assert.deepEqual(await call("demo.echo", { text: "fixture" }), { text: "fixture" });
+  assert.equal(f.store.getCapabilityGrant("task-1", grant.id).usesUsed, 3);
+  assert.notEqual((await raw("demo.echo", { text: "exhausted" })).kind, "value");
+  await call("plugin.disable", { id: "demo" });
+});
+
 test("only admitted human-writer input becomes a durable user Message, without another delivery", t => {
   const f = fixture(t);
   let binding = createProviderRuntimeBinding({ providerNamespace: "openai/codex", accountScope: "codex",
