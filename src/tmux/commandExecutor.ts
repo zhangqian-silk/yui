@@ -22,9 +22,10 @@ export class CommandExecutionError extends Error {
   constructor(
     readonly code: CommandExecutionErrorCode,
     readonly exitStatus?: number,
-    readonly stderr = ""
+    readonly stderr = "",
+    options?: ErrorOptions
   ) {
-    super(commandExecutionMessage(code));
+    super(commandExecutionMessage(code), options);
     this.name = "CommandExecutionError";
   }
 }
@@ -123,17 +124,19 @@ export class NodeCommandExecutor implements CommandExecutor {
 
 function stableCommandExecutionError(error: unknown): CommandExecutionError {
   const details = errorDetails(error);
+  const cause = typeof error === "object" && error !== null && "error" in error
+    && error.error instanceof Error ? { cause: error.error } : undefined;
   if (details.code === "ENOENT") {
-    return new CommandExecutionError("COMMAND_NOT_FOUND", details.exitStatus, details.stderr);
+    return new CommandExecutionError("COMMAND_NOT_FOUND", details.exitStatus, details.stderr, cause);
   }
   if (
     details.code === "ETIMEDOUT"
     || details.signal === "SIGTERM"
     || details.signal === "SIGKILL"
   ) {
-    return new CommandExecutionError("COMMAND_TIMED_OUT", details.exitStatus, details.stderr);
+    return new CommandExecutionError("COMMAND_TIMED_OUT", details.exitStatus, details.stderr, cause);
   }
-  return new CommandExecutionError("COMMAND_FAILED", details.exitStatus, details.stderr);
+  return new CommandExecutionError("COMMAND_FAILED", details.exitStatus, details.stderr, cause);
 }
 
 function errorDetails(error: unknown): {

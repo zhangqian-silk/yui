@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { StorageSchemaError } from "../storage/storageSchema.js";
 import { isStorageVersion, compareStorageVersions, type StorageVersion } from "../storage/storageVersions.js";
 
 import { callController as defaultCallController, ControllerClientError } from "../core/controllerClient.js";
@@ -39,10 +40,15 @@ export async function assertRuntimeCoherence(
   const identity = validateVersionIdentity(options.identity ?? yuiVersionIdentity());
   const storage = (options.inspectStorage ?? inspectStorageSchema)(home);
   if (storage.status !== "current") {
-    throw new Error(`Managed control-plane storage is not current: ${storage.status}.`);
+    throw new StorageSchemaError(
+      storage.status === "uninitialized" ? "STORAGE_UNINITIALIZED"
+        : storage.status === "unsupported" ? "STORAGE_SCHEMA_UNSUPPORTED" : "STORAGE_SCHEMA_INVALID",
+      `Managed control-plane storage is not current: ${storage.status}.`
+        + ("detail" in storage && typeof storage.detail === "string" ? ` ${storage.detail}` : "")
+    );
   }
   if (storage.currentVersion !== identity.storageVersion) {
-    throw new Error(
+    throw new StorageSchemaError("STORAGE_SCHEMA_UNSUPPORTED",
       "Managed control-plane storage version is incompatible "
         + `(expected ${identity.storageVersion}, found `
         + `${storage.currentVersion ?? "unknown"}).`
@@ -75,7 +81,7 @@ export function assertControllerStatusIdentity(
   expected: YuiVersionIdentity = yuiVersionIdentity()
 ): void {
   if (!isRecord(status) || status.running !== true) {
-    throw new Error("Controller status does not describe a running Controller.");
+    throw new ControllerClientError("INVALID_RESPONSE", "Controller status does not describe a running Controller.");
   }
   assertControllerField(
     status.protocolVersion,
@@ -125,10 +131,10 @@ function assertControllerContinuityIdentity(
   expected: YuiVersionIdentity
 ): void {
   if (!isRecord(status) || status.running !== true) {
-    throw new Error("Controller status does not describe a running Controller.");
+    throw new ControllerClientError("INVALID_RESPONSE", "Controller status does not describe a running Controller.");
   }
   if (typeof status.version !== "string" || status.version.trim().length === 0) {
-    throw new Error("Controller version is invalid at the managed continuity gate.");
+    throw new ControllerClientError("CONTROLLER_PROTOCOL_MISMATCH", "Controller version is invalid at the managed continuity gate.");
   }
   assertControllerField(
     status.protocolVersion,
@@ -148,11 +154,10 @@ function assertControllerField(
   label: string
 ): void {
   if (actual !== expected) {
-    throw new Error(
+    throw new ControllerClientError("CONTROLLER_PROTOCOL_MISMATCH",
       `Controller ${label} is incompatible with the exact control plane `
         + `(expected ${expected}, found ${typeof actual === "string" || typeof actual === "number" ? actual : "unknown"}). `
-        + "Run controller restart through the matching exact control-plane invocation "
-        + "before writing new Task records."
+        + "Verify Home, CLI and Controller identity before an authorized restart through the matching invocation."
     );
   }
 }

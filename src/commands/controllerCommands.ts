@@ -1,4 +1,5 @@
 import { usageError } from "../errors/cliError.js";
+import { describeCliFailure } from "../errors/cliFailure.js";
 import { defaultTableWidth, renderTable } from "../output/table.js";
 import type {
   ControllerInventoryScope,
@@ -463,7 +464,7 @@ export async function runInteractiveControllerCleanup(input: Readonly<{
     } catch (error) {
       failed.push({
         id: resource.id,
-        message: error instanceof Error ? error.message : String(error)
+        message: describeCliFailure(error).message
       });
     }
   }

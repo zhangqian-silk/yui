@@ -22,9 +22,10 @@ export class CliError extends Error {
     readonly code: CliErrorCode,
     message: string,
     readonly helpText?: string,
-    readonly details: Readonly<Record<string, unknown>> = {}
+    readonly details: Readonly<Record<string, unknown>> = {},
+    options?: ErrorOptions
   ) {
-    super(message);
+    super(message, options);
     this.name = "CliError";
     this.exitCode = EXIT_CODES[code];
   }
@@ -54,6 +55,6 @@ export function dataError(message: string): CliError {
   return new CliError("DATA_ERROR", message);
 }
 
-export function runtimeError(message: string): CliError {
-  return new CliError("RUNTIME_ERROR", message);
+export function runtimeError(message: string, options?: ErrorOptions): CliError {
+  return new CliError("RUNTIME_ERROR", message, undefined, {}, options);
 }

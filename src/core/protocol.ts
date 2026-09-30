@@ -203,10 +203,23 @@ export function parseControllerDiscovery(
       "socketPath",
       "token"
     ])
-    || value.schemaVersion !== 1
-    || value.protocolVersion !== FILE_TASK_CONTROLLER_PROTOCOL_VERSION
-    || !isHomeId(value.homeId)
-    || value.homeFilesystemId !== expected.homeFilesystemId
+  ) {
+    throw new ControllerProtocolError("CONTROLLER_DISCOVERY_INVALID", "Controller discovery fields are invalid.");
+  }
+  if (value.schemaVersion !== 1 || value.protocolVersion !== FILE_TASK_CONTROLLER_PROTOCOL_VERSION) {
+    throw new ControllerProtocolError(
+      "CONTROLLER_DISCOVERY_INVALID",
+      "Controller discovery schema/protocol version does not match this CLI; verify the matching installation."
+    );
+  }
+  if (value.homeFilesystemId !== expected.homeFilesystemId || value.socketPath !== expected.socketPath) {
+    throw new ControllerProtocolError(
+      "CONTROLLER_DISCOVERY_INVALID",
+      "Controller discovery Home/socket identity does not match this invocation."
+    );
+  }
+  if (
+    !isHomeId(value.homeId)
     || !isHomeFilesystemId(value.homeFilesystemId)
     || typeof value.controllerInstanceId !== "string"
     || !/^[a-f0-9]{32}$/u.test(value.controllerInstanceId)
@@ -214,13 +227,13 @@ export function parseControllerDiscovery(
     || (value.pid as number) < 1
     || typeof value.processStartIdentity !== "string"
     || !/^[0-9]{1,32}$/u.test(value.processStartIdentity)
-    || value.socketPath !== expected.socketPath
+    || typeof value.socketPath !== "string"
     || typeof value.token !== "string"
     || !/^[a-f0-9]{64}$/u.test(value.token)
   ) {
     throw new ControllerProtocolError(
       "CONTROLLER_DISCOVERY_INVALID",
-      "Controller discovery is invalid."
+      "Controller discovery process, Home or authentication identity is invalid; raw record omitted."
     );
   }
   return Object.freeze({

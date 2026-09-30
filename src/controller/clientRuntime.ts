@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { describeCliFailure } from "../errors/cliFailure.js";
 import { fileURLToPath } from "node:url";
 import {
   findLiveControllerProcessForHome,
@@ -62,7 +63,7 @@ const CONTROLLER_OPERATIONAL_ENVIRONMENT = [
 
 export type FileControllerClientOptions = Readonly<{
   call?: typeof callController;
-  spawnController?: (home: string, environment: NodeJS.ProcessEnv) => number | void;
+  spawnController?: (home: string, environment: NodeJS.ProcessEnv) => number | void | Promise<number | void>;
   environment?: NodeJS.ProcessEnv;
   startupTimeoutMs?: number;
   shutdownTimeoutMs?: number;
@@ -141,7 +142,7 @@ export async function ensureFileTaskController(
     ? findLiveControllerProcessForHome(readHomeFilesystemId(home))
     : undefined;
   const startupPid = existing?.pid
-    ?? spawnController(home, controllerSpawnEnvironment(home, options.environment ?? process.env));
+    ?? await spawnController(home, controllerSpawnEnvironment(home, options.environment ?? process.env));
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     try {
@@ -205,7 +206,7 @@ function assertControllerRuntimeProcessIdentity(
     || actual.storageVersion !== expected.storageVersion
     || actual.minimumStorageVersion !== expected.minimumStorageVersion
   ) {
-    throw new Error(
+    throw new ControllerClientError("CONTROLLER_IDENTITY_MISMATCH",
       "Authenticated Controller runtime identity does not match the captured executable, argv, package, protocol and storage versions; refusing readiness."
     );
   }
@@ -218,11 +219,11 @@ function assertCompatibleControllerStatus(
   const statusRecord = isJsonRecord(status) && status.running === true ? status : null;
   const actual = statusRecord?.protocolVersion;
   if (statusRecord === null || actual !== FILE_TASK_CONTROLLER_PROTOCOL_VERSION) {
-    throw new Error(
+    throw new ControllerClientError("CONTROLLER_PROTOCOL_MISMATCH",
       `Controller protocol is incompatible (expected ${
         FILE_TASK_CONTROLLER_PROTOCOL_VERSION
       }, found ${typeof actual === "number" ? actual : "unknown"}). `
-        + "Run `yui controller restart` before writing new task records."
+        + "Verify Home, CLI and Controller identity before an authorized restart."
     );
   }
   const actualVersion = statusRecord.version;
@@ -233,10 +234,10 @@ function assertCompatibleControllerStatus(
   } : parseControllerIdentity(expectedIdentity));
 }
 
-function spawnDetachedFileTaskController(
+async function spawnDetachedFileTaskController(
   _home: string,
   environment: NodeJS.ProcessEnv
-): number | undefined {
+): Promise<number | undefined> {
   const child = spawn(
     process.execPath,
     [fileURLToPath(new URL("./controllerMain.js", import.meta.url))],
@@ -246,8 +247,15 @@ function spawnDetachedFileTaskController(
       stdio: "ignore"
     }
   );
-  child.unref();
-  return child.pid;
+  // Route asynchronous spawn failures back through the command's normal error
+  // boundary instead of Node's unhandled "error" event / raw stack output.
+  return await new Promise((resolve, reject) => {
+    child.once("error", error => reject(new Error("Controller process could not start.", { cause: error })));
+    child.once("spawn", () => {
+      child.unref();
+      resolve(child.pid);
+    });
+  });
 }
 
 export type FileControllerRestartResult = Readonly<{
@@ -579,7 +587,7 @@ function classifyRefreshFailure(
   options.onError?.(error);
   return {
     status: "failed",
-    message: error instanceof Error ? error.message : String(error)
+    message: describeCliFailure(error).message
   };
 }
 

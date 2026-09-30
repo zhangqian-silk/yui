@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -43,7 +43,8 @@ test("doctor reports Controller reachability without starting it", async t => {
     throw new ControllerClientError("CONTROLLER_UNAVAILABLE", "socket could not be reached");
   });
   assert.equal(unreachable.status, "invalid");
-  assert.match(unreachable.detail, /yui start/);
+  assert.doesNotMatch(unreachable.detail, /yui start/);
+  assert.match(unreachable.detail, /controller status/);
   assert.match(unreachable.detail, /unverified/);
   assert.match(unreachable.detail, /socket could not be reached/);
 });
@@ -104,15 +105,29 @@ test("Controller failure reaches the CLI with recovery guidance while offline re
   new SqliteTaskStore(home).close();
   const cli = resolve("dist/cli.js");
   const environment = { ...process.env, YUI_HOME: home, YUI_STORE_WORKER: "false" };
-  for (const name of ["YUI_SESSION_SCOPE", "YUI_ROLE", "YUI_AGENT_ID", "YUI_NATIVE_SESSION_ID"]) {
-    delete environment[name];
-  }
+  for (const name of Object.keys(environment)) if (name.startsWith("YUI_")) delete environment[name];
+  environment.YUI_HOME = home;
+  environment.YUI_STORE_WORKER = "false";
   const read = spawnSync(process.execPath, [cli, "task", "list"], { env: environment, encoding: "utf8" });
   assert.equal(read.status, 0, read.stderr);
   const request = spawnSync(process.execPath, [cli, "web", "--status"], { env: environment, encoding: "utf8" });
   assert.equal(request.status, 5, request.stderr);
-  assert.match(request.stderr, /Controller is not running.*yui doctor.*yui start/s);
+  assert.match(request.stderr, /discovery record is missing.*yui doctor.*yui start/s);
   assert.match(request.stderr, /ENOENT/);
+  for (const [command, expectedCode] of [
+    [["web", "--status"], "RUNTIME_ERROR"],
+    [["controller", "live-identity"], "CONTROLLER_NOT_RUNNING"]
+  ]) {
+    const result = spawnSync(process.execPath, [cli, ...command, "--json"], { env: environment, encoding: "utf8" });
+    assert.equal(result.status, 5);
+    const failure = JSON.parse(result.stderr);
+    assert.equal(failure.ok, false);
+    assert.equal(failure.code, expectedCode);
+    assert.equal(failure.details.diagnostic.home, home);
+    assert.equal(failure.details.diagnostic.controller.delivery, "not-sent");
+    assert.match(failure.message, /ENOENT.*not sent.*yui doctor/s);
+  }
+  assert.equal(existsSync(join(home, "runtime/controller.json")), false);
 
   const unavailable = new ControllerClientError("CONTROLLER_UNAVAILABLE", "fixture socket refused");
   const call = async () => { throw unavailable; };

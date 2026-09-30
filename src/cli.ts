@@ -33,7 +33,7 @@ import {
 import { routeInvocation } from "./cli/invocationRouter.js";
 import { operatorOfflineCommand, taskDiagnosticTarget } from "./cli/managedDiagnostics.js";
 import { assertConfigurationAuthority, assertTaskInvocationScope } from "./cli/invocationAuthority.js";
-import { requireManagedGlobalCaller } from "./runtime/managedCaller.js";
+import { requireManagedGlobalCaller, ManagedRuntimeDriftError } from "./runtime/managedCaller.js";
 import { resolveOperatorWizardArguments } from "./cli/operatorWizard.js";
 import {
   resolveGlobalRoleAgentConfigurationArguments,
@@ -166,6 +166,7 @@ import {
   runtimeError,
   usageError
 } from "./errors/cliError.js";
+import { describeCliFailure, renderCliFailure, sanitizeFailureText, sanitizeFailureDetails } from "./errors/cliFailure.js";
 import type { RoleAgentConfig } from "./executor/agentAdapter.js";
 import {
   AgentConfigurationCatalogService,
@@ -195,10 +196,7 @@ import type { AgentProfile } from "./profile/agentProfile.js";
 import {
   resolveAgentProfileView
 } from "./profile/agentProfileRuntime.js";
-import {
-  assertCliHomeReleaseFence,
-  describeCliHomeInvocation
-} from "./release/cliHomeReleaseFence.js";
+import { assertCliHomeReleaseFence } from "./release/cliHomeReleaseFence.js";
 import { createReleaseWorkflowPorts } from "./release/releaseWorkflowPorts.js";
 import {
   acquireHandoverLock,
@@ -260,7 +258,6 @@ import {
   openCurrentTaskStore,
   validateCurrentTaskStore
 } from "./storage/currentTaskStore.js";
-import { SqliteSchemaError } from "./storage/sqliteSchema.js";
 import { inspectStorageSchema } from "./storage/storageSchema.js";
 import { resolveYuiHome, type TaskStore } from "./storage/taskStore.js";
 import { renderArchiveDiagnostics, taskArchiveDiagnostics } from "./task/archiveDiagnostics.js";
@@ -291,48 +288,42 @@ const jsonOutput = rawArgs.includes("--json");
 const args = normalizeAliases(
   jsonOutput ? rawArgs.filter((argument) => argument !== "--json") : rawArgs
 );
+let invocationHome: string | undefined;
 
 void main().catch((error: unknown) => {
   if (error instanceof CleanupInspectionError) {
     error = cleanupCliError(error, error.checks[0]?.resource ?? "workspace");
   }
-  if (error instanceof CliError) {
-    const rendered = jsonOutput
-      ? JSON.stringify({ ok: false, code: error.code, message: error.message, details: error.details })
-      : `${error.code}: ${error.message}${error.helpText === undefined ? "" : `\n\n${error.helpText.trimEnd()}`}`;
-    process.stderr.write(`${rendered}\n`);
-    process.exitCode = error.exitCode;
-    return;
-  }
-  const message = runtimeFailureMessage(error);
-  process.stderr.write(`${jsonOutput
-    ? JSON.stringify({ ok: false, code: "RUNTIME_ERROR", message, details: {} })
-    : `RUNTIME_ERROR: ${message}`}\n`);
-  process.exitCode = 5;
+  const failure = describeCliFailure(error, failureContext());
+  process.stderr.write(`${renderCliFailure(failure, jsonOutput)}\n`);
+  process.exitCode = failure.exitCode;
 });
 
-function runtimeFailureMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  if (error instanceof ControllerClientError
-    && ["CONTROLLER_NOT_RUNNING", "CONTROLLER_UNAVAILABLE", "CONTROLLER_DISCOVERY_INVALID"].includes(error.code)) {
-    return `${message} Run \`yui doctor\` with this Session's YUI_HOME and CLI; `
-      + "if the Controller is stopped, run `yui start`; if its process is present but unreachable, "
-      + "inspect it before `yui controller restart`. The Operator or user can perform recovery.";
-  }
-  if (!(error instanceof SqliteSchemaError)) return message;
-  try {
-    return `${message}\n${describeCliHomeInvocation({
-      home: resolveYuiHome(process.env),
-      packageRoot: fileURLToPath(new URL("../", import.meta.url)),
-      entryPath: fileURLToPath(import.meta.url)
-    })}`;
-  } catch {
-    return message;
-  }
+function failureContext() {
+  const route = routeInvocation(args);
+  const node = "node" in route ? route.node : route.helpNode;
+  const operands = args.slice(node.path.length - 1);
+  const publicValues = new Set([
+    ...Object.values(node.argumentValues).flat(),
+    ...Object.values(node.optionValues).flat()
+  ]);
+  const recordId = /^(?:task|project|message|run|work|wake|operation|review|input|job|integration|publication)-\d+(?:\/(?:message|run|work|wake|review|input|job|integration|publication)-\d+)?$/;
+  return {
+    operation: node.path.join(" "),
+    targets: operands.filter(value => recordId.test(value)),
+    // Do not replay argv: operands include Message bodies, config values and credentials.
+    privateValues: operands.filter(value =>
+      !/^--[a-z][a-z-]*$/.test(value) && !recordId.test(value) && !publicValues.has(value)
+    ),
+    home: invocationHome ?? process.env.YUI_HOME ?? "(default Home unresolved)",
+    cli: process.env.YUI_SESSION_CLI ?? fileURLToPath(import.meta.url),
+    environment: process.env
+  };
 }
 
 export async function main(): Promise<void> {
   const home = resolveYuiHome(process.env);
+  invocationHome = home;
   const routedForFence = args.length === 0 ? undefined : routeInvocation(args);
   const managedInvocation = process.env.YUI_SESSION_SCOPE === "task"
     || process.env.YUI_SESSION_SCOPE === "global";
@@ -362,7 +353,7 @@ export async function main(): Promise<void> {
     );
     if (delegated.error !== undefined) {
       throw runtimeError(
-        `Target release activation driver could not start: ${delegated.error.message}`
+        "Target release activation driver could not start.", { cause: delegated.error }
       );
     }
     if (delegated.signal !== null) {
@@ -423,7 +414,8 @@ export async function main(): Promise<void> {
     const subcommand = args[1];
     if (subcommand === "install" && args.length === 3) {
       const result = runReleaseInstall(home, args[2]);
-      emit(renderReleaseInstallResult(result), false, result);
+      if (result.outcome === "aborted") emitFailureResult(renderReleaseInstallResult(result), result);
+      else emit(renderReleaseInstallResult(result), false, result);
       if (result.outcome === "aborted") process.exitCode = 5;
       return;
     }
@@ -443,7 +435,9 @@ export async function main(): Promise<void> {
         );
       }
       const result = await runReleaseActivate(home, releaseId);
-      emit(renderReleaseActivateResult(result), false, result);
+      if (result.outcome === "aborted" || result.outcome === "dual-owner") {
+        emitFailureResult(renderReleaseActivateResult(result), result);
+      } else emit(renderReleaseActivateResult(result), false, result);
       if (result.outcome === "aborted" || result.outcome === "dual-owner") {
         process.exitCode = 5;
       }
@@ -545,7 +539,7 @@ export async function main(): Promise<void> {
         codex = await prepareLocalCodexStartup(startupStore, home, process.env);
       } catch (error) {
         throw runtimeError(
-          `Controller is ready, but Codex shared startup failed: ${error instanceof Error ? error.message : String(error)}`
+          "Controller is ready, but Codex shared startup failed.", { cause: error }
         );
       }
       const lines = ["Yui Controller is ready."];
@@ -584,7 +578,8 @@ export async function main(): Promise<void> {
   if (args[0] === "upgrade") {
     const result = await runUpgradeCommand(args.slice(1), home);
     process.exitCode = result.exitCode;
-    emit(result.output, false, result.data);
+    if (result.exitCode !== 0) emitFailureResult(result.output, result.data);
+    else emit(result.output, false, result.data);
     return;
   }
   if (args[0] === "internal") {
@@ -677,16 +672,7 @@ export async function main(): Promise<void> {
         emit("", false, identity);
       } catch (error) {
         if (!(error instanceof ControllerClientError)) throw error;
-        if (jsonOutput) {
-          process.stderr.write(`${JSON.stringify({
-            ok: false,
-            code: error.code,
-            message: error.message,
-            details: {}
-          })}\n`);
-        } else {
-          process.stderr.write(`RUNTIME_ERROR: ${error.message}\n`);
-        }
+        process.stderr.write(`${renderCliFailure(describeCliFailure(error, failureContext()), jsonOutput, error.code)}\n`);
         process.exitCode = 5;
       }
       return;
@@ -708,16 +694,7 @@ export async function main(): Promise<void> {
         // definitive CONTROLLER_NOT_RUNNING proof and force an unnecessary
         // unknown-active block.
         if (!(error instanceof ControllerClientError)) throw error;
-        if (jsonOutput) {
-          process.stderr.write(`${JSON.stringify({
-            ok: false,
-            code: error.code,
-            message: error.message,
-            details: {}
-          })}\n`);
-        } else {
-          process.stderr.write(`RUNTIME_ERROR: ${error.message}\n`);
-        }
+        process.stderr.write(`${renderCliFailure(describeCliFailure(error, failureContext()), jsonOutput, error.code)}\n`);
         process.exitCode = 5;
       }
       return;
@@ -887,7 +864,7 @@ export async function main(): Promise<void> {
       yuiHome: home,
       historyLimit: resolveTmuxHistoryLimit(store.getConfig().tmuxHistoryLimit),
       terminalInput: process.stdin,
-      onWarning: (message) => process.stderr.write(`Warning: ${message}\n`)
+      onWarning: (message) => writeCliWarning(message)
     }
   );
   const telemetry = openSchedulerTelemetry(home, store.getConfig());
@@ -908,8 +885,11 @@ export async function main(): Promise<void> {
       {
         environment: process.env,
         onError: (error) => {
-          const message = error instanceof Error ? error.message : String(error);
-          process.stderr.write(`Controller runtime error: ${message}\n`);
+          // Advisory async failure: preserve the foreground command's exit status.
+          const failure = describeCliFailure(error, failureContext());
+          process.stderr.write(`${renderCliFailure({
+            ...failure, details: { ...failure.details, advisory: true }
+          }, jsonOutput)}\n`);
         }
       }
     );
@@ -1369,9 +1349,9 @@ export async function main(): Promise<void> {
             await runtime.assertTaskPhysicalResourcesReleased(result.taskId);
             finalizeStoppedTaskExecution(result.taskId, store);
           } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
             throw runtimeError(
-              `Task execution is stopped and durable progress is preserved, but physical runtime cleanup failed: ${message}`
+              "Task execution is stopped and durable progress is preserved, but physical runtime cleanup failed.",
+              { cause: error }
             );
           }
           emit(result.output, false, result);
@@ -1884,7 +1864,7 @@ export async function main(): Promise<void> {
                 })
           });
           for (const warning of completionWarnings) {
-            process.stderr.write(`Warning: ${warning}\n`);
+            writeCliWarning(warning);
           }
           // Refresh observes remote objects only. Choosing and executing an
           // upstream Integration belongs to its explicit command, never completion.
@@ -2537,7 +2517,7 @@ async function preflightManagedGlobalControlPlane(): Promise<ManagedTaskControlP
   const expectedRoleKind = process.env.YUI_ROLE === "operator" ? "operator" : "global";
   if (manifest.owner.scope !== "global"
     || manifest.roleKind !== expectedRoleKind) {
-    throw new Error("Managed global invocation does not match its Session Manifest.");
+    throw new ManagedRuntimeDriftError("Managed global invocation does not match its Session Manifest.");
   }
   if (expectedRoleKind === "operator" && ["doctor", "upgrade", "update"].includes(args[0] ?? "")) {
     // These commands inspect/adopt the storage contract themselves. Requiring
@@ -2574,17 +2554,22 @@ function assertManagedSessionManifest(
 ) {
   const manifestPath = process.env.YUI_SESSION_MANIFEST;
   if (manifestPath === undefined) {
-    throw new Error("Managed control-plane invocation requires its Session Manifest.");
+    throw new ManagedRuntimeDriftError("Managed control-plane invocation requires its Session Manifest.");
   }
-  const manifest = readSessionBootstrapManifest(manifestPath);
+  let manifest: ReturnType<typeof readSessionBootstrapManifest>;
+  try {
+    manifest = readSessionBootstrapManifest(manifestPath);
+  } catch (error) {
+    throw new ManagedRuntimeDriftError("Managed Session Manifest could not be verified.", { cause: error });
+  }
   if (manifest.owner.scope !== scope) {
-    throw new Error("Managed invocation scope does not match its Session Manifest.");
+    throw new ManagedRuntimeDriftError("Managed invocation scope does not match its Session Manifest.");
   }
   if (scope === "task" && (
     manifest.owner.scope !== "task"
     || manifest.owner.taskId !== process.env.YUI_TASK_ID
   )) {
-    throw new Error("Managed Task invocation does not match its Session Manifest owner.");
+    throw new ManagedRuntimeDriftError("Managed Task invocation does not match its Session Manifest owner.");
   }
   const expectedPath = resolve(
     home,
@@ -2601,7 +2586,7 @@ function assertManagedSessionManifest(
     canonicalManifestPath = resolve(manifestPath);
   }
   if (canonicalManifestPath !== expectedPath) {
-    throw new Error("Managed Session Manifest path is outside this YUI_HOME.");
+    throw new ManagedRuntimeDriftError("Managed Session Manifest path is outside this YUI_HOME.");
   }
   return manifest;
 }
@@ -2622,7 +2607,8 @@ function cleanupCliError(error: unknown, fallbackResource: string): CliError {
     "RUNTIME_ERROR",
     error instanceof Error ? error.message : String(error),
     undefined,
-    cleanupBlockedDetails("cleanup-failed", fallbackResource, true)
+    cleanupBlockedDetails("cleanup-failed", fallbackResource, true),
+    { cause: error }
   );
 }
 
@@ -3186,7 +3172,7 @@ async function prepareCodexForCurrentRoles(
       );
     }
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
+    const detail = describeCliFailure(error, failureContext()).message;
     const permissionDenied = isCodexInspectionPermissionError(error);
     codexAppNotice(
       `${permissionDenied
@@ -3209,7 +3195,7 @@ function assertHomeStartupAuthority(store: TaskStore): void {
 }
 
 function codexAppNotice(message: string, notification: string): void {
-  process.stderr.write(`\nYui: ${message}\n`);
+  writeCliWarning(message);
   if (process.platform !== "darwin") return;
   // The native TUI clears terminal output on attach, so keep the actionable
   // warning visible in Notification Center without interrupting Yui startup.
@@ -3217,6 +3203,13 @@ function codexAppNotice(message: string, notification: string): void {
     "-e",
     `display notification "${notification}" with title "Yui"`
   ], { stdio: "ignore", timeout: 3_000 });
+}
+
+function writeCliWarning(message: string): void {
+  const safe = sanitizeFailureText(message, failureContext());
+  process.stderr.write(`${jsonOutput
+    ? JSON.stringify({ ok: false, code: "RUNTIME_ERROR", message: safe, details: { advisory: true } })
+    : `Warning: ${safe}`}\n`);
 }
 
 function renderControllerResult(method: "stop" | "restart", value: unknown): string {
@@ -3689,9 +3682,18 @@ function emit(output: string, literal = false, data?: unknown): void {
 
 function emitControlFailure(message: string, code: string, details: unknown): void {
   process.exitCode = 2;
+  const context = failureContext();
+  const safeMessage = sanitizeFailureText(message.trim(), context);
+  const safeDetails = sanitizeFailureDetails({ value: details }, context).value;
   process.stdout.write(`${jsonOutput
-    ? JSON.stringify({ ok: false, code, message: message.trim(), details })
-    : message.trim()}\n`);
+    ? JSON.stringify({ ok: false, code, message: safeMessage, details: safeDetails })
+    : safeMessage}\n`);
+}
+
+/** Domain-owned failure reports retain their output envelope and effect receipts. */
+function emitFailureResult(output: string, data: unknown): void {
+  const context = failureContext();
+  emit(sanitizeFailureText(output, context), false, sanitizeFailureDetails({ value: data }, context).value);
 }
 
 /**
