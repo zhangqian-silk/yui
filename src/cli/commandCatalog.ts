@@ -1683,7 +1683,7 @@ export const ROOT_COMMAND = buildNode({
       sections: [{
         id: "callbacks",
         title: "Callbacks",
-        entries: ["session-notify", "runtime-hook", "agent-host", "session-cli-refresh"]
+        entries: ["session-notify", "runtime-hook", "agent-host"]
       }],
       children: [
         {
@@ -1700,11 +1700,6 @@ export const ROOT_COMMAND = buildNode({
           name: "runtime-hook",
           summary: "Record a managed Agent Driver observation from stdin.",
           usage: "yui internal runtime-hook"
-        },
-        {
-          name: "session-cli-refresh",
-          summary: "Refresh existing managed Session CLI wrappers after an update.",
-          usage: "yui internal session-cli-refresh"
         }
       ]
     }

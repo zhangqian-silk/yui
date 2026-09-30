@@ -643,6 +643,8 @@ test("Global Codex Sessions use the shared daemon and retain a process-independe
   assert.equal(planned.launch.providerControl.sessionOnly, true);
   assert.ok(!planned.launch.args.includes("--remote"));
   assert.ok(planned.launch.env.YUI_SESSION_MANIFEST);
+  assert.equal(planned.launch.env.YUI_SESSION_CLI, undefined);
+  assert.equal(existsSync(join(home, "runtime", "session-cli")), false);
   assert.doesNotMatch(bootstrap.manifest.contextProtocol.loadCommand, /\$YUI_/u);
   assert.doesNotMatch(bootstrap.manifest.contextProtocol.loadCommand, /--yui-control/u);
   assert.match(bootstrap.manifest.contextProtocol.loadCommand, /session context 'operator' --json/u);

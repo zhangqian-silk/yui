@@ -7,7 +7,7 @@ description: Lead one Yui Task through authorized planning, activation handoff, 
 
 Follow [yui-runtime](../yui-runtime/SKILL.md) first. Load the exact Context Pack
 for an explicitly dispatched AgentRun; for direct conversation or a Task
-notification, read current Task context through the Manifest's Session CLI.
+notification, read current Task context using `yui task context <task-id> --json`.
 No self-dispatch or old completed Run is needed. Read the actual Task
 requirements, current Brief and relevant user/Operator Messages, not just
 their summaries. Resolve links relative to the file containing them.

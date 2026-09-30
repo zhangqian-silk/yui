@@ -133,6 +133,8 @@ try {
   if (!existsSync(cli)) {
     throw new Error("Installed runtime package did not create its yui bin.");
   }
+  // Sessions use the normal launch PATH, pointing at this exact fixture package.
+  symlinkSync(cli, join(fakeBin, "yui"));
   environment = {
     HOME: isolatedHome,
     CODEX_HOME: join(isolatedHome, ".codex"),
@@ -265,6 +267,8 @@ try {
     "CLI input did not traverse Controller, Host and fake Provider back to durable results.",
     () => JSON.stringify({ task: json("task", "show", task.id), events: json("task", "event", "list", task.id) }));
   assert.equal(json("task", "show", task.id).task.status, "active");
+  assert.equal(existsSync(join(yuiHome, "runtime", "session-cli")), false,
+    "Launching and waking a Leader must not generate a Session CLI script.");
   json("task", "complete", task.id, "--summary", "The deterministic Provider result is accepted.");
   assert.equal(json("task", "show", task.id).task.status, "completed");
 

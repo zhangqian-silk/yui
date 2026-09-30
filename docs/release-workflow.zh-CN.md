@@ -113,8 +113,10 @@ Controller RPC 版本 1。Host 不打开 Home 数据库，包括进程归属、�
 
 存储升级仅包含同主版本内明确的小版本步骤。跨主版本转换独立授权，
 不构成运行时回退。
-Session CLI 刷新只重定位有效 Manifest 指向的当前双参数引号 wrapper，不转换
-退役形态。运行时诊断不解释 `schema.json`、`state.json` 或整表 release 幂等文件；
+新 Session 使用启动环境中的普通 `yui` 入口；升级不生成或重定向会话 CLI 脚本。
+Global Context 命令保持自足，供远端 TUI/Desktop 使用。必须正确选择 PATH 和 Home：
+协议及存储校验不能区分所有同合约安装；开发使用显式隔离的 checkout 入口。
+运行时诊断不解释 `schema.json`、`state.json` 或整表 release 幂等文件；
 当前 SQLite 与逐 key release 回执仍是权威，无关文件保持原样。
 
 `task role status`、`task role list` 和 `task role session inspect` 在持久 Run 状态旁

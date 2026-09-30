@@ -1,7 +1,7 @@
 # Task-local capabilities
 
 Read this before creating, validating or activating a Task-local plugin.
-Use the stable Session CLI's capability directory and read the exact schema
+Use the `yui` CLI's capability directory and read the exact schema
 before each unfamiliar operation. Prefer an existing tool, composition or
 one-off script unless a reusable named capability is useful.
 

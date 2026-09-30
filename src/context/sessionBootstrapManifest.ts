@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { chmodSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 
 import type { GlobalRole, TaskRole } from "../role/role.js";
 import { writeTextFileAtomically } from "../storage/durableFile.js";
@@ -25,9 +25,6 @@ export type SessionBootstrapManifest = Readonly<{
   roleKind: SessionRoleKind;
   /** Stable compatibility identity; distinct from this materialization's byte digest. */
   compatibilityDigest: string;
-  controlPlane: Readonly<{
-    sessionCliPath: string;
-  }>;
   skills: readonly Readonly<{ id: string; path: string; digest: string }>[];
   roleProfileRef: Readonly<{ digest: string; path: string }>;
   contextProtocol: Readonly<{
@@ -41,14 +38,7 @@ export type SessionBootstrapManifest = Readonly<{
 export type MaterializedSessionBootstrap = Readonly<{
   manifest: SessionBootstrapManifest;
   manifestPath: string;
-  sessionCliPath: string;
   roleProfilePath: string;
-}>;
-
-export type SessionCliRefreshResult = Readonly<{
-  refreshed: number;
-  current: number;
-  skipped: number;
 }>;
 
 /** Portable read pointers accompany every managed input, including the first
@@ -62,34 +52,16 @@ export function withSessionContextPointer(
   return [
     `Read the Yui Session Manifest at ${manifest}.`,
     "Follow its referenced Role Skills and role profile. It gives the exact Context load command.",
-    ...(environment.YUI_SESSION_CLI === undefined ? [] : [
-      `Use this absolute CLI entry for Yui commands: ${environment.YUI_SESSION_CLI}`
-    ]),
     "",
     text
   ].join("\n");
 }
 
-/** Where a managed Session's commands run: this installation, nothing more. */
+/** Explicit entry for self-contained Global Context reads across clients. */
 export type SessionEntryPoint = Readonly<{
   executable: string;
   cliEntry: string;
 }>;
-
-/**
- * A managed Session wrapper answers exactly one question: which installation
- * runs this command. It therefore carries only the resolved entry point, never
- * a package or build identity. Current Sessions may survive a compatible
- * installation relocation; this is not a cross-version runtime adapter.
- */
-function renderSessionCli(entryPoint: SessionEntryPoint): string {
-  return [
-    "#!/bin/sh",
-    `exec ${quoteShellWord(entryPoint.executable)} `
-      + `${quoteShellWord(entryPoint.cliEntry)} \"$@\"`,
-    ""
-  ].join("\n");
-}
 
 /** Read back one immutable Session Manifest and verify its content digest. */
 export function readSessionBootstrapManifest(path: string): SessionBootstrapManifest {
@@ -123,8 +95,6 @@ export function readSessionBootstrapManifest(path: string): SessionBootstrapMani
       && record.roleKind !== "leader"
       && record.roleKind !== "worker"
       && record.roleKind !== "reviewer")
-    || record.controlPlane === null
-    || typeof record.controlPlane !== "object"
     || !Array.isArray(record.skills)
     || record.roleProfileRef === null
     || typeof record.roleProfileRef !== "object"
@@ -136,8 +106,6 @@ export function readSessionBootstrapManifest(path: string): SessionBootstrapMani
   if (owner.scope === "task" && typeof owner.taskId !== "string") {
     throw new Error("Task Session Manifest owner is invalid.");
   }
-  const control = record.controlPlane as Record<string, unknown>;
-  requireText(control.sessionCliPath, "Session Manifest CLI path");
   for (const skill of record.skills) {
     if (skill === null || typeof skill !== "object") {
       throw new Error("Session Manifest Skill entry is invalid.");
@@ -167,17 +135,6 @@ export function materializeSessionBootstrap(input: Readonly<{
   entryPoint: SessionEntryPoint;
 }>): MaterializedSessionBootstrap {
   const home = resolve(input.yuiHome);
-  // Provider command runners may rebuild PATH independently of the managed
-  // process environment, so a bare `yui` could resolve to another install or
-  // Home. The wrapper pins the resolved entry point instead. Package identity
-  // stays out of it: current Session authority and the CLI/Controller protocol
-  // boundary authorize the command.
-  const sessionCliContent = renderSessionCli(input.entryPoint);
-  const sessionCliDigest = digest(sessionCliContent);
-  const sessionCliPath = resolve(join(home, "runtime", "session-cli", `yui-${sessionCliDigest}.sh`));
-  writeImmutableText(sessionCliPath, sessionCliContent);
-  chmodSync(sessionCliPath, 0o700);
-
   const roleProfile = {
     roleName: input.role.name,
     roleKind: input.roleKind,
@@ -209,9 +166,6 @@ export function materializeSessionBootstrap(input: Readonly<{
       input.roleKind,
       input.role
     ),
-    controlPlane: {
-      sessionCliPath
-    },
     skills: input.skills.map((skill) => Object.freeze({
       id: skill.id,
       path: skill.path,
@@ -230,10 +184,10 @@ export function materializeSessionBootstrap(input: Readonly<{
           )
         }
       : {
-          loadCommand: "\"$YUI_SESSION_CLI\" task run context \"$YUI_TASK_ID/<run-id>\" --json",
-          expandCommand: "\"$YUI_SESSION_CLI\" task run context expand \"$YUI_TASK_ID/<run-id>\" <ref-id> --store <store> --mode full --json",
+          loadCommand: `yui task run context ${quoteShellWord(`${input.owner.taskId}/<run-id>`)} --json`,
+          expandCommand: `yui task run context expand ${quoteShellWord(`${input.owner.taskId}/<run-id>`)} <ref-id> --store <store> --mode full --json`,
           ...(input.role.name === "leader" ? {
-            currentCommand: "\"$YUI_SESSION_CLI\" task context \"$YUI_TASK_ID\" --json"
+            currentCommand: `yui task context ${quoteShellWord(input.owner.taskId)} --json`
           } : {})
         }
   };
@@ -248,7 +202,6 @@ export function materializeSessionBootstrap(input: Readonly<{
   return Object.freeze({
     manifest,
     manifestPath,
-    sessionCliPath,
     roleProfilePath
   });
 }
@@ -271,73 +224,6 @@ function renderGlobalContextCommand(
 
 function quoteShellWord(value: string): string {
   return `'${value.replaceAll("'", "'\"'\"'")}'`;
-}
-
-/**
- * Retargets current managed wrappers to the resolved installation entry point.
- * Only a valid Session Manifest may nominate a wrapper, and only the exact
- * two-argument shell form generated here is changed.
- */
-export function refreshManagedSessionCliWrappers(
-  homeInput: string,
-  entryPoint: SessionEntryPoint
-): SessionCliRefreshResult {
-  const home = resolve(homeInput);
-  const currentSessionCli = renderSessionCli(entryPoint);
-  const manifestDirectory = resolve(join(home, "runtime", "session-manifests"));
-  const sessionCliDirectory = resolve(join(home, "runtime", "session-cli"));
-  if (!existsSync(manifestDirectory)) {
-    return Object.freeze({ refreshed: 0, current: 0, skipped: 0 });
-  }
-
-  const wrapperPaths = new Set<string>();
-  let skipped = 0;
-  for (const name of readdirSync(manifestDirectory).filter((entry) => entry.endsWith(".json"))) {
-    const manifestPath = resolve(join(manifestDirectory, name));
-    try {
-      const manifest = readSessionBootstrapManifest(manifestPath);
-      if (manifestPath !== resolve(join(manifestDirectory, `${manifest.digest}.json`))) {
-        skipped += 1;
-        continue;
-      }
-      const wrapperPath = resolve(manifest.controlPlane.sessionCliPath);
-      if (dirname(wrapperPath) !== sessionCliDirectory) {
-        skipped += 1;
-        continue;
-      }
-      wrapperPaths.add(wrapperPath);
-    } catch {
-      // An invalid Manifest cannot nominate a wrapper for mutation.
-      skipped += 1;
-    }
-  }
-
-  let refreshed = 0;
-  let current = 0;
-  for (const wrapperPath of wrapperPaths) {
-    if (!existsSync(wrapperPath)) {
-      skipped += 1;
-      continue;
-    }
-    const content = readFileSync(wrapperPath, "utf8");
-    if (content === currentSessionCli) {
-      current += 1;
-      continue;
-    }
-    if (!isManagedSessionCli(content)) {
-      skipped += 1;
-      continue;
-    }
-    writeTextFileAtomically(wrapperPath, currentSessionCli);
-    chmodSync(wrapperPath, 0o700);
-    refreshed += 1;
-  }
-  return Object.freeze({ refreshed, current, skipped });
-}
-
-/** Match exactly the two shell-quoted words emitted by renderSessionCli. */
-function isManagedSessionCli(content: string): boolean {
-  return /^#!\/bin\/sh\nexec '(?:[^'\n]|'"'"')*' '(?:[^'\n]|'"'"')*' "\$@"\n$/u.test(content);
 }
 
 function writeImmutableText(path: string, content: string): void {

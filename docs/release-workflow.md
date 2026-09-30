@@ -149,9 +149,12 @@ protection remain enforced.
 
 Storage upgrades are limited to the current major's explicit minor steps.
 Cross-major conversion is independently authorized and is not a runtime fallback.
-Session CLI refresh only retargets the current two-argument quoted wrapper
-named by a valid Manifest. It does not convert retired wrapper forms. Runtime
-diagnostics do not interpret `schema.json`, `state.json`, or a whole-map release
+New Sessions use the ordinary `yui` entry from their launch environment; updates
+do not generate or retarget per-Session CLI scripts. Global Context commands
+remain self-contained for remote TUI/Desktop use. Correct PATH and Home selection
+are required: protocol/storage checks do not distinguish every same-contract
+installation. Development uses an explicit isolated checkout entry.
+Runtime diagnostics do not interpret `schema.json`, `state.json`, or a whole-map release
 idempotency file; current SQLite data and per-key release receipts remain the
 authorities, and unrelated files are left untouched.
 

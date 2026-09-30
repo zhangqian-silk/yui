@@ -279,15 +279,6 @@ export function createUpdatePorts(
             + "different build than the one that passed preflight."
         );
       }
-      // Retarget current Manifest-referenced wrappers to the activated
-      // installation before the replacement Controller starts. This relocates
-      // the current shell form; it does not convert historical Session wrappers.
-      const sessionCliRefresh = run(
-        activeBinary,
-        ["--json", "internal", "session-cli-refresh"],
-        { cwd: process.cwd(), env: { ...environment, YUI_HOME: home }, shell: false }
-      );
-      assertSpawnOk(sessionCliRefresh, "refresh managed Session CLI wrappers");
       // Retain the exact path used by both doctor and version verification. The
       // replacement start must not resolve UPDATE_CLI_PATH or npm again.
       verifiedActivatedBinary = activeBinary;
