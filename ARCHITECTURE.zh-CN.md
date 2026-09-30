@@ -138,7 +138,8 @@ Registry 暴露 context、消息、artifact、环境、插件以及部分 Task/J
 
 经验证的 Task-local 插件在 Store 中保留显式的 enabled 意图，在 InstanceHost 中保留活
 实例。读取或重启不运行作者代码。Leader 的管理仅限于其 Task；可执行代码仍需要确切的、
-由 Operator 签发的 grant。插件验证不是安全认证。
+由 Operator 签发，或由当前 delivery Leader 依据原始用户授权在本 Task 和资源范围内
+签发的有界 grant。插件验证不是安全认证。
 
 CLI 贡献和受控的 Web 面板是 Registry 的投影。Web 仅本地回环、由 Controller 拥有；浏览器
 凭据认证本地用户控制，这些控制复用 CLI 领域操作；查询面板仍只读，不能借用该用户权限

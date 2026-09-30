@@ -1,3 +1,5 @@
+import { assertTaskLocalResourcePath, taskAuthorizationSource } from "../grant/taskAuthorization.js";
+import { createTaskEvent } from "../event/taskEvent.js";
 import {
   listArtifactsCapability,
   readArtifactCapability,
@@ -31,6 +33,7 @@ import {
 } from "./capabilityRegistry.js";
 import type { CapabilitySchema } from "./capabilitySchema.js";
 import type { InstanceHost } from "./instanceHost.js";
+import type { LeaderArchivePort } from "../task/leaderArchive.js";
 
 const text: CapabilitySchema = { type: "string", minLength: 1 };
 const strings: CapabilitySchema = { type: "object", additionalProperties: { type: "string" } };
@@ -119,9 +122,15 @@ const definitions: readonly Omit<CapabilityDescriptor, "contractVersion" | "prov
     inputSchema: taskInput, outputSchema: { type: "array", items: recordOutput }
   },
   {
-    name: "resource.local.register", summary: "Register a user-owned local directory by canonical identity (Operator); registration does not grant use.",
+    name: "task.archive", summary: "Archive this terminal Task with original user authorization; may end the requesting Leader Session. Inspect durable archive receipts after interrupted delivery.",
+    effect: "local-mutation", requiredPermissions: ["task:manage"], source: "LeaderArchive",
+    inputSchema: object({ taskId: text, sourceMessage: text, purpose: text }), outputSchema: recordOutput
+  },
+  {
+    name: "resource.local.register", summary: "Register a user-owned local directory by canonical identity (Operator or source-authorized Task Leader); registration does not grant use.",
     effect: "local-mutation", requiredPermissions: ["resource:register"], source: "ProjectResources.registerLocalDirectory",
-    inputSchema: object({ displayName: text, path: text }), outputSchema: recordOutput
+    inputSchema: object({ displayName: text, path: text, sourceMessage: text, purpose: text },
+      ["displayName", "path"]), outputSchema: recordOutput
   },
   {
     name: "resource.local.read", summary: "Read an explicitly granted local resource.",
@@ -248,7 +257,8 @@ export function createBuiltinCapabilities(
   store: TaskStore,
   jobs: DurableJobControlPort,
   signal: (taskId: string) => void = () => undefined,
-  contextProviders: readonly ContextObservationProvider[] = []
+  contextProviders: readonly ContextObservationProvider[] = [],
+  archiveTask?: LeaderArchivePort
 ) {
   const authority = createJobCallAuthority(store);
   const resources = createProjectResources(store);
@@ -274,6 +284,14 @@ export function createBuiltinCapabilities(
         throw new Error("Capability target is outside the authenticated Task.");
       }
       const taskId = invocation.context.targetId;
+      if (name === "task.archive") {
+        if (!archiveTask) throw new Error("Controller archive execution is unavailable.");
+        if (!invocation.requestId) throw new Error("Archive requires a stable requestId.");
+        return archiveTask(taskId, callerEnvironment(caller), {
+          sourceMessage: params.sourceMessage as string, purpose: params.purpose as string,
+          requestId: invocation.requestId
+        });
+      }
       if (name === "message.send") {
         // A managed Task Session resolves to Leader/role authority and never
         // gains develop from an intent argument; only a global Operator Session
@@ -335,7 +353,18 @@ export function createBuiltinCapabilities(
           params.quiescence === undefined ? undefined : { quiescence: params.quiescence as string });
       }
       if (name === "environment.list") return store.listEnvironmentPreparations(taskId);
-      if (name === "resource.local.register") return resources.registerLocalDirectory(params.displayName as string, params.path as string);
+      if (name === "resource.local.register") return store.transaction(tx => {
+        const source = caller.scope === "task"
+          ? taskAuthorizationSource(tx, taskId, callerEnvironment(caller),
+            params.sourceMessage as string | undefined, params.purpose as string | undefined)
+          : undefined;
+        if (source) assertTaskLocalResourcePath(tx, params.path as string);
+        const resource = resources.registerLocalDirectory(params.displayName as string, params.path as string);
+        if (source) tx.saveEvent(taskId, createTaskEvent(tx.nextEventId(taskId), taskId,
+          "resource.local.registered", { resourceId: resource.id, path: resource.path,
+            authorizationSource: JSON.stringify(source) }, new Date()));
+        return resource;
+      });
       if (name === "resource.local.read") return resources.readLocalResource(taskId, params.resourceId as string);
       if (name === "project.context") return resources.projectContext(taskId, params.projectId as string);
       if (name === "project.resources.configure") return resources.configureProject(params.projectId as string,
@@ -386,6 +415,13 @@ export function createBuiltinCapabilities(
       throw new Error("Capability target is outside the authenticated Task.");
     }
     for (const permission of descriptor?.requiredPermissions ?? []) {
+      if (caller.scope === "task" && descriptor?.effect !== "query"
+        && ["task:manage", "plugin:manage", "resource:register"].includes(permission)) {
+        const sessions = store.getTaskRoleSessionSet(task.id, caller.role!);
+        if (sessions?.sessions[sessions.activeAgentId]?.effective.executionAuthority !== "delivery") {
+          throw new Error("Planning Sessions cannot mutate delivery environments or plugins.");
+        }
+      }
       if (permission === "job:start" && caller.scope === "task") {
         const sessions = store.getTaskRoleSessionSet(task.id, caller.role!);
         if (sessions?.sessions[sessions.activeAgentId]?.effective.executionAuthority !== "delivery") {
@@ -405,6 +441,8 @@ export function createBuiltinCapabilities(
       // Task. This admits package management, not author-code execution:
       // adopted environments and exact plugin.execute grants remain separate.
       if (permission === "plugin:manage" && caller.scope === "task" && caller.role === "leader") continue;
+      if (permission === "resource:register" && descriptor?.name === "resource.local.register"
+        && caller.scope === "task" && caller.role === "leader") continue;
       if ((permission === "config:read" || permission === "plugin:manage" || permission === "resource:register")
         && caller.scope === "global" && caller.role === "operator") continue;
       throw new Error(`Permission unavailable: ${permission}.`);

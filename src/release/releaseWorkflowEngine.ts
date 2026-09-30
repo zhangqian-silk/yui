@@ -311,7 +311,8 @@ async function runReleaseWorkflowLocked(
     if (grant === null) {
       return finish(workflow, "unauthorized", "unauthorized:grant-missing", attempted);
     }
-    const params = resolveParams(workflow, plan);
+    const params = grant.authorizationSource === undefined ? resolveParams(workflow, plan)
+      : Object.freeze({ ...resolveParams(workflow, plan), sourceCommit: workflow.source.commit });
     const effectiveIrreversibility = effectiveStepIrreversibility(plan);
     const decision = checkGrant(grant, {
       action: grantAction(plan),
@@ -733,6 +734,12 @@ function versionTagCheckoutDenial(
   params: Readonly<Record<string, string>>
 ): string | undefined {
   if (plan.kind !== "version-tag") return undefined;
+  // Leader authorization names a release version; the adapter pushes tag,
+  // not version. Validate that actual effect before consuming a grant use.
+  if (grant.authorizationSource !== undefined
+    && (!params.version || ![params.version, `v${params.version}`].includes(params.tag ?? ""))) {
+    return "grant-version-tag-mismatch";
+  }
   const repositories = grant.scope.repositories;
   if (repositories === undefined || repositories.length === 0) return undefined;
   const checkoutPath = params.repositoryPath;

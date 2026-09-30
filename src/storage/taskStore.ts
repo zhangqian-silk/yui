@@ -600,6 +600,7 @@ export function storedCapabilityGrant(value: unknown): CapabilityGrant {
   if (grant.maxUses !== undefined) fields.push("maxUses");
   if (grant.revokedAt !== undefined) fields.push("revokedAt");
   if (grant.revokedBy !== undefined) fields.push("revokedBy");
+  if (grant.authorizationSource !== undefined) fields.push("authorizationSource");
   exact(grant as unknown as Record<string, unknown>, fields, "Capability grant");
   requireRecordIdentity(grant.id, "Capability grant id");
   requireRecordIdentity(grant.taskId, "Capability grant Task id");
@@ -725,6 +726,7 @@ export function isValidCapabilityGrantTransition(existing: CapabilityGrant, cand
   const immutable = candidate.id === existing.id
     && candidate.taskId === existing.taskId
     && candidate.granter === existing.granter
+    && isDeepStrictEqual(candidate.authorizationSource, existing.authorizationSource)
     && isDeepStrictEqual(candidate.scope, existing.scope)
     && isDeepStrictEqual(candidate.actions, existing.actions)
     && isDeepStrictEqual(candidate.parameterBounds, existing.parameterBounds)

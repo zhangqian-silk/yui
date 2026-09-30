@@ -96,7 +96,7 @@ import {
   runSessionReconcileCommand,
   runSessionStopCommand
 } from "./commands/sessionCommands.js";
-import { assertTaskDeliveryAuthority, taskLocalActor } from "./task/taskAuthority.js";
+import { assertTaskDeliveryAuthority, taskLocalActor, resolveJobCaller } from "./task/taskAuthority.js";
 import { runTaskBaseStatusCommand } from "./commands/taskBaseCommands.js";
 import { runTaskChangeSetCommand } from "./commands/taskChangeSetCommands.js";
 import {
@@ -1650,6 +1650,19 @@ export async function main(): Promise<void> {
       let archiveRemoteDeliveryProof: TaskRemoteDeliveryProof | undefined;
       let archiveTaskReviewCandidate: TaskReviewCandidate | undefined;
       if (resolved[1] === "archive") {
+        const request = parseTaskArchiveArguments(resolved.slice(2));
+        if (request.sourceMessage !== undefined) {
+          if (request.force || request.disposition !== "integrated") {
+            throw usageError("Leader ordinary archive does not authorize --force or --abandon.");
+          }
+          const result = await callController(home, "capability.call", {
+            taskId: request.taskId, caller: resolveJobCaller(process.env, request.taskId),
+            request: { name: "task.archive", requestId: request.requestId!,
+              input: { taskId: request.taskId, sourceMessage: request.sourceMessage, purpose: request.purpose! } }
+          });
+          emit("Controller archive result; inspect task events if this Session ends before the receipt.\n", false, result);
+          return;
+        }
         const { taskId, disposition, force } = validateTaskArchiveRequest(
           resolved.slice(2),
           store,

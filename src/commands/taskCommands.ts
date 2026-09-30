@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { ConfiguredAgent } from "../agent/agent.js";
 import { agentExecutionComponentLabel } from "../agent/executionComponents.js";
+import { assertLeaderArchiveAdmission } from "../task/leaderArchiveAuthority.js";
 import {
   createRun,
   runExecutionObservation,
@@ -1870,7 +1871,8 @@ function archiveTaskCommand(
   const now = clock(options);
   const result = store.transaction((tx) => {
     const task = requireTask(tx, request.taskId);
-    const actor = taskActor(tx, options, task.id);
+    const actor = options.archiveLeaderAdmission === undefined ? taskActor(tx, options, task.id)
+      : (assertLeaderArchiveAdmission(tx, task.id, options.archiveLeaderAdmission), "leader" as const);
     if (task.status === "archived") return { task, changed: false } as const;
     if (task.status !== "completed"
       && task.status !== "cancelled") {
@@ -1940,6 +1942,9 @@ function archiveTaskCommand(
       );
     recordTaskEvent(tx, task.id, "task.archived", {
       by: actor,
+      ...(options.archiveLeaderAdmission === undefined ? {} : {
+        authorizationSource: JSON.stringify(options.archiveLeaderAdmission.source)
+      }),
       workspaceDisposition: request.disposition,
       ...(request.force ? {
         force: "true", cleanup: "pending",
@@ -2185,11 +2190,26 @@ export function parseTaskArchiveArguments(
   taskId: string;
   disposition: "integrated" | "abandoned";
   force: boolean;
+  sourceMessage?: string;
+  purpose?: string;
+  requestId?: string;
 }> {
   const usage = "Task archive usage: "
     + `yui task ${command} <id> (--integrated|--abandon) [--force].`;
   const taskId = args[0]?.trim();
-  const flags = args.slice(1);
+  const flags: string[] = [];
+  const values = new Map<string, string>();
+  for (let index = 1; index < args.length; index++) {
+    const arg = args[index]!;
+    if (["--source-message", "--purpose", "--request-id"].includes(arg)) {
+      if (command !== "archive" || values.has(arg) || !args[index + 1]?.trim()
+        || args[index + 1]!.startsWith("--")) throw usageError(usage);
+      values.set(arg, args[++index]!);
+    } else flags.push(arg);
+  }
+  if (values.size !== 0 && values.size !== 3) {
+    throw usageError("Leader archive requires --source-message, --purpose and --request-id together.");
+  }
   if (taskId === undefined
     || taskId.length === 0
     || flags.some((flag, index) => (
@@ -2207,7 +2227,11 @@ export function parseTaskArchiveArguments(
   return {
     taskId,
     disposition: integrated ? "integrated" : "abandoned",
-    force
+    force,
+    ...(values.size === 0 ? {} : {
+      sourceMessage: values.get("--source-message")!, purpose: values.get("--purpose")!,
+      requestId: values.get("--request-id")!
+    })
   };
 }
 
@@ -2227,9 +2251,18 @@ export function validateTaskArchiveRequest(
 ): ReturnType<typeof parseTaskArchiveArguments> {
   const request = parseTaskArchiveArguments(args);
   const task = requireTask(store, request.taskId);
-  const archiveActor = taskActor(store, options, task.id);
-  if (archiveActor === "leader") {
-    throw usageError("Task archive requires independent user or Operator authorization.");
+  if (options.archiveLeaderAdmission !== undefined) {
+    assertLeaderArchiveAdmission(store, task.id, options.archiveLeaderAdmission);
+    if (request.force || request.disposition !== "integrated") {
+      throw usageError("Leader ordinary archive admission never authorizes force or abandonment.");
+    }
+  }
+  const archiveActor = options.archiveLeaderAdmission === undefined ? taskActor(store, options, task.id) : "leader";
+  if (archiveActor === "leader" && options.archiveLeaderAdmission === undefined) {
+    if (request.force || request.disposition === "abandoned") {
+      throw usageError("Force or abandon archive requires independent user or Operator authorization.");
+    }
+    throw usageError("Leader archive requires a source-authorized Controller operation; use task archive with --source-message, --purpose and --request-id.");
   }
   if (task.status !== "archived"
     && task.status !== "completed"

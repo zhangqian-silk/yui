@@ -17,7 +17,9 @@ the exact plugin id, digest, environment, trust and phase, within its remaining
 uses and validity. A source change cannot inherit an old digest's grant.
 Trusted-local subprocesses are not an OS sandbox.
 
-Never issue your own grants, impersonate Operator, change global configuration,
+Use [source-authorized capabilities](authorization.md) when original user input
+already authorizes the exact Task plugin/resource. Never invent grants,
+impersonate Operator, change global configuration,
 or modify the core installation, namespace or carrying Endpoint to obtain a
 tool. Request only a genuinely missing resource or trust boundary, not authority
 already available. Plugin grants do not authorize unrelated external effects.

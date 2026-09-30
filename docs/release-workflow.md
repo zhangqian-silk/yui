@@ -275,18 +275,25 @@ grouped by Role/AgentRun, and process owners use PID/start identity. Storage
 changes follow the [single explicit upgrade boundary](sqlite-control-plane-design.md);
 ordinary commands never rewrite the Home schema.
 
-Grant issue and revoke are irreversible-authority operations. They require
+Operator grant issue and revoke retain their existing authority. They require
 the current registered global Operator conversation. Its native session ID
 must match the durable live session binding: Codex commands use `CODEX_THREAD_ID`
 when present, otherwise `YUI_NATIVE_SESSION_ID`; Claude uses `YUI_NATIVE_SESSION_ID`.
 Host generation and launch-time Agent labels are not caller identity. Resuming
 the same conversation through another entry point does not revoke its authority.
 An unregistered, replaced, or ended conversation has no such authority.
-A managed Task Agent cannot self-issue or
-self-revoke a grant, and clearing the child-process environment does not
-confer user authority. The recorded granter/revoker is bound to that
-Operator session (`operator:<agent-id>`); there is no `--granter`/`--by`
-label to spoof.
+A current delivery Leader can instead issue finite, expiring grants for its own
+Task from an original user/Operator Message, using `--source-message`,
+`--purpose` (a verbatim authorization quotation), and `--request-id`. It must
+choose only the actions actually authorized by that source. Source validation
+is not natural-language approval; development intent is not publication intent.
+Release scope requires Task Projects and their repositories; package/version
+effects also need explicit package/version bounds. Global update, Controller
+replacement and migration remain Operator-only. The Leader may revoke only
+Leader-issued grants in its Task. Empty environments, Worker/Reviewer or
+planning/replaced Sessions confer no such authority. Granter/revoker attribution
+comes from the current Session; there is no `--granter`/`--by` label to spoof.
+See the [complete source/ordinary archive contract](../skills/yui-leader/references/authorization.md).
 
 ```sh
 # 1. The Operator session issues the authority for the release chain.

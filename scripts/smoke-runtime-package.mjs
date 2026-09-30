@@ -10,6 +10,7 @@ import {
   mkdtempSync,
   realpathSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -247,7 +248,7 @@ try {
     return true;
   }, "Activation must not invent request-free intent.");
   assert.equal(json("task", "show", task.id).task.status, "draft");
-  const original = "Keep the original requirement across restart.";
+  const original = "Keep the original requirement across restart. Archive this fixture Task after completion.";
   json("task", "message", "send", task.id, original, "--intent", "record", "--request-id", "original");
   const beforeRestart = json("task", "message", "list", task.id);
   const previousPid = JSON.parse(readFileSync(join(yuiHome, "runtime/controller.json"), "utf8")).pid;
@@ -324,8 +325,35 @@ try {
   tmux("new-session", "-d", "-s", neighbor, "/bin/sleep", "60");
   await waitFor(() => tmux("display-message", "-p", "-t", `=${session}:=exited-fixture`, "#{pane_dead}").trim() === "1",
     "The fixture pane did not exit.");
-  json("task", "archive", task.id, "--integrated");
+  const sourceMessage = json("task", "context", task.id).records
+    .filter(record => record.ref.store === "task-message").map(record => record.value)
+    .find(message => message?.body === original);
+  assert.ok(sourceMessage);
+  const connection = events().find(event => event.type === "runtime.native-connection-bound"
+    && event.payload.roleName === "leader");
+  assert.ok(connection);
+  const manifestDirectory = join(yuiHome, "runtime", "session-manifests");
+  const manifestPath = readdirSync(manifestDirectory).map(name => join(manifestDirectory, name))
+    .find(path => {
+      const manifest = JSON.parse(readFileSync(path, "utf8"));
+      return manifest.owner.scope === "task" && manifest.owner.taskId === task.id
+        && manifest.roleKind === "leader";
+    });
+  assert.ok(manifestPath);
+  const archiveReply = JSON.parse(runCli(cli, ["--json", "task", "archive", task.id, "--integrated",
+    "--source-message", sourceMessage.id, "--purpose", "Archive this fixture Task after completion.",
+    "--request-id", "leader-fixture-archive"], {
+    ...environment, YUI_SESSION_SCOPE: "task", YUI_TASK_ID: task.id, YUI_ROLE: "leader",
+    YUI_NATIVE_SESSION_ID: connection.payload.nativeSessionId, YUI_SESSION_MANIFEST: manifestPath
+  }));
+  assert.equal(archiveReply.ok, true, JSON.stringify(archiveReply));
+  assert.equal(archiveReply.data.kind, "value", JSON.stringify({
+    archiveReply, events: archiveReply.data.kind === "value" ? [] : events().slice(-20)
+  }));
+  assert.equal(archiveReply.data.value.status, "archived", JSON.stringify(archiveReply));
   assert.equal(json("task", "show", task.id).task.status, "archived");
+  assert.ok(events().some(event => event.type === "task.leader-archive-result"
+    && event.payload.status === "archived"), "Self-stop must leave a readable Controller-owned receipt.");
   assert.equal(processExited(panePid), true, "Archive must release the Host, not just its durable Session.");
   const sessions = tmux("list-sessions", "-F", "#{session_name}").trim().split("\n");
   assert.deepEqual(sessions, [neighbor], "Archive must remove its live/dead panes and viewer, but not task-10.");

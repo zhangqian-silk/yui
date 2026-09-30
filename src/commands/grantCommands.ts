@@ -12,6 +12,9 @@ import { formatTimestamp } from "../output/timePresentation.js";
 import type { Task } from "../task/task.js";
 import type { TaskCommandExecution, TaskCommandOptions, TaskWorkflowStore } from "./taskCommandTypes.js";
 import { isCurrentGlobalOperator } from "./taskInputCommands.js";
+import { assertLeaderGrantBounds, taskAuthorizationSource } from "../grant/taskAuthorization.js";
+import { currentManagedRuntime } from "../runtime/managedCaller.js";
+import { isDeepStrictEqual } from "node:util";
 
 const CEILINGS: ReadonlySet<string> = new Set(["none", "reversible", "irreversible"]);
 
@@ -41,7 +44,7 @@ function issueGrant(
   const usage = "Task grant issue usage: yui task grant issue <task> --action <name> (repeatable) [--scope-project <id>...] [--scope-repo <owner/name>...] [--scope-package <name>...] [--scope-home <path>] [--param <name=v1,v2>...] [--expires-at <iso-8601>] [--max-uses <int>] [--irreversibility-ceiling <none|reversible|irreversible>].";
   const parsed = parseMultiValueTail(
     args,
-    new Set(["--scope-home", "--expires-at", "--max-uses", "--irreversibility-ceiling"]),
+    new Set(["--scope-home", "--expires-at", "--max-uses", "--irreversibility-ceiling", "--source-message", "--purpose", "--request-id"]),
     new Set(["--action", "--scope-project", "--scope-repo", "--scope-package", "--param"]),
     usage
   );
@@ -55,20 +58,36 @@ function issueGrant(
   const expiresAt = optionalOption(parsed.options, "--expires-at");
   const maxUses = parseMaxUses(parsed, usage);
   const ceiling = parseCeiling(parsed, usage);
-  // Grant issuance mints irreversible authority. The granter is bound to the
-  // authenticated global Operator Session, not to a caller-supplied label.
+  // Bind issuance to the authenticated Session, never a caller-supplied label.
   const env = options.environment ?? {};
-  const granter = authorizeGrantOrigin(store, env, usage);
+  const operator = isCurrentGlobalOperator(store, env);
+  const sourceMessage = optionalOption(parsed.options, "--source-message");
+  const purpose = optionalOption(parsed.options, "--purpose");
+  const requestId = optionalOption(parsed.options, "--request-id");
+  if (!operator && !requestId) throw usageError("Leader grant issue requires a stable --request-id.");
+  const authorizationSource = operator ? undefined
+    : taskAuthorizationSource(store, taskId, env, sourceMessage, purpose);
+  const granter = operator ? authorizeGrantOrigin(store, env, usage)
+    : `leader:${taskId}:${authorizationSource!.nativeSessionId}`;
   const now = clock(options);
   // The grant record and its audit event commit in one transaction: a failed
   // event save cannot leave a persisted grant without its audit trail.
   const grant = store.transaction((tx) => {
+    if (operator) authorizeGrantOrigin(tx, env, usage);
+    else if (!isDeepStrictEqual(
+      authorizationSource, taskAuthorizationSource(tx, taskId, env, sourceMessage, purpose)
+    )) throw usageError("Authorization source changed before grant issuance; inspect current context.");
+    const previous = requestId === undefined ? undefined : tx.listEvents(taskId).find(event =>
+      event.type === "capability-grant.issued" && event.payload.requestId === requestId
+      && event.payload.issuer === (operator ? "operator" : "leader"));
+    const existing = previous === undefined ? null : tx.getCapabilityGrant(taskId, previous.payload.grantId!);
     const issued = createCapabilityGrant(
-      tx.nextCapabilityGrantId(taskId),
+      existing?.id ?? tx.nextCapabilityGrantId(taskId),
       taskId,
       {
         granter,
-        ...(scope === undefined ? {} : { scope }),
+        ...(authorizationSource === undefined ? {} : { authorizationSource }),
+        ...(operator ? (scope === undefined ? {} : { scope }) : { scope: { ...scope, taskId } }),
         actions,
         ...(parameterBounds === undefined ? {} : { parameterBounds }),
         ...(expiresAt === undefined ? {} : { expiresAt }),
@@ -77,12 +96,29 @@ function issueGrant(
       },
       now
     );
+    if (previous !== undefined) {
+      const identity = (value: CapabilityGrant) => ({
+        scope: value.scope, actions: value.actions, parameterBounds: value.parameterBounds,
+        expiresAt: value.expiresAt, maxUses: value.maxUses, irreversibilityCeiling: value.irreversibilityCeiling,
+        source: value.authorizationSource === undefined ? undefined : {
+          messageId: value.authorizationSource.messageId, digest: value.authorizationSource.digest,
+          purpose: value.authorizationSource.purpose
+        }
+      });
+      if (!existing || !isDeepStrictEqual(identity(existing), identity(issued))) {
+        throw usageError("Grant request id already names different authorization or bounds; inspect the original grant.");
+      }
+      return existing;
+    }
+    if (!operator) assertLeaderGrantBounds(tx, issued, now);
     tx.saveCapabilityGrant(taskId, issued);
     recordTaskEvent(tx, taskId, "capability-grant.issued", {
       grantId: issued.id,
       granter: issued.granter,
       actions: issued.actions.join(","),
-      scope: scopeSummary(issued.scope)
+      scope: scopeSummary(issued.scope),
+      ...(requestId === undefined ? {} : { requestId, issuer: operator ? "operator" : "leader" }),
+      ...(authorizationSource === undefined ? {} : { authorizationSource: JSON.stringify(authorizationSource) })
     }, now);
     return issued;
   });
@@ -189,7 +225,10 @@ function revokeGrantCommand(
   // Revoke is the same irreversible-authority operation as issue: it requires
   // the authenticated Operator Session, and the revoker is bound to it.
   const env = options.environment ?? {};
-  const by = authorizeGrantOrigin(store, env, usage);
+  const caller = currentManagedRuntime(store, env, taskId, "leader");
+  const leader = caller?.executionAuthority === "delivery"
+    && existing.authorizationSource !== undefined && existing.granter.startsWith(`leader:${taskId}:`);
+  const by = leader ? `leader:${taskId}:${caller.nativeSessionId}` : authorizeGrantOrigin(store, env, usage);
   const wasRevoked = existing.revokedAt !== undefined;
   const now = clock(options);
   const grant = revokeGrant(existing, by, now);

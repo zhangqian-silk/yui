@@ -1,4 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
+import { archiveLeaderTask } from "../task/leaderArchive.js";
+import { TaskWorkspaceCoordinator } from "../repository/taskWorkspaceCoordinator.js";
 import type { ConfiguredAgent } from "../agent/agent.js";
 import {
   AGENT_OPERATIONAL_ENVIRONMENT_NAMES,
@@ -529,6 +531,10 @@ export async function startFileTaskControllerRuntime(
     // the poll interval.
     const kernel = createKernelPorts(store, createLinuxProcessPort(), (taskId) => {
       runningRuntime?.signal(`task:${taskId}`);
+    }, [], async (taskId, environment, request) => {
+      if (!(workspacePreparer instanceof FileTaskWorkspacePreparer)) throw new Error("Archive workspace owner unavailable.");
+      return archiveLeaderTask(store, new TaskWorkspaceCoordinator(store, workspacePreparer, webWorkflow),
+        taskId, environment, request);
     });
     closeKernel = () => kernel.close();
     const webWorkflow = new FileTaskWorkflowRuntime(home, store, schedulerStore, planner, tmux, workspacePreparer, {

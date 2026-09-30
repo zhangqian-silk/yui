@@ -122,6 +122,9 @@ lifecycle action before enabling controlled delivery.
 Context reads never consume queue entries. Read the referenced Message in full
 from Session Context. Native/transport acceptance is not implementation, and
 `interrupt-requested` is not a stopped Turn or stopped background resources.
+Saving a Task Message or Brief is not notification delivery to Operator. A
+Task Role uses the existing Task InputRequest path for a genuinely missing
+user decision, not global Role input controls or fabricated progress questions.
 Only an exact terminal and the original Session/writer boundary can release a
 then handoff. An accepted or unconfirmed steer must not be submitted again by
 changing its request id or composing then. A conclusive rejection permits an

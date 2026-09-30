@@ -209,14 +209,19 @@ Session 权威依据当前持久绑定检查。Telemetry 按 Role/AgentRun 分�
 PID/start 身份。存储变更遵循[唯一的显式升级边界](sqlite-control-plane-design.zh-CN.md);
 普通命令绝不改写 Home schema。
 
-grant 的签发与撤销是不可逆权威操作。它们需要当前已登记的全局 Operator 对话。它的
+Operator 的 grant 签发与撤销保留现有权威边界，需要当前已登记的全局 Operator 对话。它的
 原生 session ID 必须与持久的活动 session 绑定匹配：Codex 命令在存在时使用
 `CODEX_THREAD_ID`，否则使用 `YUI_NATIVE_SESSION_ID`;Claude 使用 `YUI_NATIVE_SESSION_ID`。
 Host generation 和启动时的 Agent 标签不是调用者身份。通过另一个入口恢复同一段对话
-不撤销其权威。一个未登记、被替换或已结束的对话没有这种权威。一个受管的 Task Agent
-不能自签发或自撤销 grant，清空子进程环境也不赋予用户权威。被记录的授权者/撤销者
-绑定到那个 Operator session（`operator:<agent-id>`）；不存在可伪造的 `--granter`/`--by`
-标签。
+不撤销其权威。未登记、被替换或已结束的对话没有这种权威。
+本 Task 当前 delivery Leader 也可引用真实用户/Operator 原消息，以
+`--source-message`、`--purpose`（逐字授权引文）、`--request-id` 签发有有效期及有限次数的
+有界 Grant，并撤销本 Task 的 Leader Grant。语义判断仍由 Agent 负责：引文匹配只是来源
+验证，开发指令不是发布许可。发布必须限定 Task Project/repository，包与版本操作另须明确
+package/version 边界；全局升级、共享 Controller 替换、迁移仍不开放。
+Worker/Reviewer、规划/失效 Session 和清空环境不获得授权；身份来自当前持久 Session，
+不存在可伪造的 `--granter`/`--by` 标签。参见
+[完整来源与普通归档契约](../skills/yui-leader/references/authorization.md)。
 
 ```sh
 # 1. Operator session 为发布链签发权威。

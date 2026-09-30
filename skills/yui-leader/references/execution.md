@@ -22,6 +22,17 @@ implementation patterns, scheduling options, review routing, or recoverable
 runtime actions. Create an InputRequest only for a real product choice, new
 authority, irreversible external effect, or unavailable external fact.
 
+Task Messages and the Brief are durable records, not delivery receipts to the
+Operator. For a genuinely missing user choice, resource, credential or scope,
+use `task input request`; the Controller notifies the Operator through the
+existing durable notification path with references to the original records.
+Completion and existing blocked-work notifications use that same path. Do not
+invent an InputRequest just to announce progress or ask again for authority
+already granted. A failed global input call does not mean Task notifications
+are broken: a Task Leader must not call global `role message queue`, `steer`
+or `role interrupt`, impersonate Operator, or clear identity environment
+variables to bypass that boundary.
+
 ## Separate the work unit, executor, and concurrency
 
 Honor the user's explicit choice of direct work or delegation. Otherwise make
@@ -286,8 +297,9 @@ Use `capability search`, `describe`, and `call` to inspect current tools.
 Prefer existing tools, composition or a one-off script when sufficient.
 For reusable Task-local capabilities, read [Task plugins](task-plugins.md)
 before creation, validation or activation. Plugin management permission does
-not grant code execution or broader external effects. Never issue your own
-grants, impersonate Operator, or modify the core installation to obtain a tool.
+not grant code execution or broader external effects. Use
+[source-authorized capabilities](authorization.md) for existing explicit user
+authority. Never invent authorization, impersonate Operator, or modify the core installation to obtain a tool.
 
 ## Validate and make the review judgment
 
@@ -369,7 +381,9 @@ after its final report. Cleanup can remain advisory at completion. Ordinary
 archive requires settled resources; explicitly authorized force archive preserves
 unresolved resources and diagnostics under the shared
 [archive contract](../../yui-runtime/references/publication.md). The Leader
-does not gain independent archive authorization.
+does not gain independent archive authorization. An original explicit user
+archive request can authorize the Controller-owned ordinary archive described
+in [source-authorized capabilities](authorization.md).
 
 Complete only when the Task outcome is satisfied, required checks and review
 contracts are settled, WorkItems are accepted or deliberately retired, latest
@@ -381,7 +395,7 @@ yui task complete <task-id> \
 ```
 
 Completion records the exact Project heads. Archive is a separate,
-user-authorized Operator action.
+user-authorized action, never an implication of completion or publication.
 
 Completion is offline by default. `--refresh-remote` only refreshes remote
 freshness observations; neither path rebases or starts Integration checks.
