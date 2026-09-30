@@ -1,5 +1,6 @@
 import { parseRepeatable } from "../cli/parseRepeatable.js";
 import { usageError } from "../errors/cliError.js";
+import { describeCliFailure } from "../errors/cliFailure.js";
 import { GitIntegrationService, type IntegrationJobPort, type IntegrationResult } from "../integration/gitIntegrationService.js";
 import { createIntegrationAttempt } from "../integration/integrationAttempt.js";
 import { NodeGitWorkspace, type GitWorkspacePort } from "../repository/gitWorkspace.js";
@@ -168,7 +169,7 @@ async function integrateUpstream(
       failure = {
         projectId: binding.projectId,
         phase,
-        message: error instanceof Error ? error.message : String(error),
+        message: describeCliFailure(error, { environment: options.environment }).message,
         ...(integrationId === undefined ? {} : { integrationId }),
         effect: integrationId === undefined ? "not-started" : "inspect-required"
       };

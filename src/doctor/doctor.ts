@@ -13,6 +13,7 @@ import { operationalAgentEnvironment } from "../agent/launchEnvironment.js";
 import { resolveTmuxBin } from "../config/yuiConfig.js";
 import { compileRoleSessionContext } from "../context/roleSessionContext.js";
 import { callController, ControllerClientError } from "../core/controllerClient.js";
+import { describeCliFailure } from "../errors/cliFailure.js";
 import {
   EPHEMERAL_DOMAIN_GRACE_MS,
   readEphemeralDomainIdentity,
@@ -335,19 +336,19 @@ export async function checkController(
     };
   } catch (error) {
     if (error instanceof ControllerClientError && error.code === "CONTROLLER_NOT_RUNNING") {
-      return { name: "controller", status: "missing", detail: `${error.message} Run yui start.` };
+      return { name: "controller", status: "missing", detail: describeCliFailure(error).message };
     }
     if (error instanceof ControllerClientError && error.code === "CONTROLLER_UNAVAILABLE") {
       return {
         name: "controller",
         status: "invalid",
-        detail: `Controller is not reachable: ${error.message} Run yui start. Its process state is unverified.`
+        detail: describeCliFailure(error).message
       };
     }
     return {
       name: "controller",
       status: "invalid",
-      detail: `Controller status could not be verified: ${error instanceof Error ? error.message : String(error)}. Inspect yui controller status --verbose.`
+      detail: describeCliFailure(error).message
     };
   }
 }

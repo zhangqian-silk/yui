@@ -94,8 +94,8 @@ export async function runTaskPublicationVerifyCommand(
     if (error instanceof CliError) throw error;
     throw runtimeError(
       `Publication verification failed for ${request.publication.provider}/`
-      + `${request.publication.repository}/${request.publication.externalId}: `
-      + `${error instanceof Error ? error.message : String(error)}`
+      + `${request.publication.repository}/${request.publication.externalId}.`,
+      { cause: error }
     );
   }
   assertVerificationObservation(request, observation);

@@ -75,8 +75,8 @@ export type ManagedTaskSessionIdentity = Readonly<{
 export class ManagedRuntimeDriftError extends Error {
   readonly name = "ManagedRuntimeDriftError";
 
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
   }
 }
 

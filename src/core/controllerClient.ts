@@ -22,7 +22,17 @@ import {
 } from "./protocol.js";
 
 export class ControllerClientError extends Error {
-  constructor(readonly code: string, message: string, cause?: unknown) {
+  constructor(
+    readonly code: string,
+    message: string,
+    cause?: unknown,
+    readonly diagnostic?: Readonly<{
+      delivery: "not-sent" | "unconfirmed" | "response-received";
+      method?: string;
+      requestId?: string;
+      socketPath?: string;
+    }>
+  ) {
     super(message, { cause });
     this.name = "ControllerClientError";
   }
@@ -53,14 +63,10 @@ export async function readControllerDiscovery(home: string): Promise<ControllerD
   try {
     const metadata = await lstat(discoveryPath);
     const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
-    if (
-      !metadata.isFile()
-      || (metadata.mode & 0o077) !== 0
-      || metadata.size > 4_096
-      || (uid !== undefined && metadata.uid !== uid)
-    ) {
-      throw invalidDiscovery();
-    }
+    if (!metadata.isFile()) throw invalidDiscovery(new Error("Discovery path is not a regular file."));
+    if ((metadata.mode & 0o077) !== 0) throw invalidDiscovery(new Error("Discovery record permissions are not owner-only."));
+    if (metadata.size > 4_096) throw invalidDiscovery(new Error("Discovery record exceeds the 4096-byte limit."));
+    if (uid !== undefined && metadata.uid !== uid) throw invalidDiscovery(new Error("Discovery record belongs to a different user."));
     const value: unknown = JSON.parse(await readFile(discoveryPath, "utf8"));
     const socketPath = discoverySocketPath(value);
     return parseControllerDiscovery(value, {
@@ -72,8 +78,9 @@ export async function readControllerDiscovery(home: string): Promise<ControllerD
     if (isNodeError(error) && error.code === "ENOENT") {
       throw new ControllerClientError(
         "CONTROLLER_NOT_RUNNING",
-        withOriginalError("Controller is not running.", error),
-        error
+        withOriginalError("Controller discovery record is missing; process state is unverified.", error),
+        error,
+        { delivery: "not-sent" }
       );
     }
     if (isNodeError(error) && (error.code === "EPERM" || error.code === "EACCES")) {
@@ -105,12 +112,20 @@ export async function callController(
   params: JsonValue = {},
   options: ControllerCallOptions = {}
 ): Promise<JsonValue> {
-  const discovery = await readControllerDiscovery(home);
+  const id = options.id ?? randomUUID();
+  let discovery: ControllerDiscovery;
+  try {
+    discovery = await readControllerDiscovery(home);
+  } catch (error) {
+    if (!(error instanceof ControllerClientError)) throw error;
+    throw new ControllerClientError(error.code, error.message, error.cause, {
+      delivery: "not-sent", method, requestId: id
+    });
+  }
   const timeoutMs = options.timeoutMs ?? 5_000;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
     throw new TypeError("Controller timeout must be a positive integer.");
   }
-  const id = options.id ?? randomUUID();
   let requestLine: string;
   try {
     requestLine = encodeControllerRequest({
@@ -125,15 +140,18 @@ export async function callController(
     });
   } catch (error) {
     if (error instanceof ControllerProtocolError) {
-      throw new ControllerClientError(error.code, error.message, error);
+      throw new ControllerClientError(error.code, error.message, error, {
+        delivery: "not-sent", method, requestId: id
+      });
     }
     throw new ControllerClientError(
       "INVALID_REQUEST",
       withOriginalError("Invalid controller request.", error),
-      error
+      error,
+      { delivery: "not-sent", method, requestId: id }
     );
   }
-  return exchange(discovery.socketPath, requestLine, id, timeoutMs);
+  return exchange(discovery.socketPath, requestLine, id, timeoutMs, method);
 }
 
 /**
@@ -203,7 +221,8 @@ function exchange(
   socketPath: string,
   requestLine: string,
   expectedId: string,
-  timeoutMs: number
+  timeoutMs: number,
+  method: string
 ): Promise<JsonValue> {
   return new Promise((resolve, reject) => {
     const socket = createConnection(socketPath);
@@ -229,7 +248,12 @@ function exchange(
       settled = true;
       clearTimeout(timer);
       socket.destroy();
-      reject(error);
+      reject(new ControllerClientError(error.code, error.message, error.cause, {
+        delivery: error.diagnostic?.delivery ?? (deliveryStarted ? "unconfirmed" : "not-sent"),
+        method,
+        requestId: expectedId,
+        socketPath
+      }));
     };
 
     socket.on("connect", () => {
@@ -257,7 +281,9 @@ function exchange(
           expectedId
         );
         if (response.ok) finish(response.result);
-        else fail(new ControllerClientError(response.error.code, response.error.message));
+        else fail(new ControllerClientError(response.error.code, response.error.message, undefined, {
+          delivery: "response-received"
+        }));
       } catch (error) {
         fail(invalidResponse(error));
       }
@@ -276,7 +302,8 @@ export function classifyControllerSocketError(error: unknown, deliveryStarted: b
     return new ControllerClientError(
       "CONTROLLER_DELIVERY_UNKNOWN",
       withOriginalError("Controller request delivery is unknown.", error),
-      error
+      error,
+      { delivery: "unconfirmed" }
     );
   }
   if (isNodeError(error) && (error.code === "EPERM" || error.code === "EACCES")) {
@@ -285,7 +312,8 @@ export function classifyControllerSocketError(error: unknown, deliveryStarted: b
   return new ControllerClientError(
     "CONTROLLER_UNAVAILABLE",
     withOriginalError("Controller is unavailable.", error),
-    error
+    error,
+    { delivery: "not-sent" }
   );
 }
 
@@ -295,7 +323,8 @@ function controllerAccessDenied(error: NodeJS.ErrnoException, target: string): C
     `Controller ${target} access was denied (${error.code}) before any request was sent. `
       + "In Codex, request sandbox escalation to rerun the same Yui CLI command outside the sandbox "
       + `if authorized. If escalation is denied, report that to the user.${originalErrorDetail(error)}`,
-    error
+    error,
+    { delivery: "not-sent" }
   );
 }
 
@@ -305,7 +334,8 @@ function invalidDiscovery(error?: unknown): ControllerClientError {
     error === undefined
       ? "Controller discovery is invalid."
       : withOriginalError("Controller discovery is invalid.", error),
-    error
+    error,
+    { delivery: "not-sent" }
   );
 }
 
@@ -327,7 +357,9 @@ function originalErrorDetail(error: unknown): string {
   const code = isNodeError(error) && typeof error.code === "string"
     ? ` (${error.code})`
     : "";
-  return ` Original error${code}: ${error instanceof Error ? error.message : String(error)}`;
+  return ` Original error${code}: ${error instanceof SyntaxError
+    ? "Input could not be parsed; raw input omitted."
+    : error instanceof Error ? error.message : typeof error === "string" ? error : "Unknown cause."}`;
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
