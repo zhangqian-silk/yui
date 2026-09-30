@@ -67,10 +67,18 @@
 
 ## Run this checkout in isolation
 
-- To exercise Yui from this checkout, run `make install-local` once, then always invoke the launcher by absolute path: `<checkout>/output/dev/bin/yui ...`. This is the reliable per-checkout entry point for automation.
+- To develop, debug or test Yui from this checkout, run `make install-local` once, then specify its absolute launcher path and an independent `YUI_HOME` on every command, or verify that the launcher selects its isolated default Home. This per-checkout development launcher is not a generated per-Session CLI wrapper.
 - `make install-local` builds `dist/` and writes exactly one file, the launcher at `output/dev/bin/yui`. It does not modify `PATH`, does not touch the global `yui`, and does not create the data home. It is idempotent; re-run it after pulling code.
 - The launcher resolves its own checkout and defaults `YUI_HOME` to this checkout's `output/dev/home`, so the Controller socket, tmux server, and state that Yui derives from `YUI_HOME` stay separate from other checkouts and the global install. Calling it by absolute path works from any working directory.
-- A bare `yui` always resolves through `PATH`, independent of the current directory. Being inside this checkout does NOT make bare `yui` use the local launcher; it still runs whatever `PATH` finds (typically the global `yui`). Only an absolute launcher path selects this instance. A per-shell `export PATH=<checkout>/output/dev/bin:$PATH` also works, but only inside that one interactive shell.
+- A bare `yui` always resolves through `PATH`, independent of the current directory. Being inside this checkout does NOT make bare `yui` use the local launcher; it still runs whatever `PATH` finds (typically the global `yui`). Use the absolute launcher path for development automation, not an assumed shell PATH.
 - Each command runs in a fresh process, so `export PATH=...` / `export YUI_HOME=...` do not persist to the next command; never depend on them in automation. Use the absolute launcher path every time instead.
-- Development tooling does not replace the user-level global `yui`. Use `make install-local` plus the absolute launcher path for per-checkout work.
+- Development tooling does not replace the user-level global `yui`. Do not use `npm link`, `make link`, or `npm install -g` to overwrite it. Without explicit production authorization, do not upgrade, migrate, restart or stop the global Home/Controller.
 - `make install-local` only creates the launcher. Initialize the isolated home once with `<checkout>/output/dev/bin/yui setup` before commands that need state, and run `<checkout>/output/dev/bin/yui controller restart` if a Controller is already running an older build.
+- For example, from the checkout after `make install-local`, this read-only command explicitly selects both paths:
+
+  ```sh
+  YUI_HOME="$(pwd -P)/output/dev/home" "$(pwd -P)/output/dev/bin/yui" version
+  ```
+
+- Before the first fixture CLI call, including `setup`, register teardown in `finally`, a test hook or a shell trap. Controller, socket, tmux and state resources must belong to that fixture's independent Home. On success and failure, stop owned work/processes and its Controller, release only its tmux namespace, then remove its scratch directories. Never clean another Home; retain ownership evidence and report exact leftovers if cleanup cannot be confirmed.
+- Reading or managing the existing control plane through an authorized Operator/managed Session is separate from exercising the developed Yui. Keep the legal Session's Context entry and Home for those reads; do not substitute the test Home or strip Session identity to obtain authority.

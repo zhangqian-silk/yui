@@ -22,6 +22,7 @@ import { createDecision } from "../../dist/decision/decision.js";
 import { createDurableJob } from "../../dist/job/durableJob.js";
 import { createDurableJobControl, parseDurableJobRefParams } from "../../dist/controller/jobControl.js";
 import { startControllerServer } from "../../dist/core/controllerServer.js";
+import { installDevLauncher } from "../../scripts/manage-dev-launcher.mjs";
 
 const execute = promisify(execFile);
 
@@ -47,7 +48,9 @@ test("public CLI fences replaced Operators, Home configuration and cross-Task re
   store.saveGlobalRoleSessionSet(set);
   set = updateRoleAgentSessionStatus(set, agent.id, "ended", now, "stopped");
   store.saveGlobalRoleSessionSet(recordRoleAgentSession(set, session(operator, "operator-current"), now));
-  const base = { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: root, YUI_HOME: home,
+  const { launcherPath } = installDevLauncher({ projectRoot: process.cwd(), outputDir: join(root, "dev") });
+  const bin = dirname(launcherPath);
+  const base = { PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: root, YUI_HOME: home,
     CODEX_HOME: join(root, "codex"), CLAUDE_CONFIG_DIR: join(root, "claude"), YUI_STORE_WORKER: "false" };
   const environment = (role, owner, nativeSessionId) => {
     const manifest = materializeSessionBootstrap({ yuiHome: home, role, owner,
@@ -60,7 +63,7 @@ test("public CLI fences replaced Operators, Home configuration and cross-Task re
   };
   const cli = async (args, env) => {
     try {
-      const { stdout } = await execute(process.execPath, [resolve("dist/cli.js"), ...args, "--json"],
+      const { stdout } = await execute("yui", [...args, "--json"],
         { cwd: workspace, env, timeout: 10000 });
       return { ok: true, data: JSON.parse(stdout) };
     } catch (error) { return { ok: false, error: error.stderr }; }
@@ -97,6 +100,7 @@ test("public CLI fences replaced Operators, Home configuration and cross-Task re
   assert.equal((await cli(["task", "decision", "list", "--status", "active", "task-2"], env)).ok, false);
   assert.equal((await cli(["task", "context", "task-2"], env)).ok, false);
   assert.equal((await cli(["task", "context", "read", "task-1"], env)).ok, true);
+  assert.equal((await cli(["task", "run", "context", "task-1/run-1"], env)).ok, true);
   assert.equal((await cli(["task", "context", "inspect", "task-1", "--store", "task", "--ref", "task-1"], env)).ok, true);
   assert.equal((await cli(["task", "decision", "list", "task-2"], current)).ok, true);
   // A transport-only fixture prevents a regression from starting a scheduler.

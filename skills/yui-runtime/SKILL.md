@@ -17,8 +17,8 @@ workspace layout, native transcript, or an earlier AgentRun.
 ## Enter through the current context
 
 There are two normal Task entry points. A user may continue directly with the
-current, unrevoked Leader Session: read current context using the Session CLI
-with `task context <task-id> --json`. Do not request a self-wake, reopen a Task,
+current, unrevoked Leader Session: read current context using
+`yui task context <task-id> --json`. Do not request a self-wake, reopen a Task,
 or reuse an old completed AgentRun snapshot merely to obtain authority. Pending
 delivery, unknown execution evidence and missing reports do not themselves
 revoke Session authority. Task lifecycle, scope, Assignment, workspace and
@@ -27,14 +27,21 @@ authority merely because the Task becomes active.
 Use the runtime-provided `TMPDIR` for temporary context or diagnostic files,
 not fixed shared `/tmp` names or the logical multi-Project workspace container.
 
+Ordinary commands use `yui` from the intended launch environment's PATH and
+`YUI_HOME`. Session/native identity, Task/Assignment/workspace authority and
+Controller protocol/storage checks still apply; they do not distinguish every
+installation with the same protocol and storage versions. If the entry or Home
+is wrong or unavailable, report that fact and use the explicitly authorized
+entry/environment; do not guess another installation or clear Session identity.
+
 For every explicitly dispatched managed Task AgentRun:
 
 1. Read the exact AgentRun identity from the newest Bootstrap Envelope.
-2. Before acting, load its authorized pack with the Session CLI named by the
-   current Session Manifest:
+2. Before acting, load its authorized pack using the current Session Manifest's
+   Context command and the exact Task/Run identity:
 
    ```sh
-   "$YUI_SESSION_CLI" task run context "$YUI_TASK_ID/<run-id>" --json
+   yui task run context "<task-id>/<run-id>" --json
    ```
 
 3. Verify that the returned Task, AgentRun, Role, purpose, Snapshot digest, workspace,
@@ -46,7 +53,7 @@ For every explicitly dispatched managed Task AgentRun:
    `refId`:
 
    ```sh
-   "$YUI_SESSION_CLI" task run context expand "$YUI_TASK_ID/<run-id>" <ref-id> --store <store> --mode full --json
+   yui task run context expand "<task-id>/<run-id>" <ref-id> --store <store> --mode full --json
    ```
 
    `--store` is required, even when the ref id is unique. Select both fields

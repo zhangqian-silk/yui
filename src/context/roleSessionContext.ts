@@ -21,7 +21,6 @@ export type RoleSessionContext = Readonly<{
   managedContextFile?: string;
   sessionManifestPath?: string;
   sessionManifestDigest?: string;
-  sessionCliPath?: string;
 }>;
 
 export type RoleSessionOwner = Readonly<

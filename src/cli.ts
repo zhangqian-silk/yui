@@ -136,11 +136,7 @@ import { runWorkflowCommandAsync } from "./commands/workflowCommands.js";
 import { FileCompletionManager } from "./completion/fileCompletionManager.js";
 import { CONFIG_DOMAINS, type ConfigDomain } from "./config/configCatalog.js";
 import { resolveTmuxBin, resolveTmuxHistoryLimit } from "./config/yuiConfig.js";
-import {
-  readSessionBootstrapManifest,
-  refreshManagedSessionCliWrappers,
-  type SessionEntryPoint
-} from "./context/sessionBootstrapManifest.js";
+import { readSessionBootstrapManifest } from "./context/sessionBootstrapManifest.js";
 import {
   assertFileTaskControllerStorageCompatible,
   ensureFileTaskController,
@@ -316,7 +312,7 @@ function failureContext() {
       !/^--[a-z][a-z-]*$/.test(value) && !recordId.test(value) && !publicValues.has(value)
     ),
     home: invocationHome ?? process.env.YUI_HOME ?? "(default Home unresolved)",
-    cli: process.env.YUI_SESSION_CLI ?? fileURLToPath(import.meta.url),
+    cli: fileURLToPath(import.meta.url),
     environment: process.env
   };
 }
@@ -583,25 +579,6 @@ export async function main(): Promise<void> {
     return;
   }
   if (args[0] === "internal") {
-    if (args[1] === "session-cli-refresh" && args.length === 2) {
-      if (process.env.YUI_SESSION_SCOPE === "task"
-        || (process.env.YUI_SESSION_SCOPE === "global" && process.env.YUI_ROLE !== "operator")) {
-        throw usageError(
-          "Managed Session CLI refresh may be run only by the user or global Operator."
-        );
-      }
-      const result = refreshManagedSessionCliWrappers(
-        home,
-        currentInvocationEntryPoint()
-      );
-      emit(
-        `Refreshed ${result.refreshed} managed Session CLI wrapper(s); `
-          + `${result.current} already current, ${result.skipped} skipped.`,
-        false,
-        result
-      );
-      return;
-    }
     if (args[1] === "agent-host" && args.length === 3) {
       process.exitCode = await runAgentHost({
         home,
@@ -2548,17 +2525,6 @@ async function preflightManagedGlobalControlPlane(): Promise<ManagedTaskControlP
     catch (error) { verifiedStore.close(); throw error; }
   }
   return { contract: undefined, verifiedStore };
-}
-
-/**
- * The entry point the current invocation resolves to. Only its executable and
- * CLI path are used, to retarget managed Session wrappers at this installation.
- */
-function currentInvocationEntryPoint(): SessionEntryPoint {
-  return {
-    executable: process.execPath,
-    cliEntry: fileURLToPath(import.meta.url)
-  };
 }
 
 function assertManagedSessionManifest(

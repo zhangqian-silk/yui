@@ -516,8 +516,7 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
       developerInstructions: `Read and follow the exact Yui Session Manifest at ${bootstrap.manifestPath}.`,
       managedContextFile: bootstrap.manifestPath,
       sessionManifestPath: bootstrap.manifestPath,
-      sessionManifestDigest: bootstrap.manifest.digest,
-      sessionCliPath: bootstrap.sessionCliPath
+      sessionManifestDigest: bootstrap.manifest.digest
     };
     const managedRun = owner.scope === "task" && input.runId !== undefined
       ? this.store.getRun(owner.taskId, input.runId)
@@ -593,7 +592,6 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
     const compiled = managedCompiled;
     for (const path of [
       bootstrap.manifestPath,
-      bootstrap.sessionCliPath,
       bootstrap.roleProfilePath
     ]) {
       this.#resourceRegistrar().registerSessionContext(
@@ -747,7 +745,6 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
         YUI_DRIVER_ID: driver.id,
         YUI_WORKSPACE: effectiveWorkspace,
         YUI_SESSION_MANIFEST: sessionContext.sessionManifestPath,
-        YUI_SESSION_CLI: sessionContext.sessionCliPath,
         ...(configured.adapterId === "codex"
           ? { YUI_AGENT_BASE_ARGS: JSON.stringify(configured.baseArgs) }
           : {}),
