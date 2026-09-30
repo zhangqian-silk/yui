@@ -27,6 +27,9 @@ schema migration or new snapshot/cache store is introduced.
 Domain lists for Task Messages, events, WorkItems, Runs, decisions, milestones,
 publications and InputRequests use the same summary/reference paging contract.
 Task Role-status and wake-history lists also page, with explicit detail commands.
+Role discovery reports `recordedHealth` and `hostObservation: "not-requested"`,
+not live Host health. Even a normal recorded status cannot rule out a failed Host
+or unacknowledged terminal; follow the row's `task role status` read to inspect it.
 Context lists additionally expose candidates, reviews, jobs, Project Knowledge,
 workspaces and other authorized record families. `--status`, `--after` and
 `--work-item` narrow Context discovery; every continuation must retain filters.

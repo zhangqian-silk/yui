@@ -24,6 +24,9 @@ CLI 调用成功，不代表 Task、原生 Turn 或远端投递完成。
 
 Task Message、事件、WorkItem、Run、决策、里程碑、publication 和 InputRequest 列表
 共用摘要/引用分页。Role 状态与 wake 历史列表也分页，并给出详情命令。
+Role 发现返回 `recordedHealth` 与 `hostObservation: "not-requested"`，不是实时 Host
+健康度。记录状态正常也不能排除 Host 失败或终态未确认；需沿条目的 `task role status`
+读取指针检查。
 Context 列表还暴露候选、Review、Job、Project Knowledge、工作区等获授权的记录。
 `--status`、`--after`、`--work-item` 缩小发现范围；续读必须保留过滤条件。
 Run 列表接受 Task 或 `task/work` 目标。

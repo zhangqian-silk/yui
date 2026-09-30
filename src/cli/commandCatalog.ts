@@ -756,7 +756,7 @@ const taskChildren: readonly NodeInput[] = [
         options: ["--profile", "--agent", ...roleProfileOptions, ...roleAgentOptions],
         optionValues: roleAgentOptionValues
       },
-      { name: "list", summary: "List Task Role status summaries.", usage: "yui task role list <task> [--limit <1..100>] [--cursor <cursor>]", options: ["--limit", "--cursor"] },
+      { name: "list", summary: "Discover recorded Role health; Host is unchecked until role status.", usage: "yui task role list <task> [--limit <1..100>] [--cursor <cursor>]", options: ["--limit", "--cursor"] },
       {
         name: "status",
         summary: "Show persisted and live runtime state for one Task Role.",

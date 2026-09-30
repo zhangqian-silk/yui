@@ -3511,9 +3511,10 @@ function listTaskRoles(
     store,
     options.runtime?.inspectTaskRolePanes?.(task.id) ?? [],
     options.now?.() ?? new Date()
-  ).map(status => withTaskRoleHostObservation(status, options.liveHostObservations?.[status.roleName]));
+  );
   const data = recordPage(statuses.map(status => ({
-    roleName: status.roleName, agentId: status.agentId, health: status.health,
+    roleName: status.roleName, agentId: status.agentId, recordedHealth: status.health,
+    hostObservation: "not-requested",
     openInput: taskRoleOpenInputLabel(status), activeWork: taskRoleActiveWorkLabel(status),
     lastRun: taskRoleLastRunLabel(status), nativeSession: taskRoleNativeSessionLabel(status),
     tmux: taskRoleTmuxLabel(status),
