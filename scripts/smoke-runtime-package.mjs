@@ -212,7 +212,8 @@ try {
     assert.ok(healthy.every(check => check.status === "ok"), JSON.stringify(healthy));
     const helperCheck = healthy.find(check => check.name === "pty helper");
     const helper = helperCheck.detail.match(/helper=(.*?); mode=/u)?.[1];
-    assert.ok(helper?.startsWith(copyModule), helperCheck.detail);
+    // Node resolves the native module physically (/var -> /private/var on macOS).
+    assert.ok(helper?.startsWith(`${realpathSync(copyModule)}/`), helperCheck.detail);
     chmodSync(helper, 0o644);
     const denied = inspectPty({ requireFrom });
     const failed = denied.find(check => check.name === "pty helper");
