@@ -1,7 +1,10 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import {
+  chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -181,7 +184,45 @@ try {
     throw new Error("Installed CLI setup did not create the minimum task-ready runtime.");
   }
 
-  assert.equal(json("doctor").storage.healthy, true);
+  const doctorStarted = Date.now();
+  const doctor = json("doctor");
+  assert.equal(doctor.storage.healthy, true);
+  const ptyChecks = doctor.checks.filter(check => check.name === "node-pty" || check.name.startsWith("pty "));
+  assert.ok(ptyChecks.some(check => check.name === "pty spawn"));
+  assert.ok(ptyChecks.every(check => check.status === "ok"), JSON.stringify(ptyChecks));
+  const consumerRequire = createRequire(join(root, "package.json"));
+  assert.equal(packageJson.dependencies["node-pty"], "1.2.0-beta.15");
+  assert.equal(consumerRequire("node-pty/package.json").version, "1.2.0-beta.15");
+  assert.ok(ptyChecks.find(check => check.name === "node-pty").detail.includes(consumerRequire.resolve("node-pty")));
+  console.log(`Default Doctor passed in ${Date.now() - doctorStarted}ms: ${JSON.stringify(ptyChecks)}`);
+  if (!assembled) {
+    const consumerModules = resolve(root, "../..");
+    const resolvedPty = consumerRequire.resolve("node-pty");
+    assert.ok(!relative(consumerModules, resolvedPty).startsWith(".."),
+      `PTY must resolve inside the consumer install, not the checkout: ${resolvedPty}`);
+  }
+  if (process.platform === "darwin") {
+    // Damage only a disposable copy; never chmod the real install under test.
+    const copyRoot = join(sandbox, "broken-pty");
+    const copyModule = join(copyRoot, "node_modules/node-pty");
+    cpSync(dirname(consumerRequire.resolve("node-pty/package.json")), copyModule, { recursive: true });
+    const { inspectPty } = await import(pathToFileURL(join(root, "dist/doctor/ptyProbe.js")).href);
+    const requireFrom = pathToFileURL(join(copyRoot, "entry.cjs")).href;
+    const healthy = inspectPty({ requireFrom });
+    assert.ok(healthy.every(check => check.status === "ok"), JSON.stringify(healthy));
+    const helperCheck = healthy.find(check => check.name === "pty helper");
+    const helper = helperCheck.detail.match(/helper=(.*?); mode=/u)?.[1];
+    assert.ok(helper?.startsWith(copyModule), helperCheck.detail);
+    chmodSync(helper, 0o644);
+    const denied = inspectPty({ requireFrom });
+    const failed = denied.find(check => check.name === "pty helper");
+    assert.equal(failed.status, "invalid");
+    assert.ok(failed.detail.includes(helper));
+    assert.match(failed.detail, /mode=0644.*permission denied/);
+    assert.equal(statSync(helper).mode & 0o777, 0o644, "Doctor must not repair the helper");
+    assert.equal(denied.some(check => check.name === "pty spawn"), false);
+    console.log(`Damaged macOS helper diagnosed without repair: ${failed.detail}`);
+  }
   const status = JSON.parse(runCli(cli, ["--json", "controller", "status"],
     { ...environment, YUI_STATUS_IDENTITY: "0" })).data;
   assert.ok(status.identity, "Status identity is unconditional, not a rollout flag.");

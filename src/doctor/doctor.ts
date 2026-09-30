@@ -2,6 +2,7 @@ import { accessSync, constants, existsSync, lstatSync, realpathSync } from "node
 import { isAbsolute, join } from "node:path";
 
 import Database from "better-sqlite3";
+import { inspectPty } from "./ptyProbe.js";
 
 import {
   configuredAgentToDefinition,
@@ -307,6 +308,7 @@ async function inspectDoctor(
       controller,
       ...(domain === undefined ? [] : [domain]),
       ...toolChecks,
+      ...inspectPty(),
       ...agentChecks,
       ...review.checks
     ],

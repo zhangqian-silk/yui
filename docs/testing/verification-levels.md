@@ -118,6 +118,14 @@ freshly installed package through
 artifact and provenance boundaries. This validates runtime integration, not
 real-model behavior. Pure contract and safety tests remain in `test/core`;
 production wiring is exercised here rather than only through mocked ports.
+The native dependency check launches a fixed local program through PTY and
+requires its output and normal exit. Installed-package smoke explicitly checks
+default Doctor's PTY results using dependencies resolved from the consumer.
+On macOS it also tests a disposable copy with a non-executable spawn-helper:
+Doctor must report the selected helper path and permissions without repairing it.
+Doctor's isolated PTY probe waits up to 750 ms for output/exit, with a 1.5-second
+outer native-process limit, and reports elapsed time. Existing Agent/Controller
+diagnostics have their own costs; this is not a one-second whole-Doctor guarantee.
 The package smoke also checks unconditional status identity and update-owned
 resource/identity capture through the assembled package. Real lifecycle children
 stop the exact Controller and restore its captured launch identity while their

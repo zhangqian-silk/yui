@@ -206,6 +206,7 @@ jobs:
           YUI_TGZ="$PWD/release-artifact/yui-runtime.tgz"
           consumer="$(mktemp -d)"
           npm install --prefix "$consumer" "$YUI_TGZ"
+          YUI_INSTALLED_ROOT="$consumer/node_modules/@zq-silk/yui" node scripts/ci-native-dependencies.mjs verify
           YUI_INSTALLED_ROOT="$consumer/node_modules/@zq-silk/yui" node scripts/smoke-runtime-package.mjs
 
   publish:
