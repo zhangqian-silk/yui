@@ -101,6 +101,8 @@ do not add prose-matching tests or claim model validation from static checks.
 `ci.yml` runs core plus one assembled-package normal-path smoke per supported
 platform (Linux x64, Mac Intel and Apple Silicon) on every PR, without another
 lint or broad regression suite.
+Linux runs on Node 24 and 26; release fresh-install smoke covers Node 20, 22,
+24 and 26 on all three platforms.
 `node scripts/smoke-runtime-package.mjs --assembled .release-stage` exercises
 the actual CLI/Controller/Host/SQLite and isolated tmux, replacing only the
 external Provider with a deterministic fixture. It covers setup, durable input

@@ -13,10 +13,10 @@ export function inspectPty(options: {
   const started = Date.now();
   const checks: DoctorCheck[] = [];
   const major = Number(process.versions.node.split(".")[0]);
-  if (![20, 22, 24].includes(major)) {
+  if (![20, 22, 24, 26].includes(major)) {
     checks.push({
       name: "pty Node runtime", status: "unsupported",
-      detail: `Node ${process.versions.node} is outside Yui's supported Node 20/22/24 range; this is not evidence of a helper permission failure.`
+      detail: `Node ${process.versions.node} is outside Yui's supported Node 20/22/24/26 range; this is not evidence of a helper permission failure.`
     });
   }
   let entry: string;

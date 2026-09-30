@@ -74,6 +74,8 @@ package-start 检查跟随已安装树中的本地 Skill 引用，包括跨 Role
 
 `ci.yml` 在每个 PR 上构建一次，运行 core 及一个组装包正常链路检查，不重复 lint，
 也不增加宽泛回归套件。
+Linux CI 在 Node 24 和 26 上运行；发布时的全新安装 smoke 覆盖三个平台上的
+Node 20、22、24 和 26。
 `node scripts/smoke-runtime-package.mjs --assembled .release-stage` 经过真实
 CLI/Controller/Host/SQLite 与隔离 tmux，仅用确定性夹具替换外部 Provider。它验证
 setup、输入跨重启持久化及幂等、scratch 激活、原生结果入库、完成后保留会话、

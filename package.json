@@ -34,7 +34,7 @@
     "pack:dry-run": "npm run build && node scripts/assemble-runtime-package.mjs --output .release-stage && npm pack ./.release-stage --dry-run --ignore-scripts --cache ./.npm-cache"
   },
   "engines": {
-    "node": "^20.17.0 || ^22.9.0 || ^24.0.0"
+    "node": "^20.17.0 || ^22.9.0 || ^24.0.0 || ^26.0.0"
   },
   "os": [
     "linux",
