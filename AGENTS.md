@@ -65,6 +65,13 @@
 - These repository constraints apply whenever Yui is the Project being changed, independent of which human, Agent, orchestrator, CI system, or other tool performs the work.
 - When developing this repository, read and follow [`.agents/skills/develop-yui/SKILL.md`](.agents/skills/develop-yui/SKILL.md). It owns Yui-specific implementation and validation workflow; do not copy those Project details into Yui's generic Leader, Worker, or Reviewer behavior.
 
+## Keep development and version releases separate
+
+- Do not release a new version by default. Development, testing, acceptance, PR creation and merge do not authorize version-number changes, release tags, GitHub Releases or npm publication; each external effect still needs the Task's actual authority.
+- When the user explicitly requests a new version without specifying its level, choose only minor or patch according to the actual changes and the project's version rules. A major release requires explicit user authorization for a major release or a specific major version; completion or discovery of a breaking change does not supply it.
+- If a breaking change cannot honestly fit a minor/patch release, explain the compatibility conflict and wait for the necessary explicit user choice. Do not silently choose major, label incompatible behavior as compatible, or add historical compatibility machinery merely to avoid that decision.
+- Follow [the release workflow guidance](docs/release-workflow.md) only for the authorized effects. A merge-only ReleaseWorkflow is not permission to publish, update the global CLI or replace a Controller. Package release versions and storage migration versions remain separate contracts.
+
 ## Run this checkout in isolation
 
 - To develop, debug or test Yui from this checkout, run `make install-local` once, then specify its absolute launcher path and an independent `YUI_HOME` on every command, or verify that the launcher selects its isolated default Home. This per-checkout development launcher is not a generated per-Session CLI wrapper.
