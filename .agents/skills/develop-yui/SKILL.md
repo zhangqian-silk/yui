@@ -104,7 +104,10 @@ separate work, not a reason to add a background protocol to the normal path.
   references in the installed package as well as the source checkout.
 - For release or package changes, read the relevant section of
   [release workflow](../../../docs/release-workflow.md); verification does not
-  authorize publishing.
+  authorize publishing. Apply AGENTS.md's release boundary: no version release
+  by default; an explicit release request defaults to minor/patch, and major
+  requires explicit user authorization. If compatibility conflicts with that
+  scope, report it and wait for the necessary user choice.
 
 ## Hand off evidence
 

@@ -27,6 +27,29 @@ system sits behind `ReleaseWorkflowPorts`
 external ports exercise recovery without real GitHub, npm, git, Controller,
 or model effects.
 
+## Yui's default release boundary
+
+For development of Yui itself, the repository's `AGENTS.md` owns the release policy:
+do not release a version by default. Development, tests, acceptance, PR creation
+and merge do not include changing version numbers, creating release tags or
+GitHub Releases, or publishing to npm. Each external effect still requires the
+Task's actual authorization. A workflow containing only PR, CI and merge steps
+is a valid delivery plan; its `ReleaseWorkflow` name does not authorize any
+package release, global CLI update or Controller replacement.
+
+When the user explicitly asks to release a new version without naming its
+level, select only minor or patch according to the actual changes and project
+version rules. A major release requires explicit user authorization for major
+or a specific major version. If breaking changes cannot honestly be represented
+by minor/patch, explain the compatibility conflict and wait for the necessary
+explicit user choice: neither silently publish major nor mislabel incompatible
+behavior as compatible. This does not require adding historical compatibility
+mechanisms. Package release versions are distinct from storage migration
+versions; the storage rules below do not authorize a package release.
+
+The operations and examples below describe how to execute already-authorized
+effects, not a default sequence to run after completing or merging a Task.
+
 ## Stable 1.0 baseline and release evidence
 
 Package 1.0.0 defines the storage **1.0** contract directly. The runtime and
