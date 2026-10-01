@@ -345,8 +345,8 @@ try {
   tmux("new-session", "-d", "-s", neighbor, "/bin/sleep", "60");
   await waitFor(() => tmux("display-message", "-p", "-t", `=${session}:=exited-fixture`, "#{pane_dead}").trim() === "1",
     "The fixture pane did not exit.");
-  const sourceMessage = json("task", "context", task.id).records
-    .filter(record => record.ref.store === "task-message").map(record => record.value)
+  const sourceMessage = json("task", "context", "list", task.id, "--store", "task-message").items
+    .map(entry => json("task", "message", "show", `${task.id}/${entry.ref.refId}`))
     .find(message => message?.body === original);
   assert.ok(sourceMessage);
   const connection = events().find(event => event.type === "runtime.native-connection-bound"
