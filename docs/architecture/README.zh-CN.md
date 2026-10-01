@@ -20,6 +20,7 @@
 | 谁消费结果、综合与审查？ | [结果消费](../agent-result-consumption.zh-CN.md) |
 | WorkItem 依赖何时满足？ | [Task 依赖](../task-dag-semantics.zh-CN.md) |
 | Task 内记录如何引用？ | [局部身份](../task-local-identity.zh-CN.md) |
+| 有界发现、完整原文与变更回执如何配合？ | [CLI 信息契约](../cli-information-contract.zh-CN.md) |
 | Role、Profile 与运行配置如何生效？ | [角色与配置](../roles-and-configuration.zh-CN.md) |
 | 怎样交付、集成和归档？ | [交付生命周期](../task-delivery.zh-CN.md) |
 | Project refresh 同步什么，怎样报告部分失败？ | [Project refresh](../project-refresh.zh-CN.md) |

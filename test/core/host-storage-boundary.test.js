@@ -376,6 +376,12 @@ test("Controller resolves Host facts, retains ACK-loss replay and rejects wrong/
   assert.equal(store.getActiveRun("task-1", "worker").id, successor.id);
   assert.ok(store.listEvents("task-1").some(e => JSON.stringify(e.payload).includes("exceeds its event authority")));
   assert.ok(store.listEvents("task-1").some(e => JSON.stringify(e.payload).includes("workspace does not match")));
+  const listed = runTaskCommand(["role", "list", "task-1"], store, { environment: {} })
+    .data.items.find(item => item.roleName === "worker");
+  assert.equal(listed.health, undefined, "A discovery row must not imply a live Host health check.");
+  assert.equal(typeof listed.recordedHealth, "string");
+  assert.equal(listed.hostObservation, "not-requested");
+  assert.equal(listed.read, "task role status task-1 worker");
   const status = runTaskCommand(["role", "status", "task-1", "worker"], store, {
     environment: {}, liveHostObservations: { worker: { snapshot: {
       schemaVersion: 1, state: "failed", adapterId: "codex", nativeSessionId: identity.nativeSessionId,

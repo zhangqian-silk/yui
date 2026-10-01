@@ -16,7 +16,7 @@ import { projectTaskRemoteDeliveryFromStore, createTaskRemoteDeliveryProof, asse
 import { runTaskPublicationAdoptCommand } from "../../dist/commands/taskPublicationAdoptCommand.js";
 import { runTaskCommand } from "../../dist/commands/taskCommands.js";
 import { buildWebTaskDetail } from "../../dist/web/webSnapshot.js";
-import { readTaskContext } from "../../dist/context/taskContext.js";
+import { readTaskContext, inspectTaskContext } from "../../dist/context/taskContext.js";
 import { createPublicationReference } from "../../dist/task/publicationReference.js";
 import { createIntegrationAttempt, updateIntegrationAttempt, supersedeIntegration } from "../../dist/integration/integrationAttempt.js";
 
@@ -120,7 +120,8 @@ test("a merged post-completion candidate is a remote fact, not automatic Task co
   assert.equal(f.delivery().projects[0].adoption.id, adopted.data.id, "same-head metadata retains adoption");
   const snapshotRevision = f.store.getStateRevision();
   assert.deepEqual(buildWebTaskDetail(f.store, f.task.id).remoteDelivery, f.delivery());
-  assert.deepEqual(readTaskContext(f.store, f.task.id).records.find(r => r.ref.store === "remote-delivery").value,
+  const deliveryRef = readTaskContext(f.store, f.task.id).records.find(r => r.ref.store === "remote-delivery").ref;
+  assert.deepEqual(inspectTaskContext(f.store, f.task.id, deliveryRef).value,
     f.delivery());
   assert.equal(f.store.getStateRevision(), snapshotRevision);
   const proof = createTaskRemoteDeliveryProof(f.store, f.task);

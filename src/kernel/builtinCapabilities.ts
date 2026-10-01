@@ -9,7 +9,7 @@ import { runConfigCommand } from "../commands/configCommands.js";
 import { sendTaskMessageCommand, updateTaskMetadataCommand } from "../commands/taskCommands.js";
 import { CONFIG_DOMAINS, type ConfigDomain } from "../config/configCatalog.js";
 import {
-  inspectTaskContext,
+  inspectTaskContext, listTaskContext,
   readTaskContext, readTaskContextDelta,
   withContextObservations,
   type ContextObservationProvider
@@ -69,10 +69,17 @@ const definitions: readonly Omit<CapabilityDescriptor, "contractVersion" | "prov
     outputSchema: { type: "object", required: ["events", "throughCursor"] }
   },
   {
+    name: "context.list", summary: "Discover one authorized record family with bounded summaries and exact references.",
+    effect: "query", requiredPermissions: ["task:read"], source: "listTaskContext",
+    inputSchema: object({ taskId: text, store: text, cursor: text, limit: { type: "integer" },
+      status: text, after: text, workItemId: text }, ["taskId", "store"]),
+    outputSchema: { type: "object", required: ["items", "total", "complete", "nextCursor"] }
+  },
+  {
     name: "context.inspect", summary: "Expand an authorized current record; optionally require its exact digest.",
     effect: "query", requiredPermissions: ["task:read"], source: "inspectTaskContext",
-    inputSchema: object({ taskId: text, store: text, refId: text, digest: text }, ["taskId", "store", "refId"]),
-    outputSchema: { type: "object", required: ["ref", "value", "coreCursor"] }
+    inputSchema: object({ taskId: text, store: text, refId: text, digest: text, cursor: text }, ["taskId", "store", "refId"]),
+    outputSchema: { type: "object" }
   },
   {
     name: "artifact.save", summary: "Save a file artifact by relativePath into the Task's local Git repository; returns a commit-pinned reference.",
@@ -320,8 +327,14 @@ export function createBuiltinCapabilities(
         after: params.after as string, continuation: params.continuation as string | undefined,
         limit: params.limit as number | undefined
       }, callerEnvironment(caller));
+      if (name === "context.list") return listTaskContext(store, taskId, params.store as string, {
+        cursor: params.cursor as string | undefined, limit: params.limit as number | undefined,
+        status: params.status as string | undefined, after: params.after as string | undefined,
+        workItemId: params.workItemId as string | undefined
+      }, callerEnvironment(caller));
       if (name === "context.inspect") return inspectTaskContext(store, taskId, {
-        store: params.store as string, refId: params.refId as string, digest: params.digest as string | undefined
+        store: params.store as string, refId: params.refId as string, digest: params.digest as string | undefined,
+        cursor: params.cursor as string | undefined
       }, callerEnvironment(caller));
       // File/directory artifacts live in the Task's local Git repository, not
       // the DB. Save commits exactly one path and returns a self-certifying

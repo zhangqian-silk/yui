@@ -25,23 +25,12 @@ import {
 import { MAX_SYNTHESIS_SOURCE_RUNS, sourceRunContextValue } from "./sourceRunContext.js";
 
 export const RUN_CONTEXT_PACK_SCHEMA_VERSION = 1 as const;
-export const RUN_CONTEXT_PACK_MAX_REFS = 256;
-export const RUN_CONTEXT_PACK_MAX_BYTES = 8 * 1024 * 1024;
-export const RUN_CONTEXT_EXPAND_MAX_BYTES = 4 * 1024 * 1024;
 
 export type AgentRunContextView = "operator" | "leader" | "worker" | "reviewer" | "global";
-export type AgentRunContextSummary = Readonly<{
-  refId: string;
-  store: string;
-  summary: string;
-  digest: string;
-}>;
-export type AgentRunContextBudgetResult = Readonly<{
-  maxRefs: number;
-  returnedRefs: number;
-  maxBytes: number;
-  returnedBytes: number;
-  truncated: false;
+export type AgentRunContextInventory = Readonly<{
+  refs: number;
+  frozenBytes: number;
+  complete: true;
 }>;
 export type AgentRunContextPack = Readonly<{
   schemaVersion: typeof RUN_CONTEXT_PACK_SCHEMA_VERSION;
@@ -58,17 +47,15 @@ export type AgentRunContextPack = Readonly<{
   input: AgentRun["inputs"][number]["input"];
   authority: Readonly<{
     view: AgentRunContextView;
-    readableRefs: readonly ContextRef[];
     writableProjectIds: readonly string[];
   }>;
   pointers: readonly ContextRef[];
-  summaries: readonly AgentRunContextSummary[];
-  deltas: readonly ContextRef[];
+  deltaRefs: readonly Readonly<{ store: string; refId: string }>[];
   completion: Readonly<{
     allowedActions: readonly string[];
     exactRunRef: string;
   }>;
-  budget: AgentRunContextBudgetResult;
+  inventory: AgentRunContextInventory;
   digest: string;
   liveTaskState: AgentRunContextLiveTaskState;
 }>;
@@ -349,18 +336,9 @@ export function buildRunContextPack(store: TaskStore, taskId: string, runId: str
   const run = requireExactRun(store, taskId, runId);
   const snapshot = readRunContextSnapshot(store, run);
   const pointers = snapshot.refs;
-  if (pointers.length > RUN_CONTEXT_PACK_MAX_REFS) {
-    throw new Error(`AgentRun Context exceeds ${RUN_CONTEXT_PACK_MAX_REFS} authorized refs.`);
-  }
   const view = contextView(run);
   const writableProjectIds = run.effective.executionAuthority === "planning"
     ? [] : run.effective.writeProjectIds;
-  const summaries = pointers.map((ref) => Object.freeze({
-    refId: ref.refId,
-    store: ref.store,
-    summary: ref.summary ?? `${ref.store} ${ref.refId}`,
-    digest: ref.digest
-  }));
   const body = {
     schemaVersion: RUN_CONTEXT_PACK_SCHEMA_VERSION,
     identity: Object.freeze({
@@ -374,10 +352,10 @@ export function buildRunContextPack(store: TaskStore, taskId: string, runId: str
     }),
     snapshot: contextSnapshotRef(snapshot),
     input: run.inputs[0]!.input,
-    authority: Object.freeze({ view, readableRefs: pointers, writableProjectIds }),
+    authority: Object.freeze({ view, writableProjectIds }),
     pointers,
-    summaries,
-    deltas: pointers.filter((ref) => run.inputs[0]!.input.deltaRefIds.includes(ref.refId)),
+    deltaRefs: pointers.filter((ref) => run.inputs[0]!.input.deltaRefIds.includes(ref.refId))
+      .map(({ store, refId }) => ({ store, refId })),
     completion: Object.freeze({
       allowedActions: completionActions(view, run.effective.executionAuthority),
       exactRunRef: `${taskId}/${runId}`
@@ -385,17 +363,12 @@ export function buildRunContextPack(store: TaskStore, taskId: string, runId: str
   };
   const digest = contextContentDigest(body);
   const preliminaryBytes = Buffer.byteLength(JSON.stringify({ ...body, digest }), "utf8");
-  if (preliminaryBytes > RUN_CONTEXT_PACK_MAX_BYTES) {
-    throw new Error(`AgentRun Context Pack exceeds ${RUN_CONTEXT_PACK_MAX_BYTES} bytes.`);
-  }
   const pack = Object.freeze({
     ...body,
-    budget: Object.freeze({
-      maxRefs: RUN_CONTEXT_PACK_MAX_REFS,
-      returnedRefs: pointers.length,
-      maxBytes: RUN_CONTEXT_PACK_MAX_BYTES,
-      returnedBytes: preliminaryBytes,
-      truncated: false as const
+    inventory: Object.freeze({
+      refs: pointers.length,
+      frozenBytes: preliminaryBytes,
+      complete: true as const
     }),
     digest,
     liveTaskState: readLiveTaskState(store, taskId)
@@ -454,10 +427,6 @@ export function expandRunContextRef(
   if (materialized === undefined || materialized.ref.digest !== authorized[0]!.digest) {
     throw new Error(`AgentRun Context ref is unavailable or drifted: ${selector}.`);
   }
-  const bytes = Buffer.byteLength(JSON.stringify(materialized.value), "utf8");
-  if (bytes > RUN_CONTEXT_EXPAND_MAX_BYTES) {
-    throw new Error(`AgentRun Context expansion exceeds ${RUN_CONTEXT_EXPAND_MAX_BYTES} bytes.`);
-  }
   return Object.freeze({
     ref: materialized.ref,
     value: materialized.value,
@@ -487,7 +456,7 @@ export function buildRunContextDelta(
     schemaVersion: 1,
     after,
     cursor: pack.digest,
-    refs: pack.deltas
+    refs: pack.pointers.filter(ref => pack.deltaRefs.some(delta => delta.store === ref.store && delta.refId === ref.refId))
   });
 }
 

@@ -8,15 +8,16 @@ import { providerRetryProjection } from "../runtime/providerRetry.js";
 import type { ContextRecordFamily, ContextRecordQuery } from "../storage/contextRecords.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import { projectTaskRemoteDeliveryFromStore } from "../task/remoteDeliveryService.js";
+import { retiredTaskRecordIds, TASK_RECORD_RETIRED_EVENT } from "../task/taskRecordRetirement.js";
 import { managedWorkspaceKey } from "../worktree/managedWorkspace.js";
 import { contextContentDigest } from "./contextSnapshot.js";
 import { buildRunContextPack } from "./runContextPack.js";
 import { sourceRunContextValue } from "./sourceRunContext.js";
+import { boundedDocument, recordPage, type ReadPageOptions } from "../output/boundedRead.js";
 
-const MAX_RECORDS = 256;
-const MAX_VALUE_BYTES = 4096;
-const MAX_PAGE_BYTES = 128 * 1024;
-const MAX_INSPECT_BYTES = 4 * 1024 * 1024;
+const MAX_RECORDS = 64;
+const MAX_VALUE_BYTES = 2048;
+const MAX_PAGE_BYTES = 24 * 1024;
 const MAX_EVENTS = 100;
 const MAX_ATTENTION_REFS = 8;
 type Ref = Readonly<{ store: string; refId: string; revision: string; digest: string }>;
@@ -44,7 +45,7 @@ export function readTaskContext(
 ) {
   return store.readTransaction((reader) => {
     const scope = authorizeContext(reader, taskId, environment);
-    const sources = authorizedSources(reader, scope);
+    const sources = authorizedSources(reader, scope, true);
     const count = sources.reduce((total, source) => total + source.count, 0);
     const cursor = currentCursor(reader, taskId);
     // Reserve a small, classified view before ordinary history consumes the
@@ -56,9 +57,10 @@ export function readTaskContext(
     let runtimeEvents: TaskEvent[] | undefined;
     page: for (const source of sources) for (const entry of source.read()) {
       if (records.length >= MAX_RECORDS) break page;
+      if (records.filter(record => record.ref.store === source.family).length >= 8) continue;
       if (entry.ref.store === "run") runtimeEvents ??= reader.listEventsByType(taskId, ["runtime.agent-error"]);
       const valueBytes = Buffer.byteLength(JSON.stringify(entry.value));
-      const content = valueBytes > MAX_VALUE_BYTES
+      const content = valueBytes > MAX_VALUE_BYTES || ["task-message", "run", "work-item", "project-knowledge"].includes(entry.ref.store)
         ? { ref: entry.ref, summary: summarize(entry.value), omitted: true }
         : { ...entry, omitted: false };
       const record = { ...content, ...(entry.ref.store === "run" ? {
@@ -75,11 +77,20 @@ export function readTaskContext(
     }
     return {
       taskId, coreCursor: encode(cursor), throughCursor: encode(cursor),
+      view: "current",
+      collections: Object.entries(sources.reduce((counts, source) => {
+        counts[source.family] = (counts[source.family] ?? 0) + source.count;
+        return counts;
+      }, {} as Record<string, number>)).map(([store, total]) => ({
+        store, total, returned: records.filter(record => record.ref.store === store).length
+      })),
+      discovery: `task context list ${taskId} --store <store>`,
+      detail: `task context inspect ${taskId} --store <store> --ref <refId> --digest <digest>`,
       attention,
       records, count,
       omitted: { records: count - records.length, values: records.filter((r) => r.omitted).length },
       observations: [] as ContextObservation[],
-      limits: { records: MAX_RECORDS, valueBytes: MAX_VALUE_BYTES, pageBytes: MAX_PAGE_BYTES,
+      limits: { records: MAX_RECORDS, valueBytes: MAX_VALUE_BYTES, pageBytes: 32 * 1024, recordBytes: MAX_PAGE_BYTES,
         attentionRefsPerCategory: MAX_ATTENTION_REFS, attentionRefBytesPerCategory: MAX_VALUE_BYTES }
     };
   });
@@ -88,15 +99,16 @@ export function readTaskContext(
 function summarizeAttention(store: TaskStore, taskId: string, allow: Set<string> | undefined) {
   const group = () => ({ count: 0, refs: [] as Ref[], omittedRefs: 0 });
   const attention = {
-    openInputs: group(), pendingOperations: group(), unknownOperations: group()
+    openInputs: group(), pendingOperations: group(), unknownOperations: group(), messages: group()
   };
   for (const [category, family, statuses] of [
     ["openInputs", "input-request", ["open"]],
     ["pendingOperations", "job", ["queued", "running"]],
-    ["unknownOperations", "job", ["unknown-needs-attention"]]
+    ["unknownOperations", "job", ["unknown-needs-attention"]],
+    ["messages", "task-message", undefined]
   ] as const) {
     const page = store.queryContextRecords(taskId, {
-      family, statuses, ids: allowedIds(allow, family), limit: MAX_ATTENTION_REFS
+      family, statuses, descending: category === "messages", ids: allowedIds(allow, family), limit: MAX_ATTENTION_REFS
     });
     const summary = attention[category];
     summary.count = page.count;
@@ -167,7 +179,7 @@ export function readTaskContextDelta(
 }
 
 export function inspectTaskContext(
-  store: TaskStore, taskId: string, selector: Readonly<{ store: string; refId: string; digest?: string }>,
+  store: TaskStore, taskId: string, selector: Readonly<{ store: string; refId: string; digest?: string; cursor?: string }>,
   environment: NodeJS.ProcessEnv = {}
 ) {
   return store.readTransaction((reader) => {
@@ -181,9 +193,6 @@ export function inspectTaskContext(
         currentRef: entry.ref
       });
     }
-    if (Buffer.byteLength(JSON.stringify(entry.value)) > MAX_INSPECT_BYTES) {
-      throw usageError("Context value exceeds the bounded inspect limit.", undefined, { ref: entry.ref, maxBytes: MAX_INSPECT_BYTES });
-    }
     const expansion = selector.store === "task-message"
       ? expandTaskMessageResult(value as TaskMessage, (task, run) => reader.getRun(task, run))
       : undefined;
@@ -192,15 +201,55 @@ export function inspectTaskContext(
       ...(selector.store === "run" ? { execution: runExecutionObservation(value as AgentRun,
         reader.getTaskRoleSessionSet(taskId, (value as AgentRun).roleName)?.providerBinding,
         reader.listEventsByType(taskId, ["runtime.agent-error"])) } : {}),
-      coreCursor: encode(currentCursor(reader, taskId)) };
-    if (Buffer.byteLength(JSON.stringify(response)) > MAX_INSPECT_BYTES) {
-      throw usageError("Expanded Context exceeds the bounded inspect limit.", undefined,
-        { ref: entry.ref, maxBytes: MAX_INSPECT_BYTES });
-    }
-    return response;
+    };
+    return boundedDocument(response, `task:${taskId}/${selector.store}/${selector.refId}`, selector.cursor);
   });
 }
 
+/** Discover one authorized family without copying its bodies or unrelated Task
+ * state. Content-version cursors fail explicitly if the collection changes.
+ */
+export function listTaskContext(
+  store: TaskStore, taskId: string, family: string,
+  options: ReadPageOptions & { status?: string; after?: string; workItemId?: string } = {},
+  environment: NodeJS.ProcessEnv = {}
+) {
+  return store.readTransaction(reader => {
+    const scope = authorizeContext(reader, taskId, environment);
+    const sources = authorizedSources(reader, scope, false, family);
+    if (!CONTEXT_FAMILIES.includes(family)) throw usageError(`Unknown Context store: ${family}.`);
+    if (options.after !== undefined && !Number.isFinite(Date.parse(options.after))) throw usageError("Invalid --after timestamp.");
+    const retiredKind = family === "task-message" ? "message" : family === "run" ? "run" : undefined;
+    const retired = retiredKind === undefined ? undefined
+      : retiredTaskRecordIds(reader.listEventsByType(taskId, [TASK_RECORD_RETIRED_EVENT]), retiredKind);
+    const records: Array<{ ref: Ref; summary: string; status?: unknown }> = [];
+    for (const source of sources) {
+      for (let offset = 0; offset < source.count; offset += MAX_RECORDS) {
+        for (const entry of source.read(offset)) {
+          const value = entry.value as Record<string, unknown>;
+          if (options.status !== undefined && value.status !== options.status
+            || options.workItemId !== undefined && value.workItemId !== options.workItemId
+            || options.after !== undefined && Date.parse(String(value.createdAt)) <= Date.parse(options.after)) continue;
+          records.push({ ref: entry.ref, summary: summarize(value),
+            ...(retired === undefined ? {} : { history: retired.has(entry.ref.refId) ? "retired" : "active" }),
+            ...Object.fromEntries(["status", "kind", "type", "createdAt", "roleName", "assignee", "purpose", "workItemId", "reviewRoundId"]
+              .filter(key => typeof value[key] === "string").map(key => [key, value[key]])) });
+        }
+      }
+    }
+    return recordPage(records, `task:${taskId}/${family}/${JSON.stringify({
+      status: options.status, after: options.after, workItemId: options.workItemId
+    })}`, options);
+  });
+}
+
+export const CONTEXT_FAMILIES = [
+  "task", "task-brief", "remote-delivery", "role", "role-profile",
+  "project-policy", "project-knowledge", "input-request", "work-item",
+  "accepted-work-item", "candidate", "environment-preparation", "managed-workspace",
+  "change-set", "task-message", "run", "source-run", "review-round", "mailbox",
+  "task-decision", "task-milestone", "job", "publication", "task-event"
+];
 export function listContextMessages(
   store: TaskStore, taskId: string, environment: NodeJS.ProcessEnv = {}
 ): TaskMessage[] {
@@ -276,7 +325,7 @@ function authorizeContext(store: TaskStore, taskId: string, environment: NodeJS.
   if (caller !== undefined && caller.roleName !== "leader") {
     if (caller.currentRunId === undefined) throw usageError("A managed Role needs a current AgentRun to read its scoped Context.");
     const pack = buildRunContextPack(store, taskId, caller.currentRunId);
-    allow = new Set(pack.authority.readableRefs.map((ref) => `${ref.store}:${ref.refId}`));
+    allow = new Set(pack.pointers.map((ref) => `${ref.store}:${ref.refId}`));
     allow.add(`role:${caller.roleName}`);
     allow.add(`turn:${caller.currentRunId}`);
     // Shared current user intent and this exact Assignment's live steers augment
@@ -423,31 +472,35 @@ function inspectValue(
   }
 }
 
-type EntrySource = { count: number; read(): Iterable<Entry> };
+type EntrySource = { family: string; count: number; read(offset?: number): Iterable<Entry> };
 
-function authorizedSources(store: TaskStore, { task, allow, caller }: ReturnType<typeof authorizeContext>): EntrySource[] {
+function authorizedSources(store: TaskStore, { task, allow, caller }: ReturnType<typeof authorizeContext>,
+  current = false, requestedFamily?: string): EntrySource[] {
   const taskId = task.id;
   const sources: EntrySource[] = [];
   const add = (family: string, id: string, value: unknown) => {
-    if (value !== null && isAllowed(allow, family, id)) {
-      sources.push({ count: 1, read: () => [materialize(family, id, value)] });
+    if ((requestedFamily === undefined || requestedFamily === family) && value !== null && isAllowed(allow, family, id)) {
+      sources.push({ family, count: 1, read: () => [materialize(family, id, value)] });
     }
   };
   const query = (family: ContextRecordFamily, options: Partial<ContextRecordQuery> = {}) => {
+    if (requestedFamily !== undefined && requestedFamily !== family) return;
     const selection = { ...options, family, ids: allowedIds(allow, family) };
     const { count } = store.queryContextRecords(taskId, { ...selection, limit: 0 });
-    sources.push({ count, *read() {
+    sources.push({ family, count, *read(offset = 0) {
       for (const { id, value } of store.queryContextRecords(taskId, {
-        ...selection, limit: MAX_RECORDS
+        ...selection, offset, limit: current ? 8 : MAX_RECORDS
       }).records) yield materialize(family, id, value);
     } });
   };
   add("task", taskId, task);
   add("task-brief", taskId, store.getTaskBrief(taskId));
-  if (allow === undefined) add("remote-delivery", taskId, projectTaskRemoteDeliveryFromStore(store, task));
+  if (allow === undefined && (requestedFamily === undefined || requestedFamily === "remote-delivery")) {
+    add("remote-delivery", taskId, projectTaskRemoteDeliveryFromStore(store, task));
+  }
   for (const role of store.listRoles(taskId)) {
     add("role", role.name, role);
-    add("role-profile", role.name, roleProfile(role));
+    if (!current) add("role-profile", role.name, roleProfile(role));
   }
   for (const binding of task.projectBindings) {
     const project = store.getProject(binding.projectId);
@@ -460,42 +513,44 @@ function authorizedSources(store: TaskStore, { task, allow, caller }: ReturnType
   }
   // Current responsibilities and unanswered inputs precede historical bulk.
   query("input-request", { statuses: ["open"] });
-  query("work-item");
+  query("work-item", current ? { excludeStatuses: ["accepted", "retired"] } : {});
   for (const id of allowedIds(allow, "accepted-work-item") ?? []) {
     add("accepted-work-item", id, store.getWorkItem(taskId, id));
   }
-  query("candidate");
+  if (!current) query("candidate");
   // File artifacts are not enumerated into the synchronous Context listing: the
   // core cursor does not cover file edits and an ambient directory index here
   // would be the forbidden update-time mirror (§3.7). Current artifacts are
   // listed on demand via the async `artifact.list` capability; frozen Candidate
   // artifacts remain reachable as commit-pinned pointers under their Candidate.
-  query("environment-preparation");
+  if (!current) query("environment-preparation");
   query("managed-workspace");
   if (caller?.currentRunId !== undefined) {
     add("managed-workspace", `${taskId}/${caller.roleName}`,
       store.getRun(taskId, caller.currentRunId)?.workspace ?? null);
   }
-  query("change-set");
+  if (!current) query("change-set");
   query("task-message", { descending: true });
-  query("run", { descending: true });
+  query("run", { descending: true, ...(current ? { statuses: ["active"] } : {}) });
   for (const id of allowedIds(allow, "source-turn") ?? []) {
     const run = store.getRun(taskId, id);
     if (run !== null) add("source-run", id, sourceRunContextValue(run));
   }
-  query("review-round", { descending: true });
-  query("input-request", { excludeStatuses: ["open"] });
-  if (allow === undefined) {
+  query("review-round", { descending: true, ...(current ? { statuses: ["pending", "running"] } : {}) });
+  if (!current) query("input-request", { excludeStatuses: ["open"] });
+  if (!current && allow === undefined) {
     add("mailbox", "task", store.getWorkMailbox({ kind: "task", taskId }));
     for (const role of store.listRoles(taskId)) {
       add("mailbox", `role:${role.name}`, store.getWorkMailbox({ kind: "role", taskId, roleName: role.name }));
     }
   }
-  query("task-decision");
-  query("task-milestone");
-  query("job");
-  query("publication");
-  query("task-event", { descending: true });
+  query("task-decision", current ? { statuses: ["active"] } : {});
+  if (!current) {
+    query("task-milestone");
+    query("publication");
+    query("task-event", { descending: true });
+  }
+  query("job", current ? { statuses: ["queued", "running", "unknown-needs-attention"] } : {});
   return sources;
 }
 
@@ -538,7 +593,7 @@ function freeze<T>(value: T): T {
 }
 function summarize(value: unknown): string {
   const record = value as Record<string, unknown>;
-  return ["title", "objective", "summary", "body", "status"]
+  return ["title", "objective", "question", "summary", "body", "status", "type"]
     .flatMap((key) => typeof record[key] === "string" ? [`${key}: ${record[key]}`] : [])
     .join("; ").slice(0, 400);
 }

@@ -33,6 +33,7 @@ Run Context Pack。
 
 ```sh
 yui task context <task> --json
+yui task context list <task> --store <store> [--cursor <cursor>]
 yui task context delta <task> --after <coreCursor>
 yui task context inspect <task> --store <store> --ref <id>
 yui task run context <task/run> --json
@@ -42,6 +43,11 @@ yui task run context expand <task/run> <ref-id> --store <store> --mode full --js
 Task Context 是一个有界的、获授权的工作集，带有当前 core 游标。delta 在一个固定
 上界内分页不可变事件；inspect 展开一条当前记录，并可要求确切摘要。运行时观察声明
 自己的覆盖范围，不会成为另一份持久快照。
+
+入口 Context 抽样当前事实，不是完整历史目录。先列出一种获授权的记录，再展开相关原文。
+长详情使用 `contentPage` 与 `--cursor`；必须拼接全部确切文本分块后再解析 JSON。
+Global `session context` 同样把有界 pending/recent 发现与 `role message show` 原文分开。
+预算、范围、续读及完整原文协议见 [CLI 信息契约](cli-information-contract.zh-CN.md)。
 
 Run Context 冻结 Assignment、来源引用、生效配置和工作区边界。一次 Role 编辑不改写
 既有 Assignment。读取任一 Context 都不确认输入或创建执行权限。每一条受管输入都指向

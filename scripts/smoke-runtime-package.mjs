@@ -262,8 +262,25 @@ try {
   json("task", "message", "send", task.id, original, "--intent", "record", "--request-id", "original");
   assert.deepEqual(json("task", "message", "list", task.id), beforeRestart, "A replay must not duplicate input.");
 
+  let eventCursor = json("task", "context", task.id).coreCursor;
+  const observedEvents = [];
+  const events = () => {
+    let continuation;
+    do {
+      const page = json("task", "context", "delta", task.id, "--after", eventCursor,
+        ...(continuation === undefined ? [] : ["--continuation", continuation]));
+      for (const entry of page.events) observedEvents.push(entry.value ??
+        json("task", "context", "inspect", task.id, "--store", entry.ref.store,
+          "--ref", entry.ref.refId, "--digest", entry.ref.digest).value);
+      continuation = page.continuation;
+      if (continuation === undefined) eventCursor = page.throughCursor;
+    } while (continuation !== undefined);
+    return observedEvents;
+  };
+  const wakes = () => listItems("task", "wake", "list", task.id)
+    .map(entry => json("task", "wake", "show", task.id, entry.id).wake);
   json("task", "activation", "request", task.id, "--request-id", "execute", "--environment", "scratch");
-  await waitFor(() => JSON.stringify(json("task", "event", "list", task.id)).includes("Native Codex result."),
+  await waitFor(() => JSON.stringify(events()).includes("Native Codex result."),
     "CLI input did not traverse Controller, Host and fake Provider back to durable results.",
     () => JSON.stringify({ task: json("task", "show", task.id), events: json("task", "event", "list", task.id) }));
   assert.equal(json("task", "show", task.id).task.status, "active");
@@ -276,7 +293,6 @@ try {
   // and conversation. Deliberately let the lifecycle-only notification finish
   // first, so a second, exact Message must reach the Host on its own wake.
   const followupStarted = performance.now();
-  const events = () => json("task", "event", "list", task.id).events;
   const originalCompletion = events().find(event => event.type === "task.completed");
   assert.throws(() => runCli(cli, ["operator", "submit", "Not an automatic reopen",
     "--task", task.id, "--intent", "discuss"], environment), error => {
@@ -292,22 +308,22 @@ try {
     return observation.fence.receiptId?.startsWith(`notification:${task.id}/${wake.id}/`) === true;
   });
   await waitFor(() => {
-    const wake = json("task", "wake", "list", task.id).wakes.find(w => w.reasons.includes("task-reopened"));
+    const wake = wakes().find(w => w.reasons.includes("task-reopened"));
     return wake !== undefined && terminalForWake(wake);
   }, "Reopen notification did not finish through the existing Host.");
   const request = ["operator", "submit", "Continue this same accepted result; local fixture only.",
     "--task", task.id, "--intent", "develop", "--request-id", "authorized-followup"];
   runCli(cli, request, environment);
   runCli(cli, request, environment);
-  const inputs = json("task", "context", task.id).records
-    .filter(record => record.ref.store === "task-message").map(record => record.value);
+  const inputs = listItems("task", "message", "list", task.id)
+    .map(entry => json("task", "message", "show", `${task.id}/${entry.ref.refId}`));
   const followups = inputs.filter(message => message?.submissionKey === "authorized-followup");
   assert.equal(followups.length, 1, "Matching Operator retries must retain one original Message.");
   const followup = followups[0];
   assert.equal(followup.submissionReceipt.routing.kind, "active-context");
   assert.equal(followup.submissionReceipt.feedback.delivery, "queued");
   await waitFor(() => {
-    const wake = json("task", "wake", "list", task.id).wakes.find(w =>
+    const wake = wakes().find(w =>
       w.refs?.some(ref => ref.type === "message" && ref.id === followup.id));
     return wake !== undefined && terminalForWake(wake);
   }, "The exact follow-up Message did not traverse CLI/Controller/Host/native terminal.");
@@ -329,8 +345,8 @@ try {
   tmux("new-session", "-d", "-s", neighbor, "/bin/sleep", "60");
   await waitFor(() => tmux("display-message", "-p", "-t", `=${session}:=exited-fixture`, "#{pane_dead}").trim() === "1",
     "The fixture pane did not exit.");
-  const sourceMessage = json("task", "context", task.id).records
-    .filter(record => record.ref.store === "task-message").map(record => record.value)
+  const sourceMessage = json("task", "context", "list", task.id, "--store", "task-message").items
+    .map(entry => json("task", "message", "show", `${task.id}/${entry.ref.refId}`))
     .find(message => message?.body === original);
   assert.ok(sourceMessage);
   const connection = events().find(event => event.type === "runtime.native-connection-bound"
@@ -454,9 +470,38 @@ function runCli(cli, args, env, input) {
 }
 
 function json(...args) {
-  const reply = JSON.parse(runCli(cli, ["--json", ...args], environment));
-  assert.equal(reply.ok, true, JSON.stringify(reply));
-  return reply.data;
+  const read = tail => {
+    const reply = JSON.parse(runCli(cli, ["--json", ...args, ...tail], environment));
+    assert.equal(reply.ok, true, JSON.stringify(reply));
+    return reply.data;
+  };
+  let data = read([]);
+  if (data?.contentPage === undefined) return data;
+  const { source, digest } = data.contentPage;
+  let text = "";
+  for (;;) {
+    const page = data.contentPage;
+    assert.equal(page.source, source);
+    assert.equal(page.digest, digest);
+    assert.equal(page.offset, text.length);
+    text += page.text;
+    if (page.complete) {
+      assert.equal(page.nextCursor, null);
+      return JSON.parse(text);
+    }
+    data = read(["--cursor", page.nextCursor]);
+  }
+}
+
+function listItems(...args) {
+  const items = [];
+  let cursor;
+  do {
+    const page = json(...args, ...(cursor === undefined ? [] : ["--cursor", cursor]));
+    items.push(...page.items);
+    cursor = page.nextCursor;
+  } while (cursor !== null);
+  return items;
 }
 
 function tmux(...args) {

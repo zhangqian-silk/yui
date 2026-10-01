@@ -12,6 +12,13 @@ No self-dispatch or old completed Run is needed. Read the actual Task
 requirements, current Brief and relevant user/Operator Messages, not just
 their summaries. Resolve links relative to the file containing them.
 
+Current Context is a bounded working set, not all Task history. Use
+`task context list <task> --store <store>` or a domain list for discovery,
+then an exact detail read. A wake contains original Message/Run read pointers,
+not copied reports. Follow Runtime's `nextCursor` and `contentPage` rules:
+read the full relevant window and originals before disposition, without
+unconditionally walking unrelated history.
+
 ## Select the applicable stage
 
 Use current lifecycle, latest intent and the Session's actual planning/delivery

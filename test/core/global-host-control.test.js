@@ -60,7 +60,7 @@ async function globalHostFixture(t, adapterId = "codex", {
   const scheduler = new FileSchedulerStoreAdapter(store);
   const command = args => {
     const result = runGlobalRoleCommand(args, store, { env: {}, jsonOutput: true });
-    return typeof result === "string" ? JSON.parse(result) : result;
+    return result.kind === "output" ? result.data : result;
   };
   const errors = [];
   const inbox = new FileRuntimeEventInbox(home);

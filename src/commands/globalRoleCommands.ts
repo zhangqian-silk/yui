@@ -1,4 +1,5 @@
 import { roleNotFound, usageError } from "../errors/cliError.js";
+import { boundedDocument, recordPage, readOptions, readDigest, messageReceipt } from "../output/boundedRead.js";
 import { controlProviderRetry, providerRetryProjection, renderProviderRetry } from "../runtime/providerRetry.js";
 import { settleGlobalRetryInput } from "../message/globalProviderRetry.js";
 import {
@@ -132,6 +133,7 @@ export type GlobalRoleInputInterrupt = Readonly<{
 
 export type GlobalRoleCommandResult =
   | string
+  | Readonly<{ kind: "output"; output: string; data: unknown }>
   | GlobalRoleEnterControl
   | GlobalRoleInputSteer
   | GlobalRoleInputInterrupt;
@@ -153,7 +155,14 @@ function inputOutput(output: string, data: Readonly<Record<string, unknown>>): G
 }
 
 function renderGlobalInput(result: GlobalInputResult, options: GlobalRoleCommandOptions): GlobalRoleCommandResult {
-  return result.kind === "output" ? jsonOrText(options, result.output, result.data) : result;
+  if (result.kind === "output") {
+    const record = result.data as { steer?: { code?: string; detail?: string }; interrupt?: { code?: string; detail?: string } };
+    const failure = record.steer?.code === undefined ? record.interrupt : record.steer;
+    if (failure?.code !== undefined) options.onInputFailure?.({
+      code: failure.code, detail: failure.detail ?? failure.code, data: result.data
+    });
+  }
+  return result;
 }
 
 function assertGlobalInputAuthority(store: GlobalRoleStore, options: GlobalRoleCommandOptions, target: string | undefined): void {
@@ -206,10 +215,11 @@ function roleContext(
   args: string[],
   store: GlobalRoleStore,
   options: GlobalRoleCommandOptions
-): string {
+): GlobalRoleCommandResult {
   const [rawName, ...rest] = args;
   const name = roleName(rawName);
-  assertNoArguments(rest, "Session context usage: yui session context <role>");
+  const parsed = readOptions(rest, ["--cursor"]);
+  assertNoArguments(parsed.positionals, "Session context usage: yui session context <role> [--cursor <cursor>]");
   const environment = options.env ?? process.env;
   // Context reads expose durable input and runtime facts without delivering it.
   const selfRead = environment.YUI_SESSION_SCOPE !== undefined;
@@ -227,18 +237,12 @@ function roleContext(
   const sessions = store.getGlobalRoleSessionSet(name);
   const session = sessions?.sessions[role.activeAgentId];
   // Only the controlled Endpoint's accepted receipt consumes a queued Message.
-  const queued = store.listGlobalRoleMessages(name).filter((message) => message.delivery === undefined
+  const messages = store.listGlobalRoleMessages(name);
+  const queued = messages.filter((message) => message.delivery === undefined
         && message.notDelivered === undefined
         && (message.interruptThen !== undefined || message.inputControl?.action === "queue"));
-  const pendingQueue = queued.map((message) => ({
-    id: message.id,
-    requestId: message.interruptThen?.requestId ?? message.inputControl?.requestId,
-    body: message.body,
-    ...(message.control === undefined ? {} : { control: message.control }),
-    ...(message.deliveryTarget === undefined ? {} : { deliveryTarget: message.deliveryTarget }),
-    ...(message.interruptThen === undefined ? {} : { interruptThen: true }),
-    ...(message.delivery === undefined ? {} : { deliveredAt: message.delivery.deliveredAt })
-  }));
+  const pending = recordPage(queued.map(globalMessageSummary), `global:${name}/messages/pending`, { limit: 8 });
+  const recent = recordPage([...messages].reverse().map(globalMessageSummary), `global:${name}/messages/all`, { limit: 8 });
   const context = Object.freeze({
     schemaVersion: 1,
     protocol: "yui-managed-context/v1",
@@ -274,16 +278,22 @@ function roleContext(
         : ["perform-global-role-request"]
     },
     // Reading pending input is neither delivery nor implementation.
-    pendingMessages: pendingQueue,
-    messages: store.listGlobalRoleMessages(name),
+    pending,
+    recent,
+    reads: {
+      messages: `role message list ${name}`,
+      pending: `role message list ${name} --pending`,
+      detail: `role message show ${name} <message-id>`
+    },
     nativeTurn: sessions?.providerBinding?.run ?? null,
     retry: providerRetryProjection(sessions?.providerBinding),
-    interrupts: sessions?.interrupts ?? {},
+    // Historical interrupt receipts are available through Session inspection;
+    // only this Turn's exact identity is required at entry.
     sessionManifestPath: environment.YUI_SESSION_MANIFEST,
     cliCommand: "yui"
   });
-  if (options.jsonOutput === true) return `${JSON.stringify(context)}\n`;
-  return [
+  const data = boundedDocument(context, `global:${name}/context`, parsed.cursor);
+  return { kind: "output", data, output: [
     `Role Context: ${role.name}`,
     `Scope: global (${context.identity.roleKind})`,
     `Agent: ${binding.agentId}/${binding.adapterId}`,
@@ -291,10 +301,23 @@ function roleContext(
     `Effective revision: ${role.launchRevision}`,
     `Skills: ${context.profile.skillIds.join(", ") || "none"}`,
     `Authority: ${context.authority.view}; Task implementation: no`,
-    `Pending messages: ${pendingQueue.length === 0 ? "none"
-      : pendingQueue.map((message) => message.id).join(", ")}`,
+    `Pending messages: ${pending.total}; recent messages: ${recent.total}`,
+    JSON.stringify(data),
     ""
-  ].join("\n");
+  ].join("\n") };
+}
+
+function globalMessageSummary(message: GlobalRoleMessage) {
+  return {
+    id: message.id, createdAt: message.createdAt, kind: message.kind,
+    digest: readDigest(message), summary: message.body.slice(0, 240),
+    delivery: message.delivery === undefined ? undefined : { deliveredAt: message.delivery.deliveredAt },
+    notDelivered: message.notDelivered === undefined ? undefined : { summary: message.notDelivered.reason.slice(0, 240) },
+    control: message.control === undefined ? undefined : { outcome: message.control.outcome, observedAt: message.control.observedAt },
+    inputAction: message.inputControl?.action,
+    deliveryTarget: message.deliveryTarget,
+    interruptThen: message.interruptThen === undefined ? undefined : true
+  };
 }
 
 function addRole(
@@ -744,6 +767,33 @@ function globalRoleMessage(
   options: GlobalRoleCommandOptions
 ): GlobalRoleCommandResult {
   const [action, rawName, ...tail] = args;
+  if (action === "list" || action === "show") {
+    const name = roleName(rawName);
+    const env = options.env ?? process.env;
+    if (env.YUI_SESSION_SCOPE !== undefined
+      && (env.YUI_SESSION_SCOPE !== "global" || env.YUI_ROLE !== name)) {
+      throw usageError("Global Message read is outside the exact Session scope.");
+    }
+    requireRole(name, store);
+    const pending = tail.includes("--pending");
+    const parsed = readOptions(tail.filter(arg => arg !== "--pending"), action === "list"
+      ? ["--cursor", "--limit"] : ["--cursor"]);
+    const messages = store.listGlobalRoleMessages(name);
+    let data: unknown;
+    if (action === "show") {
+      if (parsed.positionals.length !== 1 || pending) throw usageError("Role message show <role> <message-id> [--cursor <cursor>].");
+      const message = messages.find(m => m.id === parsed.positionals[0]);
+      if (message === undefined) throw usageError("Global Message is unavailable in this scope.");
+      data = boundedDocument(message, `global:${name}/message/${message.id}`, parsed.cursor);
+    } else {
+      if (parsed.positionals.length !== 0) throw usageError("Role message list <role> [--pending] [--limit <n>] [--cursor <cursor>].");
+      const selected = pending ? messages.filter(message => message.delivery === undefined
+        && message.notDelivered === undefined
+        && (message.interruptThen !== undefined || message.inputControl?.action === "queue")) : [...messages].reverse();
+      data = recordPage(selected.map(globalMessageSummary), `global:${name}/messages/${pending ? "pending" : "all"}`, parsed);
+    }
+    return { kind: "output", output: `${JSON.stringify(data, null, 2)}\n`, data };
+  }
   if (action !== "queue" && action !== "steer") {
     throw usageError("Role message usage: yui role message queue|steer <role> (<body>|--body-file <path|->) --request-id <id> [--expected-target <turn>].");
   }
@@ -789,17 +839,17 @@ function messageGlobalInput(
   if (action === "queue") {
     const state = persisted.idempotentReplay ? "idempotent-replay" : "queued";
     return inputOutput(`Queued Global message ${persisted.message.id} to ${name} (${state}).\n`,
-      { roleName: name, message: persisted.message, delivery: { state } });
+      { roleName: name, message: messageReceipt(persisted.message), delivery: { state } });
   }
   if (persisted.idempotentReplay) {
     return inputOutput(`Steer Global message ${persisted.message.id} already recorded (idempotent-replay).\n`,
-      { roleName: name, message: persisted.message, steer: { state: "idempotent-replay" } });
+      { roleName: name, message: messageReceipt(persisted.message), steer: { state: "idempotent-replay" } });
   }
   const resolution = resolveGlobalInputControl(store, name, "steer", expectedTarget!);
   if (resolution.outcome !== "ready") {
     return inputOutput(
       `Steer Global message ${persisted.message.id} saved but not delivered (${resolution.code}: ${resolution.detail}).\n`,
-      { roleName: name, message: persisted.message,
+      { roleName: name, message: messageReceipt(persisted.message),
         steer: { state: "not-steered", code: resolution.code, detail: resolution.detail } });
   }
   store.updateGlobalRoleMessage({ ...persisted.message, control: {
@@ -985,20 +1035,6 @@ function registerGlobalInterruptThen(
   return "claimed";
 }
 
-/** Emit a plain string or, under --json, a JSON envelope, matching the Global
- * Role command surface's existing string/JSON split. */
-function jsonOrText(
-  options: GlobalRoleCommandOptions,
-  text: string,
-  data: unknown
-): string {
-  const record = data as { steer?: { code?: string; detail?: string }; interrupt?: { code?: string; detail?: string } };
-  const failure = record.steer?.code === undefined ? record.interrupt : record.steer;
-  if (failure?.code !== undefined) options.onInputFailure?.({
-    code: failure.code, detail: failure.detail ?? failure.code, data
-  });
-  return options.jsonOutput === true ? JSON.stringify(data) : text;
-}
 
 type OptionKind = boolean | "flag";
 type Parsed = Readonly<{

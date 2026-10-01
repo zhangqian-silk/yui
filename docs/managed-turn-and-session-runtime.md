@@ -41,6 +41,7 @@ automatically create Runs. Explicit dispatch loads one exact Run Context Pack.
 
 ```sh
 yui task context <task> --json
+yui task context list <task> --store <store> [--cursor <cursor>]
 yui task context delta <task> --after <coreCursor>
 yui task context inspect <task> --store <store> --ref <id>
 yui task run context <task/run> --json
@@ -51,6 +52,14 @@ Task Context is a bounded authorized working set with a current core cursor.
 Delta pages immutable events through a fixed upper bound; inspect expands a
 current record and can require an exact digest. Runtime observations state their
 own coverage and do not become another durable snapshot.
+
+Entry Context samples current facts; it is not a complete historical inventory.
+List one authorized record family, then inspect the relevant originals. Large
+details use `contentPage` and `--cursor`; concatenate all exact text chunks before
+parsing. Global `session context` likewise separates bounded pending/recent
+discovery from `role message show`. See the
+[CLI information contract](cli-information-contract.md) for budgets, scope,
+continuations and the complete-original reading protocol.
 
 Run Context freezes Assignment, source references, effective configuration and
 workspace boundaries. A Role edit does not rewrite an existing Assignment.

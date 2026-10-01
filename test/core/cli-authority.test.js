@@ -74,6 +74,8 @@ test("public CLI fences replaced Operators, Home configuration and cross-Task re
   assert.equal((await cli(knowledge, old)).ok, false, "Replaced Operator cannot write Knowledge.");
   assert.equal(store.getProject("project-1").knowledge.length, 0);
   assert.equal((await cli(["session", "context", "operator"], old)).ok, true, "Historical self context remains readable.");
+  assert.equal((await cli(["role", "message", "list", "operator"], old)).ok, true,
+    "Separating Message reads must preserve historical self-read without restoring writes.");
   assert.equal((await cli(knowledge, current)).ok, true);
   for (const id of ["task-1", "task-2"]) store.saveTask(activateTask(createTask(id, id, now), now));
   const worker = createRole("task-1", "worker", [binding], agent.id, workspace, now);
@@ -101,6 +103,9 @@ test("public CLI fences replaced Operators, Home configuration and cross-Task re
   assert.equal((await cli(["task", "context", "task-2"], env)).ok, false);
   assert.equal((await cli(["task", "context", "read", "task-1"], env)).ok, true);
   assert.equal((await cli(["task", "run", "context", "task-1/run-1"], env)).ok, true);
+  assert.equal((await cli(["task", "context", "list", "task-1", "--store", "task-message"], env)).ok, true);
+  assert.equal((await cli(["task", "context", "list", "task-2", "--store", "task-message"], env)).ok, false);
+  assert.equal((await cli(["role", "message", "list", "operator"], env)).ok, false);
   assert.equal((await cli(["task", "context", "inspect", "task-1", "--store", "task", "--ref", "task-1"], env)).ok, true);
   assert.equal((await cli(["task", "decision", "list", "task-2"], current)).ok, true);
   // A transport-only fixture prevents a regression from starting a scheduler.

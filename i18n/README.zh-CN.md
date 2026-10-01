@@ -345,6 +345,8 @@ Yui 面向一个受信任本地用户，不是 OS 沙箱，也不是远程多用
 [总体架构](../ARCHITECTURE.zh-CN.md)介绍端到端设计，
 [文档导航](../docs/architecture/README.zh-CN.md)提供配置、执行、交付、存储和插件的
 当前合同。想直接操作 CLI 时，使用 `yui --help` 查看命令。
+[CLI 信息契约](../docs/cli-information-contract.zh-CN.md)说明当前 Context、分页发现、
+完整原文读取和变更回执。
 
 Yui 默认将控制面数据保存在 `~/.yui`，通过 `YUI_HOME` 选择另一个实例。
 切换构建或更新已有 Home 前，请查看[存储与升级](../docs/sqlite-control-plane-design.md)。

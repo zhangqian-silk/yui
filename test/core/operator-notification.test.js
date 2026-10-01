@@ -66,7 +66,7 @@ function fixture(t) {
     user(body) {
       const result = runGlobalRoleCommand(["message", "queue", "operator", body,
         "--request-id", body], store, { env: {}, jsonOutput: true });
-      return (typeof result === "string" ? JSON.parse(result) : result).message;
+      return result.data.message;
     },
     observe(kind) {
       const sessions = store.getGlobalRoleSessionSet("operator");
@@ -239,7 +239,7 @@ test("Global delivery keeps busy and unknown notices fenced, then advances to or
   provider.outcome = "accepted";
   await f.deliver();
   assert.deepEqual(provider.attempts, messages.map(message => `global-input:operator/${message.id}`));
-  assert.equal(f.store.listGlobalRoleMessages("operator").find(m => m.id === laterUser.id).body, laterUser.body);
+  assert.equal(f.store.listGlobalRoleMessages("operator").find(m => m.id === laterUser.id).body, "Later user input");
   assert.equal(f.store.listGlobalRoleMessages("operator").find(m => m.id === laterUser.id).delivery.via, "provider");
   assert.deepEqual(await f.process(), [], "Neither rejection nor acceptance recreates source attention.");
   f.observe("turn.completed");

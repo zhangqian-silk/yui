@@ -173,9 +173,9 @@ test("Context pages preserve counts and exact history without materializing it o
   writer.exec("BEGIN IMMEDIATE");
   try {
     const page = readTaskContext(store, "task-1");
-    assert.equal(page.count, initial.count + 1000);
-    assert.ok(page.records.length < 256);
-    assert.equal(page.records.find(r => r.ref.store === "task-event").ref.refId, "event-1000");
+    assert.equal(page.count, initial.count, "History is not the current working set");
+    assert.ok(page.records.length < 64);
+    assert.equal(page.records.find(r => r.ref.store === "task-event"), undefined);
     const delta = readTaskContextDelta(store, "task-1", { after: initial.coreCursor, limit: 2 });
     assert.equal(delta.count, 1000);
     assert.deepEqual(delta.events.map(e => e.ref.refId), ["event-1", "event-2"]);

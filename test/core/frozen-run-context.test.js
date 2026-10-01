@@ -18,6 +18,7 @@ import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerSt
 import { processActiveRoleRunDeliveries } from "../../dist/scheduler/activeRoleRunDelivery.js";
 import { findCommandNode } from "../../dist/cli/commandCatalog.js";
 import { createManagedWorkspace } from "../../dist/worktree/managedWorkspace.js";
+import { readDocument } from "../helpers/read-document.js";
 
 test("Run Context uses only its exact frozen evidence and explicit store/refId", t => {
   const home = mkdtempSync(join(tmpdir(), "yui-frozen-context-"));
@@ -29,10 +30,11 @@ test("Run Context uses only its exact frozen evidence and explicit store/refId",
   const binding = createRoleAgentBinding({ id: "codex", adapterId: "codex" });
   const role = createRole(task.id, "worker", [binding], binding.agentId, home, now);
   store.saveRole(task.id, role);
+  const originalReport = "Exact selected Producer result😀\n".repeat(1200);
   const resources = [
     ["task", task.id, task],
     ["task-brief", task.id, { objective: "The original objective" }],
-    ["source-run", "run-source", { result: { output: "Exact selected Producer result" } }]
+    ["source-run", "run-source", { result: { output: originalReport } }]
   ].map(([refStore, refId, value]) => ({
     ref: { layer: "L3", store: refStore, refId, revision: "1", digest: contextContentDigest(value) },
     value
@@ -56,6 +58,14 @@ test("Run Context uses only its exact frozen evidence and explicit store/refId",
   assert.equal(runTaskCommand(["run", "context", "expand", `${task.id}/${run.id}`, task.id,
     "--store", "task", "--mode", "full"], store, { environment: sanitizedTestEnv() }).data.context.value.title,
   task.title);
+  const initialPack = buildRunContextPack(store, task.id, run.id);
+  assert.deepEqual(runTaskCommand(["run", "context", "delta", `${task.id}/${run.id}`,
+    "--after", initialPack.snapshot.digest], store, { environment: sanitizedTestEnv() }).data.contextDelta.refs, []);
+  const expandedReport = readDocument(cursor => runTaskCommand([
+    "run", "context", "expand", `${task.id}/${run.id}`, "run-source", "--store", "source-run",
+    ...(cursor === undefined ? [] : ["--cursor", cursor])
+  ], store, { environment: sanitizedTestEnv() }).data.context);
+  assert.equal(expandedReport.value.result.output, originalReport);
   // A synthesis snapshot remains readable even when live assignment/source
   // collection cannot be repeated. Only the live activity projection is fresh.
   for (const method of ["getTask", "getTaskBrief", "getRole", "getWorkItem", "getProject", "listMessages"]) {
@@ -67,7 +77,7 @@ test("Run Context uses only its exact frozen evidence and explicit store/refId",
   assert.equal(expandRunContextRef(store, task.id, run.id, task.id, "task").value.title, "Frozen intent");
   assert.equal(expandRunContextRef(store, task.id, run.id, task.id, "task-brief").value.objective, "The original objective");
   assert.equal(expandRunContextRef(store, task.id, run.id, "run-source", "source-run").value.result.output,
-    "Exact selected Producer result");
+    originalReport);
   assert.throws(() => expandRunContextRef(store, task.id, run.id, "run-source"), /store.*(required|invalid)/i);
   assert.throws(() => expandRunContextRef(store, task.id, run.id, task.id, "foreign"), /authorized/i);
   assert.deepEqual(buildRunContextDelta(store, task.id, run.id, pack.snapshot.digest).refs, []);

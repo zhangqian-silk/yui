@@ -275,7 +275,8 @@ const globalSessionChildren: readonly NodeInput[] = [
   {
     name: "context",
     summary: "Load the exact authorized global Role context.",
-    usage: "yui session context <role>"
+    usage: "yui session context <role> [--cursor <cursor>]",
+    options: ["--cursor"]
   },
   {
     name: "record",
@@ -470,7 +471,7 @@ const taskChildren: readonly NodeInput[] = [
     usage: "yui task list [--all] [--status <status>] [--project <id>] [--search <text>] [--attention <category>] [--limit <1..100>] [--cursor <cursor>]",
     options: ["--all", "--status", "--project", "--search", "--attention", "--limit", "--cursor"]
   },
-  { name: "show", summary: "Show a Task.", usage: "yui task show <id>" },
+  { name: "show", summary: "Show Task metadata and counts; long details use contentPage.", usage: "yui task show <id> [--cursor <cursor>]", options: ["--cursor"] },
   {
     name: "artifact",
     summary: "Save Task files in local Git and read current or commit-pinned content.",
@@ -484,20 +485,20 @@ const taskChildren: readonly NodeInput[] = [
   {
     name: "context",
     summary: "Read compact authorized facts, fixed-bound delta, or inspect a Context reference.",
-    usage: "yui task context [read|delta|inspect] <task> [--after <cursor>] [--continuation <cursor>] [--limit <n>] [--store <store> --ref <id>] [--digest <digest>]",
-    options: ["--after", "--continuation", "--limit", "--store", "--ref", "--digest"]
+    usage: "yui task context [read|list|delta|inspect] <task> [--after <cursor>] [--continuation <cursor>] [--cursor <cursor>] [--limit <n>] [--store <store> --ref <id>] [--digest <digest>]",
+    options: ["--after", "--continuation", "--cursor", "--limit", "--store", "--ref", "--digest", "--status", "--work-item"]
   },
   {
     name: "next-action",
     summary: "Read Task facts, mechanical prerequisites and legal alternatives; semantic choices remain with the Leader.",
-    usage: "yui task next-action <task> [--json]",
-    options: ["--json"]
+    usage: "yui task next-action <task> [--cursor <cursor>] [--json]",
+    options: ["--cursor", "--json"]
   },
   {
     name: "remote-delivery",
     summary: "Project exact Task heads and current PR/MR evidence into merge coverage.",
-    usage: "yui task remote-delivery <task> [--json]",
-    options: ["--json"]
+    usage: "yui task remote-delivery <task> [--cursor <cursor>] [--json]",
+    options: ["--cursor", "--json"]
   },
   {
     name: "archive-preflight",
@@ -569,13 +570,14 @@ const taskChildren: readonly NodeInput[] = [
       {
         name: "list",
         summary: "List Task messages.",
-        usage: "yui task message list <id> [--after <timestamp>] [--limit <n>]",
-        options: ["--after", "--limit"]
+        usage: "yui task message list <id> [--after <timestamp>] [--limit <1..100>] [--cursor <cursor>]",
+        options: ["--after", "--limit", "--cursor"]
       },
       {
         name: "show",
         summary: "Read a scoped Message and expand its single execution result.",
-        usage: "yui task message show <task>/<message>"
+        usage: "yui task message show <task>/<message> [--cursor <cursor>]",
+        options: ["--cursor"]
       },
       {
         name: "update",
@@ -606,14 +608,14 @@ const taskChildren: readonly NodeInput[] = [
       {
         name: "list",
         summary: "List the global Inbox or one Task's input requests.",
-        usage: "yui task input list [task] [--all]",
-        options: ["--all"]
+        usage: "yui task input list [task] [--all] [--limit <1..100>] [--cursor <cursor>]",
+        options: ["--all", "--limit", "--cursor"]
       },
       {
         name: "show",
         summary: "Show one input request.",
-        usage: "yui task input show (<task>/<input> | <input> --task <task>)",
-        options: ["--task"]
+        usage: "yui task input show (<task>/<input> | <input> --task <task>) [--cursor <cursor>]",
+        options: ["--task", "--cursor"]
       },
       {
         name: "answer",
@@ -729,7 +731,8 @@ const taskChildren: readonly NodeInput[] = [
       {
         name: "list",
         summary: "List external publication evidence for a Task.",
-        usage: "yui task publication list <task>"
+        usage: "yui task publication list <task> [--limit <1..100>] [--cursor <cursor>]",
+        options: ["--limit", "--cursor"]
       },
       {
         name: "show",
@@ -753,13 +756,14 @@ const taskChildren: readonly NodeInput[] = [
         options: ["--profile", "--agent", ...roleProfileOptions, ...roleAgentOptions],
         optionValues: roleAgentOptionValues
       },
-      { name: "list", summary: "List Task Roles.", usage: "yui task role list <task>" },
+      { name: "list", summary: "Discover recorded Role health; Host is unchecked until role status.", usage: "yui task role list <task> [--limit <1..100>] [--cursor <cursor>]", options: ["--limit", "--cursor"] },
       {
         name: "status",
         summary: "Show persisted and live runtime state for one Task Role.",
-        usage: "yui task role status <task> <role>"
+        usage: "yui task role status <task> <role> [--cursor <cursor>]",
+        options: ["--cursor"]
       },
-      { name: "show", summary: "Show one Task Role.", usage: "yui task role show <task> <role>" },
+      { name: "show", summary: "Show one Task Role.", usage: "yui task role show <task> <role> [--cursor <cursor>]", options: ["--cursor"] },
       { name: "capabilities", summary: "Read native options using this Role's desired or exact failed launch configuration.",
         usage: "yui task role capabilities <task> <role> [--error <event-id>] [--refresh]",
         options: ["--error", "--refresh"] },
@@ -788,7 +792,8 @@ const taskChildren: readonly NodeInput[] = [
           {
             name: "inspect",
             summary: "Read the current Session, Host process, and AgentRun facts.",
-            usage: "yui task role session inspect <task> <role>"
+            usage: "yui task role session inspect <task> <role> [--cursor <cursor>]",
+            options: ["--cursor"]
           },
           {
             name: "stop",
@@ -845,8 +850,8 @@ const taskChildren: readonly NodeInput[] = [
         usage: "yui task work create <task> <title> [--project <project> ...] [--base-ref <project>=<ref> ...] [--objective <text>] [--accept <criterion> ...] [--after <work> ...] [--role <name>]",
         options: ["--project", "--base-ref", "--objective", "--accept", "--after", "--role"]
       },
-      { name: "list", summary: "List work items for a Task.", usage: "yui task work list <task>" },
-      { name: "show", summary: "Show one Work Item.", usage: "yui task work show <work>" },
+      { name: "list", summary: "Discover work items by summary and exact reference.", usage: "yui task work list <task> [--limit <1..100>] [--cursor <cursor>]", options: ["--limit", "--cursor"] },
+      { name: "show", summary: "Show one Work Item.", usage: "yui task work show <work> [--cursor <cursor>]", options: ["--cursor"] },
       {
         name: "edit",
         summary: "Edit current requirements without changing frozen Assignments or acceptance.",
@@ -953,11 +958,12 @@ const taskChildren: readonly NodeInput[] = [
     summary: "Inspect and control Task Role AgentRuns.",
     sections: [{ id: "manage", title: "Commands", entries: ["list", "show", "retry", "settle", "context", "checkpoint", "retire"] }],
     children: [
-      { name: "list", summary: "List all AgentRuns for a Task or one WorkItem.", usage: "yui task run list <task|task/work>" },
+      { name: "list", summary: "Discover AgentRuns for a Task or one WorkItem.", usage: "yui task run list <task|task/work> [--limit <1..100>] [--cursor <cursor>]", options: ["--limit", "--cursor"] },
       {
         name: "show",
         summary: "Show one AgentRun and its retained audit evidence.",
-        usage: "yui task run show <task>/<run> [--json]"
+        usage: "yui task run show <task>/<run> [--cursor <cursor>] [--json]",
+        options: ["--cursor", "--json"]
       },
       {
         name: "retry",
@@ -972,7 +978,8 @@ const taskChildren: readonly NodeInput[] = [
       {
         name: "context",
         summary: "Load the exact authorized AgentRun context.",
-        usage: "yui task run context <task>/<run> [--json]",
+        usage: "yui task run context <task>/<run> [--cursor <cursor>] [--json]",
+        options: ["--cursor", "--json"],
         executable: true,
         hidden: true,
         sections: [{ id: "load", title: "Commands", entries: ["expand", "delta"] }],
@@ -980,14 +987,14 @@ const taskChildren: readonly NodeInput[] = [
           {
             name: "expand",
             summary: "Expand one authorized AgentRun context reference.",
-            usage: "yui task run context expand <task>/<run> <ref-id> --store <store> [--mode full]",
-            options: ["--store", "--mode"]
+            usage: "yui task run context expand <task>/<run> <ref-id> --store <store> [--mode full] [--cursor <cursor>]",
+            options: ["--store", "--mode", "--cursor"]
           },
           {
             name: "delta",
             summary: "Load authorized AgentRun context changes after a cursor.",
-            usage: "yui task run context delta <task>/<run> --after <cursor>",
-            options: ["--after"]
+            usage: "yui task run context delta <task>/<run> --after <digest> [--cursor <cursor>]",
+            options: ["--after", "--cursor"]
           }
         ]
       },
@@ -1077,7 +1084,7 @@ const taskChildren: readonly NodeInput[] = [
     summary: "Manage the Task Brief, the authoritative summary of current task state.",
     sections: [{ id: "manage", title: "Commands", entries: ["show", "update"] }],
     children: [
-      { name: "show", summary: "Show the Task Brief.", usage: "yui task brief show <task>" },
+      { name: "show", summary: "Show the Task Brief.", usage: "yui task brief show <task> [--cursor <cursor>]", options: ["--cursor"] },
       {
         name: "update",
         summary: "Create or update the Task Brief.",
@@ -1100,11 +1107,11 @@ const taskChildren: readonly NodeInput[] = [
       {
         name: "list",
         summary: "List Decisions for a Task.",
-        usage: "yui task decision list <task> [--status active|superseded]",
-        options: ["--status"],
+        usage: "yui task decision list <task> [--status active|superseded] [--limit <1..100>] [--cursor <cursor>]",
+        options: ["--status", "--limit", "--cursor"],
         optionValues: { "--status": ["active", "superseded"] }
       },
-      { name: "show", summary: "Show one Decision.", usage: "yui task decision show <task> <decision>" },
+      { name: "show", summary: "Show one Decision.", usage: "yui task decision show <task> <decision> [--cursor <cursor>]", options: ["--cursor"] },
       {
         name: "supersede",
         summary: "Mark a Decision as superseded.",
@@ -1124,8 +1131,8 @@ const taskChildren: readonly NodeInput[] = [
         usage: "yui task milestone add <task> --title <text> --summary <text>",
         options: ["--title", "--summary"]
       },
-      { name: "list", summary: "List Milestones for a Task.", usage: "yui task milestone list <task>" },
-      { name: "show", summary: "Show one Milestone.", usage: "yui task milestone show <task> <milestone>" }
+      { name: "list", summary: "List Milestones for a Task.", usage: "yui task milestone list <task> [--limit <1..100>] [--cursor <cursor>]", options: ["--limit", "--cursor"] },
+      { name: "show", summary: "Show one Milestone.", usage: "yui task milestone show <task> <milestone> [--cursor <cursor>]", options: ["--cursor"] }
     ]
   },
   {
@@ -1136,10 +1143,10 @@ const taskChildren: readonly NodeInput[] = [
       {
         name: "list",
         summary: "List Task events.",
-        usage: "yui task event list <task> [--after <timestamp>] [--limit <n>]",
-        options: ["--after", "--limit"]
+        usage: "yui task event list <task> [--after <timestamp>] [--limit <1..100>] [--cursor <cursor>]",
+        options: ["--after", "--limit", "--cursor"]
       },
-      { name: "show", summary: "Show one Task event.", usage: "yui task event show <task> <event>" }
+      { name: "show", summary: "Show one Task event.", usage: "yui task event show <task> <event> [--cursor <cursor>]", options: ["--cursor"] }
     ]
   },
   {
@@ -1160,8 +1167,8 @@ const taskChildren: readonly NodeInput[] = [
     summary: "Inspect the durable Leader wake ledger and its delta content.",
     sections: [{ id: "manage", title: "Commands", entries: ["list", "show", "retry", "resolve"] }],
     children: [
-      { name: "list", summary: "List recorded Leader wakes.", usage: "yui task wake list <task>" },
-      { name: "show", summary: "Show one wake and its delta content.", usage: "yui task wake show <task> <wake>" },
+      { name: "list", summary: "List recorded Leader wakes.", usage: "yui task wake list <task> [--limit <1..100>] [--cursor <cursor>]", options: ["--limit", "--cursor"] },
+      { name: "show", summary: "Show a fixed wake window and exact detail reads.", usage: "yui task wake show <task> <wake> [--cursor <cursor>]", options: ["--cursor"] },
       { name: "retry", summary: "Retry a rejected notification after correcting its cause; preserve original input.",
         usage: "yui task wake retry <task> <wake> --reason <correction>", options: ["--reason"] },
       { name: "resolve", summary: "Release an unknown notification claim after explicit quiescence evidence, without replay.",
@@ -1179,7 +1186,7 @@ const taskChildren: readonly NodeInput[] = [
     summary: "Inspect ChangeSets captured from WorkItem Candidates.",
     sections: [{ id: "inspect", title: "Commands", entries: ["show"] }],
     children: [
-      { name: "show", summary: "Show one ChangeSet.", usage: "yui task change-set show <task>/<change-set>" }
+      { name: "show", summary: "Show one ChangeSet.", usage: "yui task change-set show <task>/<change-set> [--cursor <cursor>]", options: ["--cursor"] }
     ]
   },
 ];
@@ -1207,8 +1214,18 @@ export const ROOT_COMMAND = buildNode({
       children: [
         {
           name: "message", summary: "Send durable input to a Global Role.",
-          sections: [{ id: "input", title: "Input control", entries: ["queue", "steer"] }],
+          sections: [{ id: "input", title: "Input control", entries: ["queue", "steer", "list", "show"] }],
           children: [
+            {
+              name: "list", summary: "Discover Global Messages without consuming input.",
+              usage: "yui role message list <role> [--pending] [--limit <1..100>] [--cursor <cursor>]",
+              options: ["--pending", "--limit", "--cursor"]
+            },
+            {
+              name: "show", summary: "Read one exact Global Message; follow contentPage.nextCursor for long content.",
+              usage: "yui role message show <role> <message-id> [--cursor <cursor>]",
+              options: ["--cursor"]
+            },
             {
               name: "queue", summary: "Queue input for the next legal delivery opportunity.",
               usage: "yui role message queue <role> (<text>|--body-file <path|->) --request-id <id>",

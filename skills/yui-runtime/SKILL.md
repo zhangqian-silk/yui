@@ -48,7 +48,9 @@ For every explicitly dispatched managed Task AgentRun:
    and Adapter match the Envelope and Session Manifest. Stop and report a
    context-load failure if the pack is missing, stale, unauthorized, malformed,
    or mismatched. Never request an inline/full-prompt fallback.
-4. Use pack summaries and pointers first. Expand only an authorized ref when
+4. Use the pack's `pointers` (including each pointer's summary) first. They are
+   the single readable-ref inventory; `deltaRefs` contains only changed identities.
+   Expand only an authorized ref when
    its full value is needed, selecting it by the pointer's exact `store` and
    `refId`:
 
@@ -126,8 +128,12 @@ TUI, with the configured Agent, permissions and workspace unchanged. A live
 unmanaged Session is not silently replaced or adopted; use an explicit Session
 lifecycle action before enabling controlled delivery.
 
-Context reads never consume queue entries. Read the referenced Message in full
-from Session Context. Native/transport acceptance is not implementation, and
+Context reads never consume queue entries. Global Context returns bounded
+`pending` and `recent` discovery pages, not Message bodies. Read a referenced
+original with `role message show <role> <message-id> --json`. Follow a pending
+page's `nextCursor` using `role message list <role> --pending --cursor <cursor>`
+when it is incomplete; accepted delivery does not erase the Message from the
+separate all-message list. Native/transport acceptance is not implementation, and
 `interrupt-requested` is not a stopped Turn or stopped background resources.
 Saving a Task Message or Brief is not notification delivery to Operator. A
 Task Role uses the existing Task InputRequest path for a genuinely missing
@@ -136,6 +142,32 @@ Only an exact terminal and the original Session/writer boundary can release a
 then handoff. An accepted or unconfirmed steer must not be submitted again by
 changing its request id or composing then. A conclusive rejection permits an
 explicit new control attempt; uncertainty does not.
+
+## Read bounded information completely when required
+
+Structured CLI results live in the top-level `data`, not a JSON-encoded
+`output` string. Task current Context includes bounded current facts and
+message references; it does not include event or terminal Run history.
+`collections` and `attention` identify incomplete discovery. Use
+`task context list <task> --store <store> [--cursor <cursor>]` to discover one
+family, then `task context inspect <task> --store <store> --ref <refId>
+--digest <digest>` to read its exact current value. Common Task lists use the
+same `items`, `total`, `complete`, and `nextCursor` contract. Do not treat the
+first page or a summary as complete requirements.
+
+Long detail reads return `contentPage` instead of the ordinary value (under
+`data.context` for Run context/expand, `data.contextDelta` for Run Context delta). Repeat the same read with
+`--cursor <contentPage.nextCursor>` until `complete: true`. Concatenate `text`
+in offset order and parse the combined JSON once, retaining the same source
+and digest. A source-change error requires a fresh read, not mixing old and
+new chunks. Never use a read cursor to repeat a mutation.
+
+Read all pages of a relevant original requirement, result, or authorization
+before acting on it. For a wake, read its complete fixed window and the
+referenced original Messages; the wake itself contains pointers, not reports.
+For unrelated discovery, stop once the necessary evidence is found. Task
+event deltas retain their fixed upper bound and are history, not replacement
+current state. No read acknowledges implementation or consumes a queue.
 
 ## Preserve intent and authority
 
