@@ -10,6 +10,47 @@ import { saveArtifactCapability } from "../../dist/artifacts/artifactCapability.
 import { createWebTaskSurface } from "../../dist/web/webTaskSurface.js";
 import { createYuiWebServer } from "../../dist/web/webServer.js";
 import { WEB_ASSETS } from "../../dist/web/assets/assetManifest.js";
+import { RECORDS_SCRIPT } from "../../dist/web/assets/client/records.js";
+import { API_SCRIPT } from "../../dist/web/assets/client/api.js";
+
+test("Web source reads expose exact message control facts and the original report without writing", async () => {
+  const element = (spec, attrs, ...children) => ({
+    spec, dataset: {}, disabled: false, children: children.filter(child => child != null), handlers: {},
+    append(...items) { this.children.push(...items); },
+    addEventListener(name, handler) { this.handlers[name] = handler; },
+    replaceChildren(...items) { this.children = items; },
+    remove() { this.removed = true; }
+  });
+  const context = vm.createContext({
+    h: element, icon: name => element(name), mono: text => text, note: text => text,
+    button: text => element("button", null, text),
+    richText: (title, text) => element("report", null, title, text)
+  });
+  vm.runInContext(RECORDS_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
+  const ref = { store: "task-message", refId: "message-1", revision: 3, digest: "exact-digest" };
+  const value = { body: "Summary", inputControl: { action: "steer", requestId: "request-1" },
+    control: { outcome: "delivery-unknown" } };
+  const calls = [];
+  let finish;
+  const reader = context.recordReader({ ref, value, omitted: false }, "task-1", key => key, {
+    inspect: (...args) => {
+      calls.push(args);
+      return new Promise(resolve => { finish = resolve; });
+    }
+  });
+  const open = reader.children[0].children[0];
+  const pending = open.handlers.click();
+  assert.equal(open.disabled, true);
+  assert.equal(reader.dataset.reading, "true");
+  assert.deepEqual(calls, [["task-1", ref]], "use the Context reference including its digest");
+  finish({ value, result: { output: "Original report", diagnostic: "Original diagnostic" } });
+  await pending;
+  assert.equal(reader.dataset.reading, "false");
+  assert.equal(open.removed, true);
+  assert.match(JSON.stringify(reader.children), /delivery-unknown.*Original report|Original report.*delivery-unknown/u);
+  assert.match(JSON.stringify(reader.children), /Original diagnostic/u);
+  assert.equal(calls.length, 1, "only the explicitly requested source read is performed");
+});
 
 test("authenticated Web evidence reads keep a fixed Task file and cannot mutate or escape its repository", async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-web-evidence-"));
@@ -58,6 +99,17 @@ test("authenticated Web evidence reads keep a fixed Task file and cannot mutate 
   assert.equal((await fetch(base + "/api/dashboard/sessions")).status, 403);
   assert.equal((await fetch(base + "/api/dashboard/sessions?view=compact", { headers })).status, 400,
     "do not restore the retired view selector");
+  const description = "完整报告🙂".repeat(3000);
+  store.saveTask(createTask("task-3", "Long original", new Date(), { description }));
+  const snapshot = await surface.read("task-3");
+  const ref = snapshot.records.find(entry => entry.ref.store === "task").ref;
+  const client = vm.createContext({
+    document: { querySelector: () => ({ content: "fixture-token" }) }, URLSearchParams,
+    fetch: (path, options) => fetch(base + path, options)
+  });
+  vm.runInContext(API_SCRIPT.replace(/^export /gm, "") + "\nglobalThis.clientApi = api;", client);
+  const original = await client.clientApi.inspect("task-3", ref);
+  assert.equal(original.value?.description, description, "Web must collect all exact original pages before parsing");
   // The shipped UI is JavaScript carried by TypeScript strings; tsc alone
   // cannot catch a syntax error that would make every Task inaccessible.
   for (const [path, asset] of Object.entries(WEB_ASSETS).filter(([path]) => path.endsWith(".js"))) {

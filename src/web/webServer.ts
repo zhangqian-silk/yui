@@ -294,7 +294,8 @@ async function handleHttpRequest(
       } else if (method === "GET" && action === "inspect") {
         value = dependencies.surface.inspect(taskId, {
           store: query.get("store") ?? "", refId: query.get("ref") ?? "",
-          ...(query.has("digest") ? { digest: query.get("digest")! } : {})
+          ...(query.has("digest") ? { digest: query.get("digest")! } : {}),
+          ...(query.has("cursor") ? { cursor: query.get("cursor")! } : {})
         });
       } else if (method === "POST" && action === "messages") {
         const body = await readMutationBody(request);

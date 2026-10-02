@@ -297,7 +297,7 @@ export function createWebTaskSurface(
     ),
     delta: (taskId: string, input: { after: string; continuation?: string }) =>
       readTaskContextDelta(store, taskId, input, environment),
-    inspect: (taskId: string, input: { store: string; refId: string; digest?: string }) =>
+    inspect: (taskId: string, input: { store: string; refId: string; digest?: string; cursor?: string }) =>
       inspectTaskContext(store, taskId, input, environment),
     update: (taskId: string, input: unknown) => {
       const descriptor = BUILTIN_CAPABILITIES.find((entry) => entry.name === "task.update")!;

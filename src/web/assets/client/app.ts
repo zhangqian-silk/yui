@@ -1,589 +1,285 @@
-export const APP_SCRIPT = `
-import { Terminal } from "/assets/vendor/xterm.mjs";
-import { FitAddon } from "/assets/vendor/addon-fit.mjs";
+export const APP_SCRIPT = String.raw`
+// Application controller: view state, URL routing, the refresh loop, the
+// sidebar | center | dock layout, keyboard shortcuts and dialogs. Everything
+// kept here is view state; Task facts always come from the loopback API.
 import { createI18n } from "/assets/js/i18n.js";
 import { createThemeController } from "/assets/js/theme.js";
-import { updateTaskObservations } from "/assets/js/task-summary.js";
-import {
-  renderError,
-  renderFilters,
-  renderLoading,
-  renderOverview,
-  renderTaskDetail,
-  renderTasks
-} from "/assets/js/view.js";
+import { api, releaseMutation } from "/assets/js/api.js";
+import { formatClock } from "/assets/js/format.js";
+import { h } from "/assets/js/dom.js";
+import { renderAttentionBar, renderFilters, renderTasks, STATUS_FILTERS, ATTENTION_KINDS } from "/assets/js/sidebar.js";
+import { renderOverview } from "/assets/js/overview.js";
+import { renderTaskDetail, selectTab, updateObservation, TABS } from "/assets/js/detail.js";
+import { renderDiscussion, discussionHasUnsent, createTerminalController, sameTarget } from "/assets/js/dock.js";
+import { entriesOf } from "/assets/js/records.js";
 
-const elements = {
-  locale: document.querySelector("#locale-select"),
-  theme: document.querySelector("#theme-select"),
-  refresh: document.querySelector("#refresh"),
-  operatorTerminal: document.querySelector("#operator-terminal"),
-  search: document.querySelector("#search"),
-  filters: document.querySelector("#status-filters"),
-  tasks: document.querySelector("#task-list"),
-  catalogNext: document.querySelector("#catalog-next"),
-  catalogReset: document.querySelector("#catalog-reset"),
-  catalogCount: document.querySelector("#catalog-count"),
-  catalogAttentionReset: document.querySelector("#catalog-attention-reset"),
-  detail: document.querySelector("#detail"),
-  mainCol: document.querySelector(".main-col"),
-  topbar: document.querySelector(".topbar"),
-  detailBack: document.querySelector("#detail-back"),
-  detailTabs: document.querySelector("#detail-tabs"),
-  conversationToggle: document.querySelector("#conversation-toggle"),
-  conversationPanel: document.querySelector("#conversation-panel"),
-  conversationContent: document.querySelector("#conversation-content"),
-  conversationClose: document.querySelector("#conversation-close"),
-  conversationSwap: document.querySelector("#conversation-swap"),
-  paneDivider: document.querySelector("#pane-divider"),
-  pageTitle: document.querySelector("#page-title"),
-  toast: document.querySelector("#toast"),
-  lastSync: document.querySelector("#last-sync"),
-  terminalPanel: document.querySelector("#terminal-panel"),
-  terminalHost: document.querySelector("#terminal-host"),
-  terminalTitle: document.querySelector("#terminal-title"),
-  terminalState: document.querySelector("#terminal-state span"),
-  terminalClose: document.querySelector("#terminal-close")
+const $ = function (selector) { return document.querySelector(selector); };
+const el = {
+  sidebar: $(".sidebar"), center: $("#center"), detail: $("#detail"),
+  search: $("#search"), filters: $("#status-filters"), attention: $("#attention-bar"), tasks: $("#task-list"),
+  catalogNext: $("#catalog-next"), catalogReset: $("#catalog-reset"), catalogCount: $("#catalog-count"),
+  catalogAttentionReset: $("#catalog-attention-reset"),
+  refresh: $("#refresh"), sync: $("#sync-state"), lastSync: $("#last-sync"), toast: $("#toast"),
+  operator: $("#operator-terminal"), settingsOpen: $("#settings-open"), settings: $("#settings-dialog"),
+  locale: $("#locale-select"), themeOptions: $("#theme-options"),
+  dock: $("#dock"), divider: $("#dock-divider"), dockSwap: $("#dock-swap"), dockClose: $("#dock-close"),
+  dockTabDiscussion: $("#dock-tab-discussion"), dockTabSession: $("#dock-tab-session"),
+  discussion: $("#dock-discussion"), session: $("#dock-session"),
+  terminalHost: $("#terminal-host"), terminalEmpty: $("#terminal-empty"), terminalState: $("#terminal-state"),
+  sessionTargets: $("#session-targets"), terminalCli: $("#terminal-cli")
 };
 
-const token = document.querySelector('meta[name="yui-web-token"]').content;
 const state = {
-  tasks: [],
-  counts: null,
-  attention: [],
-  catalogAttention: null,
-  catalogScope: null,
-  catalogQuery: "",
-  sessionOverview: null,
-  sessionLoading: false,
-  sessionError: null,
-  catalogAll: false,
-  catalogTotal: 0,
-  catalogCursor: null,
-  nextCursor: null,
-  attentionFilter: null,
-  generatedAt: null,
-  filter: "all",
-  query: "",
-  selected: null,
-  detail: null,
-  detailKey: null
+  tasks: [], counts: null, attention: [], catalogAttention: null, catalogScope: null, catalogQuery: "",
+  catalogAll: false, catalogTotal: 0, catalogCursor: null, nextCursor: null,
+  sessionOverview: null, sessionLoading: false, sessionError: null,
+  attentionFilter: null, generatedAt: null, filter: "all", query: "",
+  selected: null, detail: null, detailKey: null, activeTab: "overview"
 };
-const VALID_FILTERS = ["all", "active", "draft", "completed", "cancelled", "archived"];
-const VALID_ATTENTION = ["openInputs", "pendingOperations", "unknownOperations", "executionSignals"];
-let terminalSession = null;
-let terminalStateKey = "terminal.closed";
-const submittedRequests = new Set();
-let conversationVisible = true;
-let paneWidth = Number(localStorage.getItem("yui.conversation.width")) || 400;
-const paneSide = localStorage.getItem("yui.conversation.side") === "left" ? "left" : "right";
-document.body.classList.toggle("pane-left", paneSide === "left");
 
-const i18n = createI18n(elements.locale);
-createThemeController(elements.theme);
+function readPreference(key, fallback) {
+  try { return localStorage.getItem(key) || fallback; } catch { return fallback; }
+}
+function writePreference(key, value) {
+  try { localStorage.setItem(key, value); } catch {}
+}
+const dock = {
+  open: readPreference("yui.dock.open", "true") !== "false",
+  mode: "discussion",
+  center: readPreference("yui.dock.side", "end") === "center",
+  width: Number(readPreference("yui.dock.width", "440")) || 440,
+  // On narrow screens the dock is a full-screen sheet opened explicitly per
+  // Task, never restored from the desktop preference.
+  sheet: false
+};
+const narrow = window.matchMedia("(max-width: 900px)");
 
-// --- URL / history ---------------------------------------------------------
-// Reflect the current view (selected task, status filter, search query) in the
-// query string so the browser back/forward buttons work and the page can be
-// deep-linked / refreshed without losing context.
-function readQuery() {
-  return new URLSearchParams(window.location.search);
+const i18n = createI18n(el.locale);
+const t = i18n.t;
+const locale = i18n.getLocale;
+const theme = createThemeController(el.themeOptions, t);
+const terminal = createTerminalController({
+  host: el.terminalHost, empty: el.terminalEmpty, state: el.terminalState, targets: el.sessionTargets, cli: el.terminalCli
+}, t, locale, showToast);
+theme.subscribe(function () { terminal.retheme(); });
+
+let toastTimer = null;
+function showToast(message) {
+  el.toast.textContent = message;
+  el.toast.classList.add("show");
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(function () { el.toast.classList.remove("show"); }, 3200);
 }
 
-function buildSearch(params) {
-  const entries = Array.from(params.entries()).filter(function (entry) {
-    return entry[1] !== "" && entry[1] !== null && entry[1] !== undefined;
-  });
-  if (!entries.length) return "";
-  return "?" + entries.map(function (entry) {
+// --- URL / history ---------------------------------------------------------------
+// The selected Task, section, status filter, search and attention filter live
+// in the query string so back/forward, refresh and deep links keep context.
+function readQuery() { return new URLSearchParams(window.location.search); }
+function applyUrl(params, replace) {
+  const entries = Array.from(params.entries()).filter(function (entry) { return entry[1] !== ""; });
+  const search = entries.length ? "?" + entries.map(function (entry) {
     return encodeURIComponent(entry[0]) + "=" + encodeURIComponent(entry[1]);
-  }).join("&");
-}
-
-function applyUrl(params, options) {
-  const replace = options && options.replace;
-  const search = buildSearch(params);
+  }).join("&") : "";
   const url = window.location.pathname + search + window.location.hash;
-  if (replace) {
-    history.replaceState({ task: params.get("task") || null }, "", url);
-  } else {
-    history.pushState({ task: params.get("task") || null }, "", url);
-  }
+  history[replace ? "replaceState" : "pushState"]({ task: params.get("task") || null }, "", url);
 }
-
-function urlTaskId() {
-  return readQuery().get("task") || null;
-}
-
-// The visible detail section is part of the URL (?task=X&section=exec) so a
-// refresh or a shared link lands on the same section. Writes always replace —
-// section moves are not history entries.
-function setSectionParam(targetId) {
-  if (!state.detail) return;
-  const params = readQuery();
-  const section = String(targetId).replace(/^detail-/, "");
-  if (params.get("section") === section) return;
-  params.set("section", section);
-  applyUrl(params, { replace: true });
-}
-
-let sectionParamTimer = null;
-function queueSectionParamSync(targetId) {
-  if (sectionParamTimer !== null) window.clearTimeout(sectionParamTimer);
-  sectionParamTimer = window.setTimeout(function () {
-    sectionParamTimer = null;
-    setSectionParam(targetId);
-  }, 250);
-}
-
-function syncUrlFromState(options) {
+function urlTaskId() { return readQuery().get("task") || null; }
+function syncUrl(replace) {
   const params = readQuery();
   if (state.selected) params.set("task", state.selected);
-  else {
-    params.delete("task");
-    params.delete("section");
-  }
-  if (state.filter && state.filter !== "all") params.set("filter", state.filter);
-  else params.delete("filter");
-  if (state.query) params.set("q", state.query);
-  else params.delete("q");
-  if (state.attentionFilter) params.set("attention", state.attentionFilter);
-  else params.delete("attention");
-  if (state.catalogAll) params.set("all", "true");
-  else params.delete("all");
-  applyUrl(params, options);
+  else { params.delete("task"); params.delete("section"); }
+  if (state.filter !== "all") params.set("filter", state.filter); else params.delete("filter");
+  if (state.query) params.set("q", state.query); else params.delete("q");
+  if (state.attentionFilter) params.set("attention", state.attentionFilter); else params.delete("attention");
+  if (state.catalogAll) params.set("all", "true"); else params.delete("all");
+  applyUrl(params, replace);
+}
+function setSectionParam(section) {
+  const params = readQuery();
+  if (!state.selected || params.get("section") === section) return;
+  if (section === "overview") params.delete("section"); else params.set("section", section);
+  applyUrl(params, true);
 }
 
-function detailActions() {
+// --- Detail rendering -------------------------------------------------------------
+function detailContext() {
   return {
-    conversationHost: elements.conversationContent,
+    activeTab: state.activeTab,
+    onTab: switchTab,
+    onBack: clearSelection,
+    showDock: toggleDock,
+    openSession: function (roleName) { openSession({ scope: "task", taskId: state.selected, roleName: roleName }); },
     answerInput: answerInput,
-    openTerminal: openTerminal,
-    inspect: inspectRecord,
-    artifacts: taskId => requestJson("/api/tasks/" + encodeURIComponent(taskId) + "/artifacts"),
-    evidence: taskId => requestJson("/api/tasks/" + encodeURIComponent(taskId) + "/evidence"),
-    readArtifact: (taskId, path, commit) => requestJson("/api/tasks/" + encodeURIComponent(taskId)
-      + "/artifacts?" + new URLSearchParams({ path, commit })),
-    sendMessage: (taskId, body, requestId, intent) => submitMutation(taskId + "/messages",
-      "/api/tasks/" + encodeURIComponent(taskId) + "/messages",
-      { body, requestId, ...(intent === undefined ? {} : { intent }) }),
-    controlInput: (taskId, payload, requestId) => submitMutation(taskId + "/control/" + requestId,
-      "/api/tasks/" + encodeURIComponent(taskId) + "/control", payload),
-    updateTask: (taskId, patch, requestId) => submitMutation(taskId + "/metadata",
-      "/api/tasks/" + encodeURIComponent(taskId) + "/metadata", { patch, requestId }),
-    panels: (taskId) => requestJson("/api/tasks/" + encodeURIComponent(taskId) + "/panels",
-      { signal: AbortSignal.timeout(3000) }),
-    readPanel: (taskId, ref, input) => requestJson("/api/tasks/" + encodeURIComponent(taskId) + "/panels", {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ref, input }),
-      signal: AbortSignal.timeout(3000)
-    })
+    inspect: api.inspect,
+    artifacts: api.artifacts,
+    readArtifact: api.artifact,
+    evidence: api.evidence,
+    panels: api.panels,
+    readPanel: api.readPanel,
+    control: api.control,
+    updateTask: api.updateTask,
+    afterWrite: function () { refreshDashboard({ quiet: true }); }
+  };
+}
+function dockActions() {
+  return {
+    sendMessage: api.sendMessage,
+    inspect: api.inspect,
+    afterWrite: function () { refreshDashboard({ quiet: true }); }
   };
 }
 
-function updateMetrics() {
-  elements.lastSync.textContent = state.generatedAt
-    ? new Intl.DateTimeFormat(i18n.getLocale(), { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(state.generatedAt))
-    : "—";
-}
-
-function setDetailActive(active) {
-  document.body.classList.toggle("detail-active", active);
-  elements.detailBack.hidden = !active;
-  if (elements.detailTabs) elements.detailTabs.hidden = !active;
-  if (elements.pageTitle) {
-    if (active) {
-      elements.pageTitle.textContent = state.detail
-        ? state.detail.task.title
-        : (state.tasks.find(function (task) { return task.id === state.selected; }) || { title: "…" }).title;
-      elements.pageTitle.dataset.i18n = "";
-    } else {
-      elements.pageTitle.textContent = i18n.t("page.title");
-      elements.pageTitle.dataset.i18n = "page.title";
-    }
-  }
-  updateConversationLayout();
-}
-
-function maxPaneWidth() {
-  return Math.max(280, Math.min(640,
-    window.innerWidth - elements.tasks.closest(".sidebar").offsetWidth - 460 - 8));
-}
-
-function setPaneWidth(width, persist, keepPreference) {
-  const effectiveWidth = Math.max(280, Math.min(maxPaneWidth(), width));
-  if (!keepPreference) paneWidth = effectiveWidth;
-  document.documentElement.style.setProperty("--pane-w", effectiveWidth + "px");
-  elements.paneDivider.setAttribute("aria-valuemax", String(maxPaneWidth()));
-  elements.paneDivider.setAttribute("aria-valuenow", String(effectiveWidth));
-  if (persist) localStorage.setItem("yui.conversation.width", String(effectiveWidth));
-}
-
-function updateConversationLayout() {
-  const visible = !!state.selected && conversationVisible && !terminalPanelOpen();
-  document.body.classList.toggle("conversation-active", visible);
-  elements.conversationPanel.hidden = !visible;
-  elements.paneDivider.hidden = !visible;
-  elements.conversationToggle.hidden = !state.selected || terminalPanelOpen();
-  elements.conversationToggle.setAttribute("aria-expanded", String(visible));
-  elements.conversationToggle.textContent = i18n.t(visible ? "conversation.hide" : "conversation.show");
-  elements.conversationToggle.setAttribute("aria-label", elements.conversationToggle.textContent);
-  setPaneWidth(paneWidth, false, true);
-}
-
-function showOverview() {
-  renderOverview(elements.detail, state, i18n.t, i18n.getLocale(), selectTask);
-  elements.mainCol.scrollTop = 0;
-}
-
-// Fingerprint of the rendered detail payload. Quiet polling re-renders the
-// whole detail on every tick; skipping identical payloads keeps local UI state
-// (expanded blocks, list pages) alive and avoids DOM churn.
-let renderedDetailKey = null;
-
-function detailKeyOf(detail) {
-  const text = JSON.stringify(detail);
+// Fingerprint of the rendered payload. Quiet polling skips identical reads so
+// local view state (open blocks, list pages, drafts) survives.
+function fingerprint(value) {
+  const text = JSON.stringify(value);
   let hash = 0;
-  for (let i = 0; i < text.length; i += 1) {
-    hash = (hash * 31 + text.charCodeAt(i)) | 0;
-  }
+  for (let i = 0; i < text.length; i += 1) hash = (hash * 31 + text.charCodeAt(i)) | 0;
   return text.length + ":" + hash;
 }
-
-// The optional observation arrives after the core snapshot has already been
-// rendered, so the render key has to cover the observed facts the detail
-// actually draws or they would stay stale until the core snapshot changed.
-// Only the rendered identity is included: observation timestamps advance on
-// every poll and would re-render the detail continuously.
-function runtimeSignatureOf(detail) {
-  const roles = (detail.runtime && detail.runtime.roles) || [];
-  return detail.runtimeStatus + "|" + JSON.stringify([
-    detail.runtime?.sessions?.sessions, detail.runtime?.remoteDelivery,
-    detail.runtime?.execution?.attention, detail.runtime?.execution?.blockers,
-    detail.runtime?.execution?.next
-  ]) + "|" + roles.map(function (role) {
-    const session = role.runtimeSession;
-    return role.name + ":" + (session
-      ? session.nativeSessionId + "/" + session.status
-      : "-");
+// Only the observed identity participates: observation timestamps advance on
+// every poll and would otherwise re-render continuously.
+function runtimeSignature(detail) {
+  const runtime = detail.runtime;
+  return detail.runtimeStatus + "|" + JSON.stringify(runtime ? [
+    runtime.sessions && runtime.sessions.sessions, runtime.remoteDelivery,
+    runtime.execution && runtime.execution.attention, runtime.execution && runtime.execution.blockers,
+    runtime.execution && runtime.execution.next, runtime.execution && runtime.execution.status
+  ] : null) + "|" + ((runtime && runtime.roles) || []).map(function (role) {
+    return role.name + ":" + (role.runtimeSession ? role.runtimeSession.nativeSessionId + "/" + role.runtimeSession.status : "-") + ":" + role.status;
   }).join(",");
 }
 
+let renderedDetailKey = null;
+let renderedDiscussionKey = null;
+function centerIsBusy() {
+  const active = document.activeElement;
+  const editing = active && (["INPUT", "SELECT", "TEXTAREA"].includes(active.tagName) || active.isContentEditable);
+  return el.detail.dataset.taskId === (state.detail && state.detail.task.id)
+    && (el.detail.querySelector('[data-unsent="true"]') || el.detail.querySelector('[data-reading="true"]')
+      || editing && el.center.contains(active));
+}
 function renderCurrentDetail(force) {
+  if (!state.detail) {
+    if (!state.selected) { renderedDetailKey = null; showOverview(); }
+    return;
+  }
+  renderDock();
+  // Polling must not replace an unsent draft or an in-flight form, including
+  // after focus moved. This is view state, never Task state.
+  if (centerIsBusy()) return;
+  const key = locale() + "|" + state.detailKey + "|" + runtimeSignature(state.detail);
+  if (!force && key === renderedDetailKey) return;
+  const openSections = Array.from(el.detail.querySelectorAll("details[data-view-key][open]")).map(function (d) { return d.dataset.viewKey; });
+  const focusedTab = el.detail.querySelector(".tab:focus");
+  const focusedTabId = focusedTab && focusedTab.id;
+  const scroll = el.detail.dataset.taskId === state.detail.task.id ? el.center.scrollTop : 0;
+  renderTaskDetail(el.detail, state.detail, t, locale(), detailContext());
+  el.detail.querySelectorAll("details[data-view-key]").forEach(function (d) { d.open = openSections.includes(d.dataset.viewKey); });
+  if (focusedTabId) el.detail.querySelector("#" + CSS.escape(focusedTabId)).focus({ preventScroll: true });
+  el.center.scrollTop = scroll;
+  renderedDetailKey = key;
+  syncDockButtons();
+}
+function renderDock() {
+  if (!state.detail) return;
+  const key = locale() + "|" + state.detail.task.id + "|" + state.detailKey + "|" + state.detail.task.status;
+  if (key !== renderedDiscussionKey || el.discussion.dataset.taskId !== state.detail.task.id) {
+    renderDiscussion(el.discussion, state.detail, t, locale(), dockActions());
+    renderedDiscussionKey = key;
+  }
+  updateSessionTargets();
+}
+function updateSessionTargets() {
+  const targets = [];
   if (state.detail) {
-    // Polling must not replace an unsent draft or an in-flight form, including
-    // after the user has moved focus. This is view state, never Task state.
-    if (elements.detail.dataset.taskId === state.detail.task.id
-      && (elements.detail.querySelector('[data-unsent="true"]')
-        || elements.detail.querySelector('[data-reading="true"]')
-        || elements.detail.contains(document.activeElement)
-        || elements.conversationContent.querySelector('[data-unsent="true"]')
-        || elements.conversationContent.contains(document.activeElement))) return;
-    const key = i18n.getLocale() + "|" + state.detailKey
-      + "|" + runtimeSignatureOf(state.detail);
-    if (!force && key === renderedDetailKey) return;
-    const openSections = Array.from(elements.detail.querySelectorAll("details[data-view-key][open]"))
-      .map(element => element.dataset.viewKey);
-    const oldFeed = elements.conversationContent.querySelector(".conversation-feed");
-    const feedScroll = oldFeed ? oldFeed.scrollTop : 0;
-    const atFeedEnd = oldFeed && oldFeed.scrollHeight - oldFeed.clientHeight - feedScroll < 32;
-    renderTaskDetail(
-      elements.detail,
-      state.detail,
-      i18n.t,
-      i18n.getLocale(),
-      detailActions()
-    );
-    elements.detail.querySelectorAll("details[data-view-key]").forEach(element => {
-      element.open = openSections.includes(element.dataset.viewKey);
+    const runtimeRoles = (state.detail.runtime && state.detail.runtime.roles) || [];
+    entriesOf(state.detail.core, "role").forEach(function (entry) {
+      const runtimeRole = runtimeRoles.find(function (role) { return role.name === entry.ref.refId; });
+      targets.push({ scope: "task", taskId: state.detail.task.id, roleName: entry.ref.refId,
+        live: !!(runtimeRole && runtimeRole.runtimeSession && runtimeRole.runtimeSession.nativeSessionId) });
     });
-    const newFeed = elements.conversationContent.querySelector(".conversation-feed");
-    if (newFeed) newFeed.scrollTop = atFeedEnd ? newFeed.scrollHeight : feedScroll;
-    renderedDetailKey = key;
-  } else if (!state.selected) {
-    renderedDetailKey = null;
-    showOverview();
   }
+  targets.push({ scope: "global", roleName: "operator" });
+  const current = terminal.current();
+  if (current && !targets.some(function (target) { return sameTarget(target, current); })) targets.unshift(current);
+  terminal.setTargets(targets);
 }
 
-function renderDynamicContent() {
-  renderFilters(elements.filters, state, i18n.t, function (filter) {
-    state.filter = filter;
-    state.attentionFilter = null;
-    state.catalogAll = false;
-    syncUrlFromState({ replace: false });
-    resetCatalog();
+function showOverview() {
+  delete el.detail.dataset.taskId;
+  renderOverview(el.detail, state, t, locale(), {
+    select: selectTask,
+    filterAttention: pickAttention,
+    readSessions: readPageSessions,
+    openOperator: openOperator
   });
-  elements.catalogNext.disabled = !state.nextCursor || refreshing;
-  elements.catalogCount.textContent = i18n.t("catalog.count")
-    .replace("{shown}", String(state.tasks.length)).replace("{total}", String(state.catalogTotal))
-    + (state.attentionFilter ? " · " + i18n.t("catalog." + state.attentionFilter) : "");
-  elements.catalogAttentionReset.hidden = !state.attentionFilter;
-  const savedTaskScroll = elements.tasks.scrollTop;
-  renderTasks(elements.tasks, state, i18n.t, i18n.getLocale(), selectTask);
-  elements.tasks.scrollTop = savedTaskScroll;
-  const preserveScroll = state.detail !== null && elements.mainCol.scrollTop > 0;
-  const savedScrollTop = elements.mainCol.scrollTop;
-  renderCurrentDetail();
-  if (preserveScroll) elements.mainCol.scrollTop = savedScrollTop;
-  syncTabHighlight();
-  updateMetrics();
-  updateStickyOffsets();
 }
 
-function updateStickyOffsets() {
-  const root = document.documentElement;
-  if (elements.topbar) {
-    root.style.setProperty("--topbar-h", elements.topbar.offsetHeight + "px");
-  }
-  if (elements.detailTabs && !elements.detailTabs.hidden) {
-    root.style.setProperty("--tabs-h", elements.detailTabs.offsetHeight + "px");
-  }
+function switchTab(tab, options) {
+  if (!TABS.includes(tab)) return;
+  state.activeTab = tab;
+  selectTab(el.detail, tab);
+  if (!(options && options.keepScroll)) el.center.scrollTop = 0;
+  setSectionParam(tab);
+}
+// A section may name a tab or any anchored block inside one (for example
+// "reviews" → the Work tab, scrolled to #detail-reviews).
+function applySection(section) {
+  if (!section || TABS.includes(section)) { switchTab(section || "overview"); return; }
+  const anchor = el.detail.querySelector("#detail-" + CSS.escape(section));
+  const panel = anchor && anchor.closest(".tab-panel");
+  if (!panel) { switchTab("overview"); return; }
+  state.activeTab = panel.id.replace(/^panel-/, "");
+  selectTab(el.detail, state.activeTab);
+  anchor.scrollIntoView({ block: "start" });
 }
 
-function updateActiveTabFromScroll() {
-  if (!state.detail || !elements.detailTabs) return;
-  const tabs = Array.from(elements.detailTabs.querySelectorAll(".tab"));
-  if (!tabs.length) return;
-  const root = elements.mainCol;
-  const rootTop = root.getBoundingClientRect().top;
-  // Sections sit below the sticky topbar + tab bar (see .anchor scroll-margin),
-  // so "current" means the last section whose top crossed that stacked offset.
-  const stickyH = (elements.topbar ? elements.topbar.offsetHeight : 0)
-    + (elements.detailTabs.hidden ? 0 : elements.detailTabs.offsetHeight);
-  const threshold = stickyH + 8;
-  let activeId = tabs[0].dataset.target;
-  let bestTop = -Infinity;
-  tabs.forEach(function (tab) {
-    const id = tab.dataset.target;
-    if (!id) return;
-    const el = root.querySelector("#" + id);
-    if (!el) return;
-    const top = el.getBoundingClientRect().top - rootTop;
-    if (top <= threshold && top > bestTop) {
-      bestTop = top;
-      activeId = id;
-    }
-  });
-  tabs.forEach(function (tab) {
-    tab.classList.toggle("is-active", tab.dataset.target === activeId);
-  });
-  if (state.detail) queueSectionParamSync(activeId);
-}
-
-function syncTabHighlight() {
-  // Compute the active tab from the current scroll position. The module-level
-  // scroll listener keeps it in sync afterwards.
-  updateActiveTabFromScroll();
-}
-
-function showToast(message) {
-  elements.toast.textContent = message;
-  elements.toast.classList.add("show");
-  window.setTimeout(function () { elements.toast.classList.remove("show"); }, 3200);
-}
-
-function clearSelection() {
-  if (!canLeaveDetail()) return;
-  state.selected = null;
-  state.detail = null;
-  setDetailActive(false);
-  elements.conversationContent.replaceChildren();
-  syncUrlFromState({ replace: !urlTaskId() });
-  showOverview();
-  const savedTaskScroll = elements.tasks.scrollTop;
-  renderTasks(elements.tasks, state, i18n.t, i18n.getLocale(), selectTask);
-  elements.tasks.scrollTop = savedTaskScroll;
-}
-
-async function requestJson(path, options) {
-  const response = await fetch(path, {
-    ...options,
-    headers: {
-      accept: "application/json",
-      "x-yui-web-token": token,
-      ...(options && options.headers ? options.headers : {})
-    }
-  });
-  if (!response.ok) {
-    let message = "HTTP " + response.status;
-    let disposition = "unknown";
-    try {
-      const body = await response.json();
-      if (body && body.error) message = body.error;
-      if (body && body.disposition === "not-submitted") disposition = "not-submitted";
-    } catch {}
-    throw Object.assign(new Error(message), { disposition });
-  }
-  return response.json();
-}
-
-async function submitMutation(key, path, body) {
-  if (submittedRequests.has(key)) throw new Error("An earlier submission is unresolved; read current facts.");
-  submittedRequests.add(key);
-  try {
-    const receipt = await requestJson(path, {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body)
-    });
-    submittedRequests.delete(key);
-    return receipt;
-  } catch (error) {
-    if (error.disposition === "not-submitted") submittedRequests.delete(key);
-    throw error;
-  }
-}
-
+// --- Loading ----------------------------------------------------------------------
 async function loadTaskDetail(taskId, navigate) {
-  // navigate marks an explicit user navigation (task selection, deep link,
-  // back/forward). Only a navigation may move the viewport; the 5s background
-  // refresh (navigate=false) preserves the current scroll, so a quiet tick
-  // never yanks the page back to the URL section.
   if (navigate) {
-    renderLoading(elements.detail, i18n.t, "loading.detail");
-    elements.mainCol.scrollTop = 0;
+    el.detail.replaceChildren(h("div.page", null, h("div.loading-block", null, h("span.spinner"), h("span", null, t("loading.detail")))));
+    delete el.detail.dataset.taskId;
+    el.center.scrollTop = 0;
   }
-  const savedScrollTop = elements.mainCol.scrollTop;
-  const base = "/api/tasks/" + encodeURIComponent(taskId);
-  // Rendering consumes the current snapshot, not event pages. Reconnect uses
-  // this same read; the independent delta API retains its fixed-bound contract.
-  const core = await requestJson(base + "/context");
+  // Rendering consumes the current Context snapshot, not event pages.
+  const core = await api.context(taskId);
   const taskEntry = core.records.find(function (entry) { return entry.ref.store === "task"; });
   if (!taskEntry) throw new Error("Task reference unavailable.");
-  const task = taskEntry.omitted ? (await inspectRecord(taskId, taskEntry.ref)).value : taskEntry.value;
+  const task = taskEntry.omitted ? (await api.inspect(taskId, taskEntry.ref)).value : taskEntry.value;
+  if (state.selected !== taskId) return;
   const previous = state.detail && state.detail.task.id === taskId ? state.detail : null;
   const detail = {
-    task, core,
+    task: task, core: core,
     viewState: previous ? previous.viewState : {},
-    runtime: previous && previous.runtime,
+    runtime: previous ? previous.runtime : null,
     runtimeStatus: previous ? previous.runtimeStatus : "waiting",
     runtimeObservedAt: previous ? previous.runtimeObservedAt : new Date().toISOString()
   };
-  if (state.selected !== taskId) return;
   state.detail = detail;
-  state.detailKey = detailKeyOf(core);
-  renderCurrentDetail();
-  // Optional observation does not participate in core readiness or cursor.
-  void requestJson(base, { signal: AbortSignal.timeout(1000) }).then(function (runtime) {
+  state.detailKey = fingerprint(core);
+  renderCurrentDetail(navigate);
+  if (navigate) applySection(readQuery().get("section"));
+  // The optional observation never participates in core readiness.
+  api.observation(taskId).then(function (runtime) {
     if (state.detail !== detail) return;
     detail.runtime = runtime;
     detail.runtimeStatus = "available";
     detail.runtimeObservedAt = new Date().toISOString();
-    updateRuntimePanel(detail);
+    observationArrived(detail);
   }).catch(function () {
     if (state.detail !== detail) return;
     detail.runtime = null;
     detail.runtimeStatus = "unavailable";
     detail.runtimeObservedAt = new Date().toISOString();
-    updateRuntimePanel(detail);
+    observationArrived(detail);
   });
-  // Reveal the tab bar before measuring/scroll so anchors land correctly.
-  setDetailActive(true);
-  updateStickyOffsets();
-  // Only an explicit navigation may reposition the viewport. On navigation a
-  // section in the URL wins over the top; a background refresh keeps the reader
-  // where they are so the page does not jump on every poll.
-  if (navigate) {
-    const section = readQuery().get("section");
-    const anchor = section ? elements.detail.querySelector("#detail-" + section) : null;
-    if (anchor) {
-      anchor.scrollIntoView({ block: "start" });
-    } else {
-      elements.mainCol.scrollTop = savedScrollTop;
-    }
-  } else {
-    elements.mainCol.scrollTop = savedScrollTop;
-  }
-  syncTabHighlight();
 }
-
-function updateRuntimePanel(detail) {
-  updateTaskObservations(elements.detail, detail, i18n.t, i18n.getLocale());
-  const status = elements.detail.querySelector("[data-runtime-status]");
-  const value = elements.detail.querySelector("[data-runtime-value]");
-  if (status) status.textContent = detail.runtimeStatus + " · " + detail.runtimeObservedAt;
-  if (value) value.textContent = detail.runtime
-    ? JSON.stringify({ roles: detail.runtime.roles, runtimeHealth: detail.runtime.runtimeHealth }, null, 2)
-    : "";
-  // Patching the panel in place is not enough: the observation also feeds facts
-  // the detail rendered before it arrived. Re-render when the observed identity
-  // has actually changed — renderCurrentDetail still compares the render key,
-  // so an unchanged observation costs nothing and an unsent form is preserved.
+function observationArrived(detail) {
+  if (el.detail.dataset.taskId === detail.task.id) updateObservation(el.detail, detail, t, locale(), detailContext());
+  // Patching slots is not enough when the observed identity changed facts the
+  // detail drew earlier; the render key decides whether a re-render is due.
   if (state.detail === detail) renderCurrentDetail();
-}
-
-async function inspectRecord(taskId, ref) {
-  const query = new URLSearchParams({ store: ref.store, ref: ref.refId });
-  if (ref.digest) query.set("digest", ref.digest);
-  return requestJson("/api/tasks/" + encodeURIComponent(taskId) + "/inspect?" + query);
-}
-
-async function selectTask(taskId) {
-  // Re-selecting the already visible Task is not navigation. Keep the same
-  // draft and fixed artifact selection, just as an ordinary refresh does.
-  if (state.selected === taskId && state.detail) return;
-  if (state.selected !== taskId && !canLeaveDetail()) {
-    syncUrlFromState({ replace: true });
-    return;
-  }
-  // Switching tasks drops the previous section; staying on the same task
-  // (URL-driven loads, popstate) keeps it.
-  if (urlTaskId() !== taskId) {
-    const params = readQuery();
-    params.delete("section");
-    applyUrl(params, { replace: true });
-  }
-  state.selected = taskId;
-  state.detail = null;
-  conversationVisible = true;
-  elements.conversationContent.replaceChildren();
-  renderedDetailKey = null;
-  // When the selection is driven by the URL (initial load or popstate), the
-  // URL already reflects the task id, so replace instead of pushing a
-  // duplicate history entry.
-  syncUrlFromState({ replace: state.selected === urlTaskId() });
-  setDetailActive(true);
-  const savedTaskScroll = elements.tasks.scrollTop;
-  renderTasks(elements.tasks, state, i18n.t, i18n.getLocale(), selectTask);
-  elements.tasks.scrollTop = savedTaskScroll;
-  try {
-    await loadTaskDetail(taskId, true);
-  } catch {
-    if (state.selected !== taskId) return;
-    renderError(elements.detail, i18n.t("errors.detail"));
-    showToast(i18n.t("errors.detail"));
-  }
-}
-
-function canLeaveDetail() {
-  return !(elements.detail.querySelector('[data-unsent="true"]')
-    || elements.conversationContent.querySelector('[data-unsent="true"]')) || window.confirm(
-    i18n.getLocale().startsWith("zh") ? "此任务有未提交或结果尚不确定的输入。仍要离开？"
-      : "This Task has unsent input or an unresolved submission. Leave anyway?");
-}
-window.addEventListener("beforeunload", event => {
-  if (!elements.detail.querySelector('[data-unsent="true"]')
-    && !elements.conversationContent.querySelector('[data-unsent="true"]')) return;
-  event.preventDefault();
-  event.returnValue = "";
-});
-
-async function answerInput(input, answer) {
-  if (!state.detail) return;
-  const taskId = state.detail.task.id;
-  const key = taskId + "/input/" + input.id;
-  try {
-    await submitMutation(key,
-      "/api/tasks/" + encodeURIComponent(taskId)
-        + "/inputs/" + encodeURIComponent(input.id) + "/answer",
-      answer
-    );
-    showToast(i18n.t("input.answered"));
-    submittedRequests.delete(key);
-    await refreshDashboard({ quiet: true });
-  } catch (error) {
-    showToast(error.disposition === "not-submitted" ? error.message : i18n.getLocale().startsWith("zh")
-      ? "回答结果未知；请刷新检查原问题，不要盲目重发。"
-      : "Answer outcome unknown; refresh the original question before resubmitting.");
-  }
 }
 
 let refreshing = false;
@@ -594,14 +290,15 @@ function resetCatalog() {
   refreshDashboard();
 }
 async function refreshDashboard(options) {
-  if (refreshing && options && options.quiet) return;
+  const quiet = options && options.quiet;
+  if (refreshing && quiet) return;
   const request = ++catalogRequest;
   refreshing = true;
-  elements.catalogNext.disabled = true;
-  const quiet = options && options.quiet;
+  el.catalogNext.disabled = true;
+  el.sync.dataset.state = "syncing";
   if (!quiet) {
-    elements.refresh.disabled = true;
-    if (!state.tasks.length) renderLoading(elements.tasks, i18n.t, "loading.dashboard");
+    el.refresh.disabled = true;
+    if (!state.tasks.length) el.tasks.replaceChildren(h("div.loading-block", null, h("span.spinner"), h("span", null, t("loading.dashboard"))));
   }
   const previousInputs = state.counts ? state.counts.openInputs : null;
   try {
@@ -611,11 +308,11 @@ async function refreshDashboard(options) {
     if (state.query.trim()) query.set("search", state.query.trim());
     if (state.attentionFilter) query.set("attention", state.attentionFilter);
     if (state.catalogCursor) query.set("cursor", state.catalogCursor);
-    const dashboard = await requestJson("/api/dashboard?" + query.toString());
+    const dashboard = await api.dashboard(query.toString());
     if (request !== catalogRequest) return;
     state.tasks = dashboard.tasks;
     if (state.catalogQuery !== query.toString() || (state.sessionOverview && JSON.stringify(
-      state.sessionOverview.tasks.map(task => task.taskId)) !== JSON.stringify(dashboard.tasks.map(task => task.id)))) {
+      state.sessionOverview.tasks.map(function (task) { return task.taskId; })) !== JSON.stringify(dashboard.tasks.map(function (task) { return task.id; })))) {
       state.sessionOverview = null;
     }
     state.catalogQuery = query.toString();
@@ -629,422 +326,417 @@ async function refreshDashboard(options) {
       return { taskId: ref.taskId, taskTitle: task ? task.title : ref.taskId };
     });
     state.generatedAt = new Date().toISOString();
-    // A selected Task may live on another page or outside current filters.
-    // Only its detail endpoint can establish that it no longer exists.
-    renderDynamicContent();
-    if (previousInputs !== null && state.counts.openInputs > previousInputs) {
-      showToast(i18n.t("input.new"));
-    }
+    el.sync.dataset.state = "ok";
+    renderSidebar();
+    if (!state.selected) showOverview();
+    if (previousInputs !== null && state.counts.openInputs > previousInputs) showToast(t("input.new"));
+    // A selected Task may live on another page or outside current filters;
+    // only its own read can establish that it no longer exists.
     if (state.selected) {
-      try { await loadTaskDetail(state.selected, false); } catch {
-        showToast(i18n.getLocale().startsWith("zh") ? "连接不可用；保留上次读取。" : "Disconnected; showing the last read.");
-      }
+      try { await loadTaskDetail(state.selected, false); }
+      catch { showToast(t("errors.disconnected")); }
     }
   } catch {
     if (request !== catalogRequest) return;
+    el.sync.dataset.state = "error";
     if (!quiet) {
-      renderError(elements.tasks, i18n.t("errors.dashboard"));
-      showToast(i18n.t("errors.dashboard"));
+      el.tasks.replaceChildren(h("div.list-empty.is-error", null, h("p", null, t("errors.dashboard"))));
+      showToast(t("errors.dashboard"));
     }
   } finally {
     if (request === catalogRequest) {
       refreshing = false;
-      elements.refresh.disabled = false;
-      elements.catalogNext.disabled = !state.nextCursor;
+      el.refresh.disabled = false;
+      el.catalogNext.disabled = !state.nextCursor;
     }
   }
 }
 
-function terminalUrl(target, columns, rows) {
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const parameters = new URLSearchParams({
-    scope: target.scope,
-    role: target.roleName,
-    cols: String(columns),
-    rows: String(rows),
-    token: token
+function renderSidebar() {
+  renderAttentionBar(el.attention, state, t, pickAttention);
+  renderFilters(el.filters, state, t, function (filter) {
+    state.filter = filter;
+    state.attentionFilter = null;
+    state.catalogAll = false;
+    syncUrl(false);
+    resetCatalog();
   });
-  if (target.scope === "task") parameters.set("task", target.taskId);
-  return protocol + "//" + window.location.host + "/api/terminal?" + parameters.toString();
+  el.catalogCount.textContent = t("catalog.count").replace("{shown}", String(state.tasks.length)).replace("{total}", String(state.catalogTotal));
+  el.catalogReset.hidden = !state.catalogCursor;
+  el.catalogNext.hidden = !state.nextCursor && !state.catalogCursor;
+  el.catalogAttentionReset.hidden = !state.attentionFilter;
+  const scroll = el.tasks.scrollTop;
+  renderTasks(el.tasks, state, t, locale(), selectTask);
+  el.tasks.scrollTop = scroll;
+  el.lastSync.textContent = state.generatedAt ? formatClock(state.generatedAt, locale()) : "—";
 }
 
-function setTerminalState(key) {
-  terminalStateKey = key;
-  elements.terminalState.textContent = i18n.t(key);
-}
-
-function terminalPanelOpen() {
-  return !elements.terminalPanel.hidden;
-}
-
-function openTerminalPanel() {
-  elements.terminalPanel.hidden = false;
-  elements.terminalPanel.setAttribute("aria-hidden", "false");
-  document.body.classList.add("terminal-active");
-  updateConversationLayout();
-}
-
-function closeTerminalPanel() {
-  disposeTerminal();
-  document.body.classList.remove("terminal-active");
-  elements.terminalPanel.setAttribute("aria-hidden", "true");
-  elements.terminalPanel.hidden = true;
-  updateConversationLayout();
-}
-
-function disposeTerminal() {
-  if (!terminalSession) return;
-  const current = terminalSession;
-  terminalSession = null;
-  current.resizeObserver.disconnect();
-  current.input.dispose();
-  current.socket.close();
-  current.terminal.dispose();
-  elements.terminalHost.replaceChildren();
-}
-
-function openTerminal(target) {
-  disposeTerminal();
-  elements.terminalTitle.textContent = target.scope === "task"
-    ? target.taskId + " / " + target.roleName
-    : target.roleName;
-  setTerminalState("terminal.connecting");
-  openTerminalPanel();
-
-  const terminal = new Terminal({
-    cursorBlink: true,
-    scrollback: 0,
-    convertEol: false,
-    fontFamily: '"IBM Plex Mono","JetBrains Mono","SFMono-Regular",Consolas,monospace',
-    fontSize: 13,
-    theme: {
-      background: "#080b11",
-      foreground: "#e8eef6",
-      cursor: "#49d6ff",
-      selectionBackground: "#264b5d"
+async function readPageSessions() {
+  if (state.sessionLoading) return;
+  const query = state.catalogQuery;
+  state.sessionLoading = true;
+  showOverview();
+  try {
+    const result = await api.pageSessions(query);
+    if (query !== state.catalogQuery) return;
+    if (JSON.stringify(result.tasks.map(function (task) { return task.taskId; })) !== JSON.stringify(state.tasks.map(function (task) { return task.id; }))) {
+      throw new Error(t("overview.sessionsPageChanged"));
     }
-  });
-  const fit = new FitAddon();
-  terminal.loadAddon(fit);
-  terminal.open(elements.terminalHost);
-  fit.fit();
-
-  let writable = false;
-  const socket = new WebSocket(terminalUrl(target, terminal.cols, terminal.rows));
-  const input = terminal.onData(function (data) {
-    if (writable && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: "input", data: data }));
-    }
-  });
-  const resizeObserver = new ResizeObserver(function () {
-    if (!terminalSession || terminalSession.terminal !== terminal) return;
-    fit.fit();
-    if (socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({
-        type: "resize",
-        columns: terminal.cols,
-        rows: terminal.rows
-      }));
-    }
-  });
-  resizeObserver.observe(elements.terminalHost);
-
-  socket.addEventListener("message", function (event) {
-    let message;
-    try {
-      message = JSON.parse(event.data);
-    } catch {
-      return;
-    }
-    if (message.type === "ready") {
-      writable = !message.readOnly;
-      setTerminalState(writable ? "terminal.writable" : "terminal.readOnly");
-      if (message.history && message.history.limit < message.history.target) {
-        const number = new Intl.NumberFormat(i18n.getLocale());
-        showToast(
-          i18n.t("terminal.historyLimited")
-            .replace("{current}", number.format(message.history.limit))
-            .replace("{target}", number.format(message.history.target))
-        );
-      }
-      terminal.focus();
-    } else if (message.type === "data") {
-      terminal.write(message.data);
-    } else if (message.type === "exit") {
-      setTerminalState("terminal.closed");
-    } else if (message.type === "error") {
-      setTerminalState("terminal.error");
-      terminal.writeln("\\r\\n" + message.message);
-    }
-  });
-  socket.addEventListener("close", function () {
-    writable = false;
-    setTerminalState("terminal.closed");
-  });
-  socket.addEventListener("error", function () {
-    writable = false;
-    setTerminalState("terminal.error");
-  });
-
-  terminalSession = { terminal, socket, input, resizeObserver };
+    state.sessionOverview = result;
+    state.sessionError = null;
+  } catch (error) { state.sessionError = error.message; }
+  finally {
+    state.sessionLoading = false;
+    if (!state.selected) showOverview();
+  }
 }
 
-if (elements.detailTabs) {
-  elements.detailTabs.addEventListener("click", function (event) {
-    const tab = event.target && event.target.closest ? event.target.closest(".tab") : null;
-    if (!tab) return;
-    const targetId = tab.dataset.target;
-    if (!targetId || !elements.detail) return;
-    const section = elements.detail.querySelector("#" + targetId);
-    if (!section) return;
-    const folded = section.querySelector(":scope > details");
-    if (folded) folded.open = true;
-    section.scrollIntoView({ behavior: "smooth", block: "start" });
-    setSectionParam(targetId);
-    elements.detailTabs.querySelectorAll(".tab").forEach(function (other) {
-      other.classList.toggle("is-active", other === tab);
-    });
-  });
+function pickAttention(kind) {
+  state.attentionFilter = kind;
+  state.catalogAll = !!kind && !!state.catalogScope && state.catalogScope.archived === "included";
+  state.filter = "all";
+  state.query = "";
+  el.search.value = "";
+  syncUrl(false);
+  resetCatalog();
 }
 
-let catalogSearchTimer = null;
-elements.search.addEventListener("input", function () {
-  state.query = elements.search.value;
-  syncUrlFromState({ replace: true });
-  window.clearTimeout(catalogSearchTimer);
-  catalogSearchTimer = window.setTimeout(resetCatalog, 200);
+// --- Selection --------------------------------------------------------------------
+function hasUnsent() {
+  return !!(el.detail.querySelector('[data-unsent="true"]') || discussionHasUnsent(el.discussion));
+}
+function canLeaveDetail() {
+  return !hasUnsent() || window.confirm(t("confirm.leave"));
+}
+window.addEventListener("beforeunload", function (event) {
+  if (!hasUnsent()) return;
+  event.preventDefault();
+  event.returnValue = "";
 });
-elements.catalogNext.addEventListener("click", function () {
+
+async function selectTask(taskId) {
+  // Re-selecting the visible Task is not navigation.
+  if (state.selected === taskId && state.detail) return;
+  if (state.selected !== taskId && !canLeaveDetail()) { syncUrl(true); return; }
+  if (urlTaskId() !== taskId) {
+    const params = readQuery();
+    params.delete("section");
+    applyUrl(params, true);
+  }
+  state.selected = taskId;
+  state.detail = null;
+  state.activeTab = "overview";
+  dock.sheet = false;
+  renderedDetailKey = null;
+  renderedDiscussionKey = null;
+  el.discussion.replaceChildren();
+  delete el.discussion.dataset.taskId;
+  syncUrl(state.selected === urlTaskId());
+  updateLayout();
+  const scroll = el.tasks.scrollTop;
+  renderTasks(el.tasks, state, t, locale(), selectTask);
+  el.tasks.scrollTop = scroll;
+  try {
+    await loadTaskDetail(taskId, true);
+  } catch {
+    if (state.selected !== taskId) return;
+    el.detail.replaceChildren(h("div.page", null, h("div.list-empty.is-error", null, h("p", null, t("errors.detail")))));
+    showToast(t("errors.detail"));
+  }
+}
+
+function clearSelection() {
+  if (!canLeaveDetail()) return;
+  state.selected = null;
+  state.detail = null;
+  el.discussion.replaceChildren();
+  delete el.discussion.dataset.taskId;
+  if (dock.mode === "discussion" || (terminal.current() && terminal.current().scope === "task")) {
+    if (!terminal.connected()) dock.mode = "discussion";
+  }
+  syncUrl(!urlTaskId());
+  updateLayout();
+  showOverview();
+  const scroll = el.tasks.scrollTop;
+  renderTasks(el.tasks, state, t, locale(), selectTask);
+  el.tasks.scrollTop = scroll;
+  updateSessionTargets();
+}
+
+async function answerInput(input, answer, control) {
+  if (!state.detail) return;
+  const taskId = state.detail.task.id;
+  if (control) control.disabled = true;
+  try {
+    await api.answerInput(taskId, input.id, answer);
+    releaseMutation(taskId + "/input/" + input.id);
+    showToast(t("input.answered"));
+    const form = control && control.closest("form");
+    if (form) form.dataset.unsent = "false";
+    await refreshDashboard({ quiet: true });
+  } catch (error) {
+    if (control) control.disabled = error.disposition !== "not-submitted";
+    showToast(error.disposition === "not-submitted" ? error.message : t("input.unknown"));
+  }
+}
+
+// --- Dock layout ------------------------------------------------------------------
+function dockVisible() {
+  if (narrow.matches ? !dock.sheet : !dock.open) return false;
+  if (state.selected) return true;
+  return dock.mode === "session" && terminal.connected();
+}
+function maxDockWidth() {
+  const sidebar = window.innerWidth > 900 ? el.sidebar.offsetWidth : 0;
+  return Math.max(320, Math.min(760, window.innerWidth - sidebar - 420));
+}
+function setDockWidth(width, persist) {
+  const effective = Math.max(320, Math.min(maxDockWidth(), width));
+  document.documentElement.style.setProperty("--dock-w", effective + "px");
+  el.divider.setAttribute("aria-valuemax", String(maxDockWidth()));
+  el.divider.setAttribute("aria-valuenow", String(effective));
+  if (persist) { dock.width = effective; writePreference("yui.dock.width", String(effective)); }
+}
+function updateLayout() {
+  const visible = dockVisible();
+  document.body.classList.toggle("task-open", !!state.selected);
+  document.body.classList.toggle("dock-open", visible);
+  document.body.classList.toggle("dock-center", dock.center);
+  el.dock.hidden = !visible;
+  el.divider.hidden = !visible;
+  el.discussion.hidden = dock.mode !== "discussion";
+  el.session.hidden = dock.mode !== "session";
+  el.dockTabDiscussion.setAttribute("aria-selected", String(dock.mode === "discussion"));
+  el.dockTabSession.setAttribute("aria-selected", String(dock.mode === "session"));
+  el.dockTabDiscussion.disabled = !state.selected;
+  el.dockSwap.setAttribute("aria-pressed", String(dock.center));
+  setDockWidth(dock.width, false);
+  syncDockButtons();
+}
+function syncDockButtons() {
+  const visible = dockVisible();
+  el.detail.querySelectorAll("[data-dock-toggle]").forEach(function (button) {
+    button.setAttribute("aria-pressed", String(visible && dock.mode === button.dataset.dockToggle));
+  });
+  el.operator.setAttribute("aria-pressed", String(visible && dock.mode === "session"
+    && !!terminal.current() && terminal.current().scope === "global"));
+}
+function setDockOpen(open) {
+  if (narrow.matches) dock.sheet = open;
+  else {
+    dock.open = open;
+    writePreference("yui.dock.open", String(open));
+  }
+  if (!open && terminal.connected()) terminal.close();
+  updateLayout();
+}
+function setDockMode(mode) {
+  dock.mode = mode === "session" || !state.selected ? "session" : "discussion";
+  updateLayout();
+}
+function toggleDock(mode) {
+  if (dockVisible() && (!mode || dock.mode === mode)) { setDockOpen(false); return; }
+  if (mode) dock.mode = mode === "session" || !state.selected ? mode : "discussion";
+  if (!state.selected && dock.mode === "discussion") dock.mode = "session";
+  setDockOpen(true);
+}
+function openSession(target) {
+  dock.mode = "session";
+  if (narrow.matches) dock.sheet = true;
+  else {
+    dock.open = true;
+    writePreference("yui.dock.open", "true");
+  }
+  terminal.open(target);
+  updateLayout();
+  updateSessionTargets();
+}
+function openOperator() { openSession({ scope: "global", roleName: "operator" }); }
+
+el.dockTabDiscussion.addEventListener("click", function () { setDockMode("discussion"); });
+el.dockTabSession.addEventListener("click", function () { setDockMode("session"); });
+el.dockClose.addEventListener("click", function () { setDockOpen(false); });
+el.dockSwap.addEventListener("click", function () {
+  dock.center = !dock.center;
+  writePreference("yui.dock.side", dock.center ? "center" : "end");
+  updateLayout();
+});
+el.operator.addEventListener("click", function () {
+  const current = terminal.current();
+  if (dockVisible() && dock.mode === "session" && current && current.scope === "global") { setDockOpen(false); return; }
+  openOperator();
+});
+
+let resizing = false;
+el.divider.addEventListener("pointerdown", function (event) {
+  if (event.button !== 0 || window.innerWidth <= 900) return;
+  resizing = true;
+  el.divider.setPointerCapture(event.pointerId);
+  document.body.classList.add("dock-resizing");
+  event.preventDefault();
+});
+el.divider.addEventListener("pointermove", function (event) {
+  if (!resizing) return;
+  const rect = el.dock.getBoundingClientRect();
+  const width = dock.center ? event.clientX - rect.left : rect.right - event.clientX;
+  setDockWidth(width, false);
+  dock.width = Math.max(320, Math.min(maxDockWidth(), width));
+});
+function finishResize() {
+  if (!resizing) return;
+  resizing = false;
+  document.body.classList.remove("dock-resizing");
+  writePreference("yui.dock.width", String(dock.width));
+}
+el.divider.addEventListener("pointerup", finishResize);
+el.divider.addEventListener("pointercancel", finishResize);
+el.divider.addEventListener("keydown", function (event) {
+  const grow = dock.center ? "ArrowRight" : "ArrowLeft";
+  const shrink = dock.center ? "ArrowLeft" : "ArrowRight";
+  const delta = event.key === grow ? 24 : event.key === shrink ? -24 : 0;
+  if (!delta && event.key !== "Home" && event.key !== "End") return;
+  event.preventDefault();
+  setDockWidth(event.key === "Home" ? 320 : event.key === "End" ? maxDockWidth() : dock.width + delta, true);
+});
+window.addEventListener("resize", function () { setDockWidth(dock.width, false); });
+narrow.addEventListener("change", updateLayout);
+
+// --- Sidebar controls -------------------------------------------------------------
+let searchTimer = null;
+el.search.addEventListener("input", function () {
+  state.query = el.search.value;
+  syncUrl(true);
+  window.clearTimeout(searchTimer);
+  searchTimer = window.setTimeout(resetCatalog, 200);
+});
+el.catalogNext.addEventListener("click", function () {
   if (!state.nextCursor) return;
   state.catalogCursor = state.nextCursor;
   refreshDashboard();
 });
-elements.catalogReset.addEventListener("click", function () {
-  resetCatalog();
-});
-elements.catalogAttentionReset.addEventListener("click", function () {
-  state.attentionFilter = null;
-  state.catalogAll = false;
-  syncUrlFromState({ replace: false });
-  resetCatalog();
-});
-elements.detail.addEventListener("click", async function (event) {
-  const observe = event.target.closest("[data-observe-sessions]");
-  if (observe) {
-    if (state.sessionLoading) return;
-    const query = state.catalogQuery;
-    state.sessionLoading = true;
-    observe.disabled = true;
-    try {
-      const result = await requestJson("/api/dashboard/sessions?" + query, { signal: AbortSignal.timeout(5000) });
-      if (query !== state.catalogQuery) return;
-      if (JSON.stringify(result.tasks.map(task => task.taskId)) !== JSON.stringify(state.tasks.map(task => task.id))) {
-        throw new Error("Catalog page changed; refresh it before reading Sessions.");
-      }
-      state.sessionOverview = result;
-      state.sessionError = null;
-    } catch (error) { state.sessionError = error.message; }
-    finally {
-      state.sessionLoading = false;
-      if (!state.selected) showOverview();
-    }
-    return;
-  }
-  const button = event.target.closest("[data-catalog-attention]");
-  if (!button) return;
-  state.attentionFilter = button.dataset.catalogAttention;
-  state.catalogAll = state.catalogScope && state.catalogScope.archived === "included";
-  state.filter = "all";
-  state.query = "";
-  elements.search.value = "";
-  syncUrlFromState({ replace: false });
-  resetCatalog();
-});
-elements.refresh.addEventListener("click", function () { refreshDashboard(); });
-elements.operatorTerminal.addEventListener("click", function () {
-  openTerminal({ scope: "global", roleName: "operator" });
-});
-const globalDialog = document.querySelector("#global-input-dialog");
-const globalForm = document.querySelector("#global-input-form");
-const globalRole = document.querySelector("#global-input-role");
-const globalAction = document.querySelector("#global-input-action");
-const globalBody = document.querySelector("#global-input-body");
-const globalTarget = document.querySelector("#global-input-target");
-const globalThen = document.querySelector("#global-input-then");
-const globalSubmit = document.querySelector("#global-input-submit");
-const globalReceipt = document.querySelector("#global-input-receipt");
-const globalState = document.querySelector("#global-input-state");
-document.querySelector("#global-input-open").addEventListener("click", () => globalDialog.showModal());
-document.querySelector("#global-input-close").addEventListener("click", () => globalDialog.close());
-globalAction.addEventListener("change", () => {
-  document.querySelector("#global-input-body-label").hidden = globalAction.value === "interrupt";
-  document.querySelector("#global-input-target-label").hidden = globalAction.value === "queue";
-  document.querySelector("#global-input-then-label").hidden = globalAction.value !== "interrupt";
+el.catalogReset.addEventListener("click", resetCatalog);
+el.catalogAttentionReset.addEventListener("click", function () { pickAttention(null); });
+el.refresh.addEventListener("click", function () { refreshDashboard(); });
+el.settingsOpen.addEventListener("click", function () { el.settings.showModal(); });
+
+// --- Global Role input ------------------------------------------------------------
+const globalDialog = $("#global-input-dialog");
+const globalForm = $("#global-input-form");
+const globalRole = $("#global-input-role");
+const globalAction = $("#global-input-action");
+const globalBody = $("#global-input-body");
+const globalTarget = $("#global-input-target");
+const globalThen = $("#global-input-then");
+const globalSubmit = $("#global-input-submit");
+const globalReceipt = $("#global-input-receipt");
+const globalState = $("#global-input-state");
+$("#global-input-open").addEventListener("click", function () { globalDialog.showModal(); });
+$("#global-input-close").addEventListener("click", function () { globalDialog.close(); });
+globalAction.addEventListener("change", function () {
+  $("#global-input-body-label").hidden = globalAction.value === "interrupt";
+  $("#global-input-target-label").hidden = globalAction.value === "queue";
+  $("#global-input-then-label").hidden = globalAction.value !== "interrupt";
   globalBody.required = globalAction.value !== "interrupt";
   globalTarget.required = globalAction.value !== "queue";
 });
-document.querySelector("#global-input-inspect").addEventListener("click", async () => {
+$("#global-input-inspect").addEventListener("click", async function () {
+  globalState.hidden = false;
   try {
-    const facts = await requestJson("/api/roles/" + encodeURIComponent(globalRole.value.trim()) + "/control");
+    const facts = await api.globalState(globalRole.value.trim());
     globalState.textContent = JSON.stringify(facts, null, 2);
-    globalTarget.value = facts.turn?.nativeTurnId || facts.turn?.attemptId || "";
+    globalTarget.value = (facts.turn && (facts.turn.nativeTurnId || facts.turn.attemptId)) || "";
   } catch (error) { globalState.textContent = error.message; }
 });
-globalForm.addEventListener("submit", async event => {
+globalForm.addEventListener("submit", async function (event) {
   event.preventDefault();
   if (globalSubmit.disabled) return;
   globalSubmit.disabled = true;
   const role = globalRole.value.trim();
   const action = globalAction.value;
   const requestId = crypto.randomUUID();
-  const input = { action, requestId };
+  const input = { action: action, requestId: requestId };
   if (action !== "interrupt") input.body = globalBody.value;
   if (action !== "queue") input.expectedTarget = globalTarget.value.trim();
   if (action === "interrupt" && globalThen.value.trim()) input.thenMessage = globalThen.value.trim();
-  globalReceipt.textContent = "Waiting for receipt · 等待回执 · " + requestId;
+  globalReceipt.dataset.state = "pending";
+  globalReceipt.textContent = t("receipt.waiting") + " · " + requestId;
   try {
-    const receipt = await submitMutation("global/" + role, "/api/roles/" + encodeURIComponent(role) + "/control", input);
+    const receipt = await api.globalControl(role, input);
     const status = receipt.steer || receipt.interrupt || receipt.delivery || {};
+    globalReceipt.dataset.state = "ok";
     globalReceipt.textContent = JSON.stringify(receipt);
     const unknown = ["pending", "delivery-unknown", "steer-unknown", "interrupt-unknown"].includes(status.state)
       || status.code === "DELIVERY_UNKNOWN";
     globalSubmit.disabled = unknown;
     if (!unknown && !status.code) globalBody.value = "";
   } catch (error) {
-    globalReceipt.textContent = error.disposition === "not-submitted" ? error.message
-      : "Outcome unknown; read state before acting. 结果未知，请先读取状态，不要重发。 · " + requestId;
+    globalReceipt.dataset.state = error.disposition === "not-submitted" ? "bad" : "warn";
+    globalReceipt.textContent = error.disposition === "not-submitted" ? error.message : t("receipt.unknownControl") + " · " + requestId;
     globalSubmit.disabled = error.disposition !== "not-submitted";
   }
 });
-elements.detailBack.addEventListener("click", clearSelection);
-elements.terminalClose.addEventListener("click", closeTerminalPanel);
-elements.conversationToggle.addEventListener("click", function () {
-  conversationVisible = !conversationVisible;
-  updateConversationLayout();
-});
-elements.conversationClose.addEventListener("click", function () {
-  conversationVisible = false;
-  updateConversationLayout();
-  elements.conversationToggle.focus();
-});
-elements.conversationSwap.addEventListener("click", function () {
-  const left = !document.body.classList.contains("pane-left");
-  document.body.classList.toggle("pane-left", left);
-  localStorage.setItem("yui.conversation.side", left ? "left" : "right");
-});
-let resizingPane = false;
-elements.paneDivider.addEventListener("pointerdown", function (event) {
-  if (event.button !== 0 || elements.paneDivider.hidden || window.innerWidth <= 900) return;
-  resizingPane = true;
-  elements.paneDivider.setPointerCapture(event.pointerId);
-  document.body.classList.add("pane-resizing");
-  event.preventDefault();
-});
-elements.paneDivider.addEventListener("pointermove", function (event) {
-  if (!resizingPane) return;
-  const left = document.body.classList.contains("pane-left");
-  const width = left ? event.clientX - elements.tasks.closest(".sidebar").offsetWidth
-    : window.innerWidth - event.clientX;
-  setPaneWidth(width - 4, false);
-});
-function finishPaneResize() {
-  if (!resizingPane) return;
-  resizingPane = false;
-  document.body.classList.remove("pane-resizing");
-  localStorage.setItem("yui.conversation.width", String(paneWidth));
-}
-elements.paneDivider.addEventListener("pointerup", finishPaneResize);
-elements.paneDivider.addEventListener("pointercancel", finishPaneResize);
-elements.paneDivider.addEventListener("keydown", function (event) {
-  const left = document.body.classList.contains("pane-left");
-  const delta = left ? (event.key === "ArrowRight" ? 20 : event.key === "ArrowLeft" ? -20 : 0)
-    : (event.key === "ArrowLeft" ? 20 : event.key === "ArrowRight" ? -20 : 0);
-  if (!delta && !["Home", "End"].includes(event.key)) return;
-  event.preventDefault();
-  setPaneWidth(event.key === "Home" ? 280 : event.key === "End" ? maxPaneWidth() : paneWidth + delta, true);
-});
-window.addEventListener("resize", function () { setPaneWidth(paneWidth, false, true); });
+
+// --- Keyboard ---------------------------------------------------------------------
 document.addEventListener("keydown", function (event) {
-  if (globalDialog.open) return;
+  if (globalDialog.open || el.settings.open) return;
   const active = document.activeElement;
-  const typing = active && ["INPUT", "SELECT", "TEXTAREA"].includes(active.tagName);
-  if (event.key === "Escape" && terminalPanelOpen()) {
-    closeTerminalPanel();
+  const typing = active && (["INPUT", "SELECT", "TEXTAREA"].includes(active.tagName) || active.isContentEditable);
+  const inTerminal = el.terminalHost.contains(active);
+  if (event.key === "Escape") {
+    // A native Session needs its own Escape key.
+    if (inTerminal) return;
+    if (typing) { active.blur(); return; }
+    if (dockVisible()) { setDockOpen(false); return; }
+    if (state.selected) clearSelection();
     return;
   }
-  if (event.key === "Escape" && document.body.classList.contains("conversation-active")) {
-    conversationVisible = false;
-    updateConversationLayout();
-    elements.conversationToggle.focus();
-    return;
-  }
-  if (event.key === "Escape" && state.selected) {
-    clearSelection();
-    return;
-  }
-  if (typing) return;
-  if (event.key === "/") {
-    event.preventDefault();
-    elements.search.focus();
-    return;
-  }
-  if (event.key.toLowerCase() === "o" && !event.metaKey && !event.ctrlKey && !event.altKey) {
-    openTerminal({ scope: "global", roleName: "operator" });
-    return;
-  }
-  if (event.key.toLowerCase() === "r" && !event.metaKey && !event.ctrlKey && !event.altKey && !terminalPanelOpen()) {
-    refreshDashboard();
-  }
+  if (typing || inTerminal || event.metaKey || event.ctrlKey || event.altKey) return;
+  const key = event.key.toLowerCase();
+  if (key === "/") { event.preventDefault(); el.search.focus(); el.search.select(); }
+  else if (key === "r") refreshDashboard();
+  else if (key === "o") openOperator();
+  else if (key === "d") toggleDock();
+  else if (/^[1-5]$/.test(key) && state.detail) switchTab(TABS[Number(key) - 1]);
 });
 
-// Restore view state from the URL on load and on browser back/forward.
+// --- Boot -------------------------------------------------------------------------
 function applyStateFromUrl() {
   const params = readQuery();
   const filter = params.get("filter");
-  if (filter && VALID_FILTERS.indexOf(filter) !== -1) {
-    state.filter = filter;
-  } else {
-    state.filter = "all";
-  }
-  const query = params.get("q");
-  state.query = query || "";
-  state.attentionFilter = VALID_ATTENTION.includes(params.get("attention")) ? params.get("attention") : null;
+  state.filter = STATUS_FILTERS.includes(filter) ? filter : "all";
+  state.query = params.get("q") || "";
+  state.attentionFilter = ATTENTION_KINDS.includes(params.get("attention")) ? params.get("attention") : null;
   state.catalogAll = params.get("all") === "true";
-  if (elements.search) elements.search.value = state.query;
+  el.search.value = state.query;
   const taskId = params.get("task");
   if (taskId) {
-    selectTask(taskId);
-  } else {
-    if (state.selected && !canLeaveDetail()) {
-      syncUrlFromState({ replace: true });
-      return;
-    }
-    state.selected = null;
-    state.detail = null;
-    setDetailActive(false);
-    elements.conversationContent.replaceChildren();
-    showOverview();
+    if (taskId === state.selected && state.detail) applySection(params.get("section"));
+    else selectTask(taskId);
+    return;
   }
+  if (state.selected && !canLeaveDetail()) { syncUrl(true); return; }
+  state.selected = null;
+  state.detail = null;
+  el.discussion.replaceChildren();
+  delete el.discussion.dataset.taskId;
+  updateLayout();
+  showOverview();
 }
-
 window.addEventListener("popstate", function () {
   applyStateFromUrl();
   resetCatalog();
 });
-
 i18n.subscribe(function () {
-  renderDynamicContent();
-  if (terminalSession) setTerminalState(terminalStateKey);
-  updateConversationLayout();
-  if (!state.selected && elements.pageTitle) elements.pageTitle.textContent = i18n.t("page.title");
+  theme.render();
+  terminal.relabel();
+  renderSidebar();
+  renderedDiscussionKey = null;
+  if (state.detail) renderCurrentDetail(true); else showOverview();
+  updateLayout();
 });
+
+updateLayout();
 showOverview();
-
-// Scroll-spy: keep the detail tab bar in sync with the visible section.
-// Bound once on the scroll container; it reads tabs/sections from the live DOM
-// so it survives detail re-renders.
-elements.mainCol.addEventListener("scroll", updateActiveTabFromScroll, { passive: true });
-
 applyStateFromUrl();
 refreshDashboard();
 window.setInterval(function () { refreshDashboard({ quiet: true }); }, 5000);

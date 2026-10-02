@@ -1,153 +1,160 @@
+import { iconSvg } from "./icons.js";
+
+// Static application frame. Everything inside #detail, #task-list and the dock
+// panes is rendered by the client modules; this file only fixes the regions
+// and the controls whose identity must survive re-renders.
 export const DASHBOARD_HTML = `<!doctype html>
-<html lang="en" data-theme="control-room">
+<html lang="en" data-theme="sumi">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark light">
   <meta name="yui-web-token" content="__YUI_WEB_TOKEN__">
   <link rel="icon" href="data:,">
-  <title>Yui Control Room</title>
+  <title>Yui</title>
   <link rel="preload" href="/assets/fonts/inter-500.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/assets/fonts/inter-600.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/assets/css/fonts.css">
   <link rel="stylesheet" href="/assets/css/tokens.css">
+  <link rel="stylesheet" href="/assets/css/base.css">
   <link rel="stylesheet" href="/assets/css/layout.css">
-  <link rel="stylesheet" href="/assets/css/widgets.css">
-  <link rel="stylesheet" href="/assets/css/cards.css">
+  <link rel="stylesheet" href="/assets/css/components.css">
+  <link rel="stylesheet" href="/assets/css/views.css">
   <link rel="stylesheet" href="/assets/css/markdown.css">
   <link rel="stylesheet" href="/assets/css/responsive.css">
   <link rel="stylesheet" href="/assets/vendor/xterm.css">
 </head>
 <body>
-  <a class="skip-link" href="#main" data-i18n="a11y.skip">Skip to the main panel</a>
-  <div class="app-shell">
-    <aside class="sidebar" aria-label="Work index">
-      <div class="sidebar-brand">
-        <span class="brand-mark" aria-hidden="true">結</span>
-        <div class="brand-text">
-          <strong>Yui</strong>
-          <span data-i18n="brand.subtitle">local control plane</span>
+  <a class="skip-link" href="#center" data-i18n="a11y.skip">Skip to task details</a>
+  <div class="app">
+    <aside class="sidebar" aria-label="Tasks" data-i18n-aria-label="sidebar.label">
+      <header class="side-head">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">結</span>
+          <span class="brand-name">Yui</span>
         </div>
-        <span class="live" title="Local loopback"><i aria-hidden="true"></i><span class="sr-only" data-i18n="brand.connection">Local loopback</span></span>
-      </div>
-      <button id="global-input-open" class="operator-open" type="button">Global inputs · 全局消息</button>
-      <label class="search">
+        <span class="sync" id="sync-state" title="Last sync" data-i18n-title="sync.label">
+          <i aria-hidden="true"></i><time id="last-sync">—</time>
+        </span>
+        <button id="refresh" class="icon-btn" type="button" aria-label="Refresh" data-i18n-aria-label="actions.refresh" title="Refresh · R">${iconSvg("refresh")}</button>
+      </header>
+      <label class="search-field">
+        ${iconSvg("search")}
         <span class="sr-only" data-i18n="search.label">Search tasks</span>
-        <input id="search" type="search" placeholder="Filter by title, ID, tag, or project…" data-i18n-placeholder="search.placeholder">
+        <input id="search" type="search" autocomplete="off" spellcheck="false" placeholder="Search tasks" data-i18n-placeholder="search.placeholder">
         <kbd>/</kbd>
       </label>
-      <div id="status-filters" class="filters" role="group" aria-label="Filter by status" data-i18n-aria-label="filters.label"></div>
-      <div id="task-list" class="task-list" aria-label="Tasks" data-i18n-aria-label="board.title" aria-live="polite"><div class="loading" data-i18n="loading.dashboard">Reading local state…</div></div>
-      <div id="catalog-controls" class="catalog-pager" aria-live="polite">
-        <button id="catalog-reset" type="button" data-i18n="catalog.first">First page</button>
-        <span id="catalog-count"></span>
-        <button id="catalog-next" type="button" data-i18n="catalog.next" disabled>Next page</button>
-        <button id="catalog-attention-reset" type="button" data-i18n="catalog.clearAttention" hidden>Clear attention filter</button>
+      <div id="attention-bar" class="attention-bar" aria-live="polite"></div>
+      <div id="status-filters" class="status-tabs" role="group" aria-label="Filter by status" data-i18n-aria-label="filters.label"></div>
+      <div id="task-list" class="task-list" aria-label="Tasks" data-i18n-aria-label="sidebar.label" aria-live="polite"></div>
+      <div id="catalog-controls" class="pager" aria-live="polite">
+        <button id="catalog-reset" class="pager-btn" type="button" data-i18n="catalog.first">First page</button>
+        <span id="catalog-count" class="pager-count"></span>
+        <button id="catalog-next" class="pager-btn" type="button" data-i18n="catalog.next" disabled>Next page</button>
+        <button id="catalog-attention-reset" class="pager-clear" type="button" data-i18n="catalog.clearAttention" hidden>Clear attention filter</button>
       </div>
-      <div class="sidebar-foot">
-        <div class="sidebar-controls">
-          <label class="select-control">
-            <span class="sr-only" data-i18n="controls.language">Language</span>
-            <select id="locale-select" aria-label="Language" data-i18n-aria-label="controls.language">
-              <option value="en">English</option>
-              <option value="zh-CN">简体中文</option>
-            </select>
-          </label>
-          <label class="select-control">
-            <span class="sr-only" data-i18n="controls.theme">Theme</span>
-            <select id="theme-select" aria-label="Theme" data-i18n-aria-label="controls.theme">
-              <option value="control-room" data-i18n="theme.controlRoom">Control room</option>
-              <option value="paper" data-i18n="theme.paper">Paper ledger</option>
-              <option value="atlas" data-i18n="theme.atlas">Atlas</option>
-            </select>
-          </label>
-        </div>
-      </div>
+      <footer class="side-foot">
+        <button id="operator-terminal" class="foot-btn" type="button" title="Operator session · O">
+          ${iconSvg("terminal")}<span data-i18n="actions.operator">Operator</span><kbd>O</kbd>
+        </button>
+        <button id="global-input-open" class="foot-btn" type="button">
+          ${iconSvg("broadcast")}<span data-i18n="global.open">Global input</span>
+        </button>
+        <button id="settings-open" class="icon-btn" type="button" aria-label="Settings" data-i18n-aria-label="settings.title" title="Settings">${iconSvg("settings")}</button>
+      </footer>
     </aside>
-    <div class="main-col">
-      <header class="topbar">
-        <div class="topbar-leading">
-          <button id="detail-back" class="detail-back" type="button" aria-label="Back to task list" data-i18n-aria-label="actions.back" hidden>←</button>
-          <div class="breadcrumb">
-            <span class="crumb" data-i18n="breadcrumb.taskList">All work</span>
-            <span class="crumb-sep" aria-hidden="true">/</span>
-            <h1 id="page-title" class="crumb-current" data-i18n="page.title">Overview</h1>
-          </div>
+    <main id="center" class="center" tabindex="-1">
+      <div id="detail" class="detail"></div>
+    </main>
+    <div id="dock-divider" class="dock-divider" role="separator" tabindex="0" aria-orientation="vertical" aria-valuemin="320" aria-valuemax="720" aria-valuenow="440" aria-label="Resize session panel" data-i18n-aria-label="dock.resize" hidden><span aria-hidden="true"></span></div>
+    <aside id="dock" class="dock" aria-label="Session" data-i18n-aria-label="dock.label" hidden>
+      <header class="dock-head">
+        <div class="seg" role="tablist" aria-label="Session view" data-i18n-aria-label="dock.label">
+          <button id="dock-tab-discussion" class="seg-btn" type="button" role="tab" aria-selected="true" aria-controls="dock-discussion">${iconSvg("chat")}<span data-i18n="dock.discussion">Discussion</span></button>
+          <button id="dock-tab-session" class="seg-btn" type="button" role="tab" aria-selected="false" aria-controls="dock-session">${iconSvg("terminal")}<span data-i18n="dock.session">Live session</span></button>
         </div>
-        <div class="topbar-actions">
-          <button id="conversation-toggle" class="operator-open" type="button" aria-controls="conversation-panel" aria-expanded="false" data-i18n="conversation.show" hidden>Task discussion</button>
-          <div class="clock">
-            <span data-i18n="sync.label">Last sync</span>
-            <time id="last-sync">—</time>
-          </div>
-          <button id="operator-terminal" class="operator-open" type="button" aria-label="Operator session" data-i18n-aria-label="actions.operator">
-            <span class="operator-title" data-i18n="actions.operator">Operator session</span>
-            <span class="operator-shortcuts" aria-hidden="true"><kbd>O</kbd></span>
-          </button>
-          <button id="refresh" class="refresh" type="button" title="Refresh tasks" aria-label="Refresh" data-i18n-aria-label="actions.refresh"><span data-i18n="actions.refresh">Refresh</span> <kbd>R</kbd></button>
+        <div class="dock-actions">
+          <button id="dock-swap" class="icon-btn" type="button" aria-label="Swap with task details" data-i18n-aria-label="dock.swap" title="Swap with task details">${iconSvg("swap")}</button>
+          <button id="dock-close" class="icon-btn" type="button" aria-label="Hide session panel" data-i18n-aria-label="dock.hide" title="Hide · D">${iconSvg("close")}</button>
         </div>
       </header>
-      <nav id="detail-tabs" class="detail-tabs" aria-label="Task sections" data-i18n-aria-label="tabs.label" hidden>
-        <button class="tab" type="button" data-target="detail-top" data-i18n="tabs.summary">Overview</button>
-        <button class="tab" type="button" data-target="detail-work" data-i18n="tabs.workResults">Work &amp; results</button>
-        <button class="tab" type="button" data-target="detail-exec" data-i18n="tabs.executionReviews">Execution &amp; reviews</button>
-        <button class="tab" type="button" data-target="detail-history" data-i18n="tabs.historyMessages">History &amp; messages</button>
-      </nav>
-      <main id="detail" class="detail" aria-labelledby="page-title" tabindex="-1"></main>
-    </div>
-    <div id="pane-divider" class="pane-divider" role="separator" tabindex="0" aria-label="Resize task discussion" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="640" aria-valuenow="400" data-i18n-aria-label="conversation.resize" hidden><span aria-hidden="true"></span></div>
-    <aside id="conversation-panel" class="conversation-panel" aria-labelledby="conversation-title" hidden>
-      <header class="conversation-head">
-        <div>
-          <span class="conversation-eyebrow" data-i18n="conversation.source">Recorded Task messages · not a Session transcript</span>
-          <h2 id="conversation-title" data-i18n="conversation.title">Task discussion</h2>
+      <section id="dock-discussion" class="dock-pane dock-discussion" role="tabpanel" aria-labelledby="dock-tab-discussion"></section>
+      <section id="dock-session" class="dock-pane dock-session" role="tabpanel" aria-labelledby="dock-tab-session" hidden>
+        <div class="session-bar">
+          <div id="session-targets" class="session-targets" role="group" aria-label="Session target" data-i18n-aria-label="dock.target"></div>
+          <span id="terminal-state" class="conn" data-state="idle"><i aria-hidden="true"></i><span data-i18n="terminal.idle">Not connected</span></span>
         </div>
-        <div class="conversation-head-actions">
-          <button id="conversation-swap" class="pane-action" type="button" title="Move discussion to the other side" data-i18n-aria-label="conversation.swap" aria-label="Move discussion to the other side">⇄</button>
-          <button id="conversation-close" class="pane-action" type="button" title="Hide discussion" data-i18n-aria-label="conversation.hide" aria-label="Hide discussion">×</button>
+        <div id="terminal-host" class="terminal-host"></div>
+        <div id="terminal-empty" class="terminal-empty">
+          ${iconSvg("terminal", "icon icon-xl")}
+          <p class="terminal-empty-title" data-i18n="terminal.emptyTitle">Attach to a native Session</p>
+          <p class="terminal-empty-text" data-i18n="terminal.emptyText">Pick a Role above. The panel shows the Session's current screen; attaching never starts or restarts an Agent.</p>
         </div>
-      </header>
-      <div id="conversation-content" class="conversation-content task-surface"></div>
-    </aside>
-    <dialog id="global-input-dialog" class="global-input-dialog" aria-labelledby="global-input-title">
-      <h2 id="global-input-title">Global Role input · 全局 Role 消息</h2>
-      <p class="muted">Queue is the default. A cancel request does not prove the Turn stopped.<br>默认排队；取消请求不代表执行已停止。</p>
-      <form id="global-input-form" class="record-block">
-        <label>Role<input id="global-input-role" value="operator" required pattern="[A-Za-z0-9_-]+"></label>
-        <label>Action · 动作<select id="global-input-action">
-          <option value="queue">Queue · 排队</option>
-          <option value="steer">Steer · 当前轮插话</option>
-          <option value="interrupt">Interrupt · 请求取消</option>
-        </select></label>
-        <label id="global-input-body-label">Message · 消息<textarea id="global-input-body" maxlength="8000" required></textarea></label>
-        <label id="global-input-target-label" hidden>Expected Turn · 精确目标<input id="global-input-target"></label>
-        <label id="global-input-then-label" hidden>Then-message ID · 后续消息引用<input id="global-input-then"></label>
-        <div class="record-actions">
-          <button id="global-input-inspect" type="button" class="record-open">Read state · 读取状态</button>
-          <button id="global-input-submit" type="submit" class="record-open">Submit · 提交</button>
-          <button id="global-input-close" type="button" class="record-open">Close · 关闭</button>
-        </div>
-        <p id="global-input-receipt" role="status" class="muted">Not submitted · 未提交</p>
-        <pre id="global-input-state" class="global-input-state"></pre>
-      </form>
-    </dialog>
-    <aside id="terminal-panel" class="terminal-panel" aria-labelledby="terminal-title" aria-hidden="true" hidden>
-      <header class="terminal-head">
-        <div>
-          <span id="terminal-state" class="live"><i aria-hidden="true"></i><span data-i18n="terminal.connecting">Connecting</span></span>
-          <h2 id="terminal-title">Operator</h2>
-        </div>
-        <button id="terminal-close" class="detail-back terminal-close" type="button" aria-label="Close terminal" data-i18n-aria-label="terminal.close">×</button>
-      </header>
-      <div id="terminal-host" class="terminal-host">
-        <div id="terminal-hint" class="terminal-hint" hidden>
-          <p data-i18n="terminal.attachTitle">Open the full Operator in a terminal</p>
-          <p class="terminal-hint-cli"><a id="terminal-cli" href="#" title="Copy command">yui operator enter</a></p>
-          <p class="terminal-hint-note" data-i18n="terminal.attachNote">This panel stays attached until you close it.</p>
-        </div>
-      </div>
+        <footer class="session-foot">
+          <span data-i18n="terminal.cliHint">Full terminal</span>
+          <code id="terminal-cli">yui operator enter</code>
+        </footer>
+      </section>
     </aside>
   </div>
+  <dialog id="settings-dialog" class="dialog settings-dialog" aria-labelledby="settings-title">
+    <form method="dialog" class="dialog-body">
+      <header class="dialog-head">
+        <h2 id="settings-title" data-i18n="settings.title">Settings</h2>
+        <button class="icon-btn" value="close" aria-label="Close" data-i18n-aria-label="actions.close">${iconSvg("close")}</button>
+      </header>
+      <fieldset class="field">
+        <legend data-i18n="settings.theme">Theme</legend>
+        <div id="theme-options" class="theme-options"></div>
+      </fieldset>
+      <label class="field">
+        <span data-i18n="settings.language">Language</span>
+        <select id="locale-select">
+          <option value="en">English</option>
+          <option value="zh-CN">简体中文</option>
+        </select>
+      </label>
+      <div class="field">
+        <span data-i18n="settings.shortcuts">Keyboard</span>
+        <dl class="shortcut-list">
+          <dt><kbd>/</kbd></dt><dd data-i18n="shortcut.search">Search tasks</dd>
+          <dt><kbd>R</kbd></dt><dd data-i18n="shortcut.refresh">Refresh</dd>
+          <dt><kbd>D</kbd></dt><dd data-i18n="shortcut.dock">Show or hide the session panel</dd>
+          <dt><kbd>O</kbd></dt><dd data-i18n="shortcut.operator">Operator session</dd>
+          <dt><kbd>1</kbd>–<kbd>5</kbd></dt><dd data-i18n="shortcut.tabs">Switch task sections</dd>
+          <dt><kbd>Esc</kbd></dt><dd data-i18n="shortcut.escape">Close panel / leave task</dd>
+        </dl>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="global-input-dialog" class="dialog" aria-labelledby="global-input-title">
+    <form id="global-input-form" class="dialog-body">
+      <header class="dialog-head">
+        <div>
+          <h2 id="global-input-title" data-i18n="global.title">Global Role input</h2>
+          <p class="dialog-sub" data-i18n="global.help">Queue is the default. A cancel request does not prove the Turn stopped.</p>
+        </div>
+        <button id="global-input-close" class="icon-btn" type="button" aria-label="Close" data-i18n-aria-label="actions.close">${iconSvg("close")}</button>
+      </header>
+      <div class="field-row">
+        <label class="field"><span data-i18n="global.role">Role</span><input id="global-input-role" value="operator" required pattern="[A-Za-z0-9_-]+"></label>
+        <label class="field"><span data-i18n="control.action">Action</span><select id="global-input-action">
+          <option value="queue" data-i18n="control.queue">Queue</option>
+          <option value="steer" data-i18n="control.steer">Steer</option>
+          <option value="interrupt" data-i18n="control.interrupt">Interrupt</option>
+        </select></label>
+      </div>
+      <label id="global-input-body-label" class="field"><span data-i18n="control.message">Message</span><textarea id="global-input-body" maxlength="8000" required rows="4"></textarea></label>
+      <label id="global-input-target-label" class="field" hidden><span data-i18n="control.expectedTurn">Expected current Turn</span><input id="global-input-target" class="mono"></label>
+      <label id="global-input-then-label" class="field" hidden><span data-i18n="control.then">Then-message reference</span><input id="global-input-then" class="mono"></label>
+      <div class="dialog-actions">
+        <button id="global-input-inspect" type="button" class="btn" data-i18n="global.inspect">Read state</button>
+        <button id="global-input-submit" type="submit" class="btn btn-primary" data-i18n="actions.submit">Submit</button>
+      </div>
+      <p id="global-input-receipt" role="status" class="receipt" data-i18n="receipt.notSubmitted">Not submitted</p>
+      <pre id="global-input-state" class="code-block" hidden></pre>
+    </form>
+  </dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script type="module" src="/assets/app.js"></script>
 </body>
