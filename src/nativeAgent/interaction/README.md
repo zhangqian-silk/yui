@@ -2,7 +2,7 @@
 
 此模块属于 task-78，只消费 Agent/会话事实，不接入 Yui Controller，
 也不是生产会话持久化实现。仅从 `interaction/index.ts` 导入。
-现有内核及公共 `nativeAgent/index.ts` 合同没有改动。
+统一组合通过公共 `nativeAgent/index.ts` 的执行所有者、实时进度与诊断适配器接入。
 
 ## 本地运行
 
@@ -41,7 +41,7 @@ demo 仅使用自己创建的临时目录，不访问工作目录文件，不调
 
 ## 替换与所有权
 
-`openCli({ sessions, input, output, renderer?, diagnostics?, initialSessionId? })` 返回
+`openCli({ sessions, input, output, renderer?, diagnostics?, progress?, initialSessionId? })` 返回
 `{ done, close }`。传入的 Node streams、SessionPort 和 renderer 由调用方选择。
 关闭只释放此入口的 readline 和订阅；不关闭调用方 streams 或 SessionPort，
 也不隐式请求取消。输出错误、renderer 异常、输入 EOF 不证明执行失败或停止。
@@ -54,18 +54,18 @@ demo 仅使用自己创建的临时目录，不访问工作目录文件，不调
 
 - `create/list/submit/cancel` 操作由会话服务决定；submit 只等待接受，不等待执行完成。
 - `read(session, after, limit)` 查询按会话单调游标排序的事件页与实际活动 Turn。
-  `history` 返回稳定追加的消息页。单页最多 20，单记录 payload 最多 512 KiB；
+  `history` 返回稳定追加的消息页。单页最多 20，每事件最多 1 MiB、每消息最多 512 KiB；
   每页渐进显示，对慢终端等待写回调，避免无界输出缓冲。
 - `subscribe` 只表示“请重新查询”。入口先订阅再读取；通知丢失后可手动刷新。
   会话适配器必须先保存必要事实，再隔离调用显示订阅者；不能把显示错误
-  直接传给内核的必要 `onEvent` sink。
+  直接传给内核的必要 `recorder` sink。
 - 复用现有 `AgentEvent`、`Message`、`Scope`。可选 `text_delta` 仅供临时显示；
   真实 provider 接线必须由其生产者提供增量，不能将完成的消息拆成伪 token。
 - 缺失/过期游标、错会话、乱序和无进展页显式报错；不自动重放提交。
   read 的 `diagnostic` 是执行服务诊断，不是虚构的 Agent 终态。
 
 `createMemoryDemoSessions({ provider, tools, maxSteps? })` 是可销毁的内存
-fixture，用现有公开 `createAgent/runTurn/onEvent` 组装。它拥有历史与执行句柄，
+fixture，用现有公开 `createAgent/runTurn/recorder` 组装。它拥有历史与执行句柄，
 先存事实再通知观察者；UI 没有自己的执行状态副本。`close()` 拒绝新提交，
 取消并等待所有已接受执行；调用方仍负责 provider/tools 自身资源。
 此 fixture 不应替代 task-76 的生产会话服务，不提供磁盘 schema 或迁移。
@@ -82,11 +82,11 @@ rejected、dropped、inFlight 的意义；UI 不计算这些值，不以它们�
 诊断查询失败只显示 observation unavailable，不关闭输入、不取消执行。
 诊断正文不能填入 SessionPort 的消息历史；观测白名单不包含会话正文。
 
-这使 task-79 的 query/subscribe/health 可以经薄显示适配器消费，无需复制
-它的权威类型；**目前只有确定性 fixture，未声称已适配 task-79 的实际签名**。
-Operator 转交的 task-72 必要 recorder/可选 observer 分离原则已保留：
-此处现有内核 onEvent 先保存会话事实，再调用隔离的订阅者；
-迁移到最终内核时保持这个边界，不把必要记录降级为可丢失的观察出口。
+`createInteractionDiagnostics` 已连接实际 LocalObserver 的 query/subscribe/health，
+无需复制权威类型。`createInteractionProgress` 将实际模型 text_delta 送到可选
+live-only 通道；CLI 使用一个最多 8192 字符的待显示缓冲并标注省略，入口关闭
+立即解绑。它没有持久游标，不改变会话分页，重连不重造临时 token。
+内核必要 recorder 与可选 observer 分离，先保存事实再通知，不将存储降级为观察。
 
 ## 确定性验收
 
@@ -97,5 +97,6 @@ npm test
 
 fixture 覆盖增量与完整确认的顺序、工具结算与精确取消、会话选择与历史分页、
 刷新/重连接、显示故障隔离及关闭。当前 mock provider 没有 token streaming；
-delta 路径使用可控 SessionPort 验证。以上不证明真实 provider、生产持久化、
-跨模块组装或真实终端全屏体验；这是行式 CLI，不是 TUI/Web 前端。
+delta 路径使用可控 SessionPort 验证。实际 SSE 网关、SQLite 和本地工具组合另见
+`native-agent-composition.test.js`；其传输是离线 fixture，不证明真实厂商兼容性。
+这是行式 CLI，不是 TUI/Web 前端。

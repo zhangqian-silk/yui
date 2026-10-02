@@ -82,7 +82,9 @@ export function createAgent(options: AgentOptions): Agent {
       const append = async (message: Message, step?: number, settlement?: ToolSettlement): Promise<void> => {
         const saved = snapshot(message);
         messages.push(saved);
-        await emit({ type: 'message_appended', step, message: saved, ...(settlement ? { settlement } : {}) });
+        const evidence = settlement && { started: settlement.started, status: settlement.status,
+          cancellationRequested: settlement.cancellationRequested, cleanup: settlement.cleanup };
+        await emit({ type: 'message_appended', step, message: saved, ...(evidence ? { settlement: evidence } : {}) });
       };
       await emit({ type: 'turn_started' });
       try {
@@ -168,9 +170,12 @@ export function createAgent(options: AgentOptions): Agent {
                     if (!call || identity.sessionId !== scope.sessionId || identity.turnId !== scope.turnId
                       || identity.step !== steps || identity.toolCallId !== call.id || identity.name !== call.name)
                       throw new Error('Executor intent identity does not match the next call');
-                    if (recordingFailed || signal.aborted) throw new Error('Turn no longer permits a new tool effect');
+                    if (recordingFailed) throw new Error('Turn no longer permits a new tool effect');
+                    if (signal.aborted) return;
                     await emit({ type: 'tool_started', step: steps, toolCallId: call.id, name: call.name });
-                    if (recordingFailed || signal.aborted) throw new Error('Required intent recording or cancellation stopped execution');
+                    if (recordingFailed) throw new Error('Required intent recording stopped execution');
+                    // The executor checks cancellation after this barrier. A
+                    // successful write followed by cancellation is not a failed write.
                   },
                   async afterExecute(settlement) {
                     await acceptSettlement(settlement);

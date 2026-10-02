@@ -1,6 +1,6 @@
 # 独立 Agent 执行内核与组合合同
 
-这是自有 TypeScript 类型和循环组成的独立 Agent，不调用真实模型、不依赖
+这是自有 TypeScript 类型和循环组成的独立 Agent，默认样例不调用真实模型、不依赖
 Yui 控制面。当前和后续模块开发均不需要考虑接入 Yui；模块的持续约束见
 [AGENTS.md](./AGENTS.md)。内置实现与外部实现走相同接口，依赖全部显式传入。
 它不是完整生产 Agent，也不提供强沙箱、动态插件装载或自动崩溃恢复。
@@ -52,7 +52,8 @@ const result = await agent.runTurn({
   组装成同一合同，也可只提供 `toolExecutor` 替换实现；两者必须且只能选一。
   内核先核对声明、调用身份与预算，再顺序调用；执行器负责授权、参数验证及
   实际效果结算，不得自行重放未知效果。`afterExecute` 在资源释放之后，
-  将完整 `ToolSettlement` 与配对消息一起写入必要的 `message_appended` 事件；
+  将 `ToolSettlement` 的执行/释放证据与配对消息一起写入必要的 `message_appended` 事件
+  （身份和 outcome 已由事件/消息承载，不重复存储）；
   cleanup 失败不覆盖已确认结果，但停止后续效果。`tools` 简写只表示调用方已授权
   这些预绑定工具，使用无资源 lease 和允许策略，不宣称额外限制 root/env。
   构造期固定工具声明，工具配置变更需重新组装。
@@ -78,7 +79,7 @@ const result = await agent.runTurn({
 提供可替换组合、final、调用/结果、取消和失败的可运行样例。新增能力实现
 无需改写循环或操作其他模块私有状态；资源由创建方关闭，内核不关闭注入实例。
 原骨架混合的 `onEvent` 出口已拆为 `recorder` 与 `observer`，不保留旧兼容入口。
-这里未引入持久化格式或修改 Yui 存储版本。
+独立会话格式见 [session/README.md](./session/README.md)，不修改 Yui 存储版本。
 
 ## 公共组合示例与模块所有权
 
@@ -104,9 +105,61 @@ task-77 提供 `ContextBuilder`，task-78 消费 `Agent/TurnInput/TurnResult`，
 task-79 消费 `AgentObserver/AgentEvent`。这些是独立实现的最小边界，不是
 内核对其他 Task 的运行时依赖。公共合同修改须明确生产者、消费者与可运行证据。
 
-`native-agent-composition.test.js` 已连接真实工具管理、编码工具、上下文和观测模块，
-证明读取→指纹编辑→本地检查→回答及必要记录/释放失败边界。模型仍为确定性 fixture，
-记录仍为内存 fixture；保存并恢复会话及完整 UI/网关组合须另行补齐，不能据此宣称完成。
+`native-agent-composition.test.js` 已连接七个实际模块：网关编解码/流处理、工具管理、
+编码工具、SQLite 会话、上下文、CLI、观测。证明读取→指纹编辑→本地检查→回答→
+保存→关闭重开→续聊；网络传输替换为确定性 SSE fixture，不调用真实厂商账号。
+因此这是实际模块的离线组合证据，不是真实模型规划能力或线上协议兼容性证据。
+
+### 共同组合入口
+
+`createExecutionOwner` 是交互入口与执行内核之间的薄连接：只持有当前执行句柄，
+每次提交从 store 读取完整历史并取得必要 recorder，再调用同一个 `Agent.runTurn`。
+不增加循环、调度器、后台重试或恢复状态。`settle(sessionId)` 返回当前/最近一次本地
+执行的结果、保存回执和原始失败；它不从历史重造旧 TurnResult。
+`close()` 取消并等待自己持有的执行，调用方随后关闭 store 和 observer。
+同一 Session 必须只有一个执行所有者；CAS 不等于跨进程执行租约。
+
+```ts
+const observations = createLocalObserver();
+const progress = createInteractionProgress();
+const store = createSessionStore(createSqliteSessionBackend(explicitAbsoluteFile));
+const provider = createModelGateway({
+  ...explicitModelOptions,
+  onObservation: connectModelObservations(observations, progress.observe),
+});
+const executor = createToolExecutor({ tools, environment, permission });
+const sessions = createExecutionOwner({
+  store, maxSteps: 8, observer: observations,
+  sessions: [{ id: knownSessionId, title: 'Explicitly selected session' }],
+  agent: recorder => createAgent({
+    provider, toolExecutor: executor, contextBuilder: createContextBuilder(),
+    recorder, observer: observations,
+  }),
+});
+// knownSessionId must already exist; sessions.create(title) creates a fresh ID.
+try {
+  const cli = await openCli({
+    sessions, input, output, initialSessionId: knownSessionId, progress,
+    diagnostics: createInteractionDiagnostics(observations),
+  });
+  await cli.done;
+} finally {
+  await sessions.close();
+  await store.close();
+  observations.close();
+}
+```
+
+上例变量均由调用方显式提供，不隐式读账号、工作目录或全局配置。根/env 已预绑定的
+工具必须匹配授予的环境；第四个 environment 参数不会重新限制其 root/env。
+会话列表是调用方显式选择的 catalog 加本进程新建项，标题只是显示标签；
+不是 SQLite 自动枚举或持久标题。重启时明确提供已知 ID，`/use ID` 仍可直接查询
+同一 store 内的确切会话。未结束记录不冒充活动句柄；未知效果和 cleanup-required
+拒绝新录制，不能通过 UI 自动恢复或重放。
+
+`connectModelObservations` 保留真实请求身份、用量、状态和累计 elapsedMs；
+不虚构 started/duration。`createInteractionProgress` 只转发实时增量，CLI 有界暂存，
+不将增量写入会话历史；显示可丢，最终消息来自必要记录。
 
 ## 终止与边界
 

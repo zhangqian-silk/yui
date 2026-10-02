@@ -34,7 +34,7 @@ test('session backends preserve restart history, receipts, CAS and bounded obser
       const recorder = await store.recorder('s1');
       const agent = createAgent({
         provider: { async complete() { return { kind: 'final', content: 'hello' }; } },
-        tools: [], onEvent: async e => { await recorder.record(e); },
+        tools: [], recorder,
       });
       assert.equal((await agent.runTurn({
         sessionId: 's1', turnId: 't1', input: 'hi', maxSteps: 1,
@@ -74,7 +74,7 @@ test('session backends preserve restart history, receipts, CAS and bounded obser
         assert.deepEqual(request.messages.map(m => m.content), ['hi', 'hello', 'again']);
         return { kind: 'final', content: 'continued after restart' };
       } },
-      tools: [], onEvent: async e => { await continuation.record(e); },
+      tools: [], recorder: continuation,
     });
     assert.equal((await agent.runTurn({ sessionId: 's1', turnId: 't3', input: 'again',
       history: loaded.messages, maxSteps: 1 })).reason, 'completed');
@@ -131,7 +131,7 @@ test('required recorder failure blocks new effects and preserves exact unsaved e
       provider: { async complete() { return { kind: 'tool_calls', content: '', calls: [call] }; } },
       tools: [{ definition: { name: 'write', description: '', inputSchema: {} },
         validate: () => null, async execute() { executions++; return { ok: true, content: 'done' }; } }],
-      onEvent: async e => { await recorder.record(e); },
+      recorder,
     });
     const result = await agent.runTurn({ sessionId: 's1', turnId: 't1', input: 'write', maxSteps: 1 });
     assert.equal(result.reason, 'error');
@@ -188,9 +188,9 @@ test('SQLite restart exposes an interrupted effect; stale writers and malformed 
     diagnosticDb.prepare("UPDATE sessions SET document = ? WHERE id = 's1'").run(good.slice(0, -5));
     await assert.rejects(reader.load('s1'), /malformed/);
     await reader.close();
-    diagnosticDb.pragma('user_version = 2');
-    assert.throws(() => createSqliteSessionBackend(filename), /version-1/);
-    assert.equal(diagnosticDb.pragma('user_version', { simple: true }), 2);
+    diagnosticDb.pragma('user_version = 99');
+    assert.throws(() => createSqliteSessionBackend(filename), /version-2/);
+    assert.equal(diagnosticDb.pragma('user_version', { simple: true }), 99);
   } finally {
     diagnosticDb?.close();
     await Promise.all(stores.map(store => store.close()));

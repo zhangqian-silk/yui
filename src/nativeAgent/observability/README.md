@@ -39,7 +39,8 @@ try {
 - 内核提供 `observeEvent(event, source?)`，保留源序号及会话、轮次、步骤和
   工具调用身份。不会变更源事件或回写执行状态。
 - 模型网关显式提供 `observeModel({ sessionId, turnId, step, requestId,
-  attempt, phase, status?, effect?, usage?, errorCode?, retryAfterMs? }, source?)`。
+  attempt, phase, status?, effect?, usage?, errorCode?, retryAfterMs?,
+  clientRequestId?, providerRequestId?, httpStatus?, elapsedMs? }, source?)`。
   `phase` 为 `started | ended | retry`，`status` 为
   `completed | error | cancelled | unknown`。记录重试提示不执行重试。
   `requestId + attempt` 必须来自生产者；本模块不生成模型调用身份。
@@ -69,7 +70,9 @@ try {
 缺失不替换成零。调用方应保持同一身份的事件有序。
 
 用量只白名单复制生产方实际提供的 `inputTokens`、`outputTokens` 和
-`cachedInputTokens`，保留缺失值，不估算、不求和、不把重复观察算作新账单。
+`cachedInputTokens`、`totalTokens`，保留缺失值，不估算、不求和、不把重复观察算作新账单。
+实际网关通过 `connectModelObservations` 接入；累计 `elapsedMs` 与观察间隔
+`durationMs` 分开，没有 started 证据时不虚构 duration。
 取消保留实际 `cancelled` 终态；已执行工具不会改称未执行；`effect: unknown`
 始终保留，不用于自动重放。
 

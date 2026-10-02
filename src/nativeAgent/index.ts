@@ -10,7 +10,11 @@ export { createModelGateway, createChatCompletionsAdapter, createModelObservatio
 export type { ModelGateway, ModelGatewayOptions, ModelTransport } from './model/index.js';
 export { openCli, createTextRenderer } from './interaction/index.js';
 export type { InteractionSessionPort, InteractionDiagnosticsPort } from './interaction/index.js';
-export { connectModelObservations, createInteractionDiagnostics } from './composition.js';
+export { connectModelObservations, createInteractionDiagnostics, createInteractionProgress } from './composition.js';
+export { createSessionStore, createMemorySessionBackend, createSqliteSessionBackend } from './session/index.js';
+export type { SessionStore, SessionRecording, SaveReceipt } from './session/index.js';
+export { createExecutionOwner } from './executionOwner.js';
+export type { ExecutionOwner, ExecutionEvidence } from './executionOwner.js';
 export { createMockProvider } from './mockProvider.js';
 export type { MockOptions } from './mockProvider.js';
 export { createTextTools } from './textTools.js';

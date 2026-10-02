@@ -1,6 +1,27 @@
 import { createModelObservationAdapter, type ModelObservation } from './model/index.js';
 import type { LocalObserver } from './observability/index.js';
-import type { InteractionDiagnosticsPort } from './interaction/index.js';
+import type { InteractionDiagnosticsPort, InteractionTextProgress } from './interaction/index.js';
+import type { Scope } from './contracts.js';
+
+/** Live display fanout with no retained body or durable cursor. UI consumers
+ * own bounded buffering; final messages always come from the Session store. */
+export function createInteractionProgress(): InteractionTextProgress & { observe(event: ModelObservation): void } {
+  const listeners = new Set<(progress: Scope & { text: string }) => void>();
+  return {
+    observe(event) {
+      if (event.data.type !== 'text_delta') return;
+      for (const listener of listeners) {
+        try { void Promise.resolve(listener({ sessionId: event.sessionId, turnId: event.turnId, text: event.data.text })).catch(() => {}); }
+        catch { /* Display cannot reject model execution. */ }
+      }
+    },
+    subscribe(listener) {
+      if (listeners.size >= 32) throw new Error('Progress subscriber limit reached');
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+  };
+}
 
 /** Connect actual model evidence; never synthesize starts, usage or AgentEvent sequences. */
 export function connectModelObservations(observer: LocalObserver, display?: (event: ModelObservation) => void) {

@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute, resolve } from 'node:path';
 import { existsSync, lstatSync } from 'node:fs';
 import type { SessionBackend, SessionDocument } from './contracts.js';
-import { encode, identity, inspectDocument, revision, SessionError, sessionLimits } from './format.js';
+import { encode, identity, inspectDocument, migrateSessionDocument, revision, SessionError, sessionLimits } from './format.js';
 
 export function digest(document: SessionDocument): string {
   return createHash('sha256').update(encode(document)).digest('hex');
@@ -77,9 +77,27 @@ export function createSqliteSessionBackend(filename: string): SessionBackend {
       if (id === 0 && version === 0 && objects.length === 0) {
         db.exec(schema);
         db.pragma(`application_id = ${applicationId}`);
-        db.pragma('user_version = 1');
-      } else if (id !== applicationId || version !== 1 || objects.length !== 1 || objects[0].sql !== schema) {
-        throw new SessionError('unsupported_format', 'Not a supported version-1 Session database; no migration applied');
+        db.pragma('user_version = 2');
+      } else if (id !== applicationId || ![1, 2].includes(version as number) || objects.length !== 1 || objects[0].sql !== schema) {
+        throw new SessionError('unsupported_format', 'Not a supported version-2 Session database; no migration applied');
+      } else if (version === 1) {
+        // Validate every original row and transform in the same transaction.
+        // A corrupt row rolls back the entire declared migration.
+        const update = db.prepare('UPDATE sessions SET document = ?, digest = ? WHERE id = ?');
+        const nextRow = db.prepare('SELECT id, revision, document, digest FROM sessions WHERE id > ? ORDER BY id LIMIT 1');
+        let row = db.prepare('SELECT id, revision, document, digest FROM sessions ORDER BY id LIMIT 1').get() as Row | undefined;
+        while (row) {
+          if (Buffer.byteLength(row.document) > sessionLimits.documentBytes) throw new Error('Oversized v1 document');
+          const original = JSON.parse(row.document);
+          if (row.id !== original.sessionId || row.revision !== original.events?.length
+            || row.digest !== createHash('sha256').update(JSON.stringify(original)).digest('hex')) {
+            throw new SessionError('corrupt_session', 'Version-1 identity, revision or digest mismatch');
+          }
+          const migrated = migrateSessionDocument(original);
+          update.run(encode(migrated), digest(migrated), row.id);
+          row = nextRow.get(row.id) as Row | undefined;
+        }
+        db.pragma('user_version = 2');
       }
     }).immediate();
   } catch (cause) {

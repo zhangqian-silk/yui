@@ -75,7 +75,7 @@ export function createSessionStore(backend: SessionBackend): SessionStore {
   const store: SessionStore = {
     async create(sessionId) {
       check(); identity(sessionId);
-      return save({ schemaVersion: 1, sessionId, events: [] }, null);
+      return save({ schemaVersion: 2, sessionId, events: [] }, null);
     },
     async load(sessionId) {
       check(); identity(sessionId);

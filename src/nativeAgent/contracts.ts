@@ -26,10 +26,12 @@ export interface Tool {
   execute(args: Json, scope: StepScope & { toolCallId: string }, signal: AbortSignal): Promise<ToolOutcome>;
 }
 export type EndReason = 'completed' | 'cancelled' | 'budget_exhausted' | 'error';
+/** Identity and outcome are already in the enclosing event and tool message. */
+export type ToolSettlementEvidence = Pick<ToolSettlement, 'started' | 'status' | 'cancellationRequested' | 'cleanup'>;
 export type EventData =
   | { type: 'turn_started' }
   | { type: 'step_started'; step: number }
-  | { type: 'message_appended'; step?: number; message: Message; settlement?: ToolSettlement }
+  | { type: 'message_appended'; step?: number; message: Message; settlement?: ToolSettlementEvidence }
   | { type: 'tool_started'; step: number; toolCallId: string; name: string }
   | { type: 'step_ended'; step: number }
   | { type: 'turn_ended'; reason: EndReason; errorCode?: string };

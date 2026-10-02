@@ -14,7 +14,7 @@ export interface InteractionSessionPort {
   cancel(scope: Scope): Promise<boolean>;
   /**
    * Ordered session-local cursor, stable across observers. Required facts must be
-   * recorded before notification. Page sizes <=20; each payload <=512 KiB.
+   * recorded before notification. Page sizes <=20; each event <=1 MiB.
    * cursor is the last returned record (or after for an empty page).
    * hasMore requires forward progress. activeTurnId is a current observation.
    * Missing/expired cursors must fail explicitly; never silently skip history.
@@ -35,6 +35,10 @@ export interface InteractionSessionPort {
 export interface InteractionRenderer {
   record(record: DisplayRecord): string;
   message(message: Message): string;
+}
+/** Optional live-only text. Never a history cursor or execution fact. */
+export interface InteractionTextProgress {
+  subscribe(listener: (progress: Scope & { text: string }) => void): () => void;
 }
 
 /**
