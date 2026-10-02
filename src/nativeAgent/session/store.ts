@@ -1,5 +1,5 @@
 import type { AgentEvent } from '../index.js';
-import type { SaveReceipt, SessionBackend, SessionDocument, SessionRecorder, SessionStore } from './contracts.js';
+import type { SaveReceipt, SessionBackend, SessionDocument, SessionRecording, SessionStore } from './contracts.js';
 import { digest } from './backends.js';
 import { copyEvent, identity, immutable, inspectDocument, revision, SessionError, sessionLimits } from './format.js';
 
@@ -123,7 +123,7 @@ export function createSessionStore(backend: SessionBackend): SessionStore {
       observers.add(observer);
       return () => { observer.active = false; observer.pending = undefined; observers.delete(observer); };
     },
-    async recorder(sessionId): Promise<SessionRecorder> {
+    async recorder(sessionId): Promise<SessionRecording> {
       const saved = await store.load(sessionId);
       if (saved.recovery.disposition !== 'ready') {
         throw new SessionError('recovery_required', 'Session requires explicit recovery; automatic replay is forbidden');
@@ -141,7 +141,6 @@ export function createSessionStore(backend: SessionBackend): SessionStore {
           try {
             if (event.sessionId !== sessionId) throw new SessionError('invalid_session', 'Recorder Session mismatch');
             lastReceipt = await store.append(event, lastReceipt.revision);
-            return lastReceipt;
           } catch (cause) {
             failure = cause instanceof Error ? cause : new Error(String(cause));
             throw failure;
