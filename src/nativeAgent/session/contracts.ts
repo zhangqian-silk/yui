@@ -60,8 +60,9 @@ export type SessionPage = SaveReceipt & {
   records: readonly { revision: number; event: AgentEvent }[];
   nextCursor: number | null;
 };
-export interface SessionRecorder {
-  record(event: AgentEvent): Promise<SaveReceipt>;
+/** A store-owned handle; structurally usable as the kernel's required recorder. */
+export interface SessionRecording {
+  record(event: AgentEvent): Promise<void>;
   readonly lastReceipt: SaveReceipt;
   readonly failure: Error | undefined;
 }
@@ -74,7 +75,7 @@ export interface SessionStore {
   /** Local handle notifications, no replay or cross-process delivery guarantee. */
   subscribe(sessionId: string, observer: (receipt: SaveReceipt) => void | Promise<void>): () => void;
   /** Only a ready Session can acquire a new sequential recorder. */
-  recorder(sessionId: string): Promise<SessionRecorder>;
+  recorder(sessionId: string): Promise<SessionRecording>;
   /** Store takes ownership of backend; caller must stop execution before close. */
   close(): Promise<void>;
 }

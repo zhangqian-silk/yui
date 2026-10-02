@@ -55,7 +55,9 @@ Session 内唯一；Session 的执行由调用方串行管理，存储不是执�
   不保证跨进程通知，不充当持久事件队列。每个订阅最多一个运行回调和一个
   合并后的待通知回执。回调拒绝/抛错会取消该订阅，不影响提交；挂起回调不会
   阻塞写入。调用方要恢复观察时重新 query/subscribe。最多 64 个订阅。
-- `recorder` 持有最后确认回执；一次失败后停止接受新事实。`SessionSaveError`
+- `recorder` 返回 `SessionRecording`，其 `record(event): Promise<void>` 与必要
+  记录消费合同结构兼容，保存确认保留在 `lastReceipt`，不定义另一套内核
+  SessionRecorder 类型。一次失败后停止接受新事实。`SessionSaveError`
   包含目标 Session、预期修订号、尝试写入的事件、原始 cause，且 effect 保守
   标为 unknown。错误不证明事务没有提交：先读取精确状态，禁止盲目重试。
   内核必须停止新增效果，并保留未保存的结果；模块不会自动补写内存结算。
@@ -125,3 +127,11 @@ Controller、Agent Host、真实模型或账号服务。
 
 这是存储模块独立验收；新的 required-recording 内核、上下文构建、UI 和遥测
 实现的组合验收尚未在此完成。生产内核必须遵守写前确认和失败结算合同。
+
+对其他模块：上下文构建只能使用不可变历史副本，裁剪不能写回会话事实。
+交互层可从分页事件投影历史，订阅只负责通知刷新；submit/cancel 和真正的
+activeTurnId 仍由执行所有者提供，未保存终态不等于进程仍在执行。观测层
+可以将已保存的 `document.events` 标为 replay，而不能标为 live/cached；
+本模块没有缓存读取。现有 AgentEvent 终态只含 errorCode，不含原始
+TurnResult.error.message，因此不会伪造完整原始 TurnResult。需要该原始
+结果时由生产者提供，未来持久化它须先确定明确的公共证据合同。
