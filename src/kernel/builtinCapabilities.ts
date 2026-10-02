@@ -34,6 +34,7 @@ import {
 import type { CapabilitySchema } from "./capabilitySchema.js";
 import type { InstanceHost } from "./instanceHost.js";
 import type { LeaderArchivePort } from "../task/leaderArchive.js";
+import type { AccessAssessment } from "./accessAssessment.js";
 
 const text: CapabilitySchema = { type: "string", minLength: 1 };
 const strings: CapabilitySchema = { type: "object", additionalProperties: { type: "string" } };
@@ -461,7 +462,33 @@ export function createBuiltinCapabilities(
       throw new Error(`Permission unavailable: ${permission}.`);
     }
     return { taskIds: [task.id], projectIds: task.projectBindings.map((binding) => binding.projectId) };
-  }, BUILTIN_CAPABILITIES);
+  }, BUILTIN_CAPABILITIES, (context, descriptor, input) => {
+    const caller = current(context);
+    const params = input as Record<string, unknown>;
+    const via = caller.scope === "global" ? "operator"
+      : caller.role === "leader" ? "leader-input" : "leader-message";
+    const forCaller = (access: AccessAssessment) =>
+      caller.scope === "user" && access.state === "requestable" ? { state: "hidden" as const } : access;
+    const pluginAccess = plugins.assess(context.targetId, descriptor, input, via);
+    if (pluginAccess) return forCaller(pluginAccess);
+    if (input === undefined) return undefined;
+    if (descriptor.name === "resource.local.read") {
+      return forCaller(resources.assessLocalAccess(context.targetId, params.resourceId as string, "read", via));
+    }
+    if (descriptor.name === "environment.prepare") {
+      const plan = params.plan as EnvironmentPlan;
+      return plan.kind === "local"
+        ? forCaller(resources.assessLocalAccess(context.targetId, plan.resourceId, plan.access, via))
+        : { state: "authorized" };
+    }
+    if (descriptor.name === "task.read" || descriptor.name === "config.read"
+      || descriptor.name === "resource.workspaces" || descriptor.name === "environment.list") {
+      return { state: "authorized" };
+    }
+    // Other domain operations retain their exact execution checks. Do not
+    // claim target authorization from a descriptor's coarse permission alone.
+    return undefined;
+  });
   const plugins = createPluginService(store, host, registry);
   return {
     registry,

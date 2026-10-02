@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { AccessAssessment } from "../kernel/accessAssessment.js";
 import { lstatSync, mkdirSync, mkdtempSync, realpathSync, rmdirSync, statSync } from "node:fs";
 import { join, relative, resolve, isAbsolute } from "node:path";
 import type { TaskStore } from "../storage/taskStore.js";
@@ -50,7 +51,7 @@ export function createProjectResources(store: TaskStore, now: () => Date = () =>
     if (!value) throw new Error(`Local resource not found: ${resourceId}.`);
     return value;
   };
-  const grantFor = (taskId: string, resourceId: string, access: "read" | "write", reservation?: string, reservedOnly = false) => {
+  const findGrant = (taskId: string, resourceId: string, access: "read" | "write", reservation?: string, reservedOnly = false) => {
     const target = resource(resourceId);
     const grant = store.listCapabilityGrants(taskId).find((candidate) => {
       // A Project scope is visibility, not an exhaustive Resource grant. A
@@ -62,6 +63,10 @@ export function createProjectResources(store: TaskStore, now: () => Date = () =>
       return checkGrant(candidate, { action: `resource.local.${access}`, params: { resourceId } }, now(),
         { skipUsesCheck: reservation !== undefined && candidate.useReservations.includes(reservation) }).allowed;
     });
+    return grant;
+  };
+  const grantFor = (taskId: string, resourceId: string, access: "read" | "write", reservation?: string, reservedOnly = false) => {
+    const grant = findGrant(taskId, resourceId, access, reservation, reservedOnly);
     if (!grant) throw new Error(`Resource grant unavailable: ${resourceId}/${access}.`);
     return grant;
   };
@@ -108,6 +113,25 @@ export function createProjectResources(store: TaskStore, now: () => Date = () =>
     });
   };
   return {
+    assessLocalAccess(taskId: string, resourceId: string, access: "read" | "write",
+      via: "leader-message" | "leader-input" | "operator", reservation?: string, reservedOnly = false): AccessAssessment {
+      const current = task(taskId);
+      // Only already-discoverable references may receive request guidance.
+      // Do not resolve an arbitrary global ID merely to confirm its existence.
+      const known = current.projectBindings.some(({ projectId }) =>
+        store.getProject(projectId)?.resourceRefs?.includes(resourceId))
+        || store.listCapabilityGrants(taskId).some(grant => grant.parameterBounds.resourceId?.includes(resourceId))
+        || store.listEnvironmentPreparations(taskId).some(value => value.resourceRefs.includes(resourceId))
+        || store.listEvents(taskId).some(event =>
+          event.type === "resource.local.registered" && event.payload.resourceId === resourceId);
+      if (!known) return { state: "hidden" };
+      if (findGrant(taskId, resourceId, access, reservation, reservedOnly)) return { state: "authorized" };
+      return { state: "requestable", request: {
+        action: `resource.local.${access}`, taskId, bounds: { resourceId: [resourceId] }, via,
+        explanation: "Request this exact resource and access through existing Message/InputRequest and Grant authority. A response alone is not a Grant."
+          + (reservedOnly ? " This environment's adoption reservation is no longer valid; inspect preparation/adoption before reusing it." : "")
+      } };
+    },
     resolveExecutionEnvironment,
     bindEnvironment(
       taskId: string, roleName: string, preparationId: string | null,

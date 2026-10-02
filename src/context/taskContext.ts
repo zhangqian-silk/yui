@@ -85,6 +85,10 @@ export function readTaskContext(
         store, total, returned: records.filter(record => record.ref.store === store).length
       })),
       discovery: `task context list ${taskId} --store <store>`,
+      commandDiscovery: {
+        help: "yui help", describe: "yui --json help",
+        note: "Help and completion share the current caller's offline command view. Follow that view for operation-specific discovery; execution always revalidates authority."
+      },
       detail: `task context inspect ${taskId} --store <store> --ref <refId> --digest <digest>`,
       attention,
       records, count,

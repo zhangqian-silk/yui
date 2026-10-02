@@ -18,12 +18,17 @@ import {
 } from "../../dist/context/sessionBootstrapManifest.js";
 import { createFileReleaseIdempotencyStore } from "../../dist/release/releaseIdempotencyStore.js";
 import { runUpdate } from "../../dist/cli/updateOrchestrator.js";
+import { sanitizedTestEnv } from "../helpers/sanitizedEnv.mjs";
 
-test("only current CLI and verification contracts are accepted", () => {
+test("only current CLI and verification contracts are accepted", t => {
   const cli = resolve("dist/cli.js");
-  const old = spawnSync(process.execPath, [cli, "task", "turn", "--help"], { encoding: "utf8" });
+  const home = mkdtempSync(join(tmpdir(), "yui-discovery-contract-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const env = sanitizedTestEnv({ YUI_HOME: home, YUI_SESSION_SCOPE: "task", YUI_TASK_ID: "task-1",
+    YUI_ROLE: "leader", YUI_NATIVE_SESSION_ID: "offline-help-only" });
+  const old = spawnSync(process.execPath, [cli, "task", "turn", "--help"], { encoding: "utf8", env });
   assert.notEqual(old.status, 0, "The retired Task turn alias must not dispatch.");
-  assert.match(execFileSync(process.execPath, [cli, "task", "run", "--help"], { encoding: "utf8" }), /AgentRun/);
+  assert.match(execFileSync(process.execPath, [cli, "task", "run", "--help"], { encoding: "utf8", env }), /AgentRun/);
   assert.match(renderCompletion("bash"), /complete -F _yui yui/);
   assert.doesNotMatch(renderCompletion("bash", "yui-dev"), /yui-dev|_yui_dev/,
     "An obsolete second argument cannot select another completion identity.");
