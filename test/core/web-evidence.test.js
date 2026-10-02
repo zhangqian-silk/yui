@@ -11,6 +11,7 @@ import { createWebTaskSurface } from "../../dist/web/webTaskSurface.js";
 import { createYuiWebServer } from "../../dist/web/webServer.js";
 import { WEB_ASSETS } from "../../dist/web/assets/assetManifest.js";
 import { RECORDS_SCRIPT } from "../../dist/web/assets/client/records.js";
+import { API_SCRIPT } from "../../dist/web/assets/client/api.js";
 
 test("Web source reads expose exact message control facts and the original report without writing", async () => {
   const element = (spec, attrs, ...children) => ({
@@ -98,6 +99,17 @@ test("authenticated Web evidence reads keep a fixed Task file and cannot mutate 
   assert.equal((await fetch(base + "/api/dashboard/sessions")).status, 403);
   assert.equal((await fetch(base + "/api/dashboard/sessions?view=compact", { headers })).status, 400,
     "do not restore the retired view selector");
+  const description = "完整报告🙂".repeat(3000);
+  store.saveTask(createTask("task-3", "Long original", new Date(), { description }));
+  const snapshot = await surface.read("task-3");
+  const ref = snapshot.records.find(entry => entry.ref.store === "task").ref;
+  const client = vm.createContext({
+    document: { querySelector: () => ({ content: "fixture-token" }) }, URLSearchParams,
+    fetch: (path, options) => fetch(base + path, options)
+  });
+  vm.runInContext(API_SCRIPT.replace(/^export /gm, "") + "\nglobalThis.clientApi = api;", client);
+  const original = await client.clientApi.inspect("task-3", ref);
+  assert.equal(original.value?.description, description, "Web must collect all exact original pages before parsing");
   // The shipped UI is JavaScript carried by TypeScript strings; tsc alone
   // cannot catch a syntax error that would make every Task inaccessible.
   for (const [path, asset] of Object.entries(WEB_ASSETS).filter(([path]) => path.endsWith(".js"))) {

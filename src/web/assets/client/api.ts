@@ -63,10 +63,26 @@ export const api = {
   },
   context: function (taskId) { return requestJson(task(taskId) + "/context"); },
   observation: function (taskId) { return requestJson(task(taskId), { signal: AbortSignal.timeout(1500) }); },
-  inspect: function (taskId, ref) {
+  inspect: async function (taskId, ref) {
     const query = new URLSearchParams({ store: ref.store, ref: ref.refId });
     if (ref.digest) query.set("digest", ref.digest);
-    return requestJson(task(taskId) + "/inspect?" + query);
+    let result = await requestJson(task(taskId) + "/inspect?" + query);
+    if (!result.contentPage) return result;
+    const source = result.contentPage.source;
+    const digest = result.contentPage.digest;
+    let text = "";
+    while (true) {
+      const page = result.contentPage;
+      if (!page || page.source !== source || page.digest !== digest || page.encoding !== "json"
+        || page.offset !== text.length || typeof page.text !== "string" || !page.text.length) {
+        throw new Error("Original read changed or returned an invalid page; refresh its Context reference.");
+      }
+      text += page.text;
+      if (page.complete) return JSON.parse(text);
+      if (!page.nextCursor) throw new Error("Original read is incomplete; refresh its Context reference.");
+      query.set("cursor", page.nextCursor);
+      result = await requestJson(task(taskId) + "/inspect?" + query);
+    }
   },
   artifacts: function (taskId) { return requestJson(task(taskId) + "/artifacts"); },
   artifact: function (taskId, path, commit) {
