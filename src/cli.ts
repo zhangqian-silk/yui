@@ -21,6 +21,8 @@ import {
   renderAgentConfigurationResolutionNotice
 } from "./cli/agentConfigurationPicker.js";
 import { describeCommandTree, findCommandNode } from "./cli/commandCatalog.js";
+import { discoveryCommandTree } from "./cli/commandDiscovery.js";
+import { contextRecordReader } from "./context/taskContext.js";
 import { renderCompletion } from "./cli/completion.js";
 import { runCompletionWizard } from "./cli/completionWizard.js";
 import { resolveCompletionCandidates } from "./cli/dynamicCompletion.js";
@@ -34,6 +36,7 @@ import { routeInvocation } from "./cli/invocationRouter.js";
 import { operatorOfflineCommand, taskDiagnosticTarget } from "./cli/managedDiagnostics.js";
 import { assertConfigurationAuthority, assertTaskInvocationScope } from "./cli/invocationAuthority.js";
 import { requireManagedGlobalCaller, ManagedRuntimeDriftError } from "./runtime/managedCaller.js";
+import { hasManagedIdentity } from "./runtime/managedIdentity.js";
 import { resolveOperatorWizardArguments } from "./cli/operatorWizard.js";
 import {
   resolveGlobalRoleAgentConfigurationArguments,
@@ -319,11 +322,14 @@ function failureContext() {
 
 export async function main(): Promise<void> {
   const home = resolveYuiHome(process.env);
+  const discovery = discoveryCommandTree(process.env);
   invocationHome = home;
   const routedForFence = args.length === 0 ? undefined : routeInvocation(args);
   const managedInvocation = process.env.YUI_SESSION_SCOPE === "task"
     || process.env.YUI_SESSION_SCOPE === "global";
   const homeFreeInvocation = args.length === 0
+    || (args[0] === "config" && (args[1] === "describe"
+      || (args[1] === "completion" && args[2] === "candidates")))
     || (args[0] === "version" && args.length === 1)
     || routedForFence?.kind === "help"
     || routedForFence?.kind === "path-error"
@@ -361,7 +367,7 @@ export async function main(): Promise<void> {
     return;
   }
   if (args.length === 0) {
-    emit(renderCommandHelp((await import("./cli/commandCatalog.js")).ROOT_COMMAND, VERSION));
+    emit(renderCommandHelp(discovery, VERSION), false, jsonOutput ? describeCommandTree(discovery) : undefined);
     return;
   }
   if (args[0] === "version" && args.length === 1) {
@@ -369,9 +375,9 @@ export async function main(): Promise<void> {
     return;
   }
 
-  const invocation = routeInvocation(args);
+  const invocation = routeInvocation(args, discovery);
   if (invocation.kind === "help") {
-    emit(renderCommandHelp(invocation.node, VERSION), true);
+    emit(renderCommandHelp(invocation.node, VERSION), true, jsonOutput ? describeCommandTree(invocation.node) : undefined);
     return;
   }
   if (invocation.kind === "path-error") {
@@ -388,14 +394,24 @@ export async function main(): Promise<void> {
   }
 
   if (args[0] === "version") throw usageError("Version usage: yui version");
+  // Offline discovery is not an execution credential. Target selectors enter
+  // the original authenticated path lazily, only when stored data is needed.
+  if (args[0] === "config" && args[1] === "completion" && args[2] === "candidates") {
+    await completionCommand(home, invocation.node);
+    return;
+  }
+  if (args[0] === "config" && args[1] === "describe") {
+    const target = findCommandNode(args[2] === undefined ? ["config"] : ["config", args[2]], discovery);
+    if (args.length > 3 || !target) throw usageError("Config describe usage: yui config describe [visible-domain].");
+    emit(renderCommandHelp(target, VERSION), false, describeCommandTree(target));
+    return;
+  }
   const {
     contract: taskFinalReviewContract,
     verifiedStore
   } = await preflightManagedTaskControlPlane();
   assertTaskInvocationScope(args, process.env);
-  if (["config", "resources"].includes(args[0] ?? "") && (managedInvocation
-    || process.env.YUI_ROLE !== undefined || process.env.YUI_AGENT_ID !== undefined
-    || process.env.YUI_NATIVE_SESSION_ID !== undefined)) {
+  if (["config", "resources"].includes(args[0] ?? "") && hasManagedIdentity(process.env)) {
     const ownedStore = verifiedStore === undefined ? openCurrentTaskStore(home) : undefined;
     try { assertConfigurationAuthority(args, verifiedStore ?? ownedStore!, process.env); }
     finally { ownedStore?.close(); }
@@ -445,19 +461,6 @@ export async function main(): Promise<void> {
   }
   if (args[0] === "config" && args[1] === "completion") {
     await completionCommand(home, invocation.node);
-    return;
-  }
-  if (args[0] === "config" && args[1] === "describe") {
-    const describeNode = findCommandNode(["config", "describe"]);
-    if (describeNode === undefined) throw new Error("Config describe command is missing from the catalog.");
-    const domain = args[2];
-    const domains = describeNode.argumentValues[0] ?? [];
-    if (args.length > 3 || (domain !== undefined && !domains.includes(domain))) {
-      throw usageError(`Config describe usage: ${describeNode.usage.join(" | ")}.`);
-    }
-    const target = findCommandNode(domain === undefined ? ["config"] : ["config", domain]);
-    if (target === undefined) throw new Error(`Config domain is missing from the catalog: ${domain}.`);
-    emit(renderCommandHelp(target, VERSION), false, describeCommandTree(target));
     return;
   }
 
@@ -2429,6 +2432,9 @@ async function preflightManagedTaskControlPlane(): Promise<ManagedTaskControlPla
     if (process.env.YUI_SESSION_SCOPE === "global") {
       return await preflightManagedGlobalControlPlane();
     }
+    if (hasManagedIdentity(process.env)) {
+      throw usageError("Managed Agent identity is incomplete; refusing to infer user authority.");
+    }
     if (taskFinalReviewInvocation.request !== undefined) {
       throw new Error(
         "Task final-review contract may only be established from the Task Leader's managed Session."
@@ -3233,10 +3239,23 @@ async function completionCommand(
         "Completion candidates usage: yui config completion candidates <prefix> -- <words...>"
       );
     }
+    let selection: SelectionPorts | undefined;
     const candidates = await resolveCompletionCandidates({
       current: prefix,
       words: args.slice(separator + 1),
-      ports: completionSelectionPorts(home)
+      root: discoveryCommandTree(process.env),
+      ports: { call: async (method, params) => {
+        if (!selection) {
+          assertCliHomeReleaseFence({
+            home, packageRoot: fileURLToPath(new URL("../", import.meta.url)),
+            entryPath: fileURLToPath(import.meta.url), args
+          });
+          await preflightManagedTaskControlPlane();
+          assertTaskInvocationScope(args.slice(separator + 1), process.env);
+          selection = completionSelectionPorts(home);
+        }
+        return selection.call(method, params);
+      } }
     });
     process.stdout.write(candidates.length === 0 ? "" : `${candidates.join("\n")}\n`);
     return;
@@ -3653,10 +3672,34 @@ function completionSelectionPorts(home: string): SelectionPorts {
     return { call: () => [] };
   }
   const store = readableStore(home);
-  return selectionPorts(
+  const ports = selectionPorts(
     store,
     new AgentConfigurationCatalogService(home, { environment: process.env })
   );
+  if (process.env.YUI_SESSION_SCOPE !== "task") return ports;
+  const taskId = process.env.YUI_TASK_ID!;
+  const readable = contextRecordReader(store, taskId, process.env);
+  const families: Record<string, string> = {
+    "task.list": "task", "project.list": "project-policy", "task.role.list": "role",
+    "task.work.list": "work-item", "task.message.list": "task-message", "task.input.list": "input-request",
+    "task.turn.list": "run", "task.decision.list": "task-decision", "task.milestone.list": "task-milestone",
+    "task.event.list": "task-event", "task.change-set.list": "change-set",
+    "task.integration.list": "integration-attempt"
+  };
+  return { call: async (method, params) => {
+    if (params.taskId !== undefined && params.taskId !== taskId) return [];
+    const family = families[method];
+    if (!family) return []; // Completion never needs broader authority than Context.
+    const scopedParams = method === "task.input.list" ? { ...params, taskId } : params;
+    const values = await ports.call(method, scopedParams);
+    if (!Array.isArray(values)) return [];
+    return values.filter(value => {
+      const id = String(value.id ?? value.name ?? "");
+      if (method === "task.list" && id !== taskId) return false;
+      if (method === "project.list" && !store.getTask(taskId)?.projectBindings.some(binding => binding.projectId === id)) return false;
+      return readable(family, id);
+    });
+  } };
 }
 
 function emit(output: string, literal = false, data?: unknown): void {

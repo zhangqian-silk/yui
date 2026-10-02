@@ -10,6 +10,7 @@ import type { TrustedCallContext } from "../kernel/callAuthority.js";
 import type { InstanceHost, ImplementationRef } from "../kernel/instanceHost.js";
 import type { CapabilityRegistry, CapabilityDescriptor, CapabilityImplementation } from "../kernel/capabilityRegistry.js";
 import { CapabilityExecutionError } from "../kernel/capabilityRegistry.js";
+import type { AccessAssessment } from "../kernel/accessAssessment.js";
 import { validatePluginId, type PluginIntent } from "./pluginIntent.js";
 import { packagePath, readPluginPackage, type PluginPackage, type PluginValidation } from "./pluginPackage.js";
 import { interpretPlugin } from "./pluginInterpreter.js";
@@ -105,26 +106,43 @@ export function createPluginService(store: TaskStore, host: InstanceHost, regist
     }));
   const refFor = (taskId: string, pkg: PluginPackage): ImplementationRef =>
     ({ id: keyFor(taskId, pkg.manifest.id), generation: randomUUID() });
+  const executionParams = (taskId: string, preparationId: string, pkg: PluginPackage, phase: string) => ({
+    pluginId: pkg.manifest.id, digest: pkg.digest,
+    environmentRef: `${taskId}/${preparationId}`, trust: "trusted-local", phase
+  });
+  const executionGrant = (taskId: string, params: ReturnType<typeof executionParams>, path: string,
+    plannedUses: ReadonlyMap<string, number> = new Map()) =>
+    store.listCapabilityGrants(taskId).find(candidate =>
+      Object.entries(params).every(([key, value]) => candidate.parameterBounds[key]?.includes(value))
+      && (candidate.scope.taskId === undefined || candidate.scope.taskId === taskId)
+      && candidate.scope.projectIds === undefined && candidate.scope.repositories === undefined
+      && candidate.scope.packages === undefined
+      && (candidate.scope.homePath === undefined || candidate.scope.homePath === path)
+      && checkGrant({ ...candidate, usesUsed: candidate.usesUsed + (plannedUses.get(candidate.id) ?? 0) },
+        { action: "plugin.execute", params, irreversibility: "irreversible" }, new Date()).allowed);
+  const environmentAccess = (taskId: string, preparationId: string,
+    via: "leader-message" | "leader-input" | "operator"): AccessAssessment => {
+    const prepared = store.getEnvironmentPreparation(taskId, preparationId);
+    if (!prepared) throw new Error("Plugin environment preparation is missing.");
+    for (const resourceId of prepared.resourceRefs) {
+      const access = resources.assessLocalAccess(taskId, resourceId, prepared.access, via, prepared.id, true);
+      if (access.state !== "authorized") return access;
+    }
+    return { state: "authorized" };
+  };
 
   /** Each execution consumes one use. A live call's bound closure carries its
    * admission; it is never resumed from a durable reservation or sent to code.
    * Subsequent actions still check current authority, not cached permission. */
   const execution = (taskId: string, preparationId: string, pkg: PluginPackage, phase: string) => {
-    const params = { pluginId: pkg.manifest.id, digest: pkg.digest,
-      environmentRef: `${taskId}/${preparationId}`, trust: "trusted-local", phase };
+    const params = executionParams(taskId, preparationId, pkg, phase);
     // This grants the capability to run code without OS effect confinement;
     // it does not claim that every invocation actually has irreversible effects.
     const request = { action: "plugin.execute", params, irreversibility: "irreversible" as const };
     const reservation = phase === "call" ? undefined : `plugin/${randomUUID()}`;
     const grantId = store.transaction((tx) => {
       const env = environment(taskId, preparationId);
-      const grant = tx.listCapabilityGrants(taskId).find((candidate) =>
-        Object.entries(params).every(([key, value]) => candidate.parameterBounds[key]?.includes(value))
-        && (candidate.scope.taskId === undefined || candidate.scope.taskId === taskId)
-        && candidate.scope.projectIds === undefined && candidate.scope.repositories === undefined
-        && candidate.scope.packages === undefined
-        && (candidate.scope.homePath === undefined || candidate.scope.homePath === env.directory!.path)
-        && checkGrant(candidate, request, new Date()).allowed);
+      const grant = executionGrant(taskId, params, env.directory!.path);
       if (!grant) throw new Error(`Explicit trusted-local execution grant unavailable (${phase}); pluginId=${params.pluginId}, digest=${params.digest}, environmentRef=${params.environmentRef}.`);
       tx.saveCapabilityGrant(taskId, recordGrantUse(grant, new Date(), reservation));
       return grant.id;
@@ -171,6 +189,70 @@ export function createPluginService(store: TaskStore, host: InstanceHost, regist
   };
 
   return {
+    assess(taskId: string, descriptor: CapabilityDescriptor, input: unknown,
+      via: "leader-message" | "leader-input" | "operator"): AccessAssessment | undefined {
+      let validationId: string | undefined;
+      let phase: string;
+      let pkg: PluginPackage;
+      let preparationId: string;
+      let path: string;
+      if (descriptor.name === "plugin.validate") {
+        if (input === undefined) return undefined;
+        const params = input as { preparationId: string; directory: string };
+        const prepared = store.getEnvironmentPreparation(taskId, params.preparationId);
+        if (!prepared?.directory) throw new Error("Plugin validation needs an existing directory preparation.");
+        const access = environmentAccess(taskId, prepared.id, via);
+        if (access.state !== "authorized") return access;
+        const directory = resolve(prepared.directory.path, params.directory);
+        packagePath(relative(prepared.directory.path, directory));
+        // Capture data only. Never run a build, prepare an environment or
+        // initialize a Provider just to assess the source's exact grant.
+        pkg = readPluginPackage(directory, false);
+        preparationId = prepared.id;
+        path = prepared.directory.path;
+        phase = "validate";
+      } else if (descriptor.name === "plugin.activate") {
+        if (input === undefined) return undefined;
+        validationId = (input as { validationId: string }).validationId;
+        phase = "activate";
+      } else {
+        const selected = active.get(descriptor.provider.id);
+        if (!selected || selected.ref.generation !== descriptor.provider.generation) return undefined;
+        validationId = selected.validationId;
+        phase = "call";
+      }
+      // Inspect captured authorization parameters, not Host availability,
+      // filesystem readiness or author code. Execution owns those checks.
+      if (validationId !== undefined) {
+        const report = store.getPluginValidation(taskId, validationId);
+        if (!report) throw new Error("Plugin validation not found in this Task.");
+        pkg = report.package;
+        preparationId = report.preparationId;
+        path = report.environment.path;
+      }
+      if (phase !== "validate") {
+        const access = environmentAccess(taskId, preparationId!, via);
+        if (access.state !== "authorized") return access;
+      }
+      if (pkg!.manifest.kind === "declarative") return { state: "authorized" };
+      const params = executionParams(taskId, preparationId!, pkg!, phase);
+      const phases = phase === "validate" && pkg!.manifest.build ? ["build", "validate"] : [phase];
+      // Simulate the same ordered selection as execution, without persisting
+      // uses. A broad Grant may fund multiple phases only if it has capacity.
+      const plannedUses = new Map<string, number>();
+      const missing = phases.filter(value => {
+        const grant = executionGrant(taskId, { ...params, phase: value }, path!, plannedUses);
+        if (!grant) return true;
+        plannedUses.set(grant.id, (plannedUses.get(grant.id) ?? 0) + 1);
+        return false;
+      });
+      if (!missing.length) return { state: "authorized" };
+      return { state: "requestable", request: {
+        action: "plugin.execute", taskId,
+        bounds: { ...Object.fromEntries(Object.entries(params).map(([key, value]) => [key, [value]])), phase: missing },
+        via, explanation: "Trusted-local author code needs an exact, irreversible execution Grant. Use the existing authorization source and Grant path; discovery consumes no uses."
+      } };
+    },
     current: inspect,
     list(taskId: string) {
       return store.transaction(() => store.listPluginIntents(taskId)

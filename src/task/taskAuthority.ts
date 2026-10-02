@@ -1,8 +1,8 @@
 import type { TaskCompletedBy } from "../task/task.js";
+import { hasManagedIdentity } from "../runtime/managedIdentity.js";
 import { usageError } from "../errors/cliError.js";
 import type { DurableJobCaller } from "../controller/jobControl.js";
 import {
-  MANAGED_NATIVE_SESSION_ENV,
   currentManagedRuntime,
   type ManagedCallerStore
 } from "../runtime/managedCaller.js";
@@ -30,11 +30,7 @@ export function taskActor(
     if (env.YUI_ROLE === "operator") return "operator";
     throw usageError("A managed global Session may perform this action only as Operator.");
   }
-  if (
-    env.YUI_ROLE !== undefined
-    || env.YUI_AGENT_ID !== undefined
-    || env[MANAGED_NATIVE_SESSION_ENV] !== undefined
-  ) {
+  if (hasManagedIdentity(env)) {
     throw usageError("Managed Agent identity is incomplete; refusing to infer user authority.");
   }
   return "user";
@@ -121,11 +117,7 @@ export function projectActor(environment: NodeJS.ProcessEnv | undefined): Projec
     if (env.YUI_ROLE === "operator") return "operator";
     throw usageError("A managed global Session may manage Project Knowledge only as Operator.");
   }
-  if (
-    env.YUI_ROLE !== undefined
-    || env.YUI_AGENT_ID !== undefined
-    || env[MANAGED_NATIVE_SESSION_ENV] !== undefined
-  ) {
+  if (hasManagedIdentity(env)) {
     throw usageError("Managed Agent identity is incomplete; refusing to infer user authority.");
   }
   return "user";
@@ -167,11 +159,7 @@ export function resolveJobCaller(
       nativeSessionId: env.CODEX_THREAD_ID ?? env.YUI_NATIVE_SESSION_ID
     };
   }
-  if (
-    env.YUI_ROLE !== undefined
-    || env.YUI_AGENT_ID !== undefined
-    || env[MANAGED_NATIVE_SESSION_ENV] !== undefined
-  ) {
+  if (hasManagedIdentity(env)) {
     throw usageError("Managed Agent identity is incomplete; refusing to infer user authority.");
   }
   return { scope: "user" };

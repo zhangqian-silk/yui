@@ -7,13 +7,14 @@ import { promisify } from "node:util";
 import test from "node:test";
 import { createConfiguredAgent } from "../../dist/agent/agent.js";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
+import { sanitizedTestEnv } from "../helpers/sanitizedEnv.mjs";
 
 const execute = promisify(execFile);
 const cli = resolve("dist/cli.js");
 
 test("start is idempotent and leaves Codex stopped when no active Role needs it", async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-local-start-"));
-  const environment = { ...process.env, YUI_HOME: home, HOME: home };
+  const environment = sanitizedTestEnv({ YUI_HOME: home, HOME: home });
   const run = async (...args) => execute(process.execPath, [cli, ...args], {
     env: environment, timeout: 20_000
   });

@@ -315,6 +315,8 @@ import {
   hasRoleLaunchContextOptions,
   validateConfiguredRoleSkills
 } from "./roleSkillValidation.js";
+import { requireManagedGlobalCaller } from "../runtime/managedCaller.js";
+import { hasManagedIdentity } from "../runtime/managedIdentity.js";
 import { nonLeaderActivationIdentity, runTaskActivationCommand } from "./taskActivationCommands.js";
 import {
   assertTaskOpen,
@@ -1315,6 +1317,15 @@ export function submitOperatorMessage(
   intent?: TaskSubmissionIntent,
   submissionKey?: string
 ): string {
+  // Public terminals and ordinary unmanaged Agents retain the submission
+  // route. Managed callers cannot turn a Task Assignment into Operator input.
+  const callerEnvironment = options.environment ?? {};
+  if (hasManagedIdentity(callerEnvironment)) {
+    if (callerEnvironment.YUI_SESSION_SCOPE !== "global" || callerEnvironment.YUI_ROLE !== "operator") {
+      throw usageError("Operator submission requires a public caller or the current global Operator.");
+    }
+    requireManagedGlobalCaller(store, callerEnvironment);
+  }
   const now = clock(options);
   const effectiveIntent = normalizeSubmissionIntent(intent);
   const result = store.transaction((tx) => {

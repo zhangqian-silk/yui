@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
@@ -8,7 +8,8 @@ import { activateTask, completeTask, createTask } from "../../dist/task/task.js"
 import { createGlobalRole, createRole, createRoleAgentBinding } from "../../dist/role/role.js";
 import { createRoleSessionSet, recordRoleAgentSession, bindTaskRoleProviderRuntime } from "../../dist/executor/agentExecutor.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
-import { runTaskCommand } from "../../dist/commands/taskCommands.js";
+import { runTaskCommand, submitOperatorMessage } from "../../dist/commands/taskCommands.js";
+import { SurfaceContributions } from "../../dist/surface/surfaceContributions.js";
 import { checkGrant, recordGrantUse } from "../../dist/grant/capabilityGrant.js";
 import { createTaskMessage } from "../../dist/message/message.js";
 import { archiveLeaderTask } from "../../dist/task/leaderArchive.js";
@@ -20,6 +21,8 @@ import { runReleaseWorkflow } from "../../dist/release/releaseWorkflowEngine.js"
 import { createBuiltinCapabilities } from "../../dist/kernel/builtinCapabilities.js";
 import { InstanceHost } from "../../dist/kernel/instanceHost.js";
 import { createDurableJobControl } from "../../dist/controller/jobControl.js";
+import { taskActor, projectActor, resolveJobCaller } from "../../dist/task/taskAuthority.js";
+import { assertConfigurationAuthority } from "../../dist/cli/invocationAuthority.js";
 
 const now = new Date("2026-09-30T00:00:00Z");
 function fixture(t) {
@@ -67,10 +70,18 @@ test("Leader grants require original input, exact bounded resources and current 
     sourceMessage: source.id, purpose: source.body });
   assert.equal(registered.kind, "value", JSON.stringify(registered));
   const resource = registered.value;
+  const request = { name: "resource.local.read", input: { taskId: "task-1", resourceId: resource.id } };
+  const discover = () => capabilities.registry.describe(caller, request);
+  assert.equal(discover().value.access.state, "requestable");
+  assert.equal((await capabilities.registry.call(caller, request)).kind, "denied");
+  assert.equal(capabilities.registry.describe(caller, { ...request,
+    input: { taskId: "task-1", resourceId: "resource-unknown" } }).kind, "unavailable");
+  assert.equal(capabilities.registry.describe(caller, { ...request,
+    input: { taskId: "task-2", resourceId: resource.id } }).kind, "denied");
   const args = ["grant", "issue", "task-1", "--action", "resource.local.read",
     "--scope-home", path, "--param", `resourceId=${resource.id}`, "--source-message", source.id,
     "--purpose", source.body, "--request-id", "read-once", "--max-uses", "1",
-    "--expires-at", "2026-10-01T00:00:00Z"];
+    "--expires-at", new Date(Date.now() + 60_000).toISOString()];
   const replace = (name, value) => args.map((arg, index) => args[index - 1] === name ? value : arg);
   assert.throws(() => f.command(args, {}), /delivery Leader/);
   assert.throws(() => f.command(args, { ...f.environment, YUI_NATIVE_SESSION_ID: "old" }), /delivery Leader/);
@@ -83,12 +94,19 @@ test("Leader grants require original input, exact bounded resources and current 
   const grant = f.command(args).data;
   assert.equal(grant.authorizationSource.messageId, source.id);
   assert.equal(grant.scope.taskId, "task-1");
+  assert.equal(discover().value.access.state, "authorized");
+  assert.equal(f.store.getCapabilityGrant("task-1", grant.id).usesUsed, 0);
+  const write = capabilities.registry.describe(caller, { name: "environment.prepare",
+    input: { taskId: "task-1", plan: { kind: "local", resourceId: resource.id, access: "write" } } });
+  assert.equal(write.value.access.state, "requestable");
   assert.equal(checkGrant(grant, { action: "resource.local.write", params: { resourceId: resource.id } }, now).allowed, false);
   f.store.saveCapabilityGrant("task-1", recordGrantUse(grant, now));
   assert.equal(f.command(args).data.usesUsed, 1);
   assert.equal(f.store.listCapabilityGrants("task-1").length, 1);
   assert.throws(() => f.command(replace("--max-uses", "2")), /different authorization/);
   f.command(["grant", "revoke", "task-1", grant.id]);
+  assert.equal(discover().value.access.state, "requestable");
+  assert.equal((await capabilities.registry.call(caller, request)).kind, "denied");
   assert.equal(checkGrant(f.store.getCapabilityGrant("task-1", grant.id),
     { action: "resource.local.read", params: { resourceId: resource.id } }, now).reason, "grant-revoked");
   const binding = createRoleAgentBinding({ id: "codex", adapterId: "codex" });
@@ -103,6 +121,22 @@ test("Leader grants require original input, exact bounded resources and current 
   const operatorGrant = f.command(["grant", "issue", "task-1", "--action", "post-verify"], opEnvironment).data;
   assert.throws(() => f.command(["grant", "revoke", "task-1", operatorGrant.id]), /Operator/);
   f.command(["grant", "revoke", "task-1", operatorGrant.id], opEnvironment);
+  const before = f.store.listMessages("task-1").length;
+  assert.throws(() => submitOperatorMessage("forged user authority", "task-1", f.store,
+    { environment: f.environment }), /public caller or.*Operator/);
+  assert.throws(() => submitOperatorMessage("partial identity", "task-1", f.store,
+    { environment: { YUI_ROLE: "operator" } }), /public caller or.*Operator/);
+  assert.throws(() => submitOperatorMessage("manifest-only identity", "task-1", f.store,
+    { environment: { YUI_SESSION_MANIFEST: "/managed/session.json" } }), /public caller or.*Operator/);
+  assert.equal(f.store.listMessages("task-1").length, before);
+  submitOperatorMessage("ordinary public request", "task-1", f.store, { environment: {} }, "record");
+  assert.equal(f.store.listMessages("task-1").length, before + 1);
+  for (const environment of [{ YUI_SESSION_MANIFEST: "/managed/session.json" }, { YUI_TASK_ID: "task-1" }]) {
+    assert.throws(() => taskActor(environment, "task-1"), /incomplete/);
+    assert.throws(() => projectActor(environment), /incomplete/);
+    assert.throws(() => resolveJobCaller(environment, "task-1"), /incomplete/);
+    assert.throws(() => assertConfigurationAuthority(["config", "system", "set"], f.store, environment), /require/);
+  }
 });
 
 test("Leader release grants bind the workflow source rather than a claimed step parameter", async t => {
@@ -202,19 +236,46 @@ test("Leader plugin grants are consumed by real isolated plugin validation, acti
   const prepared = await call("environment.prepare", { taskId: "task-1", plan: { kind: "scratch" } });
   await call("environment.adopt", { taskId: "task-1", preparationId: prepared.id });
   const created = await call("plugin.create", { preparationId: prepared.id, id: "demo", kind: "trusted-local" });
+  const manifestPath = join(created.directory, "plugin.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  writeFileSync(manifestPath, JSON.stringify({ ...manifest, build: ["build.mjs"] }));
+  writeFileSync(join(created.directory, "build.mjs"), "export {};\n");
   const scan = await call("plugin.scan", { preparationId: prepared.id, directory: created.directory });
+  const validationRequest = { name: "plugin.validate",
+    input: { preparationId: prepared.id, directory: created.directory } };
+  const missing = capabilities.registry.describe(caller, validationRequest);
+  assert.equal(missing.value.access.state, "requestable");
+  assert.equal(missing.value.access.request.bounds.digest[0], scan.digest);
+  assert.deepEqual(missing.value.access.request.bounds.phase, ["build", "validate"]);
   assert.notEqual((await raw("plugin.validate", { preparationId: prepared.id, directory: created.directory })).kind, "value");
   const source = f.message("Execute the isolated demo plugin for this Task.");
-  const grant = f.command(["grant", "issue", "task-1", "--source-message", source.id, "--purpose", source.body,
-    "--request-id", "plugin-grant", "--action", "plugin.execute", "--param", "pluginId=demo",
+  const issue = maxUses => f.command(["grant", "issue", "task-1", "--source-message", source.id, "--purpose", source.body,
+    "--request-id", `plugin-grant-${maxUses}`, "--action", "plugin.execute", "--param", "pluginId=demo",
     "--param", `digest=${scan.digest}`, "--param", `environmentRef=task-1/${prepared.id}`,
-    "--param", "trust=trusted-local", "--param", "phase=validate,activate,call",
-    "--expires-at", new Date(Date.now() + 60_000).toISOString(), "--max-uses", "3",
+    "--param", "trust=trusted-local", "--param", "phase=build,validate,activate,call",
+    "--expires-at", new Date(Date.now() + 60_000).toISOString(), "--max-uses", String(maxUses),
     "--irreversibility-ceiling", "irreversible"]).data;
+  const limited = issue(1);
+  const insufficient = capabilities.registry.describe(caller, validationRequest);
+  assert.equal(insufficient.value.access.state, "requestable");
+  assert.deepEqual(insufficient.value.access.request.bounds.phase, ["validate"]);
+  assert.equal((await raw("plugin.validate", validationRequest.input)).kind, "denied");
+  assert.equal(f.store.getCapabilityGrant("task-1", limited.id).usesUsed, 0);
+  f.command(["grant", "revoke", "task-1", limited.id]);
+  const grant = issue(4);
+  assert.equal(capabilities.registry.describe(caller, validationRequest).value.access.state, "authorized");
+  assert.equal(f.store.getCapabilityGrant("task-1", grant.id).usesUsed, 0);
   const validation = await call("plugin.validate", { preparationId: prepared.id, directory: created.directory });
   await call("plugin.activate", { validationId: validation.id });
   assert.deepEqual(await call("demo.echo", { text: "fixture" }), { text: "fixture" });
-  assert.equal(f.store.getCapabilityGrant("task-1", grant.id).usesUsed, 3);
+  assert.equal(f.store.getCapabilityGrant("task-1", grant.id).usesUsed, 4);
+  const discovered = capabilities.registry.describe(caller, { name: "demo.echo", input: { text: "read-only query" } });
+  assert.equal(discovered.value.access.state, "requestable");
+  assert.equal(discovered.value.access.request.bounds.phase[0], "call");
+  const surfaces = new SurfaceContributions(capabilities.registry);
+  assert.equal(surfaces.listCommands(caller).find(entry => entry.capability === "demo.echo").access.state, "requestable");
+  assert.ok(!surfaces.listPanels(caller).some(entry => entry.capability === "demo.echo"));
+  assert.equal(f.store.getCapabilityGrant("task-1", grant.id).usesUsed, 4, "discovery must not consume grants");
   assert.notEqual((await raw("demo.echo", { text: "exhausted" })).kind, "value");
   await call("plugin.disable", { id: "demo" });
 });

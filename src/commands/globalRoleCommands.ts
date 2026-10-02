@@ -1,4 +1,5 @@
 import { roleNotFound, usageError } from "../errors/cliError.js";
+import { hasManagedIdentity } from "../runtime/managedIdentity.js";
 import { boundedDocument, recordPage, readOptions, readDigest, messageReceipt } from "../output/boundedRead.js";
 import { controlProviderRetry, providerRetryProjection, renderProviderRetry } from "../runtime/providerRetry.js";
 import { settleGlobalRetryInput } from "../message/globalProviderRetry.js";
@@ -179,7 +180,7 @@ function assertGlobalInputAuthority(store: GlobalRoleStore, options: GlobalRoleC
       || (env.CODEX_THREAD_ID ?? env.YUI_NATIVE_SESSION_ID) !== session.nativeSessionId) {
       throw usageError("Global input mutation requires the current native caller Session.");
     }
-  } else if (env.YUI_ROLE !== undefined || env.YUI_AGENT_ID !== undefined || env.YUI_NATIVE_SESSION_ID !== undefined) {
+  } else if (hasManagedIdentity(env)) {
     throw usageError("Incomplete managed identity cannot acquire user authority.");
   }
 }

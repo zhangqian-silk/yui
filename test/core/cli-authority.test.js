@@ -93,6 +93,13 @@ test("public CLI fences replaced Operators, Home configuration and cross-Task re
     now, { workItemId: "work-item-1", effective: session(worker, "worker-current").effective }));
   const env = environment(worker, { scope: "task", taskId: "task-1" }, "worker-current");
   const config = ["config", "resources", "set", "resources-gc-auto-quarantine", "true"];
+  for (const partial of [{ YUI_SESSION_MANIFEST: current.YUI_SESSION_MANIFEST }, { YUI_TASK_ID: "task-1" }]) {
+    const incomplete = { ...base, ...partial };
+    assert.equal((await cli(["task", "cancel", "task-1"], incomplete)).ok, false);
+    assert.equal(store.getTask("task-1").status, "active");
+    assert.equal((await cli(config, incomplete)).ok, false);
+    assert.equal((await cli(["help"], incomplete)).ok, true, "Offline help is not execution authority.");
+  }
   assert.equal((await cli(config, env)).ok, false, "Worker cannot change Home policy.");
   assert.notEqual(store.getConfig().resourcesGcAutoQuarantine, true);
   assert.equal((await cli(["config", "resources", "show"], env)).ok, true);

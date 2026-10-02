@@ -3,6 +3,7 @@ import type {
   CapabilityDescriptor, CapabilityRegistry, CapabilityResult
 } from "../kernel/capabilityRegistry.js";
 import type { ImplementationRef } from "../kernel/instanceHost.js";
+import type { AccessAssessment } from "../kernel/accessAssessment.js";
 
 /** Presentation data only. No entrypoint, HTML, script, activation or instance
  * ownership: T09 owns extension packaging and activation. */
@@ -24,6 +25,7 @@ export type SurfaceCommandContribution = SurfaceContributionRef & Readonly<{
   help: string;
   effect: CapabilityDescriptor["effect"];
   unavailable?: string;
+  access?: AccessAssessment;
 }>;
 export type SurfacePanelContribution = SurfaceContributionRef & Readonly<{
   panel: SurfacePanelDescriptor;
@@ -41,12 +43,14 @@ export class SurfaceContributions {
     return this.registry.search(context).map((entry) => ({
       ...reference(entry), name: entry.surfaces?.cli?.name ?? entry.name,
       help: entry.surfaces?.cli?.help ?? entry.summary, effect: entry.effect,
+      ...(entry.access === undefined ? {} : { access: entry.access }),
       ...(entry.unavailable === undefined ? {} : { unavailable: entry.unavailable })
     }));
   }
 
   listPanels(context: TrustedCallContext): readonly SurfacePanelContribution[] {
     return this.registry.search(context).flatMap((entry) => {
+      if (entry.access?.state === "requestable") return [];
       const panel: SurfacePanelDescriptor | undefined = entry.surfaces?.panel
         ?? (entry.effect === "query" ? { kind: "data", title: entry.summary, renderer: "json" } : undefined);
       return panel ? [{

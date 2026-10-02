@@ -6,16 +6,25 @@ export type Invocation =
   | Readonly<{ kind: "path-error"; typedPath: string; helpNode: CommandNode }>
   | Readonly<{ kind: "incomplete"; typedPath: string; helpNode: CommandNode }>;
 
-export function routeInvocation(args: readonly string[]): Invocation {
+export function routeInvocation(args: readonly string[], discoveryRoot = ROOT_COMMAND): Invocation {
   if (args.length === 0) return { kind: "execute", node: ROOT_COMMAND };
-  if (args[0] === "help") return resolveHelpPath(args.slice(1));
-  return resolveExecutionPath(args);
+  if (args[0] === "help") return resolveHelpPath(args.slice(1), discoveryRoot);
+  const result = resolveExecutionPath(args);
+  if (result.kind === "execute" || result.kind === "help") return result;
+  const path = result.helpNode.path.slice(1);
+  let helpNode = discoveryRoot;
+  for (const segment of path) {
+    const child = findChild(helpNode, segment);
+    if (!child) break;
+    helpNode = child;
+  }
+  return { ...result, helpNode };
 }
 
-function resolveHelpPath(path: readonly string[]): Invocation {
-  if (path.length === 0) return { kind: "help", node: ROOT_COMMAND };
-  let node = ROOT_COMMAND;
-  let nearestGroup = ROOT_COMMAND;
+function resolveHelpPath(path: readonly string[], root: CommandNode): Invocation {
+  if (path.length === 0) return { kind: "help", node: root };
+  let node = root;
+  let nearestGroup = root;
   for (const segment of path) {
     const child = findChild(node, segment);
     if (child === undefined || child.hidden) {

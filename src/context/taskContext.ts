@@ -4,6 +4,7 @@ import { taskNotFound, usageError } from "../errors/cliError.js";
 import type { TaskEvent } from "../event/taskEvent.js";
 import { expandTaskMessageResult, type TaskMessage } from "../message/message.js";
 import { resolveManagedTaskReader } from "../runtime/managedCaller.js";
+import { hasManagedIdentity } from "../runtime/managedIdentity.js";
 import { providerRetryProjection } from "../runtime/providerRetry.js";
 import type { ContextRecordFamily, ContextRecordQuery } from "../storage/contextRecords.js";
 import type { TaskStore } from "../storage/taskStore.js";
@@ -85,6 +86,10 @@ export function readTaskContext(
         store, total, returned: records.filter(record => record.ref.store === store).length
       })),
       discovery: `task context list ${taskId} --store <store>`,
+      commandDiscovery: {
+        help: "yui help", describe: "yui --json help",
+        note: "Help and completion share the current caller's offline command view. Follow that view for operation-specific discovery; execution always revalidates authority."
+      },
       detail: `task context inspect ${taskId} --store <store> --ref <refId> --digest <digest>`,
       attention,
       records, count,
@@ -306,8 +311,7 @@ export function resolveContextReader(store: TaskStore, environment: NodeJS.Proce
     throw usageError("Only Operator may read Task context from a global Session.");
   }
   if (caller === undefined && environment.YUI_SESSION_SCOPE === undefined
-    && (environment.YUI_ROLE !== undefined || environment.YUI_NATIVE_SESSION_ID !== undefined
-      || environment.YUI_TASK_ID !== undefined || environment.YUI_AGENT_ID !== undefined)) {
+    && hasManagedIdentity(environment)) {
     throw usageError("Incomplete managed Context caller identity.");
   }
   if (environment.YUI_SESSION_SCOPE !== undefined && !["task", "global"].includes(environment.YUI_SESSION_SCOPE)) {

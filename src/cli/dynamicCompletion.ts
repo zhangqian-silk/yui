@@ -7,6 +7,7 @@ export type DynamicCompletionInput = Readonly<{
   words: readonly string[];
   current: string;
   ports: SelectionPorts;
+  root?: CommandNode;
 }>;
 
 export async function resolveCompletionCandidates(
@@ -15,7 +16,14 @@ export async function resolveCompletionCandidates(
   const words = input.words[0] === "yui"
     ? input.words.slice(1)
     : [...input.words];
-  const { node, consumed } = resolveCommand(words);
+  const root = input.root ?? ROOT_COMMAND;
+  if (words[0] === "help") {
+    const { node, consumed } = resolveCommand(words.slice(1), root);
+    return consumed === words.length - 1 ? prefix(visibleChildren(node).map(child => child.name), input.current) : [];
+  }
+  const { node, consumed } = resolveCommand(words, root);
+  if (node.kind === "group" && consumed < words.length) return [];
+  if (input.current.startsWith("-")) return prefix(node.options, input.current);
   if (consumed === words.length && node.children.length > 0) {
     return prefix(visibleChildren(node).map((child) => child.name), input.current);
   }
@@ -24,10 +32,6 @@ export async function resolveCompletionCandidates(
   if (previous !== undefined && Object.hasOwn(node.optionValues, previous)) {
     return prefix(node.optionValues[previous] ?? [], input.current);
   }
-  if (input.current.startsWith("-")) {
-    return prefix(node.options, input.current);
-  }
-
   const argumentPosition = words.length;
   const policy = findInteractionPolicy(node);
   const selector = policy?.selectors.find((candidate) => selectorApplies(
@@ -53,8 +57,8 @@ function selectorApplies(
   return selector.argumentIndex === argumentPosition;
 }
 
-function resolveCommand(words: readonly string[]): { node: CommandNode; consumed: number } {
-  let node = ROOT_COMMAND;
+function resolveCommand(words: readonly string[], root: CommandNode): { node: CommandNode; consumed: number } {
+  let node = root;
   let consumed = 0;
   while (consumed < words.length && node.kind !== "leaf") {
     const child = findChild(node, words[consumed] ?? "");

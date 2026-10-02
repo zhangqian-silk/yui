@@ -2,6 +2,7 @@ import type { TrustedCallContext } from "./callAuthority.js";
 import { InstanceHost, type ImplementationRef } from "./instanceHost.js";
 import { capabilitySchemaError, checkCapabilitySchema, type CapabilitySchema } from "./capabilitySchema.js";
 import { checkSurfaceDescriptors, type SurfaceDescriptors } from "../surface/surfaceContributions.js";
+import type { AccessAssessment } from "./accessAssessment.js";
 
 export type CapabilityEffect = "query" | "local-mutation" | "external-operation";
 export type CapabilityScope = Readonly<{ kind: "global" } | { kind: "project" | "task"; id: string }>;
@@ -59,6 +60,7 @@ export type CapabilityImplementation = Readonly<{
   invoke(name: string, input: unknown, invocation: CapabilityInvocation): unknown | Promise<unknown>;
 }>;
 export type CapabilityVisibility = Readonly<{ taskIds: readonly string[]; projectIds: readonly string[] }>;
+export type CapabilityDiscovery = CapabilityDescriptor & Readonly<{ access?: AccessAssessment }>;
 /** Trusted owners may accompany a failed operation with its current read model.
  * This is diagnostic data, not an operation receipt or an authority token. */
 export class CapabilityExecutionError extends Error {
@@ -82,7 +84,8 @@ export class CapabilityRegistry {
   constructor(
     private readonly host: InstanceHost,
     private readonly authorize: Authorize,
-    builtins: readonly CapabilityDescriptor[] = []
+    builtins: readonly CapabilityDescriptor[] = [],
+    private readonly assess?: (context: TrustedCallContext, descriptor: CapabilityDescriptor, input: unknown) => AccessAssessment | undefined
   ) {
     this.#publish(builtins, true);
     builtins.forEach((entry) => this.#coreProviders.add(entry.provider.id));
@@ -101,7 +104,7 @@ export class CapabilityRegistry {
     const prepared = this.#prepare(descriptors, false);
     if (!prepared.length) throw new Error("Plugin must contribute capabilities.");
     const available = [
-      ...this.search(context).filter((entry) => entry.provider.id !== prepared[0].provider.id),
+      ...this.#authorized(context).filter((entry) => entry.provider.id !== prepared[0].provider.id),
       ...prepared
     ];
     const check = (entry: CapabilityDescriptor, path: ReadonlySet<CapabilityDescriptor>): void => {
@@ -109,7 +112,8 @@ export class CapabilityRegistry {
       if (path.has(entry)) throw new Error("Required capability dependency cycle.");
       for (const dependency of entry.required ?? []) {
         const matches = available.filter((candidate) => candidate.name === dependency.name
-          && candidate.contractVersion === dependency.contractVersion && candidate.unavailable === undefined);
+          && candidate.contractVersion === dependency.contractVersion && candidate.unavailable === undefined
+          && (prepared.includes(candidate) || this.host.isAvailable(candidate.provider)));
         if (matches.length !== 1) throw new Error(`Required capability is missing or ambiguous: ${dependency.name}.`);
         check(matches[0], new Set([...path, entry]));
       }
@@ -121,30 +125,36 @@ export class CapabilityRegistry {
     this.#descriptors = this.#descriptors.filter((entry) => entry.provider.id !== providerId);
   }
 
-  search(context: TrustedCallContext, query = ""): readonly CapabilityDescriptor[] {
+  #authorized(context: TrustedCallContext): readonly CapabilityDescriptor[] {
     const visibility = this.authorize(context);
-    const authorized = this.#descriptors.filter((entry) => visible(entry.scope, visibility))
+    return this.#descriptors.filter((entry) => visible(entry.scope, visibility))
       .filter((entry) => {
         try { this.authorize(context, entry); return true; } catch { return false; }
       });
-    return authorized.filter((entry) => `${entry.name} ${entry.summary}`.toLowerCase().includes(query.toLowerCase()))
-      .map((entry) => {
-        const unavailable = this.#unavailable(entry, authorized, new Set());
-        return unavailable === undefined ? entry : Object.freeze({ ...entry, unavailable });
-      });
   }
 
-  describe(context: TrustedCallContext, request: Omit<CapabilityCall, "input">): CapabilityResult {
+  search(context: TrustedCallContext, query = ""): readonly CapabilityDiscovery[] {
+    // Descriptor discovery must not acquire or inspect runtime Providers. These
+    // are templates: without input, no exact-target authorization is asserted.
+    return this.#authorized(context).filter((entry) => `${entry.name} ${entry.summary}`.toLowerCase().includes(query.toLowerCase()))
+      .map(entry => {
+        const access = this.assess?.(context, entry, undefined);
+        return access ? { ...entry, access } : entry;
+      }).filter(entry => !("access" in entry) || entry.access?.state !== "hidden");
+  }
+
+  #select(context: TrustedCallContext, request: Omit<CapabilityCall, "input">, execution: boolean): CapabilityResult {
     try {
-      const candidates = this.search(context).filter((entry) => entry.name === request.name
+      const authorized = this.#authorized(context);
+      const candidates = authorized.filter((entry) => entry.name === request.name
         && (request.contractVersion === undefined || request.contractVersion === entry.contractVersion)
         && (request.providerId === undefined || request.providerId === entry.provider.id));
       if (!candidates.length) return result("unavailable", "No authorized compatible Provider is available.");
-      const available = candidates.filter((entry) => entry.unavailable === undefined);
-      if (!available.length) return {
-        ...result("unavailable", candidates.map((entry) => `${entry.provider.id}: ${entry.unavailable}`).join("; ")),
-        candidates
-      };
+      const available = execution ? candidates.filter(entry => this.#unavailable(entry, authorized, new Set()) === undefined) : candidates;
+      if (!available.length) {
+        return { ...result("unavailable", candidates.map(entry =>
+          `${entry.provider.id}: ${this.#unavailable(entry, authorized, new Set())}`).join("; ")), candidates };
+      }
       if (available.length > 1) return { ...result("ambiguous", "Select an explicit Provider and contract version."), candidates };
       const selected = available[0];
       return {
@@ -153,6 +163,25 @@ export class CapabilityRegistry {
       };
     } catch {
       return result("denied", "Current call authority is unavailable.");
+    }
+  }
+
+  describe(context: TrustedCallContext, request: Omit<CapabilityCall, "input"> & { input?: unknown }): CapabilityResult {
+    const selected = this.#select(context, request, false);
+    if (selected.kind !== "value") return selected;
+    const descriptor = selected.value as CapabilityDescriptor;
+    if (Object.hasOwn(request, "input")) {
+      const error = capabilitySchemaError(descriptor.inputSchema, request.input);
+      if (error) return result("invalid", error);
+      try { this.authorize(context, descriptor, request.input); }
+      catch { return result("denied", "Current call authority is unavailable."); }
+    }
+    try {
+      const access = this.assess?.(context, descriptor, request.input);
+      if (access?.state === "hidden") return result("unavailable", "No authorized compatible Provider is available.");
+      return access ? { ...selected, value: { ...descriptor, access } } : selected;
+    } catch (error) {
+      return result("failed", error instanceof Error ? error.message : "Authorization assessment failed.");
     }
   }
 
@@ -166,7 +195,11 @@ export class CapabilityRegistry {
     try { request = deepFreeze(structuredClone(request)); } catch {
       return result("invalid", "Capability request must be cloneable data.");
     }
-    const resolved = this.describe(context, request);
+    // Execution selects independently of discovery assessment and rechecks the
+    // exact input below. A requestable descriptor never grants admission.
+    const resolved = this.#select(context, {
+      name: request.name, contractVersion: request.contractVersion, providerId: request.providerId
+    }, true);
     if (resolved.kind !== "value") return resolved;
     const descriptor = resolved.value as CapabilityDescriptor;
     const origin = { provider: descriptor.provider, selection: resolved.selection };
@@ -183,6 +216,14 @@ export class CapabilityRegistry {
     }
     try { this.authorize(context, descriptor, request.input); } catch {
       return { ...result("denied", "Current call authority was revoked."), ...origin };
+    }
+    try {
+      const access = this.assess?.(context, descriptor, request.input);
+      if (access && access.state !== "authorized") {
+        return { ...result("denied", "Exact target authorization is required."), ...origin };
+      }
+    } catch (error) {
+      return { ...result("failed", error instanceof Error ? error.message : "Authorization assessment failed."), ...origin };
     }
     const operations: CapabilityOperation[] = [];
     let effect: CapabilityResult["effect"] = "none";

@@ -160,10 +160,16 @@ try {
   if (!runCli(cli, ["help"], environment).includes("Yui")) {
     throw new Error("Installed CLI help did not render.");
   }
-  const scopedHelp = runCli(cli, ["help", "task", "role"], environment);
+  const offlineLeader = { ...environment, YUI_SESSION_SCOPE: "task", YUI_TASK_ID: "task-fixture",
+    YUI_ROLE: "leader", YUI_NATIVE_SESSION_ID: "offline-help-only" };
+  const scopedHelp = runCli(cli, ["help", "task", "role"], offlineLeader);
   if (!scopedHelp.includes("yui task role <command>") || !scopedHelp.includes("add")) {
     throw new Error("Installed CLI nested help did not render the restored command catalog.");
   }
+  const publicTree = JSON.parse(runCli(cli, ["--json", "help", "task"], environment)).data;
+  assert.ok(!publicTree.children.some(child => child.path === "task role"),
+    "Public discovery must not expose internal role coordination.");
+  assert.equal(spawnSync(cli, ["help", "task", "role"], { env: environment, encoding: "utf8" }).status, 2);
   const completion = runCli(
     cli,
     ["config", "completion", "candidates", "ta", "--"],
