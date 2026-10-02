@@ -1,6 +1,11 @@
 export type * from './contracts.js';
 export { createAgent } from './agent.js';
-export { createToolExecutor } from './toolExecutor.js';
+export { createToolExecutor } from './toolManager/index.js';
+export type { ToolSettlement, ToolBatchRequest, ToolBatchResult, ToolEnvironment, ToolPermission, EnvironmentTool } from './toolManager/index.js';
+export { createContextBuilder, ContextBuildError, jsonByteEstimator } from './context/index.js';
+export type { ContextInput, ContextReport, ContextSource, ContextMaterial, ContextEstimator, ContextCompressor } from './context/index.js';
+export { createLocalObserver } from './observability/index.js';
+export type { LocalObserver } from './observability/index.js';
 export { createMockProvider } from './mockProvider.js';
 export type { MockOptions } from './mockProvider.js';
 export { createTextTools } from './textTools.js';

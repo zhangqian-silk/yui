@@ -53,8 +53,8 @@ export interface LocalObserver {
   observeSnapshot(result: TurnResult, source?: ObservationSource): boolean;
   observeModel(model: ModelObservation, source?: ObservationSource): boolean;
   observeStream(stream: StepScope & { requestId?: string; text: string }, source?: ObservationSource): boolean;
-  /** Safe for the existing required onEvent port: no exporter is awaited. */
-  onEvent(event: AgentEvent): Promise<void>;
+  /** Optional synchronous AgentObserver port; exporters are never awaited. */
+  observe(event: AgentEvent): void;
   query(query?: ObservationQuery): {
     records: readonly Observation[]; nextCursor: number; throughCursor: number;
     evicted: number; gap: boolean; closed: boolean;
@@ -218,7 +218,7 @@ export function createLocalObserver(options: { capacity?: number; clock?: () => 
         ...(stream.requestId ? { requestId: label(stream.requestId) } : {}),
       }), source);
     },
-    async onEvent(event) { observer.observeEvent(event); },
+    observe(event) { observer.observeEvent(event); },
     query(query = {}) {
       const after = integer(query.after ?? 0);
       const limit = integer(query.limit ?? 100, 1000);

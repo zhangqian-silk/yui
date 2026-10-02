@@ -3,7 +3,13 @@ import { mkdtemp, readFile, writeFile, rm, symlink, readdir } from 'node:fs/prom
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { createAgent, createMockProvider, createTextTools } from '../../dist/nativeAgent/index.js';
+import { createAgent, createMockProvider, createTextTools, createToolExecutor, createContextBuilder } from '../../dist/nativeAgent/index.js';
+
+// Replacement builders retain the actual request/report contract.
+const projection = project => ({ async build(input, signal) {
+  const messages = project(input.request);
+  return createContextBuilder().build({ ...input, request: { ...input.request, messages } }, signal);
+} });
 
 const scope = { sessionId: 'session-1', turnId: 'turn-1' };
 const turn = (extra = {}) => ({ ...scope, input: 'Copy input.txt to output.txt', maxSteps: 3, ...extra });
@@ -176,21 +182,23 @@ test('explicit composition replaces context and execution without changing autho
   const contexts = [];
   const executed = [];
   const result = await createAgent({
-    toolExecutor: {
-      definitions: [{ name: 'effect', description: 'fixture', inputSchema: {} }],
-      async execute(call, stepScope, signal) {
-        assert.ok(Object.isFrozen(call.arguments));
-        assert.ok(Object.isFrozen(stepScope));
+    toolExecutor: createToolExecutor({
+      tools: [effectTool(async (args, identity, signal) => {
+        assert.ok(Object.isFrozen(args));
+        const { toolCallId, name, ...stepScope } = identity;
+        assert.ok(Object.isFrozen(identity));
         assert.equal(signal.aborted, false);
-        executed.push({ call, stepScope });
+        executed.push({ stepScope });
         return { ok: true, content: 'settled' };
-      },
-    },
-    contextBuilder: { async build(request) {
+      })],
+      environment: { async acquire() { return { value: {}, async release() {} }; } },
+      permission: { async check() { return { allowed: true }; } },
+    }),
+    contextBuilder: projection(request => {
       contexts.push(request);
       assert.ok(Object.isFrozen(request.messages));
       return [{ role: 'system', content: `context-${request.step}` }, ...request.messages];
-    } },
+    }),
     provider: { async complete(request) {
       assert.equal(request.messages[0].content, `context-${request.step}`);
       return request.step === 1 ? batch(call('one')) : { kind: 'final', content: 'done' };
@@ -212,10 +220,8 @@ test('explicit composition replaces context and execution without changing autho
 
 test('unsettled or unknown effects cannot resume; projection cannot bypass canonical call identity', async () => {
   let effects = 0;
-  const options = { toolExecutor: {
-    definitions: [{ name: 'effect', description: 'fixture', inputSchema: {} }],
-    async execute() { effects++; throw new Error('uncertain'); },
-  }, provider: { async complete() { return batch(call('old'), call('skipped')); } } };
+  const options = { tools: [effectTool(async () => { effects++; throw new Error('uncertain'); })],
+    provider: { async complete() { return batch(call('old'), call('skipped')); } } };
   const first = await createAgent(options).runTurn(turn());
   assert.equal(first.error.code, 'tool_exception');
   assert.equal(effects, 1);
@@ -231,7 +237,7 @@ test('unsettled or unknown effects cannot resume; projection cannot bypass canon
     { role: 'tool', toolCallId: 'old', name: 'effect', outcome: { ok: true, content: 'confirmed' } },
   ];
   const duplicate = await createAgent({ ...options,
-    contextBuilder: { async build() { return [{ role: 'user', content: 'compressed' }]; } },
+    contextBuilder: projection(() => [{ role: 'user', content: 'compressed' }]),
   }).runTurn(turn({ history: settled }));
   assert.equal(duplicate.error.code, 'provider_protocol');
   assert.equal(effects, 1);
@@ -245,15 +251,15 @@ test('context failure/cancellation gates providers; observers are nonblocking no
     providers++;
     return { kind: 'final', content: 'done' };
   } } };
-  const invalid = await createAgent({ ...base, contextBuilder: { async build() {
+  const invalid = await createAgent({ ...base, contextBuilder: projection(() => {
     return [{ role: 'assistant', content: '', toolCalls: [call('dangling')] }];
-  } } }).runTurn(turn());
+  }) }).runTurn(turn());
   assert.equal(invalid.error.code, 'context_error');
   assert.equal(providers, 0);
-  const cancelled = await createAgent({ ...base, contextBuilder: { async build(request) {
+  const cancelled = await createAgent({ ...base, contextBuilder: projection(request => {
     controller.abort();
     return request.messages;
-  } } }).runTurn(turn({ signal: controller.signal }));
+  }) }).runTurn(turn({ signal: controller.signal }));
   assert.equal(cancelled.reason, 'cancelled');
   assert.equal(providers, 0);
   const observer = await createAgent({ ...base, observer: {
@@ -277,14 +283,16 @@ test('model budget applies after context projection; missing or conflicting capa
   } };
   const largeHistory = Array.from({ length: 6 }, () => ({ role: 'user', content: 'x'.repeat(200_000) }));
   const projected = await createAgent({ provider, tools: [],
-    contextBuilder: { async build(request) {
+    contextBuilder: projection(request => {
       assert.equal(request.messages.length, 7);
       return [{ role: 'user', content: 'summary' }];
-    } },
+    }),
   }).runTurn(turn({ history: largeHistory }));
   assert.equal(projected.reason, 'completed');
-  const unprojected = await createAgent({ provider, tools: [] }).runTurn(turn({ history: largeHistory }));
-  assert.equal(unprojected.error.code, 'context_limit');
+  const unprojected = await createAgent({ provider, tools: [] }).runTurn(turn({
+    history: largeHistory.map(m => ({ ...m, role: 'system' })),
+  }));
+  assert.equal(unprojected.error.code, 'context_error');
   assert.throws(() => createAgent({ tools: [] }), /provider/);
   assert.throws(() => createAgent({ provider }), /exactly one/);
   assert.throws(() => createAgent({ provider, tools: [], toolExecutor: { definitions: [], execute() {} } }), /exactly one/);

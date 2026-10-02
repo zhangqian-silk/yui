@@ -1,5 +1,6 @@
-import type { Agent, AgentEvent, AgentOptions, EndReason, EventData, Message, RecordingStatus, ToolOutcome, TurnResult } from './contracts.js';
-import { createToolExecutor } from './toolExecutor.js';
+import type { Agent, AgentEvent, AgentOptions, EndReason, EventData, Message, ModelRequest, RecordingStatus, ToolOutcome, TurnResult } from './contracts.js';
+import { createToolExecutor, type ToolSettlement } from './toolManager/index.js';
+import { createContextBuilder, ContextBuildError } from './context/index.js';
 import { AgentFault, history, limits, response, size, snapshot, validOutcome } from './validation.js';
 
 const failed = (code: string, message: string, effect: 'none' | 'unknown' = 'none'): ToolOutcome =>
@@ -10,15 +11,22 @@ export function createAgent(options: AgentOptions): Agent {
     || (options.tools === undefined) === (options.toolExecutor === undefined)) {
     throw new Error('A provider and exactly one of tools or toolExecutor are required');
   }
-  const executor = options.toolExecutor ?? createToolExecutor(options.tools!);
+  // tools is an explicitly preauthorized, prebound capability set. This lease
+  // owns no resources and does not pretend to narrow those tools' authority.
+  const executor = options.toolExecutor ?? createToolExecutor({
+    tools: options.tools!,
+    environment: { async acquire() { return { value: undefined, async release() {} }; } },
+    permission: { async check() { return { allowed: true }; } },
+  });
   const definitions = snapshot(executor.definitions);
-  if (typeof executor.execute !== 'function' || !Array.isArray(definitions)
+  if (typeof executor.executeBatch !== 'function' || !Array.isArray(definitions)
     || definitions.some(d => !d || typeof d.name !== 'string' || !d.name.trim())
     || new Set(definitions.map(d => d.name)).size !== definitions.length) {
     throw new Error('An executor with unique nonempty tool definitions is required');
   }
-  const names = new Set(definitions.map(d => d.name));
-  const { provider, contextBuilder, recorder, observer } = options;
+  const { provider, recorder, observer } = options;
+  const contextBuilder = options.contextBuilder ?? createContextBuilder();
+  const contextBudget = snapshot(options.contextBudget ?? { capacity: limits.historyBytes, reserveOutput: 0 });
   return {
     async runTurn(input): Promise<TurnResult> {
       const scope = { sessionId: input.sessionId, turnId: input.turnId };
@@ -26,6 +34,7 @@ export function createAgent(options: AgentOptions): Agent {
       const { maxSteps, input: userInput } = input;
       const messages: Message[] = [];
       const events: AgentEvent[] = [];
+      const contextReports: Array<TurnResult['contextReports'][number]> = [];
       let steps = 0;
       let reason: EndReason = 'error';
       let error: TurnResult['error'];
@@ -70,10 +79,10 @@ export function createAgent(options: AgentOptions): Agent {
           }
         }
       };
-      const append = async (message: Message, step?: number): Promise<void> => {
+      const append = async (message: Message, step?: number, settlement?: ToolSettlement): Promise<void> => {
         const saved = snapshot(message);
         messages.push(saved);
-        await emit({ type: 'message_appended', step, message: saved });
+        await emit({ type: 'message_appended', step, message: saved, ...(settlement ? { settlement } : {}) });
       };
       await emit({ type: 'turn_started' });
       try {
@@ -100,16 +109,23 @@ export function createAgent(options: AgentOptions): Agent {
             if (recordingFailed) break;
             if (signal.aborted) { reason = 'cancelled'; break; }
             const source = snapshot({ ...scope, step: steps, messages: all, tools: definitions });
-            let context;
+            let request: ModelRequest;
             try {
-              const built = contextBuilder ? await contextBuilder.build(source, signal) : source.messages;
+              const built = await contextBuilder.build({ request: source, budget: contextBudget }, signal);
               if (signal.aborted) { reason = 'cancelled'; break; }
-              context = history(built, Infinity);
+              if (built.request.sessionId !== scope.sessionId || built.request.turnId !== scope.turnId
+                || built.request.step !== steps || JSON.stringify(built.request.tools) !== JSON.stringify(definitions)) {
+                throw new Error('Context builder changed execution identity or tool definitions');
+              }
+              request = snapshot({ ...built.request, messages: history(built.request.messages, Infinity) });
+              contextReports.push(snapshot({ step: steps, status: 'prepared', report: built.report }));
             } catch (cause) {
+              if (cause instanceof ContextBuildError && cause.report) {
+                contextReports.push(snapshot({ step: steps, status: 'failed', report: cause.report }));
+              }
               if (signal.aborted) { reason = 'cancelled'; break; }
               throw new AgentFault('context_error', cause instanceof Error ? cause.message : String(cause));
             }
-            const request = snapshot({ ...source, messages: context });
             if (size(request) > limits.historyBytes) {
               throw new AgentFault('context_limit', 'Model request exceeds context byte limit');
             }
@@ -128,34 +144,72 @@ export function createAgent(options: AgentOptions): Agent {
             }
             await append({ role: 'assistant', content: model.content, toolCalls: model.calls }, steps);
             let uncertain = false;
+            const settled = new Map<string, ToolSettlement>();
+            let batchFailed = false;
+            const acceptSettlement = async (settlement: ToolSettlement): Promise<void> => {
+              const call = model.calls[settled.size];
+              if (!call || settlement.identity.sessionId !== scope.sessionId
+                || settlement.identity.turnId !== scope.turnId || settlement.identity.step !== steps
+                || settlement.identity.toolCallId !== call.id || settlement.identity.name !== call.name
+                || !validOutcome(settlement.outcome) || typeof settlement.started !== 'boolean'
+                || !['not_acquired', 'released', 'failed', 'acquire_failed'].includes(settlement.cleanup?.status)) {
+                throw new Error('Executor returned an invalid or out-of-order settlement');
+              }
+              const saved = snapshot(settlement);
+              settled.set(call.id, saved);
+              await append({ role: 'tool', toolCallId: call.id, name: call.name, outcome: saved.outcome }, steps, saved);
+            };
+            if (!recordingFailed && !signal.aborted) {
+              try {
+                const batch = await executor.executeBatch({
+                  calls: model.calls, scope: snapshot({ ...scope, step: steps }), signal,
+                  async beforeExecute(identity) {
+                    const call = model.calls[settled.size];
+                    if (!call || identity.sessionId !== scope.sessionId || identity.turnId !== scope.turnId
+                      || identity.step !== steps || identity.toolCallId !== call.id || identity.name !== call.name)
+                      throw new Error('Executor intent identity does not match the next call');
+                    if (recordingFailed || signal.aborted) throw new Error('Turn no longer permits a new tool effect');
+                    await emit({ type: 'tool_started', step: steps, toolCallId: call.id, name: call.name });
+                    if (recordingFailed || signal.aborted) throw new Error('Required intent recording or cancellation stopped execution');
+                  },
+                  async afterExecute(settlement) {
+                    await acceptSettlement(settlement);
+                    if (recordingFailed) throw new Error('Required settlement recording failed; do not start further effects');
+                  },
+                });
+                if (batch.results.length !== model.calls.length) throw new Error('Executor omitted settlements');
+                for (const settlement of batch.results) {
+                  const recorded = settled.get(settlement.identity.toolCallId);
+                  if (recorded) {
+                    if (JSON.stringify(recorded) !== JSON.stringify(settlement)) throw new Error('Executor changed a recorded settlement');
+                  } else await acceptSettlement(settlement);
+                }
+                batchFailed = !!batch.recordingError || (batch.stopped !== null && batch.stopped !== 'cancelled');
+                if (batchFailed) {
+                  const unknown = batch.results.find(r => !r.outcome.ok && r.outcome.error.effect === 'unknown')?.outcome;
+                  error ??= unknown && !unknown.ok ? unknown.error : {
+                    code: batch.recordingError?.code ?? batch.stopped!,
+                    message: batch.recordingError?.message ?? `Tool batch stopped: ${batch.stopped}; inspect settlement evidence`,
+                  };
+                }
+              } catch (cause) {
+                batchFailed = true;
+                error ??= { code: 'tool_protocol', message: cause instanceof Error ? cause.message : String(cause) };
+              }
+            }
             for (const call of model.calls) {
               usedIds.add(call.id);
-              let outcome: ToolOutcome;
-              if (recordingFailed || uncertain || signal.aborted) {
-                outcome = failed(signal.aborted ? 'cancelled_before_start' : 'not_started', 'Tool was not started');
-              } else {
-                if (!names.has(call.name)) outcome = failed('unknown_tool', `Unknown tool: ${call.name}`);
-                else {
-                  await emit({ type: 'tool_started', step: steps, toolCallId: call.id, name: call.name });
-                  if (recordingFailed || signal.aborted) outcome = failed('not_started', 'Tool was not started');
-                  else {
-                    try {
-                      outcome = await executor.execute(call, snapshot({ ...scope, step: steps }), signal);
-                      if (!validOutcome(outcome)) outcome = failed('tool_protocol', 'Invalid tool result', 'unknown');
-                    } catch (cause) {
-                      outcome = failed('tool_exception', cause instanceof Error ? cause.message : String(cause), 'unknown');
-                    }
-                  }
-                }
-              }
-              if (!validOutcome(outcome)) outcome = failed('tool_protocol', 'Invalid tool failure result', 'unknown');
+              const receipt = settled.get(call.id);
+              const outcome = receipt?.outcome ?? (batchFailed
+                ? failed('tool_protocol', 'Executor did not return a confirmed settlement', 'unknown')
+                : failed(signal.aborted ? 'cancelled_before_start' : 'not_started', 'Tool was not started'));
               if (!outcome.ok && outcome.error.effect === 'unknown') {
                 uncertain = true;
                 error ??= { code: outcome.error.code, message: outcome.error.message };
               }
-              await append({ role: 'tool', toolCallId: call.id, name: call.name, outcome }, steps);
+              if (!receipt) await append({ role: 'tool', toolCallId: call.id, name: call.name, outcome }, steps);
             }
-            if (uncertain || recordingFailed) { reason = 'error'; break; }
+            if (uncertain || recordingFailed || batchFailed) { reason = 'error'; break; }
             if (signal.aborted) { reason = 'cancelled'; break; }
           } finally {
             await emit({ type: 'step_ended', step: steps });
@@ -168,7 +222,7 @@ export function createAgent(options: AgentOptions): Agent {
       }
       if (recordingFailed) reason = 'error';
       await emit({ type: 'turn_ended', reason, ...(error ? { errorCode: error.code } : {}) });
-      return snapshot({ ...scope, reason, messages, events, steps, recording, observerErrors, ...(error ? { error } : {}) });
+      return snapshot({ ...scope, reason, messages, events, steps, recording, observerErrors, contextReports, ...(error ? { error } : {}) });
     },
   };
 }

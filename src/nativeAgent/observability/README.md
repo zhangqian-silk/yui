@@ -17,7 +17,7 @@ try {
   const agent = createAgent({
     tools: [],
     provider: createMockProvider({ toolCallProbability: 0, random: () => 0 }),
-    onEvent: observations.onEvent,
+    observer: observations,
   });
   const result = await agent.runTurn({
     sessionId: 's1', turnId: 't1', input: 'hello', maxSteps: 1,
@@ -30,9 +30,9 @@ try {
 }
 ```
 
-这是可选观测适配器，不是必要持久化出口。现有内核 `onEvent` 的必要事实语义
-不变；需要同时持久化时，由组合方先调用自己的必要存储，再调用这里的
-`onEvent`，不要把必要存储塞进 best-effort consumer。观测失败不等于存储成功。
+这是可选观测适配器，不是必要持久化出口。内核分别注入必要的 `recorder`
+和同步 `observer.observe`，不要把必要存储塞进 best-effort consumer。
+观测失败不等于存储成功。
 
 ## 生产者与消费者
 
@@ -92,7 +92,7 @@ session/turn/request/toolCall 过滤及 `after` cursor。`nextCursor` 用于下�
 忙时丢弃通知；本地窗口仍接收记录，`consumerDropped` 如实累计。
 最多 32 个订阅、总计最多 32 个在途导出（包括已取消但未结算的导出）。
 同步抛错或 Promise 拒绝计入 `consumerFailures`，异常文本不进入日志。
-非法观测或时钟异常计入 `rejected`，`onEvent` 不将其传播给 Agent。
+非法观测或时钟异常计入 `rejected`，`observe` 不将其传播给 Agent。
 
 取消订阅/关闭会发送 AbortSignal，但不谎称导出已结算；`inFlight` 在 Promise
 真正结算前仍非零。插件必须合作释放自己创建的文件/连接；本模块不创建这些

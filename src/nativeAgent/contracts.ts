@@ -1,3 +1,6 @@
+import type { ContextBuilder, ContextInput, ContextReport } from './context/index.js';
+import type { ToolExecutor, ToolSettlement } from './toolManager/index.js';
+export type { ContextBuilder, ToolExecutor };
 /** Independent Agent contracts: no Yui runtime or third-party Agent types. */
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type ToolCall = { id: string; name: string; arguments: Json };
@@ -22,20 +25,11 @@ export interface Tool {
   validate(args: Json): ToolError | null;
   execute(args: Json, scope: StepScope & { toolCallId: string }, signal: AbortSignal): Promise<ToolOutcome>;
 }
-/** Owns tool authorization/validation and settlement; never retry unknown effects. */
-export interface ToolExecutor {
-  readonly definitions: readonly ToolDefinition[];
-  execute(call: ToolCall, scope: StepScope, signal: AbortSignal): Promise<ToolOutcome>;
-}
-/** Produces model-only context, not a replacement for authoritative session history. */
-export interface ContextBuilder {
-  build(request: ModelRequest, signal: AbortSignal): Promise<readonly Message[]>;
-}
 export type EndReason = 'completed' | 'cancelled' | 'budget_exhausted' | 'error';
 export type EventData =
   | { type: 'turn_started' }
   | { type: 'step_started'; step: number }
-  | { type: 'message_appended'; step?: number; message: Message }
+  | { type: 'message_appended'; step?: number; message: Message; settlement?: ToolSettlement }
   | { type: 'tool_started'; step: number; toolCallId: string; name: string }
   | { type: 'step_ended'; step: number }
   | { type: 'turn_ended'; reason: EndReason; errorCode?: string };
@@ -61,6 +55,8 @@ export type TurnResult = Scope & {
   recording: RecordingStatus;
   /** A failed observer is disconnected for the rest of this Turn, not retried. */
   observerErrors: readonly { seq: number; message: string }[];
+  /** Model projection evidence, never a replacement for authoritative history. */
+  contextReports: readonly { step: number; status: 'prepared' | 'failed'; report: ContextReport }[];
   error?: { code: string; message: string };
 };
 export type TurnInput = Scope & {
@@ -72,6 +68,8 @@ export type TurnInput = Scope & {
 export type AgentOptions = {
   provider: ModelProvider;
   contextBuilder?: ContextBuilder;
+  /** Units belong to the selected builder's estimator; default uses JSON bytes. */
+  contextBudget?: ContextInput['budget'];
   /** If omitted, facts exist only in the returned in-memory events. */
   recorder?: SessionRecorder;
   observer?: AgentObserver;

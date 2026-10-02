@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createAgent, createMockProvider, createTextTools, createToolExecutor, type AgentEvent } from './index.js';
+import { createAgent, createMockProvider, createTextTools, createContextBuilder, type AgentEvent } from './index.js';
 
 const root = await mkdtemp(path.join(tmpdir(), 'independent-agent-demo-'));
 try {
@@ -13,15 +13,16 @@ try {
   const recorded: AgentEvent[] = [];
   const observed: AgentEvent[] = [];
   const agent = createAgent({
-    toolExecutor: createToolExecutor(createTextTools({ root })),
+    tools: createTextTools({ root }),
     provider: createMockProvider({ toolCallProbability: 0.5, random: () => {
       const sample = samples.shift();
       if (sample === undefined) throw new Error('Demo random sequence exhausted');
       return sample;
     } }),
-    contextBuilder: { async build(request) {
-      return [{ role: 'system', content: 'Use only the explicitly supplied tools.' }, ...request.messages];
-    } },
+    contextBuilder: createContextBuilder({ sources: [{ id: 'demo', async load() {
+      return [{ id: 'guide', kind: 'guidance', content: 'Use only the explicitly supplied tools.',
+        source: 'demo', revision: '1', required: true }];
+    } }] }),
     recorder: { async record(event) { recorded.push(event); } },
     observer: { observe(event) { observed.push(event); } },
   });

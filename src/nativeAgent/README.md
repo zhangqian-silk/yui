@@ -48,12 +48,18 @@ const result = await agent.runTurn({
 - `Tool` 提供声明、无副作用的 `validate` 和 `execute`。结果明确成功，
   或携带 `effect: none | unknown` 的错误；结果按调用 ID 写回历史。
 - `ToolExecutor` 提供冻结的 `definitions` 与
-  `execute(call, StepScope, signal)`。`tools` 数组通过 `createToolExecutor`
+  `executeBatch({scope,calls,signal,beforeExecute,afterExecute})`。`tools` 数组通过 `createToolExecutor`
   组装成同一合同，也可只提供 `toolExecutor` 替换实现；两者必须且只能选一。
   内核先核对声明、调用身份与预算，再顺序调用；执行器负责授权、参数验证及
-  实际效果结算，不得自行重放未知效果。构造期固定工具声明，工具配置变更需重新组装。
-- `ContextBuilder.build(ModelRequest, signal)` 在每次模型调用前执行，返回
-  本次模型消费的消息投影。默认使用完整历史；投影会再次校验调用/结果配对及
+  实际效果结算，不得自行重放未知效果。`afterExecute` 在资源释放之后，
+  将完整 `ToolSettlement` 与配对消息一起写入必要的 `message_appended` 事件；
+  cleanup 失败不覆盖已确认结果，但停止后续效果。`tools` 简写只表示调用方已授权
+  这些预绑定工具，使用无资源 lease 和允许策略，不宣称额外限制 root/env。
+  构造期固定工具声明，工具配置变更需重新组装。
+- `ContextBuilder.build({request,budget}, signal)` 在每次模型调用前执行，返回
+  `{request,report}`。默认使用真实上下文构建器，按预算裁剪完整的旧历史组；
+  `contextBudget` 使用所选 estimator 的单位（默认 1 MiB JSON 字节、输出预留 0）。
+  `TurnResult.contextReports` 保留每步报告及带报告的预算失败。投影会再次校验调用/结果配对及
   请求预算，不改写权威历史、工具声明和 Session/Turn/Step 身份。
   隐藏历史不能绕过原始调用 ID 去重或未知效果检查。
 - `SessionRecorder.record(AgentEvent)` 是可选外部必要记录入口。内核按序
@@ -82,8 +88,9 @@ import { createAgent, createToolExecutor, type AgentOptions } from './index.js';
 // provider、tools、contextBuilder、recorder、observer 由调用方创建。
 const options: AgentOptions = {
   provider,
-  toolExecutor: createToolExecutor(tools),
+  toolExecutor: createToolExecutor({ tools, environment, permission }),
   contextBuilder,
+  contextBudget: { capacity: 100_000, reserveOutput: 1000 },
   recorder,
   observer,
 };
@@ -97,9 +104,9 @@ task-77 提供 `ContextBuilder`，task-78 消费 `Agent/TurnInput/TurnResult`，
 task-79 消费 `AgentObserver/AgentEvent`。这些是独立实现的最小边界，不是
 内核对其他 Task 的运行时依赖。公共合同修改须明确生产者、消费者与可运行证据。
 
-当前独立验收使用 mock、内存 fixture 和受控目录文本工具。尚未证明实际模型网关、
-通用编码工具、持久会话或 UI 已组合。读取项目→修改文件→本地检查→回答→保存并
-恢复会话的真实模块组合证据，须在那些模块可用后单独补齐，不能用 fixture 冒充。
+`native-agent-composition.test.js` 已连接真实工具管理、编码工具、上下文和观测模块，
+证明读取→指纹编辑→本地检查→回答及必要记录/释放失败边界。模型仍为确定性 fixture，
+记录仍为内存 fixture；保存并恢复会话及完整 UI/网关组合须另行补齐，不能据此宣称完成。
 
 ## 终止与边界
 
