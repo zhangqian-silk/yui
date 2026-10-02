@@ -110,14 +110,16 @@ export function createPluginService(store: TaskStore, host: InstanceHost, regist
     pluginId: pkg.manifest.id, digest: pkg.digest,
     environmentRef: `${taskId}/${preparationId}`, trust: "trusted-local", phase
   });
-  const executionGrant = (taskId: string, params: ReturnType<typeof executionParams>, path: string) =>
+  const executionGrant = (taskId: string, params: ReturnType<typeof executionParams>, path: string,
+    plannedUses: ReadonlyMap<string, number> = new Map()) =>
     store.listCapabilityGrants(taskId).find(candidate =>
       Object.entries(params).every(([key, value]) => candidate.parameterBounds[key]?.includes(value))
       && (candidate.scope.taskId === undefined || candidate.scope.taskId === taskId)
       && candidate.scope.projectIds === undefined && candidate.scope.repositories === undefined
       && candidate.scope.packages === undefined
       && (candidate.scope.homePath === undefined || candidate.scope.homePath === path)
-      && checkGrant(candidate, { action: "plugin.execute", params, irreversibility: "irreversible" }, new Date()).allowed);
+      && checkGrant({ ...candidate, usesUsed: candidate.usesUsed + (plannedUses.get(candidate.id) ?? 0) },
+        { action: "plugin.execute", params, irreversibility: "irreversible" }, new Date()).allowed);
   const environmentAccess = (taskId: string, preparationId: string,
     via: "leader-message" | "leader-input" | "operator"): AccessAssessment => {
     const prepared = store.getEnvironmentPreparation(taskId, preparationId);
@@ -235,7 +237,15 @@ export function createPluginService(store: TaskStore, host: InstanceHost, regist
       if (pkg!.manifest.kind === "declarative") return { state: "authorized" };
       const params = executionParams(taskId, preparationId!, pkg!, phase);
       const phases = phase === "validate" && pkg!.manifest.build ? ["build", "validate"] : [phase];
-      const missing = phases.filter(value => !executionGrant(taskId, { ...params, phase: value }, path!));
+      // Simulate the same ordered selection as execution, without persisting
+      // uses. A broad Grant may fund multiple phases only if it has capacity.
+      const plannedUses = new Map<string, number>();
+      const missing = phases.filter(value => {
+        const grant = executionGrant(taskId, { ...params, phase: value }, path!, plannedUses);
+        if (!grant) return true;
+        plannedUses.set(grant.id, (plannedUses.get(grant.id) ?? 0) + 1);
+        return false;
+      });
       if (!missing.length) return { state: "authorized" };
       return { state: "requestable", request: {
         action: "plugin.execute", taskId,

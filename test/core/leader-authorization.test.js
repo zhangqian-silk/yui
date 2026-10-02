@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
@@ -21,6 +21,8 @@ import { runReleaseWorkflow } from "../../dist/release/releaseWorkflowEngine.js"
 import { createBuiltinCapabilities } from "../../dist/kernel/builtinCapabilities.js";
 import { InstanceHost } from "../../dist/kernel/instanceHost.js";
 import { createDurableJobControl } from "../../dist/controller/jobControl.js";
+import { taskActor, projectActor, resolveJobCaller } from "../../dist/task/taskAuthority.js";
+import { assertConfigurationAuthority } from "../../dist/cli/invocationAuthority.js";
 
 const now = new Date("2026-09-30T00:00:00Z");
 function fixture(t) {
@@ -129,6 +131,12 @@ test("Leader grants require original input, exact bounded resources and current 
   assert.equal(f.store.listMessages("task-1").length, before);
   submitOperatorMessage("ordinary public request", "task-1", f.store, { environment: {} }, "record");
   assert.equal(f.store.listMessages("task-1").length, before + 1);
+  for (const environment of [{ YUI_SESSION_MANIFEST: "/managed/session.json" }, { YUI_TASK_ID: "task-1" }]) {
+    assert.throws(() => taskActor(environment, "task-1"), /incomplete/);
+    assert.throws(() => projectActor(environment), /incomplete/);
+    assert.throws(() => resolveJobCaller(environment, "task-1"), /incomplete/);
+    assert.throws(() => assertConfigurationAuthority(["config", "system", "set"], f.store, environment), /require/);
+  }
 });
 
 test("Leader release grants bind the workflow source rather than a claimed step parameter", async t => {
@@ -228,34 +236,46 @@ test("Leader plugin grants are consumed by real isolated plugin validation, acti
   const prepared = await call("environment.prepare", { taskId: "task-1", plan: { kind: "scratch" } });
   await call("environment.adopt", { taskId: "task-1", preparationId: prepared.id });
   const created = await call("plugin.create", { preparationId: prepared.id, id: "demo", kind: "trusted-local" });
+  const manifestPath = join(created.directory, "plugin.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  writeFileSync(manifestPath, JSON.stringify({ ...manifest, build: ["build.mjs"] }));
+  writeFileSync(join(created.directory, "build.mjs"), "export {};\n");
   const scan = await call("plugin.scan", { preparationId: prepared.id, directory: created.directory });
   const validationRequest = { name: "plugin.validate",
     input: { preparationId: prepared.id, directory: created.directory } };
   const missing = capabilities.registry.describe(caller, validationRequest);
   assert.equal(missing.value.access.state, "requestable");
   assert.equal(missing.value.access.request.bounds.digest[0], scan.digest);
-  assert.deepEqual(missing.value.access.request.bounds.phase, ["validate"]);
+  assert.deepEqual(missing.value.access.request.bounds.phase, ["build", "validate"]);
   assert.notEqual((await raw("plugin.validate", { preparationId: prepared.id, directory: created.directory })).kind, "value");
   const source = f.message("Execute the isolated demo plugin for this Task.");
-  const grant = f.command(["grant", "issue", "task-1", "--source-message", source.id, "--purpose", source.body,
-    "--request-id", "plugin-grant", "--action", "plugin.execute", "--param", "pluginId=demo",
+  const issue = maxUses => f.command(["grant", "issue", "task-1", "--source-message", source.id, "--purpose", source.body,
+    "--request-id", `plugin-grant-${maxUses}`, "--action", "plugin.execute", "--param", "pluginId=demo",
     "--param", `digest=${scan.digest}`, "--param", `environmentRef=task-1/${prepared.id}`,
-    "--param", "trust=trusted-local", "--param", "phase=validate,activate,call",
-    "--expires-at", new Date(Date.now() + 60_000).toISOString(), "--max-uses", "3",
+    "--param", "trust=trusted-local", "--param", "phase=build,validate,activate,call",
+    "--expires-at", new Date(Date.now() + 60_000).toISOString(), "--max-uses", String(maxUses),
     "--irreversibility-ceiling", "irreversible"]).data;
+  const limited = issue(1);
+  const insufficient = capabilities.registry.describe(caller, validationRequest);
+  assert.equal(insufficient.value.access.state, "requestable");
+  assert.deepEqual(insufficient.value.access.request.bounds.phase, ["validate"]);
+  assert.equal((await raw("plugin.validate", validationRequest.input)).kind, "denied");
+  assert.equal(f.store.getCapabilityGrant("task-1", limited.id).usesUsed, 0);
+  f.command(["grant", "revoke", "task-1", limited.id]);
+  const grant = issue(4);
   assert.equal(capabilities.registry.describe(caller, validationRequest).value.access.state, "authorized");
   assert.equal(f.store.getCapabilityGrant("task-1", grant.id).usesUsed, 0);
   const validation = await call("plugin.validate", { preparationId: prepared.id, directory: created.directory });
   await call("plugin.activate", { validationId: validation.id });
   assert.deepEqual(await call("demo.echo", { text: "fixture" }), { text: "fixture" });
-  assert.equal(f.store.getCapabilityGrant("task-1", grant.id).usesUsed, 3);
+  assert.equal(f.store.getCapabilityGrant("task-1", grant.id).usesUsed, 4);
   const discovered = capabilities.registry.describe(caller, { name: "demo.echo", input: { text: "read-only query" } });
   assert.equal(discovered.value.access.state, "requestable");
   assert.equal(discovered.value.access.request.bounds.phase[0], "call");
   const surfaces = new SurfaceContributions(capabilities.registry);
   assert.equal(surfaces.listCommands(caller).find(entry => entry.capability === "demo.echo").access.state, "requestable");
   assert.ok(!surfaces.listPanels(caller).some(entry => entry.capability === "demo.echo"));
-  assert.equal(f.store.getCapabilityGrant("task-1", grant.id).usesUsed, 3, "discovery must not consume grants");
+  assert.equal(f.store.getCapabilityGrant("task-1", grant.id).usesUsed, 4, "discovery must not consume grants");
   assert.notEqual((await raw("demo.echo", { text: "exhausted" })).kind, "value");
   await call("plugin.disable", { id: "demo" });
 });

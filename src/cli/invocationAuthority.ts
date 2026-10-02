@@ -1,4 +1,5 @@
 import { usageError } from "../errors/cliError.js";
+import { hasManagedIdentity } from "../runtime/managedIdentity.js";
 import { requireManagedGlobalCaller, type ManagedGlobalCallerStore } from "../runtime/managedCaller.js";
 import { routeInvocation } from "./invocationRouter.js";
 import { findInteractionPolicy } from "./interactionPolicy.js";
@@ -19,8 +20,7 @@ export function assertConfigurationAuthority(
     requireManagedGlobalCaller(store, env);
     return;
   }
-  if (env.YUI_SESSION_SCOPE !== undefined || env.YUI_ROLE !== undefined
-    || env.YUI_AGENT_ID !== undefined || env.YUI_NATIVE_SESSION_ID !== undefined) {
+  if (hasManagedIdentity(env)) {
     throw usageError("Home configuration and resource mutations require the user or current Operator, not a Task Assignment.");
   }
 }

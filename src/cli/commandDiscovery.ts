@@ -1,11 +1,10 @@
 import { ROOT_COMMAND, findCommandNode, type CommandNode, type DiscoveryAudience } from "./commandCatalog.js";
+import { hasManagedIdentity } from "../runtime/managedIdentity.js";
 
 /** Offline presentation hints only. Execution still authenticates the original
  * caller, including stale/incomplete identities, at its existing boundary. */
 export function discoveryAudience(env: NodeJS.ProcessEnv): DiscoveryAudience {
-  const marked = ["YUI_SESSION_SCOPE", "YUI_ROLE", "YUI_AGENT_ID", "YUI_NATIVE_SESSION_ID",
-    "YUI_TASK_ID", "YUI_SESSION_MANIFEST"].some(key => env[key] !== undefined);
-  if (!marked) return "public";
+  if (!hasManagedIdentity(env)) return "public";
   if (!env.YUI_ROLE || !env.YUI_NATIVE_SESSION_ID) return "unbound";
   if (env.YUI_SESSION_SCOPE === "global") return env.YUI_ROLE === "operator" ? "operator" : "global";
   if (env.YUI_SESSION_SCOPE === "task" && env.YUI_TASK_ID) return env.YUI_ROLE === "leader" ? "leader" : "assignment";

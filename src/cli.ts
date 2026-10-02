@@ -36,6 +36,7 @@ import { routeInvocation } from "./cli/invocationRouter.js";
 import { operatorOfflineCommand, taskDiagnosticTarget } from "./cli/managedDiagnostics.js";
 import { assertConfigurationAuthority, assertTaskInvocationScope } from "./cli/invocationAuthority.js";
 import { requireManagedGlobalCaller, ManagedRuntimeDriftError } from "./runtime/managedCaller.js";
+import { hasManagedIdentity } from "./runtime/managedIdentity.js";
 import { resolveOperatorWizardArguments } from "./cli/operatorWizard.js";
 import {
   resolveGlobalRoleAgentConfigurationArguments,
@@ -410,9 +411,7 @@ export async function main(): Promise<void> {
     verifiedStore
   } = await preflightManagedTaskControlPlane();
   assertTaskInvocationScope(args, process.env);
-  if (["config", "resources"].includes(args[0] ?? "") && (managedInvocation
-    || process.env.YUI_ROLE !== undefined || process.env.YUI_AGENT_ID !== undefined
-    || process.env.YUI_NATIVE_SESSION_ID !== undefined)) {
+  if (["config", "resources"].includes(args[0] ?? "") && hasManagedIdentity(process.env)) {
     const ownedStore = verifiedStore === undefined ? openCurrentTaskStore(home) : undefined;
     try { assertConfigurationAuthority(args, verifiedStore ?? ownedStore!, process.env); }
     finally { ownedStore?.close(); }
@@ -2432,6 +2431,9 @@ async function preflightManagedTaskControlPlane(): Promise<ManagedTaskControlPla
   if (process.env.YUI_SESSION_SCOPE !== "task") {
     if (process.env.YUI_SESSION_SCOPE === "global") {
       return await preflightManagedGlobalControlPlane();
+    }
+    if (hasManagedIdentity(process.env)) {
+      throw usageError("Managed Agent identity is incomplete; refusing to infer user authority.");
     }
     if (taskFinalReviewInvocation.request !== undefined) {
       throw new Error(
