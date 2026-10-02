@@ -1,7 +1,8 @@
 import { performance } from 'node:perf_hooks';
+import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { ModelRequest, ModelResponse, ToolCall } from '../index.js';
-import type { ModelAttempt, ModelGateway, ModelGatewayOptions, ModelProgress, ModelTransport } from './types.js';
+import type { ModelAttempt, ModelGateway, ModelGatewayOptions, ModelProgress, ModelTransport, ModelUsage } from './types.js';
 import { ModelGatewayError } from './errors.js';
 import { createChatCompletionsAdapter } from './chatCompletions.js';
 
@@ -106,6 +107,14 @@ function retryAfter(value: string | null): number {
   const date = Date.parse(value);
   return Number.isFinite(date) ? Math.max(0, date - Date.now()) : 0;
 }
+function reportedUsage(value: unknown): ModelUsage {
+  if (!plain(value) || ![value.inputTokens, value.outputTokens, value.totalTokens]
+    .every(v => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0)) {
+    throw new ModelGatewayError('protocol');
+  }
+  return { inputTokens: value.inputTokens as number, outputTokens: value.outputTokens as number,
+    totalTokens: value.totalTokens as number };
+}
 
 export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
   let endpoint: string, headers: Record<string, string>;
@@ -130,11 +139,15 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
   const adapter = options.adapter ?? createChatCompletionsAdapter();
   const transport = options.transport ?? fetchTransport;
   const observe = options.onObservation;
+  const credential = options.account.kind === 'bearer' ? options.account.token : undefined;
   const clock = options.clock ?? { now: () => performance.now(), sleep: async (ms: number, signal: AbortSignal) => {
     await delay(ms, undefined, { signal });
   } };
   async function generate(input: ModelRequest, external: AbortSignal) {
-    const request = requestSnapshot(input), attempts: ModelAttempt[] = [];
+    const requestId = randomUUID(), attempts: ModelAttempt[] = [];
+    let request: ModelRequest;
+    try { request = requestSnapshot(input); }
+    catch { throw new ModelGatewayError('request', 'none', [], undefined, requestId); }
     const controller = new AbortController();
     const cancel = (): void => controller.abort();
     external.addEventListener('abort', cancel, { once: true });
@@ -154,7 +167,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
       if (!observe) return;
       try {
         void Promise.resolve(observe(frozen({ sessionId: request.sessionId, turnId: request.turnId,
-          step: request.step, attempt, data }))).catch(() => {});
+          step: request.step, requestId, source: 'live' as const, attempt, data }))).catch(() => {});
       } catch { /* Optional display is not a required storage boundary. */ }
     };
     try {
@@ -172,12 +185,18 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
         let rejectedForRateLimit = false;
         let classifiedRejection = false;
         let acquiredResponse: Response | undefined;
+        const clientRequestId = `${requestId}-${attempt}`;
+        let providerRequestId: string | undefined, usage: ModelUsage | undefined;
         try {
           sent = true;
-          const response = await transport(endpoint, { method: 'POST', headers: { ...headers }, body,
+          const response = await transport(endpoint, { method: 'POST',
+            headers: { ...headers, 'x-client-request-id': clientRequestId }, body,
             signal: controller.signal, redirect: 'error' });
           acquiredResponse = response;
           status = response.status;
+          const remoteId = response.headers.get('x-request-id');
+          if (remoteId && /^[A-Za-z0-9_-]{1,128}$/.test(remoteId)
+            && !(credential && remoteId.includes(credential))) providerRequestId = remoteId;
           // A transport returning after cancellation still transfers body ownership here.
           if (controller.signal.aborted || external.aborted || elapsed() >= retry.maxElapsedMs) {
             await response.body?.cancel();
@@ -201,32 +220,40 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
           const bodyStream = readBody(response, controller.signal, 4 * 1024 * 1024);
           let decoded;
           try {
-            decoded = await adapter.decode(bodyStream, streaming, data => emit(attempt, data));
+            decoded = await adapter.decode(bodyStream, streaming, data => {
+              if (data.type === 'usage') usage = reportedUsage(data.usage);
+              // Attempts and retries are gateway facts, not adapter-created observations.
+              if (data.type !== 'attempt_finished' && data.type !== 'retry') emit(attempt, data);
+            });
           } finally {
             await bodyStream.return(undefined);
           }
           check();
           validateResponse(decoded.response, request);
-          if (decoded.usage !== undefined && (!plain(decoded.usage)
-            || ![decoded.usage.inputTokens, decoded.usage.outputTokens, decoded.usage.totalTokens]
-              .every(v => Number.isSafeInteger(v) && v >= 0))) throw new ModelGatewayError('protocol');
-          attempts.push({ attempt, elapsedMs: elapsed(), status, outcome: 'success', effect: 'completed' });
+          if (decoded.usage !== undefined) usage = reportedUsage(decoded.usage);
+          const record: ModelAttempt = { attempt, clientRequestId, elapsedMs: elapsed(), status,
+            ...(providerRequestId ? { providerRequestId } : {}), ...(usage ? { usage } : {}),
+            outcome: 'success', effect: 'completed' };
+          attempts.push(record);
+          emit(attempt, { type: 'attempt_finished', record });
           const cleanResponse: ModelResponse = decoded.response.kind === 'final'
             ? { kind: 'final', content: decoded.response.content }
             : { kind: 'tool_calls', content: decoded.response.content, calls: decoded.response.calls.map(c => ({
               id: c.id, name: c.name, arguments: c.arguments,
             })) };
-          const cleanUsage = decoded.usage && { inputTokens: decoded.usage.inputTokens,
-            outputTokens: decoded.usage.outputTokens, totalTokens: decoded.usage.totalTokens };
-          return frozen({ response: cleanResponse, ...(cleanUsage ? { usage: cleanUsage } : {}), attempts });
+          return frozen({ requestId, source: 'live' as const, response: cleanResponse,
+            ...(usage ? { usage } : {}), attempts });
         } catch (error) {
           let fault = error instanceof ModelGatewayError ? error : new ModelGatewayError('transport');
           if (!classifiedRejection && fault.effect === 'none') {
             fault = new ModelGatewayError(fault.code, 'unknown');
           }
           try { check(); } catch (cancelled) { fault = cancelled as ModelGatewayError; }
-          attempts.push({ attempt, elapsedMs: elapsed(), ...(status !== undefined ? { status } : {}),
-            outcome: fault.code, effect: fault.effect });
+          const record: ModelAttempt = { attempt, clientRequestId, elapsedMs: elapsed(),
+            ...(status !== undefined ? { status } : {}), ...(providerRequestId ? { providerRequestId } : {}),
+            ...(usage ? { usage } : {}), outcome: fault.code, effect: fault.effect };
+          attempts.push(record);
+          emit(attempt, { type: 'attempt_finished', record });
           if (fault.code !== 'rate_limit' || fault.effect !== 'none' || !rejectedForRateLimit) {
             throw new ModelGatewayError(fault.code, fault.effect, attempts);
           }
@@ -244,14 +271,14 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
       throw new ModelGatewayError('deadline', 'unknown', attempts);
     } catch (error) {
       if (error instanceof ModelGatewayError) {
-        if (error.attempts.length) throw error;
-        throw new ModelGatewayError(error.code, error.effect, attempts, error.stopReason);
+        throw new ModelGatewayError(error.code, error.effect,
+          error.attempts.length ? error.attempts : attempts, error.stopReason, requestId);
       }
       try { check(); } catch (cancelled) {
         const fault = cancelled as ModelGatewayError;
-        throw new ModelGatewayError(fault.code, fault.effect, attempts);
+        throw new ModelGatewayError(fault.code, fault.effect, attempts, undefined, requestId);
       }
-      throw new ModelGatewayError('transport', sent ? 'unknown' : 'none', attempts);
+      throw new ModelGatewayError('transport', sent ? 'unknown' : 'none', attempts, undefined, requestId);
     } finally {
       clearTimeout(timer);
       external.removeEventListener('abort', cancel);

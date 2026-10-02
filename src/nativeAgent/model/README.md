@@ -60,8 +60,8 @@ JSON 最大深度 32。超限拒绝，不截断。
 
 ## 显示、用量和诊断消费者
 
-`onObservation` 提供 Session/Turn/Step/attempt 身份与 text_delta、
-tool_delta、usage、retry。这些都是尽力显示，不是完整消息、可执行调用、
+`onObservation` 提供 Session/Turn/Step/requestId/attempt 身份与 text_delta、
+tool_delta、usage、retry、attempt_finished。这些都是尽力显示，不是完整消息、可执行调用、
 持久事实或可靠终态。回调异常/Promise 拒绝被隔离，Promise 不等待；
 慢消费者自行持有有界队列及生命周期。调用次数有界于响应字节上限，
 模块不缓存事件、不声称已送达 UI。内容本身可能敏感，显示方自行决定存储。
@@ -70,8 +70,45 @@ tool_delta、usage、retry。这些都是尽力显示，不是完整消息、可
 output、total tokens；未提供时字段缺席，不填零、不据此推算金额。
 usage 增量可以早于失败出现，不能代表请求成功。
 `ModelGatewayError` 含稳定 code、effect、尝试记录及可选 stopReason。
-不保留原始异常 cause、服务器 message/body、URL、header 或 token。
+不保留原始异常 cause、服务器 message/body、URL、任意 header 或 token。
 精确目标由持有配置的调用方关联，避免把含秘密的 URL 写入诊断。
+
+### 给 72/78/79 的最小接线
+
+```ts
+import { createModelGateway, createModelObservationAdapter } from './index.js';
+
+const onObservation = createModelObservationAdapter({
+  display: event => ui.enqueue(event),            // 正文/工具参数片段，仅显示
+  diagnostics: event => diagnostics.enqueue(event), // 仅 retry/attempt_finished
+});
+const provider = createModelGateway({ ...explicitConfiguration, onObservation });
+// 72: createAgent({ provider, ... }); complete 的返回合同不变。
+```
+
+这里的 `ui` / `diagnostics` 是调用方显式提供的回调，**不是**声称已存在的
+79 API。适配器不导入 observability、不复制 AgentEvent、不伪造内核 seq；
+实际 79 方法的映射由统一组合入口按其公开合同完成。
+测试中的同名适配器用例可直接运行并证明消费者失败不传播。
+
+- `requestId` 是 Gateway 每次 generate 创建的真实本地 UUID，同一次调用的
+  多次尝试共用；不是服务端 ID，也不是 Session/Turn 的替代权威。
+- 每次尝试携带唯一 `clientRequestId`，实际以 `X-Client-Request-Id` 发送。
+  `providerRequestId` 仅取实际响应 `x-request-id`，并限制为 1–128 个
+  ASCII 字母/数字/下划线/连字符，包含当前凭据或超限时省略，不替造。
+  这些身份不构成幂等键或重放许可。
+- 结果、错误和增量来源均明确为 `live`。保存后的回放或缓存应由读取方
+  显式标 `replay` / `cached`，不能把旧来源字段当作现在仍是现场执行。
+- 诊断仅转发 retry 和 attempt_finished，包含真实 status、效果、耗时和
+  该次报告的 usage；不把 provisional usage 帧重复累计。
+  流已报告 usage 后再异常结束，失败尝试仍保留这些已知用量。
+  `elapsedMs` 是逻辑调用开始后的累计耗时（含之前尝试和退避），不是
+  该次模型执行时长或服务端耗时；不要按多次尝试相加。
+- `attempt_finished` 是一次请求尝试的结算观察，不是 Agent Turn 终态。
+  取消发生在两次尝试之间时，以 `generate` 抛错为最终结果，不能把
+  最后一个已拒绝尝试当作整个调用结论。未发送请求时 attempts 为空。
+- 两个出口都是可选、非等待、异常隔离；真实送达/丢弃/排队状态属于
+  接收方。必要存储不能接到这个出口，回调本身不得做阻塞工作。
 
 ## 重试与取消
 

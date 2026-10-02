@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { test } from 'node:test';
 import { createAgent } from '../../dist/nativeAgent/index.js';
-import { createModelGateway, createChatCompletionsAdapter, ModelGatewayError } from '../../dist/nativeAgent/model/index.js';
+import { createModelGateway, createChatCompletionsAdapter, createModelObservationAdapter, ModelGatewayError } from '../../dist/nativeAgent/model/index.js';
 
 const request = {
   sessionId: 's', turnId: 't', step: 1,
@@ -231,4 +231,49 @@ test('model gateway: total deadline and cancellation during backoff settle witho
   await assert.rejects(gateway(async () => { throw new Error('must not send'); }).generate({
     ...request, messages: [{ role: 'tool', toolCallId: 'x', name: 'read', outcome: { ok: true, content: '' } }],
   }, signal()), e => e.code === 'request' && e.effect === 'none');
+});
+
+test('model diagnostics: logical and HTTP identities, live source, usage and failures are correlated', async () => {
+  const events = [], sent = [];
+  let count = 0;
+  const provider = gateway(async (_url, init) => {
+    sent.push(init.headers['x-client-request-id']);
+    return ++count === 1
+      ? jsonResponse({ error: { code: 'rate_limit_exceeded' } }, 429, { 'x-request-id': 'req_rejected' })
+      : jsonResponse(final, 200, { 'x-request-id': 'req_completed' });
+  }, { clock: { now: () => 0, sleep: async () => {} }, onObservation: e => events.push(e) });
+  const result = await provider.generate(request, signal());
+  assert.equal(result.source, 'live');
+  assert.equal(typeof result.requestId, 'string');
+  assert.equal(new Set(sent).size, 2);
+  assert.deepEqual(result.attempts.map(a => a.clientRequestId), sent);
+  assert.deepEqual(result.attempts.map(a => a.providerRequestId), ['req_rejected', 'req_completed']);
+  assert.deepEqual(result.attempts[1].usage, result.usage);
+  const settled = events.filter(e => e.data.type === 'attempt_finished');
+  assert.deepEqual(settled.map(e => e.data.record.status), [429, 200]);
+  assert.equal(events.every(e => e.source === 'live' && e.requestId === result.requestId), true);
+  const failedEvents = [];
+  await assert.rejects(gateway(async () => jsonResponse({}, 401, { 'x-request-id': 'req_denied' }),
+    { onObservation: e => failedEvents.push(e) }).generate(request, signal()), error => {
+    assert.equal(error.source, 'live');
+    assert.notEqual(error.requestId, result.requestId);
+    assert.equal(error.requestId, failedEvents[0].requestId);
+    assert.equal(error.attempts[0].providerRequestId, 'req_denied');
+    return true;
+  });
+  const display = [], diagnostics = [];
+  const onObservation = createModelObservationAdapter({
+    display: e => { display.push(e); throw new Error('UI gone'); },
+    diagnostics: async e => { diagnostics.push(e); throw new Error('logger gone'); },
+  });
+  await gateway(async () => new Response(stream), { stream: true, onObservation }).complete(request, signal());
+  assert.equal(display.some(e => e.data.type === 'tool_delta'), true);
+  assert.equal(diagnostics.length, 1, 'provisional usage must not become a second charge');
+  assert.equal(diagnostics[0].data.record.usage.totalTokens, 8);
+  assert.equal(JSON.stringify(diagnostics).includes('你好'), false);
+  assert.equal(JSON.stringify(diagnostics).includes('arguments'), false);
+  assert.equal(diagnostics[0].data.record.providerRequestId, undefined);
+  await assert.rejects(gateway(async () => new Response(stream.replace('data: [DONE]\r\n\r\n', '')),
+    { stream: true }).generate(request, signal()),
+  e => e.code === 'incomplete' && e.attempts[0].usage.totalTokens === 8);
 });

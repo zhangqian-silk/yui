@@ -15,16 +15,20 @@ const messages: Record<ModelErrorCode, string> = {
 };
 /** No raw cause, URL, request/response bodies, headers, credentials or provider message. */
 export class ModelGatewayError extends Error {
+  readonly source = 'live' as const;
   readonly attempts: readonly ModelAttempt[];
   constructor(
     readonly code: ModelErrorCode,
     readonly effect: 'none' | 'unknown' = 'unknown',
     attempts: readonly ModelAttempt[] = [],
     readonly stopReason?: 'attempt_limit' | 'time_limit',
+    readonly requestId?: string,
   ) {
     super(messages[code]);
     this.name = 'ModelGatewayError';
-    this.attempts = Object.freeze(attempts.map(a => Object.freeze({ ...a })));
+    this.attempts = Object.freeze(attempts.map(a => Object.freeze({
+      ...a, ...(a.usage ? { usage: Object.freeze({ ...a.usage }) } : {}),
+    })));
   }
 }
 export function protocol(): never { throw new ModelGatewayError('protocol'); }

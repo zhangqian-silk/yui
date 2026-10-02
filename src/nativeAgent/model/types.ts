@@ -5,18 +5,36 @@ export type ModelProgress =
   | { type: 'text_delta'; text: string }
   | { type: 'tool_delta'; index: number; id?: string; name?: string; arguments?: string }
   | { type: 'usage'; usage: ModelUsage }
+  | { type: 'attempt_finished'; record: ModelAttempt }
   | { type: 'retry'; delayMs: number };
 /** Display-only, never an executable call, stored message, or durable terminal. */
-export type ModelObservation = StepScope & { attempt: number; data: ModelProgress };
+export type ModelObservation = StepScope & {
+  /** Gateway-generated logical call identity; never presented as a server ID. */
+  requestId: string; source: 'live'; attempt: number; data: ModelProgress;
+};
+/** Body-free projection for optional diagnostic consumers, not an AgentEvent. */
+export type ModelDiagnostic = Omit<ModelObservation, 'data'> & {
+  data: Extract<ModelProgress, { type: 'attempt_finished' | 'retry' }>;
+};
 export type ModelErrorCode = 'configuration' | 'request' | 'protocol' | 'incomplete'
   | 'authentication' | 'quota' | 'rate_limit' | 'http' | 'transport' | 'cancelled' | 'deadline';
 export type ModelAttempt = {
-  attempt: number; elapsedMs: number; status?: number;
+  attempt: number;
+  /** Cumulative since this logical generate began, including earlier attempts/backoff. */
+  elapsedMs: number;
+  status?: number;
+  /** Exact X-Client-Request-Id sent for this HTTP attempt. */
+  clientRequestId: string;
+  /** Bounded x-request-id response header when supplied; absent is not synthesized. */
+  providerRequestId?: string;
+  /** Reported usage, including when a later stream error prevents success. */
+  usage?: ModelUsage;
   outcome: 'success' | ModelErrorCode;
   /** Rejection is known; transport errors/cancellation do not prove remote rollback. */
   effect: 'none' | 'unknown' | 'completed';
 };
 export type ModelGeneration = {
+  requestId: string; source: 'live';
   response: ModelResponse; usage?: ModelUsage; attempts: readonly ModelAttempt[];
 };
 export interface ModelGateway extends ModelProvider {
