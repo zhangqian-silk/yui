@@ -2,7 +2,7 @@
 import type { AgentEvent, Scope, StepScope, TurnResult } from '../index.js';
 
 export type ObservationSource = 'live' | 'replay' | 'cached';
-export type Usage = Readonly<{ inputTokens?: number; outputTokens?: number; cachedInputTokens?: number }>;
+export type Usage = Readonly<{ inputTokens?: number; outputTokens?: number; cachedInputTokens?: number; totalTokens?: number }>;
 export type ModelObservation = StepScope & {
   requestId: string;
   attempt: number;
@@ -12,6 +12,11 @@ export type ModelObservation = StepScope & {
   usage?: Usage;
   errorCode?: string;
   retryAfterMs?: number;
+  clientRequestId?: string;
+  providerRequestId?: string;
+  httpStatus?: number;
+  /** Producer's cumulative logical-call elapsed time, not observation duration. */
+  elapsedMs?: number;
 };
 export type Observation = Readonly<Scope & {
   cursor: number;
@@ -32,6 +37,10 @@ export type Observation = Readonly<Scope & {
   errorCode?: string;
   usage?: Usage;
   retryAfterMs?: number;
+  clientRequestId?: string;
+  providerRequestId?: string;
+  httpStatus?: number;
+  elapsedMs?: number;
   durationMs?: number;
   messageCount?: number;
   unknownEffects?: number;
@@ -88,8 +97,8 @@ const reasons = ['completed', 'error', 'cancelled', 'budget_exhausted'] as const
 const effects = ['none', 'unknown'] as const;
 const scopeOf = (value: Scope): Scope => ({ sessionId: label(value.sessionId), turnId: label(value.turnId) });
 function usageOf(usage: Usage): Usage {
-  const result: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number } = {};
-  for (const key of ['inputTokens', 'outputTokens', 'cachedInputTokens'] as const) {
+  const result: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number; totalTokens?: number } = {};
+  for (const key of ['inputTokens', 'outputTokens', 'cachedInputTokens', 'totalTokens'] as const) {
     if (usage[key] !== undefined) result[key] = integer(usage[key]);
   }
   return Object.freeze(result);
@@ -209,6 +218,13 @@ export function createLocalObserver(options: { capacity?: number; clock?: () => 
         ...(model.errorCode ? { errorCode: label(model.errorCode) } : {}),
         ...(model.usage ? { usage: usageOf(model.usage) } : {}),
         ...(model.retryAfterMs === undefined ? {} : { retryAfterMs: integer(model.retryAfterMs) }),
+        ...(model.clientRequestId === undefined ? {} : { clientRequestId: label(model.clientRequestId) }),
+        ...(model.providerRequestId === undefined ? {} : { providerRequestId: label(model.providerRequestId) }),
+        ...(model.httpStatus === undefined ? {} : { httpStatus: integer(model.httpStatus, 599) }),
+        ...(model.elapsedMs === undefined ? {} : { elapsedMs: (() => {
+          if (!Number.isFinite(model.elapsedMs) || model.elapsedMs < 0) throw new Error('Invalid elapsed time');
+          return model.elapsedMs;
+        })() }),
       }), source);
     },
     observeStream(stream, source = 'live') {

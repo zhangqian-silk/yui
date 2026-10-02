@@ -6,6 +6,11 @@ export { createContextBuilder, ContextBuildError, jsonByteEstimator } from './co
 export type { ContextInput, ContextReport, ContextSource, ContextMaterial, ContextEstimator, ContextCompressor } from './context/index.js';
 export { createLocalObserver } from './observability/index.js';
 export type { LocalObserver } from './observability/index.js';
+export { createModelGateway, createChatCompletionsAdapter, createModelObservationAdapter, ModelGatewayError } from './model/index.js';
+export type { ModelGateway, ModelGatewayOptions, ModelTransport } from './model/index.js';
+export { openCli, createTextRenderer } from './interaction/index.js';
+export type { InteractionSessionPort, InteractionDiagnosticsPort } from './interaction/index.js';
+export { connectModelObservations, createInteractionDiagnostics } from './composition.js';
 export { createMockProvider } from './mockProvider.js';
 export type { MockOptions } from './mockProvider.js';
 export { createTextTools } from './textTools.js';

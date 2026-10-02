@@ -56,7 +56,7 @@ export function createMemoryDemoSessions(options: { provider: ModelProvider; too
       if (session.active) throw new Error('Session already running; cancel or select another session');
       const scope = { sessionId, turnId: `demo-turn-${++nextTurn}` };
       const abort = new AbortController();
-      const agent = createAgent({ ...options, onEvent: async event => { append(session, event); } });
+      const agent = createAgent({ ...options, recorder: { async record(event) { append(session, event); } } });
       const history = structuredClone(session.messages);
       // Defer execution until the active handle is installed, even for immediate providers.
       const done = Promise.resolve().then(async () => {
