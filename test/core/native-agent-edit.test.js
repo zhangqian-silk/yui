@@ -1,0 +1,56 @@
+import assert from 'node:assert/strict';
+import { mkdtemp, readFile, writeFile, readdir, rm, link } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+import { createTextTools } from '../../dist/nativeAgent/index.js';
+
+const scope = { sessionId: 's', turnId: 't', step: 1, toolCallId: 'c' };
+const invoke = (tool, args, signal = new AbortController().signal) => tool.execute(args, scope, signal);
+test('exact edits and guarded replacements preserve changed files, pair real results and leave no scratch', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'agent-edit-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const [read, write, edit] = createTextTools({ root });
+  assert.ok(edit, 'text tool pack supplies exact edit');
+  assert.equal((await invoke(write, { path: 'file', content: 'hello 世界\n' })).ok, true);
+  const initial = JSON.parse((await invoke(read, { path: 'file' })).content);
+  assert.match(initial.sha256, /^[a-f0-9]{64}$/);
+  const args = { path: 'file', expectedSha256: initial.sha256, oldText: '世界', newText: 'world' };
+  const edited = await invoke(edit, args);
+  assert.equal(edited.ok, true);
+  assert.equal(await readFile(path.join(root, 'file'), 'utf8'), 'hello world\n');
+  assert.equal((await invoke(edit, args)).error.code, 'edit_conflict');
+  assert.equal((await invoke(write, { path: 'file', content: 'lost' })).error.code, 'edit_conflict');
+  const current = JSON.parse((await invoke(read, { path: 'file' })).content);
+  assert.equal((await invoke(edit, { ...args, expectedSha256: current.sha256, oldText: 'missing' })).error.code, 'edit_conflict');
+  const cancelled = new AbortController();
+  cancelled.abort();
+  assert.equal((await invoke(edit, { ...args, expectedSha256: current.sha256, oldText: 'world' }, cancelled.signal)).error.effect, 'none');
+  assert.equal((await invoke(write, { path: 'file', content: 'same same', expectedSha256: current.sha256 })).ok, true);
+  const repeated = JSON.parse((await invoke(read, { path: 'file' })).content);
+  assert.equal((await invoke(edit, { ...args, expectedSha256: repeated.sha256, oldText: 'same' })).error.code, 'edit_conflict');
+  await writeFile(path.join(root, 'file'), 'external change');
+  assert.equal((await invoke(write, { path: 'file', content: 'lost', expectedSha256: repeated.sha256 })).error.code, 'edit_conflict');
+  assert.equal(await readFile(path.join(root, 'file'), 'utf8'), 'external change');
+  await link(path.join(root, 'file'), path.join(root, 'hard'));
+  assert.equal((await invoke(edit, args)).error.code, 'not_regular_file');
+  assert.deepEqual((await readdir(root)).sort(), ['file', 'hard']);
+});
+
+test('edit validates limits and serializes competing edits from one pack', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'agent-edit-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(path.join(root, 'file'), 'abc');
+  const [read, , edit] = createTextTools({ root, maxBytes: 8 });
+  assert.ok(edit);
+  const { sha256 } = JSON.parse((await invoke(read, { path: 'file' })).content);
+  const args = { path: 'file', expectedSha256: sha256, oldText: 'a', newText: 'A' };
+  assert.equal((await invoke(edit, { ...args, newText: '1234567' })).error.code, 'too_large');
+  assert.equal((await invoke(edit, { ...args, path: '../file' })).error.code, 'path_out_of_scope');
+  assert.equal((await invoke(edit, { ...args, oldText: '' })).error.code, 'invalid_arguments');
+  assert.equal((await invoke(read, { path: './'.repeat(32760) + 'file' })).error.code, 'invalid_arguments');
+  const results = await Promise.all([invoke(edit, args), invoke(edit, args)]);
+  assert.equal(results.filter(r => r.ok).length, 1);
+  assert.equal(results.filter(r => !r.ok && r.error.code === 'edit_conflict').length, 1);
+  assert.equal(await readFile(path.join(root, 'file'), 'utf8'), 'Abc');
+});
