@@ -3681,7 +3681,8 @@ function completionSelectionPorts(home: string): SelectionPorts {
     "task.list": "task", "project.list": "project-policy", "task.role.list": "role",
     "task.work.list": "work-item", "task.message.list": "task-message", "task.input.list": "input-request",
     "task.turn.list": "run", "task.decision.list": "task-decision", "task.milestone.list": "task-milestone",
-    "task.event.list": "task-event", "task.change-set.list": "change-set"
+    "task.event.list": "task-event", "task.change-set.list": "change-set",
+    "task.integration.list": "integration-attempt"
   };
   return { call: async (method, params) => {
     if (params.taskId !== undefined && params.taskId !== taskId) return [];

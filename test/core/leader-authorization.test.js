@@ -124,6 +124,8 @@ test("Leader grants require original input, exact bounded resources and current 
     { environment: f.environment }), /public caller or.*Operator/);
   assert.throws(() => submitOperatorMessage("partial identity", "task-1", f.store,
     { environment: { YUI_ROLE: "operator" } }), /public caller or.*Operator/);
+  assert.throws(() => submitOperatorMessage("manifest-only identity", "task-1", f.store,
+    { environment: { YUI_SESSION_MANIFEST: "/managed/session.json" } }), /public caller or.*Operator/);
   assert.equal(f.store.listMessages("task-1").length, before);
   submitOperatorMessage("ordinary public request", "task-1", f.store, { environment: {} }, "record");
   assert.equal(f.store.listMessages("task-1").length, before + 1);

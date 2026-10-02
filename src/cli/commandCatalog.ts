@@ -488,7 +488,7 @@ const taskChildren: readonly NodeInput[] = [
     children: [
       { name: "list", discovery: { surface: "public", audiences: ["public","operator","leader","assignment"] }, summary: "List saved Task artifacts.", usage: "yui task artifact list <task>" },
       { name: "read", discovery: { surface: "public", audiences: ["public","operator","leader","assignment"] }, summary: "Read a file at HEAD or an exact commit.", usage: "yui task artifact read <task> <relative-path> [<commit>]" },
-      { name: "save", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] }, summary: "Save and locally commit one file.", usage: "yui task artifact save <task> <relative-path> <content> [--message <text>] [--expected-head <commit>]", options: ["--message", "--expected-head"] }
+      { name: "save", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Save and locally commit one file.", usage: "yui task artifact save <task> <relative-path> <content> [--message <text>] [--expected-head <commit>]", options: ["--message", "--expected-head"] }
     ]
   },
   {

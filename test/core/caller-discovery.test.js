@@ -18,6 +18,8 @@ test("one caller projection drives help and completion without restricting direc
   assert.ok(!listPublicCommandPaths(publicTree).includes("task work dispatch"));
   assert.ok(!listPublicCommandPaths(publicTree).some(path => path.startsWith("internal")));
   assert.ok(!listPublicCommandPaths(worker).some(path => path.startsWith("operator")));
+  assert.ok(!listPublicCommandPaths(worker).includes("task artifact save"));
+  assert.ok(listPublicCommandPaths(worker).includes("task artifact read"));
   const task = findCommandNode(["task"], worker);
   assert.doesNotMatch(renderCommandHelp(task, "test"), /work dispatch|task create/);
   assert.doesNotMatch(renderCommandHelp(findCommandNode(["task", "message", "send"], worker), "test"), /--intent/);

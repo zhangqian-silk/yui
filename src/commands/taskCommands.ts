@@ -1319,7 +1319,7 @@ export function submitOperatorMessage(
   // Public terminals and ordinary unmanaged Agents retain the submission
   // route. Managed callers cannot turn a Task Assignment into Operator input.
   const callerEnvironment = options.environment ?? {};
-  if (["YUI_SESSION_SCOPE", "YUI_ROLE", "YUI_AGENT_ID", "YUI_NATIVE_SESSION_ID", "YUI_TASK_ID"]
+  if (["YUI_SESSION_SCOPE", "YUI_ROLE", "YUI_AGENT_ID", "YUI_NATIVE_SESSION_ID", "YUI_TASK_ID", "YUI_SESSION_MANIFEST"]
     .some(key => callerEnvironment[key] !== undefined)) {
     if (callerEnvironment.YUI_SESSION_SCOPE !== "global" || callerEnvironment.YUI_ROLE !== "operator") {
       throw usageError("Operator submission requires a public caller or the current global Operator.");
