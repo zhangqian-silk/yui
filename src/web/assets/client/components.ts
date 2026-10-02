@@ -1,233 +1,210 @@
 import { AGENT_ADAPTER_CATALOG } from "../../../agent/adapterCatalog.js";
 import { AGENT_EXECUTION_COMPONENT_CATALOG } from "../../../agent/executionComponents.js";
 
-export const COMPONENTS_SCRIPT = `
-// Reusable widgets and record cards. Everything here is a pure builder:
-// data + i18n in, DOM out. Page composition lives in view.js.
-import { node } from "/assets/js/dom.js";
+export const COMPONENTS_SCRIPT = String.raw`
+// Pure builders: data + translator in, DOM out. Views compose these; nothing
+// here reads application state or performs a request.
+import { h, icon, node } from "/assets/js/dom.js";
 import { formatDateTime, relativeTime } from "/assets/js/format.js";
-import { escapeHtml, inlineMarkdown, renderMarkdown } from "/assets/js/markdown.js";
+import { renderMarkdown } from "/assets/js/markdown.js";
 
 // Generated from the server catalogs, not a second product registry.
 const adapterLabels = ${JSON.stringify(Object.fromEntries(AGENT_ADAPTER_CATALOG.map(({ id, label }) => [id, label])))};
 const componentLabels = ${JSON.stringify(Object.fromEntries(AGENT_EXECUTION_COMPONENT_CATALOG.map(({ id, label }) => [id, label])))};
-function adapterLabel(adapterId) {
-  return adapterLabels[adapterId] || adapterId;
-}
-function componentLabel(component, adapterId) {
-  return component ? componentLabels[component] || component : adapterLabel(adapterId);
+export function agentLabel(component, adapterId) {
+  return component ? componentLabels[component] || component : adapterLabels[adapterId] || adapterId;
 }
 
-export function translatedStatus(t, prefix, status) {
-  return t(prefix + "." + status);
+// --- Vocabulary ----------------------------------------------------------------
+// A translated label for a domain value; unknown values stay visible verbatim
+// instead of being hidden or guessed.
+export function label(t, prefix, value) {
+  if (value === undefined || value === null || value === "") return "—";
+  return t(prefix + "." + value, String(value).replace(/[-_]/g, " "));
 }
 
-// --- Small widgets -----------------------------------------------------------
-export function metaItem(label, value) {
-  const item = node("span", "detail-meta-item");
-  item.append(node("small", "", label), node("span", "", value));
-  return item;
+const TONES = {
+  task: { draft: "warn", active: "info", completed: "ok", cancelled: "idle", archived: "idle" },
+  exec: {
+    "needs-leader-action": "accent", "waiting-on-agents": "info", "waiting-user": "warn",
+    recovering: "warn", attention: "bad", "progressing-with-attention": "warn", blocked: "bad",
+    conflicted: "warn", working: "info", completed: "ok", retired: "idle", cancelled: "idle",
+    accepted: "ok", open: "info", archived: "idle"
+  },
+  run: { active: "info", completed: "ok", failed: "bad" },
+  work: { open: "info", accepted: "ok", retired: "idle" },
+  review: { pending: "idle", running: "info", completed: "ok", failed: "bad" },
+  job: { queued: "idle", running: "info", succeeded: "ok", failed: "bad", "timed-out": "bad",
+    cancelled: "idle", "unknown-needs-attention": "warn" },
+  session: { active: "ok", waiting: "warn", quiet: "idle", diagnostic: "bad", unknown: "idle",
+    stopped: "bad", idle: "idle", background: "warn" },
+  role: { running: "ok", waiting: "warn", idle: "idle", unknown: "idle", failed: "bad", exited: "idle", detached: "idle" },
+  decision: { active: "ok", superseded: "idle" },
+  input: { open: "warn", answered: "ok", cancelled: "idle", "auto-resolved": "ok" }
+};
+export function tone(kind, value) {
+  return (TONES[kind] && TONES[kind][value]) || "idle";
 }
 
-export function pathMetaItem(label, value) {
-  const item = node("span", "detail-meta-item");
-  const path = node("span", "meta-path", value);
-  path.title = value;
-  item.append(node("small", "", label), path);
-  return item;
-}
-
-export function chip(text, extraClass) {
-  return node("span", "chip" + (extraClass ? " " + extraClass : ""), text);
-}
-
-export function agentBadge(agent) {
-  if (!agent) return null;
-  const badge = node("span", "agent-badge");
-  if (agent.adapterId || agent.component) {
-    badge.append(chip(componentLabel(agent.component, agent.adapterId), "is-adapter"));
-  }
-  if (agent.model) badge.append(chip(agent.model));
-  if (agent.effort) badge.append(chip(agent.effort));
-  return badge.childNodes.length ? badge : null;
-}
-
-export function chipRow(label, values, activeValue) {
-  const list = (values || []).filter(function (value) { return value !== undefined && value !== null && value !== ""; });
-  if (!list.length) return null;
-  const block = node("div", "record-block");
-  block.append(node("small", "", label));
-  const row = node("div", "chip-row");
-  list.forEach(function (value) {
-    row.append(chip(String(value), activeValue !== undefined && value === activeValue ? "is-active" : ""));
-  });
-  block.append(row);
-  return block;
-}
-
-export function pill(t, namespace, status) {
-  const element = node("span", "pill", translatedStatus(t, namespace, status));
-  element.dataset.status = status;
+export function badge(text, toneName, options) {
+  const element = h("span.badge.tone-" + (toneName || "idle"), null,
+    options && options.dot ? h("i.badge-dot", { "aria-hidden": "true" }) : null, text);
+  if (options && options.title) element.title = options.title;
   return element;
 }
 
-export function statusDot(status) {
-  const dot = node("span", "status-dot " + status);
-  dot.setAttribute("aria-hidden", "true");
-  return dot;
+export function statusBadge(t, kind, prefix, value) {
+  const element = badge(label(t, prefix, value), tone(kind, value), { dot: true });
+  element.dataset.status = value;
+  return element;
 }
 
-export function emptyRow(t, key) {
-  return node("div", "row is-empty", t(key || "empty.none"));
+export function dot(toneName, title) {
+  const element = h("span.dot.tone-" + (toneName || "idle"), { "aria-hidden": title ? null : "true" });
+  if (title) { element.title = title; element.setAttribute("role", "img"); element.setAttribute("aria-label", title); }
+  return element;
 }
 
-export function sectionHead(label, options) {
-  const head = node("div", "section-head");
-  head.append(node("h3", "", label));
-  if (options && options.count !== undefined) head.append(node("span", "section-count", String(options.count)));
-  if (options && options.kicker) head.append(node("span", "section-kicker", options.kicker));
-  if (options && options.right) head.append(node("span", "section-label", options.right));
-  return head;
+export function chip(text, extraClass) {
+  return h("span.chip" + (extraClass ? "." + extraClass : ""), null, text);
 }
 
-export function anchorSection(id, head, body) {
-  const section = node("section", "detail-section anchor");
-  section.id = id;
-  if (head) section.append(head);
-  section.append(body);
-  return section;
+export function mono(text, extraClass) {
+  return h("code.id" + (extraClass ? "." + extraClass : ""), null, text);
 }
 
-// --- Task-first execution status -------------------------------------------
-// The projection is the current read-model vocabulary: one derived status,
-// owner, next action, and the attention/blocker facts behind it.
-const EXEC_STATUS_TONE = {
-  "needs-leader-action": "is-accent",
-  "waiting-on-agents": "is-active",
-  "waiting-user": "is-warning",
-  "recovering": "is-warning",
-  "attention": "is-danger",
-  "progressing-with-attention": "is-warning",
-  "blocked": "is-danger",
-  "conflicted": "is-warning",
-  "working": "is-active",
-  "completed": "is-muted",
-  "retired": "is-muted",
-  "cancelled": "is-muted",
-  "accepted": "is-muted",
-  "open": "is-active",
-  "archived": "is-muted"
-};
+export function timeTag(iso, locale, t, options) {
+  if (!iso) return null;
+  const element = h("time.when", { dateTime: iso }, options && options.absolute
+    ? formatDateTime(iso, locale) : relativeTime(iso, locale, t));
+  element.title = formatDateTime(iso, locale);
+  return element;
+}
 
-export function executionBand(projection, t, locale) {
-  if (!projection) return null;
-  const tone = EXEC_STATUS_TONE[projection.status] || "";
-  const band = node("div", "exec-band " + tone);
+// --- Containers -------------------------------------------------------------------
+export function card(options) {
+  const opts = options || {};
+  const element = h("section.card" + (opts.className ? "." + opts.className.split(" ").join(".") : ""));
+  if (opts.id) element.id = opts.id;
+  if (opts.title || opts.actions) {
+    const head = h("header.card-head", null,
+      h("h3.card-title", null, opts.icon ? icon(opts.icon) : null, h("span", null, opts.title),
+        opts.count !== undefined && opts.count !== null ? h("span.count", null, String(opts.count)) : null),
+      opts.actions ? h("div.card-actions", null, opts.actions) : null);
+    if (opts.hint) head.append(h("p.card-hint", null, opts.hint));
+    element.append(head);
+  }
+  const body = h("div.card-body");
+  element.append(body);
+  element.body = body;
+  return element;
+}
 
-  const head = node("div", "exec-band-head");
-  head.append(pill(t, "exec.status", projection.status));
-  head.append(node("span", "exec-band-owner",
-    t("exec.owner." + projection.owner) + " · " + t("exec.action." + projection.action)));
-  if (projection.activeRuns && projection.activeRuns.length > 0) {
-    head.append(node("span", "exec-band-executors",
-      projection.activeRuns.length + " " + t("exec.executors")));
-  }
-  if (projection.monitoring === "stopped") {
-    head.append(node("span", "exec-band-stopped", t("exec.monitoring.stopped")));
-  }
-  if (projection.failClosed) {
-    head.append(node("span", "exec-band-failclosed", t("exec.failClosed")));
-  }
-  band.append(head);
+export function disclosure(title, viewKey, options) {
+  const opts = options || {};
+  const element = h("details.disclosure" + (opts.className ? "." + opts.className : ""));
+  if (viewKey) element.dataset.viewKey = viewKey;
+  const summary = h("summary", null, icon("chevron", "disclosure-chevron"), h("span.disclosure-title", null, title));
+  if (opts.meta) summary.append(h("span.disclosure-meta", null, opts.meta));
+  element.append(summary);
+  const body = h("div.disclosure-body");
+  element.append(body);
+  element.body = body;
+  return element;
+}
 
-  if (projection.summary) {
-    band.append(node("p", "exec-band-summary", projection.summary));
-  }
+export function sectionTitle(text, count, actions) {
+  return h("div.section-title", null, h("h2", null, text,
+    count !== undefined && count !== null ? h("span.count", null, String(count)) : null),
+  actions ? h("div.section-actions", null, actions) : null);
+}
 
-  if (projection.attention && projection.attention.length) {
-    const list = node("div", "exec-signal-list");
-    projection.attention.forEach(function (item) {
-      const row = node("div", "exec-signal is-attention");
-      row.append(node("span", "exec-signal-kind", t("exec.attention." + item.kind)));
-      row.append(node("span", "exec-signal-text", item.summary));
-      list.append(row);
+export function kv(rows) {
+  const list = h("dl.kv");
+  rows.forEach(function (row) {
+    if (!row || row[1] === undefined || row[1] === null || row[1] === "") return;
+    list.append(h("dt", null, row[0]), h("dd", null, row[1]));
+  });
+  return list;
+}
+
+export function emptyState(text, iconName, extra) {
+  return h("div.empty", null, iconName ? icon(iconName) : null, h("p", null, text), extra || null);
+}
+
+export function note(text, toneName) {
+  return h("p.note" + (toneName ? ".tone-" + toneName : ""), null, text);
+}
+
+export function button(text, options) {
+  const opts = options || {};
+  const element = h("button.btn" + (opts.variant ? ".btn-" + opts.variant : ""), {
+    type: opts.type || "button", onclick: opts.onClick, disabled: !!opts.disabled, title: opts.title
+  }, opts.icon ? icon(opts.icon) : null, text ? h("span", null, text) : null);
+  if (opts.dataset) Object.assign(element.dataset, opts.dataset);
+  return element;
+}
+
+// --- Rich text ---------------------------------------------------------------------
+function shouldCollapse(text, threshold) {
+  const value = String(text);
+  if (value.length > (threshold || 700)) return true;
+  let lines = 0;
+  for (let index = 0; index < value.length; index += 1) if (value[index] === "\n") lines += 1;
+  return lines > 12;
+}
+
+export function richText(title, text, t, options) {
+  if (!text) return null;
+  const opts = options || {};
+  const block = h("div.prose-block" + (opts.className ? "." + opts.className : ""));
+  if (title) block.append(h("h4.prose-label", null, title));
+  const body = h("div.md" + (opts.muted ? ".muted" : ""));
+  body.innerHTML = renderMarkdown(text);
+  block.append(body);
+  if (shouldCollapse(text, opts.threshold)) {
+    block.classList.add("is-collapsed");
+    const toggle = h("button.link-btn", { type: "button" }, t("actions.showMore"));
+    toggle.addEventListener("click", function () {
+      const collapsed = block.classList.toggle("is-collapsed");
+      toggle.textContent = t(collapsed ? "actions.showMore" : "actions.showLess");
     });
-    band.append(list);
+    block.append(toggle);
   }
-
-  if (projection.blockers && projection.blockers.length) {
-    const list = node("div", "exec-signal-list");
-    projection.blockers.forEach(function (blocker) {
-      const row = node("div", "exec-signal is-blocker");
-      row.append(node("span", "exec-signal-kind",
-        t("exec.blocker." + blocker.kind) + " · " + t("exec.owner." + blocker.owner)));
-      row.append(node("span", "exec-signal-text", blocker.summary));
-      list.append(row);
-    });
-    band.append(list);
-  }
-
-  return band;
+  return block;
 }
 
-// --- WorkItem execution and recovery -----------------------------------------
-export function workItemExecutionCard(projection, t) {
-  const card = node("article", "record-card exec-group");
-  const head = node("div", "record-head");
-  const titleRow = node("div", "record-title-row");
-  titleRow.append(node("strong", "record-title", t("workExec.title")));
-  head.append(titleRow);
-  const pills = node("div", "record-pills");
-  pills.append(chip(t("workExec.shape." + projection.shape), "is-active"));
-  pills.append(chip(t("workExec.synthesis." + projection.synthesis.status)));
-  head.append(pills);
-  card.append(head);
+export function bulletList(items, className) {
+  const list = (items || []).filter(Boolean);
+  if (!list.length) return null;
+  return h("ul.bullets" + (className ? "." + className : ""), null, list.map(function (item) { return h("li", null, item); }));
+}
 
-  if (projection.lanes && projection.lanes.length) {
-    const lanes = node("div", "lane-list");
-    projection.lanes.forEach(function (lane) {
-      const row = node("div", "lane-row");
-      row.append(statusDot(lane.status));
-      row.append(node("span", "lane-role", lane.roleName));
-      row.append(node("span", "lane-status", t("workExec.lane." + lane.status)));
-      if (lane.delivery) row.append(chip(t("run.delivery." + lane.delivery)));
-      row.append(node("span", "mono", lane.currentRunId || t("detail.unobserved")));
-      if (lane.retryRunId) row.append(chip(t("workExec.retry") + " · " + lane.retryRunId, "is-danger"));
-      if (lane.settleRunId) row.append(chip(t("workExec.settle") + " · " + lane.settleRunId));
-      if (lane.session === "unobserved") row.append(chip(t("detail.unobserved")));
-      lanes.append(row);
-    });
-    card.append(lanes);
+// First page of a long list plus an in-place "show more".
+export function pagedList(container, items, pageSize, renderItem, t) {
+  let shown = 0;
+  let more = null;
+  function renderChunk() {
+    items.slice(shown, shown + pageSize).forEach(function (item) { container.insertBefore(renderItem(item), more); });
+    shown = Math.min(items.length, shown + pageSize);
+    if (!more) return;
+    const remaining = items.length - shown;
+    if (remaining <= 0) { more.remove(); more = null; }
+    else more.textContent = t("actions.showRemaining").replace("{count}", String(remaining));
   }
-
-  const facts = node("div", "record-meta execution-resource-meta");
-  facts.append(node("span", "", t("workExec.main") + " · "
-    + (projection.mainRun.runId || t("detail.unobserved"))
-    + " [" + t("workExec.mainStatus." + projection.mainRun.status) + "]"));
-  facts.append(node("span", "", t("workExec.candidate") + " · "
-    + (projection.candidate.candidateId || t("workExec.none"))
-    + " [" + t("workExec.candidateStatus." + projection.candidate.status) + "]"));
-  card.append(facts);
-
-  if (projection.candidate.sourceExecutionGroupId) {
-    const provenance = projection.candidate.successfulLaneRuns.map(function (lane) {
-      return lane.laneId + " → " + lane.successfulRunId;
-    }).join(", ") || t("detail.unobserved");
-    card.append(node("p", "muted mono", (projection.candidate.mainRunId || t("detail.unobserved"))
-      + " → " + projection.candidate.sourceExecutionGroupId + " → " + provenance));
+  if (items.length > pageSize) {
+    more = h("button.show-more", { type: "button", onclick: renderChunk });
+    container.append(more);
   }
+  renderChunk();
+}
 
-  const next = node("div", "exec-resolution");
-  next.append(node("span", "exec-resolution-decision", t("workExec.next")));
-  next.append(node("span", "exec-resolution-summary",
-    t("workExec.action." + projection.nextAction.kind)
-      + " · " + t("workExec.owner") + " "
-      + (projection.nextAction.owners.join(", ") || t("workExec.none"))));
-  if (projection.nextAction.targetIds.length) {
-    next.append(node("span", "mono", projection.nextAction.targetIds.join(", ")));
-  }
-  card.append(next);
-  return card;
+// --- Metrics (DOM built with node() only; executed by the usage test) -------------
+export function metricTile(labelText, value, options) {
+  const variant = options && options.tone ? " tone-" + options.tone : "";
+  const tile = node("div", "metric" + variant);
+  tile.append(node("span", "metric-label", labelText), node("strong", "metric-value", String(value)));
+  return tile;
 }
 
 export function usageMetricText(metric, t, suffix) {
@@ -235,10 +212,10 @@ export function usageMetricText(metric, t, suffix) {
   return metric.value + (suffix || "") + (metric.status === "partial" ? " · " + t("detail.partial") : "");
 }
 
-function usageTile(label, metric, t, suffix) {
-  const tile = metricTile(label, usageMetricText(metric, t, suffix));
-  if (metric?.reasons?.length) {
-    tile.append(node("small", "muted", metric.reasons.map(function (reason) {
+function usageTile(labelText, metric, t, suffix) {
+  const tile = metricTile(labelText, usageMetricText(metric, t, suffix));
+  if (metric && metric.reasons && metric.reasons.length) {
+    tile.append(node("small", "metric-note", metric.reasons.map(function (reason) {
       return t("usage.reason." + reason);
     }).join("; ")));
   }
@@ -247,747 +224,196 @@ function usageTile(label, metric, t, suffix) {
 
 export function observabilityMetricCard(observability, t) {
   if (!observability) return null;
-  const card = node("div", "observability-metrics");
+  const wrap = node("div", "usage");
+  const grid = node("div", "metric-grid");
   const cost = observability.cost || {};
   const context = observability.context || {};
-  card.append(usageTile(t("detail.tokens"), cost.tokens, t));
-  card.append(usageTile(t("detail.toolCalls"), cost.toolCalls, t));
-  card.append(usageTile(t("detail.elapsed"), cost.elapsedSeconds, t, "s"));
-  card.append(usageTile(t("detail.executionSum"), cost.executionSeconds, t, "s"));
-  card.append(metricTile(t("detail.ready"), (observability.dag?.readyIds || []).length, { hot: true }));
-  card.append(metricTile(t("detail.contextSnapshots"), context.snapshotCount));
-  const contextMeta = node("div", "record-meta observability-context-meta");
-  contextMeta.append(node("span", "", t("detail.usageScope")));
-  contextMeta.append(node("span", "", t("detail.observedThrough") + " · "
+  grid.append(usageTile(t("usage.tokens"), cost.tokens, t));
+  grid.append(usageTile(t("usage.toolCalls"), cost.toolCalls, t));
+  grid.append(usageTile(t("usage.elapsed"), cost.elapsedSeconds, t, "s"));
+  grid.append(usageTile(t("usage.executionSum"), cost.executionSeconds, t, "s"));
+  grid.append(metricTile(t("usage.ready"), ((observability.dag && observability.dag.readyIds) || []).length));
+  grid.append(metricTile(t("usage.contextSnapshots"), context.snapshotCount == null ? t("detail.unobserved") : context.snapshotCount));
+  wrap.append(grid);
+  const meta = node("p", "usage-meta");
+  meta.append(node("span", "", t("usage.scope")));
+  meta.append(node("span", "", t("usage.observedThrough") + " "
     + (cost.observedThrough ? formatDateTime(cost.observedThrough) : t("detail.unobserved"))));
-  contextMeta.append(node("span", "", t("detail.contextBytes") + " · "
-    + (context.totalBytes === null ? t("detail.partial") : context.totalBytes + " B")));
-  contextMeta.append(node("span", "", t("detail.compression") + " · " + t("detail.unavailable")));
-  contextMeta.append(node("span", "", t("detail.marginalValue") + " · " + t("detail.unavailable")));
-  card.append(contextMeta);
-  return card;
+  meta.append(node("span", "", t("usage.contextBytes") + " "
+    + (context.totalBytes == null ? t("detail.partial") : context.totalBytes + " B")));
+  wrap.append(meta);
+  return wrap;
 }
 
-export function dagGraph(dag, t) {
-  if (!dag || !dag.nodes || !dag.nodes.length) return emptyRow(t);
-  const graph = node("div", "dag-graph");
-  const edgeByTarget = {};
-  (dag.edges || []).forEach(function (edge) {
-    if (!edgeByTarget[edge.to]) edgeByTarget[edge.to] = [];
-    edgeByTarget[edge.to].push(edge);
-  });
-  dag.nodes.forEach(function (item) {
-    const row = node("div", "dag-node is-" + item.projectedStatus);
-    const top = node("div", "dag-node-head");
-    top.append(statusDot(item.projectedStatus), node("strong", "dag-node-title", item.title));
-    top.append(pill(t, "dag", item.projectedStatus));
-    if ((dag.readyIds || []).indexOf(item.id) >= 0) top.append(chip(t("dag.ready"), "is-active"));
-    row.append(top);
-    const edges = edgeByTarget[item.id] || [];
-    if (edges.length) {
-      const deps = node("div", "dag-node-deps");
-      deps.append(node("small", "", t("dag.dependsOn")));
-      edges.forEach(function (edge) {
-        deps.append(chip(edge.from + " · " + t("dag.edge." + edge.status), "is-" + edge.status));
-      });
-      row.append(deps);
-    }
-    if (item.rootCauseIds && item.rootCauseIds.length) {
-      row.append(node("small", "dag-root-cause", t("dag.rootCause") + " · " + item.rootCauseIds.join(" ← ")));
-    }
-    graph.append(row);
-  });
-  return graph;
+// --- Agent identity ------------------------------------------------------------------
+export function agentChips(agent) {
+  if (!agent) return null;
+  const chips = [];
+  if (agent.adapterId || agent.component) chips.push(chip(agentLabel(agent.component, agent.adapterId), "chip-strong"));
+  if (agent.model) chips.push(chip(agent.model));
+  if (agent.effort) chips.push(chip(agent.effort));
+  return chips.length ? h("span.chip-row", null, chips) : null;
 }
 
-// --- WorkItem Candidates -----------------------------------------------------
-export function candidateList(candidates, t, locale) {
-  if (!candidates || !candidates.length) return null;
-  const block = node("div", "record-block");
-  block.append(node("small", "", t("detail.candidates")));
-  const list = node("div", "candidate-list");
-  candidates.slice().sort(function (a, b) { return b.sequence - a.sequence; })
-    .forEach(function (candidate) {
-      const row = node("div", "candidate-row");
-      row.append(node("span", "candidate-seq", "#" + candidate.sequence));
-      row.append(node("span", "candidate-summary", candidate.summary));
-      const source = candidate.source.type === "direct"
-        ? t("candidate.source.direct")
-        : t("candidate.source.run") + " " + candidate.source.runId;
-      row.append(node("span", "candidate-source", source));
-      row.append(node("time", "", formatDateTime(candidate.createdAt, locale)));
-      list.append(row);
-    });
-  block.append(list);
-  return block;
-}
-
-// --- Progressive disclosure --------------------------------------------------
-// Re-render is cheap and happens whenever the underlying data changes, so all
-// disclosure state (collapsed blocks, visible pages) is deliberately
-// deterministic per render: long content starts collapsed and expanding is a
-// pure local toggle.
-function shouldCollapse(text, threshold) {
-  const limit = threshold || 700;
-  const value = String(text);
-  if (value.length > limit) return true;
-  let lines = 0;
-  for (let i = 0; i < value.length; i += 1) {
-    if (value[i] === "\\n") lines += 1;
-  }
-  return lines > 12;
-}
-
-function collapseToggle(block, t) {
-  block.classList.add("is-collapsible", "is-collapsed");
-  const toggle = node("button", "md-toggle", t("actions.showMore"));
-  toggle.type = "button";
-  toggle.addEventListener("click", function () {
-    const collapsed = block.classList.toggle("is-collapsed");
-    toggle.textContent = collapsed ? t("actions.showMore") : t("actions.showLess");
-  });
-  block.append(toggle);
-}
-
-// Rich text block: small label + Markdown body, auto-collapsed when long.
-export function richText(label, text, t, options) {
-  if (!text) return null;
-  const baseClass = (options && options.className) || "record-block";
-  const extra = options && options.extraClass ? " " + options.extraClass : "";
-  const block = node("div", baseClass + extra);
-  if (label) block.append(node("small", "", label));
-  const body = node("div", "md" + (options && options.muted ? " muted" : ""));
-  body.innerHTML = renderMarkdown(text);
-  block.append(body);
-  if (shouldCollapse(text, options && options.threshold)) collapseToggle(block, t);
-  return block;
-}
-
-// Renders the first page of a long list plus a button that reveals the rest
-// in place, one page at a time.
-export function pagedList(container, items, pageSize, renderItem, t) {
-  let shown = 0;
-  let more = null;
-  function renderChunk() {
-    const chunk = items.slice(shown, shown + pageSize);
-    chunk.forEach(function (item) {
-      container.insertBefore(renderItem(item), more);
-    });
-    shown += chunk.length;
-    if (more) {
-      const remaining = items.length - shown;
-      if (remaining <= 0) {
-        more.remove();
-        more = null;
-      } else {
-        more.textContent = t("actions.showRemaining").replace("{count}", String(remaining));
-      }
-    }
-  }
-  if (items.length > pageSize) {
-    more = node("button", "show-more", "");
-    more.type = "button";
-    more.addEventListener("click", renderChunk);
-    container.append(more);
-  }
-  renderChunk();
-}
-
-export function criteriaList(label, items, t) {
-  const list = (items || []).filter(Boolean);
-  if (!list.length) return null;
-  const block = node("div", "record-block is-wide criteria-block");
-  block.append(node("small", "", label));
-  const listElement = node("ul", "criteria-list");
-  list.forEach(function (item) {
-    const li = node("li", "");
-    li.innerHTML = inlineMarkdown(escapeHtml(item));
-    listElement.append(li);
-  });
-  block.append(listElement);
-  if (list.length > 6) collapseToggle(block, t);
-  return block;
-}
-
-// --- Authors ------------------------------------------------------------------
-function messageAuthor(message, t) {
-  return message.author.type === "role"
-    ? message.author.roleName
-    : t("author." + message.author.type);
-}
-
-function authorName(t, who) {
-  const key = "author." + who;
-  const label = t(key);
-  return label === key ? who : label;
-}
-
-// --- Input (attention) cards ---------------------------------------------------
-function answerActions(input, actions, t) {
-  const answers = node("div", "input-actions");
+// --- Input requests ----------------------------------------------------------------
+export function inputCard(input, t, locale, onAnswer) {
+  const policy = input.policy && input.policy.kind;
+  const element = h("article.input-card");
+  element.append(h("div.input-head", null,
+    h("span.input-kicker", null, icon("inbox", "icon-sm"), t("input.kicker")),
+    policy ? badge(label(t, "input", policy), policy === "required" ? "bad" : "warn") : null,
+    input.policy && input.policy.timeoutAt
+      ? h("span.input-timeout", null, icon("clock", "icon-sm"),
+        t("input.timeoutAt") + " " + relativeTime(input.policy.timeoutAt, locale, t)) : null,
+    timeTag(input.createdAt, locale, t)));
+  element.append(h("p.input-question", null, input.question));
+  const facts = [];
+  if (input.requester) facts.push(t("input.from") + " " + input.requester.roleName
+    + " · " + (input.requester.runId || input.requester.nativeSessionId || ""));
+  if (input.blockedRefs && input.blockedRefs.length) facts.push(t("input.blocks") + " "
+    + input.blockedRefs.map(function (ref) { return ref.type + " " + ref.id; }).join(", "));
+  if (facts.length) element.append(h("p.input-facts", null, facts.join("  ·  ")));
+  const recommended = input.policy && input.policy.recommendedChoiceKey;
   if (input.choices && input.choices.length) {
-    input.choices.forEach(function (choice) {
-      const button = node("button", "input-answer", choice.label);
-      button.type = "button";
-      button.addEventListener("click", function () {
-        if (actions.answerInput) actions.answerInput(input, { choiceKey: choice.key });
-      });
-      answers.append(button);
-    });
+    element.append(h("div.input-choices", null, input.choices.map(function (choice) {
+      return h("button.choice" + (choice.key === recommended ? ".is-recommended" : ""), {
+        type: "button",
+        onclick: function (event) { onAnswer(input, { choiceKey: choice.key }, event.currentTarget); }
+      }, h("span", null, choice.label), choice.key === recommended ? badge(t("input.recommended"), "accent") : null);
+    })));
   } else {
-    const form = node("form", "input-form");
-    const field = node("input", "");
-    field.type = "text";
-    field.required = true;
-    field.placeholder = t("input.freeText");
-    const submit = node("button", "input-answer", t("actions.answer"));
-    submit.type = "submit";
-    form.append(field, submit);
+    const field = h("input", { type: "text", required: true, placeholder: t("input.freeText"), maxLength: 8000 });
+    const form = h("form.input-form", null, field,
+      h("button.btn.btn-primary", { type: "submit" }, icon("send"), h("span", null, t("actions.answer"))));
+    form.addEventListener("input", function () { form.dataset.unsent = field.value ? "true" : "false"; });
     form.addEventListener("submit", function (event) {
       event.preventDefault();
       const text = field.value.trim();
-      if (text && actions.answerInput) actions.answerInput(input, { text: text });
+      if (text) onAnswer(input, { text: text }, form.querySelector("button"));
     });
-    answers.append(form);
+    element.append(form);
   }
-  return answers;
+  return element;
 }
 
-export function inputCard(input, _options, t, locale, actions) {
-  const card = node("article", "input-card");
-  const top = node("div", "input-card-top");
-  top.append(node("small", "", t("detail.openInput")));
-  const question = node("p", "input-question", input.question);
-  top.append(question);
-  const context = node("div", "input-context");
-  if (input.policy) {
-    if (input.policy.kind === "recommended") {
-      context.append(pill(t, "input", "recommended"));
-      if (input.policy.timeoutAt) {
-        context.append(node("span", "", t("input.timeoutAt") + " · " + relativeTime(input.policy.timeoutAt, locale, t)));
-      }
-    } else {
-      context.append(pill(t, "input", "required"));
-    }
-  }
-  context.append(node("time", "", formatDateTime(input.createdAt, locale)));
-  top.append(context);
-  if (input.blockedRefs && input.blockedRefs.length) {
-    const blocked = input.blockedRefs.map(function (ref) { return ref.type + "·" + ref.id; }).join("  ");
-    top.append(node("span", "input-blocked", blocked));
-  }
-  if (input.requester) {
-    top.append(node("span", "input-requester",
-      t("detail.requester") + " · " + input.requester.roleName + " / " + (input.requester.runId ?? input.requester.nativeSessionId)));
-  }
-  card.append(top);
-  card.append(answerActions(input, actions, t));
-  return card;
-}
-
-// --- Conclusion band ------------------------------------------------------------
-export function conclusionMeta(task, t, locale, kind) {
-  const meta = node("div", "conclusion-meta");
-  const actor = kind === "archived" ? task.archivedBy
-    : kind === "cancelled" ? task.retiredBy
-    : task.completedBy;
-  const at = kind === "archived" ? task.archivedAt
-    : kind === "cancelled" ? task.retiredAt
-    : task.completedAt;
-  const label = kind === "archived" ? t("detail.archivedBy")
-    : kind === "cancelled" ? t("detail.cancelledBy")
-    : t("detail.completedBy");
-  if (actor) meta.append(node("span", "", label + " · " + authorName(t, actor)));
-  if (at) meta.append(node("time", "", formatDateTime(at, locale)));
-  return meta;
-}
-
-// --- Record cards -----------------------------------------------------------------
-// WorkItems that no longer need action render collapsed; everything actionable
-// (pending, running, awaiting acceptance, failed) stays expanded.
-const WORK_ITEM_OPEN_STATUSES = ["open"];
-
-export function workItemCard(item, titles, t, locale, actions, taskId) {
-  const collapsible = WORK_ITEM_OPEN_STATUSES.indexOf(item.status) === -1;
-  const card = node(collapsible ? "details" : "article", "record-card work-item-card");
-  const head = node(collapsible ? "summary" : "div", "record-head");
-  const titleRow = node("div", "record-title-row");
-  titleRow.append(statusDot(item.status), node("strong", "record-title", item.title));
-  const pills = node("div", "record-pills");
-  pills.append(pill(t, "work", item.status));
-  if (item.workspaceDisposition) pills.append(pill(t, "disposition", item.workspaceDisposition));
-  head.append(titleRow, pills);
-  card.append(head);
-
-  const body = node("div", "work-item-body");
-  const meta = node("div", "record-meta");
-  if (item.assignee) meta.append(node("span", "meta-name", item.assignee));
-  meta.append(node("span", "mono", item.id));
-  meta.append(node("time", "", formatDateTime(item.updatedAt, locale)));
-  if (item.endedAt) {
-    meta.append(node("span", "", t("detail.endedAt") + " · " + formatDateTime(item.endedAt, locale)));
-  }
-  body.append(meta);
-
-  if (item.objective && item.objective !== item.title) {
-    body.append(richText(t("detail.objective"), item.objective, t));
-  }
+// --- Records -----------------------------------------------------------------------
+export function workItemCard(item, t, locale, titles) {
+  const settled = item.status !== "open";
+  const element = h(settled ? "details.work-card.is-settled" : "article.work-card");
+  element.dataset.viewKey = "work:" + item.id;
+  const head = h(settled ? "summary.work-head" : "header.work-head", null,
+    settled ? icon("chevron", "disclosure-chevron") : null,
+    dot(tone("work", item.status)),
+    h("span.work-title", null, item.title),
+    statusBadge(t, "work", "work", item.status));
+  element.append(head);
+  const body = h("div.work-body");
+  body.append(h("div.meta-line", null,
+    item.assignee ? h("span.meta-strong", null, icon("user", "icon-sm"), item.assignee) : null,
+    mono(item.id), timeTag(item.updatedAt, locale, t)));
+  if (item.objective && item.objective !== item.title) body.append(richText(t("work.objective"), item.objective, t));
   if (item.acceptance && item.acceptance.length) {
-    body.append(criteriaList(t("detail.acceptance"), item.acceptance, t));
+    body.append(h("div.prose-block", null, h("h4.prose-label", null, t("work.acceptance")),
+      h("ul.checklist", null, item.acceptance.map(function (entry) {
+        return h("li" + (item.status === "accepted" ? ".is-done" : ""), null, icon(item.status === "accepted" ? "check" : "target", "icon-sm"), h("span", null, entry));
+      }))));
   }
-
-  // Short chip rows (dependencies, writable projects) sit side by side; long
-  // text blocks above and below stay full-width so the card reads top-to-bottom
-  // like an issue rather than a mismatched column grid.
-  const chipCols = node("div", "work-item-chips");
-  if (item.dependsOn && item.dependsOn.length) {
-    chipCols.append(chipRow(t("detail.dependsOn"), item.dependsOn.map(function (id) { return titles[id] || id; })));
-  }
+  const deps = (item.dependsOn || []).map(function (id) { return (titles && titles[id]) || id; });
+  if (deps.length) body.append(h("div.meta-line", null, h("span.meta-label", null, t("work.dependsOn")), deps.map(function (d) { return chip(d); })));
   if (item.writeProjectIds && item.writeProjectIds.length) {
-    chipCols.append(chipRow(t("detail.writeProjects"), item.writeProjectIds));
+    body.append(h("div.meta-line", null, h("span.meta-label", null, t("work.writeProjects")), item.writeProjectIds.map(function (d) { return chip(d); })));
   }
-  if (chipCols.childNodes.length) body.append(chipCols);
-
-  if (item.execution) {
-    body.append(workItemExecutionCard(item.execution, t));
+  if (item.candidates && item.candidates.length) {
+    body.append(h("div.prose-block", null, h("h4.prose-label", null, t("work.candidates")),
+      h("ol.candidates", null, item.candidates.slice().sort(function (a, b) { return b.sequence - a.sequence; }).map(function (candidate) {
+        return h("li", null, h("span.candidate-seq", null, "#" + candidate.sequence), h("span", null, candidate.summary),
+          h("span.faint", null, candidate.source && candidate.source.type === "run" ? candidate.source.runId : t("work.direct")),
+          timeTag(candidate.createdAt, locale, t));
+      }))));
   }
-
-  if (item.observability) {
-    const observability = item.observability;
-    const metrics = node("div", "record-meta work-item-observability");
-    metrics.append(usageTile(t("detail.tokens"), observability.cost.tokens, t));
-    metrics.append(usageTile(t("detail.toolCalls"), observability.cost.toolCalls, t));
-    metrics.append(usageTile(t("detail.executionSum"), observability.cost.executionSeconds, t, "s"));
-    metrics.append(node("span", "", t("detail.contextSnapshots") + " · "
-      + observability.context.snapshotCount));
-    metrics.append(node("span", "", t("detail.results") + " · "
-      + (observability.resultCount == null
-        ? t("detail.unobserved")
-        : observability.resultCount)));
-    body.append(metrics);
-  }
-
-  // Review candidates submitted for this WorkItem, newest first.
-  const candidates = candidateList(item.candidates, t, locale);
-  if (candidates) body.append(candidates);
-
-  // Explicit Leader retirement disposition.
   if (item.disposition) {
-    const disposition = node("div", "record-block disposition-block");
-    disposition.append(node("small", "", t("detail.disposition")));
-    const text = item.disposition.summary
-      + (item.disposition.replacementWorkItemId
-        ? " · " + t("detail.replacementWorkItem") + " " + item.disposition.replacementWorkItemId
-        : "");
-    disposition.append(node("p", "muted", text));
-    body.append(disposition);
+    body.append(note(t("work.disposition") + ": " + item.disposition.summary
+      + (item.disposition.replacementWorkItemId ? " → " + item.disposition.replacementWorkItemId : "")));
   }
-
-  if (item.outcome) {
-    body.append(richText(t("detail.outcome"), item.outcome, t, { extraClass: "outcome-callout", muted: true }));
-  }
-  card.append(body);
-  return card;
+  if (item.outcome) body.append(richText(t("work.outcome"), item.outcome, t, { className: "callout" }));
+  element.append(body);
+  return element;
 }
 
 export function runCard(run, t, locale) {
-  const card = node("article", "execute-card");
-  card.dataset.status = run.status;
-
-  const idRow = node("div", "execute-id");
-  idRow.append(statusDot(run.status));
-  idRow.append(node("span", "role", run.roleName));
-  idRow.append(node("span", "", run.id));
-  if (run.workItemId) idRow.append(node("span", "", t("detail.workItem") + " · " + run.workItemId));
-  if (run.purpose) idRow.append(chip(t("run.purpose." + run.purpose)));
-  idRow.append(node("time", "", formatDateTime(run.result?.completedAt || run.updatedAt, locale)));
-  card.append(idRow);
-  const observation = node("div", "record-meta");
-  observation.append(node("span", "", t("run.recordState") + " · " + t("status." + run.status)));
-  observation.append(node("span", "", t("run.delivery") + " · "
-    + t("run.delivery." + (run.execution?.delivery || "unobserved"))));
-  card.append(observation);
-
-  const visibleInput = run.inputs && run.inputs.length ? run.inputs[0].input : null;
-  card.append(richText(t("detail.instruction"), visibleInput?.directive || visibleInput?.action || "-", t, { className: "execute-io", threshold: 320 }));
-  if (run.result?.output) {
-    card.append(richText(t("detail.outcome"), run.result.output, t, { className: "execute-io outcome", threshold: 320 }));
-  }
-  if (run.result?.diagnostic) {
-    card.append(richText(t("detail.failure"), run.result.diagnostic, t, { className: "execute-io outcome", threshold: 320 }));
-  }
-
-  const foot = node("div", "execute-foot");
-  const tags = node("div", "execute-tags");
-  tags.append(chip(t("mode." + run.mode)));
+  const element = h("article.run-card");
+  element.dataset.status = run.status;
+  const input = run.inputs && run.inputs.length ? run.inputs[0].input : null;
+  element.append(h("header.run-head", null,
+    dot(tone("run", run.status)),
+    h("span.run-role", null, run.roleName),
+    mono(run.id),
+    run.purpose ? chip(label(t, "run.purpose", run.purpose)) : null,
+    run.workItemId ? chip(run.workItemId) : null,
+    h("span.spacer"),
+    statusBadge(t, "run", "run", run.status)));
+  element.append(h("div.meta-line", null,
+    h("span", null, t("run.delivery") + ": " + label(t, "run.delivery", (run.execution && run.execution.delivery) || "unobserved")),
+    run.mode ? h("span", null, label(t, "mode", run.mode)) : null,
+    timeTag((run.result && run.result.completedAt) || run.updatedAt, locale, t),
+    agentChips(run.effective || (run.agentId ? run : null))));
+  const directive = input && (input.directive || input.action);
+  if (directive) element.append(richText(t("run.instruction"), directive, t, { threshold: 320 }));
+  if (run.result && run.result.output) element.append(richText(t("run.output"), run.result.output, t, { threshold: 320, className: "callout" }));
+  if (run.result && run.result.diagnostic) element.append(richText(t("run.failure"), run.result.diagnostic, t, { threshold: 320, className: "callout.tone-bad" }));
   if (run.executionGroupId) {
-    tags.append(chip(t("detail.lineage") + " · " + run.executionGroupId
-      + (run.executionLaneId ? "/" + run.executionLaneId : "")));
+    element.append(h("p.faint.mono-line", null, t("run.lineage") + " " + run.executionGroupId + (run.executionLaneId ? "/" + run.executionLaneId : "")));
   }
-  const badge = run.effective ? agentBadge(run.effective) : (run.agentId ? agentBadge(run) : null);
-  if (badge) tags.append(badge);
-  foot.append(tags);
-  foot.append(pill(t, "run", run.status));
-  card.append(foot);
-
-  if (run.effective) {
-    const eff = node("div", "record-meta");
-    eff.append(node("span", "", t("detail.effective") + " · r" + run.effective.sourceDesiredRevision));
-    eff.append(node("span", "", t("detail.profileIntent") + " · " + run.effective.profileAccess));
-    eff.append(node("span", "", t("detail.permission") + " · " + run.effective.permission.strategy));
-    card.append(eff);
-  }
-
-  return card;
+  return element;
 }
 
 export function reviewCard(round, t, locale) {
-  const card = node("article", "record-card");
-  const head = node("div", "record-head");
-  const titleRow = node("div", "record-title-row");
-  titleRow.append(node("strong", "record-title", round.id));
-  head.append(titleRow);
-  const headPills = node("div", "record-pills");
-  if (round.scope) headPills.append(pill(t, "review.scope", round.scope));
-  headPills.append(chip(t(round.executionGroup
-    ? "reviewExec.replicated"
-    : "reviewExec.direct"), round.executionGroup ? "is-active" : ""));
-  headPills.append(pill(t, "review", round.status));
-  head.append(headPills);
-  card.append(head);
-  const meta = node("div", "record-meta");
-  meta.append(node("span", "meta-name", round.reviewerRoleName));
-  if (round.workItemId && round.candidateId) {
-    meta.append(node("span", "mono", round.workItemId + " · " + round.candidateId));
-  }
-  if (round.createdAt) meta.append(node("time", "", formatDateTime(round.createdAt, locale)));
-  meta.append(node("span", "", t("detail.reviewBase") + " · " + round.reviewBaseCommit));
-  if (round.workspace && round.workspace.root) {
-    meta.append(pathMetaItem(t("detail.workspace"), round.workspace.root));
-  }
-  if (round.reviewerRunId) {
-    meta.append(node("span", "mono", t("detail.reviewerRun") + " · " + round.reviewerRunId));
-  }
-  if (round.workspaceDisposition) {
-    meta.append(node("span", "", t("detail.workspaceDisposition") + " · "
-      + t("disposition." + round.workspaceDisposition.kind)));
-  }
-  card.append(meta);
-  if (round.executionGroup) {
-    const group = round.executionGroup;
-    const execution = node("div", "record-block exec-group");
-    const groupMeta = node("div", "record-meta execution-resource-meta");
-    groupMeta.append(node("span", "mono", group.id));
-    groupMeta.append(node("span", "", t("reviewExec.assignment") + " · "
-      + group.assignment.contextSnapshotRef.id));
-    groupMeta.append(node("span", "", t("reviewExec.main") + " · "
-      + (round.reviewerRunId || t("detail.unobserved"))));
-    execution.append(groupMeta);
-    const lanes = node("div", "lane-list");
-    group.lanes.forEach(function (lane) {
-      const row = node("div", "lane-row");
-      row.append(statusDot(lane.disposition === "open" ? "running" : lane.disposition));
-      row.append(node("span", "lane-role", t("reviewExec.producer") + " " + lane.ordinal
-        + " · " + lane.roleName));
-      row.append(node("span", "lane-status", t("reviewExec.status." + lane.disposition)));
-      row.append(node("span", "mono", lane.currentRunId || t("detail.unobserved")));
-      lanes.append(row);
-    });
-    execution.append(lanes);
-    card.append(execution);
-  }
-  if (round.failure) {
-    card.append(richText(
-      t("detail.failure"),
-      round.failure.kind + ": " + round.failure.message,
-      t
-    ));
-  }
-  return card;
+  const element = h("article.review-card");
+  element.append(h("header.run-head", null,
+    dot(tone("review", round.status)),
+    h("span.run-role", null, round.reviewerRoleName || t("review.reviewer")),
+    mono(round.id),
+    round.scope ? chip(label(t, "review.scope", round.scope)) : null,
+    h("span.spacer"),
+    statusBadge(t, "review", "review", round.status)));
+  element.append(h("div.meta-line", null,
+    round.workItemId ? mono(round.workItemId + (round.candidateId ? " · " + round.candidateId : "")) : null,
+    round.reviewBaseCommit ? h("span", null, t("review.base") + " ", mono(String(round.reviewBaseCommit).slice(0, 12))) : null,
+    round.reviewerRunId ? h("span", null, t("review.run") + " ", mono(round.reviewerRunId)) : null,
+    timeTag(round.createdAt, locale, t)));
+  if (round.failure) element.append(note(round.failure.kind + ": " + round.failure.message, "bad"));
+  return element;
 }
 
-export function roleCard(role, task, t, locale, actions) {
-  const card = node("article", "record-card");
-  const head = node("div", "record-head");
-  head.append(node("strong", "record-title", role.name));
-  const headRight = node("div", "record-pills");
-  headRight.append(pill(t, "role", role.status));
-  const open = node("button", "record-open", "");
-  open.type = "button";
-  open.append(node("span", "", t("actions.openSession")), node("span", "arrow", "→"));
-  open.addEventListener("click", function () {
-    if (actions.openTerminal) actions.openTerminal({ scope: "task", taskId: task.id, roleName: role.name });
-  });
-  headRight.append(open);
-  head.append(headRight);
-  card.append(head);
-
-  const meta = node("div", "record-meta");
-  meta.append(node("span", "meta-name", role.activeAgentId));
-  const activeBinding = role.agentBindings && role.agentBindings[role.activeAgentId];
-  if (activeBinding) {
-    const badge = agentBadge({
-      adapterId: activeBinding.adapterId,
-      component: activeBinding.component,
-      model: activeBinding.config && activeBinding.config.model,
-      effort: activeBinding.config && activeBinding.config.effort
-    });
-    if (badge) meta.append(badge);
+export function roleCard(role, t, locale, options) {
+  const opts = options || {};
+  const session = opts.runtimeRole && opts.runtimeRole.runtimeSession;
+  const element = h("article.role-card");
+  const binding = role.agentBindings && role.agentBindings[role.activeAgentId];
+  element.append(h("header.role-head", null,
+    h("span.avatar", { "aria-hidden": "true" }, String(role.name || "?").slice(0, 1).toUpperCase()),
+    h("div.role-title", null, h("strong", null, role.name),
+      h("span.faint", null, role.activeAgentId || "")),
+    opts.status ? statusBadge(t, "role", "role", opts.status) : null));
+  if (binding) element.append(agentChips({
+    adapterId: binding.adapterId, component: binding.component,
+    model: binding.config && binding.config.model, effort: binding.config && binding.config.effort
+  }));
+  if (role.description) element.append(richText(null, role.description, t, { muted: true, threshold: 280 }));
+  const rows = [];
+  rows.push([t("role.session"), session && session.nativeSessionId ? mono(session.nativeSessionId) : t("role.noSession")]);
+  if (role.launchRevision !== undefined) rows.push([t("role.desired"), "r" + role.launchRevision + (opts.launchDrift ? " · " + t("role.drift") : "")]);
+  if (role.defaultAccess !== undefined) rows.push([t("role.access"), role.defaultAccess]);
+  if (opts.retry) rows.push([t("role.providerRetry"), label(t, "retry", opts.retry.status) + " · "
+    + opts.retry.attempts + "/" + opts.retry.limit
+    + (opts.retry.status === "waiting" && opts.retry.nextEligibleAt ? " · " + formatDateTime(opts.retry.nextEligibleAt, locale) : "")]);
+  if (role.skills && role.skills.length) rows.push([t("role.skills"), h("span.chip-row", null, role.skills.map(function (s) { return chip(s); }))]);
+  element.append(kv(rows));
+  if (opts.onOpen) {
+    element.append(h("div.role-actions", null, button(t("role.openSession"), {
+      icon: "terminal", variant: "ghost", onClick: function () { opts.onOpen(role.name); }
+    })));
   }
-  if (role.launchRevision !== undefined) {
-    meta.append(node("span", "", t("detail.desired") + " · r" + role.launchRevision));
-  }
-  if (role.defaultAccess !== undefined) {
-    meta.append(node("span", "", t("detail.profileIntent") + " · " + role.defaultAccess));
-  }
-  if (role.updatedAt) meta.append(node("time", "", formatDateTime(role.updatedAt, locale)));
-  card.append(meta);
-
-  if (role.effectiveLaunch) {
-    const eff = node("div", "record-meta");
-    eff.append(node("span", "", t("detail.effectiveAgent") + " · " + role.effectiveLaunch.agentId));
-    const effBadge = agentBadge(role.effectiveLaunch);
-    if (effBadge) eff.append(effBadge);
-    if (role.effectiveLaunch.sourceDesiredRevision !== undefined) {
-      eff.append(node("span", "", t("detail.effective") + " · r" + role.effectiveLaunch.sourceDesiredRevision));
-    }
-    if (role.effectiveLaunch.profileAccess !== undefined) {
-      eff.append(node("span", "", t("detail.profileIntent") + " · " + role.effectiveLaunch.profileAccess));
-    }
-    if (role.effectiveLaunch.permission && role.effectiveLaunch.permission.strategy !== undefined) {
-      eff.append(node("span", "", t("detail.permission") + " · " + role.effectiveLaunch.permission.strategy));
-    }
-    eff.append(node("span", "", role.launchDrift ? t("launch.drift") : t("launch.current")));
-    card.append(eff);
-  }
-
-  if (role.providerRetry) {
-    const retry = role.providerRetry;
-    const retryMeta = node("p", "record-meta");
-    const zh = locale.startsWith("zh");
-    const labels = zh ? {
-      waiting: "等待 Provider 重试", "in-flight": "Provider 重试已提交",
-      recovered: "Provider 已恢复", cancelled: "自动重试已取消",
-      exhausted: "自动重试预算耗尽", "needs-attention": "需要检查 Provider",
-      "delivery-unknown": "投递结果未知，禁止重放"
-    } : {
-      waiting: "Waiting for Provider retry", "in-flight": "Provider retry submitted",
-      recovered: "Provider recovered", cancelled: "Automatic retry cancelled",
-      exhausted: "Automatic retry budget exhausted", "needs-attention": "Provider needs attention",
-      "delivery-unknown": "Delivery unknown; no replay"
-    };
-    retryMeta.textContent = (labels[retry.status] || retry.status) + " · "
-      + (zh && retry.category === "rate-limit" ? "临时限流" : retry.category) + " · "
-      + retry.attempts + "/" + retry.limit
-      + (retry.status === "waiting" ? " · " + new Date(retry.nextEligibleAt).toLocaleString(locale) : "")
-      + " · " + (zh ? "原成果保留" : "Existing work preserved")
-      + (retry.reason ? " · " + retry.reason : "");
-    card.append(retryMeta);
-  }
-
-  if (role.sessionTokens) {
-    const tokenMeta = node("div", "record-meta");
-    const cumulative = role.sessionTokens.cumulativeTotal || {};
-    const maximum = role.sessionTokens.maximumRequestInput || {};
-    tokenMeta.append(node("span", "", t("detail.sessionTotalTokens") + " · "
-      + (cumulative.status === "observed" ? cumulative.totalTokens : t("detail.unobserved"))));
-    tokenMeta.append(node("span", "", t("detail.maximumRequestInputTokens") + " · "
-      + (maximum.status === "observed" ? maximum.inputTokens : t("detail.unobserved"))));
-    card.append(tokenMeta);
-  }
-
-  if (role.description) card.append(richText(null, role.description, t, { muted: true }));
-
-  const cols = node("div", "record-cols");
-  const bindingIds = role.agentBindings ? Object.keys(role.agentBindings) : [];
-  if (bindingIds.length > 1) {
-    const bindings = bindingIds.map(function (id) {
-      const binding = role.agentBindings[id];
-      const model = binding.config && binding.config.model;
-      return componentLabel(binding.component, binding.adapterId) + (model ? " · " + model : "");
-    });
-    const activeBindingLabel = activeBinding
-      ? componentLabel(activeBinding.component, activeBinding.adapterId) + (activeBinding.config && activeBinding.config.model ? " · " + activeBinding.config.model : "")
-      : undefined;
-    cols.append(chipRow(t("detail.agents"), bindings, activeBindingLabel));
-  }
-  if (role.skills && role.skills.length) cols.append(chipRow(t("detail.skills"), role.skills));
-  if (role.responsibilities && role.responsibilities.length) cols.append(criteriaList(t("detail.responsibilities"), role.responsibilities, t));
-  if (role.constraints && role.constraints.length) cols.append(criteriaList(t("detail.constraints"), role.constraints, t));
-  if (role.expectedOutput) cols.append(richText(t("detail.expectedOutput"), role.expectedOutput, t, { muted: true }));
-  if (cols.childNodes.length) card.append(cols);
-
-  if (role.workspace) {
-    const workspaceMeta = node("div", "record-meta");
-    workspaceMeta.append(pathMetaItem(t("detail.workspace"), role.workspace));
-    card.append(workspaceMeta);
-  }
-  return card;
-}
-
-export function historyEventRow(event, t, locale) {
-  if (event.kind === "milestone") {
-    const milestone = event.item;
-    const card = node("article", "record-card");
-    const head = node("div", "record-head");
-    const titleRow = node("div", "record-title-row");
-    titleRow.append(node("strong", "record-title", milestone.title));
-    head.append(titleRow);
-    head.append(pill(t, "history", "milestone"));
-    card.append(head);
-    const meta = node("div", "record-meta");
-    meta.append(node("span", "mono", milestone.id));
-    meta.append(node("time", "", formatDateTime(milestone.createdAt, locale)));
-    card.append(meta);
-    if (milestone.summary) card.append(richText(null, milestone.summary, t, { muted: true }));
-    return card;
-  }
-  const decision = event.item;
-  const card = node("article", "record-card");
-  const head = node("div", "record-head");
-  const titleRow = node("div", "record-title-row");
-  titleRow.append(node("strong", "record-title", decision.title));
-  head.append(titleRow);
-  head.append(pill(t, "history", "decision"));
-  card.append(head);
-  const meta = node("div", "record-meta");
-  meta.append(node("span", "mono", decision.id));
-  if (decision.createdAt) meta.append(node("time", "", formatDateTime(decision.createdAt, locale)));
-  if (decision.status) meta.append(pill(t, "decision", decision.status));
-  card.append(meta);
-  if (decision.rationale) card.append(richText(null, decision.rationale, t, { muted: true }));
-  if (decision.supersededReason) card.append(richText(null, decision.supersededReason, t, { muted: true }));
-  return card;
-}
-
-export function messageCard(message, t, locale, result) {
-  const card = node("article", "record-card");
-  const head = node("div", "record-head");
-  const titleRow = node("div", "record-title-row");
-  titleRow.append(node("strong", "record-title", messageAuthor(message, t)));
-  head.append(titleRow);
-  if (message.kind) head.append(pill(t, "messageKind", message.kind));
-  if (message.status) head.append(pill(t, "status", message.status));
-  card.append(head);
-
-  const meta = node("div", "record-meta");
-  meta.append(node("span", "mono", message.id));
-  meta.append(node("time", "", formatDateTime(message.createdAt, locale)));
-  if (message.runId) meta.append(node("span", "mono", message.runId + (message.workItemId ? " · " + message.workItemId : "")));
-  if (message.recipient) {
-    meta.append(node("span", "mono", "→ " + message.recipient.roleName + " · "
-      + (message.recipient.reviewRoundId || message.recipient.workItemId)));
-    meta.append(node("span", "mono", !message.recipient.ownerRunId ? t("messageDelivery.notification") : message.continuation?.runId
-      ? t("messageDelivery.run") + " " + message.continuation.runId
-      : message.continuation?.notDeliveredReason
-        ? t("messageDelivery.blocked") + " " + message.continuation.notDeliveredReason
-        : t("messageDelivery.pending")));
-  }
-  card.append(meta);
-
-  card.append(richText(null, message.body, t));
-  if (message.resultRef) {
-    card.append(node("small", "mono", message.resultRef.runId));
-    if (result?.output) card.append(richText(t("detail.outcome"), result.output, t));
-    if (result?.diagnostic) card.append(richText(t("detail.failure"), result.diagnostic, t));
-    if (!result) card.append(node("p", "muted", t("detail.unobserved")));
-  }
-  return card;
-}
-
-// --- Overview + sidebar rows --------------------------------------------------
-export function metricTile(label, value, options) {
-  const variant = options && options.hot ? " is-hot" : options && options.warning ? " is-warning" : "";
-  const tile = node("article", "metric" + variant);
-  tile.append(node("span", "metric-label", label), node("strong", "metric-value", String(value)));
-  return tile;
-}
-
-export function attentionRow(item, t, locale, onSelect) {
-  const row = node("button", "inbox-row");
-  row.type = "button";
-  const request = item.request || {};
-  const kind = request.policy && request.policy.kind === "required" ? "required"
-    : request.policy && request.policy.kind === "recommended" ? "recommended"
-    : null;
-
-  const lead = node("span", "inbox-lead");
-  lead.append(node("span", "inbox-dot"));
-  const head = node("span", "inbox-head");
-  head.append(node("span", "inbox-task", item.taskTitle));
-  if (kind) head.append(pill(t, "input", kind));
-  lead.append(head);
-  row.append(lead);
-
-  if (request.question) {
-    const question = node("span", "inbox-question", request.question);
-    question.title = request.question;
-    row.append(question);
-  }
-
-  const foot = node("span", "inbox-foot");
-  if (request.createdAt) foot.append(node("time", "", relativeTime(request.createdAt, locale, t)));
-  foot.append(node("span", "inbox-go", t("actions.answer") + " →"));
-  row.append(foot);
-
-  row.addEventListener("click", function () { onSelect(item.taskId); });
-  return row;
-}
-
-export function overviewRow(task, label, variant, t, locale, onSelect) {
-  const hasInputs = task.openInputCount > 0;
-  const row = node("button", "overview-row"
-    + (hasInputs || variant === "has-inputs" ? " has-inputs" : ""));
-  row.type = "button";
-  row.append(statusDot(task.status));
-  const main = node("span", "overview-row-title", task.title);
-  main.title = task.title;
-  row.append(main);
-  if (label) {
-    row.append(node("span", "overview-row-label", label));
-  }
-  row.append(node("span", "overview-row-time", relativeTime(task.updatedAt, locale, t)));
-  row.addEventListener("click", function () { onSelect(task.id); });
-  return row;
-}
-
-export function taskCard(task, hasAttention, state, t, locale, onSelect) {
-  const button = node("button", "task");
-  button.type = "button";
-  button.dataset.id = task.id;
-  button.setAttribute("aria-current", String(state.selected === task.id));
-
-  button.append(statusDot(task.status));
-
-  const main = node("span", "task-main");
-  main.append(node("strong", "task-title", task.title));
-  main.append(node("span", "task-meta", relativeTime(task.updatedAt, locale, t)));
-  button.append(main);
-
-  // Derived Task-first execution status for active tasks (blocked, waiting on
-  // agents, recovering, etc.) — a richer signal than the raw lifecycle status.
-  if (task.executionStatus && task.status === "active") {
-    const exec = node("span", "task-exec is-" + task.executionStatus,
-      t("exec.status." + task.executionStatus));
-    button.append(exec);
-  }
-
-  // One signal only: an open input (needs the user) outranks a running count.
-  if (hasAttention || (task.attention && task.attention.openInputs > 0)) {
-    const badge = node("span", "task-signal is-input", String(task.attention ? task.attention.openInputs : task.openInputCount || 1));
-    badge.title = t("stats.inputs");
-    button.append(badge);
-  } else if (task.attention && task.attention.executionSignals > 0) {
-    const badge = node("span", "task-signal", String(task.attention.executionSignals));
-    badge.title = t("catalog.executionSignals");
-    button.append(badge);
-  } else if (task.workItems && task.workItems.running > 0) {
-    const badge = node("span", "task-signal is-running", String(task.workItems.running));
-    badge.title = t("stats.running");
-    button.append(badge);
-  }
-
-  button.addEventListener("click", function () { onSelect(task.id); });
-  return button;
+  return element;
 }
 `;
