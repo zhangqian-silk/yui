@@ -115,7 +115,7 @@ test('errors remain evidence: validation is recoverable; protocol and uncertain 
   assert.equal(executions, 1);
 });
 
-test('cancellation settles started effects; failed fact sinks prevent new effects', async () => {
+test('cancellation settles started effects; failed required recording prevents new effects', async () => {
   const controller = new AbortController();
   let executions = 0;
   const tool = effectTool(async () => {
@@ -135,20 +135,159 @@ test('cancellation settles started effects; failed fact sinks prevent new effect
   assert.equal(before.reason, 'cancelled');
   assert.equal(before.steps, 0);
   assertSettled(before);
-  const sink = await createAgent({ ...options, onEvent: async event => {
+  const sink = await createAgent({ ...options, recorder: { async record(event) {
     if (event.data.type === 'tool_started') throw new Error('sink offline');
-  } }).runTurn(turn());
-  assert.equal(sink.error.code, 'event_sink_failed');
+  } } }).runTurn(turn());
+  assert.equal(sink.error.code, 'recording_failed');
   assert.equal(executions, 1);
+  assert.equal(sink.recording.status, 'failed');
+  assert.equal(sink.recording.failedSeq, sink.recording.lastRecordedSeq + 1);
   assertSettled(sink);
+  const observed = [];
   const terminal = await createAgent({ tools: [], provider: {
     async complete() { return { kind: 'final', content: 'done' }; },
-  }, onEvent: async event => {
+  }, recorder: { async record(event) {
     if (event.data.type === 'turn_ended') throw new Error('sink offline');
-  } }).runTurn(turn());
+  } }, observer: { observe(event) { observed.push(event); } } }).runTurn(turn());
   assert.equal(terminal.reason, 'error');
   assert.equal(terminal.events.at(-1).data.reason, 'error');
+  assert.equal(terminal.recording.failedSeq, terminal.events.at(-1).seq);
+  assert.deepEqual(observed, terminal.events);
   assertSettled(terminal);
+
+  let callsAfterWrite = 0;
+  const lostRecord = await createAgent({
+    tools: [effectTool(async () => { callsAfterWrite++; return { ok: true, content: 'committed' }; })],
+    provider: options.provider,
+    recorder: { async record(event) {
+      if (event.data.type === 'message_appended' && event.data.message.role === 'tool') throw new Error('disk failed');
+    } },
+  }).runTurn(turn());
+  assert.equal(callsAfterWrite, 1);
+  assert.equal(lostRecord.messages[2].outcome.content, 'committed');
+  assert.equal(lostRecord.messages[3].outcome.error.effect, 'none');
+  assert.equal(lostRecord.reason, 'error');
+  assert.match(lostRecord.error.message, /disk failed/);
+  assertSettled(lostRecord);
+});
+
+test('explicit composition replaces context and execution without changing authoritative history', async () => {
+  const recorded = [];
+  const contexts = [];
+  const executed = [];
+  const result = await createAgent({
+    toolExecutor: {
+      definitions: [{ name: 'effect', description: 'fixture', inputSchema: {} }],
+      async execute(call, stepScope, signal) {
+        assert.ok(Object.isFrozen(call.arguments));
+        assert.ok(Object.isFrozen(stepScope));
+        assert.equal(signal.aborted, false);
+        executed.push({ call, stepScope });
+        return { ok: true, content: 'settled' };
+      },
+    },
+    contextBuilder: { async build(request) {
+      contexts.push(request);
+      assert.ok(Object.isFrozen(request.messages));
+      return [{ role: 'system', content: `context-${request.step}` }, ...request.messages];
+    } },
+    provider: { async complete(request) {
+      assert.equal(request.messages[0].content, `context-${request.step}`);
+      return request.step === 1 ? batch(call('one')) : { kind: 'final', content: 'done' };
+    } },
+    recorder: { async record(event) { recorded.push(event); } },
+    observer: { observe() { throw new Error('UI disconnected'); } },
+  }).runTurn(turn());
+  assert.equal(result.reason, 'completed');
+  assert.deepEqual(contexts.map(r => r.step), [1, 2]);
+  assert.deepEqual(contexts.map(r => r.messages.length), [1, 3]);
+  assert.equal(executed.length, 1);
+  assert.deepEqual(executed[0].stepScope, { ...scope, step: 1 });
+  assert.equal(result.messages.some(m => m.role === 'system'), false);
+  assert.deepEqual(recorded, result.events);
+  assert.deepEqual(result.recording, { status: 'recorded', lastRecordedSeq: result.events.length });
+  assert.deepEqual(result.observerErrors, [{ seq: 1, message: 'UI disconnected' }]);
+  assertSettled(result);
+});
+
+test('unsettled or unknown effects cannot resume; projection cannot bypass canonical call identity', async () => {
+  let effects = 0;
+  const options = { toolExecutor: {
+    definitions: [{ name: 'effect', description: 'fixture', inputSchema: {} }],
+    async execute() { effects++; throw new Error('uncertain'); },
+  }, provider: { async complete() { return batch(call('old'), call('skipped')); } } };
+  const first = await createAgent(options).runTurn(turn());
+  assert.equal(first.error.code, 'tool_exception');
+  assert.equal(effects, 1);
+  assertSettled(first);
+  const resumed = await createAgent({ ...options, provider: {
+    async complete() { assert.fail('unknown history must not reach model'); },
+  } }).runTurn(turn({ turnId: 'next', history: first.messages }));
+  assert.equal(resumed.error.code, 'unresolved_effect');
+  assert.equal(effects, 1);
+  assertSettled(resumed);
+  const settled = [
+    { role: 'assistant', content: '', toolCalls: [call('old')] },
+    { role: 'tool', toolCallId: 'old', name: 'effect', outcome: { ok: true, content: 'confirmed' } },
+  ];
+  const duplicate = await createAgent({ ...options,
+    contextBuilder: { async build() { return [{ role: 'user', content: 'compressed' }]; } },
+  }).runTurn(turn({ history: settled }));
+  assert.equal(duplicate.error.code, 'provider_protocol');
+  assert.equal(effects, 1);
+  assertSettled(duplicate);
+});
+
+test('context failure/cancellation gates providers; observers are nonblocking notifications', async () => {
+  let providers = 0;
+  const controller = new AbortController();
+  const base = { tools: [], provider: { async complete() {
+    providers++;
+    return { kind: 'final', content: 'done' };
+  } } };
+  const invalid = await createAgent({ ...base, contextBuilder: { async build() {
+    return [{ role: 'assistant', content: '', toolCalls: [call('dangling')] }];
+  } } }).runTurn(turn());
+  assert.equal(invalid.error.code, 'context_error');
+  assert.equal(providers, 0);
+  const cancelled = await createAgent({ ...base, contextBuilder: { async build(request) {
+    controller.abort();
+    return request.messages;
+  } } }).runTurn(turn({ signal: controller.signal }));
+  assert.equal(cancelled.reason, 'cancelled');
+  assert.equal(providers, 0);
+  const observer = await createAgent({ ...base, observer: {
+    observe() { return new Promise(() => {}); },
+  } }).runTurn(turn());
+  assert.equal(observer.reason, 'completed');
+  assert.equal(observer.observerErrors.length, 1);
+  assert.equal(observer.recording.status, 'memory');
+  const rejectedObserver = await createAgent({ ...base, observer: {
+    async observe() { throw new Error('invalid async observer'); },
+  } }).runTurn(turn());
+  assert.equal(rejectedObserver.reason, 'completed');
+  assert.equal(rejectedObserver.observerErrors.length, 1);
+  for (const result of [invalid, cancelled, observer]) assertSettled(result);
+});
+
+test('model budget applies after context projection; missing or conflicting capabilities are explicit', async () => {
+  const provider = { async complete(request) {
+    assert.deepEqual(request.messages, [{ role: 'user', content: 'summary' }]);
+    return { kind: 'final', content: 'done' };
+  } };
+  const largeHistory = Array.from({ length: 6 }, () => ({ role: 'user', content: 'x'.repeat(200_000) }));
+  const projected = await createAgent({ provider, tools: [],
+    contextBuilder: { async build(request) {
+      assert.equal(request.messages.length, 7);
+      return [{ role: 'user', content: 'summary' }];
+    } },
+  }).runTurn(turn({ history: largeHistory }));
+  assert.equal(projected.reason, 'completed');
+  const unprojected = await createAgent({ provider, tools: [] }).runTurn(turn({ history: largeHistory }));
+  assert.equal(unprojected.error.code, 'context_limit');
+  assert.throws(() => createAgent({ tools: [] }), /provider/);
+  assert.throws(() => createAgent({ provider }), /exactly one/);
+  assert.throws(() => createAgent({ provider, tools: [], toolExecutor: { definitions: [], execute() {} } }), /exactly one/);
 });
 
 test('text tools constrain paths, bytes and UTF-8 without changing external files', async t => {
