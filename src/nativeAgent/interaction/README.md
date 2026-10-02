@@ -26,6 +26,7 @@ demo 仅使用自己创建的临时目录，不访问工作目录文件，不调
 | `/sessions [offset]` | 分页列出会话（每页最多 20） |
 | `/use ID` | 选择会话并重放事实 |
 | `/history [offset]` | 分页显示完整消息记录（每页最多 20） |
+| `/diagnostics [offset]` | 查询独立的可选观测日志页与健康信息 |
 | `/refresh` | 从会话事实重新构建显示，不重发输入 |
 | `/more` | 请求下一页执行事件 |
 | `/help`、`/quit` | 帮助、断开入口 |
@@ -40,7 +41,7 @@ demo 仅使用自己创建的临时目录，不访问工作目录文件，不调
 
 ## 替换与所有权
 
-`openCli({ sessions, input, output, renderer?, initialSessionId? })` 返回
+`openCli({ sessions, input, output, renderer?, diagnostics?, initialSessionId? })` 返回
 `{ done, close }`。传入的 Node streams、SessionPort 和 renderer 由调用方选择。
 关闭只释放此入口的 readline 和订阅；不关闭调用方 streams 或 SessionPort，
 也不隐式请求取消。输出错误、renderer 异常、输入 EOF 不证明执行失败或停止。
@@ -73,6 +74,19 @@ fixture，用现有公开 `createAgent/runTurn/onEvent` 组装。它拥有历史
 本模块没有 Web 项目、自动重试、真实协议接线或统一插件加载器。
 task-72/76 的公共操作/查询合同仍由其拥有者协调；本模块提供最小消费样例，
 不把消费接口宣称为其他模块的权威类型。
+
+可选 `InteractionDiagnosticsPort` 只消费适配器提供的有界文本投影：
+`query(sessionId, offset, limit)` 返回日志行，`health()` 返回生产者的健康摘要，
+`subscribe` 触发重新读取健康信息。适配器应原样保留真实 source、gap、
+rejected、dropped、inFlight 的意义；UI 不计算这些值，不以它们推断 Turn 状态。
+诊断查询失败只显示 observation unavailable，不关闭输入、不取消执行。
+诊断正文不能填入 SessionPort 的消息历史；观测白名单不包含会话正文。
+
+这使 task-79 的 query/subscribe/health 可以经薄显示适配器消费，无需复制
+它的权威类型；**目前只有确定性 fixture，未声称已适配 task-79 的实际签名**。
+Operator 转交的 task-72 必要 recorder/可选 observer 分离原则已保留：
+此处现有内核 onEvent 先保存会话事实，再调用隔离的订阅者；
+迁移到最终内核时保持这个边界，不把必要记录降级为可丢失的观察出口。
 
 ## 确定性验收
 

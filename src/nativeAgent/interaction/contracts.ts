@@ -36,3 +36,16 @@ export interface InteractionRenderer {
   record(record: DisplayRecord): string;
   message(message: Message): string;
 }
+
+/**
+ * Optional display projection supplied by an observation adapter. Strings retain
+ * the producer's source/gap/rejected/dropped/inFlight facts, not session state.
+ * No telemetry domain types or execution authority are defined here.
+ */
+export interface InteractionDiagnosticsPort {
+  query(sessionId: string, offset: number, limit: number): Promise<{
+    lines: readonly string[]; nextOffset: number | null;
+  }>;
+  health(): Promise<string>;
+  subscribe(changed: () => void): () => void;
+}

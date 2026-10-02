@@ -172,6 +172,42 @@ test('input stream failure detaches readline without an unhandled interface erro
   } finally { cli.close(); await sessions.close(); }
 });
 
+test('optional observation query and health stay distinct from execution and failures do not block input', async () => {
+  const sessions = createMemoryDemoSessions({
+    provider: { complete: async () => ({ kind: 'final', content: 'confirmed' }) }, tools: [],
+  });
+  let changed;
+  let failed = false;
+  const diagnostics = {
+    query: async (id, _offset, limit) => {
+      assert.equal(id, 'demo-session-1');
+      assert.equal(limit, 20);
+      return { lines: ['source=replay gap=true'], nextOffset: null };
+    },
+    health: async () => {
+      if (failed) throw new Error('observer offline');
+      return 'rejected=2 dropped=3 inFlight=1';
+    },
+    subscribe: callback => { changed = callback; return () => { changed = undefined; }; },
+  };
+  const io = terminal();
+  const cli = await openCli({ sessions, ...io, diagnostics });
+  try {
+    await eventually(() => changed);
+    io.input.write('/diagnostics\n');
+    await eventually(() => io.text().includes('inFlight=1'));
+    assert.match(io.text(), /NOT execution state/);
+    assert.match(io.text(), /source=replay gap=true/);
+    assert.ok(!io.text().includes('[ended'));
+    failed = true;
+    changed();
+    await eventually(() => io.text().includes('[observation unavailable]'));
+    io.input.write('still works\n');
+    await eventually(() => io.text().includes('[ended: completed]'));
+  } finally { cli.close(); await sessions.close(); }
+  assert.equal(changed, undefined);
+});
+
 test('tool effects settle after cancellation, observer exceptions isolate, and exact turn identity is enforced', async () => {
   let toolStarted;
   const started = new Promise(resolve => { toolStarted = resolve; });

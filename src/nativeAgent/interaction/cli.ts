@@ -1,17 +1,18 @@
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
-import type { InteractionRenderer, InteractionSessionPort } from './contracts.js';
+import type { InteractionDiagnosticsPort, InteractionRenderer, InteractionSessionPort } from './contracts.js';
 import { createTextRenderer, terminalText } from './renderer.js';
 
 export type CliEnd = { reason: 'closed' | 'quit' | 'eof' | 'display-error' | 'input-error'; error?: unknown };
 export type CliConnection = { done: Promise<CliEnd>; close(): void };
 const PAGE = 20;
-const HELP = 'Text: submit | /new [title] | /sessions [offset] | /use ID | /history [offset] | /refresh | /more | /cancel | /quit\n';
+const HELP = 'Text: submit | /new [title] | /sessions [offset] | /use ID | /history [offset] | /diagnostics [offset] | /refresh | /more | /cancel | /quit\n';
 
 /** Caller owns the streams and session service. Detaching never cancels a turn. */
 export async function openCli(options: {
   sessions: InteractionSessionPort; input: Readable; output: Writable;
   initialSessionId?: string; renderer?: InteractionRenderer;
+  diagnostics?: InteractionDiagnosticsPort;
 }): Promise<CliConnection> {
   const { sessions, input, output } = options;
   const renderer = options.renderer ?? createTextRenderer();
@@ -19,6 +20,8 @@ export async function openCli(options: {
   let cursor = 0;
   let closed = false;
   let unsubscribe = () => {};
+  let unsubscribeDiagnostics = () => {};
+  let diagnosticsQueued = false;
   let refreshQueued = false;
   let scheduled: NodeJS.Immediate | undefined;
   let queue = Promise.resolve();
@@ -30,6 +33,8 @@ export async function openCli(options: {
     closed = true;
     if (scheduled) clearImmediate(scheduled);
     unsubscribe();
+    try { unsubscribeDiagnostics(); }
+    catch (error) { end.error ??= error; }
     lines.close();
     lines.off('error', inputError);
     input.off('error', inputError);
@@ -66,6 +71,23 @@ export async function openCli(options: {
         await write(`[error] ${terminalText(error instanceof Error ? error.message : String(error))}\n`);
       }
     });
+  };
+  const diagnostics = async (offset?: number) => {
+    if (!options.diagnostics) {
+      await write('[observation unavailable: no adapter configured]\n');
+      return;
+    }
+    try {
+      if (offset !== undefined) {
+        const page = await options.diagnostics.query(selected, offset, PAGE);
+        if (page.lines.length > PAGE) throw new Error('Observation page exceeds limit');
+        for (const line of page.lines) await write(`[observation] ${terminalText(line)}\n`);
+        if (page.nextOffset !== null) await write(`[next: /diagnostics ${page.nextOffset}]\n`);
+      }
+      await write(`[observation health; NOT execution state] ${terminalText(await options.diagnostics.health())}\n`);
+    } catch (error) {
+      await write(`[observation unavailable] ${terminalText(error instanceof Error ? error.message : String(error))}\n`);
+    }
   };
   const refresh = async () => {
     const page = await sessions.read(selected, cursor, PAGE);
@@ -158,6 +180,7 @@ export async function openCli(options: {
         if (page.nextOffset !== null) await write(`[next: /history ${page.nextOffset}]\n`);
         break;
       }
+      case 'diagnostics': await diagnostics(offset(arg)); break;
       case 'refresh': cursor = 0; await write('[replay from session facts]\n'); await refresh(); break;
       case 'more': await refresh(); break;
       case 'cancel': {
@@ -176,7 +199,20 @@ export async function openCli(options: {
     // Let already accepted input lines finish on piped EOF.
     enqueue(async () => finish({ reason: 'eof' }));
   });
-  enqueue(async () => { await write(HELP); await select(selected); });
+  enqueue(async () => {
+    await write(HELP);
+    await select(selected);
+    if (closed || !options.diagnostics) return;
+    try {
+      unsubscribeDiagnostics = options.diagnostics.subscribe(() => {
+        if (closed || diagnosticsQueued) return;
+        diagnosticsQueued = true;
+        enqueue(async () => { diagnosticsQueued = false; await diagnostics(); });
+      });
+    } catch (error) {
+      await write(`[observation unavailable] ${terminalText(error instanceof Error ? error.message : String(error))}\n`);
+    }
+  });
   if (input.readableEnded) enqueue(async () => finish({ reason: 'eof' }));
   if (output.destroyed) displayError(new Error('Output unavailable'));
   return { done, close: () => finish({ reason: 'closed' }) };
