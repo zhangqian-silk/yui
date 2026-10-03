@@ -8,6 +8,33 @@ import { resolveCompletionCandidates } from "../../dist/cli/dynamicCompletion.js
 import { routeInvocation } from "../../dist/cli/invocationRouter.js";
 import { renderCommandHelp } from "../../dist/cli/helpRenderer.js";
 
+test("native Codex identity discovers the same offline catalog as transport identity", async () => {
+  const leader = { YUI_SESSION_SCOPE: "task", YUI_TASK_ID: "task-1",
+    YUI_ROLE: "leader", YUI_ADAPTER_ID: "codex", CODEX_THREAD_ID: "native" };
+  assert.equal(discoveryAudience(leader), "leader");
+  assert.equal(discoveryAudience({ ...leader, YUI_ROLE: "worker" }), "assignment");
+  assert.equal(discoveryAudience({ ...leader, YUI_SESSION_SCOPE: "global",
+    YUI_TASK_ID: undefined, YUI_ROLE: "operator" }), "operator");
+  const tree = discoveryCommandTree(leader);
+  assert.deepEqual(tree, discoveryCommandTree({ ...leader, CODEX_THREAD_ID: undefined,
+    YUI_NATIVE_SESSION_ID: "native" }));
+  for (const path of [["task", "brief", "update"], ["task", "publication", "upsert"], ["task", "input", "request"]]) {
+    assert.ok(findCommandNode(path, tree), path.join(" "));
+  }
+  assert.match(renderCommandHelp(findCommandNode(["task", "brief"], tree), "test"), /update/);
+  const ports = { call() { throw new Error("Offline discovery must not query runtime state"); } };
+  assert.ok((await resolveCompletionCandidates({ words: ["task", "brief"], current: "", ports, root: tree })).includes("update"));
+  for (const id of ["", " native", "native ", "bad\0id"]) {
+    assert.equal(discoveryAudience({ ...leader, CODEX_THREAD_ID: id, YUI_NATIVE_SESSION_ID: "fallback" }), "unbound");
+  }
+  assert.equal(discoveryAudience({ ...leader, CODEX_THREAD_ID: undefined }), "unbound");
+  assert.equal(discoveryAudience({ ...leader, YUI_ADAPTER_ID: "claude-code" }), "unbound");
+  assert.equal(discoveryAudience({ ...leader, YUI_ADAPTER_ID: "claude-code",
+    YUI_NATIVE_SESSION_ID: "transport" }), "leader");
+  assert.equal(discoveryAudience({ CODEX_THREAD_ID: "unmanaged" }), "public");
+  assert.equal(discoveryAudience({ YUI_ROLE: "leader", CODEX_THREAD_ID: "native" }), "unbound");
+});
+
 test("one caller projection drives help and completion without restricting direct parsing", async () => {
   const publicTree = discoveryCommandTree({});
   const worker = discoveryCommandTree({ YUI_SESSION_SCOPE: "task", YUI_TASK_ID: "task-1",
