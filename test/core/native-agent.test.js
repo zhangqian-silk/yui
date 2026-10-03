@@ -169,7 +169,8 @@ test('text tools constrain paths, bytes and UTF-8 without changing external file
   assert.equal((await invoke(write, { path: 'new', content: '123456789' })).error.code, 'too_large');
   assert.equal((await invoke(write, { path: 'new', content: 'ok', extra: true })).error.code, 'invalid_arguments');
   assert.equal((await invoke(write, { path: 'new', content: 'ok' })).ok, true);
-  assert.equal((await invoke(write, { path: 'new', content: 'replaced' })).ok, true);
+  const { sha256 } = JSON.parse((await invoke(read, { path: 'new' })).content);
+  assert.equal((await invoke(write, { path: 'new', content: 'replaced', expectedSha256: sha256 })).ok, true);
   assert.equal(await readFile(path.join(root, 'new'), 'utf8'), 'replaced');
   assert.equal(await readFile(sentinel, 'utf8'), 'untouched');
   assert.ok(!(await readdir(root)).some(name => name.startsWith('.agent-')));
