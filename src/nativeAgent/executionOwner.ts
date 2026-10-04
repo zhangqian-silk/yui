@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type { Agent, Scope, TurnResult } from './contracts.js';
+import type { Agent, Scope, TurnResult, ModelRequest, ToolDefinition } from './contracts.js';
+import { ContextBuildError, type ContextBuilder, type ContextInput, type ContextReport } from './context/index.js';
 import type { InteractionSessionPort, SessionSummary } from './interaction/index.js';
 import type { SessionStore, SessionRecording, SaveReceipt } from './session/index.js';
 import type { LocalObserver } from './observability/index.js';
@@ -7,7 +8,10 @@ import type { LocalObserver } from './observability/index.js';
 export type ExecutionEvidence = {
   scope: Scope; result?: TurnResult; receipt?: SaveReceipt; failure?: unknown;
 };
+export type ManualContextProjection = { request: ModelRequest; report: ContextReport; receipt: SaveReceipt };
 export interface ExecutionOwner extends InteractionSessionPort {
+  /** Idle, ready Session only. Computes a disposable projection; never writes history or runs tools. */
+  compact(sessionId: string, signal?: AbortSignal): Promise<ManualContextProjection>;
   /** Current or most recent local execution only; never reconstructed on restart. */
   settle(sessionId: string): Promise<ExecutionEvidence | undefined>;
   /** Cancels and waits for owned executions, detaches listeners; does not close injected store. */
@@ -23,11 +27,15 @@ export function createExecutionOwner(options: {
   sessions?: readonly SessionSummary[];
   maxSteps: number;
   observer?: LocalObserver;
+  /** Share this exact builder/budget/tool set with the agent factory to consume manual projections. */
+  context?: { builder: ContextBuilder; budget: ContextInput['budget']; tools: readonly ToolDefinition[];
+    retention?: Pick<ContextInput, 'protectedHistoryRanges' | 'keepRecentGroups'> };
 }): ExecutionOwner {
   if (!Number.isSafeInteger(options.maxSteps) || options.maxSteps < 1) throw new Error('Positive maxSteps required');
   const catalog = new Map((options.sessions ?? []).map(item => [item.id, { ...item }]));
   const active = new Map<string, { scope: Scope; abort: AbortController; done: Promise<ExecutionEvidence> }>();
   const completed = new Map<string, ExecutionEvidence>();
+  const compacting = new Map<string, { abort: AbortController; done: Promise<ManualContextProjection> }>();
   const listeners = new Map<string, Set<() => void>>();
   const subscriptions = new Set<() => void>();
   let closed = false;
@@ -56,7 +64,7 @@ export function createExecutionOwner(options: {
     },
     async submit(sessionId, input) {
       check();
-      if (active.has(sessionId)) throw new Error('Session already running');
+      if (active.has(sessionId) || compacting.has(sessionId)) throw new Error('Session already running or compacting');
       if (completed.get(sessionId)?.result?.recording.status === 'failed' || completed.get(sessionId)?.failure)
         throw new Error('Prior execution requires explicit inspection; no automatic retry');
       const scope = Object.freeze({ sessionId, turnId: randomUUID() });
@@ -76,7 +84,9 @@ export function createExecutionOwner(options: {
           const agent = options.agent(recording);
           accept();
           const result = await agent.runTurn({ ...scope, input, history: saved.messages,
-            maxSteps: options.maxSteps, signal: abort.signal });
+            maxSteps: options.maxSteps, signal: abort.signal,
+            context: { ...options.context?.retention, baseReceipt: { sessionId, revision: saved.revision, digest: saved.digest,
+              messageCount: saved.messages.length } } });
           evidence = { scope, result, receipt: recording.lastReceipt,
             ...(recording.failure ? { failure: recording.failure } : {}) };
           // A returned result is live evidence, not a reconstituted persisted result.
@@ -134,11 +144,56 @@ export function createExecutionOwner(options: {
       return unsubscribe;
     },
     async settle(id) { return active.get(id)?.done ?? completed.get(id); },
+    async compact(sessionId, signal) {
+      check();
+      if (!options.context) throw new ContextBuildError('invalid_options', 'Manual context builder is not configured');
+      if (active.has(sessionId) || compacting.has(sessionId))
+        throw new ContextBuildError('session_busy', 'Settle the active Turn/compaction before a manual projection');
+      if (completed.get(sessionId)?.failure || completed.get(sessionId)?.result?.recording.status === 'failed')
+        throw new ContextBuildError('storage_failed', 'Inspect prior owner/storage evidence before compacting');
+      const config = options.context;
+      const abort = new AbortController();
+      const cancel = () => abort.abort();
+      signal?.addEventListener('abort', cancel, { once: true });
+      if (signal?.aborted) cancel();
+      const load = async () => {
+        try { return await options.store.load(sessionId); }
+        catch (error) {
+          const failure = new ContextBuildError('storage_failed', 'Manual projection could not read/verify the authoritative SessionStore');
+          failure.cause = error;
+          throw failure;
+        }
+      };
+      const done = Promise.resolve().then(async () => {
+        const saved = await load();
+        if (saved.recovery.disposition !== 'ready')
+          throw new ContextBuildError('session_recovery_required', 'Inspect unresolved effects, cleanup and interrupted facts before compacting');
+        const built = await config.builder.build({ ...config.retention, mode: 'manual', budget: config.budget,
+          baseReceipt: { sessionId, revision: saved.revision, digest: saved.digest, messageCount: saved.messages.length },
+          request: { sessionId, turnId: `projection:${randomUUID()}`, step: 1, tools: config.tools,
+            messages: saved.messages } }, abort.signal);
+        const current = await load();
+        if (current.digest !== saved.digest || current.revision !== saved.revision)
+          throw new ContextBuildError('history_changed', 'Stored history changed during manual projection; reload exact current facts');
+        if (abort.signal.aborted) throw new ContextBuildError('cancelled', 'Manual projection cancelled; no history changed');
+        return { ...built, receipt: { sessionId, revision: saved.revision, digest: saved.digest, source: saved.source } };
+      }).catch(error => {
+        config.builder.discard?.(sessionId);
+        throw error;
+      }).finally(() => {
+        compacting.delete(sessionId);
+        signal?.removeEventListener('abort', cancel);
+      });
+      compacting.set(sessionId, { abort, done });
+      return done;
+    },
     async close() {
       closed = true;
       const owned = [...active.values()];
+      const projections = [...compacting.values()];
       for (const turn of owned) turn.abort.abort();
-      await Promise.all(owned.map(turn => turn.done));
+      for (const projection of projections) projection.abort.abort();
+      await Promise.allSettled([...owned.map(turn => turn.done), ...projections.map(projection => projection.done)]);
       for (const unsubscribe of subscriptions) unsubscribe();
       listeners.clear();
     },

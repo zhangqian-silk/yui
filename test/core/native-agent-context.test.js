@@ -14,15 +14,18 @@ const input = (messages, capacity = 100) => ({
 });
 const estimator = { id: 'message-count', estimate: req => req.messages.length };
 
-test('context trims complete tool batches, preserves instructions/current input and source history', async () => {
+test('context summarizes complete tool batches, preserves original goal/instructions and source history', async () => {
   const messages = [{ role: 'system', content: 'rules' }, user('old'), ...pair, user('current')];
   const original = structuredClone(messages);
-  const result = await createContextBuilder({ estimator }).build(input(messages, 3), signal());
-  assert.deepEqual(result.request.messages, [messages[0], messages[4]]);
+  const result = await createContextBuilder({ estimator, compressor: { id: 'fixture',
+    summarize: async () => 'earlier paired result' } }).build(input(messages, 4), signal());
+  assert.deepEqual(result.request.messages.slice(0, 2), messages.slice(0, 2));
+  assert.deepEqual(result.request.messages.at(-1), messages[4]);
   assert.deepEqual(messages, original);
-  assert.equal(result.report.estimatedInput, 2);
+  assert.equal(result.report.estimatedInput, 4);
   assert.deepEqual(result.report.entries.find(e => e.historyRange?.[0] === 2).historyRange, [2, 4]);
-  assert.equal(result.report.entries.find(e => e.historyRange?.[0] === 2).action, 'omitted');
+  assert.equal(result.report.entries.find(e => e.historyRange?.[0] === 2).action, 'summarized');
+  await assert.rejects(createContextBuilder({ estimator }).build(input(messages, 3), signal()), { code: 'budget_exceeded' });
   assert.ok(Object.isFrozen(result.request.messages));
   await assert.rejects(createContextBuilder({ estimator }).build(input([user('q'), pair[0]]), signal()),
     { code: 'invalid_history' });
@@ -46,7 +49,7 @@ test('every step rebuilds with explicit sources and complete request estimation;
   assert.equal(result.request.messages[0].role, 'system');
   const next = { ...first, request: { ...first.request, step: 2, messages: [user('q'), ...pair] } };
   await assert.rejects(builder.build(next, signal()), error =>
-    error.code === 'budget_exceeded' && error.report.estimatedInput === 6);
+    error.code === 'budget_exceeded' && error.report.estimatedInput === 7);
   assert.deepEqual(scopes, [1, 2]);
 });
 
@@ -63,6 +66,8 @@ test('replaceable compression summarizes whole optional batches without fabricat
   assert.match(result.request.messages[0].content, /earlier evidence/);
   assert.match(result.request.messages[0].content, /summary/);
   assert.equal(result.request.messages.some(m => m.role === 'tool'), false);
+  const facts = JSON.parse(result.request.messages[0].content).contextSummary.sources[0].toolOutcomes;
+  assert.deepEqual(facts, [{ toolCallId: 'call-1', name: 'read', ok: true }]);
 });
 
 test('failures and cooperative cancellation return no partial request or fallback', async () => {
@@ -83,22 +88,19 @@ test('failures and cooperative cancellation return no partial request or fallbac
 });
 
 test('byte budgets honor output reserve, exact limits and recent retention with no-gain summaries', async () => {
-  const messages = [user('old '.repeat(100)), user('new')];
+  const messages = [user('goal'), { role: 'assistant', content: 'old '.repeat(100), toolCalls: [] }, user('new')];
   const full = request(messages);
   const bytes = jsonByteEstimator.estimate(full);
   const builder = createContextBuilder();
   const exact = await builder.build({ ...input(messages, bytes + 10),
     budget: { capacity: bytes + 10, reserveOutput: 10 } }, signal());
   assert.deepEqual(exact.request, full);
-  const cropped = await builder.build(input(messages, bytes - 1), signal());
-  assert.deepEqual(cropped.request.messages, [messages[1]]);
-  await assert.rejects(builder.build({ ...input(messages, bytes - 1), keepRecentGroups: 2 }, signal()),
+  await assert.rejects(builder.build(input(messages, bytes - 1), signal()), { code: 'budget_exceeded' });
+  await assert.rejects(builder.build({ ...input(messages, bytes - 1), keepRecentGroups: 3 }, signal()),
     { code: 'budget_exceeded' });
-  const noGain = await createContextBuilder({ compressor: { id: 'larger',
+  await assert.rejects(createContextBuilder({ compressor: { id: 'larger',
     summarize: async () => 'summary '.repeat(1000),
-  } }).build(input(messages, bytes - 1), signal());
-  assert.equal(noGain.report.entries[0].action, 'omitted');
-  assert.deepEqual(noGain.request.messages, [messages[1]]);
+  } }).build(input(messages, bytes - 1), signal()), { code: 'compression_no_gain' });
 });
 
 test('one batch includes out-of-order paired results and cannot be partially retained', async () => {
@@ -108,9 +110,15 @@ test('one batch includes out-of-order paired results and cannot be partially ret
       error: { code: 'denied', message: 'denied', effect: 'none' } } },
     pair[1],
   ];
-  const result = await createContextBuilder({ estimator }).build(input([...batch, user('new')], 3), signal());
-  assert.deepEqual(result.request.messages, [user('new')]);
+  const result = await createContextBuilder({ estimator, compressor: { id: 'paired-summary',
+    summarize: async unit => { assert.deepEqual(unit.messages, batch); return 'read confirmed; write denied'; },
+  } }).build(input([...batch, user('new')], 3), signal());
+  assert.deepEqual(result.request.messages.at(-1), user('new'));
+  assert.equal(result.request.messages.some(m => m.role === 'tool'), false);
   assert.deepEqual(result.report.entries[0].historyRange, [0, 3]);
+  const facts = JSON.parse(result.request.messages[0].content).contextSummary.sources[0].toolOutcomes;
+  assert.deepEqual(facts, [{ toolCallId: 'call-2', name: 'write', ok: false, errorCode: 'denied', effect: 'none' },
+    { toolCallId: 'call-1', name: 'read', ok: true }]);
   await assert.rejects(createContextBuilder({ estimator }).build(input([...pair, ...pair, user('new')]), signal()),
     { code: 'invalid_history' });
 });

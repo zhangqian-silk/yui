@@ -66,12 +66,14 @@ export type TurnInput = Scope & {
   history?: readonly Message[];
   maxSteps: number;
   signal?: AbortSignal;
+  context?: Pick<ContextInput, 'baseReceipt' | 'protectedHistoryRanges' | 'keepRecentGroups'>;
 };
 export type AgentOptions = {
   provider: ModelProvider;
   contextBuilder?: ContextBuilder;
   /** Units belong to the selected builder's estimator; default uses JSON bytes. */
   contextBudget?: ContextInput['budget'];
+  contextRetention?: Pick<ContextInput, 'protectedHistoryRanges' | 'keepRecentGroups'>;
   /** If omitted, facts exist only in the returned in-memory events. */
   recorder?: SessionRecorder;
   observer?: AgentObserver;

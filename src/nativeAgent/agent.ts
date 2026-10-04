@@ -113,7 +113,8 @@ export function createAgent(options: AgentOptions): Agent {
             const source = snapshot({ ...scope, step: steps, messages: all, tools: definitions });
             let request: ModelRequest;
             try {
-              const built = await contextBuilder.build({ request: source, budget: contextBudget }, signal);
+              const built = await contextBuilder.build({ ...options.contextRetention, ...input.context,
+                request: source, budget: contextBudget }, signal);
               if (signal.aborted) { reason = 'cancelled'; break; }
               if (built.request.sessionId !== scope.sessionId || built.request.turnId !== scope.turnId
                 || built.request.step !== steps || JSON.stringify(built.request.tools) !== JSON.stringify(definitions)) {
