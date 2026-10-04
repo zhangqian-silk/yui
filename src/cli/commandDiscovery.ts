@@ -5,7 +5,10 @@ import { hasManagedIdentity } from "../runtime/managedIdentity.js";
  * caller, including stale/incomplete identities, at its existing boundary. */
 export function discoveryAudience(env: NodeJS.ProcessEnv): DiscoveryAudience {
   if (!hasManagedIdentity(env)) return "public";
-  if (!env.YUI_ROLE || !env.YUI_NATIVE_SESSION_ID) return "unbound";
+  const nativeSessionId = env.YUI_ADAPTER_ID === "codex"
+    ? env.CODEX_THREAD_ID ?? env.YUI_NATIVE_SESSION_ID : env.YUI_NATIVE_SESSION_ID;
+  if (!env.YUI_ROLE || !nativeSessionId || nativeSessionId.trim() !== nativeSessionId
+    || nativeSessionId.includes("\0")) return "unbound";
   if (env.YUI_SESSION_SCOPE === "global") return env.YUI_ROLE === "operator" ? "operator" : "global";
   if (env.YUI_SESSION_SCOPE === "task" && env.YUI_TASK_ID) return env.YUI_ROLE === "leader" ? "leader" : "assignment";
   return "unbound";

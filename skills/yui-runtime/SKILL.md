@@ -178,6 +178,13 @@ public view. This offline view is only guidance, not an authenticated permission
 or a way to switch Roles. An incomplete or stale managed identity must not be
 cleared to obtain public execution authority.
 
+For Codex, the native `CODEX_THREAD_ID` takes precedence over the transport's
+`YUI_NATIVE_SESSION_ID`; a newly created thread can legitimately lack the latter.
+Other adapters do not borrow Codex identity for offline discovery. A missing
+transport variable or hidden help entry alone does not prove Session failure.
+Discovery does not establish that a Session is current: actual execution still
+revalidates Session, Task/Assignment, workspace, resource and Grant boundaries.
+
 When capability discovery appears in that view, use `capability search` for
 templates and `capability describe <name> --task
 <task-id> --input '<json>'` for supported exact authorization assessments.
