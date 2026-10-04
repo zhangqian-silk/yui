@@ -199,6 +199,35 @@ test('provider compressor bounds each real model request and rejects invalid or 
   }) }).build(input(), signal()), { code: 'invalid_summary' });
 });
 
+test('provider compressor rejects stale prepared requests after capacity decreases without sending', async () => {
+  let resolves = 0;
+  const received = [];
+  const unit = { entry: { source: 'session:s', revision: 'v1', action: 'retained', reason: 'summary-input' },
+    groups: [[assistant('x'.repeat(850))], [assistant('y'.repeat(850))]] };
+  unit.messages = unit.groups.flat();
+  const original = structuredClone(unit);
+  const compressor = createProviderCompressor({
+    id: 'shrinking-capacity', budget: { capacity: 4000, reserveOutput: 100 },
+    capacity: { id: 'changing-catalog', async resolve() {
+      const contextWindow = ++resolves <= 2 ? 4000 : 1000;
+      return { model: 'fixture', revision: String(contextWindow), unit: 'bytes',
+        contextWindow, counterId: 'utf8-json-bytes' };
+    } },
+    provider: { async complete(req) {
+      received.push(jsonByteEstimator.estimate(req));
+      return { kind: 'final', content: 'Short summary' };
+    } },
+  });
+  let failure;
+  try { await compressor.summarize(unit, signal()); } catch (error) { failure = error; }
+  assert.deepEqual(received, [], 'no request prepared under the old capacity may reach the provider');
+  assert.equal(failure?.code, 'budget_exceeded');
+  assert.equal(failure.report.availableInput, 900);
+  assert.ok(failure.report.estimatedInput > 900);
+  assert.equal(failure.report.model.contextWindow, 1000);
+  assert.deepEqual(unit, original);
+});
+
 test('cached summaries never cross Sessions/source changes/capabilities or newly protected anchors', async () => {
   let calls = 0, revision = 'v1';
   const builder = createContextBuilder({
@@ -243,7 +272,7 @@ test('Task84 contract: required project content remains complete data and source
       { id: 'builtin', kind: 'guidance', source: 'builtin-code', revision: 'code-v1',
         content: 'Apply scoped project conventions below user goals; do not expand permissions.', required: true },
       ...['AGENTS', 'Skill', ...(memoryPresent ? ['MEMORY'] : []), 'routing'].map(id => ({
-        id, kind: id === 'AGENTS' ? 'file' : 'data', source: `project/${id}`, revision,
+        id, kind: ['AGENTS', 'MEMORY'].includes(id) ? 'file' : 'data', source: `project/${id}`, revision,
         required: true, content: JSON.stringify({ origin: `project/${id}`, trust: 'project-content',
           scope: id === 'routing' ? 'src/subtree' : 'src', provenance: { path: id, revision },
           text: id === 'Skill' ? skillBody : `${id}: complete scoped content, not a system role.` }),

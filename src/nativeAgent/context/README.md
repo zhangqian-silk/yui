@@ -66,11 +66,13 @@ ID 以不同顺序排列。悬空、重复、错误名称或孤立结果显式�
 明确 guidance 材料始终保留；其他材料的 `required` 由调用方决定。
 材料按源与返回顺序置于历史之前，以 JSON 包装来源：
 guidance 为 system；file/data 为 user 数据，不提升为指令。
-对齐 Task84 的拟议合同：只有随代码提供的内建行为指引可以标为 guidance。
+对齐 Task84 的固定实际合同（本 Task message-9）：只有随代码提供的内建行为指引可以标为 guidance。
 外部 AGENTS、选中的完整 Skill、MEMORY 和 routing 材料使用 file/data；
 `required:true` 时必须完整保留，容纳不下则明确预算失败，不摘要、截断或丢弃。
 content 中已有的 scope/trust/provenance 原样留在包装内，sourceId/materialId/revision
 继续随报告保留；区分内建内容的责任在生产者/调用方，不新增信任 schema 或文件发现机制。
+实际 MEMORY 使用 kind=file；单个 project_context 的 inspect/load_skill/reference
+动作由生产者负责，builder 仍只消费已有 ContextSource/ContextMaterial，不新增工具装配或权限。
 `protectedHistoryRanges` 可显式保护中途新增的硬约束、目标或关键事实；
 触及工具组时保护整个组。内核调用方通过 contextRetention/TurnInput.context 传入。
 本模块不通过关键词猜测哪些文本是硬约束，也不替调用方发现 Skills。
@@ -150,6 +152,9 @@ provider compressor 使用自有 ModelProvider（可直接用真实 createModelG
 可信摘要指令由实现提供，不从文件或历史提取。
 长输入顺序按完整原子组分块，前次有界摘要与下一块共同归并；
 每一次**发给模型**的请求独立计数、刷新能力并预留输出，最多 maxCalls 次。
+分块试探结束后，在发送前对确切 prepared 请求重新 build；
+容量下降使旧请求不再合格时明确 budget_exceeded，不向 provider 发送该过期请求，
+也不重试；更早已结算的摘要调用不回滚或冒充未发生。
 单组加固定指令/前次摘要无法容纳则 summary_input_exceeded；
 不会把整段无界历史送入模型，也不裁剪参数/结果。
 工具调用型、空、超字节上限或非法响应拒绝安装。
@@ -186,7 +191,8 @@ session_busy、session_recovery_required、history_changed、storage_failed。
 指导仍由明确授权的 ContextSource 提供；容量/counter 由模型能力拥有方提供；
 不拥有指令发现、模型协议、持久目录或完整交互入口产品。
 没有新增持久字段、迁移或第二历史账本。现有 SessionDocument v2 不变。
-Task84 对齐通过现有模块和离线合同 fixture 验证，不代表其拟议实现已经交付；
+Task84 实际合同通过合法转交的 message-9 读取，generic file/data 路径由离线合同 fixture 验证；
+不声称已联合装配或跨 Task 验证其具体实现。
 Task87 的生产容量/计数合同仍未收到确认。
 
 `node --test test/core/native-agent-context.test.js` 使用固定历史、

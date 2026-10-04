@@ -78,6 +78,9 @@ export function createProviderCompressor(options: ProviderCompressorOptions): Co
         if (!prepared)
           throw new ContextBuildError('summary_input_exceeded',
             `Atomic source group ${cursor} plus summary instructions/reserve cannot fit; ${calls} calls settled`);
+        // A later chunk probe may have observed a smaller capacity. Revalidate
+        // the exact selected request, not its earlier admission, before sending.
+        prepared = (await builder.build({ request: prepared, budget }, signal)).request;
         check(signal);
         let response;
         try { response = await options.provider.complete(prepared, signal); }
