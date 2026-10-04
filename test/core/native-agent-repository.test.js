@@ -187,6 +187,52 @@ test('patch preflights all files, locates edits in original text and produces in
   assert.deepEqual((await readdir(root)).sort(), ['a', 'b', 'verify']);
 });
 
+test('edit, patch and empty creation diffs preserve special filename bytes in Git apply', async t => {
+  const root = await fixture(t);
+  const names = ['normal', 'tab\tname', 'quote"name', '中文', 'control\x01name', 'bell\x07name', 'del\x7fname'];
+  const before = 'old\r\nlast';
+  const after = 'new\r\nlast';
+  const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' };
+  for (const operation of ['edit', 'patch', 'write']) {
+    const working = path.join(root, operation);
+    const verify = path.join(root, `${operation}-verify`);
+    await mkdir(working);
+    await mkdir(verify);
+    if (operation !== 'write') for (const name of names) {
+      await writeFile(path.join(working, name), before);
+      await writeFile(path.join(verify, name), before);
+    }
+    const executor = executorFor(createTextTools({ root: working }));
+    const target = name => ({ path: name, expectedSha256: hash(before),
+      edits: [{ oldText: 'old', newText: 'new' }] });
+    const calls = operation === 'patch'
+      ? [{ id: 'patch', name: 'patch', arguments: { files: names.map(target) } }]
+      : names.map((name, i) => ({ id: `c-${i}`, name: operation, arguments: operation === 'write'
+        ? { path: name, content: '' }
+        : { path: name, expectedSha256: hash(before), oldText: 'old', newText: 'new' } }));
+    const batch = await executor.executeBatch(batchRequest(calls));
+    const receipts = batch.results.map(result => {
+      assert.equal(result.outcome.ok, true, JSON.stringify(result.outcome));
+      return JSON.parse(result.outcome.content);
+    });
+    execFileSync('git', ['apply', '-'], { cwd: verify, env,
+      input: receipts.flatMap(receipt => receipt.files ?? [receipt]).map(file => file.diff).join('') });
+    assert.deepEqual((await readdir(verify)).sort(), [...names].sort());
+    for (const name of names) {
+      assert.deepEqual(await readFile(path.join(verify, name)), Buffer.from(operation === 'write' ? '' : after));
+      assert.deepEqual(await readFile(path.join(working, name)), await readFile(path.join(verify, name)));
+    }
+  }
+  // Escaping also counts toward the outer receipt budget, before empty creation.
+  const longName = '\x01'.repeat(180);
+  const denied = await invoke(createTextTools({ root, maxOutputBytes: 1024 })[1],
+    { path: longName, content: '' });
+  assert.equal(denied.error.code, 'output_limit');
+  assert.equal(denied.error.effect, 'none');
+  assert.deepEqual((await readdir(root)).sort(),
+    ['edit', 'edit-verify', 'patch', 'patch-verify', 'write', 'write-verify']);
+});
+
 test('discovery separates result pagination from scan/coverage, respects ignore policy and bounds patterns', async t => {
   const root = await fixture(t);
   await mkdir(path.join(root, 'sub'));

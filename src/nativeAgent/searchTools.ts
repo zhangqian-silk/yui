@@ -47,8 +47,13 @@ export function createSearchTools(options: SearchToolOptions): Tool[] {
     definition: {
       name,
       description: name === 'list' ? 'List immediate entries with bounded pages and explicit discovery coverage'
-        : name === 'find' ? 'Find literal basename substrings or bounded root-relative glob patterns; pages bind scan/policy'
-          : 'Search literal substrings or restricted bounded regex; matching line snippets, real line numbers, explicit binary/policy coverage',
+        : name === 'find' ? 'Find literal basename substrings (default) or root-relative glob patterns; bounded pages bind scan/policy. '
+          + 'Glob (max 256 characters): *, ?, [] ranges/negation, backslash literal escapes outside []; ** only as a whole path segment. '
+          + 'No braces or extglob (@(), +(), ?(), !(), *()). Example: mode="glob", query="**/*.ts".'
+          : 'Search literal substrings (default) or bounded single-line regex; matching line snippets, real line numbers, explicit binary/policy coverage. '
+          + 'Regex (max 256 characters): literals, ., [] ranges/^ negation, ^/$ anchors, *+?, \\d/\\w/\\s, escaped metacharacters. '
+          + 'No groups, alternation, counted repeats, flags, lookaround, backreferences or escapes inside []. '
+          + 'Example: mode="regex", query="^TODO\\\\s+.+$" (JSON-escaped).',
       inputSchema: { type: 'object', properties: { path: { type: 'string' },
         ...(name !== 'list' ? { query: { type: 'string' }, mode: { type: 'string', enum: name === 'find'
           ? ['literal', 'glob'] : ['literal', 'regex'] } } : {}),

@@ -104,10 +104,18 @@ export function replace(text: string, edits: Replacement[]): string {
   for (const edit of [...edits].reverse()) result = result.slice(0, edit.start) + edit.text + result.slice(edit.end);
   return result;
 }
+// Git's quoted paths use C escapes, not JSON's \uXXXX. Keep UTF-8 literal;
+// three-digit octal escapes avoid ambiguity with following filename digits.
+function quoteDiffPath(value: string): string {
+  return '"' + value.replace(/[\x00-\x1f\x7f"\\]/g, character => {
+    if (character === '"' || character === '\\') return '\\' + character;
+    return '\\' + character.charCodeAt(0).toString(8).padStart(3, '0');
+  }) + '"';
+}
 /** Edit-derived hunks, not a quadratic whole-file diff or a Git HEAD diff. */
 export function diff(relative: string, before: string, edits: Replacement[], next: string, creating = false): string {
   if (before === next && !creating) return '';
-  if (creating && !next) return `diff --git ${JSON.stringify(`a/${relative}`)} ${JSON.stringify(`b/${relative}`)}\nnew file mode 100600\n`;
+  if (creating && !next) return `diff --git ${quoteDiffPath(`a/${relative}`)} ${quoteDiffPath(`b/${relative}`)}\nnew file mode 100600\n`;
   const oldLines = lines(before);
   const starts = [0];
   for (const line of oldLines) starts.push(starts[starts.length - 1] + line.length);
@@ -122,7 +130,7 @@ export function diff(relative: string, before: string, edits: Replacement[], nex
     if (previous && group.start <= previous.end) previous.end = Math.max(previous.end, group.end);
     else groups.push(group);
   }
-  let output = `--- ${creating ? '/dev/null' : JSON.stringify(`a/${relative}`)}\n+++ ${JSON.stringify(`b/${relative}`)}\n`;
+  let output = `--- ${creating ? '/dev/null' : quoteDiffPath(`a/${relative}`)}\n+++ ${quoteDiffPath(`b/${relative}`)}\n`;
   let lineDelta = 0;
   const print = (prefix: string, line: string) => prefix + line + (line.endsWith('\n') ? '' : '\n\\ No newline at end of file\n');
   for (const group of groups) {
