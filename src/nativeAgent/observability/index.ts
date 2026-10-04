@@ -2,7 +2,8 @@
 import type { AgentEvent, Scope, StepScope, TurnResult } from '../index.js';
 
 export type ObservationSource = 'live' | 'replay' | 'cached';
-export type Usage = Readonly<{ inputTokens?: number; outputTokens?: number; cachedInputTokens?: number; totalTokens?: number }>;
+export type Usage = Readonly<{ inputTokens?: number; outputTokens?: number; cachedInputTokens?: number;
+  cacheWriteInputTokens?: number; totalTokens?: number }>;
 export type ModelObservation = StepScope & {
   requestId: string;
   attempt: number;
@@ -97,8 +98,8 @@ const reasons = ['completed', 'error', 'cancelled', 'budget_exhausted'] as const
 const effects = ['none', 'unknown'] as const;
 const scopeOf = (value: Scope): Scope => ({ sessionId: label(value.sessionId), turnId: label(value.turnId) });
 function usageOf(usage: Usage): Usage {
-  const result: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number; totalTokens?: number } = {};
-  for (const key of ['inputTokens', 'outputTokens', 'cachedInputTokens', 'totalTokens'] as const) {
+  const result: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number; cacheWriteInputTokens?: number; totalTokens?: number } = {};
+  for (const key of ['inputTokens', 'outputTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'totalTokens'] as const) {
     if (usage[key] !== undefined) result[key] = integer(usage[key]);
   }
   return Object.freeze(result);

@@ -1,6 +1,7 @@
 import type { Json, ModelResponse, ToolCall } from '../index.js';
 import type { ModelProtocolAdapter, ModelProgress, ModelUsage } from './types.js';
 import { ModelGatewayError, object, parse, protocol } from './errors.js';
+import { sseFrames } from './wire.js';
 
 const maxResponse = 512 * 1024;
 const maxArguments = 64 * 1024;
@@ -44,29 +45,13 @@ function messageFields(m: Record<string, unknown>): void {
   if (m.role !== undefined && m.role !== 'assistant') return protocol();
 }
 
-/** SSE lines across arbitrary byte/text chunks, including CR, LF and CRLF boundaries. */
-async function* frames(body: AsyncIterable<string>): AsyncGenerator<string> {
-  let line = '', data: string[] = [], afterCR = false;
-  for await (const part of body) {
-    for (const char of part) {
-      if (afterCR) { afterCR = false; if (char === '\n') continue; }
-      if (char === '\r' || char === '\n') {
-        if (line === '') { if (data.length) yield data.join('\n'); data = []; }
-        else if (line === 'data') data.push('');
-        else if (line.startsWith('data:')) data.push(line.slice(5).replace(/^ /, ''));
-        line = '';
-        afterCR = char === '\r';
-      } else line += char;
-    }
-  }
-  // An unterminated event is not an authoritative completion marker.
-}
-
 export function createChatCompletionsAdapter(): ModelProtocolAdapter {
   return {
-    encode(request, model, stream) {
+    protocol: 'chat-completions',
+    encode(request, model, stream, options) {
       return {
         model, stream, store: false, n: 1,
+        ...(options?.maxOutputTokens !== undefined ? { max_completion_tokens: options.maxOutputTokens } : {}),
         ...(stream ? { stream_options: { include_usage: true } } : {}),
         messages: request.messages.map(m => {
           if (m.role === 'tool') return { role: 'tool', tool_call_id: m.toolCallId, content: JSON.stringify(m.outcome) };
@@ -111,7 +96,7 @@ export function createChatCompletionsAdapter(): ModelProtocolAdapter {
       let content = '', reason: unknown, reported: ModelUsage | undefined;
       let responseId: string | undefined, responseModel: string | undefined;
       const calls = new Map<number, { id: string; type: string; function: { name: string; arguments: string } }>();
-      for await (const frame of frames(body)) {
+      for await (const { data: frame } of sseFrames(body)) {
         if (frame === '[DONE]') {
           if (reason === undefined) throw new ModelGatewayError('incomplete');
           const ordered = [...calls.entries()].sort(([a], [b]) => a - b);
