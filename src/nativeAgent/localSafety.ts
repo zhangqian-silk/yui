@@ -1,5 +1,6 @@
 import { lstatSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import type { Json, Tool, ToolError, ToolOutcome } from './contracts.js';
 import { createCodingTools, type CodingToolsOptions } from './codingTools.js';
 import type { CommandToolOptions } from './commandTool.js';
@@ -170,7 +171,16 @@ export function createLocalToolBinding(options: LocalToolOptions): LocalToolBind
     root, cwd, allowWrite, allowCommand,
     envKeys: Object.keys(commandOptions?.env ?? {}).sort(), commandCount: specs.length,
   });
-  const active = new WeakMap<LocalToolEnvironment, string>();
+  // Object member order is not part of the public ToolInvocation contract.
+  // Project its required identity fields; compare JSON values without sorting
+  // arrays or weakening parameter/definition equality.
+  const invocationValue = ({ identity, call, definition }: ToolInvocation) => [
+    identity.sessionId, identity.turnId, identity.step, identity.toolCallId, identity.name,
+    call.id, call.name, call.arguments, definition,
+  ] as const;
+  const active = new WeakMap<LocalToolEnvironment, ReturnType<typeof invocationValue>>();
+  const matchingLease = (lease: LocalToolEnvironment, invocation: ToolInvocation) =>
+    isDeepStrictEqual(active.get(lease), invocationValue(invocation));
   const selected = all.filter(tool => (allowWrite || !['write', 'edit'].includes(tool.definition.name))
     && (allowCommand || tool.definition.name !== 'command'));
   const definitions = new Map(selected.map(tool => [tool.definition.name,
@@ -191,11 +201,10 @@ export function createLocalToolBinding(options: LocalToolOptions): LocalToolBind
     } catch { return invalid('binding_changed', 'Reviewed executable changed; settle and rebuild the binding'); }
     return null;
   };
-  const invocationKey = (invocation: ToolInvocation): string => JSON.stringify(invocation);
   const validInvocation = (invocation: ToolInvocation): boolean => {
     const name = invocation.call.name;
     return invocation.identity.name === name && invocation.identity.toolCallId === invocation.call.id
-      && definitions.has(name) && JSON.stringify(invocation.definition) === JSON.stringify(definitions.get(name));
+      && definitions.has(name) && isDeepStrictEqual(invocation.definition, definitions.get(name));
   };
   const tools = selected.map(tool => {
     const definition = definitions.get(tool.definition.name)!;
@@ -207,7 +216,7 @@ export function createLocalToolBinding(options: LocalToolOptions): LocalToolBind
         // lease or the three-argument shorthand cannot bypass the actual tool.
         const invocation = { identity: { ...identity, name: definition.name },
           call: { id: identity.toolCallId, name: definition.name, arguments: args }, definition };
-        if (!lease || active.get(lease) !== invocationKey(invocation)) {
+        if (!lease || !matchingLease(lease, invocation)) {
           return { ok: false, error: invalid('binding_mismatch', 'A matching live invocation lease is required') };
         }
         try {
@@ -229,14 +238,14 @@ export function createLocalToolBinding(options: LocalToolOptions): LocalToolBind
           throw new Error('Local binding unavailable or declaration mismatched');
         }
         const lease = Object.freeze({ ...description });
-        active.set(lease, invocationKey(invocation));
+        active.set(lease, freeze(structuredClone(invocationValue(invocation))));
         return { value: lease, async release() { active.delete(lease); } };
       },
     }),
     permission: Object.freeze({
       async check(invocation: ToolInvocation, lease: LocalToolEnvironment, signal: AbortSignal) {
         try {
-          if (signal.aborted || !validInvocation(invocation) || active.get(lease) !== invocationKey(invocation)
+          if (signal.aborted || !validInvocation(invocation) || !matchingLease(lease, invocation)
             || !fresh()) throw new Error();
           const tool = selected.find(tool => tool.definition.name === invocation.call.name)!;
           if (validate(tool, invocation.call.arguments)) throw new Error();

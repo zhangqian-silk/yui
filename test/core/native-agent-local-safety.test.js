@@ -20,6 +20,31 @@ async function fixture(t) {
   return { root, cwd: root };
 }
 
+test('provider → Agent → local ToolManager accepts reordered ToolCall fields', async t => {
+  const options = await fixture(t);
+  const binding = api.createLocalToolBinding(options);
+  const calls = [
+    { id: 'id-first', name: 'read', arguments: { path: 'input.txt' } },
+    { name: 'read', arguments: { path: 'input.txt' }, id: 'name-first' },
+    { arguments: { path: 'input.txt' }, id: 'arguments-first', name: 'read' },
+  ];
+  let requests = 0;
+  const result = await api.createAgent({
+    toolExecutor: executor(binding),
+    provider: { async complete() {
+      return ++requests === 1
+        ? { kind: 'tool_calls', content: '', calls }
+        : { kind: 'final', content: 'Read results received' };
+    } },
+  }).runTurn({ sessionId: 'field-order', turnId: 'read', input: 'Read input', maxSteps: 2 });
+  assert.equal(result.reason, 'completed');
+  const messages = result.messages.filter(message => message.role === 'tool');
+  assert.deepEqual(messages.map(message => message.outcome.ok), [true, true, true]);
+  assert.ok(messages.every(message => JSON.parse(message.outcome.content).text === 'fixture-secret'));
+  const recordedCalls = result.messages.find(message => message.role === 'assistant' && message.toolCalls).toolCalls;
+  assert.deepEqual(recordedCalls.map(call => Object.keys(call)), calls.map(call => Object.keys(call)));
+});
+
 test('local binding defaults to real reads; switches are independent and leases cannot be forged or mixed', async t => {
   const options = await fixture(t);
   const binding = api.createLocalToolBinding(options);
@@ -54,6 +79,41 @@ test('local binding defaults to real reads; switches are independent and leases 
   await lease.release();
   assert.equal((await write.execute(invocation.call.arguments, invocation.identity,
     new AbortController().signal, lease.value)).error.code, 'binding_mismatch');
+  // Reordered contract fields/JSON members are equal, but changed values are not.
+  const liveInvocation = {
+    definition: {
+      inputSchema: { ...write.definition.inputSchema,
+        properties: Object.fromEntries(Object.entries(write.definition.inputSchema.properties).reverse()) },
+      description: write.definition.description, name: write.definition.name,
+    },
+    call: { name: 'write', arguments: { content: 'live', path: 'live.txt' }, id: 'live' },
+    identity: { name: 'write', toolCallId: 'live', step: 1, turnId: 'turn', sessionId: 'local' },
+  };
+  const signal = new AbortController().signal;
+  const liveLease = await writable.environment.acquire(liveInvocation, signal);
+  try {
+    assert.equal((await writable.permission.check(liveInvocation, liveLease.value, signal)).allowed, true);
+    for (const changedIdentity of [
+      { sessionId: 'other' }, { turnId: 'other' }, { step: 2 }, { toolCallId: 'other' },
+    ]) {
+      const outcome = await write.execute(liveInvocation.call.arguments,
+        { ...liveInvocation.identity, ...changedIdentity }, signal, liveLease.value);
+      assert.equal(outcome.error.code, 'binding_mismatch');
+    }
+    liveInvocation.call.arguments.content = 'changed';
+    assert.equal((await writable.permission.check(liveInvocation, liveLease.value, signal)).allowed, false);
+    assert.equal((await write.execute(liveInvocation.call.arguments, liveInvocation.identity,
+      signal, liveLease.value)).error.code, 'binding_mismatch');
+    liveInvocation.call.arguments.content = 'live';
+    assert.equal((await writable.permission.check({
+      ...liveInvocation, definition: { ...liveInvocation.definition, description: 'changed' },
+    }, liveLease.value, signal)).allowed, false);
+    await assert.rejects(readFile(path.join(options.root, 'live.txt')), { code: 'ENOENT' });
+    const written = await write.execute({ path: 'live.txt', content: 'live' },
+      { ...scope, toolCallId: 'live' }, signal, liveLease.value);
+    assert.equal(written.ok, true);
+    assert.equal(await readFile(path.join(options.root, 'live.txt'), 'utf8'), 'live');
+  } finally { await liveLease.release(); }
   const allowed = await executor(writable).executeBatch(request([call('yes', 'write', { path: 'output.txt', content: 'yes' })]));
   assert.equal(allowed.results[0].outcome.ok, true);
   assert.equal(await readFile(path.join(options.root, 'output.txt'), 'utf8'), 'yes');
