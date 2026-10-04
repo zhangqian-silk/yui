@@ -67,6 +67,7 @@ export function glob(pattern: string): (text: string, budget: MatchBudget) => bo
     const atoms: Atom[] = [];
     for (let i = 0; i < segment.length; i++) {
       const ch = String.fromCodePoint(segment.codePointAt(i)!);
+      if ('@+?!*'.includes(ch) && segment[i + 1] === '(') unsupported();
       if (ch === '*' && segment[i + 1] === '*') unsupported();
       if (ch === '*') atoms.push({ test: () => true, repeat: true, optional: true });
       else if (ch === '?') atoms.push({ test: () => true, repeat: false, optional: false });

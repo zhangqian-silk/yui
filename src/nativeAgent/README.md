@@ -272,7 +272,11 @@ diff 来自本次实际 before/after（不是 HEAD），含 hunk 坐标及 EOF n
 取消在提交前停止，已完成 rename 则如实返回成功，不回滚或伪称未发生。
 
 拒绝绝对路径、父目录穿越、符号链接、非普通文件和多硬链接文件；父目录
-必须存在。read 有界读取并验证 UTF-8；write 在同目录创建独占临时文件，
+必须存在。read 有界读取并验证 UTF-8；文本工具以 NUL 为现有二进制分类界限，
+预检发现源文件或候选内容包含 NUL 时返回 `binary_file/effect:none`，在任何
+提交前拒绝；提交期间发生外部变化则沿用已有部分效果回执，不冒称没有效果。
+非法 UTF-8 仍返回 `invalid_utf8`。这不是通用二进制格式检测。
+write 在同目录创建独占临时文件，
 完成后 rename 替换目标，取消前检查，保留已提交效果。临时文件创建权限
 为 `0600`，替换会使用新文件权限；不保留旧 inode、权限或其他元数据。
 清理失败报告自有临时文件相对路径和未知效果，不隐藏残留。
@@ -292,7 +296,8 @@ diff 来自本次实际 before/after（不是 HEAD），含 hunk 坐标及 EOF n
 - `search({path,query,mode?})` 默认检索单行字面子串；
   `mode:"regex"` 使用下述有限语法。返回 `{path,line,text}`；
   长行返回有界预览，额外标明 `textTruncated,lineBytes,byteStart,sha256`，
-  用 read 的 startLine 获取完整文本。
+  用 read 的 startLine 获取完整文本。匹配正文与预览只移除 LF 或完整 CRLF
+  行终止符，不移除孤立 CR；原始字节偏移与完整文件 hash 不变。
 
 `path` 为相对目录或显式文件，`.` 选择 root。每层路径排序，确定性深度优先；
 返回 JSON `{results,complete,scanComplete,nextCursor,coverage,skipped,budgets,
@@ -320,6 +325,8 @@ generated:false 关闭；隐藏文件默认可见，hidden:false 排除；exclud
 
 glob 支持 `* ? [abc] [a-z] [!a]` 与反斜杠 literal escape；`**` 必须为
 完整路径段，可匹配零或多个段（如 `**/*.ts`）。不支持 brace/extglob；
+未转义的 `@(...) +(...) ?(...) !(...) *(...)` 明确拒绝；转义的操作符或
+左括号可按字面匹配，不增加 extglob 引擎。
 ignore 支持注释、`!` 否定、首 `/` 锚定、末 `/` 目录和逐级覆盖，
 但尾部空格按字面处理，不宣称完全 Git wildmatch 兼容。
 regex 支持字面字符、`.`、字符类、`^ $`、`* + ?`、`\d \w \s` 与元字符

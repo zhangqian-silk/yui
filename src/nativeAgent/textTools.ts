@@ -3,7 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Json, Tool, ToolError, ToolOutcome } from './contracts.js';
 import { FileFault, bounded, workspaceRoot, validPath, checkPath, readSnapshot, digest,
-  fits, cursor, readCursor, replace, diff, type Snapshot, type Replacement } from './fileToolsSupport.js';
+  fits, cursor, readCursor, replace, diff, assertText, type Snapshot, type Replacement } from './fileToolsSupport.js';
 
 export type TextToolsOptions = { root: string; maxBytes?: number; maxOutputBytes?: number };
 type Edit = { oldText: string; newText: string };
@@ -93,6 +93,11 @@ export function createTextTools(options: TextToolsOptions): Tool[] {
       if (invalid) return { ok: false, error: invalid };
       const outcome = (value: unknown): ToolOutcome => ({ ok: true, content: JSON.stringify(value) });
       const fit = (result: ToolOutcome) => fits(result, maxOutputBytes, name, scope.toolCallId);
+      const readText = async (target: string): Promise<Snapshot> => {
+        const snapshot = await readSnapshot(target, maxBytes, signal);
+        assertText(snapshot.text);
+        return snapshot;
+      };
       const held: { key: string; promise: Promise<void>; release: () => void }[] = [];
       const receipts: { path: string; status: string; beforeSha256: string | null; sha256: string | null;
         candidateSha256: string; bytes: number; diff: string }[] = [];
@@ -103,7 +108,7 @@ export function createTextTools(options: TextToolsOptions): Tool[] {
         signal.throwIfAborted();
         if (name === 'read') {
           const request = args as unknown as ReadArgs;
-          const snapshot = await readSnapshot(await checkPath(root, request.path), maxBytes, signal);
+          const snapshot = await readText(await checkPath(root, request.path));
           const binding = digest(JSON.stringify([request.path, request.startLine ?? 1, request.limit ?? 200, maxBytes, maxOutputBytes]));
           const fingerprint = snapshot.sha256 + ':' + snapshot.identity;
           let start = readCursor(request.cursor, binding, fingerprint, snapshot.text.length);
@@ -164,7 +169,7 @@ export function createTextTools(options: TextToolsOptions): Tool[] {
         const snapshot = async (target: Target): Promise<Snapshot | undefined> => {
           const absolute = await checkPath(root, target.path, name === 'write');
           if (absolute === root) throw new FileFault('not_regular_file', 'Expected a file');
-          try { return await readSnapshot(absolute, maxBytes, signal); }
+          try { return await readText(absolute); }
           catch (error) {
             if (name === 'write' && (error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
             throw error;
@@ -186,6 +191,7 @@ export function createTextTools(options: TextToolsOptions): Tool[] {
           }).sort((a, b) => a.start - b.start) : [{ start: 0, end: before?.text.length ?? 0, text: target.content! }];
           if (edits.some((edit, i) => i > 0 && edit.start < edits[i - 1].end)) throw new FileFault('edit_conflict', 'Edits overlap in original text');
           const next = replace(before?.text ?? '', edits);
+          assertText(next);
           const bytes = Buffer.byteLength(next);
           totalBytes += bytes + (before?.bytes ?? 0);
           if (bytes > maxBytes || totalBytes > 32 * 1024 * 1024) throw new FileFault('too_large', 'Mutation snapshot byte budget exceeded');

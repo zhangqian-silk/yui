@@ -49,6 +49,11 @@ export async function checkPath(root: string, relative: string, allowMissing = f
   return target;
 }
 export type Snapshot = { text: string; bytes: number; sha256: string; identity: string };
+// Shared, deliberately narrow binary classification; not general format detection.
+export const isBinary = (text: string): boolean => text.includes('\0');
+export function assertText(text: string): void {
+  if (isBinary(text)) throw new FileFault('binary_file', 'NUL-bearing binary content is not supported by text tools');
+}
 export async function readSnapshot(target: string, maxBytes: number, signal: AbortSignal): Promise<Snapshot> {
   const file = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {

@@ -18,6 +18,118 @@ async function fixture(t) {
   return root;
 }
 
+function executorFor(tools, onRelease = () => {}) {
+  return createToolExecutor({
+    tools,
+    environment: { async acquire() { return { value: null, async release() { onRelease(); } }; } },
+    permission: { async check() { return { allowed: true }; } },
+  });
+}
+const batchRequest = calls => ({
+  scope: { sessionId: 's', turnId: 't', step: 1 }, calls,
+  signal: new AbortController().signal, async beforeExecute() {}, async afterExecute() {},
+});
+
+test('search strips only LF/CRLF terminators and preserves original byte evidence', async t => {
+  const root = await fixture(t);
+  const raw = '世\nneedle\r\nneedle\r\r\nneedle\r';
+  await writeFile(path.join(root, 'crlf.txt'), raw);
+  await writeFile(path.join(root, 'lf.txt'), 'needle\n');
+  const body = 'needle' + '世'.repeat(1000);
+  await writeFile(path.join(root, 'long.txt'), '世\n' + body + '\r\n');
+  const executor = executorFor(createSearchTools({ root, maxOutputBytes: 4096 }));
+  const call = (id, name, args) => ({ id, name, arguments: args });
+  const result = await executor.executeBatch(batchRequest([
+    call('anchor', 'search', { path: 'crlf.txt', query: '^needle$', mode: 'regex' }),
+    call('real-cr', 'search', { path: 'crlf.txt', query: '^needle.$', mode: 'regex' }),
+    call('long', 'search', { path: 'long.txt', query: '^needle.+$', mode: 'regex' }),
+  ]));
+  assert.equal(result.stopped, null);
+  assert.ok(result.results.every(receipt => receipt.outcome.ok));
+  assert.deepEqual(JSON.parse(result.results[0].outcome.content).results,
+    [{ path: 'crlf.txt', line: 2, text: 'needle' }]);
+  assert.deepEqual(JSON.parse(result.results[1].outcome.content).results.map(entry => [entry.line, entry.text]),
+    [[3, 'needle\r'], [4, 'needle\r']]);
+  const long = JSON.parse(result.results[2].outcome.content).results[0];
+  assert.equal(long.line, 2);
+  assert.equal(long.byteStart, Buffer.byteLength('世\n'));
+  assert.equal(long.lineBytes, Buffer.byteLength(body));
+  assert.equal(long.sha256, hash('世\n' + body + '\r\n'));
+  assert.equal(long.textTruncated, true);
+  const [read] = createTextTools({ root });
+  const page = JSON.parse((await invoke(read, { path: 'crlf.txt', startLine: 2, limit: 1 })).content);
+  assert.equal(page.text, 'needle\r\n');
+  assert.equal(page.byteStart, 4);
+  assert.equal(page.byteEnd, 12);
+});
+
+test('glob rejects unescaped extglob without breaking supported globs or escaped literal operators', async t => {
+  const root = await fixture(t);
+  for (const name of ['crlf.txt', 'lf.txt', 'long.txt', '@(crlf|lf).txt']) await writeFile(path.join(root, name), '');
+  const executor = executorFor(createSearchTools({ root }));
+  const call = (id, name, args) => ({ id, name, arguments: args });
+  const unsupported = await executor.executeBatch(batchRequest(
+    ['@', '+', '?', '!', '*'].map((prefix, i) => call(`ext-${i}`, 'find',
+      { path: '.', query: `${prefix}(crlf|lf).txt`, mode: 'glob' }))));
+  for (const receipt of unsupported.results) {
+    assert.equal(receipt.outcome.error.code, 'unsupported_pattern');
+    assert.equal(receipt.outcome.error.effect, 'none');
+  }
+  const supported = await executor.executeBatch(batchRequest([
+    call('glob', 'find', { path: '.', query: '**/[cl]*.txt', mode: 'glob' }),
+    call('escaped-operator', 'find', { path: '.', query: '\\@(crlf|lf).txt', mode: 'glob' }),
+    call('escaped-paren', 'find', { path: '.', query: '@\\(crlf|lf).txt', mode: 'glob' }),
+  ]));
+  assert.deepEqual(JSON.parse(supported.results[0].outcome.content).results.map(entry => entry.path),
+    ['crlf.txt', 'lf.txt', 'long.txt']);
+  for (const receipt of supported.results.slice(1)) assert.deepEqual(JSON.parse(receipt.outcome.content).results,
+    [{ path: '@(crlf|lf).txt' }]);
+});
+
+test('text tools reject NUL source/candidate bytes before any commit and preserve search coverage and UTF-8 errors', async t => {
+  const root = await fixture(t);
+  const wasm = Buffer.from('0061736d01000000', 'hex');
+  await writeFile(path.join(root, 'module.wasm'), wasm);
+  await writeFile(path.join(root, 'plain'), 'old\n');
+  await writeFile(path.join(root, 'invalid'), Buffer.from([0, 255]));
+  let released = 0;
+  const executor = executorFor(createTextTools({ root }), () => released++);
+  const plain = { path: 'plain', expectedSha256: hash('old\n'), edits: [{ oldText: 'old', newText: 'new' }] };
+  const binary = { path: 'module.wasm', expectedSha256: hash(wasm), edits: [{ oldText: 'asm', newText: 'bad' }] };
+  const calls = [
+    { name: 'read', arguments: { path: 'module.wasm' } },
+    { name: 'edit', arguments: { path: binary.path, expectedSha256: binary.expectedSha256, ...binary.edits[0] } },
+    { name: 'write', arguments: { path: binary.path, expectedSha256: binary.expectedSha256, content: 'text' } },
+    { name: 'write', arguments: { path: 'created', content: 'text\0binary' } },
+    { name: 'edit', arguments: { path: 'plain', expectedSha256: hash('old\n'), oldText: 'old', newText: '\0new' } },
+    { name: 'patch', arguments: { files: [plain, binary] } },
+    { name: 'patch', arguments: { files: [plain, { path: 'plain-copy', expectedSha256: hash('old\n'),
+      edits: [{ oldText: 'old', newText: '\0new' }] }] } },
+    { name: 'read', arguments: { path: 'invalid' } },
+  ];
+  await writeFile(path.join(root, 'plain-copy'), 'old\n');
+  const results = await executor.executeBatch(batchRequest(calls.map((call, i) => ({ ...call, id: `c-${i}` }))));
+  assert.equal(results.stopped, null);
+  for (const [index, receipt] of results.results.entries()) {
+    assert.equal(receipt.outcome.ok, false);
+    assert.equal(receipt.outcome.error.code, index === 7 ? 'invalid_utf8' : 'binary_file');
+    assert.equal(receipt.outcome.error.effect, 'none');
+    assert.equal(receipt.cleanup.status, 'released');
+  }
+  assert.equal(released, 8);
+  assert.deepEqual(await readFile(path.join(root, 'module.wasm')), wasm);
+  assert.equal(await readFile(path.join(root, 'plain'), 'utf8'), 'old\n');
+  assert.equal(await readFile(path.join(root, 'plain-copy'), 'utf8'), 'old\n');
+  assert.deepEqual((await readdir(root)).sort(), ['invalid', 'module.wasm', 'plain', 'plain-copy']);
+  const search = createSearchTools({ root }).at(-1);
+  const coverage = JSON.parse((await invoke(search, { path: 'module.wasm', query: 'asm' })).content);
+  assert.equal(coverage.skipped.binary, 1);
+  assert.equal(coverage.coverage.complete, false);
+  assert.equal(coverage.scanComplete, true);
+  assert.deepEqual(coverage.results, []);
+  assert.equal((await invoke(search, { path: 'invalid', query: 'asm' })).error.code, 'invalid_utf8');
+});
+
 test('read pages preserve BOM, CRLF, multibyte long lines, offsets and cursor preconditions', async t => {
   const root = await fixture(t);
   const text = '\ufefffirst\r\n' + '世"\\'.repeat(25000) + '\r\nlast';

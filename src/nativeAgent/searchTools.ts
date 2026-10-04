@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import type { Json, Tool, ToolError, ToolOutcome } from './contracts.js';
 import { FileFault, bounded, workspaceRoot, validPath, checkPath, inspect, readSnapshot,
-  digest, fits, cursor, readCursor, lines } from './fileToolsSupport.js';
+  digest, fits, cursor, readCursor, lines, isBinary } from './fileToolsSupport.js';
 import { glob, regex, type MatchBudget } from './filePatterns.js';
 
 export type SearchToolOptions = {
@@ -160,11 +160,11 @@ export function createSearchTools(options: SearchToolOptions): Tool[] {
           totalBytes += snapshot.bytes;
           if (totalBytes > limits.maxTotalBytes) throw limit();
           fingerprint.update(snapshot.sha256 + snapshot.identity);
-          if (snapshot.text.includes('\0')) { skipped.binary++; return; }
+          if (isBinary(snapshot.text)) { skipped.binary++; return; }
           let line = 0; let byteStart = 0;
           for (const raw of lines(snapshot.text)) {
             signal.throwIfAborted(); line++;
-            const text = raw.endsWith('\n') ? raw.slice(0, -1) : raw;
+            const text = raw.endsWith('\n') ? raw.slice(0, raw.endsWith('\r\n') ? -2 : -1) : raw;
             const matches = match ? match(text, budget) : text.includes(request.query!);
             if (matches) {
               // Long matching lines are previews, not silently complete text.
