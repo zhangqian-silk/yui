@@ -81,6 +81,13 @@ const result = await agent.runTurn({
 原骨架混合的 `onEvent` 出口已拆为 `recorder` 与 `observer`，不保留旧兼容入口。
 独立会话格式见 [session/README.md](./session/README.md)，不修改 Yui 存储版本。
 
+项目编码指导的公开工厂 `createProjectGuidance({root,cwd,sessionId})` 提供已有
+`ContextSource` 和两个普通工具，用于目录指令、先 catalog 后完整加载的 Skills、
+唯一可见 `.agents/MEMORY.md`。只有内置编码行为是 system；项目文本保持带 scope
+和指纹的 required 数据。组合、frontmatter 子集、记忆管理和边界见
+[projectGuidance/README.md](./projectGuidance/README.md)，可执行消费证据见
+`native-agent-guidance.test.js`。不需要改写内核、工具授权、协议或会话格式。
+
 ## 公共组合示例与模块所有权
 
 ```ts
