@@ -18,7 +18,7 @@ try {
   const recorder = await store.recorder('session-1');
   const agent = createAgent({
     provider, tools, // 调用方提供的实现
-    onEvent: async event => { await recorder.record(event); },
+    recorder,
   });
   const result = await agent.runTurn({
     sessionId: 'session-1', turnId: 'turn-1',
@@ -37,9 +37,8 @@ try {
 Session 内唯一；Session 的执行由调用方串行管理，存储不是执行调度器。
 系统消息可在首个 user 消息前用 `message_appended` 保存。
 
-上面的 `onEvent` 是现有最小内核的必要记录接线，不是普通 UI 回调。后续内核
-组合必须单独等待必要记录，普通 UI/遥测使用非权威观察出口；不能同时让一个
-可选观察者的异常否定必要保存。此模块不修改公共内核或统一组装入口。
+`recorder` 是内核必要记录接线，普通 UI/遥测通过独立的可选 `observer`；
+可选观察者的异常不能否定必要保存。
 
 ## 保存、查询与观察
 
@@ -85,6 +84,10 @@ Session 内唯一；Session 的执行由调用方串行管理，存储不是执�
 取消不会撤销已完成工具，成功结果不会被取消标记改成未执行。
 
 `interrupted` 表示还有未结束 Turn；`unknown-effects` 优先于 interrupted。
+版本 2 的工具结果事件保留 `settlement` 执行与释放证据；身份和结果使用外层
+事件及配对消息，不重复保存。释放失败和部分获取失败派生为 `cleanup-required`，
+不会改写已确认的工具 outcome，但禁止新 Turn/Step/工具启动。它是现有事实的
+只读恢复判断，不是额外调度协议；目前没有自动清理/清除接口。
 只读诊断始终可用。调用方可以在确认原执行者已经停止后，用明确的 `append`
 操作保存确切缺失结果并结束原 Step/Turn，不能伪造未知调用的成功。需要记录
 无法确认的效果时可写 `effect: unknown`，之后仍禁止新 Turn。本版没有“清除
@@ -106,10 +109,13 @@ journal、`synchronous=FULL`、1 秒锁等待。会话完整 JSON 与 revision/d
 SQLite 提供本地事务的原子提交与恢复；没有测试硬件掉电、损坏介质或不诚实
 文件系统，网络文件系统和敌对路径替换不在支持边界内。
 
-此文件独立格式初始版本为 1（application_id 为 NAS1、user_version 为 1）。
-`format.ts` 是会话格式校验/派生状态的统一入口；没有已发布前代格式需要迁移。
-未来格式变化必须在此定义明确版本迁移，不能猜测修复畸形记录；未知数据库、
-schema 或版本拒绝打开，不修改原证据。Yui Home storage 版本没有变化。
+独立格式当前版本为 2（application_id 仍为 NAS1、user_version 为 2），新增
+可选 settlement 证据。`format.ts` 是唯一格式校验/派生及明确 v1→v2 迁移入口。
+SQLite 打开合法版本 1 时，在单事务内验证每个原始身份/revision/digest/事件，
+只升级 document.schemaVersion 与对应摘要，事件和值完全保留，不为旧事实补造
+started 或 cleanup。未知版本、schema 或畸形历史失败回滚，不猜测修复。
+新库直接创建版本 2。此迁移仅处理调用方显式选择的独立会话库，不是 Yui Home
+升级，Yui Home storage 版本没有变化。
 
 每 Session 最多 10,000 个事件、16 MiB JSON；每事件 1 MiB，批次最多 8 个
 调用，每调用参数 64 KiB。达到容量即拒绝保存，不截断。当前实现每次读写
@@ -125,8 +131,9 @@ schema 或版本拒绝打开，不修改原证据。Yui Home storage 版本没�
 不支持的版本。fixture 自建目录且 finally 关闭连接并删除目录，不启动
 Controller、Agent Host、真实模型或账号服务。
 
-这是存储模块独立验收；新的 required-recording 内核、上下文构建、UI 和遥测
-实现的组合验收尚未在此完成。生产内核必须遵守写前确认和失败结算合同。
+上述是存储模块独立证据；实际 required-recording 内核、上下文、UI、遥测与
+SQLite 重启组合见 `native-agent-composition.test.js`。迁移与失败回滚另有固定
+`native-agent-session-migration.test.js`。均不证明真实模型或硬件掉电行为。
 
 对其他模块：上下文构建只能使用不可变历史副本，裁剪不能写回会话事实。
 交互层可从分页事件投影历史，订阅只负责通知刷新；submit/cancel 和真正的

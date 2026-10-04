@@ -50,10 +50,10 @@ export function response(value: unknown, usedIds: ReadonlySet<string>): ModelRes
   }
   return snapshot(value as ModelResponse);
 }
-export function history(value: readonly Message[]): Message[] {
+export function history(value: readonly Message[], maxBytes = limits.historyBytes): Message[] {
   const pending = new Map<string, string>();
   const used = new Set<string>();
-  if (!Array.isArray(value) || !json(value) || size(value) > limits.historyBytes) {
+  if (!Array.isArray(value) || !json(value) || size(value) > maxBytes) {
     throw new AgentFault('invalid_history', 'History must be bounded JSON messages');
   }
   for (const m of value) {

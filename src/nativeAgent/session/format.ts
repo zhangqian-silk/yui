@@ -96,12 +96,12 @@ function message(value: unknown): asserts value is Message {
  * Central current-format admission and projection. No heuristic normalization,
  * synthesized results or historical-shape fallback. Future versions migrate here.
  */
-export function inspectDocument(value: unknown): {
+function inspectVersion(value: unknown, version: 1 | 2): {
   document: SessionDocument; messages: Message[]; recovery: Recovery;
 } {
   json(value);
   fields(value, ['schemaVersion', 'sessionId', 'events']);
-  requireFact(value.schemaVersion === 1, 'Unsupported Session format; expected version 1');
+  requireFact(value.schemaVersion === version, `Unsupported Session format; expected version ${version}`);
   identity(value.sessionId);
   requireFact(Array.isArray(value.events) && value.events.length <= sessionLimits.events, 'Event count limit exceeded');
   requireFact(Buffer.byteLength(JSON.stringify(value)) <= sessionLimits.documentBytes, 'Session byte limit exceeded');
@@ -118,6 +118,7 @@ export function inspectDocument(value: unknown): {
   let responseSeen = false;
   let finalSeen = false;
   let uncertain = false;
+  let cleanupRequired = false;
   for (const [index, event] of document.events.entries()) {
     fields(event, ['sessionId', 'turnId', 'seq', 'data']);
     identity(event.turnId);
@@ -128,7 +129,7 @@ export function inspectDocument(value: unknown): {
     const at = index + 1;
     if (data.type === 'turn_started') {
       fields(data, ['type']);
-      requireFact(!active && !turnIds.has(event.turnId) && event.seq === 1 && !uncertain,
+      requireFact(!active && !turnIds.has(event.turnId) && event.seq === 1 && !uncertain && !cleanupRequired,
         'Cannot start Turn: active, repeated, noninitial sequence or unknown effects require recovery');
       active = { turnId: event.turnId, lastSequence: 1, lastStep: 0 };
       turns.push(active); turnIds.add(event.turnId);
@@ -141,14 +142,15 @@ export function inspectDocument(value: unknown): {
     switch (data.type) {
       case 'step_started':
         fields(data, ['type', 'step']);
-        requireFact(userSeen && !finalSeen && !uncertain && active.openStep === undefined && !pending.length
+        requireFact(userSeen && !finalSeen && !uncertain && !cleanupRequired && active.openStep === undefined && !pending.length
           && data.step === active.lastStep + 1, 'Invalid Step start or unsettled calls');
         active.lastStep = data.step; active.openStep = data.step; responseSeen = false;
         break;
       case 'message_appended': {
-        fields(data, ['type', 'step', 'message']);
+        fields(data, version === 1 ? ['type', 'step', 'message'] : ['type', 'step', 'message', 'settlement']);
         message(data.message);
         const msg = data.message;
+        requireFact(data.settlement === undefined || msg.role === 'tool', 'Settlement requires a tool result');
         if (msg.role === 'system' || msg.role === 'user') {
           requireFact(data.step === undefined && !active.lastStep && !userSeen,
             'Input messages must precede Steps and occur only once per Turn');
@@ -177,6 +179,29 @@ export function inspectDocument(value: unknown): {
             requireFact(!uncertain || (!msg.outcome.ok && msg.outcome.error.effect === 'none'
               && call.startRevision === undefined), 'Cannot report new effects after uncertainty');
             call.resultRevision = at; call.outcome = msg.outcome;
+            if (data.settlement !== undefined) {
+              const s = data.settlement;
+              fields(s, ['started', 'status', 'cancellationRequested', 'cleanup']);
+              requireFact(typeof s.started === 'boolean' && typeof s.cancellationRequested === 'boolean',
+                'Invalid settlement flags');
+              const expected = !s.started ? 'not_executed' : msg.outcome.ok ? 'succeeded'
+                : msg.outcome.error.effect === 'unknown' ? 'unknown'
+                  : msg.outcome.error.code === 'cancelled' ? 'cancelled' : 'failed';
+              requireFact(s.status === expected && (!s.started || call.startRevision !== undefined)
+                && (s.started || (!msg.outcome.ok && msg.outcome.error.effect === 'none')), 'Settlement contradicts outcome or intent');
+              fields(s.cleanup, ['status', 'error']);
+              requireFact(['not_acquired', 'released', 'failed', 'acquire_failed'].includes(s.cleanup.status as string),
+                'Invalid cleanup status');
+              if (s.cleanup.status === 'failed' || s.cleanup.status === 'acquire_failed') {
+                fields(s.cleanup.error, ['code', 'message']);
+                identity(s.cleanup.error.code);
+                requireFact(typeof s.cleanup.error.message === 'string', 'Missing cleanup diagnostic');
+                cleanupRequired = true;
+              } else requireFact(!('error' in s.cleanup), 'Unexpected cleanup diagnostic');
+              requireFact(!s.started || ['released', 'failed'].includes(s.cleanup.status as string),
+                'Started tool must retain acquired-resource settlement');
+              call.settlement = data.settlement;
+            }
             call.status = !msg.outcome.ok && msg.outcome.error.effect === 'unknown' ? 'unknown' : 'settled';
             uncertain ||= call.status === 'unknown';
             pending.shift();
@@ -188,7 +213,7 @@ export function inspectDocument(value: unknown): {
       case 'tool_started': {
         fields(data, ['type', 'step', 'toolCallId', 'name']);
         const call = pending[0];
-        requireFact(!uncertain && active.openStep !== undefined && data.step === active.openStep && call
+        requireFact(!uncertain && !cleanupRequired && active.openStep !== undefined && data.step === active.openStep && call
           && call.call.id === data.toolCallId && call.call.name === data.name && call.startRevision === undefined,
         'Tool start must match the next unstarted call in the open Step');
         call.startRevision = at; call.status = 'unknown';
@@ -207,6 +232,7 @@ export function inspectDocument(value: unknown): {
           && (data.errorCode === undefined || typeof data.errorCode === 'string'), 'Invalid terminal');
         requireFact(data.reason !== 'completed' || finalSeen, 'Completed Turn requires final model response');
         requireFact(!uncertain || data.reason === 'error', 'Unknown effects require error terminal');
+        requireFact(!cleanupRequired || data.reason === 'error', 'Unreleased resources require error terminal');
         active.terminal = { reason: data.reason, revision: at,
           ...(data.errorCode === undefined ? {} : { errorCode: data.errorCode }) };
         active = undefined;
@@ -216,7 +242,18 @@ export function inspectDocument(value: unknown): {
     }
   }
   return { document, messages, recovery: {
-    disposition: calls.some(c => c.status === 'unknown') ? 'unknown-effects' : active ? 'interrupted' : 'ready',
+    disposition: calls.some(c => c.status === 'unknown') ? 'unknown-effects'
+      : cleanupRequired ? 'cleanup-required' : active ? 'interrupted' : 'ready',
     turns, calls,
   } };
+}
+
+/** Current readers never reinterpret old shapes or repair malformed evidence. */
+export function inspectDocument(value: unknown) { return inspectVersion(value, 2); }
+
+/** The one declared v1 → v2 transition. All original events remain byte-equivalent
+ * JSON values; absent historical settlement evidence is never invented. */
+export function migrateSessionDocument(value: unknown): SessionDocument {
+  inspectVersion(value, 1);
+  return inspectDocument({ ...(value as object), schemaVersion: 2 }).document;
 }

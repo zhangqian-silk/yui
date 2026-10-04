@@ -17,7 +17,7 @@ try {
   const agent = createAgent({
     tools: [],
     provider: createMockProvider({ toolCallProbability: 0, random: () => 0 }),
-    onEvent: observations.onEvent,
+    observer: observations,
   });
   const result = await agent.runTurn({
     sessionId: 's1', turnId: 't1', input: 'hello', maxSteps: 1,
@@ -30,16 +30,17 @@ try {
 }
 ```
 
-这是可选观测适配器，不是必要持久化出口。现有内核 `onEvent` 的必要事实语义
-不变；需要同时持久化时，由组合方先调用自己的必要存储，再调用这里的
-`onEvent`，不要把必要存储塞进 best-effort consumer。观测失败不等于存储成功。
+这是可选观测适配器，不是必要持久化出口。内核分别注入必要的 `recorder`
+和同步 `observer.observe`，不要把必要存储塞进 best-effort consumer。
+观测失败不等于存储成功。
 
 ## 生产者与消费者
 
 - 内核提供 `observeEvent(event, source?)`，保留源序号及会话、轮次、步骤和
   工具调用身份。不会变更源事件或回写执行状态。
 - 模型网关显式提供 `observeModel({ sessionId, turnId, step, requestId,
-  attempt, phase, status?, effect?, usage?, errorCode?, retryAfterMs? }, source?)`。
+  attempt, phase, status?, effect?, usage?, errorCode?, retryAfterMs?,
+  clientRequestId?, providerRequestId?, httpStatus?, elapsedMs? }, source?)`。
   `phase` 为 `started | ended | retry`，`status` 为
   `completed | error | cancelled | unknown`。记录重试提示不执行重试。
   `requestId + attempt` 必须来自生产者；本模块不生成模型调用身份。
@@ -69,7 +70,9 @@ try {
 缺失不替换成零。调用方应保持同一身份的事件有序。
 
 用量只白名单复制生产方实际提供的 `inputTokens`、`outputTokens` 和
-`cachedInputTokens`，保留缺失值，不估算、不求和、不把重复观察算作新账单。
+`cachedInputTokens`、`totalTokens`，保留缺失值，不估算、不求和、不把重复观察算作新账单。
+实际网关通过 `connectModelObservations` 接入；累计 `elapsedMs` 与观察间隔
+`durationMs` 分开，没有 started 证据时不虚构 duration。
 取消保留实际 `cancelled` 终态；已执行工具不会改称未执行；`effect: unknown`
 始终保留，不用于自动重放。
 
@@ -92,7 +95,7 @@ session/turn/request/toolCall 过滤及 `after` cursor。`nextCursor` 用于下�
 忙时丢弃通知；本地窗口仍接收记录，`consumerDropped` 如实累计。
 最多 32 个订阅、总计最多 32 个在途导出（包括已取消但未结算的导出）。
 同步抛错或 Promise 拒绝计入 `consumerFailures`，异常文本不进入日志。
-非法观测或时钟异常计入 `rejected`，`onEvent` 不将其传播给 Agent。
+非法观测或时钟异常计入 `rejected`，`observe` 不将其传播给 Agent。
 
 取消订阅/关闭会发送 AbortSignal，但不谎称导出已结算；`inFlight` 在 Promise
 真正结算前仍非零。插件必须合作释放自己创建的文件/连接；本模块不创建这些

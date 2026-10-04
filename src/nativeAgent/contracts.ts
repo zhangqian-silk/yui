@@ -1,3 +1,6 @@
+import type { ContextBuilder, ContextInput, ContextReport } from './context/index.js';
+import type { ToolExecutor, ToolSettlement } from './toolManager/index.js';
+export type { ContextBuilder, ToolExecutor };
 /** Independent Agent contracts: no Yui runtime or third-party Agent types. */
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type ToolCall = { id: string; name: string; arguments: Json };
@@ -23,20 +26,39 @@ export interface Tool {
   execute(args: Json, scope: StepScope & { toolCallId: string }, signal: AbortSignal): Promise<ToolOutcome>;
 }
 export type EndReason = 'completed' | 'cancelled' | 'budget_exhausted' | 'error';
+/** Identity and outcome are already in the enclosing event and tool message. */
+export type ToolSettlementEvidence = Pick<ToolSettlement, 'started' | 'status' | 'cancellationRequested' | 'cleanup'>;
 export type EventData =
   | { type: 'turn_started' }
   | { type: 'step_started'; step: number }
-  | { type: 'message_appended'; step?: number; message: Message }
+  | { type: 'message_appended'; step?: number; message: Message; settlement?: ToolSettlementEvidence }
   | { type: 'tool_started'; step: number; toolCallId: string; name: string }
   | { type: 'step_ended'; step: number }
   | { type: 'turn_ended'; reason: EndReason; errorCode?: string };
 export type AgentEvent = Scope & { seq: number; data: EventData };
+/** A resolved call confirms recording this exact fact. Rejections are never retried. */
+export interface SessionRecorder {
+  record(event: AgentEvent): Promise<void>;
+}
+/** Synchronous, nonblocking notification. Queue transport in the consumer, not here. */
+export interface AgentObserver {
+  observe(event: AgentEvent): void;
+}
+export type RecordingStatus =
+  | { status: 'memory'; lastRecordedSeq: 0 }
+  | { status: 'recorded'; lastRecordedSeq: number }
+  | { status: 'failed'; lastRecordedSeq: number; failedSeq: number };
 export type TurnResult = Scope & {
   reason: EndReason;
   /** Only messages added in this Turn; prior history is not repeated. */
   messages: readonly Message[];
   events: readonly AgentEvent[];
   steps: number;
+  recording: RecordingStatus;
+  /** A failed observer is disconnected for the rest of this Turn, not retried. */
+  observerErrors: readonly { seq: number; message: string }[];
+  /** Model projection evidence, never a replacement for authoritative history. */
+  contextReports: readonly { step: number; status: 'prepared' | 'failed'; report: ContextReport }[];
   error?: { code: string; message: string };
 };
 export type TurnInput = Scope & {
@@ -47,10 +69,16 @@ export type TurnInput = Scope & {
 };
 export type AgentOptions = {
   provider: ModelProvider;
-  tools: readonly Tool[];
-  /** Ordered fact sink. A rejection stops new effects, not already-started effects. */
-  onEvent?: (event: AgentEvent) => Promise<void>;
-};
+  contextBuilder?: ContextBuilder;
+  /** Units belong to the selected builder's estimator; default uses JSON bytes. */
+  contextBudget?: ContextInput['budget'];
+  /** If omitted, facts exist only in the returned in-memory events. */
+  recorder?: SessionRecorder;
+  observer?: AgentObserver;
+} & (
+  | { tools: readonly Tool[]; toolExecutor?: never }
+  | { toolExecutor: ToolExecutor; tools?: never }
+);
 export interface Agent {
   runTurn(input: TurnInput): Promise<TurnResult>;
 }

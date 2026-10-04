@@ -1,8 +1,9 @@
-# 独立 Agent 与基础编码工具
+# 独立 Agent 执行内核与组合合同
 
-这是自有 TypeScript 类型和循环组成的独立 Agent，不调用真实模型、不依赖
+这是自有 TypeScript 类型和循环组成的独立 Agent，默认样例不调用真实模型、不依赖
 Yui 控制面。当前和后续模块开发均不需要考虑接入 Yui；模块的持续约束见
-[AGENTS.md](./AGENTS.md)。它不是完整生产 Agent，也不提供强沙箱或崩溃恢复。
+[AGENTS.md](./AGENTS.md)。内置实现与外部实现走相同接口，依赖全部显式传入。
+它不是完整生产 Agent，也不提供强沙箱、动态插件装载或自动崩溃恢复。
 
 ## 运行
 
@@ -17,7 +18,8 @@ node --test test/core/native-agent.test.js
 demo 创建并最终删除自己的临时目录，用固定随机序列 `[0.1, 0.2, 0.9]`
 实现 `mock(read) → read 结果 → mock(write) → write 结果 → mock(final)`。
 write 的内容取自模型请求中的真实 read 结果；demo 独立读取输出文件核对，
-打印消息、事件、结束原因及 `fileVerified: true`。不启动 Controller、
+demo 显式组合模型、工具执行器、上下文构建器、内存记录 fixture 和观察消费者，
+核对记录、观察与返回事实一致，打印消息、事件、结束原因及 `fileVerified: true`。不启动 Controller、
 Agent Host、账号或网络服务。仓库完整交付检查仍为 `npm test`。
 
 ## 公开入口与责任
@@ -45,15 +47,119 @@ const result = await agent.runTurn({
   厂商类型、传输和未来流式处理属于 provider，不进入内核。
 - `Tool` 提供声明、无副作用的 `validate` 和 `execute`。结果明确成功，
   或携带 `effect: none | unknown` 的错误；结果按调用 ID 写回历史。
-- `onEvent` 是可选的有序事实出口，不是策略 hook。循环先记录内存事件，
-  再等待出口；出口失败停止新增效果，仍在内存补齐已记录调用的未执行结果。
-  终态出口自身失败时，本地唯一终态修正为 `error/event_sink_failed`；
-  不能声称外部出口已经持久化这个终态，不重试坏出口。
+- `ToolExecutor` 提供冻结的 `definitions` 与
+  `executeBatch({scope,calls,signal,beforeExecute,afterExecute})`。`tools` 数组通过 `createToolExecutor`
+  组装成同一合同，也可只提供 `toolExecutor` 替换实现；两者必须且只能选一。
+  内核先核对声明、调用身份与预算，再顺序调用；执行器负责授权、参数验证及
+  实际效果结算，不得自行重放未知效果。`afterExecute` 在资源释放之后，
+  将 `ToolSettlement` 的执行/释放证据与配对消息一起写入必要的 `message_appended` 事件
+  （身份和 outcome 已由事件/消息承载，不重复存储）；
+  cleanup 失败不覆盖已确认结果，但停止后续效果。`tools` 简写只表示调用方已授权
+  这些预绑定工具，使用无资源 lease 和允许策略，不宣称额外限制 root/env。
+  构造期固定工具声明，工具配置变更需重新组装。
+- `ContextBuilder.build({request,budget}, signal)` 在每次模型调用前执行，返回
+  `{request,report}`。默认使用真实上下文构建器，按预算裁剪完整的旧历史组；
+  `contextBudget` 使用所选 estimator 的单位（默认 1 MiB JSON 字节、输出预留 0）。
+  `TurnResult.contextReports` 保留每步报告及带报告的预算失败。投影会再次校验调用/结果配对及
+  请求预算，不改写权威历史、工具声明和 Session/Turn/Step 身份。
+  隐藏历史不能绕过原始调用 ID 去重或未知效果检查。
+- `SessionRecorder.record(AgentEvent)` 是可选外部必要记录入口。内核按序
+  等待确认；未配置时 `recording.status=memory`，不声称持久化。
+  失败停止新增效果，仍在内存补齐调用结果并返回
+  `error/recording_failed`、`lastRecordedSeq` 和 `failedSeq`。
+  失败那条外部记录的实际效果未知，之后的事件仅保留本地，不重试坏出口。
+  终态记录失败时，仅修正唯一的本地终态；观察者收到该修正后的终态。
+- `AgentObserver.observe(AgentEvent)` 是同步非阻塞通知，不是必要记录确认或
+  策略 hook。抛错只进入 `observerErrors`，并断开该消费者到本轮结束，不中止执行。
+  消费者自行排队异步 UI/遥测传输、维护传输错误并负责 drain/close；
+  返回 Promise 是合同错误：内核不等待它，并接住 rejection，避免未处理异常。
+  `observe` 已返回不证明 UI/远端已经收到事件。同步 CPU 阻塞不受内核隔离。
 
 `contracts.ts` 是实际使用的公共合同，`test/core/native-agent.test.js`
-提供 final、调用/结果、取消和错误的可运行样例。新增 provider、工具及事件
-消费者无需改写循环或操作其他模块私有状态。持久化/上下文实现可从历史与
-事件入口独立推进，但恢复与未知效果的重放需要另行设计，当前不会自动续跑。
+提供可替换组合、final、调用/结果、取消和失败的可运行样例。新增能力实现
+无需改写循环或操作其他模块私有状态；资源由创建方关闭，内核不关闭注入实例。
+原骨架混合的 `onEvent` 出口已拆为 `recorder` 与 `observer`，不保留旧兼容入口。
+独立会话格式见 [session/README.md](./session/README.md)，不修改 Yui 存储版本。
+
+## 公共组合示例与模块所有权
+
+```ts
+import { createAgent, createToolExecutor, type AgentOptions } from './index.js';
+
+// provider、tools、contextBuilder、recorder、observer 由调用方创建。
+const options: AgentOptions = {
+  provider,
+  toolExecutor: createToolExecutor({ tools, environment, permission }),
+  contextBuilder,
+  contextBudget: { capacity: 100_000, reserveOutput: 1000 },
+  recorder,
+  observer,
+};
+const agent = createAgent(options);
+```
+
+task-72 维护 `contracts.ts`、`index.ts`、执行循环和组合样例；
+task-73 消费 `ModelProvider`，task-74 提供 `ToolExecutor`，
+task-75 提供 `Tool`，task-76 提供 `SessionRecorder` 与恢复后的 `TurnInput.history`，
+task-77 提供 `ContextBuilder`，task-78 消费 `Agent/TurnInput/TurnResult`，
+task-79 消费 `AgentObserver/AgentEvent`。这些是独立实现的最小边界，不是
+内核对其他 Task 的运行时依赖。公共合同修改须明确生产者、消费者与可运行证据。
+
+`native-agent-composition.test.js` 已连接七个实际模块：网关编解码/流处理、工具管理、
+编码工具、SQLite 会话、上下文、CLI、观测。证明读取→指纹编辑→本地检查→回答→
+保存→关闭重开→续聊；网络传输替换为确定性 SSE fixture，不调用真实厂商账号。
+因此这是实际模块的离线组合证据，不是真实模型规划能力或线上协议兼容性证据。
+
+### 共同组合入口
+
+`createExecutionOwner` 是交互入口与执行内核之间的薄连接：只持有当前执行句柄，
+每次提交从 store 读取完整历史并取得必要 recorder，再调用同一个 `Agent.runTurn`。
+不增加循环、调度器、后台重试或恢复状态。`settle(sessionId)` 返回当前/最近一次本地
+执行的结果、保存回执和原始失败；它不从历史重造旧 TurnResult。
+`close()` 取消并等待自己持有的执行，调用方随后关闭 store 和 observer。
+同一 Session 必须只有一个执行所有者；CAS 不等于跨进程执行租约。
+
+```ts
+const observations = createLocalObserver();
+const progress = createInteractionProgress();
+const store = createSessionStore(createSqliteSessionBackend(explicitAbsoluteFile));
+const provider = createModelGateway({
+  ...explicitModelOptions,
+  onObservation: connectModelObservations(observations, progress.observe),
+});
+const executor = createToolExecutor({ tools, environment, permission });
+const sessions = createExecutionOwner({
+  store, maxSteps: 8, observer: observations,
+  sessions: [{ id: knownSessionId, title: 'Explicitly selected session' }],
+  agent: recorder => createAgent({
+    provider, toolExecutor: executor, contextBuilder: createContextBuilder(),
+    recorder, observer: observations,
+  }),
+});
+// knownSessionId must already exist; sessions.create(title) creates a fresh ID.
+try {
+  const cli = await openCli({
+    sessions, input, output, initialSessionId: knownSessionId, progress,
+    diagnostics: createInteractionDiagnostics(observations),
+  });
+  await cli.done;
+} finally {
+  await sessions.close();
+  await store.close();
+  observations.close();
+}
+```
+
+上例变量均由调用方显式提供，不隐式读账号、工作目录或全局配置。根/env 已预绑定的
+工具必须匹配授予的环境；第四个 environment 参数不会重新限制其 root/env。
+会话列表是调用方显式选择的 catalog 加本进程新建项，标题只是显示标签；
+不是 SQLite 自动枚举或持久标题。重启时明确提供已知 ID，`/use ID` 仍可直接查询
+同一 store 内的确切会话。未结束记录不冒充活动句柄；未知效果和 cleanup-required
+拒绝新录制，不能通过 UI 自动恢复或重放。
+
+`connectModelObservations` 保留真实请求身份、用量、状态和累计 elapsedMs；
+不虚构 started/duration。`createInteractionProgress` 只转发实时增量，CLI 有界暂存，
+不将增量写入会话历史；显示可丢，最终消息来自必要记录。
 
 ## 终止与边界
 
@@ -61,18 +167,27 @@ const result = await agent.runTurn({
 允许 Step 返回 final 仍为 `completed`；若返回工具调用，先结算该批次，
 然后 `budget_exhausted`，不伪造 final。每轮一个内存 `turn_ended`，
 每个已开始 Step 都有 `step_ended`，事件序号在本轮内从 1 递增。
+`tool_started` 是执行前记录的意图，不是效果证明；记录后取消或记录失败仍可能
+产生未启动结果。实际效果以配对的工具结果为准。记录完整性以 `recording` 为准，
+不能仅通过是否存在 `turn_ended` 推断外部存储成功。
 
 输入历史拒绝悬空、重复或不匹配的调用/结果。provider 响应先验证完整批次，
 畸形响应零工具执行。未知工具与已知参数/I/O 错误可以回填给模型纠正；
 provider 异常、工具意外异常或未知效果结束为 `error`，无自动重试。
-错误详情由 provider/工具实现负责脱敏；文件工具不会输出根外路径或堆栈。
+历史包含未知效果时返回 `unresolved_effect`，不调用模型或执行器；调用方须先
+根据外部证据显式结算，再提供完整历史。内核不加载 Session、不恢复半条记录、
+不判断原 Turn 是否已经执行过。持久化/恢复实现必须验证完整性、身份和去重，
+尤其不能把未确认记录之后的成功内存结果误作已持久化。
+错误详情由能力实现负责脱敏；文件工具不会输出根外路径或堆栈。
 
 取消传递 `AbortSignal`，停止下一次调用并等待已开始工具结算；已完成写入
 不会因取消被撤销或改称“未执行”。没有硬超时竞速；不合作的 provider/tool
-可能一直不返回，Step 预算不是墙钟超时。未知效果优先报告 error。
+及必要记录器可能一直不返回，Step 预算不是墙钟超时。未知效果优先报告 error。
 
 当前固定上限：每 Step 8 个调用；每调用 JSON 参数 64 KiB；每消息/响应
-512 KiB（容纳 64 KiB 文本的 JSON 转义）；发起模型请求前历史 1 MiB。
+512 KiB（容纳 64 KiB 文本的 JSON 转义）；投影后的完整模型请求 1 MiB
+（含身份和工具声明）。完整源历史可超出模型预算，以供上下文构建器投影，
+仍要求每条消息有界、配对完整；存储层自行限制加载资源。
 所有大小按 UTF-8/JSON 编码计算。超限显式报错，不截断；最后一个有界批次
 的结果仍完整保留，即使下一次模型请求因此触及历史上限。
 

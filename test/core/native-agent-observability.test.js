@@ -57,7 +57,7 @@ test('optional exporters never hold execution; busy, failure and unsubscribe are
     return new Promise(resolve => { release = resolve; });
   } });
   observer.subscribe({ export() { throw new Error('SECRET exporter credentials'); } });
-  const result = await createAgent({ tools: [], onEvent: observer.onEvent, provider: {
+  const result = await createAgent({ tools: [], observer, provider: {
     async complete() { return { kind: 'final', content: 'ok' }; },
   } }).runTurn({ ...scope, input: 'hi', maxSteps: 1 });
   assert.equal(result.reason, 'completed');
@@ -75,7 +75,7 @@ test('optional exporters never hold execution; busy, failure and unsubscribe are
   assert.equal(observer.health().subscribers, 0);
   assert.ok(!JSON.stringify(observer.health()).includes('SECRET'));
   const badClock = createLocalObserver({ clock() { throw new Error('SECRET'); } });
-  const unaffected = await createAgent({ tools: [], onEvent: badClock.onEvent, provider: {
+  const unaffected = await createAgent({ tools: [], observer: badClock, provider: {
     async complete() { return { kind: 'final', content: 'ok' }; },
   } }).runTurn({ ...scope, input: 'hi', maxSteps: 1 });
   assert.equal(unaffected.reason, 'completed');

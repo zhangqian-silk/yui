@@ -1,8 +1,8 @@
-import type { AgentEvent, EndReason, Message, ToolCall, ToolOutcome } from '../index.js';
+import type { AgentEvent, EndReason, Message, ToolCall, ToolOutcome, ToolSettlementEvidence } from '../index.js';
 
-/** Separate from Yui Home storage. No earlier persistent format exists. */
+/** Separate from Yui Home storage. Version 2 adds exact settlement evidence. */
 export type SessionDocument = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   sessionId: string;
   events: readonly AgentEvent[];
 };
@@ -37,6 +37,7 @@ export type CallRecovery = {
   startRevision?: number;
   resultRevision?: number;
   outcome?: ToolOutcome;
+  settlement?: ToolSettlementEvidence;
 };
 export type TurnRecovery = {
   turnId: string;
@@ -46,7 +47,7 @@ export type TurnRecovery = {
   terminal?: { reason: EndReason; errorCode?: string; revision: number };
 };
 export type Recovery = {
-  disposition: 'ready' | 'interrupted' | 'unknown-effects';
+  disposition: 'ready' | 'interrupted' | 'unknown-effects' | 'cleanup-required';
   turns: readonly TurnRecovery[];
   calls: readonly CallRecovery[];
 };

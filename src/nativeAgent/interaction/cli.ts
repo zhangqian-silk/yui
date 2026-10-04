@@ -1,6 +1,6 @@
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
-import type { InteractionDiagnosticsPort, InteractionRenderer, InteractionSessionPort } from './contracts.js';
+import type { InteractionDiagnosticsPort, InteractionRenderer, InteractionSessionPort, InteractionTextProgress } from './contracts.js';
 import { createTextRenderer, terminalText } from './renderer.js';
 
 export type CliEnd = { reason: 'closed' | 'quit' | 'eof' | 'display-error' | 'input-error'; error?: unknown };
@@ -13,6 +13,7 @@ export async function openCli(options: {
   sessions: InteractionSessionPort; input: Readable; output: Writable;
   initialSessionId?: string; renderer?: InteractionRenderer;
   diagnostics?: InteractionDiagnosticsPort;
+  progress?: InteractionTextProgress;
 }): Promise<CliConnection> {
   const { sessions, input, output } = options;
   const renderer = options.renderer ?? createTextRenderer();
@@ -21,6 +22,9 @@ export async function openCli(options: {
   let closed = false;
   let unsubscribe = () => {};
   let unsubscribeDiagnostics = () => {};
+  let unsubscribeProgress = () => {};
+  let progressQueued = false;
+  let pendingProgress: { sessionId: string; turnId: string; text: string; omitted: boolean } | undefined;
   let diagnosticsQueued = false;
   let refreshQueued = false;
   let scheduled: NodeJS.Immediate | undefined;
@@ -33,6 +37,8 @@ export async function openCli(options: {
     closed = true;
     if (scheduled) clearImmediate(scheduled);
     unsubscribe();
+    try { unsubscribeProgress(); }
+    catch (error) { end.error ??= error; }
     try { unsubscribeDiagnostics(); }
     catch (error) { end.error ??= error; }
     lines.close();
@@ -202,7 +208,24 @@ export async function openCli(options: {
   enqueue(async () => {
     await write(HELP);
     await select(selected);
-    if (closed || !options.diagnostics) return;
+    if (closed) return;
+    if (options.progress) unsubscribeProgress = options.progress.subscribe(progress => {
+      if (closed || progress.sessionId !== selected) return;
+      const same = pendingProgress?.turnId === progress.turnId;
+      const text = (same ? pendingProgress!.text : '') + progress.text;
+      pendingProgress = { ...progress, text: text.slice(0, 8192),
+        omitted: text.length > 8192 || !!pendingProgress?.omitted || (!!pendingProgress && !same) };
+      if (progressQueued) return;
+      progressQueued = true;
+      enqueue(async () => {
+        const next = pendingProgress;
+        pendingProgress = undefined; progressQueued = false;
+        if (next?.sessionId === selected) {
+          await write(`[provisional ${terminalText(next.turnId, 100)}] ${terminalText(next.text)}${next.omitted ? ' [updates omitted]' : ''}\n`);
+        }
+      });
+    });
+    if (!options.diagnostics) return;
     try {
       unsubscribeDiagnostics = options.diagnostics.subscribe(() => {
         if (closed || diagnosticsQueued) return;
