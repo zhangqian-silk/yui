@@ -153,3 +153,23 @@ cache，不删除管理运行环境。未启动真实模型测试，未 push/PR/
 
 Leader 下一步：采用本补充为修订 Artifact，检查候选 commit 和固定研究引用，
 再决定 Review/WorkItem 验收与后续集成；Worker 不代替这些决定。
+
+## work-item-2 / run-8：function_call 可选状态窄修复
+
+在本修复 checkout 重新通过合法 `task artifact read` 读取上述固定原研究及
+`git:b9f0faf2b9d9d09ae97f03de258d29eaeca0ac3a:research/protocol-implementation-supplement.md`。
+message-13 不在本次 Assignment 可读范围；使用 run-8 派发的独立问题重述，
+未跨读旧 Worker/Reviewer 工作区。
+
+实际补核 OpenAI 官方 function-calling guide 的 streaming 段：
+`https://developers.openai.com/api/docs/guides/function-calling#streaming`；
+其 added/done 样例均省略 function_call 的 status。另读取上述固定官方 SDK
+commit `11b9283f2a22737e273ccc1593d01af5cf584a0b` 的
+`ResponseFunctionToolCall` 接口，status 为可选的
+`in_progress | completed | incomplete`。生成式 create 文档入口仍无完整 schema；
+没有将入口视为 schema 审计，也没有将示例视为完整响应终态。
+
+离线 JSON 与完整分片 SSE 回归先证实省略 status 会使工具 Turn 失败，
+仅在 function_call 缺席该字段时放行。显式无效/不完整状态、message 状态、
+参数 done、item done、response completed 与关联/一致性检查保留。
+未新增 fallback、重试或持久状态，未扩大工具语义支持范围。

@@ -75,6 +75,9 @@ Responses 以 caller-owned input 重送历史，assistant 文本使用合法输�
 固定 `store:false`、`truncation:'disabled'` 和 function `strict:false`，不修改
 调用方的 JSONSchema 为严格模式。区分 `item.id` 与可执行的 `call_id`，
 校验 output/content index、顺序号（若提供）、delta/done/final 一致性。
+`function_call.status` 可省略；若提供，added 阶段必须为 `in_progress`，
+done/最终输出必须为 `completed`。message 的状态仍必填。省略工具 item
+状态不替代参数 done、item done 或 `response.completed`，也不放宽关联校验。
 
 Messages 分离开头 system；中途 system、assistant prefill、空块等无法无损
 映射的历史明确拒绝。assistant tool_use 的结果以 user tool_result 配对，

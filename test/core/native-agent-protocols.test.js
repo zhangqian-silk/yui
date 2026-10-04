@@ -29,13 +29,14 @@ const responsesTools = { ...responsesFinal, output: [textItem, ...functionItems]
 const messagesTools = { ...messagesFinal, stop_reason: 'tool_use',
   content: [messagesFinal.content[0], ...calls.map(c => ({ type: 'tool_use', id: c.id, name: c.name, input: c.arguments }))] };
 const frame = (type, fields = {}) => `event: ${type}\r\ndata: ${JSON.stringify({ type, ...fields })}\r\n\r\n`;
-function responsesStream(root) {
+function responsesStream(root, transform = e => e) {
   const initial = { id: root.id, status: 'in_progress', output: [] };
   let out = frame('response.created', { response: initial })
     + frame('response.in_progress', { response: initial });
   for (const [i, item] of root.output.entries()) {
     out += frame('response.output_item.added', { output_index: i,
-      item: { ...item, status: 'in_progress', ...(item.type === 'message' ? { content: [] } : { arguments: '' }) } });
+      item: { ...item, ...(item.type === 'function_call' && item.status === undefined ? {} : { status: 'in_progress' }),
+        ...(item.type === 'message' ? { content: [] } : { arguments: '' }) } });
   }
   for (const [i, item] of root.output.entries()) {
     const refs = { output_index: i, item_id: item.id };
@@ -53,8 +54,10 @@ function responsesStream(root) {
   }
   let sequence = 0;
   return (out + frame('response.completed', { response: root }))
-    .replace(/data: (.+)\r\n/g, (_match, json) =>
-      `data: ${JSON.stringify({ ...JSON.parse(json), sequence_number: sequence++ })}\r\n`);
+    .replace(/event: ([^\r]+)\r\ndata: (.+)\r\n\r\n/g, (_match, type, json) => {
+      const e = transform(JSON.parse(json));
+      return e ? frame(type, { ...e, sequence_number: sequence++ }) : '';
+    });
 }
 function messagesStream(root) {
   let out = frame('message_start', { message: { ...root, stop_reason: null, content: [],
@@ -130,6 +133,63 @@ test('Responses: caller-owned assistant history uses input messages, not fabrica
   // Official EasyInputMessage accepts string/input content. ResponseOutputMessage
   // needs a real item ID/status; the kernel does not retain or invent those IDs.
   assert.deepEqual(sent.input[2], { role: 'assistant', content: 'previous answer' });
+});
+
+test('Responses: omitted function-call status allows complete JSON/SSE tool turns', async t => {
+  const root = { ...responsesTools, output: [textItem,
+    ...functionItems.map(({ status, ...item }) => item)] };
+  for (const stream of [false, true]) await t.test(stream ? 'SSE' : 'JSON', async () => {
+    const executed = [], executionsAtDelta = [];
+    let sends = 0;
+    const provider = createModelGateway({ ...options, protocol: 'responses', stream,
+      transport: async () => {
+        const value = sends++ === 0 ? root : responsesFinal;
+        return new Response(fragmented(stream ? responsesStream(value) : JSON.stringify(value)));
+      },
+      onObservation: e => {
+        if (e.data.type === 'tool_delta') executionsAtDelta.push(executed.length);
+      } });
+    const agent = createAgent({ provider, tools: [{ definition: request.tools[0], validate: () => null,
+      execute: async args => { executed.push(args); return { ok: true, content: 'read' }; } }] });
+    const turn = await agent.runTurn({ sessionId: 's', turnId: 't', input: 'hello', maxSteps: 2 });
+    assert.equal(turn.reason, 'completed');
+    assert.deepEqual(executed, calls.map(c => c.arguments));
+    assert.deepEqual(turn.messages.filter(m => m.role === 'tool').map(m => m.toolCallId), ['c1', 'c2']);
+    assert.equal(sends, 2);
+    if (stream) assert.ok(executionsAtDelta.length > 0 && executionsAtDelta.every(n => n === 0));
+  });
+});
+
+test('Responses: optional call status does not weaken explicit states or completion gates', async () => {
+  const item = (({ status, ...rest }) => rest)(functionItems[0]);
+  const root = { ...responsesTools, output: [item] };
+  const bad = [];
+  for (const status of ['incomplete', 'in_progress', null, 'unknown']) {
+    const invalid = { ...root, output: [{ ...item, status }] };
+    bad.push([false, JSON.stringify(invalid)], [true, responsesStream(invalid)]);
+  }
+  for (const status of ['incomplete', 'completed', null, 'unknown']) {
+    bad.push([true, responsesStream(root, e => e.type === 'response.output_item.added'
+      ? { ...e, item: { ...e.item, status } } : e)]);
+  }
+  for (const type of ['response.function_call_arguments.done', 'response.output_item.done', 'response.completed']) {
+    bad.push([true, responsesStream(root, e => e.type === type ? null : e)]);
+  }
+  bad.push([false, JSON.stringify({ ...root, status: 'incomplete' })]);
+  const { status, ...message } = textItem;
+  const missingMessageStatus = { ...root, output: [message, item] };
+  bad.push([false, JSON.stringify(missingMessageStatus)], [true, responsesStream(missingMessageStatus)]);
+  for (const [stream, body] of bad) {
+    let sends = 0, executions = 0;
+    const provider = createModelGateway({ ...options, protocol: 'responses', stream,
+      transport: async () => { sends++; return new Response(fragmented(body)); } });
+    const agent = createAgent({ provider, tools: [{ definition: request.tools[0], validate: () => null,
+      execute: async () => { executions++; return { ok: true, content: 'bad' }; } }] });
+    const turn = await agent.runTurn({ sessionId: 's', turnId: 't', input: 'x', maxSteps: 1 });
+    assert.equal(turn.reason, 'error', body);
+    assert.equal(executions, 0);
+    assert.equal(sends, 1, 'unknown effects never authorize replay');
+  }
 });
 
 test('Responses: unsupported execution contexts and assistant phases cannot become local calls/history', async () => {
