@@ -5,7 +5,8 @@
 既有管理命令仍是 `yui config agent`。
 
 当前入口已装配真实 kernel、ModelGateway、ExecutionOwner、工具、上下文、
-SQLite、行式交互和观测。尚未接入持久 Session catalog/目录绑定及可变授权策略；
+SQLite、行式交互和观测，以及真实本地安全 binding/permission/environment。
+尚未接入持久 Session catalog/目录元数据；
 因此这是可独立使用的入口装配，不是完整产品的联合验收结果。
 
 ## 启动
@@ -56,7 +57,7 @@ yui agent run --config /absolute/agent.json --session SESSION_ID --input '继续
 工具数组完整替换，不合并能力。环境项为 `NATIVE_AGENT_ADAPTER`、
 `ENDPOINT`、`MODEL`、`CREDENTIAL_REF`、`CWD`、`STATE_DIR`、`TOOLS`、
 `MAX_STEPS`、`CONTEXT_BYTES`、`OUTPUT_RESERVE_BYTES`、`MODEL_TIMEOUT_MS`、
-`STREAM`（每项都带 `NATIVE_AGENT_` 前缀）。CLI 对应 `--credential-ref`、
+`STREAM`、`COMMAND_CONFIG`（每项都带 `NATIVE_AGENT_` 前缀）。CLI 对应 `--credential-ref`、
 `--state-dir` 等 kebab-case 名称；tools是逗号分隔，stream是true/false。
 文件相对路径基于文件目录，CLI相对路径基于启动目录，环境路径必须绝对。
 cwd默认启动目录；model/endpoint/credentialRef/stateDir无账号或Home回退。
@@ -72,15 +73,58 @@ outputReserveBytes小于contextBytes；modelTimeoutMs为1–300000的单次模�
 带`--allow-write`或`--allow-command`，不能从配置、环境或历史自动恢复这些opt-in：
 
 ```sh
+# agent.json须含下述已审查command配置；单有allow-command不授予任意命令。
 yui agent start --config /absolute/agent.json \
   --tools read,list,find,search,write,edit,command --allow-write --allow-command
 ```
 
-这是现有公开合同的“调用方授权的预绑定工具”，不是可变权限策略、提示授权UI
-或强沙箱。不实现`/permissions`；改变工具集合需退出再显式启动。
-command的完整环境为`{}`，不继承PATH/HOME/凭据；使用绝对可执行路径及显式argv。
-文件工具绑定受控root；命令可访问root以外的路径、网络与系统资源。
-只向可信任本地命令开放此能力，不对敌对文件系统或脱离进程组的后代作隔离保证。
+入口使用真实 `createLocalToolBinding`，同一工厂的 tools、permission、environment
+交给唯一 `createToolExecutor`，不使用 Agent 的 tools 简写，不混用其他绑定。
+实际声明仍受 `tools` 选择限制。root 与 cwd 都绑定到有效配置的 canonical cwd；
+不会从 `.git` 或项目文本推断更大根。有效配置和 binding 描述可供核对真实目录。
+目录身份在授权和执行时复核，替换/消失/软链变化拒绝旧绑定。
+
+选择command还必须提供调用方审查过的完整规格：所选JSON文件的 `command` 字段，
+或 `--command-config JSON` / `NATIVE_AGENT_COMMAND_CONFIG` JSON值。
+例如文件中加入：
+
+```json
+{
+  "command": {
+    "env": {"LANG": "C"},
+    "specs": [
+      {"executable": "/canonical/path/to/reviewed-program", "argv": ["--check"], "effect": "read"}
+    ],
+    "timeoutMs": 10000,
+    "maxOutputBytes": 65536,
+    "killGraceMs": 1000
+  }
+}
+```
+
+这是片段，需合并进前述version-1配置；程序路径必须是真实规范化绝对普通可执行
+文件、无软链组件。argv逐项精确匹配，command调用的cwd必须等于绑定cwd；
+程序身份变化、额外参数、另一个解释器或目录均拒绝。`effect:"write"` 还需要本次
+`--allow-write`，仅 `--allow-command` 不允许写规格。上述三个预算字段可省略，
+沿用工具预算；无command配置时不能启用command。
+
+规格不是程序分析或只读证明。调用方必须审查具体程序、完整参数及其实际配置行为；
+不得把模型临时生成的脚本、可写脚本文件、可变外部配置或任意参数当作已审查规格。
+`--allow-command` 不是任意shell/脚本权限。离线例子只授权代码中固定且已审查的
+fixture检查程序，不代表可以自动授权任意模型建议。
+
+env是完整白名单环境，只允许显式PATH/LANG/LC_ALL/TZ，默认`{}`；
+不继承process.env/HOME/凭据/代理/加载器变量。PATH目录及程序仍须可信审查。
+公共配置输出不打印command规格、argv或环境值，binding只报告envKeys/commandCount。
+原始调用/结果是必要执行事实，仍会保存到历史；不要在argv或配置中放秘密。
+入口把当前已知凭据传给82的outcome脱敏，并继续保护模型/记录/诊断出口；
+这是已知秘密文字保护，不是全通道DLP，也不改变被读取文件的实际内容/sha256。
+
+改变工具/授权需先取消并等旧owner结算、关闭，再显式重开。
+每次启动/指定ID恢复均从当前配置和本次opt-in创建新binding/executor，重新验证目录、
+程序与授权；旧标题/ID/历史/描述不授予权限，不热更新旧lease。
+不实现`/permissions`或授权提示UI。命令仍可访问root外的路径、网络与系统资源，
+不对敌对文件系统或脱离进程组的后代作隔离保证，不是OS强沙箱。
 
 真实凭据仅用于内存中的模型认证；不保存在配置/历史/日志/诊断中，不传给工具
 子进程。已知的当前凭据若出现在模型响应/工具参数/必要记录，入口拒绝该出口，
@@ -117,11 +161,13 @@ CAS不是跨进程执行租约。恢复非ready状态被拒绝且不自动修复
   可恢复诊断；与现有InteractionSessionPort的create/list/read/history接线。
   目前`--session ID`和`/use ID`直接查询真实store，`/sessions`只列出本进程显式选择，
   不代表持久发现；当前无法核对原会话cwd，使用者须重新选择相同受控目录。
-- 权限/环境生产者须提供实际ToolPermission/ToolEnvironment和有效授权视图，
-  预绑定root/env与执行边界一致；恢复授权默认只读。入口不复制生产者策略。
-- 最终“新进程发现并选择同会话、目录一致、运行时授权”的验收需要真实生产者
-  固定成果，不能用fixture替代。当前离线检查只替换模型网络，其余模块真实，
-  但不是这些尚未提供模块的最终集成。
+- 已采用82真实安全模块，包含实际ToolPermission/ToolEnvironment及有效binding描述；
+  默认只读、精确命令、本次授权、结算关闭后重开重建已经通过真实CLI离线验证。
+  未提供84源码，因此不声明project_context/project_memory装配或自动授权这些工具。
+- 最终“新进程发现并选择同会话、原会话目录一致、实际授权效果”的验收仍需81
+  真实源码与完整合同，不能用fixture或完成通知替代。指定ID恢复只验证当前绑定，
+  还不能核对原会话目录。当前离线检查只替换模型网络，其余已装配模块真实，
+  不是缺少catalog的最终联合验收。
 
 ## 可执行离线样例
 
@@ -132,5 +178,6 @@ node docs/examples/agent-offline.mjs
 ```
 
 样例创建本地HTTP服务、一次性目录和dummy凭据，经真实入口完成读取、编辑、
-本地检查、回执核对和指定ID续聊；finally关闭fixture进程/服务并删除自己的目录。
+精确授权本地检查、回执核对和指定ID续聊，随后重开不继承command/write授权；
+finally关闭fixture进程/服务并删除自己的目录。
 不使用真实模型、账号或共享资源，不启动控制面。

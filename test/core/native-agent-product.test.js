@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile, access } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { realpathSync } from 'node:fs';
 import test from 'node:test';
 import { createSessionStore, createSqliteSessionBackend } from '../../dist/nativeAgent/index.js';
 
@@ -84,6 +85,10 @@ test('product cancellation drains a real model body and preserves a verifiable t
 test('real product entry reads, explicitly edits/checks, saves and resumes exact SQLite session', { timeout: 15000 }, async t => {
   const { root, env } = await fixture(t);
   await writeFile(join(root, 'input.txt'), 'before\n');
+  const executable = realpathSync(process.execPath);
+  const argv = ['-e',
+    'const fs=require("node:fs");if(fs.readFileSync("input.txt","utf8")!=="after\\n"||process.env.AGENT_TEST_TOKEN)process.exit(1);console.log("checked");'];
+  const reviewed = JSON.stringify({ env: {}, specs: [{ executable, argv, effect: 'read' }] });
   let mode = 'read', calls = 0;
   const requests = [];
   const server = createServer(async (req, res) => {
@@ -102,8 +107,7 @@ test('real product entry reads, explicitly edits/checks, saves and resumes exact
       const fingerprint = JSON.parse(JSON.parse(read.content).content).sha256;
       tool_calls = [call('e', 'edit', { path: 'input.txt', expectedSha256: fingerprint, oldText: 'before', newText: 'after' })];
     } else if (mode === 'edit' && calls === 2) tool_calls = [call('c', 'command', {
-      command: process.execPath, cwd: root, argv: ['-e',
-        'const fs=require("node:fs");if(fs.readFileSync("input.txt","utf8")!=="after\\n"||process.env.AGENT_TEST_TOKEN)process.exit(1);console.log("checked");'] })];
+      command: executable, cwd: root, argv })];
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ choices: [{ index: 0, message: { role: 'assistant', content,
       ...(tool_calls ? { tool_calls } : {}) }, finish_reason: tool_calls ? 'tool_calls' : 'stop' }] }));
@@ -120,7 +124,8 @@ test('real product entry reads, explicitly edits/checks, saves and resumes exact
   assert.deepEqual(requests[0].tools.map(t => t.function.name), ['read', 'list', 'find', 'search']);
   mode = 'edit'; calls = 0;
   const second = await cli(['run', ...args, '--session', saved.receipt.sessionId,
-    '--tools', 'read,edit,command', '--allow-write', '--allow-command', '--input', 'Edit and check'], env, undefined, t);
+    '--tools', 'read,edit,command', '--allow-write', '--allow-command', '--command-config', reviewed,
+    '--input', 'Edit and check'], env, undefined, t);
   assert.equal(second.code, 0, second.stderr);
   const continued = JSON.parse(second.stdout);
   assert.equal(continued.receipt.sessionId, saved.receipt.sessionId);
@@ -128,6 +133,10 @@ test('real product entry reads, explicitly edits/checks, saves and resumes exact
   assert.equal(await readFile(join(root, 'input.txt'), 'utf8'), 'after\n');
   const command = continued.result.messages.find(m => m.role === 'tool' && m.name === 'command');
   assert.equal(JSON.parse(command.outcome.content).exitCode, 0);
+  assert.equal(continued.binding.root, root);
+  assert.equal(continued.binding.cwd, root);
+  assert.equal(continued.binding.commandCount, 1);
+  assert.ok(!JSON.stringify(continued.configuration).includes(argv[1]));
   assert.ok(!first.stdout.includes(secret) && !second.stdout.includes(secret));
   assert.ok(!(await readFile(join(root, 'state', 'sessions.sqlite'))).includes(Buffer.from(secret)));
   mode = 'denied';
@@ -137,6 +146,77 @@ test('real product entry reads, explicitly edits/checks, saves and resumes exact
   assert.equal(JSON.parse(denied.stdout).result.reason, 'error');
   assert.ok(!requests.at(-1).tools.some(tool => ['write', 'edit', 'command'].includes(tool.function.name)));
   await assert.rejects(access(join(root, 'forbidden.txt')));
+  await assert.rejects(access(env.YUI_HOME));
+});
+
+test('product exact command authority is rebuilt on reopen, never recovered from history', { timeout: 10000 }, async t => {
+  const { root, env } = await fixture(t);
+  const executable = realpathSync(process.execPath);
+  await writeFile(join(root, 'secret.txt'), secret);
+  const argv = ['-e', 'const fs=require("node:fs");fs.writeFileSync("reviewed.txt","yes");console.log(JSON.stringify(process.env));console.log(fs.readFileSync("secret.txt","utf8"))'];
+  const policy = { env: { LANG: 'C' }, specs: [{ executable, argv, effect: 'write' }] };
+  let actual = argv, requests = 0, runId = 0;
+  let declared = [];
+  const server = createServer(async (req, res) => {
+    let body = '';
+    for await (const part of req) body += part;
+    declared = JSON.parse(body).tools.map(tool => tool.function.name);
+    const tool_calls = requests++ % 2 === 0 ? [{ id: `c-${runId}-${requests}`, type: 'function',
+      function: { name: 'command', arguments: JSON.stringify({ command: executable, argv: actual, cwd: root }) } }] : undefined;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ choices: [{ index: 0, message: { role: 'assistant', content: 'Inspect actual outcome',
+      ...(tool_calls ? { tool_calls } : {}) }, finish_reason: tool_calls ? 'tool_calls' : 'stop' }] }));
+  });
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const args = ['--allow-http', '--endpoint', `http://127.0.0.1:${server.address().port}/chat`, '--model', 'offline',
+    '--credential-ref', 'env:AGENT_TEST_TOKEN', '--cwd', root, '--state-dir', join(root, 'state')];
+  const authorized = ['--tools', 'command', '--allow-command', '--command-config', JSON.stringify(policy)];
+  const run = async (extra = [], code = 0) => {
+    requests = 0; runId++;
+    const result = await cli(['run', ...args, ...extra, '--input', 'Use the selected reviewed command'], env, undefined, t);
+    assert.equal(result.code, code, result.stderr || result.stdout);
+    assert.ok(!result.stdout.includes(secret) && !result.stderr.includes(secret));
+    return JSON.parse(result.stdout);
+  };
+  const deniedWrite = await run(authorized);
+  assert.equal(deniedWrite.result.messages.find(m => m.role === 'tool').outcome.error.code, 'command_not_authorized');
+  await assert.rejects(access(join(root, 'reviewed.txt')));
+  const allowed = await run([...authorized, '--allow-write']);
+  const id = allowed.receipt.sessionId;
+  assert.equal(await readFile(join(root, 'reviewed.txt'), 'utf8'), 'yes');
+  const outcome = JSON.parse(allowed.result.messages.find(m => m.role === 'tool').outcome.content);
+  assert.equal(outcome.exitCode, 0);
+  const [environmentLine, redactedLine] = outcome.stdout.trim().split('\n');
+  const childEnv = JSON.parse(environmentLine);
+  delete childEnv.__CF_USER_TEXT_ENCODING;
+  assert.deepEqual(childEnv, { LANG: 'C' });
+  assert.equal(redactedLine, '[REDACTED]');
+  await rm(join(root, 'reviewed.txt'));
+  const reopened = await run(['--session', id], 1);
+  assert.equal(reopened.result.reason, 'error');
+  assert.ok(!declared.includes('command'));
+  assert.equal(reopened.binding.allowCommand, false);
+  assert.equal(reopened.binding.allowWrite, false);
+  await assert.rejects(access(join(root, 'reviewed.txt')));
+  actual = [...argv, 'unreviewed-extra'];
+  const changed = await run([...authorized, '--allow-write', '--session', id]);
+  assert.equal(changed.result.messages.find(m => m.role === 'tool').outcome.error.code, 'command_not_authorized');
+  await assert.rejects(access(join(root, 'reviewed.txt')));
+  const store = createSessionStore(createSqliteSessionBackend(join(root, 'state', 'sessions.sqlite')));
+  try {
+    const saved = await store.load(id);
+    assert.equal(saved.digest, changed.receipt.digest);
+    assert.equal(saved.recovery.disposition, 'ready');
+    assert.ok(saved.document.events.filter(e => e.data.settlement)
+      .every(e => e.data.settlement.cleanup.status === 'released' || !e.data.settlement.started));
+  } finally { await store.close(); }
+  for (const badPolicy of [{ env: { HOME: root }, specs: policy.specs }, { env: {}, specs: [{ ...policy.specs[0], effect: 'guess' }] }]) {
+    const bad = await cli(['check-config', ...args, '--tools', 'command', '--allow-command',
+      '--command-config', JSON.stringify(badPolicy)], env, undefined, t);
+    assert.equal(bad.code, 2, bad.stderr);
+    assert.ok(!bad.stderr.includes(argv[1]));
+  }
   await assert.rejects(access(env.YUI_HOME));
 });
 

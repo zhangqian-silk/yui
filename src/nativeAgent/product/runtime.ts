@@ -1,19 +1,26 @@
 import { mkdir, chmod, lstat, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
-  createAgent, createCodingTools, createContextBuilder, createExecutionOwner,
+  createAgent, createToolExecutor, createContextBuilder, createExecutionOwner,
   createLocalObserver, createModelGateway, createSessionStore, createSqliteSessionBackend,
   connectModelObservations, createInteractionDiagnostics, openCli,
   type ExecutionOwner, type InteractionSessionPort, type SessionStore,
 } from '../index.js';
 import type { CliConnection } from '../interaction/index.js';
-import { ProductError, containsCredential, type ProductArguments } from './config.js';
+import { ProductError, containsCredential, createProductBinding, publicConfiguration, type ProductArguments } from './config.js';
 import { createProductTransport } from './transport.js';
 
 /** Product owns the streams' connection listeners, model dispatcher, store and owner.
  * No hidden execution loop/catalog/policy: all execution goes through ExecutionOwner. */
 export async function runProductRuntime(invocation: ProductArguments, credential?: string): Promise<number> {
   const { config } = invocation;
+  // Rebuild on EVERY open/resume from current explicit authority, never stored history.
+  // Same factory for all three capabilities; do not grant the shorthand's always-allow lease.
+  const binding = createProductBinding(invocation, credential);
+  const toolExecutor = createToolExecutor({
+    tools: binding.tools.filter(tool => config.tools.includes(tool.definition.name)),
+    environment: binding.environment, permission: binding.permission,
+  });
   const observer = createLocalObserver();
   let store: SessionStore | undefined, owner: ExecutionOwner | undefined, cli: CliConnection | undefined;
   let selected = invocation.session;
@@ -74,16 +81,11 @@ export async function runProductRuntime(invocation: ProductArguments, credential
       // Use a locally owned network pool; no global connection or account state.
       transport: network.transport,
     });
-    const tools = createCodingTools({
-      root: config.cwd,
-      ...(config.tools.includes('command') ? { command: { env: {} } } : {}),
-    }).filter(tool => config.tools.includes(tool.definition.name));
     owner = createExecutionOwner({
       store, maxSteps: config.maxSteps, observer,
       ...(selected ? { sessions: [{ id: selected, title: 'Explicit selection' }] } : {}),
       agent: recording => createAgent({
-        // Existing shorthand = caller-authorized, prebound tools. Not an 82 policy replacement.
-        tools, contextBuilder: createContextBuilder(),
+        toolExecutor, contextBuilder: createContextBuilder(),
         contextBudget: { capacity: config.contextBytes, reserveOutput: config.outputReserveBytes },
         observer,
         provider: { async complete(request, signal) {
@@ -124,7 +126,8 @@ export async function runProductRuntime(invocation: ProductArguments, credential
             nextAction: 'Preserve the state directory and inspect confirmed facts.' } });
         return 1;
       }
-      await write({ configuration: config, result: evidence.result, receipt: evidence.receipt,
+      await write({ configuration: publicConfiguration(config), binding: binding.binding,
+        result: evidence.result, receipt: evidence.receipt,
         observations: observer.query().records });
       return signalExit ?? (evidence.result.reason === 'completed' ? 0 : evidence.result.reason === 'cancelled'
         ? 130 : evidence.result.reason === 'budget_exhausted' ? 3 : 1);
@@ -163,8 +166,9 @@ export async function runProductRuntime(invocation: ProductArguments, credential
         return page;
       },
     };
-    await write({ configuration: config, sessionId: selected, mode: 'prebound-tools',
-      note: 'No persistent catalog/cwd binding or dynamic grants yet; commands are not sandboxed.' }, '[agent] ');
+    await write({ configuration: publicConfiguration(config), binding: binding.binding,
+      sessionId: selected, mode: 'local-tool-binding',
+      note: 'No persistent catalog/cwd metadata yet; authority changes require settled close and explicit reopen. Not an OS sandbox.' }, '[agent] ');
     cli = await openCli({ sessions: port, input: process.stdin, output: process.stdout,
       initialSessionId: selected, diagnostics: createInteractionDiagnostics(observer) });
     if (signalExit !== undefined || outputFailed) cli.close();

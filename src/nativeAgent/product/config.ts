@@ -1,5 +1,6 @@
 import { open, realpath, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
+import { createLocalToolBinding, type LocalToolOptions } from '../index.js';
 
 export class ProductError extends Error {
   constructor(readonly code: 'agent_config' | 'agent_storage' | 'agent_execution' | 'agent_output',
@@ -17,23 +18,24 @@ const invalid = (field: string, action = 'Provide a supported explicit value and
   throw new ProductError('agent_config', field, action);
 };
 const fields = ['adapter', 'endpoint', 'model', 'credentialRef', 'cwd', 'stateDir', 'tools',
-  'maxSteps', 'contextBytes', 'outputReserveBytes', 'modelTimeoutMs', 'stream'] as const;
+  'maxSteps', 'contextBytes', 'outputReserveBytes', 'modelTimeoutMs', 'stream', 'command'] as const;
 type Field = typeof fields[number];
 export type ProductConfig = {
   adapter: 'chat-completions'; endpoint: string; model: string; credentialRef: string;
   cwd: string; stateDir: string; tools: string[]; maxSteps: number;
   contextBytes: number; outputReserveBytes: number; modelTimeoutMs: number; stream: boolean;
+  command?: LocalToolOptions['command'];
   sources: Record<Field, 'cli' | 'environment' | 'file' | 'default'>;
 };
 export type ProductArguments = {
   command: 'check-config' | 'start' | 'run'; config: ProductConfig;
-  session?: string; input?: string;
+  session?: string; input?: string; allowWrite: boolean;
 };
 const options: Record<string, Field> = {
   '--adapter': 'adapter', '--endpoint': 'endpoint', '--model': 'model', '--credential-ref': 'credentialRef',
   '--cwd': 'cwd', '--state-dir': 'stateDir', '--tools': 'tools', '--max-steps': 'maxSteps',
   '--context-bytes': 'contextBytes', '--output-reserve-bytes': 'outputReserveBytes',
-  '--model-timeout-ms': 'modelTimeoutMs', '--stream': 'stream',
+  '--model-timeout-ms': 'modelTimeoutMs', '--stream': 'stream', '--command-config': 'command',
 };
 export const productConfigurationOptions = [...Object.keys(options), '--config',
   '--allow-write', '--allow-command', '--allow-http'];
@@ -42,7 +44,7 @@ const environment: Record<Field, string> = {
   credentialRef: 'NATIVE_AGENT_CREDENTIAL_REF', cwd: 'NATIVE_AGENT_CWD', stateDir: 'NATIVE_AGENT_STATE_DIR',
   tools: 'NATIVE_AGENT_TOOLS', maxSteps: 'NATIVE_AGENT_MAX_STEPS', contextBytes: 'NATIVE_AGENT_CONTEXT_BYTES',
   outputReserveBytes: 'NATIVE_AGENT_OUTPUT_RESERVE_BYTES', modelTimeoutMs: 'NATIVE_AGENT_MODEL_TIMEOUT_MS',
-  stream: 'NATIVE_AGENT_STREAM',
+  stream: 'NATIVE_AGENT_STREAM', command: 'NATIVE_AGENT_COMMAND_CONFIG',
 };
 const toolNames = ['read', 'list', 'find', 'search', 'write', 'edit', 'command'];
 function text(value: unknown, field: string, max = 4096): string {
@@ -148,13 +150,45 @@ export async function resolveProductArguments(args: string[], env: NodeJS.Proces
   if (typeof stream !== 'boolean') return invalid('stream');
   const contextBytes = integer(values.contextBytes, 'contextBytes', 1, 1048576);
   const outputReserveBytes = integer(values.outputReserveBytes, 'outputReserveBytes', 0, contextBytes - 1);
+  let reviewedCommand = values.command;
+  if (typeof reviewedCommand === 'string') {
+    try {
+      if (Buffer.byteLength(reviewedCommand) > 65536) return invalid('command');
+      reviewedCommand = JSON.parse(reviewedCommand);
+    } catch { return invalid('command', 'Provide a bounded JSON object containing explicit env and reviewed exact specs.'); }
+  }
+  if (reviewedCommand !== undefined && (!reviewedCommand || typeof reviewedCommand !== 'object'
+    || Array.isArray(reviewedCommand))) return invalid('command');
   return {
-    command: command as ProductArguments['command'], ...(session ? { session } : {}), ...(input !== undefined ? { input } : {}),
+    command: command as ProductArguments['command'], allowWrite,
+    ...(session ? { session } : {}), ...(input !== undefined ? { input } : {}),
     config: { adapter: 'chat-completions', endpoint, model: text(values.model, 'model', 256), credentialRef,
       cwd, stateDir, tools: [...selected], sources, stream, contextBytes, outputReserveBytes,
+      ...(reviewedCommand !== undefined ? { command: reviewedCommand as LocalToolOptions['command'] } : {}),
       maxSteps: integer(values.maxSteps, 'maxSteps', 1, 100),
       modelTimeoutMs: integer(values.modelTimeoutMs, 'modelTimeoutMs', 1, 300000) },
   };
+}
+
+/** One real producer factory owns tools, permission and live environments.
+ * The selected data is not authority until current invocation opt-ins admit it. */
+export function createProductBinding(invocation: ProductArguments, credential?: string) {
+  try {
+    const { config } = invocation;
+    return createLocalToolBinding({
+      root: config.cwd, cwd: config.cwd, allowWrite: invocation.allowWrite,
+      allowCommand: config.tools.includes('command'), command: config.command,
+      ...(credential ? { redact: [credential] } : {}),
+    });
+  } catch {
+    return invalid('binding', 'Select a canonical controlled directory and valid reviewed command executable/argv/effect/env; settle old execution before rebuilding.');
+  }
+}
+
+/** Specs/argv and environment values are caller data, not public diagnostics. */
+export function publicConfiguration(config: ProductConfig) {
+  const { command: _command, ...configuration } = config;
+  return configuration;
 }
 
 /** Resolved only in memory. Never returned in configuration, receipts or diagnostics. */
