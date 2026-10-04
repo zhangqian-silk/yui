@@ -50,6 +50,9 @@ Session 内唯一；Session 的执行由调用方串行管理，存储不是执�
 - `query(sessionId, { after, limit })` 返回游标之后最多 100 条事实及当前修订号。
   游标是同 Session 的 revision；`nextCursor: null` 表示该次读取已到末尾，
   后续增量从该次回执的 revision 开始。不是跨多次请求冻结的快照。
+  内置后端从事件投影按需读取，另受 2 MiB 页预算限制；有字节限制时可能少于
+  limit。替换后端可提供 `SessionBackend.query`；原最小后端仍可用完整文档实现
+  此旧增量合同，但不能以它冒充下述有界 `SessionCatalog`。
 - `subscribe` 返回幂等取消函数，只通知本 Store 成功提交的回执，不重播历史，
   不保证跨进程通知，不充当持久事件队列。每个订阅最多一个运行回调和一个
   合并后的待通知回执。回调拒绝/抛错会取消该订阅，不影响提交；挂起回调不会
@@ -105,23 +108,117 @@ Session 内唯一；Session 的执行由调用方串行管理，存储不是执�
 
 SQLite 使用当前仓库已有的 `better-sqlite3`，显式绝对文件路径、DELETE
 journal、`synchronous=FULL`、1 秒锁等待。会话完整 JSON 与 revision/digest
-在同一事务更新。digest 用于发现意外不一致，不是防篡改签名。
+及其只读事件查询投影在同一事务更新。投影没有独立写入 API；已有文档仍是
+必要记录与恢复的权威。digest 用于发现意外不一致，不是防篡改签名。
 SQLite 提供本地事务的原子提交与恢复；没有测试硬件掉电、损坏介质或不诚实
 文件系统，网络文件系统和敌对路径替换不在支持边界内。
 
-独立格式当前版本为 2（application_id 仍为 NAS1、user_version 为 2），新增
-可选 settlement 证据。`format.ts` 是唯一格式校验/派生及明确 v1→v2 迁移入口。
-SQLite 打开合法版本 1 时，在单事务内验证每个原始身份/revision/digest/事件，
-只升级 document.schemaVersion 与对应摘要，事件和值完全保留，不为旧事实补造
-started 或 cleanup。未知版本、schema 或畸形历史失败回滚，不猜测修复。
-新库直接创建版本 2。此迁移仅处理调用方显式选择的独立会话库，不是 Yui Home
-升级，Yui Home storage 版本没有变化。
+会话文档仍为版本 2，保留可选 settlement 证据；SQLite 布局升级为版本 3
+（application_id 仍为 NAS1、user_version 为 3）。`sqliteFormat.ts` 是集中布局
+初始化和迁移入口，声明 v1→v2→v3 链；`format.ts` 仍拥有文档校验及 v1→v2
+文档转换。打开合法旧库时，同一事务验证所有原始身份/revision/digest/事件：
+v1 只转换文档版本和摘要，不补造 started/cleanup；v2→v3 完整保留文档字节、
+revision 和 digest，新增 null 标题、metadataRevision=0、库 UUID 以及按
+`(session_id, revision)` 主键索引的事件投影。每次只验证一个有界文档，
+整次迁移仍是一笔事务。失败连同 DDL 和版本推进一起回滚；未知版本、schema
+或畸形历史保留现场，不猜测修复。新库直接创建布局 3；没有自动降级，
+旧二进制不可打开布局 3。仅处理调用方显式选择的独立库，不改变 Yui Home。
 
 每 Session 最多 10,000 个事件、16 MiB JSON；每事件 1 MiB，批次最多 8 个
-调用，每调用参数 64 KiB。达到容量即拒绝保存，不截断。当前实现每次读写
-完整有界会话文档，分页限制输出而不减少内部校验开销。它不是无限日志、
+调用，每调用参数 64 KiB。达到容量即拒绝保存，不截断。`load`/追加保存及
+owner admission 仍校验完整有界文档；目录/历史查询不加载完整文档。它不是无限日志、
 压缩服务或大规模数据库；需要更大历史时由上下文/产品合同另行设计，
 不能删除事实以伪装可恢复。内核本身的消息/历史限制仍然有效。
+
+## 持久目录、标题与按需历史（给入口消费者）
+
+`SessionStore` 实现公开 `SessionCatalog`，两个内置后端提供同语义的
+`SessionBackend.catalog`。最小的第三方 read/write 后端没有此端口时，
+目录调用明确返回 `unsupported_catalog`，没有进程标签或完整历史扫描回退。
+消费者可只注入 `SessionCatalog`；执行时另把同一个 store 交给既有 owner。
+
+```ts
+import {
+  createSessionStore, createSqliteSessionBackend,
+  type SessionCatalog, type PageOptions,
+} from '../index.js';
+
+const store = createSessionStore(createSqliteSessionBackend(explicitAbsoluteFile));
+const catalog: SessionCatalog = store;
+try {
+  const page = await catalog.listSessions({ limit: 20 });
+  // 展示 page.items 的 sessionId/title；重复标题仍以用户所选真实 ID 定位。
+  const id = page.items[0]?.sessionId;
+  if (id !== undefined) {
+    const info = await catalog.getSessionInfo(id);
+    await catalog.renameSession(id, 'User-supplied title', info.metadataRevision);
+    const history = await catalog.readHistory(id, { limit: 20 });
+    // nextCursor 非 null 时，以同一 limit 读取下一页；到 null 停止。
+    // history 不是完整执行上下文，不能把单页交给内核自动重放。
+  }
+} finally { await store.close(); }
+```
+
+实际签名：
+
+```ts
+listSessions(options?: PageOptions): Promise<SessionCatalogPage>;
+getSessionInfo(sessionId: string): Promise<SessionDetail>;
+renameSession(sessionId: string, title: string | null, expectedMetadataRevision: number): Promise<SessionDetail>;
+readHistory(sessionId: string, options?: PageOptions): Promise<SessionHistoryPage>;
+```
+
+- 新建沿用 `create(id)`，空文档和初始元数据原子保存后立即可发现，没有第二步
+  目录注册。列表只返回 `sessionId/title/metadataRevision`、库身份、目录 revision、
+  `nextCursor`；不含正文、预览或 live 状态。详情加现有 document revision/digest/source。
+  标题只有 sessions 行（Memory 的元数据项）一个可写权威，不放进历史。
+- title 为 null（清除）或 trim 后 1–200 个 Unicode code points；拒绝控制字符、
+  单独 surrogate、空白及超长值，不静默截断。标题可重复，ID 是唯一选择键。
+  同标题且正确预期版本是无变化成功；过期版本即使标题相同仍报 `revision_conflict`。
+- `metadataRevision` 和 document revision 分离。标题变更不改事件/历史回执，不使
+  历史 cursor 失效；追加事件不覆盖标题，也不使目录 cursor 失效。SQLite 的标题
+  CAS/目录版本维护在同一 immediate 事务；两个连接竞争同一版本只有一个成功。
+- 默认 limit=20、范围 1..100；ID 按 UTF-8 二进制顺序 keyset 分页。SQLite
+  目录 SELECT 不选择 document，最多取 limit+1 个摘要；目录与详情指定 SQLite
+  自动维护的 `session_info` 覆盖索引，不读取含大文档的表记录/overflow pages。
+  索引没有独立写入 API，不是第二份标题权威。Memory 维护排序 ID，
+  二分定位后只复制当前页摘要，不扫描/复制所有文档。没有默认全量总数。
+- 历史是原始 `{revision,event}`，保留 Session/Turn/seq、call/result/settlement
+  身份，工具配对可能跨页。SQLite 先读轻量 revision/digest，再从索引按位置取
+  单个事件；每页最多访问 limit+1 个有界事件，2 MiB 输出预算含 64 KiB envelope
+  预留，覆盖 JSON 转义后的身份、文件 source 及最大 4 KiB cursor。
+  每个合法事件最多 1 MiB，因此一定能完整进入一页，无 `ItemTooLarge` 死路、
+  截断或静默跳过。每条投影校验自己的摘要和 Session 身份；完整历史语义校验
+  仍属于 `load`，查询页不能用于恢复判断。
+- 不透明 cursor 绑定协议、持久库 UUID/Memory 实例、操作、Session（历史）、
+  limit、相关 revision 和下一位置；最大 4 KiB，不是权限凭证或防篡改签名。
+  错库/错会话/结构错/参数错配报 `invalid_cursor`，绝不默默回首屏。
+  新建或真实改名使目录链报 `cursor_stale`；历史追加使历史链失效。调用方应刷新
+  首屏，不混合新旧页。无变化的链不重不漏；SQLite 重开同库 UUID 保持，仍有效的
+  cursor 可继续。复制数据库会复制其 UUID，视为同一数据来源；不支持分叉副本
+  的游标互用或跨数据库调度。Memory close 后事实和 cursor 不持久。
+- 读取同页版本和记录在同一 SQLite 读事务内完成，不维持跨请求长事务；
+  高频写入下不保证长列表能走到末页。不提供 TTL、快照归档或后台清理器。
+- `not_found` 不新建；读 I/O 失败为 `read_failed`，没有空目录回退。
+  标题写失败为 `SessionMetadataSaveError`，带目标/title/预期 revision/cause，
+  effect 保守为 unknown；可能已提交，先用 getSessionInfo 对账，不能盲重试。
+  确认的 not_found/CAS/closed 前置拒绝保持原错误。旧 `SessionSaveError` 不变。
+  命名没有隐式写重试、模型生成或订阅通知；调用方显式刷新目录。
+- 查询不创建 Agent、工具执行、订阅、计时器或 live handle。选中 ID 后是否允许
+  新 Turn 仍由既有 owner/load/recorder 决定；持久未终态不等于 live execution，
+  未知效果/cleanup-required 不会被目录读取清除。
+
+独立可执行样例（无需账号/Controller/网络）：
+
+```sh
+npm run build
+node dist/nativeAgent/session/catalogDemo.js
+```
+
+样例创建三个会话、重复标题/清除、通过 owner 保存一轮、关闭全部连接后重开，
+分页发现与 ID 选择、改名、分页读取原历史/回执，再通过同一公开 owner 合同续聊。
+finally 关闭自有 owner/store 并删除临时目录。它是 81 存储/owner 合同证据，
+不是 80 CLI 装配或 82 授权/环境的最终联合验收。
 
 ## 验证与未覆盖范围
 
@@ -134,6 +231,8 @@ Controller、Agent Host、真实模型或账号服务。
 上述是存储模块独立证据；实际 required-recording 内核、上下文、UI、遥测与
 SQLite 重启组合见 `native-agent-composition.test.js`。迁移与失败回滚另有固定
 `native-agent-session-migration.test.js`。均不证明真实模型或硬件掉电行为。
+`native-agent-session-catalog.test.js` 增加 Memory/SQLite 查询替换、命名 CAS、
+真实关闭重开、cursor 刷新、确认丢失不重放、v2→布局3 原子回滚和大事件分页。
 
 对其他模块：上下文构建只能使用不可变历史副本，裁剪不能写回会话事实。
 交互层可从分页事件投影历史，订阅只负责通知刷新；submit/cancel 和真正的

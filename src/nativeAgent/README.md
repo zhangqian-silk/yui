@@ -157,6 +157,13 @@ try {
 同一 store 内的确切会话。未结束记录不冒充活动句柄；未知效果和 cleanup-required
 拒绝新录制，不能通过 UI 自动恢复或重放。
 
+存储现在另提供持久 `SessionCatalog`：`store.listSessions/getSessionInfo/
+renameSession/readHistory` 可在重启后发现和命名原会话，并通过 ID 交给此 owner。
+此窄查询端口不创建运行句柄，也没有改写现有 CLI 的 offset/显示标签接口；
+产品入口应显式消费新端口，而非把上面的本进程 catalog 当持久目录。
+公开签名、CAS/cursor、布局迁移和可运行的 `catalogDemo.js` 见
+[session/README.md](./session/README.md#持久目录标题与按需历史给入口消费者)。
+
 `connectModelObservations` 保留真实请求身份、用量、状态和累计 elapsedMs；
 不虚构 started/duration。`createInteractionProgress` 只转发实时增量，CLI 有界暂存，
 不将增量写入会话历史；显示可丢，最终消息来自必要记录。
