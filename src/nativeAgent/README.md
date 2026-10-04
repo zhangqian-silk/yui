@@ -227,7 +227,7 @@ const tools = createCodingTools({
 });
 ```
 
-文件工具为 `read`、`write`、`edit`、`list`、`find`、`search`；显式启用后
+文件工具为 `read`、`write`、`edit`、`patch`、`list`、`find`、`search`；显式启用后
 增加 `command`。也可分别使用 `createTextTools`、`createSearchTools` 和
 `createCommandTool`。工具实例没有持久化状态、后台服务或额外会话身份。
 所有操作都在 `execute` 再次验证参数，因此可用简单 fixture 执行器独立验收。
@@ -235,17 +235,40 @@ const tools = createCodingTools({
 
 ### 文件读取、写入与精确编辑
 
-`createTextTools({ root, maxBytes? })` 要求显式绝对目录，默认文件大小上限
-64 KiB，可调小，按 `read, write, edit` 顺序返回。read 参数 `{path}`，
-返回 JSON `{path,text,bytes,sha256}`；write 参数
+`createTextTools({ root, maxBytes?, maxOutputBytes? })` 要求显式绝对目录，
+默认且最大文件大小 8 MiB、最终外层 JSON 回执 64 KiB，都可调小；
+按 `read, write, edit, patch` 顺序返回。read 参数
+`{path,startLine?,limit?,cursor?}`，默认从第 1 行读取 200 行。
+返回 JSON `{path,text,bytes,fileBytes,sha256,byteStart,byteEnd,startLine,endLine,
+complete,nextCursor,truncationReason}`。`sha256` 来自完整原始字节；
+字节范围从 0 开始、右端不包含，行号从 1 开始，保留 BOM、CRLF 和 EOF。
+长行允许按 Unicode code point 分页，不伪称整行返回；`bytes` 是本页原始
+文本字节数，不是 JSON 编码大小。cursor 必须和原 path/startLine/limit/config
+一起传入，绑定完整 hash 与文件身份；变更返回 `stale_cursor`，参数不一致返回
+`invalid_cursor`。游标无持久状态，每页重读有界文件；实现保留最多 8 MiB
+快照，不声称无限流式读取。write 参数
 `{path,content,expectedSha256?}`，缺省指纹只允许创建不存在的文件。
 替换已有文件必须传入此前读取的 `expectedSha256`，缺失或不一致返回
-`edit_conflict`，不会覆盖原文件。write/edit 成功返回 `{path,bytes,sha256}`。
+`edit_conflict`，不会覆盖原文件。write/edit 成功返回
+`{path,status,beforeSha256,sha256,candidateSha256,bytes,diff}`。
 
 edit 参数 `{path,expectedSha256,oldText,newText}`，`oldText` 必须非空且在
 文件中恰好出现一次（重叠匹配也计数），否则冲突。它是字面精确替换，不是
 正则或模糊补丁。所有工具拒绝额外字段；参数自身的 JSON 字节上限仍适用。
-同一工具包的写调用按规范化目标路径串行；文件提交前重新核对内容及文件身份。
+patch 参数 `{files:[{path,expectedSha256,edits:[{oldText,newText}]}]}`，
+最多 16 个已有文件、每文件 32 个 edits；不支持删除/移动，创建仍用 write。
+所有 edits 针对同一原文件定位，禁止重复路径别名和重叠；全批预检指纹、
+候选内容及编码后 diff/回执预算，再按请求顺序提交。输入 JSON 仍最多
+64 KiB，原文件与候选内容合计最多 32 MiB。无法表达回执时写前拒绝。
+同包写调用按排序后的规范化目标路径取得队列；提交前重新核对内容与身份。
+patch 成功返回 `{files,complete:true}`。中途失败停止，**不回滚**：
+已提交文件保留，后续未尝试；`effect:unknown` 的错误 `message` 为有界 JSON
+`{complete:false,files,failedIndex,cause,temporary}`。文件 `status` 为
+`committed/rejected/not_attempted`；只有 committed 的 `sha256` 确认实际提交，
+其他为 null，`candidateSha256/bytes/diff` 是计划内容而非磁盘当前状态。
+公共执行器与 loop 保留回执、释放 lease、停止后续工具，禁止盲重放。
+diff 来自本次实际 before/after（不是 HEAD），含 hunk 坐标及 EOF newline
+标记；远距 edits 使用独立带上下文 hunks，不会把用户旧改动算作本次贡献。
 取消在提交前停止，已完成 rename 则如实返回成功，不回滚或伪称未发生。
 
 拒绝绝对路径、父目录穿越、符号链接、非普通文件和多硬链接文件；父目录
@@ -264,22 +287,52 @@ edit 参数 `{path,expectedSha256,oldText,newText}`，`oldText` 必须非空且�
 `createSearchTools({root,...limits})` 返回 `list, find, search`：
 
 - `list({path})` 浏览直接子项，返回 `{path,type}`。
-- `find({path,query})` 递归按文件名的大小写敏感字面子串查找，返回 `{path}`；
-  不是 glob。
-- `search({path,query})` 递归检索 UTF-8 文件中的单行字面子串，返回
-  `{path,line,text}`；行号从 1 开始，不是正则。
+- `find({path,query,mode?})` 默认按文件名的大小写敏感字面子串查找；
+  `mode:"glob"` 按 root 相对路径匹配，返回 `{path}`。
+- `search({path,query,mode?})` 默认检索单行字面子串；
+  `mode:"regex"` 使用下述有限语法。返回 `{path,line,text}`；
+  长行返回有界预览，额外标明 `textTruncated,lineBytes,byteStart,sha256`，
+  用 read 的 startLine 获取完整文本。
 
-`path` 为相对目录，`.` 选择 root；返回值均是 JSON
-`{results,complete:true}`，顺序取决于目录迭代顺序。空匹配仅在完整扫描后返回。
+`path` 为相对目录或显式文件，`.` 选择 root。每层路径排序，确定性深度优先；
+返回 JSON `{results,complete,scanComplete,nextCursor,coverage,skipped,budgets,
+truncationReason}`。`complete` 只代表查询结果分页结束，`scanComplete`
+表示有界扫描已完成，`coverage.complete` 表示未因策略/二进制产生缺口；
+跳过目录的计数是子树入口数，不是猜测后代文件数。三者不能互相替代。
+结果上限与编码大小形成页，cursor 绑定工具/参数/策略/预算及扫描指纹；
+每页完整有界重扫，无索引、游标存储或后台服务。变化拒绝续页。
 默认且最大预算为 `maxEntries:10000`、`maxResults:200`、
-`maxOutputBytes:65536`、`maxFileBytes:65536`、`maxTotalBytes:2097152`、
-`maxDepth:32`，调用方可调小。达到预算会明确返回 `limit_exceeded`，
-不冒充完整结果；可缩小目录或查询后重试。
+`maxOutputBytes:65536`（含外层转义）、`maxFileBytes:8388608`、
+`maxTotalBytes:33554432`、`maxDepth:32`、`maxPatternWork:2000000`。
+达到扫描硬预算返回 `limit_exceeded`，模式工作量超限为 `pattern_limit`；
+不返回伪完整页，要求缩小范围。目录名集合、结果页、文件快照均有上限。
+
+共同参数 `ignore/generated/hidden/exclude/cursor`：ignore 默认 true，读取
+root 及逐级 `.gitignore`（每份最多 64 KiB、合计最多 1024 规则，也计入扫描字节
+和模式工作量）；生成目录 `node_modules/dist/build/coverage` 默认排除，
+generated:false 关闭；隐藏文件默认可见，hidden:false 排除；exclude 是最多
+16 个额外 glob。`.git` 元数据始终排除，显式文件绕过发现过滤但不绕过安全检查。
+忽略目录直接剪枝，不能只否定其后代；嵌套仓库重置继承 ignore，不重置
+调用者 exclude。显式选中目录本身不被过滤，其后代仍遵循策略；显式文件
+不加载 ignore 规则。`.git` 显式路径也拒绝（文本 read 的权限范围不因此改变）。
+非 Git 目录同样读取 `.gitignore`。不读取父 root/global ignore、
+`.git/info/exclude` 或 index，不保证 Git 已跟踪文件特例。
+
+glob 支持 `* ? [abc] [a-z] [!a]` 与反斜杠 literal escape；`**` 必须为
+完整路径段，可匹配零或多个段（如 `**/*.ts`）。不支持 brace/extglob；
+ignore 支持注释、`!` 否定、首 `/` 锚定、末 `/` 目录和逐级覆盖，
+但尾部空格按字面处理，不宣称完全 Git wildmatch 兼容。
+regex 支持字面字符、`.`、字符类、`^ $`、`* + ?`、`\d \w \s` 与元字符
+转义；字符类内不支持转义。无分组、alternation、计数重复、flags、
+backreference 或 lookaround。
+模式最多 256 个 UTF-16 单元；动态状态匹配每次转移计入工作量，不使用任意
+JavaScript 回溯正则。未支持语法明确报 `unsupported_pattern`。
 
 这些工具采取严格遍历：遇到符号链接、非普通文件、多硬链接就失败；
 search 遇到过大文件或非法 UTF-8 也失败，绝不静默跳过后声称没有匹配。
-目录使用流式迭代；取消或失败关闭已打开的文件和目录。它不提供忽略文件
-规则、大型代码索引或二进制检索。
+NUL 二进制跳过并计入 coverage；非法 UTF-8 仍明确失败，不伪称无匹配。
+取消或失败关闭已打开文件和目录。安全检查不是强沙箱；同一次目录扫描
+检测目录身份/时间戳变化，但不提供整个仓库的原子快照。
 
 ### 本地命令
 

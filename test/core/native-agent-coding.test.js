@@ -10,7 +10,7 @@ test('coding pack runs through the public Tool loop and exposes actual edits to 
   t.after(() => rm(root, { recursive: true, force: true }));
   await writeFile(path.join(root, 'input.txt'), 'before\n');
   const tools = createCodingTools({ root });
-  assert.deepEqual(tools.map(tool => tool.definition.name), ['read', 'write', 'edit', 'list', 'find', 'search']);
+  assert.deepEqual(tools.map(tool => tool.definition.name), ['read', 'write', 'edit', 'patch', 'list', 'find', 'search']);
   assert.equal(createCodingTools({ root, command: { env: {} } }).at(-1).definition.name, 'command');
   const result = await createAgent({ tools, provider: {
     async complete(request) {
