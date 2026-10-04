@@ -181,6 +181,34 @@ function historyUnits(request: ModelRequest, keep: number, ranges: ContextInput[
   return units;
 }
 
+/** Model-facing commitments, not a second history or an enumeration of old groups.
+ * Exact selected ranges/material identities/outcomes remain in this build's report. */
+function summarySources(entries: readonly ContextEntry[], messages: readonly Message[]) {
+  const provenance = entries.map(({ action: _action, reason: _reason, ...entry }) => entry);
+  const historical = entries.filter(entry => entry.historyRange);
+  const materials = provenance.filter(entry => !entry.historyRange);
+  const outcomes = entries.flatMap(entry => entry.toolOutcomes ?? []);
+  const historyRange = historical.length
+    ? [historical[0].historyRange![0], historical.at(-1)!.historyRange![1]] as const : undefined;
+  return {
+    representation: 'aggregate', details: 'report.entries', groups: entries.length,
+    provenanceDigest: digest(provenance),
+    ...(historyRange ? { history: {
+      // Protected groups can leave holes: this commits the enclosing original
+      // span, while provenanceDigest binds the exact selected groups in report.
+      rangeKind: 'enclosing', historyRange, digest: digest(messages.slice(...historyRange)),
+      groups: historical.length,
+    } } : {}),
+    ...(materials.length ? { materials: { count: materials.length, digest: digest(materials) } } : {}),
+    ...(outcomes.length ? { toolSettlements: {
+      representation: 'aggregate-only',
+      succeeded: outcomes.filter(outcome => outcome.ok).length,
+      failedWithoutEffect: outcomes.filter(outcome => !outcome.ok && outcome.effect === 'none').length,
+      digest: digest(outcomes),
+    } } : {}),
+  };
+}
+
 export function createContextBuilder(options: {
   sources?: readonly ContextSource[];
   estimator?: ContextEstimator;
@@ -291,9 +319,7 @@ export function createContextBuilder(options: {
         const summaryDigest = digest(originals.map(e => e.digest));
         selected[0].messages = [{ role: 'user', content: JSON.stringify({ contextSummary: {
           trust: 'data', sessionId: request.sessionId, historyDigest, digest: summaryDigest,
-          compressor: compressor!.id, sources: originals.map(e => e.historyRange
-            ? { historyRange: e.historyRange, digest: e.digest, toolOutcomes: e.toolOutcomes }
-            : { source: e.source, revision: e.revision, sourceId: e.sourceId, materialId: e.materialId, digest: e.digest }),
+          compressor: compressor!.id, sources: summarySources(originals, request.messages),
           summary,
         } }) }];
         for (const u of selected.slice(1)) u.messages = [];

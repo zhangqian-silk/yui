@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createHash } from 'node:crypto';
 import { createContextBuilder, createProviderCompressor, jsonByteEstimator,
   createAgent, createExecutionOwner, createSessionStore, createMemorySessionBackend } from '../../dist/nativeAgent/index.js';
 import { runCompactionDemo } from '../../dist/nativeAgent/compactionDemo.js';
@@ -12,6 +13,99 @@ const long = [user('Goal: preserve the API. Never publish.'), assistant('evidenc
   user('intermediate detail '.repeat(200)), assistant('work '.repeat(500)), user('Continue')];
 const input = (messages = long) => ({ request: request(messages),
   budget: { capacity: 2400, reserveOutput: 200, reserveTools: 100 }, keepRecentGroups: 1 });
+const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+
+test('long-history provenance stays bounded with settled tools and cached multi-turn consumption', async () => {
+  for (const withTools of [false, true]) {
+    const metadataBytes = [];
+    for (const count of [300, 1200]) {
+      let summaryCalls = 0, modelCalls = 0;
+      const history = [user('Goal: preserve API; never publish')];
+      for (let i = 0; i < count; i++) {
+        if (!withTools) { history.push(assistant('x'.repeat(850))); continue; }
+        history.push({ role: 'assistant', content: '', toolCalls: [{ id: `read-${i}`, name: 'read', arguments: {} }] },
+          { role: 'tool', toolCallId: `read-${i}`, name: 'read', outcome: i % 2
+            ? { ok: false, error: { code: 'denied', message: 'Access denied', effect: 'none' } }
+            : { ok: true, content: 'x'.repeat(850) } });
+      }
+      const original = structuredClone(history);
+      const builder = createContextBuilder({ sources: [{ id: 'selected-reference', async load() {
+        return [{ id: 'reference', source: 'selected/reference.txt', revision: 'v1',
+          kind: 'file', required: false, content: 'Optional source evidence. '.repeat(60) }];
+      } }], compressor: { id: 'scale-fixture', async summarize() {
+        summaryCalls++; return 'Read results recorded; denied calls had no effect.';
+      } } });
+      const options = { budget: { capacity: 16000, reserveOutput: 1000 }, keepRecentGroups: 1 };
+      const verify = (built, full) => {
+        assert.ok(built.report.estimatedInput <= 15000);
+        const projected = built.request.messages.find(m => m.content?.includes('"contextSummary"'));
+        assert.equal(projected.role, 'user');
+        const summary = JSON.parse(projected.content).contextSummary;
+        assert.equal(summary.trust, 'data');
+        const selected = built.report.entries.filter(e => e.action === 'summarized');
+        assert.equal(summary.digest, digest(selected.map(e => e.digest)));
+        assert.equal(summary.sources.groups, selected.length);
+        const provenance = selected.map(({ action, reason, ...entry }) => entry);
+        assert.equal(summary.sources.provenanceDigest, digest(provenance));
+        const materials = provenance.filter(e => !e.historyRange);
+        assert.deepEqual(summary.sources.materials, { count: 1, digest: digest(materials) });
+        const span = summary.sources.history;
+        assert.equal(span.rangeKind, 'enclosing');
+        assert.equal(span.digest, digest(full.slice(...span.historyRange)));
+        const outcomes = selected.flatMap(e => e.toolOutcomes ?? []);
+        assert.deepEqual(summary.sources.toolSettlements, outcomes.length ? {
+          representation: 'aggregate-only', succeeded: outcomes.filter(o => o.ok).length,
+          failedWithoutEffect: outcomes.filter(o => !o.ok && o.effect === 'none').length,
+          digest: digest(outcomes),
+        } : undefined);
+        for (const entry of selected) if (entry.historyRange)
+          assert.equal(entry.digest, digest(full.slice(...entry.historyRange)));
+        assert.deepEqual(history.slice(0, original.length), original);
+        return Buffer.byteLength(JSON.stringify(summary.sources));
+      };
+      const full = [...history, user('Continue')];
+      const built = await builder.build({ request: request(full), ...options }, signal());
+      metadataBytes.push(verify(built, full));
+      assert.ok(metadataBytes.at(-1) < 1500, 'source metadata must not enumerate old groups');
+      assert.equal(summaryCalls, 1);
+      const agent = createAgent({ tools: [], contextBuilder: builder, contextBudget: options.budget,
+        contextRetention: { keepRecentGroups: 1 }, provider: { async complete(req) {
+          modelCalls++;
+          assert.ok(jsonByteEstimator.estimate(req) <= 15000);
+          assert.ok(req.messages.some(m => m.content.includes('"contextSummary"')));
+          return { kind: 'final', content: 'Continuation completed.' };
+        } } });
+      for (let i = 0; i < 3; i++) {
+        const result = await agent.runTurn({ sessionId: 's', turnId: `scale-${i}`,
+          history, input: `Continue ${i}`, maxSteps: 1 });
+        assert.equal(result.reason, 'completed', result.error?.message);
+        history.push(...result.messages);
+      }
+      assert.equal(modelCalls, 3);
+      assert.equal(summaryCalls, 1, 'cached provenance must stay bounded on subsequent requests');
+      const folded = await builder.build({ request: request([...history, user('Continue manual')]),
+        ...options, mode: 'manual' }, signal());
+      verify(folded, [...history, user('Continue manual')]);
+      assert.equal(summaryCalls, 2);
+      const protectedInput = [...history, user('Continue with protected evidence')];
+      const protectedBuild = await builder.build({ request: request(protectedInput),
+        ...options, protectedHistoryRanges: [[101, 102]] }, signal());
+      verify(protectedBuild, protectedInput);
+      const anchor = protectedBuild.report.entries.find(e => e.historyRange?.[0] <= 101 && e.historyRange?.[1] > 101);
+      assert.equal(anchor.action, 'retained', 'enclosing source span must not claim protected holes were summarized');
+      assert.equal(summaryCalls, 3);
+      if (withTools) {
+        const unsettled = structuredClone(full);
+        unsettled[2].outcome = { ok: false, error: { code: 'lost', message: 'Unknown effect', effect: 'unknown' } };
+        await assert.rejects(builder.build({ request: request(unsettled), ...options }, signal()),
+          { code: 'unresolved_effect' });
+        assert.equal(summaryCalls, 3);
+      }
+    }
+    assert.ok(Math.abs(metadataBytes[1] - metadataBytes[0]) < 100,
+      'quadrupling history should only change aggregate counters/range digits');
+  }
+});
 
 test('offline long session repeatedly compacts through gateway/tools/SQLite and continues', async () => {
   const evidence = await runCompactionDemo();

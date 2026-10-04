@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createHash } from 'node:crypto';
 import { createContextBuilder, jsonByteEstimator } from '../../dist/nativeAgent/context/index.js';
 
 const signal = () => new AbortController().signal;
@@ -13,6 +14,7 @@ const input = (messages, capacity = 100) => ({
   request: request(messages), budget: { capacity, reserveOutput: 0 }, keepRecentGroups: 0,
 });
 const estimator = { id: 'message-count', estimate: req => req.messages.length };
+const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
 test('context summarizes complete tool batches, preserves original goal/instructions and source history', async () => {
   const messages = [{ role: 'system', content: 'rules' }, user('old'), ...pair, user('current')];
@@ -66,8 +68,11 @@ test('replaceable compression summarizes whole optional batches without fabricat
   assert.match(result.request.messages[0].content, /earlier evidence/);
   assert.match(result.request.messages[0].content, /summary/);
   assert.equal(result.request.messages.some(m => m.role === 'tool'), false);
-  const facts = JSON.parse(result.request.messages[0].content).contextSummary.sources[0].toolOutcomes;
+  const summary = JSON.parse(result.request.messages[0].content).contextSummary;
+  const facts = result.report.entries[0].toolOutcomes;
   assert.deepEqual(facts, [{ toolCallId: 'call-1', name: 'read', ok: true }]);
+  assert.deepEqual(summary.sources.toolSettlements, { representation: 'aggregate-only',
+    succeeded: 1, failedWithoutEffect: 0, digest: digest(facts) });
 });
 
 test('failures and cooperative cancellation return no partial request or fallback', async () => {
@@ -116,9 +121,12 @@ test('one batch includes out-of-order paired results and cannot be partially ret
   assert.deepEqual(result.request.messages.at(-1), user('new'));
   assert.equal(result.request.messages.some(m => m.role === 'tool'), false);
   assert.deepEqual(result.report.entries[0].historyRange, [0, 3]);
-  const facts = JSON.parse(result.request.messages[0].content).contextSummary.sources[0].toolOutcomes;
+  const summary = JSON.parse(result.request.messages[0].content).contextSummary;
+  const facts = result.report.entries[0].toolOutcomes;
   assert.deepEqual(facts, [{ toolCallId: 'call-2', name: 'write', ok: false, errorCode: 'denied', effect: 'none' },
     { toolCallId: 'call-1', name: 'read', ok: true }]);
+  assert.deepEqual(summary.sources.toolSettlements, { representation: 'aggregate-only',
+    succeeded: 1, failedWithoutEffect: 1, digest: digest(facts) });
   await assert.rejects(createContextBuilder({ estimator }).build(input([...pair, ...pair, user('new')]), signal()),
     { code: 'invalid_history' });
 });

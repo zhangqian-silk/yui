@@ -131,6 +131,9 @@ task-79 消费 `AgentObserver/AgentEvent`。这些是独立实现的最小边界
 可选 `context: {builder,budget,tools,retention}` 必须与 Agent 工厂共享，
 启用 `compact(sessionId,signal)`：空闲 ready Session 的只读手动压缩，随后 submit
 校验并消费同一进程内投影。并发/存储变化/取消显式拒绝，不创建第二摘要账本。
+压缩请求只携带有界聚合来源和工具结算计数/digest；逐组范围、材料身份和逐项工具
+事实留在本次 ContextReport/权威历史，不冒充逐项进入模型请求。
+未知效果仍从原文预检拒绝；详见 [context/README.md](./context/README.md)。
 
 ```ts
 const observations = createLocalObserver();

@@ -6,7 +6,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAgent, createContextBuilder, createProviderCompressor, createModelGateway,
   createSessionStore, createSqliteSessionBackend, createExecutionOwner, createTextTools,
-  type ModelTransport, type SessionStore, type ExecutionOwner, type TurnResult } from './index.js';
+  type ModelTransport, type SessionStore, type ExecutionOwner, type TurnResult, type ContextReport,
+  type Message } from './index.js';
 import type { SessionSnapshot } from './session/index.js';
 
 const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
@@ -16,7 +17,43 @@ export async function runCompactionDemo() {
   let store: SessionStore | undefined, owner: ExecutionOwner | undefined;
   let summaryCalls = 0, codingCalls = 0, compressedRequests = 0;
   const observedSummaryBytes: number[] = [];
+  const observedSourceBytes: number[] = [];
+  const codingProjections: (string | undefined)[] = [];
   const sessionId = 'long-session';
+  const verifySources = (serialized: string, report: ContextReport, full: readonly Message[]) => {
+    const summary = JSON.parse(serialized).contextSummary;
+    const selected = report.entries.filter(entry => entry.action === 'summarized');
+    assert.equal(summary.historyDigest, report.historyDigest);
+    assert.equal(summary.digest, digest(selected.map(entry => entry.digest)));
+    assert.equal(summary.sources.provenanceDigest,
+      digest(selected.map(({ action: _action, reason: _reason, ...entry }) => entry)));
+    const span = summary.sources.history;
+    assert.equal(span.rangeKind, 'enclosing');
+    assert.equal(span.digest, digest(full.slice(...span.historyRange)));
+    const outcomes = selected.flatMap(entry => entry.toolOutcomes ?? []);
+    assert.deepEqual(summary.sources.toolSettlements, {
+      representation: 'aggregate-only', succeeded: outcomes.filter(outcome => outcome.ok).length,
+      failedWithoutEffect: outcomes.filter(outcome => !outcome.ok && outcome.effect === 'none').length,
+      digest: digest(outcomes),
+    });
+    const bytes = Buffer.byteLength(JSON.stringify(summary.sources));
+    assert.ok(bytes < 1500);
+    observedSourceBytes.push(bytes);
+  };
+  const verifyTurn = (before: SessionSnapshot, result: TurnResult) => {
+    for (const { report } of result.contextReports) {
+      assert.ok(report.estimatedInput <= report.availableInput);
+      assert.equal(report.baseReceipt!.digest, before.digest);
+      const full = [...before.messages, ...result.messages].slice(0,
+        Math.max(...report.entries.filter(e => e.historyRange).map(e => e.historyRange![1])));
+      assert.equal(report.historyDigest, digest(full));
+      for (const entry of report.entries) if (entry.historyRange)
+        assert.equal(entry.digest, digest(full.slice(...entry.historyRange)));
+      const serialized = codingProjections.shift();
+      if (serialized) verifySources(serialized, report, full);
+      else assert.ok(report.entries.every(entry => entry.action !== 'summarized'));
+    }
+  };
   try {
     await writeFile(path.join(root, 'input.txt'), 'Selected workspace evidence.\n'.repeat(30));
     const transport: ModelTransport = async (_endpoint, init) => {
@@ -31,6 +68,8 @@ export async function runCompactionDemo() {
         content = 'Workspace reads confirmed. Preserve API; never publish. Continue coding from saved original facts.';
       } else {
         codingCalls++;
+        codingProjections.push(wire.messages.find((message: { content: string }) =>
+          typeof message.content === 'string' && message.content.includes('"contextSummary":'))?.content);
         assert.ok(wire.messages.some((m: { content: string }) => m.content.includes('Goal: preserve API; never publish')));
         assert.ok(wire.messages.some((m: { role: string; content: string }) =>
           m.role === 'system' && m.content.includes('Trusted project guidance')));
@@ -83,23 +122,21 @@ export async function runCompactionDemo() {
       assert.deepEqual(saved.document.events.slice(0, before.document.events.length), before.document.events);
       assert.deepEqual(saved.messages.slice(0, before.messages.length), before.messages);
       assert.equal(saved.recovery.disposition, 'ready');
-      for (const { report } of result.contextReports) {
-        assert.ok(report.estimatedInput <= report.availableInput);
-        assert.equal(report.baseReceipt!.digest, before.digest);
-        for (const entry of report.entries) if (entry.historyRange) {
-          const full = [...before.messages, ...result.messages];
-          const fullAtRequest = full.slice(0, Math.max(...report.entries.filter(e => e.historyRange).map(e => e.historyRange![1])));
-          assert.equal(entry.digest, digest(fullAtRequest.slice(...entry.historyRange)));
-          assert.equal(report.historyDigest, digest(fullAtRequest));
-        }
-      }
+      verifyTurn(before, result);
     }
     const beforeManual = await store.load(sessionId);
     const manual = await owner.compact(sessionId);
     assert.ok(manual.report.entries.some(e => e.action === 'summarized'));
+    const manualSummary = manual.request.messages.flatMap(message =>
+      'content' in message && message.content.includes('"contextSummary":') ? [message.content] : [])[0];
+    assert.ok(manualSummary);
+    verifySources(manualSummary, manual.report, beforeManual.messages);
     assert.deepEqual(await store.load(sessionId), beforeManual);
     await owner.submit(sessionId, 'Continue after manual compact');
-    assert.equal((await owner.settle(sessionId))!.result!.reason, 'completed');
+    const continued = (await owner.settle(sessionId))!.result!;
+    assert.equal(continued.reason, 'completed');
+    verifyTurn(beforeManual, continued);
+    assert.equal(codingProjections.length, 0);
     const saved = await store.load(sessionId);
     assert.equal(saved.recovery.calls.length, 9);
     assert.ok(saved.recovery.calls.every(c => c.status === 'settled' && c.outcome?.ok));
@@ -112,6 +149,7 @@ export async function runCompactionDemo() {
     return { turns: 9, summaryCalls, compressedRequests, codingCalls, verifiedToolPairs: 9,
       immutableHistory: true, provenanceVerified: true, sqliteRestartVerified: true,
       largestSummaryWireBytes: Math.max(...observedSummaryBytes),
+      largestSourceMetadataBytes: Math.max(...observedSourceBytes),
       validation: 'offline fixture responses; not real-model summary quality' };
   } finally {
     await owner?.close();

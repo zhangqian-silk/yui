@@ -79,9 +79,30 @@ content 中已有的 scope/trust/provenance 原样留在包装内，sourceId/mat
 
 超限时，将所有可摘要的较旧原子组交给压缩器，保留不可压缩集合。
 没有压缩器、摘要无收益或仍超限时明确失败，**不再默默省略旧历史/材料**。
-摘要的 user 数据包装含 trust=data、sessionId、当前 historyDigest、来源范围与
-每组 SHA-256、摘要源集合 digest、compressor 身份及原始工具结果的
-调用 ID/name/ok/errorCode/effect；这些结构化结果不交给模型猜测。
+摘要的 user 数据包装含 trust=data、sessionId、当前 historyDigest、摘要源集合
+digest、compressor 身份和**有界聚合来源**，不将每个旧组重新展开进模型请求。
+`contextSummary.sources` 是聚合对象，不是逐项来源数组：
+
+- `groups` 为选中单元数，`provenanceDigest` 对选中 report entries 去掉
+  action/reason 后的有序数组求 SHA-256，绑定精确来源、revision、范围和工具结算。
+- history（有历史时）给出 `rangeKind:enclosing`、半开 historyRange、该原文跨度的
+  digest 和组数。保护锚点可能形成空洞；这个跨度不是“所有消息都被摘要”的声明。
+  精确选中组由 report 和 provenanceDigest 核对，不列出无界范围数组。
+- materials（有可摘要材料时）只给出 count 和上述材料来源记录子集的 digest；
+  完整 sourceId/materialId/revision 留在 report，必需材料仍完整进入请求。
+- toolSettlements（有已摘要工具结算时）明确 `representation:aggregate-only`，
+  给出 succeeded、failedWithoutEffect 和有序原始 toolOutcomes 的 digest。
+  成功不等于无效果，失败计数不等于成功；计数由原文计算，不由摘要模型猜测。
+  无效果失败可能是拒绝或未启动，计数不宣称调用已执行；具体 errorCode 见原始报告。
+
+模型请求不逐项保留旧调用 ID/name/errorCode；这些完整事实留在本次派生
+`report.entries[].toolOutcomes` 和唯一权威历史，不新增持久账本。
+摘要器仍接收完整选中原子组（缓存折叠时接收旧摘要与新组），要求如实保留关键结算、
+失败、约束与下一步，但摘要正文是可能有损的证据，不承诺逐项语义保留。
+未知工具效果在任何缓存复用/压缩之前从完整原文预检，仍 unresolved_effect fail-closed。
+缓存消费和再次折叠都重算聚合来源，不重新展开全部旧组；
+元数据字段数固定，只有范围/计数数字长度随历史增长。report 的审计细节可随原文增长，
+但不随请求发送，丢弃它可从权威原文重新构建，digest 不是签名或内容真实性证明。
 不截断工具参数、工具结果、system 或当前输入，也不伪造摘要 tool 消息。
 摘要语义仍可能丢失未保护的细节；结构保留不证明模型语义无损。
 
@@ -171,7 +192,8 @@ Task87 的生产容量/计数合同仍未收到确认。
 `node --test test/core/native-agent-context.test.js` 使用固定历史、
 明确指引/文件材料和 fake 扩展，覆盖预算、配对、每 Step 重建、不可变历史、
 来源、失败与取消。`native-agent-compaction.test.js` 增加容量、误差、provider
-分块、摘要失败、取消、手动接线和真实模块长会话验收。
+分块、摘要失败、取消、手动接线和真实模块长会话验收；规模回归覆盖
+300/1200 个旧组、成功/无效果失败工具、保护锚点空洞、可选材料、缓存续聊与再次折叠。
 
 ```sh
 npm run build
@@ -179,7 +201,8 @@ node dist/nativeAgent/compactionDemo.js
 ```
 
 示例执行 9 次续聊及真实受限文件读取，多次自动压缩与手动 compact；
-核对原始 events/messages 前缀不变、摘要范围 digest、工具结算及 SQLite 重开。
+核对原始 events/messages 前缀不变、摘要范围/聚合来源 digest、实际模型请求的有界
+来源元数据、工具结算计数及 SQLite 重开；输出 largestSourceMetadataBytes。
 只替换网关的 model transport 响应。临时目录和 SQLite 连接在 finally 释放。
 它证明预算、结构、来源及组合行为，**不证明真实模型的摘要语义质量**。
 没有真实模型、付费 API、Controller 或共享 Home 验证。
