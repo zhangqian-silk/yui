@@ -42,7 +42,10 @@ function itemValue(raw: unknown): { content: string; call?: ToolCall } {
   const item = object(raw);
   id(item.id);
   itemSemantics(item);
-  if (item.status !== 'completed') throw new ModelGatewayError('incomplete');
+  // Function-call status is optional; omission does not replace the response terminal.
+  if (item.status !== 'completed' && !(item.type === 'function_call' && item.status === undefined)) {
+    throw new ModelGatewayError('incomplete');
+  }
   if (item.type === 'function_call') {
     return { content: '', call: { id: id(item.call_id), name: id(item.name),
       arguments: argumentsObject(text(item.arguments)) } };
@@ -139,7 +142,7 @@ export function createResponsesAdapter(): ModelProtocolAdapter {
           if (i !== slots.size || slots.has(i) || [...slots.values()].some(s => s.item.id === item.id)) return protocol();
           id(item.id);
           itemSemantics(item);
-          if (item.status !== 'in_progress') return protocol();
+          if (item.status !== 'in_progress' && !(item.type === 'function_call' && item.status === undefined)) return protocol();
           if (item.type === 'function_call') {
             id(item.call_id); id(item.name); bounded(text(item.arguments), 64 * 1024);
             emit({ type: 'tool_delta', index: i, id: item.call_id as string, name: item.name as string });
