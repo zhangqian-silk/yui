@@ -4,6 +4,8 @@ export { createToolExecutor } from './toolManager/index.js';
 export type { ToolSettlement, ToolBatchRequest, ToolBatchResult, ToolEnvironment, ToolPermission, EnvironmentTool } from './toolManager/index.js';
 export { createContextBuilder, ContextBuildError, jsonByteEstimator } from './context/index.js';
 export type { ContextInput, ContextReport, ContextSource, ContextMaterial, ContextEstimator, ContextCompressor } from './context/index.js';
+export { createProjectGuidance } from './projectGuidance/index.js';
+export type { ProjectGuidance, ProjectGuidanceOptions } from './projectGuidance/index.js';
 export { createLocalObserver } from './observability/index.js';
 export type { LocalObserver } from './observability/index.js';
 export { createModelGateway, createChatCompletionsAdapter, createModelObservationAdapter, ModelGatewayError } from './model/index.js';
