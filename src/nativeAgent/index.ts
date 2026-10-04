@@ -31,3 +31,5 @@ export { createCommandTool } from './commandTool.js';
 export type { CommandToolOptions } from './commandTool.js';
 export { createCodingTools } from './codingTools.js';
 export type { CodingToolsOptions } from './codingTools.js';
+export { createLocalToolBinding } from './localSafety.js';
+export type { LocalCommandSpec, LocalToolOptions, LocalToolDescription, LocalToolEnvironment, LocalToolBinding } from './localSafety.js';
