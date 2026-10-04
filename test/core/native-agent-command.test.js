@@ -55,13 +55,25 @@ async function fixture(t, options = {}) {
 }
 
 test('command: explicit argv/environment, real exit status and execution-boundary validation', async t => {
+  const sentinel = 'NATIVE_COMMAND_PARENT_SENTINEL';
+  const previous = process.env[sentinel];
+  t.after(() => {
+    if (previous === undefined) delete process.env[sentinel];
+    else process.env[sentinel] = previous;
+  });
+  process.env[sentinel] = 'must-not-inherit';
   const { root, invoke, command } = await fixture(t, { env: { VISIBLE: 'chosen' } });
   const result = await invoke(command(`console.log(JSON.stringify({cwd:process.cwd(),env:process.env,args:process.argv.slice(1)})); process.exitCode=7;`));
   assert.equal(result.ok, true);
   const output = JSON.parse(result.content);
   assert.equal(output.exitCode, 7);
   assert.equal(output.signal, null);
-  assert.deepEqual(JSON.parse(output.stdout), { cwd: root, env: { VISIBLE: 'chosen' }, args: [] });
+  const observed = JSON.parse(output.stdout);
+  assert.equal(Object.hasOwn(observed.env, sentinel), false);
+  // The macOS Node fixture may add this platform field after launch.
+  // Ignore only that field there; every other unexpected variable still fails.
+  if (process.platform === 'darwin') delete observed.env.__CF_USER_TEXT_ENCODING;
+  assert.deepEqual(observed, { cwd: root, env: { VISIBLE: 'chosen' }, args: [] });
   for (const args of [
     { ...command(''), shell: true },
     { ...command(''), command: 'node' },
