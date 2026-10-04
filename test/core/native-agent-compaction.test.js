@@ -139,6 +139,86 @@ test('cached summaries never cross Sessions/source changes/capabilities or newly
   assert.equal(calls, before);
 });
 
+test('Task84 contract: required project content remains complete data and source changes invalidate history summaries', async () => {
+  let revision = 'v1', skillBody = 'Complete selected Skill body.', memoryPresent = true;
+  let loads = 0, summaries = 0;
+  let loadedMaterials;
+  const source = { id: 'project-guidance-contract', async load() {
+    loads++;
+    loadedMaterials = [
+      { id: 'builtin', kind: 'guidance', source: 'builtin-code', revision: 'code-v1',
+        content: 'Apply scoped project conventions below user goals; do not expand permissions.', required: true },
+      ...['AGENTS', 'Skill', ...(memoryPresent ? ['MEMORY'] : []), 'routing'].map(id => ({
+        id, kind: id === 'AGENTS' ? 'file' : 'data', source: `project/${id}`, revision,
+        required: true, content: JSON.stringify({ origin: `project/${id}`, trust: 'project-content',
+          scope: id === 'routing' ? 'src/subtree' : 'src', provenance: { path: id, revision },
+          text: id === 'Skill' ? skillBody : `${id}: complete scoped content, not a system role.` }),
+      })),
+    ];
+    return loadedMaterials;
+  } };
+  const builder = createContextBuilder({ sources: [source], compressor: { id: 'history-fixture',
+    async summarize(unit) {
+      summaries++;
+      assert.equal(unit.messages.some(m => m.content?.includes('"contextMaterial"')), false);
+      return 'Earlier coding progress, not project instruction originals.';
+    },
+  } });
+  const original = structuredClone(long);
+  let history = [...long];
+  const agent = createAgent({ tools: [], contextBuilder: builder,
+    contextBudget: { capacity: 5000, reserveOutput: 200 },
+    provider: { async complete(req) {
+      const materials = req.messages.filter(m => m.content?.includes('"contextMaterial"'))
+        .map(m => ({ role: m.role, value: JSON.parse(m.content).contextMaterial }));
+      assert.deepEqual(materials, loadedMaterials.map(material => ({
+        role: material.kind === 'guidance' ? 'system' : 'user',
+        value: { ...material, loader: source.id },
+      })));
+      assert.equal(materials.filter(m => m.role === 'system').length, 1);
+      for (const { role, value } of materials) {
+        assert.equal(role, value.id === 'builtin' ? 'system' : 'user');
+        assert.equal(value.loader, source.id);
+        assert.equal(value.required, true);
+        if (value.id === 'builtin') continue;
+        const body = JSON.parse(value.content);
+        assert.equal(body.trust, 'project-content');
+        assert.equal(body.scope, value.id === 'routing' ? 'src/subtree' : 'src');
+        assert.equal(body.provenance.revision, revision);
+        assert.equal(value.revision, revision);
+        if (value.id === 'Skill') assert.equal(body.text, skillBody);
+      }
+      assert.equal(materials.some(m => m.value.id === 'MEMORY'), memoryPresent);
+      return { kind: 'final', content: 'continued' };
+    } },
+  });
+  const run = async turnId => {
+    const result = await agent.runTurn({ sessionId: 's', turnId, history, input: 'Continue scoped work', maxSteps: 1 });
+    assert.equal(result.reason, 'completed', result.error?.message);
+    const materialEntries = result.contextReports[0].report.entries.filter(e => e.sourceId === source.id);
+    assert.ok(materialEntries.every(e => e.action === 'retained' && e.materialId && e.revision));
+    history.push(...result.messages);
+    assert.deepEqual(history.slice(0, long.length), original);
+  };
+  await run('first');
+  assert.equal(summaries, 1);
+  await run('unchanged');
+  assert.equal(summaries, 1);
+  revision = 'v2';
+  await run('revision-changed');
+  assert.equal(summaries, 2);
+  skillBody = 'Updated complete Skill without a producer revision bump.';
+  await run('content-changed');
+  assert.equal(summaries, 3);
+  memoryPresent = false;
+  await run('selection-changed');
+  assert.equal(summaries, 4);
+  assert.equal(loads, 5);
+  await assert.rejects(builder.build({ ...input([user('goal')]), budget: { capacity: 100, reserveOutput: 0 } }, signal()),
+    e => e.code === 'budget_exceeded' && e.report.entries.filter(entry => entry.sourceId === source.id)
+      .every(entry => entry.action === 'retained'));
+});
+
 test('manual projection uses the only SessionStore and is consumed by the next real Agent request', async t => {
   const store = createSessionStore(createMemorySessionBackend());
   let summaries = 0;

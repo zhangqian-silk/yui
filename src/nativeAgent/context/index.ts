@@ -9,6 +9,7 @@ export type { ProviderCompressorOptions } from './providerCompressor.js';
 
 export type ContextMaterial = {
   id: string;
+  /** Only code-authored built-in guidance may use this kind; external project text is file/data. */
   kind: 'guidance' | 'file' | 'data';
   content: string;
   source: string;
@@ -197,7 +198,7 @@ export function createContextBuilder(options: {
   };
   if (options.counter && options.estimator) fail('invalid_options', 'Select a counter or a legacy estimator, not both');
   // One bounded, disposable projection. Never a transcript, persistent fact or shared Session authority.
-  let cached: { sessionId: string; capability: string; keys: string[]; summary: string } | undefined;
+  let cached: { sessionId: string; capability: string; sourceSnapshot: string; keys: string[]; summary: string } | undefined;
   if (!nonempty(estimator.id) || !nonempty(counter.id) || (compressor && !nonempty(compressor.id))
     || (options.capacity && !nonempty(options.capacity.id))
     || sources.some(s => !nonempty(s.id)) || new Set(sources.map(s => s.id)).size !== sources.length)
@@ -254,6 +255,14 @@ export function createContextBuilder(options: {
           });
         }
       }
+      // Required material is not summarized, but its changes still invalidate derived
+      // history summaries. Include selection and order, not only compressible units.
+      const sourceSnapshot = digest({
+        sources: sources.map(source => source.id),
+        materials: materials.map(unit => ({ entry: unit.entry, required: unit.required })),
+      });
+      if (cached?.sessionId === request.sessionId && cached.sourceSnapshot !== sourceSnapshot)
+        cached = undefined;
       // Material order is explicit; history order remains unchanged.
       const all = [...materials, ...units];
       const makeRequest = (): ModelRequest => frozen({ ...request, messages: all.flatMap(u => [...u.messages]) });
@@ -323,7 +332,7 @@ export function createContextBuilder(options: {
           if (estimatedInput >= originalEstimate)
             throw new ContextBuildError('compression_no_gain', 'Summary did not reduce the full request', report());
           if (estimatedInput <= availableInput)
-            nextCache = { sessionId: request.sessionId, capability, keys, summary };
+            nextCache = { sessionId: request.sessionId, capability, sourceSnapshot, keys, summary };
         }
       }
       if (estimatedInput > availableInput)

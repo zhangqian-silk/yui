@@ -17,7 +17,7 @@ const context = createContextBuilder({
       signal.throwIfAborted();
       return [{
         id: 'guide', kind: 'guidance', content: 'Keep changes bounded.',
-        source: 'project-guide', revision: 'guide-v1', required: true,
+        source: 'builtin-code', revision: 'guide-v1', required: true,
       }];
     },
   }],
@@ -66,6 +66,11 @@ ID 以不同顺序排列。悬空、重复、错误名称或孤立结果显式�
 明确 guidance 材料始终保留；其他材料的 `required` 由调用方决定。
 材料按源与返回顺序置于历史之前，以 JSON 包装来源：
 guidance 为 system；file/data 为 user 数据，不提升为指令。
+对齐 Task84 的拟议合同：只有随代码提供的内建行为指引可以标为 guidance。
+外部 AGENTS、选中的完整 Skill、MEMORY 和 routing 材料使用 file/data；
+`required:true` 时必须完整保留，容纳不下则明确预算失败，不摘要、截断或丢弃。
+content 中已有的 scope/trust/provenance 原样留在包装内，sourceId/materialId/revision
+继续随报告保留；区分内建内容的责任在生产者/调用方，不新增信任 schema 或文件发现机制。
 `protectedHistoryRanges` 可显式保护中途新增的硬约束、目标或关键事实；
 触及工具组时保护整个组。内核调用方通过 contextRetention/TurnInput.context 传入。
 本模块不通过关键词猜测哪些文本是硬约束，也不替调用方发现 Skills。
@@ -90,6 +95,9 @@ baseReceipt 表示 owner 加载的**存储前缀** revision/digest/messageCount�
 缓存只在同一 Session、相同模型能力/counter 身份、原子源内容/材料 revision
 前缀完全匹配且仍可摘要时复用；每次重新计数，能力变化重新从原文生成。
 失败/取消/无收益不安装新缓存。重启或切换 builder 丢弃它可直接由原文重建。
+每次 build 都重新加载全部源；包括 required 材料在内，内容、revision、身份、
+顺序或选择集合变化都会丢弃同一 Session 的旧摘要缓存。
+材料快照相同时可复用通过历史前缀校验的摘要，缓存不代替当前文件读取。
 
 ## 有界真实摘要与手动入口
 
@@ -157,6 +165,8 @@ session_busy、session_recovery_required、history_changed、storage_failed。
 指导仍由明确授权的 ContextSource 提供；容量/counter 由模型能力拥有方提供；
 不拥有指令发现、模型协议、持久目录或完整交互入口产品。
 没有新增持久字段、迁移或第二历史账本。现有 SessionDocument v2 不变。
+Task84 对齐通过现有模块和离线合同 fixture 验证，不代表其拟议实现已经交付；
+Task87 的生产容量/计数合同仍未收到确认。
 
 `node --test test/core/native-agent-context.test.js` 使用固定历史、
 明确指引/文件材料和 fake 扩展，覆盖预算、配对、每 Step 重建、不可变历史、
