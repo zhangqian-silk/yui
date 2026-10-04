@@ -1,5 +1,6 @@
 import { supportedAgentAdapterIds } from "../agent/adapterCatalog.js";
 import { supportedAgentExecutionComponentIds } from "../agent/executionComponents.js";
+import { productConfigurationOptions } from "../nativeAgent/product/config.js";
 import {
   CONFIG_DEFINITIONS,
   CONFIG_DOMAINS,
@@ -1209,13 +1210,29 @@ export const ROOT_COMMAND = buildNode({
     { id: "general", title: "General", entries: [
       "help", "version", "update", "upgrade", "setup", "start", "doctor"
     ] },
-    { id: "workflow", title: "Workflow", entries: ["operator", "role", "project", "task"] },
+    { id: "workflow", title: "Workflow", entries: ["agent", "operator", "role", "project", "task"] },
     { id: "configuration", title: "Configuration", entries: ["config"] },
     { id: "operations", title: "Operations", entries: ["web", "controller", "session", "execution", "capability", "job", "jobs", "telemetry", "release"] },
     { id: "resources", title: "Resources", entries: ["resources"] },
     { id: "internal", title: "Internal", entries: ["internal"] }
   ],
   children: [
+    {
+      name: "agent", discovery: { surface: "public", audiences: ["public","operator"] },
+      summary: "Run the independent coding Agent without a Controller or Yui Home.",
+      sections: [{ id: "product", title: "Independent Agent", entries: ["check-config", "start", "run"] }],
+      children: [
+        { name: "check-config", discovery: { surface: "public", audiences: ["public","operator"] },
+          summary: "Validate explicit configuration without model requests or state initialization.",
+          options: productConfigurationOptions, fileOptions: ["--config"] },
+        { name: "start", discovery: { surface: "public", audiences: ["public","operator"] },
+          summary: "Open a foreground line UI; select --session ID to resume saved history.",
+          options: [...productConfigurationOptions, "--session"], fileOptions: ["--config"] },
+        { name: "run", discovery: { surface: "public", audiences: ["public","operator"] },
+          summary: "Submit one input and return real result/save evidence as JSON.",
+          options: [...productConfigurationOptions, "--session", "--input"], fileOptions: ["--config"] }
+      ]
+    },
     {
       name: "role", discovery: { surface: "public", audiences: ["public","operator"] },
       summary: "Queue input or control an exact current Global Role Turn.",
