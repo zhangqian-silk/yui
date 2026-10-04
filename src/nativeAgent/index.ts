@@ -8,7 +8,8 @@ export { createProjectGuidance } from './projectGuidance/index.js';
 export type { ProjectGuidance, ProjectGuidanceOptions } from './projectGuidance/index.js';
 export { createLocalObserver } from './observability/index.js';
 export type { LocalObserver } from './observability/index.js';
-export { createModelGateway, createChatCompletionsAdapter, createModelObservationAdapter, ModelGatewayError } from './model/index.js';
+export { createModelGateway, createChatCompletionsAdapter, createResponsesAdapter, createAnthropicMessagesAdapter,
+  createProtocolAdapter, getProtocolCapabilities, createModelObservationAdapter, ModelGatewayError } from './model/index.js';
 export type { ModelGateway, ModelGatewayOptions, ModelTransport } from './model/index.js';
 export { openCli, createTextRenderer } from './interaction/index.js';
 export type { InteractionSessionPort, InteractionDiagnosticsPort } from './interaction/index.js';
