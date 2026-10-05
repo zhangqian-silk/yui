@@ -9,14 +9,15 @@ import { ProductError, containsCredential, createProductBinding, publicConfigura
 import { createProductTransport } from './transport.js';
 import { createProductTools } from './tools.js';
 import { openProductStore, storageFailure } from './storage.js';
+import { restoreProductLocation, createProductSession } from './location.js';
 
 /** Product owns the streams' connection listeners, model dispatcher, store and owner.
  * No hidden execution loop/catalog/policy: all execution goes through ExecutionOwner. */
 export async function runProductRuntime(invocation: ProductArguments, credential?: string): Promise<number> {
-  const { config } = invocation;
+  let { config } = invocation;
   // Rebuild on EVERY open/resume from current explicit authority, never stored history.
   // Same factory for all three capabilities; do not grant the shorthand's always-allow lease.
-  const binding = createProductBinding(invocation, credential);
+  let binding: ReturnType<typeof createProductBinding>;
   const observer = createLocalObserver();
   let store: SessionStore | undefined, owner: ExecutionOwner | undefined, cli: CliConnection | undefined;
   let selected = invocation.session;
@@ -60,6 +61,22 @@ export async function runProductRuntime(invocation: ProductArguments, credential
   const network = createProductTransport();
   try {
     store = await openProductStore(config.stateDir, true);
+    if (selected) {
+      const location = await restoreProductLocation(store, selected, config);
+      config = { ...config, ...location };
+      invocation = { ...invocation, config };
+    }
+    binding = createProductBinding(invocation, credential);
+    const activeStore = store;
+    const selectedLocation = { root: config.root, cwd: config.cwd };
+    const admitLocation = async (id: string) => {
+      const location = await restoreProductLocation(activeStore, id, config);
+      guard(location);
+      if (location.root !== selectedLocation.root || location.cwd !== selectedLocation.cwd)
+        throw new ProductError('agent_config', 'location',
+          'This UI is bound to a different location. Close the settled process and reopen with --session ID and fresh grants.');
+      return location;
+    };
     const provider = createModelGateway({
       endpoint: config.endpoint, model: config.model,
       account: credential ? { kind: 'bearer', token: credential } : { kind: 'none' },
@@ -71,13 +88,16 @@ export async function runProductRuntime(invocation: ProductArguments, credential
     owner = createExecutionOwner({
       store, maxSteps: config.maxSteps, observer,
       ...(selected ? { sessions: [{ id: selected, title: 'Explicit selection' }] } : {}),
-      agent: recording => {
+      agent: async recording => {
         // ExecutionOwner creates this Agent for the admitted Turn. Bind to the
         // recording's identity, never the UI's mutable selected Session.
         const sessionId = recording.lastReceipt.sessionId;
-        const guidance = createProjectGuidance({ root: config.cwd, cwd: config.cwd, sessionId });
+        const location = await admitLocation(sessionId);
+        const currentInvocation = { ...invocation, config: { ...config, ...location } };
+        const currentBinding = createProductBinding(currentInvocation, credential);
+        const guidance = createProjectGuidance({ ...location, sessionId });
         return createAgent({
-          toolExecutor: createProductTools(binding, guidance, invocation, sessionId),
+          toolExecutor: createProductTools(currentBinding, guidance, currentInvocation, sessionId),
           contextBuilder: createContextBuilder({ sources: [guidance.source] }),
           contextBudget: { capacity: config.contextBytes, reserveOutput: config.outputReserveBytes },
           observer,
@@ -99,7 +119,7 @@ export async function runProductRuntime(invocation: ProductArguments, credential
       } catch {
         throw new ProductError('agent_storage', 'session', 'Select an existing ready Session in this state directory; inspect unsettled/unknown facts without replay.');
       }
-    } else selected = (await owner.create('Agent session')).id;
+    } else selected = (await createProductSession(owner, store, 'Agent session', selectedLocation)).id;
     if (signalExit !== undefined || outputFailed) return signalExit ?? 1;
     if (invocation.command === 'run') {
       await owner.submit(selected, invocation.input!);
@@ -128,7 +148,6 @@ export async function runProductRuntime(invocation: ProductArguments, credential
         ? 130 : evidence.result.reason === 'budget_exhausted' ? 3 : 1);
     }
     const activeOwner = owner;
-    const activeStore = store;
     const catalogSafe = async <T>(operation: () => Promise<T>): Promise<T> => {
       try { const value = await operation(); guard(value); return value; }
       catch (error) { throw storageFailure(error); }
@@ -144,20 +163,24 @@ export async function runProductRuntime(invocation: ProductArguments, credential
     };
     const safe = async <T>(operation: () => Promise<T>): Promise<T> => {
       try { const value = await operation(); guard(value); return value; }
-      catch { throw new ProductError('agent_execution', 'session', 'Inspect saved Session facts; do not automatically retry.'); }
+      catch (error) {
+        if (error instanceof ProductError) throw error;
+        throw storageFailure(error);
+      }
     };
     const port: InteractionSessionPort = {
       async create(title) {
         guard(title);
         if (!title.trim() || [...title.trim()].length > 200 || /[\p{Cc}\p{Cs}]/u.test(title))
           throw new ProductError('agent_config', 'title', 'Use 1..200 Unicode characters without controls.');
-        const item = await safe(() => activeOwner.create(title));
+        const item = await createProductSession(activeOwner, activeStore, title, selectedLocation);
         await catalog.renameSession(item.id, title, 0);
         return item;
       },
       list: (offset, limit) => safe(() => activeOwner.list(offset, limit)),
       async submit(id, input) {
         guard(input);
+        await admitLocation(id);
         const scope = await safe(() => activeOwner.submit(id, input));
         selected = id;
         return scope;
@@ -166,6 +189,7 @@ export async function runProductRuntime(invocation: ProductArguments, credential
       history: (id, offset, limit) => safe(() => activeOwner.history(id, offset, limit)),
       subscribe: (id, callback) => activeOwner.subscribe(id, callback),
       async read(id, after, limit) {
+        await admitLocation(id);
         const page = await safe(() => activeOwner.read(id, after, limit));
         selected = id;
         if (page.records.some(record => record.kind === 'event' && record.event.data.type === 'turn_ended')) {
@@ -185,7 +209,7 @@ export async function runProductRuntime(invocation: ProductArguments, credential
     await write({ configuration: publicConfiguration(config), binding: binding.binding,
       projectAuthority: { allowMemoryWrite: invocation.allowMemoryWrite },
       sessionId: selected, mode: 'local-tool-binding',
-      note: 'Persistent catalog is available; original root/cwd are not yet stored. Authority changes require settled close and explicit reopen. Not an OS sandbox.' }, '[agent] ');
+      note: 'Original root/cwd are persisted atomically. Cross-location selection requires settled close and explicit reopen with fresh authority. Not an OS sandbox.' }, '[agent] ');
     cli = await openCli({ sessions: port, catalog, input: process.stdin, output: process.stdout,
       initialSessionId: selected, diagnostics: createInteractionDiagnostics(observer) });
     if (signalExit !== undefined || outputFailed) cli.close();

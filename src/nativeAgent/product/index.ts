@@ -12,7 +12,7 @@ export const productHelp = `Independent coding Agent (no Controller or Yui Home)
   yui agent rename --state-dir PATH --session ID --title JSON_STRING_OR_NULL --expected-metadata-revision N
 
 Required: --endpoint COMPLETE_URL --model NAME --credential-ref env:NAME|anonymous --state-dir PATH
-Optional: --config FILE --cwd PATH --adapter chat-completions
+Optional: --config FILE --root PATH --cwd PATH --adapter chat-completions
           --tools read,list,find,search,project_context,project_memory --max-steps 8
           --context-bytes 1048576 --output-reserve-bytes 0
           --model-timeout-ms 30000 --stream true|false
@@ -31,7 +31,9 @@ Project guidance is required; Skills load completely on request as project/user 
 project_memory reads .agents/MEMORY.md; replace/delete need --allow-memory-write, not --allow-write.
 Catalog commands need only the existing state directory; reads never start execution.
 Duplicate titles are not identities. Stale cursors require an explicit first-page refresh.
-Original root/cwd metadata are not yet persisted; no automatic location restoration is claimed.
+New Sessions atomically persist root/cwd (root defaults to cwd).
+Resume uses the saved location; explicit conflicts and legacy missing locations are refused.
+Paths must exist without symlinks, with cwd inside root. Saved paths grant no authority.
 `;
 
 export async function runProductCommand(args: string[]): Promise<number> {
@@ -45,6 +47,9 @@ export async function runProductCommand(args: string[]): Promise<number> {
   const credential = resolveCredential(invocation.config, process.env);
   if (credential && invocation.input?.includes(credential)) {
     throw new ProductError('agent_config', 'input', 'Do not submit the configured credential as conversation text.');
+  }
+  if (credential && invocation.session?.includes(credential)) {
+    throw new ProductError('agent_config', 'session', 'Do not use the configured credential as a Session identity.');
   }
   if (invocation.command === 'check-config') {
     const binding = createProductBinding(invocation, credential);

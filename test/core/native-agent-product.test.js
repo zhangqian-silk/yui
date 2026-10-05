@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile, access, symlink } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { realpathSync } from 'node:fs';
 import test from 'node:test';
-import { createSessionStore, createSqliteSessionBackend } from '../../dist/nativeAgent/index.js';
+import { createSessionStore, createSqliteSessionBackend, createExecutionOwner } from '../../dist/nativeAgent/index.js';
+import { createProductSession } from '../../dist/nativeAgent/product/location.js';
+import { productFailure } from '../../dist/nativeAgent/product/config.js';
 
 const launcher = resolve('output/dev/bin/yui');
 const secret = 'dummy-product-secret-never-persist';
@@ -17,8 +19,8 @@ async function fixture(t) {
     YUI_HOME: join(root, 'unused-control-home'), AGENT_TEST_TOKEN: secret };
   return { root, env };
 }
-function cli(args, env, input, t, onStart, prefix = []) {
-  const child = spawn(launcher, [...prefix, 'agent', ...args], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+function cli(args, env, input, t, onStart, prefix = [], cwd) {
+  const child = spawn(launcher, [...prefix, 'agent', ...args], { env, cwd, stdio: ['pipe', 'pipe', 'pipe'] });
   let stdout = '', stderr = '';
   const done = new Promise((done, reject) => {
     child.stdout.on('data', data => { stdout += data; });
@@ -32,7 +34,8 @@ function cli(args, env, input, t, onStart, prefix = []) {
     await done;
   });
   onStart?.(child);
-  child.stdin.end(input);
+  if (typeof input === 'function') input(child);
+  else child.stdin.end(input);
   return done;
 }
 
@@ -150,6 +153,127 @@ test('real product entry reads, explicitly edits/checks, saves and resumes exact
   await assert.rejects(access(env.YUI_HOME));
 });
 
+test('product restores immutable root/cwd across launch directories without restoring grants', { timeout: 15000 }, async t => {
+  const { root, env } = await fixture(t);
+  const cwd = join(root, 'project', 'child'), project = join(root, 'project');
+  const elsewhere = join(root, 'elsewhere'), state = join(root, 'state');
+  await mkdir(cwd, { recursive: true }); await mkdir(elsewhere);
+  await writeFile(join(cwd, 'AGENTS.md'), 'ORIGINAL_CHILD_GUIDANCE');
+  let calls = 0, uiRequest = () => {};
+  const server = createServer(async (req, res) => {
+    let body = '';
+    for await (const part of req) body += part;
+    assert.ok(JSON.parse(body).messages.some(message => message.role === 'user'
+      && message.content.includes('ORIGINAL_CHILD_GUIDANCE')));
+    calls++;
+    res.end(JSON.stringify({ choices: [{ index: 0, message: { role: 'assistant', content: 'saved' }, finish_reason: 'stop' }] }));
+    uiRequest();
+  });
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const args = ['--allow-http', '--endpoint', `http://127.0.0.1:${server.address().port}/chat`,
+    '--model', 'offline', '--credential-ref', 'env:AGENT_TEST_TOKEN', '--state-dir', state];
+  const first = await cli(['run', ...args, '--root', project, '--cwd', cwd, '--input', 'first'], env, undefined, t);
+  assert.equal(first.code, 0, first.stderr);
+  const id = JSON.parse(first.stdout).receipt.sessionId;
+  const detail = await cli(['session-info', '--state-dir', state, '--session', id], env, undefined, t);
+  assert.deepEqual(JSON.parse(detail.stdout).location, { root: project, cwd });
+  const resumed = await cli(['run', ...args, '--session', id, '--input', 'again'], env, undefined, t, undefined, [], elsewhere);
+  assert.equal(resumed.code, 0, resumed.stderr);
+  assert.deepEqual({ root: JSON.parse(resumed.stdout).binding.root, cwd: JSON.parse(resumed.stdout).binding.cwd },
+    { root: project, cwd });
+  assert.equal(JSON.parse(resumed.stdout).binding.allowWrite, false);
+  const conflict = await cli(['run', ...args, '--session', id, '--cwd', elsewhere, '--input', 'conflict'], env, undefined, t);
+  assert.equal(conflict.code, 2);
+  assert.equal(JSON.parse(conflict.stderr).field, 'cwd');
+  const envConflict = await cli(['run', ...args, '--session', id, '--input', 'conflict'],
+    { ...env, NATIVE_AGENT_ROOT: elsewhere }, undefined, t);
+  assert.equal(envConflict.code, 2);
+  assert.equal(JSON.parse(envConflict.stderr).field, 'root');
+  const file = join(root, 'conflict.json');
+  await writeFile(file, JSON.stringify({ schemaVersion: 1, cwd: elsewhere }));
+  const fileConflict = await cli(['run', ...args, '--session', id, '--config', file, '--input', 'conflict'], env, undefined, t);
+  assert.equal(fileConflict.code, 2);
+  assert.equal(JSON.parse(fileConflict.stderr).field, 'cwd');
+  const store = createSessionStore(createSqliteSessionBackend(join(state, 'sessions.sqlite')));
+  try {
+    await store.create('legacy');
+    await store.create('elsewhere', { root: elsewhere, cwd: elsewhere });
+    const missing = join(root, 'missing');
+    await store.create('missing', { root: missing, cwd: missing });
+  } finally { await store.close(); }
+  const legacy = await cli(['run', ...args, '--session', 'legacy', '--input', 'do not guess'], env, undefined, t);
+  assert.equal(legacy.code, 1);
+  assert.match(legacy.stderr, /new Session/);
+  const secretId = await cli(['run', ...args, '--session', secret, '--input', 'invalid identity'], env, undefined, t);
+  assert.equal(secretId.code, 2);
+  assert.ok(!secretId.stderr.includes(secret));
+  const missing = await cli(['run', ...args, '--session', 'missing', '--input', 'no filesystem'], env, undefined, t);
+  assert.equal(missing.code, 2);
+  await symlink(project, join(root, 'linked'));
+  for (const paths of [['--root', project, '--cwd', elsewhere],
+    ['--cwd', join(root, 'linked', 'child')], ['--cwd', join(root, 'absent')], ['--cwd', file]]) {
+    const refused = await cli(['run', ...args, ...paths, '--input', 'invalid new location'], env, undefined, t);
+    assert.equal(refused.code, 2);
+  }
+  const ui = await cli(['start', ...args, '--session', id], env,
+    '/use elsewhere\n/info\n/new from-ui\n/info\n', t, undefined, [], elsewhere);
+  assert.equal(ui.code, 0, ui.stderr);
+  assert.match(ui.stdout, /different location/);
+  const infoLines = ui.stdout.split('\n').filter(line => line.startsWith('[session info] '))
+    .map(line => JSON.parse(line.slice('[session info] '.length)));
+  assert.equal(infoLines[0].sessionId, id); // Rejected selection kept prior ID.
+  assert.notEqual(infoLines[1].sessionId, id);
+  assert.equal(infoLines[1].title, 'from-ui');
+  assert.deepEqual(infoLines[1].location, { root: project, cwd });
+  const chosen = infoLines[1].sessionId;
+  const executing = await cli(['start', ...args, '--session', id], env, child => {
+    uiRequest = () => child.stdin.end('/info\n');
+    child.stdin.write(`/use ${chosen}\nUI exact selected input\n`);
+  }, t, undefined, [], elsewhere);
+  assert.equal(executing.code, 0, executing.stderr);
+  const verify = createSessionStore(createSqliteSessionBackend(join(state, 'sessions.sqlite')));
+  try {
+    const chosenSaved = await verify.load(chosen);
+    assert.ok(chosenSaved.messages.some(message => message.role === 'user' && message.content === 'UI exact selected input'));
+    assert.equal(chosenSaved.recovery.disposition, 'ready');
+    assert.equal((await verify.load(id)).digest, JSON.parse(resumed.stdout).receipt.digest);
+  } finally { await verify.close(); }
+  assert.equal(calls, 3);
+  await assert.rejects(access(env.YUI_HOME));
+});
+
+test('product reconciles lost atomic creation acknowledgement by the same ID without executing or retrying', async t => {
+  const { root } = await fixture(t);
+  const filename = join(root, 'sessions.sqlite');
+  const backend = createSqliteSessionBackend(filename);
+  let creates = 0, reads = 0, details = 0, agents = 0;
+  const store = createSessionStore({ ...backend,
+    catalog: { ...backend.catalog, async getSessionInfo(id) { details++; return backend.catalog.getSessionInfo(id); } },
+    async read(id) { reads++; return backend.read(id); },
+    async createWithLocation(document, location) {
+      creates++;
+      await backend.createWithLocation(document, location); // Real atomic transaction committed.
+      throw new Error(secret); // Only lost-ack fault, not a replacement store.
+    },
+  });
+  const owner = createExecutionOwner({ store, maxSteps: 1, agent() { agents++; throw new Error('must not execute'); } });
+  t.after(async () => { await owner.close(); await store.close(); });
+  let failure;
+  try { await createProductSession(owner, store, 'attempt', { root, cwd: root }); } catch (error) { failure = productFailure(error); }
+  assert.equal(failure.effect, 'unknown');
+  assert.match(failure.nextAction, /confirm empty Session/);
+  assert.ok(failure.nextAction.includes(failure.sessionId));
+  assert.ok(!JSON.stringify(failure).includes(secret));
+  assert.equal(creates, 1); assert.equal(details, 1); assert.equal(reads, 1); assert.equal(agents, 0);
+  await owner.close(); await store.close();
+  const reopened = createSessionStore(createSqliteSessionBackend(filename));
+  try {
+    assert.equal((await reopened.listSessions()).items.length, 1);
+    assert.deepEqual((await reopened.getSessionInfo(failure.sessionId)).location, { root, cwd: root });
+    assert.equal((await reopened.load(failure.sessionId)).recovery.disposition, 'ready');
+  } finally { await reopened.close(); }
+});
 test('product guidance loads full Skills without elevation and memory grants reset on resume', { timeout: 15000 }, async t => {
   const { root, env } = await fixture(t);
   await mkdir(join(root, '.agents/skills/check'), { recursive: true });
@@ -307,7 +431,7 @@ test('product persistent catalog discovers exact IDs without executing and expos
   try {
     await assert.rejects(store.load('not-created'));
     assert.equal((await store.load(selected)).digest, resumed.receipt.digest);
-    await store.create('unknown');
+    await store.create('unknown', { root, cwd: root });
     const data = [{ type: 'turn_started' }, { type: 'message_appended',
       message: { role: 'user', content: 'Inspect the uncertain call' } }, { type: 'step_started', step: 1 },
       { type: 'message_appended', step: 1, message: { role: 'assistant', content: '',

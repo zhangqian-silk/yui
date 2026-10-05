@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Agent, Scope, TurnResult, ModelRequest, ToolDefinition } from './contracts.js';
 import { ContextBuildError, type ContextBuilder, type ContextInput, type ContextReport } from './context/index.js';
 import type { InteractionSessionPort, SessionSummary } from './interaction/index.js';
-import type { SessionStore, SessionRecording, SaveReceipt } from './session/index.js';
+import type { SessionStore, SessionRecording, SaveReceipt, SessionLocation } from './session/index.js';
 import type { LocalObserver } from './observability/index.js';
 
 export type ExecutionEvidence = {
@@ -12,6 +12,8 @@ export type ManualContextProjection = { request: ModelRequest; report: ContextRe
 export interface ExecutionOwner extends InteractionSessionPort {
   /** Idle, ready Session only. Computes a disposable projection; never writes history or runs tools. */
   compact(sessionId: string, signal?: AbortSignal): Promise<ManualContextProjection>;
+  /** Optional immutable creation facts; never authority or a second ledger. */
+  create(title: string, location?: SessionLocation): Promise<SessionSummary>;
   /** Current or most recent local execution only; never reconstructed on restart. */
   settle(sessionId: string): Promise<ExecutionEvidence | undefined>;
   /** Cancels and waits for owned executions, detaches listeners; does not close injected store. */
@@ -23,7 +25,7 @@ export interface ExecutionOwner extends InteractionSessionPort {
  * The explicit catalog is a selection view, not persistent Session discovery. */
 export function createExecutionOwner(options: {
   store: SessionStore;
-  agent(recording: SessionRecording): Agent;
+  agent(recording: SessionRecording): Agent | Promise<Agent>;
   sessions?: readonly SessionSummary[];
   maxSteps: number;
   observer?: LocalObserver;
@@ -50,10 +52,10 @@ export function createExecutionOwner(options: {
       || !Number.isInteger(limit) || limit < 1 || limit > 20) throw new Error('Invalid page bounds');
   };
   return {
-    async create(title) {
+    async create(title, location) {
       check();
       const summary = { id: randomUUID(), title: title.slice(0, 200) };
-      await options.store.create(summary.id);
+      await options.store.create(summary.id, location);
       catalog.set(summary.id, summary);
       return { ...summary };
     },
@@ -81,7 +83,8 @@ export function createExecutionOwner(options: {
           // A concurrent outside writer is unsupported; never mix two revisions.
           if (recording.lastReceipt.revision !== saved.revision) throw new Error('Session changed during admission');
           check();
-          const agent = options.agent(recording);
+          const agent = await options.agent(recording);
+          check(); // Async admission must not acknowledge execution after close.
           accept();
           const result = await agent.runTurn({ ...scope, input, history: saved.messages,
             maxSteps: options.maxSteps, signal: abort.signal,

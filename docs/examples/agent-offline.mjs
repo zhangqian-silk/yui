@@ -10,11 +10,13 @@ import { fileURLToPath } from 'node:url';
 const packageRoot = fileURLToPath(new URL('../../', import.meta.url));
 const localLauncher = join(packageRoot, 'output/dev/bin/yui');
 const directory = await mkdtemp(join(tmpdir(), 'native-agent-offline-'));
+const workingDirectory = join(directory, 'child');
+const launchDirectory = join(directory, 'different-launch');
 const secret = 'dummy-offline-example-token';
 const executable = realpathSync(process.execPath);
 // Trusted fixture code reviewed here, not arbitrary text supplied by the model.
 const argv = ['-e',
-  'const fs=require("node:fs");if(fs.readFileSync("input.txt","utf8")!=="after\\n"||process.env.EXAMPLE_CREDENTIAL)process.exit(1);console.log("local check passed");'];
+  'const fs=require("node:fs");if(fs.readFileSync("../input.txt","utf8")!=="after\\n"||process.env.EXAMPLE_CREDENTIAL)process.exit(1);console.log("local check passed");'];
 const commandConfig = JSON.stringify({ env: {}, specs: [{ executable, argv, effect: 'read' }] });
 let phase = 'read', step = 0, active;
 let initialSkillBody = false, loadedSkillBody = false;
@@ -34,9 +36,12 @@ const server = createServer(async (request, response) => {
     calls = [call('edit-example', 'edit',
       { path: 'input.txt', expectedSha256: sha256, oldText: 'before', newText: 'after' })];
   } else if (phase === 'edit' && step === 2) calls = [call('check-example', 'command', {
-    command: executable, cwd: directory, argv })];
+    command: executable, cwd: workingDirectory, argv })];
   else if (phase === 'reopen' && step++ === 0) calls = [call('reopen-check', 'command', {
-    command: executable, cwd: directory, argv })];
+    command: executable, cwd: workingDirectory, argv })];
+  else if (phase === 'restored' && step++ === 0) calls = [call('restored-read', 'read', { path: 'input.txt' })];
+  else if (phase === 'restored' && step === 2) calls = [call('restored-check', 'command', {
+    command: executable, cwd: workingDirectory, argv })];
   else if (phase === 'skill') {
     const loaded = input.messages.some(message => message.content.includes('COMPLETE_OFFLINE_SKILL_BODY'));
     if (step++ === 0) {
@@ -54,6 +59,8 @@ const server = createServer(async (request, response) => {
     ...(calls ? { tool_calls: calls } : {}) }, finish_reason: calls ? 'tool_calls' : 'stop' }] }));
 });
 try {
+  await mkdir(workingDirectory);
+  await mkdir(launchDirectory);
   await writeFile(join(directory, 'input.txt'), 'before\n');
   await mkdir(join(directory, '.agents/skills/check'), { recursive: true });
   await writeFile(join(directory, '.agents/skills/check/SKILL.md'),
@@ -61,16 +68,18 @@ try {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const shared = ['--allow-http', '--endpoint', `http://127.0.0.1:${server.address().port}/chat`,
     '--model', 'offline-fixture', '--credential-ref', 'env:EXAMPLE_CREDENTIAL',
-    '--cwd', directory, '--state-dir', join(directory, 'state')];
+    '--state-dir', join(directory, 'state')];
   const execute = (args, expectedCode = 0, command = 'run') => new Promise((resolve, reject) => {
     // Installed package uses its public bin; source checkout uses the required absolute local launcher.
     active = spawn(existsSync(localLauncher) ? localLauncher : process.execPath,
       [...(existsSync(localLauncher) ? [] : [join(packageRoot, 'dist/cli.js')]), 'agent', command,
-        ...(command === 'run' ? shared : ['--state-dir', join(directory, 'state'), '--credential-ref', 'env:EXAMPLE_CREDENTIAL']),
+        ...(command === 'run' ? [...shared,
+          ...(args.includes('--session') ? [] : ['--root', directory, '--cwd', workingDirectory])]
+          : ['--state-dir', join(directory, 'state'), '--credential-ref', 'env:EXAMPLE_CREDENTIAL']),
         ...args],
       { env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, TMPDIR: tmpdir(),
         YUI_HOME: join(directory, 'unused-control-home'), EXAMPLE_CREDENTIAL: secret },
-        stdio: ['ignore', 'pipe', 'pipe'] });
+        cwd: launchDirectory, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '', error = '';
     active.stdout.on('data', data => { output += data; });
     active.stderr.on('data', data => { error += data; });
@@ -134,17 +143,28 @@ try {
   assert.equal(facts.records.length, 2);
   const detail = await execute(resume, 0, 'session-info');
   assert.equal(detail.sessionId, first.receipt.sessionId);
+  assert.deepEqual(detail.location, { root: directory, cwd: workingDirectory });
   await execute([...resume, '--title', '"Chosen exact ID"', '--expected-metadata-revision', '1'], 0, 'rename');
   const stale = await execute(['--limit', '1', '--cursor', page.nextCursor], 1, 'sessions');
   assert.equal(stale.field, 'cursor_stale');
   await execute(['--limit', '1'], 0, 'sessions'); // Explicit refresh, no automatic cursor fallback.
   await execute([...resume, '--limit', '2', '--cursor', facts.nextCursor], 0, 'history');
+  phase = 'restored'; step = 0;
+  const restored = await execute([...resume, '--tools', 'read,command', '--allow-command',
+    '--command-config', commandConfig, '--input', 'Continue by exact catalog ID with fresh command authority']);
+  assert.equal(restored.binding.root, directory);
+  assert.equal(restored.binding.cwd, workingDirectory);
+  assert.equal(restored.receipt.sessionId, detail.sessionId);
+  assert.ok(restored.receipt.revision > detail.revision);
+  const restoredCheck = restored.result.messages.filter(message => message.role === 'tool' && message.name === 'command').at(-1);
+  assert.equal(JSON.parse(restoredCheck.outcome.content).exitCode, 0);
   console.log(JSON.stringify({ offline: true, editedAndChecked: true, resumedExactId: true,
     persistentReceiptVerified: true, exactCommandAuthority: true, reopenDefaultsReadOnly: true,
     progressiveCompleteSkill: true, memoryRequiresSeparateInvocationGrant: true,
     persistentCatalogDiscovered: true, duplicateTitlesSelectedById: true, boundedHistoryRead: true,
     explicitStaleCursorRefresh: true, controlHomeCreated: false,
-    remaining: 'Original root/cwd persistence producer extension' }));
+    originalRootCwdRestoredAcrossLaunchDirectories: true, rootDiffersFromCwd: true,
+    freshCommandAuthorizationAfterCatalogSelection: true }));
 } finally {
   if (active) {
     const stopped = new Promise(resolve => active.once('close', resolve));

@@ -1,6 +1,7 @@
-import { open, realpath, stat } from 'node:fs/promises';
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { open, lstat, realpath } from 'node:fs/promises';
+import { dirname, isAbsolute, resolve, parse, relative, sep } from 'node:path';
 import { createLocalToolBinding, type LocalToolOptions } from '../index.js';
+import type { SessionLocation } from '../session/index.js';
 
 export class ProductError extends Error {
   constructor(readonly code: 'agent_config' | 'agent_storage' | 'agent_execution' | 'agent_output',
@@ -20,12 +21,12 @@ export function productFailure(error: unknown) {
 const invalid = (field: string, action = 'Provide a supported explicit value and restart.'): never => {
   throw new ProductError('agent_config', field, action);
 };
-const fields = ['adapter', 'endpoint', 'model', 'credentialRef', 'cwd', 'stateDir', 'tools',
+const fields = ['adapter', 'endpoint', 'model', 'credentialRef', 'root', 'cwd', 'stateDir', 'tools',
   'maxSteps', 'contextBytes', 'outputReserveBytes', 'modelTimeoutMs', 'stream', 'command'] as const;
 type Field = typeof fields[number];
 export type ProductConfig = {
   adapter: 'chat-completions'; endpoint: string; model: string; credentialRef: string;
-  cwd: string; stateDir: string; tools: string[]; maxSteps: number;
+  root: string; cwd: string; stateDir: string; tools: string[]; maxSteps: number;
   contextBytes: number; outputReserveBytes: number; modelTimeoutMs: number; stream: boolean;
   command?: LocalToolOptions['command'];
   sources: Record<Field, 'cli' | 'environment' | 'file' | 'default'>;
@@ -36,7 +37,7 @@ export type ProductArguments = {
 };
 const options: Record<string, Field> = {
   '--adapter': 'adapter', '--endpoint': 'endpoint', '--model': 'model', '--credential-ref': 'credentialRef',
-  '--cwd': 'cwd', '--state-dir': 'stateDir', '--tools': 'tools', '--max-steps': 'maxSteps',
+  '--root': 'root', '--cwd': 'cwd', '--state-dir': 'stateDir', '--tools': 'tools', '--max-steps': 'maxSteps',
   '--context-bytes': 'contextBytes', '--output-reserve-bytes': 'outputReserveBytes',
   '--model-timeout-ms': 'modelTimeoutMs', '--stream': 'stream', '--command-config': 'command',
 };
@@ -44,7 +45,7 @@ export const productConfigurationOptions = [...Object.keys(options), '--config',
   '--allow-write', '--allow-command', '--allow-memory-write', '--allow-http'];
 const environment: Record<Field, string> = {
   adapter: 'NATIVE_AGENT_ADAPTER', endpoint: 'NATIVE_AGENT_ENDPOINT', model: 'NATIVE_AGENT_MODEL',
-  credentialRef: 'NATIVE_AGENT_CREDENTIAL_REF', cwd: 'NATIVE_AGENT_CWD', stateDir: 'NATIVE_AGENT_STATE_DIR',
+  credentialRef: 'NATIVE_AGENT_CREDENTIAL_REF', root: 'NATIVE_AGENT_ROOT', cwd: 'NATIVE_AGENT_CWD', stateDir: 'NATIVE_AGENT_STATE_DIR',
   tools: 'NATIVE_AGENT_TOOLS', maxSteps: 'NATIVE_AGENT_MAX_STEPS', contextBytes: 'NATIVE_AGENT_CONTEXT_BYTES',
   outputReserveBytes: 'NATIVE_AGENT_OUTPUT_RESERVE_BYTES', modelTimeoutMs: 'NATIVE_AGENT_MODEL_TIMEOUT_MS',
   stream: 'NATIVE_AGENT_STREAM', command: 'NATIVE_AGENT_COMMAND_CONFIG',
@@ -134,16 +135,16 @@ export async function resolveProductArguments(args: string[], env: NodeJS.Proces
   } catch { return invalid('endpoint', 'Use an exact HTTPS URL without userinfo/query/fragment, or explicit --allow-http for loopback fixtures.'); }
   const credentialRef = text(values.credentialRef, 'credentialRef', 256);
   if (credentialRef !== 'anonymous' && !/^env:[A-Za-z_][A-Za-z0-9_]*$/u.test(credentialRef)) return invalid('credentialRef', 'Use env:VARIABLE_NAME or explicit anonymous.');
-  const path = (field: 'cwd' | 'stateDir') => {
+  const path = (field: 'root' | 'cwd' | 'stateDir') => {
     const value = text(values[field], field);
     if (sources[field] === 'environment' && !isAbsolute(value)) return invalid(field, 'Environment paths must be absolute.');
     return resolve(sources[field] === 'file' ? dirname(filePath!) : launchCwd, value);
   };
-  let cwd: string;
-  try {
-    cwd = await realpath(path('cwd'));
-    if (!(await stat(cwd)).isDirectory()) return invalid('cwd');
-  } catch { return invalid('cwd', 'Select an existing controlled directory.'); }
+  // Keep explicit provenance. On resume, absent paths must be replaced by the
+  // stored location BEFORE any filesystem admission (not launch-cwd defaults).
+  const cwd = path('cwd');
+  const root = sources.root === 'default' ? cwd : path('root');
+  if (!session) await validateProductLocation({ root, cwd });
   const stateDir = path('stateDir');
   const selected = typeof values.tools === 'string' ? values.tools.split(',') : values.tools;
   if (!Array.isArray(selected) || selected.length > toolNames.length
@@ -167,11 +168,34 @@ export async function resolveProductArguments(args: string[], env: NodeJS.Proces
     command: command as ProductArguments['command'], allowWrite, allowMemoryWrite,
     ...(session ? { session } : {}), ...(input !== undefined ? { input } : {}),
     config: { adapter: 'chat-completions', endpoint, model: text(values.model, 'model', 256), credentialRef,
-      cwd, stateDir, tools: [...selected], sources, stream, contextBytes, outputReserveBytes,
+      root, cwd, stateDir, tools: [...selected], sources, stream, contextBytes, outputReserveBytes,
       ...(reviewedCommand !== undefined ? { command: reviewedCommand as LocalToolOptions['command'] } : {}),
       maxSteps: integer(values.maxSteps, 'maxSteps', 1, 100),
       modelTimeoutMs: integer(values.modelTimeoutMs, 'modelTimeoutMs', 1, 300000) },
   };
+}
+
+/** Existence and symlink checks belong to this consumer, not stored metadata.
+ * Controlled local directories only; this is not a hostile-race OS sandbox. */
+export async function validateProductLocation(location: SessionLocation): Promise<void> {
+  for (const field of ['root', 'cwd'] as const) {
+    const value = location[field];
+    try {
+      if (!isAbsolute(value) || resolve(value) !== value || Buffer.byteLength(value) > 4096
+        || /[\p{Cc}\p{Cs}]/u.test(value)) throw new Error();
+      let current = value;
+      for (;;) {
+        if ((await lstat(current)).isSymbolicLink()) throw new Error();
+        const parent = dirname(current);
+        if (current === parse(current).root) break;
+        current = parent;
+      }
+      if (!(await lstat(value)).isDirectory() || await realpath(value) !== value) throw new Error();
+    } catch { return invalid(field, 'Select an existing canonical controlled directory without symlinks.'); }
+  }
+  const within = relative(location.root, location.cwd);
+  if (within === '..' || within.startsWith(`..${sep}`) || isAbsolute(within))
+    return invalid('cwd', 'cwd must be inside the explicitly selected root.');
 }
 
 /** One real producer factory owns tools, permission and live environments.
@@ -180,7 +204,7 @@ export function createProductBinding(invocation: ProductArguments, credential?: 
   try {
     const { config } = invocation;
     return createLocalToolBinding({
-      root: config.cwd, cwd: config.cwd, allowWrite: invocation.allowWrite,
+      root: config.root, cwd: config.cwd, allowWrite: invocation.allowWrite,
       allowCommand: config.tools.includes('command'), command: config.command,
       ...(credential ? { redact: [credential] } : {}),
     });

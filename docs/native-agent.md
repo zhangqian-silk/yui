@@ -7,8 +7,9 @@
 当前入口已装配真实 kernel、ModelGateway、ExecutionOwner、工具、上下文、
 SQLite、行式交互和观测，以及真实本地安全 binding/permission/environment、
 项目指导、按需完整Skill与唯一项目MEMORY。
-已接入真实持久 Session catalog、标题CAS和有界历史，尚无原始root/cwd持久元数据；
-因此这是可独立使用的入口装配，不是完整产品的联合验收结果。
+已接入真实持久 Session catalog、标题CAS、有界历史和原子不可变root/cwd；
+新进程按明确ID恢复原位置，并重新获取本次授权。本文描述本地实现，
+不替代独立Review或Leader最终接受。
 
 ## 启动
 
@@ -34,6 +35,7 @@ yui agent run --config /absolute/agent.json --session SESSION_ID --input '继续
   "endpoint": "https://your-selected-provider.example/v1/chat/completions",
   "model": "your-explicit-model",
   "credentialRef": "env:MY_AGENT_KEY",
+  "root": "/absolute/controlled/repo",
   "cwd": "/absolute/controlled/repo",
   "stateDir": "/absolute/agent-state",
   "tools": ["read", "list", "find", "search", "project_context", "project_memory"],
@@ -56,12 +58,16 @@ yui agent run --config /absolute/agent.json --session SESSION_ID --input '继续
 
 优先级逐字段为 CLI > `NATIVE_AGENT_*` > 所选文件 > 安全默认；
 工具数组完整替换，不合并能力。环境项为 `NATIVE_AGENT_ADAPTER`、
-`ENDPOINT`、`MODEL`、`CREDENTIAL_REF`、`CWD`、`STATE_DIR`、`TOOLS`、
+`ENDPOINT`、`MODEL`、`CREDENTIAL_REF`、`ROOT`、`CWD`、`STATE_DIR`、`TOOLS`、
 `MAX_STEPS`、`CONTEXT_BYTES`、`OUTPUT_RESERVE_BYTES`、`MODEL_TIMEOUT_MS`、
 `STREAM`、`COMMAND_CONFIG`（每项都带 `NATIVE_AGENT_` 前缀）。CLI 对应 `--credential-ref`、
 `--state-dir` 等 kebab-case 名称；tools是逗号分隔，stream是true/false。
 文件相对路径基于文件目录，CLI相对路径基于启动目录，环境路径必须绝对。
-cwd默认启动目录；model/endpoint/credentialRef/stateDir无账号或Home回退。
+新建时cwd默认启动目录、root默认有效cwd；可分别指定`--root`、`--cwd`。
+root/cwd都必须存在、为规范化目录、所有路径组件无软链，cwd须位于root内。
+恢复时未明确指定的位置从同ID持久详情读取，不使用新进程启动目录默认值；
+CLI、环境或配置文件明确指定的root/cwd与原位置冲突则拒绝。
+model/endpoint/credentialRef/stateDir无账号或Home回退。
 
 预算只承诺已有机制：maxSteps为1–100、contextBytes为1–1048576的JSON字节，
 outputReserveBytes小于contextBytes；modelTimeoutMs为1–300000的单次模型逻辑请求
@@ -83,8 +89,9 @@ yui agent start --config /absolute/agent.json \
 通过公开能力组合交给唯一 `createToolExecutor`，不使用 Agent 的 tools 简写。
 编码调用保留原工厂的活lease和实际权限检查；普通项目工具不获取编码lease，
 按其Session作用域、具体action与本次授权检查，不向82私有声明集合注入外来工具。
-实际声明仍受 `tools` 选择限制。root 与 cwd 都绑定到有效配置的 canonical cwd；
+实际声明仍受 `tools` 选择限制。root 与 cwd 绑定到有效配置或已保存的原位置；
 不会从 `.git` 或项目文本推断更大根。有效配置和 binding 描述可供核对真实目录。
+文件工具相对路径基于root，只有命令使用固定cwd；二者可不同。
 目录身份在授权和执行时复核，替换/消失/软链变化拒绝旧绑定。
 
 选择command还必须提供调用方审查过的完整规格：所选JSON文件的 `command` 字段，
@@ -155,8 +162,9 @@ configuration/binding/projectAuthority/result/receipt/observations；退出码0�
 工具执行非零exitCode不是业务成功；完整结果中需要检查实际工具outcome。
 
 状态文件固定为显式stateDir下`sessions.sqlite`，使用独立Session文档格式2和
-81的SQLite NAS1布局3、集中v1→v2→v3迁移，不改变Yui Home版本。合法v2文档
-字节/revision/digest保留，新增标题和事件查询投影；未知/损坏格式拒绝，迁移失败回滚。
+81的SQLite NAS1布局4、集中v1→v2→v3→v4迁移，不改变Yui Home版本。合法v2/v3文档
+字节/revision/digest保留，标题和事件投影保留，旧记录位置明确为null；
+未知/损坏格式拒绝，迁移失败回滚。旧二进制不能打开布局4，不提供自动降级。
 新状态目录0700、数据库0600；
 已有目录权限不擅自重设。请独占受控状态目录，每个Session只运行一个owner；
 CAS不是跨进程执行租约。恢复非ready状态被拒绝且不自动修复/重放。
@@ -198,7 +206,8 @@ yui agent sessions --state-dir /absolute/agent-state --limit 20 --cursor OPAQUE_
 ## 项目指导、Skill与MEMORY
 
 每个Turn从实际recording的Session身份创建真实`createProjectGuidance`，
-接入已有ContextBuilder；不使用UI当前选择作为授权身份。root=cwd仍是当前明确目录。
+接入已有ContextBuilder；不使用UI当前选择作为授权身份。
+每次按该Session的原root/cwd验证并重建82/84，不捕获另一个Session的位置。
 内建编码指导是required system材料，项目AGENTS、Skill和MEMORY是required的
 低信任user材料；来源、revision和materialId进入ContextReport。预算不足或读取
 失败阻止模型请求，不静默丢弃、摘要截断或把项目文本提升成system权限。
@@ -226,18 +235,24 @@ write/edit或可写命令，它们仍具有其既有受控root权限，可能直
 也不访问Home或任意项目外资源。显式`--tools`完整替换默认集合；
 即使未选择项目工具，required内建和基线项目指导仍加载，但不能按需激活更多内容。
 
-## 真实接线剩余边界
+## 原位置恢复与剩余边界
 
-- 已采用81真实SessionCatalog、Memory/SQLite、命名CAS、布局迁移和有界历史，
-  CLI和UI都可持久发现、按ID选择并检查原事件；目录与owner共用同一store。
-  81当前没有持久root/cwd，仍不能自动恢复或核对原会话位置。
-  不从数据库路径、当前cwd、历史、标题或MEMORY猜补；使用者须明确提供相同受控目录。
-- 已采用82真实安全模块，包含实际ToolPermission/ToolEnvironment及有效binding描述；
-  默认只读、精确命令、本次授权、结算关闭后重开重建已经通过真实CLI离线验证。
-  已采用84真实源码，项目工具使用独立的公开权限组合，MEMORY写授权不继承。
-- 最终“恢复原root/cwd、拒绝显式位置冲突、legacy缺失不猜补”的路径仍需81位置
-  持久化增量合同。此处未制造字段、sidecar或第二账本，不抢做生产者扩展。
-  当前离线检查只替换模型网络，其余已装配模块真实；不冒充位置恢复或最终联合验收。
+初始run/start和UI的`/new`都通过唯一ExecutionOwner调用81原子创建，
+同时保存空Session与不可变root/cwd；承认可执行前位置已持久，不存在后补窗口。
+目录、详情、完整load和执行共用同一store，没有sidecar或第二账本。
+`--session ID`可省略root/cwd，按原位置重新验证真实文件系统，再重建82/84；
+位置、标题和历史均不恢复write/command/MEMORY授权、命令规格或凭据。
+
+legacy缺失位置时拒绝自动执行，提示明确选择新会话，不猜补或修改旧位置。
+仍可使用独立目录/历史命令检查旧记录。unknown-effects、interrupted和cleanup-required
+仍拒绝新Turn，查询不能清除这些事实。UI允许同位置的`/use ID`；
+跨位置选择明确拒绝并保留当前选择，须先结束旧活动、关闭进程，再以目标ID显式重开。
+
+创建确认丢失时报告effect:unknown与原尝试Session ID，用同ID的getSessionInfo和load
+进行一次只读对账；即使确认空Session及位置已保存，本次也不执行、重建或换ID。
+按错误指引显式重开同ID；若对账读取失败则保留未知，不把not_found当未提交证明。
+独立Review与最终接受仍由Leader处理；真实模型、硬件掉电、跨OS迁移、
+敌对文件系统和强沙箱不在本地离线证据的保证范围内。
 
 ## 可执行离线样例
 
@@ -250,6 +265,7 @@ node docs/examples/agent-offline.mjs
 样例创建本地HTTP服务、一次性目录和dummy凭据，经真实入口完成读取、编辑、
 精确授权本地检查、按需完整Skill、MEMORY默认拒绝与显式写入、回执核对和指定ID
 续聊，随后重开不继承command/write/MEMORY授权，并验证持久分页发现、重复标题ID选择、
-改名和有界历史、失效游标明确刷新；
+改名和有界历史、失效游标明确刷新；root与cwd不同，新进程从另一个启动目录
+按目录中的确切ID恢复原root/cwd，并取得新命令授权后继续真实读取与检查；
 finally关闭fixture进程/服务并删除自己的目录。
 不使用真实模型、账号或共享资源，不启动控制面。

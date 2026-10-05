@@ -325,3 +325,128 @@ Leader已将精确需求交Operator路由81；80不猜补、不改其合同抢�
 并继续同一work-item-1做真实新进程联合路径。当前结果是Worker实现/自审，
 还需独立Review，不接受WorkItem或声称整批最终完成。
 未运行真实模型/付费/共享/生产资源，也不证明规划质量、硬件掉电或强OS沙箱。
+
+## run-8：真实原子位置增量与最终产品恢复接线
+
+2026-10-05继续同一work-item-1，消费Leader message-27及Operator message-26，
+不重放run-7。精确AgentRun为task-80/run-8，snapshot=context-snapshot-8，
+digest=0825e5255dbee9c1470d5a829f01e7cafd1865059c92f539f8139f243084433c。
+本节更新前节历史上的位置缺口；旧验证记录及其当时的未覆盖声明不删除。
+消费基线为自己的ccb32b3885b581b7fae85ca50afd3aff41cf9104；
+生产者源为6dae2d3b84f88e6d39482e8e954d94b086884136，
+位置增量基线288f46714921d94c5c4b5b4683f46737fec3659d，并非ff0完整包。
+
+仅通过合法本Task CLI按contentPage顺序读取message-26：
+source=task:task-80/message/message-26，
+message digest=9ca465ccc15db45f5addf11b2dc91610a2ef09147f84d867cb1ad1cf367030e5。
+每页校验source/digest/offset，拼接101350字符后只解析一次原JSON；
+从BEGIN_TASK81_LOCATION_*到对应END提取原文，保留终结LF。
+三份载荷全文核验如下，没有跨读或fetch生产者私有区：
+
+- GUIDE：9463 UTF-8 bytes；
+  SHA256=9dba44590061756d13ec3e9e8d58266b406a07acea4ee49102616fd3e66c56d1；
+  git:f0c04106e501296e71fb2a23308bcc6262dbf790:handoff/task81-location-transfer-guide.md。
+- CONTRACT：47107 UTF-8 bytes；
+  SHA256=09f3a5c11629d8f4bfbbeaa50265f57c7163aaecf2a102eb93b567ad72b9831d；
+  git:b1c07ef0914994f7146c990883e8fc44624f37a5:handoff/task81-location-public-contract.md。
+- PATCH：56178 UTF-8 bytes；
+  SHA256=b19b4c63ba7d12e41149da641eb272324fd3caf4f0d5b96488c2db8b85849553；
+  git:9ecfa2649c61088ca68098cd93b8ad1c7fc5e446:handoff/task81-288f467-to-6dae2d3.patch。
+
+干净ccb基线的完整增量git apply --check通过，实际采用12文件生产者变化，
+并以反向--check确认采用后源改动完整保留。共享nativeAgent/index只扩充
+SessionLocation/locationLimits导出，既有82/84导出不覆盖。
+以下生产者文件与GUIDE逐文件SHA256一致，Git blob为：
+
+```text
+093d830f2d3d436f36d296606bf8b4afdb3aae45 src/nativeAgent/session/backends.ts
+2702b35c23b5d1c22f6e6ccc5225436be1fc527e src/nativeAgent/session/contracts.ts
+05ad12694f71ae4e3d7eb49d7a8170d3ceb528da src/nativeAgent/session/index.ts
+114905fef3df3597d683cc6e4c137483b9a827f6 src/nativeAgent/session/location.ts
+48045e7be6ad6cab095979557234390996ca4ed3 src/nativeAgent/session/sqliteFormat.ts
+131fec80093497a3daa8a547ec8d63ed39cc01da src/nativeAgent/session/store.ts
+efb28f4ea0912ce8f96547840c6e8122bc3110eb src/nativeAgent/session/catalogDemo.ts
+82ba75e7c8abec4755f9c7991acc24f8ef0dda95 src/nativeAgent/session/README.md
+415fcab0f507b1d00493eb74c064d09a6f47ea11 test/core/native-agent-session-catalog.test.js
+60fa3afcc46f57ba56d14da942ae6865f50f3983 test/core/native-agent-session-location.test.js
+185d1b793470afa447189fbc42151f0234992fa5 test/core/native-agent-session-migration.test.js
+```
+
+82 localSafety.ts blob仍为79927fba8b0423535836866ba2979d0db376d703，
+84 projectGuidance/index.ts仍为aa974c9c8bb6946fc407e58f9cd9bfbeee18bb8e；
+不复制生产者实现，不修改其安全/项目指导合同。NAS1布局4沿81集中迁移链，
+独立Agent文档仍为2，Yui控制面存储没有变化。
+
+80消费接线：root独立配置，CLI/env/file明确来源保留，新建默认root=cwd。
+入口检查实际目录存在性、规范化、所有祖先无软链与cwd在root内。
+恢复先读同ID有界location，省略值取原事实，显式冲突拒绝；
+legacy null位置不能补猜或后写。唯一owner.create兼容贯通可选location，
+继续由owner生成一个ID和调用同一store原子create；initial run/start与/new均接通。
+每个Turn的异步agent工厂按recording.lastReceipt.sessionId读真实位置，
+重新验证并创建真实82 binding及84 guidance；新异步边界在owner关闭后不承认执行。
+UI同位置/use可执行，跨位置/use拒绝并保留当前选择，提示结算关闭后明确重开。
+没有第二位置表、runner、执行调度器或新授权恢复机制。
+
+创建确认丢失：原SessionSaveError的ID和unknown保留，产品一次性读取同ID
+getSessionInfo和load核对位置/空文档/回执/ready；即使确认也停止本次尝试，
+只指引明确重开该ID，不自动重建、换ID或执行。未确认或读取失败仍未知。
+JSON错误和UI错误文字均保留恢复所需ID，不输出credential、标题或原始cause。
+输入Session ID含已知凭据时在读取/诊断前拒绝。
+
+验证全部使用Node v24.20.0 PATH与绝对本地launcher；模型只用loopback HTTP
+假响应及dummy凭据，其余正常路径的存储、工具、权限、指导与owner均为实际实现。
+风险驱动测试先证实旧入口不支持--root（预期配置失败），再修改消费接线。
+两份新产品回归保护：
+root!=cwd及跨launch目录恢复，原child AGENTS以user材料到模型；
+CLI/env/file冲突、legacy缺失、目录不存在/非目录/越界/软链拒绝；
+UI/new原子位置，跨位置/use不丢选择，同位置/use提交到准确所选ID而不修改启动ID；
+未知创建确认仅注入真实SQLite事务提交后的异常，随后真实同ID详情/load，
+一个create、两个有界对账操作、零Agent执行，真关闭重开仍只发现原一个Session。
+该故障检查是产品使用的同一createProductSession/ExecutionOwner/Store路径，
+不是人为给正常路径替代存储，也不是通过CLI注入一个测试专用生产开关。
+取消、EOF关闭、目录零执行、CAS、bounded history、required/Skill/MEMORY、
+unknown拒绝回归保留；unknown产品fixture现在带真实位置，避免只被legacy守卫挡住。
+
+实际命令：
+
+```sh
+npm run build
+node --test test/core/native-agent-product.test.js test/core/native-agent-session-location.test.js test/core/native-agent-session-catalog.test.js test/core/native-agent-composition.test.js
+node --test --test-name-pattern='product restores immutable|product reconciles lost' test/core/native-agent-product.test.js
+npm test
+node docs/examples/agent-offline.mjs
+node scripts/assemble-runtime-package.mjs --output output/task80-runtime-package
+# 在output/task80-runtime-package目录执行dry-pack：
+npm pack --dry-run --ignore-scripts --json --cache "$TMPDIR/task80-npm-cache-run8"
+node scripts/check-runtime-package-structure.mjs "$TMPDIR/task80-package-inventory-run8-assembled.json"
+node scripts/smoke-runtime-package.mjs --assembled output/task80-runtime-package
+node output/task80-runtime-package/docs/examples/agent-offline.mjs
+```
+
+完整core包含build：584项，577通过、7平台条件跳过、0失败，测试阶段约8秒。
+组合针对性18/18，新的位置/确认丢失针对性2/2；后续UI身份加强另跑针对性。
+组装包结构560文件通过；package smoke为Doctor 413ms、
+重开/跟进7.63秒、handover 2.70秒，最后Runtime package smoke passed。
+第一次dry-pack误在源码目录执行：dist/cli.js模式0644使结构检查失败；
+纠正在实际组装包目录检查0755入口后通过，未修改源码或包装规则掩盖此失败。
+源码和包内离线样例都通过真实read→明确edit→精确授权command→answer→保存关闭，
+新进程持久目录发现/ID选择、不同launch cwd下恢复原root!=cwd及新命令授权继续；
+同时保留Skill完整加载、MEMORY独立授权、重复标题、分页、CAS和失效cursor检查。
+样例输出originalRootCwdRestoredAcrossLaunchDirectories/rootDiffersFromCwd/
+freshCommandAuthorizationAfterCatalogSelection均为true。
+
+完整增量/受影响消费合同自审、源文件SHA/blob、git diff --check与反向补丁检查通过。
+核心日志task80-core-run8.log及task80-core-run8-final.log、
+包日志task80-package-run8.log、成功清单task80-package-inventory-run8-assembled.json
+及失败源清单task80-package-inventory-run8.json保存在运行时TMPDIR。
+fixture首次CLI前注册teardown，进程/HTTP/store全部关闭，
+本轮相关fixture前缀检查无残留；package smoke负责自己的精确Controller/tmux。
+临时三份载荷核验后删除，可由固定message-26重建；
+task80-npm-cache-run8保留供回收，固定日志与可重建本地包保留。
+
+本轮已补齐位置产品路径，没有因未获81成果继续等待。
+这是Worker实现、自审和本地离线证据，之后仍需Leader Candidate/Integration和独立Review，
+未声明WorkItem接受、Task或整批完成。没有远端push/PR/CI/merge、发布/tag/npm、
+归档、全局安装/Home/Controller、角色模型/Profile或权限变更；
+未跑真实模型/账号/付费/共享生产，不证明模型规划质量、硬件掉电、敌对路径替换、
+跨OS搬迁、强沙箱或其他平台。生产者独立验收与80消费证据严格区分。
