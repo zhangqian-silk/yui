@@ -1,7 +1,7 @@
 import { mkdir, chmod, lstat, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
-  createAgent, createToolExecutor, createContextBuilder, createExecutionOwner,
+  createAgent, createProjectGuidance, createContextBuilder, createExecutionOwner,
   createLocalObserver, createModelGateway, createSessionStore, createSqliteSessionBackend,
   connectModelObservations, createInteractionDiagnostics, openCli,
   type ExecutionOwner, type InteractionSessionPort, type SessionStore,
@@ -9,6 +9,7 @@ import {
 import type { CliConnection } from '../interaction/index.js';
 import { ProductError, containsCredential, createProductBinding, publicConfiguration, type ProductArguments } from './config.js';
 import { createProductTransport } from './transport.js';
+import { createProductTools } from './tools.js';
 
 /** Product owns the streams' connection listeners, model dispatcher, store and owner.
  * No hidden execution loop/catalog/policy: all execution goes through ExecutionOwner. */
@@ -17,10 +18,6 @@ export async function runProductRuntime(invocation: ProductArguments, credential
   // Rebuild on EVERY open/resume from current explicit authority, never stored history.
   // Same factory for all three capabilities; do not grant the shorthand's always-allow lease.
   const binding = createProductBinding(invocation, credential);
-  const toolExecutor = createToolExecutor({
-    tools: binding.tools.filter(tool => config.tools.includes(tool.definition.name)),
-    environment: binding.environment, permission: binding.permission,
-  });
   const observer = createLocalObserver();
   let store: SessionStore | undefined, owner: ExecutionOwner | undefined, cli: CliConnection | undefined;
   let selected = invocation.session;
@@ -84,18 +81,25 @@ export async function runProductRuntime(invocation: ProductArguments, credential
     owner = createExecutionOwner({
       store, maxSteps: config.maxSteps, observer,
       ...(selected ? { sessions: [{ id: selected, title: 'Explicit selection' }] } : {}),
-      agent: recording => createAgent({
-        toolExecutor, contextBuilder: createContextBuilder(),
-        contextBudget: { capacity: config.contextBytes, reserveOutput: config.outputReserveBytes },
-        observer,
-        provider: { async complete(request, signal) {
-          guard(request);
-          const response = await provider.complete(request, signal);
-          guard(response); // Do not persist/execute a credential echoed by the model.
-          return response;
-        } },
-        recorder: { async record(event) { guard(event); await recording.record(event); } },
-      }),
+      agent: recording => {
+        // ExecutionOwner creates this Agent for the admitted Turn. Bind to the
+        // recording's identity, never the UI's mutable selected Session.
+        const sessionId = recording.lastReceipt.sessionId;
+        const guidance = createProjectGuidance({ root: config.cwd, cwd: config.cwd, sessionId });
+        return createAgent({
+          toolExecutor: createProductTools(binding, guidance, invocation, sessionId),
+          contextBuilder: createContextBuilder({ sources: [guidance.source] }),
+          contextBudget: { capacity: config.contextBytes, reserveOutput: config.outputReserveBytes },
+          observer,
+          provider: { async complete(request, signal) {
+            guard(request);
+            const response = await provider.complete(request, signal);
+            guard(response); // Do not persist/execute a credential echoed by the model.
+            return response;
+          } },
+          recorder: { async record(event) { guard(event); await recording.record(event); } },
+        });
+      },
     });
     if (selected) {
       try {
@@ -127,6 +131,7 @@ export async function runProductRuntime(invocation: ProductArguments, credential
         return 1;
       }
       await write({ configuration: publicConfiguration(config), binding: binding.binding,
+        projectAuthority: { allowMemoryWrite: invocation.allowMemoryWrite },
         result: evidence.result, receipt: evidence.receipt,
         observations: observer.query().records });
       return signalExit ?? (evidence.result.reason === 'completed' ? 0 : evidence.result.reason === 'cancelled'
@@ -167,6 +172,7 @@ export async function runProductRuntime(invocation: ProductArguments, credential
       },
     };
     await write({ configuration: publicConfiguration(config), binding: binding.binding,
+      projectAuthority: { allowMemoryWrite: invocation.allowMemoryWrite },
       sessionId: selected, mode: 'local-tool-binding',
       note: 'No persistent catalog/cwd metadata yet; authority changes require settled close and explicit reopen. Not an OS sandbox.' }, '[agent] ');
     cli = await openCli({ sessions: port, input: process.stdin, output: process.stdout,

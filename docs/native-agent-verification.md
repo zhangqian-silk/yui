@@ -3,7 +3,8 @@
 日期：2026-10-04。基线：`ff0b12cfe6c521ea3087d8dcd4d47f6d9a6b4f10`。
 工作单元：task-80/work-item-1，隔离Develop工作区；仅修改project-1。
 本记录是Worker实现/自审证据，不是Task接受或最终联合验收。
-前文记录run-3原始入口；run-5已替换其预绑定tools路径，见末尾的82消费证据。
+前文记录run-3原始入口；run-5替换其预绑定tools路径，run-6接入84真实项目指导，
+分别见后文消费证据。旧段落中的“尚未提供”是该轮历史事实，不代表当前状态。
 
 ## 已实现边界
 
@@ -140,3 +141,85 @@ Doctor原生SQLite/PTY通过，重开/跟进7.56秒、handover 2.66秒。
 不再等待81Review，也不以完成通知冒充代码采用。84的message-14是实际合同而非
 源码payload，未制造空接线或宣称已消费。最终发现/选择/原会话目录核对仍未验收。
 82工厂要求结算关闭后重新组装授权；没有运行时热更新lease/UI、强OS沙箱或全通道DLP。
+
+## run-6：采用84真实源码并与82公开能力组合
+
+日期：2026-10-05。消费基线为既有
+`ba8f67ba28787f79a432e0a97389409f851cbcd7`，保留82原源码及binding。
+本轮按manifest加载task-80/run-6，核对snapshot-6及其完整digest，
+读取message-21派工、message-19背景和message-20的实际交接，不使用旧Run代替。
+message-20共15页，同一source digest为
+`049a05525a0b547a56ba95105eade7cb0b3d868bc112d0366e87592b03e0449d`。
+原始HANDOFF为19429 UTF-8 bytes、SHA256
+`eca86b4a92b924084d405dba796183da6635aa3e6730879b6cf9022d70df9142`；
+PATCH为48656 bytes、SHA256
+`352b2e6259ebe7359819229c23327709b911faafcf7abc581f43205a1f4e6a90`。
+84实际Project commit为`18de6ac8ea55d11b3c51c8c5b9eb60d3de5c9d49`，
+基线ff0b12c；补丁Artifact为`79dd7d7f7de5b1ff964a03cb58eac1549a7a3458`，
+合同Artifact为`a5e534fb4ef4327d9224876ad8d9a6b679e8c5d6`，
+这些身份不等于消费端commit。
+
+逐页核对digest/offset，原始正文拼接后只JSON.parse一次，验证字节数与SHA，
+阅读完整合同/实现/回归后`git apply --check`通过，采用五文件真实增量。
+README/index与82新增段落无冲突；未强制覆盖、跨Task读取私有区或跨Task Git fetch。
+84的实现、模块README、回归保持原始源码：
+
+- `src/nativeAgent/projectGuidance/index.ts`：SHA256
+  `fde0c513356279848ff7fa7dd9b0b1a5f74dc8a012347fa4bc7b26169d6bff5e`，
+  blob `aa974c9c8bb6946fc407e58f9cd9bfbeee18bb8e`。
+- `src/nativeAgent/projectGuidance/README.md`：SHA256
+  `144280608441abe6d304c992edf9aa881f84a3151542a120d38db9ac8726eed1`，
+  blob `2d3d725b0920c6885abdc1f26c2d37ecf11385dc`。
+- `test/core/native-agent-guidance.test.js`：SHA256
+  `a3b73983e25a9c0371de4cd3af189b607b3fe413949e0b888e7527be351c0377`，
+  blob `f6e13b95384a0e6bad743683f7d28e760269ecd9`。
+
+消费端每次ExecutionOwner录制工厂取`recording.lastReceipt.sessionId`，
+为本Turn创建guidance及唯一ToolExecutor；不从可变UI选择绑定身份。
+84的source实际进入ContextBuilder，required/source/revision保留：
+内建coding-guidance进入system，项目材料进入user，Skill按需完整加载，
+每Turn重新创建激活状态；MEMORY始终是`.agents/MEMORY.md`，不是历史副本。
+普通项目工具通过现有ToolEnvironment/ToolPermission公共能力组合；
+它们的资源value为空，不获得编码lease。编码调用原样转交同一82工厂的
+acquire/permission/execute/release，不注入其私有定义，不复制或弱化其策略。
+project_memory的read与replace/delete分别授权；写操作只认本次
+`--allow-memory-write`，不认通用allow-write、工具名、配置、环境或保存历史。
+普通编码工具独立授权仍可编辑root下文件，这不是MEMORY文件的ACL或OS沙箱。
+
+先加入真实CLI回归，在旧入口因未声明project_context得到provider_error而失败；
+真实接线后聚焦三个文件16项全部通过，约3.09秒。
+新场景经本地HTTP+真实ModelGateway/Agent/上下文/工具/SQLite/入口验证：
+初始Skill只有metadata、请求后完整正文进入下一步user材料、项目伪造role及
+allowed-tools不提升system/command、required来源与revision可查；
+通用allow-write不能写MEMORY，明确授权实际写入、读取取得指纹，
+同ID新进程恢复默认拒绝delete，重新明确授权才实际删除；
+100字节预算阻止模型请求，失败终态仍有真实ready回执。
+82原读/edit/精确command/env/脱敏/保存/close/resume回归仍通过。
+生产者自身回归另覆盖Session/Turn隔离、子目录覆盖、完整reference、记忆刷新与
+陈旧指纹、路径/软链/大小和损坏失败；没有用其直接调用例子替代消费端接线。
+
+最终`npm test`（含build）575项，568通过、7跳过、0失败，
+测试阶段8.13秒；test:core同脚本未重复执行。组装/dry-pack/结构检查553文件通过，
+实际包含`dist/nativeAgent/projectGuidance/index.js`和`dist/nativeAgent/product/tools.js`。
+原有runtime package smoke通过：Doctor原生依赖检查409ms，
+重开/跟进7.65秒，handover 2.68秒。源码与包内新版离线样例都通过，
+仅模型网络替换为本地HTTP；样例采用真实模块完成82原路径，再验证完整Skill、
+MEMORY默认拒绝/明确写入/恢复授权归零，不创建控制面Home。
+日志为运行时TMPDIR的`task80-core-run6.log`、`task80-package-run6.log`，
+清单为`task80-package-inventory-run6.json`。
+
+完整消费增量和生产模块自审、`git diff --check`及原补丁反向`--check`通过；
+82原实现和回归blob仍分别为`79927fba8b0423535836866ba2979d0db376d703`、
+`a86bb8b062f1b49db148b92d40786303542fb218`。
+fixture teardown在首次CLI之前注册，进程/HTTP/SQLite/资源均结算，
+本轮相关fixture目录前缀残留为空；包装smoke只停止其精确fixture Controller/tmux。
+删除可由message-20重取的临时原始交接文件；本轮自有npm cache从checkout移入
+运行时TMPDIR的`task80-npm-cache-run6`保留供回收，未强制删除。
+保留可重建本地包、构建产物和日志；无远端写入或发布，message-15条件未触发。
+
+当前81仍只有验收/已请求交接的通知，没有合法完整源码payload；
+不伪造catalog或cwd元数据，不重等其Review。新进程持久发现/选择和原会话目录核对
+仍不能声明完成；需合法81交接后做真实接线及最后联合路径。
+本轮是Worker消费实现与自审，不是Task接受或最终联合完成。
+未运行真实模型/付费API/共享或生产资源，不证明真实规划质量、强OS沙箱、
+敌对并发文件系统或其他平台行为。

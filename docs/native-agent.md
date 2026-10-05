@@ -5,7 +5,8 @@
 既有管理命令仍是 `yui config agent`。
 
 当前入口已装配真实 kernel、ModelGateway、ExecutionOwner、工具、上下文、
-SQLite、行式交互和观测，以及真实本地安全 binding/permission/environment。
+SQLite、行式交互和观测，以及真实本地安全 binding/permission/environment、
+项目指导、按需完整Skill与唯一项目MEMORY。
 尚未接入持久 Session catalog/目录元数据；
 因此这是可独立使用的入口装配，不是完整产品的联合验收结果。
 
@@ -35,7 +36,7 @@ yui agent run --config /absolute/agent.json --session SESSION_ID --input '继续
   "credentialRef": "env:MY_AGENT_KEY",
   "cwd": "/absolute/controlled/repo",
   "stateDir": "/absolute/agent-state",
-  "tools": ["read", "list", "find", "search"],
+  "tools": ["read", "list", "find", "search", "project_context", "project_memory"],
   "maxSteps": 8,
   "contextBytes": 1048576,
   "outputReserveBytes": 0,
@@ -69,7 +70,7 @@ outputReserveBytes小于contextBytes；modelTimeoutMs为1–300000的单次模�
 
 ## 明确选择副作用
 
-默认只有read/list/find/search。选择write/edit或command时，当前调用必须分别
+默认选择read/list/find/search及只读project_context/project_memory。选择write/edit或command时，当前调用必须分别
 带`--allow-write`或`--allow-command`，不能从配置、环境或历史自动恢复这些opt-in：
 
 ```sh
@@ -78,8 +79,10 @@ yui agent start --config /absolute/agent.json \
   --tools read,list,find,search,write,edit,command --allow-write --allow-command
 ```
 
-入口使用真实 `createLocalToolBinding`，同一工厂的 tools、permission、environment
-交给唯一 `createToolExecutor`，不使用 Agent 的 tools 简写，不混用其他绑定。
+入口使用真实 `createLocalToolBinding`，同一工厂的编码tools、permission、environment
+通过公开能力组合交给唯一 `createToolExecutor`，不使用 Agent 的 tools 简写。
+编码调用保留原工厂的活lease和实际权限检查；普通项目工具不获取编码lease，
+按其Session作用域、具体action与本次授权检查，不向82私有声明集合注入外来工具。
 实际声明仍受 `tools` 选择限制。root 与 cwd 都绑定到有效配置的 canonical cwd；
 不会从 `.git` 或项目文本推断更大根。有效配置和 binding 描述可供核对真实目录。
 目录身份在授权和执行时复核，替换/消失/软链变化拒绝旧绑定。
@@ -143,7 +146,7 @@ UI显示确认消息、工具事件和不含正文的观测。无法识别用户
 正常/取消/预算终态的receipt由真实SQLite记录产生并与再次load的digest/revision
 核对；展示终态不等于已保存。保存失败只给lastConfirmedReceipt及检查建议，
 不声称完整Turn已保存，不重试必要记录。`run`返回JSON：
-configuration/result/receipt/observations；退出码0完成，1错误或保存失败，
+configuration/binding/projectAuthority/result/receipt/observations；退出码0完成，1错误或保存失败，
 2配置错误，3步骤预算耗尽，130取消/中断，143终止信号。
 全局`--json`前缀与`run/check-config`的`--json`标记也在控制面加载前处理；
 `start`是行式UI，若要求JSON则明确拒绝并建议使用run。
@@ -155,6 +158,37 @@ configuration/result/receipt/observations；退出码0完成，1错误或保存�
 CAS不是跨进程执行租约。恢复非ready状态被拒绝且不自动修复/重放。
 掉电/SIGKILL不保证finally运行；强沙箱、真实模型质量和其他平台未验证。
 
+## 项目指导、Skill与MEMORY
+
+每个Turn从实际recording的Session身份创建真实`createProjectGuidance`，
+接入已有ContextBuilder；不使用UI当前选择作为授权身份。root=cwd仍是当前明确目录。
+内建编码指导是required system材料，项目AGENTS、Skill和MEMORY是required的
+低信任user材料；来源、revision和materialId进入ContextReport。预算不足或读取
+失败阻止模型请求，不静默丢弃、摘要截断或把项目文本提升成system权限。
+
+初始只加载当前目录指导及Skill元数据目录。模型可用`project_context`的`inspect`
+检查目标目录规则，`load_skill`读取指定locator的完整SKILL.md，`reference`按需
+读取已加载Skill的相对资源。成功后下一步上下文加载完整正文，不把正文复制到历史；
+每个Turn重建状态，跨Session或恢复不会继承已激活Skill/目录。frontmatter中的
+allowed-tools/model/hooks、伪造role或记忆文本不能扩展工具或权限。
+
+唯一项目记忆位置为`.agents/MEMORY.md`，不是另一个Session存储。`project_memory`
+的`read`默认允许；`replace`和`delete`需要**本次调用**的`--allow-memory-write`，
+并按生产工具的expectedSha256规则防止覆盖陈旧内容。该flag不从文件、环境或历史
+恢复，也不授予编码write/edit/command；`--allow-write`不能替代它。示例：
+
+```sh
+yui agent run --config /absolute/agent.json --allow-memory-write \
+  --input '读取项目记忆，然后以当前指纹保存这次确认过的经验'
+```
+
+这是project_memory的具体action授权，不是文件系统ACL：若另行明确授予普通
+write/edit或可写命令，它们仍具有其既有受控root权限，可能直接修改这个文件。
+外部修改在下一步重新读取；旧指纹拒绝，读写权限与记忆内容不互相授予能力。
+项目读取遵守84的大小、总材料、目录/Skill数量和深度上限；不自动执行Skill脚本，
+也不访问Home或任意项目外资源。显式`--tools`完整替换默认集合；
+即使未选择项目工具，required内建和基线项目指导仍加载，但不能按需激活更多内容。
+
 ## 真实接线剩余边界
 
 - 持久catalog生产者须提供稳定ID/标题/分页、create/open/rename、cwd元数据和
@@ -163,7 +197,7 @@ CAS不是跨进程执行租约。恢复非ready状态被拒绝且不自动修复
   不代表持久发现；当前无法核对原会话cwd，使用者须重新选择相同受控目录。
 - 已采用82真实安全模块，包含实际ToolPermission/ToolEnvironment及有效binding描述；
   默认只读、精确命令、本次授权、结算关闭后重开重建已经通过真实CLI离线验证。
-  未提供84源码，因此不声明project_context/project_memory装配或自动授权这些工具。
+  已采用84真实源码，项目工具使用独立的公开权限组合，MEMORY写授权不继承。
 - 最终“新进程发现并选择同会话、原会话目录一致、实际授权效果”的验收仍需81
   真实源码与完整合同，不能用fixture或完成通知替代。指定ID恢复只验证当前绑定，
   还不能核对原会话目录。当前离线检查只替换模型网络，其余已装配模块真实，
@@ -178,6 +212,7 @@ node docs/examples/agent-offline.mjs
 ```
 
 样例创建本地HTTP服务、一次性目录和dummy凭据，经真实入口完成读取、编辑、
-精确授权本地检查、回执核对和指定ID续聊，随后重开不继承command/write授权；
+精确授权本地检查、按需完整Skill、MEMORY默认拒绝与显式写入、回执核对和指定ID
+续聊，随后重开不继承command/write/MEMORY授权；
 finally关闭fixture进程/服务并删除自己的目录。
 不使用真实模型、账号或共享资源，不启动控制面。

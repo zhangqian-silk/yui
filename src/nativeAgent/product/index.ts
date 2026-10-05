@@ -9,10 +9,10 @@ export const productHelp = `Independent coding Agent (no Controller or Yui Home)
 
 Required: --endpoint COMPLETE_URL --model NAME --credential-ref env:NAME|anonymous --state-dir PATH
 Optional: --config FILE --cwd PATH --adapter chat-completions
-          --tools read,list,find,search --max-steps 8
+          --tools read,list,find,search,project_context,project_memory --max-steps 8
           --context-bytes 1048576 --output-reserve-bytes 0
           --model-timeout-ms 30000 --stream true|false
-Explicit opt-ins on EVERY invocation: --allow-write --allow-command --allow-http
+Explicit opt-ins on EVERY invocation: --allow-write --allow-command --allow-memory-write --allow-http
 Only loopback HTTP is allowed. --command-config JSON supplies explicit env and reviewed specs.
 Command authorization is exact executable/argv/cwd/effect; no arbitrary model scripts.
 Complete env permits only PATH/LANG/LC_ALL/TZ; nothing is inherited.
@@ -22,6 +22,8 @@ run emits result + exact save receipt; exit 0 completed, 1 error, 3 budget, 130 
 CLI > NATIVE_AGENT_* environment > explicit version-1 JSON file > safe defaults.
 No automatic config discovery, account fallback, tool replay or inherited grants.
 Real local tools/permission/environment are created together; reopen rebuilds current authority.
+Project guidance is required; Skills load completely on request as project/user data.
+project_memory reads .agents/MEMORY.md; replace/delete need --allow-memory-write, not --allow-write.
 Persistent catalog/cwd metadata await the real producer module;
 /sessions currently lists this process's explicit selections, not persisted discovery.
 `;
@@ -40,7 +42,8 @@ export async function runProductCommand(args: string[]): Promise<number> {
   if (invocation.command === 'check-config') {
     const binding = createProductBinding(invocation, credential);
     process.stdout.write(`${JSON.stringify({ configuration: publicConfiguration(invocation.config),
-      binding: binding.binding, credential: 'resolved-in-memory',
+      binding: binding.binding, projectAuthority: { allowMemoryWrite: invocation.allowMemoryWrite },
+      credential: 'resolved-in-memory',
       network: 'not-contacted', state: 'not-opened' })}\n`);
     return 0;
   }

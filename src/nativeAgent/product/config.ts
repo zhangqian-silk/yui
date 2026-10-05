@@ -29,7 +29,7 @@ export type ProductConfig = {
 };
 export type ProductArguments = {
   command: 'check-config' | 'start' | 'run'; config: ProductConfig;
-  session?: string; input?: string; allowWrite: boolean;
+  session?: string; input?: string; allowWrite: boolean; allowMemoryWrite: boolean;
 };
 const options: Record<string, Field> = {
   '--adapter': 'adapter', '--endpoint': 'endpoint', '--model': 'model', '--credential-ref': 'credentialRef',
@@ -38,7 +38,7 @@ const options: Record<string, Field> = {
   '--model-timeout-ms': 'modelTimeoutMs', '--stream': 'stream', '--command-config': 'command',
 };
 export const productConfigurationOptions = [...Object.keys(options), '--config',
-  '--allow-write', '--allow-command', '--allow-http'];
+  '--allow-write', '--allow-command', '--allow-memory-write', '--allow-http'];
 const environment: Record<Field, string> = {
   adapter: 'NATIVE_AGENT_ADAPTER', endpoint: 'NATIVE_AGENT_ENDPOINT', model: 'NATIVE_AGENT_MODEL',
   credentialRef: 'NATIVE_AGENT_CREDENTIAL_REF', cwd: 'NATIVE_AGENT_CWD', stateDir: 'NATIVE_AGENT_STATE_DIR',
@@ -46,7 +46,7 @@ const environment: Record<Field, string> = {
   outputReserveBytes: 'NATIVE_AGENT_OUTPUT_RESERVE_BYTES', modelTimeoutMs: 'NATIVE_AGENT_MODEL_TIMEOUT_MS',
   stream: 'NATIVE_AGENT_STREAM', command: 'NATIVE_AGENT_COMMAND_CONFIG',
 };
-const toolNames = ['read', 'list', 'find', 'search', 'write', 'edit', 'command'];
+const toolNames = ['read', 'list', 'find', 'search', 'write', 'edit', 'command', 'project_context', 'project_memory'];
 function text(value: unknown, field: string, max = 4096): string {
   if (typeof value !== 'string' || !value.trim() || value.length > max || /[\x00-\x1f\x7f]/u.test(value)) return invalid(field);
   return value;
@@ -84,7 +84,7 @@ export async function resolveProductArguments(args: string[], env: NodeJS.Proces
   const cli: Partial<Record<Field, unknown>> = {};
   const seen = new Set<string>();
   let filePath: string | undefined, session: string | undefined, input: string | undefined;
-  let allowWrite = false, allowCommand = false, allowHttp = false;
+  let allowWrite = false, allowCommand = false, allowMemoryWrite = false, allowHttp = false;
   for (let index = 0; index < tail.length; index++) {
     const key = tail[index];
     if (seen.has(key)) return invalid('arguments', 'Do not repeat options.');
@@ -92,6 +92,7 @@ export async function resolveProductArguments(args: string[], env: NodeJS.Proces
     if (key === '--json') continue;
     if (key === '--allow-write') { allowWrite = true; continue; }
     if (key === '--allow-command') { allowCommand = true; continue; }
+    if (key === '--allow-memory-write') { allowMemoryWrite = true; continue; }
     if (key === '--allow-http') { allowHttp = true; continue; }
     if (!Object.hasOwn(options, key) && !['--config', '--session', '--input'].includes(key)) return invalid('arguments');
     const value = tail[++index];
@@ -109,7 +110,7 @@ export async function resolveProductArguments(args: string[], env: NodeJS.Proces
   if (command === 'check-config' && session !== undefined) return invalid('session');
   const file = filePath ? await configurationFile(filePath) : {};
   const defaults: Partial<Record<Field, unknown>> = { adapter: 'chat-completions', cwd: launchCwd,
-    tools: ['read', 'list', 'find', 'search'], maxSteps: 8, contextBytes: 1048576,
+    tools: ['read', 'list', 'find', 'search', 'project_context', 'project_memory'], maxSteps: 8, contextBytes: 1048576,
     outputReserveBytes: 0, modelTimeoutMs: 30000, stream: false };
   const values: Partial<Record<Field, unknown>> = {};
   const sources = {} as ProductConfig['sources'];
@@ -160,7 +161,7 @@ export async function resolveProductArguments(args: string[], env: NodeJS.Proces
   if (reviewedCommand !== undefined && (!reviewedCommand || typeof reviewedCommand !== 'object'
     || Array.isArray(reviewedCommand))) return invalid('command');
   return {
-    command: command as ProductArguments['command'], allowWrite,
+    command: command as ProductArguments['command'], allowWrite, allowMemoryWrite,
     ...(session ? { session } : {}), ...(input !== undefined ? { input } : {}),
     config: { adapter: 'chat-completions', endpoint, model: text(values.model, 'model', 256), credentialRef,
       cwd, stateDir, tools: [...selected], sources, stream, contextBytes, outputReserveBytes,

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
-import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -17,6 +17,7 @@ const argv = ['-e',
   'const fs=require("node:fs");if(fs.readFileSync("input.txt","utf8")!=="after\\n"||process.env.EXAMPLE_CREDENTIAL)process.exit(1);console.log("local check passed");'];
 const commandConfig = JSON.stringify({ env: {}, specs: [{ executable, argv, effect: 'read' }] });
 let phase = 'read', step = 0, active;
+let initialSkillBody = false, loadedSkillBody = false;
 const server = createServer(async (request, response) => {
   let source = '';
   for await (const part of request) source += part;
@@ -25,6 +26,7 @@ const server = createServer(async (request, response) => {
   const call = (id, name, args) => ({ id, type: 'function',
     function: { name, arguments: JSON.stringify(args) } });
   let calls;
+  assert.equal(input.messages.filter(message => message.role === 'system').length, 1);
   if (phase === 'read' && step++ === 0) calls = [call('read-example', 'read', { path: 'input.txt' })];
   else if (phase === 'edit' && step++ === 0) {
     const previousRead = input.messages.find(message => message.role === 'tool');
@@ -35,12 +37,27 @@ const server = createServer(async (request, response) => {
     command: executable, cwd: directory, argv })];
   else if (phase === 'reopen' && step++ === 0) calls = [call('reopen-check', 'command', {
     command: executable, cwd: directory, argv })];
+  else if (phase === 'skill') {
+    const loaded = input.messages.some(message => message.content.includes('COMPLETE_OFFLINE_SKILL_BODY'));
+    if (step++ === 0) {
+      initialSkillBody = loaded;
+      calls = [call('skill-example', 'project_context', {
+        action: 'load_skill', locator: '.agents/skills/check/SKILL.md' })];
+    } else loadedSkillBody = loaded;
+    assert.ok(input.messages.filter(message => message.content.includes('COMPLETE_OFFLINE_SKILL_BODY'))
+      .every(message => message.role === 'user'));
+  } else if (['memory-denied', 'memory-write', 'memory-reopen'].includes(phase) && step++ === 0)
+    calls = [call(phase, 'project_memory', {
+      action: 'replace', expectedSha256: null, content: 'offline confirmed experience' })];
   response.setHeader('content-type', 'application/json');
   response.end(JSON.stringify({ choices: [{ index: 0, message: { role: 'assistant', content: 'Offline facts saved',
     ...(calls ? { tool_calls: calls } : {}) }, finish_reason: calls ? 'tool_calls' : 'stop' }] }));
 });
 try {
   await writeFile(join(directory, 'input.txt'), 'before\n');
+  await mkdir(join(directory, '.agents/skills/check'), { recursive: true });
+  await writeFile(join(directory, '.agents/skills/check/SKILL.md'),
+    '---\nname: check\ndescription: Offline check.\nallowed-tools: command\n---\nCOMPLETE_OFFLINE_SKILL_BODY');
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const shared = ['--allow-http', '--endpoint', `http://127.0.0.1:${server.address().port}/chat`,
     '--model', 'offline-fixture', '--credential-ref', 'env:EXAMPLE_CREDENTIAL',
@@ -84,8 +101,27 @@ try {
   assert.equal(third.binding.allowWrite, false);
   assert.equal(third.receipt.sessionId, first.receipt.sessionId);
   assert.ok(third.receipt.revision > second.receipt.revision);
+  const resume = ['--session', first.receipt.sessionId];
+  phase = 'skill'; step = 0;
+  await execute([...resume, '--input', 'Load the relevant check Skill completely']);
+  assert.equal(initialSkillBody, false);
+  assert.equal(loadedSkillBody, true);
+  phase = 'memory-denied'; step = 0;
+  const denied = await execute([...resume, '--allow-write', '--input', 'Try memory without its grant']);
+  assert.equal(denied.result.messages.filter(message => message.role === 'tool'
+    && message.name === 'project_memory').at(-1).outcome.error.code, 'permission_denied');
+  assert.ok(!existsSync(join(directory, '.agents/MEMORY.md')));
+  phase = 'memory-write'; step = 0;
+  await execute([...resume, '--allow-memory-write', '--input', 'Save confirmed experience']);
+  assert.equal(await readFile(join(directory, '.agents/MEMORY.md'), 'utf8'), 'offline confirmed experience');
+  phase = 'memory-reopen'; step = 0;
+  const ungranted = await execute([...resume, '--input', 'Reopen without memory grant']);
+  assert.equal(ungranted.result.messages.filter(message => message.role === 'tool'
+    && message.name === 'project_memory').at(-1).outcome.error.code, 'permission_denied');
+  assert.equal(ungranted.projectAuthority.allowMemoryWrite, false);
   console.log(JSON.stringify({ offline: true, editedAndChecked: true, resumedExactId: true,
     persistentReceiptVerified: true, exactCommandAuthority: true, reopenDefaultsReadOnly: true,
+    progressiveCompleteSkill: true, memoryRequiresSeparateInvocationGrant: true,
     controlHomeCreated: false, remaining: 'Persistent catalog/cwd metadata producer integration' }));
 } finally {
   if (active) {
