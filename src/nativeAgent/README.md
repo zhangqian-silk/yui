@@ -164,6 +164,13 @@ try {
 同一 store 内的确切会话。未结束记录不冒充活动句柄；未知效果和 cleanup-required
 拒绝新录制，不能通过 UI 自动恢复或重放。
 
+存储现在另提供持久 `SessionCatalog`：`store.listSessions/getSessionInfo/
+renameSession/readHistory` 可在重启后发现和命名原会话，并通过 ID 交给此 owner。
+此窄查询端口不创建运行句柄，也没有改写现有 CLI 的 offset/显示标签接口；
+产品入口应显式消费新端口，而非把上面的本进程 catalog 当持久目录。
+公开签名、CAS/cursor、布局迁移和可运行的 `catalogDemo.js` 见
+[session/README.md](./session/README.md#持久目录标题与按需历史给入口消费者)。
+
 `connectModelObservations` 保留真实请求身份、用量、状态和累计 elapsedMs；
 不虚构 started/duration。`createInteractionProgress` 只转发实时增量，CLI 有界暂存，
 不将增量写入会话历史；显示可丢，最终消息来自必要记录。
@@ -300,7 +307,121 @@ processGroup 等。非零退出码仍保留为实际执行结果，调用方须�
 仅支持受控 POSIX 进程。命令可以访问 cwd 以外的路径、网络及其他系统资源，
 这里的 root/cwd 检查不是命令沙箱；不应对不受信任命令开放该能力。
 
-### 独立验收与后续组合
+### 用户入口的真实安全绑定（Task82 生产合同）
+
+`createLocalToolBinding(options: LocalToolOptions): LocalToolBinding` 从根
+`index.ts` 导出，实现在 `localSafety.ts`。同一工厂创建真实编码工具、匹配的
+`ToolPermission<LocalToolEnvironment>` 与 `ToolEnvironment<LocalToolEnvironment>`；
+消费端只将这三者交给已有 `createToolExecutor`。不要把 `binding.tools` 传给
+Agent 的三参数 `tools` 简写，也不要混用不同工厂的 tools/permission/environment。
+即使替换为“总是允许”的 permission，工具自身仍拒绝外来或伪造 lease。
+这里没有新增执行器、循环、全局 ACL 或 Yui 控制面接线。
+
+```ts
+import {
+  createLocalToolBinding, createToolExecutor, createAgent,
+  type LocalToolOptions,
+} from './index.js';
+
+// trustedOptions 由入口根据本次明确授权建立，不能由模型生成。
+const trustedOptions: LocalToolOptions = {
+  root: '/absolute/canonical/controlled/workspace',
+  cwd: '/absolute/canonical/controlled/workspace',
+  allowWrite: false,
+  allowCommand: false,
+};
+const binding = createLocalToolBinding(trustedOptions);
+const toolExecutor = createToolExecutor({
+  tools: binding.tools,
+  environment: binding.environment,
+  permission: binding.permission,
+});
+const agent = createAgent({ provider, toolExecutor, recorder, observer });
+```
+
+`root` 和 `cwd` 都必须显式提供，是存在、可访问、规范化且所有路径组件无软链的
+绝对目录；cwd 必须在 root 内。文件工具的相对路径基于 root（不是 cwd），
+只有命令使用固定 cwd。常见单目录入口应明确设 `root === cwd === workdir`。
+软链别名如 macOS `/var` 或 Linux `/home` 的使用者应先明确选择其真实目录，
+再授权该真实路径；工厂不悄悄把软链别名转成更广范围。
+root/cwd 的设备/inode 身份在创建时固定，acquire、permission、实际 execute
+均重新检查；目录消失、替换或变成软链会拒绝旧绑定。
+
+默认声明只有 `read/list/find/search`；`allowWrite:true` 才增加 `write/edit`。
+`allowCommand:true` 只增加受审查的 `command`，不增加文件写能力。
+布尔字段不接受字符串；配置和子配置拒绝未知字段。`text:{maxBytes?}`、
+`search:{maxEntries?,maxResults?,maxOutputBytes?,maxFileBytes?,maxTotalBytes?,maxDepth?}`
+沿用真实工具预算和错误语义。定义、配置快照和公开描述不可变。
+
+命令配置为
+`command:{env,specs,timeoutMs?,maxOutputBytes?,killGraceMs?}`。
+每个 `LocalCommandSpec` 是 `{executable:string,argv:readonly string[],effect:'read'|'write'}`：
+executable 是无软链组件的规范化绝对普通可执行文件，argv 精确匹配，
+调用参数仍使用既有 `{command,argv,cwd}` 格式，cwd 必须等于绑定 cwd。
+同一 executable/argv 不能重复。工厂固定 executable 的设备/inode/大小/mtime/模式
+并在执行前复核；不是可执行文件内容的加密完整性或敌对更新防护。
+模型不能追加参数、替换 cwd、选择 shell 或另一个解释器。
+`effect:'write'` 的规格还要求 `allowWrite:true`；
+`effect:'read'` 不要求 write。未授权规格前置返回 `command_not_authorized/effect:none`。
+
+规格的可信边界是调用方对**具体程序及完整参数**的显式审查，而非工厂证明
+程序只读。固定 shell/解释器脚本也必须逐项审查；不得把任意模型脚本、可写脚本文件、
+可变外部配置或任意参数伪装成已审查规格。程序仍可能访问 cwd/root 外部、网络，
+并经自身逻辑加载账号配置；需要这种行为的程序不应授予此能力。
+工厂不是 OS 沙箱，不限制程序的所有系统调用。消费者不得把普通配置文件中的
+“allowCommand”直接解释为任意命令授权。
+
+`env` 是完整显式环境，只接受 `PATH`、`LANG`、`LC_ALL`、`TZ`；
+默认不注入任何键，不合并 `process.env`。PATH 各段须为规范化绝对路径，
+语言/时区字段接受有界格式。不接受 HOME、账号令牌、代理、加载器/解释器注入变量
+或隐式配置入口；没有任意 env 透传选项。环境值及规格/argv 不出现在
+`binding` 描述中；描述仅含 root/cwd、两个开关、envKeys、commandCount。
+调用方仍须审查 PATH 目录、程序自身配置行为与工作目录内的文件。
+
+`redact?:readonly string[]` 显式列出已知秘密文字，工具 outcome 的内容/错误消息
+会脱敏；JSON 内容先解析、逐字符串值脱敏再编码（固定键和文件 sha256 保留），
+覆盖转义文字并保留结构。
+没有凭据自动发现或跨消息 DLP；未知文件秘密、调用参数、用户输入、模型请求、
+必要历史和第三方观察出口并不因此变成无敏感数据。
+不要把凭据放入 argv；入口的其他诊断消费者仍负责自身脱敏。
+已脱敏 read 内容的 sha256 仍对应原文件字节；编辑必须使用未脱敏的权威内容，
+否则精确编辑会冲突。不是通过脱敏修改实际文件。
+
+lease 是本工厂内 WeakMap 识别的活对象，绑定确切声明、调用身份和参数；
+绑定比较合同字段和 JSON 值，不把对象成员顺序视为身份；数组顺序和值仍严格匹配。
+acquire 保存独立冻结快照，随后修改调用方对象不能改变已授予的调用。
+不是 hash 或持久权限令牌。复制/反序列化描述、跨绑定、改变声明/调用、
+release 后重用均前置拒绝。生命周期本身不启动进程；
+release 撤销本次 lease，命令工具继续拥有它已启动的自有进程和预算结算。
+无自动重放账本：调用 ID 唯一性、Session 串行和恢复仍由原内核/存储合同负责。
+
+恢复及切换合同：80 从明确配置/当前授权取 root/cwd/能力/env/精确规格，
+81 仅提供所选 Session 和 cwd 事实，Session 标题或旧描述不是授权。
+先取消并等待旧 execution owner 结算，再关闭自己的 store/observer；
+重新打开时创建新 binding 与 executor，重新验证真实目录/程序/权限，
+再用同一 store 的完整历史创建 Agent/execution owner。不热更新旧 lease，
+不从 Session ID 推导授权，不自动清除 unknown 或 cleanup-required。
+绑定拒绝可由调用方修正明确配置后重建；必要记录失败应核对原记录和内存回执，
+cleanup 失败应核对真实资源；unknown 应核实真实效果，不能重试原工具。
+
+顺序和失败语义保持唯一 ToolManager：
+参数检查 → acquire → 必要 before 意图屏障 → 取消/permission →
+实际 execute → release → 必要 after 结果屏障。
+默认/关闭能力时工具不存在，返回 `unknown_tool/effect:none`；环境或声明错误会
+返回 `environment_failed`/`permission_denied`，真实执行入口兜底 `binding_mismatch`；
+目录或程序变化返回 `binding_changed`，均不启动目标效果。
+已确认成功 outcome 与 release/after 失败分开，失败会停止后续效果；
+取消不回滚写入，命令开始后的 timeout/output/cancel 保留 `effect:unknown`。
+既有命令工具时间/输出/TERM→KILL→有界观察合同不变，不广泛 kill，
+逃逸后代可能仍在运行。必要 recorder 不能由可选 observer 替代。
+
+Task82 生产这些新增类型与工厂；ToolManager、文件/命令工具和 Agent 的公开合同
+保持不变。Task80 消费配置和装配；Task81 消费/提供恢复事实，
+其入口/catalog 不在本模块实现。代码采用仍需各 Task 的合法 Candidate/Integration，
+不从私有 workspace 或未授权 Git 对象拼接，不默认为 push/PR/merge 授权。
+本仓库的 composition 测试是真实模块离线装配证据，不是 Task80 入口联合验收。
+
+### 独立验收与后续组合证据
 
 `test/core/native-agent-{coding,edit,search,command}.test.js` 使用临时文件、
 固定 provider 和本地 fixture 子进程验证成功、冲突、超限、取消及清理。
@@ -308,3 +429,8 @@ processGroup 等。非零退出码仍保留为实际执行结果，调用方须�
 因此它只演示新文件复制，不能代表会处理编辑冲突的语义 Agent。
 本模块没有真实模型验证，也不以其他任务的网关、注册器或存储实现完成为前提；
 这些真实模块接入后的联合验收是另一项证据。
+`native-agent-local-safety.test.js` 保留少量真实副作用回归（独立开关、
+精确规格、活 lease、路径/恢复、记录/释放失败），
+`native-agent-composition.test.js` 将安全绑定装配到既有七模块组合，并在 SQLite
+重开后重建绑定。命令预算、取消、unknown 和自有进程清理由既有 command/tools
+回归保护；没有真实模型、账号、敌对文件系统或 OS 沙箱验证。

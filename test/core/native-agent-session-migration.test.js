@@ -37,6 +37,7 @@ test('declared v1 migration preserves original facts; corrupt source rolls back 
         assert.deepEqual(loaded.document.events, events);
         assert.equal(loaded.revision, 2);
         assert.equal(loaded.recovery.disposition, 'ready');
+        assert.equal((await store.getSessionInfo('s')).location, null);
         assert.notEqual(loaded.digest, hash);
         await store.close(); store = undefined;
       }

@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { PassThrough, Writable } from 'node:stream';
 import { setImmediate as tick } from 'node:timers/promises';
-import { createAgent, createCodingTools, createToolExecutor, createContextBuilder, createLocalObserver,
+import { createAgent, createLocalToolBinding, createToolExecutor, createContextBuilder, createLocalObserver,
   createModelGateway, connectModelObservations, createInteractionDiagnostics, createSessionStore,
   createSqliteSessionBackend, createMemorySessionBackend, createExecutionOwner, openCli,
   createInteractionProgress } from '../../dist/nativeAgent/index.js';
@@ -29,16 +30,27 @@ test('all real modules compose read → edit → check → answer → SQLite res
   await writeFile(path.join(root, 'input.txt'), 'before\n');
   const trace = [];
   const events = [];
-  const tools = createCodingTools({ root, command: { env: {} } });
-  const executor = createToolExecutor({
-    tools,
-    environment: { async acquire() { return { value: { root }, async release() { trace.push('release'); } }; } },
-    permission: { async check(invocation, environment) {
-      assert.equal(environment.root, root);
-      trace.push(`allow:${invocation.call.id}`);
-      return { allowed: true };
-    } },
-  });
+  const command = realpathSync(process.execPath);
+  const argv = ['-e', 'require("node:assert/strict").equal(require("node:fs").readFileSync("input.txt","utf8"),"after\\n")'];
+  const makeExecutor = () => {
+    const binding = createLocalToolBinding({
+      root, cwd: root, allowWrite: true, allowCommand: true,
+      command: { env: {}, specs: [{ executable: command, argv, effect: 'read' }] },
+    });
+    return createToolExecutor({
+      tools: binding.tools,
+      environment: { async acquire(...args) {
+        const lease = await binding.environment.acquire(...args);
+        return { value: lease.value, async release() { await lease.release(); trace.push('release'); } };
+      } },
+      permission: { async check(invocation, environment, signal) {
+        assert.equal(environment.root, root);
+        trace.push(`allow:${invocation.call.id}`);
+        return binding.permission.check(invocation, environment, signal);
+      } },
+    });
+  };
+  let executor = makeExecutor();
   const contexts = [];
   let requestCount = 0;
   const makeAgent = recording => createAgent({
@@ -69,9 +81,7 @@ test('all real modules compose read → edit → check → answer → SQLite res
         path: 'input.txt', oldText: 'before', newText: 'after',
         expectedSha256: JSON.parse(JSON.parse(request.messages.at(-1).content).content).sha256,
       });
-      if (step === 3) response = batch('check', 'command', { command: process.execPath, argv: [
-        '-e', 'require("node:assert/strict").equal(require("node:fs").readFileSync("input.txt","utf8"),"after\\n")',
-      ], cwd: root });
+      if (step === 3) response = batch('check', 'command', { command, argv, cwd: root });
       if (step === 4) {
         const checked = JSON.parse(JSON.parse(request.messages.at(-1).content).content);
         assert.equal(checked.exitCode, 0);
@@ -138,6 +148,7 @@ test('all real modules compose read → edit → check → answer → SQLite res
   assert.equal(saved.recovery.disposition, 'ready');
   cli.close(); await owner.close(); await store.close();
   store = createSessionStore(createSqliteSessionBackend(filename));
+  executor = makeExecutor(); // Recovery revalidates explicit caller authority, not Session display data.
   assert.equal((await store.load('composed')).digest, saved.digest);
   owner = createExecutionOwner({ store, agent: makeAgent, maxSteps: 4,
     sessions: [{ id: 'composed', title: 'reopened' }], observer });

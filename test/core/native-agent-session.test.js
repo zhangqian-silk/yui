@@ -189,7 +189,7 @@ test('SQLite restart exposes an interrupted effect; stale writers and malformed 
     await assert.rejects(reader.load('s1'), /malformed/);
     await reader.close();
     diagnosticDb.pragma('user_version = 99');
-    assert.throws(() => createSqliteSessionBackend(filename), /version-2/);
+    assert.throws(() => createSqliteSessionBackend(filename), /layout\/version/);
     assert.equal(diagnosticDb.pragma('user_version', { simple: true }), 99);
   } finally {
     diagnosticDb?.close();
