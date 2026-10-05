@@ -16,6 +16,9 @@ export interface ExecutionOwner extends InteractionSessionPort {
   create(title: string, location?: SessionLocation): Promise<SessionSummary>;
   /** Current or most recent local execution only; never reconstructed on restart. */
   settle(sessionId: string): Promise<ExecutionEvidence | undefined>;
+  /** Non-blocking exact-Turn projection of this owner's already settled evidence.
+   * Never waits for an active Turn or reconstructs live evidence from history. */
+  getSettledEvidence(scope: Scope): ExecutionEvidence | undefined;
   /** Cancels and waits for owned executions, detaches listeners; does not close injected store. */
   close(): Promise<void>;
 }
@@ -189,6 +192,10 @@ export function createExecutionOwner(options: {
       });
       compacting.set(sessionId, { abort, done });
       return done;
+    },
+    getSettledEvidence(scope) {
+      const evidence = completed.get(scope.sessionId);
+      return evidence?.scope.turnId === scope.turnId ? evidence : undefined;
     },
     async close() {
       closed = true;

@@ -10,6 +10,7 @@ import { createProductTransport } from './transport.js';
 import { createProductTools } from './tools.js';
 import { openProductStore, storageFailure } from './storage.js';
 import { restoreProductLocation, createProductSession } from './location.js';
+import { createRuntimeFacts } from './facts.js';
 
 /** Product owns the streams' connection listeners, model dispatcher, store and owner.
  * No hidden execution loop/catalog/policy: all execution goes through ExecutionOwner. */
@@ -96,9 +97,10 @@ export async function runProductRuntime(invocation: ProductArguments, credential
         const currentInvocation = { ...invocation, config: { ...config, ...location } };
         const currentBinding = createProductBinding(currentInvocation, credential);
         const guidance = createProjectGuidance({ ...location, sessionId });
+        const facts = createRuntimeFacts(currentInvocation, currentBinding.binding, sessionId, credential);
         return createAgent({
           toolExecutor: createProductTools(currentBinding, guidance, currentInvocation, sessionId),
-          contextBuilder: createContextBuilder({ sources: [guidance.source] }),
+          contextBuilder: createContextBuilder({ sources: [facts, guidance.source] }),
           contextBudget: { capacity: config.contextBytes, reserveOutput: config.outputReserveBytes },
           observer,
           provider: { async complete(request, signal) {
@@ -192,15 +194,17 @@ export async function runProductRuntime(invocation: ProductArguments, credential
         await admitLocation(id);
         const page = await safe(() => activeOwner.read(id, after, limit));
         selected = id;
-        if (page.records.some(record => record.kind === 'event' && record.event.data.type === 'turn_ended')) {
-          const evidence = await activeOwner.settle(id);
-          if (evidence?.receipt && evidence.result?.recording.status === 'recorded' && !evidence.failure
-            && !displayedReceipts.has(evidence.receipt.digest)) {
-            const saved = await store!.load(id);
-            if (saved.digest === evidence.receipt.digest) {
-              displayedReceipts.add(evidence.receipt.digest);
-              await write(evidence.receipt, '[saved receipt] ');
-            }
+        // Replay is a read, never a join of the current execution promise.
+        // Historical terminal IDs cannot select another Turn's live evidence.
+        for (const record of page.records) {
+          if (record.kind !== 'event' || record.event.data.type !== 'turn_ended') continue;
+          const evidence = activeOwner.getSettledEvidence({ sessionId: id, turnId: record.event.turnId });
+          if (!evidence?.receipt || evidence.result?.recording.status !== 'recorded' || evidence.failure
+            || displayedReceipts.has(evidence.receipt.digest)) continue;
+          const saved = await activeStore.load(id);
+          if (saved.digest === evidence.receipt.digest && saved.revision === evidence.receipt.revision) {
+            displayedReceipts.add(evidence.receipt.digest);
+            await write(evidence.receipt, '[saved receipt] ');
           }
         }
         return page;
@@ -221,7 +225,7 @@ export async function runProductRuntime(invocation: ProductArguments, credential
     if (finalEvidence?.receipt && !displayedReceipts.has(finalEvidence.receipt.digest)) {
       const saved = await store.load(selected).catch(() => undefined);
       if (finalEvidence.result?.recording.status === 'recorded' && !finalEvidence.failure
-        && saved?.digest === finalEvidence.receipt.digest) {
+        && saved?.digest === finalEvidence.receipt.digest && saved.revision === finalEvidence.receipt.revision) {
         await write(finalEvidence.receipt, '[saved receipt on close] ');
       } else await write({ status: 'not_fully_saved', lastConfirmedReceipt: finalEvidence.receipt,
         nextAction: 'Inspect saved facts; no automatic retry.' }, '[agent close] ');

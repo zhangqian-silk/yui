@@ -4,7 +4,8 @@
 工作单元：task-80/work-item-1，隔离Develop工作区；仅修改project-1。
 本记录是Worker实现/自审证据，不是Task接受或最终联合验收。
 前文记录run-3原始入口；run-5替换其预绑定tools路径，run-6接入84真实项目指导，
-run-7接入81真实持久目录与历史。
+run-7接入81真实持久目录与历史，run-8接入原子Session位置，
+run-12修复独立Review的非阻塞回执与当前模型运行事实问题。
 分别见后文消费证据。旧段落中的“尚未提供”是该轮历史事实，不代表当前状态。
 
 ## 已实现边界
@@ -450,3 +451,97 @@ task80-npm-cache-run8保留供回收，固定日志与可重建本地包保留�
 归档、全局安装/Home/Controller、角色模型/Profile或权限变更；
 未跑真实模型/账号/付费/共享生产，不证明模型规划质量、硬件掉电、敌对路径替换、
 跨OS搬迁、强沙箱或其他平台。生产者独立验收与80消费证据严格区分。
+
+## Run-12：修复独立Review的两项P2
+
+日期：2026-10-05；修复基线及reviewBaseCommit：
+`7bd1df81b02c13217444ea2983d7abef15dd1a8c`。原candidate-1被
+review-round-1拒绝，原提交已在Task main但不等于通过验收；本轮不回滚或改写它。
+仍在同一隔离work-item-1分支工作，无新执行者或交付单元。
+
+本轮先完整读取Session Manifest、yui-runtime/yui-worker Role Skills与worker
+profile，再经Manifest的Node24全局CLI合法入口读取
+`yui task run context task-80/run-12 --json`。task/run/worker/execution及工作区匹配，
+固定snapshot为context-snapshot-12，digest：
+`f8a4029b128cf32361f42b618475096207bd422f3acee07b7be061b545e3fb13`。
+完整展开work-item-1 revision 5、message-35和message-30。
+message-35把run-9/review-round-1原始审查完整合法转交（digest：
+`867c74cc6d420bf5d70c79f7ab3f8edf1bc74473d1e5449a658dfde32dd1f859`），
+并撤销原先必须直接读取message-29/run-9的前置要求。
+run-10/run-11因这些旧引用无法合法展开而停止的事实保留；本轮按新授权解除阻塞，
+不绕过CLI身份、读取已移除reviewer工作区或操作其他Home。
+
+两项实质问题与修复：
+
+- P2-1：旧turn_ended回放调用当前owner.settle，挂起模型时串行UI无法继续处理
+  cancel/quit/EOF。沿用唯一owner已有completed证据，增加精确scope的非阻塞
+  getSettledEvidence查询；回放不加入当前执行Promise。只有精确Turn已结算、
+  记录成功且无failure，并与当前SQLite的digest/revision相符才展示回执。
+  关闭路径仍由owner.close取消/drain后真正settle，核对digest/revision。
+  无第二receipt账本、执行循环、重试或历史结果重构。
+- P2-2：模型只有泛化command工具声明，不知道实际位置或已审查argv。
+  每个Turn按实际recording Session位置与当前82绑定建立最小product-runtime
+  ContextSource：root/cwd、当前所选工具、独立授权开关、当前可执行的精确
+  executable/argv/effect。通过既有ContextBuilder作为required user数据材料，
+  带内容revision与ContextReport；不足预算拒绝请求。没有环境值/凭据/权限token，
+  不提升参数为system指令、不写回历史、不恢复旧授权，不改变82执行校验或84信任层。
+
+按develop-yui、engineering-quality、test-driven-development先复现再修复。
+新回归在旧实现上实际RED：历史refresh后的cancel超时；模型请求缺少运行事实。
+修复后首次命令fixture错误地使用gateway不提供的tool.name识别结果，导致重复
+调用耗尽步骤预算；按真实Chat Completions的tool_call_id及当前普通用户输入
+识别结果后通过，没有修改网关或增加生产兼容逻辑来迁就fixture。
+最终两项针对性GREEN约1.12秒；完整core中分别约914ms与867ms。
+
+永久回归只替换模型HTTP响应，其余均走实际产品入口、owner、SQLite、ContextBuilder、
+82精确命令执行与84指导。历史completed后再挂起真实HTTP body，分别验证refresh→
+cancel/quit/EOF无需fixture完成响应即可关闭，真实库末尾cancelled且ready，
+唯一显示回执与最终库digest/revision一致，没有旧/早回执或无匹配取消。
+空合法root内的命令完全从实际模型请求选择，不在响应fixture预置executable/argv/cwd；
+同ID从不同launch cwd恢复原root!=cwd，本次更换规格后真实执行新argv；
+再次无授权重开时当前commands为空且三个开关均false。模型请求中没有dummy凭据
+或命令环境值，仅有84的一个system材料，运行事实材料不在持久消息历史。
+
+源码及包内离线样例同样改为从当前HTTP模型请求选择已审查命令；原本故意重放旧
+命令的负例仍保留并确认本次没有command授权。位置、Skill完整按需加载、MEMORY
+独立授权、持久目录/分页/重名ID/CAS/stale cursor路径没有缩减或被fixture替代。
+
+实际验证（所有开发命令显式Node v24.20.0 PATH；CLI用绝对本地launcher及独立Home）：
+
+```sh
+npm run build
+node --test --test-name-pattern='product historical refresh|product model receives' test/core/native-agent-product.test.js
+npm test
+node docs/examples/agent-offline.mjs
+node scripts/assemble-runtime-package.mjs --output output/task80-runtime-package
+# 以下dry-pack在实际output/task80-runtime-package目录执行：
+npm pack --dry-run --ignore-scripts --json --cache "$TMPDIR/task80-npm-cache-run12"
+node scripts/check-runtime-package-structure.mjs "$TMPDIR/task80-package-inventory-run12.json"
+node scripts/smoke-runtime-package.mjs --assembled output/task80-runtime-package
+node output/task80-runtime-package/docs/examples/agent-offline.mjs
+git diff --check
+```
+
+完整core含build：586项，579通过、7项平台条件跳过、0失败；
+测试阶段9042ms，新增两项回归约增加一秒的针对性成本。
+组装包结构561文件通过；Doctor 414ms，重开/跟进7671ms、handover2695ms，
+最终Runtime package smoke passed。源码与包内样例全部断言通过，
+commandChosenFromCurrentModelRequest为true。不把假模型响应当作真实模型能力验证。
+
+完整最终差异/公开owner接口/模型材料预算与信任层/关闭资源自审通过。
+kernel、model、ToolManager、81 Session实现、82和84生产者文件均无修改；
+82 blob仍为79927fba8b0423535836866ba2979d0db376d703，
+84 blob仍为aa974c9c8bb6946fc407e58f9cd9bfbeee18bb8e，
+81 location blob仍为114905fef3df3597d683cc6e4c137483b9a827f6。
+没有持久schema/版本变化。已保存日志位于本Session运行时TMPDIR：
+task80-core-run12.log、task80-package-run12.log、
+task80-example-run12-source.log、task80-example-run12-package.log及
+task80-package-inventory-run12.json；task80-npm-cache-run12和可重建组装包保留。
+fixture teardown在首次CLI前登记，成功/失败均关闭自有子进程、HTTP/store；
+package smoke完成自己的Controller/tmux清理。最终相关fixture目录与进程检查无残留，
+未创建临时探索harness、未清理共享目录或其他Home。
+
+本轮是Worker修复、自审和离线验证证据，待Leader冻结新Candidate/Integration及
+独立Review；不声明WorkItem接受、Task/整批完成或外部交付。
+未push/PR/CI/merge/publish/tag/npm、归档、全局安装/Home/Controller替换、
+角色模型/Profile或权限变更；未跑真实模型、真实账号/付费/共享生产。

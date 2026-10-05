@@ -131,6 +131,8 @@ task-79 消费 `AgentObserver/AgentEvent`。这些是独立实现的最小边界
 每次提交从 store 读取完整历史并取得必要 recorder，再调用同一个 `Agent.runTurn`。
 不增加循环、调度器、后台重试或恢复状态。`settle(sessionId)` 返回当前/最近一次本地
 执行的结果、保存回执和原始失败；它不从历史重造旧 TurnResult。
+`getSettledEvidence(scope)`只非阻塞查询本owner已有的精确Turn结算证据，
+不等待活动Turn、不从持久历史重构结果；产品回放使用它，真正结算仍使用`settle`。
 `close()` 取消并等待自己持有的执行，调用方随后关闭 store 和 observer。
 同一 Session 必须只有一个执行所有者；CAS 不等于跨进程执行租约。
 可选 `context: {builder,budget,tools,retention}` 必须与 Agent 工厂共享，
@@ -511,3 +513,9 @@ Task82 生产这些新增类型与工厂；ToolManager、文件/命令工具和 
 `native-agent-composition.test.js` 将安全绑定装配到既有七模块组合，并在 SQLite
 重开后重建绑定。命令预算、取消、unknown 和自有进程清理由既有 command/tools
 回归保护；没有真实模型、账号、敌对文件系统或 OS 沙箱验证。
+
+产品入口每次Turn还通过既有ContextBuilder加载required的`product-runtime`
+user材料：实际root/cwd、当前工具与独立授权开关、当前可执行的精确命令规格。
+不包含env值或凭据，不提升为system权限、不持久化材料或恢复历史授权；
+公开描述不是lease，实际执行仍经过82的唯一绑定校验。离线产品样例从真实模型
+请求选择授权命令，不靠响应fixture预先知道参数来掩盖缺失的运行事实。

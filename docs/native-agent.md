@@ -126,6 +126,11 @@ fixture检查程序，不代表可以自动授权任意模型建议。
 env是完整白名单环境，只允许显式PATH/LANG/LC_ALL/TZ，默认`{}`；
 不继承process.env/HOME/凭据/代理/加载器变量。PATH目录及程序仍须可信审查。
 公共配置输出不打印command规格、argv或环境值，binding只报告envKeys/commandCount。
+模型请求另含本次调用的最小运行事实：实际root/cwd、所选工具、当前独立授权开关，
+以及当前可执行的已审查executable/argv/effect（没有command授权时为空）。
+它通过既有ContextBuilder作为required的user数据材料进入请求，不是system指令，
+也不能替代82的实际授权校验；不足预算则拒绝请求。环境值、凭据和权限token不进入
+该材料，材料本身不写入历史；恢复时按原位置和本次配置重新建立，绝不恢复旧授权。
 原始调用/结果是必要执行事实，仍会保存到历史；不要在argv或配置中放秘密。
 入口把当前已知凭据传给82的outcome脱敏，并继续保护模型/记录/诊断出口；
 这是已知秘密文字保护，不是全通道DLP，也不改变被读取文件的实际内容/sha256。
@@ -160,6 +165,9 @@ configuration/binding/projectAuthority/result/receipt/observations；退出码0�
 全局`--json`前缀与`run/check-config`的`--json`标记也在控制面加载前处理；
 `start`是行式UI，若要求JSON则明确拒绝并建议使用run。
 工具执行非零exitCode不是业务成功；完整结果中需要检查实际工具outcome。
+`/refresh`回放旧终态不会等待当前Turn执行；回执展示只读取同一精确Turn已结算的
+owner证据，再核对当前存储的digest/revision。挂起模型期间仍可取消、退出或EOF，
+旧Turn回执不会冒充新Turn的保存证明；关闭时仍等待取消/drain与实际保存完成。
 
 状态文件固定为显式stateDir下`sessions.sqlite`，使用独立Session文档格式2和
 81的SQLite NAS1布局4、集中v1→v2→v3→v4迁移，不改变Yui Home版本。合法v2/v3文档

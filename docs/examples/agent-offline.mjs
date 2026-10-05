@@ -19,7 +19,7 @@ const argv = ['-e',
   'const fs=require("node:fs");if(fs.readFileSync("../input.txt","utf8")!=="after\\n"||process.env.EXAMPLE_CREDENTIAL)process.exit(1);console.log("local check passed");'];
 const commandConfig = JSON.stringify({ env: {}, specs: [{ executable, argv, effect: 'read' }] });
 let phase = 'read', step = 0, active;
-let initialSkillBody = false, loadedSkillBody = false;
+let initialSkillBody = false, loadedSkillBody = false, commandFromCurrentFacts = false;
 const server = createServer(async (request, response) => {
   let source = '';
   for await (const part of request) source += part;
@@ -29,19 +29,35 @@ const server = createServer(async (request, response) => {
     function: { name, arguments: JSON.stringify(args) } });
   let calls;
   assert.equal(input.messages.filter(message => message.role === 'system').length, 1);
+  const material = input.messages.filter(message => message.role === 'user')
+    .map(message => { try { return JSON.parse(message.content).contextMaterial; } catch { return undefined; } })
+    .find(material => material?.loader === 'product-runtime');
+  assert.ok(material, 'The actual model request must include current runtime facts');
+  const currentFacts = JSON.parse(material.content);
+  assert.deepEqual({ root: currentFacts.root, cwd: currentFacts.cwd },
+    { root: directory, cwd: workingDirectory });
+  assert.ok(!source.includes(secret));
+  const configuredCheck = id => {
+    const spec = currentFacts.commands[0];
+    assert.ok(spec, 'Choose the configured check from the actual model request');
+    commandFromCurrentFacts = true;
+    return call(id, 'command', { command: spec.executable, argv: spec.argv, cwd: currentFacts.cwd });
+  };
   if (phase === 'read' && step++ === 0) calls = [call('read-example', 'read', { path: 'input.txt' })];
   else if (phase === 'edit' && step++ === 0) {
     const previousRead = input.messages.find(message => message.role === 'tool');
     const sha256 = JSON.parse(JSON.parse(previousRead.content).content).sha256;
     calls = [call('edit-example', 'edit',
       { path: 'input.txt', expectedSha256: sha256, oldText: 'before', newText: 'after' })];
-  } else if (phase === 'edit' && step === 2) calls = [call('check-example', 'command', {
-    command: executable, cwd: workingDirectory, argv })];
-  else if (phase === 'reopen' && step++ === 0) calls = [call('reopen-check', 'command', {
-    command: executable, cwd: workingDirectory, argv })];
+  } else if (phase === 'edit' && step === 2) calls = [configuredCheck('check-example')];
+  else if (phase === 'reopen' && step++ === 0) {
+    assert.deepEqual(currentFacts.commands, []);
+    assert.equal(currentFacts.grants.allowCommand, false);
+    // Deliberately replay the old command as a negative authorization probe.
+    calls = [call('reopen-check', 'command', { command: executable, cwd: workingDirectory, argv })];
+  }
   else if (phase === 'restored' && step++ === 0) calls = [call('restored-read', 'read', { path: 'input.txt' })];
-  else if (phase === 'restored' && step === 2) calls = [call('restored-check', 'command', {
-    command: executable, cwd: workingDirectory, argv })];
+  else if (phase === 'restored' && step === 2) calls = [configuredCheck('restored-check')];
   else if (phase === 'skill') {
     const loaded = input.messages.some(message => message.content.includes('COMPLETE_OFFLINE_SKILL_BODY'));
     if (step++ === 0) {
@@ -164,7 +180,8 @@ try {
     persistentCatalogDiscovered: true, duplicateTitlesSelectedById: true, boundedHistoryRead: true,
     explicitStaleCursorRefresh: true, controlHomeCreated: false,
     originalRootCwdRestoredAcrossLaunchDirectories: true, rootDiffersFromCwd: true,
-    freshCommandAuthorizationAfterCatalogSelection: true }));
+    freshCommandAuthorizationAfterCatalogSelection: true,
+    commandChosenFromCurrentModelRequest: commandFromCurrentFacts }));
 } finally {
   if (active) {
     const stopped = new Promise(resolve => active.once('close', resolve));

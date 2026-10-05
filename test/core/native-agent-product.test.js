@@ -39,6 +39,175 @@ function cli(args, env, input, t, onStart, prefix = [], cwd) {
   return done;
 }
 
+async function deadline(promise, label, ms = 1500) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`Timed out: ${label}`)), ms);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+function runtimeFacts(request) {
+  for (const message of request.messages) {
+    if (message.role !== 'user') continue;
+    try {
+      const material = JSON.parse(message.content).contextMaterial;
+      if (material?.loader === 'product-runtime') return JSON.parse(material.content);
+    } catch { /* Ordinary user/project text is not runtime facts. */ }
+  }
+}
+
+test('product historical refresh cannot block cancellation, quit or EOF behind a live model', { timeout: 10000 }, async t => {
+  const { root, env } = await fixture(t);
+  const state = join(root, 'state');
+  let pending, arrive = () => {}, disconnected = () => {}, holding = false;
+  const server = createServer(async (request, response) => {
+    for await (const _part of request) { /* Only model network is replaced. */ }
+    if (!holding) {
+      response.end(JSON.stringify({ choices: [{ index: 0, message: { role: 'assistant', content: 'prior completed answer' }, finish_reason: 'stop' }] }));
+      return;
+    }
+    pending = response;
+    response.on('close', () => disconnected());
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.write('{"choices":'); // Real body remains open until cancellation.
+    arrive();
+  });
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const args = ['--allow-http', '--endpoint', `http://127.0.0.1:${server.address().port}/chat`,
+    '--model', 'offline', '--credential-ref', 'env:AGENT_TEST_TOKEN', '--state-dir', state];
+  const seeded = await cli(['run', ...args, '--cwd', root, '--input', 'complete an earlier Turn'], env, undefined, t);
+  assert.equal(seeded.code, 0, seeded.stderr);
+  const id = JSON.parse(seeded.stdout).receipt.sessionId;
+  holding = true;
+  for (const control of ['cancel', 'quit', 'eof']) {
+    let child, output = '', ack;
+    const requested = new Promise(resolve => { arrive = resolve; });
+    const closed = new Promise(resolve => { disconnected = resolve; });
+    const acknowledged = new Promise(resolve => { ack = resolve; });
+    const done = cli(['start', ...args, '--session', id], env, process => {
+      child = process;
+      process.stdout.on('data', data => {
+        output += data;
+        if (output.includes('[cancel requested; awaiting actual terminal]')) ack();
+      });
+      process.stdin.write(`wait for ${control}\n`);
+    }, t);
+    try {
+      await deadline(requested, 'model request started');
+      assert.ok(!output.includes('[saved receipt]'));
+      child.stdin.write('/refresh\n');
+      if (control === 'cancel') {
+        child.stdin.write('/cancel\n');
+        await deadline(acknowledged, 'cancel acknowledged after historical refresh');
+        await deadline(closed, 'model body cancelled without fixture response');
+        child.stdin.end();
+      } else if (control === 'quit') child.stdin.write('/quit\n');
+      else child.stdin.end();
+      const result = await deadline(done, `${control} exits after historical refresh`);
+      await deadline(closed, 'owned model response closed');
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(result.stderr, '');
+      assert.ok(!result.stdout.includes('no matching active turn'));
+      const store = createSessionStore(createSqliteSessionBackend(join(state, 'sessions.sqlite')));
+      try {
+        const saved = await store.load(id);
+        assert.equal(saved.recovery.disposition, 'ready');
+        const terminal = saved.document.events.at(-1);
+        assert.equal(terminal.data.reason, 'cancelled');
+        assert.equal(saved.document.events.filter(event => event.data.type === 'turn_ended'
+          && event.data.reason === 'completed').length, 1);
+        const receipts = result.stdout.split('\n').filter(line => /^\[saved receipt(?: on close)?\] /u.test(line))
+          .map(line => JSON.parse(line.slice(line.indexOf('] ') + 2)));
+        assert.equal(receipts.length, 1); // No old/early receipt masquerading as this Turn.
+        assert.equal(receipts[0].sessionId, id);
+        assert.equal(receipts[0].digest, saved.digest);
+        assert.equal(receipts[0].revision, saved.revision);
+      } finally { await store.close(); }
+    } finally {
+      // A failed assertion must not strand the intentionally hanging old behavior.
+      pending?.destroy();
+      child.stdin.end();
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+      await done;
+    }
+  }
+  await assert.rejects(access(env.YUI_HOME));
+});
+
+test('product model receives current exact command facts, not inherited grants or environment', { timeout: 10000 }, async t => {
+  const { root, env } = await fixture(t);
+  const cwd = join(root, 'child'), elsewhere = join(root, 'elsewhere');
+  await mkdir(cwd); await mkdir(elsewhere);
+  const requests = [];
+  const server = createServer(async (req, res) => {
+    let body = '';
+    for await (const part of req) body += part;
+    const input = JSON.parse(body);
+    requests.push(input);
+    const facts = runtimeFacts(input);
+    // The fixture has no out-of-band executable/argv/cwd: choose only from the
+    // actual current request, just as a model must for "the configured check".
+    const spec = facts?.commands[0];
+    const ran = input.messages.slice(input.messages.findLastIndex(message =>
+      message.role === 'user' && message.content === 'Run the configured check'))
+      .some(message => message.role === 'tool' && message.tool_call_id.startsWith('configured-'));
+    const tool_calls = spec && !ran ? [{ id: `configured-${requests.length}`, type: 'function',
+      function: { name: 'command', arguments: JSON.stringify({
+        command: spec.executable, argv: spec.argv, cwd: facts.cwd }) } }] : undefined;
+    res.end(JSON.stringify({ choices: [{ index: 0, message: { role: 'assistant', content: 'checked current configuration',
+      ...(tool_calls ? { tool_calls } : {}) }, finish_reason: tool_calls ? 'tool_calls' : 'stop' }] }));
+  });
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const args = ['--allow-http', '--endpoint', `http://127.0.0.1:${server.address().port}/chat`,
+    '--model', 'offline', '--credential-ref', 'env:AGENT_TEST_TOKEN', '--state-dir', join(root, 'state')];
+  const executable = realpathSync(process.execPath);
+  const spec = value => ({ executable, argv: ['-e', `console.log("${value}")`], effect: 'read' });
+  const command = value => ['--tools', 'command', '--allow-command', '--command-config',
+    JSON.stringify({ env: { LANG: 'private-fixture-environment' }, specs: [spec(value)] })];
+  const first = await cli(['run', ...args, '--root', root, '--cwd', cwd, ...command('first'),
+    '--input', 'Run the configured check'], env, undefined, t);
+  assert.equal(first.code, 0, first.stderr);
+  const initial = runtimeFacts(requests[0]);
+  assert.ok(initial, 'Model request must contain current invocation runtime facts');
+  assert.equal(initial.root, root);
+  assert.equal(initial.cwd, cwd);
+  assert.deepEqual(initial.commands, [spec('first')]);
+  assert.equal(JSON.parse(JSON.parse(first.stdout).result.messages.find(message => message.role === 'tool').outcome.content).stdout, 'first\n');
+  const id = JSON.parse(first.stdout).receipt.sessionId;
+  const before = requests.length;
+  const second = await cli(['run', ...args, '--session', id, ...command('second'),
+    '--input', 'Run the configured check'], env, undefined, t, undefined, [], elsewhere);
+  assert.equal(second.code, 0, second.stderr);
+  const current = runtimeFacts(requests[before]);
+  assert.deepEqual(current.commands, [spec('second')]);
+  assert.equal(JSON.parse(JSON.parse(second.stdout).result.messages.filter(message => message.role === 'tool').at(-1).outcome.content).stdout, 'second\n');
+  assert.equal(current.root, root); assert.equal(current.cwd, cwd);
+  assert.notDeepEqual(initial, current);
+  const reports = JSON.parse(second.stdout).result.contextReports;
+  assert.ok(reports.every(({ report }) => report.entries.some(entry =>
+    entry.sourceId === 'product-runtime' && entry.action === 'retained' && entry.reason === 'required-material')));
+  const thirdStart = requests.length;
+  const third = await cli(['run', ...args, '--session', id, '--input', 'Run the configured check'],
+    env, undefined, t, undefined, [], elsewhere);
+  assert.equal(third.code, 0, third.stderr);
+  assert.deepEqual(runtimeFacts(requests[thirdStart]).commands, []);
+  assert.equal(runtimeFacts(requests[thirdStart]).grants.allowCommand, false);
+  assert.equal(runtimeFacts(requests[thirdStart]).grants.allowWrite, false);
+  assert.equal(runtimeFacts(requests[thirdStart]).grants.allowMemoryWrite, false);
+  assert.ok(requests.every(request => !JSON.stringify(request).includes(secret)
+    && !JSON.stringify(request).includes('private-fixture-environment')));
+  assert.ok(requests.every(request => request.messages.filter(message => message.role === 'system').length === 1));
+  const store = createSessionStore(createSqliteSessionBackend(join(root, 'state', 'sessions.sqlite')));
+  try {
+    const saved = await store.load(id);
+    assert.equal(saved.digest, JSON.parse(third.stdout).receipt.digest);
+    assert.ok(!saved.messages.some(message => 'content' in message && message.content.includes('"runtime-facts"')));
+  } finally { await store.close(); }
+});
+
 test('product config fails safely before control Home or product state initialization', async t => {
   const { root, env } = await fixture(t);
   const result = await cli(['check-config', '--endpoint', `https://user:${secret}@bad.invalid/chat`], env, undefined, t);
