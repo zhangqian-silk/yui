@@ -1,7 +1,9 @@
 import type { AgentEvent } from '../index.js';
-import type { SaveReceipt, SessionBackend, SessionDocument, SessionRecording, SessionStore } from './contracts.js';
+import type { SaveReceipt, SessionBackend, SessionCatalog, SessionDocument, SessionLocation, SessionRecording, SessionStore } from './contracts.js';
 import { digest } from './backends.js';
 import { copyEvent, identity, immutable, inspectDocument, revision, SessionError, sessionLimits } from './format.js';
+import { metadataRevision, normalizeTitle, queryBounds } from './catalog.js';
+import { copyLocation } from './location.js';
 
 export class SessionSaveError extends SessionError {
   /** Conservative: a thrown backend write is not proof that no commit occurred. */
@@ -11,9 +13,22 @@ export class SessionSaveError extends SessionError {
     readonly expectedRevision: number | null,
     readonly event: AgentEvent | undefined,
     cause: unknown,
+    readonly location?: SessionLocation,
   ) {
     super('save_failed', 'Necessary Session save failed; stop new effects and inspect exact saved facts', { cause });
     this.name = 'SessionSaveError';
+  }
+}
+export class SessionMetadataSaveError extends SessionError {
+  readonly effect = 'unknown';
+  constructor(
+    readonly sessionId: string,
+    readonly title: string | null,
+    readonly expectedMetadataRevision: number,
+    cause: unknown,
+  ) {
+    super('metadata_save_failed', 'Metadata save confirmation failed; inspect exact title/revision before another write', { cause });
+    this.name = 'SessionMetadataSaveError';
   }
 }
 type Observer = {
@@ -34,6 +49,22 @@ export function createSessionStore(backend: SessionBackend): SessionStore {
   let backendClosed = false;
   const observers = new Set<Observer>();
   const check = (): void => { if (closed) throw new SessionError('closed', 'Session store is closed'); };
+  const catalog = (): SessionCatalog => {
+    check();
+    if (!backend.catalog) throw new SessionError('unsupported_catalog', 'Backend does not implement the bounded SessionCatalog port');
+    return backend.catalog;
+  };
+  const read = async <T>(operation: () => Promise<T>): Promise<T> => {
+    check();
+    try {
+      const value = await operation();
+      check();
+      return immutable(value);
+    } catch (cause) {
+      if (cause instanceof SessionError) throw cause;
+      throw new SessionError('read_failed', 'Session query failed; no empty-page fallback', { cause });
+    }
+  };
   const receipt = (document: SessionDocument): SaveReceipt => immutable({
     sessionId: document.sessionId, revision: revision(document), digest: digest(document), source,
   });
@@ -62,20 +93,48 @@ export function createSessionStore(backend: SessionBackend): SessionStore {
       if (observer.sessionId === saved.sessionId) { observer.pending = saved; dispatch(observer); }
     }
   };
-  const save = async (document: SessionDocument, expected: number | null): Promise<SaveReceipt> => {
+  const save = async (document: SessionDocument, expected: number | null, location?: SessionLocation): Promise<SaveReceipt> => {
     check();
-    try { await backend.write(immutable(document), expected); }
+    try {
+      if (location === undefined) await backend.write(immutable(document), expected);
+      else await backend.createWithLocation!(immutable(document), location);
+    }
     catch (cause) {
-      throw new SessionSaveError(document.sessionId, expected, document.events.at(-1), cause);
+      throw new SessionSaveError(document.sessionId, expected, document.events.at(-1), cause, location);
     }
     const saved = receipt(document);
     notify(saved);
     return saved;
   };
   const store: SessionStore = {
-    async create(sessionId) {
+    async listSessions(options = {}) { return read(() => catalog().listSessions(options)); },
+    async getSessionInfo(sessionId) {
+      identity(sessionId);
+      return read(() => catalog().getSessionInfo(sessionId));
+    },
+    async readHistory(sessionId, options = {}) {
+      identity(sessionId);
+      return read(() => catalog().readHistory(sessionId, options));
+    },
+    async renameSession(sessionId, title, expected) {
       check(); identity(sessionId);
-      return save({ schemaVersion: 2, sessionId, events: [] }, null);
+      const normalized = normalizeTitle(title);
+      metadataRevision(expected);
+      const port = catalog();
+      try { return immutable(await port.renameSession(sessionId, normalized, expected)); }
+      catch (cause) {
+        // These port errors are confirmed precondition refusals, not ambiguous saves.
+        if (cause instanceof SessionError && ['revision_conflict', 'not_found', 'closed'].includes(cause.code)) throw cause;
+        throw new SessionMetadataSaveError(sessionId, normalized, expected, cause);
+      }
+    },
+    async create(sessionId, location) {
+      check(); identity(sessionId);
+      const selected = location === undefined ? undefined : immutable(copyLocation(location));
+      if (selected !== undefined && (!backend.createWithLocation || !backend.catalog)) {
+        throw new SessionError('unsupported_location', 'Backend lacks atomic location creation and bounded detail reconciliation');
+      }
+      return save({ schemaVersion: 2, sessionId, events: [] }, null, selected);
     },
     async load(sessionId) {
       check(); identity(sessionId);
@@ -102,9 +161,10 @@ export function createSessionStore(backend: SessionBackend): SessionStore {
     async query(sessionId, options = {}) {
       const after = options.after ?? 0;
       const limit = options.limit ?? 50;
-      if (!Number.isSafeInteger(after) || after < 0 || !Number.isSafeInteger(limit)
-        || limit < 1 || limit > sessionLimits.pageSize) {
-        throw new SessionError('invalid_query', 'Cursor must be nonnegative; page limit must be 1..100');
+      queryBounds(after, limit);
+      if (backend.query) {
+        identity(sessionId);
+        return read(() => backend.query!(sessionId, { after, limit }));
       }
       const loaded = await store.load(sessionId);
       if (after > loaded.revision) throw new SessionError('invalid_query', 'Cursor exceeds the saved revision');

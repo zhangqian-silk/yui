@@ -11,8 +11,14 @@ export type { ModelGateway, ModelGatewayOptions, ModelTransport } from './model/
 export { openCli, createTextRenderer } from './interaction/index.js';
 export type { InteractionSessionPort, InteractionDiagnosticsPort } from './interaction/index.js';
 export { connectModelObservations, createInteractionDiagnostics, createInteractionProgress } from './composition.js';
-export { createSessionStore, createMemorySessionBackend, createSqliteSessionBackend } from './session/index.js';
-export type { SessionStore, SessionRecording, SaveReceipt } from './session/index.js';
+export {
+  createSessionStore, createMemorySessionBackend, createSqliteSessionBackend,
+  SessionError, SessionMetadataSaveError, catalogLimits, locationLimits,
+} from './session/index.js';
+export type {
+  SessionStore, SessionBackend, SessionRecording, SaveReceipt, SessionCatalog,
+  SessionInfo, SessionDetail, SessionLocation, SessionCatalogPage, SessionHistoryPage, PageOptions,
+} from './session/index.js';
 export { createExecutionOwner } from './executionOwner.js';
 export type { ExecutionOwner, ExecutionEvidence } from './executionOwner.js';
 export { createMockProvider } from './mockProvider.js';

@@ -11,6 +11,8 @@ export type SaveSource = {
   id: string;
   durability: 'volatile' | 'persistent';
 };
+/** Caller-resolved native absolute paths, not permission or execution authority. */
+export type SessionLocation = { readonly root: string; readonly cwd: string };
 /**
  * Replacement backends must provide atomic compare-and-swap and acknowledge only
  * after their advertised durability boundary. Throws may mean unknown commit.
@@ -18,8 +20,16 @@ export type SaveSource = {
  */
 export interface SessionBackend {
   readonly source: SaveSource;
+  /** Built-ins implement this bounded port; no full-document fallback for catalogs. */
+  readonly catalog?: SessionCatalog;
+  /** Optional bounded incremental fact query, with the existing numeric semantics. */
+  query?(sessionId: string, options: { after: number; limit: number }): Promise<SessionPage>;
   read(sessionId: string): Promise<unknown | null>;
   write(document: SessionDocument, expectedRevision: number | null): Promise<void>;
+  /** Optional capability: atomically create an empty document AND immutable location.
+   * Must also expose location through catalog.getSessionInfo; never drop it.
+   * A throw may mean unknown commit; callers reconcile by the same Session ID. */
+  createWithLocation?(document: SessionDocument, location: SessionLocation): Promise<void>;
   close(): Promise<void>;
 }
 export type SaveReceipt = {
@@ -61,14 +71,48 @@ export type SessionPage = SaveReceipt & {
   records: readonly { revision: number; event: AgentEvent }[];
   nextCursor: number | null;
 };
+export type SessionInfo = {
+  sessionId: string;
+  title: string | null;
+  metadataRevision: number;
+};
+export type SessionDetail = SessionInfo & SaveReceipt & {
+  storeId: string;
+  /** null explicitly means missing (including all migrated Sessions). */
+  location: SessionLocation | null;
+};
+export type PageOptions = { limit?: number; cursor?: string };
+export type SessionCatalogPage = {
+  storeId: string;
+  catalogRevision: number;
+  items: readonly SessionInfo[];
+  nextCursor: string | null;
+};
+export type SessionHistoryPage = SaveReceipt & {
+  storeId: string;
+  records: SessionPage['records'];
+  nextCursor: string | null;
+};
+/** Reads have no execution/notification effects. Cursors are opaque, bound to
+ * store, query, limit and revision; changed data requires a fresh first page.
+ * Titles are not unique. Metadata CAS is independent of document CAS.
+ * Replacement implementations must enforce the same bounded-read contract.
+ * renameSession's revision_conflict/not_found/closed errors must be pre-write
+ * refusals; any other thrown write error may have an unknown commit outcome. */
+export interface SessionCatalog {
+  listSessions(options?: PageOptions): Promise<SessionCatalogPage>;
+  getSessionInfo(sessionId: string): Promise<SessionDetail>;
+  renameSession(sessionId: string, title: string | null, expectedMetadataRevision: number): Promise<SessionDetail>;
+  readHistory(sessionId: string, options?: PageOptions): Promise<SessionHistoryPage>;
+}
 /** A store-owned handle; structurally usable as the kernel's required recorder. */
 export interface SessionRecording {
   record(event: AgentEvent): Promise<void>;
   readonly lastReceipt: SaveReceipt;
   readonly failure: Error | undefined;
 }
-export interface SessionStore {
-  create(sessionId: string): Promise<SaveReceipt>;
+export interface SessionStore extends SessionCatalog {
+  create(sessionId: string, location?: SessionLocation): Promise<SaveReceipt>;
   load(sessionId: string): Promise<SessionSnapshot>;
   /** Exact next fact; never an automatic replay or upsert of an old fact. */
   append(event: AgentEvent, expectedRevision: number): Promise<SaveReceipt>;
