@@ -1,11 +1,15 @@
 import { runProductRuntime } from './runtime.js';
 import { ProductError, resolveCredential, resolveProductArguments, createProductBinding, publicConfiguration } from './config.js';
+import { catalogCommands, runCatalogCommand } from './catalog.js';
 export { productFailure } from './config.js';
 
 export const productHelp = `Independent coding Agent (no Controller or Yui Home)
   yui agent check-config [options]
   yui agent start [options] [--session ID]
   yui agent run [options] --input TEXT [--session ID]
+  yui agent sessions --state-dir PATH [--limit N] [--cursor CURSOR]
+  yui agent session-info|history --state-dir PATH --session ID [history: --limit N --cursor CURSOR]
+  yui agent rename --state-dir PATH --session ID --title JSON_STRING_OR_NULL --expected-metadata-revision N
 
 Required: --endpoint COMPLETE_URL --model NAME --credential-ref env:NAME|anonymous --state-dir PATH
 Optional: --config FILE --cwd PATH --adapter chat-completions
@@ -16,7 +20,8 @@ Explicit opt-ins on EVERY invocation: --allow-write --allow-command --allow-memo
 Only loopback HTTP is allowed. --command-config JSON supplies explicit env and reviewed specs.
 Command authorization is exact executable/argv/cwd/effect; no arbitrary model scripts.
 Complete env permits only PATH/LANG/LC_ALL/TZ; nothing is inherited.
-start uses the existing line UI: text, /cancel, /history, /use ID, /new, /quit.
+start uses the existing line UI: text, /cancel, /sessions [CURSOR], /history [CURSOR], /info,
+/rename EXPECTED_METADATA_REVISION JSON_STRING_OR_NULL, /use ID, /new, /quit.
 Ctrl-C cancels the active turn (or exits when idle); SIGTERM/EOF close owned execution.
 run emits result + exact save receipt; exit 0 completed, 1 error, 3 budget, 130 cancelled.
 CLI > NATIVE_AGENT_* environment > explicit version-1 JSON file > safe defaults.
@@ -24,8 +29,9 @@ No automatic config discovery, account fallback, tool replay or inherited grants
 Real local tools/permission/environment are created together; reopen rebuilds current authority.
 Project guidance is required; Skills load completely on request as project/user data.
 project_memory reads .agents/MEMORY.md; replace/delete need --allow-memory-write, not --allow-write.
-Persistent catalog/cwd metadata await the real producer module;
-/sessions currently lists this process's explicit selections, not persisted discovery.
+Catalog commands need only the existing state directory; reads never start execution.
+Duplicate titles are not identities. Stale cursors require an explicit first-page refresh.
+Original root/cwd metadata are not yet persisted; no automatic location restoration is claimed.
 `;
 
 export async function runProductCommand(args: string[]): Promise<number> {
@@ -34,6 +40,7 @@ export async function runProductCommand(args: string[]): Promise<number> {
     process.stdout.write(args.includes('--json') ? `${JSON.stringify({ help: productHelp })}\n` : productHelp);
     return 0;
   }
+  if (catalogCommands.some(command => command === args[0])) return runCatalogCommand(args, process.env, process.cwd());
   const invocation = await resolveProductArguments(args, process.env, process.cwd());
   const credential = resolveCredential(invocation.config, process.env);
   if (credential && invocation.input?.includes(credential)) {

@@ -7,7 +7,7 @@
 当前入口已装配真实 kernel、ModelGateway、ExecutionOwner、工具、上下文、
 SQLite、行式交互和观测，以及真实本地安全 binding/permission/environment、
 项目指导、按需完整Skill与唯一项目MEMORY。
-尚未接入持久 Session catalog/目录元数据；
+已接入真实持久 Session catalog、标题CAS和有界历史，尚无原始root/cwd持久元数据；
 因此这是可独立使用的入口装配，不是完整产品的联合验收结果。
 
 ## 启动
@@ -137,7 +137,9 @@ UI显示确认消息、工具事件和不含正文的观测。无法识别用户
 ## 输入、取消、关闭与保存
 
 `start`复用行式UI：普通文本提交；`/cancel`按精确活动Turn身份取消；
-`/history`查询真实消息；`/use ID`选择明确会话；`/new`新建；
+`/history [CURSOR]`查询真实分页事件，`/sessions [CURSOR]`查询持久目录；
+`/info`读取当前会话详情，`/rename METADATA_REVISION JSON_TITLE_OR_NULL`用明确版本改名；
+`/use ID`选择明确会话，`/new [title]`新建并通过真实catalog保存标题；
 `/quit`、EOF或SIGTERM关闭整个产品。Ctrl-C在执行时请求取消，在空闲时退出。
 取消不是回滚：已发生的文件/命令效果仍按真实结果保存；未知效果不重放。
 执行所有者先取消/drain，再关闭SQLite、观测、响应体和自有HTTP连接池，
@@ -152,11 +154,46 @@ configuration/binding/projectAuthority/result/receipt/observations；退出码0�
 `start`是行式UI，若要求JSON则明确拒绝并建议使用run。
 工具执行非零exitCode不是业务成功；完整结果中需要检查实际工具outcome。
 
-状态文件固定为显式stateDir下`sessions.sqlite`，使用既有独立Session格式2和
-现有v1→v2迁移，不改变Yui Home版本。新状态目录0700、数据库0600；
+状态文件固定为显式stateDir下`sessions.sqlite`，使用独立Session文档格式2和
+81的SQLite NAS1布局3、集中v1→v2→v3迁移，不改变Yui Home版本。合法v2文档
+字节/revision/digest保留，新增标题和事件查询投影；未知/损坏格式拒绝，迁移失败回滚。
+新状态目录0700、数据库0600；
 已有目录权限不擅自重设。请独占受控状态目录，每个Session只运行一个owner；
 CAS不是跨进程执行租约。恢复非ready状态被拒绝且不自动修复/重放。
 掉电/SIGKILL不保证finally运行；强沙箱、真实模型质量和其他平台未验证。
+
+## 持久目录、命名与有界历史
+
+关闭所有连接后可从新进程查看原目录，不需要模型配置、cwd或工具授权：
+
+```sh
+yui agent sessions --state-dir /absolute/agent-state --limit 20
+yui agent session-info --state-dir /absolute/agent-state --session SESSION_ID
+yui agent history --state-dir /absolute/agent-state --session SESSION_ID --limit 20
+yui agent rename --state-dir /absolute/agent-state --session SESSION_ID \
+  --expected-metadata-revision 0 --title '"我的会话"'
+# 清除标题用 --title null；下一页原样带回nextCursor并保留原limit。
+yui agent sessions --state-dir /absolute/agent-state --limit 20 --cursor OPAQUE_CURSOR
+```
+
+这些命令只消费真实SessionCatalog，不创建Agent/owner、不调用模型、不重放工具；
+改名是用户明确请求的元数据CAS写入，不是执行授权。它们打开已存在的目录和数据库，
+缺失时报错且不新建。打开合法旧库仍可能运行81的既有格式迁移，不承诺字节级只读。
+状态目录CLI优先于`NATIVE_AGENT_STATE_DIR`，环境路径须绝对；这些目录命令不读取
+模型配置文件。可用`--credential-ref env:NAME`或`NATIVE_AGENT_CREDENTIAL_REF`
+指定当前已知凭据的输出保护，不请求账户/模型；未指定时也不猜测其他秘密。
+
+目录返回真实sessionId/title/metadataRevision，不返回历史正文或猜测live状态。
+标题可重复，选择只用ID。标题版本与事件revision/digest独立；改名不改历史回执。
+页大小1–100，默认20；UI固定20。不透明cursor绑定库、操作、Session、limit和相应
+版本；过期或错配明确报cursor_stale/invalid_cursor并要求用户从首屏刷新，
+不自动换页、不混合新旧结果。历史页是原始revision/event，可能跨页配对，
+不是恢复上下文；真正submit仍由唯一ExecutionOwner从同一store完整load/recorder
+检查。未知效果或cleanup-required历史可查，但查询不会消除恢复限制。
+
+元数据写确认失败保守报告effect:unknown、精确Session ID和对账建议，
+先读当前title/metadataRevision，不能盲目重试。新建后标题保存失败时保留已创建
+的空Session事实，不重复创建或假装完整成功。UI展示、目录版本及观测不替代必要记录。
 
 ## 项目指导、Skill与MEMORY
 
@@ -191,17 +228,16 @@ write/edit或可写命令，它们仍具有其既有受控root权限，可能直
 
 ## 真实接线剩余边界
 
-- 持久catalog生产者须提供稳定ID/标题/分页、create/open/rename、cwd元数据和
-  可恢复诊断；与现有InteractionSessionPort的create/list/read/history接线。
-  目前`--session ID`和`/use ID`直接查询真实store，`/sessions`只列出本进程显式选择，
-  不代表持久发现；当前无法核对原会话cwd，使用者须重新选择相同受控目录。
+- 已采用81真实SessionCatalog、Memory/SQLite、命名CAS、布局迁移和有界历史，
+  CLI和UI都可持久发现、按ID选择并检查原事件；目录与owner共用同一store。
+  81当前没有持久root/cwd，仍不能自动恢复或核对原会话位置。
+  不从数据库路径、当前cwd、历史、标题或MEMORY猜补；使用者须明确提供相同受控目录。
 - 已采用82真实安全模块，包含实际ToolPermission/ToolEnvironment及有效binding描述；
   默认只读、精确命令、本次授权、结算关闭后重开重建已经通过真实CLI离线验证。
   已采用84真实源码，项目工具使用独立的公开权限组合，MEMORY写授权不继承。
-- 最终“新进程发现并选择同会话、原会话目录一致、实际授权效果”的验收仍需81
-  真实源码与完整合同，不能用fixture或完成通知替代。指定ID恢复只验证当前绑定，
-  还不能核对原会话目录。当前离线检查只替换模型网络，其余已装配模块真实，
-  不是缺少catalog的最终联合验收。
+- 最终“恢复原root/cwd、拒绝显式位置冲突、legacy缺失不猜补”的路径仍需81位置
+  持久化增量合同。此处未制造字段、sidecar或第二账本，不抢做生产者扩展。
+  当前离线检查只替换模型网络，其余已装配模块真实；不冒充位置恢复或最终联合验收。
 
 ## 可执行离线样例
 
@@ -213,6 +249,7 @@ node docs/examples/agent-offline.mjs
 
 样例创建本地HTTP服务、一次性目录和dummy凭据，经真实入口完成读取、编辑、
 精确授权本地检查、按需完整Skill、MEMORY默认拒绝与显式写入、回执核对和指定ID
-续聊，随后重开不继承command/write/MEMORY授权；
+续聊，随后重开不继承command/write/MEMORY授权，并验证持久分页发现、重复标题ID选择、
+改名和有界历史、失效游标明确刷新；
 finally关闭fixture进程/服务并删除自己的目录。
 不使用真实模型、账号或共享资源，不启动控制面。

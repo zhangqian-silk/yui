@@ -4,6 +4,7 @@
 工作单元：task-80/work-item-1，隔离Develop工作区；仅修改project-1。
 本记录是Worker实现/自审证据，不是Task接受或最终联合验收。
 前文记录run-3原始入口；run-5替换其预绑定tools路径，run-6接入84真实项目指导，
+run-7接入81真实持久目录与历史。
 分别见后文消费证据。旧段落中的“尚未提供”是该轮历史事实，不代表当前状态。
 
 ## 已实现边界
@@ -223,3 +224,104 @@ fixture teardown在首次CLI之前注册，进程/HTTP/SQLite/资源均结算，
 本轮是Worker消费实现与自审，不是Task接受或最终联合完成。
 未运行真实模型/付费API/共享或生产资源，不证明真实规划质量、强OS沙箱、
 敌对并发文件系统或其他平台行为。
+
+## run-7：采用81真实持久目录、命名与有界历史
+
+日期：2026-10-05。消费基线为
+`ad2bd9e064460862fa9cde3619360e823a621c1b`，保留82/84已有接线。
+按manifest加载并核对task-80/run-7、snapshot-7 digest
+`dcec2973292acad17a063f7a79b67ac4b9876c4a78f51ec66159511c63ae2e8b`；
+原work-item-1、worker写域project-1和Develop工作区未改变。
+实际派工message-23授权消费message-22的完整交接，并明确原root/cwd由81后续扩展，
+不得由80造字段/sidecar/第二账本，不扩大远端或真实资源权限。
+
+message-22共24页，source digest
+`afd0d281d66c327e7b47bb65f61cd5b5a6b2e314dc7b01b3a0d92dd28ef69e22`。
+逐页核对source/digest/offset、完整拼接96488字符后JSON.parse一次，
+保留原始LF及终结换行；三个payload验证：
+
+- GUIDE：9024 UTF-8 bytes，SHA256
+  `f7afdaaca0c055753c616854605322399d3f3bafaff88197ea48ace04fbfc865`。
+- CONTRACT：27860 bytes，SHA256
+  `dcbe6990e5060a79517849fcd966bba42329ad51d27fd6071adb70185c3f868e`。
+- PATCH：71656 bytes，SHA256
+  `b696ff8c457b458d46f8dd3fe1b4ea1d1170dfbce0bfd02fefcb0075baf424ac`。
+
+81实际Project commit为`288f46714921d94c5c4b5b4683f46737fec3659d`，
+基线`ff0b12cfe6c521ea3087d8dcd4d47f6d9a6b4f10`。
+GUIDE Artifact为`1a18e7c7f76f5bfb51aebf210764142010feef2f`，
+CONTRACT Artifact为`17391d307a108bce2c2f977f37b41d1ecc499af8`，
+PATCH Artifact为`5d8b6d506fec03fc27807610c695385f3ee226e2`；
+均不同于消费者提交身份。完整读合同、相关源码和回归；
+在自身干净HEAD执行`git apply --check`通过后采用十二文件增量，
+相邻index/README保留82/84。没有跨读私有目录、跨Task fetch或强制覆盖。
+消费者另纠正README中“81提供cwd事实”的旧描述，没有修改81存储/API来抢做位置扩展。
+
+采用的生产模块blob（与完整补丁对应，不是消费者补写实现）：
+
+| 路径（相对src/nativeAgent/session） | blob |
+| --- | --- |
+| contracts.ts | `be43da95d04511b9c2475012e4c0435b66b6f29e` |
+| backends.ts | `b01dabf22d254f745d28f9db7f35d97bdec45484` |
+| catalog.ts | `02b75bcfc6aedcf1c7472734fc3a0d372e034bc7` |
+| sqliteFormat.ts | `8b86e28d8703e4db9919265578f1191b5d0ec181` |
+| store.ts | `00d5742d34a5c0fd5897717827034b68bf540b88` |
+| index.ts | `78e28a3c08489fe822cd7397fac0ab22b73121b5` |
+| catalogDemo.ts | `3804ff99e770a4002aece45ea56285668b5f2c53` |
+
+生产目录回归blob为`3b23095f4ffa045bfa88c018b0f93bcef1fbd927`，
+更新的session回归blob为`e43c0245a4c32c51b4a1c0bf0a07c49554ca3a15`。
+82 localSafety和84 projectGuidance实现blob仍分别为
+`79927fba8b0423535836866ba2979d0db376d703`、
+`aa974c9c8bb6946fc407e58f9cd9bfbeee18bb8e`。
+
+入口增加`sessions/session-info/rename/history`四个独立目录命令，
+只打开明确现有状态库，无模型/cwd/工具配置依赖，不创建Agent或owner。
+missing不会新建库，读失败不伪造空页；合法旧库仍走81真实NAS1布局迁移，
+不声称目录打开绝不写数据库。命名严格使用metadataRevision CAS；
+元数据异常保留unknown、精确Session ID和不盲重试的对账建议，原始cause不输出。
+当前已知凭据保护可通过显式引用启用，不猜测任意历史秘密。
+
+行式UI显式注入公共SessionCatalog，`/sessions`与`/history`使用opaque cursor，
+`/info`读取详情，`/rename REV JSON_TITLE_OR_NULL`改名；
+未注入catalog的既有消费者仍沿用其原offset显示合同。`/new`沿用owner创建事实，
+再由同一store保存标题；命名失败保留已创建事实，不重复创建。
+同一个store同时供catalog与唯一owner；submit仍load完整历史和recorder admission，
+历史页不作为执行上下文，查询/标题/游标不改变恢复限制或本次权限。
+没有改写唯一kernel/ExecutionOwner/82策略/84指导或引入第二执行器与账本。
+
+先加真实CLI回归，旧入口因不认识rename而失败。接线后一次中间失败是fixture
+遗漏Step前user消息，真实存储按既有合同拒绝；补齐正确事实顺序，未放宽生产协议。
+聚焦product/catalog/migration/guidance/local-safety/interaction六文件29项全通过，
+约4.94秒，其中新增目录场景约1.75秒。场景创建两个真实Session后关闭进程，
+新进程同名标题按不同ID发现、详情/有界历史/命名CAS、目录和历史游标分别失效、
+明确刷新首屏、UI实际目录/详情/历史/改名及指定ID续聊。
+只替换模型网络；目录/改名/UI没有增加模型请求，命名不改历史digest，
+真正续聊传入原完整历史、回执增长并保持只读及MEMORY授权归零；
+未知效果历史可读，执行前拒绝且没有请求模型，不伪造live状态或重放。
+82原读/edit/精确command/save/close/resume与84 required/Skill/权限回归保留。
+临时检查另确认missing目录不创建state/Home、元数据unknown诊断保留精确目标
+而不输出原始cause；这是诊断映射检查，不冒称实际I/O丢确认的CLI验证。
+
+最终`npm test`（含build）579项，572通过、7跳过、0失败，
+测试阶段8.06秒；test:core同脚本未重复。组装/dry-pack/结构检查558文件通过；
+原有runtime package smoke通过：Doctor原生依赖413ms，重开/跟进7.67秒、
+handover 2.70秒。源码和组装包内新版`docs/examples/agent-offline.mjs`都通过，
+除82/84路径外新增真实持久分页发现、重复命名按ID选择、元数据改名、有界历史、
+失效游标明确刷新。样例没有伪造root/cwd元数据或用单页历史续聊。
+日志为运行时TMPDIR的`task80-core-run7.log`、`task80-package-run7.log`，
+清单为`task80-package-inventory-run7.json`。
+
+完整生产/消费差异自审、`git diff --check`和完整补丁反向`--check`通过。
+各fixture在首次CLI前有teardown，所有自有进程/HTTP/SQLite结算；
+相关目录前缀残留为空，package smoke只清理其精确Controller/tmux。
+临时原文可由message-22恢复，验证后删除；npm cache保留在运行时TMPDIR的
+`task80-npm-cache-run7`供回收，保留日志/清单/可重建本地包。
+没有push/PR/merge/版本/tag/npm发布/全局安装/Home或模型设置变更/归档。
+
+未满足的产品路径仍是原root/cwd持久化和新进程自动恢复正确位置。
+Leader已将精确需求交Operator路由81；80不猜补、不改其合同抢做。
+位置不是grant，未来收到实际增量后须验证显式位置冲突拒绝、legacy缺失不猜补，
+并继续同一work-item-1做真实新进程联合路径。当前结果是Worker实现/自审，
+还需独立Review，不接受WorkItem或声称整批最终完成。
+未运行真实模型/付费/共享/生产资源，也不证明规划质量、硬件掉电或强OS沙箱。

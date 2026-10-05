@@ -1,6 +1,7 @@
 import { supportedAgentAdapterIds } from "../agent/adapterCatalog.js";
 import { supportedAgentExecutionComponentIds } from "../agent/executionComponents.js";
 import { productConfigurationOptions } from "../nativeAgent/product/config.js";
+import { catalogCommands, catalogCommandOptions } from "../nativeAgent/product/catalog.js";
 import {
   CONFIG_DEFINITIONS,
   CONFIG_DOMAINS,
@@ -1220,7 +1221,7 @@ export const ROOT_COMMAND = buildNode({
     {
       name: "agent", discovery: { surface: "public", audiences: ["public","operator"] },
       summary: "Run the independent coding Agent without a Controller or Yui Home.",
-      sections: [{ id: "product", title: "Independent Agent", entries: ["check-config", "start", "run"] }],
+      sections: [{ id: "product", title: "Independent Agent", entries: ["check-config", "start", "run", ...catalogCommands] }],
       children: [
         { name: "check-config", discovery: { surface: "public", audiences: ["public","operator"] },
           summary: "Validate explicit configuration without model requests or state initialization.",
@@ -1230,7 +1231,10 @@ export const ROOT_COMMAND = buildNode({
           options: [...productConfigurationOptions, "--session"], fileOptions: ["--config"] },
         { name: "run", discovery: { surface: "public", audiences: ["public","operator"] },
           summary: "Submit one input and return real result/save evidence as JSON.",
-          options: [...productConfigurationOptions, "--session", "--input"], fileOptions: ["--config"] }
+          options: [...productConfigurationOptions, "--session", "--input"], fileOptions: ["--config"] },
+        ...catalogCommands.map(name => ({ name, discovery: { surface: "public" as const, audiences: ["public" as const, "operator" as const] },
+          summary: "Use the real persistent Session catalog without starting execution.",
+          options: catalogCommandOptions(name) }))
       ]
     },
     {

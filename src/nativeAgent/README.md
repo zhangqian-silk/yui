@@ -470,7 +470,8 @@ release 撤销本次 lease，命令工具继续拥有它已启动的自有进程
 无自动重放账本：调用 ID 唯一性、Session 串行和恢复仍由原内核/存储合同负责。
 
 恢复及切换合同：80 从明确配置/当前授权取 root/cwd/能力/env/精确规格，
-81 仅提供所选 Session 和 cwd 事实，Session 标题或旧描述不是授权。
+81 当前提供所选 Session/标题/事件事实，尚无持久原 root/cwd，须等待真实位置增量；
+Session 标题或旧描述不是授权，不从历史、MEMORY或当前目录猜补原位置。
 先取消并等待旧 execution owner 结算，再关闭自己的 store/observer；
 重新打开时创建新 binding 与 executor，重新验证真实目录/程序/权限，
 再用同一 store 的完整历史创建 Agent/execution owner。不热更新旧 lease，

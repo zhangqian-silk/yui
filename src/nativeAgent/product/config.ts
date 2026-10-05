@@ -4,14 +4,17 @@ import { createLocalToolBinding, type LocalToolOptions } from '../index.js';
 
 export class ProductError extends Error {
   constructor(readonly code: 'agent_config' | 'agent_storage' | 'agent_execution' | 'agent_output',
-    readonly field: string, readonly nextAction: string) {
+    readonly field: string, readonly nextAction: string, readonly effect?: 'unknown',
+    readonly sessionId?: string) {
     super(`${code}: ${field}; ${nextAction}`);
   }
 }
 export function productFailure(error: unknown) {
   // Never format arbitrary thrown messages, causes, argv or HTTP response bodies.
   return error instanceof ProductError
-    ? { code: error.code, field: error.field, nextAction: error.nextAction }
+    ? { code: error.code, field: error.field, nextAction: error.nextAction,
+      ...(error.effect ? { effect: error.effect } : {}),
+      ...(error.sessionId ? { sessionId: error.sessionId } : {}) }
     : { code: 'agent_execution', field: 'runtime', nextAction: 'Inspect saved facts; do not replay uncertain effects.' };
 }
 const invalid = (field: string, action = 'Provide a supported explicit value and restart.'): never => {
@@ -194,10 +197,15 @@ export function publicConfiguration(config: ProductConfig) {
 
 /** Resolved only in memory. Never returned in configuration, receipts or diagnostics. */
 export function resolveCredential(config: ProductConfig, env: NodeJS.ProcessEnv): string | undefined {
-  if (config.credentialRef === 'anonymous') return undefined;
-  const token = env[config.credentialRef.slice(4)];
+  const token = resolveCredentialReference(config.credentialRef, env);
+  if (token && containsCredential(config, token)) return invalid('credentialRef', 'Keep the credential value separate from public configuration.');
+  return token;
+}
+export function resolveCredentialReference(ref: string, env: NodeJS.ProcessEnv): string | undefined {
+  if (ref === 'anonymous') return undefined;
+  if (!/^env:[A-Za-z_][A-Za-z0-9_]*$/u.test(ref)) return invalid('credentialRef');
+  const token = env[ref.slice(4)];
   if (!token?.trim() || token.length > 4096 || /[\x00-\x1f\x7f]/u.test(token)) return invalid('credentialRef', 'Set the referenced credential environment variable to a valid nonempty value.');
-  if (containsCredential(config, token)) return invalid('credentialRef', 'Keep the credential value separate from public configuration.');
   return token;
 }
 

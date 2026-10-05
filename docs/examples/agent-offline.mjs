@@ -62,10 +62,12 @@ try {
   const shared = ['--allow-http', '--endpoint', `http://127.0.0.1:${server.address().port}/chat`,
     '--model', 'offline-fixture', '--credential-ref', 'env:EXAMPLE_CREDENTIAL',
     '--cwd', directory, '--state-dir', join(directory, 'state')];
-  const execute = (args, expectedCode = 0) => new Promise((resolve, reject) => {
+  const execute = (args, expectedCode = 0, command = 'run') => new Promise((resolve, reject) => {
     // Installed package uses its public bin; source checkout uses the required absolute local launcher.
     active = spawn(existsSync(localLauncher) ? localLauncher : process.execPath,
-      [...(existsSync(localLauncher) ? [] : [join(packageRoot, 'dist/cli.js')]), 'agent', 'run', ...shared, ...args],
+      [...(existsSync(localLauncher) ? [] : [join(packageRoot, 'dist/cli.js')]), 'agent', command,
+        ...(command === 'run' ? shared : ['--state-dir', join(directory, 'state'), '--credential-ref', 'env:EXAMPLE_CREDENTIAL']),
+        ...args],
       { env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, TMPDIR: tmpdir(),
         YUI_HOME: join(directory, 'unused-control-home'), EXAMPLE_CREDENTIAL: secret },
         stdio: ['ignore', 'pipe', 'pipe'] });
@@ -76,7 +78,7 @@ try {
     active.on('close', code => {
       active = undefined;
       if (code !== expectedCode) reject(new Error(`Offline entry failed (${code}): ${error}`));
-      else resolve(JSON.parse(output));
+      else resolve(JSON.parse(output || error));
     });
   });
   const first = await execute(['--input', 'Read input.txt']);
@@ -119,10 +121,30 @@ try {
   assert.equal(ungranted.result.messages.filter(message => message.role === 'tool'
     && message.name === 'project_memory').at(-1).outcome.error.code, 'permission_denied');
   assert.equal(ungranted.projectAuthority.allowMemoryWrite, false);
+  phase = 'read'; step = 0;
+  const another = await execute(['--input', 'Create another explicitly separate Session']);
+  for (const saved of [first, another]) await execute(['--session', saved.receipt.sessionId,
+    '--title', '"Same title"', '--expected-metadata-revision', '0'], 0, 'rename');
+  const page = await execute(['--limit', '1'], 0, 'sessions');
+  const next = await execute(['--limit', '1', '--cursor', page.nextCursor], 0, 'sessions');
+  assert.notEqual(page.items[0].sessionId, next.items[0].sessionId);
+  assert.equal(page.items[0].title, next.items[0].title);
+  assert.ok([page.items[0], next.items[0]].some(item => item.sessionId === first.receipt.sessionId));
+  const facts = await execute([...resume, '--limit', '2'], 0, 'history');
+  assert.equal(facts.records.length, 2);
+  const detail = await execute(resume, 0, 'session-info');
+  assert.equal(detail.sessionId, first.receipt.sessionId);
+  await execute([...resume, '--title', '"Chosen exact ID"', '--expected-metadata-revision', '1'], 0, 'rename');
+  const stale = await execute(['--limit', '1', '--cursor', page.nextCursor], 1, 'sessions');
+  assert.equal(stale.field, 'cursor_stale');
+  await execute(['--limit', '1'], 0, 'sessions'); // Explicit refresh, no automatic cursor fallback.
+  await execute([...resume, '--limit', '2', '--cursor', facts.nextCursor], 0, 'history');
   console.log(JSON.stringify({ offline: true, editedAndChecked: true, resumedExactId: true,
     persistentReceiptVerified: true, exactCommandAuthority: true, reopenDefaultsReadOnly: true,
     progressiveCompleteSkill: true, memoryRequiresSeparateInvocationGrant: true,
-    controlHomeCreated: false, remaining: 'Persistent catalog/cwd metadata producer integration' }));
+    persistentCatalogDiscovered: true, duplicateTitlesSelectedById: true, boundedHistoryRead: true,
+    explicitStaleCursorRefresh: true, controlHomeCreated: false,
+    remaining: 'Original root/cwd persistence producer extension' }));
 } finally {
   if (active) {
     const stopped = new Promise(resolve => active.once('close', resolve));

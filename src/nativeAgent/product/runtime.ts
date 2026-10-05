@@ -1,15 +1,14 @@
-import { mkdir, chmod, lstat, realpath } from 'node:fs/promises';
-import { join } from 'node:path';
 import {
   createAgent, createProjectGuidance, createContextBuilder, createExecutionOwner,
-  createLocalObserver, createModelGateway, createSessionStore, createSqliteSessionBackend,
+  createLocalObserver, createModelGateway,
   connectModelObservations, createInteractionDiagnostics, openCli,
-  type ExecutionOwner, type InteractionSessionPort, type SessionStore,
+  type ExecutionOwner, type InteractionSessionPort, type SessionStore, type SessionCatalog,
 } from '../index.js';
 import type { CliConnection } from '../interaction/index.js';
 import { ProductError, containsCredential, createProductBinding, publicConfiguration, type ProductArguments } from './config.js';
 import { createProductTransport } from './transport.js';
 import { createProductTools } from './tools.js';
+import { openProductStore, storageFailure } from './storage.js';
 
 /** Product owns the streams' connection listeners, model dispatcher, store and owner.
  * No hidden execution loop/catalog/policy: all execution goes through ExecutionOwner. */
@@ -60,16 +59,7 @@ export async function runProductRuntime(invocation: ProductArguments, credential
   // Explicit per-product dispatcher. Closing it cannot close a borrowed/global pool.
   const network = createProductTransport();
   try {
-    try {
-      await mkdir(config.stateDir, { recursive: true, mode: 0o700 });
-      if ((await lstat(config.stateDir)).isSymbolicLink()) throw new Error();
-      const stateDir = await realpath(config.stateDir);
-      const filename = join(stateDir, 'sessions.sqlite');
-      store = createSessionStore(createSqliteSessionBackend(filename));
-      await chmod(filename, 0o600);
-    } catch {
-      throw new ProductError('agent_storage', 'stateDir', 'Choose a writable controlled state directory containing a supported Agent database.');
-    }
+    store = await openProductStore(config.stateDir, true);
     const provider = createModelGateway({
       endpoint: config.endpoint, model: config.model,
       account: credential ? { kind: 'bearer', token: credential } : { kind: 'none' },
@@ -138,12 +128,33 @@ export async function runProductRuntime(invocation: ProductArguments, credential
         ? 130 : evidence.result.reason === 'budget_exhausted' ? 3 : 1);
     }
     const activeOwner = owner;
+    const activeStore = store;
+    const catalogSafe = async <T>(operation: () => Promise<T>): Promise<T> => {
+      try { const value = await operation(); guard(value); return value; }
+      catch (error) { throw storageFailure(error); }
+    };
+    const catalog: SessionCatalog = {
+      listSessions: options => catalogSafe(() => activeStore.listSessions(options)),
+      getSessionInfo: id => catalogSafe(() => activeStore.getSessionInfo(id)),
+      readHistory: (id, options) => catalogSafe(() => activeStore.readHistory(id, options)),
+      async renameSession(id, title, expected) {
+        guard(title);
+        return catalogSafe(() => activeStore.renameSession(id, title, expected));
+      },
+    };
     const safe = async <T>(operation: () => Promise<T>): Promise<T> => {
       try { const value = await operation(); guard(value); return value; }
       catch { throw new ProductError('agent_execution', 'session', 'Inspect saved Session facts; do not automatically retry.'); }
     };
     const port: InteractionSessionPort = {
-      async create(title) { guard(title); return safe(() => activeOwner.create(title)); },
+      async create(title) {
+        guard(title);
+        if (!title.trim() || [...title.trim()].length > 200 || /[\p{Cc}\p{Cs}]/u.test(title))
+          throw new ProductError('agent_config', 'title', 'Use 1..200 Unicode characters without controls.');
+        const item = await safe(() => activeOwner.create(title));
+        await catalog.renameSession(item.id, title, 0);
+        return item;
+      },
       list: (offset, limit) => safe(() => activeOwner.list(offset, limit)),
       async submit(id, input) {
         guard(input);
@@ -174,8 +185,8 @@ export async function runProductRuntime(invocation: ProductArguments, credential
     await write({ configuration: publicConfiguration(config), binding: binding.binding,
       projectAuthority: { allowMemoryWrite: invocation.allowMemoryWrite },
       sessionId: selected, mode: 'local-tool-binding',
-      note: 'No persistent catalog/cwd metadata yet; authority changes require settled close and explicit reopen. Not an OS sandbox.' }, '[agent] ');
-    cli = await openCli({ sessions: port, input: process.stdin, output: process.stdout,
+      note: 'Persistent catalog is available; original root/cwd are not yet stored. Authority changes require settled close and explicit reopen. Not an OS sandbox.' }, '[agent] ');
+    cli = await openCli({ sessions: port, catalog, input: process.stdin, output: process.stdout,
       initialSessionId: selected, diagnostics: createInteractionDiagnostics(observer) });
     if (signalExit !== undefined || outputFailed) cli.close();
     const ended = await cli.done;

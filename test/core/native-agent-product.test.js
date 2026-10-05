@@ -238,6 +238,90 @@ test('product guidance loads full Skills without elevation and memory grants res
   await assert.rejects(access(env.YUI_HOME));
 });
 
+test('product persistent catalog discovers exact IDs without executing and exposes bounded stale history', { timeout: 15000 }, async t => {
+  const { root, env } = await fixture(t);
+  let requests = 0;
+  const server = createServer(async (req, res) => {
+    let body = '';
+    for await (const part of req) body += part;
+    const input = JSON.parse(body);
+    requests++;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ choices: [{ index: 0, message: {
+      role: 'assistant', content: 'Saved catalog fixture', tool_calls: undefined }, finish_reason: 'stop' }] }));
+    if (requests === 3) assert.ok(input.messages.some(m => m.content === 'Saved catalog fixture'));
+  });
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const state = join(root, 'state');
+  const args = ['--allow-http', '--endpoint', `http://127.0.0.1:${server.address().port}/chat`, '--model', 'offline',
+    '--credential-ref', 'env:AGENT_TEST_TOKEN', '--cwd', root, '--state-dir', state];
+  const run = async (extra = [], code = 0) => {
+    const output = await cli(['run', ...args, ...extra, '--input', 'Read saved facts'], env, undefined, t);
+    assert.equal(output.code, code, output.stderr || output.stdout);
+    return JSON.parse(output.stdout || output.stderr);
+  };
+  const a = await run(), b = await run();
+  const browse = async (command, extra = [], code = 0) => {
+    const output = await cli([command, '--state-dir', state, ...extra], env, undefined, t);
+    assert.equal(output.code, code, output.stderr || output.stdout);
+    assert.ok(!output.stdout.includes(secret) && !output.stderr.includes(secret));
+    return JSON.parse(code ? output.stderr : output.stdout);
+  };
+  for (const saved of [a, b]) await browse('rename', ['--session', saved.receipt.sessionId,
+    '--expected-metadata-revision', '0', '--title', '"Same title"']);
+  const first = await browse('sessions', ['--limit', '1']);
+  const second = await browse('sessions', ['--limit', '1', '--cursor', first.nextCursor]);
+  assert.equal(second.nextCursor, null);
+  assert.equal(first.items[0].title, second.items[0].title);
+  assert.notEqual(first.items[0].sessionId, second.items[0].sessionId);
+  const selected = second.items[0].sessionId;
+  const info = await browse('session-info', ['--session', selected]);
+  const history = await browse('history', ['--session', selected, '--limit', '2']);
+  assert.equal(history.records.length, 2);
+  assert.equal(history.sessionId, selected);
+  assert.equal((await browse('session-info', ['--session', selected])).digest, info.digest);
+  await browse('rename', ['--session', selected, '--expected-metadata-revision', '1', '--title', '"Renamed"']);
+  const stale = await browse('sessions', ['--limit', '1', '--cursor', first.nextCursor], 1);
+  assert.equal(stale.field, 'cursor_stale');
+  assert.match(stale.nextAction, /first page/);
+  await browse('sessions', ['--limit', '1']);
+  await browse('history', ['--session', selected, '--limit', '2', '--cursor', history.nextCursor]);
+  assert.equal(requests, 2); // Reads/rename/UI never start execution.
+  const ui = await cli(['start', ...args, '--session', selected], env,
+    '/sessions\n/info\n/history\n/rename 2 "UI title"\n', t);
+  assert.equal(ui.code, 0, ui.stderr);
+  assert.ok(ui.stdout.includes(a.receipt.sessionId) && ui.stdout.includes(b.receipt.sessionId));
+  assert.ok(ui.stdout.includes('[session info]') && ui.stdout.includes('[history facts'));
+  assert.equal((await browse('session-info', ['--session', selected])).title, 'UI title');
+  assert.equal(requests, 2);
+  const resumed = await run(['--session', selected]);
+  assert.equal(resumed.receipt.sessionId, selected);
+  assert.ok(resumed.receipt.revision > info.revision);
+  assert.equal(resumed.binding.allowWrite, false);
+  assert.equal(resumed.projectAuthority.allowMemoryWrite, false);
+  assert.equal((await browse('history', ['--session', selected, '--limit', '2',
+    '--cursor', history.nextCursor], 1)).field, 'cursor_stale');
+  await browse('session-info', ['--session', 'not-created'], 1);
+  const store = createSessionStore(createSqliteSessionBackend(join(state, 'sessions.sqlite')));
+  try {
+    await assert.rejects(store.load('not-created'));
+    assert.equal((await store.load(selected)).digest, resumed.receipt.digest);
+    await store.create('unknown');
+    const data = [{ type: 'turn_started' }, { type: 'message_appended',
+      message: { role: 'user', content: 'Inspect the uncertain call' } }, { type: 'step_started', step: 1 },
+      { type: 'message_appended', step: 1, message: { role: 'assistant', content: '',
+        toolCalls: [{ id: 'uncertain', name: 'read', arguments: { path: 'input.txt' } }] } },
+      { type: 'tool_started', step: 1, toolCallId: 'uncertain', name: 'read' }];
+    for (const [index, item] of data.entries()) await store.append({
+      sessionId: 'unknown', turnId: 'interrupted', seq: index + 1, data: item }, index);
+  } finally { await store.close(); }
+  await browse('history', ['--session', 'unknown']);
+  await run(['--session', 'unknown'], 1);
+  assert.equal(requests, 3);
+  await assert.rejects(access(env.YUI_HOME));
+});
+
 test('product exact command authority is rebuilt on reopen, never recovered from history', { timeout: 10000 }, async t => {
   const { root, env } = await fixture(t);
   const executable = realpathSync(process.execPath);
