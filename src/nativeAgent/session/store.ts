@@ -1,8 +1,9 @@
 import type { AgentEvent } from '../index.js';
-import type { SaveReceipt, SessionBackend, SessionCatalog, SessionDocument, SessionRecording, SessionStore } from './contracts.js';
+import type { SaveReceipt, SessionBackend, SessionCatalog, SessionDocument, SessionLocation, SessionRecording, SessionStore } from './contracts.js';
 import { digest } from './backends.js';
 import { copyEvent, identity, immutable, inspectDocument, revision, SessionError, sessionLimits } from './format.js';
 import { metadataRevision, normalizeTitle, queryBounds } from './catalog.js';
+import { copyLocation } from './location.js';
 
 export class SessionSaveError extends SessionError {
   /** Conservative: a thrown backend write is not proof that no commit occurred. */
@@ -12,6 +13,7 @@ export class SessionSaveError extends SessionError {
     readonly expectedRevision: number | null,
     readonly event: AgentEvent | undefined,
     cause: unknown,
+    readonly location?: SessionLocation,
   ) {
     super('save_failed', 'Necessary Session save failed; stop new effects and inspect exact saved facts', { cause });
     this.name = 'SessionSaveError';
@@ -91,11 +93,14 @@ export function createSessionStore(backend: SessionBackend): SessionStore {
       if (observer.sessionId === saved.sessionId) { observer.pending = saved; dispatch(observer); }
     }
   };
-  const save = async (document: SessionDocument, expected: number | null): Promise<SaveReceipt> => {
+  const save = async (document: SessionDocument, expected: number | null, location?: SessionLocation): Promise<SaveReceipt> => {
     check();
-    try { await backend.write(immutable(document), expected); }
+    try {
+      if (location === undefined) await backend.write(immutable(document), expected);
+      else await backend.createWithLocation!(immutable(document), location);
+    }
     catch (cause) {
-      throw new SessionSaveError(document.sessionId, expected, document.events.at(-1), cause);
+      throw new SessionSaveError(document.sessionId, expected, document.events.at(-1), cause, location);
     }
     const saved = receipt(document);
     notify(saved);
@@ -123,9 +128,13 @@ export function createSessionStore(backend: SessionBackend): SessionStore {
         throw new SessionMetadataSaveError(sessionId, normalized, expected, cause);
       }
     },
-    async create(sessionId) {
+    async create(sessionId, location) {
       check(); identity(sessionId);
-      return save({ schemaVersion: 2, sessionId, events: [] }, null);
+      const selected = location === undefined ? undefined : immutable(copyLocation(location));
+      if (selected !== undefined && (!backend.createWithLocation || !backend.catalog)) {
+        throw new SessionError('unsupported_location', 'Backend lacks atomic location creation and bounded detail reconciliation');
+      }
+      return save({ schemaVersion: 2, sessionId, events: [] }, null, selected);
     },
     async load(sessionId) {
       check(); identity(sessionId);

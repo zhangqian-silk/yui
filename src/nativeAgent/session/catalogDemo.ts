@@ -27,7 +27,9 @@ const openOwner = (sessions: SessionStore) => createExecutionOwner({
 });
 try {
   store = createSessionStore(createSqliteSessionBackend(filename));
-  for (const id of ['c', 'a', 'b']) await store.create(id);
+  for (const id of ['c', 'a']) await store.create(id); // Old calls explicitly lack location.
+  const location = { root: directory, cwd: directory };
+  await store.create('b', location); // One atomic creation, never a second metadata write.
   await store.renameSession('a', 'Same title', 0);
   await store.renameSession('b', 'Same title', 0);
   await store.renameSession('c', 'Temporary', 0);
@@ -52,6 +54,11 @@ try {
   // Titles are not keys: the caller chooses the displayed exact ID.
   const selected = discovered.find(s => s.sessionId === 'b')!;
   const detail = await store.getSessionInfo(selected.sessionId);
+  assert.deepEqual(detail.location, location);
+  assert.equal((await store.getSessionInfo('a')).location, null);
+  // Consumer boundary: missing location must not be guessed. Before real execution,
+  // task-80 checks filesystem/exact explicit-location conflicts and rebuilds 82/84
+  // with fresh authority; these storage reads grant none of that authority.
   assert.equal(detail.digest, evidence?.receipt?.digest);
   const renamed = await store.renameSession(selected.sessionId, 'Chosen session', detail.metadataRevision);
   assert.equal(renamed.revision, detail.revision);
@@ -72,6 +79,7 @@ try {
     discovered, selected: renamed.sessionId, persistedTitle: renamed.title,
     historyPages, historyRecords, receiptPreserved: true,
     allConnectionsClosedBeforeReopen: true, continuedThroughExistingOwner: true, modelCalls,
+    persistedLocation: detail.location, legacyLocationExplicitlyMissing: true,
   }, null, 2));
 } finally {
   await owner?.close();

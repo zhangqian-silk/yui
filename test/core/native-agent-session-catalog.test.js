@@ -172,7 +172,7 @@ test('metadata two-connection CAS and ambiguous acknowledgements never overwrite
   }
 });
 
-test('v2 -> layout 3 preserves receipts and large history; invalid migration rolls back all rows and DDL', async () => {
+test('v2 -> current layout preserves receipts and large history; invalid migration rolls back all rows and DDL', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'session-layout-'));
   let db, store;
   try {
@@ -213,6 +213,7 @@ test('v2 -> layout 3 preserves receipts and large history; invalid migration rol
       } else {
         store = createSessionStore(createSqliteSessionBackend(file));
         assert.equal((await store.getSessionInfo('s')).digest, digest);
+        assert.equal((await store.getSessionInfo('s')).location, null);
         const loaded = await store.load('s');
         assert.deepEqual(loaded.document.events, events);
         assert.equal(loaded.recovery.calls[0].settlement.cleanup.status, 'released');
@@ -229,7 +230,7 @@ test('v2 -> layout 3 preserves receipts and large history; invalid migration rol
         assert.deepEqual(records.map(x => x.event), events);
         await store.close(); store = undefined;
         db = new Database(file);
-        assert.equal(db.pragma('user_version', { simple: true }), 3);
+        assert.equal(db.pragma('user_version', { simple: true }), 4);
         assert.equal(db.prepare("SELECT document FROM sessions WHERE id='s'").get().document, text);
         db.pragma('user_version = 99');
         db.close(); db = undefined;

@@ -11,6 +11,8 @@ export type SaveSource = {
   id: string;
   durability: 'volatile' | 'persistent';
 };
+/** Caller-resolved native absolute paths, not permission or execution authority. */
+export type SessionLocation = { readonly root: string; readonly cwd: string };
 /**
  * Replacement backends must provide atomic compare-and-swap and acknowledge only
  * after their advertised durability boundary. Throws may mean unknown commit.
@@ -24,6 +26,10 @@ export interface SessionBackend {
   query?(sessionId: string, options: { after: number; limit: number }): Promise<SessionPage>;
   read(sessionId: string): Promise<unknown | null>;
   write(document: SessionDocument, expectedRevision: number | null): Promise<void>;
+  /** Optional capability: atomically create an empty document AND immutable location.
+   * Must also expose location through catalog.getSessionInfo; never drop it.
+   * A throw may mean unknown commit; callers reconcile by the same Session ID. */
+  createWithLocation?(document: SessionDocument, location: SessionLocation): Promise<void>;
   close(): Promise<void>;
 }
 export type SaveReceipt = {
@@ -70,7 +76,11 @@ export type SessionInfo = {
   title: string | null;
   metadataRevision: number;
 };
-export type SessionDetail = SessionInfo & SaveReceipt & { storeId: string };
+export type SessionDetail = SessionInfo & SaveReceipt & {
+  storeId: string;
+  /** null explicitly means missing (including all migrated Sessions). */
+  location: SessionLocation | null;
+};
 export type PageOptions = { limit?: number; cursor?: string };
 export type SessionCatalogPage = {
   storeId: string;
@@ -102,7 +112,7 @@ export interface SessionRecording {
   readonly failure: Error | undefined;
 }
 export interface SessionStore extends SessionCatalog {
-  create(sessionId: string): Promise<SaveReceipt>;
+  create(sessionId: string, location?: SessionLocation): Promise<SaveReceipt>;
   load(sessionId: string): Promise<SessionSnapshot>;
   /** Exact next fact; never an automatic replay or upsert of an old fact. */
   append(event: AgentEvent, expectedRevision: number): Promise<SaveReceipt>;

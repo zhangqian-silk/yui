@@ -13,11 +13,11 @@ export type { InteractionSessionPort, InteractionDiagnosticsPort } from './inter
 export { connectModelObservations, createInteractionDiagnostics, createInteractionProgress } from './composition.js';
 export {
   createSessionStore, createMemorySessionBackend, createSqliteSessionBackend,
-  SessionError, SessionMetadataSaveError, catalogLimits,
+  SessionError, SessionMetadataSaveError, catalogLimits, locationLimits,
 } from './session/index.js';
 export type {
   SessionStore, SessionBackend, SessionRecording, SaveReceipt, SessionCatalog,
-  SessionInfo, SessionDetail, SessionCatalogPage, SessionHistoryPage, PageOptions,
+  SessionInfo, SessionDetail, SessionLocation, SessionCatalogPage, SessionHistoryPage, PageOptions,
 } from './session/index.js';
 export { createExecutionOwner } from './executionOwner.js';
 export type { ExecutionOwner, ExecutionEvidence } from './executionOwner.js';

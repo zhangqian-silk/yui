@@ -2,12 +2,13 @@ import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import { isAbsolute, resolve } from 'node:path';
 import { existsSync, lstatSync } from 'node:fs';
-import type { PageOptions, SessionBackend, SessionDetail, SessionDocument, SessionInfo, SessionPage } from './contracts.js';
+import type { PageOptions, SessionBackend, SessionDetail, SessionDocument, SessionInfo, SessionLocation, SessionPage } from './contracts.js';
 import { copyEvent, encode, identity, inspectDocument, revision, SessionError, sessionLimits } from './format.js';
 import {
   currentCursor, historyRecords, increment, metadataRevision, nextCursor, normalizeTitle, pageLimit, queryBounds, readCursor,
 } from './catalog.js';
 import { decode, digest, hash, initializeSessionDatabase, type Row } from './sqliteFormat.js';
+import { copyLocation, decodeLocation } from './location.js';
 
 export { digest } from './sqliteFormat.js';
 function transition(previous: SessionDocument | null, next: SessionDocument, expected: number | null): void {
@@ -35,7 +36,7 @@ function seek(ids: string[], after: string): number {
 export function createMemorySessionBackend(): SessionBackend {
   const source = Object.freeze({ id: `memory:${randomUUID()}`, durability: 'volatile' as const });
   const storeId = randomUUID();
-  const documents = new Map<string, { document: SessionDocument; digest: string }>();
+  const documents = new Map<string, { document: SessionDocument; digest: string; location: SessionLocation | null }>();
   const metadata = new Map<string, SessionInfo>();
   const ids: string[] = [];
   let catalogRevision = 0;
@@ -44,7 +45,8 @@ export function createMemorySessionBackend(): SessionBackend {
   const info = (sessionId: string): SessionDetail => {
     check(); identity(sessionId);
     const stored = documents.get(sessionId) ?? missing();
-    return { ...metadata.get(sessionId)!, revision: revision(stored.document), digest: stored.digest, source, storeId };
+    return { ...metadata.get(sessionId)!, revision: revision(stored.document), digest: stored.digest, source, storeId,
+      location: stored.location === null ? null : { ...stored.location } };
   };
   const query = (sessionId: string, after: number, limit: number): SessionPage => {
     queryBounds(after, limit);
@@ -56,6 +58,20 @@ export function createMemorySessionBackend(): SessionBackend {
     const end = records.at(-1)?.revision ?? after;
     return { sessionId, revision: detail.revision, digest: detail.digest, source, records,
       nextCursor: end < detail.revision ? end : null };
+  };
+  const write = (document: SessionDocument, expectedRevision: number | null, location: SessionLocation | null = null): void => {
+    check();
+    const next = inspectDocument(document).document;
+    const previous = documents.get(next.sessionId);
+    transition(previous?.document ?? null, next, expectedRevision);
+    const nextDigest = digest(next);
+    if (expectedRevision === null) {
+      const nextRevision = increment(catalogRevision);
+      metadata.set(next.sessionId, { sessionId: next.sessionId, title: null, metadataRevision: 0 });
+      ids.splice(seek(ids, next.sessionId), 0, next.sessionId);
+      catalogRevision = nextRevision;
+    }
+    documents.set(next.sessionId, { document: next, digest: nextDigest, location: previous?.location ?? location });
   };
   return {
     source,
@@ -104,23 +120,14 @@ export function createMemorySessionBackend(): SessionBackend {
       return structuredClone(documents.get(sessionId)?.document ?? null);
     },
     async write(document, expectedRevision) {
-      check();
-      const next = inspectDocument(document).document;
-      transition(documents.get(next.sessionId)?.document ?? null, next, expectedRevision);
-      const nextDigest = digest(next);
-      if (expectedRevision === null) {
-        const nextRevision = increment(catalogRevision);
-        metadata.set(next.sessionId, { sessionId: next.sessionId, title: null, metadataRevision: 0 });
-        ids.splice(seek(ids, next.sessionId), 0, next.sessionId);
-        catalogRevision = nextRevision;
-      }
-      documents.set(next.sessionId, { document: next, digest: nextDigest });
+      write(document, expectedRevision);
     },
+    async createWithLocation(document, location) { write(document, null, copyLocation(location)); },
     async close() { closed = true; documents.clear(); metadata.clear(); ids.length = 0; },
   };
 }
 
-type InfoRow = { id: string; revision: number; digest: string; title: string | null; metadata_revision: number };
+type InfoRow = { id: string; revision: number; digest: string; title: string | null; metadata_revision: number; location: string | null };
 /** Caller-selected local file; no Yui Home discovery, global connection or daemon. */
 export function createSqliteSessionBackend(filename: string): SessionBackend {
   if (!isAbsolute(filename) || (existsSync(filename)
@@ -149,7 +156,7 @@ export function createSqliteSessionBackend(filename: string): SessionBackend {
     return state;
   };
   const storeId = catalogState().id;
-  const readInfo = db.prepare('SELECT id, revision, digest, title, metadata_revision FROM sessions INDEXED BY session_info WHERE id = ?');
+  const readInfo = db.prepare('SELECT id, revision, digest, title, metadata_revision, location FROM sessions INDEXED BY session_info WHERE id = ?');
   const detail = (row: InfoRow): SessionDetail => {
     if (!Number.isSafeInteger(row.revision) || row.revision < 0 || row.revision > sessionLimits.events
       || !Number.isSafeInteger(row.metadata_revision) || row.metadata_revision < 0
@@ -157,7 +164,7 @@ export function createSqliteSessionBackend(filename: string): SessionBackend {
       throw new SessionError('corrupt_session', 'Malformed Session summary');
     }
     return { sessionId: row.id, revision: row.revision, digest: row.digest, title: row.title,
-      metadataRevision: row.metadata_revision, storeId, source };
+      metadataRevision: row.metadata_revision, storeId, source, location: decodeLocation(row.location) };
   };
   const info = (id: string) => { identity(id); return detail((readInfo.get(id) as InfoRow | undefined) ?? missing()); };
   const readRow = db.prepare('SELECT id, revision, document, digest FROM sessions WHERE id = ?');
@@ -182,10 +189,10 @@ export function createSqliteSessionBackend(filename: string): SessionBackend {
   const listFirst = db.prepare('SELECT id, title, metadata_revision FROM sessions INDEXED BY session_info ORDER BY id COLLATE BINARY LIMIT ?');
   const listNext = db.prepare('SELECT id, title, metadata_revision FROM sessions INDEXED BY session_info WHERE id > ? COLLATE BINARY ORDER BY id COLLATE BINARY LIMIT ?');
   const bumpCatalog = () => db.prepare('UPDATE session_catalog SET revision = ? WHERE singleton = 1').run(increment(catalogState().revision));
-  const insert = db.prepare('INSERT INTO sessions VALUES (?, ?, ?, ?, NULL, 0)');
+  const insert = db.prepare('INSERT INTO sessions VALUES (?, ?, ?, ?, NULL, 0, ?)');
   const update = db.prepare('UPDATE sessions SET revision = ?, document = ?, digest = ? WHERE id = ?');
   const insertEvent = db.prepare('INSERT INTO session_events VALUES (?, ?, ?, ?)');
-  const write = db.transaction((next: SessionDocument, expected: number | null) => {
+  const write = db.transaction((next: SessionDocument, expected: number | null, location: SessionLocation | null = null) => {
     const row = readRow.get(next.sessionId) as Row | undefined;
     transition(row ? decode(row) : null, next, expected);
     if (row) {
@@ -193,7 +200,7 @@ export function createSqliteSessionBackend(filename: string): SessionBackend {
       const text = JSON.stringify(next.events.at(-1));
       insertEvent.run(next.sessionId, revision(next), text, hash(text));
     } else {
-      insert.run(next.sessionId, revision(next), encode(next), digest(next));
+      insert.run(next.sessionId, revision(next), encode(next), digest(next), location === null ? null : JSON.stringify(location));
       bumpCatalog();
     }
   });
@@ -261,6 +268,11 @@ export function createSqliteSessionBackend(filename: string): SessionBackend {
     async write(document, expectedRevision) {
       check();
       write.immediate(inspectDocument(document).document, expectedRevision);
+    },
+    async createWithLocation(document, location) {
+      check();
+      const selected = copyLocation(location);
+      write.immediate(inspectDocument(document).document, null, selected);
     },
     async close() { if (!closed) { db.close(); closed = true; } },
   };

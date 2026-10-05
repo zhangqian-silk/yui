@@ -42,7 +42,7 @@ Session 内唯一；Session 的执行由调用方串行管理，存储不是执�
 
 ## 保存、查询与观察
 
-- `create(sessionId)` 保存空会话；`append(event, expectedRevision)` 只追加一个
+- `create(sessionId, location?)` 保存空会话与可选不可变位置；`append(event, expectedRevision)` 只追加一个
   事实，返回 `sessionId/revision/digest/source` 回执。revision 是会话范围的
   事实数，event.seq 则在每个 Turn 从 1 开始。没有隐式覆盖或自动重试。
 - `load` 校验完整格式、身份、顺序和调用/结果配对后，返回只读文档、消息和
@@ -99,7 +99,8 @@ Session 内唯一；Session 的执行由调用方串行管理，存储不是执�
 
 ## 可替换后端与持久性边界
 
-`SessionBackend` 是 `source/read/write/close` 的显式合同。`write` 必须完整
+`SessionBackend` 是 `source/read/write/close` 的显式合同；带位置创建使用
+可选的 `createWithLocation` 原子端口（完整签名见下）。`write` 必须完整
 原子 CAS，只有达到声明的持久性边界才成功返回，失败不能猜测未提交。替换
 后端不得返回旧缓存或绕过必要记录屏障。内存实现为 `volatile`；SQLite 实现为
 `persistent`，关闭 Store 会关闭其拥有的后端，不能由多个 Store 共享同一
@@ -113,16 +114,20 @@ journal、`synchronous=FULL`、1 秒锁等待。会话完整 JSON 与 revision/d
 SQLite 提供本地事务的原子提交与恢复；没有测试硬件掉电、损坏介质或不诚实
 文件系统，网络文件系统和敌对路径替换不在支持边界内。
 
-会话文档仍为版本 2，保留可选 settlement 证据；SQLite 布局升级为版本 3
-（application_id 仍为 NAS1、user_version 为 3）。`sqliteFormat.ts` 是集中布局
-初始化和迁移入口，声明 v1→v2→v3 链；`format.ts` 仍拥有文档校验及 v1→v2
+会话文档仍为版本 2，保留可选 settlement 证据；SQLite 布局升级为版本 4
+（application_id 仍为 NAS1、user_version 为 4）。`sqliteFormat.ts` 是集中布局
+初始化和迁移入口，声明 v1→v2→v3→v4 链；`format.ts` 仍拥有文档校验及 v1→v2
 文档转换。打开合法旧库时，同一事务验证所有原始身份/revision/digest/事件：
 v1 只转换文档版本和摘要，不补造 started/cleanup；v2→v3 完整保留文档字节、
 revision 和 digest，新增 null 标题、metadataRevision=0、库 UUID 以及按
 `(session_id, revision)` 主键索引的事件投影。每次只验证一个有界文档，
-整次迁移仍是一笔事务。失败连同 DDL 和版本推进一起回滚；未知版本、schema
-或畸形历史保留现场，不猜测修复。新库直接创建布局 3；没有自动降级，
-旧二进制不可打开布局 3。仅处理调用方显式选择的独立库，不改变 Yui Home。
+整次迁移仍是一笔事务。v3→v4 验证原文档、标题版本与事件投影一致性后只添加
+nullable `location TEXT` 并扩展 SQLite 维护的覆盖索引。原 v2/v3 文档字节、
+revision、digest、历史及 settlement 不改写；v3 的库 UUID、目录版本、
+标题和 metadataRevision 不变。所有 v1/v2/v3 旧记录位置均为 null，不猜补。
+失败连同 DDL 和版本推进一起回滚；未知版本、schema 或畸形历史保留现场，
+不猜测修复。新库直接创建布局 4；没有自动降级，旧二进制不可打开布局 4。
+仅处理调用方显式选择的独立库，不改变 Yui Home。
 
 每 Session 最多 10,000 个事件、16 MiB JSON；每事件 1 MiB，批次最多 8 个
 调用，每调用参数 64 KiB。达到容量即拒绝保存，不截断。`load`/追加保存及
@@ -162,15 +167,17 @@ try {
 实际签名：
 
 ```ts
+create(sessionId: string, location?: SessionLocation): Promise<SaveReceipt>;
 listSessions(options?: PageOptions): Promise<SessionCatalogPage>;
 getSessionInfo(sessionId: string): Promise<SessionDetail>;
 renameSession(sessionId: string, title: string | null, expectedMetadataRevision: number): Promise<SessionDetail>;
 readHistory(sessionId: string, options?: PageOptions): Promise<SessionHistoryPage>;
 ```
 
-- 新建沿用 `create(id)`，空文档和初始元数据原子保存后立即可发现，没有第二步
+- 新建兼容 `create(id)`，空文档和初始元数据原子保存后立即可发现，没有第二步
   目录注册。列表只返回 `sessionId/title/metadataRevision`、库身份、目录 revision、
   `nextCursor`；不含正文、预览或 live 状态。详情加现有 document revision/digest/source。
+  详情还返回 `location: SessionLocation | null`，列表不含位置。
   标题只有 sessions 行（Memory 的元数据项）一个可写权威，不放进历史。
 - title 为 null（清除）或 trim 后 1–200 个 Unicode code points；拒绝控制字符、
   单独 surrogate、空白及超长值，不静默截断。标题可重复，ID 是唯一选择键。
@@ -215,10 +222,78 @@ npm run build
 node dist/nativeAgent/session/catalogDemo.js
 ```
 
-样例创建三个会话、重复标题/清除、通过 owner 保存一轮、关闭全部连接后重开，
+样例创建三个会话（一个带位置，其余明确缺失）、重复标题/清除、通过 owner
+保存一轮、关闭全部连接后重开，按 ID 读取原位置，
 分页发现与 ID 选择、改名、分页读取原历史/回执，再通过同一公开 owner 合同续聊。
 finally 关闭自有 owner/store 并删除临时目录。它是 81 存储/owner 合同证据，
 不是 80 CLI 装配或 82 授权/环境的最终联合验收。
+
+## 原子创建位置与恢复消费合同
+
+完整类型和签名位于 `session/contracts.ts`；从 `session/index.ts` 或上级
+`nativeAgent/index.ts` 导入 `SessionLocation`、`SessionStore`、`SessionDetail`。
+运行时有界常量 `locationLimits` 也由两个入口导出。
+
+```ts
+type SessionLocation = { readonly root: string; readonly cwd: string };
+type SessionDetail = SessionInfo & SaveReceipt & {
+  storeId: string;
+  location: SessionLocation | null;
+};
+// SessionStore:
+create(sessionId: string, location?: SessionLocation): Promise<SaveReceipt>;
+getSessionInfo(sessionId: string): Promise<SessionDetail>;
+// SessionBackend 可选端口，带位置时必须同时提供 SessionCatalog:
+createWithLocation?(document: SessionDocument, location: SessionLocation): Promise<void>;
+```
+
+调用方解析配置并验证实际位置，然后显式传入 `store.create(id, { root, cwd })`。
+只接受恰好这两个字段的普通对象；每个路径最多 4096 UTF-8 字节，拒绝控制字符、
+未配对 surrogate、相对路径、未解析的 `.`/`..`、多余分隔符及非根路径的尾分隔符。
+使用运行平台的 `node:path` 语义：必须等于 `resolve(path)`，
+`relative(root, cwd)` 不得逃出 root；cwd 可等于 root。不会 trim、改写、
+探测文件系统或判断 symlink，非存在路径也可存储。跨 OS 路径搬迁不是支持合同。
+校验在写入前完成且复制输入，后续调用方改动不影响位置；公开 Store 详情递归只读。
+没有修改位置 API，append/rename 不更新位置；再 create 同 ID 发生 CAS 冲突，
+不能用它改根目录。旧 create 的 undefined/省略参数表示缺失，显式 null 是坏值。
+不接受 grant、credential、allowlist 或任意 metadata。
+
+内置 Memory/SQLite 将位置与空 Session、初始目录元数据一起原子保存；没有
+第二步写入窗口。最小第三方 backend 不实现 `createWithLocation` 或不提供
+bounded catalog 时，带位置创建在调用写端口前报 `unsupported_location`；
+旧 create 仍走原 `write(document, null)`。端口实现者必须原子仅创建空文档，
+拒绝已有 ID、保存原位置且不可修改、同一 ID 详情可读；不能静默丢弃。
+`SaveReceipt.digest` 仍对应原文档，不包含位置/标题，不是权限或位置完整性签名。
+SQLite 的同一 sessions 行保存唯一位置权威；索引由 SQLite 自动维护。
+getSessionInfo 为有界覆盖索引读取，不加载完整文档或历史，位置坏值报
+`corrupt_session`，不存在 ID 报 `not_found`，不返回猜测位置。
+
+任何 backend 创建确认失败仍为 `SessionSaveError`，`effect: 'unknown'`、
+expectedRevision=null，并带复制只读的 `location`（无位置时 undefined）。
+即使失败也可能已经提交；不自动重放 create 或模型/工具效果。消费者用**同一个
+Session ID** 调用 `getSessionInfo`，比对位置并用 `load` 对账文档状态；读失败时保留
+未知边界，不能换 ID 伪装安全重试。可以通过 backend.createWithLocation 直连
+原始 CAS 错误，但 Store 保留原必要保存错误的保守语义。
+
+```ts
+const store = createSessionStore(createSqliteSessionBackend(explicitAbsoluteFile));
+try {
+  // 首次创建，root/cwd 已由入口解析并验证；自行选择稳定 Session ID。
+  await store.create('chosen-id', { root: resolvedRoot, cwd: resolvedCwd });
+  // 重启/确认丢失后：只读同 ID，绝不自动再 create。
+  const detail = await store.getSessionInfo('chosen-id');
+  if (detail.location === null) {
+    throw new Error('Missing saved location: refuse automatic restoration; choose a new Session explicitly');
+  }
+  // 80 在这里负责实际存在性/边界、显式配置冲突检查。
+  // 随后按原位置重新装配 82/84 并获取本次授权，历史位置本身不是权限。
+  const saved = await store.load(detail.sessionId);
+  // 仍必须遵守 saved.recovery；unknown-effects/cleanup-required 不自动恢复执行。
+} finally { await store.close(); }
+```
+
+位置只是恢复配置的原始事实：不创建执行者、不恢复凭证、不消除 unknown-effects。
+本模块交付存储与离线可消费合同，不实现/宣称 80、82、84 的联合产品恢复验收。
 
 ## 验证与未覆盖范围
 
@@ -232,7 +307,10 @@ Controller、Agent Host、真实模型或账号服务。
 SQLite 重启组合见 `native-agent-composition.test.js`。迁移与失败回滚另有固定
 `native-agent-session-migration.test.js`。均不证明真实模型或硬件掉电行为。
 `native-agent-session-catalog.test.js` 增加 Memory/SQLite 查询替换、命名 CAS、
-真实关闭重开、cursor 刷新、确认丢失不重放、v2→布局3 原子回滚和大事件分页。
+真实关闭重开、cursor 刷新、确认丢失不重放、v2→当前布局原子回滚和大事件分页。
+`native-agent-session-location.test.js` 增加真实 Memory/SQLite 原子位置、不可变、
+缺失/坏值、替换 backend 能力拒绝、同 ID 确认丢失对账、创建竞争/事务失败、
+关闭全部连接重开及 v3→v4 字节/settlement 保留与 DDL/投影损坏回滚。
 
 对其他模块：上下文构建只能使用不可变历史副本，裁剪不能写回会话事实。
 交互层可从分页事件投影历史，订阅只负责通知刷新；submit/cancel 和真正的
