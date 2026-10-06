@@ -30,6 +30,7 @@ node scripts/collaboration-eval/run.mjs \
   --case C01,W01,R01,A01,O02 \
   --out /absolute/path/to/a-new-report-directory
 node scripts/collaboration-eval/analyze.mjs /absolute/path/to/a-new-report-directory
+node scripts/collaboration-eval/compare.mjs /absolute/path/to/record-A /absolute/path/to/record-B
 ```
 
 `--case` accepts comma-separated IDs (including explicit variant IDs), `dev`,
@@ -47,6 +48,16 @@ evidence denotes an interrupted save; analysis must not fill in its history.
 The analyzer only reads and hashes saved records. It does not import the
 runner, start a Home, contact Yui, repair evidence or rerun cases.
 Hashes detect accidental change, not hostile replacement of both record/hash.
+
+Comparison verifies both saved hashes, pairs exact case/variant/F-or-P identities,
+and retains the union of planned conditions, including missing counterparts,
+failures and pending-human outcomes. A fair pair requires matching case freeze,
+policy/oracle/harness/proxy, seed, source material, budgets and recorded toolchain;
+both sources must be clean. Different target commits are allowed. Incompatible
+experiments retain outcomes but emit no cost deltas. Even compatible negative
+deltas are descriptive only: this tool does not infer an optimization benefit,
+waive unverified boundaries or convert bytes into tokens. Missing cost evidence
+is unknown, never zero. It reads no current Home and never reruns a case.
 
 The manifest records target commit and dirty status, CLI/lockfile hashes,
 harness/strategy/oracle/freeze hashes, Node/platform, condition selection and
@@ -162,6 +173,7 @@ Fake-runtime setup warnings remain in raw stderr, not silently hidden.
 node --test scripts/collaboration-eval/check.mjs \
   scripts/collaboration-eval/native-worker.check.mjs \
   scripts/collaboration-eval/predecessor.check.mjs \
+  scripts/collaboration-eval/compare.check.mjs \
   scripts/collaboration-eval/cases/tests/business.test.mjs
 ```
 
@@ -170,9 +182,11 @@ boundaries, active native records, selection/denominators and holdout opt-in.
 Old first-slice O02 simulator checks remain useful independent regression
 evidence; they are not the current 24-case runner.
 
-Still outstanding: fixed-head validation of the extended P adapters,
-native frozen assignment/acceptance/permission business-case wiring,
-fair saved-record A/B comparison, dev-then-frozen-holdout
+Fixed-head development execution of all five P adapters succeeded, with three
+scripted business passes and two pending-human outcomes; all five remain
+partial-evidence. The seven business/calibration fixture roots were released.
+Still outstanding: native frozen assignment/acceptance/permission business-case wiring,
+dev-then-frozen-holdout
 baseline, final manual quality disposition and Task-level delivery validation.
 Product optimization should follow those measured gaps, not this adapter's
 normal scripted outcomes. The Task is not complete.
@@ -195,7 +209,7 @@ Use a short fixture `TMPDIR` if the environment's default path exceeds native
 Unix socket limits; the probe still creates its own random owned directory.
 Calibration has a 90-second overall budget, 120 observer reads, a 20-second/
 20-read handler budget and 20-second cleanup grace. Raw handler traces are
-included in terminal outputs. This does not establish business P preparation,
+referenced by terminal digests and retained in saved evidence. This does not establish business P preparation,
 Worker assignment/acceptance, sandbox enforcement or model understanding.
 
 `native-worker-probe.mjs <checkout> <new-output-directory>` separately checks
