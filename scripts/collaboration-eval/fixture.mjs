@@ -20,13 +20,13 @@ export class Fixture {
     this.cleanup = { status: "not-started", root: this.root };
   }
 
-  prepare() {
+  prepare({ native = false } = {}) {
     const bin = join(this.root, "bin");
     mkdirSync(bin);
     mkdirSync(this.home);
     mkdirSync(join(this.root, "user"));
     mkdirSync(join(this.root, "tmp"));
-    const fake = new URL("../../test/fixtures/fake-codex-cli.mjs", import.meta.url);
+    const fake = new URL(native ? "./native-fake-cli.mjs" : "../../test/fixtures/fake-codex-cli.mjs", import.meta.url);
     writeFileSync(join(bin, "codex"),
       `#!${process.execPath}\nimport(${JSON.stringify(fake.href)});\n`, { mode: 0o755 });
     symlinkSync(process.execPath, join(bin, "node"));
@@ -129,6 +129,13 @@ export class Fixture {
   async close() {
     this.cleanupDeadline = performance.now() + 20_000;
     const failures = [];
+    // Native fixtures register their owned Roles before activation. Stop exact
+    // Sessions while the Controller is available, before removing its state.
+    for (const { task, role } of this.ownedRoles ?? []) {
+      try { this.call(["task", "role", "session", "stop", task, role,
+        "--reason", "Owned offline evaluation teardown"], "cleanup"); }
+      catch (error) { failures.push(String(error)); }
+    }
     if (this.environment && (existsSync(join(this.home, "yui.db"))
       || existsSync(join(this.home, "runtime/controller.json")))) {
       try { this.call(["controller", "stop"], "cleanup"); }

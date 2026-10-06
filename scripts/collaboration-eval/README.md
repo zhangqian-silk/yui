@@ -129,3 +129,24 @@ permission wiring, fair saved-record A/B comparison, dev-then-frozen-holdout
 baseline, final manual quality disposition and Task-level delivery validation.
 Product optimization should follow those measured gaps, not this adapter's
 normal scripted outcomes. The Task is not complete.
+
+### Native lifecycle calibration
+
+`native-session-probe.mjs <checkout> <new-output-directory>` is a development
+calibration, not a scored business case. It activates a scratch Task with a
+deterministic Provider, lets its actual managed Leader read an original and
+persist a checkpoint, then requests a fresh Session through the native CLI.
+The successor independently reads both originals. Evidence correlates each
+result with its exact native Session/Turn terminal and checks that the old
+observed identity cannot append a new Message after replacement.
+
+The optional fake-Provider handler reuses the existing package-smoke transport;
+it does not change product permissions or inject records into Yui's database.
+Its CLI child inherits the real Host identity plus the Provider's own Thread ID.
+Cleanup stops the registered fixture Roles before its Controller and tmux server.
+Use a short fixture `TMPDIR` if the environment's default path exceeds native
+Unix socket limits; the probe still creates its own random owned directory.
+Calibration has a 90-second overall budget, 120 observer reads, a 20-second/
+20-read handler budget and 20-second cleanup grace. Raw handler traces are
+included in terminal outputs. This does not establish business P preparation,
+Worker assignment/acceptance, sandbox enforcement or model understanding.

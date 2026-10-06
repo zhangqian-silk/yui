@@ -6,7 +6,11 @@ let upgraded = false;
 let turnSequence = 0;
 let activeTurnId;
 const controlled = process.env.YUI_FAKE_CONTROLLED === "1";
-const threadId = process.env.YUI_FAKE_THREAD_ID ?? "fake-thread-1";
+let threadId = process.env.YUI_FAKE_THREAD_ID ?? "fake-thread-1";
+// Optional deterministic tool work for offline lifecycle exercises. Ordinary
+// package smoke keeps its existing fixed reply and does not load a handler.
+const turnHandler = process.env.YUI_FAKE_TURN_HANDLER === undefined ? undefined
+  : (await import(process.env.YUI_FAKE_TURN_HANDLER)).handleTurn;
 
 process.stdin.on("data", (chunk) => {
   input = Buffer.concat([input, chunk]);
@@ -83,6 +87,7 @@ function handleMessage(message) {
       respond({ thread: { id: threadId, status: { type: "idle" }, turns: [] } });
       break;
     case "thread/resume":
+      threadId = message.params.threadId;
       respond({ thread: { id: message.params.threadId, status: { type: "idle" },
         turns: JSON.parse(process.env.YUI_FAKE_RESUMED_TURNS ?? "[]") } });
       break;
@@ -123,9 +128,9 @@ function handleMessage(message) {
     case "turn/start":
       turnSequence += 1;
       const turnId = `fake-turn-${turnSequence}`;
-      if (controlled) activeTurnId = turnId;
+      if (controlled || turnHandler) activeTurnId = turnId;
       respond({ turn: { id: turnId, status: "inProgress", items: [], error: null } });
-      setImmediate(() => {
+      setImmediate(async () => {
         if (process.env.YUI_FAKE_PROTOCOL_EVENTS !== undefined) {
           for (const event of JSON.parse(process.env.YUI_FAKE_PROTOCOL_EVENTS)) sendJson(event);
           return;
@@ -135,14 +140,28 @@ function handleMessage(message) {
           params: { threadId, turn: { id: turnId, status: "inProgress", items: [] } }
         });
         if (controlled) return;
+        let text = "Native Codex result.";
+        let failure;
+        try {
+          if (turnHandler) text = await turnHandler({
+            threadId, turnId, input: message.params,
+            environment: { ...process.env, CODEX_THREAD_ID: threadId }
+          });
+        } catch (error) {
+          failure = String(error);
+        }
+        // An interrupt is a terminal, never followed by a fabricated success.
+        if (turnHandler && activeTurnId !== turnId) return;
+        activeTurnId = undefined;
         sendJson({
           method: "turn/completed",
           params: {
             threadId,
             turn: {
               id: turnId,
-              status: "completed",
-              items: [{ id: "item-1", type: "agentMessage", text: "Native Codex result." }]
+              status: failure ? "failed" : "completed",
+              ...(failure ? { error: { message: failure } } : {}),
+              items: [{ id: "item-1", type: "agentMessage", text: failure ?? text }]
             }
           }
         });
