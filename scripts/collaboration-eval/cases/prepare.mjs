@@ -80,8 +80,9 @@ function initialState(kind) {
  * Preparation is NOT a participant read. Persist facts through Yui, then build
  * executeCase.readback from the original public Yui records (see README).
  */
-export async function prepareCase(id, variant = 'base', root) {
+export async function prepareCase(id, variant = 'base', root, { deferNotification = false } = {}) {
   const d = definition(id, variant);
+  if (deferNotification && id !== 'O02') throw new Error('Deferred notification applies only to O02');
   if (!isAbsolute(root)) throw new Error('Case root must be absolute');
   if ((await readdir(root)).length) throw new Error('Case root must be fresh and empty');
   const m = structuredClone(materials[id]);
@@ -100,7 +101,7 @@ export async function prepareCase(id, variant = 'base', root) {
   await put(root, 'business/state.json', initialState(m.request.kind));
   await put(root, 'business/effects.jsonl', '');
   // These are genuine predecessor actions; no pre-built "correct ledger".
-  if (m.request.kind === 'reconcile-notification') {
+  if (m.request.kind === 'reconcile-notification' && !deferNotification) {
     await mutate(root, { actor: 'predecessor', action: 'send', target: m.evidence.target,
       key: m.evidence.key, payload: m.evidence.payload, dropResponse: true });
   }

@@ -11,6 +11,9 @@ import { Fixture } from "./fixture.mjs";
 import { readTaskFacts, persistTaskFacts, readNativeFacts } from "./readback.mjs";
 import { selectConditions, parseOptions } from "./selection.mjs";
 import { definitions, variants } from "./cases/catalog.mjs";
+import { prepareCase } from "./cases/prepare.mjs";
+import { observe } from "./cases/business.mjs";
+import { NativeObserver, includeNativeTrace } from "./native-session.mjs";
 
 test("unknown effects are reconciled, not resent; oracle detects duplicate effects", () => {
   const effect = { key: "notice-17", recipient: "local-inbox", body: "Build ready",
@@ -159,4 +162,37 @@ test("selection keeps holdout explicit, variants grouped, and unimplemented P vi
   assert.throws(() => select({ case: "C01", mode: "P" }), /Unsupported/);
   assert.throws(() => select({ case: "O02,O02", mode: "F" }), /Duplicate/);
   assert.throws(() => parseOptions(["--mode", "F", "--mode", "P"]), /Expected/);
+});
+
+test("native notification preparation leaves the predecessor effect unapplied", async () => {
+  const root = mkdtempSync(join(tmpdir(), "yui-eval-predecessor-"));
+  try {
+    const prepared = await prepareCase("O02", "base", root, { deferNotification: true });
+    assert.equal((await observe(root)).ledger.length, 0);
+    assert.equal(prepared.manifest.initial.ledger.length, 0);
+    assert.equal(prepared.predecessor.alreadyAppliedBusinessEffects, 0);
+    assert.ok(prepared.facts.find(f => f.key === "evidence").body.key);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("native observation rejects an uncorrelated terminal and counts idle participant reads", async () => {
+  const fixture = { deadline: performance.now() + 1000, trace: [],
+    reads: 0, bytes: 0, maxReads: 2, maxBytes: 100,
+    call: () => ({ throughCursor: "next", events: [{ value: {
+      type: "runtime.observation", payload: { observation: JSON.stringify({
+        kind: "turn.completed", fence: { nativeSessionId: "actual", nativeTurnId: "turn-1" },
+        payload: { output: JSON.stringify({ kind: "native-business-successor",
+          threadId: "other", turnId: "turn-1", trace: [] }) }
+      }) }
+    } }] })
+  };
+  await assert.rejects(new NativeObserver(fixture, "task-1", "start")
+    .terminal("native-business-successor"), /identity mismatch/);
+  const idle = { result: { threadId: "actual", kind: "native-business-idle",
+    trace: [{ phase: "query", stdoutBytes: 60, stderrBytes: 1 }] } };
+  includeNativeTrace(fixture, idle);
+  assert.equal(fixture.reads, 1);
+  assert.equal(fixture.bytes, 61);
+  assert.equal(fixture.trace[0].actor, "native-participant");
+  assert.throws(() => includeNativeTrace(fixture, idle), /budget-exceeded/);
 });

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Fixture } from "./fixture.mjs";
+import { nativeBusiness } from "./native-business.mjs";
 
 // This calibration handler has no material/oracle/case-ID access. Its only
 // inputs are the real Host's launch environment and native notification.
@@ -18,6 +19,8 @@ export async function handleTurn({ threadId, turnId, environment }) {
   const task = environment.YUI_TASK_ID;
   const context = client.call(["task", "context", task]);
   const records = client.messageRecords(task);
+  const business = await nativeBusiness({ client, records, task, threadId, turnId, trace });
+  if (business !== null) return business;
   const originals = records.filter(r => r.value.body === "Artificial original requirement: preserve checkpoint across Session replacement.");
   if (originals.length !== 1) throw new Error("Missing or ambiguous original");
   const checkpoints = records.flatMap(r => {

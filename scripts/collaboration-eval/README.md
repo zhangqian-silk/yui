@@ -12,8 +12,9 @@ native Decision supersession and Knowledge retirement. The evaluator checks
 actual candidate files, local Git repositories, source bytes and effects.
 
 This is **partial evidence**, not the full case baseline: managed dependency
-acceptance, frozen assignments, native permission fences and genuine
-predecessor/successor Session handoff are not yet wired. A string saying
+acceptance, frozen assignments and native permission fences are not yet wired.
+O02/P now exercises a genuine predecessor/successor Session handoff; the other
+four P adapters remain unimplemented. A string saying
 “accepted” in business material is not a native acceptance receipt. The
 deterministic participant runs as a bounded local child, outside a managed
 Agent Role. There is no filesystem sandbox or proof of model understanding.
@@ -34,9 +35,9 @@ node scripts/collaboration-eval/analyze.mjs /absolute/path/to/a-new-report-direc
 `--case` accepts comma-separated IDs (including explicit variant IDs), `dev`,
 or `all`. Selecting `dev` includes its four variants. `--mode F|P|all` defaults
 to F. The complete declared selection is `--case all --mode all`, yielding 33
-conditions across 24 base cases. P conditions currently remain `not-run` with
-an explicit missing-adapter reason; they are never replaced by a Controller
-restart. Any selection containing holdout requires `--allow-holdout true`.
+conditions across 24 base cases. O02/P uses a native managed Leader; the other
+P conditions remain `not-run` with an explicit missing-adapter reason. They
+are never replaced by a Controller restart. Any selection containing holdout requires `--allow-holdout true`.
 Do not use that flag until development calibration and strategy freeze are
 complete. Merely listing or statically hashing holdout is not executing it.
 
@@ -82,18 +83,35 @@ unverified understanding and deterministic action. Failures/timeouts/not-run
 remain in the selected denominator. Variants/P conditions do not add independent
 base cases. No automatic whole-suite success rate is emitted.
 
+O02/P has an initially empty business ledger. Only the predecessor's native
+Turn receives the original send request, performs the local simulated send
+with a dropped response, and saves its unknown-effect checkpoint. Current
+facts are published afterward. A native `session new` request ends the prior
+Session; a fresh successor reads the checkpoint and current originals, queries
+the original key, and persists its result. Its native Message receipt provides
+the exact ref/digest for final readback, avoiding a second scan of all Messages.
+The independent oracle checks that the effect remains exactly once.
+The business simulator's worker/query-only grant is **not** a native Yui Worker
+permission: this adapter uses two managed Leader Sessions and still reports
+native Worker permissions/assignment/acceptance as unexercised.
+
+Preparation's optional `deferNotification` changes only when O02's effect is
+performed. Its module freeze hash was advanced for this adapter correction;
+the holdout materials, participant and oracle hashes remain unchanged.
+Earlier evidence retains its old preparation/freeze hashes.
+
 ## Resources, costs and bounds
 
 Each condition owns a fresh temporary user directory, YUI_HOME, fake Provider
 executable and tmux namespace. Only the absolute target checkout launcher is
-called. This F adapter never activates an Agent, and the fake executable
+called. F never activates an Agent; O02/P activates only the fake Provider. The fake executable
 cannot fall back to a real model. All data and Git repos are artificial, local
 and remote-free. Knowledge projects are fixture-owned, not real Projects.
 
 Cleanup is registered before `setup`, which can start a Controller. On success
 or exceptions it stops the exact owned Controller, releases its tmux server,
 then deletes only the fixture root; uncertain cleanup retains ownership data.
-The grace budget is shared across cleanup commands. SIGINT/SIGTERM request a
+Native Role Sessions stop before the Controller. The grace budget is shared across cleanup commands. SIGINT/SIGTERM request a
 bounded stop: the current synchronous child call finishes or times out, then
 ordinary cleanup/evidence saving runs and remaining conditions stay not-run.
 Hard kills are not cleanup receipts; inspect retained paths before recovery.
@@ -105,6 +123,11 @@ deadline; participant child execution has the remaining deadline. Reads include
 failed calls, verification reads and pagination. Effect counts are checked
 against case limits before persisting a result; the bounded audited simulator
 is not a protection against hostile arbitrary code.
+Native participant traces, including idle-notification reads, are included
+in the aggregate when their terminals are observed. Each native Turn also
+has a 20-read/1-MiB/20-second local bound. The aggregate is checked after
+delivery of those traces; it is not a cross-process hard read quota. Exceeding
+it records `budget-exceeded`, never a successful score.
 
 The trace separates preparation, queries, writes and cleanup. Analyzer reports
 their call counts, UTF-8 returned bytes and elapsed times separately. This is
@@ -124,7 +147,7 @@ boundaries, active native records, selection/denominators and holdout opt-in.
 Old first-slice O02 simulator checks remain useful independent regression
 evidence; they are not the current 24-case runner.
 
-Still outstanding: genuine P lifecycles, native frozen assignment/acceptance/
+Still outstanding: four other P lifecycles, native frozen assignment/acceptance/
 permission wiring, fair saved-record A/B comparison, dev-then-frozen-holdout
 baseline, final manual quality disposition and Task-level delivery validation.
 Product optimization should follow those measured gaps, not this adapter's

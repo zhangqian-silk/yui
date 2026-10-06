@@ -12,6 +12,7 @@ import { prepareCase } from "./cases/prepare.mjs";
 import { scoreCase } from "./cases/oracle.mjs";
 import { observe } from "./cases/business.mjs";
 import { selectConditions, parseOptions } from "./selection.mjs";
+import { NativeObserver } from "./native-session.mjs";
 
 const options = parseOptions(process.argv.slice(2));
 const checkout = resolve(options.version), output = resolve(options.out);
@@ -30,8 +31,10 @@ const evidence = {
   freezeSha256: hashFile(new URL("./cases/freeze.json", import.meta.url)),
   policySha256: hashFile(new URL("./cases/participant.mjs", import.meta.url)),
   oracleSha256: hashFile(new URL("./cases/oracle.mjs", import.meta.url)),
-  harnessSha256: Object.fromEntries(["run", "fixture", "evidence", "readback", "selection", "case-process"]
+  harnessSha256: Object.fromEntries(["run", "fixture", "evidence", "readback", "selection", "case-process",
+    "native-session", "native-fake-cli", "native-turn", "native-business"]
     .map(name => [name, hashFile(new URL(`./${name}.mjs`, import.meta.url))])),
+  proxySha256: hashFile(new URL("../../test/fixtures/fake-codex-app-server-proxy.mjs", import.meta.url)),
   trace, conditions
 };
 // Reserve before fixture setup; never overwrite interrupted or prior records.
@@ -113,12 +116,13 @@ async function runCondition(condition) {
   const started = performance.now(), firstTrace = trace.length;
   const fixture = new Fixture(checkout, trace);
   const root = join(fixture.root, "business-case");
+  const native = condition.mode === "P";
   condition.understanding = "unverified";
   try {
-    fixture.prepare();
+    fixture.prepare({ native });
     condition.runtime = fixture.call(["controller", "status"], "prepare").identity;
     mkdirSync(root);
-    const prepared = await prepareCase(condition.id, condition.variant, root);
+    const prepared = await prepareCase(condition.id, condition.variant, root, { deferNotification: native });
     condition.manifest = prepared.manifest;
     condition.budget = prepared.budget;
     fixture.deadline = started + prepared.budget.wallSeconds * 1000;
@@ -130,37 +134,74 @@ async function runCondition(condition) {
     const { task } = fixture.call(["task", "create", "Artificial collaboration evaluation",
       ...(project ? ["--project", project] : [])], "prepare");
     condition.task = task.id;
+    let observer;
+    if (native) {
+      fixture.ownedRoles = [{ task: task.id, role: "leader" }];
+      const input = prepared.facts.find(f => f.key === "evidence").body;
+      fixture.call(["task", "message", "send", task.id,
+        JSON.stringify({ kind: "native-eval-predecessor-request", root,
+          operation: { kind: "notification", key: input.key, target: input.target, payload: input.payload } }),
+        "--intent", "record", "--request-id", "predecessor-request"], "prepare");
+      observer = new NativeObserver(fixture, task.id, fixture.call(["task", "context", task.id]).coreCursor);
+      fixture.call(["task", "activation", "request", task.id,
+        "--request-id", "native-predecessor", "--environment", "scratch"], "prepare");
+      condition.predecessor = await observer.terminal("native-business-predecessor");
+      if (condition.predecessor.result.checkpoint.effect !== "unknown") throw new Error("Expected lost-response predecessor");
+      // This is the observed T1 checkpoint, after a real native Turn produced
+      // the effect. Preparation never sends or prebuilds this ledger in P.
+      prepared.manifest.initial = await observe(root);
+      if (prepared.manifest.initial.ledger.length !== 1) throw new Error("Invalid predecessor effect count");
+      prepared.budget.maxTotalEffects = 1;
+    }
     seedNative(fixture, task.id, prepared, project);
     condition.stages = { saved: true, discovered: false, understood: "unverified", acted: false };
-    condition.context = fixture.call(["task", "context", task.id]);
-    const readback = readNativeFacts(fixture, task.id, { knowledge });
+    let readback, businessResult;
+    if (native) {
+      condition.beforeReplacement = fixture.call(["task", "role", "session", "inspect", task.id, "leader"]);
+      condition.replacement = fixture.call(["task", "role", "session", "new", task.id, "leader",
+        "--reason", "Fresh successor after durable unknown-effect checkpoint"], "write");
+      condition.successor = await observer.terminal("native-business-successor",
+        { excludeSession: condition.predecessor.result.threadId });
+      readback = condition.successor.result.readback;
+      businessResult = condition.successor.result.result;
+    } else {
+      condition.context = fixture.call(["task", "context", task.id]);
+      readback = readNativeFacts(fixture, task.id, { knowledge });
+    }
     // Evaluator-only comparison; expected digests never enter the participant.
     if (!isDeepStrictEqual(Object.fromEntries(readback.records.map(r => [r.value.key, r.digest])),
       prepared.manifest.factDigests)) throw new Error("Persisted fact set differs from prepared material");
     condition.readback = readback;
     condition.stages.discovered = true;
-    const result = spawnSync(process.execPath, [fileURLToPath(new URL("./case-process.mjs", import.meta.url))], {
-      input: JSON.stringify({ root, readback }), encoding: "utf8", env: fixture.environment,
-      timeout: Math.max(1, Math.ceil(fixture.deadline - performance.now())), maxBuffer: 4 * 1024 * 1024
-    });
-    condition.participantProcess = { status: result.status, signal: result.signal,
-      stdout: result.stdout, stderr: result.stderr };
-    if (result.error?.code === "ETIMEDOUT") throw new Error("budget-exceeded: participant deadline");
-    if (result.status !== 0 || result.error) throw new Error(`Participant failure: ${result.error ?? result.stderr}`);
-    const businessResult = JSON.parse(result.stdout);
+    if (!native) {
+      const result = spawnSync(process.execPath, [fileURLToPath(new URL("./case-process.mjs", import.meta.url))], {
+        input: JSON.stringify({ root, readback }), encoding: "utf8", env: fixture.environment,
+        timeout: Math.max(1, Math.ceil(fixture.deadline - performance.now())), maxBuffer: 4 * 1024 * 1024
+      });
+      condition.participantProcess = { status: result.status, signal: result.signal,
+        stdout: result.stdout, stderr: result.stderr };
+      if (result.error?.code === "ETIMEDOUT") throw new Error("budget-exceeded: participant deadline");
+      if (result.status !== 0 || result.error) throw new Error(`Participant failure: ${result.error ?? result.stderr}`);
+      businessResult = JSON.parse(result.stdout);
+    }
     condition.result = businessResult;
     condition.stages.acted = true;
     condition.business = await observe(root);
     condition.artifacts = captureArtifacts(root);
     if (condition.business.ledger.length > prepared.budget.maxTotalEffects)
       throw new Error("effect-budget-exceeded");
-    fixture.call(["task", "message", "send", task.id,
+    if (!native) fixture.call(["task", "message", "send", task.id,
       JSON.stringify({ kind: "collaboration-eval-result", result: businessResult }),
       "--intent", "record", "--request-id", "business-result"], "write");
-    const persisted = fixture.messages(task.id).find(m => {
+    const resultRef = condition.successor?.result.resultRef;
+    const candidates = resultRef ? [fixture.detail(["task", "context", "inspect", task.id,
+      "--store", resultRef.store, "--ref", resultRef.refId, "--digest", resultRef.digest]).value]
+      : fixture.messages(task.id);
+    const persisted = candidates.find(m => {
       try {
         const parsed = JSON.parse(m.body);
-        return parsed.kind === "collaboration-eval-result" && isDeepStrictEqual(parsed.result, businessResult);
+        return parsed.kind === (native ? "native-business-result" : "collaboration-eval-result")
+          && isDeepStrictEqual(parsed.result, businessResult);
       } catch { return false; }
     });
     if (!persisted) throw new Error("Business result was not persisted exactly");
@@ -176,8 +217,9 @@ async function runCondition(condition) {
       persistence: "verified", originalDiscovery: "verified", activeDecision: "verified",
       activeKnowledge: knowledge ? "verified" : "not-applicable",
       managedAcceptance: "not-exercised", frozenAssignment: "not-exercised",
-      nativePermissions: "not-exercised", sessionHandoff: "not-exercised",
-      businessExecution: "deterministic-outside-managed-role", semanticQuality: condition.score.semantic
+      nativePermissions: "not-exercised", sessionHandoff: native ? "verified" : "not-exercised",
+      businessExecution: native ? "deterministic-managed-leader" : "deterministic-outside-managed-role",
+      semanticQuality: condition.score.semantic
     };
   } catch (error) {
     condition.status = String(error).includes("budget-exceeded") ? "budget-exceeded" : "environment-error";
@@ -203,7 +245,7 @@ async function runCondition(condition) {
 try {
   for (const condition of conditions) {
     if (interrupted) { condition.reason = `cancelled: ${interrupted}`; continue; }
-    if (condition.mode === "P") {
+    if (condition.mode === "P" && condition.id !== "O02") {
       condition.reason = "Genuine managed predecessor/successor adapter not implemented; not substituted with restart.";
       continue;
     }
