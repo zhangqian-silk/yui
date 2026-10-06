@@ -7,6 +7,7 @@ function record(commit = "a") {
     schemaVersion: 1, mode: "offline", experiment: commit, caseSet: "fixed", seed: 89,
     freezeSha256: "freeze", policySha256: "policy", oracleSha256: "oracle",
     harnessSha256: { run: "runner" }, proxySha256: "proxy",
+    caseModuleSha256: { materials: "materials", prepare: "prepare", business: "business" },
     version: { commit, worktreeStatus: "", node: "v24", platform: "linux",
       architecture: "x64", packageLockSha256: "lock" },
     cleanup: { status: "released" }, trace: [],
@@ -34,6 +35,7 @@ test("saved pairs keep partial outcomes and never promote cheaper bytes to succe
 test("changed rules, budgets, material and toolchain refuse a fair comparison", () => {
   for (const mutate of [
     b => b.harnessSha256.run = "changed",
+    b => b.caseModuleSha256.prepare = "changed-without-updating-freeze-file",
     b => b.seed++,
     b => b.oracleSha256 = "changed",
     b => b.version.node = "different",
@@ -72,4 +74,7 @@ test("unknown provenance and missing trace ranges cannot become zero-cost eviden
   const c = record("c");
   delete c.conditions[0].traceRange;
   assert.equal(compareEvidence(record(), c).pairs[0].costDelta, null);
+  const d = record("d");
+  delete d.caseModuleSha256;
+  assert.equal(compareEvidence(record(), d).comparable, false);
 });

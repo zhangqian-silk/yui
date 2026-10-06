@@ -32,6 +32,10 @@ const evidence = {
   freezeSha256: hashFile(new URL("./cases/freeze.json", import.meta.url)),
   policySha256: hashFile(new URL("./cases/participant.mjs", import.meta.url)),
   oracleSha256: hashFile(new URL("./cases/oracle.mjs", import.meta.url)),
+  // Hash the executed modules, not just a declaration that can become stale.
+  caseModuleSha256: Object.fromEntries(["catalog", "materials", "prepare", "participant",
+    "business", "oracle", "code-check"]
+    .map(name => [name, hashFile(new URL(`./cases/${name}.mjs`, import.meta.url))])),
   harnessSha256: Object.fromEntries(["run", "fixture", "evidence", "readback", "selection", "case-process",
     "native-session", "native-fake-cli", "native-turn", "native-business", "native-worker",
     "native-predecessor", "predecessor-setup", "native-trace"]

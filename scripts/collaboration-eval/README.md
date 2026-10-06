@@ -1,4 +1,4 @@
-# Collaboration evaluation — implementation in progress
+# Collaboration evaluation — deterministic partial baseline
 
 This small research entry is outside `npm test` and core CI. It measures
 deterministic scripts using Yui persistence and discovery, not model coding
@@ -52,12 +52,16 @@ Hashes detect accidental change, not hostile replacement of both record/hash.
 Comparison verifies both saved hashes, pairs exact case/variant/F-or-P identities,
 and retains the union of planned conditions, including missing counterparts,
 failures and pending-human outcomes. A fair pair requires matching case freeze,
-policy/oracle/harness/proxy, seed, source material, budgets and recorded toolchain;
+policy/oracle/harness/proxy, actual case-module hashes, seed, source material,
+budgets and recorded toolchain;
 both sources must be clean. Different target commits are allowed. Incompatible
 experiments retain outcomes but emit no cost deltas. Even compatible negative
 deltas are descriptive only: this tool does not infer an optimization benefit,
 waive unverified boundaries or convert bytes into tokens. Missing cost evidence
 is unknown, never zero. It reads no current Home and never reruns a case.
+Earlier records lacking actual case-module hashes remain analyzable but are
+not accepted for fair A/B comparison: a frozen declaration alone cannot prove
+the preparation/simulator/code-check bytes that actually executed.
 
 The manifest records target commit and dirty status, CLI/lockfile hashes,
 harness/strategy/oracle/freeze hashes, Node/platform, condition selection and
@@ -167,7 +171,7 @@ not model latency; bytes are never converted into precise tokens or prices.
 Model calls are zero, tokens unverified, costs N/A, human preparation unknown.
 Fake-runtime setup warnings remain in raw stderr, not silently hidden.
 
-## Focused checks and remaining delivery
+## Focused checks and coverage gaps
 
 ```sh
 node --test scripts/collaboration-eval/check.mjs \
@@ -185,11 +189,21 @@ evidence; they are not the current 24-case runner.
 Fixed-head development execution of all five P adapters succeeded, with three
 scripted business passes and two pending-human outcomes; all five remain
 partial-evidence. The seven business/calibration fixture roots were released.
-Still outstanding: native frozen assignment/acceptance/permission business-case wiring,
-dev-then-frozen-holdout
-baseline, final manual quality disposition and Task-level delivery validation.
-Product optimization should follow those measured gaps, not this adapter's
-normal scripted outcomes. The Task is not complete.
+The six holdout F cases were then run once after development freeze: four
+scripted business passes and two pending-human outcomes, all partial-evidence
+with released fixtures. The 33-condition descriptive baseline has 22 scripted
+business passes and 11 pending-human conditions, not 33 native collaboration
+passes. Its cohorts use distinct historical harness heads, not a fair A/B.
+
+Remaining coverage gaps are native frozen assignment/acceptance/permission
+business-case wiring and real semantic quality. The permitted first deterministic
+subset does not hide or automatically pass those obligations. The saved Task
+report contains per-type outcomes, costs, historical failures, manual rubric,
+cleanup evidence and one recommendation: propagate exact result receipt refs
+instead of rereading all old Messages. No product performance gain is claimed.
+Task artifact reference:
+`git:d1b5fc2397978cbb2d0b7f90996c82a80e4930fe:reports/deterministic-baseline.md`
+(Task `task-89`, not a Project Git commit).
 
 ### Native lifecycle calibration
 

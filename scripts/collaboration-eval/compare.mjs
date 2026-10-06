@@ -4,7 +4,7 @@ import { readEvidence } from "./evidence.mjs";
 
 const key = c => `${c.id}/${c.variant}/${c.mode}`;
 const provenance = ["caseSet", "seed", "freezeSha256", "policySha256",
-  "oracleSha256", "harnessSha256", "proxySha256"];
+  "oracleSha256", "harnessSha256", "proxySha256", "caseModuleSha256"];
 const environment = ["node", "platform", "architecture", "packageLockSha256"];
 
 function indexed(evidence) {
