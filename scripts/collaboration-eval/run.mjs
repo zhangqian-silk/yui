@@ -32,7 +32,7 @@ const evidence = {
   policySha256: hashFile(new URL("./cases/participant.mjs", import.meta.url)),
   oracleSha256: hashFile(new URL("./cases/oracle.mjs", import.meta.url)),
   harnessSha256: Object.fromEntries(["run", "fixture", "evidence", "readback", "selection", "case-process",
-    "native-session", "native-fake-cli", "native-turn", "native-business"]
+    "native-session", "native-fake-cli", "native-turn", "native-business", "native-worker"]
     .map(name => [name, hashFile(new URL(`./${name}.mjs`, import.meta.url))])),
   proxySha256: hashFile(new URL("../../test/fixtures/fake-codex-app-server-proxy.mjs", import.meta.url)),
   trace, conditions

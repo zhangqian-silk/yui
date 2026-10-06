@@ -2,12 +2,13 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Fixture } from "./fixture.mjs";
 import { nativeBusiness } from "./native-business.mjs";
+import { nativeWorker } from "./native-worker.mjs";
 
 // This calibration handler has no material/oracle/case-ID access. Its only
 // inputs are the real Host's launch environment and native notification.
-export async function handleTurn({ threadId, turnId, environment }) {
+export async function handleTurn({ threadId, turnId, environment, input }) {
   const manifest = JSON.parse(readFileSync(environment.YUI_SESSION_MANIFEST, "utf8"));
-  if (manifest.owner.taskId !== environment.YUI_TASK_ID || manifest.roleKind !== "leader") {
+  if (manifest.owner.taskId !== environment.YUI_TASK_ID || !["leader", "worker"].includes(manifest.roleKind)) {
     throw new Error("Unexpected managed identity");
   }
   const trace = [];
@@ -17,6 +18,9 @@ export async function handleTurn({ threadId, turnId, environment }) {
     maxReads: 20, maxBytes: 1024 * 1024
   });
   const task = environment.YUI_TASK_ID;
+  if (manifest.roleKind === "worker") {
+    return nativeWorker({ client, input, task, role: environment.YUI_ROLE, threadId, turnId, trace });
+  }
   const context = client.call(["task", "context", task]);
   const records = client.messageRecords(task);
   const business = await nativeBusiness({ client, records, task, threadId, turnId, trace });

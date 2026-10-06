@@ -139,6 +139,7 @@ Fake-runtime setup warnings remain in raw stderr, not silently hidden.
 
 ```sh
 node --test scripts/collaboration-eval/check.mjs \
+  scripts/collaboration-eval/native-worker.check.mjs \
   scripts/collaboration-eval/cases/tests/business.test.mjs
 ```
 
@@ -173,3 +174,15 @@ Calibration has a 90-second overall budget, 120 observer reads, a 20-second/
 20-read handler budget and 20-second cleanup grace. Raw handler traces are
 included in terminal outputs. This does not establish business P preparation,
 Worker assignment/acceptance, sandbox enforcement or model understanding.
+
+`native-worker-probe.mjs <checkout> <new-output-directory>` separately checks
+a read-only, Gitless managed Worker. It extracts the exact AgentRun identity
+from its real Provider input, loads its frozen Context, expands the original
+assigned WorkItem, and attempts self-acceptance using the actual Host identity.
+The evaluator requires an authority rejection (not just an arbitrary failure),
+an exact completed original Run result, and a still-unaccepted WorkItem.
+It changes the live Task title, checks that the frozen original remains
+unchanged, then explicitly submits and accepts the inspected Candidate.
+This uses the same isolated fixture and budgets as the Session calibration.
+It does not upgrade F/P business scores, establish dependency integration or
+cross-Project filesystem permissions, or replace the outstanding case wiring.

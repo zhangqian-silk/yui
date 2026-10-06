@@ -19,7 +19,7 @@ const evidence = { schemaVersion: 1, mode: "offline", kind: "native-session-cali
   worktreeStatus: execFileSync("git", ["-C", checkout, "status", "--porcelain"], { encoding: "utf8" }),
   cliSha256: digest(readFileSync(join(checkout, "dist/cli.js"))), node: process.version,
   sourceHashes: Object.fromEntries(["fixture", "native-turn", "native-fake-cli", "native-session-probe",
-    "native-session", "native-business"]
+    "native-session", "native-business", "native-worker"]
     .map(name => [name, digest(readFileSync(new URL(`./${name}.mjs`, import.meta.url)))])),
   proxySha256: digest(readFileSync(new URL("../../test/fixtures/fake-codex-app-server-proxy.mjs", import.meta.url))),
   trace, status: "environment-error", modelCalls: 0 };
