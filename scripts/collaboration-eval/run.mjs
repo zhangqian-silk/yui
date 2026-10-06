@@ -7,6 +7,7 @@ import { digest, createEvidenceWriter } from "./evidence.mjs";
 import { recoverNotification } from "./participant.mjs";
 import { judgeNotification } from "./oracle.mjs";
 import { NotificationSimulator } from "./notification-simulator.mjs";
+import { persistTaskFacts, readTaskFacts } from "./readback.mjs";
 
 const args = process.argv.slice(2);
 const value = flag => {
@@ -31,10 +32,10 @@ const evidence = {
     packageLockSha256: digest(readFileSync(join(checkout, "package-lock.json"))),
     worktreeStatus: execFileSync("git", ["-C", checkout, "status", "--porcelain"], { encoding: "utf8" })
   },
-  caseSet: "unified-v3-O02-first-slice", seed: 89,
+  caseSet: "unified-v3-O02-readback-v1", seed: 89,
   policySha256: digest(readFileSync(new URL("./participant.mjs", import.meta.url))),
   oracleSha256: digest(readFileSync(new URL("./oracle.mjs", import.meta.url))),
-  harnessSha256: Object.fromEntries(["run", "fixture", "evidence", "notification-simulator"]
+  harnessSha256: Object.fromEntries(["run", "fixture", "evidence", "notification-simulator", "readback"]
     .map(name => [name, digest(readFileSync(new URL(`./${name}.mjs`, import.meta.url)))])),
   trace, conditions: [{ id: "O02", category: "operations", split: "dev", mode: "F", status: "not-run" }]
 };
@@ -49,16 +50,14 @@ try {
   // Local stateful external-system substitute. Initial send takes effect but its response is lost.
   const simulator = new NotificationSimulator(join(fixture.root, "notification-effects.jsonl"));
   simulator.send({ key: "notice-17", recipient: "local-inbox", body: "Build ready" }, { dropResponse: true });
-  fixture.call(["task", "message", "send", task, JSON.stringify({
-    kind: "pending-notification", status: "unknown", key: "notice-17",
-    recipient: "local-inbox", body: "Build ready"
-  }), "--intent", "record", "--request-id", "original-operation"], "prepare");
+  const operation = { key: "operation", source: "synthetic-notification", revision: 1,
+    body: { kind: "pending-notification", status: "unknown", key: "notice-17",
+      recipient: "local-inbox", body: "Build ready" } };
+  persistTaskFacts(fixture, task, [{ ...operation, digest: digest(JSON.stringify(operation)) }]);
   fixture.call(["controller", "restart"], "prepare");
   evidence.context = fixture.call(["task", "context", task]);
-  const messages = fixture.messages(task);
-  const original = messages.map(message => {
-    try { return JSON.parse(message.body); } catch { return null; }
-  }).find(message => message?.kind === "pending-notification");
+  evidence.readback = readTaskFacts(fixture, task);
+  const original = evidence.readback.records.find(record => record.value.key === "operation")?.value.body;
   if (!original) throw new Error("Original unknown operation is not discoverable.");
   const queries = [];
   const receipt = recoverNotification(original, key => {

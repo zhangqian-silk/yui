@@ -74,27 +74,48 @@ export class Fixture {
   detail(args) {
     let value = this.call(args);
     if (!value.contentPage) return value;
+    const { source, digest } = value.contentPage;
     let text = "";
     for (;;) {
-      text += value.contentPage.text;
-      if (value.contentPage.complete) return JSON.parse(text);
-      value = this.call([...args, "--cursor", value.contentPage.nextCursor]);
+      const page = value.contentPage;
+      if (!page || page.source !== source || page.digest !== digest || page.encoding !== "json"
+        || page.offset !== text.length || typeof page.text !== "string" || !page.text.length) {
+        throw new Error("Original read changed or returned an invalid page");
+      }
+      text += page.text;
+      if (page.complete) {
+        if (text.length !== page.totalCharacters
+          || createHash("sha256").update(text).digest("hex") !== digest) {
+          throw new Error("Original read is incomplete or its digest changed");
+        }
+        return JSON.parse(text);
+      }
+      if (!page.nextCursor) throw new Error("Original read is incomplete without continuation");
+      value = this.call([...args, "--cursor", page.nextCursor]);
     }
   }
 
-  messages(task) {
-    const messages = [];
+  messageRecords(task) {
+    const records = [];
     let cursor;
     do {
       const page = this.call(["task", "context", "list", task, "--store", "task-message",
         ...(cursor ? ["--cursor", cursor] : [])]);
       for (const item of page.items) {
-        messages.push(this.detail(["task", "message", "show", `${task}/${item.ref.refId}`]));
+        const original = this.detail(["task", "context", "inspect", task,
+          "--store", item.ref.store, "--ref", item.ref.refId, "--digest", item.ref.digest]);
+        if (original.ref?.refId !== item.ref.refId || original.ref?.store !== "task-message"
+          || original.ref?.digest !== item.ref.digest) throw new Error("Original record identity changed");
+        records.push(original);
       }
       cursor = page.nextCursor;
       if (!page.complete && !cursor) throw new Error("Incomplete message discovery without continuation");
     } while (cursor);
-    return messages;
+    return records;
+  }
+
+  messages(task) {
+    return this.messageRecords(task).map(record => record.value);
   }
 
   async close() {

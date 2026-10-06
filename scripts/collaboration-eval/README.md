@@ -54,6 +54,26 @@ pagination. Bytes are UTF-8 stdout/stderr bytes, never token or price estimates.
 The trace separates preparation, queries, writes and cleanup; model consumption
 and human preparation effort are not inferred.
 
+## Case readback interface
+
+`readback.mjs` connects public synthetic business facts to the case participant:
+`persistTaskFacts(fixture, task, facts)` writes signed facts through real
+`task message send --intent record`; `readTaskFacts(fixture, task)` discovers and
+reads complete originals through Context list/inspect. It never accepts prepared
+facts as a shortcut to readback. Its result is `{origin: "yui-cli", records}`, where
+each record retains the original Context `ref`, the business fact `digest`,
+the enclosing Yui record's `sourceDigest`, and the read-back fact `value`.
+Business facts contain a key and SHA-256 over their JSON without the digest field.
+These two digests identify different objects and must not be confused.
+
+Discovery follows even an empty incomplete page. Long originals retain their
+source/digest across pages and must have contiguous offsets and a verified final
+digest; a changed source fails rather than mixing versions. This bridge proves
+message persistence/readback only: placing a business statement in a Message
+does not create a Yui acceptance, Decision, Knowledge or frozen-Run record.
+Those native lifecycle semantics still require explicit wiring before the full
+suite can make claims about them.
+
 ## Focused verification
 
 ```sh
@@ -62,6 +82,8 @@ node --test scripts/collaboration-eval/check.mjs
 
 This checks append-once evidence, tamper detection, failed-condition denominators,
 unknown-effect reconciliation, and deliberate duplicate/wrong-receipt failures.
+It also checks source changes during paging, complete Unicode originals, and
+separate business/source digests.
 It is not proof of Session handoff, authority isolation or the remaining cases.
 
 ## Outstanding Task acceptance
