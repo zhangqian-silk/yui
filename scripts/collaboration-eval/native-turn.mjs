@@ -3,10 +3,16 @@ import { join } from "node:path";
 import { Fixture } from "./fixture.mjs";
 import { nativeBusiness } from "./native-business.mjs";
 import { nativeWorker } from "./native-worker.mjs";
+import { externalizeTrace } from "./native-trace.mjs";
 
 // This calibration handler has no material/oracle/case-ID access. Its only
 // inputs are the real Host's launch environment and native notification.
 export async function handleTurn({ threadId, turnId, environment, input }) {
+  const result = await executeTurn({ threadId, turnId, environment, input });
+  return JSON.stringify(externalizeTrace(join(environment.YUI_HOME, ".."), JSON.parse(result)));
+}
+
+async function executeTurn({ threadId, turnId, environment, input }) {
   const manifest = JSON.parse(readFileSync(environment.YUI_SESSION_MANIFEST, "utf8"));
   if (manifest.owner.taskId !== environment.YUI_TASK_ID || !["leader", "worker"].includes(manifest.roleKind)) {
     throw new Error("Unexpected managed identity");

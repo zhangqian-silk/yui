@@ -14,6 +14,7 @@ import { definitions, variants } from "./cases/catalog.mjs";
 import { prepareCase } from "./cases/prepare.mjs";
 import { observe } from "./cases/business.mjs";
 import { NativeObserver, includeNativeTrace } from "./native-session.mjs";
+import { externalizeTrace, readNativeTrace } from "./native-trace.mjs";
 
 test("unknown effects are reconciled, not resent; oracle detects duplicate effects", () => {
   const effect = { key: "notice-17", recipient: "local-inbox", body: "Build ready",
@@ -195,4 +196,24 @@ test("native observation rejects an uncorrelated terminal and counts idle partic
   assert.equal(fixture.bytes, 61);
   assert.equal(fixture.trace[0].actor, "native-participant");
   assert.throws(() => includeNativeTrace(fixture, idle), /budget-exceeded/);
+});
+
+test("native diagnostic sidecars retain exact bytes and are owned, immutable and identity-bound", () => {
+  const root = mkdtempSync(join(tmpdir(), "yui-eval-trace-"));
+  try {
+    const original = { kind: "native-business-predecessor", threadId: "session-1", turnId: "turn-1",
+      trace: [{ phase: "query", stdout: "中文 original", stdoutBytes: 15, stderrBytes: 0 }] };
+    const published = externalizeTrace(root, original);
+    assert.equal(published.trace, undefined);
+    assert.deepEqual(readNativeTrace(root, published), original.trace);
+    assert.throws(() => externalizeTrace(root, original), /EEXIST/);
+    assert.throws(() => readNativeTrace(root, { ...published, threadId: "another" }), /identity/);
+    writeFileSync(published.traceRef.path, "replaced");
+    assert.throws(() => readNativeTrace(root, published), /digest/);
+    const other = join(root, "outside-trace.json");
+    writeFileSync(other, "{}");
+    assert.throws(() => readNativeTrace(root, { ...published, traceRef: {
+      ...published.traceRef, path: other
+    } }), /outside/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

@@ -17,7 +17,9 @@ const evidence = { schemaVersion: 1, kind: "native-worker-calibration", mode: "o
   worktreeStatus: execFileSync("git", ["-C", checkout, "status", "--porcelain"], { encoding: "utf8" }),
   cliSha256: digest(readFileSync(join(checkout, "dist/cli.js"))), node: process.version,
   sourceHashes: Object.fromEntries(["fixture", "native-turn", "native-worker", "native-fake-cli",
-    "native-session", "native-worker-probe"].map(n => [n, digest(readFileSync(new URL(`./${n}.mjs`, import.meta.url)))])),
+    "native-session", "native-worker-probe", "native-trace", "native-business", "native-predecessor"]
+    .map(n => [n, digest(readFileSync(new URL(`./${n}.mjs`, import.meta.url)))])),
+  proxySha256: digest(readFileSync(new URL("../../test/fixtures/fake-codex-app-server-proxy.mjs", import.meta.url))),
   trace, status: "environment-error", modelCalls: 0 };
 const abort = signal => { evidence.interrupted = signal; fixture.deadline = 0; };
 process.on("SIGINT", abort); process.on("SIGTERM", abort);

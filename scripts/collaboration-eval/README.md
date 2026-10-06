@@ -13,11 +13,11 @@ actual candidate files, local Git repositories, source bytes and effects.
 
 This is **partial evidence**, not the full case baseline: managed dependency
 acceptance, frozen assignments and native permission fences are not yet wired.
-O02/P now exercises a genuine predecessor/successor Session handoff; the other
-four P adapters remain unimplemented. A string saying
+All five P adapters exercise genuine predecessor/successor Session handoffs.
+A string saying
 “accepted” in business material is not a native acceptance receipt. The
-deterministic participant runs as a bounded local child, outside a managed
-Agent Role. There is no filesystem sandbox or proof of model understanding.
+F's deterministic participant runs as a bounded local child, outside a managed
+Agent Role; P uses managed Leaders. There is no filesystem sandbox or proof of model understanding.
 
 ## Run, then analyze
 
@@ -35,9 +35,8 @@ node scripts/collaboration-eval/analyze.mjs /absolute/path/to/a-new-report-direc
 `--case` accepts comma-separated IDs (including explicit variant IDs), `dev`,
 or `all`. Selecting `dev` includes its four variants. `--mode F|P|all` defaults
 to F. The complete declared selection is `--case all --mode all`, yielding 33
-conditions across 24 base cases. O02/P uses a native managed Leader; the other
-P conditions remain `not-run` with an explicit missing-adapter reason. They
-are never replaced by a Controller restart. Any selection containing holdout requires `--allow-holdout true`.
+conditions across 24 base cases. P uses native managed Leaders and is never
+substituted with a Controller restart. Any selection containing holdout requires `--allow-holdout true`.
 Do not use that flag until development calibration and strategy freeze are
 complete. Merely listing or statically hashing holdout is not executing it.
 
@@ -86,8 +85,8 @@ base cases. No automatic whole-suite success rate is emitted.
 O02/P has an initially empty business ledger. Only the predecessor's native
 Turn receives the original send request, performs the local simulated send
 with a dropped response, and saves its unknown-effect checkpoint. Current
-facts are published afterward. A native `session new` request ends the prior
-Session; a fresh successor reads the checkpoint and current originals, queries
+facts are published after confirmed native stop. A native `session new`
+request creates a fresh successor that reads the checkpoint and current originals, queries
 the original key, and persists its result. Its native Message receipt provides
 the exact ref/digest for final readback, avoiding a second scan of all Messages.
 The independent oracle checks that the effect remains exactly once.
@@ -100,11 +99,24 @@ performed. Its module freeze hash was advanced for this adapter correction;
 the holdout materials, participant and oracle hashes remain unchanged.
 Earlier evidence retains its old preparation/freeze hashes.
 
+For the other four P conditions, evaluator-only staging removes later source
+assets before launching the predecessor. The only source at that time is the
+T0 input. C05's predecessor reads the existing SDK and writes a cursor mapping
+plan; W01 writes a constrained draft; R02 saves an unaccepted logs-v1 conclusion;
+A03 computes the orders-s1 partial aggregate and per-order checkpoint.
+The actual native Message checkpoint replaces the prepared checkpoint fact.
+After confirmed native Session stop, the evaluator publishes the current
+sources (including corrected logs / orders-s2). A fresh Session checks that
+the current checkpoint equals the predecessor's original, then produces the
+independently scored outcome. Predecessor artifacts survive in raw evidence.
+Full regeneration from valid facts is permitted; this is not a measure of
+human-like draft understanding or minimal editing.
+
 ## Resources, costs and bounds
 
 Each condition owns a fresh temporary user directory, YUI_HOME, fake Provider
 executable and tmux namespace. Only the absolute target checkout launcher is
-called. F never activates an Agent; O02/P activates only the fake Provider. The fake executable
+called. F never activates an Agent; P activates only the fake Provider. The fake executable
 cannot fall back to a real model. All data and Git repos are artificial, local
 and remote-free. Knowledge projects are fixture-owned, not real Projects.
 
@@ -129,6 +141,15 @@ has a 20-read/1-MiB/20-second local bound. The aggregate is checked after
 delivery of those traces; it is not a cross-process hard read quota. Exceeding
 it records `budget-exceeded`, never a successful score.
 
+Raw native CLI diagnostics are written append-once to a fixture-owned sidecar
+outside YUI_HOME. The native terminal binds its exact Session/Turn, byte length
+and SHA-256. The evaluator verifies ownership and those identities, merges the
+complete raw trace into saved evidence, then removes the sidecar during cleanup.
+Business records and results still travel through real Yui public APIs; the
+sidecar is diagnostics, not another context/acceptance store. This avoids
+recursively paging a large trace embedded in a native report. Observer reads
+remain counted; failed older attempts retain their original costs and outcome.
+
 The trace separates preparation, queries, writes and cleanup. Analyzer reports
 their call counts, UTF-8 returned bytes and elapsed times separately. This is
 not model latency; bytes are never converted into precise tokens or prices.
@@ -140,6 +161,7 @@ Fake-runtime setup warnings remain in raw stderr, not silently hidden.
 ```sh
 node --test scripts/collaboration-eval/check.mjs \
   scripts/collaboration-eval/native-worker.check.mjs \
+  scripts/collaboration-eval/predecessor.check.mjs \
   scripts/collaboration-eval/cases/tests/business.test.mjs
 ```
 
@@ -148,8 +170,9 @@ boundaries, active native records, selection/denominators and holdout opt-in.
 Old first-slice O02 simulator checks remain useful independent regression
 evidence; they are not the current 24-case runner.
 
-Still outstanding: four other P lifecycles, native frozen assignment/acceptance/
-permission wiring, fair saved-record A/B comparison, dev-then-frozen-holdout
+Still outstanding: fixed-head validation of the extended P adapters,
+native frozen assignment/acceptance/permission business-case wiring,
+fair saved-record A/B comparison, dev-then-frozen-holdout
 baseline, final manual quality disposition and Task-level delivery validation.
 Product optimization should follow those measured gaps, not this adapter's
 normal scripted outcomes. The Task is not complete.

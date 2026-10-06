@@ -13,6 +13,7 @@ import { scoreCase } from "./cases/oracle.mjs";
 import { observe } from "./cases/business.mjs";
 import { selectConditions, parseOptions } from "./selection.mjs";
 import { NativeObserver } from "./native-session.mjs";
+import { stagePredecessor, publishAfterPredecessor } from "./predecessor-setup.mjs";
 
 const options = parseOptions(process.argv.slice(2));
 const checkout = resolve(options.version), output = resolve(options.out);
@@ -32,7 +33,8 @@ const evidence = {
   policySha256: hashFile(new URL("./cases/participant.mjs", import.meta.url)),
   oracleSha256: hashFile(new URL("./cases/oracle.mjs", import.meta.url)),
   harnessSha256: Object.fromEntries(["run", "fixture", "evidence", "readback", "selection", "case-process",
-    "native-session", "native-fake-cli", "native-turn", "native-business", "native-worker"]
+    "native-session", "native-fake-cli", "native-turn", "native-business", "native-worker",
+    "native-predecessor", "predecessor-setup", "native-trace"]
     .map(name => [name, hashFile(new URL(`./${name}.mjs`, import.meta.url))])),
   proxySha256: hashFile(new URL("../../test/fixtures/fake-codex-app-server-proxy.mjs", import.meta.url)),
   trace, conditions
@@ -122,7 +124,7 @@ async function runCondition(condition) {
     fixture.prepare({ native });
     condition.runtime = fixture.call(["controller", "status"], "prepare").identity;
     mkdirSync(root);
-    const prepared = await prepareCase(condition.id, condition.variant, root, { deferNotification: native });
+    const prepared = await prepareCase(condition.id, condition.variant, root, { deferNotification: native && condition.id === "O02" });
     condition.manifest = prepared.manifest;
     condition.budget = prepared.budget;
     fixture.deadline = started + prepared.budget.wallSeconds * 1000;
@@ -138,28 +140,38 @@ async function runCondition(condition) {
     if (native) {
       fixture.ownedRoles = [{ task: task.id, role: "leader" }];
       const input = prepared.facts.find(f => f.key === "evidence").body;
+      const staged = condition.id === "O02" ? null : await stagePredecessor(root, prepared);
+      const operation = staged?.operation ??
+        { kind: "notification", key: input.key, target: input.target, payload: input.payload };
+      condition.predecessorInput = operation;
       fixture.call(["task", "message", "send", task.id,
-        JSON.stringify({ kind: "native-eval-predecessor-request", root,
-          operation: { kind: "notification", key: input.key, target: input.target, payload: input.payload } }),
+        JSON.stringify({ kind: "native-eval-predecessor-request", root, operation }),
         "--intent", "record", "--request-id", "predecessor-request"], "prepare");
       observer = new NativeObserver(fixture, task.id, fixture.call(["task", "context", task.id]).coreCursor);
       fixture.call(["task", "activation", "request", task.id,
         "--request-id", "native-predecessor", "--environment", "scratch"], "prepare");
       condition.predecessor = await observer.terminal("native-business-predecessor");
-      if (condition.predecessor.result.checkpoint.effect !== "unknown") throw new Error("Expected lost-response predecessor");
-      // This is the observed T1 checkpoint, after a real native Turn produced
-      // the effect. Preparation never sends or prebuilds this ledger in P.
-      prepared.manifest.initial = await observe(root);
-      if (prepared.manifest.initial.ledger.length !== 1) throw new Error("Invalid predecessor effect count");
-      prepared.budget.maxTotalEffects = 1;
+      condition.beforeReplacement = fixture.call(["task", "role", "session", "inspect", task.id, "leader"]);
+      condition.predecessorStop = fixture.call(["task", "role", "session", "stop", task.id, "leader",
+        "--reason", "End native predecessor before publishing later material"], "write");
+      if (condition.predecessorStop.stopped !== true) throw new Error("Predecessor stop not confirmed");
+      if (staged) {
+        await publishAfterPredecessor(root, prepared, staged, condition.predecessor.result.checkpoint);
+      } else {
+        if (condition.predecessor.result.checkpoint.effect !== "unknown") throw new Error("Expected lost-response predecessor");
+        // This is the observed T1 checkpoint, after a real native Turn produced
+        // the effect. Preparation never sends or prebuilds this ledger in P.
+        prepared.manifest.initial = await observe(root);
+        if (prepared.manifest.initial.ledger.length !== 1) throw new Error("Invalid predecessor effect count");
+        prepared.budget.maxTotalEffects = 1;
+      }
     }
     seedNative(fixture, task.id, prepared, project);
     condition.stages = { saved: true, discovered: false, understood: "unverified", acted: false };
     let readback, businessResult;
     if (native) {
-      condition.beforeReplacement = fixture.call(["task", "role", "session", "inspect", task.id, "leader"]);
       condition.replacement = fixture.call(["task", "role", "session", "new", task.id, "leader",
-        "--reason", "Fresh successor after durable unknown-effect checkpoint"], "write");
+        "--reason", "Fresh successor after actual native predecessor checkpoint"], "write");
       condition.successor = await observer.terminal("native-business-successor",
         { excludeSession: condition.predecessor.result.threadId });
       readback = condition.successor.result.readback;
@@ -245,10 +257,6 @@ async function runCondition(condition) {
 try {
   for (const condition of conditions) {
     if (interrupted) { condition.reason = `cancelled: ${interrupted}`; continue; }
-    if (condition.mode === "P" && condition.id !== "O02") {
-      condition.reason = "Genuine managed predecessor/successor adapter not implemented; not substituted with restart.";
-      continue;
-    }
     await runCondition(condition);
     process.stdout.write(JSON.stringify({ id: condition.id, variant: condition.variant, mode: condition.mode,
       status: condition.status, businessStatus: condition.businessStatus, cleanup: condition.cleanup.status }) + "\n");
