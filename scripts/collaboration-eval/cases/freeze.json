@@ -1,0 +1,20 @@
+{
+  "version": "unified-v2-materials-1",
+  "holdout": {
+    "C04": "a8539fb7b624d56ae2c4a7ea5f218f9579889a469bed7c37041a18aa32413a14",
+    "C07": "5cfc5e7829bf4414d696c58c9536bcf609428389176d0dc2291b17ce6975588a",
+    "W04": "957061918ac743b2775b47c2ca531b43af706ecf4e7cc9589226938f4db9a3e1",
+    "R04": "029f26806aa60235ee3e070ef6c757a2c400abd677ee30756ab8f9deb88fa71e",
+    "A04": "b9fed633d65e40f893b72712db8845fd8b01cb68cc13b8e43ed0cf9c79a113f6",
+    "O04": "af3d41b2c2b058b047cc160a5aa6650387463b4453d3dd99f20447d79e3fa0ef"
+  },
+  "modules": {
+    "catalog.mjs": "bf45ffc6ecd800543050cf8bce6aa6138fc539cafa08af3f3e2f1e127d85e243",
+    "materials.mjs": "24c380266483c3657fa52de9c917622d7756396a3852e1d6c5fa964a92e79b45",
+    "prepare.mjs": "a42c356d45698ebd1e082699ac30d27cf5deb9e1e14b98b08ca5dbdc6ce17991",
+    "participant.mjs": "22ff0c6342d9bf26120bfd2664e57623e1932063345eb30f627dc5ad39935713",
+    "business.mjs": "c9968d9efb305fe3f8a61e44ea2331f6d42ebed553b4310eec3dadfafee2fd1a",
+    "oracle.mjs": "26927892c4b3d15ac05b00e366fce4905846a12a09c7ac9ee39c03ef2847dafc",
+    "code-check.mjs": "a27b51d1ace4ec1e975a817e8bad00bef90868676e783862cef080f600725b88"
+  }
+}
