@@ -1,97 +1,131 @@
 # Collaboration evaluation — implementation in progress
 
-This research entry is deliberately outside `npm test` and core CI. It measures
+This small research entry is outside `npm test` and core CI. It measures
 deterministic scripts using Yui persistence and discovery, not model coding
 ability, Agent understanding, or real-service reliability.
 
-The first vertical slice implements **O02/F only**: a local stateful notification
-simulator commits an effect and loses its response; Yui records the original key
-and unknown outcome; after an isolated Controller restart, the script discovers
-the original through Context/message reads, queries that key, and persists a
-matching receipt without another send. The independent evaluator inspects the
-effect ledger and bound receipt. Controller restart is **not** Session replacement
-and does not count as P-mode coverage.
+The business library in [cases/README.md](cases/README.md) contains 24 frozen
+base cases (18 development / 6 holdout), four F variants and five P definitions.
+The current runner connects F cases to real Yui Message, Decision and, for K
+cases, Project Knowledge writes and complete original reads. It exercises
+native Decision supersession and Knowledge retirement. The evaluator checks
+actual candidate files, local Git repositories, source bytes and effects.
+
+This is **partial evidence**, not the full case baseline: managed dependency
+acceptance, frozen assignments, native permission fences and genuine
+predecessor/successor Session handoff are not yet wired. A string saying
+“accepted” in business material is not a native acceptance receipt. The
+deterministic participant runs as a bounded local child, outside a managed
+Agent Role. There is no filesystem sandbox or proof of model understanding.
 
 ## Run, then analyze
 
-Use supported Node (24 recommended) and the repository's isolated launcher:
+Use supported Node (24 recommended) and the per-checkout isolated launcher:
 
 ```sh
 make install-local
 node scripts/collaboration-eval/run.mjs \
   --version /absolute/path/to/Yui \
-  --case O02 \
+  --case C01,W01,R01,A01,O02 \
   --out /absolute/path/to/a-new-report-directory
 node scripts/collaboration-eval/analyze.mjs /absolute/path/to/a-new-report-directory
 ```
 
-The report directory's parent must exist. An existing report directory is refused
-before fixture creation. Each invocation reserves a new directory and stores
-append-once `evidence.json` plus its SHA-256. `record.json` without complete evidence
-means the invocation did not finish saving; analysis must not fill in its history.
-The analyzer only reads saved evidence, validates its digest and prints a derived
-report to stdout. It imports no runtime/runner and never creates a Home, contacts
-the CLI, or reruns a case. Hashes detect accidental changes, not an attacker who
-rewrites both evidence and hash.
+`--case` accepts comma-separated IDs (including explicit variant IDs), `dev`,
+or `all`. Selecting `dev` includes its four variants. `--mode F|P|all` defaults
+to F. The complete declared selection is `--case all --mode all`, yielding 33
+conditions across 24 base cases. P conditions currently remain `not-run` with
+an explicit missing-adapter reason; they are never replaced by a Controller
+restart. Any selection containing holdout requires `--allow-holdout true`.
+Do not use that flag until development calibration and strategy freeze are
+complete. Merely listing or statically hashing holdout is not executing it.
 
-The execution manifest records target commit, dirty status, CLI and lockfile
-hashes, harness/strategy/oracle hashes, Node/platform, and raw CLI receipts.
-The first slice uses fixed synthetic inputs and seed 89 (no random strategy).
-Only the selected O02 condition belongs to this invocation's denominator; this
-must not be described as a 24-case baseline.
+The report directory's parent must exist. An existing directory is refused
+before creating any fixture. Each invocation reserves a new directory and
+stores append-once `evidence.json` plus SHA-256. `record.json` without complete
+evidence denotes an interrupted save; analysis must not fill in its history.
+The analyzer only reads and hashes saved records. It does not import the
+runner, start a Home, contact Yui, repair evidence or rerun cases.
+Hashes detect accidental change, not hostile replacement of both record/hash.
 
-Each run owns a fresh temporary user directory, YUI_HOME, fake Provider executable,
-and tmux namespace. The fake executable is the existing package-smoke fixture;
-this slice never activates an Agent. It cannot fall back to a real model.
-Cleanup is installed before `setup` and runs on ordinary success or exceptions.
-Controller stop and scoped tmux cleanup precede directory removal. On cleanup
-failure, ownership paths and failures are retained in evidence. A hard process kill
-is not a cleanup receipt; inspect retained ownership before recovery.
+The manifest records target commit and dirty status, CLI/lockfile hashes,
+harness/strategy/oracle/freeze hashes, Node/platform, condition selection and
+fixed seed 89. Original CLI outputs/errors, public readback refs, evaluator-only
+material manifests, actual outputs/digests, effect ledgers and manual rubric
+packages survive fixture cleanup. Failed attempts are not overwritten.
+An exit code of zero means this partial adapter executed without infrastructure
+or automatic business-check failure; it does **not** mean the full Task passed.
 
-Current bounds: 90 seconds for O02 execution, 60 reads, 2 MiB query output, a
-20-second per-CLI bound, and bounded cleanup. Reads include failed calls and
-pagination. Bytes are UTF-8 stdout/stderr bytes, never token or price estimates.
-The trace separates preparation, queries, writes and cleanup; model consumption
-and human preparation effort are not inferred.
+## Readback and score boundaries
 
-## Case readback interface
+`readback.mjs` keeps distinct identities for the signed business fact and its
+enclosing native Yui source. The participant receives only complete observed
+originals, never the preparation object or expected answers. Every original
+retains native store/ref/revision/digest; business values retain their own
+source/version/digest. Message discovery follows empty incomplete pages;
+long original reads require one source/digest, contiguous UTF-16 offsets and
+a matching final SHA-256.
 
-`readback.mjs` connects public synthetic business facts to the case participant:
-`persistTaskFacts(fixture, task, facts)` writes signed facts through real
-`task message send --intent record`; `readTaskFacts(fixture, task)` discovers and
-reads complete originals through Context list/inspect. It never accepts prepared
-facts as a shortcut to readback. Its result is `{origin: "yui-cli", records}`, where
-each record retains the original Context `ref`, the business fact `digest`,
-the enclosing Yui record's `sourceDigest`, and the read-back fact `value`.
-Business facts contain a key and SHA-256 over their JSON without the digest field.
-These two digests identify different objects and must not be confused.
+For native F runs, decision facts are read from active `task-decision`
+originals; K-case evidence comes from active `project-knowledge` originals.
+Other public facts use Messages. Historical Decisions are superseded and
+historical Knowledge retired using the real CLI. A successful mutation whose
+JSON envelope only contains a text receipt is followed by original-record
+discovery, not a guessed ID or replay.
 
-Discovery follows even an empty incomplete page. Long originals retain their
-source/digest across pages and must have contiguous offsets and a verified final
-digest; a changed source fails rather than mixing versions. This bridge proves
-message persistence/readback only: placing a business statement in a Message
-does not create a Yui acceptance, Decision, Knowledge or frozen-Run record.
-Those native lifecycle semantics still require explicit wiring before the full
-suite can make claims about them.
+The independent business scorer remains separate from the participant.
+Business results are `scripted-pass`, `fail` or `pending-human`; all successful
+W/R structural checks remain `pending-human` with actual texts and rubric.
+The enclosing condition is `partial-evidence` while native obligations remain
+unexercised. The saved `boundaries` and `stages` distinguish saved, discovered,
+unverified understanding and deterministic action. Failures/timeouts/not-run
+remain in the selected denominator. Variants/P conditions do not add independent
+base cases. No automatic whole-suite success rate is emitted.
 
-## Focused verification
+## Resources, costs and bounds
+
+Each condition owns a fresh temporary user directory, YUI_HOME, fake Provider
+executable and tmux namespace. Only the absolute target checkout launcher is
+called. This F adapter never activates an Agent, and the fake executable
+cannot fall back to a real model. All data and Git repos are artificial, local
+and remote-free. Knowledge projects are fixture-owned, not real Projects.
+
+Cleanup is registered before `setup`, which can start a Controller. On success
+or exceptions it stops the exact owned Controller, releases its tmux server,
+then deletes only the fixture root; uncertain cleanup retains ownership data.
+The grace budget is shared across cleanup commands. SIGINT/SIGTERM request a
+bounded stop: the current synchronous child call finishes or times out, then
+ordinary cleanup/evidence saving runs and remaining conditions stay not-run.
+Hard kills are not cleanup receipts; inspect retained paths before recovery.
+
+Per-case limits come from the frozen library: 60 seconds/40 reads/1 MiB for
+single-code/docs/research, 90 seconds/60 reads/2 MiB for multi-code/data/ops;
+20 seconds cleanup grace. CLI calls have a 20-second maximum within the case
+deadline; participant child execution has the remaining deadline. Reads include
+failed calls, verification reads and pagination. Effect counts are checked
+against case limits before persisting a result; the bounded audited simulator
+is not a protection against hostile arbitrary code.
+
+The trace separates preparation, queries, writes and cleanup. Analyzer reports
+their call counts, UTF-8 returned bytes and elapsed times separately. This is
+not model latency; bytes are never converted into precise tokens or prices.
+Model calls are zero, tokens unverified, costs N/A, human preparation unknown.
+Fake-runtime setup warnings remain in raw stderr, not silently hidden.
+
+## Focused checks and remaining delivery
 
 ```sh
-node --test scripts/collaboration-eval/check.mjs
+node --test scripts/collaboration-eval/check.mjs \
+  scripts/collaboration-eval/cases/tests/business.test.mjs
 ```
 
-This checks append-once evidence, tamper detection, failed-condition denominators,
-unknown-effect reconciliation, and deliberate duplicate/wrong-receipt failures.
-It also checks source changes during paging, complete Unicode originals, and
-separate business/source digests.
-It is not proof of Session handoff, authority isolation or the remaining cases.
+Checks cover business outcomes, deliberate duplicate effects, readback/digest
+boundaries, active native records, selection/denominators and holdout opt-in.
+Old first-slice O02 simulator checks remain useful independent regression
+evidence; they are not the current 24-case runner.
 
-## Outstanding Task acceptance
-
-The pinned v3 plan remains authoritative. Still outstanding: five-type 24-case
-integration; 18/6 split and four variants; genuine P-mode predecessor/successor
-lifecycles for C05/W01/R02/A03/O02; frozen-Run/acceptance and multi-repository
-boundaries; selection, cancellation and fair A/B comparison; dev-then-frozen-holdout
-baseline; manual document/research rubrics; full Task-level delivery validation.
-The Task is not complete. Product optimization must follow evidence, not this
-single normal scripted outcome.
+Still outstanding: genuine P lifecycles, native frozen assignment/acceptance/
+permission wiring, fair saved-record A/B comparison, dev-then-frozen-holdout
+baseline, final manual quality disposition and Task-level delivery validation.
+Product optimization should follow those measured gaps, not this adapter's
+normal scripted outcomes. The Task is not complete.

@@ -34,6 +34,17 @@ export function readEvidence(directory) {
 
 export function analyze(evidence) {
   const categories = ["code", "docs", "research", "data", "operations"];
+  const statusCounts = (cases, field) => cases.reduce((counts, item) => {
+    const status = item[field] ?? "unverified";
+    counts[status] = (counts[status] ?? 0) + 1;
+    return counts;
+  }, {});
+  const phases = Object.fromEntries(["prepare", "query", "write", "cleanup"].map(phase => {
+    const calls = evidence.trace.filter(item => item.phase === phase);
+    return [phase, { calls: calls.length,
+      returnedBytes: calls.reduce((sum, item) => sum + item.stdoutBytes + item.stderrBytes, 0),
+      elapsedMs: calls.reduce((sum, item) => sum + (item.elapsedMs ?? 0), 0) }];
+  }));
   return {
     schemaVersion: 1,
     experiment: evidence.experiment,
@@ -42,14 +53,15 @@ export function analyze(evidence) {
       const cases = evidence.conditions.filter(item => item.category === category);
       return [category, {
         planned: cases.length,
-        statuses: cases.reduce((counts, item) => {
-          counts[item.status] = (counts[item.status] ?? 0) + 1;
-          return counts;
-        }, {})
+        baseCases: new Set(cases.map(item => item.id)).size,
+        statuses: statusCounts(cases, "status"),
+        businessStatuses: statusCounts(cases, "businessStatus"),
+        splits: statusCounts(cases, "split")
       }];
     })),
     conditions: evidence.conditions,
     costs: {
+      phases,
       reads: evidence.trace.filter(item => item.phase === "query").length,
       readBytes: evidence.trace.filter(item => item.phase === "query")
         .reduce((sum, item) => sum + item.stdoutBytes + item.stderrBytes, 0),
@@ -62,7 +74,10 @@ export function analyze(evidence) {
     limitations: [
       "Deterministic scripted outcomes are not Agent understanding or collaboration success rates.",
       "Not-run, environment-error and pending-human conditions remain in the planned denominator.",
-      "No real models, accounts, production systems or user history are evaluated."
+      "No real models, accounts, production systems or user history are evaluated.",
+      "Partial-evidence is not a full case pass. Unexercised native boundaries are not inferred from business labels.",
+      "Preparation and verification reads are separately recorded, not hidden or converted to tokens.",
+      "Elapsed time includes fixture startup and cleanup, not model latency."
     ]
   };
 }

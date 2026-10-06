@@ -26,15 +26,31 @@ export function persistTaskFacts(fixture, task, facts) {
 }
 
 export function readTaskFacts(fixture, task) {
+  return extractFacts(fixture.messageRecords(task), task);
+}
+
+export function readNativeFacts(fixture, task, { knowledge = false } = {}) {
+  const originals = [
+    ...fixture.records(task, "task-message"),
+    ...fixture.records(task, "task-decision").filter(r => r.value.status === "active"),
+    ...(knowledge ? fixture.records(task, "project-knowledge").filter(r => r.value.status === "active") : [])
+  ];
+  return extractFacts(originals, task);
+}
+
+function extractFacts(originals, task) {
   const records = [];
   const keys = new Set();
   // No prepared facts argument: the participant's values come exclusively
   // from complete, digest-bound original Yui records discovered in this Task.
-  for (const original of fixture.messageRecords(task)) {
+  for (const original of originals) {
     let envelope;
-    try { envelope = JSON.parse(original.value.body); } catch { continue; }
+    const store = original.ref?.store;
+    try { envelope = JSON.parse(store === "task-decision" ? original.value.rationale : original.value.body); }
+    catch { continue; }
     if (envelope?.kind !== "collaboration-eval-fact") continue;
-    if (original.value.taskId !== task || original.ref?.store !== "task-message"
+    if ((store !== "project-knowledge" && original.value.taskId !== task)
+      || !["task-message", "task-decision", "project-knowledge"].includes(store)
       || !original.ref.refId || !original.ref.digest) throw new Error("Invalid Yui source identity");
     const fact = envelope.value;
     verifyFact(fact);

@@ -14,6 +14,8 @@ export class Fixture {
     this.deadline = performance.now() + budgetMs;
     this.reads = 0;
     this.bytes = 0;
+    this.maxReads = 60;
+    this.maxBytes = 2 * 1024 * 1024;
     // Cleanup is available before setup, which can start a Controller.
     this.cleanup = { status: "not-started", root: this.root };
   }
@@ -44,14 +46,16 @@ export class Fixture {
 
   call(args, phase = "query", options = {}) {
     if (phase !== "cleanup" && performance.now() >= this.deadline) throw new Error("budget-exceeded");
-    if (phase === "query" && (this.reads >= 60 || this.bytes >= 2 * 1024 * 1024)) {
+    if (phase === "query" && (this.reads >= this.maxReads || this.bytes >= this.maxBytes)) {
       throw new Error("budget-exceeded");
     }
     const started = performance.now();
     const command = [...(options.json === false ? [] : ["--json"]), ...args];
     const result = spawnSync(this.cli, command, {
       env: options.environment ?? this.environment, encoding: "utf8", input: options.input,
-      timeout: phase === "cleanup" ? 20_000 : Math.max(1, Math.min(20_000, this.deadline - started)),
+      timeout: Math.max(1, Math.ceil(phase === "cleanup"
+        ? Math.min(20_000, (this.cleanupDeadline ?? started + 20_000) - started)
+        : Math.min(20_000, this.deadline - started))),
       maxBuffer: 8 * 1024 * 1024
     });
     const entry = { phase, args: command, exitCode: result.status, signal: result.signal,
@@ -61,9 +65,9 @@ export class Fixture {
     this.trace.push(entry);
     if (phase === "query") { this.reads++; this.bytes += entry.stdoutBytes + entry.stderrBytes; }
     if (result.status !== 0 || result.error) {
-      throw new Error(`CLI ${args.join(" ")}: ${result.error?.message ?? entry.stderr ?? entry.stdout}`);
+      throw new Error(`CLI ${args.join(" ")}: ${result.error?.message || entry.stderr || entry.stdout}`);
     }
-    if (phase === "query" && this.bytes > 2 * 1024 * 1024) throw new Error("budget-exceeded");
+    if (phase === "query" && this.bytes > this.maxBytes) throw new Error("budget-exceeded");
     if (options.json === false) return entry.stdout;
     const envelope = JSON.parse(entry.stdout);
     if (envelope.ok === false) throw new Error(JSON.stringify(envelope));
@@ -71,8 +75,8 @@ export class Fixture {
   }
 
   // Complete originals, including bounded long-content responses.
-  detail(args) {
-    let value = this.call(args);
+  detail(args, phase = "query") {
+    let value = this.call(args, phase);
     if (!value.contentPage) return value;
     const { source, digest } = value.contentPage;
     let text = "";
@@ -91,20 +95,24 @@ export class Fixture {
         return JSON.parse(text);
       }
       if (!page.nextCursor) throw new Error("Original read is incomplete without continuation");
-      value = this.call([...args, "--cursor", page.nextCursor]);
+      value = this.call([...args, "--cursor", page.nextCursor], phase);
     }
   }
 
   messageRecords(task) {
+    return Fixture.prototype.records.call(this, task, "task-message");
+  }
+
+  records(task, store) {
     const records = [];
     let cursor;
     do {
-      const page = this.call(["task", "context", "list", task, "--store", "task-message",
+      const page = this.call(["task", "context", "list", task, "--store", store,
         ...(cursor ? ["--cursor", cursor] : [])]);
       for (const item of page.items) {
         const original = this.detail(["task", "context", "inspect", task,
           "--store", item.ref.store, "--ref", item.ref.refId, "--digest", item.ref.digest]);
-        if (original.ref?.refId !== item.ref.refId || original.ref?.store !== "task-message"
+        if (original.ref?.refId !== item.ref.refId || original.ref?.store !== store
           || original.ref?.digest !== item.ref.digest) throw new Error("Original record identity changed");
         records.push(original);
       }
@@ -119,6 +127,7 @@ export class Fixture {
   }
 
   async close() {
+    this.cleanupDeadline = performance.now() + 20_000;
     const failures = [];
     if (this.environment && (existsSync(join(this.home, "yui.db"))
       || existsSync(join(this.home, "runtime/controller.json")))) {
@@ -127,7 +136,8 @@ export class Fixture {
     }
     if (this.tmux && this.environment) {
       const stopped = spawnSync("tmux", ["-L", this.tmux, "kill-server"],
-        { env: this.environment, encoding: "utf8", timeout: 5000 });
+        { env: this.environment, encoding: "utf8",
+          timeout: Math.max(1, Math.ceil(Math.min(5000, this.cleanupDeadline - performance.now()))) });
       if (stopped.status !== 0 && !/no server running|No such file/.test(stopped.stderr ?? "")) {
         failures.push(`tmux: ${stopped.error?.message ?? stopped.stderr}`);
       }
@@ -136,7 +146,9 @@ export class Fixture {
       for (let attempt = 0; attempt < 10; attempt++) {
         try { rmSync(this.root, { recursive: true, force: true }); break; }
         catch (error) {
-          if (attempt === 9) failures.push(String(error));
+          if (attempt === 9 || performance.now() + 100 >= this.cleanupDeadline) {
+            failures.push(String(error)); break;
+          }
           else await delay(100);
         }
       }

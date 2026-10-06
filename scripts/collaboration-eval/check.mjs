@@ -8,7 +8,9 @@ import { judgeNotification } from "./oracle.mjs";
 import { recoverNotification } from "./participant.mjs";
 import { NotificationSimulator } from "./notification-simulator.mjs";
 import { Fixture } from "./fixture.mjs";
-import { readTaskFacts, persistTaskFacts } from "./readback.mjs";
+import { readTaskFacts, persistTaskFacts, readNativeFacts } from "./readback.mjs";
+import { selectConditions, parseOptions } from "./selection.mjs";
+import { definitions, variants } from "./cases/catalog.mjs";
 
 test("unknown effects are reconciled, not resent; oracle detects duplicate effects", () => {
   const effect = { key: "notice-17", recipient: "local-inbox", body: "Build ready",
@@ -118,4 +120,43 @@ test("readback separates business digests from Yui record digests and rejects da
   assert.equal(writes, 1, "invalid material must fail before partial writes");
   original.value.body = original.value.body.replace('"allowed":false', '"allowed":true');
   assert.throws(() => readTaskFacts(fixture, "task-1"), /digest mismatch/);
+});
+
+test("native facts use active Decision and Knowledge originals, not superseded statements", () => {
+  const fact = key => {
+    const unsigned = { key, source: "fixture", revision: 1, body: { version: 2 } };
+    return { ...unsigned, digest: digest(JSON.stringify(unsigned)) };
+  };
+  const record = (store, key, status, field) => ({
+    ref: { store, refId: key, digest: `native-${key}-${status}` },
+    value: { taskId: "task-1", status,
+      [field]: JSON.stringify({ kind: "collaboration-eval-fact", value: fact(key) }) }
+  });
+  const fixture = {
+    records: (_task, store) => ({
+      "task-message": [record(store, "request", "recorded", "body")],
+      "task-decision": [record(store, "decision", "superseded", "rationale"),
+        record(store, "decision", "active", "rationale")],
+      "project-knowledge": [record(store, "evidence", "active", "body")]
+    })[store]
+  };
+  const readback = readNativeFacts(fixture, "task-1", { knowledge: true });
+  assert.deepEqual(readback.records.map(r => [r.value.key, r.ref.store]),
+    [["request", "task-message"], ["decision", "task-decision"], ["evidence", "project-knowledge"]]);
+  assert.ok(readback.records.every(r => r.sourceDigest.startsWith("native-")));
+});
+
+test("selection keeps holdout explicit, variants grouped, and unimplemented P visible", () => {
+  const select = options => selectConditions(options, definitions, variants);
+  assert.equal(select({ case: "dev", mode: "F" }).length, 22);
+  assert.equal(select({ case: "dev", mode: "P" }).length, 5);
+  assert.throws(() => select({ case: "all", mode: "all" }), /Holdout/);
+  const all = select({ case: "all", mode: "all", "allow-holdout": "true" });
+  assert.equal(all.length, 33);
+  assert.equal(new Set(all.map(c => c.id)).size, 24);
+  assert.equal(all.filter(c => c.split === "holdout").length, 6);
+  assert.ok(all.every(c => c.status === "not-run"));
+  assert.throws(() => select({ case: "C01", mode: "P" }), /Unsupported/);
+  assert.throws(() => select({ case: "O02,O02", mode: "F" }), /Duplicate/);
+  assert.throws(() => parseOptions(["--mode", "F", "--mode", "P"]), /Expected/);
 });
