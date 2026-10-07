@@ -58,11 +58,14 @@ const result = await agent.runTurn({
   这些预绑定工具，使用无资源 lease 和允许策略，不宣称额外限制 root/env。
   构造期固定工具声明，工具配置变更需重新组装。
 - `ContextBuilder.build({request,budget}, signal)` 在每次模型调用前执行，返回
-  `{request,report}`。默认使用真实上下文构建器，按预算裁剪完整的旧历史组；
+  `{request,report}`。默认使用真实上下文构建器；超限需要显式压缩器，否则报错，不静默丢弃历史；
   `contextBudget` 使用所选 estimator 的单位（默认 1 MiB JSON 字节、输出预留 0）。
   `TurnResult.contextReports` 保留每步报告及带报告的预算失败。投影会再次校验调用/结果配对及
   请求预算，不改写权威历史、工具声明和 Session/Turn/Step 身份。
   隐藏历史不能绕过原始调用 ID 去重或未知效果检查。
+  可替换容量/计数来源、输出/工具预留、有界 provider 摘要、保留锚点和来源 digest
+  见 [context 合同](context/README.md)。`node dist/nativeAgent/compactionDemo.js`
+  是真实模块＋离线模型响应的多次压缩续聊示例，不证明真实模型摘要质量。
 - `SessionRecorder.record(AgentEvent)` 是可选外部必要记录入口。内核按序
   等待确认；未配置时 `recording.status=memory`，不声称持久化。
   失败停止新增效果，仍在内存补齐调用结果并返回
@@ -125,6 +128,12 @@ task-79 消费 `AgentObserver/AgentEvent`。这些是独立实现的最小边界
 执行的结果、保存回执和原始失败；它不从历史重造旧 TurnResult。
 `close()` 取消并等待自己持有的执行，调用方随后关闭 store 和 observer。
 同一 Session 必须只有一个执行所有者；CAS 不等于跨进程执行租约。
+可选 `context: {builder,budget,tools,retention}` 必须与 Agent 工厂共享，
+启用 `compact(sessionId,signal)`：空闲 ready Session 的只读手动压缩，随后 submit
+校验并消费同一进程内投影。并发/存储变化/取消显式拒绝，不创建第二摘要账本。
+压缩请求只携带有界聚合来源和工具结算计数/digest；逐组范围、材料身份和逐项工具
+事实留在本次 ContextReport/权威历史，不冒充逐项进入模型请求。
+未知效果仍从原文预检拒绝；详见 [context/README.md](./context/README.md)。
 
 ```ts
 const observations = createLocalObserver();
