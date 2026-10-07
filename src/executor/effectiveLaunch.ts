@@ -269,8 +269,8 @@ export function sameEffectiveLaunch(
  *
  * Only facts that make continuation impossible participate: the Session
  * protocol, the provider identity that owns the conversation, and the physical
- * workspace the Session runs in. Launch configuration such as model, effort,
- * permission, Role context, declared write scope, and AgentRun-scoped facts like
+ * workspace and captured authority the Session runs with. Launch configuration
+ * such as model, effort, provider permission, Role context, and AgentRun-scoped facts like
  * ReviewRound identity or candidate commits shape the next Host process
  * instead of ending the Session; that divergence is acknowledged where the
  * configuration changes and stays visible as launch provenance.
@@ -314,6 +314,8 @@ function sessionContinuitySnapshot(snapshot: EffectiveLaunchSnapshot): unknown {
   return {
     schemaVersion: snapshot.schemaVersion,
     executionAuthority: snapshot.executionAuthority,
+    profileAccess: snapshot.profileAccess,
+    writeProjectIds: snapshot.writeProjectIds,
     contextProtocolVersion: snapshot.contextProtocolVersion,
     agentId: snapshot.agentId,
     // Two products on one connection plan are two different conversations. A
@@ -527,6 +529,7 @@ function effectiveWriteProjects(
   input: ResolveEffectiveLaunchInput,
   workspace: EffectiveLaunchWorkspace
 ): string[] {
+  if (input.purpose === "planning" || input.executionAuthority === "planning") return [];
   if (input.purpose === "review") {
     if (!("taskId" in input.role)) {
       throw new Error("Review launch requires a Task Role.");
@@ -563,9 +566,18 @@ function effectiveWriteProjects(
     "Workspace writable Project"
   );
   if (!("taskId" in input.role)) return [];
-  // A managed workspace describes what exists, not who is authorized to
-  // mutate it. Only an explicit WorkItem write scope can grant Task writes.
-  if (input.workItemWriteProjectIds === undefined) return [];
+  // Direct delivery belongs to the Leader in this Task's adopted main
+  // workspace. Assignment scope (including explicit []) still takes priority.
+  // Never infer authority from a path, a different owner's workspace or a
+  // desired Profile change to an already-frozen Session.
+  if (input.workItemWriteProjectIds === undefined) {
+    return input.role.name === "leader"
+      && input.role.defaultAccess === "write"
+      && input.workspace?.owner.type === "task"
+      && input.workspace.owner.taskId === input.role.taskId
+      ? workspaceWrite : [];
+  }
+  if (input.role.defaultAccess !== "write") return [];
   const requested = uniqueIdentities(
     input.workItemWriteProjectIds,
     "WorkItem writable Project"

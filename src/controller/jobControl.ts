@@ -33,6 +33,7 @@ import type { TaskStore } from "../storage/taskStore.js";
 import type { ManagedWorkspace } from "../worktree/managedWorkspace.js";
 import { assertJobAssignmentScope, JobAssignmentScopeError } from "../job/jobAssignmentScope.js";
 import { assertContextRecordReadable } from "../context/taskContext.js";
+import { assertTaskProjectWriteAuthority } from "../task/taskAuthority.js";
 
 /**
  * rr8: The caller identity a `job.start`/`job.cancel` request is bound to.
@@ -242,7 +243,28 @@ export function authorizeJobStart(store: TaskStore, job: DurableJob): void {
     throw jobDomainError("Job caller binding was revoked; no execution was started.");
   }
   requireJobAssignment(store, job, { scope, role });
+  assertLeaderJobWriteScope(store, job, { scope, role });
   validateJobTarget(store, job);
+}
+
+function assertLeaderJobWriteScope(
+  store: TaskStore, target: Pick<DurableJob, "taskId" | "projectId" | "owner">,
+  caller: Pick<DurableJobCaller, "scope" | "role" | "nativeSessionId">
+): void {
+  if (caller.scope !== "task" || caller.role !== "leader") return;
+  if (target.owner.kind !== "task" && target.owner.kind !== "integration-attempt") {
+    throw jobControlError("UNAUTHORIZED", "Direct Leader delivery does not grant another Assignment or Review workspace. Use the owning executor for its Job.");
+  }
+  const { taskId, projectId } = target;
+  const session = activeLiveRoleAgentSession(store.getTaskRoleSessionSet(taskId, caller.role));
+  try {
+    assertTaskProjectWriteAuthority(store, {
+      YUI_SESSION_SCOPE: "task", YUI_TASK_ID: taskId, YUI_ROLE: caller.role,
+      YUI_NATIVE_SESSION_ID: caller.nativeSessionId ?? session?.nativeSessionId
+    }, taskId, projectId);
+  } catch (error) {
+    throw jobControlError("UNAUTHORIZED", error instanceof Error ? error.message : String(error));
+  }
 }
 
 function requireJobAssignment(
@@ -322,6 +344,7 @@ function assertNonSecretJobInput(params: DurableJobStartParams): void {
 function validateStartParams(store: TaskStore, params: DurableJobStartParams): void {
   validateJobTarget(store, params);
   assertCallerAuthorized(store, params.caller, params.taskId);
+  assertLeaderJobWriteScope(store, params, params.caller);
   if (params.caller.scope === "task") {
     const session = store.getTaskRoleSessionSet(params.taskId, params.caller.role!);
     if (session?.sessions[session.activeAgentId]?.effective.executionAuthority !== "delivery") {

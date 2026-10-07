@@ -7,7 +7,7 @@ import { NodeGitWorkspace, type GitWorkspacePort } from "../repository/gitWorksp
 import { FileTaskWorkspacePreparer } from "../repository/taskWorkspacePreparer.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import { workspaceProjectEntry } from "../worktree/managedWorkspace.js";
-import { taskLocalActor } from "../task/taskAuthority.js";
+import { taskLocalActor, assertTaskProjectWriteAuthority } from "../task/taskAuthority.js";
 
 export type TaskUpstreamCommandOptions = Readonly<{
   git?: GitWorkspacePort;
@@ -112,6 +112,7 @@ async function integrateUpstream(
     let phase: "prepare" | "resolve-remote" | "integrate" = "prepare";
     let integrationId: string | undefined;
     try {
+      assertTaskProjectWriteAuthority(store, options.environment, task.id, binding.projectId);
       const project = store.getProject(binding.projectId);
       if (project === null) throw usageError(`Project not found: ${binding.projectId}.`);
       if (project.remoteUrl === undefined) {
@@ -136,6 +137,7 @@ async function integrateUpstream(
         branch: binding.baseRef
       });
       const attempt = store.transaction((tx) => {
+        assertTaskProjectWriteAuthority(tx, options.environment, task.id, binding.projectId);
         const created = createIntegrationAttempt({
           id: tx.nextIntegrationAttemptId(task.id),
           taskId: task.id,

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, rmdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, rmdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -25,11 +25,127 @@ import { runTaskUpstreamCommand } from "../../dist/commands/taskUpstreamCommands
 import { FileTaskWorkspacePreparer } from "../../dist/repository/taskWorkspacePreparer.js";
 import { integrationTmuxSocketRoot } from "../../dist/storage/homeLayout.js";
 import { completeGateArtifact } from "../../dist/verification/gateArtifact.js";
+import { createWorkItem } from "../../dist/workItem/workItem.js";
+import { runTaskCommand } from "../../dist/commands/taskCommands.js";
 
 const now = new Date("2026-09-12T00:00:00Z");
 const git = (path, ...args) => execFileSync("git", ["-C", path, ...args], {
   encoding: "utf8", stdio: ["ignore", "pipe", "pipe"]
 }).trim();
+
+test("managed Leader Integration advances only its actual Task-main checkout, including after checks", async t => {
+  const root = mkdtempSync(join(tmpdir(), "yui-leader-target-"));
+  const home = join(root, "home");
+  const repo = join(root, "remote");
+  mkdirSync(repo);
+  git(repo, "init", "-b", "main");
+  git(repo, "config", "user.name", "Fixture");
+  git(repo, "config", "user.email", "fixture@local");
+  writeFileSync(join(repo, "file"), "base\n");
+  git(repo, "add", ".");
+  git(repo, "commit", "-m", "base");
+  git(root, "clone", repo, join(root, "stable"));
+  const store = new SqliteTaskStore(home);
+  const f = { root, home, repo, store };
+  t.after(() => {
+    try {
+      const isolation = new GitIntegrationService(home, store, undefined, () => now, {}).runtimeIsolation;
+      for (const attempt of store.listIntegrationAttempts("task-1")) {
+        const workspace = store.getIntegrationWorkspace("task-1", attempt.id);
+        if (workspace !== null) isolation.cleanup(isolation.preflight({
+          workspace, allowExactActive: true
+        }), "completion");
+      }
+    } finally { store.close(); }
+    try { rmdirSync(integrationTmuxSocketRoot(home)); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    rmSync(root, { recursive: true, force: true });
+  });
+  store.saveConfig({ ...store.getConfig(), defaultWorkspace: join(root, "worktrees") });
+  store.saveProject({ ...createProject("project-1", "app", join(root, "stable"),
+    { stable: "main", development: "main" }, now), remoteUrl: repo });
+  store.saveTask(createTask("task-1", "Actual Task-main ownership", now, {
+    projectBindings: [{ projectId: "project-1", directory: "app", baseRef: "main" }]
+  }));
+  // Use real preparation rather than treating a directory as Task ownership.
+  const preparer = new FileTaskWorkspacePreparer(f.home, f.store, undefined, () => now);
+  runTaskCommand(["activation", "request", "task-1", "--request-id", "fixture",
+    "--environment", "empty"], store, { environment: {}, now: () => now });
+  await preparer.activateTaskWorkspace("task-1");
+  const main = f.store.getTaskWorkspace("task-1");
+  const entry = main.entries[0];
+  for (const id of ["work-item-1", "work-item-2"]) {
+    f.store.saveWorkItem("task-1", createWorkItem(id, "task-1", {
+      title: id, ...(id === "work-item-2" ? { assignee: "worker" } : {}),
+      writeProjectIds: ["project-1"]
+    }, now));
+    await preparer.prepareWorkItemWorkspace("task-1", id);
+  }
+  const source = f.store.getWorkItemWorkspace("task-1", "work-item-1").entries[0];
+  const privateEntry = f.store.getWorkItemWorkspace("task-1", "work-item-2").entries[0];
+  writeFileSync(join(source.path, "delivery"), "candidate\n");
+  git(source.path, "add", ".");
+  git(source.path, "-c", "user.name=Fixture", "-c", "user.email=fixture@local", "commit", "-m", "candidate");
+  const resultCommit = git(source.path, "rev-parse", "HEAD");
+  runTaskCommand(["work", "update", "task-1/work-item-1", "done", "--summary", "Candidate"], f.store,
+    { environment: {}, now: () => now,
+      candidateGitSnapshot: await preparer.snapshotCandidateWorkspace(
+        f.store.getWorkItemWorkspace("task-1", "work-item-1")) });
+  const binding = createRoleAgentBinding({ id: "codex", adapterId: "codex" });
+  const role = createRole("task-1", "leader", [binding], binding.agentId, main.root, now);
+  f.store.saveRole("task-1", role);
+  f.store.saveTaskRoleSessionSet(recordRoleAgentSession(
+    createRoleSessionSet({ scope: "task", taskId: "task-1", roleName: "leader" }, binding.agentId, now),
+    { agentId: binding.agentId, adapterId: binding.adapterId, nativeSessionId: "fixture-leader",
+      status: "active", policy: "fixed", effective: resolveEffectiveLaunch({
+        role, purpose: "execution", workspace: main }) }, now));
+  const environment = { PATH: process.env.PATH, YUI_SESSION_SCOPE: "task", YUI_TASK_ID: "task-1",
+    YUI_ROLE: "leader", YUI_NATIVE_SESSION_ID: "fixture-leader" };
+  const before = git(entry.path, "rev-parse", "HEAD");
+  await assert.rejects(runTaskIntegrationCommand(["start", "task-1", "--work-item", "work-item-1",
+    "--strategy", "ff", "--target", privateEntry.branch], f.store, f.home,
+  { environment, now: () => now }), /Task-main/);
+  assert.equal(git(privateEntry.path, "rev-parse", "HEAD"), before);
+  assert.equal(existsSync(join(privateEntry.path, "delivery")), false);
+  assert.equal(git(entry.path, "rev-parse", "HEAD"), before);
+  assert.equal(f.store.getTask("task-1").projectBindings[0].currentCommit, before);
+
+  // Existing attempts and the public service entry must revalidate too.
+  const attempt = (id, targetRef, checkCommands = []) => createIntegrationAttempt({
+    id, taskId: "task-1", projectId: "project-1", targetRef, beforeCommit: before, checkCommands,
+    source: { kind: "work-item", workItemId: "work-item-1", startCommit: source.baseCommit,
+      resultCommit, strategy: "ff" }
+  }, now);
+  const service = () => new GitIntegrationService(f.home, f.store, undefined, () => now, environment);
+  f.store.saveIntegrationAttempt("task-1", attempt("integration-2", privateEntry.branch));
+  await assert.rejects(service().integrate("task-1", "integration-2"), /Task-main/);
+  assert.equal(f.store.getIntegrationWorkspace("task-1", "integration-2"), null);
+
+  // Ref name alone is not ownership: another worktree can check out that ref.
+  git(entry.path, "checkout", "--detach");
+  git(privateEntry.path, "checkout", "--detach");
+  git(privateEntry.path, "checkout", entry.branch);
+  f.store.saveIntegrationAttempt("task-1", attempt("integration-3", entry.branch));
+  await assert.rejects(service().integrate("task-1", "integration-3"), /Task-main/);
+  git(privateEntry.path, "checkout", privateEntry.branch);
+  git(entry.path, "checkout", entry.branch);
+
+  // A check can race admission; CAS must revalidate the actual checkout.
+  const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
+  const moveCheckout = `git -C ${quote(entry.path)} checkout --detach && git -C ${quote(privateEntry.path)} checkout ${quote(entry.branch)}`;
+  f.store.saveIntegrationAttempt("task-1", attempt("integration-4", entry.branch, [moveCheckout]));
+  const raced = await service().integrate("task-1", "integration-4");
+  assert.notEqual(raced.status, "committed");
+  assert.equal(git(privateEntry.path, "rev-parse", "HEAD"), before);
+  assert.equal(existsSync(join(privateEntry.path, "delivery")), false);
+  assert.equal(f.store.getTask("task-1").projectBindings[0].currentCommit, before);
+  git(privateEntry.path, "checkout", privateEntry.branch);
+  git(entry.path, "checkout", entry.branch);
+  f.store.saveIntegrationAttempt("task-1", attempt("integration-5", entry.branch));
+  assert.equal((await service().integrate("task-1", "integration-5")).status, "committed");
+  assert.equal(git(entry.path, "rev-parse", "HEAD"), resultCommit);
+  assert.equal(git(privateEntry.path, "rev-parse", "HEAD"), before);
+});
 
 test("explicit Job requests replay their original operation and never fall back to content identity", t => {
   const fixture = integrationFixture(t);
@@ -42,7 +158,7 @@ test("explicit Job requests replay their original operation and never fall back 
   store.saveTaskRoleSessionSet(recordRoleAgentSession(
     createRoleSessionSet({ scope: "task", taskId: task.id, roleName: role.name }, binding.agentId, now),
     { agentId: binding.agentId, adapterId: binding.adapterId, nativeSessionId: "job-request-fixture",
-      policy: "fixed", status: "active", effective: resolveEffectiveLaunch({ role, purpose: "execution" }) }, now));
+      policy: "fixed", status: "active", effective: resolveEffectiveLaunch({ role, purpose: "execution", workspace }) }, now));
   const params = {
     taskId: task.id, requestId: "check-1", owner: { kind: "task" }, projectId: "project-1",
     head: git(workspace.root, "rev-parse", "HEAD"), workspace: workspace.root,
@@ -392,7 +508,7 @@ test("interrupted rebase receipt and successful unbound Job resume without repla
 
 test("validating settlement distinguishes new check conditions from an already-applied CAS", async t => {
   for (const applied of [false, true]) await t.test(applied ? "applied" : "unadvanced", async t => {
-    const f = integrationFixture(t);
+    const f = integrationFixture(t, "rebase");
     const ids = ["task-1", "integration-1"];
     const conflict = await f.service().integrate(...ids);
     f.resolve(conflict.workspace.path);
@@ -415,18 +531,55 @@ test("validating settlement distinguishes new check conditions from an already-a
     f.store.saveIntegrationAttempt = saveAttempt;
     f.store.saveTask = saveTask;
     if (!applied) writeFileSync(join(f.repo, "file"), original);
+    const main = f.store.getTaskWorkspace("task-1");
+    const binding = createRoleAgentBinding({ id: "codex", adapterId: "codex" });
+    const role = createRole("task-1", "leader", [binding], binding.agentId, main.root, now);
+    f.store.saveRole("task-1", role);
+    const captured = resolveEffectiveLaunch({ role, purpose: "execution", workspace: main,
+      workItemWriteProjectIds: [] });
+    f.store.saveTaskRoleSessionSet(recordRoleAgentSession(
+      createRoleSessionSet({ scope: "task", taskId: "task-1", roleName: "leader" }, binding.agentId, now),
+      { agentId: binding.agentId, adapterId: binding.adapterId, nativeSessionId: "old-empty-session",
+        status: "active", policy: "fixed", effective: captured }, now));
+    const environment = { PATH: process.env.PATH, YUI_SESSION_SCOPE: "task", YUI_TASK_ID: "task-1",
+      YUI_ROLE: "leader", YUI_NATIVE_SESSION_ID: "old-empty-session" };
     const changed = new GitIntegrationService(f.home, f.store, undefined, () => now,
       { PATH: process.env.PATH, LANG: "new-check-environment" }, undefined, f.jobs);
     if (!applied) {
       await assert.rejects(changed.integrate(...ids), /check conditions changed/);
       assert.equal(f.git("rev-parse", "HEAD"), f.before);
     }
+    await assert.rejects(new GitIntegrationService(f.home, f.store, undefined, () => now, environment,
+      undefined, f.jobs).integrate(...ids), /captured/,
+    "Even an already-applied cursor does not let an empty Session enter project execution.");
+    await assert.rejects(runTaskIntegrationCommand(["abort", ids.join("/"), "--reason", "Stale caller"],
+      f.store, f.home, { environment: { ...environment, YUI_NATIVE_SESSION_ID: "stale-session" },
+        jobPort: f.jobs }), /current native Session/);
+    if (applied) {
+      const abort = () => runTaskIntegrationCommand(["abort", ids.join("/"), "--reason", "Confirm delivery"],
+        f.store, f.home, { environment, jobPort: f.jobs });
+      const listJobs = f.store.listDurableJobs.bind(f.store);
+      f.store.listDurableJobs = (...args) => listJobs(...args).map(job => ({ ...job, head: f.before }));
+      await assert.rejects(abort(), /Job identity/);
+      f.store.listDurableJobs = listJobs;
+      writeFileSync(join(conflict.workspace.path, "file"), "unproven candidate edit");
+      await assert.rejects(abort(), /candidate must be clean/);
+      git(conflict.workspace.path, "restore", "file");
+      const displaced = join(f.root, "displaced-main");
+      f.git("checkout", "--detach");
+      f.git("worktree", "add", displaced, "main");
+      await assert.rejects(abort(), /captured Task-main/);
+      f.git("worktree", "remove", displaced);
+      f.git("checkout", "main");
+    }
     const settled = await runTaskIntegrationCommand(["abort", ids.join("/"), "--reason", "changed checks"],
-      f.store, f.home, { environment: {}, jobPort: f.jobs });
+      f.store, f.home, { environment, jobPort: f.jobs });
     assert.equal(settled.data.integration.status, applied ? "committed" : "failed");
     assert.equal(f.git("rev-parse", "HEAD"), applied ? checked.attempt.candidateCommit : f.before);
     assert.equal(f.store.getDurableJob("task-1", "job-1").status, "succeeded");
     assert.equal(f.starts(), 1);
     assert.equal(f.store.getIntegrationWorkspace(...ids).root, conflict.workspace.path);
+    assert.deepEqual(f.store.getTaskRoleSessionSet("task-1", "leader").sessions.codex.effective, captured,
+      "Management settlement must not grant Project writes or change the native Session.");
   });
 });

@@ -53,7 +53,8 @@ test("Job admission, management and spawn keep a Worker inside its current Assig
   for (const [name, space] of [["worker", workspace], ["leader", mainWorkspace]]) {
     const role = createRole(task.id, name, [createRoleAgentBinding(agent)], agent.id, space.root, at);
     store.saveRole(task.id, role);
-    const effective = resolveEffectiveLaunch({ role, purpose: "execution", workspace: space, workItemWriteProjectIds: [project.id] });
+    const effective = resolveEffectiveLaunch({ role, purpose: "execution", workspace: space,
+      ...(name === "worker" ? { workItemWriteProjectIds: [project.id] } : {}) });
     store.saveTaskRoleSessionSet(recordRoleAgentSession(createRoleSessionSet({ scope: "task", taskId: task.id, roleName: name }, agent.id, at),
       { agentId: agent.id, adapterId: agent.adapterId, nativeSessionId: `session-${name}`, status: "active", policy: "fixed", effective }, at));
     if (name === "worker") store.saveActiveRun(createFixtureRun(store, "run-1", task.id, name, "new",
@@ -82,6 +83,8 @@ test("Job admission, management and spawn keep a Worker inside its current Assig
   // An older queued record must also be rejected at the actual spawn boundary.
   assert.throws(() => authorizeJobStart(store, { ...own.job, owner: outside.owner, workspace: main, head }), /[Aa]ssignment/);
   const leaderJob = control.startJob({ ...outside, caller: caller("leader") }, at).job;
+  assert.throws(() => control.startJob({ ...params, requestId: "leader-private-workspace",
+    caller: caller("leader") }, at), /Assignment/);
   assert.throws(() => control.getJob(task.id, leaderJob.id, caller("worker")), /Assignment/i);
   assert.throws(() => control.cancelJob(task.id, leaderJob.id, at, caller("worker")), /[Aa]ssignment/);
   assert.throws(() => control.acknowledgeJob(task.id, leaderJob.id, at, caller("worker")), /[Aa]ssignment/);
@@ -90,4 +93,15 @@ test("Job admission, management and spawn keep a Worker inside its current Assig
   store.clearActiveRun(task.id, "worker");
   assert.throws(() => authorizeJobStart(store, own.job), /[Aa]ssignment/);
   authorizeJobStart(store, leaderJob);
+  // A desired Profile edit cannot broaden an old queued Job's captured scope.
+  const leaderSet = store.getTaskRoleSessionSet(task.id, "leader");
+  const leaderRole = store.getRole(task.id, "leader");
+  const old = { ...leaderSet.sessions.codex,
+    effective: resolveEffectiveLaunch({ role: leaderRole, purpose: "execution", workspace: mainWorkspace,
+      workItemWriteProjectIds: [] }) };
+  store.saveTaskRoleSessionSet({ ...leaderSet, sessions: { ...leaderSet.sessions, codex: old } });
+  assert.throws(() => authorizeJobStart(store, leaderJob), /captured/);
+  assert.throws(() => control.startJob({ ...outside, requestId: "old-scope", caller: caller("leader") }, at), /captured/);
+  assert.ok(control.cancelJob(task.id, leaderJob.id, at, caller("leader")).cancelRequestedAt,
+    "Scope denial must not prevent safe cancellation of an owned Job.");
 });

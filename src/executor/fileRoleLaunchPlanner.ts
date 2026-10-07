@@ -338,7 +338,6 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
         role.name
       ),
       input.mode === "resume" && compatibleExisting ? existing.nativeSessionId : undefined,
-      runWorkspace,
       effective,
       {
         purpose
@@ -377,7 +376,6 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
         ? operatorSessionTitle(this.#now(), this.store.getConfig().timeZone)
         : undefined,
       input.mode === "resume" && compatibleExisting ? existing.nativeSessionId : undefined,
-      undefined,
       effective,
       { purpose: "execution" }
     );
@@ -398,7 +396,6 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
     owner: Readonly<{ scope: "task"; taskId: string } | { scope: "global" }>,
     sessionTitle: string | undefined,
     knownNativeSessionId: string | undefined,
-    workspaceOverride: ManagedWorkspace | undefined,
     effective: EffectiveLaunchSnapshot,
     sessionPolicy: Readonly<{ purpose: "execution" | "review" | "planning" }>
   ): PlannedRoleSession {
@@ -770,7 +767,7 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
       childLifecycle: driver.capabilities.lifecycle.providerProcess
     };
     const scopedLaunch = owner.scope === "task"
-      ? this.#applyWorkspaceScope(owner.taskId, role, launch, workspaceOverride)
+      ? this.#applyWorkspaceScope(launch, effective)
       : launch;
     const ordinaryConversationLaunch = withCodexThreadEnvironment(scopedLaunch);
     return {
@@ -840,8 +837,6 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
   }
 
   #applyWorkspaceScope(
-    taskId: string,
-    role: TaskRole | GlobalRole,
     launch: Readonly<{
       command: string;
       args: readonly string[];
@@ -850,25 +845,12 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
       childLifecycle: "persistent" | "per-turn";
       deferProviderStart?: boolean;
     }>,
-    workspaceOverride?: ManagedWorkspace
+    effective: EffectiveLaunchSnapshot
   ): typeof launch {
-    const workspace = workspaceOverride
-      ?? (role.name === "leader"
-        ? this.store.getTaskWorkspace(taskId)
-        : this.store.listWorkItems(taskId)
-          .find((item) => item.assignee === role.name && item.status === "open") === undefined
-          ? this.store.getTaskWorkspace(taskId)
-          : this.store.getWorkItemWorkspace(
-            taskId,
-            this.store.listWorkItems(taskId).find(
-              (item) => item.assignee === role.name && item.status === "open"
-            )!.id
-          ));
-    if (workspace === null || workspace === undefined) return launch;
     return {
       ...launch,
       env: {
-        ...workspaceScopeEnvironment(launch.env, workspace)
+        ...workspaceScopeEnvironment(launch.env, effective)
       }
     };
   }
@@ -953,22 +935,27 @@ function resolveTaskRoleEffectiveLaunch(
 
 function workspaceScopeEnvironment(
   environment: Readonly<Record<string, string>>,
-  workspace: ManagedWorkspace
+  effective: EffectiveLaunchSnapshot
 ): Readonly<Record<string, string>> {
+  const entries = effective.workspace.entries.map(entry => ({
+    ...entry,
+    access: entry.access === "write" && effective.writeProjectIds.includes(entry.projectId)
+      ? "write" : "read"
+  }));
   return {
     ...environment,
     YUI_WRITABLE_PROJECT_IDS: JSON.stringify(
-      workspace.entries
+      entries
         .filter(({ access }) => access === "write")
         .map(({ projectId }) => projectId)
     ),
     YUI_CONTEXT_PROJECT_IDS: JSON.stringify(
-      workspace.entries
+      entries
         .filter(({ access }) => access === "read")
         .map(({ projectId }) => projectId)
     ),
     YUI_WORKSPACE_PROJECTS: JSON.stringify(Object.fromEntries(
-      workspace.entries.map(({ projectId, directory, access, path }) => [
+      entries.map(({ projectId, directory, access, path }) => [
         projectId,
         { directory, access, path }
       ])
