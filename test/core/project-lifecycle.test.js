@@ -303,7 +303,7 @@ test("WorkItem no-op Integration records the decision and archive removes all co
     }
   }, now);
   store.saveIntegrationAttempt(task.id, attempt);
-  const service = new GitIntegrationService(home, store);
+  const service = new GitIntegrationService(home, store, undefined, undefined, { PATH: process.env.PATH });
   const blocked = await service.integrate(task.id, attempt.id);
   assert.equal(blocked.status, "blocked");
   const rationale = "The Leader confirmed that this WorkItem requires no code change.";

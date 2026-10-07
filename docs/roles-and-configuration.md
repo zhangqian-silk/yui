@@ -62,6 +62,26 @@ different contracts. Provider bypass does not grant writes to another Project.
 Managed workspace owner, exact Assignment and resource grants enforce Yui
 operations; broad native permissions are not an OS sandbox.
 
+A write-intent delivery Leader launched in its own Task-owned main workspace
+captures that workspace's bound writable Projects without needing an open
+WorkItem. Accepted results do not remove this direct-delivery scope. An explicit
+Assignment (including an empty write scope) remains authoritative for assigned
+execution. Planning, read-intent execution and global Roles do not acquire this
+Task-main scope; Reviewer writes remain confined to their exact Review workspace.
+Project effects recheck the current Session's frozen scope as well as Task
+lifecycle and workspace ownership. The scope does not authorize stable Project
+checkouts, other Tasks, private Worker/Review workspaces or Home mutations.
+
+An existing empty-scope Session stays empty after a runtime update. Inspect
+`yui task role session inspect <task> leader --json` (`session.effective`), then
+request `yui task role session new <task> leader --reason "<adopt new scope>"`.
+When replacing your own Session, end the turn. After Yui confirms cleanup and
+launches the successor, inspect its captured `executionAuthority`,
+`profileAccess`, `writeProjectIds` and workspace before editing. A replacement
+request is not proof of adoption. Exact Run Context and launch environment
+derive their write scope from the same frozen effective snapshot; models,
+effort, accepted Candidates and their acceptance history are unchanged.
+
 Yui supplies its generic Role Skills and Context pointers. Project Skills remain
 ordinary Project files discovered natively by the Agent. Project Knowledge is
 maintained under `YUI_HOME`; copying repository material into a prompt does not

@@ -36,6 +36,7 @@ import {
 import { integrationTmuxSocketRoot, managedIntegrationRuntimeRoot } from "../storage/homeLayout.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import { advanceTaskProjectCommit } from "../task/task.js";
+import { assertTaskProjectWriteAuthority } from "../task/taskAuthority.js";
 import { yuiTmuxServerName } from "../tmux/tmuxManager.js";
 import {
   recordGateArtifactReuse
@@ -174,6 +175,7 @@ export class GitIntegrationService {
     signal?: AbortSignal
   ): Promise<IntegrationResult> {
     let initial = requireIntegration(this.store, taskId, integrationId);
+    assertTaskProjectWriteAuthority(this.store, this.environment, taskId, initial.projectId);
     if (!["running", "conflicted", "blocked", "validating"].includes(initial.status)) {
       throw new Error(`Integration cannot continue from ${initial.status}.`);
     }
@@ -192,6 +194,7 @@ export class GitIntegrationService {
       throw new Error("Integration changed before execution admission; read its current record.");
     }
     initial = currentUnderFence;
+    assertTaskProjectWriteAuthority(this.store, this.environment, taskId, initial.projectId);
     const task = this.store.getTask(initial.taskId);
     if (task === null || !task.projectBindings.some(
       ({ projectId }) => projectId === initial.projectId
@@ -334,6 +337,7 @@ export class GitIntegrationService {
         checks: checkResults
       }, this.now());
       this.store.saveIntegrationAttempt(task.id, current);
+      assertTaskProjectWriteAuthority(this.store, this.environment, task.id, current.projectId);
       await advanceTargetRef(
         taskRepository,
         current.targetRef,
@@ -877,6 +881,7 @@ export class GitIntegrationService {
       checks
     }, this.now());
     this.store.saveIntegrationAttempt(attempt.taskId, validating);
+    assertTaskProjectWriteAuthority(this.store, this.environment, attempt.taskId, attempt.projectId);
     await advanceTargetRef(
       repositoryPath,
       validating.targetRef,
@@ -967,6 +972,7 @@ export class GitIntegrationService {
         }
         assertCheckJobIdentity(attempt, job, workspace.path);
       }
+      assertTaskProjectWriteAuthority(this.store, this.environment, attempt.taskId, attempt.projectId);
       await advanceTargetRef(repositoryPath, attempt.targetRef, attempt.candidateCommit, attempt.beforeCommit);
     }
     await assertTargetReadyForChecks(

@@ -14,6 +14,7 @@ import { assertProjectActive, resolveProject } from "../repository/project.js";
 import { FileTaskWorkspacePreparer } from "../repository/taskWorkspacePreparer.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import { assertTaskDeliveryAuthority as taskLocalActor } from "../task/taskAuthority.js";
+import { assertTaskProjectWriteAuthority } from "../task/taskAuthority.js";
 import { resolveTaskRecordReference } from "../task/taskRecordReference.js";
 import { governingWorkItemCandidate } from "../workItem/workItem.js";
 import { workspaceProjectEntry } from "../worktree/managedWorkspace.js";
@@ -187,7 +188,7 @@ async function start(
     throw usageError(`WorkItem result Project snapshot is incomplete: ${workItem.id}/${project.id}.`);
   }
   const integration = store.transaction((tx) => {
-    taskLocalActor(tx, options.environment, task.id);
+    assertTaskProjectWriteAuthority(tx, options.environment, task.id, project.id);
     const created = createIntegrationAttempt({
       id: tx.nextIntegrationAttemptId(task.id),
       taskId: task.id,

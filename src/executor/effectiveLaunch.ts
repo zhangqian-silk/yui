@@ -527,6 +527,7 @@ function effectiveWriteProjects(
   input: ResolveEffectiveLaunchInput,
   workspace: EffectiveLaunchWorkspace
 ): string[] {
+  if (input.purpose === "planning" || input.executionAuthority === "planning") return [];
   if (input.purpose === "review") {
     if (!("taskId" in input.role)) {
       throw new Error("Review launch requires a Task Role.");
@@ -563,9 +564,18 @@ function effectiveWriteProjects(
     "Workspace writable Project"
   );
   if (!("taskId" in input.role)) return [];
-  // A managed workspace describes what exists, not who is authorized to
-  // mutate it. Only an explicit WorkItem write scope can grant Task writes.
-  if (input.workItemWriteProjectIds === undefined) return [];
+  // Direct delivery belongs to the Leader in this Task's adopted main
+  // workspace. Assignment scope (including explicit []) still takes priority.
+  // Never infer authority from a path, a different owner's workspace or a
+  // desired Profile change to an already-frozen Session.
+  if (input.workItemWriteProjectIds === undefined) {
+    return input.role.name === "leader"
+      && input.role.defaultAccess === "write"
+      && input.workspace?.owner.type === "task"
+      && input.workspace.owner.taskId === input.role.taskId
+      ? workspaceWrite : [];
+  }
+  if (input.role.defaultAccess !== "write") return [];
   const requested = uniqueIdentities(
     input.workItemWriteProjectIds,
     "WorkItem writable Project"

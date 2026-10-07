@@ -2,6 +2,7 @@ import type { TaskCompletedBy } from "../task/task.js";
 import { hasManagedIdentity } from "../runtime/managedIdentity.js";
 import { usageError } from "../errors/cliError.js";
 import type { DurableJobCaller } from "../controller/jobControl.js";
+import type { TaskStore } from "../storage/taskStore.js";
 import {
   currentManagedRuntime,
   type ManagedCallerStore
@@ -69,6 +70,33 @@ export function assertTaskDeliveryAuthority(
   const caller = currentManagedRuntime(store, environment, taskId, LEADER_ROLE);
   if (caller?.executionAuthority !== "delivery") {
     throw usageError("This native Session has planning authority, not delivery authority. Use a delivery Session for this operation.");
+  }
+  return actor;
+}
+
+/** Project effects consume the current Session's captured scope, never the
+ * Role's desired configuration or the mere presence of a writable directory.
+ * Task management (including abort/inspection) remains a separate authority. */
+export function assertTaskProjectWriteAuthority(
+  store: TaskStore, environment: NodeJS.ProcessEnv | undefined,
+  taskId: string, projectId: string
+): TaskCompletedBy {
+  const actor = assertTaskDeliveryAuthority(store, environment, taskId);
+  if (actor !== "leader") return actor;
+  const caller = currentManagedRuntime(store, environment, taskId, LEADER_ROLE)!;
+  const session = store.getTaskRoleSessionSet(taskId, LEADER_ROLE)?.sessions[caller.agentId];
+  const effective = session?.effective;
+  const task = store.getTask(taskId);
+  const main = store.getTaskWorkspace(taskId);
+  const entry = main?.entries.find(entry => entry.projectId === projectId);
+  if (task?.status !== "active" || task.executionGate.state !== "enabled"
+    || !task.projectBindings.some(binding => binding.projectId === projectId)
+    || effective?.profileAccess !== "write" || !effective.writeProjectIds.includes(projectId)
+    || main?.owner.type !== "task" || main.owner.taskId !== taskId
+    || effective.workspace.root !== main.root || entry?.access !== "write"
+    || !effective.workspace.entries.some(captured => captured.projectId === projectId
+      && captured.access === "write" && captured.path === entry.path)) {
+    throw usageError("Project write requires this Task's current delivery Session with a captured writable Project in its Task-main workspace. Read the Session scope; use formal Session replacement to adopt a new boundary.");
   }
   return actor;
 }

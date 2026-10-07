@@ -238,7 +238,7 @@ test("new Task multi-project lifecycle lands every worktree at the single-layer 
     }
   }, now);
   store.saveIntegrationAttempt(task.id, attempt);
-  const service = new GitIntegrationService(home, store);
+  const service = new GitIntegrationService(home, store, undefined, undefined, { PATH: process.env.PATH });
   // A no-op WorkItem Integration blocks pending a resolution decision, but the
   // integration worktree + managed workspace are materialized and persisted
   // before that — enough to assert the on-disk single-layer shape.

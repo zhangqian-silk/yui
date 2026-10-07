@@ -52,6 +52,23 @@ Provider 权限策略、Profile 访问意图和 Project 写范围是不同的合
 不授予对另一个 Project 的写入。受管工作区 owner、精确 Assignment 和资源 grant
 落实 Yui 操作；宽泛的原生权限不是 OS 沙箱。
 
+以 write 意图在自己 Task-owned main 工作区启动的 delivery Leader，从该工作区
+捕获已绑定 Project 的写域，不要求存在 open WorkItem；已接受结果也不会移除这个
+直接交付写域。显式 Assignment（包括空写域）仍决定受派发执行的范围。
+Planning、read 意图执行和全局 Role 不获得这个 Task-main 写域；Reviewer 仍只可写
+精确的 Review 工作区。Project 实际操作重新校验当前 Session 的冻结写域、Task
+生命周期和工作区 owner；它不授权稳定 Project checkout、其他 Task、私有
+Worker/Review 工作区或 Home 修改。
+
+运行时更新后，旧的空写域 Session 仍保持空域。先用
+`yui task role session inspect <task> leader --json` 读取 `session.effective`，
+再通过 `yui task role session new <task> leader --reason "<采用新写域>"`
+请求正式替换。替换自己时应结束当前 turn。Yui 确认清理并启动 successor 后，
+读回其 `executionAuthority`、`profileAccess`、`writeProjectIds` 和 workspace，
+确认后再编辑；替换请求本身不证明采用成功。精确 Run Context 与启动环境从同一
+冻结 effective snapshot 取得写域；模型、effort、accepted Candidate 和原验收
+历史保持不变。
+
 Yui 提供其通用 Role Skill 和 Context 指针。Project Skill 仍是由 Agent 原生发现的
 普通 Project 文件。Project Knowledge 维护在 `YUI_HOME` 下；把仓库材料复制进 prompt
 并不使其成为权威 Knowledge。

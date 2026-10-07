@@ -42,7 +42,7 @@ test("explicit Job requests replay their original operation and never fall back 
   store.saveTaskRoleSessionSet(recordRoleAgentSession(
     createRoleSessionSet({ scope: "task", taskId: task.id, roleName: role.name }, binding.agentId, now),
     { agentId: binding.agentId, adapterId: binding.adapterId, nativeSessionId: "job-request-fixture",
-      policy: "fixed", status: "active", effective: resolveEffectiveLaunch({ role, purpose: "execution" }) }, now));
+      policy: "fixed", status: "active", effective: resolveEffectiveLaunch({ role, purpose: "execution", workspace }) }, now));
   const params = {
     taskId: task.id, requestId: "check-1", owner: { kind: "task" }, projectId: "project-1",
     head: git(workspace.root, "rev-parse", "HEAD"), workspace: workspace.root,
