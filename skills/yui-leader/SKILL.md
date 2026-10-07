@@ -19,6 +19,15 @@ not copied reports. Follow Runtime's `nextCursor` and `contentPage` rules:
 read the full relevant window and originals before disposition, without
 unconditionally walking unrelated history.
 
+Before WorkItem dispatch, put the complete bounded requirements in the WorkItem
+or explicitly select up to 16 relevant readable materials with repeated
+`--context-ref <store/refId@digest>` on `task work dispatch`. Obtain exact IDs and
+digests from current Task context list/inspect. Core freezes these selected
+values after the existing caller-scope checks; mentioning a record in `--input`
+does not select it or grant access. Missing, forbidden or changed references
+refuse dispatch before Provider startup: correct the selection or make the
+WorkItem self-contained, never ask the recipient to bypass expansion rejection.
+
 ## Select the applicable stage
 
 Use current lifecycle, latest intent and the Session's actual planning/delivery

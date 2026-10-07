@@ -4,9 +4,11 @@ import {
 import { MAX_RUN_RESULT_OUTPUT_BYTES } from "../domain/agentResultTransport.js";
 
 export const MAX_SYNTHESIS_SOURCE_RUNS = 8;
-export const MAX_CONTEXT_SOURCE_RUNS = MAX_SYNTHESIS_SOURCE_RUNS + 1;
+// A Task review may combine several candidate reports, synthesis and
+// continuation evidence. Preserve the existing aggregate byte ceiling.
+export const MAX_CONTEXT_SOURCE_RUNS = 64;
 export const MAX_CONTEXT_SOURCE_RUN_BYTES =
-  MAX_CONTEXT_SOURCE_RUNS * (MAX_RUN_RESULT_OUTPUT_BYTES + 16 * 1024);
+  (MAX_SYNTHESIS_SOURCE_RUNS + 1) * (MAX_RUN_RESULT_OUTPUT_BYTES + 16 * 1024);
 
 /**
  * Frozen input for synthesis. The main Agent needs the producer identity and

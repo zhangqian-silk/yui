@@ -65,6 +65,17 @@ silently rerun successful Producers.
 
 ## Review
 
+Capturing a Run-backed WorkItem Candidate freezes its exact source report and
+Candidate identity in the existing immutable Context Snapshot store. Review
+receives a `source-run` pointer with `evidenceOf=<work-item>/<candidate>` and
+expands the original report through `task run context expand`, including all
+content pages. Source, Candidate or report drift refuses a new dispatch; already
+frozen Run Context remains readable. Task-final evidence follows the committed
+Integration lineage to the fixed Task heads, not a newer unintegrated Candidate.
+Historical Candidates without this frozen proof remain inspectable, but need
+newly captured delivery evidence before a new Candidate Review; old Snapshots
+are never backfilled.
+
 ReviewRound owns frozen Candidate or Task-head identity, workspace provenance,
 execution topology, exact main Reviewer Run, lifecycle and Core diagnostics.
 Its completed state is structural execution evidence, not a “pass” extracted

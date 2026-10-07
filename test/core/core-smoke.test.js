@@ -1261,11 +1261,6 @@ test("a direct Provider Turn records visible input and output without workflow s
     conversationId: "thread-1",
     startedAt: startedAt.toISOString()
   });
-  provider = updateProviderGoal(provider, {
-    status: "active",
-    objective: "Continue until the delegated work is actually complete.",
-    updatedAt: "2026-08-31T00:30:01.500Z"
-  });
   sessions = bindTaskRoleProviderRuntime(sessions, provider, startedAt);
   store.saveTaskRoleSessionSet(sessions);
   const adapter = new FileSchedulerStoreAdapter(store);
@@ -1283,13 +1278,26 @@ test("a direct Provider Turn records visible input and output without workflow s
     semanticKey: `direct-run-${kind}-${ordinal}`,
     kind,
     authority: "provider-structured",
-    receivedAt: `2026-08-31T00:30:0${ordinal}.000Z`,
-    observedAt: `2026-08-31T00:30:0${ordinal}.000Z`,
+    receivedAt: new Date(startedAt.getTime() + ordinal * 1000).toISOString(),
+    observedAt: new Date(startedAt.getTime() + ordinal * 1000).toISOString(),
     sequence: 1,
     ordinal,
     fence: { ...commonFence, ...(extra.fence ?? {}) },
     payload: extra.payload ?? {}
   });
+
+  for (const ordinal of [0, 1]) {
+    assert.equal(adapter.observeRuntimeObservation(observation("goal.cleared", ordinal),
+      completedAt), "applied");
+    assert.equal(store.getPendingWakeup(task.id), null,
+      "Initial and repeated empty Goals are observations, not new work.");
+  }
+  provider = updateProviderGoal(provider, {
+    status: "active",
+    objective: "Continue until the delegated work is actually complete.",
+    updatedAt: "2026-08-31T00:30:01.500Z"
+  });
+  store.saveTaskRoleSessionSet(updateTaskRoleProviderRuntime(sessions, provider, startedAt));
 
   for (const event of [
     observation("session.ready", 2),
@@ -1382,6 +1390,35 @@ test("a direct Provider Turn records visible input and output without workflow s
   assert.deepEqual(store.getPendingWakeup(task.id).reasons, [
     "provider-goal-complete"
   ]);
+  const wakeBeforeRepeat = store.getPendingWakeup(task.id);
+  assert.equal(adapter.observeRuntimeObservation(observation("goal.updated", 10, {
+    payload: {
+      goalStatus: "complete",
+      goalObjective: "Continue until the delegated work is actually complete.",
+      goalUpdatedAt: "2026-08-31T00:31:03.000Z",
+      goalNativeTurnId: "turn-ordinary-1"
+    }
+  }), new Date("2026-08-31T00:32:00Z")), "applied");
+  assert.deepEqual(store.getPendingWakeup(task.id), wakeBeforeRepeat,
+    "An unchanged Goal snapshot must not enqueue another Leader input.");
+  assert.equal(adapter.observeRuntimeObservation(observation("goal.cleared", 11),
+    new Date("2026-08-31T00:32:00Z")), "applied");
+  const clearedWake = store.getPendingWakeup(task.id);
+  assert.ok(clearedWake.reasons.includes("provider-goal-cleared"));
+  assert.equal(adapter.observeRuntimeObservation(observation("goal.cleared", 12),
+    new Date("2026-08-31T00:32:00Z")), "applied");
+  assert.deepEqual(store.getPendingWakeup(task.id), clearedWake);
+  const activeGoal = {
+    goalStatus: "active", goalObjective: "New goal", goalUpdatedAt: "2026-08-31T00:32:01Z"
+  };
+  assert.equal(adapter.observeRuntimeObservation(observation("goal.updated", 13,
+    { payload: activeGoal }), new Date("2026-08-31T00:32:02Z")), "applied");
+  assert.ok(store.getPendingWakeup(task.id).reasons.includes("provider-goal-active"));
+  const activeWake = store.getPendingWakeup(task.id);
+  assert.equal(adapter.observeRuntimeObservation(observation("goal.cleared", 0),
+    new Date("2026-08-31T00:32:02Z")), "applied");
+  assert.equal(store.getTaskRoleSessionSet(task.id, role.name).providerBinding.goal.objective, "New goal");
+  assert.deepEqual(store.getPendingWakeup(task.id), activeWake);
 });
 
 test("a wake names a completed Turn even when that Turn predates the delta cursor", (t) => {

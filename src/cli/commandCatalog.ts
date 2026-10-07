@@ -889,8 +889,8 @@ const taskChildren: readonly NodeInput[] = [
       {
         name: "dispatch", discovery: { surface: "managed", audiences: ["operator","leader"] },
         summary: "Dispatch a work item to its Role.",
-        usage: "yui task work dispatch <task>/<work> [--input <text>] [--lane-role <role> ...]",
-        options: ["--input", "--lane-role"]
+        usage: "yui task work dispatch <task>/<work> [--input <text>] [--context-ref <store/refId@digest> ...] [--lane-role <role> ...]",
+        options: ["--input", "--context-ref", "--lane-role"]
       },
       {
         name: "synthesize", discovery: { surface: "managed", audiences: ["operator","leader"] },

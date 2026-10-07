@@ -23,6 +23,7 @@ import {
   type ContextSnapshotScope
 } from "./contextSnapshot.js";
 import { MAX_SYNTHESIS_SOURCE_RUNS, sourceRunContextValue } from "./sourceRunContext.js";
+import type { TaskReviewCandidate } from "../review/reviewRound.js";
 
 export const RUN_CONTEXT_PACK_SCHEMA_VERSION = 1 as const;
 
@@ -92,7 +93,119 @@ export type AgentRunContextLiveTaskState = Readonly<{
   }>[];
 }>;
 
-type MaterializedRef = Readonly<{ ref: ContextRef; value: unknown }>;
+export type MaterializedRef = Readonly<{ ref: ContextRef; value: unknown }>;
+
+function mergeRequiredContext(
+  automatic: readonly MaterializedRef[], required: readonly MaterializedRef[]
+): MaterializedRef[] {
+  const entries = new Map(automatic.map(entry => [`${entry.ref.store}/${entry.ref.refId}`, entry]));
+  for (const entry of required) {
+    const key = `${entry.ref.store}/${entry.ref.refId}`;
+    const existing = entries.get(key);
+    if (existing !== undefined && existing.ref.digest !== entry.ref.digest) {
+      throw new Error(`Required Context changed during dispatch: ${key}. Read its current reference and dispatch again.`);
+    }
+    entries.set(key, entry);
+  }
+  return [...entries.values()];
+}
+
+/** Pin the original result together with the candidate, using the existing
+ * immutable Snapshot store rather than a second result/provenance ledger. */
+export function freezeCandidateContextSnapshot(
+  store: TaskStore, candidate: WorkItem["candidates"][number], now: Date
+): ContextSnapshot | undefined {
+  if (candidate.source.type !== "run") return undefined;
+  const source = store.getRun(candidate.taskId, candidate.source.runId);
+  if (source === null || source.taskId !== candidate.taskId
+    || source.workItemId !== candidate.workItemId || source.purpose !== "execution"
+    || source.status !== "completed" || source.result === undefined
+    || Date.parse(source.updatedAt) > Date.parse(candidate.createdAt)) {
+    throw new Error(`Candidate source report is missing or mismatched: ${candidate.workItemId}/${candidate.id}.`);
+  }
+  const evidenceOf = `${candidate.workItemId}/${candidate.id}`;
+  const report = materialize("L4", "source-run", source.id, sourceRunContextValue(source));
+  const resources = [
+    materialize("L3", "candidate", evidenceOf, candidate),
+    { ...report, ref: { ...report.ref, evidenceOf } }
+  ];
+  const snapshot = createContextSnapshot({
+    id: store.nextContextSnapshotId(candidate.taskId),
+    taskId: candidate.taskId, scope: "workitem", scopeRef: `candidate:${evidenceOf}`,
+    sequence: 1, refs: resources.map(({ ref }) => ref), resources, acceptRefs: [],
+    frozenAt: now, frozenBy: "controller"
+  });
+  store.saveContextSnapshot(snapshot);
+  return snapshot;
+}
+
+function candidateReviewContext(
+  store: TaskStore, candidate: WorkItem["candidates"][number]
+): MaterializedRef[] {
+  const identity = `${candidate.workItemId}/${candidate.id}`;
+  if (candidate.source.type === "direct") {
+    return [materialize("L3", "candidate", identity, candidate)];
+  }
+  const sourceRunId = candidate.source.runId;
+  const snapshots = store.listContextSnapshots(candidate.taskId).filter(snapshot =>
+    snapshot.scope === "workitem" && snapshot.scopeRef === `candidate:${identity}`);
+  if (snapshots.length !== 1) {
+    throw new Error(`Frozen candidate report is unavailable: ${identity}. Inspect source Run ${candidate.taskId}/${sourceRunId}; for a new Review use newly authorized delivery with a newly captured Candidate. Historical Snapshots are not rewritten.`);
+  }
+  const snapshot = validateContextSnapshot(snapshots[0]!);
+  const proof = snapshot.resources.find(({ ref }) => ref.store === "candidate" && ref.refId === identity);
+  const report = snapshot.resources.find(({ ref }) => ref.store === "source-run"
+    && ref.refId === sourceRunId && ref.evidenceOf === identity);
+  const source = store.getRun(candidate.taskId, sourceRunId);
+  if (proof?.ref.digest !== contextContentDigest(candidate) || report === undefined
+    || source === null || source.status !== "completed" || source.result === undefined
+    || source.taskId !== candidate.taskId || source.workItemId !== candidate.workItemId
+    || source.purpose !== "execution"
+    || report.ref.digest !== contextContentDigest(sourceRunContextValue(source))) {
+    throw new Error(`Frozen candidate source/report drifted: ${identity}. Inspect the exact source and capture a new Candidate; do not substitute a newer result.`);
+  }
+  return [proof, report];
+}
+
+/** Select report evidence from the fixed Task heads, never a newer,
+ * unintegrated candidate's validation. */
+function taskReviewCandidateSources(
+  store: TaskStore, taskId: string, heads: TaskReviewCandidate
+): WorkItem["candidates"][number][] {
+  const selected = new Map<string, WorkItem["candidates"][number]>();
+  const select = (candidate: WorkItem["candidates"][number]) =>
+    selected.set(`${candidate.workItemId}/${candidate.id}`, candidate);
+  for (const { projectId, commit } of heads.projects) {
+    const attempts = store.listIntegrationAttempts(taskId)
+      .filter(attempt => attempt.projectId === projectId && attempt.status === "committed")
+      .sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
+    const headIndex = attempts.map(attempt => attempt.candidateCommit).lastIndexOf(commit);
+    if (attempts.length > 0 && headIndex < 0) {
+      throw new Error(`Frozen Task review Integration provenance is unavailable: ${projectId}@${commit}.`);
+    }
+    const targetRef = attempts[headIndex]?.targetRef;
+    for (const attempt of attempts.slice(0, headIndex + 1).filter(entry => entry.targetRef === targetRef)) {
+      if (attempt.source.kind !== "work-item") continue;
+      const source = attempt.source;
+      const item = store.getWorkItem(taskId, source.workItemId);
+      const candidate = [...(item?.candidates ?? [])].reverse().find(entry => entry.gitSnapshot?.projects.some(
+        project => project.projectId === projectId && project.commit === source.resultCommit));
+      if (candidate === undefined) {
+        throw new Error(`Frozen Task review producer candidate is unavailable: ${attempt.id}.`);
+      }
+      select(candidate);
+    }
+    for (const item of store.listWorkItems(taskId)) {
+      const candidate = [...item.candidates].reverse().find(entry =>
+        entry.taskMainSnapshot?.projects.some(
+          project => project.projectId === projectId && project.headCommit === commit)
+        || (attempts.length === 0 && entry.gitSnapshot?.projects.some(
+          project => project.projectId === projectId && project.commit === commit)));
+      if (candidate !== undefined) select(candidate);
+    }
+  }
+  return [...selected.values()];
+}
 
 export function freezeRunContextSnapshot(
   store: TaskStore,
@@ -104,7 +217,8 @@ export function freezeRunContextSnapshot(
   now: Date,
   frozenBy: "leader" | "controller" = "controller",
   baselineRef?: ContextSnapshotRef,
-  sourceRunIds?: readonly string[]
+  sourceRunIds?: readonly string[],
+  requiredResources: readonly MaterializedRef[] = []
 ): ContextSnapshot {
   if (baselineRef !== undefined) {
     const baseline = store.getContextSnapshot(run.taskId, baselineRef.id);
@@ -123,7 +237,7 @@ export function freezeRunContextSnapshot(
       ...collectRunContextOverlays(store, run),
       ...collectSourceRunContext(store, run, sourceRunIds)
     ];
-    const resources = [...new Map([...baseline.resources, ...overlays].map((entry) => [
+    const resources = [...new Map(mergeRequiredContext([...baseline.resources, ...overlays], requiredResources).map((entry) => [
       contextRefIdentity(entry.ref),
       entry
     ])).values()].sort((left, right) => (
@@ -157,7 +271,7 @@ export function freezeRunContextSnapshot(
       ? "workitem"
       : "task";
   const scopeRef = run.reviewRoundId ?? run.workItemId;
-  const materialized = collectAuthorizedContext(store, run);
+  const materialized = mergeRequiredContext(collectAuthorizedContext(store, run), requiredResources);
   const previous = store.listContextSnapshots(run.taskId)
     .filter((candidate) => candidate.scope === scope && candidate.scopeRef === scopeRef)
     .sort((left, right) => left.sequence - right.sequence)
@@ -191,6 +305,7 @@ export function freezeWorkItemExecutionAssignmentContextSnapshot(
     taskId: string;
     workItemId: string;
     executionGroupId: string;
+    requiredResources?: readonly MaterializedRef[];
   }>,
   now: Date
 ): ContextSnapshot {
@@ -224,7 +339,7 @@ export function freezeWorkItemExecutionAssignmentContextSnapshot(
       ));
     }
   }
-  const resources = [...new Map(materialized.map((entry) => [
+  const resources = [...new Map(mergeRequiredContext(materialized, input.requiredResources ?? []).map((entry) => [
     contextRefIdentity(entry.ref),
     entry
   ])).values()].sort((left, right) => (
@@ -521,11 +636,21 @@ function collectAuthorizedContext(
     const round = store.getReviewRound(task.id, run.reviewRoundId);
     if (round === null) throw new Error(`AgentRun ReviewRound not found: ${run.reviewRoundId}.`);
     result.push(materialize("L3", "review-round", round.id, round));
+    if (round.scope === "work-item") {
+      const item = store.getWorkItem(task.id, round.workItemId!);
+      const candidate = item?.candidates.find(({ id }) => id === round.candidateId);
+      if (candidate === undefined) throw new Error(`Review candidate is unavailable: ${round.candidateId}.`);
+      result.push(...candidateReviewContext(store, candidate));
+    }
     if (round.scope === "task") {
       for (const item of store.listWorkItems(task.id).filter(({ status }) => status !== "retired")) {
         const candidate = governingWorkItemCandidate(item);
         if (candidate === undefined) continue;
         result.push(materialize("L3", "candidate", `${item.id}/${candidate.id}`, candidate));
+        result.push(...candidateArtifacts(task.id, [candidate]));
+      }
+      for (const candidate of taskReviewCandidateSources(store, task.id, round.taskCandidate!)) {
+        result.push(...candidateReviewContext(store, candidate));
         result.push(...candidateArtifacts(task.id, [candidate]));
       }
     }

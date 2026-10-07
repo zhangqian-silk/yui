@@ -52,6 +52,15 @@ Review 结果。Producer 从不直接进入 Integration 或验收。重试针对
 
 ## Review
 
+捕获 Run 来源的 WorkItem Candidate 时，会在现有不可变 Context Snapshot 存储中
+冻结其精确原始报告与 Candidate 身份。Review 获得带
+`evidenceOf=<work-item>/<candidate>` 的 `source-run` 指针，通过
+`task run context expand` 读取原文与所有内容分页。来源、Candidate 或报告漂移会
+拒绝新的派发，但已经冻结的 Run Context 仍可读取。Task-final 证据沿已提交
+Integration 血缘匹配固定 Task head，不使用更新但尚未集成的 Candidate 报告。
+缺少冻结证据的历史 Candidate 仍可诊断；新的 Candidate Review 需要新捕获的交付
+证据，不回填旧 Snapshot。
+
 ReviewRound 拥有冻结的 Candidate 或 Task-head 身份、工作区来源、执行拓扑、精确
 的 main Reviewer Run、生命周期和 Core 诊断。它的 completed 状态是结构性执行证据，
 而不是从报告里提取出来的“通过”。
