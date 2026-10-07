@@ -1,6 +1,18 @@
 import type { ModelProvider, ModelRequest, ModelResponse, StepScope } from '../index.js';
 
-export type ModelUsage = { inputTokens: number; outputTokens: number; totalTokens: number };
+/** Reported counts only. No synthesized zero, total, or cache-inclusive input. */
+export type ModelUsage = {
+  inputTokens?: number; outputTokens?: number; totalTokens?: number;
+  cachedInputTokens?: number; cacheWriteInputTokens?: number;
+};
+export type ModelProtocol = 'chat-completions' | 'responses' | 'anthropic-messages';
+export type ModelCapabilities = Readonly<{ text: boolean; functionTools: boolean; streaming: boolean }>;
+/** Caller-declared bounds, not an inferred model catalog or token estimator. */
+export type ModelCapacity = Readonly<{ contextWindowTokens?: number; maxOutputTokens?: number }>;
+export type ModelGenerationOptions = Readonly<{ maxOutputTokens?: number }>;
+export type ModelProfile = Readonly<{
+  protocol: ModelProtocol | 'custom'; model: string; capabilities: ModelCapabilities; capacity?: ModelCapacity;
+}>;
 export type ModelProgress =
   | { type: 'text_delta'; text: string }
   | { type: 'tool_delta'; index: number; id?: string; name?: string; arguments?: string }
@@ -38,6 +50,7 @@ export type ModelGeneration = {
   response: ModelResponse; usage?: ModelUsage; attempts: readonly ModelAttempt[];
 };
 export interface ModelGateway extends ModelProvider {
+  readonly profile: ModelProfile;
   generate(request: ModelRequest, signal: AbortSignal): Promise<ModelGeneration>;
 }
 /** Implementations must honor signal, settle before resolving, and not follow redirects. */
@@ -46,7 +59,9 @@ export type ModelTransport = (endpoint: string, init: {
   signal: AbortSignal; redirect: 'error';
 }) => Promise<Response>;
 export interface ModelProtocolAdapter {
-  encode(request: ModelRequest, model: string, stream: boolean): unknown;
+  /** Built-in adapters declare their exact wire contract; absent means custom. */
+  readonly protocol?: ModelProtocol;
+  encode(request: ModelRequest, model: string, stream: boolean, options?: ModelGenerationOptions): unknown;
   decode(body: AsyncIterable<string>, stream: boolean, emit: (data: ModelProgress) => void):
     Promise<{ response: ModelResponse; usage?: ModelUsage }>;
   /** Only explicit, known rejection classifications may enable a retry. */
@@ -56,7 +71,13 @@ export type ModelGatewayOptions = {
   /** Exact complete URL, never inferred/appended; HTTPS or loopback HTTP only. */
   endpoint: string;
   model: string;
-  account: { kind: 'bearer'; token: string } | { kind: 'none' };
+  account: { kind: 'bearer'; token: string } | { kind: 'api-key'; token: string } | { kind: 'none' };
+  /** No URL, model-name or credential sniffing. Defaults to Chat when no adapter is supplied. */
+  protocol?: ModelProtocol;
+  generation?: ModelGenerationOptions;
+  capacity?: ModelCapacity;
+  /** Can only narrow the adapter's text/tools/streaming subset. */
+  modelCapabilities?: Partial<ModelCapabilities>;
   stream?: boolean;
   adapter?: ModelProtocolAdapter;
   transport?: ModelTransport;

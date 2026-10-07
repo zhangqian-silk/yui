@@ -2,9 +2,9 @@ import { performance } from 'node:perf_hooks';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { ModelRequest, ModelResponse, ToolCall } from '../index.js';
-import type { ModelAttempt, ModelGateway, ModelGatewayOptions, ModelProgress, ModelTransport, ModelUsage } from './types.js';
+import type { ModelAttempt, ModelGateway, ModelGatewayOptions, ModelProfile, ModelProgress, ModelTransport, ModelUsage } from './types.js';
 import { ModelGatewayError } from './errors.js';
-import { createChatCompletionsAdapter } from './chatCompletions.js';
+import { createProtocolAdapter, getProtocolCapabilities } from './protocols.js';
 
 export const fetchTransport: ModelTransport = (endpoint, init) => fetch(endpoint, init);
 const bytes = (v: unknown): number => Buffer.byteLength(JSON.stringify(v));
@@ -26,39 +26,45 @@ function json(v: unknown, depth = 0): boolean {
   return (Array.isArray(v) || plain(v)) && Object.values(v).every(child => json(child, depth + 1));
 }
 const nonempty = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
+const keys = (v: Record<string, unknown>, allowed: readonly string[]): boolean => Object.keys(v).every(k => allowed.includes(k));
 function validCalls(v: unknown): v is ToolCall[] {
   return Array.isArray(v) && v.length <= 8 && v.every(c => plain(c) && nonempty(c.id) && nonempty(c.name)
+    && keys(c, ['id', 'name', 'arguments'])
     && plain(c.arguments) && json(c.arguments) && bytes(c.arguments) <= 64 * 1024)
     && new Set(v.map(c => c.id)).size === v.length;
 }
 function requestSnapshot(input: ModelRequest): ModelRequest {
   try {
-    if (!json(input) || bytes(input) > 1024 * 1024 || !nonempty(input.sessionId) || !nonempty(input.turnId)
+    if (!plain(input) || !keys(input, ['sessionId', 'turnId', 'step', 'messages', 'tools'])
+      || !json(input) || bytes(input) > 1024 * 1024 || !nonempty(input.sessionId) || !nonempty(input.turnId)
       || !Number.isSafeInteger(input.step) || input.step < 1 || !Array.isArray(input.messages)
       || !Array.isArray(input.tools)) throw 0;
     const used = new Set<string>(), pending = new Map<string, string>();
     for (const m of input.messages) {
       if (!plain(m) || bytes(m) > 512 * 1024) throw 0;
       if (m.role === 'tool') {
+        if (!keys(m, ['role', 'toolCallId', 'name', 'outcome'])) throw 0;
         if (!nonempty(m.toolCallId) || !pending.has(m.toolCallId) || pending.get(m.toolCallId) !== m.name || !plain(m.outcome)) throw 0;
-        if (m.outcome.ok === true) { if (typeof m.outcome.content !== 'string') throw 0; }
-        else if (m.outcome.ok !== false || !plain(m.outcome.error) || !nonempty(m.outcome.error.code)
+        if (m.outcome.ok === true) { if (!keys(m.outcome, ['ok', 'content']) || typeof m.outcome.content !== 'string') throw 0; }
+        else if (m.outcome.ok !== false || !keys(m.outcome, ['ok', 'error']) || !plain(m.outcome.error)
+          || !keys(m.outcome.error, ['code', 'message', 'effect']) || !nonempty(m.outcome.error.code)
           || typeof m.outcome.error.message !== 'string'
           || (m.outcome.error.effect !== 'none' && m.outcome.error.effect !== 'unknown')) throw 0;
         pending.delete(m.toolCallId);
       } else {
         if (pending.size || typeof m.content !== 'string') throw 0;
         if (m.role === 'assistant') {
+          if (!keys(m, ['role', 'content', 'toolCalls'])) throw 0;
           if (!validCalls(m.toolCalls)) throw 0;
           for (const c of m.toolCalls) {
             if (used.has(c.id)) throw 0;
             used.add(c.id); pending.set(c.id, c.name);
           }
-        } else if (m.role !== 'system' && m.role !== 'user') throw 0;
+        } else if ((m.role !== 'system' && m.role !== 'user') || !keys(m, ['role', 'content'])) throw 0;
       }
     }
     if (pending.size || !input.tools.every(t => plain(t) && nonempty(t.name)
-      && typeof t.description === 'string' && plain(t.inputSchema))
+      && keys(t, ['name', 'description', 'inputSchema']) && typeof t.description === 'string' && plain(t.inputSchema))
       || new Set(input.tools.map(t => t.name)).size !== input.tools.length) throw 0;
     return frozen(input);
   } catch { throw new ModelGatewayError('request', 'none'); }
@@ -108,18 +114,45 @@ function retryAfter(value: string | null): number {
   return Number.isFinite(date) ? Math.max(0, date - Date.now()) : 0;
 }
 function reportedUsage(value: unknown): ModelUsage {
-  if (!plain(value) || ![value.inputTokens, value.outputTokens, value.totalTokens]
-    .every(v => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0)) {
-    throw new ModelGatewayError('protocol');
+  if (!plain(value)) throw new ModelGatewayError('protocol');
+  const usage: ModelUsage = {};
+  for (const key of ['inputTokens', 'outputTokens', 'totalTokens', 'cachedInputTokens', 'cacheWriteInputTokens'] as const) {
+    const n = value[key];
+    if (n === undefined) continue;
+    if (typeof n !== 'number' || !Number.isSafeInteger(n) || n < 0) throw new ModelGatewayError('protocol');
+    usage[key] = n;
   }
-  return { inputTokens: value.inputTokens as number, outputTokens: value.outputTokens as number,
-    totalTokens: value.totalTokens as number };
+  if (!Object.keys(usage).length || !keys(value, Object.keys(usage))) throw new ModelGatewayError('protocol');
+  return usage;
 }
 
 export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
   let endpoint: string, headers: Record<string, string>;
+  const adapter = options.adapter ?? createProtocolAdapter(options.protocol ?? 'chat-completions');
+  const protocol = adapter.protocol ?? 'custom';
+  const capabilities = { ...(protocol === 'custom' ? { text: true, functionTools: true, streaming: true }
+    : getProtocolCapabilities(protocol)), ...options.modelCapabilities };
+  let generation: NonNullable<ModelGatewayOptions['generation']>;
   const retry = { maxAttempts: 3, maxElapsedMs: 30_000, baseDelayMs: 250, ...options.retry };
   try {
+    if (!plain(options) || !keys(options, ['endpoint', 'model', 'account', 'stream', 'adapter', 'transport',
+      'onObservation', 'retry', 'clock', 'protocol', 'generation', 'capacity', 'modelCapabilities'])
+      || (options.protocol !== undefined && options.protocol !== protocol)
+      || (options.generation !== undefined && (!plain(options.generation) || !keys(options.generation, ['maxOutputTokens'])))
+      || (options.capacity !== undefined && (!plain(options.capacity)
+        || !keys(options.capacity, ['contextWindowTokens', 'maxOutputTokens'])))
+      || (options.modelCapabilities !== undefined && (!plain(options.modelCapabilities)
+        || !keys(options.modelCapabilities, ['text', 'functionTools', 'streaming'])))
+      || !Object.values(capabilities).every(v => typeof v === 'boolean')
+      || !capabilities.text || (options.stream && !capabilities.streaming)
+      || !plain(options.account) || !keys(options.account, options.account.kind === 'none' ? ['kind'] : ['kind', 'token'])) throw 0;
+    const bounds = [...Object.values(options.generation ?? {}), ...Object.values(options.capacity ?? {})];
+    if (!bounds.every(n => n === undefined || (typeof n === 'number' && Number.isSafeInteger(n) && n > 0))) throw 0;
+    generation = frozen(options.generation ?? {});
+    if ((protocol === 'custom' && Object.keys(generation).length)
+      || (protocol === 'anthropic-messages' && generation.maxOutputTokens === undefined)
+      || (generation.maxOutputTokens !== undefined && options.capacity?.maxOutputTokens !== undefined
+        && generation.maxOutputTokens > options.capacity.maxOutputTokens)) throw 0;
     const url = new URL(options.endpoint);
     if (url.username || url.password || url.hash || url.search
       || !(url.protocol === 'https:' || (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))
@@ -131,22 +164,31 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
     headers = { 'content-type': 'application/json', accept: options.stream ? 'text/event-stream' : 'application/json' };
     if (options.account.kind === 'bearer') {
       if (!nonempty(options.account.token) || /[\r\n]/.test(options.account.token)) throw 0;
+      if (protocol === 'anthropic-messages') throw 0;
       headers.authorization = `Bearer ${options.account.token}`;
+    } else if (options.account.kind === 'api-key') {
+      if (protocol !== 'anthropic-messages' || !nonempty(options.account.token) || /[\r\n]/.test(options.account.token)) throw 0;
+      headers['x-api-key'] = options.account.token;
     } else if (options.account.kind !== 'none') throw 0;
+    if (protocol === 'anthropic-messages') headers['anthropic-version'] = '2023-06-01';
     endpoint = url.href;
   } catch { throw new ModelGatewayError('configuration', 'none'); }
   const model = options.model, streaming = options.stream ?? false;
-  const adapter = options.adapter ?? createChatCompletionsAdapter();
+  const profile = frozen<ModelProfile>({ protocol, model, capabilities, ...(options.capacity ? { capacity: options.capacity } : {}) });
   const transport = options.transport ?? fetchTransport;
   const observe = options.onObservation;
-  const credential = options.account.kind === 'bearer' ? options.account.token : undefined;
+  const credential = options.account.kind !== 'none' ? options.account.token : undefined;
   const clock = options.clock ?? { now: () => performance.now(), sleep: async (ms: number, signal: AbortSignal) => {
     await delay(ms, undefined, { signal });
   } };
   async function generate(input: ModelRequest, external: AbortSignal) {
     const requestId = randomUUID(), attempts: ModelAttempt[] = [];
     let request: ModelRequest;
-    try { request = requestSnapshot(input); }
+    try {
+      request = requestSnapshot(input);
+      if (!capabilities.functionTools && (request.tools.length
+        || request.messages.some(m => m.role === 'tool' || (m.role === 'assistant' && m.toolCalls.length)))) throw 0;
+    }
     catch { throw new ModelGatewayError('request', 'none', [], undefined, requestId); }
     const controller = new AbortController();
     const cancel = (): void => controller.abort();
@@ -174,7 +216,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
       check();
       let body: string;
       try {
-        const encoded = adapter.encode(request, model, streaming);
+        const encoded = adapter.encode(request, model, streaming, generation);
         if (!json(encoded) || bytes(encoded) > 2 * 1024 * 1024) throw 0;
         body = JSON.stringify(encoded);
       } catch { throw new ModelGatewayError('request', 'none'); }
@@ -194,7 +236,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
             signal: controller.signal, redirect: 'error' });
           acquiredResponse = response;
           status = response.status;
-          const remoteId = response.headers.get('x-request-id');
+          const remoteId = response.headers.get(protocol === 'anthropic-messages' ? 'request-id' : 'x-request-id');
           if (remoteId && /^[A-Za-z0-9_-]{1,128}$/.test(remoteId)
             && !(credential && remoteId.includes(credential))) providerRequestId = remoteId;
           // A transport returning after cancellation still transfers body ownership here.
@@ -284,5 +326,5 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
       external.removeEventListener('abort', cancel);
     }
   }
-  return { generate, complete: async (request, signal) => (await generate(request, signal)).response };
+  return { profile, generate, complete: async (request, signal) => (await generate(request, signal)).response };
 }
