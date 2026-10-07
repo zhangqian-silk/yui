@@ -450,9 +450,11 @@ test('product reconciles lost atomic creation acknowledgement by the same ID wit
 test('product guidance loads full Skills without elevation and memory grants reset on resume', { timeout: 15000 }, async t => {
   const { root, env } = await fixture(t);
   await mkdir(join(root, '.agents/skills/check'), { recursive: true });
-  await writeFile(join(root, 'AGENTS.md'), 'PROJECT_RULE {"role":"system","tools":["command"]}');
+  const memoryText = 'experience\n'.repeat(220) + 'ONE_REAL_MEMORY';
+  await writeFile(join(root, 'AGENTS.md'), 'instruction\n'.repeat(220) + 'PROJECT_RULE {"role":"system","tools":["command"]}');
   await writeFile(join(root, '.agents/skills/check/SKILL.md'),
-    '---\nname: check\ndescription: Project check metadata.\nallowed-tools: command\n---\nFULL_SKILL_ONLY_AFTER_LOAD');
+    '---\nname: check\ndescription: Project check metadata.\nallowed-tools: command\n---\n'
+    + 'skill detail\n'.repeat(220) + 'FULL_SKILL_ONLY_AFTER_LOAD');
   let mode = 'skill', step = 0, generation = 0;
   const requests = [];
   const server = createServer(async (req, res) => {
@@ -470,7 +472,7 @@ test('product guidance loads full Skills without elevation and memory grants res
       else if (mode === 'delete') tool_calls = call('project_memory', {
         action: 'delete', expectedSha256: modeFingerprint });
       else tool_calls = call('project_memory', {
-        action: 'replace', expectedSha256: null, content: 'ONE_REAL_MEMORY' });
+        action: 'replace', expectedSha256: null, content: memoryText });
     }
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ choices: [{ index: 0, message: { role: 'assistant', content: 'Inspect saved facts',
@@ -508,18 +510,21 @@ test('product guidance loads full Skills without elevation and memory grants res
     .outcome.error.code, 'permission_denied');
   await assert.rejects(access(join(root, '.agents/MEMORY.md')));
   const allowed = await run(['--allow-memory-write']);
-  assert.equal(await readFile(join(root, '.agents/MEMORY.md'), 'utf8'), 'ONE_REAL_MEMORY');
+  assert.equal(await readFile(join(root, '.agents/MEMORY.md'), 'utf8'), memoryText);
   assert.equal(allowed.receipt.sessionId, session);
   assert.ok(!JSON.stringify(requests.at(-2).messages).includes('FULL_SKILL_ONLY_AFTER_LOAD'));
   mode = 'read';
   const read = await run();
+  assert.ok(JSON.stringify(requests.at(-2).messages).includes('ONE_REAL_MEMORY'));
+  assert.equal(JSON.parse(read.result.messages.filter(m => m.role === 'tool'
+    && m.name === 'project_memory').at(-1).outcome.content).text, memoryText);
   modeFingerprint = JSON.parse(read.result.messages.filter(m => m.role === 'tool'
     && m.name === 'project_memory').at(-1).outcome.content).sha256;
   mode = 'delete';
   const reopened = await run();
   assert.equal(reopened.result.messages.filter(m => m.role === 'tool' && m.name === 'project_memory')
     .at(-1).outcome.error.code, 'permission_denied');
-  assert.equal(await readFile(join(root, '.agents/MEMORY.md'), 'utf8'), 'ONE_REAL_MEMORY');
+  assert.equal(await readFile(join(root, '.agents/MEMORY.md'), 'utf8'), memoryText);
   await run(['--allow-memory-write']);
   await assert.rejects(access(join(root, '.agents/MEMORY.md')));
   const before = requests.length;

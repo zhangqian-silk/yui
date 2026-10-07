@@ -607,3 +607,31 @@ dist，没有先生成 `output/dev/bin/yui`，10项产品测试均在 spawn
 Node24.20.0 的 `npm run test:core`（含重新构建）621项中614通过、
 7跳过、0失败（9563ms）。真实模型、全局安装和 Home 均未使用。
 新候选的远端 CI 与正常合并仍待完成；原 PR403 保留，不创建重复 PR。
+
+## 2026-10-08：完整指导加载的分页消费者修复
+
+完整读取 run-15/message-40（review-round-4 冻结 `ad00df0`）：
+独立复审确认 launcher 修复和原验证通过，但发现 P2：项目指导只读取
+前200行，合法 AGENTS、Skill、MEMORY 后续正文丢失仍报告加载成功。
+因此未接受或推送该候选，原 PR403 未合并；Review 工作区经正式
+cleanup 删除，原报告留存。
+
+Leader 在 Task-main 修正 `projectGuidance` 对现有文本读取合同的消费：
+逐页使用 `nextCursor`，仅在 `complete` 后返回正文和完整文件字节数；
+现有 reader 的 request/file-identity 绑定继续拒绝变源续读，不自动
+重启、不拼接不同版本。保留单文件/总材料上限和失败不激活的行为，
+未新增协议、持久状态、权限或执行器。
+
+一个约79ms的真实文件回归先在原代码上因 AGENTS 尾部丢失而失败，
+修复后通过；同时覆盖450行 Unicode/CRLF 指导、跨页 Skill/MEMORY、
+因 JSON 输出字节预算分页的单行引用，核对完整正文、字节数与 SHA-256。
+原真实 CLI guidance 纵向测试改用跨200行材料，继续仅替换模型网络，
+实际断言模型收到尾部、按需 Skill、跨恢复记忆全文、授权不继承和
+SQLite 回执，不增加另一套启动路径。
+
+Node24.20.0：`npm run build` 通过，guidance 6/6通过（总370ms）；
+`npm run test:core` 含重新构建，622项中615通过、7跳过、0失败
+（测试阶段9519ms），`git diff --check` 通过。fixture teardown 完成，
+无临时脚本或残留 Home。本次未改变包装结构，未重复此前无变化的
+package-start 验证。语义修复待新冻结独立 Review、接受和真实远端 CI；
+不声明 Task 或远端交付完成，真实模型等既有验证限制不变。
