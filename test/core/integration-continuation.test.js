@@ -508,7 +508,7 @@ test("interrupted rebase receipt and successful unbound Job resume without repla
 
 test("validating settlement distinguishes new check conditions from an already-applied CAS", async t => {
   for (const applied of [false, true]) await t.test(applied ? "applied" : "unadvanced", async t => {
-    const f = integrationFixture(t);
+    const f = integrationFixture(t, "rebase");
     const ids = ["task-1", "integration-1"];
     const conflict = await f.service().integrate(...ids);
     f.resolve(conflict.workspace.path);
@@ -531,18 +531,55 @@ test("validating settlement distinguishes new check conditions from an already-a
     f.store.saveIntegrationAttempt = saveAttempt;
     f.store.saveTask = saveTask;
     if (!applied) writeFileSync(join(f.repo, "file"), original);
+    const main = f.store.getTaskWorkspace("task-1");
+    const binding = createRoleAgentBinding({ id: "codex", adapterId: "codex" });
+    const role = createRole("task-1", "leader", [binding], binding.agentId, main.root, now);
+    f.store.saveRole("task-1", role);
+    const captured = resolveEffectiveLaunch({ role, purpose: "execution", workspace: main,
+      workItemWriteProjectIds: [] });
+    f.store.saveTaskRoleSessionSet(recordRoleAgentSession(
+      createRoleSessionSet({ scope: "task", taskId: "task-1", roleName: "leader" }, binding.agentId, now),
+      { agentId: binding.agentId, adapterId: binding.adapterId, nativeSessionId: "old-empty-session",
+        status: "active", policy: "fixed", effective: captured }, now));
+    const environment = { PATH: process.env.PATH, YUI_SESSION_SCOPE: "task", YUI_TASK_ID: "task-1",
+      YUI_ROLE: "leader", YUI_NATIVE_SESSION_ID: "old-empty-session" };
     const changed = new GitIntegrationService(f.home, f.store, undefined, () => now,
       { PATH: process.env.PATH, LANG: "new-check-environment" }, undefined, f.jobs);
     if (!applied) {
       await assert.rejects(changed.integrate(...ids), /check conditions changed/);
       assert.equal(f.git("rev-parse", "HEAD"), f.before);
     }
+    await assert.rejects(new GitIntegrationService(f.home, f.store, undefined, () => now, environment,
+      undefined, f.jobs).integrate(...ids), /captured/,
+    "Even an already-applied cursor does not let an empty Session enter project execution.");
+    await assert.rejects(runTaskIntegrationCommand(["abort", ids.join("/"), "--reason", "Stale caller"],
+      f.store, f.home, { environment: { ...environment, YUI_NATIVE_SESSION_ID: "stale-session" },
+        jobPort: f.jobs }), /current native Session/);
+    if (applied) {
+      const abort = () => runTaskIntegrationCommand(["abort", ids.join("/"), "--reason", "Confirm delivery"],
+        f.store, f.home, { environment, jobPort: f.jobs });
+      const listJobs = f.store.listDurableJobs.bind(f.store);
+      f.store.listDurableJobs = (...args) => listJobs(...args).map(job => ({ ...job, head: f.before }));
+      await assert.rejects(abort(), /Job identity/);
+      f.store.listDurableJobs = listJobs;
+      writeFileSync(join(conflict.workspace.path, "file"), "unproven candidate edit");
+      await assert.rejects(abort(), /candidate must be clean/);
+      git(conflict.workspace.path, "restore", "file");
+      const displaced = join(f.root, "displaced-main");
+      f.git("checkout", "--detach");
+      f.git("worktree", "add", displaced, "main");
+      await assert.rejects(abort(), /captured Task-main/);
+      f.git("worktree", "remove", displaced);
+      f.git("checkout", "main");
+    }
     const settled = await runTaskIntegrationCommand(["abort", ids.join("/"), "--reason", "changed checks"],
-      f.store, f.home, { environment: {}, jobPort: f.jobs });
+      f.store, f.home, { environment, jobPort: f.jobs });
     assert.equal(settled.data.integration.status, applied ? "committed" : "failed");
     assert.equal(f.git("rev-parse", "HEAD"), applied ? checked.attempt.candidateCommit : f.before);
     assert.equal(f.store.getDurableJob("task-1", "job-1").status, "succeeded");
     assert.equal(f.starts(), 1);
     assert.equal(f.store.getIntegrationWorkspace(...ids).root, conflict.workspace.path);
+    assert.deepEqual(f.store.getTaskRoleSessionSet("task-1", "leader").sessions.codex.effective, captured,
+      "Management settlement must not grant Project writes or change the native Session.");
   });
 });

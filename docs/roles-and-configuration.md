@@ -77,6 +77,11 @@ branch must actually be checked out in the captured Task-main directory.
 Admission, checks and target CAS revalidate this boundary; `--target` does not
 grant access to another worktree in the same repository.
 
+`integration abort` may confirm an already-applied CAS as committed without
+granting new Project writes. It still verifies current delivery identity,
+captured Task-main ownership, actual checkout, candidate and check/Job evidence.
+An unadvanced CAS remains a Project effect and requires the full write scope.
+
 An existing empty-scope Session stays empty after a runtime update, including
 ordinary failed-Run retries. Resume cannot change captured Profile access or
 Project write scope. Inspect

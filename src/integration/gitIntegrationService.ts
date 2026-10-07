@@ -37,7 +37,7 @@ import {
 import { integrationTmuxSocketRoot, managedIntegrationRuntimeRoot } from "../storage/homeLayout.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import { advanceTaskProjectCommit } from "../task/task.js";
-import { taskIntegrationTargetCheckout } from "../task/taskAuthority.js";
+import { taskIntegrationSettlementCheckout, taskIntegrationTargetCheckout } from "../task/taskAuthority.js";
 import { yuiTmuxServerName } from "../tmux/tmuxManager.js";
 import {
   recordGateArtifactReuse
@@ -448,9 +448,23 @@ export class GitIntegrationService {
         }
         const target = await resolveRef(mainEntry.path, attempt.targetRef);
         if (target === attempt.candidateCommit && target !== attempt.beforeCommit) {
+          if (attempt.checks.some(check => check.outcome === "failed")
+            || attempt.jobId !== undefined
+              && jobs.find(job => job.id === attempt.jobId)!.status !== "succeeded") {
+            throw new Error("Delivered Integration lacks successful candidate check evidence; inspect before settlement.");
+          }
+          await assertIntegrationCandidate(workspace.root, attempt.candidateCommit, workspaceEntry!.branch);
+          assertRecordedSourceCandidate(attempt, { path: workspace.root, branch: workspaceEntry!.branch });
           await assertTargetReadyForChecks(mainEntry.path, attempt.targetRef, target,
-            this.#targetCheckout(attempt));
-          return this.#recordCommitted(attempt, authorize);
+            taskIntegrationSettlementCheckout(this.store, this.environment,
+              taskId, attempt.projectId, attempt.targetRef));
+          return this.#recordCommitted(attempt, (tx, id) => {
+            authorize(tx, id);
+            taskIntegrationSettlementCheckout(tx, this.environment, id, attempt.projectId, attempt.targetRef);
+            if (JSON.stringify(requireIntegration(tx, id, integrationId)) !== JSON.stringify(attempt)) {
+              throw new Error("Integration changed before delivered settlement; inspect its current record.");
+            }
+          });
         }
         if (target !== attempt.beforeCommit) {
           throw new Error(`Target moved to ${target}; cannot prove this Integration is unadvanced. Inspect before settlement.`);

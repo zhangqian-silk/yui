@@ -111,12 +111,28 @@ export function taskIntegrationTargetCheckout(
   if (assertTaskProjectWriteAuthority(store, environment, taskId, projectId) !== "leader") {
     return undefined;
   }
-  const entry = store.getTaskWorkspace(taskId)!.entries.find(entry => entry.projectId === projectId)!;
+  return taskIntegrationSettlementCheckout(store, environment, taskId, projectId, targetRef);
+}
+
+/** Confirming an already-applied CAS is Task management, not a Project write
+ * grant. Keep the current delivery identity and captured target ownership, but
+ * do not require or change its declared write scope. Never use this for CAS. */
+export function taskIntegrationSettlementCheckout(
+  store: TaskStore, environment: NodeJS.ProcessEnv | undefined,
+  taskId: string, projectId: string, targetRef: string
+): string | undefined {
+  if (assertTaskDeliveryAuthority(store, environment, taskId) !== "leader") return undefined;
+  const task = store.getTask(taskId);
+  const main = store.getTaskWorkspace(taskId);
+  const entry = main?.entries.find(entry => entry.projectId === projectId);
   const caller = currentManagedRuntime(store, environment, taskId, LEADER_ROLE)!;
-  const captured = store.getTaskRoleSessionSet(taskId, LEADER_ROLE)!.sessions[caller.agentId]!
-    .effective.workspace.entries.find(entry => entry.projectId === projectId)!;
+  const effective = store.getTaskRoleSessionSet(taskId, LEADER_ROLE)?.sessions[caller.agentId]?.effective;
+  const captured = effective?.workspace.entries.find(entry => entry.projectId === projectId);
   const branchRef = (ref: string) => ref.startsWith("refs/heads/") ? ref : `refs/heads/${ref}`;
-  if (entry.branch === undefined || captured.branch === undefined
+  if (task?.status !== "active" || !task.projectBindings.some(binding => binding.projectId === projectId)
+    || main?.owner.type !== "task" || main.owner.taskId !== taskId
+    || effective?.workspace.root !== main.root || entry?.access !== "write"
+    || captured?.path !== entry.path || entry.branch === undefined || captured.branch === undefined
     || branchRef(entry.branch) !== branchRef(captured.branch)
     || branchRef(targetRef) !== branchRef(captured.branch)) {
     throw usageError("Managed Leader Integration target must be its captured Task-main branch and checkout.");

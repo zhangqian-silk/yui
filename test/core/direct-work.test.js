@@ -129,6 +129,16 @@ test("delivery Leader owns Task-main writes without an open WorkItem; other scop
   assert.throws(() => assertTaskProjectWriteAuthority(store, env, task.id, "project-1"), /Session|runtime/);
   const fresh = scheduler.getRole(task.id, role.name).effective;
   assert.deepEqual(fresh.writeProjectIds, ["project-1"]);
+  // A separately assigned read-only Leader result is an explicit empty scope,
+  // not the absence of an Assignment. Scheduler and actual launch must agree.
+  command(["work", "create", task.id, "Leader finding", "--role", "leader"]);
+  const assigned = scheduler.getRole(task.id, role.name).effective;
+  assert.deepEqual(assigned.writeProjectIds, []);
+  const assignedPlan = plan("new", assigned);
+  assert.deepEqual(JSON.parse(assignedPlan.launch.env.YUI_WRITABLE_PROJECT_IDS), []);
+  assert.equal(JSON.parse(assignedPlan.launch.env.YUI_WORKSPACE_PROJECTS)["project-1"].access, "read");
+  command(["work", "retire", `${task.id}/work-item-2`, "--summary", "Fixture scope checked"]);
+  assert.deepEqual(scheduler.getRole(task.id, role.name).effective, fresh);
   const snapshot = freezeRunContextSnapshot(store, { taskId: task.id, roleName: role.name,
     purpose: "execution" }, now);
   const run = createRun(store.nextRunId(task.id), task.id, role.name, "new", createRunInput({

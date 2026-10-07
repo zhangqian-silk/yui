@@ -64,6 +64,10 @@ Worker/Review 工作区或 Home 修改。
 在捕获的 Task-main 目录。入场、检查及目标 CAS 都重新校验此边界；
 `--target` 不授予对同仓库另一工作区的写入。
 
+`integration abort` 可以把已发生的 CAS 确认为 committed，而不授予新项目写域。
+结算仍校验当前 delivery 身份、捕获的 Task-main 归属、实际 checkout、
+候选及检查/Job 证据。未执行的 CAS 仍是项目写操作，必须具备完整写域。
+
 运行时更新后，旧的空写域 Session 仍保持空域，包括失败 Run 的普通 retry。
 Resume 不改变捕获的 Profile 访问意图或项目写域。先用
 `yui task role session inspect <task> leader --json` 读取 `session.effective`，
