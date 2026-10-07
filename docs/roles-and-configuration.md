@@ -72,7 +72,14 @@ Project effects recheck the current Session's frozen scope as well as Task
 lifecycle and workspace ownership. The scope does not authorize stable Project
 checkouts, other Tasks, private Worker/Review workspaces or Home mutations.
 
-An existing empty-scope Session stays empty after a runtime update. Inspect
+Managed Leader Integration targets must name the Task-main branch, and that
+branch must actually be checked out in the captured Task-main directory.
+Admission, checks and target CAS revalidate this boundary; `--target` does not
+grant access to another worktree in the same repository.
+
+An existing empty-scope Session stays empty after a runtime update, including
+ordinary failed-Run retries. Resume cannot change captured Profile access or
+Project write scope. Inspect
 `yui task role session inspect <task> leader --json` (`session.effective`), then
 request `yui task role session new <task> leader --reason "<adopt new scope>"`.
 When replacing your own Session, end the turn. After Yui confirms cleanup and

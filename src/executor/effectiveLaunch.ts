@@ -269,8 +269,8 @@ export function sameEffectiveLaunch(
  *
  * Only facts that make continuation impossible participate: the Session
  * protocol, the provider identity that owns the conversation, and the physical
- * workspace the Session runs in. Launch configuration such as model, effort,
- * permission, Role context, declared write scope, and AgentRun-scoped facts like
+ * workspace and captured authority the Session runs with. Launch configuration
+ * such as model, effort, provider permission, Role context, and AgentRun-scoped facts like
  * ReviewRound identity or candidate commits shape the next Host process
  * instead of ending the Session; that divergence is acknowledged where the
  * configuration changes and stays visible as launch provenance.
@@ -314,6 +314,8 @@ function sessionContinuitySnapshot(snapshot: EffectiveLaunchSnapshot): unknown {
   return {
     schemaVersion: snapshot.schemaVersion,
     executionAuthority: snapshot.executionAuthority,
+    profileAccess: snapshot.profileAccess,
+    writeProjectIds: snapshot.writeProjectIds,
     contextProtocolVersion: snapshot.contextProtocolVersion,
     agentId: snapshot.agentId,
     // Two products on one connection plan are two different conversations. A

@@ -3,6 +3,7 @@ import {
   lstat,
   mkdir,
   open,
+  realpath,
   rm,
   stat
 } from "node:fs/promises";
@@ -36,7 +37,7 @@ import {
 import { integrationTmuxSocketRoot, managedIntegrationRuntimeRoot } from "../storage/homeLayout.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import { advanceTaskProjectCommit } from "../task/task.js";
-import { assertTaskProjectWriteAuthority } from "../task/taskAuthority.js";
+import { taskIntegrationTargetCheckout } from "../task/taskAuthority.js";
 import { yuiTmuxServerName } from "../tmux/tmuxManager.js";
 import {
   recordGateArtifactReuse
@@ -169,13 +170,18 @@ export class GitIntegrationService {
     return this.#resourceRegistrarValue ??= new ResourceRegistrar(this.home, this.now);
   }
 
+  #targetCheckout(attempt: IntegrationAttempt): string | undefined {
+    return taskIntegrationTargetCheckout(this.store, this.environment,
+      attempt.taskId, attempt.projectId, attempt.targetRef);
+  }
+
   async integrate(
     taskId: string,
     integrationId: string,
     signal?: AbortSignal
   ): Promise<IntegrationResult> {
     let initial = requireIntegration(this.store, taskId, integrationId);
-    assertTaskProjectWriteAuthority(this.store, this.environment, taskId, initial.projectId);
+    this.#targetCheckout(initial);
     if (!["running", "conflicted", "blocked", "validating"].includes(initial.status)) {
       throw new Error(`Integration cannot continue from ${initial.status}.`);
     }
@@ -194,7 +200,7 @@ export class GitIntegrationService {
       throw new Error("Integration changed before execution admission; read its current record.");
     }
     initial = currentUnderFence;
-    assertTaskProjectWriteAuthority(this.store, this.environment, taskId, initial.projectId);
+    this.#targetCheckout(initial);
     const task = this.store.getTask(initial.taskId);
     if (task === null || !task.projectBindings.some(
       ({ projectId }) => projectId === initial.projectId
@@ -218,6 +224,7 @@ export class GitIntegrationService {
       || taskRepository === undefined) {
       throw new Error(`Integration Task clone is unavailable: ${task.id}/${project.id}.`);
     }
+    await assertTargetCheckout(taskRepository, initial.targetRef, this.#targetCheckout(initial));
     // Issue 08: a Project with a VerificationPlan gates through its plan
     // (bootstrap + L2) and reuses exact-SHA artifacts; an unconfigured
     // Project keeps the existing explicit check path unchanged.
@@ -296,7 +303,8 @@ export class GitIntegrationService {
       // moved or its worktree is dirty, so the check commands never run on a
       // target that cannot be advanced.  advanceTargetRef re-verifies both
       // after the checks, so a move during the gate is still fenced at CAS.
-      await assertTargetReadyForChecks(taskRepository, current.targetRef, current.beforeCommit);
+      await assertTargetReadyForChecks(taskRepository, current.targetRef, current.beforeCommit,
+        this.#targetCheckout(current));
       if (gate !== undefined) {
         return await this.#runVerificationGate(
           current,
@@ -337,12 +345,12 @@ export class GitIntegrationService {
         checks: checkResults
       }, this.now());
       this.store.saveIntegrationAttempt(task.id, current);
-      assertTaskProjectWriteAuthority(this.store, this.environment, task.id, current.projectId);
       await advanceTargetRef(
         taskRepository,
         current.targetRef,
         candidateCommit,
-        current.beforeCommit
+        current.beforeCommit,
+        this.#targetCheckout(current)
       );
       const committed = this.#recordCommitted(current);
       return this.#terminalResult("committed", committed, workspace);
@@ -358,7 +366,8 @@ export class GitIntegrationService {
             await assertTargetReadyForChecks(
               taskRepository,
               current.targetRef,
-              current.candidateCommit
+              current.candidateCommit,
+              this.#targetCheckout(current)
             );
             const committed = this.#recordCommitted(current);
             return this.#terminalResult("committed", committed, workspace);
@@ -439,7 +448,8 @@ export class GitIntegrationService {
         }
         const target = await resolveRef(mainEntry.path, attempt.targetRef);
         if (target === attempt.candidateCommit && target !== attempt.beforeCommit) {
-          await assertTargetReadyForChecks(mainEntry.path, attempt.targetRef, target);
+          await assertTargetReadyForChecks(mainEntry.path, attempt.targetRef, target,
+            this.#targetCheckout(attempt));
           return this.#recordCommitted(attempt, authorize);
         }
         if (target !== attempt.beforeCommit) {
@@ -571,7 +581,8 @@ export class GitIntegrationService {
       throw new Error(`Integration check admission requires a running, proven candidate: ${attempt.id}.`);
     }
     await assertIntegrationCandidate(path, attempt.candidateCommit, workspace.branch);
-    await assertTargetReadyForChecks(repositoryPath, attempt.targetRef, attempt.beforeCommit);
+    await assertTargetReadyForChecks(repositoryPath, attempt.targetRef, attempt.beforeCommit,
+      this.#targetCheckout(attempt));
     const { runtime, head, steps, environment, inputDigest } =
       await this.#checkSpecification(attempt, managedWorkspace, gate);
     if (attempt.checkInputDigest !== undefined && attempt.checkInputDigest !== inputDigest) {
@@ -639,7 +650,8 @@ export class GitIntegrationService {
     const job = await this.jobPort!.getJob(attempt.taskId, attempt.jobId!);
     assertCheckJobIdentity(attempt, job, path);
     await assertIntegrationCandidate(path, job.head, workspace.branch);
-    await assertTargetReadyForChecks(repositoryPath, attempt.targetRef, attempt.beforeCommit);
+    await assertTargetReadyForChecks(repositoryPath, attempt.targetRef, attempt.beforeCommit,
+      this.#targetCheckout(attempt));
     if (gate?.planDigest !== attempt.gatePlanDigest
       || gate?.toolchainDigest !== attempt.gateToolchainDigest) {
       throw new Error("Integration verification plan/toolchain changed; the original Job cannot prove the current gate.");
@@ -881,12 +893,12 @@ export class GitIntegrationService {
       checks
     }, this.now());
     this.store.saveIntegrationAttempt(attempt.taskId, validating);
-    assertTaskProjectWriteAuthority(this.store, this.environment, attempt.taskId, attempt.projectId);
     await advanceTargetRef(
       repositoryPath,
       validating.targetRef,
       candidateCommit,
-      validating.beforeCommit
+      validating.beforeCommit,
+      this.#targetCheckout(validating)
     );
     const committed = this.#recordCommitted(validating);
     return this.#terminalResult("committed", committed, workspace);
@@ -972,13 +984,14 @@ export class GitIntegrationService {
         }
         assertCheckJobIdentity(attempt, job, workspace.path);
       }
-      assertTaskProjectWriteAuthority(this.store, this.environment, attempt.taskId, attempt.projectId);
-      await advanceTargetRef(repositoryPath, attempt.targetRef, attempt.candidateCommit, attempt.beforeCommit);
+      await advanceTargetRef(repositoryPath, attempt.targetRef, attempt.candidateCommit, attempt.beforeCommit,
+        this.#targetCheckout(attempt));
     }
     await assertTargetReadyForChecks(
       repositoryPath,
       attempt.targetRef,
-      attempt.candidateCommit
+      attempt.candidateCommit,
+      this.#targetCheckout(attempt)
     );
     const committed = this.#recordCommitted(attempt);
     return this.#terminalResult("committed", committed, workspace);
@@ -1486,13 +1499,14 @@ async function resolveRef(repositoryPath: string, ref: string): Promise<string> 
 async function assertTargetReadyForChecks(
   repositoryPath: string,
   targetRef: string,
-  expectedHead: string
+  expectedHead: string,
+  expectedCheckout?: string
 ): Promise<void> {
   const current = await resolveRef(repositoryPath, targetRef);
   if (current !== expectedHead) {
     throw new Error(`Target moved to ${current}; expected ${expectedHead}.`);
   }
-  const checkedOutPaths = await checkedOutWorktreePaths(repositoryPath, fullTargetRef(targetRef));
+  const checkedOutPaths = await assertTargetCheckout(repositoryPath, targetRef, expectedCheckout);
   if (checkedOutPaths.length > 1) {
     throw new Error(`Integration target is checked out in multiple worktrees: ${targetRef}.`);
   }
@@ -1506,14 +1520,29 @@ async function assertTargetReadyForChecks(
   }
 }
 
+async function assertTargetCheckout(
+  repositoryPath: string, targetRef: string, expectedCheckout?: string
+): Promise<string[]> {
+  const paths = await checkedOutWorktreePaths(repositoryPath, fullTargetRef(targetRef));
+  if (expectedCheckout !== undefined && (
+    await realpath(repositoryPath) !== await realpath(expectedCheckout)
+    || paths.length !== 1 || await realpath(paths[0]!) !== await realpath(expectedCheckout)
+    || (await git(["-C", expectedCheckout, "symbolic-ref", "HEAD"])).trim() !== fullTargetRef(targetRef)
+  )) {
+    throw new Error("Managed Leader Integration target must be physically checked out in its captured Task-main workspace.");
+  }
+  return paths;
+}
+
 async function advanceTargetRef(
   repositoryPath: string,
   targetRef: string,
   candidateCommit: string,
-  expectedHead: string
+  expectedHead: string,
+  expectedCheckout?: string
 ): Promise<void> {
   const ref = fullTargetRef(targetRef);
-  const checkedOutPaths = await checkedOutWorktreePaths(repositoryPath, ref);
+  const checkedOutPaths = await assertTargetCheckout(repositoryPath, targetRef, expectedCheckout);
   if (checkedOutPaths.length === 0) {
     await git([
       "-C", repositoryPath, "update-ref",
@@ -1537,6 +1566,9 @@ async function advanceTargetRef(
   if (current !== expectedHead) {
     throw new Error(`Target moved to ${current}; expected ${expectedHead}.`);
   }
+  if (expectedCheckout !== undefined) {
+    await assertTargetCheckout(repositoryPath, targetRef, expectedCheckout);
+  }
   // The candidate may be a rebased upstream result and therefore need not be
   // a descendant of the old Task head. Advance the branch with a real
   // compare-and-swap, then update only this checkout's index and worktree.
@@ -1548,6 +1580,9 @@ async function advanceTargetRef(
     candidateCommit,
     expectedHead
   ]);
+  if (expectedCheckout !== undefined) {
+    await assertTargetCheckout(repositoryPath, targetRef, expectedCheckout);
+  }
   await git(["-C", checkout, "read-tree", "--reset", "-u", candidateCommit]);
   const advanced = await resolveRef(repositoryPath, targetRef);
   if (advanced !== candidateCommit) {

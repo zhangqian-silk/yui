@@ -101,6 +101,29 @@ export function assertTaskProjectWriteAuthority(
   return actor;
 }
 
+/** A managed Leader integrates into its captured Task-main, not any branch
+ * reachable through the same Git repository. The executor also verifies that
+ * this ref is physically checked out here immediately before target effects. */
+export function taskIntegrationTargetCheckout(
+  store: TaskStore, environment: NodeJS.ProcessEnv | undefined,
+  taskId: string, projectId: string, targetRef: string
+): string | undefined {
+  if (assertTaskProjectWriteAuthority(store, environment, taskId, projectId) !== "leader") {
+    return undefined;
+  }
+  const entry = store.getTaskWorkspace(taskId)!.entries.find(entry => entry.projectId === projectId)!;
+  const caller = currentManagedRuntime(store, environment, taskId, LEADER_ROLE)!;
+  const captured = store.getTaskRoleSessionSet(taskId, LEADER_ROLE)!.sessions[caller.agentId]!
+    .effective.workspace.entries.find(entry => entry.projectId === projectId)!;
+  const branchRef = (ref: string) => ref.startsWith("refs/heads/") ? ref : `refs/heads/${ref}`;
+  if (entry.branch === undefined || captured.branch === undefined
+    || branchRef(entry.branch) !== branchRef(captured.branch)
+    || branchRef(targetRef) !== branchRef(captured.branch)) {
+    throw usageError("Managed Leader Integration target must be its captured Task-main branch and checkout.");
+  }
+  return entry.path;
+}
+
 /**
  * Authority for a live steer/interrupt of an exact current native Turn
  * (decision-3 §1/§9, message-5 gap B). The legal evidence is the native

@@ -60,7 +60,12 @@ Planning、read 意图执行和全局 Role 不获得这个 Task-main 写域；Re
 生命周期和工作区 owner；它不授权稳定 Project checkout、其他 Task、私有
 Worker/Review 工作区或 Home 修改。
 
-运行时更新后，旧的空写域 Session 仍保持空域。先用
+受管 Leader 的 Integration 目标必须是 Task-main 分支，且该分支实际 checkout
+在捕获的 Task-main 目录。入场、检查及目标 CAS 都重新校验此边界；
+`--target` 不授予对同仓库另一工作区的写入。
+
+运行时更新后，旧的空写域 Session 仍保持空域，包括失败 Run 的普通 retry。
+Resume 不改变捕获的 Profile 访问意图或项目写域。先用
 `yui task role session inspect <task> leader --json` 读取 `session.effective`，
 再通过 `yui task role session new <task> leader --reason "<采用新写域>"`
 请求正式替换。替换自己时应结束当前 turn。Yui 确认清理并启动 successor 后，

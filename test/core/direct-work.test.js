@@ -19,10 +19,10 @@ import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
 import { createConfiguredAgent } from "../../dist/agent/agent.js";
 import { FileRoleLaunchPlanner } from "../../dist/executor/fileRoleLaunchPlanner.js";
 import { createRoleSessionSet, recordRoleAgentSession } from "../../dist/executor/agentExecutor.js";
-import { assertTaskProjectWriteAuthority } from "../../dist/task/taskAuthority.js";
+import { assertTaskProjectWriteAuthority, taskIntegrationTargetCheckout } from "../../dist/task/taskAuthority.js";
 import { freezeRunContextSnapshot, buildRunContextPack } from "../../dist/context/runContextPack.js";
 import { contextSnapshotRef } from "../../dist/context/contextSnapshot.js";
-import { createRun } from "../../dist/agentRun/agentRun.js";
+import { createRun, failRun } from "../../dist/agentRun/agentRun.js";
 import { createRunInput } from "../../dist/context/runInputContract.js";
 
 const now = new Date("2026-09-12T00:00:00.000Z");
@@ -98,6 +98,29 @@ test("delivery Leader owns Task-main writes without an open WorkItem; other scop
   assert.equal(JSON.parse(oldPlan.launch.env.YUI_WORKSPACE_PROJECTS)["project-1"].access, "read");
   assert.throws(() => plan("resume", launch({})), /snapshot changed/);
 
+  // An ordinary retry is reachable on this same native Session. It must not
+  // recalculate the new Leader fallback and advertise authority the Session lacks.
+  const oldSnapshot = freezeRunContextSnapshot(store, {
+    taskId: task.id, roleName: role.name, purpose: "execution", workspace
+  }, now);
+  const failed = failRun(createRun(store.nextRunId(task.id), task.id, role.name, "resume",
+    createRunInput({ source: { type: "yui", channel: "task-dispatch" },
+      contextSnapshotRef: contextSnapshotRef(oldSnapshot), deltaRefIds: [] }), now,
+    { effective: oldEffective, workspace }), "startup-failed", "Fixture failure", now);
+  store.saveRun(failed);
+  command(["run", "retry", `${task.id}/${failed.id}`]);
+  const retry = store.getActiveRun(task.id, role.name);
+  assert.equal(retry.mode, "resume");
+  assert.deepEqual(retry.effective.writeProjectIds, []);
+  assert.deepEqual(buildRunContextPack(store, task.id, retry.id).authority.writableProjectIds, []);
+  const retryPlan = plan("resume", retry.effective, retry.id);
+  assert.deepEqual(JSON.parse(retryPlan.launch.env.YUI_WRITABLE_PROJECT_IDS), []);
+  assert.equal(JSON.parse(retryPlan.launch.env.YUI_WORKSPACE_PROJECTS)["project-1"].access, "read");
+  assert.throws(() => assertTaskProjectWriteAuthority(store, env, task.id, "project-1"), /captured/);
+  store.saveRun(failRun(retry, "startup-failed", "Fixture stopped before Provider", now));
+  store.clearActiveRun(task.id, role.name);
+  assert.deepEqual(store.getTaskRoleSessionSet(task.id, role.name).sessions.codex.effective, oldEffective);
+
   runTaskCommand(["role", "session", "new", task.id, role.name, "--reason", "Adopt direct-delivery scope"],
     store, { environment: env, now: () => now });
   // This boundary is called after native stop proof; this fixture has no Host.
@@ -108,7 +131,7 @@ test("delivery Leader owns Task-main writes without an open WorkItem; other scop
   assert.deepEqual(fresh.writeProjectIds, ["project-1"]);
   const snapshot = freezeRunContextSnapshot(store, { taskId: task.id, roleName: role.name,
     purpose: "execution" }, now);
-  const run = createRun("run-1", task.id, role.name, "new", createRunInput({
+  const run = createRun(store.nextRunId(task.id), task.id, role.name, "new", createRunInput({
     source: { type: "yui", channel: "leader-wakeup" }, directive: "Continue same Task",
     contextSnapshotRef: contextSnapshotRef(snapshot), deltaRefIds: []
   }), now, { effective: fresh, workspace });
@@ -122,6 +145,13 @@ test("delivery Leader owns Task-main writes without an open WorkItem; other scop
     session("new-session", fresh), now));
   const current = { ...env, YUI_NATIVE_SESSION_ID: "new-session" };
   assert.equal(assertTaskProjectWriteAuthority(store, current, task.id, "project-1"), "leader");
+  assert.equal(taskIntegrationTargetCheckout(store, current, task.id, "project-1", "refs/heads/main"),
+    join(home, "app"));
+  store.saveManagedWorkspace({ ...workspace,
+    entries: workspace.entries.map(entry => ({ ...entry, branch: "different-main" })) });
+  assert.throws(() => taskIntegrationTargetCheckout(store, current, task.id, "project-1", "different-main"),
+    /captured Task-main/);
+  store.saveManagedWorkspace(workspace);
   assert.throws(() => assertTaskProjectWriteAuthority(store, current, task.id, "project-2"), /captured/);
   assert.throws(() => assertTaskProjectWriteAuthority(store, current, "task-2", "project-1"), /matching Leader/);
   store.saveTask({ ...task, executionGate: { state: "stopped" } });

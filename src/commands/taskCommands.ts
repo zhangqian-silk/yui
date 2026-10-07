@@ -84,6 +84,7 @@ import {
 } from "../executor/agentExecutor.js";
 import {
   resolveEffectiveLaunch,
+  effectiveLaunchWithTaskMainWorkspace,
   type EffectiveLaunchSnapshot
 } from "../executor/effectiveLaunch.js";
 import { cancelInputRequest } from "../input/inputRequest.js";
@@ -6411,7 +6412,15 @@ function retryRunOperation(
         throw dataError(`AgentRun ${previous.id} direct WorkItem workspace is missing or has drifted.`);
       }
     }
-    const effective = retryLane?.effective ?? resolveEffectiveLaunch({
+    // Direct Task delivery resumes the native Session's captured authority.
+    // New source/Role defaults are adopted only after formal replacement.
+    const directSession = retryItem === null && previous.purpose === "execution"
+      && retryManagedWorkspace?.owner.type === "task"
+      ? sessions?.sessions[role.activeAgentId] : undefined;
+    const effective = retryLane?.effective
+      ?? (directSession === undefined ? undefined
+        : effectiveLaunchWithTaskMainWorkspace(directSession.effective, retryManagedWorkspace!))
+      ?? resolveEffectiveLaunch({
       role,
       purpose: previous.purpose,
       ...(retryManagedWorkspace === undefined ? {} : { workspace: retryManagedWorkspace }),
