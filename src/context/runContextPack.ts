@@ -167,44 +167,49 @@ function candidateReviewContext(
   return [proof, report];
 }
 
-/** Select report evidence from the fixed Task heads, never a newer,
- * unintegrated candidate's validation. */
+/** Reuse only exact head/target evidence. Temporal ordering and a shared branch
+ * name do not prove ancestry; absent proof is a reviewable evidence gap. */
 function taskReviewCandidateSources(
   store: TaskStore, taskId: string, heads: TaskReviewCandidate
-): WorkItem["candidates"][number][] {
+): Readonly<{ candidates: WorkItem["candidates"][number][]; unmatchedHeads: string[] }> {
   const selected = new Map<string, WorkItem["candidates"][number]>();
   const select = (candidate: WorkItem["candidates"][number]) =>
     selected.set(`${candidate.workItemId}/${candidate.id}`, candidate);
+  const workspace = store.getTaskWorkspace(taskId);
+  const attempts = store.listIntegrationAttempts(taskId);
+  const items = store.listWorkItems(taskId);
+  const unmatchedHeads: string[] = [];
   for (const { projectId, commit } of heads.projects) {
-    const attempts = store.listIntegrationAttempts(taskId)
-      .filter(attempt => attempt.projectId === projectId && attempt.status === "committed")
-      .sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
-    const headIndex = attempts.map(attempt => attempt.candidateCommit).lastIndexOf(commit);
-    if (attempts.length > 0 && headIndex < 0) {
-      throw new Error(`Frozen Task review Integration provenance is unavailable: ${projectId}@${commit}.`);
-    }
-    const targetRef = attempts[headIndex]?.targetRef;
-    for (const attempt of attempts.slice(0, headIndex + 1).filter(entry => entry.targetRef === targetRef)) {
+    const targetRef = workspace?.entries.find(entry => entry.projectId === projectId)?.branch;
+    let matched = false;
+    for (const attempt of attempts.filter(entry => entry.projectId === projectId
+      && entry.status === "committed" && entry.candidateCommit === commit
+      && entry.targetRef === targetRef)) {
       if (attempt.source.kind !== "work-item") continue;
       const source = attempt.source;
       const item = store.getWorkItem(taskId, source.workItemId);
       const candidate = [...(item?.candidates ?? [])].reverse().find(entry => entry.gitSnapshot?.projects.some(
         project => project.projectId === projectId && project.commit === source.resultCommit));
-      if (candidate === undefined) {
-        throw new Error(`Frozen Task review producer candidate is unavailable: ${attempt.id}.`);
+      if (candidate !== undefined) {
+        select(candidate);
+        matched = true;
       }
-      select(candidate);
     }
-    for (const item of store.listWorkItems(taskId)) {
+    for (const item of items) {
       const candidate = [...item.candidates].reverse().find(entry =>
         entry.taskMainSnapshot?.projects.some(
-          project => project.projectId === projectId && project.headCommit === commit)
-        || (attempts.length === 0 && entry.gitSnapshot?.projects.some(
-          project => project.projectId === projectId && project.commit === commit)));
-      if (candidate !== undefined) select(candidate);
+          project => project.projectId === projectId && project.headCommit === commit
+            && project.branch === targetRef)
+        || entry.gitSnapshot?.projects.some(
+          project => project.projectId === projectId && project.commit === commit));
+      if (candidate !== undefined) {
+        select(candidate);
+        matched = true;
+      }
     }
+    if (!matched) unmatchedHeads.push(`${projectId}@${commit}`);
   }
-  return [...selected.values()];
+  return { candidates: [...selected.values()], unmatchedHeads };
 }
 
 export function freezeRunContextSnapshot(
@@ -635,7 +640,7 @@ function collectAuthorizedContext(
   if (run.reviewRoundId !== undefined) {
     const round = store.getReviewRound(task.id, run.reviewRoundId);
     if (round === null) throw new Error(`AgentRun ReviewRound not found: ${run.reviewRoundId}.`);
-    result.push(materialize("L3", "review-round", round.id, round));
+    let roundContext = materialize("L3", "review-round", round.id, round);
     if (round.scope === "work-item") {
       const item = store.getWorkItem(task.id, round.workItemId!);
       const candidate = item?.candidates.find(({ id }) => id === round.candidateId);
@@ -649,11 +654,24 @@ function collectAuthorizedContext(
         result.push(materialize("L3", "candidate", `${item.id}/${candidate.id}`, candidate));
         result.push(...candidateArtifacts(task.id, [candidate]));
       }
-      for (const candidate of taskReviewCandidateSources(store, task.id, round.taskCandidate!)) {
+      const evidence = taskReviewCandidateSources(store, task.id, round.taskCandidate!);
+      // Existing pointer metadata exposes the gap without changing the Round,
+      // inventing validation, or adding another persisted evidence record.
+      roundContext = {
+        ...roundContext, ref: {
+          ...roundContext.ref,
+          summary: `Task-final Review ${round.id}. Producer reports are evidence only for their named Candidate, not validation of the entire Task head.${
+            evidence.unmatchedHeads.length === 0 ? ""
+              : ` Producer evidence gap: ${evidence.unmatchedHeads.join(", ")}. Review these fixed heads and report missing validation; the gap does not prohibit review.`
+          }`
+        }
+      };
+      for (const candidate of evidence.candidates) {
         result.push(...candidateReviewContext(store, candidate));
         result.push(...candidateArtifacts(task.id, [candidate]));
       }
     }
+    result.push(roundContext);
     if (round.deltaRecheck !== undefined) {
       const previous = store.getReviewRound(task.id, round.deltaRecheck.previousReviewRoundId);
       const previousRun = previous?.reviewerRunId === undefined

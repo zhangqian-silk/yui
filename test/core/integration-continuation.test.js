@@ -25,6 +25,8 @@ import { runTaskUpstreamCommand } from "../../dist/commands/taskUpstreamCommands
 import { FileTaskWorkspacePreparer } from "../../dist/repository/taskWorkspacePreparer.js";
 import { integrationTmuxSocketRoot } from "../../dist/storage/homeLayout.js";
 import { completeGateArtifact } from "../../dist/verification/gateArtifact.js";
+import { createTaskReviewRound } from "../../dist/review/reviewRound.js";
+import { freezeRunContextSnapshot } from "../../dist/context/runContextPack.js";
 
 const now = new Date("2026-09-12T00:00:00Z");
 const git = (path, ...args) => execFileSync("git", ["-C", path, ...args], {
@@ -174,6 +176,39 @@ export function integrationFixture(t, strategy = "merge") {
     }
   };
 }
+
+test("Task-final review accepts a Task-main repair after a real committed Integration without borrowing old verification", async t => {
+  const f = integrationFixture(t, "ff");
+  f.git("checkout", "-b", "repair-source");
+  writeFileSync(join(f.repo, "file"), "worker repair\n");
+  f.git("commit", "-am", "worker change");
+  const source = f.git("rev-parse", "HEAD");
+  f.git("checkout", "main");
+  const seed = f.store.getIntegrationAttempt("task-1", "integration-1");
+  f.store.saveIntegrationAttempt("task-1", { ...seed, checkCommands: [],
+    source: { ...seed.source, startCommit: f.before, resultCommit: source } });
+  const integrated = await f.service().integrate("task-1", seed.id);
+  assert.equal(integrated.status, "committed");
+  assert.equal(f.git("rev-parse", "HEAD"), integrated.attempt.afterCommit);
+  writeFileSync(join(f.repo, "file"), "Leader repair\n");
+  f.git("commit", "-am", "Leader direct repair");
+  const repaired = f.git("rev-parse", "HEAD");
+  assert.notEqual(repaired, integrated.attempt.afterCommit);
+  const round = createTaskReviewRound("review-round-1", "task-1", "reviewer", "leader", {
+    schemaVersion: 1, projects: [{ projectId: "project-1", commit: repaired }]
+  }, now);
+  f.store.saveReviewRound("task-1", round);
+  const binding = createRoleAgentBinding({ id: "codex", adapterId: "codex" });
+  f.store.saveRole("task-1", createRole("task-1", "reviewer", [binding], binding.agentId, f.repo, now));
+  const snapshot = freezeRunContextSnapshot(f.store, {
+    taskId: "task-1", roleName: "reviewer", purpose: "review",
+    reviewRoundId: round.id, workspace: f.store.getTaskWorkspace("task-1")
+  }, now);
+  assert.equal(snapshot.resources.find(({ ref }) => ref.store === "review-round")
+    .value.taskCandidate.projects[0].commit, repaired);
+  assert.equal(snapshot.resources.some(({ ref }) => ref.store === "source-run"), false);
+  assert.match(snapshot.refs.find(ref => ref.store === "review-round").summary, /evidence gap/i);
+});
 
 test("a check that mutates its candidate cannot publish reusable successful evidence", async t => {
   const f = integrationFixture(t, "ff");

@@ -25,6 +25,7 @@ import { createRoleSessionSet, recordRoleAgentSession } from "../../dist/executo
 import { createTaskEvent } from "../../dist/event/taskEvent.js";
 import { prepareMessageContinuations } from "../../dist/message/messageContinuation.js";
 import { createProject } from "../../dist/repository/project.js";
+import { createIntegrationAttempt } from "../../dist/integration/integrationAttempt.js";
 
 test("managed dispatch freezes explicit materials and candidate reports; continuation preserves their exact evidence", t => {
   const home = mkdtempSync(join(tmpdir(), "yui-dispatch-evidence-"));
@@ -160,12 +161,46 @@ test("managed dispatch freezes explicit materials and candidate reports; continu
   const finalContext = { ...reviewContract, workItemId: undefined, reviewRoundId: finalRound.id };
   assert.equal(freezeRunContextSnapshot(store, finalContext, later).resources
     .find(({ ref }) => ref.store === "source-run").value.result.output, report);
+  const integration = createIntegrationAttempt({
+    id: "integration-1", taskId: task.id, projectId: "project-1", targetRef: "fixture",
+    beforeCommit: "a".repeat(40), source: { kind: "work-item",
+      workItemId: candidate.workItemId, startCommit: "a".repeat(40),
+      resultCommit: "b".repeat(40), strategy: "ff" }
+  }, later);
+  const endedAt = later.toISOString();
+  store.saveIntegrationAttempt(task.id, { ...integration, status: "committed",
+    candidateCommit: "d".repeat(40), afterCommit: "d".repeat(40), summary: "Integrated", endedAt });
+  store.saveReviewRound(task.id, { ...finalRound, taskCandidate: {
+    schemaVersion: 1, projects: [{ projectId: "project-1", commit: "d".repeat(40) }]
+  }, reviewBaseCommit: "d".repeat(40) });
+  assert.equal(freezeRunContextSnapshot(store, finalContext, later).resources
+    .find(({ ref }) => ref.store === "source-run").value.result.output, report,
+  "The exact integrated head carries the report of its named source Candidate.");
   store.saveReviewRound(task.id, { ...finalRound, taskCandidate: {
     schemaVersion: 1, projects: [{ projectId: "project-1", commit: "c".repeat(40) }]
   }, reviewBaseCommit: "c".repeat(40) });
   assert.equal(freezeRunContextSnapshot(store, finalContext, later).resources
     .some(({ ref }) => ref.store === "source-run"), false,
   "An unrelated Task head must not inherit the Candidate's validation report.");
+  // Older attempts on this same branch and attempts on other targets are not
+  // proof of this head. Both used to leak the old producer's report.
+  store.saveIntegrationAttempt(task.id, { ...integration, id: "integration-2",
+    status: "committed", beforeCommit: "e".repeat(40), endedAt,
+    candidateCommit: "c".repeat(40), afterCommit: "c".repeat(40), summary: "Other source",
+    source: { kind: "upstream", branch: "upstream", remoteCommit: "c".repeat(40),
+      taskBaseCommit: "e".repeat(40), strategy: "rebase" } });
+  assert.equal(freezeRunContextSnapshot(store, finalContext, later).resources
+    .some(({ ref }) => ref.store === "source-run"), false);
+  store.saveIntegrationAttempt(task.id, { ...integration, id: "integration-3",
+    targetRef: "other-target", status: "committed", endedAt,
+    candidateCommit: "c".repeat(40), afterCommit: "c".repeat(40), summary: "Other target" });
+  const unmatched = freezeRunContextSnapshot(store, finalContext, later);
+  assert.equal(unmatched.resources.some(({ ref }) => ref.store === "source-run"), false);
+  assert.match(unmatched.refs.find(ref => ref.store === "review-round").summary, /evidence gap/i);
+  store.saveReviewRound(task.id, finalRound);
+  assert.equal(freezeRunContextSnapshot(store, finalContext, later).resources
+    .find(({ ref }) => ref.store === "source-run").value.result.output, report,
+  "An exact Candidate head remains readable even when unrelated attempts exist.");
 
   // The supported scoped continuation copies the same Assignment, including
   // its explicit materials, rather than re-reading today's edited Message.
