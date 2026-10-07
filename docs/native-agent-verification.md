@@ -545,3 +545,47 @@ package smoke完成自己的Controller/tmux清理。最终相关fixture目录与
 独立Review；不声明WorkItem接受、Task/整批完成或外部交付。
 未push/PR/CI/merge/publish/tag/npm、归档、全局安装/Home/Controller替换、
 角色模型/Profile或权限变更；未跑真实模型、真实账号/付费/共享生产。
+
+## 2026-10-08：同结果远端交付前的上游整合
+
+原本地接受 `d9c671e6d7da38ab5da7d89690adc4948edff1ad` 及两轮独立
+Review 保留。本轮依 Task80 message-38/message-15 续办同一结果，
+不是新功能验收，也不代交付其他 Task。
+
+通过正式 `task base status --refresh` 确认实际上游
+`f3c4b1e9e781ccf43d01af286a89f9f4ef561e49`，再经
+`task upstream integrate` / `integration-3` 的逐次冲突继续和 CAS，
+生成 Task-main `25c7a6737654333db0d2e2a9b469d84174508feb`。
+冲突解决保留上游 Context 容量/压缩导出、Session 布局4及原子位置、
+ExecutionOwner 手动压缩，同时保留产品异步位置准入和精确 Turn
+非阻塞结算查询。相对上游，Session、localSafety、context、model、
+executor 和 commands 目录没有差异。controlPlaneCli 相对上游 cli
+仅增加原公开 cli.js 入口身份并替换五处入口路径；不撤回上游修复。
+
+明确使用 `/data00/home/zhangqian.0326/.nvm/versions/node/v24.20.0/bin`
+选择 Node 24.20.0，实际执行：
+
+```sh
+make install-local
+npm test
+node scripts/assemble-runtime-package.mjs --output output/task80-package
+node docs/examples/agent-offline.mjs
+node scripts/smoke-runtime-package.mjs --assembled output/task80-package
+node output/task80-package/docs/examples/agent-offline.mjs
+git diff --check
+```
+
+结果：core 621项，614通过、7跳过、0失败，测试阶段9592ms。
+源码及包内样例所有断言通过，包括跨启动目录恢复原root/cwd、按同ID
+发现续聊、独立写入/MEMORY/精确命令授权、从实际请求选择命令和持久
+回执核对；controlHomeCreated=false。包smoke通过：Doctor 413ms、
+reopen/follow-up 7691ms、handover 2674ms。检查使用已有自有fixture
+及其finally teardown，没有调用真实模型或全局Controller。
+
+首次 `make install-local` 误选系统Node18，已按精确进程身份终止该次
+依赖安装；首次Node24重装遇到缺失node-pty安装脚本，确认旧进程已结束
+后重装和构建成功。这两次失败不计为通过。无全局安装或运行配置修改。
+
+这是新整合树的Leader自检证据；新独立冻结Review及候选接受仍待完成，
+不以旧树验证替代新树接受，不声明PR/CI/merge已完成。真实模型质量、
+其他平台本地运行、硬件掉电和强沙箱仍未验证。
