@@ -118,6 +118,15 @@ test("managed dispatch freezes explicit materials and candidate reports; continu
     `task-message/${resultMessage.id}@${contextContentDigest(resultMessage)}`]);
   const reader = store.getActiveRun(task.id, "reader");
   assert.equal(expandRunContextRef(store, task.id, reader.id, worker.id, "source-run").value.result.output, report);
+  store.saveRun(failRun(reader, "runtime-failed", "Temporary provider failure", later));
+  store.clearActiveRun(task.id, "reader");
+  store.updateMessage(task.id, { ...resultMessage, body: "Changed after dispatch" });
+  command(["run", "retry", `${task.id}/${reader.id}`]);
+  const retriedReader = store.getActiveRun(task.id, "reader");
+  assert.equal(expandRunContextRef(store, task.id, retriedReader.id, resultMessage.id,
+    "task-message").value.body, resultMessage.body);
+  assert.equal(expandRunContextRef(store, task.id, retriedReader.id, worker.id,
+    "source-run").value.result.output, report);
   const round = createReviewRound("review-round-1", task.id, candidate.workItemId, candidate.id,
     "reviewer", "leader", "b".repeat(40), later);
   store.saveReviewRound(task.id, round);

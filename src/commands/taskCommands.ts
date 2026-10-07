@@ -6494,13 +6494,21 @@ function retryRunOperation(
     const input = retriesSynthesisMain
       ? previous.inputs[0]!.input
       : (() => {
+          // A retry keeps the explicit frozen handoff, not today's mutable
+          // versions of those records. Legacy Runs without a Snapshot retain
+          // the existing explicit recovery from current facts.
+          const requiredResources = previous.inputs[0]!.input.contextSnapshotRef === undefined
+            ? []
+            : readRunContextSnapshot(tx, previous).resources.filter(
+                entry => entry.ref.evidenceOf === "dispatch-required"
+              );
           const retrySnapshot = freezeRunContextSnapshot(tx, {
             taskId: task.id,
             roleName: role.name,
             purpose: previous.purpose,
             ...(retryManagedWorkspace === undefined ? {} : { workspace: retryManagedWorkspace }),
             ...(previous.workItemId === undefined ? {} : { workItemId: previous.workItemId })
-          }, now, "controller", retryGroup?.assignment.contextSnapshotRef);
+          }, now, "controller", retryGroup?.assignment.contextSnapshotRef, undefined, requiredResources);
           return createRunInput({
             source: {
               type: "yui",
@@ -6672,14 +6680,15 @@ function taskReviewProvenance(
         break;
       }
     }
-    if (headIndex < 0) {
-      throw dataError(
-        `Committed Integration provenance is unavailable for Project ${projectId}@${commit}.`
-      );
-    }
-    const head = committedAttempts[headIndex]!;
-    const lineage = committedAttempts.slice(0, headIndex + 1)
-      .filter(({ targetRef }) => targetRef === head.targetRef);
+    const target = store.getTaskWorkspace(task.id)?.entries.find(
+      entry => entry.projectId === projectId
+    )?.branch ?? committedAttempts[headIndex]?.targetRef;
+    // A direct Task-main repair has no Integration at its new head. It is
+    // still reviewable; conservatively exclude prior producers on this target
+    // from reviewing it. This is an independence fence, not ancestry or proof
+    // that any prior report validates the current head.
+    const lineage = (headIndex < 0 ? committedAttempts : committedAttempts.slice(0, headIndex + 1))
+      .filter(({ targetRef }) => targetRef === target);
     for (const committed of lineage) {
       if (committed.source.kind !== "work-item") continue;
       const source = committed.source;

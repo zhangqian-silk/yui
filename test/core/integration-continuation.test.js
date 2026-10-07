@@ -25,8 +25,9 @@ import { runTaskUpstreamCommand } from "../../dist/commands/taskUpstreamCommands
 import { FileTaskWorkspacePreparer } from "../../dist/repository/taskWorkspacePreparer.js";
 import { integrationTmuxSocketRoot } from "../../dist/storage/homeLayout.js";
 import { completeGateArtifact } from "../../dist/verification/gateArtifact.js";
-import { createTaskReviewRound } from "../../dist/review/reviewRound.js";
 import { freezeRunContextSnapshot } from "../../dist/context/runContextPack.js";
+import { runTaskCommand, dispatchPreparedReviewRound } from "../../dist/commands/taskCommands.js";
+import { createWorkItem, submitWorkItemCandidate } from "../../dist/workItem/workItem.js";
 
 const now = new Date("2026-09-12T00:00:00Z");
 const git = (path, ...args) => execFileSync("git", ["-C", path, ...args], {
@@ -190,16 +191,46 @@ test("Task-final review accepts a Task-main repair after a real committed Integr
   const integrated = await f.service().integrate("task-1", seed.id);
   assert.equal(integrated.status, "committed");
   assert.equal(f.git("rev-parse", "HEAD"), integrated.attempt.afterCommit);
+  const item = createWorkItem("work-item-1", "task-1", { title: "Source repair" }, now);
+  f.store.saveWorkItem("task-1", item);
+  f.store.saveWorkItem("task-1", submitWorkItemCandidate(item, {
+    summary: "Direct source", source: { type: "direct" },
+    workspace: createManagedWorkspace({
+      owner: { type: "work-item", taskId: "task-1", workItemId: item.id },
+      root: join(f.root, "work"),
+      entries: [{ ...f.store.getTaskWorkspace("task-1").entries[0],
+        path: join(f.root, "work", "app"), branch: "repair-source" }]
+    }, now),
+    gitSnapshot: { schemaVersion: 1, reviewBaseCommit: source,
+      projects: [{ projectId: "project-1", commit: source }] }
+  }, now));
   writeFileSync(join(f.repo, "file"), "Leader repair\n");
   f.git("commit", "-am", "Leader direct repair");
   const repaired = f.git("rev-parse", "HEAD");
   assert.notEqual(repaired, integrated.attempt.afterCommit);
-  const round = createTaskReviewRound("review-round-1", "task-1", "reviewer", "leader", {
-    schemaVersion: 1, projects: [{ projectId: "project-1", commit: repaired }]
-  }, now);
-  f.store.saveReviewRound("task-1", round);
+  const task = f.store.getTask("task-1");
+  f.store.saveTask({ ...task, projectBindings: task.projectBindings.map(entry =>
+    ({ ...entry, currentCommit: repaired })) });
+  const options = { now: () => now, environment: {},
+    actualTaskReviewCandidate: { schemaVersion: 1,
+      projects: [{ projectId: "project-1", commit: repaired }] } };
   const binding = createRoleAgentBinding({ id: "codex", adapterId: "codex" });
   f.store.saveRole("task-1", createRole("task-1", "reviewer", [binding], binding.agentId, f.repo, now));
+  f.store.saveRole("task-1", createRole("task-1", "leader", [binding], binding.agentId, f.repo, now));
+  assert.throws(() => runTaskCommand(["review", "request", "task-1", "--role", "leader"],
+    f.store, options), /producer|independent/i);
+  runTaskCommand(["review", "request", "task-1", "--role", "reviewer"], f.store, options);
+  const round = f.store.listReviewRounds("task-1").at(-1);
+  const reviewWorkspace = createManagedWorkspace({
+    owner: { type: "review-round", taskId: "task-1", reviewRoundId: round.id },
+    root: join(f.root, "review"),
+    entries: [{ ...f.store.getTaskWorkspace("task-1").entries[0],
+      path: join(f.root, "review", "app"), branch: "review", baseRef: repaired, baseCommit: repaired }]
+  }, now);
+  f.store.saveManagedWorkspace(reviewWorkspace);
+  f.store.saveReviewRound("task-1", { ...round, workspace: reviewWorkspace });
+  const run = dispatchPreparedReviewRound("task-1", round.id, f.store, options);
+  assert.ok(run, "The actual Review request and dispatch must admit the repaired head.");
   const snapshot = freezeRunContextSnapshot(f.store, {
     taskId: "task-1", roleName: "reviewer", purpose: "review",
     reviewRoundId: round.id, workspace: f.store.getTaskWorkspace("task-1")
