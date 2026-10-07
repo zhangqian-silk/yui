@@ -3,8 +3,16 @@
  *   ≤1200px  narrower sidebar and dock defaults
  *   ≤900px   master–detail: task list OR task page; the dock becomes a
  *            full-screen sheet over the task page
+ * Sidebar container queries adapt its footer to the width the user chose.
  */
 export const RESPONSIVE_STYLES = `
+@container sidebar (max-width:299px){
+  .foot-btn kbd{display:none}
+}
+@container sidebar (max-width:259px){
+  .foot-btn{gap:0;padding:0 9px}
+  .foot-btn span{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+}
 @media(max-width:1200px){
   :root{--sidebar-w:264px}
   .card-grid{grid-template-columns:minmax(0,1fr)}
@@ -21,7 +29,7 @@ export const RESPONSIVE_STYLES = `
   body.task-open .center{display:block}
   .back-btn{display:inline-grid}
   .crumbs .crumb,.crumbs .crumb-sep{display:none}
-  .dock-divider{display:none}
+  .dock-divider,.sidebar-divider{display:none}
   .dock{position:fixed;inset:0;z-index:60;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
   #dock-swap{display:none}
   .overview-grid{grid-template-columns:minmax(0,1fr)}

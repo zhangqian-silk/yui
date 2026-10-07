@@ -15,7 +15,7 @@ import { entriesOf } from "/assets/js/records.js";
 
 const $ = function (selector) { return document.querySelector(selector); };
 const el = {
-  sidebar: $(".sidebar"), center: $("#center"), detail: $("#detail"),
+  sidebar: $(".sidebar"), sidebarDivider: $("#sidebar-divider"), center: $("#center"), detail: $("#detail"),
   search: $("#search"), filters: $("#status-filters"), attention: $("#attention-bar"), tasks: $("#task-list"),
   catalogNext: $("#catalog-next"), catalogReset: $("#catalog-reset"), catalogCount: $("#catalog-count"),
   catalogAttentionReset: $("#catalog-attention-reset"),
@@ -43,6 +43,9 @@ function readPreference(key, fallback) {
 function writePreference(key, value) {
   try { localStorage.setItem(key, value); } catch {}
 }
+function clearPreference(key) {
+  try { localStorage.removeItem(key); } catch {}
+}
 const dock = {
   open: readPreference("yui.dock.open", "true") !== "false",
   mode: "discussion",
@@ -52,6 +55,10 @@ const dock = {
   // Task, never restored from the desktop preference.
   sheet: false
 };
+// Task list width: null keeps the CSS default (--sidebar-w); otherwise the width
+// the user dragged to. It is a preference; the width actually applied is clamped
+// to the current window.
+const sidebar = { width: Number(readPreference("yui.sidebar.width", "")) || null, resizing: false };
 const narrow = window.matchMedia("(max-width: 900px)");
 
 const i18n = createI18n(el.locale);
@@ -510,7 +517,7 @@ function updateLayout() {
   el.dockTabSession.setAttribute("aria-selected", String(dock.mode === "session"));
   el.dockTabDiscussion.disabled = !state.selected;
   el.dockSwap.setAttribute("aria-pressed", String(dock.center));
-  setDockWidth(dock.width, false);
+  applySidebarWidth();
   syncDockButtons();
 }
 function syncDockButtons() {
@@ -598,8 +605,62 @@ el.divider.addEventListener("keydown", function (event) {
   event.preventDefault();
   setDockWidth(event.key === "Home" ? 320 : event.key === "End" ? maxDockWidth() : dock.width + delta, true);
 });
-window.addEventListener("resize", function () { setDockWidth(dock.width, false); });
 narrow.addEventListener("change", updateLayout);
+
+// --- Sidebar width ----------------------------------------------------------------
+const SIDEBAR_MIN = 240;
+const SIDEBAR_MAX = 560;
+function maxSidebarWidth() {
+  // An open dock can shrink to its minimum, so it reserves only that much.
+  const reserve = dockVisible() ? 320 + 9 : 0;
+  return Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, window.innerWidth - reserve - 420));
+}
+function applySidebarWidth() {
+  const root = document.documentElement.style;
+  if (sidebar.width === null) root.removeProperty("--sidebar-w");
+  else root.setProperty("--sidebar-w", Math.max(SIDEBAR_MIN, Math.min(maxSidebarWidth(), sidebar.width)) + "px");
+  // A wider task list leaves the dock less room; the dock keeps its stored width.
+  setDockWidth(dock.width, false);
+  el.sidebarDivider.setAttribute("aria-valuemax", String(maxSidebarWidth()));
+  el.sidebarDivider.setAttribute("aria-valuenow", String(el.sidebar.offsetWidth));
+}
+function setSidebarWidth(width, persist) {
+  sidebar.width = width === null ? null : Math.max(SIDEBAR_MIN, Math.min(maxSidebarWidth(), Math.round(width)));
+  if (persist) {
+    if (sidebar.width === null) clearPreference("yui.sidebar.width");
+    else writePreference("yui.sidebar.width", String(sidebar.width));
+  }
+  applySidebarWidth();
+}
+el.sidebarDivider.addEventListener("pointerdown", function (event) {
+  if (event.button !== 0 || window.innerWidth <= 900) return;
+  sidebar.resizing = true;
+  el.sidebarDivider.setPointerCapture(event.pointerId);
+  document.body.classList.add("sidebar-resizing");
+  event.preventDefault();
+});
+el.sidebarDivider.addEventListener("pointermove", function (event) {
+  if (!sidebar.resizing) return;
+  setSidebarWidth(event.clientX - el.sidebar.getBoundingClientRect().left, false);
+});
+function finishSidebarResize() {
+  if (!sidebar.resizing) return;
+  sidebar.resizing = false;
+  document.body.classList.remove("sidebar-resizing");
+  if (sidebar.width !== null) writePreference("yui.sidebar.width", String(sidebar.width));
+}
+el.sidebarDivider.addEventListener("pointerup", finishSidebarResize);
+el.sidebarDivider.addEventListener("pointercancel", finishSidebarResize);
+el.sidebarDivider.addEventListener("dblclick", function () { setSidebarWidth(null, true); });
+el.sidebarDivider.addEventListener("keydown", function (event) {
+  const current = el.sidebar.offsetWidth;
+  const next = event.key === "ArrowRight" ? current + 16 : event.key === "ArrowLeft" ? current - 16
+    : event.key === "Home" ? SIDEBAR_MIN : event.key === "End" ? maxSidebarWidth() : null;
+  if (next === null) return;
+  event.preventDefault();
+  setSidebarWidth(next, true);
+});
+window.addEventListener("resize", applySidebarWidth);
 
 // --- Sidebar controls -------------------------------------------------------------
 let searchTimer = null;

@@ -30,7 +30,24 @@ export function renderAttentionBar(container, state, t, onPick) {
 }
 
 // The tab row is created once and updated in place so its horizontal scroll
-// position survives every refresh.
+// position survives every refresh. When the sidebar is too narrow for every
+// tab, the clipped edge fades out, the wheel scrolls the row sideways and a
+// newly selected tab is scrolled into view.
+function syncTabsOverflow(row) {
+  const max = row.scrollWidth - row.clientWidth;
+  const before = row.scrollLeft > 1;
+  const after = row.scrollLeft < max - 1;
+  row.dataset.fade = before && after ? "both" : after ? "end" : before ? "start" : "none";
+}
+
+function revealTab(row, tab) {
+  const margin = 28;
+  const left = tab.offsetLeft - margin;
+  const right = tab.offsetLeft + tab.offsetWidth + margin;
+  if (left < row.scrollLeft) row.scrollLeft = Math.max(0, left);
+  else if (right > row.scrollLeft + row.clientWidth) row.scrollLeft = right - row.clientWidth;
+}
+
 export function renderFilters(container, state, t, onFilter) {
   const counts = state.counts || {};
   let row = container.querySelector(":scope > .tabs-row");
@@ -41,6 +58,13 @@ export function renderFilters(container, state, t, onFilter) {
         h("span.status-tab-label"), h("span.status-tab-count")));
     });
     container.append(row);
+    row.addEventListener("scroll", function () { syncTabsOverflow(row); }, { passive: true });
+    row.addEventListener("wheel", function (event) {
+      if (Math.abs(event.deltaY) <= Math.abs(event.deltaX) || row.scrollWidth <= row.clientWidth) return;
+      event.preventDefault();
+      row.scrollLeft += event.deltaY;
+    }, { passive: false });
+    new ResizeObserver(function () { syncTabsOverflow(row); }).observe(row);
   }
   STATUS_FILTERS.forEach(function (status) {
     const tab = row.querySelector('[data-status="' + status + '"]');
@@ -56,6 +80,11 @@ export function renderFilters(container, state, t, onFilter) {
     badge.hidden = hide;
     if (!hide) badge.textContent = String(count);
   });
+  if (row.dataset.selected !== state.filter) {
+    row.dataset.selected = state.filter;
+    revealTab(row, row.querySelector('[data-status="' + state.filter + '"]'));
+  }
+  syncTabsOverflow(row);
 }
 
 function groupOf(task) {
@@ -106,7 +135,7 @@ function taskRow(task, state, t, locale, onSelect) {
   h("span.task-body", null,
     h("span.task-line", null, h("span.task-name", null, task.title), h("time.task-time", { dateTime: task.updatedAt }, relativeTime(task.updatedAt, locale, t))),
     h("span.task-line.task-sub", null, h("code.task-id", null, task.id),
-      counts.workItems > 0 ? h("span.task-meta", { title: t("sidebar.workItems") }, icon("layers", "icon-sm"), String(counts.workItems)) : null,
+      counts.workItems > 0 ? h("span.task-count", { title: t("sidebar.workItems") }, icon("layers", "icon-sm"), String(counts.workItems)) : null,
       signals)));
   return row;
 }
