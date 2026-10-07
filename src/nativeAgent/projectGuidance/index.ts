@@ -141,9 +141,22 @@ export function createProjectGuidance(options: ProjectGuidanceOptions): ProjectG
       if (optional) return undefined;
       return fail('not_found', `Required file absent: ${rel}`);
     }
-    const result = await reader.execute({ path: rel }, { ...scope, toolCallId: 'guidance-read' }, signal);
-    if (!result.ok) fail(result.error.code, `${rel}: ${result.error.message}`);
-    return JSON.parse((result as { ok: true; content: string }).content) as Text;
+    const parts: string[] = [];
+    let cursor: string | null = null;
+    do {
+      // The reader binds continuation to the original request and file identity;
+      // a changed source fails instead of mixing versions or restarting silently.
+      const result = await reader.execute({ path: rel, ...(cursor ? { cursor } : {}) },
+        { ...scope, toolCallId: 'guidance-read' }, signal);
+      if (!result.ok) fail(result.error.code, `${rel}: ${result.error.message}`);
+      const page = JSON.parse((result as { ok: true; content: string }).content) as Text & {
+        fileBytes: number; complete: boolean; nextCursor: string | null;
+      };
+      parts.push(page.text);
+      if (page.complete) return { path: page.path, text: parts.join(''), bytes: page.fileBytes, sha256: page.sha256 };
+      cursor = page.nextCursor;
+    } while (cursor);
+    return fail('incomplete_read', `Missing guidance continuation: ${rel}`);
   };
   const ancestors = (dir: string) => {
     const rel = relative(dir || '.', true);

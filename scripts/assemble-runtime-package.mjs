@@ -26,6 +26,8 @@ const RUNTIME_SKILLS = [
   "yui-runtime"
 ];
 const RUNTIME_DOCUMENTS = [
+  "docs/native-agent.md",
+  "docs/examples/agent-offline.mjs",
   "README.md",
   "ARCHITECTURE.md",
   "ARCHITECTURE.zh-CN.md",

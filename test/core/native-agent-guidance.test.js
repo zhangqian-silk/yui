@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -33,6 +34,36 @@ async function call(pack, name, args, current = scope, usedSignal = signal) {
   return tool.execute(args, { ...current, toolCallId: 'direct' }, usedSignal);
 }
 const content = materials => materials.map(m => m.content).join('\n');
+
+test('guidance loads complete instruction, Skill, reference and memory pages with exact fingerprints', async t => {
+  const { root, put } = await fixture(t);
+  const skill = '.agents/skills/check/SKILL.md';
+  const reference = '.agents/skills/check/references/check.txt';
+  const files = {
+    'AGENTS.md': '规则🙂\r\n'.repeat(450) + 'LAST_INSTRUCTION',
+    [skill]: '---\nname: check\ndescription: Complete skill.\n---\n' + 'step\n'.repeat(230) + 'LAST_SKILL',
+    [reference]: '"\\'.repeat(18000) + 'LAST_REFERENCE',
+    '.agents/MEMORY.md': 'experience\n'.repeat(410) + 'LAST_MEMORY',
+  };
+  for (const [name, text] of Object.entries(files)) await put(name, text);
+  const pack = createProjectGuidance({ root, cwd: root, sessionId: scope.sessionId });
+  await pack.source.load(scope, signal);
+  assert.equal((await call(pack, 'project_context', { action: 'load_skill', locator: skill })).ok, true);
+  assert.equal((await call(pack, 'project_context', {
+    action: 'reference', locator: skill, path: 'references/check.txt',
+  })).ok, true);
+  const materials = await pack.source.load({ ...scope, step: 2 }, signal);
+  for (const [name, text] of Object.entries(files)) {
+    const item = materials.find(m => m.source === `project:${name}`);
+    const file = JSON.parse(item.content);
+    assert.equal(file.text, text, name);
+    assert.equal(file.bytes, Buffer.byteLength(text), name);
+    assert.equal(file.sha256, createHash('sha256').update(text).digest('hex'), name);
+    assert.equal(item.revision, file.sha256);
+  }
+  const memory = JSON.parse((await call(pack, 'project_memory', { action: 'read' })).content);
+  assert.equal(memory.text, files['.agents/MEMORY.md']);
+});
 
 test('scoped instructions and lazy complete Skills stay project data and reset by Turn/Session', async t => {
   const { root, put } = await fixture(t);

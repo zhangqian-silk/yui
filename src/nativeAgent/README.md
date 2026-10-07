@@ -7,6 +7,11 @@ Yui 控制面。当前和后续模块开发均不需要考虑接入 Yui；模块
 
 ## 运行
 
+实际用户入口是 [`yui agent`](../../docs/native-agent.md)，复用本文的同一执行核心，
+在控制面初始化前分流。支持显式配置、只读工具选择、交互/单次输入、真实保存和
+指定ID恢复，已消费真实本地安全、项目指导与持久catalog/位置合同。
+位置原子创建且不可变，重启按原root/cwd重建本次权限；本地验证不替代最终独立接受。
+
 在仓库根目录：
 
 ```sh
@@ -126,6 +131,8 @@ task-79 消费 `AgentObserver/AgentEvent`。这些是独立实现的最小边界
 每次提交从 store 读取完整历史并取得必要 recorder，再调用同一个 `Agent.runTurn`。
 不增加循环、调度器、后台重试或恢复状态。`settle(sessionId)` 返回当前/最近一次本地
 执行的结果、保存回执和原始失败；它不从历史重造旧 TurnResult。
+`getSettledEvidence(scope)`只非阻塞查询本owner已有的精确Turn结算证据，
+不等待活动Turn、不从持久历史重构结果；产品回放使用它，真正结算仍使用`settle`。
 `close()` 取消并等待自己持有的执行，调用方随后关闭 store 和 observer。
 同一 Session 必须只有一个执行所有者；CAS 不等于跨进程执行租约。
 可选 `context: {builder,budget,tools,retention}` 必须与 Agent 工厂共享，
@@ -176,7 +183,9 @@ try {
 存储现在另提供持久 `SessionCatalog`：`store.listSessions/getSessionInfo/
 renameSession/readHistory` 可在重启后发现和命名原会话，并通过 ID 交给此 owner。
 此窄查询端口不创建运行句柄，也没有改写现有 CLI 的 offset/显示标签接口；
-产品入口应显式消费新端口，而非把上面的本进程 catalog 当持久目录。
+产品入口已显式消费新端口，而非把上面的本进程 catalog 当持久目录。
+owner.create(title, location?)兼容贯通原子位置参数；agent工厂可异步验证原位置，
+仍只有原owner负责创建ID、承认新Turn和执行。详情位置不是授权或完整历史。
 公开签名、CAS/cursor、布局迁移和可运行的 `catalogDemo.js` 见
 [session/README.md](./session/README.md#持久目录标题与按需历史给入口消费者)。
 
@@ -464,8 +473,9 @@ release 后重用均前置拒绝。生命周期本身不启动进程；
 release 撤销本次 lease，命令工具继续拥有它已启动的自有进程和预算结算。
 无自动重放账本：调用 ID 唯一性、Session 串行和恢复仍由原内核/存储合同负责。
 
-恢复及切换合同：80 从明确配置/当前授权取 root/cwd/能力/env/精确规格，
-81 仅提供所选 Session 和 cwd 事实，Session 标题或旧描述不是授权。
+恢复及切换合同：81原子保存不可变root/cwd、Session/标题/事件事实；
+80从同ID详情取原位置，验证真实目录及显式配置冲突，再按本次授权取能力/env/精确规格。
+legacy位置缺失拒绝自动恢复；标题或旧描述不是授权，不从历史、MEMORY或启动目录猜补。
 先取消并等待旧 execution owner 结算，再关闭自己的 store/observer；
 重新打开时创建新 binding 与 executor，重新验证真实目录/程序/权限，
 再用同一 store 的完整历史创建 Agent/execution owner。不热更新旧 lease，
@@ -503,3 +513,9 @@ Task82 生产这些新增类型与工厂；ToolManager、文件/命令工具和 
 `native-agent-composition.test.js` 将安全绑定装配到既有七模块组合，并在 SQLite
 重开后重建绑定。命令预算、取消、unknown 和自有进程清理由既有 command/tools
 回归保护；没有真实模型、账号、敌对文件系统或 OS 沙箱验证。
+
+产品入口每次Turn还通过既有ContextBuilder加载required的`product-runtime`
+user材料：实际root/cwd、当前工具与独立授权开关、当前可执行的精确命令规格。
+不包含env值或凭据，不提升为system权限、不持久化材料或恢复历史授权；
+公开描述不是lease，实际执行仍经过82的唯一绑定校验。离线产品样例从真实模型
+请求选择授权命令，不靠响应fixture预先知道参数来掩盖缺失的运行事实。
