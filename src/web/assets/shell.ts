@@ -57,12 +57,13 @@ export const DASHBOARD_HTML = `<!doctype html>
         <button id="operator-terminal" class="foot-btn" type="button" title="Operator session · O">
           ${iconSvg("terminal")}<span data-i18n="actions.operator">Operator</span><kbd>O</kbd>
         </button>
-        <button id="global-input-open" class="foot-btn" type="button">
+        <button id="global-input-open" class="foot-btn" type="button" title="Global input" data-i18n-title="global.open">
           ${iconSvg("broadcast")}<span data-i18n="global.open">Global input</span>
         </button>
         <button id="settings-open" class="icon-btn" type="button" aria-label="Settings" data-i18n-aria-label="settings.title" title="Settings">${iconSvg("settings")}</button>
       </footer>
     </aside>
+    <div id="sidebar-divider" class="sidebar-divider" role="separator" tabindex="0" aria-orientation="vertical" aria-valuemin="240" aria-valuemax="560" aria-valuenow="264" aria-label="Resize task list" data-i18n-aria-label="sidebar.resize" title="Drag to resize · double-click to reset" data-i18n-title="sidebar.resizeHint"><span aria-hidden="true"></span></div>
     <main id="center" class="center" tabindex="-1">
       <div id="detail" class="detail"></div>
     </main>
