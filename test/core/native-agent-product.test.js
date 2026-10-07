@@ -5,13 +5,17 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { realpathSync } from 'node:fs';
-import test from 'node:test';
+import test, { before } from 'node:test';
+import { installDevLauncher } from '../../scripts/manage-dev-launcher.mjs';
 import { createSessionStore, createSqliteSessionBackend, createExecutionOwner } from '../../dist/nativeAgent/index.js';
 import { createProductSession } from '../../dist/nativeAgent/product/location.js';
 import { productFailure } from '../../dist/nativeAgent/product/config.js';
 
 const launcher = resolve('output/dev/bin/yui');
 const secret = 'dummy-product-secret-never-persist';
+// test:core builds dist, but a fresh checkout has not run make install-local.
+// Use the same managed launcher without initializing any control-plane Home.
+before(() => installDevLauncher());
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'agent-product-'));
   t.after(() => rm(root, { recursive: true, force: true }));

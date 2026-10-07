@@ -589,3 +589,21 @@ reopen/follow-up 7691ms、handover 2674ms。检查使用已有自有fixture
 这是新整合树的Leader自检证据；新独立冻结Review及候选接受仍待完成，
 不以旧树验证替代新树接受，不声明PR/CI/merge已完成。真实模型质量、
 其他平台本地运行、硬件掉电和强沙箱仍未验证。
+
+## 2026-10-08：PR403 干净检出测试入口修复
+
+冻结 `14e3355d9d6b7afd35e9ab63620248c9a3ca4c2b` 的独立
+Review（run-14/message-39）无实质 P1/P2，41项针对性测试通过。
+但实际 CI run `37666104342` 在干净检出中失败：`test:core` 仅构建
+dist，没有先生成 `output/dev/bin/yui`，10项产品测试均在 spawn
+时 ENOENT。Linux Node24 为604通过、10失败、7跳过；macOS Intel
+日志也确认同一原因。没有将本地通过等同于 CI 通过，没有执行合并。
+
+修复仅在产品测试的 before hook 复用 `installDevLauncher()`，创建
+同一个 checkout 正式 launcher；不初始化控制面 Home、不改产品行为、
+不改 CI 门槛、超时或断言。移走原 launcher 后执行11项产品测试全部
+通过（7838ms），生成文件与原文件 cmp 一致，移走的备份已删除；
+各产品 fixture 继续显式独立 Home 和 teardown。
+Node24.20.0 的 `npm run test:core`（含重新构建）621项中614通过、
+7跳过、0失败（9563ms）。真实模型、全局安装和 Home 均未使用。
+新候选的远端 CI 与正常合并仍待完成；原 PR403 保留，不创建重复 PR。
