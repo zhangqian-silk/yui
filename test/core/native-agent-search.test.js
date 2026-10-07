@@ -42,9 +42,14 @@ test('bounded directory browsing, recursive filenames and literal line evidence'
   assert.deepEqual(content(await run(root, 'search', { path: 'sub', query: 'missing' })).results, []);
 });
 
-test('scan, file, result and output budgets fail truthfully without false complete results', async t => {
+test('hard scan budgets fail truthfully; result caps return explicit pages', async t => {
   const root = await fixture(t);
-  for (const limits of [{ maxEntries: 1 }, { maxFileBytes: 1 }, { maxResults: 1 },
+  const paged = await run(root, 'search', { path: '.', query: 'needle' }, { maxResults: 1 });
+  assert.equal(paged.ok, true);
+  assert.equal(JSON.parse(paged.content).complete, false);
+  assert.equal(JSON.parse(paged.content).scanComplete, true);
+  assert.ok(JSON.parse(paged.content).nextCursor);
+  for (const limits of [{ maxEntries: 1 }, { maxFileBytes: 1 },
     { maxOutputBytes: 64 }, { maxTotalBytes: 1 }, { maxDepth: 1 }]) {
     if (limits.maxDepth) await mkdir(path.join(root, 'sub', 'deep'));
     fault(await run(root, 'search', { path: '.', query: 'needle' }, limits), 'limit_exceeded');
