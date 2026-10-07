@@ -27,6 +27,10 @@ demo 显式组合模型、工具执行器、上下文构建器、内存记录 fi
 核对记录、观察与返回事实一致，打印消息、事件、结束原因及 `fileVerified: true`。不启动 Controller、
 Agent Host、账号或网络服务。仓库完整交付检查仍为 `npm test`。
 
+编码质量任务的独立验收见 [evaluation/README.md](./evaluation/README.md)：
+`node dist/nativeAgent/evaluation/demo.js` 使用实际模块运行修复、重构、补测试
+六个好/坏对照，不以执行终态或模型声明判定用户目标通过。
+
 ## 公开入口与责任
 
 只从 `index.ts` 导入公开类型和构造函数：
