@@ -6,6 +6,7 @@ import { WorkspaceCleanupBlockedError } from "../repository/taskWorkspacePrepare
 import { managedWorkspaceKey } from "../worktree/managedWorkspace.js";
 import { hasRuntimeLifecycleWork, runtimeLifecycleTarget } from "../runtime/lifecycleReservation.js";
 import { cleanupCheckFromError, renderCleanupCheck, type CleanupCheck } from "../workspace/cleanupInspection.js";
+import { jobCleanupBlocker } from "../job/jobCleanupInspection.js";
 
 export type ArchiveInspectionRequest = Readonly<{
   taskId: string; disposition: "integrated" | "abandoned"; force: boolean;
@@ -40,7 +41,7 @@ export function archiveSettlementChecks(store: TaskStore, task: Task): CleanupCh
 /** Unknown execution is never permission to remove workspaces, even after
  * force admission. These facts are reloaded in the actual force cleanup path.
  */
-export function archiveExecutionChecks(store: TaskStore, taskId: string): CleanupCheck[] {
+export function archiveExecutionChecks(store: TaskStore, taskId: string, home?: string): CleanupCheck[] {
   const checks: CleanupCheck[] = [];
   const add = (resource: string, reason: string, detail: string, observed: unknown, action: string) =>
     checks.push({ resource, reason, status: "unknown", detail, expected: "settled execution",
@@ -49,9 +50,9 @@ export function archiveExecutionChecks(store: TaskStore, taskId: string): Cleanu
     add(`run:${taskId}/${run.id}`, "active-turn", "AgentRun remains active; archive is not stop evidence.",
       run.status, `yui task run show ${taskId}/${run.id}`);
   }
-  for (const job of store.listDurableJobs(taskId).filter(j =>
-    ["queued", "running", "unknown-needs-attention"].includes(j.status))) {
-    add(`job:${taskId}/${job.id}`, "unresolved-execution", "DurableJob may still hold resources; acknowledgement is not physical exit evidence.",
+  for (const job of store.listDurableJobs(taskId)) {
+    const blocker = jobCleanupBlocker(job, home);
+    if (blocker !== undefined) add(`job:${taskId}/${job.id}`, "unresolved-execution", blocker,
       job.status, `yui job get --task ${taskId} --job ${job.id}`);
   }
   for (const role of store.listRoles(taskId)) {
@@ -87,7 +88,7 @@ export async function inspectTaskArchive(coordinator: TaskWorkspaceCoordinator, 
       observed: { coverage: p.coverage, merged: p.merged, verified: p.verified, localCommit: p.publication?.localCommit ?? null },
       sources: [`task:${task.id}`, ...(p.publication === null ? [] : [`publication:${task.id}/${p.publication.id}`])],
       actions: [`yui task remote-delivery ${task.id}`] }));
-  const execution = archiveExecutionChecks(store, task.id);
+  const execution = archiveExecutionChecks(store, task.id, preparer.home);
   const runtimeResource = `runtime:${task.id}`;
   if (runtime.assertTaskPhysicalResourcesReleased === undefined) {
     execution.push(...cleanupCheckFromError(null, runtimeResource, [`task:${task.id}`],

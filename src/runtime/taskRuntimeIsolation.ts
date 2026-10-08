@@ -246,7 +246,10 @@ export class FileTaskRuntimeIsolation implements TaskRuntimeIsolationPort {
       ...inspectRuntimeRoot(descriptor, fingerprint),
       ...(this.#inspectResources?.(descriptor) ?? [])
     ];
-    if (resources.length === 0) return;
+    if (resources.length === 0) {
+      this.#resourceRegistrar().markTaskRuntimeDeleted(descriptor);
+      return;
+    }
     planTaskRuntimeCleanup(descriptor, reason, resources);
     // Re-read the sole durable marker immediately before deletion. A missing,
     // replaced, symlinked, or mismatched runtime is never cleanup authority.
@@ -270,12 +273,6 @@ export class FileTaskRuntimeIsolation implements TaskRuntimeIsolationPort {
         throw new Error("Task runtime resources changed during cleanup claim.");
       }
       rmSync(claimed, { recursive: true });
-      this.#resourceRegistrar().markPathsDeleted([
-        descriptor.roots.runtime,
-        descriptor.roots.data,
-        descriptor.roots.cache,
-        descriptor.roots.temporary
-      ]);
     } catch (error) {
       // Preserve a claimed-but-unverified resource. Restore its exact path only
       // when no concurrent runtime has appeared there; never delete it.
@@ -289,6 +286,10 @@ export class FileTaskRuntimeIsolation implements TaskRuntimeIsolationPort {
       }
       throw error;
     }
+    // Receipt persistence is separate from the filesystem claim. If it fails,
+    // retain the caller's owner and retry using the same validated descriptor;
+    // do not try to restore an already removed directory.
+    this.#resourceRegistrar().markTaskRuntimeDeleted(descriptor);
   }
 }
 

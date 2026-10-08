@@ -207,7 +207,7 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
   ) {}
 
   inspectWorkspaceCleanup(workspace: ManagedWorkspace, disposition: WorkItemWorkspaceDisposition, forceArchive = false) {
-    return inspectWorkspaceCleanup(this.store, this.git, workspace, disposition, forceArchive);
+    return inspectWorkspaceCleanup(this.store, this.git, workspace, disposition, forceArchive, this.home);
   }
 
   async #assertWorkspaceCleanup(workspace: ManagedWorkspace, disposition: WorkItemWorkspaceDisposition): Promise<void> {
@@ -2524,10 +2524,6 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
     // Terminal history does not authorize discarding conflict resolutions or
     // diagnostics. All entry points use the same exact-owner inspection.
     await this.#assertWorkspaceCleanup(workspace, "abandoned");
-    const activeJob = this.store.listDurableJobs(taskId).find(job =>
-      job.owner.kind === "integration-attempt" && job.owner.integrationAttemptId === integrationId
-      && ["queued", "running", "unknown-needs-attention"].includes(job.status));
-    if (activeJob !== undefined) throw new Error(`Integration execution is unresolved: ${activeJob.id}/${activeJob.status}.`);
     const runtime = options.runtimeIsolation ?? defaultIntegrationRuntimeIsolation(this.home, this.store.getHomeIdentity().homeId);
     runtime.cleanup(runtime.preflight({ workspace, allowExactActive: true }),
       attempt.status === "committed" ? "completion" : "failure");

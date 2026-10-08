@@ -74,25 +74,8 @@ async function cleanupIntegration(
       `Integration is not terminal: ${integration.id}/${integration.status}.`
     );
   }
-  // rr4/finding-5: An Integration Attempt with an active DurableJob cannot be
-  // cleaned up — the runner may still be using its worktree. Block on queued,
-  // running, and unacknowledged unknown-needs-attention jobs owned by it.
-  const activeIntegrationJob = store.listDurableJobs(integration.taskId).find((job) => (
-    job.owner.kind === "integration-attempt"
-    && job.owner.integrationAttemptId === integration.id
-    && (
-      job.status === "queued"
-      || job.status === "running"
-      || job.status === "unknown-needs-attention"
-    )
-  ));
-  if (activeIntegrationJob !== undefined) {
-    throw usageError(
-      `Integration ${integration.id} has an active DurableJob: `
-      + `${activeIntegrationJob.id}/${activeIntegrationJob.status}. `
-      + "Establish its physical exit before cleanup; acknowledgement alone is not stop evidence."
-    );
-  }
+  // The service's shared owner inspection checks both Job settlement and
+  // current physical occupancy before any runtime or worktree is released.
   const result = await new GitIntegrationService(home, store).cleanup(integration, {
     authorize: () => taskLocalActor(store, environment, integration.taskId)
   });

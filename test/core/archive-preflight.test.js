@@ -22,6 +22,7 @@ import { runTaskPublicationAdoptCommand } from "../../dist/commands/taskPublicat
 import { generateTaskWorkspaceIdentity, taskWorkspaceRefSegmentFromIdentity } from "../../dist/repository/taskWorkspaceIdentity.js";
 import { ResourceRegistrar } from "../../dist/resources/resourceRegistrar.js";
 import { withResourceRegistry } from "../../dist/resources/resourceRegistryStore.js";
+import { SqliteResourceRegistry } from "../../dist/resources/sqliteResourceRegistry.js";
 
 function fixture(t) {
   const home = mkdtempSync(join(tmpdir(), "yui-archive-preflight-"));
@@ -113,6 +114,7 @@ test("archive preflight observes SQLite and Git without writes, and force still 
   store.saveManagedWorkspace(createManagedWorkspace({ owner: { type: "task", taskId: task.id },
     root: task.cwd, entries: [{ projectId: "project-1", directory: "app", access: "write", path: root,
       branch, baseRef: "main", baseCommit: base }] }, now));
+  new ResourceRegistrar(home).registerManagedWorkspace(store.getTaskWorkspace(task.id));
   const preparer = new FileTaskWorkspacePreparer(home, store);
   const coordinator = new TaskWorkspaceCoordinator(store, preparer, {
     async stopTaskRoleSessions() { assert.fail("inspection must not stop a runtime"); },
@@ -188,6 +190,7 @@ test("ordinary archive can retain safe physical material and explicit cleanup co
     async stopTaskRoleSessions() {}, async releaseTaskTerminals() {}, async assertTaskPhysicalResourcesReleased() {}
   });
   const diagnostic = join(task.cwd, "diagnosis.txt");
+  new ResourceRegistrar(home).registerManagedWorkspace(store.getTaskWorkspace(task.id));
   writeFileSync(diagnostic, "preserve me");
   await coordinator.prepareTaskForArchive(task.id);
   const { createTaskRemoteDeliveryProof } = await import("../../dist/task/remoteDeliveryService.js");
@@ -217,10 +220,24 @@ test("ordinary archive can retain safe physical material and explicit cleanup co
   assert.ok(store.getTaskWorkspace(task.id));
   const preflight = await inspectTaskArchive(coordinator, { taskId: task.id, disposition: "integrated", force: false });
   assert.equal(preflight.cleanup.resources[0].status, "checked");
+  const saveRegistry = SqliteResourceRegistry.prototype.save;
+  let failReceipt = true;
+  t.mock.method(SqliteResourceRegistry.prototype, "save", function (next, previous) {
+    if (failReceipt && Object.values(next.records).some(record => record.disposition === "deleted")) {
+      failReceipt = false;
+      throw Object.assign(new Error("one-off deletion receipt failure"), { code: "SQLITE_BUSY" });
+    }
+    return saveRegistry.call(this, next, previous);
+  });
+  await assert.rejects(coordinator.cleanupArchivedTask(task.id, "integrated"), /receipt failure/);
+  assert.ok(store.getTaskWorkspace(task.id), "receipt failure must preserve the exact retry owner");
+  assert.equal(existsSync(root), false);
   await coordinator.cleanupArchivedTask(task.id, "integrated");
   result = taskArchiveDiagnostics(store, store.getTask(task.id));
-  assert.equal(result.allResourcesReleased, true);
+  assert.equal(result.allResourcesReleased, true, JSON.stringify(result));
   assert.equal(store.getTaskWorkspace(task.id), null);
+  assert.ok(withResourceRegistry(home, undefined, registry =>
+    Object.values(registry.load().records).every(record => record.disposition === "deleted")));
   assert.ok(store.listEvents(task.id).some(e => e.type === "task.completed"));
 });
 
@@ -327,6 +344,6 @@ test("workspace release receipts never delete read-only context or another resou
     root: join(home, "child"), entries: [{ ...entry, access: "read" }] }, new Date());
   registrar.markWorkspaceDeleted(child);
   assert.equal(read().disposition, "active", "read-only Task-main context was not removed");
-  registrar.markWorkspaceDeleted({ ...main, owner: child.owner });
+  assert.throws(() => registrar.markWorkspaceDeleted({ ...main, owner: child.owner }), /owner changed/);
   assert.equal(read().disposition, "active", "a path alone cannot authorize another owner's receipt");
 });

@@ -196,6 +196,25 @@ test("cleanup persistence failures propagate even when the next audit write coul
   });
 });
 
+test("a successful cleanup pass is not polluted by retained warnings from an interrupted pass", async t => {
+  const { home, store, command } = fixture(t);
+  const task = completeTask(activateTask(createTask("task-2", "Scratch", now), now), now,
+    { by: "user", summary: "Done" });
+  store.saveTask(task);
+  command(["archive", task.id, "--abandon"]);
+  recordArchiveCleanup(store, task.id, { resource: `runtime:${task.id}`, detail: "old interrupted pass" }, "retained");
+  const coordinator = new TaskWorkspaceCoordinator(store, { home }, {
+    async stopTaskRoleSessions() {}, async releaseTaskTerminals() {}, async assertTaskPhysicalResourcesReleased() {}
+  });
+  await coordinator.cleanupArchivedTask(task.id, "abandoned");
+  const result = taskArchiveDiagnostics(store, store.getTask(task.id));
+  assert.equal(result.cleanupFinished, true);
+  assert.equal(result.counts.retainedResources, 0);
+  assert.equal(result.allResourcesReleased, true);
+  assert.ok(result.warnings.some(warning => warning.detail === "old interrupted pass"),
+    "history stays visible independently of current release evidence");
+});
+
 test("late events retain complete source evidence without replaying or acknowledging original unknown input", async t => {
   const { store, home, task, target, command } = fixture(t);
   command(["archive", task.id, "--integrated", "--force"]);

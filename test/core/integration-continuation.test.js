@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, rmdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, rmdirSync, openSync, closeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -14,7 +15,9 @@ import { generateTaskWorkspaceIdentity } from "../../dist/repository/taskWorkspa
 import { createManagedWorkspace, managedWorkspaceKey } from "../../dist/worktree/managedWorkspace.js";
 import { createIntegrationAttempt } from "../../dist/integration/integrationAttempt.js";
 import { GitIntegrationService } from "../../dist/integration/gitIntegrationService.js";
-import { createDurableJob, startDurableJob, completeDurableJob, durableJobIdempotencyKey } from "../../dist/job/durableJob.js";
+import { createDurableJob, startDurableJob, completeDurableJob, durableJobIdempotencyKey,
+  markDurableJobUnknown, acknowledgeUnknownDurableJob } from "../../dist/job/durableJob.js";
+import { archiveExecutionChecks } from "../../dist/task/archivePreflight.js";
 import { runTaskIntegrationCommand } from "../../dist/commands/taskIntegrationCommands.js";
 import { resolveVerificationGate } from "../../dist/verification/verificationGateService.js";
 import { createDurableJobControl } from "../../dist/controller/jobControl.js";
@@ -543,6 +546,45 @@ test("an old Git conflict without its Integration receipt is diagnosed without a
   assert.equal(git(conflict.workspace.path, "rev-parse", "MERGE_HEAD"), operation);
   assert.equal(f.git("rev-parse", "HEAD"), f.before);
   assert.equal(f.starts(), 0);
+});
+
+test("unknown Job cleanup requires acknowledgement and current physical absence without rewriting its result", async t => {
+  const f = integrationFixture(t);
+  const conflict = await f.service().integrate("task-1", "integration-1");
+  f.resolve(conflict.workspace.path);
+  await f.service().integrate("task-1", "integration-1");
+  const queued = f.store.getDurableJob("task-1", "job-1");
+  const runner = spawn(process.execPath, ["--input-type=module", "-e",
+    `import {currentProcessStartIdentity} from ${JSON.stringify(new URL("../../dist/core/fileLockOwner.js", import.meta.url).href)};
+    console.log(JSON.stringify({pid:process.pid,startIdentity:currentProcessStartIdentity()}));
+    process.stdin.resume();`
+  ], { stdio: ["pipe", "pipe", "inherit"] });
+  t.after(() => { if (runner.exitCode === null) runner.kill(); });
+  const [identity] = await once(runner.stdout, "data");
+  const unknown = markDurableJobUnknown(startDurableJob(queued,
+    JSON.parse(identity.toString()), now),
+  "runner process exited without writing exit.json", [], now);
+  f.store.saveDurableJob("task-1", unknown);
+  const attempt = { ...f.store.getIntegrationAttempt("task-1", "integration-1"), status: "failed", endedAt: now.toISOString() };
+  f.store.saveIntegrationAttempt("task-1", attempt);
+  const cleanup = () => runTaskIntegrationCommand(["cleanup", "task-1/integration-1"], f.store, f.home,
+    { environment: {} });
+  await assert.rejects(cleanup(), /Job|execution|acknowledge/i);
+  const acknowledged = acknowledgeUnknownDurableJob(unknown, now);
+  f.store.saveDurableJob("task-1", acknowledged);
+  await assert.rejects(cleanup(), /Job|execution|process/i);
+  const exited = once(runner, "exit");
+  runner.stdin.end();
+  await exited;
+  // A surviving step still holding the workspace must prevent cleanup even
+  // though the exact runner generation has exited.
+  const fd = openSync(join(conflict.workspace.path, "file"), "r");
+  try { await assert.rejects(cleanup(), /Job|execution|reference/i); }
+  finally { closeSync(fd); }
+  assert.equal(archiveExecutionChecks(f.store, "task-1", f.home).filter(c => c.resource === "job:task-1/job-1").length, 0);
+  assert.equal((await cleanup()).data.cleanup, "removed");
+  assert.deepEqual(f.store.getDurableJob("task-1", "job-1"), acknowledged);
+  assert.deepEqual(f.store.getIntegrationAttempt("task-1", attempt.id), attempt);
 });
 
 test("interrupted rebase receipt and successful unbound Job resume without replay", async t => {

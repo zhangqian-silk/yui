@@ -45,7 +45,7 @@ export async function archiveLeaderTask(
   // Only the requesting no-Run Leader may be stopped as part of this action.
   // Another Run, Job, unknown input, or then handoff is not archive authority.
   const ownResources = `role:${taskId}/leader`;
-  const execution = archiveExecutionChecks(store, taskId).filter(check =>
+  const execution = archiveExecutionChecks(store, taskId, coordinator.preparer.home).filter(check =>
     !(check.resource === ownResources
       && ownInput?.runId === undefined && ownInput?.status === "accepted"
       && ["unresolved-provider-input", "unresolved-mailbox"].includes(check.reason)));
@@ -106,7 +106,8 @@ export async function archiveLeaderTask(
     });
     await coordinator.prepareTaskForArchive(taskId);
     runTaskCommand(["archive", taskId, "--integrated"], store, {
-      environment, archiveLeaderAdmission: admission, archiveRemoteDeliveryProof: proof
+      environment, yuiHome: coordinator.preparer.home,
+      archiveLeaderAdmission: admission, archiveRemoteDeliveryProof: proof
     });
     await coordinator.cleanupArchivedTask(taskId, "integrated");
     record("task.leader-archive-result", { status: "archived" });

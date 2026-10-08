@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { jobCleanupBlocker } from "../job/jobCleanupInspection.js";
 import { describeCliFailure } from "../errors/cliFailure.js";
 import { fileURLToPath } from "node:url";
 import {
@@ -729,8 +730,8 @@ export class FileTaskWorkflowRuntime implements TaskWorkflowRuntimePort {
    * live, preserving the owner records for Operator recovery.
    */
   async assertTaskPhysicalResourcesReleased(taskId: string): Promise<void> {
-    const activeJobs = this.store.listActiveDurableJobs()
-      .filter((job) => job.taskId === taskId);
+    const activeJobs = this.store.listDurableJobs(taskId)
+      .filter((job) => jobCleanupBlocker(job, this.home) !== undefined);
     if (activeJobs.length > 0) {
       throw new WorkspaceCleanupBlockedError(
         "physical-resource-live",

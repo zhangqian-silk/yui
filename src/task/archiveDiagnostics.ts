@@ -45,7 +45,8 @@ export function archiveRetainedResources(store: TaskStore, task: Task): ArchiveD
       detail: `AgentRun remains active (${run.roleName}); archive is not stop evidence.` });
   }
   for (const job of store.listDurableJobs(task.id).filter(j =>
-    ["queued", "running", "unknown-needs-attention"].includes(j.status))) {
+    ["queued", "running"].includes(j.status)
+    || (j.status === "unknown-needs-attention" && j.acknowledgedAt === undefined))) {
     resources.push({ resource: `job:${task.id}/${job.id}`, detail: `DurableJob remains ${job.status}.` });
   }
   for (const attempt of store.listIntegrationAttempts(task.id).filter(a =>
@@ -135,7 +136,10 @@ export function taskArchiveDiagnostics(store: TaskStore, task: Task) {
   if (task.status === "archived" && !cleanupFinished) warnings.push({ resource: `task:${task.id}`,
     detail: "Archive committed; cleanup has not finished. Retained references require explicit inspection; archive retry does not replay cleanup." });
   const retainedResources = archiveRetainedResources(store, task);
-  const lastPass = cleanup.slice(cleanup.map(e => e.payload.status).lastIndexOf("finished", cleanup.length - 2) + 1);
+  const passStart = cleanup.map(e =>
+    e.payload.resource === `cleanup-pass:${task.id}` && e.payload.status === "started").lastIndexOf(true);
+  const lastPass = cleanup.slice(passStart >= 0 ? passStart
+    : cleanup.map(e => e.payload.status).lastIndexOf("finished", cleanup.length - 2) + 1);
   // Derived from current references AND a completed physical cleanup attempt;
   // neither archive nor an empty workspace list alone establishes release.
   const allResourcesReleased = task.status === "archived" && cleanupFinished

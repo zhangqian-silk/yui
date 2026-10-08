@@ -1931,7 +1931,7 @@ function archiveTaskCommand(
       )
       : undefined;
     if (!request.force) {
-      const checks = [...archiveSettlementChecks(tx, task), ...archiveExecutionChecks(tx, task.id)];
+      const checks = [...archiveSettlementChecks(tx, task), ...archiveExecutionChecks(tx, task.id, options.yuiHome)];
       if (checks.length > 0) throw new CleanupInspectionError(checks);
       const activeRole = tx.listRoles(task.id)
         .find((role) => tx.getActiveRun(task.id, role.name) !== null);

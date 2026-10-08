@@ -9,7 +9,37 @@ import { createManagedWorkspace } from "../../dist/worktree/managedWorkspace.js"
 import { FileTaskRuntimeIsolation } from "../../dist/runtime/taskRuntimeIsolation.js";
 import { managedRuntimeRoot } from "../../dist/storage/homeLayout.js";
 import { controllerSocketPath } from "../../dist/core/controllerEndpoint.js";
+import { SqliteResourceRegistry } from "../../dist/resources/sqliteResourceRegistry.js";
+import { withResourceRegistry } from "../../dist/resources/resourceRegistryStore.js";
 import { planResourceGc, applyResourceGc, restoreAllResourceGc, purgeResourceQuarantine } from "../../dist/resources/resourceGc.js";
+
+test("runtime deletion receipt failure is explicit and the exact descriptor retry converges", t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-runtime-receipt-"));
+  const store = new SqliteTaskStore(home);
+  t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
+  const workspace = createManagedWorkspace({ owner: { type: "integration-attempt",
+    taskId: "task-1", integrationAttemptId: "integration-1" },
+    root: join(home, "workspace"), entries: [] }, new Date());
+  const isolation = new FileTaskRuntimeIsolation({ runtimeRoot: managedRuntimeRoot(home),
+    controlPlane: { yuiHome: home, controllerSocketPath: controllerSocketPath(store.getHomeIdentity().homeId),
+      tmuxNamespace: "fixture-no-server", managedRuntimeRoot: managedRuntimeRoot(home) } });
+  const prepared = isolation.preflight({ workspace });
+  isolation.activate(prepared);
+  const save = SqliteResourceRegistry.prototype.save;
+  let fail = true;
+  t.mock.method(SqliteResourceRegistry.prototype, "save", function (next, previous) {
+    if (fail) { fail = false; throw new Error("interrupted runtime receipt"); }
+    return save.call(this, next, previous);
+  });
+  assert.throws(() => isolation.cleanup(prepared, "failure"), /interrupted runtime receipt/);
+  assert.equal(existsSync(prepared.descriptor.roots.runtime), false);
+  assert.ok(withResourceRegistry(home, undefined, registry =>
+    Object.values(registry.load().records).some(record => record.disposition === "active")));
+  isolation.cleanup(isolation.preflight({ workspace }), "failure");
+  assert.ok(withResourceRegistry(home, undefined, registry =>
+    Object.values(registry.load().records).every(record => record.disposition === "deleted")));
+  isolation.cleanup(prepared, "failure");
+});
 
 test("GC owns one physical subtree and rechecks durable ownership before moving it", async t => {
   const root = mkdtempSync(join(tmpdir(), "yui-gc-lifecycle-"));

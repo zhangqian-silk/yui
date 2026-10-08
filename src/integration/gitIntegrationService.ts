@@ -507,13 +507,6 @@ export class GitIntegrationService {
       integration = current;
       const managedWorkspace = this.store.getIntegrationWorkspace(integration.taskId, integration.id);
       if (managedWorkspace === null) return "missing";
-      const activeJob = this.store.listDurableJobs(integration.taskId).find(job =>
-        job.owner.kind === "integration-attempt" && job.owner.integrationAttemptId === integration.id
-        && (job.status === "queued" || job.status === "running"
-          || job.status === "unknown-needs-attention"));
-      if (activeJob !== undefined) {
-        throw new Error(`Integration ${integration.id} has an active DurableJob: ${activeJob.id}/${activeJob.status}.`);
-      }
       const task = this.store.getTask(integration.taskId);
       if (task === null || !task.projectBindings.some(
         ({ projectId }) => projectId === integration.projectId

@@ -117,14 +117,19 @@ export class ResourceRegistrar {
   }
 
   markWorkspaceDeleted(workspace: ManagedWorkspace): void {
-    try {
-      this.#markPathsDeleted([
-        workspace.root,
-        ...workspace.entries.filter(entry => entry.access === "write").map(entry => entry.path)
-      ], ownerFromManagedWorkspace(this.#home, workspace.owner));
-    } catch {
-      // Best-effort receipt; workspace deletion must proceed regardless.
-    }
+    // Callers remove the managed owner only after this succeeds. Losing the
+    // receipt must retain that exact owner so a missing-path retry can finish.
+    this.#markPathsDeleted([
+      workspace.root,
+      ...workspace.entries.filter(entry => entry.access === "write").map(entry => entry.path)
+    ], ownerFromManagedWorkspace(this.#home, workspace.owner));
+  }
+
+  markTaskRuntimeDeleted(descriptor: TaskRuntimeIsolationDescriptor): void {
+    // The validated descriptor and matching registry owner survive deletion.
+    // A missing-root retry may settle this receipt, never a different owner.
+    this.#markPathsDeleted(Object.values(descriptor.roots),
+      ownerFromManagedWorkspace(this.#home, descriptor.workspace.owner));
   }
 
   markPathsDeleted(paths: readonly string[]): void {

@@ -230,7 +230,7 @@ export class TaskWorkspaceCoordinator {
     if (task.status !== "completed" && task.status !== "cancelled") {
       throw new Error(`Task must be completed or retired before archive: ${task.id}.`);
     }
-    const settlement = [...archiveSettlementChecks(this.store, task), ...archiveExecutionChecks(this.store, taskId)];
+    const settlement = [...archiveSettlementChecks(this.store, task), ...archiveExecutionChecks(this.store, taskId, this.preparer.home)];
     if (settlement.length > 0) throw new CleanupInspectionError(settlement);
     const managedWorkspaces = [...this.store.listManagedWorkspaces(task.id)]
       .sort((left, right) => managedWorkspaceKey(left.owner)
@@ -268,7 +268,7 @@ export class TaskWorkspaceCoordinator {
       }
       await this.runtime.assertTaskPhysicalResourcesReleased(task.id);
       this.#assertTaskArchiveSnapshot(snapshot);
-      const rechecked = [...archiveSettlementChecks(this.store, task), ...archiveExecutionChecks(this.store, taskId)];
+      const rechecked = [...archiveSettlementChecks(this.store, task), ...archiveExecutionChecks(this.store, taskId, this.preparer.home)];
       if (rechecked.length > 0) throw new CleanupInspectionError(rechecked);
     } finally { releaseMaintenance(); }
   }
@@ -282,6 +282,8 @@ export class TaskWorkspaceCoordinator {
     if (task?.status !== "archived") {
       throw new Error(`Archive must commit before cleanup: ${taskId}.`);
     }
+    recordArchiveCleanup(this.store, taskId, { resource: `cleanup-pass:${taskId}`,
+      detail: "Begin one foreground exact-owner cleanup pass." }, "started");
     const attempt = async (
       diagnostic: ArchiveDiagnostic,
       action: () => Promise<"removed" | "missing" | "released" | "dirty">
@@ -305,7 +307,7 @@ export class TaskWorkspaceCoordinator {
     for (const role of this.store.listRoles(taskId)) {
       const released = await attempt({ resource: `role:${taskId}/${role.name}`,
         detail: "Exact Role runtime stop." }, async () => {
-        const checks = archiveExecutionChecks(this.store, taskId).filter(c => c.resource === `role:${taskId}/${role.name}`);
+        const checks = archiveExecutionChecks(this.store, taskId, this.preparer.home).filter(c => c.resource === `role:${taskId}/${role.name}`);
         if (checks.length > 0) throw new CleanupInspectionError(checks);
         await this.#stopLiveRoles(taskId, [role.name]);
         return "released";
@@ -314,7 +316,7 @@ export class TaskWorkspaceCoordinator {
     }
     const physicalReleased = await attempt({ resource: `runtime:${taskId}`,
       detail: "Verify exact physical resource release before workspace deletion." }, async () => {
-      const checks = archiveExecutionChecks(this.store, taskId);
+      const checks = archiveExecutionChecks(this.store, taskId, this.preparer.home);
       if (checks.length > 0) throw new CleanupInspectionError(checks);
       if (!runtimeReleased) throw new Error("One or more Role runtimes could not be safely released.");
       await this.runtime.releaseTaskTerminals(taskId);

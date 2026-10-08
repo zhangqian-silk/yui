@@ -10,13 +10,14 @@ import { WorkItemChangeSetManager } from "../workspace/workItemChangeSetManager.
 import { managedWorkspaceKey, managedWorktreeName, type ManagedWorkspace } from "../worktree/managedWorkspace.js";
 import { integrationWorktreeIdentity, worktreeIdentity, type GitWorkspacePort } from "./gitWorkspace.js";
 import { taskWorkspaceRefSegment } from "./taskWorkspaceIdentity.js";
+import { jobCleanupBlocker } from "../job/jobCleanupInspection.js";
 
 /** Current owner facts + the same Git inspection used immediately before removal.
  * No preparation, locks, Git refresh, runtime stop, DB writes or repair.
  */
 export async function inspectWorkspaceCleanup(
   store: TaskStore, git: GitWorkspacePort, workspace: ManagedWorkspace,
-  disposition: WorkItemWorkspaceDisposition, forceArchive = false
+  disposition: WorkItemWorkspaceDisposition, forceArchive = false, home?: string
 ): Promise<CleanupCheck[]> {
   const owner = workspace.owner;
   const task = store.getTask(owner.taskId);
@@ -91,9 +92,9 @@ export async function inspectWorkspaceCleanup(
         add("owner-unsettled", "IntegrationAttempt must be terminal before cleanup.", "terminal attempt", attempt?.status ?? null);
       }
       for (const job of store.listDurableJobs(task.id).filter(job =>
-        job.owner.kind === "integration-attempt" && job.owner.integrationAttemptId === owner.integrationAttemptId
-        && ["queued", "running", "unknown-needs-attention"].includes(job.status))) {
-        add("unresolved-execution", "Integration Job has no proven terminal; acknowledgement is not physical exit evidence.",
+        job.owner.kind === "integration-attempt" && job.owner.integrationAttemptId === owner.integrationAttemptId)) {
+        const blocker = jobCleanupBlocker(job, home);
+        if (blocker !== undefined) add("unresolved-execution", blocker,
           "settled execution", { jobId: job.id, status: job.status });
       }
       break;

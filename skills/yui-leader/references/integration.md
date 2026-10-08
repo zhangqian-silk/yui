@@ -96,7 +96,10 @@ archive. Save necessary reports in Task artifacts/results first. Cleanup
 preserves the attempt, fixed checks/logs and target receipts. Failure or abort
 never authorizes deleting uncommitted resolutions; preserve dirty material
 and resolve its disposition explicitly. Acknowledging an unknown Job is not
-physical stop evidence.
+physical stop evidence: cleanup also rechecks the recorded runner generation
+and physical workspace/log/runtime references. When those are proven absent,
+the acknowledged unknown result remains historical evidence, not a permanent
+physical-cleanup blocker.
 
 Direct Task-main delivery is an alternative only when current delivery
 authority, ownership and the Task contract already permit it, with no other
