@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, rmdirSync, openSync, closeSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, rmdirSync, openSync, closeSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,7 +10,7 @@ import Database from "better-sqlite3";
 import { CURRENT_STORAGE_VERSION } from "../../dist/storage/storageVersions.js";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { createProject, addProjectKnowledge } from "../../dist/repository/project.js";
-import { createTask, activateTask, bindTaskWorkspaceIdentity } from "../../dist/task/task.js";
+import { createTask, activateTask, bindTaskWorkspaceIdentity, retireTask } from "../../dist/task/task.js";
 import { generateTaskWorkspaceIdentity, taskWorkspaceRefSegment } from "../../dist/repository/taskWorkspaceIdentity.js";
 import { currentProcessStartIdentity } from "../../dist/core/fileLockOwner.js";
 import { TaskWorkspaceCoordinator } from "../../dist/repository/taskWorkspaceCoordinator.js";
@@ -19,7 +19,8 @@ import { createIntegrationAttempt } from "../../dist/integration/integrationAtte
 import { GitIntegrationService } from "../../dist/integration/gitIntegrationService.js";
 import { createDurableJob, startDurableJob, completeDurableJob, durableJobIdempotencyKey,
   markDurableJobUnknown, acknowledgeUnknownDurableJob } from "../../dist/job/durableJob.js";
-import { archiveExecutionChecks } from "../../dist/task/archivePreflight.js";
+import { archiveExecutionChecks, inspectTaskArchive } from "../../dist/task/archivePreflight.js";
+import { jobCleanupBlocker } from "../../dist/job/jobCleanupInspection.js";
 import { runTaskIntegrationCommand } from "../../dist/commands/taskIntegrationCommands.js";
 import { resolveVerificationGate } from "../../dist/verification/verificationGateService.js";
 import { createDurableJobControl } from "../../dist/controller/jobControl.js";
@@ -620,8 +621,50 @@ test("unknown Job cleanup requires acknowledgement and current physical absence 
   const fd = openSync(join(conflict.workspace.path, "file"), "r");
   try { await assert.rejects(cleanup(), /Job|execution|reference/i); }
   finally { closeSync(fd); }
+  // A cleanup rename moves surviving process references away from every
+  // original Job env path. Ordinary archive must reject before committing,
+  // not rely on post-archive deletion to notice that execution is still live.
+  const descriptor = JSON.parse(acknowledged.env.YUI_TASK_RUNTIME_ISOLATION_DESCRIPTOR);
+  const claimed = `${descriptor.roots.runtime}.cleanup-${"b".repeat(32)}`;
+  renameSync(descriptor.roots.runtime, claimed);
+  const helper = spawn(process.execPath, ["-e", "console.log('ready');process.stdin.resume()"],
+    { cwd: claimed, stdio: ["pipe", "pipe", "inherit"] });
+  t.after(() => { if (helper.exitCode === null) helper.kill(); });
+  await once(helper.stdout, "data");
+  f.store.saveTask(retireTask(f.store.getTask("task-1"), { by: "user", summary: "fixture abandonment" }, now));
+  const coordinator = new TaskWorkspaceCoordinator(f.store, new FileTaskWorkspacePreparer(f.home, f.store), {
+    async stopTaskRoleSessions() {}, async releaseTaskTerminals() {}, async assertTaskPhysicalResourcesReleased() {}
+  });
+  const archive = () => runTaskCommand(["archive", "task-1", "--abandon"], f.store,
+    { environment: {}, yuiHome: f.home });
+  try {
+    assert.match(jobCleanupBlocker(acknowledged, f.home) ?? "", /live|unverified/);
+    const inspection = await inspectTaskArchive(coordinator,
+      { taskId: "task-1", disposition: "abandoned", force: false });
+    assert.ok(inspection.archive.execution.some(c => c.resource === "job:task-1/job-1"));
+    await assert.rejects(coordinator.prepareTaskForArchive("task-1"), /execution|live|reference/i);
+    assert.throws(archive, /execution|live|reference/i);
+    assert.equal(f.store.getTask("task-1").status, "cancelled");
+    await assert.rejects(cleanup(), /execution|live|reference/i);
+    assert.equal(existsSync(claimed), true);
+  } finally {
+    const stopped = once(helper, "exit");
+    helper.stdin.end();
+    await stopped;
+  }
   assert.equal(archiveExecutionChecks(f.store, "task-1", f.home).filter(c => c.resource === "job:task-1/job-1").length, 0);
+  const markerPath = join(claimed, ".yui-task-runtime-owner.json");
+  const marker = readFileSync(markerPath, "utf8");
+  rmSync(markerPath);
+  try {
+    assert.match(jobCleanupBlocker(acknowledged, f.home) ?? "", /unverified/);
+    assert.throws(archive, /unverified/);
+    assert.equal(f.store.getTask("task-1").status, "cancelled");
+  } finally { writeFileSync(markerPath, marker); }
   assert.equal((await cleanup()).data.cleanup, "removed");
+  assert.equal(existsSync(claimed), false);
+  archive();
+  assert.equal(f.store.getTask("task-1").status, "archived");
   assert.deepEqual(f.store.getDurableJob("task-1", "job-1"), acknowledged);
   assert.deepEqual(f.store.getIntegrationAttempt("task-1", attempt.id), attempt);
 });

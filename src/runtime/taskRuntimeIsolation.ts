@@ -576,8 +576,21 @@ function inspectRuntimeRoot(
   descriptor: TaskRuntimeIsolationDescriptor,
   expectedFingerprint: string
 ): readonly TaskRuntimeResourceObservation[] {
-  return [descriptor.roots.runtime, ...runtimeCleanupClaims(descriptor.roots.runtime)]
-    .flatMap(root => inspectRuntimeDirectory(descriptor, expectedFingerprint, root));
+  return [
+    ...inspectRuntimeDirectory(descriptor, expectedFingerprint, descriptor.roots.runtime),
+    ...inspectTaskRuntimeCleanupClaims(descriptor)
+  ];
+}
+
+/** Read-only inventory shared by execution admission and physical cleanup.
+ * The descriptor remains the original identity after a cleanup rename.
+ */
+export function inspectTaskRuntimeCleanupClaims(
+  descriptor: TaskRuntimeIsolationDescriptor
+): readonly TaskRuntimeResourceObservation[] {
+  const fingerprint = taskRuntimeIsolationFingerprint(descriptor);
+  return runtimeCleanupClaims(descriptor.roots.runtime)
+    .flatMap(root => inspectRuntimeDirectory(descriptor, fingerprint, root));
 }
 
 function runtimeCleanupClaims(root: string): readonly string[] {

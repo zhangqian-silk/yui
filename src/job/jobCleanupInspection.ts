@@ -1,6 +1,10 @@
 import { isAbsolute, join, resolve } from "node:path";
 import { processGenerationIsLive } from "../core/fileLockOwner.js";
 import { scanProcessPathRefs } from "../resources/liveReferences.js";
+import {
+  inspectTaskRuntimeCleanupClaims, parseTaskRuntimeIsolationDescriptor,
+  YUI_TASK_RUNTIME_ISOLATION_DESCRIPTOR
+} from "../runtime/taskRuntimeIsolation.js";
 import type { DurableJob } from "./durableJob.js";
 
 /** Result uncertainty and physical occupancy are different facts. Reuse the
@@ -25,6 +29,25 @@ export function jobCleanupBlocker(job: DurableJob, home?: string): string | unde
         const path = job.env[key];
         return path !== undefined && isAbsolute(path) ? [path] : [];
       })];
+    const serialized = job.env[YUI_TASK_RUNTIME_ISOLATION_DESCRIPTOR];
+    if (serialized !== undefined) {
+      const descriptor = parseTaskRuntimeIsolationDescriptor(serialized);
+      const owner = descriptor.workspace.owner;
+      if (descriptor.taskId !== job.taskId || descriptor.workspace.root !== job.workspace
+        || owner.type !== job.owner.kind
+        || (owner.type === "integration-attempt" && job.owner.kind === "integration-attempt"
+          && owner.integrationAttemptId !== job.owner.integrationAttemptId)
+        || (owner.type === "work-item" && job.owner.kind === "work-item"
+          && owner.workItemId !== job.owner.workItemId)) {
+        return "Job runtime descriptor does not match its exact owner/workspace.";
+      }
+      const claims = inspectTaskRuntimeCleanupClaims(descriptor);
+      const uncertain = claims.find(claim => claim.ownership !== "owned" || claim.state !== "inactive");
+      if (uncertain !== undefined) return `Job runtime cleanup claim is unverified: ${uncertain.id}.`;
+      // cwd/fd references follow rename, unlike the recorded environment.
+      // Use the same exact claim inventory as deletion, before archive commits.
+      paths.push(descriptor.roots.runtime, ...claims.map(claim => claim.id));
+    }
     const scan = scanProcessPathRefs(paths);
     if (scan.diagnostics.some(diagnostic => diagnostic.severity === "error")
       || [...scan.refs.values()].some(refs => refs.length > 0)) {

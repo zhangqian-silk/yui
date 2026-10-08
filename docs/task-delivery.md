@@ -360,7 +360,9 @@ Retries inspect these claims as well as the original path: only an exact Owner
 marker and no live process references permit deletion. Missing or mismatched
 markers remain retained with their path for explicit diagnosis; absence of the
 original directory alone never proves release. Unresolved claims also prevent
-reactivating the same runtime. This uses the existing resource owner and receipt,
+reactivating the same runtime. Unknown-Job execution checks use that same claim
+inventory before ordinary archive commits; acknowledgement does not bypass a
+live or unverified renamed runtime. This uses the existing resource owner and receipt,
 not a second cleanup queue.
 
 Resource GC is a separate, opt-in quarantine path. A runtime subtree moves once:
