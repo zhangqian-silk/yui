@@ -14,6 +14,7 @@ import { assertProjectActive, resolveProject } from "../repository/project.js";
 import { FileTaskWorkspacePreparer } from "../repository/taskWorkspacePreparer.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import { assertTaskDeliveryAuthority as taskLocalActor } from "../task/taskAuthority.js";
+import { taskIntegrationTargetCheckout } from "../task/taskAuthority.js";
 import { resolveTaskRecordReference } from "../task/taskRecordReference.js";
 import { governingWorkItemCandidate } from "../workItem/workItem.js";
 import { workspaceProjectEntry } from "../worktree/managedWorkspace.js";
@@ -176,6 +177,7 @@ async function start(
   if (targetRef === undefined) {
     throw usageError(`Task main worktree is not ready; reconcile the Task first: ${task.id}.`);
   }
+  taskIntegrationTargetCheckout(store, options.environment, task.id, project.id, targetRef);
   const expectedHead = (await new NodeGitWorkspace().inspect(mainEntry!.path, targetRef)).baseCommit;
   const snapshotEntry = candidate.workspace.entries.find(
     ({ projectId }) => projectId === project.id
@@ -187,7 +189,7 @@ async function start(
     throw usageError(`WorkItem result Project snapshot is incomplete: ${workItem.id}/${project.id}.`);
   }
   const integration = store.transaction((tx) => {
-    taskLocalActor(tx, options.environment, task.id);
+    taskIntegrationTargetCheckout(tx, options.environment, task.id, project.id, targetRef);
     const created = createIntegrationAttempt({
       id: tx.nextIntegrationAttemptId(task.id),
       taskId: task.id,

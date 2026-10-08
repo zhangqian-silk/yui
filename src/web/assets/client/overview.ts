@@ -28,7 +28,12 @@ export function renderOverview(container, state, t, locale, actions) {
     metricTile(t("metrics.completed"), counts ? counts.completed : "—", { tone: "ok" }),
     metricTile(t("metrics.total"), counts ? counts.total : "—")));
 
-  const grid = h("div.overview-grid");
+  // Two independent column stacks instead of paired rows: each card keeps its
+  // natural height, so a short card never leaves a gap beside a long one.
+  // Main column: the work path (answer, in progress, recent). Rail: catalog-wide
+  // signals and the explicit Session read.
+  const main = h("div.overview-col.overview-main");
+  const rail = h("div.overview-col.overview-rail");
   // Open questions: the catalog names the affected Tasks, never the questions.
   const inbox = card({ title: t("overview.inbox"), icon: "inbox", count: counts ? counts.openInputs : null });
   const items = state.attention || [];
@@ -41,7 +46,7 @@ export function renderOverview(container, state, t, locale, actions) {
         h("span.list-row-go", null, t("overview.answer"), icon("chevron", "icon-sm")));
     })));
   }
-  grid.append(inbox);
+  main.append(inbox);
 
   const catalog = card({ title: t("overview.catalog"), icon: "pulse", hint: t("overview.catalogHint") });
   if (state.catalogAttention) {
@@ -59,16 +64,14 @@ export function renderOverview(container, state, t, locale, actions) {
     })));
     catalog.body.append(note(t("overview.signalsHelp")));
   } else catalog.body.append(emptyState(t("loading.dashboard")));
-  grid.append(catalog);
-  page.append(grid);
+  rail.append(catalog);
 
   const active = (state.tasks || []).filter(function (task) { return task.status === "active"; });
   const recent = (state.tasks || []).filter(function (task) { return task.status !== "archived"; }).slice().sort(byNewest).slice(0, 8);
-  const lists = h("div.overview-grid");
-  lists.append(taskListCard(t("overview.activeNow"), "pulse", active, t("overview.activeEmpty"), t, locale, actions));
-  lists.append(taskListCard(t("overview.recent"), "history", recent, t("sidebar.empty"), t, locale, actions));
-  page.append(lists);
-  page.append(sessionCard(state, t, locale, actions));
+  main.append(taskListCard(t("overview.activeNow"), "pulse", active, t("overview.activeEmpty"), t, locale, actions));
+  main.append(taskListCard(t("overview.recent"), "history", recent, t("sidebar.empty"), t, locale, actions));
+  rail.append(sessionCard(state, t, locale, actions));
+  page.append(h("div.overview-layout", null, main, rail));
   page.append(h("p.page-foot", null, t("overview.pageScope")));
   container.append(page);
 }

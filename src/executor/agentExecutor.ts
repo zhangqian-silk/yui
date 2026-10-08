@@ -514,7 +514,7 @@ export function roleAgentSessionResumeMode(
   if (roleSessionMayContinue(session.effective, desired)) return "resume";
   throw new Error(
     `Role Agent session cannot continue under the next launch: ${agentId}. `
-    + "Its Agent, adapter or physical workspace changed. Explicitly select a new Session "
+    + "Its Agent, adapter, physical workspace or captured authority changed. Explicitly select a new Session "
     + "after resolving existing execution and resource ownership."
   );
 }

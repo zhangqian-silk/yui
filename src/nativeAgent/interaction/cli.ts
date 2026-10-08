@@ -2,6 +2,7 @@ import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import type { InteractionDiagnosticsPort, InteractionRenderer, InteractionSessionPort, InteractionTextProgress } from './contracts.js';
 import { createTextRenderer, terminalText } from './renderer.js';
+import type { SessionCatalog } from '../session/index.js';
 
 export type CliEnd = { reason: 'closed' | 'quit' | 'eof' | 'display-error' | 'input-error'; error?: unknown };
 export type CliConnection = { done: Promise<CliEnd>; close(): void };
@@ -14,8 +15,13 @@ export async function openCli(options: {
   initialSessionId?: string; renderer?: InteractionRenderer;
   diagnostics?: InteractionDiagnosticsPort;
   progress?: InteractionTextProgress;
+  /** Optional real persistent catalog; does not admit execution or own storage. */
+  catalog?: SessionCatalog;
 }): Promise<CliConnection> {
   const { sessions, input, output } = options;
+  const help = options.catalog
+    ? 'Text: submit | /new [title] | /sessions [CURSOR] | /use ID | /info | /rename REV JSON_TITLE_OR_NULL | /history [CURSOR] | /diagnostics [offset] | /refresh | /more | /cancel | /quit\n'
+    : HELP;
   const renderer = options.renderer ?? createTextRenderer();
   let selected = options.initialSessionId ?? (await sessions.create('CLI session')).id;
   let cursor = 0;
@@ -159,7 +165,7 @@ export async function openCli(options: {
     }
     const arg = (match[2] ?? '').trim();
     switch (match[1]) {
-      case 'help': await write(HELP); break;
+      case 'help': await write(help); break;
       case 'new': {
         const item = await sessions.create(arg || 'CLI session');
         if (!closed) await select(item.id);
@@ -169,6 +175,12 @@ export async function openCli(options: {
         if (!arg) throw new Error('Usage: /use ID');
         await select(arg); break;
       case 'sessions': {
+        if (options.catalog) {
+          const page = await options.catalog.listSessions({ limit: PAGE, ...(arg ? { cursor: arg } : {}) });
+          for (const item of page.items) await write(`${terminalText(item.sessionId, 200)} ${terminalText(item.title ?? '(untitled)', 400)} [metadata revision ${item.metadataRevision}]\n`);
+          if (page.nextCursor !== null) await write(`[next: /sessions ${terminalText(page.nextCursor, 4096)}]\n`);
+          break;
+        }
         const page = await sessions.list(offset(arg), PAGE);
         if (page.sessions.length > PAGE) throw new Error('Session page exceeds limit');
         for (const item of page.sessions) await write(`${terminalText(item.id, 200)} ${terminalText(item.title, 200)}\n`);
@@ -176,6 +188,18 @@ export async function openCli(options: {
         break;
       }
       case 'history': {
+        if (options.catalog) {
+          const page = await options.catalog.readHistory(selected, { limit: PAGE, ...(arg ? { cursor: arg } : {}) });
+          await write(`[history facts ${terminalText(selected, 200)} revision ${page.revision}; not execution context]\n`);
+          for (const item of page.records) {
+            let text: string;
+            try { text = renderer.record({ kind: 'event', cursor: item.revision, event: item.event }); }
+            catch (error) { displayError(error); return; }
+            await write(`[fact ${item.revision}] ${text}`);
+          }
+          if (page.nextCursor !== null) await write(`[next: /history ${terminalText(page.nextCursor, 4096)}]\n`);
+          break;
+        }
         const page = await sessions.history(selected, offset(arg), PAGE);
         if (page.messages.length > PAGE) throw new Error('History page exceeds limit');
         await write(`[history ${terminalText(selected, 200)} offset ${offset(arg)}]\n`);
@@ -184,6 +208,21 @@ export async function openCli(options: {
           catch (error) { displayError(error); return; }
         }
         if (page.nextOffset !== null) await write(`[next: /history ${page.nextOffset}]\n`);
+        break;
+      }
+      case 'info':
+        if (!options.catalog || arg) throw new Error('Usage: /info requires a catalog');
+        await write(`[session info] ${terminalText(JSON.stringify(await options.catalog.getSessionInfo(selected)), 8192)}\n`);
+        break;
+      case 'rename': {
+        const rename = /^(\d+)\s+(.+)$/u.exec(arg);
+        if (!options.catalog || !rename || !Number.isSafeInteger(Number(rename[1])))
+          throw new Error('Usage: /rename EXPECTED_METADATA_REVISION JSON_TITLE_OR_NULL');
+        let title: unknown;
+        try { title = JSON.parse(rename[2]); } catch { throw new Error('Expected JSON string or null title'); }
+        if (title !== null && typeof title !== 'string') throw new Error('Expected JSON string or null title');
+        const saved = await options.catalog.renameSession(selected, title, Number(rename[1]));
+        await write(`[session renamed] ${terminalText(JSON.stringify(saved), 8192)}\n`);
         break;
       }
       case 'diagnostics': await diagnostics(offset(arg)); break;
@@ -206,7 +245,7 @@ export async function openCli(options: {
     enqueue(async () => finish({ reason: 'eof' }));
   });
   enqueue(async () => {
-    await write(HELP);
+    await write(help);
     await select(selected);
     if (closed) return;
     if (options.progress) unsubscribeProgress = options.progress.subscribe(progress => {

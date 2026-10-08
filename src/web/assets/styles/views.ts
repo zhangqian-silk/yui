@@ -85,7 +85,8 @@ export const VIEW_STYLES = `
 .metric-strip{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-bottom:14px}
 .metric-strip .metric{padding:14px 16px;border-radius:var(--r-lg)}
 .metric-strip .metric-value{font-size:var(--fs-2xl)}
-.overview-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-bottom:14px;align-items:start}
+.overview-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,380px);gap:14px;align-items:start}
+.overview-col{display:flex;flex-direction:column;gap:14px;min-width:0}
 .overview>.card{margin-bottom:14px}
 .row-list{display:grid;gap:2px;margin:-4px -8px}
 .list-row{display:flex;align-items:center;gap:10px;width:100%;min-height:38px;padding:7px 8px;border:0;border-radius:var(--r-sm);background:transparent;color:var(--ink);text-align:left;font-size:var(--fs-sm)}

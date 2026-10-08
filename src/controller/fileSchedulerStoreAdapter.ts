@@ -4126,14 +4126,16 @@ function mapRole(
     ? resolveEffectiveLaunch({
         role,
         purpose,
-        ...(workspace === undefined ? {} : { workspace })
+        ...(workspace === undefined ? {} : { workspace }),
+        ...(item === null ? {} : { workItemWriteProjectIds: item.writeProjectIds })
       })
     : liveSession !== null && workspace?.owner.type === "task"
       ? effectiveLaunchWithTaskMainWorkspace(liveSession.effective, workspace)
       : liveSession?.effective ?? resolveEffectiveLaunch({
           role,
           purpose,
-          ...(workspace === undefined ? {} : { workspace })
+          ...(workspace === undefined ? {} : { workspace }),
+          ...(item === null ? {} : { workItemWriteProjectIds: item.writeProjectIds })
         });
   return {
     taskId: role.taskId,

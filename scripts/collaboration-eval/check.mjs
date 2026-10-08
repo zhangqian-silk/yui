@@ -1,0 +1,219 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { test } from "node:test";
+import { analyze, readEvidence, saveEvidence, digest } from "./evidence.mjs";
+import { judgeNotification } from "./oracle.mjs";
+import { recoverNotification } from "./participant.mjs";
+import { NotificationSimulator } from "./notification-simulator.mjs";
+import { Fixture } from "./fixture.mjs";
+import { readTaskFacts, persistTaskFacts, readNativeFacts } from "./readback.mjs";
+import { selectConditions, parseOptions } from "./selection.mjs";
+import { definitions, variants } from "./cases/catalog.mjs";
+import { prepareCase } from "./cases/prepare.mjs";
+import { observe } from "./cases/business.mjs";
+import { NativeObserver, includeNativeTrace } from "./native-session.mjs";
+import { externalizeTrace, readNativeTrace } from "./native-trace.mjs";
+
+test("unknown effects are reconciled, not resent; oracle detects duplicate effects", () => {
+  const effect = { key: "notice-17", recipient: "local-inbox", body: "Build ready",
+    effectId: "effect-1", status: "confirmed" };
+  const receipt = recoverNotification({ ...effect, status: "unknown" }, key => {
+    assert.equal(key, "notice-17");
+    return effect;
+  });
+  const observation = { receipt, ledger: [effect], persistedReceipt: true, discoveredOriginal: true };
+  assert.equal(judgeNotification(observation).status, "scripted-pass");
+  assert.equal(judgeNotification({ ...observation, ledger: [effect, { ...effect, key: "new-key" }] }).status, "fail");
+  assert.equal(judgeNotification({ ...observation, receipt: { ...receipt, effectId: "other" } }).status, "fail");
+  assert.equal(recoverNotification({ ...effect, status: "unknown" }, () => undefined).status, "unknown");
+});
+
+test("saved evidence is append-once, analysis includes failures and cannot repair missing evidence", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "yui-eval-evidence-check-"));
+  try {
+    const directory = join(scratch, "record");
+    const evidence = { schemaVersion: 1, mode: "offline", trace: [],
+      conditions: [{ category: "operations", status: "environment-error" },
+        { category: "docs", status: "not-run" }], cleanup: { status: "released" } };
+    saveEvidence(directory, evidence);
+    assert.throws(() => saveEvidence(directory, evidence), /EEXIST/);
+    assert.equal(analyze(readEvidence(directory)).categories.operations.statuses["environment-error"], 1);
+    const raw = readFileSync(join(directory, "evidence.json"), "utf8");
+    writeFileSync(join(directory, "evidence.json"), raw.replace("not-run", "pass"));
+    assert.throws(() => readEvidence(directory), /digest mismatch/);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("lost response does not undo the simulated effect; a new-key resend is independently rejected", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "yui-eval-effect-check-"));
+  try {
+    const simulator = new NotificationSimulator(join(scratch, "effects.jsonl"));
+    const request = { key: "notice-17", recipient: "local-inbox", body: "Build ready" };
+    assert.equal(simulator.send(request, { dropResponse: true }), undefined);
+    const receipt = recoverNotification({ ...request, status: "unknown" }, key => simulator.lookup(key));
+    const observation = { receipt, persistedReceipt: true, discoveredOriginal: true };
+    assert.equal(judgeNotification({ ...observation, ledger: simulator.ledger() }).status, "scripted-pass");
+    simulator.send({ ...request, key: "mistaken-resend" });
+    assert.equal(judgeNotification({ ...observation, ledger: simulator.ledger() }).status, "fail");
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("paged original reads reject a changed source instead of joining two versions", () => {
+  let calls = 0;
+  const fixture = { call: () => ({
+    contentPage: {
+      source: "task/message-1", digest: calls ? "new-version" : "original-version",
+      encoding: "json", offset: calls ? 8 : 0, text: calls++ ? '"mixed"}' : '{"body":',
+      complete: calls === 2, nextCursor: calls === 1 ? "page-two" : null
+    }
+  }) };
+  assert.throws(() => Fixture.prototype.detail.call(fixture, ["task", "message", "show", "task/message-1"]),
+    /changed|invalid page/);
+});
+
+test("all discovery pages and Unicode original pages retain exact record provenance", () => {
+  const message = { taskId: "task-1", id: "message-2", body: "末页✅".repeat(3000) };
+  const original = { ref: { store: "task-message", refId: "message-2", digest: digest(JSON.stringify(message)) },
+    value: message };
+  const text = JSON.stringify(original);
+  const split = 4000;
+  const chunks = [text.slice(0, split), text.slice(split)];
+  const detailPages = chunks.map((chunk, index) => ({ contentPage: {
+    source: "context/task-1/message-2", digest: digest(text), encoding: "json",
+    offset: index ? split : 0, text: chunk, totalCharacters: text.length,
+    complete: index === 1, nextCursor: index ? null : "original-page-2"
+  } }));
+  const calls = [];
+  const fixture = {
+    detail: Fixture.prototype.detail,
+    call: args => {
+      calls.push(args);
+      if (args[2] === "list") {
+        if (args.includes("discovery-page-2")) return { items: [{ ref: original.ref }], complete: true, nextCursor: null };
+        return { items: [], complete: false, nextCursor: "discovery-page-2" };
+      }
+      assert.ok(args.includes(original.ref.digest));
+      return detailPages[args.includes("original-page-2") ? 1 : 0];
+    }
+  };
+  assert.deepEqual(Fixture.prototype.messageRecords.call(fixture, "task-1"), [original]);
+  assert.equal(calls.length, 4);
+});
+
+test("readback separates business digests from Yui record digests and rejects damaged originals", () => {
+  const unsigned = { key: "decision", source: "synthetic", revision: 2, body: { allowed: false } };
+  const fact = { ...unsigned, digest: digest(JSON.stringify(unsigned)) };
+  const ref = { store: "task-message", refId: "message-9", digest: "enclosing-yui-record-digest" };
+  const original = { ref, value: { taskId: "task-1",
+    body: JSON.stringify({ kind: "collaboration-eval-fact", value: fact }) } };
+  let writes = 0;
+  const fixture = { call: () => { writes++; }, messageRecords: () => [original] };
+  persistTaskFacts(fixture, "task-1", [fact]);
+  assert.equal(writes, 1);
+  assert.deepEqual(readTaskFacts(fixture, "task-1"), {
+    origin: "yui-cli", records: [{ ref, digest: fact.digest, sourceDigest: ref.digest, value: fact }]
+  });
+  assert.equal(writes, 1, "reading must never write or re-seed a missing fact");
+  assert.throws(() => persistTaskFacts(fixture, "task-1", [fact, fact]), /Duplicate/);
+  assert.equal(writes, 1, "invalid material must fail before partial writes");
+  original.value.body = original.value.body.replace('"allowed":false', '"allowed":true');
+  assert.throws(() => readTaskFacts(fixture, "task-1"), /digest mismatch/);
+});
+
+test("native facts use active Decision and Knowledge originals, not superseded statements", () => {
+  const fact = key => {
+    const unsigned = { key, source: "fixture", revision: 1, body: { version: 2 } };
+    return { ...unsigned, digest: digest(JSON.stringify(unsigned)) };
+  };
+  const record = (store, key, status, field) => ({
+    ref: { store, refId: key, digest: `native-${key}-${status}` },
+    value: { taskId: "task-1", status,
+      [field]: JSON.stringify({ kind: "collaboration-eval-fact", value: fact(key) }) }
+  });
+  const fixture = {
+    records: (_task, store) => ({
+      "task-message": [record(store, "request", "recorded", "body")],
+      "task-decision": [record(store, "decision", "superseded", "rationale"),
+        record(store, "decision", "active", "rationale")],
+      "project-knowledge": [record(store, "evidence", "active", "body")]
+    })[store]
+  };
+  const readback = readNativeFacts(fixture, "task-1", { knowledge: true });
+  assert.deepEqual(readback.records.map(r => [r.value.key, r.ref.store]),
+    [["request", "task-message"], ["decision", "task-decision"], ["evidence", "project-knowledge"]]);
+  assert.ok(readback.records.every(r => r.sourceDigest.startsWith("native-")));
+});
+
+test("selection keeps holdout explicit, variants grouped, and unimplemented P visible", () => {
+  const select = options => selectConditions(options, definitions, variants);
+  assert.equal(select({ case: "dev", mode: "F" }).length, 22);
+  assert.equal(select({ case: "dev", mode: "P" }).length, 5);
+  assert.throws(() => select({ case: "all", mode: "all" }), /Holdout/);
+  const all = select({ case: "all", mode: "all", "allow-holdout": "true" });
+  assert.equal(all.length, 33);
+  assert.equal(new Set(all.map(c => c.id)).size, 24);
+  assert.equal(all.filter(c => c.split === "holdout").length, 6);
+  assert.ok(all.every(c => c.status === "not-run"));
+  assert.throws(() => select({ case: "C01", mode: "P" }), /Unsupported/);
+  assert.throws(() => select({ case: "O02,O02", mode: "F" }), /Duplicate/);
+  assert.throws(() => parseOptions(["--mode", "F", "--mode", "P"]), /Expected/);
+});
+
+test("native notification preparation leaves the predecessor effect unapplied", async () => {
+  const root = mkdtempSync(join(tmpdir(), "yui-eval-predecessor-"));
+  try {
+    const prepared = await prepareCase("O02", "base", root, { deferNotification: true });
+    assert.equal((await observe(root)).ledger.length, 0);
+    assert.equal(prepared.manifest.initial.ledger.length, 0);
+    assert.equal(prepared.predecessor.alreadyAppliedBusinessEffects, 0);
+    assert.ok(prepared.facts.find(f => f.key === "evidence").body.key);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("native observation rejects an uncorrelated terminal and counts idle participant reads", async () => {
+  const fixture = { deadline: performance.now() + 1000, trace: [],
+    reads: 0, bytes: 0, maxReads: 2, maxBytes: 100,
+    call: () => ({ throughCursor: "next", events: [{ value: {
+      type: "runtime.observation", payload: { observation: JSON.stringify({
+        kind: "turn.completed", fence: { nativeSessionId: "actual", nativeTurnId: "turn-1" },
+        payload: { output: JSON.stringify({ kind: "native-business-successor",
+          threadId: "other", turnId: "turn-1", trace: [] }) }
+      }) }
+    } }] })
+  };
+  await assert.rejects(new NativeObserver(fixture, "task-1", "start")
+    .terminal("native-business-successor"), /identity mismatch/);
+  const idle = { result: { threadId: "actual", kind: "native-business-idle",
+    trace: [{ phase: "query", stdoutBytes: 60, stderrBytes: 1 }] } };
+  includeNativeTrace(fixture, idle);
+  assert.equal(fixture.reads, 1);
+  assert.equal(fixture.bytes, 61);
+  assert.equal(fixture.trace[0].actor, "native-participant");
+  assert.throws(() => includeNativeTrace(fixture, idle), /budget-exceeded/);
+});
+
+test("native diagnostic sidecars retain exact bytes and are owned, immutable and identity-bound", () => {
+  const root = mkdtempSync(join(tmpdir(), "yui-eval-trace-"));
+  try {
+    const original = { kind: "native-business-predecessor", threadId: "session-1", turnId: "turn-1",
+      trace: [{ phase: "query", stdout: "中文 original", stdoutBytes: 15, stderrBytes: 0 }] };
+    const published = externalizeTrace(root, original);
+    assert.equal(published.trace, undefined);
+    assert.deepEqual(readNativeTrace(root, published), original.trace);
+    assert.throws(() => externalizeTrace(root, original), /EEXIST/);
+    assert.throws(() => readNativeTrace(root, { ...published, threadId: "another" }), /identity/);
+    writeFileSync(published.traceRef.path, "replaced");
+    assert.throws(() => readNativeTrace(root, published), /digest/);
+    const other = join(root, "outside-trace.json");
+    writeFileSync(other, "{}");
+    assert.throws(() => readNativeTrace(root, { ...published, traceRef: {
+      ...published.traceRef, path: other
+    } }), /outside/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

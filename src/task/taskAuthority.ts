@@ -2,6 +2,7 @@ import type { TaskCompletedBy } from "../task/task.js";
 import { hasManagedIdentity } from "../runtime/managedIdentity.js";
 import { usageError } from "../errors/cliError.js";
 import type { DurableJobCaller } from "../controller/jobControl.js";
+import type { TaskStore } from "../storage/taskStore.js";
 import {
   currentManagedRuntime,
   type ManagedCallerStore
@@ -71,6 +72,72 @@ export function assertTaskDeliveryAuthority(
     throw usageError("This native Session has planning authority, not delivery authority. Use a delivery Session for this operation.");
   }
   return actor;
+}
+
+/** Project effects consume the current Session's captured scope, never the
+ * Role's desired configuration or the mere presence of a writable directory.
+ * Task management (including abort/inspection) remains a separate authority. */
+export function assertTaskProjectWriteAuthority(
+  store: TaskStore, environment: NodeJS.ProcessEnv | undefined,
+  taskId: string, projectId: string
+): TaskCompletedBy {
+  const actor = assertTaskDeliveryAuthority(store, environment, taskId);
+  if (actor !== "leader") return actor;
+  const caller = currentManagedRuntime(store, environment, taskId, LEADER_ROLE)!;
+  const session = store.getTaskRoleSessionSet(taskId, LEADER_ROLE)?.sessions[caller.agentId];
+  const effective = session?.effective;
+  const task = store.getTask(taskId);
+  const main = store.getTaskWorkspace(taskId);
+  const entry = main?.entries.find(entry => entry.projectId === projectId);
+  if (task?.status !== "active" || task.executionGate.state !== "enabled"
+    || !task.projectBindings.some(binding => binding.projectId === projectId)
+    || effective?.profileAccess !== "write" || !effective.writeProjectIds.includes(projectId)
+    || main?.owner.type !== "task" || main.owner.taskId !== taskId
+    || effective.workspace.root !== main.root || entry?.access !== "write"
+    || !effective.workspace.entries.some(captured => captured.projectId === projectId
+      && captured.access === "write" && captured.path === entry.path)) {
+    throw usageError("Project write requires this Task's current delivery Session with a captured writable Project in its Task-main workspace. Read the Session scope; use formal Session replacement to adopt a new boundary.");
+  }
+  return actor;
+}
+
+/** A managed Leader integrates into its captured Task-main, not any branch
+ * reachable through the same Git repository. The executor also verifies that
+ * this ref is physically checked out here immediately before target effects. */
+export function taskIntegrationTargetCheckout(
+  store: TaskStore, environment: NodeJS.ProcessEnv | undefined,
+  taskId: string, projectId: string, targetRef: string
+): string | undefined {
+  if (assertTaskProjectWriteAuthority(store, environment, taskId, projectId) !== "leader") {
+    return undefined;
+  }
+  return taskIntegrationSettlementCheckout(store, environment, taskId, projectId, targetRef);
+}
+
+/** Confirming an already-applied CAS is Task management, not a Project write
+ * grant. Keep the current delivery identity and captured target ownership, but
+ * do not require or change its declared write scope. Never use this for CAS. */
+export function taskIntegrationSettlementCheckout(
+  store: TaskStore, environment: NodeJS.ProcessEnv | undefined,
+  taskId: string, projectId: string, targetRef: string
+): string | undefined {
+  if (assertTaskDeliveryAuthority(store, environment, taskId) !== "leader") return undefined;
+  const task = store.getTask(taskId);
+  const main = store.getTaskWorkspace(taskId);
+  const entry = main?.entries.find(entry => entry.projectId === projectId);
+  const caller = currentManagedRuntime(store, environment, taskId, LEADER_ROLE)!;
+  const effective = store.getTaskRoleSessionSet(taskId, LEADER_ROLE)?.sessions[caller.agentId]?.effective;
+  const captured = effective?.workspace.entries.find(entry => entry.projectId === projectId);
+  const branchRef = (ref: string) => ref.startsWith("refs/heads/") ? ref : `refs/heads/${ref}`;
+  if (task?.status !== "active" || !task.projectBindings.some(binding => binding.projectId === projectId)
+    || main?.owner.type !== "task" || main.owner.taskId !== taskId
+    || effective?.workspace.root !== main.root || entry?.access !== "write"
+    || captured?.path !== entry.path || entry.branch === undefined || captured.branch === undefined
+    || branchRef(entry.branch) !== branchRef(captured.branch)
+    || branchRef(targetRef) !== branchRef(captured.branch)) {
+    throw usageError("Managed Leader Integration target must be its captured Task-main branch and checkout.");
+  }
+  return entry.path;
 }
 
 /**
