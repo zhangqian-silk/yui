@@ -280,7 +280,7 @@ export function integrationFixture(t, strategy = "merge") {
     starts: () => starts,
     finishJob() {
       const queued = store.getDurableJob(task.id, "job-1");
-      const job = startDurableJob(queued, { pid: 99999999, startIdentity: "fixture-only" }, now);
+      const job = startDurableJob(queued, { pid: 99999999, startIdentity: "0" }, now);
       store.saveDurableJob(task.id, job);
       store.saveDurableJob(task.id, completeDurableJob(job, {
           outcome: "succeeded", exitCode: 0, signal: null,
@@ -551,7 +551,8 @@ test("an old Git conflict without its Integration receipt is diagnosed without a
   assert.equal(f.starts(), 0);
 });
 
-test("WorkItem preflight and both cleanup entry points retain an acknowledged unknown live Job", async t => {
+for (const outcome of ["unknown-needs-attention", "succeeded", "failed", "timed-out", "cancelled"]) {
+test(`WorkItem preflight and both cleanup entry points retain a ${outcome} live Job`, async t => {
   const f = integrationFixture(t);
   const preparer = new FileTaskWorkspacePreparer(f.home, f.store, undefined, () => now);
   const item = retireWorkItem(createWorkItem("work-item-1", "task-1",
@@ -572,8 +573,11 @@ test("WorkItem preflight and both cleanup entry points retain an acknowledged un
     artifactsLocator: "artifacts/jobs/task-1/job-1",
     operation: { requestId: "work-check", actorId: "fixture:leader",
       authorityRef: "fixture:leader", inputDigest: "a".repeat(64) } }, now);
-  const unknown = acknowledgeUnknownDurableJob(markDurableJobUnknown(startDurableJob(queued,
-    { pid: process.pid, startIdentity: currentProcessStartIdentity() }, now), "unknown result", [], now), now);
+  const running = startDurableJob(queued,
+    { pid: process.pid, startIdentity: currentProcessStartIdentity() }, now);
+  const unknown = outcome === "unknown-needs-attention"
+    ? acknowledgeUnknownDurableJob(markDurableJobUnknown(running, "unknown result", [], now), now)
+    : completeDurableJob(running, { outcome, exitCode: outcome === "succeeded" ? 0 : 1, signal: null, steps: [] }, now);
   f.store.saveDurableJob("task-1", unknown);
   const checks = await preparer.inspectWorkspaceCleanup(workspace, "abandoned");
   assert.ok(checks.some(check => check.reason === "unresolved-execution"), JSON.stringify(checks));
@@ -586,6 +590,67 @@ test("WorkItem preflight and both cleanup entry points retain an acknowledged un
   assert.equal(existsSync(prepared.path), true);
   assert.deepEqual(f.store.getWorkItemWorkspace("task-1", item.id), workspace);
   assert.deepEqual(f.store.getDurableJob("task-1", unknown.id), unknown);
+});
+}
+
+test("succeeded Job retains surviving child references after its runner exits", async t => {
+  const f = integrationFixture(t);
+  const conflict = await f.service().integrate("task-1", "integration-1");
+  f.resolve(conflict.workspace.path);
+  await f.service().integrate("task-1", "integration-1");
+  f.finishJob();
+  const job = f.store.getDurableJob("task-1", "job-1");
+  f.store.saveIntegrationAttempt("task-1", { ...f.store.getIntegrationAttempt("task-1", "integration-1"),
+    status: "failed", endedAt: now.toISOString() });
+  const helper = spawn(process.execPath, ["-e", "console.log('ready');process.stdin.resume()"],
+    { cwd: job.workspace, stdio: ["pipe", "pipe", "inherit"] });
+  t.after(() => { if (helper.exitCode === null) helper.kill(); });
+  await once(helper.stdout, "data");
+  const preparer = new FileTaskWorkspacePreparer(f.home, f.store);
+  const workspace = f.store.getIntegrationWorkspace("task-1", "integration-1");
+  try {
+    assert.match(jobCleanupBlocker(job, f.home) ?? "", /live|unverified/);
+    assert.ok((await preparer.inspectWorkspaceCleanup(workspace, "abandoned"))
+      .some(check => check.reason === "unresolved-execution"));
+    assert.ok(archiveExecutionChecks(f.store, "task-1", f.home).some(check => check.resource === "job:task-1/job-1"));
+    await assert.rejects(preparer.cleanupIntegrationWorkspace("task-1", "integration-1"), /Job|execution/);
+    assert.equal(existsSync(job.workspace), true);
+  } finally {
+    const stopped = once(helper, "exit");
+    helper.stdin.end();
+    await stopped;
+  }
+  assert.equal(jobCleanupBlocker(job, f.home), undefined);
+  assert.equal(await preparer.cleanupIntegrationWorkspace("task-1", "integration-1"), "removed");
+  assert.deepEqual(f.store.getDurableJob("task-1", "job-1"), job);
+});
+
+test("Integration preflight retains unowned runtime without blocking ordinary archive admission", async t => {
+  const f = integrationFixture(t);
+  const conflict = await f.service().integrate("task-1", "integration-1");
+  f.resolve(conflict.workspace.path);
+  await f.service().integrate("task-1", "integration-1");
+  f.finishJob();
+  f.store.saveIntegrationAttempt("task-1", { ...f.store.getIntegrationAttempt("task-1", "integration-1"),
+    status: "failed", endedAt: now.toISOString() });
+  const descriptor = JSON.parse(f.store.getDurableJob("task-1", "job-1").env.YUI_TASK_RUNTIME_ISOLATION_DESCRIPTOR);
+  const markerPath = join(descriptor.roots.runtime, ".yui-task-runtime-owner.json");
+  const marker = readFileSync(markerPath, "utf8");
+  const preparer = new FileTaskWorkspacePreparer(f.home, f.store);
+  const workspace = f.store.getIntegrationWorkspace("task-1", "integration-1");
+  rmSync(markerPath);
+  try {
+    const checks = await preparer.inspectWorkspaceCleanup(workspace, "abandoned");
+    assert.ok(checks.some(check => check.reason === "runtime-resource-unverified"), JSON.stringify(checks));
+    assert.equal(archiveExecutionChecks(f.store, "task-1", f.home).length, 0);
+    await assert.rejects(preparer.cleanupIntegrationWorkspace("task-1", "integration-1"), /runtime/i);
+    assert.equal(existsSync(workspace.root), true);
+    f.store.saveTask(retireTask(f.store.getTask("task-1"), { by: "user", summary: "fixture abandonment" }, now));
+    runTaskCommand(["archive", "task-1", "--abandon"], f.store, { environment: {}, yuiHome: f.home });
+    assert.equal(f.store.getTask("task-1").status, "archived");
+  } finally { writeFileSync(markerPath, marker); }
+  assert.deepEqual(await preparer.inspectWorkspaceCleanup(workspace, "abandoned"), []);
+  assert.equal(await preparer.cleanupIntegrationWorkspace("task-1", "integration-1"), "removed");
 });
 
 test("unknown Job cleanup requires acknowledgement and current physical absence without rewriting its result", async t => {

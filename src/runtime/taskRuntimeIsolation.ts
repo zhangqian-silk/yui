@@ -249,15 +249,12 @@ export class FileTaskRuntimeIsolation implements TaskRuntimeIsolationPort {
   ): void {
     requireCleanupReason(reason);
     const { descriptor, fingerprint } = validatePreparation(preparation);
-    const resources = [
-      ...inspectRuntimeRoot(descriptor, fingerprint),
-      ...(this.#inspectResources?.(descriptor) ?? [])
-    ];
+    const resources = inspectTaskRuntimeCleanup(preparation, reason,
+      this.#inspectResources?.(descriptor) ?? []);
     if (resources.length === 0) {
       this.#resourceRegistrar().markTaskRuntimeDeleted(descriptor);
       return;
     }
-    planTaskRuntimeCleanup(descriptor, reason, resources);
     // Claims keep the original descriptor and owner marker. An interrupted
     // rename is not absence: resume only exact, inactive claims and leave any
     // partial/unmarked deletion discoverable through the original owner.
@@ -570,6 +567,27 @@ export function planTaskRuntimeCleanup(
     }
   }
   return Object.freeze([...ids].sort());
+}
+
+/** Read-only cleanup admission, shared by resource preflight and deletion.
+ * Deletion still repeats ownership/live checks after claiming each directory.
+ */
+export function inspectTaskRuntimeCleanup(
+  preparation: TaskRuntimeIsolationPreparation,
+  reason: TaskRuntimeCleanupReason,
+  additionalResources: readonly TaskRuntimeResourceObservation[] = []
+): readonly TaskRuntimeResourceObservation[] {
+  const { descriptor, fingerprint } = validatePreparation(preparation);
+  const resources = [...inspectRuntimeRoot(descriptor, fingerprint), ...additionalResources];
+  planTaskRuntimeCleanup(descriptor, reason, resources);
+  const paths = resources.filter(resource => resource.kind === "directory").map(resource => resource.id);
+  if (paths.length === 0) return resources;
+  const scan = scanProcessPathRefs(paths);
+  if (scan.diagnostics.some(diagnostic => diagnostic.severity === "error")
+    || [...scan.refs.values()].some(refs => refs.length > 0)) {
+    throw new Error("Task runtime cleanup resources are live or unverified.");
+  }
+  return resources;
 }
 
 function inspectRuntimeRoot(

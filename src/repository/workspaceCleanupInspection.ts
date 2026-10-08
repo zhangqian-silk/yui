@@ -11,13 +11,16 @@ import { managedWorkspaceKey, managedWorktreeName, type ManagedWorkspace } from 
 import { integrationWorktreeIdentity, worktreeIdentity, type GitWorkspacePort } from "./gitWorkspace.js";
 import { taskWorkspaceRefSegment } from "./taskWorkspaceIdentity.js";
 import { jobCleanupBlocker } from "../job/jobCleanupInspection.js";
+import { defaultIntegrationRuntimeIsolation } from "../runtime/integrationRuntimeIsolation.js";
+import { inspectTaskRuntimeCleanup, type TaskRuntimeIsolationPort } from "../runtime/taskRuntimeIsolation.js";
 
 /** Current owner facts + the same Git inspection used immediately before removal.
  * No preparation, locks, Git refresh, runtime stop, DB writes or repair.
  */
 export async function inspectWorkspaceCleanup(
   store: TaskStore, git: GitWorkspacePort, workspace: ManagedWorkspace,
-  disposition: WorkItemWorkspaceDisposition, forceArchive = false, home?: string
+  disposition: WorkItemWorkspaceDisposition, forceArchive = false, home?: string,
+  integrationRuntime?: TaskRuntimeIsolationPort
 ): Promise<CleanupCheck[]> {
   const owner = workspace.owner;
   const task = store.getTask(owner.taskId);
@@ -102,6 +105,15 @@ export async function inspectWorkspaceCleanup(
       }
       if (attempt === null || ["running", "blocked", "conflicted", "validating"].includes(attempt.status)) {
         add("owner-unsettled", "IntegrationAttempt must be terminal before cleanup.", "terminal attempt", attempt?.status ?? null);
+      }
+      try {
+        if (home === undefined) throw new Error("Runtime Home unavailable.");
+        const runtime = integrationRuntime ?? defaultIntegrationRuntimeIsolation(home, store.getHomeIdentity().homeId);
+        inspectTaskRuntimeCleanup(runtime.preflight({ workspace, allowExactActive: true }),
+          attempt?.status === "committed" ? "completion" : "failure");
+      } catch {
+        add("runtime-resource-unverified", "Integration runtime ownership or physical quiescence cannot be verified.",
+          "exactly owned inactive runtime and cleanup claims", "unverified");
       }
       break;
     }

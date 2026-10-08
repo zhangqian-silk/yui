@@ -2523,8 +2523,9 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
     if (workspace === null) return "missing"; // no current resource ownership to delete
     // Terminal history does not authorize discarding conflict resolutions or
     // diagnostics. All entry points use the same exact-owner inspection.
-    await this.#assertWorkspaceCleanup(workspace, "abandoned");
     const runtime = options.runtimeIsolation ?? defaultIntegrationRuntimeIsolation(this.home, this.store.getHomeIdentity().homeId);
+    const checks = await inspectWorkspaceCleanup(this.store, this.git, workspace, "abandoned", false, this.home, runtime);
+    if (checks.length > 0) throw new CleanupInspectionError(checks);
     runtime.cleanup(runtime.preflight({ workspace, allowExactActive: true }),
       attempt.status === "committed" ? "completion" : "failure");
     const project = requireProject(this.store, attempt.projectId);

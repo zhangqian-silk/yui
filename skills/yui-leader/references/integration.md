@@ -100,6 +100,11 @@ physical stop evidence: cleanup also rechecks the recorded runner generation
 and physical workspace/log/runtime references. When those are proven absent,
 the acknowledged unknown result remains historical evidence, not a permanent
 physical-cleanup blocker.
+The same physical checks apply to every executed terminal Job, including a
+successful one: surviving child processes are not stopped by a result receipt.
+Integration resource preflight includes runtime ownership and renamed cleanup
+claims; retain unverified material for diagnosis without inferring new deletion
+authority from Task archive admission.
 
 Direct Task-main delivery is an alternative only when current delivery
 authority, ownership and the Task contract already permit it, with no other

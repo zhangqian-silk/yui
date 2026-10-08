@@ -360,7 +360,7 @@ Retries inspect these claims as well as the original path: only an exact Owner
 marker and no live process references permit deletion. Missing or mismatched
 markers remain retained with their path for explicit diagnosis; absence of the
 original directory alone never proves release. Unresolved claims also prevent
-reactivating the same runtime. Unknown-Job execution checks use that same claim
+reactivating the same runtime. Executed-Job physical checks use that same claim
 inventory before ordinary archive commits; acknowledgement does not bypass a
 live or unverified renamed runtime. This uses the existing resource owner and receipt,
 not a second cleanup queue.
@@ -429,7 +429,13 @@ before clone removal. Archive preserves new dirt even in a failed Integration
 workspace; explicit Integration cleanup also preserves dirt and durable logs.
 An acknowledged unknown Job result remains unknown: cleanup additionally needs
 fresh evidence that its exact runner generation and physical path references
-are absent. A finished cleanup means the foreground
+are absent. Successful, failed, timed-out and cancelled executed Jobs need the
+same physical evidence; a terminal result does not prove surviving children
+stopped. Only Jobs cancelled/rejected before any execution effect bypass it.
+Integration resource preflight also checks runtime ownership and cleanup claims
+with the deletion inspector. Unverified physical material is retained without
+turning it into a new ordinary-archive business gate.
+A finished cleanup means the foreground
 attempt ended, not that every resource was released. Current retained references
 and exact physical runtime evidence remain separate from historical diagnostics.
 

@@ -13,10 +13,13 @@ import type { DurableJob } from "./durableJob.js";
  */
 export function jobCleanupBlocker(job: DurableJob, home?: string): string | undefined {
   if (job.status === "queued" || job.status === "running") return `DurableJob is ${job.status}.`;
-  if (job.status !== "unknown-needs-attention") return undefined;
-  if (job.acknowledgedAt === undefined) return "Unknown Job result requires explicit acknowledgement.";
+  if (job.status === "unknown-needs-attention" && job.acknowledgedAt === undefined) {
+    return "Unknown Job result requires explicit acknowledgement.";
+  }
+  if (job.status !== "unknown-needs-attention" && job.startedAt === undefined
+    && job.process === undefined && job.operation.effect === "none") return undefined;
   if (job.process === undefined || home === undefined) {
-    return "Unknown Job has no exact process/Home evidence for physical inspection.";
+    return "Job has no exact process/Home evidence for physical inspection.";
   }
   try {
     if (processGenerationIsLive(job.process.pid, job.process.startIdentity)) {
