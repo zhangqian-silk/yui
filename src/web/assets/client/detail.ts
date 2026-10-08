@@ -129,14 +129,14 @@ function renderOverviewPanel(panel, data, t, locale, ctx) {
     panel.append(needs);
   }
 
-  const grid = h("div.card-grid");
-  grid.append(progressCard(data, t, locale, ctx));
+  // Independent column stacks, not paired rows: a long progress card must not
+  // push the next row down and leave a gap under the shorter Session card.
+  // Main column: what the Task is and where it stands. Rail: live and decided facts.
   const sessions = card({ title: t("sessions.title"), icon: "terminal", hint: t("sessions.hint") });
   sessions.body.append(h("div", { dataset: { slot: "sessions" } }));
-  grid.append(sessions);
-  grid.append(goalCard(data, t, ctx));
-  grid.append(decisionsCard(data, t, locale, ctx));
-  panel.append(grid);
+  panel.append(h("div.card-columns", null,
+    h("div.card-column", null, progressCard(data, t, locale, ctx), goalCard(data, t, ctx)),
+    h("div.card-column", null, sessions, decisionsCard(data, t, locale, ctx))));
   if (task.status === "draft") panel.append(planningCard(data, t, locale));
 }
 
