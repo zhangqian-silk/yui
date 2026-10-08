@@ -593,6 +593,80 @@ test(`WorkItem preflight and both cleanup entry points retain a ${outcome} live 
 });
 }
 
+test("cleanup stops exact idle Roles before terminal Job path checks, but retains surviving references", async t => {
+  const f = integrationFixture(t);
+  const preparer = new FileTaskWorkspacePreparer(f.home, f.store);
+  const item = retireWorkItem(createWorkItem("work-item-1", "task-1",
+    { title: "Settled work", assignee: "worker", writeProjectIds: ["project-1"] }, now),
+  { by: "leader", summary: "abandoned" }, now);
+  f.store.saveWorkItem("task-1", item);
+  const root = join(f.home, "workspaces/tasks/task-1/work-items/work-item-1");
+  const prepared = await preparer.git.ensureWorktree({ repositoryPath: f.repo, container: root,
+    directory: "app", taskSegment: taskWorkspaceRefSegment(f.store.getTask("task-1")),
+    roleName: item.id, baseRef: "main" });
+  f.store.saveManagedWorkspace(createManagedWorkspace({ owner: { type: "work-item",
+    taskId: "task-1", workItemId: item.id }, root,
+    entries: [{ projectId: "project-1", directory: "app", access: "write", ...prepared, baseRef: "main" }] }, now));
+  const binding = createRoleAgentBinding({ id: "codex", adapterId: "codex" });
+  for (const name of ["worker", "leader"]) {
+    f.store.saveRole("task-1", createRole("task-1", name, [binding], binding.agentId, f.repo, now));
+  }
+  const succeeded = (id, owner, workspace) => completeDurableJob(startDurableJob(createDurableJob({
+    id, taskId: "task-1", owner, workspace, projectId: "project-1", head: prepared.baseCommit,
+    env: {}, steps: [{ name: "check", command: "true" }], artifactsLocator: `artifacts/jobs/task-1/${id}`,
+    operation: { requestId: id, actorId: "fixture:leader", authorityRef: "fixture:leader", inputDigest: "a".repeat(64) }
+  }, now), { pid: 99999999, startIdentity: "0" }, now),
+  { outcome: "succeeded", exitCode: 0, signal: null, steps: [] }, now);
+  f.store.saveDurableJob("task-1", succeeded("job-1", { kind: "work-item", workItemId: item.id }, root));
+  const launch = async cwd => {
+    const child = spawn(process.execPath, ["-e", "console.log('ready');process.stdin.resume()"],
+      { cwd, stdio: ["pipe", "pipe", "inherit"] });
+    t.after(async () => {
+      if (child.exitCode === null) { const exit = once(child, "exit"); child.stdin.end(); await exit; }
+    });
+    await once(child.stdout, "data");
+    return child;
+  };
+  const stop = async child => { const exit = once(child, "exit"); child.stdin.end(); await exit; };
+  let role = "worker";
+  let idle = await launch(prepared.path);
+  let live = true;
+  let stops = 0;
+  const coordinator = new TaskWorkspaceCoordinator(f.store, preparer, {
+    inspectTaskRolePanes() { return live ? [{ roleName: role, dead: false }] : []; },
+    async stopTaskRoleSessions(taskId, names) {
+      assert.equal(taskId, "task-1");
+      assert.deepEqual(names, [role]);
+      stops++;
+      await stop(idle);
+      live = false;
+    },
+    async releaseTaskTerminals() {},
+    async assertTaskPhysicalResourcesReleased() {}
+  });
+  const survivor = await launch(prepared.path);
+  await assert.rejects(coordinator.cleanupWorkItem("task-1", item.id, "abandoned"), /Job|execution/);
+  assert.equal(stops, 1, "the exact idle Worker must reach its normal stop");
+  assert.equal(existsSync(prepared.path), true, "unrelated surviving references still protect the worktree");
+  await stop(survivor);
+  assert.equal(await coordinator.cleanupWorkItem("task-1", item.id, "abandoned"), "removed");
+  f.store.saveIntegrationAttempt("task-1", { ...f.store.getIntegrationAttempt("task-1", "integration-1"),
+    status: "failed", endedAt: now.toISOString() });
+  f.store.saveTask(retireTask(f.store.getTask("task-1"), { by: "user", summary: "abandon" }, now));
+  f.store.saveDurableJob("task-1", succeeded("job-2", { kind: "task" }, f.repo));
+  role = "leader";
+  idle = await launch(f.repo);
+  live = true;
+  const archiveSurvivor = await launch(f.repo);
+  await assert.rejects(coordinator.prepareTaskForArchive("task-1"), /live|reference|execution/i);
+  assert.equal(stops, 2, "the exact idle Leader must reach its normal stop");
+  assert.equal(f.store.getTask("task-1").status, "cancelled");
+  await stop(archiveSurvivor);
+  await coordinator.prepareTaskForArchive("task-1");
+  runTaskCommand(["archive", "task-1", "--abandon"], f.store, { environment: {}, yuiHome: f.home });
+  assert.equal(f.store.getTask("task-1").status, "archived");
+});
+
 test("succeeded Job retains surviving child references after its runner exits", async t => {
   const f = integrationFixture(t);
   const conflict = await f.service().integrate("task-1", "integration-1");

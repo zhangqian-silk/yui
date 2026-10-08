@@ -45,7 +45,7 @@ export async function archiveLeaderTask(
   // Only the requesting no-Run Leader may be stopped as part of this action.
   // Another Run, Job, unknown input, or then handoff is not archive authority.
   const ownResources = `role:${taskId}/leader`;
-  const execution = archiveExecutionChecks(store, taskId, coordinator.preparer.home).filter(check =>
+  const execution = archiveExecutionChecks(store, taskId, coordinator.preparer.home, "before-role-stop").filter(check =>
     !(check.resource === ownResources
       && ownInput?.runId === undefined && ownInput?.status === "accepted"
       && ["unresolved-provider-input", "unresolved-mailbox"].includes(check.reason)));

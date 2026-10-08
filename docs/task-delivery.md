@@ -432,6 +432,11 @@ fresh evidence that its exact runner generation and physical path references
 are absent. Successful, failed, timed-out and cancelled executed Jobs need the
 same physical evidence; a terminal result does not prove surviving children
 stopped. Only Jobs cancelled/rejected before any execution effect bypass it.
+Cleanup first checks Job results and exact runner exit, then stops only settled,
+exactly owned Roles. It repeats full path-reference checks after that stop and
+before deleting any child workspace or committing ordinary archive. An idle
+reusable Role sharing the workspace is not itself a reason to skip its normal
+stop; surviving or unverified references still prevent release.
 Integration resource preflight also checks runtime ownership and cleanup claims
 with the deletion inspector. Unverified physical material is retained without
 turning it into a new ordinary-archive business gate.

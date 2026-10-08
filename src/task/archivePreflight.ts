@@ -45,7 +45,10 @@ export function archiveSettlementChecks(store: TaskStore, task: Task): CleanupCh
 /** Unknown execution is never permission to remove workspaces, even after
  * force admission. These facts are reloaded in the actual force cleanup path.
  */
-export function archiveExecutionChecks(store: TaskStore, taskId: string, home?: string): CleanupCheck[] {
+export function archiveExecutionChecks(
+  store: TaskStore, taskId: string, home?: string,
+  phase: "before-role-stop" | "before-removal" = "before-removal"
+): CleanupCheck[] {
   const checks: CleanupCheck[] = [];
   const add = (resource: string, reason: string, detail: string, observed: unknown, action: string) =>
     checks.push({ resource, reason, status: "unknown", detail, expected: "settled execution",
@@ -55,7 +58,7 @@ export function archiveExecutionChecks(store: TaskStore, taskId: string, home?: 
       run.status, `yui task run show ${taskId}/${run.id}`);
   }
   for (const job of store.listDurableJobs(taskId)) {
-    const blocker = jobCleanupBlocker(job, home);
+    const blocker = jobCleanupBlocker(job, home, phase);
     if (blocker !== undefined) add(`job:${taskId}/${job.id}`, "unresolved-execution", blocker,
       job.status, `yui job get --task ${taskId} --job ${job.id}`);
   }

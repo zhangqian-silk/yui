@@ -11,7 +11,9 @@ import type { DurableJob } from "./durableJob.js";
  * recorded process generation and resource scanner, without rewriting the Job
  * or treating acknowledgement as stop evidence. Every cleanup reads this anew.
  */
-export function jobCleanupBlocker(job: DurableJob, home?: string): string | undefined {
+export function jobCleanupBlocker(
+  job: DurableJob, home?: string, phase: "before-role-stop" | "before-removal" = "before-removal"
+): string | undefined {
   if (job.status === "queued" || job.status === "running") return `DurableJob is ${job.status}.`;
   if (job.status === "unknown-needs-attention" && job.acknowledgedAt === undefined) {
     return "Unknown Job result requires explicit acknowledgement.";
@@ -25,6 +27,10 @@ export function jobCleanupBlocker(job: DurableJob, home?: string): string | unde
     if (processGenerationIsLive(job.process.pid, job.process.startIdentity)) {
       return "The exact Job runner process is still live.";
     }
+    // A reusable idle Role can share this workspace. Its exact-owner stop is
+    // allowed only after result/runner checks; path references must then be
+    // rechecked before any child deletion or ordinary archive commit.
+    if (phase === "before-role-stop") return undefined;
     // Steps may outlive a killed runner. Their cwd, logs and isolated runtime
     // paths remain protective references; no process is signalled here.
     const paths = [job.workspace, join(resolve(home), "artifacts", "jobs", job.taskId, job.id),

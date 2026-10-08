@@ -144,8 +144,9 @@ export class TaskWorkspaceCoordinator {
       const state = await this.preparer.inspectWorkItemWorkspace(item.taskId, item.id);
       if (state === "dirty") return "dirty";
       this.#assertWorkItemRuntimeQuiescent(item);
-      this.#assertNoActiveWorkItemDurableJobs(item);
+      this.#assertNoActiveWorkItemDurableJobs(item, "before-role-stop");
       await this.#stopLiveRoles(item.taskId, this.#workItemRoleNames(item));
+      this.#assertNoActiveWorkItemDurableJobs(item);
       const laneCleanup = await this.preparer.cleanupExecutionLaneWorkspacesForWorkItem(
         item.taskId,
         item.id
@@ -229,7 +230,8 @@ export class TaskWorkspaceCoordinator {
     if (task.status !== "completed" && task.status !== "cancelled") {
       throw new Error(`Task must be completed or retired before archive: ${task.id}.`);
     }
-    const settlement = [...archiveSettlementChecks(this.store, task), ...archiveExecutionChecks(this.store, taskId, this.preparer.home)];
+    const settlement = [...archiveSettlementChecks(this.store, task),
+      ...archiveExecutionChecks(this.store, taskId, this.preparer.home, "before-role-stop")];
     if (settlement.length > 0) throw new CleanupInspectionError(settlement);
     const managedWorkspaces = [...this.store.listManagedWorkspaces(task.id)]
       .sort((left, right) => managedWorkspaceKey(left.owner)
@@ -432,15 +434,17 @@ export class TaskWorkspaceCoordinator {
     }
   }
 
-  /** Check before stopping Roles or cleaning child lanes. The preparer's
-   * shared inspection repeats this physical check immediately before removal.
+  /** Check result/runner before stopping Roles, then physical references before
+   * cleaning any child lanes. The preparer repeats the full check at removal.
    */
-  #assertNoActiveWorkItemDurableJobs(item: WorkItem): void {
+  #assertNoActiveWorkItemDurableJobs(
+    item: WorkItem, phase: "before-role-stop" | "before-removal" = "before-removal"
+  ): void {
     const jobs = this.store.listDurableJobs(item.taskId);
     const blocking = jobs.filter((job) => (
       job.owner.kind === "work-item"
       && job.owner.workItemId === item.id
-      && jobCleanupBlocker(job, this.preparer.home) !== undefined
+      && jobCleanupBlocker(job, this.preparer.home, phase) !== undefined
     ));
     if (blocking.length > 0) {
       throw new WorkspaceCleanupBlockedError(
@@ -470,6 +474,9 @@ export class TaskWorkspaceCoordinator {
 
   async #stopLiveRoles(taskId: string, roleNames: readonly string[]): Promise<void> {
     const targets = [...new Set(roleNames)];
+    const unresolved = archiveExecutionChecks(this.store, taskId, this.preparer.home, "before-role-stop")
+      .filter(check => targets.some(roleName => check.resource === `role:${taskId}/${roleName}`));
+    if (unresolved.length > 0) throw new CleanupInspectionError(unresolved);
     for (const roleName of targets) {
       if (this.store.getActiveRun(taskId, roleName) !== null) {
         throw new Error(`Role has an active AgentRun: ${taskId}/${roleName}.`);
