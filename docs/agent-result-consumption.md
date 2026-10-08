@@ -65,6 +65,22 @@ silently rerun successful Producers.
 
 ## Review
 
+Capturing a Run-backed WorkItem Candidate freezes its exact source report and
+Candidate identity in the existing immutable Context Snapshot store. Review
+receives a `source-run` pointer with `evidenceOf=<work-item>/<candidate>` and
+expands the original report through `task run context expand`, including all
+content pages. Source, Candidate or report drift refuses a new dispatch; already
+frozen Run Context remains readable. Task-final producer evidence requires an
+exact Candidate head or a committed Integration at the fixed head and Task-main
+target. Earlier attempts sharing a target are not ancestry proof. A later direct
+Task-main repair remains reviewable without a matching producer report: the
+ReviewRound pointer identifies the evidence gap. Attached reports describe their
+named Candidate, not validation of the entire Task head; a Reviewer assesses
+the fixed code and reports missing validation rather than borrowing old success.
+Historical Candidates without this frozen proof remain inspectable, but need
+newly captured delivery evidence before a new Candidate Review; old Snapshots
+are never backfilled.
+
 ReviewRound owns frozen Candidate or Task-head identity, workspace provenance,
 execution topology, exact main Reviewer Run, lifecycle and Core diagnostics.
 Its completed state is structural execution evidence, not a “pass” extracted

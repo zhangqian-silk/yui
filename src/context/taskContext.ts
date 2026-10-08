@@ -187,6 +187,15 @@ export function inspectTaskContext(
   store: TaskStore, taskId: string, selector: Readonly<{ store: string; refId: string; digest?: string; cursor?: string }>,
   environment: NodeJS.ProcessEnv = {}
 ) {
+  const response = readTaskContextResource(store, taskId, selector, environment);
+  return boundedDocument(response, `task:${taskId}/${selector.store}/${selector.refId}`, selector.cursor);
+}
+
+/** The same authorized read as inspect, before transport pagination. */
+export function readTaskContextResource(
+  store: TaskStore, taskId: string, selector: Readonly<{ store: string; refId: string; digest?: string }>,
+  environment: NodeJS.ProcessEnv = {}
+) {
   return store.readTransaction((reader) => {
     const scope = authorizeContext(reader, taskId, environment);
     const value = isAllowed(scope.allow, selector.store, selector.refId)
@@ -207,7 +216,7 @@ export function inspectTaskContext(
         reader.getTaskRoleSessionSet(taskId, (value as AgentRun).roleName)?.providerBinding,
         reader.listEventsByType(taskId, ["runtime.agent-error"])) } : {}),
     };
-    return boundedDocument(response, `task:${taskId}/${selector.store}/${selector.refId}`, selector.cursor);
+    return response;
   });
 }
 

@@ -23,6 +23,7 @@ import {
   type ContextSnapshotScope
 } from "./contextSnapshot.js";
 import { MAX_SYNTHESIS_SOURCE_RUNS, sourceRunContextValue } from "./sourceRunContext.js";
+import type { TaskReviewCandidate } from "../review/reviewRound.js";
 
 export const RUN_CONTEXT_PACK_SCHEMA_VERSION = 1 as const;
 
@@ -92,7 +93,125 @@ export type AgentRunContextLiveTaskState = Readonly<{
   }>[];
 }>;
 
-type MaterializedRef = Readonly<{ ref: ContextRef; value: unknown }>;
+export type MaterializedRef = Readonly<{ ref: ContextRef; value: unknown }>;
+
+function mergeRequiredContext(
+  automatic: readonly MaterializedRef[], required: readonly MaterializedRef[],
+  requiredPolicy: "current" | "frozen" = "current"
+): MaterializedRef[] {
+  const entries = new Map(automatic.map(entry => [`${entry.ref.store}/${entry.ref.refId}`, entry]));
+  for (const entry of required) {
+    const key = `${entry.ref.store}/${entry.ref.refId}`;
+    const existing = entries.get(key);
+    if (requiredPolicy === "current" && existing !== undefined && existing.ref.digest !== entry.ref.digest) {
+      throw new Error(`Required Context changed during dispatch: ${key}. Read its current reference and dispatch again.`);
+    }
+    entries.set(key, entry);
+  }
+  return [...entries.values()];
+}
+
+/** Pin the original result together with the candidate, using the existing
+ * immutable Snapshot store rather than a second result/provenance ledger. */
+export function freezeCandidateContextSnapshot(
+  store: TaskStore, candidate: WorkItem["candidates"][number], now: Date
+): ContextSnapshot | undefined {
+  if (candidate.source.type !== "run") return undefined;
+  const source = store.getRun(candidate.taskId, candidate.source.runId);
+  if (source === null || source.taskId !== candidate.taskId
+    || source.workItemId !== candidate.workItemId || source.purpose !== "execution"
+    || source.status !== "completed" || source.result === undefined
+    || Date.parse(source.updatedAt) > Date.parse(candidate.createdAt)) {
+    throw new Error(`Candidate source report is missing or mismatched: ${candidate.workItemId}/${candidate.id}.`);
+  }
+  const evidenceOf = `${candidate.workItemId}/${candidate.id}`;
+  const report = materialize("L4", "source-run", source.id, sourceRunContextValue(source));
+  const resources = [
+    materialize("L3", "candidate", evidenceOf, candidate),
+    { ...report, ref: { ...report.ref, evidenceOf } }
+  ];
+  const snapshot = createContextSnapshot({
+    id: store.nextContextSnapshotId(candidate.taskId),
+    taskId: candidate.taskId, scope: "workitem", scopeRef: `candidate:${evidenceOf}`,
+    sequence: 1, refs: resources.map(({ ref }) => ref), resources, acceptRefs: [],
+    frozenAt: now, frozenBy: "controller"
+  });
+  store.saveContextSnapshot(snapshot);
+  return snapshot;
+}
+
+function candidateReviewContext(
+  store: TaskStore, candidate: WorkItem["candidates"][number]
+): MaterializedRef[] {
+  const identity = `${candidate.workItemId}/${candidate.id}`;
+  if (candidate.source.type === "direct") {
+    return [materialize("L3", "candidate", identity, candidate)];
+  }
+  const sourceRunId = candidate.source.runId;
+  const snapshots = store.listContextSnapshots(candidate.taskId).filter(snapshot =>
+    snapshot.scope === "workitem" && snapshot.scopeRef === `candidate:${identity}`);
+  if (snapshots.length !== 1) {
+    throw new Error(`Frozen candidate report is unavailable: ${identity}. Inspect source Run ${candidate.taskId}/${sourceRunId}; for a new Review use newly authorized delivery with a newly captured Candidate. Historical Snapshots are not rewritten.`);
+  }
+  const snapshot = validateContextSnapshot(snapshots[0]!);
+  const proof = snapshot.resources.find(({ ref }) => ref.store === "candidate" && ref.refId === identity);
+  const report = snapshot.resources.find(({ ref }) => ref.store === "source-run"
+    && ref.refId === sourceRunId && ref.evidenceOf === identity);
+  const source = store.getRun(candidate.taskId, sourceRunId);
+  if (proof?.ref.digest !== contextContentDigest(candidate) || report === undefined
+    || source === null || source.status !== "completed" || source.result === undefined
+    || source.taskId !== candidate.taskId || source.workItemId !== candidate.workItemId
+    || source.purpose !== "execution"
+    || report.ref.digest !== contextContentDigest(sourceRunContextValue(source))) {
+    throw new Error(`Frozen candidate source/report drifted: ${identity}. Inspect the exact source and capture a new Candidate; do not substitute a newer result.`);
+  }
+  return [proof, report];
+}
+
+/** Reuse only exact head/target evidence. Temporal ordering and a shared branch
+ * name do not prove ancestry; absent proof is a reviewable evidence gap. */
+function taskReviewCandidateSources(
+  store: TaskStore, taskId: string, heads: TaskReviewCandidate
+): Readonly<{ candidates: WorkItem["candidates"][number][]; unmatchedHeads: string[] }> {
+  const selected = new Map<string, WorkItem["candidates"][number]>();
+  const select = (candidate: WorkItem["candidates"][number]) =>
+    selected.set(`${candidate.workItemId}/${candidate.id}`, candidate);
+  const workspace = store.getTaskWorkspace(taskId);
+  const attempts = store.listIntegrationAttempts(taskId);
+  const items = store.listWorkItems(taskId);
+  const unmatchedHeads: string[] = [];
+  for (const { projectId, commit } of heads.projects) {
+    const targetRef = workspace?.entries.find(entry => entry.projectId === projectId)?.branch;
+    let matched = false;
+    for (const attempt of attempts.filter(entry => entry.projectId === projectId
+      && entry.status === "committed" && entry.candidateCommit === commit
+      && entry.targetRef === targetRef)) {
+      if (attempt.source.kind !== "work-item") continue;
+      const source = attempt.source;
+      const item = store.getWorkItem(taskId, source.workItemId);
+      const candidate = [...(item?.candidates ?? [])].reverse().find(entry => entry.gitSnapshot?.projects.some(
+        project => project.projectId === projectId && project.commit === source.resultCommit));
+      if (candidate !== undefined) {
+        select(candidate);
+        matched = true;
+      }
+    }
+    for (const item of items) {
+      const candidate = [...item.candidates].reverse().find(entry =>
+        entry.taskMainSnapshot?.projects.some(
+          project => project.projectId === projectId && project.headCommit === commit
+            && project.branch === targetRef)
+        || entry.gitSnapshot?.projects.some(
+          project => project.projectId === projectId && project.commit === commit));
+      if (candidate !== undefined) {
+        select(candidate);
+        matched = true;
+      }
+    }
+    if (!matched) unmatchedHeads.push(`${projectId}@${commit}`);
+  }
+  return { candidates: [...selected.values()], unmatchedHeads };
+}
 
 export function freezeRunContextSnapshot(
   store: TaskStore,
@@ -104,7 +223,11 @@ export function freezeRunContextSnapshot(
   now: Date,
   frozenBy: "leader" | "controller" = "controller",
   baselineRef?: ContextSnapshotRef,
-  sourceRunIds?: readonly string[]
+  sourceRunIds?: readonly string[],
+  requiredResources: readonly MaterializedRef[] = [],
+  // Only retry of a validated prior Snapshot inherits frozen values over live
+  // automatic context; a new dispatch must still match current references.
+  requiredPolicy: "current" | "frozen" = "current"
 ): ContextSnapshot {
   if (baselineRef !== undefined) {
     const baseline = store.getContextSnapshot(run.taskId, baselineRef.id);
@@ -123,7 +246,7 @@ export function freezeRunContextSnapshot(
       ...collectRunContextOverlays(store, run),
       ...collectSourceRunContext(store, run, sourceRunIds)
     ];
-    const resources = [...new Map([...baseline.resources, ...overlays].map((entry) => [
+    const resources = [...new Map(mergeRequiredContext([...baseline.resources, ...overlays], requiredResources, requiredPolicy).map((entry) => [
       contextRefIdentity(entry.ref),
       entry
     ])).values()].sort((left, right) => (
@@ -157,7 +280,7 @@ export function freezeRunContextSnapshot(
       ? "workitem"
       : "task";
   const scopeRef = run.reviewRoundId ?? run.workItemId;
-  const materialized = collectAuthorizedContext(store, run);
+  const materialized = mergeRequiredContext(collectAuthorizedContext(store, run), requiredResources, requiredPolicy);
   const previous = store.listContextSnapshots(run.taskId)
     .filter((candidate) => candidate.scope === scope && candidate.scopeRef === scopeRef)
     .sort((left, right) => left.sequence - right.sequence)
@@ -191,6 +314,7 @@ export function freezeWorkItemExecutionAssignmentContextSnapshot(
     taskId: string;
     workItemId: string;
     executionGroupId: string;
+    requiredResources?: readonly MaterializedRef[];
   }>,
   now: Date
 ): ContextSnapshot {
@@ -224,7 +348,7 @@ export function freezeWorkItemExecutionAssignmentContextSnapshot(
       ));
     }
   }
-  const resources = [...new Map(materialized.map((entry) => [
+  const resources = [...new Map(mergeRequiredContext(materialized, input.requiredResources ?? []).map((entry) => [
     contextRefIdentity(entry.ref),
     entry
   ])).values()].sort((left, right) => (
@@ -520,7 +644,13 @@ function collectAuthorizedContext(
   if (run.reviewRoundId !== undefined) {
     const round = store.getReviewRound(task.id, run.reviewRoundId);
     if (round === null) throw new Error(`AgentRun ReviewRound not found: ${run.reviewRoundId}.`);
-    result.push(materialize("L3", "review-round", round.id, round));
+    let roundContext = materialize("L3", "review-round", round.id, round);
+    if (round.scope === "work-item") {
+      const item = store.getWorkItem(task.id, round.workItemId!);
+      const candidate = item?.candidates.find(({ id }) => id === round.candidateId);
+      if (candidate === undefined) throw new Error(`Review candidate is unavailable: ${round.candidateId}.`);
+      result.push(...candidateReviewContext(store, candidate));
+    }
     if (round.scope === "task") {
       for (const item of store.listWorkItems(task.id).filter(({ status }) => status !== "retired")) {
         const candidate = governingWorkItemCandidate(item);
@@ -528,7 +658,24 @@ function collectAuthorizedContext(
         result.push(materialize("L3", "candidate", `${item.id}/${candidate.id}`, candidate));
         result.push(...candidateArtifacts(task.id, [candidate]));
       }
+      const evidence = taskReviewCandidateSources(store, task.id, round.taskCandidate!);
+      // Existing pointer metadata exposes the gap without changing the Round,
+      // inventing validation, or adding another persisted evidence record.
+      roundContext = {
+        ...roundContext, ref: {
+          ...roundContext.ref,
+          summary: `Task-final Review ${round.id}. Producer reports are evidence only for their named Candidate, not validation of the entire Task head.${
+            evidence.unmatchedHeads.length === 0 ? ""
+              : ` Producer evidence gap: ${evidence.unmatchedHeads.join(", ")}. Review these fixed heads and report missing validation; the gap does not prohibit review.`
+          }`
+        }
+      };
+      for (const candidate of evidence.candidates) {
+        result.push(...candidateReviewContext(store, candidate));
+        result.push(...candidateArtifacts(task.id, [candidate]));
+      }
     }
+    result.push(roundContext);
     if (round.deltaRecheck !== undefined) {
       const previous = store.getReviewRound(task.id, round.deltaRecheck.previousReviewRoundId);
       const previousRun = previous?.reviewerRunId === undefined

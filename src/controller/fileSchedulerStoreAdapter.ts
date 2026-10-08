@@ -452,7 +452,8 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       default:
         outcome = "obsolete";
     }
-    if (outcome === "applied" && !isRunTerminalObservation(input)) {
+    if (outcome === "applied" && !isRunTerminalObservation(input)
+      && input.kind !== "goal.updated" && input.kind !== "goal.cleared") {
       this.persistRuntimeObservation(input, now);
     }
     return outcome;
@@ -911,7 +912,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
     });
   }
 
-  private persistRuntimeObservation(input: RuntimeObservation, now: Date): void {
+  private persistRuntimeObservation(input: RuntimeObservation, now: Date, notifyGoal = true): void {
     this.store.transaction((store) => {
       const taskId = input.fence.taskId!;
       const events = store.listEvents(taskId);
@@ -993,8 +994,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
           now
         );
       }
-      if ((input.kind === "goal.cleared"
-          || (input.kind === "goal.updated" && input.payload.goalStatus !== "active"))
+      if (notifyGoal && (input.kind === "goal.cleared" || input.kind === "goal.updated")
         && input.fence.roleName !== "leader") {
         routeRoleEvent(
           store,
@@ -3042,6 +3042,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
   ): ProviderLifecycleObservation {
     return this.store.transaction((store) => {
       const taskId = input.fence.taskId!;
+      if (hasPersistedRuntimeObservation(store.listEvents(taskId), input)) return "applied";
       const sessions = store.getTaskRoleSessionSet(taskId, input.fence.roleName);
       const binding = sessions?.providerBinding;
       if (sessions === null || sessions === undefined || binding === null || binding === undefined
@@ -3062,7 +3063,16 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
               ? {}
               : { tokenBudget: input.payload.goalTokenBudget })
           });
+      // Startup/re-attachment observes current state, not necessarily a change.
+      // Compare under the same transaction that persists and routes the fact.
+      if (isDeepStrictEqual(binding.goal, updated.goal)) {
+        // Retain the existing dedup evidence: an old empty observation replayed
+        // after a later real update must not clear that newer state.
+        this.persistRuntimeObservation(input, now, false);
+        return "applied";
+      }
       store.saveTaskRoleSessionSet(updateTaskRoleProviderRuntime(sessions, updated, now));
+      this.persistRuntimeObservation(input, now);
       return "applied";
     });
   }

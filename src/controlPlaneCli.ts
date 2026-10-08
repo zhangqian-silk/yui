@@ -113,6 +113,7 @@ import {
   preserveReviewRoundWorkspace,
   previewTaskRoleAgentConfigurationMutation,
   requireWorkItemAssignee,
+  readDispatchContextRefs,
   runTaskCommand,
   validateTaskArchiveRequest
 } from "./commands/taskCommands.js";
@@ -1764,6 +1765,8 @@ export async function main(): Promise<void> {
           // Authority and pure Lane-shape checks precede every physical or
           // durable workspace preparation performed for dispatch.
           assertTaskDeliveryAuthority(store, process.env, task.id);
+          readDispatchContextRefs(store, task.id, resolved.flatMap((arg, index) =>
+            arg === "--context-ref" ? [resolved[index + 1] ?? ""] : []), process.env);
           requireWorkItemAssignee(item);
           workItemDispatchLanePlan(resolved, store, item);
         }

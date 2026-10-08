@@ -14,7 +14,9 @@ import {
   parseGitArtifactRef,
   type GitArtifactRef
 } from "../artifacts/gitArtifactRef.js";
-import { contextSnapshotRef } from "../context/contextSnapshot.js";
+import { contextContentDigest, contextSnapshotRef } from "../context/contextSnapshot.js";
+import { sourceRunContextValue } from "../context/sourceRunContext.js";
+import type { TaskStore } from "../storage/taskStore.js";
 import {
   buildRunContextDelta,
   buildRunContextPack,
@@ -23,6 +25,8 @@ import {
   freezeReviewStageContextSnapshot,
   freezeRunContextSnapshot,
   freezeWorkItemExecutionAssignmentContextSnapshot,
+  freezeCandidateContextSnapshot,
+  type MaterializedRef,
   readRunContextSnapshot,
   synthesisSourceRunIds
 } from "../context/runContextPack.js";
@@ -32,7 +36,7 @@ import {
   readTaskCatalog,
   renderTaskCatalog
 } from "../context/taskCatalog.js";
-import { assertContextRecordReadable } from "../context/taskContext.js";
+import { assertContextRecordReadable, readTaskContextResource } from "../context/taskContext.js";
 import { boundedDocument, readOptions, messageReceipt, recordPage } from "../output/boundedRead.js";
 import { referencedWakeRunIds } from "../context/wakeRunReferences.js";
 import {
@@ -4356,6 +4360,7 @@ function updateWork(
         : { taskMainSnapshot: options.directTaskMainSnapshot })
     }, now);
     tx.saveWorkItem(task.id, updated);
+    freezeCandidateContextSnapshot(tx, updated.candidates.at(-1)!, now);
     recordTaskEvent(tx, task.id, "work.updated", {
       workItemId: updated.id,
       status: updated.status,
@@ -4417,11 +4422,11 @@ function dispatchWork(
   store: TaskWorkflowStore,
   options: TaskCommandOptions
 ): string {
-  const usage = "Task work dispatch usage: yui task work dispatch <task>/<work> [--input <text>] [--lane-role <role> ...].";
+  const usage = "Task work dispatch usage: yui task work dispatch <task>/<work> [--input <text>] [--context-ref <store/refId@digest> ...] [--lane-role <role> ...].";
   const parsed = parseMultiValueTail(
     args,
     new Set(["--input"]),
-    new Set(["--lane-role"]),
+    new Set(["--lane-role", "--context-ref"]),
     usage
   );
   exactPositionals(parsed.positionals, 1, usage);
@@ -4431,6 +4436,8 @@ function dispatchWork(
     const item = requireWorkItem(tx, parsed.positionals[0], options);
     const task = requireTask(tx, item.taskId);
     taskActor(tx, options, task.id);
+    const requiredResources = readDispatchContextRefs(tx, task.id,
+      parsed.multiOptions.get("--context-ref") ?? [], options.environment);
     if (task.status !== "active") throw usageError(inactiveTaskMessage(task, "dispatch"));
     assertTaskExecutionEnabled(task, "dispatching work");
     const assignee = requireWorkItemAssignee(item);
@@ -4497,7 +4504,7 @@ function dispatchWork(
         purpose: "execution",
         workItemId: item.id,
         workspace
-      }, now, "controller");
+      }, now, "controller", undefined, undefined, requiredResources);
       const run = createRun(
         runId,
         task.id,
@@ -4541,7 +4548,8 @@ function dispatchWork(
     const assignmentContext = contextSnapshotRef(freezeWorkItemExecutionAssignmentContextSnapshot(tx, {
       taskId: task.id,
       workItemId: item.id,
-      executionGroupId: groupId
+      executionGroupId: groupId,
+      requiredResources
     }, now));
     const plans = roles.map((role, index) => {
       const laneId = `${groupId}-lane-${index + 1}`;
@@ -4671,6 +4679,50 @@ function dispatchWork(
   return dispatch.kind === "direct"
     ? `Direct WorkItem AgentRun queued as ${dispatch.runs[0]!.id}\n`
     : `Dispatch queued for ${dispatch.runs.length} replicated Lanes\n`;
+}
+
+/** Explicit, bounded reads; prose never grants access or selects records. */
+export function readDispatchContextRefs(
+  store: TaskStore, taskId: string, selectors: readonly string[],
+  environment: NodeJS.ProcessEnv = {}
+): MaterializedRef[] {
+  if (selectors.length > 16 || new Set(selectors).size !== selectors.length) {
+    throw usageError("Dispatch requires at most 16 distinct --context-ref values.");
+  }
+  return selectors.flatMap(selector => {
+    const match = /^([^/]+)\/(.+)@([0-9a-f]{64})$/u.exec(selector);
+    if (match === null) {
+      throw usageError(`Invalid required Context reference: ${selector}. Use store/refId@digest from task context list/inspect.`);
+    }
+    const [, family, refId, digest] = match;
+    try {
+      const entry = readTaskContextResource(store, taskId, {
+        store: family!, refId: refId!, digest: digest!
+      }, environment);
+      const resources: MaterializedRef[] = [{
+        ref: { ...entry.ref, layer: "L4" as const, evidenceOf: "dispatch-required" },
+        value: entry.value
+      }];
+      // Selecting a result Message selects its already-authorized original
+      // result too, not just a pointer the receiving Assignment cannot expand.
+      if (family === "task-message" && "result" in entry) {
+        const message = entry.value as TaskMessage;
+        const source = store.getRun(taskId, message.resultRef!.runId)!;
+        const value = sourceRunContextValue(source);
+        resources.push({
+          ref: { layer: "L4", store: "source-run", refId: source.id,
+            revision: source.updatedAt, digest: contextContentDigest(value),
+            evidenceOf: "dispatch-required", summary: `Original result for Message ${message.id}` },
+          value
+        });
+      }
+      return resources;
+    } catch (error) {
+      throw usageError(`Required Context reference ${selector} cannot be frozen: ${
+        error instanceof Error ? error.message : String(error)
+      } Read an authorized current reference, correct the selection or include the requirement in the WorkItem, then dispatch again.`);
+    }
+  });
 }
 
 function replicatedProducerAssignmentInput(input: string, requiresCodeRef: boolean): string {
@@ -6451,13 +6503,21 @@ function retryRunOperation(
     const input = retriesSynthesisMain
       ? previous.inputs[0]!.input
       : (() => {
+          // A retry keeps the explicit frozen handoff, not today's mutable
+          // versions of those records. Legacy Runs without a Snapshot retain
+          // the existing explicit recovery from current facts.
+          const requiredResources = previous.inputs[0]!.input.contextSnapshotRef === undefined
+            ? []
+            : readRunContextSnapshot(tx, previous).resources.filter(
+                entry => entry.ref.evidenceOf === "dispatch-required"
+              );
           const retrySnapshot = freezeRunContextSnapshot(tx, {
             taskId: task.id,
             roleName: role.name,
             purpose: previous.purpose,
             ...(retryManagedWorkspace === undefined ? {} : { workspace: retryManagedWorkspace }),
             ...(previous.workItemId === undefined ? {} : { workItemId: previous.workItemId })
-          }, now, "controller", retryGroup?.assignment.contextSnapshotRef);
+          }, now, "controller", retryGroup?.assignment.contextSnapshotRef, undefined, requiredResources, "frozen");
           return createRunInput({
             source: {
               type: "yui",
@@ -6629,14 +6689,15 @@ function taskReviewProvenance(
         break;
       }
     }
-    if (headIndex < 0) {
-      throw dataError(
-        `Committed Integration provenance is unavailable for Project ${projectId}@${commit}.`
-      );
-    }
-    const head = committedAttempts[headIndex]!;
-    const lineage = committedAttempts.slice(0, headIndex + 1)
-      .filter(({ targetRef }) => targetRef === head.targetRef);
+    const target = store.getTaskWorkspace(task.id)?.entries.find(
+      entry => entry.projectId === projectId
+    )?.branch ?? committedAttempts[headIndex]?.targetRef;
+    // A direct Task-main repair has no Integration at its new head. It is
+    // still reviewable; conservatively exclude prior producers on this target
+    // from reviewing it. This is an independence fence, not ancestry or proof
+    // that any prior report validates the current head.
+    const lineage = (headIndex < 0 ? committedAttempts : committedAttempts.slice(0, headIndex + 1))
+      .filter(({ targetRef }) => targetRef === target);
     for (const committed of lineage) {
       if (committed.source.kind !== "work-item") continue;
       const source = committed.source;

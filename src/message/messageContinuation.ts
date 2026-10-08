@@ -264,10 +264,15 @@ export function prepareMessageContinuations(store: TaskStore, taskId: string, no
       const { endedAt: _endedAt, failure: _failure, ...current } = round;
       return { ...current, status: "running" as const, reviewerRunId: runId };
     })();
-    const priorMessages = baseline.resources.filter((entry) => entry.ref.store === "task-message").slice(-16);
+    const messages = baseline.resources.filter((entry) => entry.ref.store === "task-message");
+    const priorMessages = [
+      ...messages.filter(entry => entry.ref.evidenceOf === "dispatch-required"),
+      ...messages.filter(entry => entry.ref.evidenceOf !== "dispatch-required").slice(-16)
+    ];
     const source = sourceRunContextValue(previous);
     const resources = [...baseline.resources.filter((entry) =>
-      entry.ref.store !== "task-message" && entry.ref.store !== "source-run"
+      entry.ref.store !== "task-message"
+      && (entry.ref.store !== "source-run" || entry.ref.evidenceOf !== undefined)
       && !(continuingRound !== null && entry.ref.store === "review-round" && entry.ref.refId === continuingRound.id)),
       ...(continuingRound === null ? [] : [{ ref: { layer: "L3" as const, store: "review-round",
         refId: continuingRound.id, revision: now.toISOString(), digest: contextContentDigest(continuingRound),
