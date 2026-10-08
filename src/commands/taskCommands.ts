@@ -6517,7 +6517,7 @@ function retryRunOperation(
             purpose: previous.purpose,
             ...(retryManagedWorkspace === undefined ? {} : { workspace: retryManagedWorkspace }),
             ...(previous.workItemId === undefined ? {} : { workItemId: previous.workItemId })
-          }, now, "controller", retryGroup?.assignment.contextSnapshotRef, undefined, requiredResources);
+          }, now, "controller", retryGroup?.assignment.contextSnapshotRef, undefined, requiredResources, "frozen");
           return createRunInput({
             source: {
               type: "yui",

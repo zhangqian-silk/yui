@@ -65,6 +65,7 @@ test("managed dispatch freezes explicit materials and candidate reports; continu
   for (const invalid of [
     `task-message/missing@${contextContentDigest(message)}`,
     `task-message/${message.id}@${"0".repeat(64)}`,
+    `task/${task.id}@${"0".repeat(64)}`,
     `task-message/task-2/message-1@${contextContentDigest(message)}`
   ]) {
     assert.throws(() => command(["work", "dispatch", `${task.id}/work-item-1`,
@@ -114,15 +115,20 @@ test("managed dispatch freezes explicit materials and candidate reports; continu
     owner: { type: "work-item", taskId: task.id, workItemId: "work-item-2" },
     root: readerRoot, entries: [projectEntry(readerRoot)]
   }, now));
+  const dispatchedTask = store.getTask(task.id);
   command(["work", "dispatch", `${task.id}/work-item-2`, "--context-ref",
-    `task-message/${resultMessage.id}@${contextContentDigest(resultMessage)}`]);
+    `task-message/${resultMessage.id}@${contextContentDigest(resultMessage)}`,
+    "--context-ref", `task/${task.id}@${contextContentDigest(dispatchedTask)}`]);
   const reader = store.getActiveRun(task.id, "reader");
   assert.equal(expandRunContextRef(store, task.id, reader.id, worker.id, "source-run").value.result.output, report);
   store.saveRun(failRun(reader, "runtime-failed", "Temporary provider failure", later));
   store.clearActiveRun(task.id, "reader");
   store.updateMessage(task.id, { ...resultMessage, body: "Changed after dispatch" });
+  store.saveTask({ ...store.getTask(task.id), title: "Renamed after dispatch" });
   command(["run", "retry", `${task.id}/${reader.id}`]);
   const retriedReader = store.getActiveRun(task.id, "reader");
+  assert.equal(expandRunContextRef(store, task.id, retriedReader.id, task.id,
+    "task").value.title, dispatchedTask.title);
   assert.equal(expandRunContextRef(store, task.id, retriedReader.id, resultMessage.id,
     "task-message").value.body, resultMessage.body);
   assert.equal(expandRunContextRef(store, task.id, retriedReader.id, worker.id,

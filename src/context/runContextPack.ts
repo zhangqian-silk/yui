@@ -96,13 +96,14 @@ export type AgentRunContextLiveTaskState = Readonly<{
 export type MaterializedRef = Readonly<{ ref: ContextRef; value: unknown }>;
 
 function mergeRequiredContext(
-  automatic: readonly MaterializedRef[], required: readonly MaterializedRef[]
+  automatic: readonly MaterializedRef[], required: readonly MaterializedRef[],
+  requiredPolicy: "current" | "frozen" = "current"
 ): MaterializedRef[] {
   const entries = new Map(automatic.map(entry => [`${entry.ref.store}/${entry.ref.refId}`, entry]));
   for (const entry of required) {
     const key = `${entry.ref.store}/${entry.ref.refId}`;
     const existing = entries.get(key);
-    if (existing !== undefined && existing.ref.digest !== entry.ref.digest) {
+    if (requiredPolicy === "current" && existing !== undefined && existing.ref.digest !== entry.ref.digest) {
       throw new Error(`Required Context changed during dispatch: ${key}. Read its current reference and dispatch again.`);
     }
     entries.set(key, entry);
@@ -223,7 +224,10 @@ export function freezeRunContextSnapshot(
   frozenBy: "leader" | "controller" = "controller",
   baselineRef?: ContextSnapshotRef,
   sourceRunIds?: readonly string[],
-  requiredResources: readonly MaterializedRef[] = []
+  requiredResources: readonly MaterializedRef[] = [],
+  // Only retry of a validated prior Snapshot inherits frozen values over live
+  // automatic context; a new dispatch must still match current references.
+  requiredPolicy: "current" | "frozen" = "current"
 ): ContextSnapshot {
   if (baselineRef !== undefined) {
     const baseline = store.getContextSnapshot(run.taskId, baselineRef.id);
@@ -242,7 +246,7 @@ export function freezeRunContextSnapshot(
       ...collectRunContextOverlays(store, run),
       ...collectSourceRunContext(store, run, sourceRunIds)
     ];
-    const resources = [...new Map(mergeRequiredContext([...baseline.resources, ...overlays], requiredResources).map((entry) => [
+    const resources = [...new Map(mergeRequiredContext([...baseline.resources, ...overlays], requiredResources, requiredPolicy).map((entry) => [
       contextRefIdentity(entry.ref),
       entry
     ])).values()].sort((left, right) => (
@@ -276,7 +280,7 @@ export function freezeRunContextSnapshot(
       ? "workitem"
       : "task";
   const scopeRef = run.reviewRoundId ?? run.workItemId;
-  const materialized = mergeRequiredContext(collectAuthorizedContext(store, run), requiredResources);
+  const materialized = mergeRequiredContext(collectAuthorizedContext(store, run), requiredResources, requiredPolicy);
   const previous = store.listContextSnapshots(run.taskId)
     .filter((candidate) => candidate.scope === scope && candidate.scopeRef === scopeRef)
     .sort((left, right) => left.sequence - right.sequence)
