@@ -516,6 +516,16 @@ test("ordinary conflict continues without resolve and consumes one exact check J
   assert.equal(done.status, "committed");
   assert.equal(f.git("rev-parse", "HEAD"), done.attempt.afterCommit);
   assert.equal(f.starts(), 1);
+  const logs = join(f.home, "artifacts", "integration-checks", "task-1", done.attempt.id);
+  mkdirSync(logs, { recursive: true });
+  const log = join(logs, "verification.log");
+  writeFileSync(log, "fixed validation evidence\n");
+  const history = f.store.getIntegrationAttempt("task-1", done.attempt.id);
+  assert.equal(await f.service().cleanup(history), "removed");
+  assert.equal(await f.service().cleanup(history), "missing");
+  assert.deepEqual(f.store.getIntegrationAttempt("task-1", history.id), history);
+  assert.equal(readFileSync(log, "utf8"), "fixed validation evidence\n");
+  assert.equal(f.store.getDurableJob("task-1", "job-1").status, "succeeded");
 });
 
 test("an old Git conflict without its Integration receipt is diagnosed without adopting or replaying it", async t => {
@@ -539,6 +549,11 @@ test("interrupted rebase receipt and successful unbound Job resume without repla
   const f = integrationFixture(t, "rebase");
   const conflict = await f.service().integrate("task-1", "integration-1");
   assert.equal(conflict.status, "conflicted", conflict.attempt.summary);
+  const workspace = f.store.getIntegrationWorkspace("task-1", "integration-1");
+  const inspection = await new FileTaskWorkspacePreparer(f.home, f.store).inspectWorkspaceCleanup(workspace, "abandoned");
+  assert.ok(inspection.some(c => c.reason === "dirty-worktree"));
+  assert.ok(!inspection.some(c => c.reason === "inspection-unavailable"),
+    "a matching rebase's detached HEAD is valid ownership, not Git exit 128");
   f.resolve(conflict.workspace.path);
   const save = f.store.saveIntegrationAttempt.bind(f.store);
   let interruptGit = true;

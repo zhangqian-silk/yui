@@ -518,8 +518,13 @@ const taskChildren: readonly NodeInput[] = [
     options: ["--integrated", "--abandon", "--force", "--json"]
   },
   {
+    name: "archive-cleanup", discovery: { surface: "public", audiences: ["public","operator","leader"] },
+    summary: "Retry one foreground exact-owner cleanup for an archived Task; retain unsafe resources and all history.",
+    usage: "yui task archive-cleanup <id>"
+  },
+  {
     name: "archive", discovery: { surface: "public", audiences: ["public","operator","leader"], optionAudiences: { "--force": ["public", "operator"] } },
-    summary: "Archive a terminal Task; explicit --force commits despite delivery/cleanup warnings, retaining unsafe resources.",
+    summary: "Archive settled, delivered, stopped work, then attempt exact-owner cleanup. Retained physical resources do not require --force; force separately bypasses business admission.",
     usage: "yui task archive <id> (--integrated|--abandon) [--force] [--source-message <id> --purpose <verbatim-authorization> --request-id <id>]",
     options: ["--integrated", "--abandon", "--force", "--source-message", "--purpose", "--request-id"]
   },
@@ -1087,7 +1092,7 @@ const taskChildren: readonly NodeInput[] = [
       },
       { name: "list", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "List Integration Attempts.", usage: "yui task integration list <task>" },
       { name: "show", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Show one Integration Attempt.", usage: "yui task integration show <task>/<integration>" },
-      { name: "cleanup", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Remove a terminal Integration worktree and branch.", usage: "yui task integration cleanup <task>/<integration>" }
+      { name: "cleanup", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Release clean terminal Integration resources; preserve attempt history, check logs and dirty diagnostics.", usage: "yui task integration cleanup <task>/<integration>" }
     ]
   },
   {
@@ -1675,7 +1680,7 @@ export const ROOT_COMMAND = buildNode({
       name: "task", discovery: { surface: "public", audiences: ["public","operator"] },
       summary: "Manage Tasks, WorkItems, AgentRuns, and integration.",
       sections: [
-        { id: "lifecycle", title: "Lifecycle", entries: ["create", "project", "base", "update", "activate", "activation", "execution", "complete", "cancel", "reopen", "retire", "list", "show", "context", "next-action", "remote-delivery", "archive-preflight", "archive", "replace", "reconcile", "upstream", "artifact"] },
+        { id: "lifecycle", title: "Lifecycle", entries: ["create", "project", "base", "update", "activate", "activation", "execution", "complete", "cancel", "reopen", "retire", "list", "show", "context", "next-action", "remote-delivery", "archive-preflight", "archive", "archive-cleanup", "replace", "reconcile", "upstream", "artifact"] },
         { id: "collaboration", title: "Collaboration", entries: ["message", "input", "grant", "workflow", "publication", "work", "run", "review", "integration", "role", "overlap", "change-set"] },
         { id: "knowledge", title: "Task Knowledge", entries: ["brief", "decision", "milestone", "event", "continuation", "wake"] }
       ],

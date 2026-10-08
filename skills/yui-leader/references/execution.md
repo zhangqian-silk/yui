@@ -378,7 +378,8 @@ After a ReviewRound is terminal, the Leader or authorized Operator owns
 `task work review cleanup <task>/<round>`. Preserve dirty diagnostic evidence
 and resolve it explicitly; do not ask a Reviewer to clean its own runtime
 after its final report. Cleanup can remain advisory at completion. Ordinary
-archive requires settled resources; explicitly authorized force archive preserves
+archive requires settled business and stopped execution, not complete physical
+release; safe resource retention is reported separately. Explicitly authorized force archive preserves
 unresolved resources and diagnostics under the shared
 [archive contract](../../yui-runtime/references/publication.md). The Leader
 does not gain independent archive authorization. An original explicit user

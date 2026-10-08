@@ -41,10 +41,10 @@ test("archive releases retained Task terminals, remains idempotent and preserves
   // Read-only quiescence inspection may preserve a useful exited scene.
   await runtime.assertTaskPhysicalResourcesReleased("task-1");
   assert.equal(panes.get("task-1").length, 2);
-  assert.equal((await coordinator.cleanupTaskForArchive("task-1", "abandoned")).status, "removed");
+  await coordinator.prepareTaskForArchive("task-1");
   assert.deepEqual(runtime.inspectTaskRolePanes("task-1"), []);
   assert.deepEqual(panes.get("task-2"), [{ roleName: "leader", dead: false }]);
-  assert.equal((await coordinator.cleanupTaskForArchive("task-1", "abandoned")).status, "removed");
+  await coordinator.prepareTaskForArchive("task-1");
   assert.equal(store.getTask("task-1").status, originalTask.status, "cleanup never deletes or archives the Task record");
 });
 

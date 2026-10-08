@@ -3,7 +3,6 @@ import {
   mkdir,
   readdir,
   readlink,
-  rm,
   rmdir,
   symlink,
   unlink
@@ -105,7 +104,9 @@ import {
   validateTaskWorkspaceIdentity,
   type TaskWorkspaceIdentity
 } from "./taskWorkspaceIdentity.js";
-import { inspectWorkspaceCleanup } from "./workspaceCleanupInspection.js";
+import { inspectWorkspaceCleanup, inspectWorkspaceContainer } from "./workspaceCleanupInspection.js";
+import { defaultIntegrationRuntimeIsolation } from "../runtime/integrationRuntimeIsolation.js";
+import type { TaskRuntimeIsolationPort } from "../runtime/taskRuntimeIsolation.js";
 
 const MAIN_WORKTREE = "main";
 const LEADER_ROLE = "leader";
@@ -1631,7 +1632,7 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
       this.#recordArchivePathRemoval(task, entry.path, result);
       removed ||= result === "removed";
     }
-    await removeWorkspaceView(workspace.root);
+    await removeWorkspaceView(workspace.root, workspace);
     this.#resourceRegistrar().markWorkspaceDeleted(workspace);
     this.store.removeManagedWorkspace(workspace.owner);
     return removed ? "removed" : "missing";
@@ -2381,7 +2382,7 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
       this.#recordArchivePathRemoval(task, entry.path, result);
       removed ||= result === "removed";
     }
-    await removeWorkspaceView(workspace.root);
+    await removeWorkspaceView(workspace.root, workspace);
     this.#resourceRegistrar().markWorkspaceDeleted(workspace);
     this.store.transaction((tx) => {
       const currentRound = tx.getReviewRound(task.id, round.id);
@@ -2461,7 +2462,7 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
       this.#recordArchivePathRemoval(task, entry.path, result);
       removed ||= result === "removed";
     }
-    await removeWorkspaceView(workspace.root);
+    await removeWorkspaceView(workspace.root, workspace);
     this.#resourceRegistrar().markWorkspaceDeleted(workspace);
     try {
       this.#recordWorkspaceRemoval(task, workspace, this.#fallbackWorkspace(), {
@@ -2505,7 +2506,7 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
   async cleanupIntegrationWorkspace(
     taskId: string,
     integrationId: string,
-    options: Readonly<{ preserveChanges?: boolean }> = {}
+    options: Readonly<{ runtimeIsolation?: TaskRuntimeIsolationPort }> = {}
   ): Promise<GitWorkspaceRemoval> {
     const task = requireTask(this.store, taskId);
     const attempt = this.store.getIntegrationAttempt(task.id, integrationId);
@@ -2519,44 +2520,38 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
       throw new Error(`IntegrationAttempt must be terminal before cleanup: ${attempt.id}.`);
     }
     const workspace = this.store.getIntegrationWorkspace(task.id, attempt.id);
-    // A failed Integration's explicitly disposable conflict tree retains its
-    // existing cleanup contract outside archive. Archive never discards dirt.
-    if (workspace !== null && (options.preserveChanges || task.status === "archived" || attempt.status !== "failed")) {
-      await this.#assertWorkspaceCleanup(workspace, "abandoned");
-    }
+    if (workspace === null) return "missing"; // no current resource ownership to delete
+    // Terminal history does not authorize discarding conflict resolutions or
+    // diagnostics. All entry points use the same exact-owner inspection.
+    await this.#assertWorkspaceCleanup(workspace, "abandoned");
+    const activeJob = this.store.listDurableJobs(taskId).find(job =>
+      job.owner.kind === "integration-attempt" && job.owner.integrationAttemptId === integrationId
+      && ["queued", "running", "unknown-needs-attention"].includes(job.status));
+    if (activeJob !== undefined) throw new Error(`Integration execution is unresolved: ${activeJob.id}/${activeJob.status}.`);
+    const runtime = options.runtimeIsolation ?? defaultIntegrationRuntimeIsolation(this.home, this.store.getHomeIdentity().homeId);
+    runtime.cleanup(runtime.preflight({ workspace, allowExactActive: true }),
+      attempt.status === "committed" ? "completion" : "failure");
     const project = requireProject(this.store, attempt.projectId);
-    // The recorded entry pins the exact on-disk worktree path; reconstruct the
-    // owner root from it so removal targets the real Git worktree regardless of
-    // how the layout helper derives it. Absent a recorded workspace, fall back
-    // to the deterministic integration owner root + bound directory.
-    const recorded = workspace?.entries[0];
-    const directory = recorded?.directory
-      ?? task.projectBindings.find(({ projectId }) => projectId === attempt.projectId)?.directory;
-    if (directory === undefined) {
-      throw new Error(`Integration Project binding is unavailable: ${task.id}/${project.id}.`);
+    // Only the recorded entry grants resource ownership; no history-derived
+    // path reconstruction after the current resource record has been removed.
+    const recorded = workspace.entries[0];
+    if (recorded === undefined || recorded.projectId !== project.id || workspace.entries.length !== 1) {
+      throw new Error(`Integration workspace Project identity is unavailable: ${task.id}/${project.id}.`);
     }
     const result = await this.git.removeIntegrationWorktree({
       repositoryPath: this.#taskRepositoryPath(task.id, project.id),
-      container: recorded !== undefined
-        ? dirname(recorded.path)
-        : this.#integrationWorkspaceRoot(task.id, attempt.id),
-      directory,
+      container: dirname(recorded.path),
+      directory: recorded.directory,
       taskSegment: this.#taskSegment(task),
       integrationId: attempt.id,
-      discardChanges: options.preserveChanges !== true && task.status !== "archived" && attempt.status === "failed"
+      discardChanges: false
     });
     if (result !== "dirty") {
-      for (const entry of workspace?.entries ?? []) {
+      for (const entry of workspace.entries) {
         this.#recordArchivePathRemoval(task, entry.path, result);
       }
-      if (workspace !== null) this.#resourceRegistrar().markWorkspaceDeleted(workspace);
-      await rm(join(
-        this.home,
-        "artifacts",
-        "integration-checks",
-        task.id,
-        attempt.id
-      ), { recursive: true, force: true });
+      this.#resourceRegistrar().markWorkspaceDeleted(workspace);
+      // Check logs are stable historical evidence, not worktree scratch.
       this.store.removeManagedWorkspace({
         type: "integration-attempt",
         taskId: task.id,
@@ -2596,20 +2591,9 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
     if (main !== null) {
       await this.#assertWorkspaceCleanup(main, disposition);
       assertTaskArchiveState(requireTask(this.store, task.id), task);
-      // Scratch-only workspaces have no Git entries or Git workspace identity.
-      if (main.entries.length > 0 && await this.#inspectEntries(
-        task.id,
-        this.#taskSegment(task),
-        MAIN_WORKTREE,
-        main.entries
-      ) === "dirty") {
-        return {
-          taskId,
-          status: "retained-dirty",
-          ...(task.cwd === undefined ? {} : { path: task.cwd })
-        };
-      }
-      for (const entry of main.entries) {
+      // The shared preflight and removeTaskClone both inspect clone identity.
+      // Do not re-enter linked-worktree inspection against a missing clone.
+      for (const entry of main.entries.filter(e => e.access === "write")) {
         assertTaskArchiveState(requireTask(this.store, task.id), task);
         const result = await this.git.removeTaskClone({
           path: entry.path, container: main.root, directory: entry.directory,
@@ -2621,7 +2605,7 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
         this.#recordArchivePathRemoval(task, entry.path, result);
       }
       assertTaskArchiveState(requireTask(this.store, task.id), task);
-      await removeWorkspaceView(main.root);
+      await removeWorkspaceView(main.root, main);
       this.#resourceRegistrar().markWorkspaceDeleted(main);
       assertTaskArchiveState(requireTask(this.store, task.id), task);
       this.#recordWorkspaceRemoval(task, main, this.#fallbackWorkspace());
@@ -2689,10 +2673,6 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
   #reviewRoundWorkspaceRoot(taskId: string, round: ReviewRound): string {
     return join(resolveTaskRoot(this.home),
       safePathSegment(taskId), "reviews", safePathSegment(this.#reviewWorktreeName(round)));
-  }
-
-  #integrationWorkspaceRoot(taskId: string, integrationId: string): string {
-    return integrationWorkspaceRoot(this.home, taskId, integrationId);
   }
 
   #reviewWorktreeName(round: ReviewRound): string {
@@ -3246,7 +3226,11 @@ async function ensureWorkspaceView(
   }
 }
 
-async function removeWorkspaceView(root: string): Promise<void> {
+async function removeWorkspaceView(root: string, workspace?: ManagedWorkspace): Promise<void> {
+  if (workspace !== undefined) {
+    const checks = await inspectWorkspaceContainer(workspace);
+    if (checks.length > 0) throw new CleanupInspectionError(checks);
+  }
   let entries;
   try {
     entries = await readdir(root, { withFileTypes: true });
@@ -3258,6 +3242,8 @@ async function removeWorkspaceView(root: string): Promise<void> {
     if (!entry.isSymbolicLink()) {
       throw new Error(`Managed workspace contains an unexpected entry: ${join(root, entry.name)}.`);
     }
+  }
+  for (const entry of entries) {
     await unlink(join(root, entry.name));
   }
   await rmdir(root);

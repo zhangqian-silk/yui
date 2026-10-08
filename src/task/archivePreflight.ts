@@ -117,26 +117,37 @@ export async function inspectTaskArchive(coordinator: TaskWorkspaceCoordinator, 
       checks });
   }
   const eligible = ["completed", "cancelled", "archived"].includes(task.status);
+  const limit = 32;
+  const boundedExecution = execution.slice(0, limit);
   return { taskId: task.id, observedAt: new Date().toISOString(), disposition: request.disposition, force: request.force,
     readOnly: true, authorizesCleanup: false,
     archive: { status: task.status, eligible, alreadyArchived: task.status === "archived",
-      settlement, delivery: deliveryChecks, forceBypassesSettlement: request.force,
+      settlement: settlement.slice(0, limit), delivery: deliveryChecks.slice(0, limit), forceBypassesSettlement: request.force,
+      execution: boundedExecution, physicalRetentionBlocksArchive: false,
       requiresIndependentAuthorization: true },
-    cleanup: { execution, resources },
-    note: "Current observations only. Execution reloads the checks. Force commits archive first and retains unsafe resources; a finished attempt does not prove resource release." };
+    cleanup: { execution: boundedExecution, resources: resources.slice(0, limit).map(resource => ({
+      ...resource, checkCount: resource.checks.length, checks: resource.checks.slice(0, limit)
+    })) },
+    counts: { settlement: settlement.length, delivery: deliveryChecks.length,
+      execution: execution.length, resources: resources.length },
+    actions: [`yui task context list ${task.id} --store managed-workspace`,
+      `yui task remote-delivery ${task.id}`, `yui task event list ${task.id}`],
+    note: "Current observations only. Ordinary archive requires settled business, exact delivery and stopped execution; safe physical retention is separate. Cleanup reloads these checks after archive commits. A finished attempt does not prove resource release." };
 }
 
 export function renderTaskArchivePreflight(data: Awaited<ReturnType<typeof inspectTaskArchive>>): string {
   return [
     `Archive preflight: ${data.taskId} (${data.disposition}${data.force ? ", force" : ""}); read-only, not authorization`,
     `Task: ${data.archive.status}; terminal eligibility: ${data.archive.eligible}`,
+    `Checks/resources (showing at most 32 per list): settlement=${data.counts.settlement}; delivery=${data.counts.delivery}; execution=${data.counts.execution}; resources=${data.counts.resources}`,
     ...data.archive.settlement.map(c => `Admission${data.force ? " (force preserves)" : ""}: ${renderCleanupCheck(c)}`),
     ...data.archive.delivery.map(c => `Delivery${data.force || data.disposition === "abandoned" ? " (advisory for admission)" : ""}: ${renderCleanupCheck(c)}`),
     ...data.cleanup.execution.map(c => `Cleanup: ${renderCleanupCheck(c)}`),
     ...data.cleanup.resources.flatMap(r => [
-      `Workspace [${r.resource}]: ${r.status}`,
+      `Workspace [${r.resource}]: ${r.status}; checks=${r.checkCount}`,
       ...r.checks.map(c => `  ${renderCleanupCheck(c)}`)
     ]),
-    data.note
+    data.note,
+    `Inspect full evidence: ${data.actions.join("; ")}`
   ].join("\n") + "\n";
 }

@@ -17,7 +17,6 @@ import {
 import { promisify } from "node:util";
 
 import { selectEnvironment } from "../agent/launchEnvironment.js";
-import { controllerSocketPath } from "../core/controllerEndpoint.js";
 import { durableJobIdempotencyKey, type DurableJob, type DurableJobStep } from "../job/durableJob.js";
 import { readRuntimeIdentity } from "../release/runtimeRelease.js";
 import type { GitWorkspaceRemoval } from "../repository/gitWorkspace.js";
@@ -27,18 +26,17 @@ import {
 } from "../repository/gitWorkspace.js";
 import { acquireProjectMaintenanceLocks } from "../repository/projectMaintenanceLock.js";
 import { taskWorkspaceRefSegment } from "../repository/taskWorkspaceIdentity.js";
-import { integrationWorkspaceRoot } from "../repository/taskWorkspacePreparer.js";
+import { FileTaskWorkspacePreparer, integrationWorkspaceRoot } from "../repository/taskWorkspacePreparer.js";
 import { ResourceRegistrar } from "../resources/resourceRegistrar.js";
 import {
-  FileTaskRuntimeIsolation,
   type TaskRuntimeIsolationPort,
   type TaskRuntimeIsolationPreparation
 } from "../runtime/taskRuntimeIsolation.js";
-import { integrationTmuxSocketRoot, managedIntegrationRuntimeRoot } from "../storage/homeLayout.js";
+import { integrationTmuxSocketRoot } from "../storage/homeLayout.js";
+import { defaultIntegrationRuntimeIsolation } from "../runtime/integrationRuntimeIsolation.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import { advanceTaskProjectCommit } from "../task/task.js";
 import { taskIntegrationSettlementCheckout, taskIntegrationTargetCheckout } from "../task/taskAuthority.js";
-import { yuiTmuxServerName } from "../tmux/tmuxManager.js";
 import {
   recordGateArtifactReuse
 } from "../verification/gateArtifact.js";
@@ -507,10 +505,12 @@ export class GitIntegrationService {
         throw new Error("Integration changed before cleanup; read its current record.");
       }
       integration = current;
+      const managedWorkspace = this.store.getIntegrationWorkspace(integration.taskId, integration.id);
+      if (managedWorkspace === null) return "missing";
       const activeJob = this.store.listDurableJobs(integration.taskId).find(job =>
         job.owner.kind === "integration-attempt" && job.owner.integrationAttemptId === integration.id
         && (job.status === "queued" || job.status === "running"
-          || (job.status === "unknown-needs-attention" && job.acknowledgedAt === undefined)));
+          || job.status === "unknown-needs-attention"));
       if (activeJob !== undefined) {
         throw new Error(`Integration ${integration.id} has an active DurableJob: ${activeJob.id}/${activeJob.status}.`);
       }
@@ -528,50 +528,8 @@ export class GitIntegrationService {
       if (taskRepository === undefined) {
         throw new Error(`Integration Task clone is unavailable: ${task.id}/${project.id}.`);
       }
-      const managedWorkspace = this.store.getIntegrationWorkspace(
-        integration.taskId,
-        integration.id
-      );
-      if (managedWorkspace !== null) {
-        const runtime = this.#runtimePreparation(integration, managedWorkspace);
-        this.runtimeIsolation.cleanup(
-          runtime,
-          integration.status === "committed" ? "completion" : "failure"
-        );
-      }
-      const recorded = managedWorkspace?.entries[0];
-      const directory = recorded?.directory
-        ?? task.projectBindings.find(
-          ({ projectId }) => projectId === integration.projectId
-        )?.directory;
-      if (directory === undefined) {
-        throw new Error(`Integration Project binding is unavailable: ${task.id}/${project.id}.`);
-      }
-      const result = await this.git.removeIntegrationWorktree({
-        repositoryPath: taskRepository,
-        container: recorded !== undefined
-          ? dirname(recorded.path)
-          : integrationWorkspaceRoot(this.home, task.id, integration.id),
-        directory,
-        taskSegment: taskWorkspaceRefSegment(task),
-        integrationId: integration.id,
-        discardChanges: integration.status === "failed"
-      });
-      if (result !== "dirty") {
-        if (managedWorkspace !== null) {
-          this.#resourceRegistrar().markWorkspaceDeleted(managedWorkspace);
-        }
-        await rm(integrationCheckDirectory(this.home, task.id, integration.id), {
-          recursive: true,
-          force: true
-        });
-        this.store.removeManagedWorkspace({
-          type: "integration-attempt",
-          taskId: integration.taskId,
-          integrationAttemptId: integration.id
-        });
-      }
-      return result;
+      return await new FileTaskWorkspacePreparer(this.home, this.store, this.git, this.now)
+        .cleanupIntegrationWorkspace(task.id, integration.id, { runtimeIsolation: this.runtimeIsolation });
     } finally {
       release();
     }
@@ -1362,30 +1320,6 @@ function isNodeCode(error: unknown, code: string): boolean {
     && error !== null
     && "code" in error
     && (error as { code?: unknown }).code === code;
-}
-
-function defaultIntegrationRuntimeIsolation(
-  home: string,
-  homeId: string
-): TaskRuntimeIsolationPort {
-  const controlHome = resolve(home);
-  const runtimeRoot = managedIntegrationRuntimeRoot(controlHome);
-  return new FileTaskRuntimeIsolation({
-    // The integration check's provider data/cache/tmp live in a dedicated Home
-    // partition — the same isolation contract every Task runtime obeys — not in
-    // a system-wide `/tmp` root. Only the tmux socket ENDPOINT stays a short
-    // `/tmp` path (see `integrationCheckEnvironment`) for the `sockaddr_un`
-    // budget; ordinary runtime state is now Yui-managed under Home.
-    runtimeRoot,
-    pathLayout: "compact",
-    controlPlane: {
-      yuiHome: controlHome,
-      managedRuntimeRoot: runtimeRoot,
-      controllerSocketPath: controllerSocketPath(homeId),
-      tmuxNamespace: yuiTmuxServerName(controlHome),
-      globalInstallPaths: [process.execPath]
-    }
-  });
 }
 
 /**

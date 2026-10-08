@@ -83,14 +83,14 @@ async function cleanupIntegration(
     && (
       job.status === "queued"
       || job.status === "running"
-      || (job.status === "unknown-needs-attention" && job.acknowledgedAt === undefined)
+      || job.status === "unknown-needs-attention"
     )
   ));
   if (activeIntegrationJob !== undefined) {
     throw usageError(
       `Integration ${integration.id} has an active DurableJob: `
       + `${activeIntegrationJob.id}/${activeIntegrationJob.status}. `
-      + "Cancel or acknowledge it before cleanup."
+      + "Establish its physical exit before cleanup; acknowledgement alone is not stop evidence."
     );
   }
   const result = await new GitIntegrationService(home, store).cleanup(integration, {
@@ -105,9 +105,9 @@ async function cleanupIntegration(
   }
   return {
     output: result === "removed"
-      ? `Cleaned Integration worktree and check logs ${integration.id}\n`
-      : `Integration worktree and check logs already clean: ${integration.id}\n`,
-    data: { integrationId: integration.id, cleanup: result }
+      ? `Cleaned Integration worktree ${integration.id}; history and check logs retained\n`
+      : `Integration worktree already clean: ${integration.id}; history and check logs retained\n`,
+    data: { integrationId: integration.id, cleanup: result, historyRetained: true }
   };
 }
 

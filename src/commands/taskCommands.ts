@@ -215,7 +215,7 @@ import {
   renderArchiveDiagnostics,
   taskArchiveDiagnostics
 } from "../task/archiveDiagnostics.js";
-import { archiveSettlementChecks } from "../task/archivePreflight.js";
+import { archiveExecutionChecks, archiveSettlementChecks } from "../task/archivePreflight.js";
 import {
   projectCompletionReadiness,
   type CompletionAdvisory,
@@ -1931,11 +1931,8 @@ function archiveTaskCommand(
       )
       : undefined;
     if (!request.force) {
-      const checks = archiveSettlementChecks(tx, task);
+      const checks = [...archiveSettlementChecks(tx, task), ...archiveExecutionChecks(tx, task.id)];
       if (checks.length > 0) throw new CleanupInspectionError(checks);
-      if (task.cwd !== undefined || tx.listManagedWorkspaces(task.id).length > 0) {
-        throw usageError(`Task ${task.id} still has managed worktrees; clean them before archiving.`);
-      }
       const activeRole = tx.listRoles(task.id)
         .find((role) => tx.getActiveRun(task.id, role.name) !== null);
       if (activeRole !== undefined) {
@@ -1956,7 +1953,7 @@ function archiveTaskCommand(
         );
       }
     }
-    const retainedResources = request.force ? archiveRetainedResources(tx, task) : [];
+    const retainedResources = archiveRetainedResources(tx, task);
     const warnings = request.force && remoteDelivery !== undefined ? archiveDeliveryWarnings(remoteDelivery) : [];
     const archived = { ...archiveTask(task, now, { by: actor }), executionGate: { state: "stopped" as const } };
     tx.saveTask(archived);
@@ -1989,8 +1986,9 @@ function archiveTaskCommand(
         authorizationSource: JSON.stringify(options.archiveLeaderAdmission.source)
       }),
       workspaceDisposition: request.disposition,
+      cleanup: "pending",
       ...(request.force ? {
-        force: "true", cleanup: "pending",
+        force: "true",
         warnings: JSON.stringify(warnings),
         retainedResources: JSON.stringify(retainedResources)
       } : {}),

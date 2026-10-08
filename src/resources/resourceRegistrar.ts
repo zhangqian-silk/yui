@@ -118,10 +118,10 @@ export class ResourceRegistrar {
 
   markWorkspaceDeleted(workspace: ManagedWorkspace): void {
     try {
-      this.markPathsDeleted([
+      this.#markPathsDeleted([
         workspace.root,
-        ...workspace.entries.map((entry) => entry.path)
-      ]);
+        ...workspace.entries.filter(entry => entry.access === "write").map(entry => entry.path)
+      ], ownerFromManagedWorkspace(this.#home, workspace.owner));
     } catch {
       // Best-effort receipt; workspace deletion must proceed regardless.
     }
@@ -135,7 +135,7 @@ export class ResourceRegistrar {
     }
   }
 
-  #markPathsDeleted(paths: readonly string[]): void {
+  #markPathsDeleted(paths: readonly string[], owner?: ResourceOwner): void {
     const targets = new Set(paths.map((path) => resolve(path)));
     const store = createResourceRegistryStore(this.#home);
     try {
@@ -144,6 +144,10 @@ export class ResourceRegistrar {
       const timestamp = this.#now().toISOString();
       for (const record of Object.values(state.records) as ResourceRecord[]) {
         if (!targets.has(record.path) || record.disposition === "deleted") continue;
+        if (owner !== undefined && (["home", "taskId", "workItemId", "reviewRoundId", "integrationAttemptId"] as const)
+          .some(key => record.owner[key] !== owner[key])) {
+          throw new Error("Resource registration owner changed; deletion receipt retained for inspection.");
+        }
         next = upsertResourceRecord(next, {
           ...record,
           activeRefs: Object.freeze([]),

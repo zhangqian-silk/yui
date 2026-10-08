@@ -305,7 +305,8 @@ test("force retains active Runs and queued Jobs, while plain settled archive sti
     environment: {}, archiveRemoteDeliveryProof: createTaskRemoteDeliveryProof(store, clean)
   });
   assert.equal(result.data.archived, true);
-  assert.deepEqual(result.data.warnings, []);
+  assert.equal(result.data.cleanupFinished, false, "logical archive has not yet run physical cleanup");
+  assert.equal(result.data.allResourcesReleased, false);
   assert.deepEqual(result.data.retainedResources, []);
 });
 
