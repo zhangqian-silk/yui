@@ -25,6 +25,10 @@ export function archiveSettlementChecks(store: TaskStore, task: Task): CleanupCh
     add(`work-item:${task.id}/${item.id}`, "owner-unsettled", "WorkItem must be accepted or explicitly retired before archive.",
       ["accepted", "retired"], item.status, `yui task work show ${task.id}/${item.id}`);
   }
+  for (const round of store.listReviewRounds(task.id).filter(r => ["pending", "running"].includes(r.status))) {
+    add(`review-round:${task.id}/${round.id}`, "owner-unsettled", "ReviewRound must be terminal before ordinary archive.",
+      ["completed", "failed"], round.status, `yui task context list ${task.id} --store review-round`);
+  }
   for (const attempt of store.listIntegrationAttempts(task.id).filter(a =>
     ["running", "blocked", "conflicted", "validating"].includes(a.status))) {
     add(`integration-attempt:${task.id}/${attempt.id}`, "unresolved-integration", "Task has an unresolved Integration Attempt.",

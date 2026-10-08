@@ -242,6 +242,8 @@ yui task archive <task> (--integrated|--abandon) --force
 
 缺失或陈旧的覆盖、未解决的执行会阻止普通归档。脏 worktree 或其他无法安全移除的
 临时资源在逻辑归档后保留，不会仅因这些残留而要求 force；不会隐式 reset 或强制删除。
+`--abandon` 可释放 HEAD 精确等于已记录 Project 基线的干净 Task-main，无需 Publication；
+未验证的新增提交仍保留。pending/running Review 属于未结清业务，而不只是保留目录。
 
 ### 明确授权的 force 归档
 

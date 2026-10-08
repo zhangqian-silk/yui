@@ -112,9 +112,9 @@ export async function inspectWorkspaceCleanup(
       }
       break;
   }
-  const delivery = owner.type === "task" && (disposition === "integrated" || task.status === "archived" || forceArchive)
+  const delivery = owner.type === "task"
     ? await readArchiveDelivery(store, git, task, forceArchive) : undefined;
-  if (delivery !== undefined && (!delivery.allMerged || !delivery.allVerified)) {
+  if (disposition === "integrated" && delivery !== undefined && (!delivery.allMerged || !delivery.allVerified)) {
     add("delivery-coverage", "Task main has commits without verified remote coverage; cleanup does not establish delivery.",
       { allMerged: true, allVerified: true }, { allMerged: delivery.allMerged, allVerified: delivery.allVerified });
   }
@@ -159,7 +159,12 @@ export async function inspectWorkspaceCleanup(
           const covered = delivery.projects.find(p => p.projectId === entry.projectId);
           const expected = covered?.expectedLocalCommit;
           const observed = (await git.inspect(entry.path, "HEAD")).baseCommit;
-          if (expected != null && expected !== observed && covered?.deliveryLocalCommit !== observed) {
+          const baseline = task.projectBindings.find(binding => binding.projectId === entry.projectId)?.baseCommit;
+          const unchangedAbandonment = disposition === "abandoned" && baseline !== undefined && observed === baseline;
+          if (!unchangedAbandonment && disposition === "abandoned" && (!covered?.merged || !covered.verified)) {
+            check("delivery-coverage", "Abandonment does not discard unverified local commits; only the exact unchanged baseline is disposable.",
+              { baseline: baseline ?? null, verifiedDelivery: true }, observed);
+          } else if (!unchangedAbandonment && expected != null && expected !== observed && covered?.deliveryLocalCommit !== observed) {
             check("head-mismatch", "Task main HEAD differs from the accepted head and its covered publication candidate.",
               { acceptedCommit: expected, deliveryLocalCommit: covered?.deliveryLocalCommit ?? null }, observed);
           }

@@ -11,7 +11,8 @@ import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { FileTaskWorkspacePreparer } from "../../dist/repository/taskWorkspacePreparer.js";
 import { TaskWorkspaceCoordinator } from "../../dist/repository/taskWorkspaceCoordinator.js";
 import { inspectTaskArchive, renderTaskArchivePreflight } from "../../dist/task/archivePreflight.js";
-import { createTask, activateTask, completeTask } from "../../dist/task/task.js";
+import { createTask, activateTask, completeTask, retireTask } from "../../dist/task/task.js";
+import { createTaskReviewRound, finishReviewRound } from "../../dist/review/reviewRound.js";
 import { createProject } from "../../dist/repository/project.js";
 import { createManagedWorkspace } from "../../dist/worktree/managedWorkspace.js";
 import { createTaskEvent } from "../../dist/event/taskEvent.js";
@@ -160,6 +161,63 @@ test("archive preflight observes SQLite and Git without writes, and force still 
     async stopTaskRoleSessions() { assert.fail("read only"); }
   }), { ...request, force: true });
   assert.ok(unknown.cleanup.execution.some(c => c.status === "unknown"));
+});
+
+test("ordinary abandoned archive waits for Review settlement and releases only the unchanged baseline", async t => {
+  const { home, root, git } = fixture(t);
+  const store = new SqliteTaskStore(home);
+  t.after(() => store.close());
+  const now = new Date("2026-10-08T00:00:00Z");
+  const workspaceIdentity = generateTaskWorkspaceIdentity({
+    home: store.getHomeIdentity(), taskId: "task-1", now, entropy: Buffer.alloc(16, 5)
+  });
+  const branch = `yui/${taskWorkspaceRefSegmentFromIdentity(workspaceIdentity)}/main`;
+  git(root, "branch", "-m", branch);
+  const base = git(root, "rev-parse", "HEAD");
+  store.saveProject(createProject("project-1", "app", join(home, "reference"),
+    { stable: "main", development: "main" }, now));
+  const task = { ...retireTask(activateTask(createTask("task-1", "Abandoned baseline", now, {
+    cwd: join(home, "workspaces/tasks/task-1/main"),
+    projectBindings: [{ projectId: "project-1", directory: "app", baseRef: "main", baseCommit: base, currentCommit: base }]
+  }), now), { by: "user", summary: "No delivery needed" }, now), workspaceIdentity };
+  store.saveTask(task);
+  store.saveManagedWorkspace(createManagedWorkspace({ owner: { type: "task", taskId: task.id },
+    root: task.cwd, entries: [{ projectId: "project-1", directory: "app", access: "write", path: root,
+      branch, baseRef: "main", baseCommit: base }] }, now));
+  const preparer = new FileTaskWorkspacePreparer(home, store);
+  const coordinator = new TaskWorkspaceCoordinator(store, preparer, {
+    async stopTaskRoleSessions() {}, async releaseTaskTerminals() {}, async assertTaskPhysicalResourcesReleased() {}
+  });
+  const round = createTaskReviewRound("review-round-1", task.id, "reviewer", "leader",
+    { schemaVersion: 1, projects: [{ projectId: "project-1", commit: base }] }, now);
+  store.saveReviewRound(task.id, round);
+  await assert.rejects(coordinator.prepareTaskForArchive(task.id), /Review|review/i);
+  assert.throws(() => runTaskCommand(["archive", task.id, "--abandon"], store, { environment: {} }), /Review|review/i);
+  assert.equal(store.getTask(task.id).status, "cancelled");
+  store.saveReviewRound(task.id, finishReviewRound(round, "failed", now,
+    { kind: "dispatch", message: "Fixture Review settled without execution" }));
+  // A clean new commit is still material, not disposable merely because the
+  // requested disposition is abandoned.
+  git(root, "commit", "--allow-empty", "-m", "unverified local increment");
+  assert.ok((await preparer.inspectWorkspaceCleanup(store.getTaskWorkspace(task.id), "abandoned"))
+    .some(check => check.reason === "delivery-coverage"));
+  // Return only this fixture to its known baseline without discarding files.
+  git(root, "reset", "--soft", base);
+  const before = await inspectTaskArchive(coordinator, { taskId: task.id, disposition: "abandoned", force: false });
+  assert.equal(before.cleanup.resources[0].status, "checked");
+  await coordinator.prepareTaskForArchive(task.id);
+  runTaskCommand(["archive", task.id, "--abandon"], store, { environment: {} });
+  git(root, "commit", "--allow-empty", "-m", "late unverified increment");
+  await coordinator.cleanupArchivedTask(task.id, "abandoned");
+  assert.equal(existsSync(root), true, "archive does not authorize discarding a later local commit");
+  assert.equal(taskArchiveDiagnostics(store, store.getTask(task.id)).allResourcesReleased, false);
+  git(root, "reset", "--soft", base);
+  await coordinator.cleanupArchivedTask(task.id, "abandoned");
+  assert.equal(existsSync(root), false);
+  assert.equal(taskArchiveDiagnostics(store, store.getTask(task.id)).allResourcesReleased, true);
+  await coordinator.cleanupArchivedTask(task.id, "abandoned");
+  assert.equal(taskArchiveDiagnostics(store, store.getTask(task.id)).allResourcesReleased, true);
+  assert.equal(store.getReviewRound(task.id, round.id).status, "failed");
 });
 
 test("ordinary archive can retain safe physical material and explicit cleanup converges after interrupted recording", async t => {

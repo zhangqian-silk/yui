@@ -1,4 +1,3 @@
-import { lstat } from "node:fs/promises";
 import { isDeepStrictEqual } from "node:util";
 import {
   isArchivePersistenceFailure,
@@ -6,7 +5,6 @@ import {
   type ArchiveDiagnostic
 } from "../task/archiveDiagnostics.js";
 import { archiveExecutionChecks, archiveSettlementChecks } from "../task/archivePreflight.js";
-import { projectTaskRemoteDeliveryFromStore } from "../task/remoteDeliveryService.js";
 import { CleanupInspectionError } from "../workspace/cleanupInspection.js";
 import { WorkItemChangeSetManager } from "../workspace/workItemChangeSetManager.js";
 import { withResourceRegistry } from "../resources/resourceRegistryStore.js";
@@ -360,26 +358,8 @@ export class TaskWorkspaceCoordinator {
               case "integration-attempt":
                 return await this.preparer.cleanupIntegrationWorkspace(taskId, owner.integrationAttemptId);
               case "task": {
-                const current = this.store.getTask(taskId)!;
-                const delivery = projectTaskRemoteDeliveryFromStore(this.store, current);
-                if (!delivery.allMerged || !delivery.allVerified) {
-                  throw new Error("Task main retained: local commits are not covered by verified remote delivery. Force does not discard them.");
-                }
-                for (const entry of workspace.entries.filter(e => e.access === "write")) {
-                  const covered = delivery.projects.find(p => p.projectId === entry.projectId);
-                  const expected = covered?.expectedLocalCommit;
-                  const path = await lstat(entry.path).catch(error => {
-                    if (error.code === "ENOENT") return null;
-                    throw error;
-                  });
-                  if (expected !== null && expected !== undefined
-                    && path !== null) {
-                    const actual = await this.preparer.git.inspect(entry.path, "HEAD");
-                    if (actual.baseCommit !== expected && actual.baseCommit !== covered?.deliveryLocalCommit) {
-                      throw new Error(`Task main HEAD changed: ${entry.path}; retained.`);
-                    }
-                  }
-                }
+                // The preparer reloads the shared identity, dirt, baseline and
+                // delivery checks; do not maintain a second post-archive gate.
                 const result = await this.preparer.cleanupTaskForArchive(taskId, disposition);
                 if (result.status !== "removed") throw new Error(result.error ?? "Task main or dependent workspace retained.");
                 return "removed";

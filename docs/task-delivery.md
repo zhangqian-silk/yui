@@ -317,6 +317,9 @@ Missing/stale coverage or unresolved execution prevents ordinary archive.
 Dirty or otherwise unsafe temporary resources are retained after the logical
 archive commit; they do not require force merely to archive. No implicit reset
 or force deletion occurs.
+For `--abandon`, a clean Task-main at its exact recorded Project baseline can
+be released without a Publication. New unverified commits remain protected.
+Pending or running Reviews are unsettled business, not just retained directories.
 
 ### Explicit force archive
 
