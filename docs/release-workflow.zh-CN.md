@@ -27,12 +27,42 @@ Agent 选择一个预先声明的计划，设施从持久状态驱动该计划�
 发布 npm；每项外部效果仍需 Task 的实际授权。仅包含 PR、CI 和合并步骤也是合法的交付
 计划，`ReleaseWorkflow` 这个名称不授予包发布、全局 CLI 更新或 Controller 替换权限。
 
-用户明确要求「发布新版本」但没有指定级别时，根据实际变更和项目版本规则，仅选择
-minor（中版本）或 patch（小版本）。major（大版本）必须得到用户对大版本或具体 major
-版本号的明确授权。如果破坏性变更无法诚实地用 minor/patch 表达，说明兼容性冲突，
-等待必要的明确用户选择：既不能静默发布 major，也不能把不兼容行为冒称为兼容。
-这不要求为了回避选择而新增历史兼容机制。包发布版本与存储迁移版本是不同契约，
-下文的存储规则不授予包发布权限。
+用户明确要求「发布新版本」时，新功能或接口／行为不兼容变更使用 minor（中版本），
+纯兼容修复可使用 patch（小版本）。不兼容本身不要求 major 或再次确认版本级别；
+只有用户明确要求 major（大版本）时才发布 major。
+
+这是 Yui 项目专属的编号约定，不是通常 SemVer 的向后兼容承诺：minor 也可能不兼容。
+用户升级前应阅读兼容性及迁移说明；发布说明必须列明受影响的契约与新接口用法，
+不能将不兼容冒称为兼容，也不为回避版本选择新增历史兼容机制。包版本与协议、
+持久存储契约仍然独立：兼容性检查和必要迁移要求不变，下文存储规则不授予发版权限。
+
+### 2.2.0 兼容性及迁移说明
+
+本 minor 增加独立 `yui agent` 入口、显式模型／工具配置、持久本地会话、上下文压缩、
+离线评估，以及 Task 交接／Leader 写域修复和 Web 布局改善。
+
+2.1.0 独立 Agent 的公开 `createAgent({ onEvent })` 已被替换。
+JavaScript 调用方继续传入 `onEvent` 时不会再触发该回调，Turn 仍可能完成，
+但事实仅保留在内存中。升级前必须调整调用方；虽然编号为 minor，这仍是不兼容变化。
+
+必要的有序记录使用 `recorder.record`：内核等待记录确认，拒绝会停止新增效果。
+可选展示／遥测使用同步 `observer.observe`：失败写入 `observerErrors`，不停止 Turn。
+Observer 必须自行排队异步工作，不能返回 Promise。旧异步持久化回调应改为：
+
+```js
+const agent = createAgent({
+  provider,
+  tools,
+  recorder: { record: persistEvent }, // async (event) => { await durableWrite(event); }
+  observer: { observe: renderEvent }, // 可选，同步
+});
+```
+
+检查 `result.recording` 的记录证据及 `result.error`；记录失败代码由
+`event_sink_failed` 改为 `recording_failed`。不要把必要持久化放入 Observer。
+已有 Task 和历史报告仍可读取，但新 Review 必须有冻结 Candidate／原报告证据，
+缺少的历史证据不会自动补造。上下文超预算时，压缩需要显式 compressor。
+上述说明不授予全局 CLI 安装、Home 迁移或 Controller 重启权限。
 
 下文操作及示例说明如何执行已经获授权的效果，不是 Task 完成或合并后默认运行的步骤。
 

@@ -105,9 +105,12 @@ separate work, not a reason to add a background protocol to the normal path.
 - For release or package changes, read the relevant section of
   [release workflow](../../../docs/release-workflow.md); verification does not
   authorize publishing. Apply AGENTS.md's release boundary: no version release
-  by default; an explicit release request defaults to minor/patch, and major
-  requires explicit user authorization. If compatibility conflicts with that
-  scope, report it and wait for the necessary user choice.
+  by default; an explicit release request uses minor for features or incompatible
+  interface/behavior changes, and patch for compatible fixes. Incompatibility
+  alone does not require major or another version-level approval. This Yui-specific
+  convention is not a SemVer compatibility promise: document impacts and migration
+  in release notes. Do not relax protocol/storage migration requirements or modify
+  generic Role Skills to encode this Project policy.
 
 ## Hand off evidence
 

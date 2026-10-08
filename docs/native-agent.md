@@ -1,5 +1,9 @@
 # 独立编码 Agent 入口
 
+升级前请阅读 [2.2.0 兼容性及迁移说明](release-workflow.zh-CN.md#220-兼容性及迁移说明)：
+Yui 的 minor 编号不承诺向后兼容，旧 `createAgent({onEvent})` 调用方须迁移到
+`recorder`／`observer`，否则旧回调不会执行。
+
 `yui agent` 与控制面共用安装包，不共用运行生命周期：它在控制面模块加载之前
 分流，不初始化或读取 Yui Home，不启动 Controller/Task/Role/Host/ACP。
 既有管理命令仍是 `yui config agent`。

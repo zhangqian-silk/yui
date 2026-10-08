@@ -37,15 +37,53 @@ Task's actual authorization. A workflow containing only PR, CI and merge steps
 is a valid delivery plan; its `ReleaseWorkflow` name does not authorize any
 package release, global CLI update or Controller replacement.
 
-When the user explicitly asks to release a new version without naming its
-level, select only minor or patch according to the actual changes and project
-version rules. A major release requires explicit user authorization for major
-or a specific major version. If breaking changes cannot honestly be represented
-by minor/patch, explain the compatibility conflict and wait for the necessary
-explicit user choice: neither silently publish major nor mislabel incompatible
-behavior as compatible. This does not require adding historical compatibility
-mechanisms. Package release versions are distinct from storage migration
-versions; the storage rules below do not authorize a package release.
+When the user explicitly asks to release a new version, select minor for new
+features or incompatible interface/behavior changes, and patch for compatible
+fixes. Incompatibility does not require major or another version-level approval;
+major is used only when explicitly requested by the user.
+
+This is Yui's project-specific numbering convention, not the usual SemVer
+backward-compatibility meaning. A minor release can be incompatible. Users must
+read its compatibility and migration notes before upgrading; release notes must
+identify affected contracts and how to move to the new interfaces, not label
+incompatible behavior as compatible. Do not add historical compatibility mechanisms
+merely to avoid a version decision. Package versions remain distinct from protocol
+and persistent-storage contracts: their compatibility checks and required migrations
+are unchanged, and the storage rules below do not authorize a package release.
+
+### 2.2.0 compatibility and migration notes
+
+This minor release adds the independent `yui agent` entry, explicit model/tool
+configuration, durable local sessions, context compaction and offline evaluation,
+alongside Task handoff/Leader scope fixes and Web layout improvements.
+
+The independent Agent's public `createAgent({ onEvent })` option from 2.1.0 has
+been replaced. Passing `onEvent` in JavaScript no longer invokes the callback;
+the turn may complete with facts retained only in memory. Update callers before
+upgrading—this is an incompatible interface change, despite the minor version.
+
+Use `recorder.record` for required ordered recording; it is awaited and a rejected
+record stops new effects. Use synchronous `observer.observe` for optional display
+or telemetry; its failure is reported in `observerErrors` and does not stop the
+turn. An observer must enqueue asynchronous work itself, not return a Promise.
+For an old awaited persistence callback, the equivalent construction is:
+
+```js
+const agent = createAgent({
+  provider,
+  tools,
+  recorder: { record: persistEvent }, // async (event) => { await durableWrite(event); }
+  observer: { observe: renderEvent }, // optional, synchronous
+});
+```
+
+Inspect `result.recording` for recording evidence and `result.error` for failure.
+Recording errors now use `recording_failed`, not `event_sink_failed`. Do not move
+required persistence into an observer. Existing Tasks and historical reports
+remain readable, but a new Review requires frozen candidate/report evidence;
+missing historical evidence is not reconstructed. Context compaction requires
+an explicit compressor when the budget is exceeded. These notes do not authorize
+global CLI installation, Home migration or Controller restart.
 
 The operations and examples below describe how to execute already-authorized
 effects, not a default sequence to run after completing or merging a Task.
