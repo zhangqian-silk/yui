@@ -3,12 +3,14 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmdirSync,
   rmSync,
   writeFileSync
 } from "node:fs";
 import {
+  basename,
   dirname,
   isAbsolute,
   join,
@@ -22,6 +24,7 @@ import {
   type ManagedWorkspaceOwner
 } from "../worktree/managedWorkspace.js";
 import { ResourceRegistrar } from "../resources/resourceRegistrar.js";
+import { scanProcessPathRefs } from "../resources/liveReferences.js";
 
 export const YUI_TASK_RUNTIME_ISOLATION_DESCRIPTOR =
   "YUI_TASK_RUNTIME_ISOLATION_DESCRIPTOR";
@@ -193,6 +196,10 @@ export class FileTaskRuntimeIsolation implements TaskRuntimeIsolationPort {
     const { descriptor, fingerprint } = validatePreparation(preparation);
     const root = descriptor.roots.runtime;
     const existing = inspectRuntimeRoot(descriptor, fingerprint);
+    const claim = existing.find(resource => resource.id !== root);
+    if (claim !== undefined) {
+      throw new Error(`Task runtime has an unresolved cleanup claim: ${claim.id}.`);
+    }
     if (existing.length > 0) {
       const [resource] = existing;
       if (
@@ -251,9 +258,19 @@ export class FileTaskRuntimeIsolation implements TaskRuntimeIsolationPort {
       return;
     }
     planTaskRuntimeCleanup(descriptor, reason, resources);
+    // Claims keep the original descriptor and owner marker. An interrupted
+    // rename is not absence: resume only exact, inactive claims and leave any
+    // partial/unmarked deletion discoverable through the original owner.
+    for (const claimed of runtimeCleanupClaims(descriptor.roots.runtime)) {
+      removeRuntimeClaim(descriptor, fingerprint, claimed);
+    }
     // Re-read the sole durable marker immediately before deletion. A missing,
     // replaced, symlinked, or mismatched runtime is never cleanup authority.
     const current = inspectRuntimeRoot(descriptor, fingerprint);
+    if (current.length === 0) {
+      this.#resourceRegistrar().markTaskRuntimeDeleted(descriptor);
+      return;
+    }
     if (
       current.length !== 1
       || current[0]?.ownership !== "owned"
@@ -265,14 +282,7 @@ export class FileTaskRuntimeIsolation implements TaskRuntimeIsolationPort {
     const claimed = `${root}.cleanup-${randomBytes(16).toString("hex")}`;
     renameSync(root, claimed);
     try {
-      const marker = parseMarker(readFileSync(join(claimed, MARKER_FILE), "utf8"));
-      if (
-        marker.fingerprint !== fingerprint
-        || JSON.stringify(marker.descriptor) !== JSON.stringify(descriptor)
-      ) {
-        throw new Error("Task runtime resources changed during cleanup claim.");
-      }
-      rmSync(claimed, { recursive: true });
+      removeRuntimeClaim(descriptor, fingerprint, claimed);
     } catch (error) {
       // Preserve a claimed-but-unverified resource. Restore its exact path only
       // when no concurrent runtime has appeared there; never delete it.
@@ -285,6 +295,9 @@ export class FileTaskRuntimeIsolation implements TaskRuntimeIsolationPort {
         );
       }
       throw error;
+    }
+    if (inspectRuntimeRoot(descriptor, fingerprint).length !== 0) {
+      throw new Error("Task runtime resources changed during cleanup.");
     }
     // Receipt persistence is separate from the filesystem claim. If it fails,
     // retain the caller's owner and retry using the same validated descriptor;
@@ -563,7 +576,50 @@ function inspectRuntimeRoot(
   descriptor: TaskRuntimeIsolationDescriptor,
   expectedFingerprint: string
 ): readonly TaskRuntimeResourceObservation[] {
-  const root = descriptor.roots.runtime;
+  return [descriptor.roots.runtime, ...runtimeCleanupClaims(descriptor.roots.runtime)]
+    .flatMap(root => inspectRuntimeDirectory(descriptor, expectedFingerprint, root));
+}
+
+function runtimeCleanupClaims(root: string): readonly string[] {
+  const parent = dirname(root);
+  try {
+    // Names select candidates, never deletion authority. Include malformed or
+    // partially removed claims too so absence cannot produce a false receipt.
+    return readdirSync(parent).filter(name => name.startsWith(`${basename(root)}.cleanup-`))
+      .sort().map(name => join(parent, name));
+  } catch (error) {
+    if (isNodeCode(error, "ENOENT")) return [];
+    throw error;
+  }
+}
+
+function removeRuntimeClaim(
+  descriptor: TaskRuntimeIsolationDescriptor,
+  fingerprint: string,
+  claimed: string
+): void {
+  const current = inspectRuntimeDirectory(descriptor, fingerprint, claimed);
+  if (current.length !== 1 || current[0]?.ownership !== "owned") {
+    throw new Error(`Task runtime cleanup claim is not exactly owned: ${claimed}.`);
+  }
+  // A process cwd/fd follows rename. Inspect the physical claim, not only the
+  // descriptor's original (now missing) runtime path.
+  const scan = scanProcessPathRefs([claimed]);
+  if (scan.diagnostics.some(diagnostic => diagnostic.severity === "error")
+    || [...scan.refs.values()].some(refs => refs.length > 0)) {
+    throw new Error(`Task runtime cleanup claim is live or unverified: ${claimed}.`);
+  }
+  if (inspectRuntimeDirectory(descriptor, fingerprint, claimed)[0]?.ownership !== "owned") {
+    throw new Error(`Task runtime cleanup claim changed during inspection: ${claimed}.`);
+  }
+  rmSync(claimed, { recursive: true });
+}
+
+function inspectRuntimeDirectory(
+  descriptor: TaskRuntimeIsolationDescriptor,
+  expectedFingerprint: string,
+  root: string
+): readonly TaskRuntimeResourceObservation[] {
   let metadata;
   try {
     metadata = lstatSync(root);

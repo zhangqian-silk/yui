@@ -355,6 +355,14 @@ and remaining ownership separately from historical warnings; no background retry
 is implied. Both archive paths preserve Task history and recovery information.
 Archived Tasks cannot reopen.
 
+Interrupted runtime cleanup may leave an adjacent `.cleanup-*` directory.
+Retries inspect these claims as well as the original path: only an exact Owner
+marker and no live process references permit deletion. Missing or mismatched
+markers remain retained with their path for explicit diagnosis; absence of the
+original directory alone never proves release. Unresolved claims also prevent
+reactivating the same runtime. This uses the existing resource owner and receipt,
+not a second cleanup queue.
+
 Resource GC is a separate, opt-in quarantine path. A runtime subtree moves once:
 the parent receipt owns recovery of its contents, and redundant child registry
 entries are removed in the same registry transaction. Independently owned Git

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, mkdirSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, renameSync, writeFileSync, openSync, closeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
@@ -12,6 +12,46 @@ import { controllerSocketPath } from "../../dist/core/controllerEndpoint.js";
 import { SqliteResourceRegistry } from "../../dist/resources/sqliteResourceRegistry.js";
 import { withResourceRegistry } from "../../dist/resources/resourceRegistryStore.js";
 import { planResourceGc, applyResourceGc, restoreAllResourceGc, purgeResourceQuarantine } from "../../dist/resources/resourceGc.js";
+
+test("interrupted runtime claims remain owned until exact inactive resources are removed", t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-runtime-claim-"));
+  const store = new SqliteTaskStore(home);
+  t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
+  const workspace = createManagedWorkspace({ owner: { type: "integration-attempt",
+    taskId: "task-1", integrationAttemptId: "integration-1" },
+    root: join(home, "workspace"), entries: [] }, new Date());
+  const isolation = new FileTaskRuntimeIsolation({ runtimeRoot: managedRuntimeRoot(home),
+    controlPlane: { yuiHome: home, controllerSocketPath: controllerSocketPath(store.getHomeIdentity().homeId),
+      tmuxNamespace: "fixture-no-server", managedRuntimeRoot: managedRuntimeRoot(home) } });
+  const prepared = isolation.preflight({ workspace });
+  isolation.activate(prepared);
+  const root = prepared.descriptor.roots.runtime;
+  const claimed = `${root}.cleanup-${"a".repeat(32)}`;
+  writeFileSync(join(root, "diagnostic"), "preserve while referenced");
+  renameSync(root, claimed); // Process interruption after claim, before rm/receipt.
+  assert.throws(() => isolation.activate(prepared), /cleanup claim/);
+  const fd = openSync(join(claimed, "diagnostic"), "r");
+  try {
+    assert.throws(() => isolation.cleanup(isolation.preflight({ workspace }), "failure"), /live|unverified/);
+    assert.equal(existsSync(claimed), true);
+    assert.ok(withResourceRegistry(home, undefined, registry =>
+      Object.values(registry.load().records).every(record => record.disposition === "active")));
+  } finally { closeSync(fd); }
+  isolation.cleanup(isolation.preflight({ workspace }), "failure");
+  assert.equal(existsSync(claimed), false);
+  assert.ok(withResourceRegistry(home, undefined, registry =>
+    Object.values(registry.load().records).every(record => record.disposition === "deleted")));
+  isolation.cleanup(prepared, "failure");
+
+  isolation.activate(prepared);
+  renameSync(root, claimed);
+  rmSync(join(claimed, ".yui-task-runtime-owner.json")); // Partial deletion lost ownership proof.
+  assert.throws(() => isolation.preflight({ workspace }), /ambiguous|owned/);
+  assert.throws(() => isolation.cleanup(prepared, "failure"), /unowned/);
+  assert.equal(existsSync(claimed), true);
+  assert.ok(withResourceRegistry(home, undefined, registry =>
+    Object.values(registry.load().records).every(record => record.disposition === "active")));
+});
 
 test("runtime deletion receipt failure is explicit and the exact descriptor retry converges", t => {
   const home = mkdtempSync(join(tmpdir(), "yui-runtime-receipt-"));
