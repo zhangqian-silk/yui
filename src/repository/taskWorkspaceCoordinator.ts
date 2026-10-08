@@ -10,6 +10,7 @@ import { projectTaskRemoteDeliveryFromStore } from "../task/remoteDeliveryServic
 import { CleanupInspectionError } from "../workspace/cleanupInspection.js";
 import { WorkItemChangeSetManager } from "../workspace/workItemChangeSetManager.js";
 import { withResourceRegistry } from "../resources/resourceRegistryStore.js";
+import { jobCleanupBlocker } from "../job/jobCleanupInspection.js";
 
 import type { ReviewRound } from "../review/reviewRound.js";
 import {
@@ -451,23 +452,15 @@ export class TaskWorkspaceCoordinator {
     }
   }
 
-  /**
-   * rr5/f4: A WorkItem workspace must not be removed while a DurableJob it
-   * owns could still be using it. Queued, running, and unacknowledged
-   * unknown-needs-attention jobs are unsettled — the runner (or its corpse)
-   * may still hold the worktree. Acknowledged unknown jobs are settled: a
-   * human/Leader has taken responsibility for the outcome.
+  /** Check before stopping Roles or cleaning child lanes. The preparer's
+   * shared inspection repeats this physical check immediately before removal.
    */
   #assertNoActiveWorkItemDurableJobs(item: WorkItem): void {
     const jobs = this.store.listDurableJobs(item.taskId);
     const blocking = jobs.filter((job) => (
       job.owner.kind === "work-item"
       && job.owner.workItemId === item.id
-      && (
-        job.status === "queued"
-        || job.status === "running"
-        || (job.status === "unknown-needs-attention" && job.acknowledgedAt === undefined)
-      )
+      && jobCleanupBlocker(job, this.preparer.home) !== undefined
     ));
     if (blocking.length > 0) {
       throw new WorkspaceCleanupBlockedError(
@@ -476,7 +469,7 @@ export class TaskWorkspaceCoordinator {
         true,
         `Work item ${item.id} still has ${blocking.length} active DurableJob(s): `
         + `${blocking.map((job) => `${job.id}/${job.status}`).join(", ")}. `
-        + "Cancel or acknowledge them before cleanup."
+        + "Settle their outcomes and establish physical exit before cleanup; acknowledgement alone is not stop evidence."
       );
     }
   }

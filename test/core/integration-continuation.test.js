@@ -11,7 +11,9 @@ import { CURRENT_STORAGE_VERSION } from "../../dist/storage/storageVersions.js";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { createProject, addProjectKnowledge } from "../../dist/repository/project.js";
 import { createTask, activateTask, bindTaskWorkspaceIdentity } from "../../dist/task/task.js";
-import { generateTaskWorkspaceIdentity } from "../../dist/repository/taskWorkspaceIdentity.js";
+import { generateTaskWorkspaceIdentity, taskWorkspaceRefSegment } from "../../dist/repository/taskWorkspaceIdentity.js";
+import { currentProcessStartIdentity } from "../../dist/core/fileLockOwner.js";
+import { TaskWorkspaceCoordinator } from "../../dist/repository/taskWorkspaceCoordinator.js";
 import { createManagedWorkspace, managedWorkspaceKey } from "../../dist/worktree/managedWorkspace.js";
 import { createIntegrationAttempt } from "../../dist/integration/integrationAttempt.js";
 import { GitIntegrationService } from "../../dist/integration/gitIntegrationService.js";
@@ -30,7 +32,7 @@ import { integrationTmuxSocketRoot } from "../../dist/storage/homeLayout.js";
 import { completeGateArtifact } from "../../dist/verification/gateArtifact.js";
 import { freezeRunContextSnapshot } from "../../dist/context/runContextPack.js";
 import { runTaskCommand, dispatchPreparedReviewRound } from "../../dist/commands/taskCommands.js";
-import { createWorkItem, submitWorkItemCandidate } from "../../dist/workItem/workItem.js";
+import { createWorkItem, submitWorkItemCandidate, retireWorkItem } from "../../dist/workItem/workItem.js";
 
 const now = new Date("2026-09-12T00:00:00Z");
 const git = (path, ...args) => execFileSync("git", ["-C", path, ...args], {
@@ -546,6 +548,43 @@ test("an old Git conflict without its Integration receipt is diagnosed without a
   assert.equal(git(conflict.workspace.path, "rev-parse", "MERGE_HEAD"), operation);
   assert.equal(f.git("rev-parse", "HEAD"), f.before);
   assert.equal(f.starts(), 0);
+});
+
+test("WorkItem preflight and both cleanup entry points retain an acknowledged unknown live Job", async t => {
+  const f = integrationFixture(t);
+  const preparer = new FileTaskWorkspacePreparer(f.home, f.store, undefined, () => now);
+  const item = retireWorkItem(createWorkItem("work-item-1", "task-1",
+    { title: "Retired work", writeProjectIds: ["project-1"] }, now),
+  { by: "leader", summary: "No longer needed" }, now);
+  f.store.saveWorkItem("task-1", item);
+  const root = join(f.home, "workspaces/tasks/task-1/work-items/work-item-1");
+  const prepared = await preparer.git.ensureWorktree({ repositoryPath: f.repo, container: root,
+    directory: "app", taskSegment: taskWorkspaceRefSegment(f.store.getTask("task-1")),
+    roleName: item.id, baseRef: "main" });
+  const workspace = createManagedWorkspace({ owner: { type: "work-item",
+    taskId: "task-1", workItemId: item.id }, root,
+    entries: [{ projectId: "project-1", directory: "app", access: "write", ...prepared, baseRef: "main" }] }, now);
+  f.store.saveManagedWorkspace(workspace);
+  const queued = createDurableJob({ id: "job-1", taskId: "task-1",
+    owner: { kind: "work-item", workItemId: item.id }, projectId: "project-1",
+    head: prepared.baseCommit, workspace: root, env: {}, steps: [{ name: "check", command: "true" }],
+    artifactsLocator: "artifacts/jobs/task-1/job-1",
+    operation: { requestId: "work-check", actorId: "fixture:leader",
+      authorityRef: "fixture:leader", inputDigest: "a".repeat(64) } }, now);
+  const unknown = acknowledgeUnknownDurableJob(markDurableJobUnknown(startDurableJob(queued,
+    { pid: process.pid, startIdentity: currentProcessStartIdentity() }, now), "unknown result", [], now), now);
+  f.store.saveDurableJob("task-1", unknown);
+  const checks = await preparer.inspectWorkspaceCleanup(workspace, "abandoned");
+  assert.ok(checks.some(check => check.reason === "unresolved-execution"), JSON.stringify(checks));
+  const coordinator = new TaskWorkspaceCoordinator(f.store, preparer, {
+    async stopTaskRoleSessions() { assert.fail("must block before stopping unrelated Roles"); },
+    async releaseTaskTerminals() { assert.fail("not Task cleanup"); }
+  });
+  await assert.rejects(coordinator.cleanupWorkItem("task-1", item.id, "abandoned"), /Job|execution/i);
+  await assert.rejects(preparer.cleanupWorkItemWorkspace("task-1", item.id, "abandoned"), /Job|execution/i);
+  assert.equal(existsSync(prepared.path), true);
+  assert.deepEqual(f.store.getWorkItemWorkspace("task-1", item.id), workspace);
+  assert.deepEqual(f.store.getDurableJob("task-1", unknown.id), unknown);
 });
 
 test("unknown Job cleanup requires acknowledgement and current physical absence without rewriting its result", async t => {

@@ -33,6 +33,18 @@ export async function inspectWorkspaceCleanup(
       "same managed workspace", "changed or missing");
     return checks;
   }
+  // Job admission supports these three exact managed owners. Apply the same
+  // physical check before every supported owner's cleanup, not only Integration.
+  for (const job of store.listDurableJobs(task.id).filter(job =>
+    (owner.type === "task" && job.owner.kind === "task")
+    || (owner.type === "work-item" && job.owner.kind === "work-item"
+      && job.owner.workItemId === owner.workItemId)
+    || (owner.type === "integration-attempt" && job.owner.kind === "integration-attempt"
+      && job.owner.integrationAttemptId === owner.integrationAttemptId))) {
+    const blocker = jobCleanupBlocker(job, home);
+    if (blocker !== undefined) add("unresolved-execution", blocker,
+      "settled execution", { jobId: job.id, status: job.status });
+  }
   checks.push(...await inspectWorkspaceContainer(workspace));
   if (task.workspaceIdentity === undefined && workspace.entries.some(e => e.access === "write")) {
     add("workspace-metadata-missing", "Task has no durable workspace identity; do not infer one from paths.",
@@ -90,12 +102,6 @@ export async function inspectWorkspaceCleanup(
       }
       if (attempt === null || ["running", "blocked", "conflicted", "validating"].includes(attempt.status)) {
         add("owner-unsettled", "IntegrationAttempt must be terminal before cleanup.", "terminal attempt", attempt?.status ?? null);
-      }
-      for (const job of store.listDurableJobs(task.id).filter(job =>
-        job.owner.kind === "integration-attempt" && job.owner.integrationAttemptId === owner.integrationAttemptId)) {
-        const blocker = jobCleanupBlocker(job, home);
-        if (blocker !== undefined) add("unresolved-execution", blocker,
-          "settled execution", { jobId: job.id, status: job.status });
       }
       break;
     }
