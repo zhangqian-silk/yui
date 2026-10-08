@@ -15,11 +15,11 @@ export const RESPONSIVE_STYLES = `
 }
 @media(max-width:1200px){
   :root{--sidebar-w:264px}
-  .card-grid{grid-template-columns:minmax(0,1fr)}
+  .card-grid,.card-columns{grid-template-columns:minmax(0,1fr)}
   .metric-strip{grid-template-columns:repeat(3,minmax(0,1fr))}
 }
 @media(max-width:1040px){
-  body.dock-open .overview-grid{grid-template-columns:minmax(0,1fr)}
+  body.dock-open .overview-layout{grid-template-columns:minmax(0,1fr)}
 }
 @media(max-width:900px){
   .app,body.dock-open .app,body.dock-open.dock-center .app{grid-template-areas:"main";grid-template-columns:minmax(0,1fr)}
@@ -32,7 +32,7 @@ export const RESPONSIVE_STYLES = `
   .dock-divider,.sidebar-divider{display:none}
   .dock{position:fixed;inset:0;z-index:60;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
   #dock-swap{display:none}
-  .overview-grid{grid-template-columns:minmax(0,1fr)}
+  .overview-layout{grid-template-columns:minmax(0,1fr)}
   .dock-toggle span{display:none}
   .dock-toggle{width:32px;padding:0}
 }

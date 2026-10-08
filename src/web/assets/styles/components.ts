@@ -73,6 +73,8 @@ code.id{padding:1px 6px;border-radius:var(--r-xs);background:var(--surface-3);co
 .card-body{display:grid;gap:12px;padding:14px 16px 16px;min-width:0}
 .card-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;align-items:start}
 .card-grid-1{grid-template-columns:minmax(0,1fr)}
+.card-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;align-items:start}
+.card-column{display:flex;flex-direction:column;gap:14px;min-width:0}
 .stack{display:grid;gap:10px;min-width:0}
 
 /* Disclosure */
