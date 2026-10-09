@@ -13,8 +13,10 @@ export function bindCreateTask(options) {
     }
   });
   document.querySelector("#create-task").addEventListener("click", async function () {
+    if (dialog && dialog.dataset.saved === "true") { dialog.remove(); dialog = null; }
     if (dialog) { dialog.showModal(); return; }
     dialog = h("dialog.dialog", { "aria-label": t("create.title") });
+    const creationDialog = dialog;
     const form = h("form.dialog-body");
     const title = h("input", { required: true, maxLength: 200 });
     const requirements = h("textarea", { required: true, rows: 6, maxLength: 8000 });
@@ -31,6 +33,7 @@ export function bindCreateTask(options) {
     document.body.append(dialog);
     dialog.showModal();
     const choices = [];
+    let projectsReady = false;
     let cursor;
     const more = button(t("catalog.next"), { onClick: function () { loadProjects(); } });
     projects.append(more);
@@ -39,15 +42,15 @@ export function bindCreateTask(options) {
       try {
         const result = await options.api.projects(cursor);
         result.projects.forEach(function (project) {
-          const control = h("input", { type: "checkbox", value: project.id });
+          const control = h("input", { type: "checkbox", value: project.id, disabled: creationDialog.dataset.saved === "true" });
           choices.push(control);
           projects.insertBefore(field(project.name + " · " + project.id, control), more);
         });
         cursor = result.nextCursor;
         more.hidden = !cursor;
-        more.disabled = false;
-        submit.disabled = false;
-      } catch (error) { setReceipt(receipt, error.message, "bad"); more.disabled = false; }
+        more.disabled = creationDialog.dataset.saved === "true";
+        if (!projectsReady) { submit.disabled = false; projectsReady = true; }
+      } catch (error) { setReceipt(receipt, error.message, "bad"); more.disabled = creationDialog.dataset.saved === "true"; }
     }
     await loadProjects();
     plan.addEventListener("change", function () { submit.textContent = t(plan.checked ? "create.plan" : "create.only"); });
@@ -63,6 +66,8 @@ export function bindCreateTask(options) {
             plan: plan.checked, requestId: requestId });
         },
         saved: function (result) {
+          creationDialog.dataset.saved = "true";
+          [title, requirements, plan, more].concat(choices).forEach(function (control) { control.disabled = true; });
           setReceipt(receipt, t("receipt.saved") + " · " + result.task.id, "ok");
           renderSubmissionFacets(facets, result.submission, t);
           facets.append(button(t("create.open"), { onClick: function () {

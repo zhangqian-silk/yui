@@ -28,6 +28,7 @@ import {
 } from "../runtime/agentHost.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import type { TaskMetadataUpdate } from "../task/task.js";
+import { validateOrdinaryTaskArchive } from "../task/ordinaryArchive.js";
 import { webLocalMutation, WebRequestRejected } from "./webMutation.js";
 import type { WebInputAnswer } from "./webServer.js";
 
@@ -169,12 +170,7 @@ export function createWebTaskSurface(
       if (!lifecycle) throw new WebRequestRejected("Ordinary archive is unavailable.");
       // Preflight rejection precedes any physical effects; later errors remain
       // unknown and must be reconciled from the Task and archive diagnostics.
-      webLocalMutation(store, tx => {
-        const task = tx.getTask(taskId);
-        if (!task || !["completed", "cancelled", "archived"].includes(task.status)) {
-          throw new Error("Only a completed or retired Task can be archived.");
-        }
-      });
+      webLocalMutation(store, tx => validateOrdinaryTaskArchive(tx, taskId, commandOptions));
       return lifecycle.archive(taskId);
     },
     evidence: (taskId: string) => store.transaction(reader => {

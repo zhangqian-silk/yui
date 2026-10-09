@@ -159,12 +159,15 @@ export function buildWebTaskDetail(
     });
     const execution = buildTaskExecutionProjection(reader, taskId, now);
     if (execution === null) return null;
+    const brief = reader.getTaskBrief(taskId);
+    const roleSessionSets = reader.listRoleSessionSets(taskId);
+    const sessions = projectWebSessions({ taskId, sessionSets: roleSessionSets, events, now,
+      ...(brief?.updatedAt === undefined ? {} : { semanticProgressAt: brief.updatedAt }),
+      policy: resolveRuntimeHealth(reader.getConfig().runtimeHealth) });
     if (compact) {
       // Observation is not semantic progress. No Task/Message/Run bodies,
       // Role history or validation logs ride the default polling response.
       const clip = (text: string | undefined) => text?.slice(0, 1200);
-      const sessions = projectWebSessions({ taskId, sessionSets: reader.listRoleSessionSets(taskId), events, now,
-        policy: resolveRuntimeHealth(reader.getConfig().runtimeHealth) });
       return {
         execution: {
           status: execution.status, owner: execution.owner, action: execution.action, next: execution.next,
@@ -194,7 +197,6 @@ export function buildWebTaskDetail(
     }
     const remoteDelivery = webRemoteDelivery(reader, task);
     const workItems = reader.listWorkItems(taskId);
-    const roleSessionSets = reader.listRoleSessionSets(taskId);
     const workItemObservability = new Map(
       execution.observability.workItems.map((item) => [item.workItemId, item])
     );
@@ -204,14 +206,10 @@ export function buildWebTaskDetail(
         ...(projectNames.length === 0 ? {} : { projectNames })
       },
       execution,
-      sessions: projectWebSessions({ taskId, sessionSets: roleSessionSets, events, now,
-        ...(reader.getTaskBrief(taskId)?.updatedAt === undefined ? {} : {
-          semanticProgressAt: reader.getTaskBrief(taskId)!.updatedAt
-        }),
-        policy: resolveRuntimeHealth(reader.getConfig().runtimeHealth) }),
+      sessions,
       remoteDelivery,
       observability: execution.observability,
-      brief: reader.getTaskBrief(taskId),
+      brief,
       roles,
       workItems: workItems.map((item) => ({
         ...item,

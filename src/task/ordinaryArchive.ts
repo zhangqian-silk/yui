@@ -4,6 +4,18 @@ import type { TaskWorkspaceCoordinator } from "../repository/taskWorkspaceCoordi
 import type { TaskReviewCandidate } from "../review/reviewRound.js";
 import { taskArchiveDiagnostics } from "./archiveDiagnostics.js";
 import { assertTaskRemoteDeliveryIntegrated, createTaskRemoteDeliveryProof } from "./remoteDeliveryService.js";
+import type { TaskStore } from "../storage/taskStore.js";
+
+/** Read-only admission shared by CLI and Web. Cancelled Project Tasks need a
+ * workspace snapshot before delivery can be proved; that later preparation
+ * may have effects and must not be reported as a known non-submission. */
+export function validateOrdinaryTaskArchive(store: TaskStore, taskId: string, options: TaskCommandOptions) {
+  validateTaskArchiveRequest([taskId, "--integrated"], store, options);
+  const task = store.getTask(taskId)!;
+  if (task.status !== "archived" && (task.status === "completed" || !task.projectBindings.length)) {
+    assertTaskRemoteDeliveryIntegrated(createTaskRemoteDeliveryProof(store, task).delivery);
+  }
+}
 
 /** The local user's ordinary archive path. No force, abandonment, source
  * impersonation, or private cleanup policy is accepted by this port. */
@@ -12,7 +24,7 @@ export async function archiveOrdinaryTask(
 ) {
   const { store, preparer } = coordinator;
   const args = [taskId, "--integrated"];
-  validateTaskArchiveRequest(args, store, options);
+  validateOrdinaryTaskArchive(store, taskId, options);
   const task = store.getTask(taskId)!;
   if (task.status !== "archived") {
     let candidate: TaskReviewCandidate | null = null;

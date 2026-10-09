@@ -17,6 +17,8 @@ import { archiveOrdinaryTask } from "../../dist/task/ordinaryArchive.js";
 import { SELECTION_SCRIPT } from "../../dist/web/assets/client/app/selection.js";
 import { FORMS_SCRIPT } from "../../dist/web/assets/client/ui/forms.js";
 import { TASK_PAGE_SCRIPT } from "../../dist/web/assets/client/views/task/page.js";
+import { CREATE_TASK_SCRIPT } from "../../dist/web/assets/client/views/createTask.js";
+import { buildWebTaskDetail } from "../../dist/web/webSnapshot.js";
 
 test("Web task operations share durable intent, reject authority fields, and return actual lifecycle receipts", async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-workbench-"));
@@ -40,7 +42,10 @@ test("Web task operations share durable intent, reject authority fields, and ret
   const archiveEffects = [];
   const coordinator = {
     store, preparer: { home },
-    prepareTaskForArchive: async id => { archiveEffects.push(["prepare", id]); },
+    prepareTaskForArchive: async id => {
+      archiveEffects.push(["prepare", id]);
+      if (id === "task-92") throw new Error("Runtime stop outcome is unknown");
+    },
     cleanupArchivedTask: async id => { archiveEffects.push(["cleanup", id]); }
   };
   const surface = createWebTaskSurface(store, { yuiHome: home }, [], undefined, {
@@ -117,6 +122,16 @@ test("Web task operations share durable intent, reject authority fields, and ret
   assert.equal(archived.status, 200);
   assert.equal(archived.body.result.task.status, "archived");
   assert.deepEqual(archiveEffects, [["prepare", "task-90"], ["cleanup", "task-90"]]);
+  store.saveTask({ ...terminal, id: "task-91", projectBindings: [{ projectId: "project-1",
+    directory: "project", baseRef: "main", baseCommit: "a".repeat(40), currentCommit: "b".repeat(40) }] });
+  const denied = await post("/api/tasks/task-91/archive", { requestId: "unpublished" });
+  assert.equal(denied.body.disposition, "not-submitted", "delivery rejection precedes physical effects");
+  assert.equal(store.getTask("task-91").status, "completed");
+  assert.equal(archiveEffects.length, 2);
+  store.saveTask({ ...terminal, id: "task-92" });
+  const uncertain = await post("/api/tasks/task-92/archive", { requestId: "unknown-stop" });
+  assert.equal(uncertain.body.disposition, "unknown", "errors after runtime preparation are not safe to replay");
+  assert.equal(store.getTask("task-92").status, "completed");
 
   const long = "Long original requirements. ".repeat(2000);
   store.saveTask({ ...store.getTask(id), description: long });
@@ -131,6 +146,29 @@ test("Web task operations share durable intent, reject authority fields, and ret
   assert.equal(store.getTask(id).description, long, "summaries never overwrite original requirements");
   const observation = await (await fetch(base + `/api/tasks/${id}?compact=true`, { headers })).json();
   for (const field of ["messages", "runs", "brief", "workItems", "task"]) assert.equal(observation[field], undefined);
+  const started = new Date(now.getTime() - 20 * 60000).toISOString();
+  // Feed the same selected native Turn to both snapshot modes. No live model
+  // or managed execution is needed to compare their read-only classification.
+  const sessionSets = [{
+    owner: { scope: "task", taskId: id, roleName: "leader" }, activeAgentId: "codex",
+    sessions: { codex: { agentId: "codex", adapterId: "codex", nativeSessionId: "session-1",
+      status: "active", createdAt: started, updatedAt: started } },
+    providerBinding: { providerNamespace: "openai/codex", accountScope: "codex", currentConversationEpoch: 1,
+      conversations: [{ conversationId: "session-1", epoch: 1, status: "current" }],
+      run: { attemptId: "notification-1", nativeTurnId: "turn-1", authorityEpoch: 1,
+        status: "accepted", submittedAt: started, updatedAt: started } }
+  }];
+  const dashboard = { transaction: fn => store.transaction(tx => fn(new Proxy(tx, {
+    get(target, key) {
+      if (key === "listRoleSessionSets") return () => sessionSets;
+      const value = Reflect.get(target, key);
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  }))) };
+  const full = buildWebTaskDetail(dashboard, id, now);
+  const compact = buildWebTaskDetail(dashboard, id, now, true);
+  assert.equal(full.sessions.counts.quiet, 1);
+  assert.deepEqual(compact.sessions, full.sessions, "compact output must preserve the full projection's facts");
 });
 
 test("selecting a Task uses its bounded workbench without automatically expanding original bodies", async () => {
@@ -191,4 +229,71 @@ test("Task panels stay lazy and unknown mutations preserve both the input guard 
   assert.equal(control.disabled, true);
   assert.equal(form.dataset.unsent, "true");
   assert.match(receipt.textContent, /request-1.*Delivery coverage is not established/);
+});
+
+test("creation dialog resets saved work on close but preserves unsent and unknown requests", async () => {
+  const elements = [];
+  const h = (spec, attrs, ...children) => {
+    const element = { spec, ...attrs, children, dataset: {}, handlers: {}, value: "",
+      append(...items) { this.children.push(...items); },
+      insertBefore(item) { this.children.push(item); },
+      addEventListener(name, handler) { this.handlers[name] = handler; },
+      showModal() { this.open = true; },
+      close() { this.open = false; this.handlers.close?.(); },
+      remove() { this.removed = true; },
+      querySelector() { return this.children.find(child => child?.dataset?.unsent === "true"); }
+    };
+    elements.push(element);
+    return element;
+  };
+  const open = h("button");
+  let outcome = "saved", creates = 0;
+  const runtime = vm.createContext({
+    h, crypto: { randomUUID: () => `create-${creates}` },
+    button: (text, options) => h("button", { textContent: text, ...options }),
+    renderSubmissionFacets() {},
+    window: { addEventListener() {} },
+    document: { querySelector: () => open, body: h("body") }
+  });
+  for (const script of [FORMS_SCRIPT, CREATE_TASK_SCRIPT]) {
+    vm.runInContext(script.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), runtime);
+  }
+  runtime.bindCreateTask({
+    t: key => key, afterWrite() {}, selectTask() {},
+    api: {
+      projects: async () => ({ projects: [], nextCursor: "next-page" }),
+      createTask: async () => {
+        creates++;
+        if (outcome === "unknown") throw new Error("Connection lost");
+        return { task: { id: `task-${creates}` }, submission: {} };
+      }
+    }
+  });
+  const current = spec => elements.findLast(element => element.spec === spec);
+  await open.handlers.click();
+  const first = current("dialog.dialog"), form = current("form.dialog-body");
+  current("textarea").value = "Original input";
+  form.handlers.input();
+  first.close();
+  await open.handlers.click();
+  assert.equal(current("dialog.dialog"), first, "closing unsent work preserves it");
+  form.handlers.submit({ preventDefault() {} });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(form.dataset.unsent, "false");
+  first.close();
+  await open.handlers.click();
+  assert.notEqual(current("dialog.dialog"), first, "a saved creation must not block the next task");
+  assert.equal(current("textarea").value, "");
+  outcome = "unknown";
+  const second = current("dialog.dialog"), secondForm = current("form.dialog-body");
+  secondForm.handlers.submit({ preventDefault() {} });
+  await new Promise(resolve => setImmediate(resolve));
+  second.close();
+  await open.handlers.click();
+  assert.equal(current("dialog.dialog"), second);
+  assert.equal(secondForm.dataset.unsent, "true");
+  elements.findLast(element => element.textContent === "catalog.next").onClick();
+  await new Promise(resolve => setImmediate(resolve));
+  secondForm.handlers.submit({ preventDefault() {} });
+  assert.equal(creates, 2, "reopening or loading more projects cannot replay an unknown creation");
 });
