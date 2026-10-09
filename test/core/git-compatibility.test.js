@@ -40,6 +40,9 @@ test("Git compatibility preserves exact paths, locked missing registrations and 
     assert.equal(await workspace.inspectClean(repo), true);
     assert.equal(existsSync(hookMarker), false);
   } finally { process.env.PATH = originalPath; }
+  // Git >=2.48 writes relative administrative pointers with this setting;
+  // older Git ignores it and exercises the same contract with absolute paths.
+  git(repo, "config", "worktree.useRelativePaths", "true");
   const input = {
     repositoryPath: repo, container: join(root, "owner"), directory: 'linked "中"\t\n ',
     taskSegment: "task-1-token", roleName: "work-item-1", baseRef: "HEAD", deleteBranch: true

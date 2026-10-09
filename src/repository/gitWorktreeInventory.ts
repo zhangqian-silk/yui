@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { lstat, readFile, readdir, realpath } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { gitOutputLine, supportedGit } from "./gitCompatibility.js";
 
@@ -56,10 +56,12 @@ export async function readGitWorktrees(cwd: string): Promise<GitWorktreeRecord[]
     if (!entry.isDirectory()) throw new Error(`Uncertain Git worktree administration: ${join(directory, entry.name)}; retained.`);
     const admin = join(directory, entry.name);
     const pointer = gitOutputLine(await readFile(join(admin, "gitdir"), "utf8"));
-    if (!isAbsolute(pointer) || basename(pointer) !== ".git") {
+    if (basename(pointer) !== ".git") {
       throw new Error(`Invalid Git worktree back-pointer: ${admin}; retained.`);
     }
-    const path = dirname(pointer);
+    // Relative back-pointers are based at the administrative directory,
+    // not the caller's cwd (Git's worktree.useRelativePaths setting).
+    const path = dirname(resolve(admin, pointer));
     const adminCommon = await realpath(resolve(cwd, gitOutputLine(await run([
       "-C", cwd, `--git-dir=${admin}`, "rev-parse", "--git-common-dir"
     ]))));
