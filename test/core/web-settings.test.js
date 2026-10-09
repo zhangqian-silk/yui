@@ -1,0 +1,228 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import vm from "node:vm";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
+import { createConfiguredAgent } from "../../dist/agent/agent.js";
+import { createGlobalRole, createRoleAgentBinding } from "../../dist/role/role.js";
+import { createRoleSessionSet, recordRoleAgentSession } from "../../dist/executor/agentExecutor.js";
+import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
+import { createAgentProfile } from "../../dist/profile/agentProfile.js";
+import { runConfigCommand } from "../../dist/commands/configCommands.js";
+import { staticAgentConfigurationFields } from "../../dist/executor/agentConfigurationFields.js";
+import { createWebSettings } from "../../dist/web/webSettings.js";
+import { WebRequestRejected } from "../../dist/web/webMutation.js";
+import { createYuiWebServer } from "../../dist/web/webServer.js";
+import { PREFS_SCRIPT } from "../../dist/web/assets/client/lib/prefs.js";
+import { SETTINGS_SCRIPT } from "../../dist/web/assets/client/app/settings.js";
+
+function fixture(t) {
+  const home = mkdtempSync(join(tmpdir(), "yui-settings-"));
+  let store;
+  t.after(() => { store?.close(); rmSync(home, { recursive: true, force: true }); });
+  store = new SqliteTaskStore(home);
+  const agent = createConfiguredAgent("fixture", "codex", "unused", [], [
+    { target: "API_TOKEN", source: "process", sourceName: "FIXTURE_SECRET", required: true }
+  ], new Date());
+  store.saveConfiguredAgent(agent);
+  store.saveGlobalRole(createGlobalRole("worker", [createRoleAgentBinding(agent)], agent.id, home, new Date()));
+  store.saveAgentProfile(createAgentProfile({ id: "reader", runtime: { source: "global-worker" } }, new Date()));
+  let refreshed = 0;
+  const queries = [];
+  const service = createWebSettings(store, {
+    environment: { FIXTURE_SECRET: "must-never-be-exposed" },
+    catalogs: { resolve: async input => {
+      queries.push(input);
+      return { source: "fallback", attemptedAt: new Date().toISOString(),
+        failure: { code: "missing-command", message: "Fixture has no native provider." },
+        catalog: { schemaVersion: 1, agentId: input.agent.id, adapterId: "codex", models: [],
+          fields: staticAgentConfigurationFields("codex"), warnings: ["Native enumeration unavailable."] } };
+    } },
+    refreshConfiguration: () => { refreshed++; }
+  });
+  const save = (id, changes, extra = {}) => service.save({ id, revision: service.read(id).revision, changes, ...extra });
+  return { home, store, service, save, queries, refreshed: () => refreshed };
+}
+
+test("settings use CLI defaults and validation, atomic group writes, stale-read protection and supported reset", async t => {
+  const f = fixture(t);
+  assert.deepEqual(f.service.read("system").fields.find(f => f.key === "time-zone").value,
+    runConfigCommand("system", ["show"], f.store).data.timeZone);
+  const original = f.service.read("runtime");
+  await assert.rejects(f.save("runtime", [
+    { key: "delivery-timeout-seconds", value: 240 },
+    { key: "controller-task-concurrency", value: 0 }
+  ]), WebRequestRejected);
+  assert.equal(f.service.read("runtime").revision, original.revision, "failed group rolls back earlier valid fields");
+  const saved = await f.save("runtime", [
+    { key: "delivery-timeout-seconds", value: 240 },
+    { key: "reconciliation-interval-seconds", value: 40 }
+  ]);
+  assert.equal(saved.status, "saved");
+  assert.equal(f.refreshed(), 1);
+  assert.equal(f.store.getConfig().deliveryTimeoutSeconds, 240);
+  await assert.rejects(f.service.save({ id: "runtime", revision: original.revision,
+    changes: [{ key: "delivery-timeout-seconds", value: 300 }] }), /changed since/);
+  await f.save("runtime", [{ key: "delivery-timeout-seconds", reset: true }]);
+  const reset = f.service.read("runtime").fields.find(f => f.key === "delivery-timeout-seconds");
+  assert.equal(reset.source, "default");
+  assert.equal(reset.value, reset.defaultValue);
+  await f.save("workflow", [{ key: "review", value: { roleName: "worker", trigger: "final" } }]);
+  assert.equal(runConfigCommand("workflow", ["show"], f.store).data.review.trigger, "final");
+  await f.save("resources", [{ key: "resources-gc-mode", value: "quarantine" }]);
+  await f.save("tools", [{ key: "tmux-history-limit", value: 2000 }]);
+  assert.equal(f.store.getConfig().tmuxHistoryLimit, 2000);
+  assert.match(f.service.read("tools").fields.find(f => f.key === "tmux-history-limit").takesEffect, /New tmux sessions/);
+});
+
+test("Agent/Role/Profile settings retain existing ownership, environment references and honest capability failures", async t => {
+  const f = fixture(t);
+  const agent = f.service.read("agent/fixture");
+  assert.doesNotMatch(JSON.stringify(agent), /must-never-be-exposed/);
+  assert.equal(agent.observation.environment[0].present, true);
+  await f.save("agent/fixture", [{ key: "baseArgs", value: ["--fixture", "a b"] }]);
+  assert.deepEqual(f.store.getConfiguredAgent("fixture").baseArgs, ["--fixture", "a b"]);
+  await assert.rejects(f.save("agent/fixture", [{ key: "environment", value: [
+    { target: "API_TOKEN", source: "literal", value: "secret" }
+  ] }]), /references/);
+  const role = f.store.getGlobalRole("worker");
+  await f.save("role/worker", [{ key: "model", value: "explicit-model" }, { key: "systemPrompt", value: "Keep answers concise" }]);
+  assert.equal(f.store.getGlobalRole("worker").agentBindings.fixture.config.model, "explicit-model");
+  assert.equal(f.store.getGlobalRole("worker").launchRevision, role.launchRevision + 1);
+  assert.equal(f.store.getGlobalRoleSessionSet("worker"), null, "save never launches a Session");
+  assert.equal(f.service.read("profile/reader").observation.source, "global-worker");
+  await f.save("profile/reader", [{ key: "agent", value: "fixture" }, { key: "model", value: "explicit-model" }]);
+  assert.equal(f.store.getAgentProfile("reader").runtime.source, "explicit");
+  await f.save("profile/reader", [{ key: "agent", value: "" }]);
+  assert.equal(f.store.getAgentProfile("reader").runtime.source, "global-worker");
+  const result = await f.service.capabilities("role/worker", true);
+  assert.equal(result.source, "fallback");
+  assert.equal(result.failure.code, "missing-command");
+  assert.deepEqual(result.catalog.models, []);
+  assert.equal(f.queries.at(-1).refresh, true);
+  assert.equal(f.queries.at(-1).config.model, "explicit-model");
+  const now = new Date();
+  const desired = f.store.getGlobalRole("worker");
+  const sessions = recordRoleAgentSession(createRoleSessionSet({ scope: "global", roleName: "worker" }, "fixture", now), {
+    agentId: "fixture", adapterId: "codex", nativeSessionId: "fixture-session", status: "active",
+    policy: "fixed", effective: resolveEffectiveLaunch({ role: desired, purpose: "execution" })
+  }, now);
+  f.store.saveGlobalRoleSessionSet(sessions);
+  await assert.rejects(f.save("role/worker", [{ key: "model", value: "next-model" }]), /live native Session/);
+  await f.save("role/worker", [{ key: "model", value: "next-model" }], { acknowledgeLive: true });
+  assert.deepEqual(f.store.getGlobalRoleSessionSet("worker"), sessions, "acknowledgement stores desired settings without adopting them");
+  await assert.rejects(f.save("agent/fixture", [{ key: "command", value: "next-command" }]), /live native session/);
+  await f.save("agent/fixture", [{ key: "command", value: "next-command" }], { acknowledgeLive: true });
+  assert.deepEqual(f.store.getGlobalRoleSessionSet("worker"), sessions);
+});
+
+test("settings HTTP ingress requires page token and reports rejected writes without exposing environment values", async t => {
+  const f = fixture(t);
+  const server = createYuiWebServer(f.store, { settings: f.service, token: "fixture-token" });
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const headers = { "x-yui-web-token": "fixture-token", "content-type": "application/json" };
+  assert.equal((await fetch(base + "/api/settings")).status, 403);
+  assert.equal((await fetch(base + "/settings")).status, 200);
+  const list = await (await fetch(base + "/api/settings", { headers })).json();
+  assert.ok(list.groups.some(g => g.id === "profile/reader"));
+  const read = await (await fetch(base + "/api/settings/group?id=system", { headers })).json();
+  const response = await fetch(base + "/api/settings/group", { method: "POST", headers,
+    body: JSON.stringify({ id: "system", revision: read.revision, changes: [{ key: "default-agent", value: "missing" }] }) });
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).disposition, "not-submitted");
+});
+
+test("browser session access preference is isolated, validated and truthful when storage fails", () => {
+  const values = new Map();
+  const context = vm.createContext({ localStorage: {
+    getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key)
+  } });
+  vm.runInContext(PREFS_SCRIPT.replace(/^export /gm, ""), context);
+  assert.equal(context.readSessionAccessMode(), "native");
+  assert.equal(context.writeSessionAccessMode("structured"), true);
+  assert.equal(context.readSessionAccessMode(), "structured");
+  assert.throws(() => context.writeSessionAccessMode("invented"));
+  context.localStorage.setItem = () => { throw Error("denied"); };
+  assert.equal(context.writeSessionAccessMode("native"), false);
+});
+
+test("settings editor retains drafts on rejection and uncertainty, and only replaces them with a saved readback", async () => {
+  function element(spec, attrs, ...children) {
+    const result = {
+      tagName: spec.split(".")[0].toUpperCase(), value: "", checked: false, disabled: false,
+      dataset: {}, handlers: {}, children: [], classList: { add() {} },
+      append(...items) { this.children.push(...items.flat().filter(x => x != null)); },
+      replaceChildren(...items) { this.children = []; this.append(...items); },
+      addEventListener(name, fn) { this.handlers[name] = fn; },
+      setAttribute(name, value) { this[name] = value; },
+      remove() {},
+      after() {},
+      querySelectorAll(selector) {
+        const tags = selector.toUpperCase().split(",");
+        const visit = node => typeof node === "object" ? [
+          ...(tags.includes(node.tagName) ? [node] : []), ...node.children.flatMap(visit)
+        ] : [];
+        return this.children.flatMap(visit);
+      }
+    };
+    if (attrs) for (const [key, value] of Object.entries(attrs)) {
+      if (key.startsWith("on")) result.addEventListener(key.slice(2), value);
+      else result[key] = value;
+    }
+    result.append(...children);
+    return result;
+  }
+  const shell = new Map();
+  let failure = Object.assign(Error("Invalid value"), { disposition: "not-submitted" });
+  let saved;
+  let submissions = 0;
+  const context = vm.createContext({
+    h: element, URLSearchParams,
+    document: { querySelector: key => {
+      if (!shell.has(key)) shell.set(key, element("div"));
+      return shell.get(key);
+    } },
+    window: { addEventListener() {} },
+    createI18n: () => ({ t: k => k, subscribe() {} }), createThemeController: () => ({}),
+    readSessionAccessMode: () => "native", writeSessionAccessMode: () => true,
+    readPreference() {}, clearPreference() {},
+    requestJson: async () => ({}),
+    submitMutation: async () => { submissions++; if (failure) throw failure; return saved; }
+  });
+  vm.runInContext(SETTINGS_SCRIPT.replace(/^import .*;\n/gm, "").replace("void start();", ""), context);
+  const group = { id: "runtime", revision: "first", notice: "next launch",
+    fields: [{ key: "delivery-timeout-seconds", label: "Timeout", kind: "number", value: 120, reset: true }] };
+  const state = { content: element("div"), pending: false };
+  context.renderGroup(state, group);
+  const draft = state.editors[0].control;
+  draft.value = "bad"; draft.handlers.input();
+  await state.content.children[0].handlers.submit({ preventDefault() {} });
+  assert.equal(submissions, 0, "basic validation happens before submission");
+  draft.value = "240"; draft.handlers.input();
+  await state.content.children[0].handlers.submit({ preventDefault() {} });
+  assert.equal(draft.value, "240");
+  assert.equal(state.dirty, true);
+  assert.equal(state.save.disabled, false, "proven rejection is editable");
+  failure = Object.assign(Error("Connection lost"), { disposition: "unknown" });
+  await state.content.children[0].handlers.submit({ preventDefault() {} });
+  assert.equal(draft.value, "240");
+  assert.equal(state.unknown, true);
+  assert.equal(state.save.disabled, true);
+  const count = submissions;
+  await state.content.children[0].handlers.submit({ preventDefault() {} });
+  assert.equal(submissions, count, "unknown outcome is not replayed");
+  // A fresh, explicitly reconciled page receives a fresh read revision.
+  context.renderGroup(state, { ...group, revision: "reconciled" });
+  state.editors[0].control.value = "240"; state.editors[0].control.handlers.input();
+  failure = null;
+  saved = { group: { ...group, revision: "saved", fields: [{ ...group.fields[0], value: 240 }] },
+    output: "saved 240", adoption: "next launch", refresh: "not-required" };
+  await state.content.children[0].handlers.submit({ preventDefault() {} });
+  assert.equal(state.dirty, false);
+  assert.equal(state.group.revision, "saved");
+  assert.equal(state.editors[0].control.value, "240");
+});

@@ -13,4 +13,17 @@ export function writePreference(key, value) {
 export function clearPreference(key) {
   try { localStorage.removeItem(key); } catch {}
 }
+
+// Shared with session access consumers: no server configuration or live
+// Session is changed by this browser-local preference.
+export function readSessionAccessMode() {
+  const value = readPreference("yui.session.accessMode", "native");
+  return value === "structured" ? "structured" : "native";
+}
+
+export function writeSessionAccessMode(value) {
+  if (value !== "native" && value !== "structured") throw new Error("Invalid session access mode.");
+  writePreference("yui.session.accessMode", value);
+  return readSessionAccessMode() === value;
+}
 `;

@@ -96,6 +96,7 @@ import { createWebTaskSurface } from "../web/webTaskSurface.js";
 import { createWebConversationSurface } from "../web/webConversation.js";
 import { inspectAgentHost } from "../runtime/agentHost.js";
 import { archiveOrdinaryTask } from "../task/ordinaryArchive.js";
+import { createWebSettings } from "../web/webSettings.js";
 import {
   isTaskOwnedWorkspace,
   sameManagedWorkspaceIdentity
@@ -558,6 +559,13 @@ export async function startFileTaskControllerRuntime(
     });
     const surfaces = new SurfaceContributions(kernel.capabilities.registry);
     const web = createControllerWeb(store, {
+      settings: createWebSettings(store, {
+        environment: options.environment ?? process.env, catalogs,
+        refreshConfiguration: () => {
+          if (!runningRuntime) throw new Error("Controller runtime unavailable.");
+          runningRuntime.reloadReconciliationInterval();
+        }
+      }),
       surface: webSurface,
       conversation: createWebConversationSurface(store, webSurface,
         (owner, id) => planner.planNativeControl(owner, id), undefined,

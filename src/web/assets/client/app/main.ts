@@ -110,7 +110,7 @@ bindShortcuts({
   el: el, state: state, globalInput: globalInput, workspace: workspace,
   selection: selection, catalog: catalog, taskView: taskView
 });
-el.settingsOpen.addEventListener("click", function () { el.settings.showModal(); });
+el.settingsOpen.addEventListener("click", function () { window.location.assign("/settings"); });
 
 // The URL names the catalog filters and the selected Task (with its section).
 function applyStateFromUrl() {
