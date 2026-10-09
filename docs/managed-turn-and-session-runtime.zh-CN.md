@@ -223,6 +223,13 @@ queue/steer 要求 `--request-id`，steer/interrupt 要求 `--expected-target`�
 配置仍使用 `config role`，生命周期使用 `session`。新的受控 Global Session 使用 Host console。活动的非受管 Session
 不会被静默采用，需要先执行显式的 Session 生命周期操作。
 
+当前受控 Codex Operator 与 Task Leader 也可从 Web Terminal 打开原生 TUI 视图。
+经过认证的本地 relay 连接 Host 现有 App Server 连接中的精确 Thread；完整文本、
+steer 和 interrupt 复用 Host 准入与回执，原生问题/审批保留原 request/Thread/Turn
+身份。配置覆盖和新建/派生 Thread 被拒绝。Web 复用已有终端 writer lease，
+其他窗口在 writer 脱离前保持只读。关闭视图不会停止 Host 或 Provider。会话与
+原生历史仍来自同一 Provider 事实，不建立另一份 Task 消息存储。
+
 ## 精确结果
 
 原生终态只结算相匹配的那次执行。已知的原生 Turn ID 必须匹配；串行流可以使用已证明的

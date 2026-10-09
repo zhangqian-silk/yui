@@ -276,6 +276,15 @@ Queue/steer require `--request-id`; steer/interrupt require `--expected-target`.
 These commands retain the caller's existing Session authority; do not fabricate
 a Task/Run or borrow the browser's user authority. Configuration remains under
 `config role`, lifecycle under `session`. New controlled Global Sessions use the Host console.
+The current controlled Codex Operator and Task Leader can also open a native
+TUI view from Web Terminal. Its authenticated loopback relay attaches to the
+Host's existing App Server connection and exact Thread. Complete text prompts,
+steer and interrupt reuse Host admission and settlement; native server requests
+retain their original request/Thread/Turn identity. Configuration overrides and
+new/forked Threads are rejected. Web uses the existing terminal writer lease;
+other browser windows remain read-only until the writer detaches. Closing this
+view does not stop the Host or Provider. Conversation and native history remain
+views of the same Provider facts, not a second Task message store.
 A live unmanaged Session is not silently adopted; an explicit Session lifecycle
 action is needed first.
 

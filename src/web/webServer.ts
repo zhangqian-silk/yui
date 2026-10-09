@@ -45,6 +45,7 @@ export type WebTerminalRequest =
       roleName: string;
       columns: number;
       rows: number;
+      nativeSessionId?: string;
     }>
   | Readonly<{
       scope: "task";
@@ -52,6 +53,7 @@ export type WebTerminalRequest =
       roleName: string;
       columns: number;
       rows: number;
+      nativeSessionId?: string;
     }>;
 
 export type WebTerminalConnection = Readonly<{
@@ -290,10 +292,20 @@ async function handleHttpRequest(
       } else if (method === "POST") {
         const body = await readMutationBody(request);
         if (!body || typeof body !== "object" || Array.isArray(body)
-          || Object.keys(body).some(k => !["action", "requestId", "body", "expectedTarget", "materials"].includes(k))) {
+          || Object.keys(body).some(k => !["action", "requestId", "body", "expectedTarget", "materials", "nativeRequestId", "result"].includes(k))) {
           throw new WebRequestRejected("Invalid conversation input.");
         }
         const value = body as Record<string, unknown>;
+        if (value.action === "native-respond") {
+          if ((typeof value.nativeRequestId !== "string" && typeof value.nativeRequestId !== "number")
+            || typeof value.expectedTarget !== "string" || !value.result || typeof value.result !== "object" || Array.isArray(value.result)) {
+            throw new WebRequestRejected("Expected exact native request and Turn response.");
+          }
+          result = await dependencies.conversation.respond(owner, safeIdentity(q.get("session"), "Session"),
+            value.nativeRequestId, value.expectedTarget, value.result as Record<string, unknown>);
+          sendJson(response, 200, result, false);
+          return;
+        }
         if (!["queue", "steer", "interrupt"].includes(String(value.action))
           || typeof value.requestId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(value.requestId)
           || value.body !== undefined && typeof value.body !== "string"
@@ -693,9 +705,11 @@ function parseTerminalRequest(parameters: URLSearchParams): WebTerminalRequest {
   const roleName = safeIdentity(parameters.get("role"), "Role");
   const columns = boundedInteger(parameters.get("cols"), 20, 400, "Terminal columns");
   const rows = boundedInteger(parameters.get("rows"), 5, 200, "Terminal rows");
+  const selection = parameters.has("session")
+    ? { nativeSessionId: safeIdentity(parameters.get("session"), "Session") } : {};
   if (scope === "global") {
     if (parameters.has("task")) throw new Error("Global terminal cannot include a Task.");
-    return { scope, roleName, columns, rows };
+    return { scope, roleName, columns, rows, ...selection };
   }
   if (scope === "task") {
     return {
@@ -703,7 +717,8 @@ function parseTerminalRequest(parameters: URLSearchParams): WebTerminalRequest {
       taskId: safeIdentity(parameters.get("task"), "Task"),
       roleName,
       columns,
-      rows
+      rows,
+      ...selection
     };
   }
   throw new Error("Terminal scope is invalid.");

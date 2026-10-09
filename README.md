@@ -162,6 +162,15 @@ The task list remains at the left, task details occupy the primary reading area,
 and recorded Task messages live in a secondary discussion pane. You can resize,
 swap or hide that pane; on narrow screens it opens over the detail. Native Sessions
 remain separate from recorded Task messages.
+For a current controlled Codex Operator or Task Leader, **Conversation** and
+**Terminal** are two views of the same Thread. Terminal opens the native Codex
+TUI through the existing Host; it does not start another Agent. Only one browser
+terminal holds the writer at a time. Returning to Conversation or closing the
+page detaches that browser, without stopping the Agent. Conversation drafts and
+the browser's default-view preference survive switching. Native questions and
+approvals answer the original Codex request; Leader Task questions remain on
+the separate InputRequest channel. Attachments and native configuration changes
+are not supported by this managed text-input surface.
 The detail has four tabs: Overview (user input, progress and key Decisions),
 Delivery (WorkItems, Reviews, Integration and remote delivery, read on demand),
 Runtime (Roles, native Session activity, open execution and usage) and Records

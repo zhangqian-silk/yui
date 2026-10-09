@@ -65,6 +65,7 @@ export type AgentEndpointConfiguration = Readonly<{
 }>;
 
 export interface AgentEndpoint {
+  readonly nativeAccess?: import("./codexNativeAccess.js").CodexNativeAccess;
   readonly publicReply?: import("./publicReply.js").PublicReply;
   readonly ownedProcessId?: number;
   readonly nativeAccountHome?: string;
@@ -152,6 +153,11 @@ export function createAgentEndpointFactory(
       else endpoint.observe(event);
     };
     const opened = await start(payload, {
+      // The native TUI owns rendering while attached. Raw JSON mirroring into
+      // its inherited PTY would corrupt its screen on every Provider event.
+      mirrorOutput: (stream, text) => {
+        if (!endpoint?.nativeAccess?.attached) (stream === "stdout" ? process.stdout : process.stderr).write(text);
+      },
       onAccepted: (value) => emit({ type: "accepted", value }),
       onActivity: (value) => emit({ type: "activity", value }),
       onStarted: (value) => emit({ type: "started", value }),
@@ -192,6 +198,7 @@ type EventValue =
   | Readonly<{ type: "diagnostic"; value: StructuredProviderDiagnostic }>;
 
 class BuiltinAgentEndpoint implements AgentEndpoint {
+  get nativeAccess() { return this.driver.nativeAccess; }
   get ownedProcessId(): number | undefined { return this.driver.ownedProcessId; }
   get nativeAccountHome(): string | undefined { return this.driver.nativeAccountHome; }
   readonly capabilities;

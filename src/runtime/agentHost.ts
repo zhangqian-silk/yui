@@ -61,6 +61,9 @@ import {
 } from "./agentRunConfiguration.js";
 import { CodexPreSubmissionError } from "./codexAppServerRuntime.js";
 import { runCodexInteractiveHost } from "./codexInteractiveHost.js";
+import { openControlledCodexTui } from "./controlledCodexTui.js";
+import type { JsonObject } from "./jsonLineChannel.js";
+import type { CodexNativeRequest } from "./codexNativeAccess.js";
 import {
   validateAgentHostLaunchPayload,
   type AgentHostLaunchPayload
@@ -160,7 +163,17 @@ export type AgentHostControl =
   | AgentHostSubmitRunControl
   | AgentHostSteerRunControl
   | AgentHostCancelControl
-  | AgentHostSetAuthorityControl;
+  | AgentHostSetAuthorityControl
+  | AgentHostNativeControl;
+
+export type AgentHostNativeControl = Readonly<{
+  protocol: typeof AGENT_HOST_CONTROL_PROTOCOL;
+  type: "native-open" | "native-respond";
+  nativeSessionId: string;
+  requestId?: string | number;
+  nativeTurnId?: string;
+  result?: JsonObject;
+}>;
 
 export type AgentHostProviderState =
   | "idle"
@@ -174,6 +187,9 @@ export type AgentHostProviderState =
   | "exited";
 
 export type AgentHostSnapshot = Readonly<{
+  nativeTui?: boolean;
+  nativeRequests?: readonly CodexNativeRequest[];
+  nativeRequestsOmitted?: boolean;
   /** Live-only bounded public assistant delta; never persisted or execution authority. */
   publicReply?: import("./publicReply.js").PublicReply;
   publicReplyObservation?: "supported";
@@ -339,6 +355,9 @@ export async function runAgentHost(input: Readonly<{
   let snapshot = hostSnapshot("idle");
   let dispatchTail = Promise.resolve();
   let promptHuman = (): void => {};
+  let humanConsole: ReturnType<typeof createInterface> | undefined;
+  let nativeTui: { close(): void } | undefined;
+  let nativeOpening: Promise<{ close(): void }> | undefined;
   const recentSteerAttempts = new Map<string, {
     request: AgentHostSteerRunControl;
     outcome: PromptPushOutcome;
@@ -676,6 +695,8 @@ export async function runAgentHost(input: Readonly<{
         && providerSession.adapterId === "codex"
         && !hostStopRequested;
       if (reconnectableCodexClient) {
+        nativeTui?.close();
+        nativeTui = undefined;
         session = undefined;
         if (codexClientAttachedAt !== undefined
           && Date.now() - codexClientAttachedAt >= CODEX_CLIENT_STABLE_MS) {
@@ -1282,7 +1303,73 @@ export async function runAgentHost(input: Readonly<{
     return snapshot;
   };
 
-  const control = await openAgentHostControl(input.home, payload, () => snapshot, async (request) => {
+  const nativeMutation = async (expected: AgentEndpoint, method: string, params: JsonObject): Promise<JsonObject> => {
+    if (session !== expected || params.threadId !== expected.nativeSessionId || !authority
+      || (sessionPayload?.environment.YUI_SESSION_SCOPE === "task" && sessionPayload.environment.YUI_ROLE !== "leader")) {
+      throw new Error("Native input targets a replaced or unsupported Session.");
+    }
+    if (method === "turn/interrupt") {
+      if (!activeRunAttemptId || params.turnId !== activeNativeTurnId) throw new Error("Native stop targets a different Turn.");
+      const cancelled = await expected.cancel(activeRunAttemptId);
+      if (cancelled.status !== "requested") throw new Error(`Native stop is ${cancelled.status}; do not replay.`);
+      return {};
+    }
+    if (!Array.isArray(params.input) || params.input.length === 0
+      || params.input.some(part => !part || typeof part !== "object"
+        || (part as JsonObject).type !== "text" || typeof (part as JsonObject).text !== "string")) {
+      throw new Error("Managed native access currently supports text input only.");
+    }
+    const boundedText = params.input.map(part => (part as JsonObject).text).join("\n");
+    if (!boundedText.trim() || boundedText.includes("\0") || Buffer.byteLength(boundedText) > 12000) throw new Error("Native input exceeds its text bound.");
+    const run = { attemptId: `human:${authority.holderId}:${randomUUID()}`, boundedText };
+    if (method === "turn/steer") {
+      const turnId = activeNativeTurnId;
+      if (params.expectedTurnId !== turnId || !turnId) throw new Error("Native steer targets a different Turn.");
+      // Reuse the same serialized admission and durable disposition as Web.
+      const result = await handleControl({ protocol: AGENT_HOST_CONTROL_PROTOCOL, type: "steer-turn",
+        nativeSessionId: expected.nativeSessionId, nativeTurnId: turnId, authority, run });
+      if (result.outcome !== "accepted") throw new Error("Native steer acceptance is unconfirmed; do not resubmit.");
+      return { turnId };
+    }
+    const result = await handleControl({ protocol: AGENT_HOST_CONTROL_PROTOCOL, type: "submit-turn",
+      nativeSessionId: expected.nativeSessionId, authority, run });
+    const accepted = result.snapshot;
+    if (result.outcome !== "accepted" || accepted.inputAcceptance !== "provider" || !accepted.nativeTurnId) {
+      throw new Error("Native acceptance is unconfirmed; do not resubmit.");
+    }
+    return { turn: { id: accepted.nativeTurnId, items: [], status: "inProgress", error: null } };
+  };
+
+  const handleControl = async (request: AgentHostControl): Promise<AgentHostControlResult> => {
+    if (request.type === "native-open" || request.type === "native-respond") {
+      const current = session;
+      if (!current?.nativeAccess || current.nativeSessionId !== request.nativeSessionId
+        || !sessionPayload || (sessionPayload.environment.YUI_SESSION_SCOPE === "task"
+          && sessionPayload.environment.YUI_ROLE !== "leader")) throw new Error("Native access requires the current controlled Codex Operator/Leader.");
+      if (request.type === "native-respond") {
+        await assertHostExecutionEnvironment(input.home, sessionPayload, current.nativeSessionId);
+        await current.nativeAccess.respond(request.requestId!, request.nativeSessionId, request.nativeTurnId!, request.result!);
+      } else if (!nativeTui) {
+        if (!process.stdin.isTTY) throw new Error("Native TUI requires the Host's owned terminal.");
+        humanConsole?.close();
+        humanConsole = undefined;
+        nativeOpening ??= openControlledCodexTui(sessionPayload, current.nativeSessionId, current.nativeAccess, {
+          mutate: (method, params) => nativeMutation(current, method, params),
+          respond: async (requestId, nativeTurnId, result) => {
+            await handleControl({ protocol: AGENT_HOST_CONTROL_PROTOCOL, type: "native-respond",
+              nativeSessionId: current.nativeSessionId, requestId, nativeTurnId, result });
+          },
+          onExit: () => {
+            nativeTui = undefined;
+            process.stdout.write("\r\nNative TUI detached. Reattach the terminal to reopen this same Thread; the Agent Host remains running.\r\n");
+          },
+          onError: error => process.stderr.write(`Native TUI: ${errorText(error)}\n`)
+        });
+        try { nativeTui = await nativeOpening; } finally { nativeOpening = undefined; }
+        if (session !== current) { nativeTui.close(); nativeTui = undefined; throw new Error("Session changed while opening native access."); }
+      }
+      return controlResult("accepted", { ...snapshot, nativeTui: !!nativeTui });
+    }
     if (request.type === "status") {
       // Read the Agent's configuration at answer time, not from the stored
       // snapshot. The Agent may have changed it since the last state
@@ -1290,10 +1377,18 @@ export async function runAgentHost(input: Readonly<{
       // current reading rather than the one that was true at launch. Nothing is
       // sent to the Agent to obtain it: this reads what the Session has already
       // been told.
+      let requestBytes = 0;
+      const nativeRequests = session?.nativeAccess?.requests.filter(request => {
+        requestBytes += Buffer.byteLength(JSON.stringify(request));
+        return requestBytes <= 8000;
+      }).slice(0, 8);
       return controlResult("status", session === undefined
         ? snapshot
         : validateSnapshot({
             ...snapshot,
+            nativeTui: !!nativeTui,
+            ...(nativeRequests === undefined ? {} : { nativeRequests,
+              nativeRequestsOmitted: nativeRequests.length !== session.nativeAccess!.requests.length }),
             ...(session.publicReply === undefined ? {} : { publicReply: session.publicReply }),
             ...(session.adapterId === "codex" ? { publicReplyObservation: "supported" as const } : {}),
             runConfiguration: session.runConfiguration
@@ -1401,6 +1496,7 @@ export async function runAgentHost(input: Readonly<{
       const accepted = await enqueueSerialized(async () => setAuthority(request));
       return controlResult("accepted", accepted);
     }
+    if (request.type !== "launch") throw new Error("Unsupported Host request.");
     const redeemed = await redeem(input.home, request.ticket);
     if (activeRunPayload !== undefined
       || ["starting", "ready", "settling", "delivery-unknown"].includes(snapshot.state)) {
@@ -1412,9 +1508,10 @@ export async function runAgentHost(input: Readonly<{
     }
     const accepted = await enqueueDispatch(redeemed);
     return controlResult("accepted", accepted);
-  });
+  };
+  const control = await openAgentHostControl(input.home, payload, () => snapshot, handleControl);
 
-  const humanConsole = process.stdin.isTTY
+  humanConsole = process.stdin.isTTY
     ? createInterface({ input: process.stdin, output: process.stdout, terminal: true })
     : undefined;
   promptHuman = (): void => {
@@ -1492,6 +1589,7 @@ export async function runAgentHost(input: Readonly<{
     for (const [signal, handler] of handlers) process.removeListener(signal, handler);
     if (forceKillTimer !== undefined) clearTimeout(forceKillTimer);
     humanConsole?.close();
+    nativeTui?.close();
     await closeAgentHostEndpoints({
       owner: endpointOwner, session, lease: endpointLease, adapterId: endpointAdapterId,
       attemptId: activeRunAttemptId ?? lastTerminal?.attemptId,
@@ -1611,6 +1709,12 @@ export async function sendAgentHostCancelControl(input: Readonly<{
   control: AgentHostCancelControl;
 }>): Promise<AgentHostControlResult> {
   return await sendAgentHostControl(input);
+}
+
+export async function sendAgentHostNativeControl(input: Readonly<{
+  home: string; scope: string; taskId?: string; roleName: string; control: AgentHostNativeControl;
+}>): Promise<AgentHostControlResult> {
+  return sendAgentHostControl(input);
 }
 
 export async function inspectAgentHost(input: Readonly<{
@@ -1984,6 +2088,17 @@ function validateControl(control: AgentHostControl): AgentHostControl {
     throw new Error("Agent Host control protocol is invalid.");
   }
   if (control.type === "status") return Object.freeze({ ...control });
+  if (control.type === "native-open" || control.type === "native-respond") {
+    validateIdentity(control.nativeSessionId, "native Session id");
+    if (control.type === "native-respond") {
+      validateIdentity(control.nativeTurnId!, "native Turn id");
+      if ((typeof control.requestId !== "string" && typeof control.requestId !== "number")
+        || control.result === null || typeof control.result !== "object" || Array.isArray(control.result)) {
+        throw new Error("Invalid native request response.");
+      }
+    }
+    return Object.freeze({ ...control });
+  }
   if (control.type === "cancel") {
     if (control.nativeOnly !== undefined && typeof control.nativeOnly !== "boolean") {
       throw new Error("Native-only cancellation flag is invalid.");

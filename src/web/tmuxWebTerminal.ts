@@ -51,6 +51,9 @@ export type TmuxWebTerminalOptions = Readonly<{
     inspectRoleHistory?(hostId: string, roleName: string): TmuxRoleHistory;
   }>;
   prepareGlobalRole(roleName: string): Promise<void>;
+  /** Revalidates the selected current Session and opens its Host-owned TUI. */
+  prepareNative?(request: WebTerminalRequest): Promise<boolean>;
+  validateWrite?(request: WebTerminalRequest): void;
   spawnPty?: PtySpawner;
   environment?: NodeJS.ProcessEnv;
   onError?: (error: unknown) => void;
@@ -72,12 +75,14 @@ export class TmuxWebTerminalService {
 
   async open(request: WebTerminalRequest): Promise<WebTerminalConnection> {
     const hostId = request.scope === "task" ? request.taskId : "operator";
-    if (request.scope === "global") {
+    if (request.scope === "global" && request.nativeSessionId === undefined) {
       await this.options.prepareGlobalRole(request.roleName);
     }
     const roleHistory = this.options.tmux.inspectRoleHistory?.(hostId, request.roleName);
 
-    let readOnly = request.scope === "task" || this.#writers.has(hostId);
+    const nativeWritable = this.options.prepareNative === undefined ? request.scope === "global"
+      : await this.options.prepareNative(request);
+    let readOnly = !nativeWritable || this.#writers.has(hostId);
 
     let clientSession: string | undefined;
     let process: PtyProcess;
@@ -168,6 +173,7 @@ export class TmuxWebTerminalService {
         // The tmux client may already have detached or exited.
       }
     };
+    const validateWrite = () => this.options.validateWrite?.(request);
 
     return {
       readOnly,
@@ -193,7 +199,7 @@ export class TmuxWebTerminalService {
         return () => exitListeners.delete(listener);
       },
       write(data) {
-        if (!readOnly) process.write(data);
+        if (!readOnly && !closed && !clientReleased) { validateWrite(); process.write(data); }
       },
       resize(columns, rows) {
         process.resize(columns, rows);
