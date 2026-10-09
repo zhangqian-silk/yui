@@ -51,6 +51,31 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.3.0 compatibility and migration notes
+
+This minor release separates Task acceptance and verified remote delivery from
+immutable Integration history and temporary workspace cleanup. Integration
+history remains readable after its workspace is released.
+
+Automation that previously treated leftover workspaces as an unconditional
+archive blocker must now inspect business settlement, exact delivery and runtime
+quiescence separately from physical cleanup. Ordinary archive releases safe
+resources child-first and retains dirty, unknown or live resources with their
+ownership and diagnostics. `--force` is separate explicit authority; it neither
+proves delivery or quiescence nor permits discarding retained data.
+
+For an ordinary Integration conflict, resolve and stage files in that attempt's
+workspace, then run `yui task integration continue <task>/<integration>`.
+Do not create a replacement attempt or require a manual-resolution decision
+just for a normal Git conflict. Cleanup uses exact ownership and Git
+registrations; missing paths alone do not establish that cleanup is complete.
+
+These are behavioral changes under Yui's minor-version convention. There is no
+new persistent schema or storage migration in 2.3.0. Existing Task and
+Integration evidence is preserved. This package release does not itself
+install the global CLI, activate a runtime or restart a Controller. Users
+upgrading from 2.1.0 must also apply the 2.2.0 API guidance below.
+
 ### 2.2.0 compatibility and migration notes
 
 This minor release adds the independent `yui agent` entry, explicit model/tool
