@@ -42,7 +42,7 @@ export async function submitWrite(options) {
       options.control.disabled = false;
       return;
     }
-    setReceipt(options.receipt, t(options.unknownKey) + " · " + requestId, "warn");
+    setReceipt(options.receipt, t(options.unknownKey) + " · " + requestId + " · " + error.message, "warn");
   }
 }
 `;

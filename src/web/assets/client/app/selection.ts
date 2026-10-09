@@ -105,14 +105,13 @@ async function load(deps, taskId, navigate) {
   const state = deps.state;
   if (navigate) deps.taskView.showLoading();
   // Rendering consumes the current Context snapshot, not event pages.
-  const core = await deps.api.context(taskId);
-  const taskEntry = core.records.find(function (entry) { return entry.ref.store === "task"; });
-  if (!taskEntry) throw new Error("Task reference unavailable.");
-  const task = taskEntry.omitted ? (await deps.api.inspect(taskId, taskEntry.ref)).value : taskEntry.value;
+  const snapshot = await deps.api.workbench(taskId);
+  const core = snapshot.core;
+  const task = snapshot.task;
   if (state.selected !== taskId) return;
   const previous = state.detail && state.detail.task.id === taskId ? state.detail : null;
   const detail = {
-    task: task, core: core,
+    task: task, core: core, briefValue: snapshot.brief, evidenceSummary: snapshot.evidence,
     viewState: previous ? previous.viewState : {},
     runtime: previous ? previous.runtime : null,
     runtimeStatus: previous ? previous.runtimeStatus : "waiting",

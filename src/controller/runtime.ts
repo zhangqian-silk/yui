@@ -95,6 +95,7 @@ import { TmuxWebTerminalService } from "../web/tmuxWebTerminal.js";
 import { createWebTaskSurface } from "../web/webTaskSurface.js";
 import { createWebConversationSurface } from "../web/webConversation.js";
 import { inspectAgentHost } from "../runtime/agentHost.js";
+import { archiveOrdinaryTask } from "../task/ordinaryArchive.js";
 import {
   isTaskOwnedWorkspace,
   sameManagedWorkspaceIdentity
@@ -548,7 +549,13 @@ export async function startFileTaskControllerRuntime(
         else if (target.kind === "task") runningRuntime?.signal(`task:${target.taskId}`);
       },
       reconcileTask: (taskId) => runningRuntime?.signal(`task:${taskId}`)
-    }, yuiHome: home });
+    }, yuiHome: home }, [], undefined, {
+      archive: async (taskId) => {
+        if (!(workspacePreparer instanceof FileTaskWorkspacePreparer)) throw new Error("Archive workspace owner unavailable.");
+        return archiveOrdinaryTask(new TaskWorkspaceCoordinator(store, workspacePreparer, webWorkflow),
+          taskId, { environment: {}, yuiHome: home });
+      }
+    });
     const surfaces = new SurfaceContributions(kernel.capabilities.registry);
     const web = createControllerWeb(store, {
       surface: webSurface,

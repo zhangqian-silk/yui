@@ -81,7 +81,8 @@ export type WebDashboardStore = Pick<TaskStore,
 export function buildWebTaskDetail(
   store: WebDashboardStore,
   taskId: string,
-  now: Date = new Date()
+  now: Date = new Date(),
+  compact = false
 ): object | null {
   return store.transaction((reader) => {
     const task = reader.getTask(taskId);
@@ -158,9 +159,44 @@ export function buildWebTaskDetail(
     });
     const execution = buildTaskExecutionProjection(reader, taskId, now);
     if (execution === null) return null;
+    const brief = reader.getTaskBrief(taskId);
+    const roleSessionSets = reader.listRoleSessionSets(taskId);
+    const sessions = projectWebSessions({ taskId, sessionSets: roleSessionSets, events, now,
+      ...(brief?.updatedAt === undefined ? {} : { semanticProgressAt: brief.updatedAt }),
+      policy: resolveRuntimeHealth(reader.getConfig().runtimeHealth) });
+    if (compact) {
+      // Observation is not semantic progress. No Task/Message/Run bodies,
+      // Role history or validation logs ride the default polling response.
+      const clip = (text: string | undefined) => text?.slice(0, 1200);
+      return {
+        execution: {
+          status: execution.status, owner: execution.owner, action: execution.action, next: execution.next,
+          summary: clip(execution.summary), reason: clip(execution.reason),
+          monitoring: execution.monitoring, failClosed: execution.failClosed,
+          activeRuns: execution.activeRuns.slice(0, 16).map(run => ({ id: run.id })),
+          activeRunCount: execution.activeRuns.length,
+          attention: execution.attention.slice(0, 8).map(item => ({ ...item, summary: clip(item.summary) })),
+          blockers: execution.blockers.slice(0, 8).map(item => ({ ...item, summary: clip(item.summary) }))
+        },
+        roles: roles.slice(0, 16).map(role => ({
+          name: role.name, status: role.status, runtimeSession: role.runtimeSession
+        })),
+        sessions: { ...sessions, sessions: sessions.sessions.slice(0, 16).map(session => ({
+          ...session, reason: session.reason.slice(0, 1200),
+          operations: session.operations.slice(0, 16), background: session.background.slice(0, 16)
+        })) },
+        observability: {
+          cost: execution.observability.cost,
+          readyCount: execution.observability.dag.readyIds.length,
+          context: {
+            snapshotCount: execution.observability.context.snapshotCount,
+            totalBytes: execution.observability.context.totalBytes
+          }
+        }
+      };
+    }
     const remoteDelivery = webRemoteDelivery(reader, task);
     const workItems = reader.listWorkItems(taskId);
-    const roleSessionSets = reader.listRoleSessionSets(taskId);
     const workItemObservability = new Map(
       execution.observability.workItems.map((item) => [item.workItemId, item])
     );
@@ -170,14 +206,10 @@ export function buildWebTaskDetail(
         ...(projectNames.length === 0 ? {} : { projectNames })
       },
       execution,
-      sessions: projectWebSessions({ taskId, sessionSets: roleSessionSets, events, now,
-        ...(reader.getTaskBrief(taskId)?.updatedAt === undefined ? {} : {
-          semanticProgressAt: reader.getTaskBrief(taskId)!.updatedAt
-        }),
-        policy: resolveRuntimeHealth(reader.getConfig().runtimeHealth) }),
+      sessions,
       remoteDelivery,
       observability: execution.observability,
-      brief: reader.getTaskBrief(taskId),
+      brief,
       roles,
       workItems: workItems.map((item) => ({
         ...item,

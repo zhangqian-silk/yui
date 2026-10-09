@@ -3,27 +3,28 @@ export const TASK_OVERVIEW_SCRIPT = String.raw`
 // now, what needs the user, what it has reported, its goal and its current
 // decisions. A Draft also reports its planning Turn.
 import { h } from "/assets/js/lib/dom.js";
-import { fill, formatDateTime } from "/assets/js/lib/format.js";
-import { bulletList, button, codeBlock, dot, emptyState, kv, mono, note, timeTag } from "/assets/js/ui/primitives.js";
+import { formatDateTime } from "/assets/js/lib/format.js";
+import { bulletList, button, codeBlock, dot, emptyState, note, timeTag } from "/assets/js/ui/primitives.js";
 import { card, disclosure } from "/assets/js/ui/containers.js";
 import { richText } from "/assets/js/ui/text.js";
-import { entriesOf, exactCache, readExact, totalOf, valuesOf } from "/assets/js/domain/context.js";
-import { recordCard } from "/assets/js/domain/records.js";
+import { entriesOf, exactCache, totalOf, valuesOf } from "/assets/js/domain/context.js";
+import { lazyRow, recordCard } from "/assets/js/domain/records.js";
 import { inputCard } from "/assets/js/domain/work.js";
+import { taskActions } from "/assets/js/views/task/actions.js";
 
 export function renderOverviewPanel(panel, data, t, locale, ctx) {
   // Now: the derived execution status (observation), the open questions and
   // who acts next. drawNow() tints the banner with the status tone.
   const now = card({ className: "now-card" });
-  now.body.append(h("div", { dataset: { slot: "now" } }), h("p.next-line", { dataset: { slot: "next" } }));
+  now.body.append(h("p.faint.small", null, t("workbench.observation")),
+    h("div", { dataset: { slot: "now" } }), h("p.next-line", { dataset: { slot: "next" } }));
   panel.append(now);
+  panel.append(taskActions(data.task, t, ctx));
   if (data.core.attention.openInputs.count) panel.append(needsCard(data, t, locale, ctx));
   const progress = progressCard(data, t, locale, ctx);
-  const goal = goalCard(data, t);
+  const goal = goalCard(data, t, ctx);
   panel.append(progress);
-  if (data.task.status === "draft") panel.append(planningCard(data, t, locale));
-  panel.append(goal, decisionsCard(data, t, locale, ctx));
-  readBrief(data, progress, goal, t, locale, ctx);
+  panel.append(goal, workAndEvidence(data, t, ctx), decisionsCard(data, t, locale, ctx));
 }
 
 // Needs you: open InputRequests with their answer controls. Open questions
@@ -38,24 +39,36 @@ function needsCard(data, t, locale, ctx) {
   const needs = card({ title: t("overview.needsYou"), icon: "inbox", count: openInputs.count, className: "needs-card" });
   needs.id = "detail-attention";
   inputs.forEach(function (entry) { needs.body.append(inputCard(entry.value, t, locale, ctx.answerInput)); });
-  missing.forEach(function (ref) { needs.body.append(recordCard({ ref: ref, omitted: true }, task.id, t, ctx)); });
+  const seen = new Set(inputs.map(function (entry) { return entry.ref.refId; }));
+  function deferredInput(item) {
+    seen.add(item.ref.refId);
+    return lazyRow(item, task.id, t, ctx, {
+      head: h("span", null, item.summary || item.ref.refId),
+      cache: exactCache(data.viewState),
+      render: function (value) {
+        return value.status === "open" ? inputCard(value, t, locale, ctx.answerInput)
+          : note(value.id + " · " + value.status);
+      }
+    });
+  }
+  missing.forEach(function (ref) {
+    const entry = entriesOf(data.core, "input-request").find(function (entry) { return entry.ref.refId === ref.refId; });
+    needs.body.append(deferredInput({ ref: ref, summary: entry && entry.summary }));
+  });
   if (openInputs.count > inputs.length + missing.length) {
-    needs.body.append(note(t("overview.moreInputs"), "warn"), codeBlock("yui task input list " + task.id));
+    let cursor;
+    const more = button(t("overview.moreInputs"), { onClick: async function () {
+      more.disabled = true;
+      try {
+        const page = await ctx.list(task.id, "input-request", { status: "open", limit: 20, cursor: cursor });
+        page.items.forEach(function (item) { if (!seen.has(item.ref.refId)) needs.body.insertBefore(deferredInput(item), more); });
+        cursor = page.nextCursor;
+        more.disabled = !cursor;
+      } catch (error) { needs.body.append(note(error.message, "bad")); more.disabled = false; }
+    } });
+    needs.body.append(more);
   }
   return needs;
-}
-
-// The Brief is the Overview's main source; when the bounded read withheld
-// its value, read it exactly once per digest and redraw both cards.
-function readBrief(data, progress, goal, t, locale, ctx) {
-  const briefEntry = entriesOf(data.core, "task-brief")[0];
-  if (!briefEntry || !briefEntry.omitted) return;
-  readExact(briefEntry, data.task.id, ctx, exactCache(data.viewState)).then(function (result) {
-    if (!progress.isConnected) return;
-    const exact = { ...data, briefValue: result.value };
-    progress.replaceWith(progressCard(exact, t, locale, ctx));
-    goal.replaceWith(goalCard(exact, t));
-  }, function () {});
 }
 
 function briefOf(data) {
@@ -80,7 +93,7 @@ function progressCard(data, t, locale, ctx) {
   return element;
 }
 
-function goalCard(data, t) {
+function goalCard(data, t, ctx) {
   const task = data.task;
   const brief = briefOf(data);
   const element = card({ title: t("goal.title"), icon: "target" });
@@ -90,7 +103,34 @@ function goalCard(data, t) {
   }
   if (brief && brief.technicalApproach) element.body.append(proseDisclosure(t("goal.approach"), "approach", brief.technicalApproach, t));
   if (task.description) element.body.append(proseDisclosure(t("goal.requirements"), "requirements", task.description, t));
+  element.body.append(note(t("workbench.summary")));
+  ["task", "task-brief"].forEach(function (store) {
+    const entry = entriesOf(data.core, store)[0];
+    if (entry) element.body.append(recordCard({ ref: entry.ref, omitted: true }, task.id, t, ctx));
+  });
   if (!element.body.childNodes.length) element.body.append(emptyState(t("goal.none")));
+  return element;
+}
+
+function workAndEvidence(data, t, ctx) {
+  const element = card({ title: t("workbench.evidence"), icon: "layers" });
+  entriesOf(data.core, "work-item").slice(0, 3).forEach(function (entry) {
+    element.body.append(recordCard(entry, data.task.id, t, ctx, { compact: true }));
+  });
+  const evidence = data.evidenceSummary || { reviews: [], integrations: [] };
+  evidence.reviews.forEach(function (review) {
+    element.body.append(h("p.small", null, review.id + " · " + t("workbench.reviewExecution") + " " + review.status),
+      review.excerpt ? richText(review.runId, review.excerpt, t) : null);
+  });
+  evidence.integrations.forEach(function (integration) {
+    element.body.append(h("p.small", null, integration.id + " · " + integration.status),
+      integration.summary ? richText(null, integration.summary, t) : null);
+    (integration.checks || []).forEach(function (check) {
+      element.body.append(h("p.faint.small", null, check.name + " · " + check.outcome));
+    });
+  });
+  if (!evidence.reviews.length && !evidence.integrations.length) element.body.append(note(t("workbench.noEvidence")));
+  element.body.append(button(t("workbench.openEvidence"), { variant: "link", onClick: function () { ctx.onTab("delivery"); } }));
   return element;
 }
 
@@ -118,28 +158,4 @@ function decisionsCard(data, t, locale, ctx) {
   return element;
 }
 
-// A Draft's Leader conversation is its planning Turn. Report the snapshot's
-// real planning facts; a withheld value is reported as withheld, never as
-// "not dispatched".
-function planningCard(data, t, locale) {
-  const planning = valuesOf(data.core, "run").filter(function (run) { return run.roleName === "leader" && run.purpose === "planning"; });
-  const turn = planning[planning.length - 1] || null;
-  const withheld = turn === null && entriesOf(data.core, "run").some(function (entry) { return entry.omitted; });
-  const live = ((data.runtime && data.runtime.roles) || []).find(function (role) { return role.name === "leader"; }) || null;
-  const element = card({ title: t("planning.title"), icon: "sparkle", className: "planning-card" });
-  element.dataset.planning = turn ? turn.status : withheld ? "withheld" : "not-dispatched";
-  element.body.append(note(withheld ? t("planning.withheld") : turn === null ? t("planning.none")
-    : turn.status === "active" ? t("planning.open") : fill(t("planning.settled"), { status: turn.status })));
-  const provider = (turn && turn.result && turn.result.provider) || {};
-  const environment = turn && turn.effective && turn.effective.executionEnvironment;
-  element.body.append(kv([
-    [t("planning.run"), turn ? mono(turn.id + " (" + turn.status + ")") : withheld ? t("planning.withheldValue") : t("common.none")],
-    [t("planning.providerTerminal"), provider.status || t("common.notReported")],
-    [t("planning.conversation"), provider.conversationId || t("common.notReported")],
-    [t("planning.liveSession"), (live && live.runtimeSession && live.runtimeSession.nativeSessionId) || t("planning.notRunning")],
-    [t("planning.environment"), (environment && environment.environmentRef) || t("planning.emptyEnvironment")],
-    [t("planning.updated"), turn ? formatDateTime((turn.result && turn.result.completedAt) || turn.updatedAt, locale) : t("common.unknown")]
-  ]));
-  return element;
-}
 `;

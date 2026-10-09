@@ -16,6 +16,7 @@ export const SIDEBAR_HTML = `    <aside class="sidebar" aria-label="Tasks" data-
         </span>
         <button id="refresh" class="icon-btn" type="button" aria-label="Refresh" data-i18n-aria-label="actions.refresh" title="Refresh · R">${iconSvg("refresh")}</button>
       </header>
+      <button id="create-task" class="btn btn-primary" type="button" data-i18n="create.title">New task</button>
       <label class="search-field">
         ${iconSvg("search")}
         <span class="sr-only" data-i18n="search.label">Search tasks</span>

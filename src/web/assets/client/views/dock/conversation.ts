@@ -226,8 +226,10 @@ export function createConversationController(host, t) {
       if (!timer) timer = window.setInterval(function () { if (!cursor) refresh(); }, 2000);
       refresh();
     },
-    open: function (target) {
-      if (JSON.stringify(target) !== JSON.stringify(owner)) {
+    open: function (target, options) {
+      // Explicit workbench continuation must resolve today's current Session
+      // from the shared endpoint, not retain a historical selection or stale ID.
+      if (JSON.stringify(target) !== JSON.stringify(owner) || options && options.current) {
         if (selected) saved(".draft", text.value);
         generation++; owner = target; selected = null; facts = null; pending = null; clear(select); clear(feed);
         cursor = null; next = null; historyOk = false; rendered.clear();
