@@ -15,6 +15,10 @@ limit it marks consumption as partial (`usage-history-limited`); it does not
 silently call the retained subtotal a lifetime total. Detail pages contain at
 most 50 entries per evidence family. Pages are current reads, not frozen audit
 snapshots; refresh the summary when new observations arrive.
+Source selection uses existing indexes before JSON projection: recent events
+are selected per type and merged within a bounded window; Run identities use
+descending stored ID order (not chronological order). Exceeding the Run cap
+therefore yields an explicitly partial subset, not the newest 2,000 Runs.
 Web retains already-read pages across Context redraws and labels each page's
 observation time. Reselect the Task to start a fresh detail read.
 
@@ -46,7 +50,9 @@ canonical observation boundary:
 
 This is independent of token observations; reporting an amount never fabricates
 token counts. Request revisions replace the same request, and replay does not
-add another charge. Cumulative Session amounts exclude the first nonzero
+add another charge, including when a revision changes currency. Identity and
+Run conflicts are checked before grouping independent requests by currency.
+Cumulative Session amounts exclude the first nonzero
 baseline; a single nonzero snapshot cannot establish consumption. Rollbacks,
 mixed meanings, overlapping sources, and ambiguous Session ownership remain
 unknown. Cumulative Session costs are not allocated to WorkItems.

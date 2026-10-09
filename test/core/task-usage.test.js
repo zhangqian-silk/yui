@@ -21,6 +21,10 @@ import { taskUsageCommand } from "../../dist/commands/taskUsageCommand.js";
 import { createYuiWebServer } from "../../dist/web/webServer.js";
 import { coalesceRuntimeProgress } from "../../dist/controller/runtimeEventProcessor.js";
 import { routeInvocation } from "../../dist/cli/invocationRouter.js";
+import { createFixtureRun } from "../helpers/runFixture.mjs";
+import { createConfiguredAgent } from "../../dist/agent/agent.js";
+import { createRole, createRoleAgentBinding } from "../../dist/role/role.js";
+import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
 
 const origin = Date.parse("2026-09-13T00:00:00Z");
 const at = seconds => new Date(origin + seconds * 1000).toISOString();
@@ -93,7 +97,8 @@ test("money evidence retains currency, source and estimate basis without becomin
   assert.equal(result.costs.actual.amounts[0].value, 0.25);
   assert.equal(result.costs.estimated.evidence[0].basis.model, "fixture-model");
   const euro = charge(5, 2, { currency: "EUR" });
-  assert.equal(project([...actual, euro]).costs.actual.amounts.length, 2);
+  assert.deepEqual(project([...actual, euro]).costs.actual.amounts.map(({ value, currency }) => [value, currency]),
+    [[2, "EUR"]], "a currency correction replaces the same request, not a second charge");
   assert.throws(() => charge(1, 1, { kind: "estimated" }), /basis/i);
   assert.throws(() => charge(1, -1), /amount/i);
   const cumulative = [
@@ -113,9 +118,77 @@ test("money evidence retains currency, source and estimate basis without becomin
     cost: { kind: "actual", semantics: "request", amount: 0.5, currency: "USD", source: "receipt-2" } });
   assert.equal(project([...actual, separate]).costs.actual.amounts[0].value, 0.75);
   assert.equal(project([...actual, separate]).costs.actual.evidence.length, 2);
+  assert.equal(project([...actual, separate, euro]).costs.actual.amounts.length, 2,
+    "independent requests in different currencies remain separate");
   const replay = actual.map((entry, index) => ({ id: `inbox-${index}`, type: "runtime-observation",
     taskId: task.id, observation: JSON.parse(entry.payload.observation) }));
   assert.equal(coalesceRuntimeProgress(replay).length, 3, "cost facts must survive ingress compaction");
+});
+
+test("cross-currency request revisions retain Run attribution and source conflict checks", () => {
+  const runs = [1, 2].map(n => ({ id: `run-${n}`, taskId: task.id, roleName: "worker",
+    workItemId: `work-${n}`, effective: { agentId: "codex", adapterId: "codex" } }));
+  const charge = (n, currency, source = "provider") => event("activity.observed", n, {
+    activity: "model", activityId: "same-request",
+    cost: { kind: "actual", semantics: "request", amount: 0.25, currency, source }
+  }, { runId: `run-${n}`, roleName: "worker" });
+  const events = [charge(1, "USD"), charge(2, "EUR")];
+  assert.deepEqual(project(events, { runs }).costs.actual.amounts.map(x => x.currency), ["EUR"]);
+  for (const workItemId of ["work-1", "work-2"]) {
+    const cost = project(events, { runs, workItemId }).costs.actual;
+    assert.equal(cost.status, "unknown");
+    assert.ok(cost.reasons.includes("request-run-attribution-conflict"));
+  }
+  const conflict = project([events[0], charge(2, "EUR", "other-source")], { runs }).costs.actual;
+  assert.equal(conflict.status, "unknown");
+  assert.ok(conflict.reasons.includes("cost-source-overlap"));
+});
+
+test("usage source queries bound JSON work before projecting large histories", t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-usage-bounded-sql-"));
+  const store = new SqliteTaskStore(home);
+  t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
+  store.saveTask(createTask(task.id, "Bounded SQL", new Date(at(0))));
+  const db = store.databaseHandle();
+  const agent = createConfiguredAgent("codex", "codex", "false", [], [], new Date(at(0)));
+  const role = createRole(task.id, "leader", [createRoleAgentBinding(agent)], agent.id, home, new Date(at(0)));
+  const run = createFixtureRun(null, "run-1", task.id, "leader", "new",
+    { source: { type: "yui", channel: "task-dispatch" }, directive: "Fixture", deltaRefIds: [] },
+    new Date(at(0)), { effective: resolveEffectiveLaunch({ role, purpose: "execution" }) });
+  const insertEvent = db.prepare("INSERT INTO events VALUES(?, ?, ?, ?, ?)");
+  const insertRun = db.prepare("INSERT INTO turns VALUES(?, ?, ?, ?, ?, ?)");
+  db.transaction(() => {
+    for (let n = 1; n <= 5000; n++) {
+      // Equal timestamps exercise the tie-break path, not just distinct times.
+      const e = token(1, usage("request-context", 1), {}, { activityId: `request-${n}` });
+      insertEvent.run(task.id, e.id, e.type, e.createdAt, JSON.stringify(e));
+      const id = `run-${n}`;
+      insertRun.run(task.id, id, "leader", run.status, JSON.stringify({ ...run, id }), at(1));
+    }
+  })();
+  let projections = 0;
+  db.function("usage_probe", payload => { projections++; return payload; });
+  const prepare = db.prepare.bind(db);
+  const plans = [];
+  // Instrument the real queries at the SQLite boundary. Probe preserves the
+  // payload and counts JSON inputs; no timing assertion or parallel query copy.
+  db.prepare = sql => {
+    if (/SELECT json_(set|object)/.test(sql)) {
+      const instrumented = sql.replaceAll("json_set(payload,", "json_set(usage_probe(payload),")
+        .replaceAll("json_extract(payload,", "json_extract(usage_probe(payload),");
+      return { all: (...args) => {
+        plans.push(...prepare("EXPLAIN QUERY PLAN " + sql).all(...args).map(row => row.detail));
+        return prepare(instrumented).all(...args);
+      } };
+    }
+    return prepare(sql);
+  };
+  const facts = store.readTaskUsageFacts(task.id);
+  assert.equal(facts.events.length, 2000);
+  assert.equal(facts.runs.length, 2000);
+  assert.equal(facts.complete, false);
+  assert.ok(projections <= 6 * 2001, `JSON projection processed full history: ${projections} inputs`);
+  assert.ok(!plans.some(detail => /\bSCAN (events|turns)\b/.test(detail)), plans.join("\n"));
 });
 
 test("Task usage query and Web share bounded facts and explicit detail pages", async t => {

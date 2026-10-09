@@ -52,67 +52,61 @@ export function projectTaskCosts(
       if (costs.length === 0) { reasons.push("cost-unobserved"); continue; }
       // Different native Roles and sources cannot safely claim independent charges.
       const overlap = new Set(all.map(o => JSON.stringify([o.fence.roleName, o.fence.agentId]))).size > 1;
-      const currencies = [...new Set(costs.map(o => o.payload.cost!.currency))].sort();
-      for (const currency of currencies) {
-        const versions = costs.filter(o => o.payload.cost!.currency === currency);
-        const latest = versions.at(-1)!;
-        const cost = latest.payload.cost!;
-        // Missing receipts can carry only a coverage boundary, with no cost
-        // field. Keep known subtotals but do not erase that boundary by first
-        // filtering down to monetary observations.
-        const local = qualityReasons(all.filter(o => inScope(o)
-          && (o.payload.cost === undefined || o.payload.cost.kind === kind)));
+      const latest = costs.at(-1)!;
+      const cost = latest.payload.cost!;
+      // Missing receipts can carry only a coverage boundary, with no cost.
+      const local = qualityReasons(all.filter(o => inScope(o)
+        && (o.payload.cost === undefined || o.payload.cost.kind === kind)));
+      const semantics = new Set(costs.map(o => o.payload.cost!.semantics));
+      if (overlap || semantics.size > 1) {
+        evidence.push(detail(latest, null, [...local,
+          overlap ? "native-session-role-overlap" : "cost-source-overlap"]));
+        continue;
+      }
+      if (cost.semantics === "cumulative-session") {
         let value: number | null = null;
-        const semantics = new Set(versions.map(o => o.payload.cost!.semantics));
-        const sources = new Set(versions.map(o => o.payload.cost!.source));
-        if (overlap) local.push("native-session-role-overlap");
-        else if (semantics.size > 1) local.push("cost-source-overlap");
-        else if (cost.semantics === "cumulative-session") {
-          if (sources.size > 1) local.push("cost-source-overlap");
-          else if (workItem) local.push("cumulative-not-allocatable-to-work-item");
-          else if (versions.some((o, i) => i > 0
-            && o.payload.cost!.amount < versions[i - 1]!.payload.cost!.amount)) {
-            local.push("cost-counter-rollback");
-          } else if (new Set(versions.map(o => JSON.stringify(o.payload.cost!.basis))).size > 1) {
-            local.push("cost-basis-changed");
-          } else {
-            const baseline = versions[0]!.payload.cost!.amount;
-            if (baseline !== 0) local.push("nonzero-session-baseline");
-            if (baseline === 0 || versions.length > 1) value = cost.amount - baseline;
-          }
+        if (new Set(costs.map(o => JSON.stringify([o.payload.cost!.source, o.payload.cost!.currency]))).size > 1) {
+          local.push("cost-source-overlap");
+        } else if (workItem) local.push("cumulative-not-allocatable-to-work-item");
+        else if (costs.some((o, i) => i > 0
+          && o.payload.cost!.amount < costs[i - 1]!.payload.cost!.amount)) {
+          local.push("cost-counter-rollback");
+        } else if (new Set(costs.map(o => JSON.stringify(o.payload.cost!.basis))).size > 1) {
+          local.push("cost-basis-changed");
         } else {
-          const requests = new Map<string, RuntimeObservation[]>();
-          for (const o of versions) {
-            const id = o.payload.activityId!;
-            requests.set(id, [...(requests.get(id) ?? []), o]);
-          }
-          const selected: RuntimeObservation[] = [];
-          for (const request of requests.values()) {
-            if (!request.some(inScope)) continue;
-            if (new Set(request.map(o => o.payload.cost!.source)).size > 1) {
-              local.push("cost-source-overlap");
-            } else if (workItem && (!request.every(inScope)
-              || new Set(request.map(o => o.fence.runId)).size !== 1)) {
-              local.push("request-run-attribution-conflict");
-            } else selected.push(request.at(-1)!);
-          }
-          // Preserve each price basis rather than attaching the latest basis to
-          // a subtotal computed using a different model or price version.
-          const bases = new Map<string, RuntimeObservation[]>();
-          for (const o of selected) {
-            const key = JSON.stringify([o.payload.cost!.source, o.payload.cost!.basis]);
-            bases.set(key, [...(bases.get(key) ?? []), o]);
-          }
-          for (const group of bases.values()) {
-            const representative = group.at(-1)!;
-            const subtotal = group.reduce((sum, o) => sum + o.payload.cost!.amount, 0);
-            evidence.push(detail(representative, safeAmount(subtotal),
-              [...local, ...qualityReasons(group)]));
-          }
-          if (selected.length > 0) { reasons.push(...local); continue; }
-          local.push("cost-unobserved");
+          const baseline = costs[0]!.payload.cost!.amount;
+          if (baseline !== 0) local.push("nonzero-session-baseline");
+          if (baseline === 0 || costs.length > 1) value = cost.amount - baseline;
         }
-        evidence.push(detail(latest, value, [...local, ...qualityReasons(versions)]));
+        evidence.push(detail(latest, value, [...local, ...qualityReasons(costs)]));
+        continue;
+      }
+      // Currency and price basis can change in a request revision. Resolve
+      // identity and attribution over every version before monetary grouping.
+      const requests = new Map<string, RuntimeObservation[]>();
+      for (const o of costs) {
+        const id = o.payload.activityId!;
+        requests.set(id, [...(requests.get(id) ?? []), o]);
+      }
+      const bases = new Map<string, RuntimeObservation[]>();
+      for (const request of requests.values()) {
+        if (!request.some(inScope)) continue;
+        const selected = request.at(-1)!;
+        const conflict = new Set(request.map(o => o.payload.cost!.source)).size > 1
+          ? "cost-source-overlap"
+          : workItem && (!request.every(inScope) || new Set(request.map(o => o.fence.runId)).size !== 1)
+            ? "request-run-attribution-conflict" : undefined;
+        if (conflict !== undefined) {
+          evidence.push(detail(selected, null, [...local, conflict]));
+          continue;
+        }
+        const selectedCost = selected.payload.cost!;
+        const key = JSON.stringify([selectedCost.currency, selectedCost.source, selectedCost.basis]);
+        bases.set(key, [...(bases.get(key) ?? []), selected]);
+      }
+      for (const group of bases.values()) {
+        const subtotal = group.reduce((sum, o) => sum + o.payload.cost!.amount, 0);
+        evidence.push(detail(group.at(-1)!, safeAmount(subtotal), [...local, ...qualityReasons(group)]));
       }
     }
     if (evidence.length === 0) reasons.push(kind === "estimated" ? "price-unavailable" : "cost-unobserved");
