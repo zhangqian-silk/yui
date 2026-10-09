@@ -18,6 +18,7 @@ export const ZH_CN: Readonly<Partial<Record<MessageKey, string>>> = {
   "materials.attach": "添加文本材料",
   "materials.boundary": "支持 UTF-8 文本、Markdown 和代码，最大 256 KiB。作为不可信数据保存到任务成果中，发送仍需单独操作。",
   "materials.remove": "移除引用",
+  "materials.capacity": "最多添加八个引用，本次版本均未添加。请先移除引用，再从结果页重新讨论这些版本。",
   "materials.tooLarge": "材料超过 256 KiB。",
   "materials.saved": "材料已保存。填写消息并发送即可分享固定引用。",
   "materials.inspectUpload": "若保存结果未知，请先在任务成果中检查此路径，不要重复上传：",

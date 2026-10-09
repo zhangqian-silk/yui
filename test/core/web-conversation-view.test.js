@@ -46,6 +46,8 @@ function fixture(submitResult = { state: "submitted" }) {
   return { controller, calls, storage, host, writes,
     button: key => elements.find(n => n.spec.startsWith("button") && n.children.includes("conversation." + key)),
     get input() { return elements.find(n => n.spec.startsWith("textarea")); },
+    get materialList() { return elements.find(n => n.spec === "div.row-stack"); },
+    get materialAlert() { return elements.find(n => n.role === "alert"); },
     get selector() { return elements.find(n => n.spec === "select"); },
     replaceCurrent: id => { currentSessionId = id; },
     get feed() { return elements.find(n => n.spec === "div.feed"); },
@@ -56,6 +58,40 @@ function fixture(submitResult = { state: "submitted" }) {
   };
 }
 const flush = () => new Promise(resolve => setImmediate(resolve));
+
+test("a full draft rejects an entire diff pair visibly and admits both versions after space is freed", async () => {
+  const f = fixture();
+  const owner = { scope: "task", taskId: "task-1", roleName: "leader" };
+  const existing = Array.from({ length: 7 }, (_, i) => ({
+    taskId: "task-1", relativePath: `note-${i}.md`, commit: "a".repeat(40), digest: "b".repeat(64)
+  }));
+  const pair = [
+    { ...existing[0], relativePath: "result.md", commit: "c".repeat(40) },
+    { ...existing[0], relativePath: "result.md", commit: "d".repeat(40) }
+  ];
+  f.controller.open(owner, { current: true, materials: existing });
+  await flush();
+  f.input.value = "Please compare both versions";
+  f.controller.open(owner, { current: true, materials: pair });
+  await flush();
+  const key = [...f.storage.keys()].find(k => k.endsWith(".materials"));
+  assert.deepEqual(JSON.parse(f.storage.get(key)), existing, "never attach only half the diff pair");
+  assert.equal(f.input.value, "Please compare both versions");
+  assert.equal(f.materialAlert.textContent, "materials.capacity");
+  assert.equal(f.writes.length, 0);
+  f.materialList.children[0].children[1].handlers.click();
+  f.controller.open(owner, { current: true, materials: pair });
+  await flush();
+  assert.deepEqual(JSON.parse(f.storage.get(key)), [...existing.slice(1), ...pair]);
+  assert.equal(f.materialAlert.textContent, "");
+  f.controller.open(owner, { current: true, materials: pair });
+  await flush();
+  assert.equal(JSON.parse(f.storage.get(key)).length, 8, "deduplicate before checking capacity");
+  f.button("send").handlers.click();
+  await flush();
+  assert.deepEqual(JSON.parse(JSON.stringify(f.writes[0][2].materials)), [...existing.slice(1), ...pair]);
+  f.controller.close();
+});
 
 test("version feedback fills a draft without sending, persists exact refs, and never crosses owners", async () => {
   const f = fixture();

@@ -18,6 +18,7 @@ export const EN = {
   "materials.attach": "Attach text material",
   "materials.boundary": "UTF-8 text, Markdown or code, up to 256 KiB. Saved in Task artifacts as untrusted data. Sending remains a separate action.",
   "materials.remove": "Remove reference",
+  "materials.capacity": "At most eight references. None of these versions were added. Remove references, then try discussing these versions again.",
   "materials.tooLarge": "Material exceeds 256 KiB.",
   "materials.saved": "Material saved. Add your message and send to share its fixed reference.",
   "materials.inspectUpload": "If the save outcome is unknown, inspect this path in Task files before uploading again:",

@@ -23,11 +23,12 @@ export function createConversationController(host, t) {
   const moreSessions = h("button.btn", { type: "button", hidden: true }, t("conversation.moreSessions"));
   const file = h("input", { type: "file", "aria-label": t("materials.attach") });
   const materialList = h("div.row-stack");
+  const materialAlert = h("p.feed-note", { role: "alert" });
   const materialBar = h("details", null, h("summary", null, t("materials.attach")), file,
     h("p.feed-note", null, t("materials.boundary")));
   host.append(h("div.dock-sub", null, select, current, moreSessions), identity, status, feed,
     h("div.composer-bar", null, older, latest),
-    h("div.composer-wrap", null, materialBar, materialList, text, h("div.composer-bar", null, send, stop, check), receipt,
+    h("div.composer-wrap", null, materialBar, materialList, materialAlert, text, h("div.composer-bar", null, send, stop, check), receipt,
       h("p.feed-note", null, t("conversation.boundary"))));
 
   function key() { return "yui.conversation." + JSON.stringify(owner) + "." + selected; }
@@ -75,11 +76,14 @@ export function createConversationController(host, t) {
     text.value = saved(".draft") || "";
     try { pending = JSON.parse(saved(".pending") || "null"); } catch { pending = null; }
     try { materials = JSON.parse(saved(".materials") || "[]"); } catch { materials = []; }
+    materialAlert.textContent = "";
     if (incomingMaterials) {
-      materials = materials.concat(incomingMaterials).filter(function (ref, index, all) {
+      const combined = materials.concat(incomingMaterials).filter(function (ref, index, all) {
         return all.findIndex(function (other) { return other.commit === ref.commit && other.relativePath === ref.relativePath; }) === index;
-      }).slice(0, 8);
-      incomingMaterials = null; saveMaterials();
+      });
+      if (combined.length > 8) materialAlert.textContent = t("materials.capacity");
+      else { materials = combined; saveMaterials(); }
+      incomingMaterials = null;
     }
     drawMaterials();
     receipt.textContent = pending ? t("conversation.unknown") + " " + pending.requestId : "";
@@ -291,7 +295,7 @@ export function createConversationController(host, t) {
         generation++; owner = target; selected = null; facts = null; pending = null; clear(select); clear(feed);
         cursor = null; next = null; historyOk = false; rendered.clear();
         text.value = ""; receipt.textContent = ""; identity.textContent = ""; controls();
-        materials = []; incomingMaterials = null; clear(materialList);
+        materials = []; incomingMaterials = null; clear(materialList); materialAlert.textContent = "";
       }
       if (options && options.materials) incomingMaterials = options.materials;
       if (!timer) timer = window.setInterval(function () { if (!cursor) refresh(); }, 2000);
