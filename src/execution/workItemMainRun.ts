@@ -109,6 +109,7 @@ export function dispatchWorkItemSynthesis(
     throw new Error(`WorkItem main workspace does not match its approved scope: ${item.id}.`);
   }
   const effective = resolveEffectiveLaunch({
+    store,
     role,
     purpose: "execution",
     workspace,

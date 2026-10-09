@@ -48,7 +48,7 @@ test("delivery Leader owns Task-main writes without an open WorkItem; other scop
   store.saveRole(task.id, role);
   const scheduler = new FileSchedulerStoreAdapter(store);
   assert.deepEqual(scheduler.getRole(task.id, role.name).effective.writeProjectIds, ["project-1"]);
-  const launch = input => resolveEffectiveLaunch({ role, purpose: "execution", workspace, ...input });
+  const launch = input => resolveEffectiveLaunch({ yuiHome: home, role, purpose: "execution", workspace, ...input });
   assert.deepEqual(launch({}).writeProjectIds, ["project-1"]);
   for (const input of [
     { purpose: "planning" }, { executionAuthority: "planning" },

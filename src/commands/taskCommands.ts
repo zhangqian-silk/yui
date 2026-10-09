@@ -4504,6 +4504,7 @@ function dispatchWork(
         throw usageError(`${task.id}/${role.name} already has an active run.`);
       }
       const effective = resolveEffectiveLaunch({
+        store: tx,
         role,
         purpose: "execution",
         workspace,
@@ -4572,6 +4573,7 @@ function dispatchWork(
       }
       const laneWorkspace = managedWorkspace ?? workspace;
       const effective = resolveEffectiveLaunch({
+        store: tx,
         role,
         purpose: "execution",
         workspace: laneWorkspace,
@@ -6486,6 +6488,7 @@ function retryRunOperation(
       ?? (directSession === undefined ? undefined
         : effectiveLaunchWithTaskMainWorkspace(directSession.effective, retryManagedWorkspace!))
       ?? resolveEffectiveLaunch({
+      store: tx,
       role,
       purpose: previous.purpose,
       ...(retryManagedWorkspace === undefined ? {} : { workspace: retryManagedWorkspace }),
@@ -7243,6 +7246,7 @@ function retryFailedReviewRun(
       }
       selectedReviewSynthesisProducers(tx, round, group, synthesisSourceRunIds(tx, run));
       const effective = resolveEffectiveLaunch({
+        store: tx,
         role: reviewer,
         purpose: "review",
         workspace: run.workspace,
@@ -7891,6 +7895,7 @@ export function dispatchPreparedReviewRound(
       }
       const runId = tx.nextRunId(taskId);
       const effective = resolveEffectiveLaunch({
+        store: tx,
         role: reviewer,
         purpose: "review",
         workspace: round.workspace,
@@ -7969,6 +7974,7 @@ export function dispatchPreparedReviewRound(
       }
       const laneManagedWorkspace = preparedLaneWorkspaces.get(lane.id)!;
       const effective = lane.effective ?? resolveEffectiveLaunch({
+        store: tx,
         role: laneReviewer,
         purpose: "review",
         workspace: laneManagedWorkspace,

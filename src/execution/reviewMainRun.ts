@@ -97,6 +97,7 @@ export function dispatchReviewSynthesis(
     throw new Error(`Review main workspace is missing: ${taskId}/${round.id}.`);
   }
   const effective = resolveEffectiveLaunch({
+    store,
     role,
     purpose: "review",
     workspace,

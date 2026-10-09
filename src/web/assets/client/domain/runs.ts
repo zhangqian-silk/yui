@@ -36,7 +36,25 @@ export function runBody(run, t, locale) {
   if (run.executionGroupId) {
     parts.push(h("p.faint.mono-line", null, t("run.lineage") + " " + run.executionGroupId + (run.executionLaneId ? "/" + run.executionLaneId : "")));
   }
+  parts.push(skillPackageDetails(run.effective && run.effective.skillPackages, t));
   return parts.filter(Boolean);
+}
+
+function skillPackageDetails(packages, t) {
+  const details = h("details", null, h("summary", null, t("role.skills") + " · " + (packages ? packages.length : t("skills.unrecorded"))));
+  if (!packages) {
+    details.append(note(t("skills.legacyNote")));
+    return details;
+  }
+  packages.forEach(function (skill) {
+    details.append(h("div.record", null, h("strong", null, skill.id),
+      h("p.small.mono-line", null, skill.digest),
+      h("p.small", null, skill.source.kind + " · " + skill.fileCount + " " + t("skills.files") + " · " + skill.byteSize + " B"),
+      h("p.small.mono-line", null, t("skills.source") + ": " + skill.source.path),
+      h("p.small.mono-line", null, t("skills.snapshot") + ": " + skill.path),
+      h("p.small.mono-line", null, t("skills.inventory") + ": " + skill.manifestPath)));
+  });
+  return details;
 }
 
 export function reviewCard(round, t, locale) {
@@ -75,6 +93,9 @@ export function roleCard(role, t, locale, options) {
   }));
   if (role.description) element.append(richText(null, role.description, t, { muted: true, threshold: 280 }));
   element.append(kv(roleFacts(role, t, locale, opts)));
+  if (opts.runtimeRole && opts.runtimeRole.runtimeSession) {
+    element.append(skillPackageDetails(opts.runtimeRole.runtimeSession.skillPackages, t));
+  }
   if (opts.onOpen) {
     element.append(h("div.role-actions", null, button(t("role.openSession"), {
       icon: "terminal", variant: "ghost", onClick: function () { opts.onOpen(role.name); }

@@ -1,7 +1,5 @@
-import { accessSync, constants, statSync } from "node:fs";
-import { resolve } from "node:path";
-
 import { usageError } from "../errors/cliError.js";
+import { loadYuiSkillContexts } from "../context/roleSessionContext.js";
 import type { ParsedRoleOptions } from "./roleConfiguration.js";
 
 const ROLE_LAUNCH_CONTEXT_OPTIONS = new Set([
@@ -42,12 +40,10 @@ export function validateConfiguredRoleSkills(
     if (!SAFE_SKILL_ID.test(id)) {
       throw usageError(`Configured Skill id is invalid: ${id}.`);
     }
-    const path = resolve(yuiHome, "skills", id, "SKILL.md");
     try {
-      if (!statSync(path).isFile()) throw new Error("not a file");
-      accessSync(path, constants.R_OK);
-    } catch {
-      throw usageError(`Configured Skill not found or unreadable: ${id}.`);
+      loadYuiSkillContexts(yuiHome, [id]);
+    } catch (error) {
+      throw usageError(`Configured Skill not found, unreadable or invalid: ${id}. ${error instanceof Error ? error.message : ""}`);
     }
   }
 }

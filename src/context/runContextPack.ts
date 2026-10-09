@@ -45,6 +45,7 @@ export type AgentRunContextPack = Readonly<{
     workspace: string;
   }>;
   snapshot: ContextSnapshotRef;
+  skillPackages: AgentRun["effective"]["skillPackages"] | null;
   input: AgentRun["inputs"][number]["input"];
   authority: Readonly<{
     view: AgentRunContextView;
@@ -475,6 +476,7 @@ export function buildRunContextPack(store: TaskStore, taskId: string, runId: str
       workspace: run.effective.workspace.root
     }),
     snapshot: contextSnapshotRef(snapshot),
+    skillPackages: run.effective.skillPackages ?? null,
     input: run.inputs[0]!.input,
     authority: Object.freeze({ view, writableProjectIds }),
     pointers,

@@ -81,7 +81,7 @@ test("only a newly created global Operator Session receives the dated title", (t
     mode: "new"
   }).sessionTitle, undefined);
 
-  const effective = resolveEffectiveLaunch({ role: operator, purpose: "execution" });
+  const effective = resolveEffectiveLaunch({ store, role: operator, purpose: "execution" });
   store.saveGlobalRoleSessionSet(bindGlobalRoleProviderRuntime(recordRoleAgentSession(
     createRoleSessionSet(
       { scope: "global", roleName: operator.name },

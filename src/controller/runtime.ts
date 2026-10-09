@@ -1236,6 +1236,7 @@ function resolveRuntimeDesiredEffective(
 ): EffectiveLaunchSnapshot {
   if (request.scope === "global") {
     return resolveEffectiveLaunch({
+      store,
       role: role as GlobalRole,
       purpose: "execution"
     });
@@ -1251,6 +1252,7 @@ function resolveRuntimeDesiredEffective(
     ?? store.getTaskWorkspace(request.taskId)
     ?? undefined;
   return resolveEffectiveLaunch({
+    store,
     role: taskRole,
     purpose: store.getTask(request.taskId)?.status === "draft" && request.roleName === "leader"
       ? "planning" : "execution",
@@ -1355,7 +1357,7 @@ function currentDesiredEffective(
   role: Role | GlobalRole
 ): EffectiveLaunchSnapshot {
   if (request.owner.scope === "global") {
-    return resolveEffectiveLaunch({ role: role as GlobalRole, purpose: "execution" });
+    return resolveEffectiveLaunch({ store, role: role as GlobalRole, purpose: "execution" });
   }
   const item = store.listWorkItems(request.owner.taskId).find((candidate) => (
     candidate.assignee === request.owner.roleName
@@ -1367,6 +1369,7 @@ function currentDesiredEffective(
     ?? store.getTaskWorkspace(request.owner.taskId)
     ?? undefined;
   return resolveEffectiveLaunch({
+    store,
     role: role as Role,
     purpose: store.getTask(request.owner.taskId)?.status === "draft" && request.owner.roleName === "leader"
       ? "planning" : "execution",

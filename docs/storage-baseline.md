@@ -2,7 +2,7 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.4. The declared 1.3 → 1.4 transition gives Project
+Current storage is 1.5. The declared 1.3 → 1.4 transition gives Project
 Knowledge applicability and exact version history, and updates proposal
 fingerprints to include applicability and replacement intent. It restores
 `scope`/`expiresWhen` only from an exact matching accepted proposal. Migrated
@@ -18,6 +18,26 @@ The declared 1.1 → 1.2 transition adds optional
 CapabilityGrant authorization-source evidence and native-human input/archive
 audit records. Existing valid Operator grants remain unchanged; migration does
 not infer or invent past user authority. The SQL layout is unchanged.
+
+The 1.4 → 1.5 transition introduces complete Skill package references in
+effective launch snapshots and Session Manifests. Historical records and their
+digests are preserved byte-for-byte; missing package metadata explicitly means
+legacy entrypoint-only/unrecorded evidence. Migration cannot recover resources
+that were never captured. Existing running Hosts keep their original inputs;
+restoring a legacy Session requires explicitly selecting a new Session. No
+ordinary reader backfills historical versions from mutable sources.
+
+New launches snapshot raw resources under `runtime/skill-packages/<digest>`.
+The version covers sorted relative paths, SHA-256 byte digests, sizes and
+executable flags. Builtin Skills share a complete sibling tree to preserve
+cross-Role references; configured Skills are bounded to their own directory.
+Symlinks and special files are rejected, as are packages exceeding 2,048 files,
+8 MiB per file, 32 MiB total or 32 directory levels. Scripts are retained,
+never run on import. Sources must be readable and physically rooted.
+Sessions and AgentRuns retain the compact source/version/inventory pointers;
+file bodies stay in the package. Changing a source affects a new Session only.
+Lost or corrupted packages fail closed rather than being rebuilt from current
+sources.
 
 Yui 1.0.0 starts from one clean persistent contract. The package version,
 storage schema, record envelopes and Controller protocol are separate

@@ -355,7 +355,7 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
       throw new Error("Global Role has an unmanaged live Session. Stop that exact Session before opening controlled input; it will not be silently replaced.");
     }
     const resolvedEffective = activeLiveRoleAgentSession(sessionSet)?.effective
-      ?? resolveEffectiveLaunch({ role, purpose: "execution" });
+      ?? resolveEffectiveLaunch({ store: this.store, role, purpose: "execution" });
     if (input.effective !== undefined
       && !isDeepStrictEqual(resolvedEffective, input.effective)) {
       throw new Error(`Global Role launch effective snapshot changed: ${role.name}.`);
@@ -489,11 +489,16 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
         ? {}
         : taskRuntimeIsolationEnvironment(runtimeIsolation)
     );
+    const skillPackages = input.mode === "resume"
+      ? existingSession?.effective.skillPackages : effective.skillPackages;
+    if (skillPackages === undefined) {
+      throw new Error("This launch has no frozen Skill package evidence (pre-1.5 or externally recorded Session). Create a new Session from current Role configuration; historical Skill versions cannot be reconstructed.");
+    }
     const baseSessionContext = compileRoleSessionContext(
       this.home,
       launchRole,
       owner,
-      sessionPolicy
+      { ...sessionPolicy, skillPackages }
     );
     const bootstrap = materializeSessionBootstrap({
       yuiHome: this.home,
@@ -916,7 +921,7 @@ function resolveTaskRoleEffectiveLaunch(
   if (purpose === "planning") {
     // Planning has no WorkItem assignment and no managed workspace, so it
     // resolves the Role's own configured workspace with no writable Project.
-    return resolveEffectiveLaunch({ role, purpose: "planning" });
+    return resolveEffectiveLaunch({ store, role, purpose: "planning" });
   }
   const item = store.listWorkItems(role.taskId).find((candidate) => (
     candidate.assignee === role.name
@@ -928,6 +933,7 @@ function resolveTaskRoleEffectiveLaunch(
     ?? store.getTaskWorkspace(role.taskId)
     ?? undefined;
   return resolveEffectiveLaunch({
+    store,
     role,
     purpose: "execution",
     ...(workspace === undefined ? {} : { workspace }),

@@ -69,6 +69,19 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   targetChecksum: CURRENT_SCHEMA_CHECKSUM,
   sql: "",
   dataMigration: "project-knowledge"
+}, {
+  fromVersion: "1.4",
+  toVersion: "1.5",
+  name: "frozen-skill-packages",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Additive effective-launch/manifest package evidence. Historical envelopes
+  // and their digests remain unchanged: absence explicitly means entrypoint-only
+  // provenance, not an invitation to invent packages from today's source files.
+  // Existing Hosts retain their original inputs. Restoring such a Session fails
+  // with a bounded new-Session instruction; ordinary readers never backfill it.
+  sql: ""
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {
