@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
 import { CONVERSATION_SCRIPT } from "../../dist/web/assets/client/views/dock/conversation.js";
+import { SELECTION_SCRIPT } from "../../dist/web/assets/client/app/selection.js";
 
 // Exercise the shipped controller with disposable DOM/network boundaries.
-function fixture() {
+function fixture(submitResult = { state: "submitted" }) {
   const elements = [], storage = new Map(), calls = [];
   let interval, delayedRead, delayedReceipt;
   const h = (spec, attrs, ...children) => {
@@ -38,7 +39,7 @@ function fixture() {
         status: "active", adapterId: "codex" }], authority: { owner: "controller" },
         turn: { status: "accepted", nativeTurnId: "turn" }, total: 1, nextOffset: null };
     },
-    submitMutation: async () => ({ state: "submitted" })
+    submitMutation: async () => submitResult
   });
   vm.runInContext(CONVERSATION_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
   const controller = context.createConversationController(host, k => k);
@@ -76,6 +77,47 @@ test("conversation preserves unsent drafts and reading state while receipts and 
   assert.equal(f.feed.children[0], tool, "unchanged item keeps its DOM and expansion");
   assert.equal(tool.open, true);
   f.controller.close();
+});
+
+test("definite interrupt refusal releases input while unknown delivery remains blocked", async () => {
+  for (const code of ["NO_ACTIVE_TURN", "TARGET_CHANGED", "INTERRUPT_UNSUPPORTED", "DELIVERY_UNKNOWN"]) {
+    const f = fixture({ interrupt: { state: "not-interrupted", code } });
+    f.controller.open({ scope: "global", roleName: "operator" });
+    await flush();
+    f.input.value = "Unsent";
+    // Missing durable interrupt receipt cannot settle an unconfirmed action.
+    const receipt = f.delayReceipt();
+    f.button("stop").handlers.click();
+    await flush();
+    receipt.resolve?.({ state: "unknown" });
+    await flush();
+    const unknown = code === "DELIVERY_UNKNOWN";
+    assert.equal(f.button("send").disabled, unknown, code);
+    assert.equal([...f.storage.keys()].some(k => k.endsWith(".pending")), unknown, code);
+    assert.equal(f.input.value, "Unsent");
+    f.controller.close();
+  }
+});
+
+test("URL back navigation leaves the Task through the same owner transition as the back button", () => {
+  const state = { selected: "task-1", detail: {} };
+  let left = 0, owner = { scope: "task", taskId: "task-1", roleName: "leader" };
+  const context = vm.createContext({
+    window: { addEventListener() {} }, syncUrl() {}, urlTaskId: () => null
+  });
+  vm.runInContext(SELECTION_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
+  const selection = context.createSelection({ state,
+    workspace: { updateLayout() {}, leaveTask() { left++; owner = { scope: "global", roleName: "operator" }; } },
+    taskView: { hasUnsent: () => false, leaveTask() {}, showOverview() {}, updateSessionTargets() {} },
+    renderTaskList() {}
+  });
+  selection.followUrl(new URLSearchParams());
+  assert.equal(state.selected, null);
+  assert.equal(owner.scope, "global");
+  assert.equal(left, 1);
+  state.selected = "task-2";
+  selection.clearSelection();
+  assert.equal(left, 2);
 });
 
 test("owner switch during an older-page read eventually reads the new owner without replaying inputs", async () => {

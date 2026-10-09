@@ -46,6 +46,12 @@ test("structured conversation input retains its selected Session and exact recei
   const surface = createWebTaskSurface(store);
   const conversation = createWebConversationSurface(store, surface, () => { throw Error("read not expected"); });
   const owner = { scope: "task", taskId: "task-1", roleName: "leader" };
+  const stopped = await conversation.control(owner, "leader-native", {
+    action: "interrupt", requestId: "already-ended", expectedTarget: "turn-old"
+  });
+  assert.equal(stopped.interrupt.state, "not-interrupted");
+  assert.equal(stopped.interrupt.code, "NO_ACTIVE_TURN");
+  assert.equal(conversation.receipt(owner, "already-ended").state, "unknown", "no interrupt was saved or sent");
   await conversation.control(owner, "leader-native", { action: "queue", requestId: "selected-input", body: "Only the selected Session" });
   assert.equal(conversation.receipt(owner, "selected-input").state, "submitted");
   const original = store.getTaskRoleSessionSet("task-1", "leader");

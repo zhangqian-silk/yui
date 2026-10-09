@@ -185,6 +185,12 @@ export function createConversationController(host, t) {
       const result = await submitMutation(endpoint + "/" + payload.requestId, endpoint, payload);
       if (own !== generation) return;
       receipt.textContent = JSON.stringify(result);
+      if (action === "interrupt" && result.interrupt?.state === "not-interrupted"
+        && ["NO_ACTIVE_TURN", "TARGET_CHANGED", "INTERRUPT_UNSUPPORTED"].includes(result.interrupt.code)) {
+        // Preflight proved no native cancel was submitted, so no durable
+        // interrupt receipt exists. DELIVERY_UNKNOWN must stay unresolved.
+        pending = null; saved(".pending", null);
+      }
       // Saved/queued is not accepted. Only an exact receipt lookup settles it.
     } catch (error) {
       if (own !== generation) return;
