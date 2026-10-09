@@ -14,7 +14,7 @@ type PreviousProject = Omit<Project, "knowledge" | "knowledgeProposals"> & {
 };
 
 /**
- * The declared 1.2 -> 1.3 payload transition. Never used by ordinary readers.
+ * The declared 1.3 -> 1.4 payload transition. Never used by ordinary readers.
  * Version 1 is the observed pre-migration head, not a claim that no earlier
  * edits happened. Existing proposals and frozen Context snapshots retain their
  * original identities, decisions and evidence; snapshots are never rewritten.
@@ -24,23 +24,23 @@ export function migrateProjectKnowledge(db: Database.Database): void {
   for (const row of rows) {
     const project = JSON.parse(row.payload) as PreviousProject;
     if (project.id !== row.id || !Array.isArray(project.knowledge) || !Array.isArray(project.knowledgeProposals)) {
-      throw new Error(`Invalid 1.2 Project knowledge container: ${row.id}.`);
+      throw new Error(`Invalid 1.3 Project knowledge container: ${row.id}.`);
     }
     const knowledgeProposals: KnowledgeProposal[] = project.knowledgeProposals.map(proposal => {
-      if (proposal.schemaVersion !== 1) throw new Error(`Invalid 1.2 Knowledge proposal: ${proposal.id}.`);
+      if (proposal.schemaVersion !== 1) throw new Error(`Invalid 1.3 Knowledge proposal: ${proposal.id}.`);
       const sourceKey = [proposal.projectId, proposal.source.taskId, proposal.source.decisionId ?? "",
         proposal.source.milestoneId ?? "", proposal.source.commitSha ?? ""].join("|");
       const previousFingerprint = createHash("sha256")
         .update(`${sourceKey}\u0000${proposal.title}\u0000${proposal.body}`).digest("hex");
       if (proposal.fingerprint !== previousFingerprint) {
-        throw new Error(`Invalid 1.2 Knowledge fingerprint: ${proposal.id}.`);
+        throw new Error(`Invalid 1.3 Knowledge fingerprint: ${proposal.id}.`);
       }
       return { ...proposal, schemaVersion: 2, fingerprint: knowledgeProposalFingerprint(proposal) };
     });
     const knowledge: ProjectKnowledge[] = project.knowledge.map(entry => {
       if (entry.schemaVersion !== 1 || "version" in entry || "history" in entry
         || "scope" in entry || "expiresWhen" in entry) {
-        throw new Error(`Invalid 1.2 Project knowledge: ${entry.id}.`);
+        throw new Error(`Invalid 1.3 Project knowledge: ${entry.id}.`);
       }
       const proposal = knowledgeProposals.find(candidate => candidate.id === entry.provenance?.proposalId);
       const backed = proposal !== undefined && proposal.status === "accepted"
