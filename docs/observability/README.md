@@ -58,8 +58,16 @@ Session with settled native input is idle rather than a false runtime failure.
 
 ## Web attention and progress
 
-Task detail prioritizes **needs your input**, **Session activity**, **Task progress**
-and **key conclusions**. InputRequests retain their original answer controls and
+Task detail has four tabs. **Overview** shows needs your input, Task progress,
+goal and key Decisions. **Delivery** shows WorkItems, Reviews, Integration and
+remote delivery, files and workspaces; its evidence is read when the tab opens.
+**Runtime** shows Roles with their Session activity, open execution and
+operations, usage and diagnostics. **Records** is a paged timeline of Decisions,
+milestones, executions and questions plus Task facts; finished rows read their
+exact record when opened. Messages live in the Discussion dock, oldest first,
+with earlier ones listed on request.
+
+InputRequests retain their original answer controls and
 bounded Context counts; a partial read is not an empty inbox. Technical attention
 names the owner from the existing execution projection. An assigned owner does
 not imply work started, and a diagnostic hint is not new user authorization.
@@ -81,7 +89,7 @@ Current Decisions show their rationale/source; superseded ones remain in history
 Reports and recommendations are not relabelled as user approval. Core Context
 remains readable when its independent observation fails.
 
-**Results and evidence** reads files only on request. A selected commit-pinned
+**Delivery** reads files only on request. A selected commit-pinned
 text survives refresh and newer file listings; switching versions is explicit.
 A missing revision fails visibly, never substitutes HEAD. HTML/scripts stay
 text, never an executing preview. Copying a source sends nothing; discussion
@@ -100,6 +108,8 @@ All routes use the local Web token and Task boundary.
 `GET /api/tasks/<id>/artifacts` lists a fixed repository revision;
 `?path=<relative-path>&commit=<full-commit>` reads its exact text file.
 `GET /api/tasks/<id>/evidence` reads original check/Review/workspace records.
+`GET /api/tasks/<id>/list?store=<family>[&status&cursor&limit]` returns the same
+paged summaries as `task context list`.
 These reads do not start a runtime, fetch a remote, write business state, require
 a migration, or introduce a new persistent protocol.
 

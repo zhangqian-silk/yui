@@ -23,7 +23,7 @@ export const TOKEN_STYLES = `
   --sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-5:20px;--sp-6:24px;--sp-8:32px;
   --r-xs:5px;--r-sm:7px;--r-md:10px;--r-lg:14px;--r-pill:999px;
   --sidebar-w:clamp(260px,21vw,312px);--dock-w:440px;--dock-min:320px;--divider-w:9px;
-  --center-max:980px;--header-h:56px;
+  --center-max:880px;--header-h:56px;
   --t-fast:120ms;--t-med:220ms;--ease:cubic-bezier(.2,.8,.2,1);
 }
 :root,[data-theme="sumi"]{

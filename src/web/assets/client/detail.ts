@@ -8,11 +8,15 @@ import {
   badge, statusBadge, label, tone, card, disclosure, richText, bulletList, emptyState,
   note, button, chip, mono, inputCard, kv, dot, timeTag
 } from "/assets/js/components.js";
-import { entriesOf, valuesOf, recordCard } from "/assets/js/records.js";
-import { renderWork, renderExecution, renderHistory, renderDetails } from "/assets/js/sections.js";
+import { entriesOf, valuesOf, totalOf, recordCard, readExact } from "/assets/js/records.js";
+import { renderRuntime, renderRecords } from "/assets/js/sections.js";
+import { renderDelivery } from "/assets/js/evidence.js";
 
-export const TABS = ["overview", "work", "execution", "history", "details"];
-const TAB_ICONS = { overview: "target", work: "layers", execution: "pulse", history: "history", details: "dots" };
+// Overview: where it stands. Delivery: what it produced. Runtime: what is
+// live now. Records: what happened. Retired section names stay addressable.
+export const TABS = ["overview", "delivery", "runtime", "records"];
+export const TAB_ALIASES = { work: "delivery", execution: "runtime", history: "records", details: "records" };
+const TAB_ICONS = { overview: "target", delivery: "package", runtime: "pulse", records: "history" };
 const SESSION_GROUPS = ["active", "waiting", "background", "quiet", "diagnostic", "stopped", "unknown", "idle"];
 
 export function renderTaskDetail(container, data, t, locale, ctx) {
@@ -20,6 +24,7 @@ export function renderTaskDetail(container, data, t, locale, ctx) {
   const task = data.task;
   const core = data.core;
   container.dataset.taskId = task.id;
+  data.viewState.coreKey = core.coreCursor;
   const page = h("div.page.task-page");
 
   // --- Header ----------------------------------------------------------------
@@ -48,10 +53,12 @@ export function renderTaskDetail(container, data, t, locale, ctx) {
     (task.projectBindings || []).length ? h("span.meta-item", null, icon("layers", "icon-sm"),
       task.projectBindings.map(function (binding) { return binding.projectId; }).join(", ")) : null);
 
+  // Tab counts are current totals from the same bounded read, not samples:
+  // open questions, open work items and open execution records.
   const counts = {
-    work: entriesOf(core, "work-item").length,
-    execution: entriesOf(core, "run").length,
-    history: entriesOf(core, "task-decision").length + entriesOf(core, "task-milestone").length + entriesOf(core, "task-message").length
+    overview: core.attention.openInputs.count,
+    delivery: totalOf(core, "work-item"),
+    runtime: totalOf(core, "run")
   };
   const tabs = h("nav.tabs", { role: "tablist", "aria-label": t("tabs.label") }, TABS.map(function (tab, index) {
     return h("button.tab", {
@@ -63,7 +70,7 @@ export function renderTaskDetail(container, data, t, locale, ctx) {
       dataset: { tab: tab },
       onclick: function () { ctx.onTab(tab); }
     }, icon(TAB_ICONS[tab], "icon-sm"), h("span", null, t("tabs." + tab)),
-    counts[tab] ? h("span.count", null, String(counts[tab])) : null);
+    counts[tab] ? h("span.count" + (tab === "overview" ? ".tone-warn" : ""), null, String(counts[tab])) : null);
   }));
   tabs.addEventListener("keydown", function (event) {
     if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
@@ -87,29 +94,38 @@ export function renderTaskDetail(container, data, t, locale, ctx) {
     page.append(panels[tab]);
   });
   renderOverviewPanel(panels.overview, data, t, locale, ctx);
-  renderWork(panels.work, data, t, locale, ctx);
-  renderExecution(panels.execution, data, t, locale, ctx);
-  renderHistory(panels.history, data, t, locale, ctx);
-  renderDetails(panels.details, data, t, locale, ctx);
+  renderDelivery(panels.delivery, data, t, locale, ctx);
+  renderRuntime(panels.runtime, data, t, locale, ctx);
+  renderRecords(panels.records, data, t, locale, ctx);
   container.append(page);
   updateObservation(container, data, t, locale, ctx);
+  const active = panels[ctx.activeTab];
+  if (active && active.onShow) active.onShow();
 }
 
+// A panel may read on first show (evidence, record pages); it keeps those
+// reads in view state, so showing it again does not repeat them.
 export function selectTab(container, tab) {
   container.querySelectorAll(".tab").forEach(function (button) {
     const active = button.dataset.tab === tab;
     button.setAttribute("aria-selected", String(active));
     button.tabIndex = active ? 0 : -1;
   });
-  container.querySelectorAll(".tab-panel").forEach(function (panel) { panel.hidden = panel.id !== "panel-" + tab; });
+  container.querySelectorAll(".tab-panel").forEach(function (panel) {
+    panel.hidden = panel.id !== "panel-" + tab;
+    if (!panel.hidden && panel.onShow) panel.onShow();
+  });
 }
 
+// One reading column, top to bottom: where the Task stands now, what needs the
+// user, what it has reported, its goal and its current decisions.
 function renderOverviewPanel(panel, data, t, locale, ctx) {
   const task = data.task;
   const core = data.core;
-  // Now: the derived execution status (observation) plus the open questions.
+  // Now: the derived execution status (observation), the open questions and
+  // who acts next. drawNow() tints the banner with the status tone.
   const now = card({ className: "now-card" });
-  now.body.append(h("div", { dataset: { slot: "now" } }));
+  now.body.append(h("div", { dataset: { slot: "now" } }), h("p.next-line", { dataset: { slot: "next" } }));
   panel.append(now);
 
   // Needs you: open InputRequests with their answer controls.
@@ -129,15 +145,28 @@ function renderOverviewPanel(panel, data, t, locale, ctx) {
     panel.append(needs);
   }
 
-  // Independent column stacks, not paired rows: a long progress card must not
-  // push the next row down and leave a gap under the shorter Session card.
-  // Main column: what the Task is and where it stands. Rail: live and decided facts.
-  const sessions = card({ title: t("sessions.title"), icon: "terminal", hint: t("sessions.hint") });
-  sessions.body.append(h("div", { dataset: { slot: "sessions" } }));
-  panel.append(h("div.card-columns", null,
-    h("div.card-column", null, progressCard(data, t, locale, ctx), goalCard(data, t, ctx)),
-    h("div.card-column", null, sessions, decisionsCard(data, t, locale, ctx))));
+  const progress = progressCard(data, t, locale, ctx);
+  const goal = goalCard(data, t, ctx);
+  panel.append(progress);
   if (task.status === "draft") panel.append(planningCard(data, t, locale));
+  panel.append(goal, decisionsCard(data, t, locale, ctx));
+  // The Brief is the Overview's main source; when the bounded read withheld
+  // its value, read it exactly once per digest and redraw both cards.
+  const briefEntry = entriesOf(core, "task-brief")[0];
+  if (briefEntry && briefEntry.omitted) {
+    const view = data.viewState;
+    view.exact = view.exact || {};
+    readExact(briefEntry, task.id, ctx, view.exact).then(function (result) {
+      if (!progress.isConnected) return;
+      const exact = { ...data, briefValue: result.value };
+      progress.replaceWith(progressCard(exact, t, locale, ctx));
+      goal.replaceWith(goalCard(exact, t, ctx));
+    }, function () {});
+  }
+}
+
+function briefOf(data) {
+  return data.briefValue || valuesOf(data.core, "task-brief")[0];
 }
 
 function progressCard(data, t, locale, ctx) {
@@ -148,20 +177,19 @@ function progressCard(data, t, locale, ctx) {
   if (task.retirementSummary) element.body.append(richText(t("progress.retirement"), task.retirementSummary, t, { className: "callout" }));
   if (task.archiveSummary || task.archiveReason) element.body.append(richText(t("progress.archive"), [task.archiveSummary, task.archiveReason].filter(Boolean).join("\n\n"), t, { className: "callout" }));
   const briefEntry = entriesOf(data.core, "task-brief")[0];
-  const brief = valuesOf(data.core, "task-brief")[0];
+  const brief = briefOf(data);
   if (brief) {
     element.body.append(richText(t(working ? "progress.focus" : "progress.lastFocus"), brief.currentFocus, t));
     element.body.append(richText(t(working ? "progress.report" : "progress.lastReport"), brief.leaderSummary, t, { muted: true }));
     element.body.append(h("p.faint.small", null, t("progress.briefUpdated") + " " + formatDateTime(brief.updatedAt, locale)));
   } else if (briefEntry) element.body.append(recordCard(briefEntry, task.id, t, ctx, { compact: true }));
   else element.body.append(emptyState(t("progress.none")));
-  element.body.append(h("p.next-line", { dataset: { slot: "next" } }));
   return element;
 }
 
 function goalCard(data, t, ctx) {
   const task = data.task;
-  const brief = valuesOf(data.core, "task-brief")[0];
+  const brief = briefOf(data);
   const element = card({ title: t("goal.title"), icon: "target" });
   if (brief && brief.objective) element.body.append(richText(null, brief.objective, t));
   if (brief && brief.boundaries && brief.boundaries.length) {
@@ -184,7 +212,8 @@ function goalCard(data, t, ctx) {
 function decisionsCard(data, t, locale, ctx) {
   const entries = entriesOf(data.core, "task-decision");
   const active = entries.filter(function (entry) { return !entry.omitted && entry.value.status === "active"; });
-  const element = card({ title: t("decisions.title"), icon: "check", count: active.length || null, hint: t("decisions.hint") });
+  const total = totalOf(data.core, "task-decision");
+  const element = card({ id: "detail-decisions", title: t("decisions.title"), icon: "check", count: total || null, hint: t("decisions.hint") });
   active.slice(0, 3).forEach(function (entry) {
     const value = entry.value;
     element.body.append(h("article.decision", null,
@@ -192,9 +221,10 @@ function decisionsCard(data, t, locale, ctx) {
       value.rationale ? richText(null, value.rationale, t, { muted: true, threshold: 260 }) : null));
   });
   if (!active.length) element.body.append(emptyState(t("decisions.none")));
-  if (active.length > 3 || data.core.omitted.records || entries.some(function (entry) { return entry.omitted; })) {
-    element.body.append(button(t("decisions.more"), { variant: "link", icon: "chevron", onClick: function () { ctx.onTab("history"); } }));
-  }
+  element.body.append(button(t("decisions.more"), { variant: "link", icon: "chevron", onClick: function () {
+    data.viewState.recordsFilter = "decision";
+    ctx.onTab("records");
+  } }));
   return element;
 }
 
@@ -240,12 +270,7 @@ export function updateObservation(container, data, t, locale, ctx) {
     if (execution && !(execution.next.owner === "none" && execution.next.action === "none")) next.append(icon("flag", "icon-sm"), h("span", null, t("now.nextOwner") + " "),
       h("strong", null, label(t, "exec.owner", execution.next.owner)), h("span", null, " · " + label(t, "exec.action", execution.next.action)));
   }
-  const sessions = container.querySelector('[data-slot="sessions"]');
-  if (sessions && !sessions.contains(document.activeElement)) {
-    const open = sessions.querySelector("details") && sessions.querySelector("details").open;
-    drawSessions(sessions, available ? data.runtime.sessions : null, t, locale);
-    if (open && sessions.querySelector("details")) sessions.querySelector("details").open = true;
-  }
+  drawSessions(container, available ? data.runtime.sessions : null, t, locale);
   const raw = container.querySelector('[data-slot="runtime-raw"]');
   if (raw) raw.textContent = available ? JSON.stringify({ roles: data.runtime.roles, runtimeHealth: data.runtime.runtimeHealth }, null, 2) : "";
   const rawStatus = container.querySelector('[data-slot="runtime-status"]');
@@ -257,9 +282,16 @@ export function updateObservation(container, data, t, locale, ctx) {
   });
 }
 
+const BANNER_TONES = ["tone-info", "tone-ok", "tone-warn", "tone-bad", "tone-idle", "tone-accent"];
+
 function drawNow(slot, data, execution, t, locale) {
   clear(slot);
   const inputCount = data.core.attention.openInputs.count;
+  const banner = slot.closest(".now-card");
+  if (banner) {
+    banner.classList.remove.apply(banner.classList, BANNER_TONES);
+    banner.classList.add("tone-" + (execution ? tone("exec", execution.status) : data.runtimeStatus === "unavailable" ? "bad" : "idle"));
+  }
   if (!execution) {
     slot.append(h("div.now-head", null,
       badge(t("observation." + data.runtimeStatus), data.runtimeStatus === "unavailable" ? "bad" : "idle", { dot: true }),
@@ -300,34 +332,48 @@ function drawNow(slot, data, execution, t, locale) {
   else slot.append(h("p.now-note", null, inputCount ? t("now.inputs").replace("{count}", String(inputCount)) : t("now.clear")));
 }
 
-function drawSessions(slot, observation, t, locale) {
-  clear(slot);
-  if (!observation) { slot.append(emptyState(t("sessions.unavailable"))); return; }
-  const chips = SESSION_GROUPS.filter(function (group) { return observation.counts[group]; }).map(function (group) {
-    return badge(observation.counts[group] + " " + t("session." + group), tone("session", group), { dot: true });
+// Native Session observation, drawn into the Runtime tab: one line per Role,
+// the group counts beside the Roles heading, and the timestamps under
+// Diagnostics. Activity is never delivery progress.
+function drawSessions(container, observation, t, locale) {
+  const sessions = observation ? observation.sessions : [];
+  container.querySelectorAll("[data-role-session]").forEach(function (slot) {
+    clear(slot);
+    const session = sessions.find(function (item) { return item.roleName === slot.dataset.roleSession; });
+    if (!session) {
+      slot.append(h("span.faint.small", null, observation ? t("session.noneRecorded") : t("sessions.unavailable")));
+      return;
+    }
+    slot.append(h("div.role-session-head", null, dot(tone("session", session.group)),
+      h("strong", null, t("session." + session.group)),
+      h("span.faint.small", null, session.lastActivityAt ? relativeTime(session.lastActivityAt, locale, t) : t("sessions.unobserved"))));
+    if (session.reason) slot.append(h("p.small", null, session.reason));
+    if (session.waitingReason) slot.append(h("p.small", null, t("sessions.waitingFor") + " " + session.waitingReason));
   });
-  if (chips.length) slot.append(h("div.chip-row", null, chips));
-  if (!observation.sessions.length) { slot.append(note(t("sessions.none"))); return; }
-  slot.append(h("ul.session-list", null, observation.sessions.map(function (session) {
-    return h("li.session-row", null,
-      h("div.session-row-head", null, dot(tone("session", session.group)), h("strong", null, session.roleName),
-        h("span.faint", null, t("session." + session.group)), h("span.spacer"),
-        h("span.faint.small", null, session.lastActivityAt ? relativeTime(session.lastActivityAt, locale, t) : t("sessions.unobserved"))),
-      h("p.small", null, session.reason),
-      session.waitingReason ? h("p.small", null, t("sessions.waitingFor") + " " + session.waitingReason) : null);
-  })));
-  const facts = disclosure(t("sessions.facts"), "sessions");
-  observation.sessions.forEach(function (session) {
-    facts.body.append(kv([
-      [t("sessions.role"), session.roleName],
-      [t("sessions.lastActivity"), session.lastActivityAt ? formatDateTime(session.lastActivityAt, locale) : t("sessions.unobserved")],
-      [t("sessions.inputUpdated"), formatDateTime(session.sourceUpdatedAt, locale)],
-      [t("sessions.operations"), session.operations.length ? session.operations.join(", ") : null],
-      [t("sessions.background"), session.background.length ? session.background.map(function (item) { return item.id + " · " + item.execution; }).join(", ") : null],
-      [t("sessions.identity"), mono([session.nativeSessionId, session.nativeTurnId, session.attemptId].filter(Boolean).join(" / "))]
-    ]));
-  });
-  facts.body.append(h("p.faint.small", null, t("sessions.scope") + " " + formatDateTime(observation.readAt, locale)));
-  slot.append(facts);
+  const counts = container.querySelector('[data-slot="session-counts"]');
+  if (counts) {
+    clear(counts);
+    if (observation) SESSION_GROUPS.forEach(function (group) {
+      if (observation.counts[group]) counts.append(badge(observation.counts[group] + " " + t("session." + group), tone("session", group), { dot: true }));
+    });
+  }
+  const facts = container.querySelector('[data-slot="session-facts"]');
+  if (facts) {
+    clear(facts);
+    if (!observation) return;
+    facts.append(h("h4.sub-head", null, t("sessions.facts")));
+    if (!sessions.length) facts.append(note(t("sessions.none")));
+    sessions.forEach(function (session) {
+      facts.append(kv([
+        [t("sessions.role"), session.roleName],
+        [t("sessions.lastActivity"), session.lastActivityAt ? formatDateTime(session.lastActivityAt, locale) : t("sessions.unobserved")],
+        [t("sessions.inputUpdated"), formatDateTime(session.sourceUpdatedAt, locale)],
+        [t("sessions.operations"), session.operations.length ? session.operations.join(", ") : null],
+        [t("sessions.background"), session.background.length ? session.background.map(function (item) { return item.id + " · " + item.execution; }).join(", ") : null],
+        [t("sessions.identity"), mono([session.nativeSessionId, session.nativeTurnId, session.attemptId].filter(Boolean).join(" / "))]
+      ]));
+    });
+    facts.append(h("p.faint.small", null, t("sessions.scope") + " " + formatDateTime(observation.readAt, locale)));
+  }
 }
 `;

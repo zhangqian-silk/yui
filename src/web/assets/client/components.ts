@@ -40,7 +40,9 @@ const TONES = {
     stopped: "bad", idle: "idle", background: "warn" },
   role: { running: "ok", waiting: "warn", idle: "idle", unknown: "idle", failed: "bad", exited: "idle", detached: "idle" },
   decision: { active: "ok", superseded: "idle" },
-  input: { open: "warn", answered: "ok", cancelled: "idle", "auto-resolved": "ok" }
+  input: { open: "warn", answered: "ok", cancelled: "idle", "auto-resolved": "ok" },
+  integration: { running: "info", validating: "info", committed: "ok", conflicted: "warn", blocked: "bad",
+    failed: "bad", superseded: "idle" }
 };
 export function tone(kind, value) {
   return (TONES[kind] && TONES[kind][value]) || "idle";
@@ -82,22 +84,57 @@ export function timeTag(iso, locale, t, options) {
 }
 
 // --- Containers -------------------------------------------------------------------
+// One panel of the single reading column: a heading (icon tile, title, count
+// and hint) with optional actions, then the body. A "list-card" body holds a
+// .row-stack whose rows are divided by hairlines instead of nested boxes.
 export function card(options) {
   const opts = options || {};
   const element = h("section.card" + (opts.className ? "." + opts.className.split(" ").join(".") : ""));
   if (opts.id) element.id = opts.id;
   if (opts.title || opts.actions) {
-    const head = h("header.card-head", null,
-      h("h3.card-title", null, opts.icon ? icon(opts.icon) : null, h("span", null, opts.title),
+    const heading = h("div.card-heading", null,
+      h("h3.card-title", null, opts.icon ? h("span.card-icon", null, icon(opts.icon)) : null, h("span", null, opts.title),
         opts.count !== undefined && opts.count !== null ? h("span.count", null, String(opts.count)) : null),
-      opts.actions ? h("div.card-actions", null, opts.actions) : null);
-    if (opts.hint) head.append(h("p.card-hint", null, opts.hint));
-    element.append(head);
+      opts.hint ? h("p.card-hint", null, opts.hint) : null);
+    element.append(h("header.card-head", null, heading, opts.actions ? h("div.card-actions", null, opts.actions) : null));
   }
   const body = h("div.card-body");
   element.append(body);
   element.body = body;
   return element;
+}
+
+// A panel whose body is a divided list of rows.
+export function listCard(options) {
+  const element = card({ ...options, className: "list-card" + (options.className ? " " + options.className : "") });
+  element.list = h("div.row-stack");
+  element.body.append(element.list);
+  return element;
+}
+
+// Update a card heading count after a later read; null removes it.
+export function setCardCount(element, value) {
+  const title = element.querySelector(".card-title");
+  let count = title && title.querySelector(".count");
+  if (value === undefined || value === null) { if (count) count.remove(); return; }
+  if (!title) return;
+  if (!count) { count = h("span.count"); title.append(count); }
+  count.textContent = String(value);
+}
+
+// Local filter chips; selecting one redraws the list in place.
+export function filterChips(ariaLabel, options, selected, onSelect) {
+  const row = h("div.chip-tabs", { role: "group", "aria-label": ariaLabel });
+  options.forEach(function (option) {
+    row.append(h("button.chip-tab", {
+      type: "button", "aria-pressed": String(option.value === selected), dataset: { filter: option.value },
+      onclick: function () {
+        row.querySelectorAll(".chip-tab").forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.filter === option.value)); });
+        onSelect(option.value);
+      }
+    }, option.label, option.count === undefined || option.count === null ? null : h("span.count", null, String(option.count))));
+  });
+  return row;
 }
 
 export function disclosure(title, viewKey, options) {
@@ -111,12 +148,6 @@ export function disclosure(title, viewKey, options) {
   element.append(body);
   element.body = body;
   return element;
-}
-
-export function sectionTitle(text, count, actions) {
-  return h("div.section-title", null, h("h2", null, text,
-    count !== undefined && count !== null ? h("span.count", null, String(count)) : null),
-  actions ? h("div.section-actions", null, actions) : null);
 }
 
 export function kv(rows) {
@@ -207,9 +238,24 @@ export function metricTile(labelText, value, options) {
   return tile;
 }
 
+function pageLocale() { return typeof document === "undefined" ? undefined : document.documentElement.lang || undefined; }
+
+// Seconds as the largest whole unit plus the next one ("2d 22h", "2小时48分钟").
+const DURATION_UNITS = [["day", 86400], ["hour", 3600], ["minute", 60], ["second", 1]];
+function durationText(seconds) {
+  const total = Math.max(0, Math.round(seconds));
+  const found = DURATION_UNITS.findIndex(function (unit) { return total >= unit[1]; });
+  const first = found < 0 ? DURATION_UNITS.length - 1 : found;
+  return DURATION_UNITS.slice(first, first + 2).map(function (unit, index) {
+    const count = index ? Math.floor((total % DURATION_UNITS[first][1]) / unit[1]) : Math.floor(total / unit[1]);
+    return index && !count ? "" : new Intl.NumberFormat(pageLocale(), { style: "unit", unit: unit[0], unitDisplay: "narrow" }).format(count);
+  }).filter(Boolean).join(" ");
+}
+
 export function usageMetricText(metric, t, suffix) {
   if (!metric || metric.value == null) return t("detail.unobserved");
-  return metric.value + (suffix || "") + (metric.status === "partial" ? " · " + t("detail.partial") : "");
+  const value = suffix === "s" ? durationText(metric.value) : metric.value + (suffix || "");
+  return value + (metric.status === "partial" ? " · " + t("detail.partial") : "");
 }
 
 function usageTile(labelText, metric, t, suffix) {
@@ -238,7 +284,7 @@ export function observabilityMetricCard(observability, t) {
   const meta = node("p", "usage-meta");
   meta.append(node("span", "", t("usage.scope")));
   meta.append(node("span", "", t("usage.observedThrough") + " "
-    + (cost.observedThrough ? formatDateTime(cost.observedThrough) : t("detail.unobserved"))));
+    + (cost.observedThrough ? formatDateTime(cost.observedThrough, pageLocale()) : t("detail.unobserved"))));
   meta.append(node("span", "", t("usage.contextBytes") + " "
     + (context.totalBytes == null ? t("detail.partial") : context.totalBytes + " B")));
   wrap.append(meta);
@@ -301,30 +347,35 @@ export function workItemCard(item, t, locale, titles) {
   const settled = item.status !== "open";
   const element = h(settled ? "details.work-card.is-settled" : "article.work-card");
   element.dataset.viewKey = "work:" + item.id;
-  const head = h(settled ? "summary.work-head" : "header.work-head", null,
+  element.append(h(settled ? "summary.work-head" : "header.work-head", null,
     settled ? icon("chevron", "disclosure-chevron") : null,
     dot(tone("work", item.status)),
     h("span.work-title", null, item.title),
-    statusBadge(t, "work", "work", item.status));
-  element.append(head);
-  const body = h("div.work-body");
-  body.append(h("div.meta-line", null,
+    statusBadge(t, "work", "work", item.status)));
+  element.append(h("div.work-body", null, workItemBody(item, t, locale, titles)));
+  return element;
+}
+
+// The body of one work item, shared by the open card and a lazily read row.
+export function workItemBody(item, t, locale, titles) {
+  const parts = [];
+  parts.push(h("div.meta-line", null,
     item.assignee ? h("span.meta-strong", null, icon("user", "icon-sm"), item.assignee) : null,
     mono(item.id), timeTag(item.updatedAt, locale, t)));
-  if (item.objective && item.objective !== item.title) body.append(richText(t("work.objective"), item.objective, t));
+  if (item.objective && item.objective !== item.title) parts.push(richText(t("work.objective"), item.objective, t));
   if (item.acceptance && item.acceptance.length) {
-    body.append(h("div.prose-block", null, h("h4.prose-label", null, t("work.acceptance")),
+    parts.push(h("div.prose-block", null, h("h4.prose-label", null, t("work.acceptance")),
       h("ul.checklist", null, item.acceptance.map(function (entry) {
         return h("li" + (item.status === "accepted" ? ".is-done" : ""), null, icon(item.status === "accepted" ? "check" : "target", "icon-sm"), h("span", null, entry));
       }))));
   }
   const deps = (item.dependsOn || []).map(function (id) { return (titles && titles[id]) || id; });
-  if (deps.length) body.append(h("div.meta-line", null, h("span.meta-label", null, t("work.dependsOn")), deps.map(function (d) { return chip(d); })));
+  if (deps.length) parts.push(h("div.meta-line", null, h("span.meta-label", null, t("work.dependsOn")), deps.map(function (d) { return chip(d); })));
   if (item.writeProjectIds && item.writeProjectIds.length) {
-    body.append(h("div.meta-line", null, h("span.meta-label", null, t("work.writeProjects")), item.writeProjectIds.map(function (d) { return chip(d); })));
+    parts.push(h("div.meta-line", null, h("span.meta-label", null, t("work.writeProjects")), item.writeProjectIds.map(function (d) { return chip(d); })));
   }
   if (item.candidates && item.candidates.length) {
-    body.append(h("div.prose-block", null, h("h4.prose-label", null, t("work.candidates")),
+    parts.push(h("div.prose-block", null, h("h4.prose-label", null, t("work.candidates")),
       h("ol.candidates", null, item.candidates.slice().sort(function (a, b) { return b.sequence - a.sequence; }).map(function (candidate) {
         return h("li", null, h("span.candidate-seq", null, "#" + candidate.sequence), h("span", null, candidate.summary),
           h("span.faint", null, candidate.source && candidate.source.type === "run" ? candidate.source.runId : t("work.direct")),
@@ -332,18 +383,16 @@ export function workItemCard(item, t, locale, titles) {
       }))));
   }
   if (item.disposition) {
-    body.append(note(t("work.disposition") + ": " + item.disposition.summary
+    parts.push(note(t("work.disposition") + ": " + item.disposition.summary
       + (item.disposition.replacementWorkItemId ? " → " + item.disposition.replacementWorkItemId : "")));
   }
-  if (item.outcome) body.append(richText(t("work.outcome"), item.outcome, t, { className: "callout" }));
-  element.append(body);
-  return element;
+  if (item.outcome) parts.push(richText(t("work.outcome"), item.outcome, t, { className: "callout" }));
+  return parts.filter(Boolean);
 }
 
 export function runCard(run, t, locale) {
   const element = h("article.run-card");
   element.dataset.status = run.status;
-  const input = run.inputs && run.inputs.length ? run.inputs[0].input : null;
   element.append(h("header.run-head", null,
     dot(tone("run", run.status)),
     h("span.run-role", null, run.roleName),
@@ -351,20 +400,27 @@ export function runCard(run, t, locale) {
     run.purpose ? chip(label(t, "run.purpose", run.purpose)) : null,
     run.workItemId ? chip(run.workItemId) : null,
     h("span.spacer"),
-    statusBadge(t, "run", "run", run.status)));
-  element.append(h("div.meta-line", null,
+    statusBadge(t, "run", "run", run.status)), runBody(run, t, locale));
+  return element;
+}
+
+// What one execution record says: delivery, instruction, report, failure.
+export function runBody(run, t, locale) {
+  const parts = [];
+  const input = run.inputs && run.inputs.length ? run.inputs[0].input : null;
+  parts.push(h("div.meta-line", null,
     h("span", null, t("run.delivery") + ": " + label(t, "run.delivery", (run.execution && run.execution.delivery) || "unobserved")),
     run.mode ? h("span", null, label(t, "mode", run.mode)) : null,
     timeTag((run.result && run.result.completedAt) || run.updatedAt, locale, t),
     agentChips(run.effective || (run.agentId ? run : null))));
   const directive = input && (input.directive || input.action);
-  if (directive) element.append(richText(t("run.instruction"), directive, t, { threshold: 320 }));
-  if (run.result && run.result.output) element.append(richText(t("run.output"), run.result.output, t, { threshold: 320, className: "callout" }));
-  if (run.result && run.result.diagnostic) element.append(richText(t("run.failure"), run.result.diagnostic, t, { threshold: 320, className: "callout.tone-bad" }));
+  if (directive) parts.push(richText(t("run.instruction"), directive, t, { threshold: 320 }));
+  if (run.result && run.result.output) parts.push(richText(t("run.output"), run.result.output, t, { threshold: 320, className: "callout" }));
+  if (run.result && run.result.diagnostic) parts.push(richText(t("run.failure"), run.result.diagnostic, t, { threshold: 320, className: "callout.tone-bad" }));
   if (run.executionGroupId) {
-    element.append(h("p.faint.mono-line", null, t("run.lineage") + " " + run.executionGroupId + (run.executionLaneId ? "/" + run.executionLaneId : "")));
+    parts.push(h("p.faint.mono-line", null, t("run.lineage") + " " + run.executionGroupId + (run.executionLaneId ? "/" + run.executionLaneId : "")));
   }
-  return element;
+  return parts.filter(Boolean);
 }
 
 export function reviewCard(round, t, locale) {
@@ -378,6 +434,9 @@ export function reviewCard(round, t, locale) {
     statusBadge(t, "review", "review", round.status)));
   element.append(h("div.meta-line", null,
     round.workItemId ? mono(round.workItemId + (round.candidateId ? " · " + round.candidateId : "")) : null,
+    round.taskCandidate && round.taskCandidate.projects ? round.taskCandidate.projects.map(function (project) {
+      return mono(project.projectId + " @ " + String(project.commit).slice(0, 12));
+    }) : null,
     round.reviewBaseCommit ? h("span", null, t("review.base") + " ", mono(String(round.reviewBaseCommit).slice(0, 12))) : null,
     round.reviewerRunId ? h("span", null, t("review.run") + " ", mono(round.reviewerRunId)) : null,
     timeTag(round.createdAt, locale, t)));

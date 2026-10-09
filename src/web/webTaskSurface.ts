@@ -5,7 +5,7 @@ import { applyTaskInputControl, sendTaskMessageCommand, updateTaskMetadataComman
 import { type TaskCommandExecution, type TaskCommandOptions } from "../commands/taskCommandTypes.js";
 import { runTaskInputCommand } from "../commands/taskInputCommands.js";
 import {
-  inspectTaskContext,
+  inspectTaskContext, listTaskContext,
   readTaskContext, readTaskContextDelta,
   withContextObservations,
   type ContextObservationProvider
@@ -299,6 +299,14 @@ export function createWebTaskSurface(
       readTaskContextDelta(store, taskId, input, environment),
     inspect: (taskId: string, input: { store: string; refId: string; digest?: string; cursor?: string }) =>
       inspectTaskContext(store, taskId, input, environment),
+    // The same paged family discovery as `task context list`: summaries and
+    // exact references, never bodies; continuations keep their filters.
+    list: (taskId: string, input: { store: string; status?: string; cursor?: string; limit?: number }) =>
+      listTaskContext(store, taskId, input.store, {
+        ...(input.status === undefined ? {} : { status: input.status }),
+        ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+        ...(input.limit === undefined ? {} : { limit: input.limit })
+      }, environment),
     update: (taskId: string, input: unknown) => {
       const descriptor = BUILTIN_CAPABILITIES.find((entry) => entry.name === "task.update")!;
       const error = capabilitySchemaError(descriptor.inputSchema, { taskId, patch: input });

@@ -84,6 +84,14 @@ export const api = {
       result = await requestJson(task(taskId) + "/inspect?" + query);
     }
   },
+  // One page of a Context family: summaries and exact references, no bodies.
+  list: function (taskId, store, options) {
+    const query = new URLSearchParams({ store: store });
+    ["status", "cursor", "limit"].forEach(function (key) {
+      if (options && options[key] !== undefined && options[key] !== null) query.set(key, String(options[key]));
+    });
+    return requestJson(task(taskId) + "/list?" + query);
+  },
   artifacts: function (taskId) { return requestJson(task(taskId) + "/artifacts"); },
   artifact: function (taskId, path, commit) {
     return requestJson(task(taskId) + "/artifacts?" + new URLSearchParams({ path, commit }));

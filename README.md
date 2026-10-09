@@ -162,8 +162,10 @@ The task list remains at the left, task details occupy the primary reading area,
 and recorded Task messages live in a secondary discussion pane. You can resize,
 swap or hide that pane; on narrow screens it opens over the detail. Native Sessions
 remain separate from recorded Task messages.
-The detail prioritizes user input, native Session activity, Task progress and key
-conclusions; fixed file results and delivery evidence open on demand. See
+The detail has four tabs: Overview (user input, progress and key Decisions),
+Delivery (WorkItems, Reviews, Integration and remote delivery, read on demand),
+Runtime (Roles, native Session activity, open execution and usage) and Records
+(a timeline of Decisions, milestones, executions and questions). See
 [attention and progress](docs/observability/README.md#web-attention-and-progress).
 See [Web permissions](docs/architecture/capabilities-and-resources.md#cli-and-web)
 and [input timing](docs/managed-turn-and-session-runtime.md#input-timing-queue-steer-and-interrupt).
