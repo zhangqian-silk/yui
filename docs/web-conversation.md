@@ -47,3 +47,32 @@ Ordinary CLI Role-addressed inputs preserve their existing semantics. A selected
 Session changing before admission retains the original input with nondelivery
 evidence instead of sending it to its successor. Upgrade uses the normal
 centralized 1.2→1.3 transition; no global Home is modified by development.
+
+## Text materials and fixed results
+
+The Task Leader conversation accepts UTF-8 text, Markdown and supported code
+files up to 256 KiB. Upload saves a file in the existing Task Artifact Git
+repository; it does **not** send a message or execute work. Sending explicitly
+adds verified same-Task `taskId / commit / relativePath / sha256` references to
+the durable Message, alongside its existing selected-Session fence. Material
+contents are untrusted data, never additional instructions or authorization.
+The original Session is recorded in the artifact commit. Later Sessions can
+read the same references through existing Task context and artifact commands.
+This uses existing records and storage 1.3, without a new attachment schema.
+
+Delivery → Saved files lists 40 entries per page at one pinned commit. Select a
+file or enter a relative path and full commit to open historical evidence.
+Text and same-path two-commit diffs load at most 12,000 characters per page,
+without splitting a Unicode surrogate pair. Markdown previews use the existing
+escaped renderer; HTML and code remain text, not executable previews.
+Reference copy, page-text copy and explicit full-text download preserve the
+selected version. **Discuss these versions** fills the current Leader's draft
+with the exact file (or both diff references); it does not send automatically.
+
+The Web boundary rejects unsupported types, invalid UTF-8, control bytes,
+oversize uploads, escaping paths, missing revisions and cross-Task material
+references. Existing Artifact limits still bound reads (8 MiB per file); diff
+generation has a 20 MiB output cap and five-second budget and fails explicitly
+when exceeded. Unknown upload outcomes show the exact material path to inspect
+in Saved files before any retry. Reading files, diffs or receipts never starts
+an Agent or replays input.

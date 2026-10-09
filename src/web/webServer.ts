@@ -252,7 +252,7 @@ async function handleHttpRequest(
     return;
   }
   const artifactTarget = /^\/api\/tasks\/([^/]+)\/(artifacts|evidence)$/.exec(pathname);
-  if (pathname === "/api/conversation" && dependencies.conversation) {
+  if ((pathname === "/api/conversation" || pathname === "/api/conversation/material") && dependencies.conversation) {
     try {
       const q = new URL(request.url!, "http://localhost").searchParams;
       if ([...q.keys()].some(k => !["scope", "task", "role", "session", "cursor", "offset", "requestId"].includes(k))) {
@@ -264,7 +264,20 @@ async function handleHttpRequest(
         : q.get("scope") === "global" && !q.has("task") ? { scope: "global", roleName }
           : (() => { throw new WebRequestRejected("Invalid conversation scope."); })();
       let result: unknown;
-      if (method === "GET" && q.has("requestId")) {
+      if (pathname.endsWith("/material")) {
+        if (method !== "POST") throw new WebRequestRejected("Material upload requires POST.");
+        const body = await readMutationBody(request, 2 * 1024 * 1024);
+        if (!body || typeof body !== "object" || Array.isArray(body)
+          || Object.keys(body).some(k => !["requestId", "name", "content"].includes(k))) {
+          throw new WebRequestRejected("Expected material requestId, name and UTF-8 content only.");
+        }
+        const value = body as Record<string, unknown>;
+        if (typeof value.requestId !== "string" || typeof value.name !== "string" || typeof value.content !== "string") {
+          throw new WebRequestRejected("Invalid material fields.");
+        }
+        result = await dependencies.conversation.material(owner, safeIdentity(q.get("session"), "Session"),
+          value as { requestId: string; name: string; content: string });
+      } else if (method === "GET" && q.has("requestId")) {
         result = dependencies.conversation.receipt(owner, safeIdentity(q.get("requestId"), "Request"));
       } else if (method === "GET" && q.has("session")) {
         const cursor = q.get("cursor");
@@ -277,14 +290,15 @@ async function handleHttpRequest(
       } else if (method === "POST") {
         const body = await readMutationBody(request);
         if (!body || typeof body !== "object" || Array.isArray(body)
-          || Object.keys(body).some(k => !["action", "requestId", "body", "expectedTarget"].includes(k))) {
+          || Object.keys(body).some(k => !["action", "requestId", "body", "expectedTarget", "materials"].includes(k))) {
           throw new WebRequestRejected("Invalid conversation input.");
         }
         const value = body as Record<string, unknown>;
         if (!["queue", "steer", "interrupt"].includes(String(value.action))
           || typeof value.requestId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(value.requestId)
           || value.body !== undefined && typeof value.body !== "string"
-          || value.expectedTarget !== undefined && typeof value.expectedTarget !== "string") {
+          || value.expectedTarget !== undefined && typeof value.expectedTarget !== "string"
+          || value.materials !== undefined && (!Array.isArray(value.materials) || value.materials.length > 8)) {
           throw new WebRequestRejected("Expected action, requestId, input and exact Turn.");
         }
         result = await dependencies.conversation.control(owner, safeIdentity(q.get("session"), "Session"),
@@ -312,14 +326,19 @@ async function handleHttpRequest(
         sendJson(response, 200, dependencies.surface.evidence(taskId), false);
         return;
       }
-      if ([...query.keys()].some(key => !["path", "commit"].includes(key))) {
-        throw new WebRequestRejected("Artifact read accepts only path and commit.");
+      if ([...query.keys()].some(key => !["path", "commit", "before", "offset"].includes(key) || query.getAll(key).length !== 1)) {
+        throw new WebRequestRejected("Artifact read accepts path, fixed commits and offset only.");
       }
       const path = query.get("path");
       const commit = query.get("commit");
-      if ((path === null) !== (commit === null)) throw new WebRequestRejected("Select path and fixed commit together.");
-      const result = path === null ? await dependencies.surface.artifacts(taskId)
-        : await dependencies.surface.artifact(taskId, path, commit!);
+      const before = query.get("before");
+      const offset = query.get("offset") ?? "0";
+      if (!/^\d{1,9}$/u.test(offset)) throw new WebRequestRejected("Invalid artifact offset.");
+      if (path !== null && commit === null || before !== null && path === null
+        || Number(offset) > 0 && commit === null) throw new WebRequestRejected("Select a fixed commit for this read.");
+      const result = path === null ? await dependencies.surface.artifacts(taskId, commit ?? undefined, Number(offset))
+        : before === null ? await dependencies.surface.artifact(taskId, path, commit!, Number(offset))
+        : await dependencies.surface.artifactDiff(taskId, path, commit!, before, Number(offset));
       sendJson(response, 200, result, false);
     } catch (error) {
       sendJson(response, 409, { error: error instanceof Error ? error.message : "Artifact unavailable." }, false);
@@ -835,8 +854,8 @@ function parseWebInputAnswer(value: unknown): WebInputAnswer {
   throw new Error("Exactly one non-empty choiceKey or text is required.");
 }
 
-async function readMutationBody(request: IncomingMessage): Promise<unknown> {
-  try { return await readJsonBody(request); }
+async function readMutationBody(request: IncomingMessage, limit = MAX_JSON_BODY_BYTES): Promise<unknown> {
+  try { return await readJsonBody(request, limit); }
   catch (error) { throw new WebRequestRejected(error instanceof Error ? error.message : "Invalid request body."); }
 }
 
@@ -852,13 +871,13 @@ function webSubmissionIntent(body: Record<string, unknown>): TaskSubmissionInten
   throw new WebRequestRejected(`intent must be one of ${TASK_SUBMISSION_INTENTS.join(", ")}.`);
 }
 
-async function readJsonBody(request: IncomingMessage): Promise<unknown> {
+async function readJsonBody(request: IncomingMessage, limit = MAX_JSON_BODY_BYTES): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += buffer.length;
-    if (size > MAX_JSON_BODY_BYTES) throw new Error("Request body is too large.");
+    if (size > limit) throw new Error("Request body is too large.");
     chunks.push(buffer);
   }
   if (size === 0) throw new Error("Request body is required.");

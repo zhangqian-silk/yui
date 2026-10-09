@@ -40,11 +40,11 @@ export function createWorkspace(deps) {
     setDockOpen: function (open) { setDockOpen(ws, open); },
     toggleDock: function (mode) { toggleDock(ws, mode); },
     openSession: function (target) { openSession(ws, target); },
-    openConversation: function (target) {
+    openConversation: function (target, materials) {
       showDock(ws, true);
       ws.dock.mode = "conversation";
       updateLayout(ws);
-      ws.deps.conversation.open(target, { current: true });
+      ws.deps.conversation.open(target, { current: true, materials: materials });
       syncDockButtons(ws);
     },
     openOperator: function () { openOperator(ws); },

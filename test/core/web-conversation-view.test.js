@@ -6,7 +6,7 @@ import { SELECTION_SCRIPT } from "../../dist/web/assets/client/app/selection.js"
 
 // Exercise the shipped controller with disposable DOM/network boundaries.
 function fixture(submitResult = { state: "submitted" }) {
-  const elements = [], storage = new Map(), calls = [];
+  const elements = [], storage = new Map(), calls = [], writes = [];
   let interval, delayedRead, delayedReceipt, currentSessionId = "thread";
   const h = (spec, attrs, ...children) => {
     const node = { spec, ...attrs, children: children.filter(Boolean), handlers: {}, value: "", scrollTop: 0,
@@ -39,11 +39,11 @@ function fixture(submitResult = { state: "submitted" }) {
         status: "active", adapterId: "codex" }], authority: { owner: "controller" },
         turn: { status: "accepted", nativeTurnId: "turn" }, total: 1, nextOffset: null };
     },
-    submitMutation: async () => submitResult
+    submitMutation: async (...args) => { writes.push(args); return submitResult; }
   });
   vm.runInContext(CONVERSATION_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
   const controller = context.createConversationController(host, k => k);
-  return { controller, calls, storage, host,
+  return { controller, calls, storage, host, writes,
     button: key => elements.find(n => n.spec.startsWith("button") && n.children.includes("conversation." + key)),
     get input() { return elements.find(n => n.spec.startsWith("textarea")); },
     get selector() { return elements.find(n => n.spec === "select"); },
@@ -56,6 +56,30 @@ function fixture(submitResult = { state: "submitted" }) {
   };
 }
 const flush = () => new Promise(resolve => setImmediate(resolve));
+
+test("version feedback fills a draft without sending, persists exact refs, and never crosses owners", async () => {
+  const f = fixture();
+  const owner = { scope: "task", taskId: "task-1", roleName: "leader" };
+  const ref = { taskId: "task-1", relativePath: "notes.md", commit: "a".repeat(40), digest: "b".repeat(64) };
+  f.controller.open(owner, { current: true, materials: [ref] });
+  await flush();
+  assert.equal(f.writes.length, 0);
+  const materialKey = [...f.storage.keys()].find(k => k.endsWith(".materials"));
+  assert.deepEqual(JSON.parse(f.storage.get(materialKey)), [ref]);
+  f.input.value = "Revise this version";
+  f.button("send").handlers.click();
+  await flush();
+  assert.deepEqual(JSON.parse(JSON.stringify(f.writes[0][2].materials)), [ref]);
+  assert.equal(JSON.parse(f.storage.get(materialKey)).length, 0);
+  f.delayRead();
+  f.controller.open(owner, { current: true, materials: [ref] });
+  f.controller.open({ scope: "task", taskId: "task-2", roleName: "leader" });
+  f.finishRead();
+  await flush();
+  assert.ok(![...f.storage.entries()].some(([key, value]) => key.includes("task-2") && value.includes(ref.commit)));
+  assert.equal(f.writes.length, 1, "owner transitions never send a material");
+  f.controller.close();
+});
 
 test("workbench continuation resolves the current Leader afresh without replaying historical input", async () => {
   const f = fixture();

@@ -8,6 +8,8 @@ import type { WebTaskSurface } from "./webTaskSurface.js";
 import { WebRequestRejected } from "./webMutation.js";
 import { findTaskInterrupt, taskInterruptReceipt } from "../message/taskInterrupt.js";
 import type { AgentHostSnapshot } from "../runtime/agentHost.js";
+import type { GitArtifactRef } from "../artifacts/gitArtifactRef.js";
+import { materialInputBody, saveTextMaterial, type TextMaterialInput } from "./webMaterials.js";
 
 export type ConversationItem = Readonly<{
   id: string; turnId: string; kind: "user" | "assistant" | "activity";
@@ -121,6 +123,20 @@ export function createWebConversationSurface(
     if (!session) throw new WebRequestRejected("Session does not belong to this Role.");
     return { set: set!, session };
   };
+  const writable = (owner: RoleSessionOwner, id: string) => {
+    const chosen = select(owner, id);
+    const { set, session } = chosen;
+    if (set.sessions[set.activeAgentId] !== session || session.status !== "active") {
+      throw new WebRequestRejected("Historical Session is read-only. Select the current Session.");
+    }
+    if (session.adapterId !== "codex" || set.providerBinding === null) {
+      throw new WebRequestRejected("Structured input requires an existing controlled Codex Session.");
+    }
+    if (owner.scope === "task" && owner.roleName !== "leader") {
+      throw new WebRequestRejected("This entry supports Task Leader input; other Roles retain their assignment controls.");
+    }
+    return chosen;
+  };
   // Native queue input is a reference-only notification, not the user's body.
   // Join only selected-Session inputs named by that exact native notification,
   // with confirmed delivery. Keep native text and label the linked source.
@@ -158,6 +174,15 @@ export function createWebConversationSurface(
     return { items: linked, linkedInputsOmitted: omitted };
   };
   return {
+    async material(owner: RoleSessionOwner, id: string, input: TextMaterialInput) {
+      writable(owner, id);
+      if (owner.scope !== "task") throw new WebRequestRejected("Text materials require a Task.");
+      const task = store.getTask(owner.taskId)!;
+      if (["completed", "cancelled", "retired", "archived"].includes(task.status)) {
+        throw new WebRequestRejected("Terminal Task materials are read-only.");
+      }
+      return saveTextMaterial(store.rootDirectory(), owner.taskId, id, input);
+    },
     state(owner: RoleSessionOwner, offset = 0) {
       const set = sessions(owner);
       const all = conversationSessions(set);
@@ -206,23 +231,24 @@ export function createWebConversationSurface(
     },
     async control(owner: RoleSessionOwner, id: string, input: {
       action: "queue" | "steer" | "interrupt"; requestId: string; body?: string; expectedTarget?: string;
+      materials?: readonly GitArtifactRef[];
     }) {
-      const { set, session } = select(owner, id);
-      if (set.sessions[set.activeAgentId] !== session || session.status !== "active") {
-        throw new WebRequestRejected("Historical Session is read-only. Select the current Session.");
-      }
-      if (session.adapterId !== "codex" || set.providerBinding === null) {
-        throw new WebRequestRejected("Structured input requires an existing controlled Codex Session.");
-      }
-      if (owner.scope === "task" && owner.roleName !== "leader") {
-        throw new WebRequestRejected("This entry supports Task Leader input; other Roles retain their assignment controls.");
+      writable(owner, id);
+      let body = input.body;
+      if (input.materials !== undefined) {
+        if (owner.scope !== "task" || input.action === "interrupt") throw new WebRequestRejected("Materials require Task text input.");
+        try { body = await materialInputBody(store.rootDirectory(), owner.taskId, required(body), input.materials); }
+        catch (error) { throw new WebRequestRejected(error instanceof Error ? error.message : "Invalid material."); }
+        // Reading blobs is asynchronous: fence again before entering the shared
+        // atomic input primitive (which also checks expectedSessionId).
+        writable(owner, id);
       }
       const common = { requestId: input.requestId, expectedSessionId: id };
       const control = input.action === "interrupt"
         ? { ...common, action: "interrupt" as const, role: owner.roleName, expectedTarget: required(input.expectedTarget) }
         : input.action === "steer"
-          ? { ...common, action: "steer" as const, to: owner.roleName, expectedTarget: required(input.expectedTarget), body: required(input.body) }
-          : { ...common, action: "queue" as const, body: required(input.body) };
+          ? { ...common, action: "steer" as const, to: owner.roleName, expectedTarget: required(input.expectedTarget), body: required(body) }
+          : { ...common, action: "queue" as const, body: required(body) };
       return owner.scope === "task" ? surface.control(owner.taskId, control) : surface.globalControl(owner.roleName, control);
     },
     receipt(owner: RoleSessionOwner, requestId: string) {

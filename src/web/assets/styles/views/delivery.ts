@@ -22,4 +22,8 @@ export const DELIVERY_STYLES = `
 .viewer-head{display:flex;align-items:center;gap:8px;font-size:var(--fs-sm)}
 .viewer-ref code{white-space:normal;overflow-wrap:anywhere}
 .artifact-text{max-height:480px;color:var(--ink)}
+.record-actions{flex-wrap:wrap}
+.record-actions input{min-width:0;max-width:100%;flex:1 1 180px}
+.composer-wrap .row-stack{overflow-wrap:anywhere;max-height:180px;overflow:auto}
+.composer-wrap input[type=file]{max-width:100%}
 `;

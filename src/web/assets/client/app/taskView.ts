@@ -146,8 +146,8 @@ function detailContext(view) {
     onTab: view.controller.switchTab,
     onBack: deps.clearSelection,
     showDock: deps.workspace.toggleDock,
-    openConversation: function () {
-      deps.workspace.openConversation({ scope: "task", taskId: deps.state.selected, roleName: "leader" });
+    openConversation: function (materials) {
+      deps.workspace.openConversation({ scope: "task", taskId: deps.state.selected, roleName: "leader" }, materials);
     },
     openSession: function (roleName) { deps.workspace.openSession({ scope: "task", taskId: deps.state.selected, roleName: roleName }); },
     answerInput: function (input, answer, control) { return answerInput(deps, input, answer, control); },
