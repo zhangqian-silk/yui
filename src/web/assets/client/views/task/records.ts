@@ -6,7 +6,10 @@ export const TASK_RECORDS_SCRIPT = String.raw`
 import { h, clear } from "/assets/js/lib/dom.js";
 import { formatDateTime } from "/assets/js/lib/format.js";
 import { button, chip, emptyState, externalLink, jsonBlock, kv, mono, note, safeUrl } from "/assets/js/ui/primitives.js";
-import { card, cardDisclosure, disclosure } from "/assets/js/ui/containers.js";
+import { card, cardDisclosure, disclosure, loadedNote, moreButton } from "/assets/js/ui/containers.js";
+import { richText } from "/assets/js/ui/text.js";
+import { exactCache, familyState, loadFamily, summaryFields, totalOf } from "/assets/js/domain/context.js";
+import { lazyRow } from "/assets/js/domain/records.js";
 import { label, statusBadge } from "/assets/js/domain/vocab.js";
 import { titleForm } from "/assets/js/domain/taskForms.js";
 import { historyCard } from "/assets/js/views/task/timeline.js";
@@ -14,7 +17,58 @@ import { historyCard } from "/assets/js/views/task/timeline.js";
 export function renderRecords(panel, data, t, locale, ctx) {
   panel.append(historyCard(panel, data, t, locale, ctx));
   panel.append(factsCard(data.task, t, locale, ctx));
+  panel.append(knowledgeCard(data, t, ctx));
   panel.append(advancedCard(data.core, data.task, t, locale, ctx));
+}
+
+// Current, bound-project Knowledge only. Read summaries in pages and fetch an
+// exact full version (including source and prior versions) on first row open.
+function knowledgeCard(data, t, ctx) {
+  const view = data.viewState;
+  exactCache(view);
+  view.openRows = view.openRows || {};
+  const element = cardDisclosure("detail-knowledge", t("knowledge.title"), "info",
+    String(totalOf(data.core, "project-knowledge")));
+  function draw() {
+    clear(element.body);
+    element.body.append(note(t("knowledge.help")));
+    const state = familyState(view, "project-knowledge");
+    if (state.error) {
+      element.body.append(note(state.error, "bad"));
+      const retry = button(t("panels.read"), { variant: "ghost" });
+      retry.addEventListener("click", function () { load(false); });
+      element.body.append(retry);
+    }
+    if (!state.items.length) element.body.append(note(t(state.pending ? "record.reading" : "records.none")));
+    state.items.forEach(function (item) {
+      const fields = summaryFields(item.summary);
+      element.body.append(lazyRow(item, data.task.id, t, ctx, {
+        cache: view.exact, openRows: view.openRows,
+        head: [h("span.lazy-title", null, fields.title || item.ref.refId), mono(item.ref.refId)],
+        render: function (value) {
+          return h("div.stack", null, kv([
+            [t("knowledge.version"), String(value.version)],
+            [t("details.status"), value.status],
+            [t("knowledge.scope"), value.scope || t("knowledge.unspecified")],
+            [t("knowledge.expires"), value.expiresWhen || t("knowledge.unspecified")],
+            [t("knowledge.source"), value.provenance ? value.provenance.taskId + (value.provenance.proposalId ? " / " + value.provenance.proposalId : "") : t("knowledge.direct")]
+          ]), richText(null, value.body, t), note(t("knowledge.history")));
+        }
+      }));
+    });
+    if (state.pages) element.body.append(loadedNote(t, state.items.length, state.total));
+    if (state.nextCursor) element.body.append(moreButton(t, function () { load(true); }));
+  }
+  function load(more) {
+    const promise = loadFamily(view, data.task.id, "project-knowledge", data.core.coreCursor, ctx, { more: more, limit: 40 });
+    draw();
+    promise.then(draw);
+  }
+  element.addEventListener("toggle", function () {
+    if (element.open) load(false);
+  });
+  draw();
+  return element;
 }
 
 // --- Task information --------------------------------------------------------

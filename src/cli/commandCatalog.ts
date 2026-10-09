@@ -1616,13 +1616,14 @@ export const ROOT_COMMAND = buildNode({
             {
               name: "list", discovery: { surface: "public", audiences: ["public","operator","leader"] },
               summary: "List Project knowledge.",
-              usage: "yui project knowledge list <project> [--all]",
-              options: ["--all"]
+              usage: "yui project knowledge list <project> [--all] [--limit <1..100>] [--cursor <cursor>]",
+              options: ["--all", "--limit", "--cursor"]
             },
             {
               name: "show", discovery: { surface: "public", audiences: ["public","operator","leader"] },
               summary: "Read one Project knowledge entry.",
-              usage: "yui project knowledge show <project> <knowledge>"
+              usage: "yui project knowledge show <project> <knowledge> [--cursor <cursor>]",
+              options: ["--cursor"]
             },
             {
               name: "propose", discovery: { surface: "public", audiences: ["public","operator","leader"] },
@@ -1640,13 +1641,14 @@ export const ROOT_COMMAND = buildNode({
                 {
                   name: "list", discovery: { surface: "public", audiences: ["public","operator","leader"] },
                   summary: "List Knowledge promotion proposals (pending by default).",
-                  usage: "yui project knowledge proposals list <project> [--status pending|accepted|rejected] [--all]",
-                  options: ["--status", "--all"]
+                  usage: "yui project knowledge proposals list <project> [--status pending|accepted|rejected] [--all] [--limit <1..100>] [--cursor <cursor>]",
+                  options: ["--status", "--all", "--limit", "--cursor"]
                 },
                 {
                   name: "show", discovery: { surface: "public", audiences: ["public","operator","leader"] },
                   summary: "Show one Knowledge promotion proposal.",
-                  usage: "yui project knowledge proposals show <project> <proposal>"
+                  usage: "yui project knowledge proposals show <project> <proposal> [--cursor <cursor>]",
+                  options: ["--cursor"]
                 }
               ]
             },

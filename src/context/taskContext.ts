@@ -606,7 +606,8 @@ function freeze<T>(value: T): T {
 }
 function summarize(value: unknown): string {
   const record = value as Record<string, unknown>;
-  return ["title", "objective", "question", "summary", "body", "status", "type"]
-    .flatMap((key) => typeof record[key] === "string" ? [`${key}: ${record[key]}`] : [])
+  return ["title", "scope", "expiresWhen", "version", "objective", "question", "summary", "body", "status", "type"]
+    .flatMap((key) => typeof record[key] === "string" || (key === "version" && typeof record[key] === "number")
+      ? [`${key}: ${record[key]}`] : [])
     .join("; ").slice(0, 400);
 }

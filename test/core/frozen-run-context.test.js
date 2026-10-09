@@ -24,7 +24,7 @@ import { createTaskMessage } from "../../dist/message/message.js";
 import { createRoleSessionSet, recordRoleAgentSession } from "../../dist/executor/agentExecutor.js";
 import { createTaskEvent } from "../../dist/event/taskEvent.js";
 import { prepareMessageContinuations } from "../../dist/message/messageContinuation.js";
-import { createProject } from "../../dist/repository/project.js";
+import { addProjectKnowledge, createProject, retireProjectKnowledge } from "../../dist/repository/project.js";
 import { createIntegrationAttempt } from "../../dist/integration/integrationAttempt.js";
 
 test("managed dispatch freezes explicit materials and candidate reports; continuation preserves their exact evidence", t => {
@@ -33,8 +33,12 @@ test("managed dispatch freezes explicit materials and candidate reports; continu
   t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
   const now = new Date("2026-09-17T00:00:00Z");
   const later = new Date(now.getTime() + 1000);
-  store.saveProject(createProject("project-1", "Fixture", join(home, "project"),
-    { stable: "main", development: "main" }, now));
+  let project = addProjectKnowledge(createProject("project-1", "Fixture", join(home, "project"),
+    { stable: "main", development: "main" }, now), "knowledge-1", "Applicable rule", "Original rule",
+    now, undefined, { scope: "Review and implementation", expiresWhen: "After explicit replacement" });
+  project = retireProjectKnowledge(addProjectKnowledge(project, "knowledge-2", "Old rule", "Retired",
+    now), "knowledge-2", now);
+  store.saveProject(project);
   const task = activateTask(createTask("task-1", "Reliable handoff", now, {
     cwd: home, projectBindings: [{ projectId: "project-1", directory: "project",
       baseRef: "main", baseCommit: "b".repeat(40), currentCommit: "b".repeat(40) }]
@@ -74,6 +78,15 @@ test("managed dispatch freezes explicit materials and candidate reports; continu
   }
   command(["work", "dispatch", `${task.id}/work-item-1`, "--context-ref", selector]);
   const worker = store.getActiveRun(task.id, "worker");
+  const knowledgePointer = buildRunContextPack(store, task.id, worker.id).pointers
+    .find(ref => ref.store === "project-knowledge");
+  assert.match(knowledgePointer.summary, /Review and implementation/);
+  assert.equal(expandRunContextRef(store, task.id, worker.id, "project-1:knowledge-1", "project-knowledge").value.version, 1);
+  assert.equal(buildRunContextPack(store, task.id, worker.id).pointers
+    .some(ref => ref.refId === "project-1:knowledge-2"), false);
+  store.saveProject(retireProjectKnowledge(project, "knowledge-1", later));
+  assert.equal(expandRunContextRef(store, task.id, worker.id, "project-1:knowledge-1", "project-knowledge").value.status,
+    "active", "retirement changes future selection, not an existing Run's frozen evidence");
   assert.equal(expandRunContextRef(store, task.id, worker.id, message.id, "task-message").value.body,
     message.body);
   store.updateMessage(task.id, { ...message, body: "Later revision must not leak" });

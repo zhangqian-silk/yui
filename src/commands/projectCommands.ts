@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import { CliError, usageError } from "../errors/cliError.js";
 import { defaultTableWidth, renderTable } from "../output/table.js";
+import { boundedDocument, readOptions, recordPage } from "../output/boundedRead.js";
 import {
   healCheckoutSwap,
   restoreCheckoutSwap,
@@ -147,16 +148,11 @@ export async function runProjectCommand(
   }
   if (command === "knowledge") {
     const result = projectKnowledge(rest, store, options);
-    const project = resolveProject(store.listProjects(), result.projectId);
-    if (project === null) return { output: result.output };
-    if (result.knowledgeId !== undefined) {
-      const knowledge = project.knowledge.find(({ id }) => id === result.knowledgeId);
-      return { output: result.output, data: { project, knowledge } };
-    }
-    const knowledge = result.all
-      ? project.knowledge
-      : project.knowledge.filter(({ status }) => status === "active");
-    return { output: result.output, data: { project, knowledge } };
+    return { output: result.output, data: result.data ?? {
+      projectId: result.projectId,
+      ...(result.knowledgeId === undefined ? {} : { knowledgeId: result.knowledgeId }),
+      ...(result.proposalId === undefined ? {} : { proposalId: result.proposalId })
+    } };
   }
   throw usageError(command === undefined
     ? "Project command is required."
@@ -1418,12 +1414,7 @@ function projectKnowledge(
   args: readonly string[],
   store: ProjectCommandStore,
   options: ProjectCommandOptions
-): Readonly<{
-  output: string;
-  projectId: string;
-  knowledgeId?: string;
-  all?: boolean;
-}> {
+): ProjectKnowledgeCommandResult {
   const [command, ...rest] = args;
   if (command === "add") {
     const usage = "Project knowledge add usage: yui project knowledge add <project> <title> --body <text>.";
@@ -1451,19 +1442,22 @@ function projectKnowledge(
   }
   if (command === "list") {
     const all = rest.includes("--all");
-    const positionals = rest.filter((value) => value !== "--all");
-    if (positionals.length !== 1 || rest.some((value) => value.startsWith("--") && value !== "--all")) {
-      throw usageError("Project knowledge list usage: yui project knowledge list <project> [--all].");
+    const parsed = readOptions(rest.filter((value) => value !== "--all"));
+    if (parsed.positionals.length !== 1) {
+      throw usageError("Project knowledge list usage: yui project knowledge list <project> [--all] [--limit <1..100>] [--cursor <cursor>].");
     }
-    const project = requireProject(store, positionals[0]!);
-    const entries = all
-      ? project.knowledge
-      : project.knowledge.filter(({ status }) => status === "active");
+    const project = requireProject(store, parsed.positionals[0]!);
+    const page = recordPage(project.knowledge.filter(({ status }) => all || status === "active").map(entry => ({
+      id: entry.id, title: entry.title.slice(0, 200), version: entry.version, status: entry.status,
+      scope: entry.scope?.slice(0, 200), expiresWhen: entry.expiresWhen?.slice(0, 200),
+      updatedAt: entry.updatedAt
+    })), `project:${project.id}/knowledge/${all ? "all" : "active"}`, parsed);
+    const entries = page.items;
     if (entries.length === 0) {
       return {
         output: "No project knowledge found.\n",
         projectId: project.id,
-        all
+        data: { projectId: project.id, ...page }
       };
     }
     return {
@@ -1476,24 +1470,31 @@ function projectKnowledge(
       ],
       entries.map((entry) => [entry.id, entry.title, entry.status]),
       defaultTableWidth()
-      )}\n`,
+      )}\n${page.nextCursor === null ? "" : `Next cursor: ${page.nextCursor}\n`}`,
       projectId: project.id,
-      all
+      data: { projectId: project.id, ...page }
     };
   }
   if (command === "show") {
-    if (rest.length !== 2) {
-      throw usageError("Project knowledge show usage: yui project knowledge show <project> <knowledge>.");
+    const parsed = readOptions(rest, ["--cursor"]);
+    if (parsed.positionals.length !== 2) {
+      throw usageError("Project knowledge show usage: yui project knowledge show <project> <knowledge> [--cursor <cursor>].");
     }
-    const project = requireProject(store, rest[0]!);
-    const entry = project.knowledge.find(({ id }) => id === rest[1]);
-    if (entry === undefined) throw usageError(`Project knowledge not found: ${rest[1]}.`);
+    const project = requireProject(store, parsed.positionals[0]!);
+    const entry = project.knowledge.find(({ id }) => id === parsed.positionals[1]);
+    if (entry === undefined) throw usageError(`Project knowledge not found: ${parsed.positionals[1]}.`);
+    const data = boundedDocument({ projectId: project.id, knowledge: entry },
+      `project:${project.id}/knowledge/${entry.id}`, parsed.cursor);
+    if ("contentPage" in data) return { output: `${JSON.stringify(data)}\n`, projectId: project.id, data };
     return {
       output: [
         `Knowledge: ${entry.id}`,
         `Project: ${project.id}`,
         `Title: ${entry.title}`,
         `Status: ${entry.status}`,
+        `Version: ${entry.version}`,
+        ...(entry.scope === undefined ? [] : [`Scope: ${entry.scope}`]),
+        ...(entry.expiresWhen === undefined ? [] : [`Expires when: ${entry.expiresWhen}`]),
         ...(entry.provenance === undefined ? [] : [
           `Source: ${entry.provenance.taskId}`
             + `${entry.provenance.decisionId === undefined ? "" : `/${entry.provenance.decisionId}`}`
@@ -1510,10 +1511,14 @@ function projectKnowledge(
             : [`Promoted by: ${entry.provenance.promotedBy} at ${entry.provenance.promotedAt ?? "?"}`])
         ]),
         "",
-        entry.body
+        entry.body,
+        ...(entry.history.length === 0 ? [] : [
+          "", "Prior versions (exact records):", JSON.stringify(entry.history, null, 2)
+        ])
       ].join("\n").concat("\n"),
       projectId: project.id,
-      knowledgeId: entry.id
+      knowledgeId: entry.id,
+      data
     };
   }
   if (command === "update") {
@@ -1686,7 +1691,7 @@ function parseKnowledgeProposalOptions(
  * Leader-proposed promotion candidate. The proposal is workflow state, not
  * Knowledge: it never appears in `project knowledge list/show` until an
  * Operator accepts it. A managed Task Session may propose only for its own
- * Task. The same candidate (source identity + title + body) is deduplicated to
+ * Task. The same candidate (source, content, applicability and replacement intent) is deduplicated to
  * the existing pending proposal instead of creating a second copy.
  */
 function proposeKnowledge(
@@ -1719,7 +1724,10 @@ function proposeKnowledge(
       projectId: project.id,
       source,
       title: parsed.title,
-      body: parsed.body
+      body: parsed.body,
+      ...(parsed.scope === undefined ? {} : { scope: parsed.scope }),
+      ...(parsed.expiresWhen === undefined ? {} : { expiresWhen: parsed.expiresWhen }),
+      ...(parsed.supersedes === undefined ? {} : { supersedesKnowledgeId: parsed.supersedes })
     });
     const pending = findKnowledgeProposalByFingerprint(project, fingerprint, "pending");
     if (pending !== null) {
@@ -1741,7 +1749,7 @@ function proposeKnowledge(
       };
     }
     const proposal: KnowledgeProposal = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       id: nextProposalId(project),
       projectId: project.id,
       title: parsed.title,
@@ -1824,42 +1832,28 @@ function listKnowledgeProposals(
   store: ProjectCommandStore
 ): ProjectKnowledgeCommandResult {
   const usage = "Project knowledge proposals list usage: yui project knowledge proposals list <project>"
-    + " [--status pending|accepted|rejected] [--all].";
-  const positionals: string[] = [];
-  let status: "pending" | "accepted" | "rejected" | undefined = "pending";
-  let sawAll = false;
-  let sawStatus = false;
-  for (let index = 0; index < args.length; index += 1) {
-    const value = args[index]!;
-    if (value === "--all") {
-      if (sawStatus) throw usageError(`--all and --status are mutually exclusive. ${usage}`);
-      sawAll = true;
-      status = undefined;
-    } else if (value === "--status") {
-      if (sawAll) throw usageError(`--all and --status are mutually exclusive. ${usage}`);
-      sawStatus = true;
-      const next = args[index + 1];
-      if (next === undefined || next.startsWith("--")) throw usageError(usage);
-      if (next !== "pending" && next !== "accepted" && next !== "rejected") throw usageError(usage);
-      status = next;
-      index += 1;
-    } else if (value.startsWith("--")) {
-      throw usageError(`Unknown option: ${value}. ${usage}`);
-    } else {
-      positionals.push(value);
-    }
-  }
-  if (positionals.length !== 1) throw usageError(usage);
-  const project = requireProject(store, positionals[0]!);
-  const entries = project.knowledgeProposals
+    + " [--status pending|accepted|rejected] [--all] [--limit <1..100>] [--cursor <cursor>].";
+  const parsed = readOptions(args.filter(value => value !== "--all"), ["--cursor", "--limit", "--status"]);
+  const all = args.includes("--all");
+  if (all && parsed.values.has("--status")) throw usageError(`--all and --status are mutually exclusive. ${usage}`);
+  const status = all ? undefined : parsed.values.get("--status") ?? "pending";
+  if (parsed.positionals.length !== 1
+    || (status !== undefined && !["pending", "accepted", "rejected"].includes(status))) throw usageError(usage);
+  const project = requireProject(store, parsed.positionals[0]!);
+  const page = recordPage(project.knowledgeProposals
     .filter((entry) => status === undefined || entry.status === status)
     .slice()
-    .sort((a, b) => a.id.localeCompare(b.id));
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map(entry => ({ id: entry.id, title: entry.title.slice(0, 200), status: entry.status,
+      source: entry.source, knowledgeId: entry.knowledgeId,
+      scope: entry.scope?.slice(0, 200), expiresWhen: entry.expiresWhen?.slice(0, 200) })),
+    `project:${project.id}/knowledge-proposals/${status ?? "all"}`, parsed);
+  const entries = page.items;
   if (entries.length === 0) {
     return {
       output: "No knowledge proposals found.\n",
       projectId: project.id,
-      proposals: []
+      data: { projectId: project.id, ...page }
     };
   }
   return {
@@ -1882,9 +1876,9 @@ function listKnowledgeProposals(
         entry.knowledgeId ?? "-"
       ]),
       defaultTableWidth()
-    )}\n`,
+    )}\n${page.nextCursor === null ? "" : `Next cursor: ${page.nextCursor}\n`}`,
     projectId: project.id,
-    proposals: entries
+    data: { projectId: project.id, ...page }
   };
 }
 
@@ -1892,13 +1886,17 @@ function showKnowledgeProposal(
   args: readonly string[],
   store: ProjectCommandStore
 ): ProjectKnowledgeCommandResult {
-  const usage = "Project knowledge proposals show usage: yui project knowledge proposals show <project> <proposal>.";
-  if (args.length !== 2) throw usageError(usage);
-  const project = requireProject(store, args[0]!);
-  const proposal = findKnowledgeProposal(project, args[1]!);
+  const usage = "Project knowledge proposals show usage: yui project knowledge proposals show <project> <proposal> [--cursor <cursor>].";
+  const parsed = readOptions(args, ["--cursor"]);
+  if (parsed.positionals.length !== 2) throw usageError(usage);
+  const project = requireProject(store, parsed.positionals[0]!);
+  const proposal = findKnowledgeProposal(project, parsed.positionals[1]!);
   if (proposal === null) {
-    throw usageError(`Knowledge proposal not found: ${args[1]!}.`);
+    throw usageError(`Knowledge proposal not found: ${parsed.positionals[1]!}.`);
   }
+  const data = boundedDocument({ projectId: project.id, proposal },
+    `project:${project.id}/knowledge-proposals/${proposal.id}`, parsed.cursor);
+  if ("contentPage" in data) return { output: `${JSON.stringify(data)}\n`, projectId: project.id, data };
   const lines = [
     `Proposal: ${proposal.id}`,
     `Project: ${project.id}`,
@@ -1925,7 +1923,7 @@ function showKnowledgeProposal(
     output: `${lines.join("\n")}\n`,
     projectId: project.id,
     proposalId: proposal.id,
-    proposals: [proposal]
+    data
   };
 }
 
@@ -1955,6 +1953,10 @@ function acceptKnowledgeProposal(
     if (proposal === null) {
       throw usageError(`Knowledge proposal not found: ${parsed.proposal}.`);
     }
+    if (proposal.status === "accepted"
+      && (parsed.update === undefined || parsed.update === proposal.knowledgeId)) {
+      return { projectId: project.id, proposalId: proposal.id, knowledgeId: proposal.knowledgeId!, duplicate: true };
+    }
     if (proposal.status !== "pending") {
       throw usageError(`Knowledge proposal is already ${proposal.status}: ${proposal.id}.`);
     }
@@ -1976,7 +1978,9 @@ function acceptKnowledgeProposal(
         || previousProposal.status !== "accepted"
         || previousProposal.knowledgeId !== target.id
         || previousProposal.title !== target.title
-        || previousProposal.body !== target.body) {
+        || previousProposal.body !== target.body
+        || previousProposal.scope !== target.scope
+        || previousProposal.expiresWhen !== target.expiresWhen) {
         throw usageError(
           `Knowledge ${target.id} has no complete proposal-backed version history. `
           + "Create the replacement proposal with --supersedes instead of --update."
@@ -1985,13 +1989,15 @@ function acceptKnowledgeProposal(
       knowledgeId = target.id;
       next = updateProjectKnowledge(next, knowledgeId, {
         title: proposal.title,
-        body: proposal.body
-      }, now);
-      next = withKnowledgeProvenance(next, knowledgeId, {
-        ...provenanceFromProposal(proposal),
-        proposalId: proposal.id,
-        promotedBy: decidedBy,
-        promotedAt: now.toISOString()
+        body: proposal.body,
+        scope: proposal.scope ?? null,
+        expiresWhen: proposal.expiresWhen ?? null,
+        provenance: {
+          ...provenanceFromProposal(proposal),
+          proposalId: proposal.id,
+          promotedBy: decidedBy,
+          promotedAt: now.toISOString()
+        }
       }, now);
     } else {
       const plan = planKnowledgeAcceptance(next, proposal);
@@ -2014,7 +2020,8 @@ function acceptKnowledgeProposal(
             proposalId: proposal.id,
             promotedBy: decidedBy,
             promotedAt: now.toISOString()
-          }
+          },
+          proposal
         );
       }
     }
@@ -2082,22 +2089,6 @@ function provenanceFromProposal(proposal: KnowledgeProposal): ProjectKnowledgePr
   };
 }
 
-/** Replace a Knowledge entry's provenance (used by accept --update). */
-function withKnowledgeProvenance(
-  project: Project,
-  knowledgeId: string,
-  provenance: ProjectKnowledgeProvenance,
-  now: Date
-): Project {
-  const timestamp = now.toISOString();
-  const knowledge = project.knowledge.map((entry) => (
-    entry.id === knowledgeId
-      ? { ...entry, provenance, updatedAt: timestamp }
-      : entry
-  ));
-  return validateProject({ ...project, knowledge, updatedAt: timestamp });
-}
-
 function parseAcceptArguments(
   args: readonly string[],
   usage: string
@@ -2127,7 +2118,7 @@ type ProjectKnowledgeCommandResult = Readonly<{
   projectId: string;
   proposalId?: string;
   knowledgeId?: string;
-  proposals?: readonly KnowledgeProposal[];
+  data?: unknown;
 }>;
 
 function parseAddArguments(

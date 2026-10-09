@@ -25,6 +25,34 @@ and semantic progress.
 
 ## Query and page contract
 
+### Project knowledge
+
+Current Task and Run Context select active knowledge only from the bound
+projects. `scope` and `expiresWhen` are free text: the Agent reads the original
+and decides whether it applies to the actual task. Engineering does not infer
+semantic expiry or execute knowledge content. Explicit Operator retirement
+removes an entry from future current Context; frozen Run evidence is unchanged.
+Context pointers expose applicability and version, with complete source and
+prior versions available through the exact detail read.
+
+`project knowledge list` and `project knowledge proposals list` return compact
+`items/total/complete/nextCursor` pages (`--limit`, `--cursor`); `--all` includes
+retired knowledge or decided proposals respectively. `show` returns the exact
+knowledge/proposal, or `contentPage` for a long record: continue with its cursor
+and concatenate `text` in offset order before parsing. Mutation receipts contain
+identities, not the entire Project. Web’s Task Records → Project knowledge uses
+the same paged discovery and exact source reader.
+
+Proposal identity includes project, source Task/Decision/Milestone/commit,
+title, body, scope, expiry condition and superseded knowledge ID. Only outer
+whitespace is trimmed; internal whitespace, case and Unicode remain significant.
+An omitted condition differs from a supplied one; omit a condition in a
+replacement proposal to clear it upon `accept --update`. A repeated identical
+proposal reuses its existing pending/accepted identity. Changed applicability
+still requires the existing Operator approval, including explicit `--update`
+for a same-title replacement. Each effective update or retirement increments
+the formal version and preserves its exact prior content and provenance.
+
 ```sh
 yui task list --project project-1 --status active --limit 20 --json
 yui task list --attention openInputs --json
