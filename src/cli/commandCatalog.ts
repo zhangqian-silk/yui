@@ -489,6 +489,7 @@ const taskChildren: readonly NodeInput[] = [
     options: ["--task", "--kind", "--limit", "--cursor"]
   },
   { name: "show", discovery: { surface: "public", audiences: ["public","operator","leader","assignment"] }, summary: "Show Task metadata and counts; long details use contentPage.", usage: "yui task show <id> [--cursor <cursor>]", options: ["--cursor"] },
+  { name: "usage", discovery: { surface: "public", audiences: ["public","operator","leader"] }, summary: "Read bounded Task usage and sourced costs; request detail pages explicitly.", usage: "yui task usage <task> [--limit <0..50>] [--offset <n>]", options: ["--limit", "--offset"] },
   {
     name: "artifact", discovery: { surface: "managed", audiences: ["operator","leader"] },
     summary: "Save Task files in local Git and read current or commit-pinned content.",
@@ -1690,7 +1691,7 @@ export const ROOT_COMMAND = buildNode({
       sections: [
         { id: "lifecycle", title: "Lifecycle", entries: ["create", "project", "base", "update", "activate", "activation", "execution", "complete", "cancel", "reopen", "retire", "list", "show", "context", "next-action", "remote-delivery", "archive-preflight", "archive", "archive-cleanup", "replace", "reconcile", "upstream", "artifact"] },
         { id: "collaboration", title: "Collaboration", entries: ["message", "input", "grant", "workflow", "publication", "work", "run", "review", "integration", "role", "overlap", "change-set"] },
-        { id: "knowledge", title: "Task Knowledge", entries: ["search", "brief", "decision", "milestone", "event", "continuation", "wake"] }
+        { id: "knowledge", title: "Task Knowledge", entries: ["search", "brief", "decision", "milestone", "event", "continuation", "wake", "usage"] }
       ],
       children: taskChildren
     },

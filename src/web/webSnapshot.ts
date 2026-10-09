@@ -50,6 +50,7 @@ export function buildWebPageSessions(store: WebDashboardStore, options: TaskCata
 
 export type WebDashboardStore = Pick<TaskStore,
   | "transaction"
+  | "readTransaction"
   | "getTask"
   | "getTaskBrief"
   | "getRun"

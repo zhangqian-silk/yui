@@ -199,6 +199,7 @@ export type TaskStore = {
   queryContextRecords(taskId: string, query: ContextRecordQuery): ContextRecordPage;
   latestEventSequence(taskId: string): number;
   listEventsByType(taskId: string, types: readonly string[]): TaskEvent[];
+  readTaskUsageFacts(taskId: string): import("../runtime/taskUsageQuery.js").TaskUsageFacts;
   listTaskRunWorkspaceBases(taskId: string): Pick<AgentRun, "id" | "createdAt" | "workspace">[];
   contextInputReferences(taskId: string, scope: ContextInputScope): { messages: string[]; events: string[] };
   listActiveRuns(taskId: string): AgentRun[];

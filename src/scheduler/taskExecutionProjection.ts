@@ -148,6 +148,7 @@ export type TaskExecutionReadStore = Pick<TaskStore,
   | "listInputRequests" | "listReviewRounds" | "listChangeSets" | "listIntegrationAttempts"
   | "listEvents" | "getWorkMailbox" | "getPendingWakeup" | "getLeaderFailure"
   | "getRoleSession" | "getTaskRoleSessionSet" | "getConfig" | "listContextSnapshots"
+  | "readTaskUsageFacts"
 >;
 
 type TaskExecutionTask = Readonly<Pick<
@@ -168,6 +169,7 @@ export type TaskExecutionFacts = Readonly<{
   runs: readonly AgentRun[];
   /** Lifetime usage includes obsolete runs; scheduling still uses current runs. */
   usageRuns?: readonly AgentRun[];
+  usageFacts?: import("../runtime/taskUsageQuery.js").TaskUsageFacts;
   runDelivery?: Readonly<Record<string, ProviderTurnStatus | "unobserved">>;
   workItems?: readonly WorkItem[];
   inputRequests?: readonly InputRequest[];
@@ -227,6 +229,7 @@ export function buildTaskExecutionProjection(
   });
   return projectTaskExecution({
     task,
+    usageFacts: store.readTaskUsageFacts(taskId),
     roles,
     runs,
     usageRuns,
@@ -321,6 +324,7 @@ export function projectTaskExecution(
     workItems,
     executionGroups: observabilityGroups,
     runs: facts.usageRuns ?? runs,
+    usageFacts: facts.usageFacts,
     events,
     contextSnapshots: facts.contextSnapshots,
     sessionTokens,

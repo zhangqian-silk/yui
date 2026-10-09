@@ -11,6 +11,7 @@ import WebSocket, { WebSocketServer } from "ws";
 import { CliError, usageError } from "../errors/cliError.js";
 import { parseTaskCatalogOptions } from "../context/taskCatalog.js";
 import { parseTaskSearchOptions, searchTaskBodies } from "../context/taskSearch.js";
+import { readTaskUsage } from "../runtime/taskUsageQuery.js";
 import type { WebTaskSurface, WebControlInput } from "./webTaskSurface.js";
 import { WebRequestRejected } from "./webMutation.js";
 import type { createWebConversationSurface } from "./webConversation.js";
@@ -515,6 +516,16 @@ async function handleHttpRequest(
           ? buildWebPageSessions(store, options, now())
           : buildWebTaskCatalog(store, options);
         sendJson(response, 200, snapshot, method === "HEAD");
+      } else if (/^\/api\/tasks\/[^/]+\/usage$/u.test(pathname)) {
+        const taskId = decodeURIComponent(pathname.split("/")[3]!);
+        const query = new URL(request.url!, "http://localhost").searchParams;
+        const offset = Number(query.get("offset") ?? 0), limit = Number(query.get("limit") ?? 0);
+        if ([...query.keys()].some(key => key !== "offset" && key !== "limit")
+          || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 0 || limit > 50) {
+          throw usageError("Usage requires offset >= 0 and limit 0..50.");
+        }
+        const value = store.readTransaction(reader => readTaskUsage(reader, taskId, { offset, limit, now: now() }));
+        sendJson(response, value === null ? 404 : 200, value ?? { error: "Task not found." }, method === "HEAD");
       } else if (pathname.startsWith("/api/tasks/")) {
         const taskId = decodeURIComponent(pathname.slice("/api/tasks/".length));
         const detail = taskId.length === 0 || taskId.includes("/")

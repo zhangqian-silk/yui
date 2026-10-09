@@ -14,13 +14,17 @@ import { createRole, createRoleAgentBinding } from "../../dist/role/role.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
 import { createRoleSessionSet, recordRoleAgentSession, updateRoleAgentSessionStatus } from "../../dist/executor/agentExecutor.js";
 import { createCapabilityGrant } from "../../dist/grant/capabilityGrant.js";
+import { readTaskUsage } from "../../dist/runtime/taskUsageQuery.js";
+import { addProjectKnowledge, createProject } from "../../dist/repository/project.js";
+import { createTaskMessage } from "../../dist/message/message.js";
+import { contextContentDigest, createContextSnapshot } from "../../dist/context/contextSnapshot.js";
 
-test("fresh storage creates only the current 1.5 contract", () => {
-  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.5");
+test("fresh storage creates only the current 1.6 contract", () => {
+  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.6");
   const db = new Database(":memory:");
   try {
     schema.initializeSqliteSchema(db);
-    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.5");
+    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.6");
     assert.equal(db.prepare("SELECT count(*) AS n FROM storage_schema").get().n, 1);
     assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='schema_migrations'").get(), undefined);
     for (const name of ["coordination_locks", "work_item_candidates", "idx_input_open"]) {
@@ -64,7 +68,16 @@ test("1.1 upgrade preserves valid Operator authority without inventing user prov
   old.close();
   assert.equal((await runStorageUpgrade({ home, mode: "execute" })).outcome, "upgraded");
   const current = new SqliteTaskStore(home);
-  try { assert.deepEqual(current.getCapabilityGrant("task-1", grant.id), grant); }
+  try {
+    assert.deepEqual(current.getCapabilityGrant("task-1", grant.id), grant);
+    assert.equal(readTaskUsage(current, "task-1").costs.actual.status, "unknown");
+    assert.equal(readTaskUsage(current, "task-1").costs.estimated.status, "unknown");
+    assert.deepEqual(schema.storageMinorUpgradePlan("1.2").map(step => [step.fromVersion, step.toVersion, step.name]),
+      [["1.2", "1.3", "selected-session-input"],
+        ["1.3", "1.4", "project-knowledge-applicability"],
+        ["1.4", "1.5", "frozen-skill-packages"],
+        ["1.5", "1.6", "runtime-cost-evidence"]]);
+  }
   finally { current.close(); }
 });
 
@@ -80,7 +93,7 @@ test("default storage upgrades advance only the minor version of the same major"
   }
 });
 
-for (const minor of [0, 1, 2, 3, 4]) test(`1.${minor} package migration preserves legacy Session bytes and never invents complete-package evidence`, async t => {
+for (const minor of [0, 1, 2, 3, 4, 5]) test(`1.${minor} migration preserves Session evidence and leaves absent costs unknown`, async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-skill-upgrade-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const at = new Date("2026-09-01T00:00:00Z");
@@ -89,24 +102,46 @@ for (const minor of [0, 1, 2, 3, 4]) test(`1.${minor} package migration preserve
   const role = createRole("task-1", "leader",
     [createRoleAgentBinding({ id: "codex", adapterId: "codex" })], "codex", home, at);
   store.saveRole("task-1", role);
+  const effective = resolveEffectiveLaunch({ ...(minor === 5 ? { store } : {}), role, purpose: "execution" });
   const sessions = recordRoleAgentSession(createRoleSessionSet({
     scope: "task", taskId: "task-1", roleName: "leader"
   }, "codex", at), { agentId: "codex", adapterId: "codex", nativeSessionId: "old",
-    policy: "fixed", status: "active", effective: resolveEffectiveLaunch({ role, purpose: "execution" }) }, at);
+    policy: "fixed", status: "active", effective }, at);
   store.saveTaskRoleSessionSet(sessions);
+  if (minor >= 4) {
+    const project = addProjectKnowledge(createProject("project-1", "Historical knowledge", join(home, "project"),
+      { stable: "main", development: "main" }, at), "knowledge-1", "Rule", "Retain evidence", at);
+    store.saveProject(project);
+    store.saveMessage("task-1", createTaskMessage("message-1", "task-1", "Selected Session input", "user",
+      { type: "user" }, at, { inputControl: { action: "queue", requestId: "historical-input",
+        expectedSessionId: "session-exact" } }));
+    const value = project.knowledge[0];
+    const ref = { layer: "L2", store: "project-knowledge", refId: "project-1:knowledge-1",
+      revision: at.toISOString(), digest: contextContentDigest(value) };
+    store.saveContextSnapshot(createContextSnapshot({
+      id: "snapshot-1", taskId: "task-1", scope: "task", sequence: 1,
+      refs: [ref], resources: [{ ref, value }], acceptRefs: [], frozenAt: at, frozenBy: "leader"
+    }));
+  }
   store.close();
   const db = new Database(join(home, "yui.db"));
   const before = db.prepare("SELECT payload FROM role_session_sets").get().payload;
+  const retained = minor >= 4 ? ["projects", "messages", "context_snapshots"].map(table =>
+    [table, db.prepare(`SELECT * FROM ${table}`).all()]) : [];
   db.prepare("UPDATE storage_schema SET minor=?").run(minor);
   db.close();
   assert.equal((await runStorageUpgrade({ home, mode: "execute" })).outcome, "upgraded");
   const check = new Database(join(home, "yui.db"));
   assert.equal(check.prepare("SELECT payload FROM role_session_sets").get().payload, before);
+  for (const [table, rows] of retained) assert.deepEqual(check.prepare(`SELECT * FROM ${table}`).all(), rows);
   check.close();
   const current = new SqliteTaskStore(home);
   try {
-    assert.equal(resolveEffectiveLaunch({ store: current, role, purpose: "execution" }).skillPackages, undefined);
-    assert.equal(existsSync(join(home, "runtime/skill-packages")), false);
+    assert.deepEqual(resolveEffectiveLaunch({ store: current, role, purpose: "execution" }).skillPackages,
+      effective.skillPackages);
+    assert.equal(existsSync(join(home, "runtime/skill-packages")), minor === 5);
+    assert.equal(readTaskUsage(current, "task-1").costs.actual.status, "unknown");
+    assert.equal(readTaskUsage(current, "task-1").costs.estimated.status, "unknown");
   } finally { current.close(); }
 });
 

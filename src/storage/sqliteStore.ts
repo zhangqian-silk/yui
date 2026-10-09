@@ -419,6 +419,56 @@ export class SqliteTaskStore implements TaskStore {
     ), event => event.id);
   }
 
+  readTaskUsageFacts(taskId: string): import("../runtime/taskUsageQuery.js").TaskUsageFacts {
+    // Bounded source selection, not a scan/deserialization of Task history.
+    // Strip result bodies before they cross the SQLite boundary.
+    // Each event type uses idx_events_type_time (including its rowid tie
+    // breaker); only bounded prefixes are merged before JSON projection.
+    const limit = 2000;
+    const rows = this.#db.prepare(`SELECT json_set(payload, '$.payload.observation',
+      CASE WHEN type = 'runtime.observation' THEN
+        json_remove(json_extract(payload, '$.payload.observation'),
+          '$.payload.output', '$.payload.input', '$.payload.failure.lastOutput', '$.payload.summary')
+      ELSE NULL END) AS payload
+      FROM (
+        SELECT * FROM (
+          SELECT * FROM (
+            SELECT rowid AS source_order, type, occurred_at, payload FROM events
+            WHERE task_id = ? AND type = 'runtime.observation'
+            ORDER BY occurred_at DESC, rowid DESC LIMIT ?
+          )
+          UNION ALL
+          SELECT * FROM (
+            SELECT rowid AS source_order, type, occurred_at, payload FROM events
+            WHERE task_id = ? AND type = 'task.cancelled'
+            ORDER BY occurred_at DESC, rowid DESC LIMIT ?
+          )
+        ) ORDER BY occurred_at DESC, source_order DESC LIMIT ?
+      )`).all(taskId, limit + 1, taskId, limit + 1, limit + 1) as { payload: string }[];
+    const events = rows.slice(0, limit).map(row => {
+      const event = JSON.parse(row.payload) as TaskEvent;
+      // json_set embeds normalized JSON as an object; the event wire contract
+      // stores the canonical observation in a string.
+      const observation = event.payload.observation;
+      return typeof observation === "object" && observation !== null
+        ? { ...event, payload: { ...event.payload, observation: JSON.stringify(observation) } } : event;
+    });
+    // The Task/Run primary key supplies a deterministic bounded ID window,
+    // not a "latest by time" claim. Beyond the cap coverage is partial.
+    const runs = this.#db.prepare(`SELECT json_object(
+      'id', turn_id, 'taskId', task_id, 'roleName', json_extract(payload, '$.roleName'),
+      'workItemId', json_extract(payload, '$.workItemId'),
+      'effective', json_object('agentId', json_extract(payload, '$.effective.agentId'),
+        'adapterId', json_extract(payload, '$.effective.adapterId'))) AS payload
+      FROM (
+        SELECT turn_id, task_id, payload FROM turns WHERE task_id = ?
+        ORDER BY turn_id DESC LIMIT ?
+      )`)
+      .all(taskId, limit + 1) as { payload: string }[];
+    return { events, runs: runs.slice(0, limit).map(row => JSON.parse(row.payload)),
+      complete: rows.length <= limit && runs.length <= limit };
+  }
+
   /** Delivery needs original workspace bases, never complete Run reports. */
   listTaskRunWorkspaceBases(taskId: string): Pick<AgentRun, "id" | "createdAt" | "workspace">[] {
     return (this.#db.prepare(`SELECT json_object(

@@ -1,6 +1,7 @@
 import type { AgentRun } from "../agentRun/agentRun.js";
 import type { TaskEvent } from "../event/taskEvent.js";
 import type { Task } from "../task/task.js";
+import { projectTaskCosts, type TaskCosts } from "./taskCostMetrics.js";
 import { builtinDriverIdForAdapter } from "./builtinAgentDrivers.js";
 import {
   isRuntimeTokenEvidence,
@@ -31,6 +32,7 @@ export type TaskUsageMetrics = Readonly<{
   toolCalls: UsageMetric;
   elapsedSeconds: UsageMetric;
   executionSeconds: UsageMetric;
+  costs: TaskCosts;
   coverage: Readonly<{
     basis: "task-fenced-observations";
     observedSessions: number;
@@ -52,10 +54,13 @@ export type TaskUsageMetrics = Readonly<{
 export type TaskUsageInput = Readonly<{
   task: Pick<Task, "id" | "status" | "createdAt" | "completedAt" | "retiredAt">;
   events: readonly TaskEvent[];
-  runs: readonly AgentRun[];
+  runs: readonly UsageRun[];
   workItemId?: string;
   now?: Date;
 }>;
+
+export type UsageRun = Pick<AgentRun, "id" | "taskId" | "roleName" | "workItemId">
+  & { effective: Pick<AgentRun["effective"], "agentId" | "adapterId"> };
 
 /**
  * Pure lifetime projection. No transcript reads, collection, persistence,
@@ -92,7 +97,7 @@ export function projectTaskUsageMetrics(input: TaskUsageInput): TaskUsageMetrics
     if (!all.some((observation) => !child(observation) && usageAuthority(observation))) continue;
     const resource = resourceKey(identity);
     const owners = resourceOwners.get(resource) ?? new Set<string>();
-    owners.add(identity.roleName);
+    owners.add(JSON.stringify([identity.roleName, identity.agentId]));
     resourceOwners.set(resource, owners);
   }
   const sessions = [...buckets.values()]
@@ -153,11 +158,17 @@ export function projectTaskUsageMetrics(input: TaskUsageInput): TaskUsageMetrics
       }];
     });
   const reasons: string[] = [];
+  const costReasons: string[] = [];
   if (scoped.some((observation) => sessionIdentity(observation) === null)) reasons.push("session-identity-missing");
+  if (reasons.length > 0) costReasons.push("session-identity-missing");
   for (const run of runs.values()) {
     if (input.workItemId !== undefined && run.workItemId !== input.workItemId) continue;
     if (!observations.some((observation) => exactRun(observation, runs)?.id === run.id
       && usageAuthority(observation) && isRuntimeTokenEvidence(observation))) reasons.push("run-usage-unobserved");
+    if (!observations.some((observation) => exactRun(observation, runs)?.id === run.id
+      && usageAuthority(observation) && !child(observation) && observation.payload.cost !== undefined)) {
+      costReasons.push("run-cost-unobserved");
+    }
   }
   const tokenValues = sessions.flatMap(({ tokens }) => tokens.value === null ? [] : [tokens.value]);
   const sum = safeSum(tokenValues);
@@ -192,6 +203,7 @@ export function projectTaskUsageMetrics(input: TaskUsageInput): TaskUsageMetrics
     elapsedSeconds: input.workItemId === undefined
       ? taskElapsed(input.task, events, now) : metric(null, ["work-item-lifecycle-not-task-elapsed"]),
     executionSeconds: executionDuration(scoped, now),
+    costs: projectTaskCosts(observations, inScope, input.workItemId !== undefined, costReasons),
     coverage: {
       basis: "task-fenced-observations",
       observedSessions: sessions.length,
@@ -220,7 +232,7 @@ function attributableTokens(
     : metric(total.totalTokens - baseline, ["nonzero-session-baseline"]);
 }
 
-function exactRun(observation: RuntimeObservation, runs: ReadonlyMap<string, AgentRun>): AgentRun | undefined {
+function exactRun(observation: RuntimeObservation, runs: ReadonlyMap<string, UsageRun>): UsageRun | undefined {
   const { fence } = observation;
   const run = fence.runId === undefined ? undefined : runs.get(fence.runId);
   if (run === undefined || fence.nativeSessionId === undefined || run.roleName !== fence.roleName
@@ -244,7 +256,7 @@ function identityKey(identity: SessionTokenIdentity): string {
 }
 
 function resourceKey(identity: SessionTokenIdentity): string {
-  return JSON.stringify([identity.agentId, identity.driverId, identity.nativeSessionId]);
+  return JSON.stringify([identity.driverId, identity.nativeSessionId]);
 }
 
 function child({ fence }: RuntimeObservation): boolean {

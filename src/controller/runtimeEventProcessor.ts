@@ -1,5 +1,5 @@
 import {
-  isRuntimeTokenEvidence,
+  isRuntimeUsageEvidence,
   type RuntimeObservation
 } from "../runtime/runtimeObservation.js";
 import type { SchedulerTask } from "../scheduler/ports.js";
@@ -475,7 +475,7 @@ export function coalesceRuntimeProgress(
     }
     const representedByIndex = new Map<number, string[]>();
     for (const indices of indicesByStream.values()) {
-      const hasUsage = isRuntimeTokenEvidence(segment[indices[0]!]!.observation);
+      const hasUsage = isRuntimeUsageEvidence(segment[indices[0]!]!.observation);
       // Usage facts and incomplete boundaries are authoritative history for
       // read-only Session token projection, so ingress never coalesces them.
       const retainedPositions = hasUsage ? indices.map((_, position) => position) : [];
@@ -588,7 +588,7 @@ function progressStreamKey(event: RuntimeObservationInboxEvent): string {
     fence.nativeTurnId ?? null,
     event.host ?? null,
     payload.activity,
-    isRuntimeTokenEvidence(event.observation) ? "usage" : "signal"
+    isRuntimeUsageEvidence(event.observation) ? "usage" : "signal"
   ]);
 }
 

@@ -114,6 +114,9 @@ test("public CLI fences replaced Operators, Home configuration and cross-Task re
   assert.equal((await cli(["task", "context", "list", "task-2", "--store", "task-message"], env)).ok, false);
   assert.equal((await cli(["role", "message", "list", "operator"], env)).ok, false);
   assert.equal((await cli(["task", "context", "inspect", "task-1", "--store", "task", "--ref", "task-1"], env)).ok, true);
+  assert.equal((await cli(["task", "usage", "task-1", "--limit", "20"], env)).ok, false,
+    "Reading the Task record does not authorize a Worker to read all Roles' usage evidence.");
+  assert.equal((await cli(["task", "usage", "task-1"], current)).ok, true);
   assert.equal((await cli(["task", "decision", "list", "task-2"], current)).ok, true);
   const searched = await cli(["task", "search", "Other rationale"], current);
   assert.equal(searched.ok, true);

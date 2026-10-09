@@ -73,6 +73,22 @@ export type RuntimeUsageSnapshot = Readonly<{
   reasoningTokens?: number;
 }>;
 
+/** Upstream monetary evidence, never inferred from runtime or a guessed price. */
+export type RuntimeCostSnapshot = Readonly<{
+  kind: "actual" | "estimated";
+  semantics: "request" | "cumulative-session";
+  amount: number;
+  currency: string;
+  source: string;
+  basis?: Readonly<{
+    model: string;
+    source: string;
+    version: string;
+    scope: string;
+    excluded: readonly string[];
+  }>;
+}>;
+
 export type RuntimeRunFailure = Readonly<{
   /** Complete standardized fact; never a recovery decision. */
   error: StandardAgentError;
@@ -90,6 +106,7 @@ export type RuntimeObservationPayload = Readonly<{
   activity?: "model" | "tool" | "subagent" | "provider" | "resource";
   activityId?: string;
   usage?: RuntimeUsageSnapshot;
+  cost?: RuntimeCostSnapshot;
   observerSource?: AgentRuntimeObserverSource;
   sourceId?: string;
   observerStatus?: "healthy" | "degraded" | "unavailable";
@@ -148,6 +165,14 @@ export function isRuntimeTokenEvidence(
         && observation.payload.activityId === undefined
         && (observation.payload.observationQuality === "partial"
           || observation.payload.observationQuality === "unavailable")));
+}
+
+/** Both money and tokens survive activity compaction; only tokens feed token metrics. */
+export function isRuntimeUsageEvidence(
+  observation: Pick<RuntimeObservation, "kind" | "payload">
+): boolean {
+  return isRuntimeTokenEvidence(observation)
+    || (observation.kind === "activity.observed" && observation.payload.cost !== undefined);
 }
 
 const KINDS: readonly RuntimeObservationKind[] = [
@@ -459,6 +484,11 @@ function normalizePayload(
   const observerSource = input.observerSource === undefined
     ? undefined
     : normalizeObserverSource(input.observerSource);
+  const cost = input.cost === undefined ? undefined : normalizeCost(input.cost);
+  if (cost !== undefined && (kind !== "activity.observed"
+    || (cost.semantics === "request" && input.activityId === undefined))) {
+    throw new Error("Cost requires activity.observed and a stable request activityId.");
+  }
   if (kind === "turn.failed" && input.failure === undefined) {
     throw new Error("run.failed requires normalized failure evidence.");
   }
@@ -540,6 +570,7 @@ function normalizePayload(
           ...input.usage,
           semantics: input.usage.semantics ?? "cumulative-session"
         }) }),
+    ...(cost === undefined ? {} : { cost }),
     ...(observerSource === undefined ? {} : { observerSource }),
     ...(input.sourceId === undefined
       ? {}
@@ -603,6 +634,44 @@ function normalizePayload(
       : { goalNativeTurnId: requireIdentity(input.goalNativeTurnId, "Provider Goal native Turn id") }),
     ...(input.goalTokenBudget === undefined ? {} : { goalTokenBudget: input.goalTokenBudget })
   });
+}
+
+function normalizeCost(input: RuntimeCostSnapshot): RuntimeCostSnapshot {
+  if (input === null || typeof input !== "object"
+    || !["actual", "estimated"].includes(input.kind)
+    || !["request", "cumulative-session"].includes(input.semantics)) {
+    throw new Error("Runtime cost kind or semantics is invalid.");
+  }
+  if (!Number.isFinite(input.amount) || input.amount < 0 || input.amount > Number.MAX_SAFE_INTEGER) {
+    throw new Error("Runtime cost amount must be finite and non-negative.");
+  }
+  if (typeof input.currency !== "string" || !/^[A-Z]{3}$/u.test(input.currency)) {
+    throw new Error("Runtime cost currency requires a three-letter currency code.");
+  }
+  if (input.kind === "estimated" && input.basis === undefined) {
+    throw new Error("Estimated cost requires a price basis.");
+  }
+  const basis = input.basis;
+  if (basis !== undefined && (!Array.isArray(basis.excluded) || basis.excluded.length > 16)) {
+    throw new Error("Runtime cost basis excluded items must be a bounded list.");
+  }
+  return Object.freeze({
+    kind: input.kind, semantics: input.semantics, amount: input.amount,
+    currency: input.currency, source: costText(input.source, "Cost source"),
+    ...(basis === undefined ? {} : { basis: Object.freeze({
+      model: costText(basis.model, "Cost model"),
+      source: costText(basis.source, "Price source"),
+      version: costText(basis.version, "Price version or date"),
+      scope: costText(basis.scope, "Estimate scope"),
+      excluded: Object.freeze(basis.excluded.map(value => costText(value, "Excluded cost", 128)))
+    }) })
+  });
+}
+
+function costText(value: unknown, label: string, limit = 512): string {
+  const text = requireText(value, label);
+  if (text.length > limit) throw new Error(`${label} exceeds ${limit} characters.`);
+  return text;
 }
 
 export function runtimeObservationSemanticKey(input: Readonly<{

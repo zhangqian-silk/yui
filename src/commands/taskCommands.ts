@@ -361,6 +361,7 @@ import {
 } from "./taskCompletionGate.js";
 import { runTaskContextCommand, taskRecordList } from "./taskContextCommand.js";
 import { taskBriefCommand, taskDecisionCommand, taskEventCommand, taskMilestoneCommand } from "./taskFactCommands.js";
+import { taskUsageCommand } from "./taskUsageCommand.js";
 import {
   openInputRequestCount,
   runTaskInputCommand
@@ -771,6 +772,7 @@ function executeTaskCommand(
     case "review": return taskReviewCommand(rest, store, options);
     case "run": return taskRunCommand(rest, store, options);
     case "brief": return taskBriefCommand(rest, store, options);
+    case "usage": return taskUsageCommand(rest, store, options);
     case "decision": return taskDecisionCommand(rest, store, options);
     case "milestone": return taskMilestoneCommand(rest, store, options);
     case "event": return taskEventCommand(rest, store, options);

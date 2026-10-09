@@ -357,6 +357,11 @@ export function renderExecutionAudit(
     lines.push("", "Observed usage — Task lifetime, observed sources only (audit time window not applied):");
     for (const usage of report.usage.data) {
       lines.push(`  ${usage.taskId}: tokens=${formatUsageMetric(usage.tokens)}; tools=${formatUsageMetric(usage.toolCalls)}; elapsed=${formatUsageMetric(usage.elapsedSeconds, "s")}; native execution sum=${formatUsageMetric(usage.executionSeconds, "s")}`);
+      for (const kind of ["actual", "estimated"] as const) {
+        const costs = usage.costs[kind];
+        lines.push(`    ${kind} cost: ${costs.amounts.length === 0 ? `unknown (${costs.reasons.join(", ")})`
+          : costs.amounts.map(amount => `${formatUsageMetric(amount)} ${amount.currency}`).join("; ")} (observed sources only, not a bill)`);
+      }
     }
   } else {
     lines.push("", ...sectionError("usage", report));
