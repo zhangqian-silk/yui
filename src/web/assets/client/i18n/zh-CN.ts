@@ -350,6 +350,8 @@ export const ZH_CN: Readonly<Partial<Record<MessageKey, string>>> = {
   "conversation.history": "原生公开会话",
   "conversation.input": "发送到选中的会话",
   "conversation.send": "发送",
+  "conversation.linkedInput": "已投递的 Yui 输入 ·",
+  "conversation.linkedOmitted": "更多关联输入可在来源记录中查看。",
   "conversation.stop": "停止本轮",
   "conversation.receipt": "查询原始回执",
   "conversation.older": "上一页历史",

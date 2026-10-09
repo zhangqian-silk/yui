@@ -6,6 +6,7 @@ import { richText } from "/assets/js/ui/text.js";
 export function createConversationController(host, t) {
   let owner = null, selected = null, facts = null, cursor = null, next = null;
   let generation = 0, busy = false, timer = null, pending = null, historyOk = false;
+  let rendered = new Map();
   const select = h("select", { "aria-label": t("conversation.sessions") });
   const status = h("p.feed-note", { role: "status" });
   const identity = h("p.feed-note");
@@ -55,8 +56,45 @@ export function createConversationController(host, t) {
     text.value = saved(".draft") || "";
     try { pending = JSON.parse(saved(".pending") || "null"); } catch { pending = null; }
     receipt.textContent = pending ? t("conversation.unknown") + " " + pending.requestId : "";
-    clear(feed);
+    clear(feed); rendered.clear();
     controls();
+  }
+  function finish(own) {
+    busy = false; controls();
+    // A read for the old owner may have prevented the new selection's read.
+    // Only refresh view state; never repeat a mutation or receipt submission.
+    if (own !== generation && timer !== null) refresh();
+  }
+  function renderItems(items) {
+    const nodes = [], updated = new Map();
+    items.slice().reverse().forEach(function (item) {
+      const key = JSON.stringify([item.turnId, item.id]), signature = JSON.stringify(item);
+      const previous = rendered.get(key);
+      let node = previous && previous.signature === signature ? previous.node : null;
+      if (!node) {
+        const content = richText(null, item.text, t, { threshold: 1800 });
+        const meta = (item.source === "yui-input" ? t("conversation.linkedInput") + " " + item.messageId : item.kind)
+          + " · " + item.turnId + (item.status ? " · " + item.status : "");
+        node = item.kind === "activity" ? h("details", null, h("summary", null, meta), content)
+          : h("article.msg.from-" + (item.kind === "user" ? "user" : "role"), null,
+            h("div.msg-main", null, h("header.msg-head", null, meta), h("div.msg-bubble", null, content),
+              item.truncated ? h("p.feed-note", null, t("conversation.truncated")) : null));
+        if (previous) {
+          if (item.kind === "activity") node.open = previous.node.open;
+          const oldProse = previous.node.querySelectorAll(".prose-block");
+          node.querySelectorAll(".prose-block").forEach(function (prose, index) {
+            if (oldProse[index] && !oldProse[index].classList.contains("is-collapsed")
+              && prose.classList.contains("is-collapsed")) prose.querySelector("button.link-btn")?.click();
+          });
+        }
+      }
+      updated.set(key, { signature: signature, node: node }); nodes.push(node);
+    });
+    rendered = updated;
+    if (!nodes.length) nodes.push(h("p.feed-note", null, t("conversation.empty")));
+    if (feed.children.length !== nodes.length || nodes.some(function (n, i) { return feed.children[i] !== n; })) {
+      feed.replaceChildren(...nodes);
+    }
   }
   function drawSessions(rows, append) {
     if (!append) clear(select);
@@ -71,7 +109,7 @@ export function createConversationController(host, t) {
   async function refresh() {
     if (!owner || busy || host.hidden || host.closest("[hidden]") || document.hidden) return;
     busy = true; controls();
-    const own = generation;
+    let own = generation;
     try {
       const result = await requestJson(url());
       if (own !== generation) return;
@@ -87,10 +125,7 @@ export function createConversationController(host, t) {
       });
       if (!selected) {
         choose(facts.currentSessionId);
-        // Initialization changed only view identity; this read still owns it.
-        busy = false;
-        drawSessions(facts.sessions, false);
-        if (selected) return refresh();
+        own = generation;
       }
       if (!selected) { status.textContent = t("conversation.noSession"); return; }
       // Preserve a historical choice even if it is outside the newest page.
@@ -106,23 +141,15 @@ export function createConversationController(host, t) {
       if (turn && turn.status === "delivery-unknown") state = "unknown";
       status.textContent = t("conversation." + state) + " · " + page.observedAt;
       if (page.live === "unavailable" && !cursor) status.textContent += " · " + t("conversation.liveUnavailable");
+      if (page.linkedInputsOmitted) status.textContent += " · " + t("conversation.linkedOmitted");
       identity.textContent = (owner.taskId || "Global") + " / " + owner.roleName + " / " + selected
         + (turn ? " / " + (turn.nativeTurnId || turn.attemptId) + (turn.runId ? " / " + turn.runId : "") : "");
       const scroll = feed.scrollTop, atEnd = feed.scrollHeight - feed.clientHeight - scroll < 40;
-      clear(feed);
-      if (!page.items.length) feed.append(h("p.feed-note", null, t("conversation.empty")));
-      page.items.slice().reverse().forEach(function (item) {
-        const content = richText(null, item.text, t, { threshold: 1800 });
-        const meta = item.kind + " · " + item.turnId + (item.status ? " · " + item.status : "");
-        if (item.kind === "activity") feed.append(h("details", null, h("summary", null, meta), content));
-        else feed.append(h("article.msg.from-" + (item.kind === "user" ? "user" : "role"), null,
-          h("div.msg-main", null, h("header.msg-head", null, meta), h("div.msg-bubble", null, content),
-            item.truncated ? h("p.feed-note", null, t("conversation.truncated")) : null)));
-      });
+      renderItems(page.items);
       feed.scrollTop = atEnd ? feed.scrollHeight : scroll;
     } catch (error) {
       if (own === generation) { historyOk = false; status.textContent = t("conversation.disconnected") + " · " + error.message; }
-    } finally { busy = false; controls(); }
+    } finally { finish(own); }
   }
   async function inspectReceipt() {
     if (!pending || busy) return;
@@ -133,11 +160,14 @@ export function createConversationController(host, t) {
       if (own !== generation) return;
       receipt.textContent = JSON.stringify(result);
       if (["accepted", "failed"].includes(result.state)) {
+        const submitted = pending;
         pending = null; saved(".pending", null);
-        if (result.state === "accepted") { text.value = ""; saved(".draft", null); }
+        if (result.state === "accepted" && submitted.action !== "interrupt" && text.value === submitted.body) {
+          text.value = ""; saved(".draft", null);
+        }
       }
     } catch (error) { if (own === generation) receipt.textContent = t("conversation.unknown") + " " + error.message; }
-    finally { busy = false; controls(); }
+    finally { finish(own); }
   }
   async function submit(interrupt) {
     if (busy || pending || (interrupt ? stop.disabled : send.disabled)) return;
@@ -147,7 +177,7 @@ export function createConversationController(host, t) {
     const payload = { action: action, requestId: crypto.randomUUID() };
     if (!interrupt) payload.body = text.value;
     if (action !== "queue") payload.expectedTarget = turn.nativeTurnId || turn.attemptId;
-    pending = { requestId: payload.requestId, action: action };
+    pending = { requestId: payload.requestId, action: action, body: payload.body };
     saved(".pending", JSON.stringify(pending)); saved(".draft", text.value);
     const own = generation, endpoint = url({ session: selected });
     busy = true; controls();
@@ -160,7 +190,7 @@ export function createConversationController(host, t) {
       if (own !== generation) return;
       receipt.textContent = t("conversation.unknown") + " " + error.message;
       if (error.disposition === "not-submitted") { pending = null; saved(".pending", null); }
-    } finally { busy = false; controls(); }
+    } finally { finish(own); }
     if (own === generation) await inspectReceipt();
   }
   text.addEventListener("input", function () { if (selected) saved(".draft", text.value); });
@@ -181,7 +211,7 @@ export function createConversationController(host, t) {
       facts.sessions = facts.sessions.concat(page.sessions); facts.nextOffset = page.nextOffset;
       drawSessions(page.sessions, true);
     } catch (error) { status.textContent = error.message; }
-    finally { busy = false; controls(); }
+    finally { finish(own); }
   });
   controls();
   return {
@@ -194,6 +224,8 @@ export function createConversationController(host, t) {
       if (JSON.stringify(target) !== JSON.stringify(owner)) {
         if (selected) saved(".draft", text.value);
         generation++; owner = target; selected = null; facts = null; pending = null; clear(select); clear(feed);
+        cursor = null; next = null; historyOk = false; rendered.clear();
+        text.value = ""; receipt.textContent = ""; identity.textContent = ""; controls();
       }
       if (!timer) timer = window.setInterval(function () { if (!cursor) refresh(); }, 2000);
       refresh();

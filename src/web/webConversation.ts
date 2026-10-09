@@ -12,6 +12,7 @@ import type { AgentHostSnapshot } from "../runtime/agentHost.js";
 export type ConversationItem = Readonly<{
   id: string; turnId: string; kind: "user" | "assistant" | "activity";
   text: string; truncated: boolean; status?: string;
+  source?: "yui-input"; messageId?: string;
 }>;
 type PageQuery = { nativeSessionId: string; cursor?: string };
 type Channel = Pick<Awaited<ReturnType<typeof openCodexInteractiveConnection>>, "request" | "notify" | "close">;
@@ -120,6 +121,42 @@ export function createWebConversationSurface(
     if (!session) throw new WebRequestRejected("Session does not belong to this Role.");
     return { set: set!, session };
   };
+  // Native queue input is a reference-only notification, not the user's body.
+  // Join only selected-Session inputs named by that exact native notification,
+  // with confirmed delivery. Keep native text and label the linked source.
+  const linkInputs = (owner: RoleSessionOwner, id: string, items: ConversationItem[]) => {
+    let remaining = 48000, count = 0, omitted = false;
+    const seen = new Set<string>();
+    const linked = items.flatMap(item => {
+      if (item.kind !== "user") return [item];
+      let messages: Array<{ id: string; body: string; inputControl?: { action: string; expectedSessionId?: string } }> = [];
+      if (owner.scope === "task") {
+        const ref = /^Yui Task notification: task=([A-Za-z0-9_-]+) wake=([A-Za-z0-9_-]+)\.\nRead current context: /m.exec(item.text);
+        if (ref?.[1] === owner.taskId) {
+          const wake = store.listTaskWakes(owner.taskId).find(w => w.id === ref[2] && w.status === "consumed");
+          const ids = new Set(wake?.refs?.filter(r => r.type === "message").map(r => r.id));
+          messages = store.listMessages(owner.taskId).filter(m => ids.has(m.id));
+        }
+      } else {
+        const ref = /^Yui Global Message: role=([A-Za-z0-9_-]+) message=([A-Za-z0-9_-]+)\.\nRead your Session Context/m.exec(item.text);
+        if (ref?.[1] === owner.roleName) messages = store.listGlobalRoleMessages(owner.roleName)
+          .filter(m => m.id === ref[2] && m.delivery?.via === "provider" && m.deliveryTarget?.nativeSessionId === id);
+      }
+      const inputs: ConversationItem[] = [];
+      for (const message of messages) {
+        if (message.inputControl?.action !== "queue" || message.inputControl.expectedSessionId !== id
+          || seen.has(message.id)) continue;
+        seen.add(message.id);
+        if (count >= 40) { omitted = true; continue; }
+        const text = message.body.slice(0, Math.min(12000, remaining));
+        remaining -= text.length; count++;
+        inputs.push({ id: `yui-input:${message.id}`, messageId: message.id, source: "yui-input",
+          turnId: item.turnId, kind: "user", text, truncated: text.length < message.body.length });
+      }
+      return [...inputs.reverse(), item];
+    });
+    return { items: linked, linkedInputsOmitted: omitted };
+  };
   return {
     state(owner: RoleSessionOwner, offset = 0) {
       const set = sessions(owner);
@@ -163,7 +200,7 @@ export function createWebConversationSurface(
           text: reply.text, truncated: reply.truncated },
           ...page.items.filter(i => i.id !== reply.id || i.turnId !== reply.turnId)]
         : page.items;
-      return { ...page, items, live: observed?.publicReplyObservation !== "supported" ? "unavailable" : "connected",
+      return { ...page, ...linkInputs(owner, id, items), live: observed?.publicReplyObservation !== "supported" ? "unavailable" : "connected",
         nextCursor: page.nextCursor === null ? null
         : Buffer.from(JSON.stringify({ owner: JSON.stringify(owner), id, cursor: page.nextCursor })).toString("base64url") };
     },

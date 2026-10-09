@@ -24,6 +24,13 @@ Messages retain exact item and Turn identity; only public user/assistant text
 and allowlisted tool summaries are rendered. Reasoning and raw tool results are
 excluded. Long messages are explicitly excerpted at 12,000 characters; native
 access remains available for complete items. Native history is not Task status.
+Reference-only native queue notifications retain their original text. The view
+also labels the original **delivered Yui input** and Message ID when the named
+notification, saved selected-Session fence and delivery evidence agree. These
+are linked source records, not reconstructed native messages or a full Task
+Message feed. Each page includes at most 40 such inputs and 48,000 linked text
+characters; omissions/excerpts are explicit. Refresh preserves expanded reading
+state. Switching owners resets pagination without replaying input.
 
 Sending reuses durable queue input when idle and exact-Turn steer when active.
 Stop uses the existing native interrupt, not Task cancellation or process kill.
@@ -31,6 +38,8 @@ Each request retains its ID in session storage before submission; the original
 receipt can be queried after reconnect, without repeating the write. Submitted,
 accepted, failed and unknown are separate dispositions. An interrupt acceptance
 means cancellation was requested, not that execution is already stopped.
+Stop never clears an unsent draft; message acceptance clears only the submitted
+text if the draft still matches it.
 Native questions/approvals remain on the native entry in this minimum surface.
 
 Storage 1.3 adds an optional selected-Session fence to new structured inputs.

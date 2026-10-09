@@ -350,6 +350,8 @@ export const EN = {
   "conversation.history": "Native public conversation",
   "conversation.input": "Message to the selected Session",
   "conversation.send": "Send",
+  "conversation.linkedInput": "Delivered Yui input ·",
+  "conversation.linkedOmitted": "More linked inputs are available in the source records.",
   "conversation.stop": "Stop this Turn",
   "conversation.receipt": "Check original receipt",
   "conversation.older": "Older page",

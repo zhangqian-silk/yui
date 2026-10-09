@@ -89,6 +89,56 @@ test("conversation pages fence owner/cursor and only merge live replies for the 
   assert.equal(reads, 3);
 });
 
+test("conversation links only exact delivered selected-Session inputs to a native notification", async t => {
+  const { store } = fixture(t);
+  withControllerTurn(store, "leader", { attemptId: "old", nativeTurnId: "turn-old" });
+  settleLeaderTurn(store, { nativeTurnId: "turn-old", status: "completed" }, evenLater);
+  const owner = { scope: "task", taskId: "task-1", roleName: "leader" };
+  let notification;
+  const conversation = createWebConversationSurface(store, createWebTaskSurface(store), () => ({}),
+    async () => ({ status: "idle", nativeSessionId: "leader-native", nextCursor: null,
+      items: [{ id: "native-user", turnId: "turn-next", kind: "user",
+        text: `Yui Task notification: task=task-1 wake=${notification.wakeId}.\nRead current context: yui task context task-1 --json.`,
+        truncated: false }] }));
+  await conversation.control(owner, "leader-native", { action: "queue", requestId: "web-input", body: "Original user text" });
+  const adapter = new FileSchedulerStoreAdapter(store);
+  notification = adapter.claimLeaderNotification("task-1", new Date());
+  assert.equal((await conversation.history(owner, "leader-native")).items.length, 1, "unconfirmed delivery is not history");
+  adapter.settleLeaderNotification("task-1", notification.attemptId, "accepted", new Date());
+  const page = await conversation.history(owner, "leader-native");
+  assert.equal(page.items.length, 2);
+  const linked = page.items.find(i => i.source === "yui-input");
+  assert.equal(linked.text, "Original user text");
+  assert.equal(linked.turnId, "turn-next");
+  assert.equal(linked.messageId, store.listMessages("task-1")[0].id);
+  assert.match(page.items.find(i => i.id === "native-user").text, /Yui Task notification/);
+});
+
+test("Global conversation linked inputs require provider delivery and the exact selected Session", async t => {
+  const { store, home } = fixture(t);
+  const agent = store.getConfiguredAgent("codex"), owner = { scope: "global", roleName: "assistant" };
+  store.createGlobalRoleIfAbsent(createGlobalRole("assistant", [createRoleAgentBinding(agent)], agent.id, home, at));
+  store.saveGlobalRoleSessionSet({ ...store.getTaskRoleSessionSet("task-1", "leader"), owner });
+  const surface = createWebTaskSurface(store);
+  const response = await surface.globalControl("assistant", {
+    action: "queue", requestId: "selected-global", body: "Global original", expectedSessionId: "leader-native"
+  });
+  const message = store.listGlobalRoleMessages("assistant")[0];
+  const conversation = createWebConversationSurface(store, surface, () => ({}), async () => ({
+    status: "idle", nativeSessionId: "leader-native", nextCursor: null,
+    items: [{ id: "native", turnId: "global-turn", kind: "user", truncated: false,
+      text: `Yui Global Message: role=assistant message=${response.message.id}.\nRead your Session Context and the referenced Message in full, then act on its durable input.` }]
+  }));
+  store.updateGlobalRoleMessage({ ...message, deliveryTarget: { agentId: "codex", nativeSessionId: "leader-native" },
+    delivery: { via: "transport", deliveredAt: later.toISOString() } });
+  assert.equal((await conversation.history(owner, "leader-native")).items.length, 1);
+  const delivered = { ...store.listGlobalRoleMessages("assistant")[0], delivery: { via: "provider", deliveredAt: later.toISOString() } };
+  store.updateGlobalRoleMessage(delivered);
+  assert.equal((await conversation.history(owner, "leader-native")).items.find(i => i.source === "yui-input").text, "Global original");
+  store.updateGlobalRoleMessage({ ...delivered, deliveryTarget: { agentId: "codex", nativeSessionId: "different" } });
+  assert.equal((await conversation.history(owner, "leader-native")).items.length, 1);
+});
+
 /**
  * A Task with an active Session per Role, so a control can be resolved against a
  * real capability plan and writer fence. Each Role's Agent plan (adapterId)
