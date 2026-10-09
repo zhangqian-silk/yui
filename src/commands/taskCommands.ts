@@ -2453,6 +2453,13 @@ function taskMessageCommand(
 export function applyTaskInputControl(
   taskId: string, input: InputControlRequest, store: TaskWorkflowStore, options: TaskCommandOptions
 ): TaskCommandExecution {
+  if (input.expectedSessionId !== undefined) {
+    const roleName = input.action === "interrupt" ? input.role : input.to ?? "leader";
+    const set = store.getTaskRoleSessionSet(taskId, roleName);
+    if (set?.sessions[set.activeAgentId]?.nativeSessionId !== input.expectedSessionId) {
+      throw usageError("Selected native Session changed; refresh before sending.");
+    }
+  }
   if (input.action === "queue") return queueTaskInput(taskId, input, store, options);
   if (input.action === "steer") return steerTaskInput(taskId, input, store, options);
   return interruptTaskInput(taskId, input, store, options);
@@ -2490,7 +2497,8 @@ function queueTaskInput(
   }
   const result = sendTaskMessageCommand(store, taskId, body, options,
     recipientRole === undefined ? undefined : { roleName: recipientRole, workItemId, reviewRoundId },
-    undefined, undefined, { action: "queue", requestId });
+    undefined, undefined, { action: "queue", requestId,
+      ...(input.expectedSessionId === undefined ? {} : { expectedSessionId: input.expectedSessionId }) });
   const reason = result.message.continuation?.notDeliveredReason;
   const delivery = result.idempotentReplay ? { state: "idempotent-replay" }
     : reason !== undefined ? { state: "not-delivered", reason }
@@ -2553,7 +2561,8 @@ function steerTaskInput(
   }
   const result = leaderTarget
     ? sendTaskMessageCommand(store, taskId, body, options,
-        undefined, undefined, undefined, { action: "steer", requestId, expectedTarget })
+        undefined, undefined, undefined, { action: "steer", requestId, expectedTarget,
+          ...(input.expectedSessionId === undefined ? {} : { expectedSessionId: input.expectedSessionId }) })
     : sendTaskMessageCommand(store, taskId, body, options,
         { roleName: recipientRole, workItemId, reviewRoundId }, undefined, undefined,
         { action: "steer", requestId, expectedTarget });
@@ -2662,7 +2671,7 @@ export function sendTaskMessageCommand(
   recipient?: Readonly<{ roleName: string; workItemId?: string; reviewRoundId?: string }>,
   intent?: TaskSubmissionIntent,
   submissionKey?: string,
-  inputControl?: Readonly<{ action: TaskMessageInputAction; requestId: string; expectedTarget?: string }>
+  inputControl?: Readonly<{ action: TaskMessageInputAction; requestId: string; expectedTarget?: string; expectedSessionId?: string }>
 ) {
   if (!body.trim()) throw usageError("Message body is required.");
   if (recipient !== undefined && intent !== undefined) {
@@ -2698,6 +2707,7 @@ export function sendTaskMessageCommand(
           : { roleName: recipient.roleName, workItemId: recipient.workItemId, reviewRoundId: recipient.reviewRoundId };
         if (prior?.action !== inputControl.action || existing.body !== body
           || prior.expectedTarget !== inputControl.expectedTarget
+          || prior.expectedSessionId !== inputControl.expectedSessionId
           || !isDeepStrictEqual(priorRecipient, nextRecipient)) {
           throw usageError(
             `Input requestId ${inputControl.requestId} was already used with different content or target; use a new requestId for a new input.`);

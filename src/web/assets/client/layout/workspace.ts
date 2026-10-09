@@ -42,7 +42,11 @@ export function createWorkspace(deps) {
     openSession: function (target) { openSession(ws, target); },
     openOperator: function () { openOperator(ws); },
     // A newly selected Task starts with the narrow-screen sheet closed.
-    enterTask: function () { ws.dock.sheet = false; },
+    enterTask: function () {
+      ws.dock.sheet = false;
+      ws.dock.mode = "conversation";
+      ws.deps.conversation.open({ scope: "task", taskId: ws.deps.state.selected, roleName: "leader" });
+    },
     leaveTask: function () { leaveTask(ws); }
   };
 }
@@ -50,7 +54,7 @@ export function createWorkspace(deps) {
 function readDockState() {
   return {
     open: readPreference("yui.dock.open", "true") !== "false",
-    mode: "discussion",
+    mode: "conversation",
     center: readPreference("yui.dock.side", "end") === "center",
     width: Number(readPreference("yui.dock.width", String(DOCK_INITIAL))) || DOCK_INITIAL,
     // On narrow screens the dock is a full-screen sheet opened explicitly per
@@ -63,6 +67,7 @@ function dockVisible(ws) {
   const dock = ws.dock;
   if (ws.narrow.matches ? !dock.sheet : !dock.open) return false;
   if (ws.deps.state.selected) return true;
+  if (dock.mode === "conversation") return true;
   return dock.mode === "session" && ws.deps.terminal.connected();
 }
 
@@ -78,6 +83,8 @@ function updateLayout(ws) {
   el.divider.hidden = !visible;
   el.discussion.hidden = dock.mode !== "discussion";
   el.session.hidden = dock.mode !== "session";
+  el.conversation.hidden = dock.mode !== "conversation";
+  el.dockTabConversation.setAttribute("aria-selected", String(dock.mode === "conversation"));
   el.dockTabDiscussion.setAttribute("aria-selected", String(dock.mode === "discussion"));
   el.dockTabSession.setAttribute("aria-selected", String(dock.mode === "session"));
   el.dockTabDiscussion.disabled = !selected;
@@ -97,6 +104,7 @@ function syncDockButtons(ws) {
 
 // The dock currently shows the global operator Session.
 function operatorShown(ws) {
+  if (ws.dock.mode === "conversation") return dockVisible(ws) && ws.deps.conversation.current()?.scope === "global";
   const current = ws.deps.terminal.current();
   return dockVisible(ws) && ws.dock.mode === "session" && !!current && current.scope === "global";
 }
@@ -112,10 +120,21 @@ function showDock(ws, open) {
 function setDockOpen(ws, open) {
   showDock(ws, open);
   if (!open && ws.deps.terminal.connected()) ws.deps.terminal.close();
+  if (!open) ws.deps.conversation.close();
   updateLayout(ws);
+  if (open && ws.dock.mode === "conversation") ws.deps.conversation.reconnect();
 }
 
 function setDockMode(ws, mode) {
+  if (mode === "conversation") {
+    ws.dock.mode = mode;
+    updateLayout(ws);
+    ws.deps.conversation.open(ws.deps.state.selected
+      ? { scope: "task", taskId: ws.deps.state.selected, roleName: "leader" }
+      : { scope: "global", roleName: "operator" });
+    return;
+  }
+  ws.deps.conversation.close();
   ws.dock.mode = mode === "session" || !ws.deps.state.selected ? "session" : "discussion";
   updateLayout(ws);
 }
@@ -130,6 +149,7 @@ function toggleDock(ws, mode) {
 }
 
 function openSession(ws, target) {
+  ws.deps.conversation.close();
   ws.dock.mode = "session";
   showDock(ws, true);
   ws.deps.terminal.open(target);
@@ -138,12 +158,19 @@ function openSession(ws, target) {
 }
 
 function openOperator(ws) {
-  openSession(ws, { scope: "global", roleName: "operator" });
+  showDock(ws, true);
+  setDockMode(ws, "conversation");
+  ws.deps.conversation.open({ scope: "global", roleName: "operator" });
+  syncDockButtons(ws);
 }
 
 // Leaving a Task: when the dock's last Session belonged to a Task and is no
 // longer connected, the dock returns to the discussion mode.
 function leaveTask(ws) {
+  if (ws.dock.mode === "conversation") {
+    ws.deps.conversation.open({ scope: "global", roleName: "operator" });
+    return;
+  }
   const terminal = ws.deps.terminal;
   const current = terminal.current();
   if ((ws.dock.mode === "discussion" || (current && current.scope === "task")) && !terminal.connected()) ws.dock.mode = "discussion";
@@ -153,6 +180,7 @@ function bindDockControls(ws) {
   const el = ws.deps.el;
   const dock = ws.dock;
   el.dockTabDiscussion.addEventListener("click", function () { setDockMode(ws, "discussion"); });
+  el.dockTabConversation.addEventListener("click", function () { setDockMode(ws, "conversation"); });
   el.dockTabSession.addEventListener("click", function () { setDockMode(ws, "session"); });
   el.dockClose.addEventListener("click", function () { setDockOpen(ws, false); });
   el.dockSwap.addEventListener("click", function () {

@@ -2,7 +2,10 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.2. The declared 1.1 → 1.2 transition adds optional
+Current storage is 1.3. The declared 1.2 → 1.3 transition adds optional exact
+Session fences to structured inputs and permits their explicit nondelivery
+reason without an Assignment. Existing Role-addressed inputs remain unchanged.
+The declared 1.1 → 1.2 transition adds optional
 CapabilityGrant authorization-source evidence and native-human input/archive
 audit records. Existing valid Operator grants remain unchanged; migration does
 not infer or invent past user authority. The SQL layout is unchanged.

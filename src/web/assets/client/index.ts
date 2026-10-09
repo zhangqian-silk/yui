@@ -32,6 +32,7 @@ import { TASK_FORMS_SCRIPT } from "./domain/taskForms.js";
 import { VOCAB_SCRIPT } from "./domain/vocab.js";
 import { WORK_SCRIPT } from "./domain/work.js";
 import { DISCUSSION_SCRIPT } from "./views/dock/discussion.js";
+import { CONVERSATION_SCRIPT } from "./views/dock/conversation.js";
 import { TERMINAL_SCRIPT } from "./views/dock/terminal.js";
 import { GLOBAL_INPUT_SCRIPT } from "./views/globalInput.js";
 import { OVERVIEW_SCRIPT } from "./views/overview.js";
@@ -81,6 +82,7 @@ export const CLIENT_MODULES: Readonly<Record<string, string>> = Object.freeze({
   "views/overview": OVERVIEW_SCRIPT,
   "views/globalInput": GLOBAL_INPUT_SCRIPT,
   "views/dock/discussion": DISCUSSION_SCRIPT,
+  "views/dock/conversation": CONVERSATION_SCRIPT,
   "views/dock/terminal": TERMINAL_SCRIPT,
   "views/task/page": TASK_PAGE_SCRIPT,
   "views/task/overview": TASK_OVERVIEW_SCRIPT,

@@ -171,11 +171,13 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
 
   /** Recovery addresses the recorded Agent/Session, independent of delivery
    * admission, a missing worktree, or the old Endpoint code generation. */
-  planNativeControl(owner: RuntimeRoleOwner): import("../runtime/nativeSessionControl.js").NativeControlConnection {
+  planNativeControl(owner: RuntimeRoleOwner, nativeSessionId?: string): import("../runtime/nativeSessionControl.js").NativeControlConnection {
     const set = owner.scope === "task"
       ? this.store.getTaskRoleSessionSet(owner.taskId, owner.roleName)
       : this.store.getGlobalRoleSessionSet(owner.roleName);
-    const session = roleSessionControlTarget(set);
+    const session = nativeSessionId === undefined ? roleSessionControlTarget(set)
+      : [...Object.values(set?.sessions ?? {}), ...Object.values(set?.history ?? {})]
+        .find(entry => entry.nativeSessionId === nativeSessionId);
     if (session?.adapterId !== "codex") throw new Error("Native metadata control requires a recorded Codex Session.");
     const configured = this.store.getConfiguredAgent(session.agentId);
     if (configured === null || configured.adapterId !== session.adapterId) {

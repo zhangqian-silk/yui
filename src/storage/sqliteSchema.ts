@@ -49,6 +49,16 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   // New grants can carry source evidence. Valid historical Operator grants
   // remain unchanged; migration must not invent authorization provenance.
   sql: ""
+}, {
+  fromVersion: "1.2",
+  toVersion: "1.3",
+  name: "selected-session-input",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Optional explicit Session fences apply only to new inputs. Preserve old
+  // Role-addressed messages; never infer a historical user's Session choice.
+  sql: ""
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {

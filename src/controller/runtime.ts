@@ -93,6 +93,8 @@ import { TmuxManager, yuiTmuxServerName } from "../tmux/tmuxManager.js";
 import { createControllerWeb } from "../web/controllerWeb.js";
 import { TmuxWebTerminalService } from "../web/tmuxWebTerminal.js";
 import { createWebTaskSurface } from "../web/webTaskSurface.js";
+import { createWebConversationSurface } from "../web/webConversation.js";
+import { inspectAgentHost } from "../runtime/agentHost.js";
 import {
   isTaskOwnedWorkspace,
   sameManagedWorkspaceIdentity
@@ -550,6 +552,9 @@ export async function startFileTaskControllerRuntime(
     const surfaces = new SurfaceContributions(kernel.capabilities.registry);
     const web = createControllerWeb(store, {
       surface: webSurface,
+      conversation: createWebConversationSurface(store, webSurface,
+        (owner, id) => planner.planNativeControl(owner, id), undefined,
+        (owner) => inspectAgentHost({ home, ...owner })),
       answerInput: async ({ taskId, inputId, answer }) => webSurface.answer(taskId, inputId, answer),
       panels: {
         list: (taskId) => surfaces.listPanels(kernel.capabilities.authenticateWebQuery(taskId)),

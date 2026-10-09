@@ -174,6 +174,9 @@ export type AgentHostProviderState =
   | "exited";
 
 export type AgentHostSnapshot = Readonly<{
+  /** Live-only bounded public assistant delta; never persisted or execution authority. */
+  publicReply?: import("./publicReply.js").PublicReply;
+  publicReplyObservation?: "supported";
   schemaVersion: 1;
   state: AgentHostProviderState;
   adapterId?: AgentAdapterId;
@@ -1291,6 +1294,8 @@ export async function runAgentHost(input: Readonly<{
         ? snapshot
         : validateSnapshot({
             ...snapshot,
+            ...(session.publicReply === undefined ? {} : { publicReply: session.publicReply }),
+            ...(session.adapterId === "codex" ? { publicReplyObservation: "supported" as const } : {}),
             runConfiguration: session.runConfiguration
           }));
     }
@@ -1902,6 +1907,11 @@ function boundControlResponse(result: AgentHostControlResult): AgentHostControlR
     ...(result.cancellation === undefined ? {} : { cancellation: result.cancellation })
   };
   if (withinControlBound(result)) return result;
+  if (result.snapshot.publicReply !== undefined) {
+    const { publicReply: _omitted, ...snapshot } = result.snapshot;
+    result = { ...result, snapshot };
+    if (withinControlBound(result)) return result;
+  }
   const clip = (text: string, chars: number): string => {
     if (text.length <= chars) return text;
     const head = Math.floor(chars * 0.75);

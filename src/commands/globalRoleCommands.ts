@@ -146,6 +146,12 @@ export function applyGlobalInputControl(
   name: string, input: InputControlRequest, store: GlobalRoleStore, options: GlobalRoleCommandOptions = {}
 ): GlobalInputResult {
   assertGlobalInputAuthority(store, options, name);
+  if (input.expectedSessionId !== undefined) {
+    const set = store.getGlobalRoleSessionSet(name);
+    if (set?.sessions[set.activeAgentId]?.nativeSessionId !== input.expectedSessionId) {
+      throw usageError("Selected native Session changed; refresh before sending.");
+    }
+  }
   return input.action === "interrupt"
     ? interruptGlobalInput(name, input, store)
     : messageGlobalInput(name, input, store, options);
@@ -725,7 +731,7 @@ export function sendGlobalRoleMessageCommand(
   roleName: string,
   body: string,
   author: GlobalRoleMessageAuthor,
-  inputControl: Readonly<{ action: TaskMessageInputAction; requestId: string; expectedTarget?: string }>,
+  inputControl: Readonly<{ action: TaskMessageInputAction; requestId: string; expectedTarget?: string; expectedSessionId?: string }>,
   now: Date
 ): Readonly<{ message: GlobalRoleMessage; idempotentReplay: boolean }> {
   if (!body.trim()) throw usageError("Message body is required.");
@@ -735,7 +741,8 @@ export function sendGlobalRoleMessageCommand(
     const original = existing.inputControl ?? existing.interruptThen?.reusedInput;
     if (original?.action !== inputControl.action
       || existing.body !== body
-      || original.expectedTarget !== inputControl.expectedTarget) {
+      || original.expectedTarget !== inputControl.expectedTarget
+      || original.expectedSessionId !== inputControl.expectedSessionId) {
       throw usageError(
         `Input requestId ${inputControl.requestId} was already used with different content or target; use a new requestId for a new input.`);
     }
@@ -835,7 +842,8 @@ function messageGlobalInput(
   const persisted = store.transaction((tx) => {
     requireRole(name, tx);
     return sendGlobalRoleMessageCommand(tx, name, body,
-      author, { action, requestId, ...(expectedTarget === undefined ? {} : { expectedTarget }) }, now);
+      author, { action, requestId, ...(expectedTarget === undefined ? {} : { expectedTarget }),
+        ...(input.expectedSessionId === undefined ? {} : { expectedSessionId: input.expectedSessionId }) }, now);
   });
   if (action === "queue") {
     const state = persisted.idempotentReplay ? "idempotent-replay" : "queued";

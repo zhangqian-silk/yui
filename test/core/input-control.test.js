@@ -33,10 +33,61 @@ import { inspectTaskContext, listContextMessages, listTaskContext } from "../../
 import { createWebTaskSurface } from "../../dist/web/webTaskSurface.js";
 import { createYuiWebServer } from "../../dist/web/webServer.js";
 import { foldSteerLiveReceipt, foldInterruptLiveReceipt } from "../../dist/runtime/agentHost.js";
+import { createWebConversationSurface } from "../../dist/web/webConversation.js";
 
 const at = new Date("2026-09-10T00:00:00Z");
 const later = new Date("2026-09-10T00:01:00Z");
 const evenLater = new Date("2026-09-10T00:02:00Z");
+
+test("structured conversation input retains its selected Session and exact receipt across replacement", async t => {
+  const { store, command } = fixture(t);
+  withControllerTurn(store, "leader", { attemptId: "old", nativeTurnId: "turn-old" });
+  settleLeaderTurn(store, { nativeTurnId: "turn-old", status: "completed" }, evenLater);
+  const surface = createWebTaskSurface(store);
+  const conversation = createWebConversationSurface(store, surface, () => { throw Error("read not expected"); });
+  const owner = { scope: "task", taskId: "task-1", roleName: "leader" };
+  await conversation.control(owner, "leader-native", { action: "queue", requestId: "selected-input", body: "Only the selected Session" });
+  assert.equal(conversation.receipt(owner, "selected-input").state, "submitted");
+  const original = store.getTaskRoleSessionSet("task-1", "leader");
+  store.saveTaskRoleSessionSet({ ...original, providerBinding: null,
+    sessions: { codex: { ...original.sessions.codex, nativeSessionId: "replacement" } } });
+  const queued = command(["message", "queue", "task-1", "New Role input", "--request-id", "new-role-input"]);
+  const wake = new FileSchedulerStoreAdapter(store).claimLeaderNotification("task-1", new Date());
+  assert.deepEqual(store.listTaskWakes("task-1").find(w => w.id === wake.wakeId).refs
+    .filter(r => r.type === "message").map(r => r.id), [queued.data.message.id]);
+  assert.equal(conversation.receipt(owner, "selected-input").state, "failed");
+  assert.equal(conversation.receipt(owner, "lost-request").state, "unknown");
+  const adapter = new FileSchedulerStoreAdapter(store);
+  adapter.settleLeaderNotification("task-1", wake.attemptId, "unknown", new Date());
+  assert.equal(conversation.receipt(owner, "new-role-input").state, "unknown");
+  adapter.settleLeaderNotification("task-1", wake.attemptId, "rejected", new Date());
+  assert.equal(conversation.receipt(owner, "new-role-input").state, "failed");
+  await assert.rejects(conversation.control(owner, "leader-native", {
+    action: "queue", requestId: "do-not-retarget", body: "Old browser"
+  }), /does not belong|Historical/);
+});
+
+test("conversation pages fence owner/cursor and only merge live replies for the exact active Turn", async t => {
+  const { store } = fixture(t);
+  withControllerTurn(store, "leader", { attemptId: "attempt", nativeTurnId: "turn" });
+  const owner = { scope: "task", taskId: "task-1", roleName: "leader" };
+  let status = "active", nativeTurnId = "turn", reads = 0;
+  const conversation = createWebConversationSurface(store, createWebTaskSurface(store), () => ({}),
+    async () => { reads++; return { status, items: [{ id: "item", turnId: "turn", kind: "assistant", text: "persisted" }],
+      nativeSessionId: "leader-native", nextCursor: "opaque", observedAt: at.toISOString() }; },
+    async () => ({ nativeSessionId: "leader-native", nativeTurnId, publicReplyObservation: "supported",
+      publicReply: { nativeSessionId: "leader-native", turnId: "turn", id: "item", text: "stream", truncated: false } }));
+  const page = await conversation.history(owner, "leader-native");
+  assert.equal(page.items[0].text, "stream");
+  nativeTurnId = "other";
+  assert.equal((await conversation.history(owner, "leader-native")).items[0].text, "persisted");
+  nativeTurnId = "turn"; status = "idle";
+  assert.equal((await conversation.history(owner, "leader-native")).items[0].text, "persisted");
+  await assert.rejects(conversation.history(owner, "not-owned"), /does not belong/);
+  const wrongCursor = Buffer.from(JSON.stringify({ owner: JSON.stringify(owner), id: "other", cursor: "opaque" })).toString("base64url");
+  await assert.rejects(conversation.history(owner, "leader-native", wrongCursor), /another Session/);
+  assert.equal(reads, 3);
+});
 
 /**
  * A Task with an active Session per Role, so a control can be resolved against a

@@ -54,6 +54,8 @@ export const TASK_MESSAGE_INPUT_CONTROL_OUTCOMES = ["pending", "accepted", "reje
 export type TaskMessageInputControl = Readonly<{
   action: TaskMessageInputAction;
   requestId: string;
+  /** Optional exact Session selected by a structured conversation client. */
+  expectedSessionId?: string;
   /** The Leader's exact expected current Turn for a steer; absent for queue. */
   expectedTarget?: string;
 }>;
@@ -266,6 +268,9 @@ export function createTaskMessage(
       : { inputControl: {
           action: context.inputControl.action,
           requestId: requireSafeIdentity(context.inputControl.requestId, "Message input requestId"),
+          ...(context.inputControl.expectedSessionId === undefined ? {} : {
+            expectedSessionId: requireText(context.inputControl.expectedSessionId, "Message Session")
+          }),
           ...(context.inputControl.expectedTarget === undefined
             ? {} : { expectedTarget: requireText(context.inputControl.expectedTarget, "Message input expectedTarget") })
         } }),
@@ -475,6 +480,7 @@ export function validateTaskMessage(message: TaskMessage): void {
       throw new Error(`Message input action is invalid: ${String(message.inputControl.action)}.`);
     }
     requireSafeIdentity(message.inputControl.requestId, "Message input requestId");
+    if (message.inputControl.expectedSessionId !== undefined) requireText(message.inputControl.expectedSessionId, "Message Session");
     if (message.inputControl.expectedTarget !== undefined) {
       requireText(message.inputControl.expectedTarget, "Message input expectedTarget");
       if (message.inputControl.action !== "steer") {
@@ -554,7 +560,11 @@ export function validateTaskMessage(message: TaskMessage): void {
       throw new Error("A recipient requires an exact WorkItem or ReviewRound.");
     }
   }
-  if (message.continuation !== undefined && message.recipient?.ownerRunId === undefined) {
+  const selectedSessionNondelivery = message.inputControl?.action === "queue"
+    && message.inputControl.expectedSessionId !== undefined
+    && message.continuation?.runId === undefined
+    && message.continuation?.notDeliveredReason !== undefined;
+  if (message.continuation !== undefined && message.recipient?.ownerRunId === undefined && !selectedSessionNondelivery) {
     throw new Error("Message continuation requires an owner Assignment.");
   }
   if (message.continuation?.runId !== undefined) {
@@ -710,6 +720,9 @@ export function createGlobalRoleMessage(
       : { inputControl: {
           action: context.inputControl.action,
           requestId: requireSafeIdentity(context.inputControl.requestId, "Message input requestId"),
+          ...(context.inputControl.expectedSessionId === undefined ? {} : {
+            expectedSessionId: requireText(context.inputControl.expectedSessionId, "Message Session")
+          }),
           ...(context.inputControl.expectedTarget === undefined
             ? {} : { expectedTarget: requireText(context.inputControl.expectedTarget, "Message input expectedTarget") })
         } }),
@@ -740,6 +753,7 @@ export function validateGlobalRoleMessage(message: GlobalRoleMessage): void {
       throw new Error(`Message input action is invalid: ${String(message.inputControl.action)}.`);
     }
     requireSafeIdentity(message.inputControl.requestId, "Message input requestId");
+    if (message.inputControl.expectedSessionId !== undefined) requireText(message.inputControl.expectedSessionId, "Message Session");
     if (message.inputControl.expectedTarget !== undefined) {
       requireText(message.inputControl.expectedTarget, "Message input expectedTarget");
       if (message.inputControl.action !== "steer") {

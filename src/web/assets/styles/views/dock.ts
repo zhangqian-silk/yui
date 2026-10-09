@@ -13,6 +13,11 @@ export const DOCK_STYLES = `
 .feed>.empty{margin:auto 0}
 .feed-note{color:var(--ink-4);font-size:var(--fs-2xs);text-align:center}
 .feed-older{align-self:center}
+#dock-conversation .dock-sub select{min-width:0;max-width:100%;flex:1 1 180px}
+#dock-conversation .feed-note{overflow-wrap:anywhere;margin:4px 12px}
+#dock-conversation .composer-bar{flex-wrap:wrap}
+#dock-conversation .composer-input{width:100%;box-sizing:border-box}
+#dock-conversation .feed details{min-width:0;overflow-wrap:anywhere}
 .feed-day{display:flex;align-items:center;gap:10px;color:var(--ink-4);font-size:var(--fs-2xs);font-weight:500}
 .feed-day::before,.feed-day::after{content:"";flex:1;height:1px;background:var(--line)}
 

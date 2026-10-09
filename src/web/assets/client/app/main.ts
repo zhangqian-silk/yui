@@ -25,6 +25,7 @@ import { createThemeController } from "/assets/js/lib/theme.js";
 import { api } from "/assets/js/lib/api.js";
 import { createToast } from "/assets/js/ui/toast.js";
 import { createTerminalController } from "/assets/js/views/dock/terminal.js";
+import { createConversationController } from "/assets/js/views/dock/conversation.js";
 import { bindGlobalInput } from "/assets/js/views/globalInput.js";
 import { readQuery } from "/assets/js/layout/router.js";
 import { createWorkspace } from "/assets/js/layout/workspace.js";
@@ -44,6 +45,7 @@ const el = {
   locale: $("#locale-select"), themeOptions: $("#theme-options"),
   dock: $("#dock"), divider: $("#dock-divider"), dockSwap: $("#dock-swap"), dockClose: $("#dock-close"),
   dockTabDiscussion: $("#dock-tab-discussion"), dockTabSession: $("#dock-tab-session"),
+  dockTabConversation: $("#dock-tab-conversation"), conversation: $("#dock-conversation"),
   discussion: $("#dock-discussion"), session: $("#dock-session"),
   terminalHost: $("#terminal-host"), terminalEmpty: $("#terminal-empty"), terminalState: $("#terminal-state"),
   sessionTargets: $("#session-targets"), terminalCli: $("#terminal-cli")
@@ -67,6 +69,7 @@ const t = i18n.t;
 const locale = i18n.getLocale;
 const theme = createThemeController(el.themeOptions, t);
 const toast = createToast(el.toast);
+const conversation = createConversationController(el.conversation, t);
 const terminal = createTerminalController({
   host: el.terminalHost, empty: el.terminalEmpty, state: el.terminalState, targets: el.sessionTargets, cli: el.terminalCli
 }, t, locale, toast);
@@ -78,7 +81,7 @@ let taskView = null;
 let selection = null;
 let catalog = null;
 const workspace = createWorkspace({
-  el: el, state: state, terminal: terminal,
+  el: el, state: state, terminal: terminal, conversation: conversation,
   sessionOpened: function () { taskView.updateSessionTargets(); }
 });
 taskView = createTaskView({
@@ -127,6 +130,7 @@ i18n.subscribe(function () {
 
 workspace.updateLayout();
 taskView.showOverview();
+conversation.open({ scope: "global", roleName: "operator" });
 applyStateFromUrl();
 catalog.refresh();
 window.setInterval(function () { catalog.refresh({ quiet: true }); }, 5000);
