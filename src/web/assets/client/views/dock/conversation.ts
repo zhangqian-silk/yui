@@ -7,6 +7,7 @@ export function createConversationController(host, t) {
   let owner = null, selected = null, facts = null, cursor = null, next = null;
   let generation = 0, busy = false, timer = null, pending = null, historyOk = false;
   let rendered = new Map();
+  let materials = [], incomingMaterials = null;
   const select = h("select", { "aria-label": t("conversation.sessions") });
   const status = h("p.feed-note", { role: "status" });
   const identity = h("p.feed-note");
@@ -20,9 +21,14 @@ export function createConversationController(host, t) {
   const latest = h("button.btn", { type: "button" }, t("conversation.latest"));
   const current = h("button.btn", { type: "button" }, t("conversation.current"));
   const moreSessions = h("button.btn", { type: "button", hidden: true }, t("conversation.moreSessions"));
+  const file = h("input", { type: "file", "aria-label": t("materials.attach") });
+  const materialList = h("div.row-stack");
+  const materialAlert = h("p.feed-note", { role: "alert" });
+  const materialBar = h("details", null, h("summary", null, t("materials.attach")), file,
+    h("p.feed-note", null, t("materials.boundary")));
   host.append(h("div.dock-sub", null, select, current, moreSessions), identity, status, feed,
     h("div.composer-bar", null, older, latest),
-    h("div.composer-wrap", null, text, h("div.composer-bar", null, send, stop, check), receipt,
+    h("div.composer-wrap", null, materialBar, materialList, materialAlert, text, h("div.composer-bar", null, send, stop, check), receipt,
       h("p.feed-note", null, t("conversation.boundary"))));
 
   function key() { return "yui.conversation." + JSON.stringify(owner) + "." + selected; }
@@ -49,12 +55,37 @@ export function createConversationController(host, t) {
     stop.disabled = busy || !!pending || !writable || !turn || turn.status !== "accepted" || !turn.nativeTurnId;
     check.disabled = busy || !pending;
     older.disabled = busy || !next;
+    materialBar.hidden = !owner || owner.scope !== "task";
+    file.disabled = busy || !!pending || !writable || materials.length >= 8;
+    materialList.querySelectorAll("button").forEach(function (control) { control.disabled = busy || !!pending; });
+  }
+  function saveMaterials() { saved(".materials", JSON.stringify(materials)); }
+  function drawMaterials() {
+    clear(materialList);
+    materials.forEach(function (ref, index) {
+      const remove = h("button.btn", { type: "button" }, t("materials.remove"));
+      remove.disabled = busy || !!pending;
+      remove.addEventListener("click", function () { materials.splice(index, 1); saveMaterials(); drawMaterials(); controls(); });
+      materialList.append(h("div", null, h("span.small", null,
+        ref.relativePath + " · " + ref.commit + " · sha256:" + ref.digest), remove));
+    });
   }
   function choose(id) {
     if (selected) saved(".draft", text.value);
     generation++; selected = id; cursor = null; next = null; historyOk = false;
     text.value = saved(".draft") || "";
     try { pending = JSON.parse(saved(".pending") || "null"); } catch { pending = null; }
+    try { materials = JSON.parse(saved(".materials") || "[]"); } catch { materials = []; }
+    materialAlert.textContent = "";
+    if (incomingMaterials) {
+      const combined = materials.concat(incomingMaterials).filter(function (ref, index, all) {
+        return all.findIndex(function (other) { return other.commit === ref.commit && other.relativePath === ref.relativePath; }) === index;
+      });
+      if (combined.length > 8) materialAlert.textContent = t("materials.capacity");
+      else { materials = combined; saveMaterials(); }
+      incomingMaterials = null;
+    }
+    drawMaterials();
     receipt.textContent = pending ? t("conversation.unknown") + " " + pending.requestId : "";
     clear(feed); rendered.clear();
     controls();
@@ -164,6 +195,12 @@ export function createConversationController(host, t) {
         pending = null; saved(".pending", null);
         if (result.state === "accepted" && submitted.action !== "interrupt" && text.value === submitted.body) {
           text.value = ""; saved(".draft", null);
+          materials = materials.filter(function (ref) {
+            return !(submitted.materials || []).some(function (sent) {
+              return sent.commit === ref.commit && sent.relativePath === ref.relativePath;
+            });
+          });
+          saveMaterials(); drawMaterials();
         }
       }
     } catch (error) { if (own === generation) receipt.textContent = t("conversation.unknown") + " " + error.message; }
@@ -176,8 +213,11 @@ export function createConversationController(host, t) {
     const action = interrupt ? "interrupt" : turn && turn.status === "accepted" ? "steer" : "queue";
     const payload = { action: action, requestId: crypto.randomUUID() };
     if (!interrupt) payload.body = text.value;
+    if (!interrupt && materials.length) payload.materials = materials.map(function (ref) {
+      return { taskId: ref.taskId, relativePath: ref.relativePath, commit: ref.commit, digest: ref.digest };
+    });
     if (action !== "queue") payload.expectedTarget = turn.nativeTurnId || turn.attemptId;
-    pending = { requestId: payload.requestId, action: action, body: payload.body };
+    pending = { requestId: payload.requestId, action: action, body: payload.body, materials: payload.materials };
     saved(".pending", JSON.stringify(pending)); saved(".draft", text.value);
     const own = generation, endpoint = url({ session: selected });
     busy = true; controls();
@@ -200,6 +240,27 @@ export function createConversationController(host, t) {
     if (own === generation) await inspectReceipt();
   }
   text.addEventListener("input", function () { if (selected) saved(".draft", text.value); });
+  file.addEventListener("change", async function () {
+    const chosen = file.files[0];
+    if (!chosen || file.disabled) return;
+    const own = generation;
+    const endpoint = url({ session: selected }).replace("/api/conversation?", "/api/conversation/material?");
+    const requestId = crypto.randomUUID();
+    busy = true; controls();
+    try {
+      if (chosen.size > 256 * 1024) throw Object.assign(new Error(t("materials.tooLarge")), { disposition: "not-submitted" });
+      const content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(await chosen.arrayBuffer());
+      if (own !== generation) return;
+      const ref = await submitMutation(endpoint + "/" + requestId, endpoint,
+        { requestId: requestId, name: chosen.name, content: content });
+      if (own !== generation) return;
+      materials.push(ref); saveMaterials(); drawMaterials();
+      receipt.textContent = t("materials.saved");
+    } catch (error) {
+      if (own === generation) receipt.textContent = error.message + " · " + t("materials.inspectUpload")
+        + " materials/" + requestId + "/" + chosen.name;
+    } finally { file.value = ""; finish(own); drawMaterials(); }
+  });
   select.addEventListener("change", function () { choose(select.value); refresh(); });
   current.addEventListener("click", function () { if (facts) { choose(facts.currentSessionId); refresh(); } });
   older.addEventListener("click", function () { cursor = next; refresh(); });
@@ -234,7 +295,9 @@ export function createConversationController(host, t) {
         generation++; owner = target; selected = null; facts = null; pending = null; clear(select); clear(feed);
         cursor = null; next = null; historyOk = false; rendered.clear();
         text.value = ""; receipt.textContent = ""; identity.textContent = ""; controls();
+        materials = []; incomingMaterials = null; clear(materialList); materialAlert.textContent = "";
       }
+      if (options && options.materials) incomingMaterials = options.materials;
       if (!timer) timer = window.setInterval(function () { if (!cursor) refresh(); }, 2000);
       refresh();
     },

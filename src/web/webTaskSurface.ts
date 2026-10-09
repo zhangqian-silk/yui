@@ -1,5 +1,5 @@
-import { readArtifactCapability } from "../artifacts/artifactCapability.js";
 import { openTaskArtifactRepository } from "../artifacts/taskArtifactRepository.js";
+import { compareTextArtifacts, readTextArtifactPage } from "./webMaterials.js";
 import { applyGlobalInputControl } from "../commands/globalRoleCommands.js";
 import { applyTaskInputControl, runTaskCommand, sendTaskMessageCommand, updateTaskMetadataCommand } from "../commands/taskCommands.js";
 import { runTaskActivationCommand } from "../commands/taskActivationCommands.js";
@@ -178,18 +178,26 @@ export function createWebTaskSurface(
       return { taskId, integrations: reader.listIntegrationAttempts(taskId),
         reviews: reader.listReviewRounds(taskId), workspaces: reader.listManagedWorkspaces(taskId) };
     }),
-    artifacts: async (taskId: string) => {
+    artifacts: async (taskId: string, selectedCommit?: string, offset = 0) => {
       if (store.getTask(taskId) === null) throw new WebRequestRejected("Task not found.");
       const repo = openTaskArtifactRepository(store.rootDirectory(), taskId);
-      const commit = await repo.head();
+      if (selectedCommit !== undefined && !repo.exists()) throw new WebRequestRejected("Artifact revision unavailable.");
+      const commit = selectedCommit ?? await repo.head();
       const entries = commit === null ? [] : await repo.list(commit);
-      return { taskId, commit, entries };
+      if (!Number.isSafeInteger(offset) || offset < 0 || offset > entries.length) throw new WebRequestRejected("Invalid artifact offset.");
+      return { taskId, commit, entries: entries.slice(offset, offset + 40), total: entries.length,
+        nextOffset: offset + 40 < entries.length ? offset + 40 : null };
     },
-    artifact: async (taskId: string, relativePath: string, commit: string) => {
+    artifact: async (taskId: string, relativePath: string, commit: string, offset = 0) => {
       if (store.getTask(taskId) === null) throw new WebRequestRejected("Task not found.");
       // The browser always names a fixed revision. Never substitute HEAD after
       // a missing object, and never execute/render artifact HTML as an app.
-      return readArtifactCapability(store.rootDirectory(), taskId, { relativePath, commit });
+      return readTextArtifactPage(store.rootDirectory(), taskId, { taskId, relativePath, commit }, offset);
+    },
+    artifactDiff: async (taskId: string, relativePath: string, commit: string, beforeCommit: string, offset = 0) => {
+      if (store.getTask(taskId) === null) throw new WebRequestRejected("Task not found.");
+      return compareTextArtifacts(store.rootDirectory(), taskId,
+        { taskId, relativePath, commit: beforeCommit }, { taskId, relativePath, commit }, offset);
     },
     globalState: (roleName: string) => {
       const role = store.getGlobalRole(roleName);

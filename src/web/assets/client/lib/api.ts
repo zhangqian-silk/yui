@@ -99,9 +99,13 @@ export const api = {
     });
     return requestJson(task(taskId) + "/list?" + query);
   },
-  artifacts: function (taskId) { return requestJson(task(taskId) + "/artifacts"); },
-  artifact: function (taskId, path, commit) {
-    return requestJson(task(taskId) + "/artifacts?" + new URLSearchParams({ path, commit }));
+  artifacts: function (taskId, commit, offset) {
+    return requestJson(task(taskId) + "/artifacts?" + new URLSearchParams(commit ? { commit, offset: offset || 0 } : {}));
+  },
+  artifact: function (taskId, path, commit, offset, before) {
+    return requestJson(task(taskId) + "/artifacts?" + new URLSearchParams({
+      path, commit, offset: offset || 0, ...(before ? { before } : {})
+    }));
   },
   evidence: function (taskId) { return requestJson(task(taskId) + "/evidence"); },
   panels: function (taskId) { return requestJson(task(taskId) + "/panels", { signal: AbortSignal.timeout(3000) }); },
