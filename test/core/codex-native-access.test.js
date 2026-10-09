@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createCodexNativeAccess } from "../../dist/runtime/codexNativeAccess.js";
 import { openControlledCodexTui } from "../../dist/runtime/controlledCodexTui.js";
 import { resolve } from "node:path";
+import { nativeConfiguration, nativeTurnStart } from "../fixtures/managed-codex-native-shape.mjs";
 
 test("native access attaches to the same Thread and answers exact requests once", async () => {
   const sent = [], reads = [];
@@ -42,7 +43,7 @@ test("native TUI relay uses one existing connection and forwards complete prompt
     onMessage(listener) { emit = listener; },
     async request(method, params) {
       assert.equal(method, "thread/resume"); assert.equal(params.threadId, "thread");
-      return { thread: { id: "thread" } };
+      return { thread: { id: "thread" }, ...nativeConfiguration };
     },
     async send(message) {
       replies.push(message);
@@ -64,8 +65,7 @@ test("native TUI relay uses one existing connection and forwards complete prompt
   t.after(() => tui.close());
   await done;
   assert.deepEqual(errors, []);
-  assert.deepEqual(mutations, [{ method: "turn/start",
-    params: { threadId: "thread", input: [{ type: "text", text: "complete prompt" }] } }]);
+  assert.deepEqual(mutations, [{ method: "turn/start", params: nativeTurnStart }]);
   assert.deepEqual(replies, [{ id: "approval", result: { decision: "decline" } }]);
 });
 

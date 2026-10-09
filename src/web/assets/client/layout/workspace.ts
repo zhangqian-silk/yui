@@ -140,13 +140,16 @@ function showDock(ws, open) {
 
 function setDockOpen(ws, open) {
   showDock(ws, open);
-  if (!open) ws.deps.terminal.close();
+  if (!open) {
+    ws.terminalTarget = ws.deps.terminal.current() || ws.terminalTarget;
+    ws.deps.terminal.close();
+  }
   if (!open) ws.deps.conversation.close();
-  updateLayout(ws);
   if (open && ws.dock.mode === "conversation") ws.deps.conversation.reconnect();
   if (open && ws.dock.mode === "session") {
     ws.deps.terminal.open(ws.terminalTarget || { scope: "global", roleName: "operator" });
   }
+  updateLayout(ws);
 }
 
 function setDockMode(ws, mode) {

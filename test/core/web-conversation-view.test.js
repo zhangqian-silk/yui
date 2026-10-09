@@ -147,11 +147,12 @@ test("workbench continuation resolves the current Leader afresh without replayin
   f.controller.close();
 });
 
-test("connecting terminal remains visible and hide cancels attachment before a socket exists", () => {
+test("terminal hide cancels pending attachment and reopens the actual selected owner", () => {
   const context = vm.createContext({ writePreference() {} });
   vm.runInContext(WORKSPACE_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
-  const target = { scope: "global", roleName: "operator" };
-  let current = target, closed = 0, reopened;
+  const target = { scope: "task", taskId: "task-1", roleName: "leader", nativeSessionId: "leader-thread" };
+  const switched = { scope: "global", roleName: "operator", nativeSessionId: "operator-thread" };
+  let current = target, closed = 0, reopened, layoutVisible;
   const ws = {
     dock: { mode: "session", open: true }, narrow: { matches: false },
     terminalTarget: target,
@@ -161,13 +162,17 @@ test("connecting terminal remains visible and hide cancels attachment before a s
     }, conversation: { close() {} } }
   };
   assert.equal(context.dockVisible(ws), true);
-  vm.runInContext("updateLayout = function () {}", context);
+  // The terminal target chips change the terminal controller directly.
+  current = switched;
+  context.observeLayout = value => { layoutVisible = context.dockVisible(value); };
+  vm.runInContext("updateLayout = observeLayout", context);
   context.setDockOpen(ws, false);
   assert.equal(closed, 1);
   assert.equal(context.dockVisible(ws), false);
   context.setDockOpen(ws, true);
-  assert.equal(reopened, target);
+  assert.equal(reopened, switched, "never reopen the previous Task after selecting Operator");
   assert.equal(context.dockVisible(ws), true);
+  assert.equal(layoutVisible, true, "layout is rendered after restoring the selected target");
 });
 
 test("conversation preserves unsent drafts and reading state while receipts and refreshes arrive", async () => {
