@@ -6,6 +6,7 @@ import { WorkspaceCleanupBlockedError } from "../repository/taskWorkspacePrepare
 import { managedWorkspaceKey } from "../worktree/managedWorkspace.js";
 import { hasRuntimeLifecycleWork, runtimeLifecycleTarget } from "../runtime/lifecycleReservation.js";
 import { cleanupCheckFromError, renderCleanupCheck, type CleanupCheck } from "../workspace/cleanupInspection.js";
+import { jobCleanupBlocker } from "../job/jobCleanupInspection.js";
 
 export type ArchiveInspectionRequest = Readonly<{
   taskId: string; disposition: "integrated" | "abandoned"; force: boolean;
@@ -24,6 +25,10 @@ export function archiveSettlementChecks(store: TaskStore, task: Task): CleanupCh
     add(`work-item:${task.id}/${item.id}`, "owner-unsettled", "WorkItem must be accepted or explicitly retired before archive.",
       ["accepted", "retired"], item.status, `yui task work show ${task.id}/${item.id}`);
   }
+  for (const round of store.listReviewRounds(task.id).filter(r => ["pending", "running"].includes(r.status))) {
+    add(`review-round:${task.id}/${round.id}`, "owner-unsettled", "ReviewRound must be terminal before ordinary archive.",
+      ["completed", "failed"], round.status, `yui task context list ${task.id} --store review-round`);
+  }
   for (const attempt of store.listIntegrationAttempts(task.id).filter(a =>
     ["running", "blocked", "conflicted", "validating"].includes(a.status))) {
     add(`integration-attempt:${task.id}/${attempt.id}`, "unresolved-integration", "Task has an unresolved Integration Attempt.",
@@ -40,7 +45,10 @@ export function archiveSettlementChecks(store: TaskStore, task: Task): CleanupCh
 /** Unknown execution is never permission to remove workspaces, even after
  * force admission. These facts are reloaded in the actual force cleanup path.
  */
-export function archiveExecutionChecks(store: TaskStore, taskId: string): CleanupCheck[] {
+export function archiveExecutionChecks(
+  store: TaskStore, taskId: string, home?: string,
+  phase: "before-role-stop" | "before-removal" = "before-removal"
+): CleanupCheck[] {
   const checks: CleanupCheck[] = [];
   const add = (resource: string, reason: string, detail: string, observed: unknown, action: string) =>
     checks.push({ resource, reason, status: "unknown", detail, expected: "settled execution",
@@ -49,9 +57,9 @@ export function archiveExecutionChecks(store: TaskStore, taskId: string): Cleanu
     add(`run:${taskId}/${run.id}`, "active-turn", "AgentRun remains active; archive is not stop evidence.",
       run.status, `yui task run show ${taskId}/${run.id}`);
   }
-  for (const job of store.listDurableJobs(taskId).filter(j =>
-    ["queued", "running", "unknown-needs-attention"].includes(j.status))) {
-    add(`job:${taskId}/${job.id}`, "unresolved-execution", "DurableJob may still hold resources; acknowledgement is not physical exit evidence.",
+  for (const job of store.listDurableJobs(taskId)) {
+    const blocker = jobCleanupBlocker(job, home, phase);
+    if (blocker !== undefined) add(`job:${taskId}/${job.id}`, "unresolved-execution", blocker,
       job.status, `yui job get --task ${taskId} --job ${job.id}`);
   }
   for (const role of store.listRoles(taskId)) {
@@ -87,7 +95,7 @@ export async function inspectTaskArchive(coordinator: TaskWorkspaceCoordinator, 
       observed: { coverage: p.coverage, merged: p.merged, verified: p.verified, localCommit: p.publication?.localCommit ?? null },
       sources: [`task:${task.id}`, ...(p.publication === null ? [] : [`publication:${task.id}/${p.publication.id}`])],
       actions: [`yui task remote-delivery ${task.id}`] }));
-  const execution = archiveExecutionChecks(store, task.id);
+  const execution = archiveExecutionChecks(store, task.id, preparer.home);
   const runtimeResource = `runtime:${task.id}`;
   if (runtime.assertTaskPhysicalResourcesReleased === undefined) {
     execution.push(...cleanupCheckFromError(null, runtimeResource, [`task:${task.id}`],
@@ -117,26 +125,37 @@ export async function inspectTaskArchive(coordinator: TaskWorkspaceCoordinator, 
       checks });
   }
   const eligible = ["completed", "cancelled", "archived"].includes(task.status);
+  const limit = 32;
+  const boundedExecution = execution.slice(0, limit);
   return { taskId: task.id, observedAt: new Date().toISOString(), disposition: request.disposition, force: request.force,
     readOnly: true, authorizesCleanup: false,
     archive: { status: task.status, eligible, alreadyArchived: task.status === "archived",
-      settlement, delivery: deliveryChecks, forceBypassesSettlement: request.force,
+      settlement: settlement.slice(0, limit), delivery: deliveryChecks.slice(0, limit), forceBypassesSettlement: request.force,
+      execution: boundedExecution, physicalRetentionBlocksArchive: false,
       requiresIndependentAuthorization: true },
-    cleanup: { execution, resources },
-    note: "Current observations only. Execution reloads the checks. Force commits archive first and retains unsafe resources; a finished attempt does not prove resource release." };
+    cleanup: { execution: boundedExecution, resources: resources.slice(0, limit).map(resource => ({
+      ...resource, checkCount: resource.checks.length, checks: resource.checks.slice(0, limit)
+    })) },
+    counts: { settlement: settlement.length, delivery: deliveryChecks.length,
+      execution: execution.length, resources: resources.length },
+    actions: [`yui task context list ${task.id} --store managed-workspace`,
+      `yui task remote-delivery ${task.id}`, `yui task event list ${task.id}`],
+    note: "Current observations only. Ordinary archive requires settled business, exact delivery and stopped execution; safe physical retention is separate. Cleanup reloads these checks after archive commits. A finished attempt does not prove resource release." };
 }
 
 export function renderTaskArchivePreflight(data: Awaited<ReturnType<typeof inspectTaskArchive>>): string {
   return [
     `Archive preflight: ${data.taskId} (${data.disposition}${data.force ? ", force" : ""}); read-only, not authorization`,
     `Task: ${data.archive.status}; terminal eligibility: ${data.archive.eligible}`,
+    `Checks/resources (showing at most 32 per list): settlement=${data.counts.settlement}; delivery=${data.counts.delivery}; execution=${data.counts.execution}; resources=${data.counts.resources}`,
     ...data.archive.settlement.map(c => `Admission${data.force ? " (force preserves)" : ""}: ${renderCleanupCheck(c)}`),
     ...data.archive.delivery.map(c => `Delivery${data.force || data.disposition === "abandoned" ? " (advisory for admission)" : ""}: ${renderCleanupCheck(c)}`),
     ...data.cleanup.execution.map(c => `Cleanup: ${renderCleanupCheck(c)}`),
     ...data.cleanup.resources.flatMap(r => [
-      `Workspace [${r.resource}]: ${r.status}`,
+      `Workspace [${r.resource}]: ${r.status}; checks=${r.checkCount}`,
       ...r.checks.map(c => `  ${renderCleanupCheck(c)}`)
     ]),
-    data.note
+    data.note,
+    `Inspect full evidence: ${data.actions.join("; ")}`
   ].join("\n") + "\n";
 }

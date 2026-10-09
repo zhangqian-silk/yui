@@ -1,5 +1,6 @@
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { lstat, readdir, readlink } from "node:fs/promises";
 import type { TaskStore } from "../storage/taskStore.js";
 import { projectTaskRemoteDeliveryFromStore } from "../task/remoteDeliveryService.js";
 import type { Task } from "../task/task.js";
@@ -9,13 +10,17 @@ import { WorkItemChangeSetManager } from "../workspace/workItemChangeSetManager.
 import { managedWorkspaceKey, managedWorktreeName, type ManagedWorkspace } from "../worktree/managedWorkspace.js";
 import { integrationWorktreeIdentity, worktreeIdentity, type GitWorkspacePort } from "./gitWorkspace.js";
 import { taskWorkspaceRefSegment } from "./taskWorkspaceIdentity.js";
+import { jobCleanupBlocker } from "../job/jobCleanupInspection.js";
+import { defaultIntegrationRuntimeIsolation } from "../runtime/integrationRuntimeIsolation.js";
+import { inspectTaskRuntimeCleanup, type TaskRuntimeIsolationPort } from "../runtime/taskRuntimeIsolation.js";
 
 /** Current owner facts + the same Git inspection used immediately before removal.
  * No preparation, locks, Git refresh, runtime stop, DB writes or repair.
  */
 export async function inspectWorkspaceCleanup(
   store: TaskStore, git: GitWorkspacePort, workspace: ManagedWorkspace,
-  disposition: WorkItemWorkspaceDisposition, forceArchive = false
+  disposition: WorkItemWorkspaceDisposition, forceArchive = false, home?: string,
+  integrationRuntime?: TaskRuntimeIsolationPort
 ): Promise<CleanupCheck[]> {
   const owner = workspace.owner;
   const task = store.getTask(owner.taskId);
@@ -31,6 +36,19 @@ export async function inspectWorkspaceCleanup(
       "same managed workspace", "changed or missing");
     return checks;
   }
+  // Job admission supports these three exact managed owners. Apply the same
+  // physical check before every supported owner's cleanup, not only Integration.
+  for (const job of store.listDurableJobs(task.id).filter(job =>
+    (owner.type === "task" && job.owner.kind === "task")
+    || (owner.type === "work-item" && job.owner.kind === "work-item"
+      && job.owner.workItemId === owner.workItemId)
+    || (owner.type === "integration-attempt" && job.owner.kind === "integration-attempt"
+      && job.owner.integrationAttemptId === owner.integrationAttemptId))) {
+    const blocker = jobCleanupBlocker(job, home);
+    if (blocker !== undefined) add("unresolved-execution", blocker,
+      "settled execution", { jobId: job.id, status: job.status });
+  }
+  checks.push(...await inspectWorkspaceContainer(workspace));
   if (task.workspaceIdentity === undefined && workspace.entries.some(e => e.access === "write")) {
     add("workspace-metadata-missing", "Task has no durable workspace identity; do not infer one from paths.",
       "recorded Task workspace identity", null);
@@ -78,8 +96,24 @@ export async function inspectWorkspaceCleanup(
     }
     case "integration-attempt": {
       const attempt = store.getIntegrationAttempt(task.id, owner.integrationAttemptId);
+      const entry = workspace.entries[0];
+      if (workspace.entries.length !== 1 || entry?.access !== "write"
+        || entry.projectId !== attempt?.projectId || entry.path !== workspace.root) {
+        add("workspace-identity-mismatch", "Integration resource does not match its single recorded Project worktree.",
+          "one writable Project at the Integration root", "different or missing entry");
+        return checks;
+      }
       if (attempt === null || ["running", "blocked", "conflicted", "validating"].includes(attempt.status)) {
         add("owner-unsettled", "IntegrationAttempt must be terminal before cleanup.", "terminal attempt", attempt?.status ?? null);
+      }
+      try {
+        if (home === undefined) throw new Error("Runtime Home unavailable.");
+        const runtime = integrationRuntime ?? defaultIntegrationRuntimeIsolation(home, store.getHomeIdentity().homeId);
+        inspectTaskRuntimeCleanup(runtime.preflight({ workspace, allowExactActive: true }),
+          attempt?.status === "committed" ? "completion" : "failure");
+      } catch {
+        add("runtime-resource-unverified", "Integration runtime ownership or physical quiescence cannot be verified.",
+          "exactly owned inactive runtime and cleanup claims", "unverified");
       }
       break;
     }
@@ -90,9 +124,9 @@ export async function inspectWorkspaceCleanup(
       }
       break;
   }
-  const delivery = owner.type === "task" && (disposition === "integrated" || task.status === "archived" || forceArchive)
+  const delivery = owner.type === "task"
     ? await readArchiveDelivery(store, git, task, forceArchive) : undefined;
-  if (delivery !== undefined && (!delivery.allMerged || !delivery.allVerified)) {
+  if (disposition === "integrated" && delivery !== undefined && (!delivery.allMerged || !delivery.allVerified)) {
     add("delivery-coverage", "Task main has commits without verified remote coverage; cleanup does not establish delivery.",
       { allMerged: true, allVerified: true }, { allMerged: delivery.allMerged, allVerified: delivery.allVerified });
   }
@@ -130,13 +164,19 @@ export async function inspectWorkspaceCleanup(
           ? await git.inspectTaskClone({ path: entry.path, container: workspace.root, directory: entry.directory,
             taskSegment, branch: entry.branch })
           : await git.inspectWorktree({ repositoryPath: main!.path, container, directory: entry.directory,
-            taskSegment, roleName, expectedBranch });
+            taskSegment, roleName,
+            ...(owner.type === "integration-attempt" ? { expectedBranch } : {}) });
         if (state === "dirty") check("dirty-worktree", "Uncommitted or untracked changes must be preserved.", "clean", "dirty");
         if (owner.type === "task" && state !== "missing" && delivery !== undefined) {
           const covered = delivery.projects.find(p => p.projectId === entry.projectId);
           const expected = covered?.expectedLocalCommit;
           const observed = (await git.inspect(entry.path, "HEAD")).baseCommit;
-          if (expected != null && expected !== observed && covered?.deliveryLocalCommit !== observed) {
+          const baseline = task.projectBindings.find(binding => binding.projectId === entry.projectId)?.baseCommit;
+          const unchangedAbandonment = disposition === "abandoned" && baseline !== undefined && observed === baseline;
+          if (!unchangedAbandonment && disposition === "abandoned" && (!covered?.merged || !covered.verified)) {
+            check("delivery-coverage", "Abandonment does not discard unverified local commits; only the exact unchanged baseline is disposable.",
+              { baseline: baseline ?? null, verifiedDelivery: true }, observed);
+          } else if (!unchangedAbandonment && expected != null && expected !== observed && covered?.deliveryLocalCommit !== observed) {
             check("head-mismatch", "Task main HEAD differs from the accepted head and its covered publication candidate.",
               { acceptedCommit: expected, deliveryLocalCommit: covered?.deliveryLocalCommit ?? null }, observed);
           }
@@ -148,6 +188,43 @@ export async function inspectWorkspaceCleanup(
     checks.push(...entryChecks);
   }
   return checks;
+}
+
+/** Inspect the complete logical container before removing any Project. Files
+ * and unrecognized links are evidence, not disposable workspace scaffolding.
+ */
+export async function inspectWorkspaceContainer(workspace: ManagedWorkspace): Promise<CleanupCheck[]> {
+  if (workspace.owner.type === "integration-attempt") return []; // root is the Git worktree itself
+  const resource = managedWorkspaceKey(workspace.owner);
+  const sources = [resource];
+  const actions = workspaceCleanupActions(workspace);
+  try {
+    const root = await lstat(workspace.root).catch(error => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (root === null) return [];
+    if (!root.isDirectory() || root.isSymbolicLink()) return [{
+      resource, reason: "workspace-identity-mismatch", status: "blocked",
+      detail: "Logical workspace container is not an owned directory.",
+      expected: "directory", observed: "different filesystem type", sources, actions
+    }];
+    const unexpected: string[] = [];
+    for (const entry of await readdir(workspace.root, { withFileTypes: true })) {
+      const owned = workspace.entries.find(e => e.directory === entry.name);
+      const allowed = owned !== undefined && (owned.access === "write"
+        ? entry.isDirectory() && !entry.isSymbolicLink()
+        : entry.isSymbolicLink() && resolve(workspace.root,
+          await readlink(join(workspace.root, entry.name))) === resolve(owned.path));
+      if (!allowed) unexpected.push(entry.name);
+    }
+    return unexpected.length === 0 ? [] : [{
+      resource, reason: "workspace-material-retained", status: "blocked",
+      detail: "Logical container contains material outside its registered Project entries; no Project removal was started.",
+      expected: "only registered Project directories/links", observed: unexpected,
+      sources, actions
+    }];
+  } catch (error) { return cleanupCheckFromError(error, resource, sources, actions); }
 }
 
 /** Reuse Publication's projection, supplying live heads only where its existing
@@ -179,7 +256,8 @@ export async function readArchiveDelivery(store: TaskStore, git: GitWorkspacePor
 export function workspaceCleanupActions(workspace: ManagedWorkspace): string[] {
   const owner = workspace.owner;
   switch (owner.type) {
-    case "task": return [`yui task remote-delivery ${owner.taskId}`, `yui task show ${owner.taskId}`];
+    case "task": return [`yui task remote-delivery ${owner.taskId}`, `yui task show ${owner.taskId}`,
+      `yui task archive-cleanup ${owner.taskId}`];
     case "work-item": return [`yui task work show ${owner.taskId}/${owner.workItemId}`,
       `yui task work cleanup ${owner.taskId}/${owner.workItemId} --integrated|--abandon`];
     case "review-round": return [`yui task work review show ${owner.taskId}/${owner.reviewRoundId}`,

@@ -8,6 +8,7 @@ import { admitLeaderArchive, assertLeaderArchiveAdmission } from "./leaderArchiv
 import { assertTaskRemoteDeliveryIntegrated, createTaskRemoteDeliveryProof } from "./remoteDeliveryService.js";
 import type { TaskReviewCandidate } from "../review/reviewRound.js";
 import { selectNewTaskRoleSession } from "../executor/agentExecutor.js";
+import { taskArchiveDiagnostics } from "./archiveDiagnostics.js";
 
 export type LeaderArchiveRequest = Readonly<{
   sourceMessage: string;
@@ -44,7 +45,7 @@ export async function archiveLeaderTask(
   // Only the requesting no-Run Leader may be stopped as part of this action.
   // Another Run, Job, unknown input, or then handoff is not archive authority.
   const ownResources = `role:${taskId}/leader`;
-  const execution = archiveExecutionChecks(store, taskId).filter(check =>
+  const execution = archiveExecutionChecks(store, taskId, coordinator.preparer.home, "before-role-stop").filter(check =>
     !(check.resource === ownResources
       && ownInput?.runId === undefined && ownInput?.status === "accepted"
       && ["unresolved-provider-input", "unresolved-mailbox"].includes(check.reason)));
@@ -55,7 +56,7 @@ export async function archiveLeaderTask(
   }
   let candidate: TaskReviewCandidate | null = null;
   const workspace = store.getTaskWorkspace(taskId);
-  if (task.projectBindings.length && workspace) {
+  if (task.status === "cancelled" && task.projectBindings.length && workspace) {
     const snapshot = await coordinator.preparer.snapshotDirectTaskMain(workspace,
       task.projectBindings.map(binding => binding.projectId));
     candidate = { schemaVersion: 1, projects: snapshot.projects.map(project => ({
@@ -64,14 +65,6 @@ export async function archiveLeaderTask(
   }
   const proof = createTaskRemoteDeliveryProof(store, task, candidate);
   assertTaskRemoteDeliveryIntegrated(proof.delivery);
-  for (const owned of store.listManagedWorkspaces(taskId)) {
-    const disposition = owned.owner.type === "work-item"
-      && store.getWorkItem(taskId, owned.owner.workItemId)?.status === "retired" ? "abandoned" : "integrated";
-    const checks = await coordinator.preparer.inspectWorkspaceCleanup(owned, disposition);
-    if (checks.some(check => !(owned.owner.type === "task" && check.reason === "git-worktree-registrations"))) {
-      throw new Error(`Archive workspace is not clean/removable: ${JSON.stringify(checks)}`);
-    }
-  }
   // Reauthenticate after asynchronous inspection, before the first effect.
   admitLeaderArchive(store, taskId, environment, request.sourceMessage, request.purpose);
   assertLeaderArchiveAdmission(store, taskId, admission);
@@ -111,13 +104,15 @@ export async function archiveLeaderTask(
       // the first verified stop already released its physical owner records.
       tx.saveTaskRoleSessionSet(selectNewTaskRoleSession(stopped, stopped.activeAgentId, new Date()));
     });
-    const cleanup = await coordinator.cleanupTaskForArchive(taskId, "integrated");
-    if (cleanup.status !== "removed") throw new Error(cleanup.error ?? `Archive cleanup ${cleanup.status}.`);
+    await coordinator.prepareTaskForArchive(taskId);
     runTaskCommand(["archive", taskId, "--integrated"], store, {
-      environment, archiveLeaderAdmission: admission, archiveRemoteDeliveryProof: proof
+      environment, yuiHome: coordinator.preparer.home,
+      archiveLeaderAdmission: admission, archiveRemoteDeliveryProof: proof
     });
+    await coordinator.cleanupArchivedTask(taskId, "integrated");
     record("task.leader-archive-result", { status: "archived" });
-    return { taskId, requestId: request.requestId, status: "archived" };
+    return { taskId, requestId: request.requestId, status: "archived",
+      ...taskArchiveDiagnostics(store, store.getTask(taskId)!) };
   } catch (error) {
     record("task.leader-archive-result", { status: store.getTask(taskId)?.status === "archived" ? "archived" : "failed",
       detail: error instanceof Error ? error.message : String(error) });

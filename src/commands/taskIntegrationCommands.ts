@@ -74,25 +74,8 @@ async function cleanupIntegration(
       `Integration is not terminal: ${integration.id}/${integration.status}.`
     );
   }
-  // rr4/finding-5: An Integration Attempt with an active DurableJob cannot be
-  // cleaned up — the runner may still be using its worktree. Block on queued,
-  // running, and unacknowledged unknown-needs-attention jobs owned by it.
-  const activeIntegrationJob = store.listDurableJobs(integration.taskId).find((job) => (
-    job.owner.kind === "integration-attempt"
-    && job.owner.integrationAttemptId === integration.id
-    && (
-      job.status === "queued"
-      || job.status === "running"
-      || (job.status === "unknown-needs-attention" && job.acknowledgedAt === undefined)
-    )
-  ));
-  if (activeIntegrationJob !== undefined) {
-    throw usageError(
-      `Integration ${integration.id} has an active DurableJob: `
-      + `${activeIntegrationJob.id}/${activeIntegrationJob.status}. `
-      + "Cancel or acknowledge it before cleanup."
-    );
-  }
+  // The service's shared owner inspection checks both Job settlement and
+  // current physical occupancy before any runtime or worktree is released.
   const result = await new GitIntegrationService(home, store).cleanup(integration, {
     authorize: () => taskLocalActor(store, environment, integration.taskId)
   });
@@ -105,9 +88,9 @@ async function cleanupIntegration(
   }
   return {
     output: result === "removed"
-      ? `Cleaned Integration worktree and check logs ${integration.id}\n`
-      : `Integration worktree and check logs already clean: ${integration.id}\n`,
-    data: { integrationId: integration.id, cleanup: result }
+      ? `Cleaned Integration worktree ${integration.id}; history and check logs retained\n`
+      : `Integration worktree already clean: ${integration.id}; history and check logs retained\n`,
+    data: { integrationId: integration.id, cleanup: result, historyRetained: true }
   };
 }
 

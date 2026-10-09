@@ -104,6 +104,9 @@ judgment; it does not accept the WorkItem or complete the Task. Preserve the
 ReviewRound record and workspace, and report any diagnostic changes. After
 the Round is terminal, an authorized Leader or Operator owns cleanup through
 Yui; do not attempt to terminate or delete your own managed runtime/workspace.
+Keep scratch in the supplied runtime `TMPDIR` and put required diagnostic
+evidence in durable results/artifacts; resource release must not erase the
+frozen Review or its original report.
 
 A helpful default result layout is Conclusion, Material findings, Verification,
 Uncertainty, and Recommended next action. Markdown or JSON are both acceptable.

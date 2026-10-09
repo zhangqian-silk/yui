@@ -200,14 +200,14 @@ test("source-authorized ordinary archive survives ending its caller and records 
         ...f.set.sessions.codex, status: "ended", endReason: "stopped"
       } } });
     } },
-    cleanupTaskForArchive: async () => {
+    prepareTaskForArchive: async () => {
       const stoppedSet = f.store.getTaskRoleSessionSet("task-1", "leader");
       assert.deepEqual(stoppedSet.sessions, {},
         "retire the stopped caller before generic cleanup can stop it a second time");
       assert.equal(stoppedSet.history.at(-1).nativeSessionId, "leader-current");
       assert.equal(stoppedSet.history.at(-1).status, "ended");
-      return { taskId: "task-1", status: "removed" };
-    }
+    },
+    cleanupArchivedTask: async () => { assert.equal(f.store.getTask("task-1").status, "archived"); }
   };
   const request = { sourceMessage: source.id, purpose: source.body, requestId: "archive-once" };
   assert.throws(() => f.command(["archive", "task-1", "--integrated"]), /source-authorized/);

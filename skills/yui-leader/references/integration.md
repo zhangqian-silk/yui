@@ -33,6 +33,10 @@ the files there, then run `integration continue`. No preceding
 `resolve --option manual-resolution` is required for an ordinary conflict.
 Core completes the matching Git operation, records the candidate, runs or
 recovers its exact checks and advances the original target by CAS.
+Keep that same attempt for ordinary resolution and record its rationale in
+the existing resolution/report evidence. A detached HEAD during a matching
+rebase is normal. Start another attempt only for a real input/baseline change
+or evidenced inability to resume safely, explaining that decision.
 
 Do not close the Task execution gate, stop unrelated work, create an
 InputRequest or end in passive waiting merely because Git conflicted.
@@ -85,6 +89,22 @@ deletion, target advancement, or proof that a Job/process has stopped.
 Inspect all Jobs owned by the exact attempt, including an unbound Job;
 cancel and establish quiescence by exact identity before reusing or cleaning
 resources. Successful Job evidence and Task acceptance remain separate.
+
+After terminal settlement, `task integration cleanup <task>/<integration>`
+can release clean exact-owner temporary resources without waiting for Task
+archive. Save necessary reports in Task artifacts/results first. Cleanup
+preserves the attempt, fixed checks/logs and target receipts. Failure or abort
+never authorizes deleting uncommitted resolutions; preserve dirty material
+and resolve its disposition explicitly. Acknowledging an unknown Job is not
+physical stop evidence: cleanup also rechecks the recorded runner generation
+and physical workspace/log/runtime references. When those are proven absent,
+the acknowledged unknown result remains historical evidence, not a permanent
+physical-cleanup blocker.
+The same physical checks apply to every executed terminal Job, including a
+successful one: surviving child processes are not stopped by a result receipt.
+Integration resource preflight includes runtime ownership and renamed cleanup
+claims; retain unverified material for diagnosis without inferring new deletion
+authority from Task archive admission.
 
 Direct Task-main delivery is an alternative only when current delivery
 authority, ownership and the Task contract already permit it, with no other

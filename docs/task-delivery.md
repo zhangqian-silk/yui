@@ -305,17 +305,21 @@ yui task archive <task> (--integrated|--abandon) --force
 
 ### Ordinary archive
 
-Active work and inputs must be settled, and managed resources clean and safely
-removable. WorkItem results must be integrated or deliberately abandoned;
+Active work and inputs must be settled, and execution proven stopped.
+WorkItem results must be integrated or deliberately abandoned;
 Review, Lane and Integration resources must be settled. With `--integrated`,
 each Project requiring code delivery needs a merged, verified Publication
 covering its accepted head, either exactly or through valid explicit candidate
 adoption. `--abandon` records deliberate non-delivery,
 not verified merge.
 
-Missing/stale coverage, unresolved execution or dirty worktrees prevent ordinary
-archive. Resolve the reported facts before an explicit retry; no implicit reset
+Missing/stale coverage or unresolved execution prevents ordinary archive.
+Dirty or otherwise unsafe temporary resources are retained after the logical
+archive commit; they do not require force merely to archive. No implicit reset
 or force deletion occurs.
+For `--abandon`, a clean Task-main at its exact recorded Project baseline can
+be released without a Publication. New unverified commits remain protected.
+Pending or running Reviews are unsettled business, not just retained directories.
 
 ### Explicit force archive
 
@@ -345,10 +349,21 @@ current ownership, not a second cleanup queue.
 An archive result with `archived=true` proves archival, not that cleanup fully
 succeeded. Even `cleanupFinished` means the foreground pass finished, not that
 every resource was removed. Repeating archive reports current facts and does
-not replay cleanup. After inspection, use explicit exact-owner resource
-operations for safe cleanup; no background retry or broader deletion authority
+not replay cleanup. After inspection, use `yui task archive-cleanup <task>` to
+retry safe exact-owner cleanup. `allResourcesReleased` reports the current pass
+and remaining ownership separately from historical warnings; no background retry or broader deletion authority
 is implied. Both archive paths preserve Task history and recovery information.
 Archived Tasks cannot reopen.
+
+Interrupted runtime cleanup may leave an adjacent `.cleanup-*` directory.
+Retries inspect these claims as well as the original path: only an exact Owner
+marker and no live process references permit deletion. Missing or mismatched
+markers remain retained with their path for explicit diagnosis; absence of the
+original directory alone never proves release. Unresolved claims also prevent
+reactivating the same runtime. Executed-Job physical checks use that same claim
+inventory before ordinary archive commits; acknowledgement does not bypass a
+live or unverified renamed runtime. This uses the existing resource owner and receipt,
+not a second cleanup queue.
 
 Resource GC is a separate, opt-in quarantine path. A runtime subtree moves once:
 the parent receipt owns recovery of its contents, and redundant child registry
@@ -411,8 +426,21 @@ Preflight is an observation, not a removal permit. Cleanup reloads the same
 checks and Git verifies ownership/dirt again at removal. A Task-main clone's
 dependent registrations are expected before child cleanup and must be absent
 before clone removal. Archive preserves new dirt even in a failed Integration
-workspace; the separate explicit Integration cleanup command keeps its existing
-disposable-conflict behavior. A finished force cleanup means the foreground
+workspace; explicit Integration cleanup also preserves dirt and durable logs.
+An acknowledged unknown Job result remains unknown: cleanup additionally needs
+fresh evidence that its exact runner generation and physical path references
+are absent. Successful, failed, timed-out and cancelled executed Jobs need the
+same physical evidence; a terminal result does not prove surviving children
+stopped. Only Jobs cancelled/rejected before any execution effect bypass it.
+Cleanup first checks Job results and exact runner exit, then stops only settled,
+exactly owned Roles. It repeats full path-reference checks after that stop and
+before deleting any child workspace or committing ordinary archive. An idle
+reusable Role sharing the workspace is not itself a reason to skip its normal
+stop; surviving or unverified references still prevent release.
+Integration resource preflight also checks runtime ownership and cleanup claims
+with the deletion inspector. Unverified physical material is retained without
+turning it into a new ordinary-archive business gate.
+A finished cleanup means the foreground
 attempt ended, not that every resource was released. Current retained references
 and exact physical runtime evidence remain separate from historical diagnostics.
 

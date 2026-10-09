@@ -11,7 +11,8 @@ import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { FileTaskWorkspacePreparer } from "../../dist/repository/taskWorkspacePreparer.js";
 import { TaskWorkspaceCoordinator } from "../../dist/repository/taskWorkspaceCoordinator.js";
 import { inspectTaskArchive, renderTaskArchivePreflight } from "../../dist/task/archivePreflight.js";
-import { createTask, activateTask, completeTask } from "../../dist/task/task.js";
+import { createTask, activateTask, completeTask, retireTask } from "../../dist/task/task.js";
+import { createTaskReviewRound, finishReviewRound } from "../../dist/review/reviewRound.js";
 import { createProject } from "../../dist/repository/project.js";
 import { createManagedWorkspace } from "../../dist/worktree/managedWorkspace.js";
 import { createTaskEvent } from "../../dist/event/taskEvent.js";
@@ -20,6 +21,9 @@ import { runTaskCommand } from "../../dist/commands/taskCommands.js";
 import { upsertTaskPublication } from "../../dist/commands/taskPublicationCommands.js";
 import { runTaskPublicationAdoptCommand } from "../../dist/commands/taskPublicationAdoptCommand.js";
 import { generateTaskWorkspaceIdentity, taskWorkspaceRefSegmentFromIdentity } from "../../dist/repository/taskWorkspaceIdentity.js";
+import { ResourceRegistrar } from "../../dist/resources/resourceRegistrar.js";
+import { withResourceRegistry } from "../../dist/resources/resourceRegistryStore.js";
+import { SqliteResourceRegistry } from "../../dist/resources/sqliteResourceRegistry.js";
 
 function fixture(t) {
   const home = mkdtempSync(join(tmpdir(), "yui-archive-preflight-"));
@@ -111,6 +115,7 @@ test("archive preflight observes SQLite and Git without writes, and force still 
   store.saveManagedWorkspace(createManagedWorkspace({ owner: { type: "task", taskId: task.id },
     root: task.cwd, entries: [{ projectId: "project-1", directory: "app", access: "write", path: root,
       branch, baseRef: "main", baseCommit: base }] }, now));
+  new ResourceRegistrar(home).registerManagedWorkspace(store.getTaskWorkspace(task.id));
   const preparer = new FileTaskWorkspacePreparer(home, store);
   const coordinator = new TaskWorkspaceCoordinator(store, preparer, {
     async stopTaskRoleSessions() { assert.fail("inspection must not stop a runtime"); },
@@ -131,6 +136,12 @@ test("archive preflight observes SQLite and Git without writes, and force still 
     workspaces: store.listManagedWorkspaces(task.id), publications: store.listPublicationReferences(task.id) }, before);
   assert.deepEqual(readFileSync(indexPath), index);
   assert.match(renderTaskArchivePreflight(report), /not authorization/);
+  writeFileSync(join(task.cwd, "diagnosis.txt"), "owner evidence outside Git");
+  const material = await inspectTaskArchive(coordinator, request);
+  assert.ok(material.cleanup.resources[0].checks.some(c => c.reason === "workspace-material-retained"));
+  await assert.rejects(preparer.cleanupTaskForArchive(task.id, "integrated"), /workspace-material-retained/);
+  assert.equal(existsSync(root), true, "container material is checked before removing any child clone");
+  rmSync(join(task.cwd, "diagnosis.txt"));
   git(root, "commit", "--allow-empty", "-m", "new HEAD after inspection");
   const moved = await inspectTaskArchive(coordinator, request);
   assert.ok(moved.cleanup.resources[0].checks.some(c => c.reason === "head-mismatch"));
@@ -150,6 +161,142 @@ test("archive preflight observes SQLite and Git without writes, and force still 
     async stopTaskRoleSessions() { assert.fail("read only"); }
   }), { ...request, force: true });
   assert.ok(unknown.cleanup.execution.some(c => c.status === "unknown"));
+});
+
+test("ordinary abandoned archive waits for Review settlement and releases only the unchanged baseline", async t => {
+  const { home, root, git } = fixture(t);
+  const store = new SqliteTaskStore(home);
+  t.after(() => store.close());
+  const now = new Date("2026-10-08T00:00:00Z");
+  const workspaceIdentity = generateTaskWorkspaceIdentity({
+    home: store.getHomeIdentity(), taskId: "task-1", now, entropy: Buffer.alloc(16, 5)
+  });
+  const branch = `yui/${taskWorkspaceRefSegmentFromIdentity(workspaceIdentity)}/main`;
+  git(root, "branch", "-m", branch);
+  const base = git(root, "rev-parse", "HEAD");
+  store.saveProject(createProject("project-1", "app", join(home, "reference"),
+    { stable: "main", development: "main" }, now));
+  const task = { ...retireTask(activateTask(createTask("task-1", "Abandoned baseline", now, {
+    cwd: join(home, "workspaces/tasks/task-1/main"),
+    projectBindings: [{ projectId: "project-1", directory: "app", baseRef: "main", baseCommit: base, currentCommit: base }]
+  }), now), { by: "user", summary: "No delivery needed" }, now), workspaceIdentity };
+  store.saveTask(task);
+  store.saveManagedWorkspace(createManagedWorkspace({ owner: { type: "task", taskId: task.id },
+    root: task.cwd, entries: [{ projectId: "project-1", directory: "app", access: "write", path: root,
+      branch, baseRef: "main", baseCommit: base }] }, now));
+  const preparer = new FileTaskWorkspacePreparer(home, store);
+  const coordinator = new TaskWorkspaceCoordinator(store, preparer, {
+    async stopTaskRoleSessions() {}, async releaseTaskTerminals() {}, async assertTaskPhysicalResourcesReleased() {}
+  });
+  const round = createTaskReviewRound("review-round-1", task.id, "reviewer", "leader",
+    { schemaVersion: 1, projects: [{ projectId: "project-1", commit: base }] }, now);
+  store.saveReviewRound(task.id, round);
+  await assert.rejects(coordinator.prepareTaskForArchive(task.id), /Review|review/i);
+  assert.throws(() => runTaskCommand(["archive", task.id, "--abandon"], store, { environment: {} }), /Review|review/i);
+  assert.equal(store.getTask(task.id).status, "cancelled");
+  store.saveReviewRound(task.id, finishReviewRound(round, "failed", now,
+    { kind: "dispatch", message: "Fixture Review settled without execution" }));
+  // A clean new commit is still material, not disposable merely because the
+  // requested disposition is abandoned.
+  git(root, "commit", "--allow-empty", "-m", "unverified local increment");
+  assert.ok((await preparer.inspectWorkspaceCleanup(store.getTaskWorkspace(task.id), "abandoned"))
+    .some(check => check.reason === "delivery-coverage"));
+  // Return only this fixture to its known baseline without discarding files.
+  git(root, "reset", "--soft", base);
+  const before = await inspectTaskArchive(coordinator, { taskId: task.id, disposition: "abandoned", force: false });
+  assert.equal(before.cleanup.resources[0].status, "checked");
+  await coordinator.prepareTaskForArchive(task.id);
+  runTaskCommand(["archive", task.id, "--abandon"], store, { environment: {} });
+  git(root, "commit", "--allow-empty", "-m", "late unverified increment");
+  await coordinator.cleanupArchivedTask(task.id, "abandoned");
+  assert.equal(existsSync(root), true, "archive does not authorize discarding a later local commit");
+  assert.equal(taskArchiveDiagnostics(store, store.getTask(task.id)).allResourcesReleased, false);
+  git(root, "reset", "--soft", base);
+  await coordinator.cleanupArchivedTask(task.id, "abandoned");
+  assert.equal(existsSync(root), false);
+  assert.equal(taskArchiveDiagnostics(store, store.getTask(task.id)).allResourcesReleased, true);
+  await coordinator.cleanupArchivedTask(task.id, "abandoned");
+  assert.equal(taskArchiveDiagnostics(store, store.getTask(task.id)).allResourcesReleased, true);
+  assert.equal(store.getReviewRound(task.id, round.id).status, "failed");
+});
+
+test("ordinary archive can retain safe physical material and explicit cleanup converges after interrupted recording", async t => {
+  const { home, root, git } = fixture(t);
+  const store = new SqliteTaskStore(home);
+  t.after(() => store.close());
+  const now = new Date("2026-10-08T00:00:00Z");
+  const workspaceIdentity = generateTaskWorkspaceIdentity({
+    home: { homeId: "home-fixture" }, taskId: "task-1", now, entropy: Buffer.alloc(16, 3)
+  });
+  const branch = `yui/${taskWorkspaceRefSegmentFromIdentity(workspaceIdentity)}/main`;
+  git(root, "branch", "-m", branch);
+  const base = git(root, "rev-parse", "HEAD");
+  store.saveProject(createProject("project-1", "app", join(home, "reference"),
+    { stable: "main", development: "main" }, now));
+  const task = { ...completeTask(activateTask(createTask("task-1", "Retain diagnostics", now, {
+    cwd: join(home, "workspaces/tasks/task-1/main"),
+    projectBindings: [{ projectId: "project-1", directory: "app", baseRef: "main", baseCommit: base, currentCommit: base }]
+  }), now), now, { by: "user", summary: "Unchanged baseline" }), workspaceIdentity };
+  store.saveTask(task);
+  store.saveEvent(task.id, createTaskEvent(store.nextEventId(task.id), task.id, "task.completed",
+    { projectHeads: `project-1@${base}`, projectBases: `project-1@${base}` }, now));
+  store.saveManagedWorkspace(createManagedWorkspace({ owner: { type: "task", taskId: task.id },
+    root: task.cwd, entries: [{ projectId: "project-1", directory: "app", access: "write", path: root,
+      branch, baseRef: "main", baseCommit: base }] }, now));
+  const preparer = new FileTaskWorkspacePreparer(home, store);
+  const coordinator = new TaskWorkspaceCoordinator(store, preparer, {
+    async stopTaskRoleSessions() {}, async releaseTaskTerminals() {}, async assertTaskPhysicalResourcesReleased() {}
+  });
+  const diagnostic = join(task.cwd, "diagnosis.txt");
+  new ResourceRegistrar(home).registerManagedWorkspace(store.getTaskWorkspace(task.id));
+  writeFileSync(diagnostic, "preserve me");
+  await coordinator.prepareTaskForArchive(task.id);
+  const { createTaskRemoteDeliveryProof } = await import("../../dist/task/remoteDeliveryService.js");
+  runTaskCommand(["archive", task.id, "--integrated"], store, {
+    environment: {}, archiveRemoteDeliveryProof: createTaskRemoteDeliveryProof(store, store.getTask(task.id))
+  });
+  await coordinator.cleanupArchivedTask(task.id, "integrated");
+  let result = taskArchiveDiagnostics(store, store.getTask(task.id));
+  assert.equal(result.forced, false);
+  assert.equal(result.archived, true);
+  assert.equal(result.cleanupFinished, true);
+  assert.equal(result.allResourcesReleased, false);
+  assert.equal(readFileSync(diagnostic, "utf8"), "preserve me");
+  assert.equal(existsSync(root), true);
+  // Fixture owner deliberately removes its diagnostic; simulate an interrupted
+  // durable receipt after actual filesystem deletion, then retry exact cleanup.
+  rmSync(diagnostic);
+  const remove = preparer.git.removeTaskClone.bind(preparer.git);
+  let interrupt = true;
+  preparer.git.removeTaskClone = async input => {
+    const removal = await remove(input);
+    if (interrupt) { interrupt = false; throw new Error("interrupted after clone removal"); }
+    return removal;
+  };
+  await coordinator.cleanupArchivedTask(task.id, "integrated");
+  assert.equal(existsSync(root), false);
+  assert.ok(store.getTaskWorkspace(task.id));
+  const preflight = await inspectTaskArchive(coordinator, { taskId: task.id, disposition: "integrated", force: false });
+  assert.equal(preflight.cleanup.resources[0].status, "checked");
+  const saveRegistry = SqliteResourceRegistry.prototype.save;
+  let failReceipt = true;
+  t.mock.method(SqliteResourceRegistry.prototype, "save", function (next, previous) {
+    if (failReceipt && Object.values(next.records).some(record => record.disposition === "deleted")) {
+      failReceipt = false;
+      throw Object.assign(new Error("one-off deletion receipt failure"), { code: "SQLITE_BUSY" });
+    }
+    return saveRegistry.call(this, next, previous);
+  });
+  await assert.rejects(coordinator.cleanupArchivedTask(task.id, "integrated"), /receipt failure/);
+  assert.ok(store.getTaskWorkspace(task.id), "receipt failure must preserve the exact retry owner");
+  assert.equal(existsSync(root), false);
+  await coordinator.cleanupArchivedTask(task.id, "integrated");
+  result = taskArchiveDiagnostics(store, store.getTask(task.id));
+  assert.equal(result.allResourcesReleased, true, JSON.stringify(result));
+  assert.equal(store.getTaskWorkspace(task.id), null);
+  assert.ok(withResourceRegistry(home, undefined, registry =>
+    Object.values(registry.load().records).every(record => record.disposition === "deleted")));
+  assert.ok(store.listEvents(task.id).some(e => e.type === "task.completed"));
 });
 
 test("archive cleanup honors an explicitly adopted publication candidate but retains an uncovered later HEAD", async t => {
@@ -236,4 +383,25 @@ test("Git cleanup inspect is read-only and removal rechecks branch ownership and
   git(root, "config", "core.fsmonitor", `touch '${marker}'`);
   assert.equal(await workspace.inspectWorktree(input), "dirty");
   assert.equal(existsSync(marker), false, "index/attribute discovery must not execute a filesystem monitor either");
+});
+
+test("workspace release receipts never delete read-only context or another resource owner", async t => {
+  const { home, root, git } = fixture(t);
+  const store = new SqliteTaskStore(home);
+  t.after(() => store.close());
+  const registrar = new ResourceRegistrar(home);
+  const entry = { projectId: "project-1", directory: "app", access: "write", path: root,
+    branch: "yui/task-1/main", baseRef: "main", baseCommit: git(root, "rev-parse", "HEAD") };
+  const main = createManagedWorkspace({ owner: { type: "task", taskId: "task-1" },
+    root: join(home, "workspaces/tasks/task-1/main"), entries: [entry] }, new Date());
+  registrar.registerManagedWorkspace(main);
+  const read = () => withResourceRegistry(home, undefined, registry =>
+    Object.values(registry.load().records).find(record => record.path === root));
+  assert.equal(read().disposition, "active");
+  const child = createManagedWorkspace({ owner: { type: "work-item", taskId: "task-1", workItemId: "work-item-1" },
+    root: join(home, "child"), entries: [{ ...entry, access: "read" }] }, new Date());
+  registrar.markWorkspaceDeleted(child);
+  assert.equal(read().disposition, "active", "read-only Task-main context was not removed");
+  assert.throws(() => registrar.markWorkspaceDeleted({ ...main, owner: child.owner }), /owner changed/);
+  assert.equal(read().disposition, "active", "a path alone cannot authorize another owner's receipt");
 });

@@ -344,10 +344,8 @@ test("WorkItem no-op Integration records the decision and archive removes all co
     async releaseTaskTerminals() {},
     async assertTaskPhysicalResourcesReleased() {}
   });
-  const cleaned = await coordinator.cleanupTaskForArchive(task.id, "integrated");
-  assert.equal(cleaned.status, "removed");
-  assert.equal(existsSync(taskEntry.path), false);
-  assert.deepEqual(store.listManagedWorkspaces(task.id), []);
+  await coordinator.prepareTaskForArchive(task.id);
+  assert.equal(existsSync(taskEntry.path), true, "admission does not remove physical resources");
 
   runTaskCommand(["archive", task.id, "--integrated"], store, {
     now: () => now,
@@ -355,6 +353,9 @@ test("WorkItem no-op Integration records the decision and archive removes all co
     archiveRemoteDeliveryProof
   });
   assert.equal(store.getTask(task.id).status, "archived");
+  await coordinator.cleanupArchivedTask(task.id, "integrated");
+  assert.equal(existsSync(taskEntry.path), false);
+  assert.deepEqual(store.listManagedWorkspaces(task.id), []);
   assert.equal(store.getWorkItem(task.id, item.id).status, "accepted");
   assert.equal(store.getIntegrationAttempt(task.id, attempt.id).status, "committed");
 });

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, rmdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, rmdirSync, openSync, closeSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,12 +10,17 @@ import Database from "better-sqlite3";
 import { CURRENT_STORAGE_VERSION } from "../../dist/storage/storageVersions.js";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { createProject, addProjectKnowledge } from "../../dist/repository/project.js";
-import { createTask, activateTask, bindTaskWorkspaceIdentity } from "../../dist/task/task.js";
-import { generateTaskWorkspaceIdentity } from "../../dist/repository/taskWorkspaceIdentity.js";
+import { createTask, activateTask, bindTaskWorkspaceIdentity, retireTask } from "../../dist/task/task.js";
+import { generateTaskWorkspaceIdentity, taskWorkspaceRefSegment } from "../../dist/repository/taskWorkspaceIdentity.js";
+import { currentProcessStartIdentity } from "../../dist/core/fileLockOwner.js";
+import { TaskWorkspaceCoordinator } from "../../dist/repository/taskWorkspaceCoordinator.js";
 import { createManagedWorkspace, managedWorkspaceKey } from "../../dist/worktree/managedWorkspace.js";
 import { createIntegrationAttempt } from "../../dist/integration/integrationAttempt.js";
 import { GitIntegrationService } from "../../dist/integration/gitIntegrationService.js";
-import { createDurableJob, startDurableJob, completeDurableJob, durableJobIdempotencyKey } from "../../dist/job/durableJob.js";
+import { createDurableJob, startDurableJob, completeDurableJob, durableJobIdempotencyKey,
+  markDurableJobUnknown, acknowledgeUnknownDurableJob } from "../../dist/job/durableJob.js";
+import { archiveExecutionChecks, inspectTaskArchive } from "../../dist/task/archivePreflight.js";
+import { jobCleanupBlocker } from "../../dist/job/jobCleanupInspection.js";
 import { runTaskIntegrationCommand } from "../../dist/commands/taskIntegrationCommands.js";
 import { resolveVerificationGate } from "../../dist/verification/verificationGateService.js";
 import { createDurableJobControl } from "../../dist/controller/jobControl.js";
@@ -27,7 +33,7 @@ import { integrationTmuxSocketRoot } from "../../dist/storage/homeLayout.js";
 import { completeGateArtifact } from "../../dist/verification/gateArtifact.js";
 import { freezeRunContextSnapshot } from "../../dist/context/runContextPack.js";
 import { runTaskCommand, dispatchPreparedReviewRound } from "../../dist/commands/taskCommands.js";
-import { createWorkItem, submitWorkItemCandidate } from "../../dist/workItem/workItem.js";
+import { createWorkItem, submitWorkItemCandidate, retireWorkItem } from "../../dist/workItem/workItem.js";
 
 const now = new Date("2026-09-12T00:00:00Z");
 const git = (path, ...args) => execFileSync("git", ["-C", path, ...args], {
@@ -274,7 +280,7 @@ export function integrationFixture(t, strategy = "merge") {
     starts: () => starts,
     finishJob() {
       const queued = store.getDurableJob(task.id, "job-1");
-      const job = startDurableJob(queued, { pid: 99999999, startIdentity: "fixture-only" }, now);
+      const job = startDurableJob(queued, { pid: 99999999, startIdentity: "0" }, now);
       store.saveDurableJob(task.id, job);
       store.saveDurableJob(task.id, completeDurableJob(job, {
           outcome: "succeeded", exitCode: 0, signal: null,
@@ -516,6 +522,16 @@ test("ordinary conflict continues without resolve and consumes one exact check J
   assert.equal(done.status, "committed");
   assert.equal(f.git("rev-parse", "HEAD"), done.attempt.afterCommit);
   assert.equal(f.starts(), 1);
+  const logs = join(f.home, "artifacts", "integration-checks", "task-1", done.attempt.id);
+  mkdirSync(logs, { recursive: true });
+  const log = join(logs, "verification.log");
+  writeFileSync(log, "fixed validation evidence\n");
+  const history = f.store.getIntegrationAttempt("task-1", done.attempt.id);
+  assert.equal(await f.service().cleanup(history), "removed");
+  assert.equal(await f.service().cleanup(history), "missing");
+  assert.deepEqual(f.store.getIntegrationAttempt("task-1", history.id), history);
+  assert.equal(readFileSync(log, "utf8"), "fixed validation evidence\n");
+  assert.equal(f.store.getDurableJob("task-1", "job-1").status, "succeeded");
 });
 
 test("an old Git conflict without its Integration receipt is diagnosed without adopting or replaying it", async t => {
@@ -535,10 +551,272 @@ test("an old Git conflict without its Integration receipt is diagnosed without a
   assert.equal(f.starts(), 0);
 });
 
+for (const outcome of ["unknown-needs-attention", "succeeded", "failed", "timed-out", "cancelled"]) {
+test(`WorkItem preflight and both cleanup entry points retain a ${outcome} live Job`, async t => {
+  const f = integrationFixture(t);
+  const preparer = new FileTaskWorkspacePreparer(f.home, f.store, undefined, () => now);
+  const item = retireWorkItem(createWorkItem("work-item-1", "task-1",
+    { title: "Retired work", writeProjectIds: ["project-1"] }, now),
+  { by: "leader", summary: "No longer needed" }, now);
+  f.store.saveWorkItem("task-1", item);
+  const root = join(f.home, "workspaces/tasks/task-1/work-items/work-item-1");
+  const prepared = await preparer.git.ensureWorktree({ repositoryPath: f.repo, container: root,
+    directory: "app", taskSegment: taskWorkspaceRefSegment(f.store.getTask("task-1")),
+    roleName: item.id, baseRef: "main" });
+  const workspace = createManagedWorkspace({ owner: { type: "work-item",
+    taskId: "task-1", workItemId: item.id }, root,
+    entries: [{ projectId: "project-1", directory: "app", access: "write", ...prepared, baseRef: "main" }] }, now);
+  f.store.saveManagedWorkspace(workspace);
+  const queued = createDurableJob({ id: "job-1", taskId: "task-1",
+    owner: { kind: "work-item", workItemId: item.id }, projectId: "project-1",
+    head: prepared.baseCommit, workspace: root, env: {}, steps: [{ name: "check", command: "true" }],
+    artifactsLocator: "artifacts/jobs/task-1/job-1",
+    operation: { requestId: "work-check", actorId: "fixture:leader",
+      authorityRef: "fixture:leader", inputDigest: "a".repeat(64) } }, now);
+  const running = startDurableJob(queued,
+    { pid: process.pid, startIdentity: currentProcessStartIdentity() }, now);
+  const unknown = outcome === "unknown-needs-attention"
+    ? acknowledgeUnknownDurableJob(markDurableJobUnknown(running, "unknown result", [], now), now)
+    : completeDurableJob(running, { outcome, exitCode: outcome === "succeeded" ? 0 : 1, signal: null, steps: [] }, now);
+  f.store.saveDurableJob("task-1", unknown);
+  const checks = await preparer.inspectWorkspaceCleanup(workspace, "abandoned");
+  assert.ok(checks.some(check => check.reason === "unresolved-execution"), JSON.stringify(checks));
+  const coordinator = new TaskWorkspaceCoordinator(f.store, preparer, {
+    async stopTaskRoleSessions() { assert.fail("must block before stopping unrelated Roles"); },
+    async releaseTaskTerminals() { assert.fail("not Task cleanup"); }
+  });
+  await assert.rejects(coordinator.cleanupWorkItem("task-1", item.id, "abandoned"), /Job|execution/i);
+  await assert.rejects(preparer.cleanupWorkItemWorkspace("task-1", item.id, "abandoned"), /Job|execution/i);
+  assert.equal(existsSync(prepared.path), true);
+  assert.deepEqual(f.store.getWorkItemWorkspace("task-1", item.id), workspace);
+  assert.deepEqual(f.store.getDurableJob("task-1", unknown.id), unknown);
+});
+}
+
+test("cleanup stops exact idle Roles before terminal Job path checks, but retains surviving references", async t => {
+  const f = integrationFixture(t);
+  const preparer = new FileTaskWorkspacePreparer(f.home, f.store);
+  const item = retireWorkItem(createWorkItem("work-item-1", "task-1",
+    { title: "Settled work", assignee: "worker", writeProjectIds: ["project-1"] }, now),
+  { by: "leader", summary: "abandoned" }, now);
+  f.store.saveWorkItem("task-1", item);
+  const root = join(f.home, "workspaces/tasks/task-1/work-items/work-item-1");
+  const prepared = await preparer.git.ensureWorktree({ repositoryPath: f.repo, container: root,
+    directory: "app", taskSegment: taskWorkspaceRefSegment(f.store.getTask("task-1")),
+    roleName: item.id, baseRef: "main" });
+  f.store.saveManagedWorkspace(createManagedWorkspace({ owner: { type: "work-item",
+    taskId: "task-1", workItemId: item.id }, root,
+    entries: [{ projectId: "project-1", directory: "app", access: "write", ...prepared, baseRef: "main" }] }, now));
+  const binding = createRoleAgentBinding({ id: "codex", adapterId: "codex" });
+  for (const name of ["worker", "leader"]) {
+    f.store.saveRole("task-1", createRole("task-1", name, [binding], binding.agentId, f.repo, now));
+  }
+  const succeeded = (id, owner, workspace) => completeDurableJob(startDurableJob(createDurableJob({
+    id, taskId: "task-1", owner, workspace, projectId: "project-1", head: prepared.baseCommit,
+    env: {}, steps: [{ name: "check", command: "true" }], artifactsLocator: `artifacts/jobs/task-1/${id}`,
+    operation: { requestId: id, actorId: "fixture:leader", authorityRef: "fixture:leader", inputDigest: "a".repeat(64) }
+  }, now), { pid: 99999999, startIdentity: "0" }, now),
+  { outcome: "succeeded", exitCode: 0, signal: null, steps: [] }, now);
+  f.store.saveDurableJob("task-1", succeeded("job-1", { kind: "work-item", workItemId: item.id }, root));
+  const launch = async cwd => {
+    const child = spawn(process.execPath, ["-e", "console.log('ready');process.stdin.resume()"],
+      { cwd, stdio: ["pipe", "pipe", "inherit"] });
+    t.after(async () => {
+      if (child.exitCode === null) { const exit = once(child, "exit"); child.stdin.end(); await exit; }
+    });
+    await once(child.stdout, "data");
+    return child;
+  };
+  const stop = async child => { const exit = once(child, "exit"); child.stdin.end(); await exit; };
+  let role = "worker";
+  let idle = await launch(prepared.path);
+  let live = true;
+  let stops = 0;
+  const coordinator = new TaskWorkspaceCoordinator(f.store, preparer, {
+    inspectTaskRolePanes() { return live ? [{ roleName: role, dead: false }] : []; },
+    async stopTaskRoleSessions(taskId, names) {
+      assert.equal(taskId, "task-1");
+      assert.deepEqual(names, [role]);
+      stops++;
+      await stop(idle);
+      live = false;
+    },
+    async releaseTaskTerminals() {},
+    async assertTaskPhysicalResourcesReleased() {}
+  });
+  const survivor = await launch(prepared.path);
+  await assert.rejects(coordinator.cleanupWorkItem("task-1", item.id, "abandoned"), /Job|execution/);
+  assert.equal(stops, 1, "the exact idle Worker must reach its normal stop");
+  assert.equal(existsSync(prepared.path), true, "unrelated surviving references still protect the worktree");
+  await stop(survivor);
+  assert.equal(await coordinator.cleanupWorkItem("task-1", item.id, "abandoned"), "removed");
+  f.store.saveIntegrationAttempt("task-1", { ...f.store.getIntegrationAttempt("task-1", "integration-1"),
+    status: "failed", endedAt: now.toISOString() });
+  f.store.saveTask(retireTask(f.store.getTask("task-1"), { by: "user", summary: "abandon" }, now));
+  f.store.saveDurableJob("task-1", succeeded("job-2", { kind: "task" }, f.repo));
+  role = "leader";
+  idle = await launch(f.repo);
+  live = true;
+  const archiveSurvivor = await launch(f.repo);
+  await assert.rejects(coordinator.prepareTaskForArchive("task-1"), /live|reference|execution/i);
+  assert.equal(stops, 2, "the exact idle Leader must reach its normal stop");
+  assert.equal(f.store.getTask("task-1").status, "cancelled");
+  await stop(archiveSurvivor);
+  await coordinator.prepareTaskForArchive("task-1");
+  runTaskCommand(["archive", "task-1", "--abandon"], f.store, { environment: {}, yuiHome: f.home });
+  assert.equal(f.store.getTask("task-1").status, "archived");
+});
+
+test("succeeded Job retains surviving child references after its runner exits", async t => {
+  const f = integrationFixture(t);
+  const conflict = await f.service().integrate("task-1", "integration-1");
+  f.resolve(conflict.workspace.path);
+  await f.service().integrate("task-1", "integration-1");
+  f.finishJob();
+  const job = f.store.getDurableJob("task-1", "job-1");
+  f.store.saveIntegrationAttempt("task-1", { ...f.store.getIntegrationAttempt("task-1", "integration-1"),
+    status: "failed", endedAt: now.toISOString() });
+  const helper = spawn(process.execPath, ["-e", "console.log('ready');process.stdin.resume()"],
+    { cwd: job.workspace, stdio: ["pipe", "pipe", "inherit"] });
+  t.after(() => { if (helper.exitCode === null) helper.kill(); });
+  await once(helper.stdout, "data");
+  const preparer = new FileTaskWorkspacePreparer(f.home, f.store);
+  const workspace = f.store.getIntegrationWorkspace("task-1", "integration-1");
+  try {
+    assert.match(jobCleanupBlocker(job, f.home) ?? "", /live|unverified/);
+    assert.ok((await preparer.inspectWorkspaceCleanup(workspace, "abandoned"))
+      .some(check => check.reason === "unresolved-execution"));
+    assert.ok(archiveExecutionChecks(f.store, "task-1", f.home).some(check => check.resource === "job:task-1/job-1"));
+    await assert.rejects(preparer.cleanupIntegrationWorkspace("task-1", "integration-1"), /Job|execution/);
+    assert.equal(existsSync(job.workspace), true);
+  } finally {
+    const stopped = once(helper, "exit");
+    helper.stdin.end();
+    await stopped;
+  }
+  assert.equal(jobCleanupBlocker(job, f.home), undefined);
+  assert.equal(await preparer.cleanupIntegrationWorkspace("task-1", "integration-1"), "removed");
+  assert.deepEqual(f.store.getDurableJob("task-1", "job-1"), job);
+});
+
+test("Integration preflight retains unowned runtime without blocking ordinary archive admission", async t => {
+  const f = integrationFixture(t);
+  const conflict = await f.service().integrate("task-1", "integration-1");
+  f.resolve(conflict.workspace.path);
+  await f.service().integrate("task-1", "integration-1");
+  f.finishJob();
+  f.store.saveIntegrationAttempt("task-1", { ...f.store.getIntegrationAttempt("task-1", "integration-1"),
+    status: "failed", endedAt: now.toISOString() });
+  const descriptor = JSON.parse(f.store.getDurableJob("task-1", "job-1").env.YUI_TASK_RUNTIME_ISOLATION_DESCRIPTOR);
+  const markerPath = join(descriptor.roots.runtime, ".yui-task-runtime-owner.json");
+  const marker = readFileSync(markerPath, "utf8");
+  const preparer = new FileTaskWorkspacePreparer(f.home, f.store);
+  const workspace = f.store.getIntegrationWorkspace("task-1", "integration-1");
+  rmSync(markerPath);
+  try {
+    const checks = await preparer.inspectWorkspaceCleanup(workspace, "abandoned");
+    assert.ok(checks.some(check => check.reason === "runtime-resource-unverified"), JSON.stringify(checks));
+    assert.equal(archiveExecutionChecks(f.store, "task-1", f.home).length, 0);
+    await assert.rejects(preparer.cleanupIntegrationWorkspace("task-1", "integration-1"), /runtime/i);
+    assert.equal(existsSync(workspace.root), true);
+    f.store.saveTask(retireTask(f.store.getTask("task-1"), { by: "user", summary: "fixture abandonment" }, now));
+    runTaskCommand(["archive", "task-1", "--abandon"], f.store, { environment: {}, yuiHome: f.home });
+    assert.equal(f.store.getTask("task-1").status, "archived");
+  } finally { writeFileSync(markerPath, marker); }
+  assert.deepEqual(await preparer.inspectWorkspaceCleanup(workspace, "abandoned"), []);
+  assert.equal(await preparer.cleanupIntegrationWorkspace("task-1", "integration-1"), "removed");
+});
+
+test("unknown Job cleanup requires acknowledgement and current physical absence without rewriting its result", async t => {
+  const f = integrationFixture(t);
+  const conflict = await f.service().integrate("task-1", "integration-1");
+  f.resolve(conflict.workspace.path);
+  await f.service().integrate("task-1", "integration-1");
+  const queued = f.store.getDurableJob("task-1", "job-1");
+  const runner = spawn(process.execPath, ["--input-type=module", "-e",
+    `import {currentProcessStartIdentity} from ${JSON.stringify(new URL("../../dist/core/fileLockOwner.js", import.meta.url).href)};
+    console.log(JSON.stringify({pid:process.pid,startIdentity:currentProcessStartIdentity()}));
+    process.stdin.resume();`
+  ], { stdio: ["pipe", "pipe", "inherit"] });
+  t.after(() => { if (runner.exitCode === null) runner.kill(); });
+  const [identity] = await once(runner.stdout, "data");
+  const unknown = markDurableJobUnknown(startDurableJob(queued,
+    JSON.parse(identity.toString()), now),
+  "runner process exited without writing exit.json", [], now);
+  f.store.saveDurableJob("task-1", unknown);
+  const attempt = { ...f.store.getIntegrationAttempt("task-1", "integration-1"), status: "failed", endedAt: now.toISOString() };
+  f.store.saveIntegrationAttempt("task-1", attempt);
+  const cleanup = () => runTaskIntegrationCommand(["cleanup", "task-1/integration-1"], f.store, f.home,
+    { environment: {} });
+  await assert.rejects(cleanup(), /Job|execution|acknowledge/i);
+  const acknowledged = acknowledgeUnknownDurableJob(unknown, now);
+  f.store.saveDurableJob("task-1", acknowledged);
+  await assert.rejects(cleanup(), /Job|execution|process/i);
+  const exited = once(runner, "exit");
+  runner.stdin.end();
+  await exited;
+  // A surviving step still holding the workspace must prevent cleanup even
+  // though the exact runner generation has exited.
+  const fd = openSync(join(conflict.workspace.path, "file"), "r");
+  try { await assert.rejects(cleanup(), /Job|execution|reference/i); }
+  finally { closeSync(fd); }
+  // A cleanup rename moves surviving process references away from every
+  // original Job env path. Ordinary archive must reject before committing,
+  // not rely on post-archive deletion to notice that execution is still live.
+  const descriptor = JSON.parse(acknowledged.env.YUI_TASK_RUNTIME_ISOLATION_DESCRIPTOR);
+  const claimed = `${descriptor.roots.runtime}.cleanup-${"b".repeat(32)}`;
+  renameSync(descriptor.roots.runtime, claimed);
+  const helper = spawn(process.execPath, ["-e", "console.log('ready');process.stdin.resume()"],
+    { cwd: claimed, stdio: ["pipe", "pipe", "inherit"] });
+  t.after(() => { if (helper.exitCode === null) helper.kill(); });
+  await once(helper.stdout, "data");
+  f.store.saveTask(retireTask(f.store.getTask("task-1"), { by: "user", summary: "fixture abandonment" }, now));
+  const coordinator = new TaskWorkspaceCoordinator(f.store, new FileTaskWorkspacePreparer(f.home, f.store), {
+    async stopTaskRoleSessions() {}, async releaseTaskTerminals() {}, async assertTaskPhysicalResourcesReleased() {}
+  });
+  const archive = () => runTaskCommand(["archive", "task-1", "--abandon"], f.store,
+    { environment: {}, yuiHome: f.home });
+  try {
+    assert.match(jobCleanupBlocker(acknowledged, f.home) ?? "", /live|unverified/);
+    const inspection = await inspectTaskArchive(coordinator,
+      { taskId: "task-1", disposition: "abandoned", force: false });
+    assert.ok(inspection.archive.execution.some(c => c.resource === "job:task-1/job-1"));
+    await assert.rejects(coordinator.prepareTaskForArchive("task-1"), /execution|live|reference/i);
+    assert.throws(archive, /execution|live|reference/i);
+    assert.equal(f.store.getTask("task-1").status, "cancelled");
+    await assert.rejects(cleanup(), /execution|live|reference/i);
+    assert.equal(existsSync(claimed), true);
+  } finally {
+    const stopped = once(helper, "exit");
+    helper.stdin.end();
+    await stopped;
+  }
+  assert.equal(archiveExecutionChecks(f.store, "task-1", f.home).filter(c => c.resource === "job:task-1/job-1").length, 0);
+  const markerPath = join(claimed, ".yui-task-runtime-owner.json");
+  const marker = readFileSync(markerPath, "utf8");
+  rmSync(markerPath);
+  try {
+    assert.match(jobCleanupBlocker(acknowledged, f.home) ?? "", /unverified/);
+    assert.throws(archive, /unverified/);
+    assert.equal(f.store.getTask("task-1").status, "cancelled");
+  } finally { writeFileSync(markerPath, marker); }
+  assert.equal((await cleanup()).data.cleanup, "removed");
+  assert.equal(existsSync(claimed), false);
+  archive();
+  assert.equal(f.store.getTask("task-1").status, "archived");
+  assert.deepEqual(f.store.getDurableJob("task-1", "job-1"), acknowledged);
+  assert.deepEqual(f.store.getIntegrationAttempt("task-1", attempt.id), attempt);
+});
+
 test("interrupted rebase receipt and successful unbound Job resume without replay", async t => {
   const f = integrationFixture(t, "rebase");
   const conflict = await f.service().integrate("task-1", "integration-1");
   assert.equal(conflict.status, "conflicted", conflict.attempt.summary);
+  const workspace = f.store.getIntegrationWorkspace("task-1", "integration-1");
+  const inspection = await new FileTaskWorkspacePreparer(f.home, f.store).inspectWorkspaceCleanup(workspace, "abandoned");
+  assert.ok(inspection.some(c => c.reason === "dirty-worktree"));
+  assert.ok(!inspection.some(c => c.reason === "inspection-unavailable"),
+    "a matching rebase's detached HEAD is valid ownership, not Git exit 128");
   f.resolve(conflict.workspace.path);
   const save = f.store.saveIntegrationAttempt.bind(f.store);
   let interruptGit = true;

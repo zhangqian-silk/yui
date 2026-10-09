@@ -1279,6 +1279,23 @@ export async function main(): Promise<void> {
         emit(renderTaskArchivePreflight(data), false, data);
         return;
       }
+      if (resolved[1] === "archive-cleanup") {
+        const taskId = resolved[2];
+        if (resolved.length !== 3 || taskId === undefined) {
+          throw usageError("Usage: yui task archive-cleanup <task>.");
+        }
+        taskLocalActor(store, process.env, taskId);
+        const task = store.getTask(taskId);
+        if (task?.status !== "archived") throw usageError("Archive cleanup requires an archived Task.");
+        const archive = taskArchiveDiagnostics(store, task);
+        if (archive.disposition !== "integrated" && archive.disposition !== "abandoned") {
+          throw usageError("Archive has no recorded cleanup disposition; inspect its original event.");
+        }
+        await workspaceCoordinator.cleanupArchivedTask(taskId, archive.disposition);
+        const result = taskArchiveDiagnostics(store, store.getTask(taskId)!);
+        emit(renderArchiveDiagnostics(result), false, { taskId, ...result });
+        return;
+      }
       if (resolved[1] === "artifact") {
         // File/directory artifacts live in the Task's local Git repository, so
         // their save/read/list are asynchronous and handled here rather than in
@@ -1685,12 +1702,12 @@ export async function main(): Promise<void> {
         }
         {
           if (disposition === "integrated") {
-            archiveTaskReviewCandidate = await actualTaskReviewCandidateForTaskCommand(
+            archiveTaskReviewCandidate = task.status === "cancelled" ? await actualTaskReviewCandidateForTaskCommand(
               resolved,
               store,
               workspacePreparer,
               process.env
-            );
+            ) : undefined;
             archiveRemoteDeliveryProof = createTaskRemoteDeliveryProof(
               store,
               task,
@@ -1698,42 +1715,16 @@ export async function main(): Promise<void> {
             );
             assertTaskRemoteDeliveryIntegrated(archiveRemoteDeliveryProof.delivery);
           }
-          const workItemIds = store.listManagedWorkspaces(task.id)
-            .flatMap(({ owner }) => owner.type === "work-item" ? [owner.workItemId] : []);
-          for (const workItemId of workItemIds) {
-            const item = store.getWorkItem(task.id, workItemId);
-            if (item?.status !== "accepted" || disposition !== "integrated") continue;
-            try {
-              await new WorkItemChangeSetManager(store).assertIntegrated(task.id, item.id);
-            } catch (error) {
-              throw cleanupCliError(error, `work-item:${task.id}/${item.id}`);
-            }
-          }
-          const cleanup = await workspaceCoordinator.cleanupTaskForArchive(task.id, disposition);
-          if (cleanup.status === "retained-dirty") {
-            throw usageError(
-              cleanup.error ?? `Task ${task.id} has dirty managed worktrees and remains terminal.`,
-              undefined,
-              cleanupBlockedDetails(
-                cleanup.reason ?? "dirty-worktree",
-                cleanup.resource ?? `task:${task.id}`,
-                cleanup.retryable ?? true,
-                cleanup.checks
-              )
-            );
-          }
-          if (cleanup.status === "failed") {
-            throw usageError(
-              `Task ${task.id} worktree cleanup failed: ${cleanup.error ?? "unknown error"}.`,
-              undefined,
-              cleanupBlockedDetails(
-                cleanup.reason ?? "cleanup-failed",
-                cleanup.resource ?? `task:${task.id}`,
-                cleanup.retryable ?? true,
-                cleanup.checks
-              )
-            );
-          }
+          await workspaceCoordinator.prepareTaskForArchive(task.id);
+          runTaskCommand(resolved.slice(1), store, {
+            runtime, environment: process.env, yuiHome: home, archiveRemoteDeliveryProof
+          });
+          await workspaceCoordinator.cleanupArchivedTask(task.id, disposition);
+          const current = store.getTask(task.id)!;
+          const archive = taskArchiveDiagnostics(store, current);
+          emit(`Archived task ${task.id}\n${renderArchiveDiagnostics(archive)}`, false,
+            { task: current, ...archive });
+          return;
         }
       }
       let taskRetirementProof;

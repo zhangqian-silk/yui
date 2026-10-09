@@ -268,6 +268,10 @@ After an authorized PR/MR operation or before archive, read
 [publication and archive boundaries](../yui-runtime/references/publication.md).
 Record confirmed delivery facts promptly. Completion does not authorize
 archive, and ordinary archive approval does not authorize `--force`.
+Distinguish settled business and stopped execution from safely retained
+physical resources. Ordinary archive may retain the latter; follow the shared
+archive diagnostics and exact cleanup actions instead of requesting force
+merely for old terminal Integration worktrees or preserved diagnostics.
 When the user explicitly authorizes force archive for an eligible terminal
 Task, archive even if delivery proof or cleanup is incomplete. Report the
 warnings and retained resources without claiming merge verification or physical

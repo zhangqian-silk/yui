@@ -45,7 +45,8 @@ export function archiveRetainedResources(store: TaskStore, task: Task): ArchiveD
       detail: `AgentRun remains active (${run.roleName}); archive is not stop evidence.` });
   }
   for (const job of store.listDurableJobs(task.id).filter(j =>
-    ["queued", "running", "unknown-needs-attention"].includes(j.status))) {
+    ["queued", "running"].includes(j.status)
+    || (j.status === "unknown-needs-attention" && j.acknowledgedAt === undefined))) {
     resources.push({ resource: `job:${task.id}/${job.id}`, detail: `DurableJob remains ${job.status}.` });
   }
   for (const attempt of store.listIntegrationAttempts(task.id).filter(a =>
@@ -129,20 +130,38 @@ export function taskArchiveDiagnostics(store: TaskStore, task: Task) {
       ...(event.payload.paths === undefined ? {} : { paths: JSON.parse(event.payload.paths) }) });
   }
   const forced = archive?.payload.force === "true";
-  const cleanupFinished = !forced || cleanup.some(e => e.payload.status === "finished");
-  if (forced && !cleanupFinished) warnings.push({ resource: `task:${task.id}`,
+  const last = cleanup.at(-1);
+  const cleanupFinished = last?.payload.status === "finished"
+    || (cleanup.length === 0 && archive !== undefined && archive.payload.cleanup !== "pending" && !forced);
+  if (task.status === "archived" && !cleanupFinished) warnings.push({ resource: `task:${task.id}`,
     detail: "Archive committed; cleanup has not finished. Retained references require explicit inspection; archive retry does not replay cleanup." });
+  const retainedResources = archiveRetainedResources(store, task);
+  const passStart = cleanup.map(e =>
+    e.payload.resource === `cleanup-pass:${task.id}` && e.payload.status === "started").lastIndexOf(true);
+  const lastPass = cleanup.slice(passStart >= 0 ? passStart
+    : cleanup.map(e => e.payload.status).lastIndexOf("finished", cleanup.length - 2) + 1);
+  // Derived from current references AND a completed physical cleanup attempt;
+  // neither archive nor an empty workspace list alone establishes release.
+  const allResourcesReleased = task.status === "archived" && cleanupFinished
+    && retainedResources.length === 0
+    && lastPass.some(e => e.payload.resource === `runtime:${task.id}` && e.payload.status === "released")
+    && !lastPass.some(e => e.payload.status === "retained");
   return { archived: task.status === "archived", forced,
     disposition: archive?.payload.workspaceDisposition ?? null,
-    cleanupFinished, warnings, retainedResources: archiveRetainedResources(store, task),
-    cleanupEvents: cleanup };
+    cleanupFinished, allResourcesReleased,
+    warnings: warnings.slice(-32), retainedResources: retainedResources.slice(0, 32),
+    counts: { warnings: warnings.length, retainedResources: retainedResources.length, cleanupEvents: cleanup.length },
+    cleanupEvents: cleanup.slice(-32),
+    actions: [`yui task archive-preflight ${task.id} --${archive?.payload.workspaceDisposition === "abandoned" ? "abandon" : "integrated"}`,
+      `yui task archive-cleanup ${task.id}`, `yui task event list ${task.id}`] };
 }
 
 export function renderArchiveDiagnostics(data: ReturnType<typeof taskArchiveDiagnostics>): string {
   return [
-    `Archived: ${data.archived}; forced: ${data.forced}; cleanup finished: ${data.cleanupFinished}`,
-    `Retained references: ${data.retainedResources.length}; a finished cleanup attempt is not physical resource release evidence.`,
+    `Archived: ${data.archived}; forced: ${data.forced}; cleanup finished: ${data.cleanupFinished}; all resources released: ${data.allResourcesReleased}`,
+    `Retained references: ${data.counts.retainedResources}; a finished cleanup attempt is not physical resource release evidence.`,
     ...data.warnings.map(w => `Warning [${w.resource}]: ${w.detail}`),
-    ...data.retainedResources.map(r => `Retained [${r.resource}]: ${r.detail}${r.paths ? ` (${r.paths.join(", ")})` : ""}`)
+    ...data.retainedResources.map(r => `Retained [${r.resource}]: ${r.detail}${r.paths ? ` (${r.paths.join(", ")})` : ""}`),
+    `Inspect/retry: ${data.actions.join("; ")}`
   ].join("\n") + "\n";
 }

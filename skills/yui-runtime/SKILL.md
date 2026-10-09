@@ -26,6 +26,10 @@ resource boundaries still apply; a planning Session does not gain delivery
 authority merely because the Task becomes active.
 Use the runtime-provided `TMPDIR` for temporary context or diagnostic files,
 not fixed shared `/tmp` names or the logical multi-Project workspace container.
+Save durable reports in Task artifacts/results before releasing their temporary
+workspace. Integration history and check evidence outlive its worktree; a
+terminal attempt is not an unresolved business input merely because resources
+remain. Cleanup inspects exact ownership and preserves unknown or dirty data.
 
 Ordinary commands use `yui` from the intended launch environment's PATH and
 `YUI_HOME`. Session/native identity, Task/Assignment/workspace authority and

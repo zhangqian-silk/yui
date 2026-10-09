@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { NodeGitWorkspace, worktreeIdentity } from "../../dist/repository/gitWorkspace.js";
+import { NodeGitWorkspace, worktreeIdentity, integrationWorktreeIdentity } from "../../dist/repository/gitWorkspace.js";
 import { sanitizedTestEnv } from "../helpers/sanitizedEnv.mjs";
 
 test("archive cleanup distinguishes a missing directory from exact Git metadata and refuses unsafe clone deletion", async t => {
@@ -51,4 +51,39 @@ test("archive cleanup distinguishes a missing directory from exact Git metadata 
   git("commit", "-m", "preserved commit");
   assert.equal(await workspace.removeTaskClone(clone), "removed");
   assert.equal(await workspace.removeTaskClone(clone), "missing");
+});
+
+test("cleanup tolerates a missing owner container and inspects exact detached Integration ownership", async t => {
+  const container = mkdtempSync(join(tmpdir(), "yui-cleanup-recovery-"));
+  t.after(() => rmSync(container, { recursive: true, force: true }));
+  const root = join(container, "repo");
+  mkdirSync(root);
+  const env = { ...sanitizedTestEnv(), GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.invalid",
+    GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.invalid" };
+  const git = (path, ...args) => execFileSync("git", ["-C", path, ...args], {
+    env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"]
+  }).trim();
+  git(root, "init", "-b", "main");
+  git(root, "commit", "--allow-empty", "-m", "base");
+  const workspace = new NodeGitWorkspace();
+  const input = { repositoryPath: root, container: join(container, "work-item"), directory: "app",
+    taskSegment: "task-1-token", roleName: "work-item-1", baseRef: "HEAD", deleteBranch: true };
+  await workspace.ensureWorktree(input);
+  rmSync(input.container, { recursive: true });
+  assert.equal(await workspace.inspectWorktree(input), "missing");
+  assert.equal(await workspace.removeWorktree(input), "missing");
+  assert.equal(await workspace.removeWorktree(input), "missing");
+  const branch = integrationWorktreeIdentity(input.taskSegment, "integration-1").branch;
+  const integration = { ...input, container: join(container, "integration"), expectedBranch: branch };
+  mkdirSync(integration.container);
+  const path = join(integration.container, "app");
+  git(root, "worktree", "add", "-b", branch, path, "HEAD");
+  git(path, "checkout", "--detach");
+  assert.equal(await workspace.inspectWorktree(integration), "clean");
+  rmSync(integration.container, { recursive: true });
+  assert.equal(await workspace.inspectWorktree(integration), "missing");
+  assert.equal(await workspace.removeIntegrationWorktree({
+    ...integration, integrationId: "integration-1"
+  }), "missing");
+  assert.equal(await workspace.refExists(root, branch), false);
 });

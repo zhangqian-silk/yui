@@ -1299,7 +1299,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
   }>): Promise<GitWorkspaceRemoval> {
     const state = await this.inspectWorktree(input);
     if (state === "dirty") return state;
-    const container = await canonicalContainer(input.container, false);
+    const container = await cleanupContainer(input.container);
     const branch = worktreeIdentity(input.taskSegment, input.roleName).branch;
     const path = managedPath(container, input.directory);
     const project = await this.inspect(input.repositoryPath);
@@ -1478,13 +1478,13 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     /** Integration uses a separate branch identity, still supplied by its owner. */
     expectedBranch?: string;
   }>): Promise<GitWorkspaceState> {
-    const container = await canonicalContainer(input.container, false);
+    const container = await cleanupContainer(input.container);
     const path = managedPath(container, input.directory);
     const kind = await pathKind(path);
     const branch = input.expectedBranch ?? worktreeIdentity(input.taskSegment, input.roleName).branch;
     if (kind === undefined) {
       const project = await this.inspect(input.repositoryPath);
-      await inspectMissingWorktreeRegistration(project.root, path, branch);
+      await inspectMissingWorktreeRegistration(project.root, path, branch, input.expectedBranch !== undefined);
       return "missing";
     }
     if (kind === "symlink") cleanupFailure("workspace-identity-mismatch",
@@ -1493,7 +1493,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     const canonicalContainerPath = await canonicalContainer(container, false);
     const project = await this.inspect(input.repositoryPath);
     await assertOwnedWorktree(project, canonicalContainerPath, path);
-    await assertExpectedBranch(path, branch);
+    await assertExpectedBranch(path, branch, input.expectedBranch !== undefined);
     const porcelain = await readWorktreeStatus(path);
     return porcelain.length > 0 ? "dirty" : "clean";
   }
@@ -1525,18 +1525,18 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     allowCommittedChanges?: boolean;
     discardChanges?: boolean;
   }>): Promise<GitWorkspaceRemoval> {
-    const container = await canonicalContainer(input.container, false);
+    const container = await cleanupContainer(input.container);
     const path = managedPath(container, input.identity.directory);
     const kind = await pathKind(path);
     if (kind === "symlink") throw new Error("Managed worktree path must not be a symbolic link.");
     const repository = await this.inspect(input.repositoryPath);
     if (kind === undefined) {
-      await removeMissingWorktreeRegistration(repository.root, path, input.identity.branch);
+      await removeMissingWorktreeRegistration(repository.root, path, input.identity.branch, true);
     }
     if (kind === "directory") {
       const canonicalContainerPath = await canonicalContainer(container, false);
       await assertOwnedWorktree(repository, canonicalContainerPath, path);
-      await assertExpectedBranch(path, input.identity.branch);
+      await assertExpectedBranch(path, input.identity.branch, true);
       if (input.discardChanges === true) {
         await git(["-C", repository.root, "worktree", "remove", "--force", "--", path]);
       } else {
@@ -1567,17 +1567,20 @@ export class NodeGitWorkspace implements GitWorkspacePort {
 /** Missing paths do not imply missing Git metadata. Never prune another
  * workspace's registration as a side effect of cleaning this exact owner.
  */
-async function removeMissingWorktreeRegistration(repositoryRoot: string, path: string, branch: string): Promise<void> {
-  if (!await inspectMissingWorktreeRegistration(repositoryRoot, path, branch)) return;
+async function removeMissingWorktreeRegistration(repositoryRoot: string, path: string, branch: string, allowDetached = false): Promise<void> {
+  if (!await inspectMissingWorktreeRegistration(repositoryRoot, path, branch, allowDetached)) return;
   if (await pathKind(path) !== undefined) throw new Error(`Worktree reappeared before metadata cleanup: ${path}.`);
   await git(["-C", repositoryRoot, "worktree", "remove", "--force", "--", path]);
 }
 
-async function inspectMissingWorktreeRegistration(repositoryRoot: string, path: string, branch: string): Promise<boolean> {
+async function inspectMissingWorktreeRegistration(repositoryRoot: string, path: string, branch: string, allowDetached = false): Promise<boolean> {
   const records = (await git(["-C", repositoryRoot, "worktree", "list", "--porcelain", "-z"])).split("\0\0");
   const fields = records.map(record => record.split("\0")).find(record => record.includes(`worktree ${path}`));
   if (fields === undefined) return false;
-  if (!fields.includes(`branch refs/heads/${branch}`) || fields.some(field => field.startsWith("locked"))) {
+  const pinnedDetached = allowDetached && fields.includes("detached")
+    && await gitSucceeds(["-C", repositoryRoot, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`])
+    && fields.includes(`HEAD ${await resolveRefCommit(repositoryRoot, `refs/heads/${branch}`)}`);
+  if ((!fields.includes(`branch refs/heads/${branch}`) && !pinnedDetached) || fields.some(field => field.startsWith("locked"))) {
     cleanupFailure("git-registration-mismatch", "Missing worktree has uncertain or locked Git ownership; metadata retained.",
       { branch, locked: false }, { branch: fields.find(field => field.startsWith("branch "))?.slice(7) ?? null,
         locked: fields.some(field => field.startsWith("locked")) });
@@ -1644,7 +1647,12 @@ async function assertExpectedBranch(path: string, expected: string, allowRebase 
       if (headName === `refs/heads/${expected}`) return;
       throw new Error(`Managed worktree is rebasing an unexpected branch: ${headName}.`);
     }
-    throw new Error("Managed worktree has detached HEAD without its expected rebase.");
+    // A terminal Integration can legitimately retain a detached checkout.
+    // Its exact owned path/common-dir were checked by the caller; require its
+    // retained branch to pin the same commit before allowing clean removal.
+    if (await resolveRefCommit(path, "HEAD") === await resolveRefCommit(path, `refs/heads/${expected}`)) return;
+    cleanupFailure("workspace-identity-mismatch", "Detached worktree is not pinned by its owned branch or rebase.",
+      expected, "unproven detached HEAD");
   }
   const branch = await gitLine(["-C", path, "symbolic-ref", "--short", "HEAD"]);
   if (branch !== expected) {
@@ -1818,6 +1826,25 @@ async function canonicalContainer(path: string, create: boolean): Promise<string
   // macOS (e.g. /var -> /private/var); symlinks at or below the container
   // stay rejected by the managed-path lstat checks.
   return canonicalDirectory(lexical, "Worktree container");
+}
+
+/** A previous removal may have deleted the whole owner container before its
+ * receipt committed. Resolve only surviving ancestors, without creating it.
+ * Git registration inspection remains mandatory even when this path is absent.
+ */
+async function cleanupContainer(path: string): Promise<string> {
+  const lexical = resolve(path);
+  if (await pathKind(lexical) === "symlink") {
+    cleanupFailure("workspace-identity-mismatch", "Cleanup container must not be a symbolic link.",
+      "owned directory or missing path", "symbolic link");
+  }
+  try { return await canonicalContainer(lexical, false); }
+  catch (error) {
+    if (!isErrno(error, "ENOENT")) throw error;
+    const parent = dirname(lexical);
+    if (parent === lexical) throw error;
+    return join(await cleanupContainer(parent), relative(parent, lexical));
+  }
 }
 
 async function canonicalDirectory(path: string, label: string): Promise<string> {

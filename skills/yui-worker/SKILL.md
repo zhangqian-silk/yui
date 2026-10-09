@@ -109,3 +109,6 @@ reject it for missing headings or invalid JSON.
 
 Leave managed workspaces intact after handoff. Their owner lifecycle and
 cleanup belong to the Leader and Yui Core.
+Keep disposable tools/cache in the supplied runtime `TMPDIR`, not the logical
+multi-Project container. Preserve required handoff evidence in durable
+results/artifacts before its temporary workspace is released.
