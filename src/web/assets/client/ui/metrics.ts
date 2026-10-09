@@ -3,6 +3,7 @@ export const METRICS_SCRIPT = String.raw`
 // usage test can execute this module with node() and formatDateTime() alone.
 import { node } from "/assets/js/lib/dom.js";
 import { formatDateTime } from "/assets/js/lib/format.js";
+import { requestJson } from "/assets/js/lib/api.js";
 
 export function metricTile(labelText, value, options) {
   const variant = options && options.tone ? " tone-" + options.tone : "";
@@ -51,6 +52,12 @@ export function observabilityMetricCard(observability, t) {
   grid.append(usageTile(t("usage.toolCalls"), cost.toolCalls, t));
   grid.append(usageTile(t("usage.elapsed"), cost.elapsedSeconds, t, "s"));
   grid.append(usageTile(t("usage.executionSum"), cost.executionSeconds, t, "s"));
+  ["actual", "estimated"].forEach(function (kind) {
+    const money = cost.costs && cost.costs[kind];
+    grid.append(metricTile(t("usage." + kind), !money || !money.amounts.length
+      ? t("detail.unobserved")
+      : money.amounts.map(function (amount) { return usageMetricText(amount, t) + " " + amount.currency; }).join("; ")));
+  });
   grid.append(metricTile(t("usage.ready"), observability.readyCount === undefined
     ? ((observability.dag && observability.dag.readyIds) || []).length : observability.readyCount));
   grid.append(metricTile(t("usage.contextSnapshots"), context.snapshotCount == null ? t("detail.unobserved") : context.snapshotCount));
@@ -62,6 +69,51 @@ export function observabilityMetricCard(observability, t) {
   meta.append(node("span", "", t("usage.contextBytes") + " "
     + (context.totalBytes == null ? t("detail.partial") : context.totalBytes + " B")));
   wrap.append(meta);
+  wrap.append(node("p", "usage-meta", t("usage.notBill")));
+  if (cost.history && !cost.history.complete) wrap.append(node("p", "metric-note", t("usage.reason.usage-history-limited")));
+  if (cost.taskId && typeof document !== "undefined") {
+    const details = node("details", "usage-details");
+    details.append(node("summary", "", t("usage.sources")));
+    const body = node("div", "stack");
+    const more = node("button", "", t("usage.loadDetails"));
+    more.type = "button";
+    let offset = 0, loaded = false;
+    async function load() {
+      more.disabled = true;
+      try {
+        const page = await requestJson("/api/tasks/" + encodeURIComponent(cost.taskId)
+          + "/usage?limit=20&offset=" + offset);
+        if (!loaded) body.replaceChildren();
+        ["actual", "estimated"].forEach(function (kind) {
+          page.costs[kind].evidence.forEach(function (entry) {
+            const basis = entry.basis;
+            body.append(node("p", "small mono-line", t("usage." + kind) + " · "
+              + usageMetricText(entry.amount, t) + " " + entry.currency + " · " + entry.source
+              + " · " + entry.roleName + "/" + entry.nativeSessionId + " · " + entry.semantics
+              + (basis ? " · " + basis.model + " · " + basis.source + "@" + basis.version
+                + " · " + basis.scope + " · " + t("usage.excluded") + ": " + basis.excluded.join(", ") : "")));
+          });
+        });
+        page.sessions.forEach(function (entry) {
+          body.append(node("p", "small mono-line", entry.identity.roleName + "/" + entry.identity.nativeSessionId
+            + " · " + usageMetricText(entry.tokens, t) + " · " + entry.sources.join(", ")
+            + " · " + entry.semantics.join(", ")));
+        });
+        if (!page.details.sessionTotal && !page.details.actualTotal && !page.details.estimatedTotal) {
+          body.append(node("p", "small", t("usage.unavailable")));
+        }
+        loaded = true;
+        offset = page.details.nextOffset;
+        more.hidden = offset === null;
+      } catch (error) {
+        body.append(node("p", "metric-note", String(error.message || error)));
+      } finally { more.disabled = false; }
+    }
+    more.addEventListener("click", load);
+    details.addEventListener("toggle", function () { if (details.open && !loaded && !more.disabled) load(); });
+    details.append(body, more);
+    wrap.append(details);
+  }
   return wrap;
 }
 `;

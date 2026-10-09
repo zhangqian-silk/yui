@@ -2,7 +2,12 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.5. The declared 1.3 → 1.4 transition gives Project
+Current storage is 1.6. The declared 1.5 → 1.6 transition adds optional
+source-attributed monetary evidence to canonical runtime observations. Existing
+observations remain unchanged: absent amounts and prices stay unknown. The SQL
+layout is unchanged.
+
+The declared 1.3 → 1.4 transition gives Project
 Knowledge applicability and exact version history, and updates proposal
 fingerprints to include applicability and replacement intent. It restores
 `scope`/`expiresWhen` only from an exact matching accepted proposal. Migrated

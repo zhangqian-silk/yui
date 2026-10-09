@@ -4,6 +4,7 @@ import type { ExecutionGroup } from "../execution/workItemExecution.js";
 import type { AgentRun } from "../agentRun/agentRun.js";
 import type { SessionTokenMetrics } from "../runtime/sessionTokenMetrics.js";
 import { projectTaskUsageMetrics, type TaskUsageMetrics } from "../runtime/taskUsageMetrics.js";
+import { pageTaskUsage, type TaskUsageFacts } from "../runtime/taskUsageQuery.js";
 import type { Task } from "../task/task.js";
 import type { WorkItem, WorkItemStatus } from "../workItem/workItem.js";
 
@@ -104,6 +105,7 @@ export type TaskObservabilityInput = Readonly<{
   contextSnapshots?: readonly ContextSnapshot[];
   sessionTokens?: readonly TaskSessionTokenProjection[];
   now?: Date;
+  usageFacts?: TaskUsageFacts;
 }>;
 
 /**
@@ -270,8 +272,15 @@ function projectCost(
     executionGroupId !== undefined && groupIds.has(executionGroupId)
   ));
   const laneCount = uniqueGroups.reduce((total, group) => total + group.lanes.length, 0);
+  const usage = projectTaskUsageMetrics({
+    ...input,
+    ...(input.usageFacts === undefined ? {} : {
+      events: input.usageFacts.events, runs: input.usageFacts.runs
+    }),
+    workItemId
+  });
   return Object.freeze({
-    ...projectTaskUsageMetrics({ ...input, workItemId }),
+    ...(input.usageFacts === undefined ? usage : pageTaskUsage(usage, input.usageFacts.complete)),
     laneCount,
     groupCount: uniqueGroups.length,
     retryCount: Math.max(0, attempts.length - laneCount),

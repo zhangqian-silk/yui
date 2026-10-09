@@ -82,6 +82,15 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   // Existing Hosts retain their original inputs. Restoring such a Session fails
   // with a bounded new-Session instruction; ordinary readers never backfill it.
   sql: ""
+}, {
+  fromVersion: "1.5",
+  toVersion: "1.6",
+  name: "runtime-cost-evidence",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Optional sourced monetary observations; historical missing costs stay unknown.
+  sql: ""
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {

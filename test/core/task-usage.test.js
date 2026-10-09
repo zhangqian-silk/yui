@@ -12,6 +12,13 @@ import { buildTaskObservabilityProjection } from "../../dist/scheduler/taskObser
 import { runExecutionAudit } from "../../dist/observability/executionAudit.js";
 import { renderExecutionAudit } from "../../dist/commands/executionAuditCommands.js";
 import { METRICS_SCRIPT } from "../../dist/web/assets/client/ui/metrics.js";
+import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
+import { createTask } from "../../dist/task/task.js";
+import { readTaskUsage } from "../../dist/runtime/taskUsageQuery.js";
+import { taskUsageCommand } from "../../dist/commands/taskUsageCommand.js";
+import { createYuiWebServer } from "../../dist/web/webServer.js";
+import { coalesceRuntimeProgress } from "../../dist/controller/runtimeEventProcessor.js";
+import { routeInvocation } from "../../dist/cli/invocationRouter.js";
 
 const origin = Date.parse("2026-09-13T00:00:00Z");
 const at = seconds => new Date(origin + seconds * 1000).toISOString();
@@ -57,6 +64,134 @@ test("Task usage preserves known zero, unknown history, replacements and exact r
   assert.equal(project([zero, unknown]).tokens.value, 0);
 });
 
+test("money evidence retains currency, source and estimate basis without becoming a bill", () => {
+  const charge = (seconds, amount, extra = {}) => event("activity.observed", seconds, {
+    activity: "model", activityId: "request-1",
+    cost: { kind: "actual", semantics: "request", amount, currency: "USD",
+      source: "fixture-provider", ...extra }
+  });
+  const actual = [charge(1, 0), charge(2, 0.25), charge(3, 0.25)];
+  assert.equal(project(actual).costs.actual.amounts[0].value, 0.25);
+  assert.equal(project(actual).costs.actual.amounts[0].currency, "USD");
+  assert.equal(project(actual).costs.estimated.status, "unknown");
+  assert.equal(project(actual).tokens.value, null, "money does not invent tokens");
+  const estimate = charge(4, 0.1, { kind: "estimated", basis: {
+    model: "fixture-model", source: "fixture-price-sheet", version: "2026-01",
+    scope: "input and output tokens", excluded: ["cache", "tools"]
+  } });
+  const result = project([...actual, estimate]);
+  assert.equal(result.costs.estimated.amounts[0].value, 0.1);
+  assert.equal(result.costs.actual.amounts[0].value, 0.25);
+  assert.equal(result.costs.estimated.evidence[0].basis.model, "fixture-model");
+  const euro = charge(5, 2, { currency: "EUR" });
+  assert.equal(project([...actual, euro]).costs.actual.amounts.length, 2);
+  assert.throws(() => charge(1, 1, { kind: "estimated" }), /basis/i);
+  assert.throws(() => charge(1, -1), /amount/i);
+  const cumulative = [
+    charge(1, 4, { semantics: "cumulative-session" }),
+    charge(2, 6, { semantics: "cumulative-session" })
+  ];
+  assert.equal(project(cumulative).costs.actual.amounts[0].value, 2);
+  assert.equal(project(cumulative).costs.actual.status, "partial");
+  assert.equal(project(cumulative.slice(0, 1)).costs.actual.status, "unknown");
+  assert.equal(project([...cumulative, charge(3, 1, { semantics: "cumulative-session" })])
+    .costs.actual.status, "unknown");
+  const mirror = event("activity.observed", 6, { activity: "model", activityId: "request-1",
+    cost: { kind: "actual", semantics: "request", amount: 0.25, currency: "USD", source: "fixture-provider" }
+  }, { roleName: "mirror" });
+  assert.equal(project([...actual, mirror]).costs.actual.status, "unknown");
+  const separate = event("activity.observed", 7, { activity: "model", activityId: "request-2",
+    cost: { kind: "actual", semantics: "request", amount: 0.5, currency: "USD", source: "receipt-2" } });
+  assert.equal(project([...actual, separate]).costs.actual.amounts[0].value, 0.75);
+  assert.equal(project([...actual, separate]).costs.actual.evidence.length, 2);
+  const replay = actual.map((entry, index) => ({ id: `inbox-${index}`, type: "runtime-observation",
+    taskId: task.id, observation: JSON.parse(entry.payload.observation) }));
+  assert.equal(coalesceRuntimeProgress(replay).length, 3, "cost facts must survive ingress compaction");
+});
+
+test("Task usage query and Web share bounded facts and explicit detail pages", async t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-usage-query-"));
+  const store = new SqliteTaskStore(home);
+  let server;
+  t.after(async () => {
+    try {
+      if (server?.listening) {
+        server.closeAllConnections();
+        await new Promise(resolve => server.close(resolve));
+      }
+    } finally { store.close(); rmSync(home, { recursive: true, force: true }); }
+  });
+  store.saveTask(createTask(task.id, "Usage query", new Date(at(0))));
+  const evidence = token(1, usage("request-context", 12), {}, { activityId: "request" });
+  store.saveEvent(task.id, evidence);
+  store.listEvents = () => { throw new Error("unbounded history must not be read"); };
+  store.listRuns = () => { throw new Error("full Run reports must not be read"); };
+  const summary = readTaskUsage(store, task.id, { now: new Date(at(30)) });
+  assert.equal(summary.tokens.value, 12);
+  assert.equal(summary.sessions.length, 0);
+  assert.equal(summary.details.sessionTotal, 1);
+  const cli = taskUsageCommand([task.id], store, { now: () => new Date(at(30)) }).data;
+  assert.equal(routeInvocation(["task", "usage", task.id]).kind, "execute");
+  assert.deepEqual(cli, summary);
+  assert.equal(readTaskUsage(store, task.id, { limit: 1 }).sessions.length, 1);
+  assert.equal(readTaskUsage(store, task.id, { offset: 1, limit: 1 }).sessions.length, 0);
+  assert.throws(() => readTaskUsage(store, task.id, { limit: 51 }));
+  server = createYuiWebServer(store, { token: "fixture-token", now: () => new Date(at(30)) });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${server.address().port}/api/tasks/${task.id}/usage`;
+  assert.equal((await fetch(url)).status, 403);
+  const response = await fetch(url, { headers: { "x-yui-web-token": "fixture-token" } });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), summary);
+  store.transaction(() => {
+    for (let i = 0; i < 2001; i++) {
+      store.saveEvent(task.id, token(2, usage("request-context", 1), {}, { activityId: `large-${i}` }));
+    }
+  });
+  const bounded = readTaskUsage(store, task.id);
+  assert.equal(bounded.history.complete, false);
+  assert.equal(bounded.tokens.status, "partial");
+  assert.equal(bounded.tokens.value, 2000);
+  assert.equal(bounded.sessions.length, 0);
+});
+
+test("Web usage sources load on disclosure and retain price provenance without rendering markup", async () => {
+  const element = (tag, className, text) => ({
+    tag, className, textContent: text == null ? "" : String(text), childNodes: [], handlers: {},
+    append(...children) { this.childNodes.push(...children); },
+    replaceChildren(...children) { this.childNodes = children; },
+    addEventListener(name, handler) { this.handlers[name] = handler; }
+  });
+  const calls = [];
+  const context = vm.createContext({ node: element, formatDateTime: value => value,
+    document: { documentElement: { lang: "en" } },
+    requestJson: async path => {
+      calls.push(path);
+      return { sessions: [], details: { sessionTotal: 0, actualTotal: 0, estimatedTotal: 1, nextOffset: null },
+        costs: { actual: { evidence: [] }, estimated: { evidence: [{
+          amount: { value: 0.1, status: "partial" }, currency: "USD", source: "<b>provider</b>",
+          roleName: "leader", nativeSessionId: "native", semantics: "request",
+          basis: { model: "fixture-model", source: "price-sheet", version: "v1",
+            scope: "tokens", excluded: ["tools"] }
+        }] } } };
+    }
+  });
+  vm.runInContext(METRICS_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
+  const card = context.observabilityMetricCard({ cost: project([]), context: {}, dag: {} }, key => key);
+  const disclosure = card.childNodes.find(child => child.tag === "details");
+  assert.equal(calls.length, 0);
+  disclosure.open = true;
+  disclosure.handlers.toggle();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /usage\?limit=20&offset=0$/u);
+  const texts = node => [node.textContent, ...node.childNodes.flatMap(texts)].join(" ");
+  assert.match(texts(disclosure), /<b>provider<\/b>.*fixture-model.*price-sheet@v1.*tools/u);
+  assert.equal(disclosure.childNodes.at(-1).hidden, true);
+  disclosure.handlers.toggle();
+  assert.equal(calls.length, 1);
+});
+
 test("cumulative baselines never become request allocations or include pre-Task consumption", () => {
   const cumulative = [
     token(1, usage("cumulative-session", 100)),
@@ -93,6 +228,8 @@ test("WorkItem attribution requires an exact Run and never counts child mirrors 
   assert.equal(project([...events, conflicting], { runs: [run], workItemId: "work-1" }).tokens.value, null);
   const mirror = token(5, usage("request-context", 27), { roleName: "mirror" }, { activityId: "mirror" });
   assert.equal(project([events[2], mirror]).tokens.value, null, "shared native counter is not two independent Roles");
+  const alias = token(5, usage("request-context", 27), { agentId: "another-codex" }, { activityId: "alias" });
+  assert.equal(project([events[2], alias]).tokens.value, null, "Agent aliases do not create another native counter");
   assert.equal(projectSessionTokenMetrics(events.slice(0, 2), {
     taskId: task.id, roleName: fence.roleName, agentId: "codex", driverId: "openai/codex",
     nativeSessionId: fence.nativeSessionId

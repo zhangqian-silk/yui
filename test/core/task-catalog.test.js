@@ -228,6 +228,7 @@ test("catalog byte budget includes escaped Unicode and continues; HTTP preserves
   assert.ok(detail.execution.observability);
   assert.ok(detail.remoteDelivery);
   assert.equal(detail.execution.observability.cost.tokens.value, 30);
-  assert.equal(detail.execution.observability.cost.sessions.length, 2);
+  assert.equal(detail.execution.observability.cost.sessions.length, 0);
+  assert.equal(detail.execution.observability.cost.details.sessionTotal, 2);
   assert.equal(detail.task.id, "task-60");
 });

@@ -133,7 +133,7 @@ import { projectProviderContinuations } from "../runtime/runtimeContinuationProj
 import {
   RUNTIME_OBSERVATION_TASK_EVENT,
   createRuntimeObservation,
-  isRuntimeTokenEvidence,
+  isRuntimeUsageEvidence,
   runtimeObservationFenceMatches,
   runtimeObservationFromTaskEvent,
   runtimeObservationRunFenceMatches,
@@ -4345,9 +4345,9 @@ function compactedRuntimeObservationIds(
   });
   const remove = ({ observation }: typeof existing[number]): boolean => {
     if (incoming.kind === "activity.observed") {
-      if (isRuntimeTokenEvidence(incoming)) return false;
+      if (isRuntimeUsageEvidence(incoming)) return false;
       return observation.kind === "activity.observed"
-        && !isRuntimeTokenEvidence(observation);
+        && !isRuntimeUsageEvidence(observation);
     }
     if (incoming.kind === "operation.started") {
       return (observation.kind === "operation.started"
@@ -4672,7 +4672,7 @@ function hasPersistedRuntimeObservation(
   events: readonly TaskEvent[],
   incoming: RuntimeObservation
 ): boolean {
-  const usageIdentity = isRuntimeTokenEvidence(incoming)
+  const usageIdentity = isRuntimeUsageEvidence(incoming)
     ? incoming.eventId
     : undefined;
   return events.some((event) => (

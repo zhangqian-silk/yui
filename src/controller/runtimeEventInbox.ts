@@ -20,7 +20,7 @@ import { join } from "node:path";
 
 import {
   createRuntimeObservation,
-  isRuntimeTokenEvidence,
+  isRuntimeUsageEvidence,
   type RuntimeObservation
 } from "../runtime/runtimeObservation.js";
 import type { AgentRunFailureReason } from "../agentRun/agentRun.js";
@@ -285,7 +285,7 @@ export class FileRuntimeEventInbox {
   ): RuntimeEventEnqueueResult<TEvent> {
     this.hooks.afterAdmission?.();
     if (event.type === "runtime-observation"
-      && isRuntimeTokenEvidence(event.observation)) {
+      && isRuntimeUsageEvidence(event.observation)) {
       const existing = this.list().find((candidate) => (
         candidate.type === "runtime-observation"
         && candidate.taskId === event.taskId

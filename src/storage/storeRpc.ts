@@ -163,6 +163,7 @@ const READ_ONLY_STORE_METHODS: ReadonlySet<string> = new Set([
   "queryTaskSearch",
   "latestEventSequence",
   "listEventsByType",
+  "readTaskUsageFacts",
   "listTaskRunWorkspaceBases",
   "contextInputReferences",
   "listActiveRuns",
