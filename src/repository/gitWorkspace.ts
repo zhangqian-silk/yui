@@ -11,7 +11,7 @@ import { gitPath, readGitWorktrees } from "./gitWorktreeInventory.js";
 const executeFile = promisify(execFile);
 const isolatedFetchOptions = [
   "--no-tags", "--no-prune", "--no-prune-tags", "--no-recurse-submodules",
-  "--no-auto-gc", "--no-write-fetch-head", "--refmap="
+  "--no-auto-gc", "--no-write-commit-graph", "--no-write-fetch-head", "--refmap="
 ] as const;
 
 export type GitRepositoryInspection = Readonly<{

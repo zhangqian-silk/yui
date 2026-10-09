@@ -93,13 +93,16 @@ async function inspect(admin: string, path: string, linked: boolean): Promise<Gi
     head = gitOutputLine(await run([`--git-dir=${admin}`, "rev-parse", "--verify", "HEAD"]));
     if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/iu.test(head)) throw new Error("Invalid Git HEAD");
   } catch (error) {
-    // A genuinely unborn main branch is valid discovery, not cleanup proof.
-    if (linked || branch === undefined) throw error;
+    // A genuinely unborn branch (main or linked) is valid discovery, not cleanup proof.
+    if (branch === undefined) throw error;
     try {
       await run([`--git-dir=${admin}`, "show-ref", "--verify", "--quiet", branch]);
     } catch (missing) {
       if ((missing as { code?: unknown }).code === 1) {
-        return { path, branch, detached: false, prunable: !await exists(path), locked: false };
+        return {
+          path, branch, detached: false, prunable: !await exists(path),
+          locked: linked && await exists(join(admin, "locked"))
+        };
       }
       throw missing;
     }

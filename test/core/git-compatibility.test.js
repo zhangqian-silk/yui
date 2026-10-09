@@ -59,6 +59,7 @@ test("Git compatibility preserves exact paths, locked missing registrations and 
   const clone = join(root, "clone");
   await workspace.clone({ remoteUrl: repo, destination: clone });
   git(clone, "config", "remote.origin.prune", "true");
+  git(clone, "config", "fetch.writeCommitGraph", "true");
   git(clone, "update-ref", "refs/remotes/origin/keep", "HEAD");
   const fetchHead = join(clone, ".git", "FETCH_HEAD");
   writeFileSync(fetchHead, "concurrent user's FETCH_HEAD\n");
@@ -71,8 +72,43 @@ test("Git compatibility preserves exact paths, locked missing registrations and 
   assert.equal(git(clone, "rev-parse", "refs/remotes/origin/main"), oldTracking);
   assert.equal(git(clone, "rev-parse", "refs/remotes/origin/keep"), oldTracking);
   assert.equal(readFileSync(fetchHead, "utf8"), "concurrent user's FETCH_HEAD\n");
+  assert.equal(existsSync(join(clone, ".git", "objects", "info", "commit-graphs")), false);
+  assert.equal(existsSync(join(clone, ".git", "objects", "info", "commit-graph")), false);
   await assert.rejects(workspace.resolveTree(clone, "--output=oops"), /Unsafe Git revision/);
   assert.equal(existsSync(join(clone, "oops")), false);
+});
+
+test("an unborn linked branch preserves inventory and lock observations", async t => {
+  const root = mkdtempSync(join(tmpdir(), "yui-git-unborn-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const repo = join(root, "repo");
+  const linked = join(root, "linked");
+  mkdirSync(repo);
+  const env = sanitizedTestEnv({
+    GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.invalid",
+    GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.invalid"
+  });
+  const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], {
+    env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"]
+  });
+  git(repo, "init");
+  git(repo, "symbolic-ref", "HEAD", "refs/heads/main");
+  git(repo, "commit", "--allow-empty", "-m", "base");
+  git(repo, "worktree", "add", "-b", "seed", linked);
+  git(linked, "checkout", "--orphan", "fresh-unborn");
+  git(repo, "worktree", "lock", linked);
+  const workspace = new NodeGitWorkspace();
+  const record = (await readGitWorktrees(repo)).find(entry => entry.path === linked);
+  assert.deepEqual(record, {
+    path: linked, branch: "refs/heads/fresh-unborn", detached: false, prunable: false, locked: true
+  });
+  await workspace.assertNoForeignWorktreeOnRef({
+    repositoryPath: repo, ref: "refs/heads/main", excludeWorktreePath: repo
+  });
+  rmSync(linked, { recursive: true });
+  assert.deepEqual((await readGitWorktrees(repo)).find(entry => entry.path === linked), {
+    ...record, prunable: true
+  });
 });
 
 test("minimum Git check stops an unsupported clone before creating its destination", async t => {
