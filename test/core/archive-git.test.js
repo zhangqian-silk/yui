@@ -33,7 +33,7 @@ test("archive cleanup distinguishes a missing directory from exact Git metadata 
   assert.equal(await workspace.removeWorktree({
     repositoryPath: root, container, directory: "work-item-1-app", taskSegment, roleName: "work-item-1", deleteBranch: true
   }), "missing");
-  const records = git("worktree", "list", "--porcelain", "-z");
+  const records = git("worktree", "list", "--porcelain");
   assert.ok(!records.includes(missing.path));
   assert.ok(records.includes(foreign.path), "exact cleanup must not prune another owner's missing registration");
   assert.equal(await workspace.refExists(root, missing.branch), false);

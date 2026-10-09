@@ -20,6 +20,8 @@ import { selectEnvironment } from "../agent/launchEnvironment.js";
 import { durableJobIdempotencyKey, type DurableJob, type DurableJobStep } from "../job/durableJob.js";
 import { readRuntimeIdentity } from "../release/runtimeRelease.js";
 import type { GitWorkspaceRemoval } from "../repository/gitWorkspace.js";
+import { compatibleGitArguments, supportedGit } from "../repository/gitCompatibility.js";
+import { readGitWorktrees } from "../repository/gitWorktreeInventory.js";
 import {
   NodeGitWorkspace,
   type GitWorkspacePort
@@ -1378,8 +1380,10 @@ function integrationCheckDirectory(
 }
 
 async function git(args: readonly string[]): Promise<string> {
+  const program = supportedGit();
+  const invocation = compatibleGitArguments(args);
   try {
-    const result = await executeFile("git", [...args], {
+    const result = await executeFile(program.path, invocation, {
       encoding: "utf8",
       maxBuffer: 16 * 1024 * 1024,
       timeout: 120_000
@@ -1541,14 +1545,6 @@ async function checkedOutWorktreePaths(
   repositoryPath: string,
   targetRef: string
 ): Promise<string[]> {
-  const porcelain = (await git([
-    "-C", repositoryPath, "worktree", "list", "--porcelain"
-  ])).trim();
-  if (porcelain.length === 0) return [];
-  return porcelain.split(/\n\n+/u).flatMap((record) => {
-    const lines = record.split("\n");
-    const path = lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
-    const branch = lines.find((line) => line.startsWith("branch "))?.slice("branch ".length);
-    return path !== undefined && branch === targetRef ? [path] : [];
-  });
+  return (await readGitWorktrees(repositoryPath))
+    .filter(record => record.branch === targetRef).map(record => record.path);
 }

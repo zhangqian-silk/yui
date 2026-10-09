@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { supportedGit } from "../repository/gitCompatibility.js";
 
 import { acquireArtifactCommitLock } from "./artifactCommitLock.js";
 import {
@@ -177,6 +178,7 @@ export function openTaskArtifactRepository(home: string, taskId: string): TaskAr
   };
 
   const ensure = async (): Promise<void> => {
+    supportedGit();
     if (exists()) {
       await assertNoRemote(taskId, repoPath);
       return;

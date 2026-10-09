@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { isDeepStrictEqual } from "node:util";
+import { supportedGit } from "./gitCompatibility.js";
 
 import type { TaskStore } from "../storage/taskStore.js";
 import type { ManagedWorkspace } from "../worktree/managedWorkspace.js";
@@ -92,7 +93,7 @@ export function snapshotExecutionLaneWorkspaceSync(
 
 function git(cwd: string, args: readonly string[]): string | undefined {
   try {
-    return execFileSync("git", args, {
+    return execFileSync(supportedGit().path, args, {
       cwd,
       encoding: "utf8",
       timeout: 5_000,

@@ -29,6 +29,8 @@ function fixture(t) {
   const checkout = join(root, "checkout");
   git(root, "init", "--bare", "--initial-branch=main", remote);
   git(root, "clone", remote, seed);
+  // Old Git does not transfer an unborn remote HEAD's branch name on clone.
+  git(seed, "symbolic-ref", "HEAD", "refs/heads/main");
   writeFileSync(join(seed, "file"), "initial\n");
   git(seed, "add", "file");
   git(seed, "commit", "-m", "initial");

@@ -300,6 +300,9 @@ export function integrationFixture(t, strategy = "merge") {
 
 test("Task-final review accepts a Task-main repair after a real committed Integration without borrowing old verification", async t => {
   const f = integrationFixture(t, "ff");
+  // Exercise native relative worktree pointers on Git >=2.48; older Git
+  // ignores the setting and keeps absolute-pointer coverage.
+  f.git("config", "worktree.useRelativePaths", "true");
   f.git("checkout", "-b", "repair-source");
   writeFileSync(join(f.repo, "file"), "worker repair\n");
   f.git("commit", "-am", "worker change");

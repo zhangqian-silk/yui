@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { GitWorkspacePort } from "../repository/gitWorkspace.js";
+import { gitOutputLine, supportedGit } from "../repository/gitCompatibility.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import { queueLeaderWakeup } from "../scheduler/wakeupQueue.js";
 import {
@@ -288,7 +289,7 @@ async function hasExactRefReceipt(path: string, branch: string, before: string, 
 
 const actionId = () => `yui-integration-${randomBytes(16).toString("hex")}`;
 async function gitPath(path: string, name: string): Promise<string> {
-  const value = (await command(path, ["rev-parse", "--git-path", name])).trim();
+  const value = gitOutputLine(await command(path, ["rev-parse", "--git-path", name]));
   return isAbsolute(value) ? value : resolve(path, value);
 }
 async function conflicts(path: string): Promise<string[]> {
@@ -301,8 +302,9 @@ async function succeeds(path: string, args: string[], action?: string): Promise<
   try { await command(path, args, action); return true; } catch { return false; }
 }
 async function command(path: string, args: string[], action?: string): Promise<string> {
+  const program = supportedGit();
   try {
-    return (await execute("git", [
+    return (await execute(program.path, [
       "-C", path, "-c", "user.name=Yui", "-c", "user.email=yui@local",
       "-c", "core.editor=true", "-c", "rebase.backend=merge", ...args
     ], {

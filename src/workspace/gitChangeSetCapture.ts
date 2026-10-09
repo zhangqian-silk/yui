@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { supportedGit } from "../repository/gitCompatibility.js";
 
 const executeFile = promisify(execFile);
 
@@ -92,8 +93,9 @@ async function assertManagedHead(input: Readonly<{
 }
 
 async function git(args: readonly string[]): Promise<string> {
+  const program = supportedGit();
   try {
-    const result = await executeFile("git", [...args], {
+    const result = await executeFile(program.path, [...args], {
       encoding: "utf8",
       maxBuffer: 16 * 1024 * 1024,
       timeout: 120_000

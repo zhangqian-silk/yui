@@ -10,6 +10,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
+import { gitOutputLine, supportedGit } from "../repository/gitCompatibility.js";
 
 import type { TaskRuntimeIsolationDescriptor } from "../runtime/taskRuntimeIsolation.js";
 import type { ManagedWorkspace, ManagedWorkspaceOwner } from "../worktree/managedWorkspace.js";
@@ -239,11 +240,11 @@ function ownerFromManagedWorkspace(
 }
 
 function readGitWorktreeMetadata(path: string): ResourceRecord["git"] {
-  const commonDir = execFileSync(
-    "git",
-    ["-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+  const commonDir = resolve(path, gitOutputLine(execFileSync(
+    supportedGit().path,
+    ["-C", path, "rev-parse", "--git-common-dir"],
     { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }
-  ).trim();
+  )));
   const repositoryPath = basename(commonDir) === ".git" ? dirname(commonDir) : commonDir;
   let branch: string | undefined;
   try {

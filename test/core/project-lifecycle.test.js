@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 
 import { runProjectCommand } from "../../dist/commands/projectCommands.js";
@@ -196,8 +196,8 @@ test("competing Task activations each clone the remote exactly once into indepen
   assert.notEqual(taskEntry.path, checkout);
   assert.equal(git(["rev-parse", "HEAD"], taskEntry.path), remoteHead);
   assert.notEqual(
-    git(["rev-parse", "--path-format=absolute", "--git-common-dir"], taskEntry.path),
-    git(["rev-parse", "--path-format=absolute", "--git-common-dir"], checkout)
+    resolve(taskEntry.path, git(["rev-parse", "--git-common-dir"], taskEntry.path)),
+    resolve(checkout, git(["rev-parse", "--git-common-dir"], checkout))
   );
   assert.equal(existsSync(join(taskEntry.path, "local.txt")), false);
   assert.equal(

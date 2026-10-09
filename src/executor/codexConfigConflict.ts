@@ -269,13 +269,14 @@ function exactTrust(
 function resolveRepositoryRootForTrust(workspace: string): string | undefined {
   const result = spawnSync(
     "git",
-    ["-C", workspace, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+    ["-C", workspace, "rev-parse", "--git-common-dir"],
     { encoding: "utf8", timeout: 1_000, windowsHide: true }
   );
   if (result.status !== 0 || result.error !== undefined) return undefined;
-  const commonDirectory = result.stdout.trim();
-  if (!isAbsolute(commonDirectory) || commonDirectory.includes("\0")) return undefined;
-  const normalized = resolve(commonDirectory);
+  if (!result.stdout.endsWith("\n")) return undefined;
+  const commonDirectory = result.stdout.slice(0, -1);
+  if (commonDirectory.length === 0 || commonDirectory.includes("\0")) return undefined;
+  const normalized = resolve(workspace, commonDirectory);
   return basename(normalized) === ".git" ? dirname(normalized) : undefined;
 }
 
