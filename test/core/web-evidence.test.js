@@ -13,6 +13,62 @@ import { WEB_ASSETS } from "../../dist/web/assets/assetManifest.js";
 import { RECORDS_SCRIPT } from "../../dist/web/assets/client/domain/records.js";
 import { API_SCRIPT } from "../../dist/web/assets/client/lib/api.js";
 import { MARKDOWN_SCRIPT } from "../../dist/web/assets/client/lib/markdown.js";
+import { CONTEXT_SCRIPT } from "../../dist/web/assets/client/domain/context.js";
+import { TASK_RECORDS_SCRIPT } from "../../dist/web/assets/client/views/task/records.js";
+
+test("Web knowledge reads summaries on open, then exact source and history only on row expansion", async () => {
+  const element = (spec, attrs, ...children) => ({
+    spec, dataset: {}, children: children.filter(child => child != null), handlers: {},
+    append(...items) { this.children.push(...items); },
+    addEventListener(name, handler) { this.handlers[name] = handler; },
+    replaceChildren(...items) { this.children = items; }
+  });
+  const context = vm.createContext({
+    h: element, icon: name => element(name), mono: text => text, note: text => text,
+    clear: node => node.replaceChildren(), kv: pairs => pairs, richText: (_, text) => text,
+    rawDisclosure: (_, value) => element("raw", null, JSON.stringify(value)),
+    loadedNote: (_, loaded, total) => `${loaded}/${total}`,
+    button: text => element("button", null, text),
+    moreButton: (_, onClick) => ({ more: onClick }),
+    cardDisclosure: () => Object.assign(element("details"), { body: element("body") })
+  });
+  for (const script of [CONTEXT_SCRIPT, RECORDS_SCRIPT, TASK_RECORDS_SCRIPT]) {
+    vm.runInContext(script.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
+  }
+  const ref = { store: "project-knowledge", refId: "project-1:knowledge-1", digest: "exact-version" };
+  const value = { version: 2, status: "active", scope: "Task leaders", expiresWhen: "After protocol change",
+    body: "Current rule", provenance: { taskId: "task-1", proposalId: "proposal-2" },
+    history: [{ version: 1, body: "Original rule", scope: "Original scope" }] };
+  const calls = [];
+  const card = context.knowledgeCard({
+    task: { id: "task-1" }, viewState: {},
+    core: { coreCursor: "cursor-1", records: [], collections: [{ store: "project-knowledge", total: 2 }] }
+  }, key => key, {
+    list: async (...args) => {
+      calls.push(["list", ...args]);
+      return { items: args[2].cursor ? [] : [{ ref, summary: "title: Rule; scope: Task leaders" }],
+        total: 2, nextCursor: args[2].cursor ? null : "next-page" };
+    },
+    inspect: async (...args) => { calls.push(["inspect", ...args]); return { value }; }
+  });
+  assert.equal(calls.length, 0);
+  card.open = true;
+  card.handlers.toggle();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.length, 1);
+  const row = card.body.children.find(child => child.spec === "details.lazy-row");
+  row.open = true;
+  row.handlers.toggle();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls[1], ["inspect", "task-1", ref]);
+  assert.match(JSON.stringify(row.children), /After protocol change/);
+  assert.match(JSON.stringify(row.children), /Original rule/);
+  row.handlers.toggle();
+  assert.equal(calls.length, 2, "no repeated source read for an already loaded row");
+  card.body.children.find(child => child.more).more();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls[2][3].cursor, "next-page");
+});
 
 test("Web source reads expose exact message control facts and the original report without writing", async () => {
   const element = (spec, attrs, ...children) => ({

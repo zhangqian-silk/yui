@@ -2,9 +2,18 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.3. The declared 1.2 → 1.3 transition adds optional exact
-Session fences to structured inputs and permits their explicit nondelivery
-reason without an Assignment. Existing Role-addressed inputs remain unchanged.
+Current storage is 1.4. The declared 1.3 → 1.4 transition gives Project
+Knowledge applicability and exact version history, and updates proposal
+fingerprints to include applicability and replacement intent. It restores
+`scope`/`expiresWhen` only from an exact matching accepted proposal. Migrated
+knowledge starts at version 1 of the observed head; older proposals remain
+available, but missing historical edits are not invented. Frozen Context
+snapshots and their digests are unchanged. The SQL layout is unchanged.
+
+The declared 1.2 → 1.3 transition adds optional exact Session fences to
+structured inputs and permits their explicit nondelivery reason without an
+Assignment. Existing Role-addressed inputs remain unchanged.
+
 The declared 1.1 → 1.2 transition adds optional
 CapabilityGrant authorization-source evidence and native-human input/archive
 audit records. Existing valid Operator grants remain unchanged; migration does

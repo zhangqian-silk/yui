@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 import { BASELINE_SCHEMA_SQL, SQLITE_SCHEMA_TABLES } from "./baselineSchema.js";
 import { migrateTaskMainWorkspaces } from "./upgrade/taskMainWorkspaceMigration.js";
+import { migrateProjectKnowledge } from "./upgrade/projectKnowledgeMigration.js";
 import {
   CURRENT_STORAGE_VERSION, MIN_SUPPORTED_STORAGE_VERSION, STORAGE_FORMAT,
   isMinorStorageUpgrade, isStorageVersion, storageVersionParts, type StorageVersion
@@ -26,7 +27,7 @@ export type StorageMinorUpgrade = Readonly<{
   sourceChecksum: string;
   targetChecksum: string;
   sql: string;
-  dataMigration?: "task-main-workspace";
+  dataMigration?: "task-main-workspace" | "project-knowledge";
 }>;
 
 // Only explicit, contiguous minor changes in this baseline may be added here.
@@ -59,6 +60,15 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   // Optional explicit Session fences apply only to new inputs. Preserve old
   // Role-addressed messages; never infer a historical user's Session choice.
   sql: ""
+}, {
+  fromVersion: "1.3",
+  toVersion: "1.4",
+  name: "project-knowledge-applicability",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  sql: "",
+  dataMigration: "project-knowledge"
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {
@@ -178,6 +188,7 @@ export function applySqliteMinorUpgrades(
       if (step.dataMigration === "task-main-workspace") {
         migrateTaskMainWorkspaces(db, home, createdRoots);
       }
+      if (step.dataMigration === "project-knowledge") migrateProjectKnowledge(db);
       const { major, minor } = storageVersionParts(step.toVersion);
       db.prepare("UPDATE storage_schema SET major=?,minor=?,checksum=? WHERE id=1")
         .run(major, minor, step.targetChecksum);

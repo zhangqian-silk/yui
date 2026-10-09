@@ -20,7 +20,7 @@ export function totalOf(core, store) {
 // List and omitted-value summaries join known fields in a fixed order
 // ("title: …; status: …"). Split them for display only; the exact record
 // stays one read away.
-const SUMMARY_KEYS = ["title", "objective", "question", "summary", "body", "status", "type"];
+const SUMMARY_KEYS = ["title", "scope", "expiresWhen", "version", "objective", "question", "summary", "body", "status", "type"];
 export function summaryFields(summary) {
   const fields = {};
   if (!summary) return fields;

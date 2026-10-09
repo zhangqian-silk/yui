@@ -15,12 +15,12 @@ import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
 import { createRoleSessionSet, recordRoleAgentSession, updateRoleAgentSessionStatus } from "../../dist/executor/agentExecutor.js";
 import { createCapabilityGrant } from "../../dist/grant/capabilityGrant.js";
 
-test("fresh storage creates only the current 1.3 contract", () => {
-  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.3");
+test("fresh storage creates only the current 1.4 contract", () => {
+  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.4");
   const db = new Database(":memory:");
   try {
     schema.initializeSqliteSchema(db);
-    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.3");
+    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.4");
     assert.equal(db.prepare("SELECT count(*) AS n FROM storage_schema").get().n, 1);
     assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='schema_migrations'").get(), undefined);
     for (const name of ["coordination_locks", "work_item_candidates", "idx_input_open"]) {

@@ -23,8 +23,8 @@ export type ProjectKnowledgeProvenance = Readonly<{
   evidenceDigest?: string;
   /**
    * Stable dedup fingerprint of the promoted conclusion (source identity +
-   * title + body). Recorded so a repeated proposal can be recognized as an
-   * already-promoted duplicate instead of creating a second entry.
+   * title + body + applicability + replacement intent). Recorded so a repeated
+   * proposal can be recognized as an already-promoted duplicate.
    */
   fingerprint?: string;
   /** The proposal that produced (or last updated) this entry. */
@@ -33,16 +33,24 @@ export type ProjectKnowledgeProvenance = Readonly<{
   promotedAt?: string;
 }>;
 
-export type ProjectKnowledge = Readonly<{
-  schemaVersion: 1;
-  id: string;
+export type ProjectKnowledgeRevision = Readonly<{
+  version: number;
   title: string;
   body: string;
+  scope?: string;
+  expiresWhen?: string;
   status: "active" | "retired";
   /** Present only for entries promoted through the Operator approval workflow. */
   provenance?: ProjectKnowledgeProvenance;
-  createdAt: string;
   updatedAt: string;
+}>;
+
+export type ProjectKnowledge = ProjectKnowledgeRevision & Readonly<{
+  schemaVersion: 2;
+  id: string;
+  /** Prior exact versions, oldest first. Migration establishes version 1. */
+  history: readonly ProjectKnowledgeRevision[];
+  createdAt: string;
 }>;
 
 /**
@@ -62,7 +70,7 @@ export type KnowledgeProposalSource = Readonly<{
 }>;
 
 export type KnowledgeProposal = Readonly<{
-  schemaVersion: 1;
+  schemaVersion: 2;
   id: string;
   projectId: string;
   title: string;
@@ -77,9 +85,9 @@ export type KnowledgeProposal = Readonly<{
   /** Existing active Knowledge this proposal suggests superseding. */
   supersedesKnowledgeId?: string;
   /**
-   * sha256 of the source identity + title + body. Two proposals with the same
-   * fingerprint are the same candidate; the second is deduplicated, not stored
-   * twice.
+   * sha256 of normalized source, content, applicability and replacement intent.
+   * Two proposals with the same fingerprint are the same candidate; the second
+   * is deduplicated, not stored twice.
    */
   fingerprint: string;
   /** Digest of the cited source evidence as read at proposal time. */
@@ -239,14 +247,19 @@ export function addProjectKnowledge(
   title: string,
   body: string,
   now: Date,
-  provenance?: ProjectKnowledgeProvenance
+  provenance?: ProjectKnowledgeProvenance,
+  applicability: Readonly<{ scope?: string; expiresWhen?: string }> = {}
 ): Project {
   const timestamp = now.toISOString();
   const knowledge: ProjectKnowledge = {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    version: 1,
+    history: [],
     id: requireIdentity(id, "Project knowledge id"),
     title: requireText(title, "Project knowledge title"),
     body: requireText(body, "Project knowledge body"),
+    ...(applicability.scope === undefined ? {} : { scope: requireText(applicability.scope, "Knowledge scope") }),
+    ...(applicability.expiresWhen === undefined ? {} : { expiresWhen: requireText(applicability.expiresWhen, "Knowledge expiry condition") }),
     status: "active",
     ...(provenance === undefined ? {} : { provenance: validateKnowledgeProvenance(provenance) }),
     createdAt: timestamp,
@@ -295,7 +308,10 @@ export function updateProjectMetadata(
 export function updateProjectKnowledge(
   project: Project,
   id: string,
-  patch: Readonly<{ title?: string; body?: string }>,
+  patch: Readonly<{
+    title?: string; body?: string; scope?: string | null; expiresWhen?: string | null;
+    provenance?: ProjectKnowledgeProvenance;
+  }>,
   now: Date
 ): Project {
   const knowledgeId = requireIdentity(id, "Project knowledge id");
@@ -306,18 +322,31 @@ export function updateProjectKnowledge(
     if (entry.status === "retired") {
       throw new Error(`Project knowledge is retired: ${knowledgeId}.`);
     }
-    return {
-      ...entry,
+    const { scope: _scope, expiresWhen: _expiresWhen, ...base } = entry;
+    const scope = patch.scope === undefined ? entry.scope
+      : patch.scope === null ? undefined : requireText(patch.scope, "Knowledge scope");
+    const expiresWhen = patch.expiresWhen === undefined ? entry.expiresWhen
+      : patch.expiresWhen === null ? undefined : requireText(patch.expiresWhen, "Knowledge expiry condition");
+    const next = {
+      ...base,
+      ...(scope === undefined ? {} : { scope }),
+      ...(expiresWhen === undefined ? {} : { expiresWhen }),
       title: patch.title === undefined
         ? entry.title
         : requireText(patch.title, "Project knowledge title"),
       body: patch.body === undefined
         ? entry.body
         : requireText(patch.body, "Project knowledge body"),
+      ...(patch.provenance === undefined ? {} : { provenance: validateKnowledgeProvenance(patch.provenance) }),
       updatedAt: now.toISOString()
     };
+    if (next.title === entry.title && next.body === entry.body
+      && next.scope === entry.scope && next.expiresWhen === entry.expiresWhen
+      && JSON.stringify(next.provenance) === JSON.stringify(entry.provenance)) return entry;
+    return { ...next, version: entry.version + 1, history: [...entry.history, knowledgeRevision(entry)] };
   });
   if (!found) throw new Error(`Project knowledge not found: ${knowledgeId}.`);
+  if (knowledge.every((entry, index) => entry === project.knowledge[index])) return project;
   return validateProject({ ...project, knowledge, updatedAt: now.toISOString() });
 }
 
@@ -331,36 +360,49 @@ export function retireProjectKnowledge(
   const knowledge = project.knowledge.map((entry) => {
     if (entry.id !== knowledgeId) return entry;
     found = true;
+    if (entry.status === "retired") return entry;
     return {
       ...entry,
+      version: entry.version + 1,
+      history: [...entry.history, knowledgeRevision(entry)],
       status: "retired" as const,
       updatedAt: now.toISOString()
     };
   });
   if (!found) throw new Error(`Project knowledge not found: ${knowledgeId}.`);
+  if (knowledge.every((entry, index) => entry === project.knowledge[index])) return project;
   return validateProject({ ...project, knowledge, updatedAt: now.toISOString() });
+}
+
+function knowledgeRevision(entry: ProjectKnowledge): ProjectKnowledgeRevision {
+  const { schemaVersion: _schema, id: _id, history: _history, createdAt: _created, ...revision } = entry;
+  return revision;
 }
 
 /**
  * Stable dedup fingerprint for a promotion candidate. Two proposals with the
- * same source identity, title, and body are the same conclusion regardless of
- * who proposed them or when.
+ * same source, content, applicability and replacement intent are identical.
+ * Trim outer whitespace only; preserve case, internal whitespace and Unicode.
+ * A JSON tuple avoids collisions between user-supplied identity delimiters.
  */
 export function knowledgeProposalFingerprint(input: Readonly<{
   projectId: string;
   source: KnowledgeProposalSource;
   title: string;
   body: string;
+  scope?: string;
+  expiresWhen?: string;
+  supersedesKnowledgeId?: string;
 }>): string {
-  const sourceKey = [
-    input.projectId,
-    input.source.taskId,
-    input.source.decisionId ?? "",
-    input.source.milestoneId ?? "",
-    input.source.commitSha ?? ""
-  ].join("|");
+  const optional = (value: string | undefined) => value === undefined ? null : requireText(value, "Knowledge fingerprint field");
   return createHash("sha256")
-    .update(`${sourceKey}\u0000${input.title}\u0000${input.body}`)
+    .update(JSON.stringify([
+      "knowledge-proposal-v2", requireText(input.projectId, "Project id"),
+      requireText(input.source.taskId, "Source Task"), optional(input.source.decisionId),
+      optional(input.source.milestoneId), optional(input.source.commitSha),
+      requireText(input.title, "Knowledge title"), requireText(input.body, "Knowledge body"),
+      optional(input.scope), optional(input.expiresWhen), optional(input.supersedesKnowledgeId)
+    ]))
     .digest("hex");
 }
 
@@ -595,16 +637,16 @@ export function validateProject(project: Project): Project {
   requireGitRef(project.developmentBranch, "Project development branch");
   const knowledgeIds = new Set<string>();
   for (const entry of project.knowledge) {
-    if (entry.schemaVersion !== 1) throw new Error("Project knowledge must use schemaVersion 1.");
+    if (entry.schemaVersion !== 2) throw new Error("Project knowledge must use schemaVersion 2.");
     requireIdentity(entry.id, "Project knowledge id");
-    requireText(entry.title, "Project knowledge title");
-    requireText(entry.body, "Project knowledge body");
-    if (!["active", "retired"].includes(entry.status)) {
-      throw new Error("Project knowledge status is invalid.");
+    validateKnowledgeRevision(entry);
+    if (!Array.isArray(entry.history) || entry.history.length !== entry.version - 1) {
+      throw new Error("Project knowledge history must contain every prior version.");
     }
-    if (entry.provenance !== undefined) {
-      validateKnowledgeProvenance(entry.provenance);
-    }
+    entry.history.forEach((revision, index) => {
+      validateKnowledgeRevision(revision);
+      if (revision.version !== index + 1) throw new Error("Project knowledge history is out of order.");
+    });
     requireTimestamp(entry.createdAt, "Project knowledge createdAt");
     requireTimestamp(entry.updatedAt, "Project knowledge updatedAt");
     if (knowledgeIds.has(entry.id)) throw new Error(`Duplicate Project knowledge id: ${entry.id}.`);
@@ -621,6 +663,17 @@ export function validateProject(project: Project): Project {
   requireTimestamp(project.createdAt, "Project createdAt");
   requireTimestamp(project.updatedAt, "Project updatedAt");
   return project;
+}
+
+function validateKnowledgeRevision(entry: ProjectKnowledgeRevision): void {
+  if (!Number.isSafeInteger(entry.version) || entry.version < 1) throw new Error("Invalid knowledge version.");
+  requireText(entry.title, "Project knowledge title");
+  requireText(entry.body, "Project knowledge body");
+  if (entry.scope !== undefined) requireText(entry.scope, "Knowledge scope");
+  if (entry.expiresWhen !== undefined) requireText(entry.expiresWhen, "Knowledge expiry condition");
+  if (!["active", "retired"].includes(entry.status)) throw new Error("Project knowledge status is invalid.");
+  if (entry.provenance !== undefined) validateKnowledgeProvenance(entry.provenance);
+  requireTimestamp(entry.updatedAt, "Project knowledge updatedAt");
 }
 
 function validateKnowledgeProvenance(provenance: ProjectKnowledgeProvenance): ProjectKnowledgeProvenance {
@@ -658,8 +711,8 @@ function validateKnowledgeProposal(
   proposal: KnowledgeProposal,
   projectId: string
 ): KnowledgeProposal {
-  if (proposal.schemaVersion !== 1) {
-    throw new Error("Knowledge proposal must use schemaVersion 1.");
+  if (proposal.schemaVersion !== 2) {
+    throw new Error("Knowledge proposal must use schemaVersion 2.");
   }
   requireIdentity(proposal.id, "Knowledge proposal id");
   if (proposal.projectId !== projectId) {
@@ -667,6 +720,9 @@ function validateKnowledgeProposal(
   }
   requireText(proposal.title, "Knowledge proposal title");
   requireText(proposal.body, "Knowledge proposal body");
+  if (proposal.fingerprint !== knowledgeProposalFingerprint(proposal)) {
+    throw new Error("Knowledge proposal fingerprint does not match its content.");
+  }
   if (!["pending", "accepted", "rejected"].includes(proposal.status)) {
     throw new Error("Knowledge proposal status is invalid.");
   }

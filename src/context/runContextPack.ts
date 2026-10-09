@@ -926,7 +926,10 @@ function materialize(layer: ContextRef["layer"], store: string, refId: string, v
       refId,
       revision,
       digest,
-      summary: title.slice(0, 400)
+      summary: (store === "project-knowledge"
+        ? [title, `version: ${record.version}`, ...(record.scope === undefined ? [] : [`scope: ${record.scope}`]),
+          ...(record.expiresWhen === undefined ? [] : [`expiresWhen: ${record.expiresWhen}`])].join("; ")
+        : title).slice(0, 400)
     }),
     value
   });
