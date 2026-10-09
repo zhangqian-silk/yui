@@ -5,6 +5,9 @@
 follow `details.nextOffset` for another page. Web uses the same facts and
 projection, with evidence loaded only when its usage disclosure is opened.
 The authenticated read endpoint is `GET /api/tasks/<task>/usage`.
+The CLI summary and details span all Task Roles, so they are available only to
+the human caller, Operator or matching Task Leader, not a Worker/Reviewer
+Assignment.
 
 The query reads at most 2,000 retained runtime/lifecycle observations and 2,000
 compact Run identities, never Run report bodies or transcripts. Above either
@@ -12,11 +15,15 @@ limit it marks consumption as partial (`usage-history-limited`); it does not
 silently call the retained subtotal a lifetime total. Detail pages contain at
 most 50 entries per evidence family. Pages are current reads, not frozen audit
 snapshots; refresh the summary when new observations arrive.
+Web retains already-read pages across Context redraws and labels each page's
+observation time. Reselect the Task to start a fresh detail read.
 
 `known` means known within the declared observed sources, not billing
 completeness. Missing values are `null`, not zero. Tool and native-turn history
 may be compacted and remains partial. Task elapsed time and summed native
 execution intervals are not billable durations.
+Partial or unavailable source coverage makes monetary subtotals partial even
+when that boundary carries no amount; known receipts remain visible.
 
 ## Monetary observations
 

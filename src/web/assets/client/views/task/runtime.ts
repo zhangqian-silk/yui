@@ -111,7 +111,7 @@ function jobRecord(job, task, t, locale) {
 // --- Usage and diagnostics -------------------------------------------------------
 function usageCard(data, t) {
   const usage = card({ id: "detail-usage", title: t("usage.title"), icon: "clock" });
-  const metrics = data.runtime && observabilityMetricCard(data.runtime.observability, t);
+  const metrics = data.runtime && observabilityMetricCard(data.runtime.observability, t, data.viewState);
   usage.body.append(h("div", { dataset: { slot: "usage" } }, metrics || emptyState(t("usage.unavailable"))));
   return usage;
 }

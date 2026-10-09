@@ -57,7 +57,11 @@ export function projectTaskCosts(
         const versions = costs.filter(o => o.payload.cost!.currency === currency);
         const latest = versions.at(-1)!;
         const cost = latest.payload.cost!;
-        const local: string[] = [];
+        // Missing receipts can carry only a coverage boundary, with no cost
+        // field. Keep known subtotals but do not erase that boundary by first
+        // filtering down to monetary observations.
+        const local = qualityReasons(all.filter(o => inScope(o)
+          && (o.payload.cost === undefined || o.payload.cost.kind === kind)));
         let value: number | null = null;
         const semantics = new Set(versions.map(o => o.payload.cost!.semantics));
         const sources = new Set(versions.map(o => o.payload.cost!.source));

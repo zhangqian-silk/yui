@@ -42,7 +42,7 @@ function usageTile(labelText, metric, t, suffix) {
   return tile;
 }
 
-export function observabilityMetricCard(observability, t) {
+export function observabilityMetricCard(observability, t, viewState) {
   if (!observability) return null;
   const wrap = node("div", "usage");
   const grid = node("div", "metric-grid");
@@ -73,17 +73,18 @@ export function observabilityMetricCard(observability, t) {
   if (cost.history && !cost.history.complete) wrap.append(node("p", "metric-note", t("usage.reason.usage-history-limited")));
   if (cost.taskId && typeof document !== "undefined") {
     const details = node("details", "usage-details");
+    details.dataset.viewKey = "usage-sources";
     details.append(node("summary", "", t("usage.sources")));
     const body = node("div", "stack");
     const more = node("button", "", t("usage.loadDetails"));
     more.type = "button";
-    let offset = 0, loaded = false;
-    async function load() {
-      more.disabled = true;
-      try {
-        const page = await requestJson("/api/tasks/" + encodeURIComponent(cost.taskId)
-          + "/usage?limit=20&offset=" + offset);
-        if (!loaded) body.replaceChildren();
+    const cache = viewState || {};
+    const state = cache.usageDetails || (cache.usageDetails = { pages: [], offset: 0, reading: false });
+    function drawPages() {
+      body.replaceChildren();
+      state.pages.forEach(function (page) {
+        body.append(node("p", "metric-note", t("usage.observedThrough") + " "
+          + (page.observedThrough ? formatDateTime(page.observedThrough, pageLocale()) : t("detail.unobserved"))));
         ["actual", "estimated"].forEach(function (kind) {
           page.costs[kind].evidence.forEach(function (entry) {
             const basis = entry.basis;
@@ -102,15 +103,32 @@ export function observabilityMetricCard(observability, t) {
         if (!page.details.sessionTotal && !page.details.actualTotal && !page.details.estimatedTotal) {
           body.append(node("p", "small", t("usage.unavailable")));
         }
-        loaded = true;
-        offset = page.details.nextOffset;
-        more.hidden = offset === null;
+      });
+      more.hidden = state.offset === null;
+      more.disabled = state.reading;
+      details.dataset.reading = String(state.reading);
+    }
+    async function load() {
+      if (state.reading || state.offset === null) return;
+      state.reading = true;
+      drawPages();
+      try {
+        const page = await requestJson("/api/tasks/" + encodeURIComponent(cost.taskId)
+          + "/usage?limit=20&offset=" + state.offset);
+        state.pages.push(page);
+        state.offset = page.details.nextOffset;
+        drawPages();
       } catch (error) {
         body.append(node("p", "metric-note", String(error.message || error)));
-      } finally { more.disabled = false; }
+      } finally {
+        state.reading = false;
+        more.disabled = false;
+        details.dataset.reading = "false";
+      }
     }
+    drawPages();
     more.addEventListener("click", load);
-    details.addEventListener("toggle", function () { if (details.open && !loaded && !more.disabled) load(); });
+    details.addEventListener("toggle", function () { if (details.open && !state.pages.length) load(); });
     details.append(body, more);
     wrap.append(details);
   }

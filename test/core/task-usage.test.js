@@ -12,6 +12,8 @@ import { buildTaskObservabilityProjection } from "../../dist/scheduler/taskObser
 import { runExecutionAudit } from "../../dist/observability/executionAudit.js";
 import { renderExecutionAudit } from "../../dist/commands/executionAuditCommands.js";
 import { METRICS_SCRIPT } from "../../dist/web/assets/client/ui/metrics.js";
+import { TASK_VIEW_SCRIPT } from "../../dist/web/assets/client/app/taskView.js";
+import { TASK_RUNTIME_SCRIPT } from "../../dist/web/assets/client/views/task/runtime.js";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { createTask } from "../../dist/task/task.js";
 import { readTaskUsage } from "../../dist/runtime/taskUsageQuery.js";
@@ -75,6 +77,13 @@ test("money evidence retains currency, source and estimate basis without becomin
   assert.equal(project(actual).costs.actual.amounts[0].currency, "USD");
   assert.equal(project(actual).costs.estimated.status, "unknown");
   assert.equal(project(actual).tokens.value, null, "money does not invent tokens");
+  const missing = event("activity.observed", 4, {
+    activity: "model", sourceId: "missing-receipt", observationQuality: "partial"
+  });
+  const partial = project([...actual, missing]).costs.actual;
+  assert.equal(partial.amounts[0].value, 0.25, "a missing receipt does not discard a known subtotal");
+  assert.equal(partial.status, "partial");
+  assert.ok(partial.reasons.includes("source-coverage-partial"));
   const estimate = charge(4, 0.1, { kind: "estimated", basis: {
     model: "fixture-model", source: "fixture-price-sheet", version: "2026-01",
     scope: "input and output tokens", excluded: ["cache", "tools"]
@@ -157,7 +166,7 @@ test("Task usage query and Web share bounded facts and explicit detail pages", a
 
 test("Web usage sources load on disclosure and retain price provenance without rendering markup", async () => {
   const element = (tag, className, text) => ({
-    tag, className, textContent: text == null ? "" : String(text), childNodes: [], handlers: {},
+    tag, className, textContent: text == null ? "" : String(text), childNodes: [], handlers: {}, dataset: {},
     append(...children) { this.childNodes.push(...children); },
     replaceChildren(...children) { this.childNodes = children; },
     addEventListener(name, handler) { this.handlers[name] = handler; }
@@ -190,6 +199,72 @@ test("Web usage sources load on disclosure and retain price provenance without r
   assert.equal(disclosure.childNodes.at(-1).hidden, true);
   disclosure.handlers.toggle();
   assert.equal(calls.length, 1);
+});
+
+test("Web usage reads protect refresh and preserve open detail pages through Context redraw", async () => {
+  const descendants = node => node.childNodes.flatMap(child => [child, ...descendants(child)]);
+  const element = (tag, className, text) => ({
+    tag, className, textContent: text == null ? "" : String(text), childNodes: [], handlers: {}, dataset: {},
+    append(...children) { this.childNodes.push(...children); },
+    replaceChildren(...children) { this.childNodes = children; },
+    addEventListener(name, handler) { this.handlers[name] = handler; },
+    querySelectorAll(selector) {
+      return descendants(this).filter(child => selector.startsWith("details")
+        ? child.tag === "details" && child.dataset.viewKey && (!selector.includes("[open]") || child.open)
+        : selector === '[data-reading="true"]' && child.dataset.reading === "true");
+    },
+    querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+  });
+  const calls = [], pending = [];
+  const root = element("div"), viewState = {};
+  const data = { task, viewState, runtime: { observability: { cost: project([]) } } };
+  const context = vm.createContext({
+    node: element, h: (tag, attrs, ...children) => {
+      const node = element(tag); Object.assign(node.dataset, attrs?.dataset); node.append(...children); return node;
+    }, formatDateTime: value => value, isEditing: () => false,
+    document: { documentElement: { lang: "en" }, activeElement: null },
+    card: () => { const node = element("section"); node.body = element("div"); node.append(node.body); return node; },
+    emptyState: () => element("p"),
+    requestJson: path => { calls.push(path); return new Promise((resolve, reject) => pending.push({ resolve, reject })); }
+  });
+  for (const script of [METRICS_SCRIPT, TASK_RUNTIME_SCRIPT, TASK_VIEW_SCRIPT]) {
+    vm.runInContext(script.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
+  }
+  context.renderTaskDetail = (container, detail, t) => {
+    container.dataset.taskId = detail.task.id;
+    container.replaceChildren(context.usageCard(detail, t));
+  };
+  const deps = { el: { detail: root, center: { scrollTop: 0, contains: () => false } },
+    state: { detail: data }, t: key => key, locale: () => "en" };
+  const disclosure = () => descendants(root).find(node => node.tag === "details");
+  const text = node => [node.textContent, ...descendants(node).map(child => child.textContent)].join(" ");
+  const page = (source, nextOffset) => ({
+    observedThrough: at(3), sessions: [],
+    details: { sessionTotal: 0, actualTotal: 21, estimatedTotal: 0, nextOffset },
+    costs: { actual: { evidence: [{ source, amount: { value: 0.25, status: "known" },
+      currency: "USD", roleName: "leader", nativeSessionId: "session-1", semantics: "request" }] },
+    estimated: { evidence: [] } }
+  });
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  context.drawDetail(deps, {});
+  disclosure().open = true;
+  disclosure().handlers.toggle();
+  assert.ok(context.centerIsBusy(deps), "the real Context refresh guard must protect the pending read");
+  pending.shift().resolve(page("first-receipt", 20));
+  await settle();
+  assert.equal(!!context.centerIsBusy(deps), false);
+  context.drawDetail(deps, {});
+  assert.equal(disclosure().open, true);
+  assert.match(text(root), /first-receipt/);
+  disclosure().handlers.toggle();
+  assert.equal(calls.length, 1, "redraw must use the loaded page");
+  disclosure().childNodes.at(-1).handlers.click();
+  assert.match(calls[1], /offset=20$/);
+  pending.shift().resolve(page("second-receipt", null));
+  await settle();
+  context.drawDetail(deps, {});
+  assert.match(text(root), /first-receipt.*second-receipt/);
+  assert.equal(disclosure().childNodes.at(-1).hidden, true);
 });
 
 test("cumulative baselines never become request allocations or include pre-Task consumption", () => {

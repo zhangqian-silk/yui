@@ -4,12 +4,16 @@ import { formatUsageMetric } from "../runtime/taskUsageMetrics.js";
 import type { TaskCommandExecution, TaskCommandOptions, TaskWorkflowStore } from "./taskCommandTypes.js";
 import { exactPositionals, output, parseTail, requireTask } from "./taskCommandSupport.js";
 import { usageError } from "../errors/cliError.js";
+import { taskActor } from "../task/taskAuthority.js";
 
 export function taskUsageCommand(args: string[], store: TaskWorkflowStore, options: TaskCommandOptions): TaskCommandExecution {
   const usage = "yui task usage <task> [--limit <0..50>] [--offset <n>]";
   const parsed = parseTail(args, new Set(["--limit", "--offset"]), usage);
   exactPositionals(parsed.positionals, 1, usage);
   const task = requireTask(store, parsed.positionals[0]);
+  // Task-lifetime aggregation spans every Role, beyond a Worker/Reviewer
+  // Assignment. Reading the Task record alone does not authorize these facts.
+  taskActor(options.environment, task.id);
   assertContextRecordReadable(store, task.id, "task", task.id, options.environment);
   const limit = Number(parsed.options.get("--limit") ?? 0), offset = Number(parsed.options.get("--offset") ?? 0);
   if (!Number.isSafeInteger(limit) || limit < 0 || limit > 50 || !Number.isSafeInteger(offset) || offset < 0) {
