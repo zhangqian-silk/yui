@@ -14,6 +14,8 @@ import type { WebTaskSurface, WebControlInput } from "./webTaskSurface.js";
 import { WebRequestRejected } from "./webMutation.js";
 import type { createWebConversationSurface } from "./webConversation.js";
 import type { RoleSessionOwner } from "../executor/agentExecutor.js";
+import type { WebSettings } from "./webSettings.js";
+import { SETTINGS_HTML } from "./assets/shell/settings.js";
 import { TASK_SUBMISSION_INTENTS, type TaskSubmissionIntent } from "../message/message.js";
 import type { SurfaceContributionRef, SurfacePanelContribution } from "../surface/surfaceContributions.js";
 import type { CapabilityResult } from "../kernel/capabilityRegistry.js";
@@ -63,6 +65,7 @@ export type WebTerminalConnection = Readonly<{
 
 export type WebServerDependencies = Readonly<{
   conversation?: ReturnType<typeof createWebConversationSurface>;
+  settings?: WebSettings;
   panels?: Readonly<{
     list(taskId: string): readonly SurfacePanelContribution[];
     read(taskId: string, ref: SurfaceContributionRef, input: unknown): Promise<CapabilityResult>;
@@ -222,6 +225,27 @@ async function handleHttpRequest(
       } else sendJson(response, 405, { error: "Method not allowed.", disposition: "not-submitted" }, false);
     } catch (error) {
       sendJson(response, 409, { error: error instanceof Error ? error.message : "Creation unavailable.",
+        disposition: error instanceof WebRequestRejected ? "not-submitted" : "unknown" }, false);
+    }
+    return;
+  }
+  if (pathname === "/api/settings" || pathname === "/api/settings/group" || pathname === "/api/settings/capabilities") {
+    try {
+      if (!dependencies.settings) throw new WebRequestRejected("Settings service unavailable.");
+      const query = new URL(request.url!, "http://localhost").searchParams;
+      if ([...query.keys()].some(k => !["id", "refresh", "q", "cursor"].includes(k))) throw new WebRequestRejected("Unknown settings query.");
+      let value: unknown;
+      if (method === "GET" && pathname === "/api/settings") value = dependencies.settings.index(query.get("q") ?? "", query.get("cursor") ?? "0");
+      else if (method === "GET" && pathname === "/api/settings/group") value = dependencies.settings.read(query.get("id") ?? "");
+      else if (method === "GET" && pathname === "/api/settings/capabilities") value = await dependencies.settings.capabilities(query.get("id") ?? "", query.get("refresh") === "true");
+      else if (method === "POST" && pathname === "/api/settings/group") value = await dependencies.settings.save(await readMutationBody(request));
+      else {
+        sendJson(response, 405, { error: "Method not allowed.", disposition: "not-submitted" }, false);
+        return;
+      }
+      sendJson(response, 200, value, false);
+    } catch (error) {
+      sendJson(response, 409, { error: error instanceof Error ? error.message : "Settings unavailable.",
         disposition: error instanceof WebRequestRejected ? "not-submitted" : "unknown" }, false);
     }
     return;
@@ -432,12 +456,12 @@ async function handleHttpRequest(
   if (method === "GET" || method === "HEAD") {
     try {
       const asset = findWebAsset(pathname);
-      if (pathname === "/" || pathname === "/index.html") {
+      if (pathname === "/" || pathname === "/index.html" || pathname === "/settings") {
         sendText(
           response,
           200,
           "text/html; charset=utf-8",
-          dashboardHtml(token),
+          pathname === "/settings" ? SETTINGS_HTML.replace("__YUI_WEB_TOKEN__", token) : dashboardHtml(token),
           method === "HEAD"
         );
       } else if (asset !== null) {
