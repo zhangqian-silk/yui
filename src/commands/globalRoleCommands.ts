@@ -297,6 +297,7 @@ function roleContext(
     // Historical interrupt receipts are available through Session inspection;
     // only this Turn's exact identity is required at entry.
     sessionManifestPath: environment.YUI_SESSION_MANIFEST,
+    skillPackages: session?.effective.skillPackages ?? null,
     cliCommand: "yui"
   });
   const data = boundedDocument(context, `global:${name}/context`, parsed.cursor);

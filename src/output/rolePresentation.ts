@@ -37,7 +37,12 @@ export function renderRoleLaunchComparison(
       ];
     }),
     defaultTableWidth()
-  );
+  ) + "\n\nSkill package evidence:\n" + (effective.skillPackages === undefined
+    ? "  Legacy / externally recorded: complete package versions were not recorded."
+    : effective.skillPackages.map(skill =>
+      `  ${skill.id} @ ${skill.digest}\n    ${skill.source.kind}: ${skill.source.path}\n`
+      + `    ${skill.fileCount} files; ${skill.byteSize} bytes; inventory: ${skill.manifestPath}`
+    ).join("\n"));
 }
 
 export function activeRoleSummary(role: PresentedRole): Readonly<{

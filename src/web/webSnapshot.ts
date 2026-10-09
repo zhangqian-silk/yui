@@ -148,6 +148,7 @@ export function buildWebTaskDetail(
           adapterId: activeSession.adapterId,
           nativeSessionId: activeSession.nativeSessionId ?? null,
           status: activeSession.status,
+          skillPackages: activeSession.effective.skillPackages ?? null,
           endpointImplementation: activeSession.endpointImplementation ?? null
         },
         effectiveLaunchSource: activeRun === undefined

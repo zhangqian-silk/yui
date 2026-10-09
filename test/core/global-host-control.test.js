@@ -49,7 +49,7 @@ async function globalHostFixture(t, adapterId = "codex", {
   store.saveConfiguredAgent(agent);
   const role = createGlobalRole(roleName, [createRoleAgentBinding(agent)], agent.id, home, now);
   store.createGlobalRoleIfAbsent(role);
-  const effective = resolveEffectiveLaunch({ role, purpose: "execution" });
+  const effective = resolveEffectiveLaunch({ store, role, purpose: "execution" });
   const planned = new FileRoleLaunchPlanner(home, store, {
     cliPath: resolve("dist/cli.js"), environment: { HOME: home, PATH: process.env.PATH }
   }).planGlobalRole({ roleName: role.name, agentId: agent.id, adapterId, mode: "new" });

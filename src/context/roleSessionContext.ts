@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { snapshotSkillPackage, verifySkillPackage, type SkillPackageRef } from "./skillPackage.js";
 
 import type { GlobalRole, TaskRole } from "../role/role.js";
 import {
@@ -13,6 +14,7 @@ export type RoleSkillContext = Readonly<{
   id: string;
   path: string;
   content: string;
+  package?: SkillPackageRef;
 }>;
 
 export type RoleSessionContext = Readonly<{
@@ -29,6 +31,7 @@ export type RoleSessionOwner = Readonly<
 
 export type RoleSessionContextOptions = Readonly<{
   purpose?: "execution" | "review" | "planning";
+  skillPackages?: readonly SkillPackageRef[];
 }>;
 
 type RoleSessionKind = "operator" | "global" | "leader" | "worker" | "reviewer";
@@ -58,7 +61,9 @@ export function compileRoleSessionContext(
     ...(builtInSkillId === undefined ? [] : [builtInSkillId]),
     ...(role.skills ?? [])
   ]);
-  const skills = loadYuiSkillContexts(yuiHome, skillIds);
+  const skills = options.skillPackages === undefined
+    ? loadYuiSkillContexts(yuiHome, skillIds)
+    : options.skillPackages.map(loadSkillPackageContext);
   return {
     developerInstructions: renderDeveloperInstructions(kind, role, owner),
     skills,
@@ -159,6 +164,14 @@ function loadSkill(yuiHome: string | undefined, id: string, builtIn: boolean): R
     ? resolve(fileURLToPath(new URL(`../../skills/${id}/`, import.meta.url)))
     : resolve(join(yuiHome!, "skills", id));
   try {
+    if (yuiHome !== undefined) {
+      return loadSkillPackageContext(snapshotSkillPackage({
+        home: yuiHome,
+        root: builtIn ? resolve(path, "..") : path,
+        id, kind: builtIn ? "builtin" : "configured",
+        ...(builtIn ? { subdirectory: id } : {})
+      }));
+    }
     return { id, path, content: readFileSync(join(path, "SKILL.md"), "utf8").trim() };
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") {
@@ -166,6 +179,12 @@ function loadSkill(yuiHome: string | undefined, id: string, builtIn: boolean): R
     }
     throw error;
   }
+}
+
+export function loadSkillPackageContext(ref: SkillPackageRef): RoleSkillContext {
+  verifySkillPackage(ref);
+  return { id: ref.id, path: ref.path, content: readFileSync(join(ref.path, "SKILL.md"), "utf8").trim(),
+    package: ref };
 }
 
 function unique(values: readonly string[]): string[] {

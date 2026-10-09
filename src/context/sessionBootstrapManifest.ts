@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import type { GlobalRole, TaskRole } from "../role/role.js";
 import { writeTextFileAtomically } from "../storage/durableFile.js";
 import type { RoleSessionOwner, RoleSkillContext } from "./roleSessionContext.js";
+import { validateSkillPackageRef, type SkillPackageRef } from "./skillPackage.js";
 import {
   SESSION_BOOTSTRAP_MANIFEST_SCHEMA_VERSION,
   SESSION_CONTEXT_PROTOCOL,
@@ -25,7 +26,7 @@ export type SessionBootstrapManifest = Readonly<{
   roleKind: SessionRoleKind;
   /** Stable compatibility identity; distinct from this materialization's byte digest. */
   compatibilityDigest: string;
-  skills: readonly Readonly<{ id: string; path: string; digest: string }>[];
+  skills: readonly Readonly<{ id: string; path: string; digest: string; package?: SkillPackageRef }>[];
   roleProfileRef: Readonly<{ digest: string; path: string }>;
   contextProtocol: Readonly<{
     loadCommand: string;
@@ -114,6 +115,13 @@ export function readSessionBootstrapManifest(path: string): SessionBootstrapMani
     requireText(entry.id, "Session Manifest Skill id");
     requireText(entry.path, "Session Manifest Skill path");
     requireDigest(entry.digest, "Session Manifest Skill digest");
+    if (entry.package !== undefined) {
+      const ref = entry.package as SkillPackageRef;
+      validateSkillPackageRef(ref);
+      if (entry.id !== ref.id || entry.path !== ref.path || entry.digest !== ref.digest) {
+        throw new Error("Session Manifest Skill package identity mismatch.");
+      }
+    }
   }
   const profile = record.roleProfileRef as Record<string, unknown>;
   requireDigest(profile.digest, "Session Manifest Role Profile digest");
@@ -169,7 +177,8 @@ export function materializeSessionBootstrap(input: Readonly<{
     skills: input.skills.map((skill) => Object.freeze({
       id: skill.id,
       path: skill.path,
-      digest: digest(skill.content)
+      digest: skill.package?.digest ?? digest(skill.content),
+      ...(skill.package === undefined ? {} : { package: skill.package })
     })),
     roleProfileRef: { digest: profileDigest, path: roleProfilePath },
     contextProtocol: input.owner.scope === "global"

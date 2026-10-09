@@ -24,7 +24,9 @@ import {
   type CodexAgentConfig,
   type RoleAgentConfig
 } from "./agentAdapter.js";
-import { roleSessionKind } from "../context/roleSessionContext.js";
+import { compileRoleSessionContext, roleSessionKind } from "../context/roleSessionContext.js";
+import { validateSkillPackageRef, type SkillPackageRef } from "../context/skillPackage.js";
+import type { TaskStore } from "../storage/taskStore.js";
 import { isAgentAdapterId } from "../agent/adapterCatalog.js";
 import {
   adapterIdForExecutionComponent,
@@ -69,6 +71,8 @@ type EffectiveLaunchBase = Readonly<{
   workspace: EffectiveLaunchWorkspace;
   executionEnvironment?: ExecutionEnvironmentSnapshot;
   context: EffectiveLaunchContext;
+  /** Absent only in pre-package historical/desired-only snapshots. Never reconstructed on resume. */
+  skillPackages?: readonly SkillPackageRef[];
   reviewRoundId?: string;
   reviewBaseCommit?: string;
   contextProtocolVersion: typeof SESSION_BOOTSTRAP_MANIFEST_SCHEMA_VERSION;
@@ -113,6 +117,8 @@ export type EffectiveLaunchSnapshot =
 export type EffectiveLaunchRole = TaskRole | GlobalRole;
 
 export type ResolveEffectiveLaunchInput = Readonly<{
+  yuiHome?: string;
+  store?: TaskStore;
   executionAuthority?: "planning" | "delivery";
   role: EffectiveLaunchRole;
   purpose: "execution" | "review" | "planning";
@@ -136,6 +142,17 @@ export function resolveEffectiveLaunch(
   const config = resolveAgentAdapter(binding.adapterId).canonicalizeConfig(
     clone(binding.config) as never
   ) as RoleAgentConfig;
+  const home = input.store?.rootDirectory() ?? input.yuiHome;
+  const sessions = "taskId" in input.role
+    ? input.store?.getTaskRoleSessionSet(input.role.taskId, input.role.name)
+    : input.store?.getGlobalRoleSessionSet(input.role.name);
+  const existing = sessions?.sessions[binding.agentId];
+  const continuing = existing?.status === "active";
+  const skillPackages = continuing ? existing.effective.skillPackages
+    : home === undefined ? undefined
+    : compileRoleSessionContext(home, input.role,
+      "taskId" in input.role ? { scope: "task", taskId: input.role.taskId } : { scope: "global" },
+      { purpose: input.purpose }).skills.map(skill => skill.package!);
   return snapshotFromConfig({
     executionAuthority: input.executionAuthority ?? (input.purpose === "planning" ? "planning" : "delivery"),
     sourceDesiredRevision: input.role.launchRevision,
@@ -149,6 +166,7 @@ export function resolveEffectiveLaunch(
       ? { executionEnvironment: input.role.executionEnvironment }
       : {}),
     context: snapshotContext(input.role),
+    ...(skillPackages === undefined ? {} : { skillPackages }),
     contextProtocolVersion: SESSION_BOOTSTRAP_MANIFEST_SCHEMA_VERSION,
     sessionManifestCompatibilityDigest: sessionManifestCompatibilityDigest(
       input.role.name,
@@ -386,6 +404,15 @@ export function validateEffectiveLaunchSnapshot<T extends EffectiveLaunchSnapsho
     throw new Error("Effective launch Session Manifest compatibility digest is invalid.");
   }
   validateWorkspace(snapshot.workspace);
+  if (snapshot.skillPackages !== undefined) {
+    if (!Array.isArray(snapshot.skillPackages)) throw new Error("Effective Skill packages must be an array.");
+    const ids = new Set<string>();
+    for (const ref of snapshot.skillPackages) {
+      validateSkillPackageRef(ref);
+      if (ids.has(ref.id)) throw new Error("Effective Skill packages must be unique.");
+      ids.add(ref.id);
+    }
+  }
   if (snapshot.executionEnvironment !== undefined) {
     validateExecutionEnvironmentSnapshot(snapshot.executionEnvironment);
     if (snapshot.executionEnvironment.access === "read") {
@@ -452,6 +479,7 @@ function snapshotFromConfig(input: Readonly<{
   workspace: EffectiveLaunchWorkspace;
   executionEnvironment?: ExecutionEnvironmentSnapshot;
   context: EffectiveLaunchContext;
+  skillPackages?: readonly SkillPackageRef[];
   reviewRoundId?: string;
   reviewBaseCommit?: string;
   contextProtocolVersion: typeof SESSION_BOOTSTRAP_MANIFEST_SCHEMA_VERSION;
@@ -490,6 +518,7 @@ function snapshotFromConfig(input: Readonly<{
       ? {}
       : { executionEnvironment: clone(input.executionEnvironment) }),
     context: cloneContext(input.context),
+    ...(input.skillPackages === undefined ? {} : { skillPackages: clone(input.skillPackages) }),
     contextProtocolVersion: input.contextProtocolVersion,
     sessionManifestCompatibilityDigest: input.sessionManifestCompatibilityDigest,
     ...review

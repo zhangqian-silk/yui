@@ -1,6 +1,6 @@
 /** One Home format version, independent of package and record versions. */
 export type StorageVersion = `${number}.${number}`;
-export const CURRENT_STORAGE_VERSION: StorageVersion = "1.4";
+export const CURRENT_STORAGE_VERSION: StorageVersion = "1.5";
 export const MIN_SUPPORTED_STORAGE_VERSION: StorageVersion = "1.0";
 export const STORAGE_FORMAT = "yui-home" as const;
 

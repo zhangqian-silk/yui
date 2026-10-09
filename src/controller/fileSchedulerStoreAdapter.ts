@@ -2331,7 +2331,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
           directive: `Plan Task ${taskId} with the user. Persist requirements and decisions. Request activation explicitly; planning grants no delivery authority.`,
           contextSnapshotRef: contextSnapshotRef(snapshot),
           deltaRefIds: [] }), now, {
-          purpose: "planning", effective: resolveEffectiveLaunch({ role, purpose: "planning" })
+          purpose: "planning", effective: resolveEffectiveLaunch({ store, role, purpose: "planning" })
         });
       store.saveRun(run);
       store.saveActiveRun(run);
@@ -4144,6 +4144,7 @@ function mapRole(
   // Active AgentRun delivery separately and exclusively uses turn.effective.
   const effective = reopened || (liveSession !== null && liveSession.agentId !== role.activeAgentId)
     ? resolveEffectiveLaunch({
+        store,
         role,
         purpose,
         ...(workspace === undefined ? {} : { workspace }),
@@ -4152,6 +4153,7 @@ function mapRole(
     : liveSession !== null && workspace?.owner.type === "task"
       ? effectiveLaunchWithTaskMainWorkspace(liveSession.effective, workspace)
       : liveSession?.effective ?? resolveEffectiveLaunch({
+          store,
           role,
           purpose,
           ...(workspace === undefined ? {} : { workspace }),
@@ -4225,6 +4227,8 @@ function globalSessionEffective(
   role: Parameters<typeof resolveEffectiveLaunch>[0]["role"],
   existing: RoleAgentSession | undefined,
 ) {
+  // A native hook without a captured launch is not proof of loaded resources.
+  // Actual controlled launches supply their frozen effective snapshot explicitly.
   return existing?.effective ?? resolveEffectiveLaunch({ role, purpose: "execution" });
 }
 

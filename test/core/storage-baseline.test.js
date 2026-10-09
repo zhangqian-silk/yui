@@ -15,12 +15,12 @@ import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
 import { createRoleSessionSet, recordRoleAgentSession, updateRoleAgentSessionStatus } from "../../dist/executor/agentExecutor.js";
 import { createCapabilityGrant } from "../../dist/grant/capabilityGrant.js";
 
-test("fresh storage creates only the current 1.4 contract", () => {
-  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.4");
+test("fresh storage creates only the current 1.5 contract", () => {
+  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.5");
   const db = new Database(":memory:");
   try {
     schema.initializeSqliteSchema(db);
-    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.4");
+    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.5");
     assert.equal(db.prepare("SELECT count(*) AS n FROM storage_schema").get().n, 1);
     assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='schema_migrations'").get(), undefined);
     for (const name of ["coordination_locks", "work_item_candidates", "idx_input_open"]) {
@@ -78,6 +78,36 @@ test("default storage upgrades advance only the minor version of the same major"
   for (const value of [1, -1, "1", "01.0", "1.-1", "1.0.0", "0.1"]) {
     assert.equal(versions.isStorageVersion(value), false);
   }
+});
+
+for (const minor of [0, 1, 2, 3, 4]) test(`1.${minor} package migration preserves legacy Session bytes and never invents complete-package evidence`, async t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-skill-upgrade-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const at = new Date("2026-09-01T00:00:00Z");
+  const store = new SqliteTaskStore(home);
+  store.saveTask(createTask("task-1", "Historical skills", at));
+  const role = createRole("task-1", "leader",
+    [createRoleAgentBinding({ id: "codex", adapterId: "codex" })], "codex", home, at);
+  store.saveRole("task-1", role);
+  const sessions = recordRoleAgentSession(createRoleSessionSet({
+    scope: "task", taskId: "task-1", roleName: "leader"
+  }, "codex", at), { agentId: "codex", adapterId: "codex", nativeSessionId: "old",
+    policy: "fixed", status: "active", effective: resolveEffectiveLaunch({ role, purpose: "execution" }) }, at);
+  store.saveTaskRoleSessionSet(sessions);
+  store.close();
+  const db = new Database(join(home, "yui.db"));
+  const before = db.prepare("SELECT payload FROM role_session_sets").get().payload;
+  db.prepare("UPDATE storage_schema SET minor=?").run(minor);
+  db.close();
+  assert.equal((await runStorageUpgrade({ home, mode: "execute" })).outcome, "upgraded");
+  const check = new Database(join(home, "yui.db"));
+  assert.equal(check.prepare("SELECT payload FROM role_session_sets").get().payload, before);
+  check.close();
+  const current = new SqliteTaskStore(home);
+  try {
+    assert.equal(resolveEffectiveLaunch({ store: current, role, purpose: "execution" }).skillPackages, undefined);
+    assert.equal(existsSync(join(home, "runtime/skill-packages")), false);
+  } finally { current.close(); }
 });
 
 test("1.0 upgrade adopts the main workspace of an active Project-free Task", async t => {
