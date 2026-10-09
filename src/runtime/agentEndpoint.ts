@@ -65,6 +65,7 @@ export type AgentEndpointConfiguration = Readonly<{
 }>;
 
 export interface AgentEndpoint {
+  readonly publicReply?: import("./publicReply.js").PublicReply;
   readonly ownedProcessId?: number;
   readonly nativeAccountHome?: string;
   readonly adapterId: StructuredProviderSession["adapterId"];
@@ -243,6 +244,7 @@ class BuiltinAgentEndpoint implements AgentEndpoint {
   get nativeSessionId(): string { return this.driver.nativeSessionId; }
   get conversationId(): string { return this.driver.conversationId; }
   get processInstanceId(): string { return this.driver.processInstanceId; }
+  get publicReply() { return this.driver.publicReply; }
 
   /**
    * Delegated rather than copied at construction: the Session reads its own

@@ -12,6 +12,8 @@ import { CliError, usageError } from "../errors/cliError.js";
 import { parseTaskCatalogOptions } from "../context/taskCatalog.js";
 import type { WebTaskSurface, WebControlInput } from "./webTaskSurface.js";
 import { WebRequestRejected } from "./webMutation.js";
+import type { createWebConversationSurface } from "./webConversation.js";
+import type { RoleSessionOwner } from "../executor/agentExecutor.js";
 import { TASK_SUBMISSION_INTENTS, type TaskSubmissionIntent } from "../message/message.js";
 import type { SurfaceContributionRef, SurfacePanelContribution } from "../surface/surfaceContributions.js";
 import type { CapabilityResult } from "../kernel/capabilityRegistry.js";
@@ -60,6 +62,7 @@ export type WebTerminalConnection = Readonly<{
 }>;
 
 export type WebServerDependencies = Readonly<{
+  conversation?: ReturnType<typeof createWebConversationSurface>;
   panels?: Readonly<{
     list(taskId: string): readonly SurfacePanelContribution[];
     read(taskId: string, ref: SurfaceContributionRef, input: unknown): Promise<CapabilityResult>;
@@ -194,6 +197,53 @@ async function handleHttpRequest(
     return;
   }
   const artifactTarget = /^\/api\/tasks\/([^/]+)\/(artifacts|evidence)$/.exec(pathname);
+  if (pathname === "/api/conversation" && dependencies.conversation) {
+    try {
+      const q = new URL(request.url!, "http://localhost").searchParams;
+      if ([...q.keys()].some(k => !["scope", "task", "role", "session", "cursor", "offset", "requestId"].includes(k))) {
+        throw new WebRequestRejected("Unknown conversation parameter.");
+      }
+      const roleName = safeIdentity(q.get("role"), "Role");
+      const owner: RoleSessionOwner = q.get("scope") === "task"
+        ? { scope: "task", taskId: safeIdentity(q.get("task"), "Task"), roleName }
+        : q.get("scope") === "global" && !q.has("task") ? { scope: "global", roleName }
+          : (() => { throw new WebRequestRejected("Invalid conversation scope."); })();
+      let result: unknown;
+      if (method === "GET" && q.has("requestId")) {
+        result = dependencies.conversation.receipt(owner, safeIdentity(q.get("requestId"), "Request"));
+      } else if (method === "GET" && q.has("session")) {
+        const cursor = q.get("cursor");
+        if (cursor !== null && cursor.length > 16000) throw new WebRequestRejected("Cursor too large.");
+        result = await dependencies.conversation.history(owner, safeIdentity(q.get("session"), "Session"), cursor ?? undefined);
+      } else if (method === "GET") {
+        const offset = q.get("offset") ?? "0";
+        if (!/^\d{1,6}$/.test(offset)) throw new WebRequestRejected("Invalid session offset.");
+        result = dependencies.conversation.state(owner, Number(offset));
+      } else if (method === "POST") {
+        const body = await readMutationBody(request);
+        if (!body || typeof body !== "object" || Array.isArray(body)
+          || Object.keys(body).some(k => !["action", "requestId", "body", "expectedTarget"].includes(k))) {
+          throw new WebRequestRejected("Invalid conversation input.");
+        }
+        const value = body as Record<string, unknown>;
+        if (!["queue", "steer", "interrupt"].includes(String(value.action))
+          || typeof value.requestId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(value.requestId)
+          || value.body !== undefined && typeof value.body !== "string"
+          || value.expectedTarget !== undefined && typeof value.expectedTarget !== "string") {
+          throw new WebRequestRejected("Expected action, requestId, input and exact Turn.");
+        }
+        result = await dependencies.conversation.control(owner, safeIdentity(q.get("session"), "Session"),
+          value as { action: "queue" | "steer" | "interrupt"; requestId: string; body?: string; expectedTarget?: string });
+      } else {
+        sendJson(response, 405, { error: "Method not allowed.", disposition: "not-submitted" }, false); return;
+      }
+      sendJson(response, 200, result, false);
+    } catch (error) {
+      sendJson(response, 409, { error: error instanceof Error ? error.message : "Conversation unavailable.",
+        disposition: error instanceof WebRequestRejected ? "not-submitted" : "unknown" }, false);
+    }
+    return;
+  }
   if (artifactTarget && dependencies.surface) {
     if (method !== "GET") {
       sendJson(response, 405, { error: "Artifacts are read-only." }, false);

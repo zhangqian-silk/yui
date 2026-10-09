@@ -71,7 +71,6 @@ async function selectTask(deps, taskId) {
 function clearSelection(deps) {
   if (!canLeave(deps)) return;
   dropSelection(deps);
-  deps.workspace.leaveTask();
   syncUrl(deps.state, !urlTaskId());
   deps.workspace.updateLayout();
   deps.taskView.showOverview();
@@ -84,6 +83,7 @@ function dropSelection(deps) {
   deps.state.selected = null;
   deps.state.detail = null;
   deps.taskView.leaveTask();
+  deps.workspace.leaveTask();
 }
 
 // The Task and section named by the URL, on load and on back/forward.

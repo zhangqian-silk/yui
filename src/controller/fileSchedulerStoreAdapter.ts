@@ -1588,6 +1588,16 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         );
       }
       const currentRun = binding.run;
+      if (input.roleName === "leader" && input.attemptId.startsWith(`notification:${input.taskId}/`)) {
+        const wakeId = input.attemptId.split("/")[1];
+        const wake = store.listTaskWakes(input.taskId).find(w => w.id === wakeId);
+        const ids = new Set(wake?.refs?.filter(r => r.type === "message").map(r => r.id));
+        if (store.listMessages(input.taskId).some(m => ids.has(m.id)
+          && m.inputControl?.expectedSessionId !== undefined
+          && m.inputControl.expectedSessionId !== input.nativeSessionId)) {
+          throw new AgentHostProviderTurnFenceError("Notification input belongs to the selected old Session; do not retarget.");
+        }
+      }
       if (session.effective.executionEnvironment !== undefined) {
         assertExecutionEnvironmentCurrent(store, input.taskId, session.effective.executionEnvironment);
       }
@@ -2398,6 +2408,16 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       const sessions = store.getTaskRoleSessionSet(taskId, "leader");
       const session = sessions?.sessions[sessions.activeAgentId];
       const obsoleteIds = new Set<string>();
+      for (const message of store.listMessages(taskId)) {
+        if (!pendingMessageIds.has(message.id) || message.inputControl?.expectedSessionId === undefined) continue;
+        if (message.inputControl.expectedSessionId !== session?.nativeSessionId
+          || message.continuation?.notDeliveredReason !== undefined) {
+          obsoleteIds.add(message.id);
+          if (message.continuation?.notDeliveredReason === undefined) store.updateMessage(taskId, {
+            ...message, continuation: { notDeliveredReason: "selected-native-session-changed" }
+          });
+        }
+      }
       for (const message of claimedMessages) {
         const claim = message.interruptThen!;
         if (claim.notDeliveredReason !== undefined

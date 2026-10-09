@@ -45,6 +45,7 @@ import type {
   AgentHostProviderControl
 } from "./launchBroker.js";
 import { PROVIDER_ACCEPT_TIMEOUT_MS } from "./runtimeDeadlines.js";
+import { foldPublicReply, type PublicReply } from "./publicReply.js";
 
 const CODEX_PROXY_HANDSHAKE_TIMEOUT_MS = 10_000;
 
@@ -148,6 +149,7 @@ export type StructuredProviderDiagnostic = Readonly<{
 }>;
 
 export interface StructuredProviderSession {
+  readonly publicReply?: PublicReply;
   /** Exact process whose exit proves the dedicated local execution drained. */
   readonly ownedProcessId?: number;
   readonly nativeAccountHome?: string;
@@ -609,6 +611,7 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
   readonly #bufferedStarts: Array<Omit<StructuredProviderTurnStarted, "clientOwned">> = [];
   readonly #bufferedTerminals: Array<Omit<StructuredProviderTurnTerminal, "clientOwned">> = [];
   readonly #bufferedActivities: Array<Omit<StructuredProviderActivity, "attemptId"> & { nativeTurnId: string }> = [];
+  publicReply: PublicReply | undefined;
 
   private constructor(
     private readonly child: ChildProcessWithoutNullStreams,
@@ -773,6 +776,7 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
       const method = typeof message.method === "string" ? message.method : "";
       const params = object(message.params) ?? {};
       const threadId = optionalId(params.threadId);
+      if (emit) this.publicReply = foldPublicReply(this.publicReply, this.conversationId, method, params);
       if (threadId !== this.conversationId) {
         if (threadId === undefined && (method === "turn/started" || method === "turn/completed")) {
           this.mirror("stderr", `Codex protocol: ${method} has no thread identity; ignored.\n`);
