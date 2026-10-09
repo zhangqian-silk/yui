@@ -275,7 +275,7 @@ async function handleHttpRequest(
     }
     return;
   }
-  const surfaceTarget = /^\/api\/tasks\/([^/]+)\/(context|delta|inspect|metadata|messages|control)$/.exec(pathname);
+  const surfaceTarget = /^\/api\/tasks\/([^/]+)\/(context|delta|inspect|list|metadata|messages|control)$/.exec(pathname);
   if (surfaceTarget && dependencies.surface) {
     try {
       let taskId: string;
@@ -296,6 +296,15 @@ async function handleHttpRequest(
           store: query.get("store") ?? "", refId: query.get("ref") ?? "",
           ...(query.has("digest") ? { digest: query.get("digest")! } : {}),
           ...(query.has("cursor") ? { cursor: query.get("cursor")! } : {})
+        });
+      } else if (method === "GET" && action === "list") {
+        const limit = query.get("limit");
+        if (limit !== null && !/^\d{1,3}$/u.test(limit)) throw new WebRequestRejected("Invalid list limit.");
+        value = dependencies.surface.list(taskId, {
+          store: query.get("store") ?? "",
+          ...(query.has("status") ? { status: query.get("status")! } : {}),
+          ...(query.has("cursor") ? { cursor: query.get("cursor")! } : {}),
+          ...(limit === null ? {} : { limit: Number(limit) })
         });
       } else if (method === "POST" && action === "messages") {
         const body = await readMutationBody(request);

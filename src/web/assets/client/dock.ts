@@ -8,7 +8,7 @@ import { FitAddon } from "/assets/vendor/addon-fit.mjs";
 import { h, icon, clear } from "/assets/js/dom.js";
 import { formatShort } from "/assets/js/format.js";
 import { label, chip, emptyState, richText, dot } from "/assets/js/components.js";
-import { entriesOf, recordCard, recordReader } from "/assets/js/records.js";
+import { entriesOf, totalOf, readExact, recordCard } from "/assets/js/records.js";
 import { messageComposer } from "/assets/js/forms.js";
 import { pageToken } from "/assets/js/api.js";
 
@@ -31,6 +31,7 @@ export function renderDiscussion(host, data, t, locale, actions) {
     feed = host.querySelector(".feed");
   }
   host.dataset.taskId = task.id;
+  latest.set(task.id, { data: data, t: t, locale: locale, actions: actions });
   if (!feed.querySelector('[data-reading="true"]')) drawFeed(feed, data, t, locale, actions);
   feed.scrollTop = atEnd ? feed.scrollHeight : previousScroll;
   if (!keepComposer) {
@@ -44,21 +45,92 @@ export function discussionHasUnsent(host) {
   return !!host.querySelector('[data-unsent="true"]');
 }
 
+// The Context read carries the newest messages as summaries; each is read
+// exactly once per digest (kept in the Task's view state) and drawn in full,
+// so a message needs no separate raw-record reader.
+// Older messages are listed on request, newest first, and read the same way.
+const older = new Map();
+const failedReads = new Set();
+const latest = new Map();
+
+function readKey(entry) { return entry.ref.refId + "@" + entry.ref.digest; }
+
+function exactValue(entry, cache) {
+  if (!entry.omitted) return entry.value;
+  const hit = cache[entry.ref.store + "/" + entry.ref.refId];
+  return hit && hit.digest === entry.ref.digest && hit.result ? hit.result.value : null;
+}
+
+function loadOlder(data, actions, state, shownIds) {
+  state.pending = true;
+  state.error = null;
+  let rounds = 0;
+  function next() {
+    return actions.list(data.task.id, "task-message", { limit: 20, cursor: state.cursor }).then(function (page) {
+      const known = new Set(state.items.map(function (item) { return item.ref.refId; }));
+      const fresh = page.items.filter(function (item) { return !known.has(item.ref.refId) && !shownIds.has(item.ref.refId); });
+      state.items = state.items.concat(fresh);
+      state.cursor = page.nextCursor;
+      state.done = !page.nextCursor;
+      rounds += 1;
+      if (!fresh.length && page.nextCursor && rounds < 10) return next();
+    });
+  }
+  // A listing that moved invalidates its continuation; the next request
+  // starts again from the newest page and skips what is already shown.
+  return next().catch(function (error) { state.error = error.message; state.cursor = null; })
+    .then(function () { state.pending = false; });
+}
+
 function drawFeed(feed, data, t, locale, actions) {
   clear(feed);
-  const core = data.core;
-  const entries = entriesOf(core, "task-message").slice().sort(function (a, b) {
-    return Date.parse((a.value && a.value.createdAt) || 0) - Date.parse((b.value && b.value.createdAt) || 0);
+  const task = data.task;
+  const cache = data.viewState.exact = data.viewState.exact || {};
+  const contextEntries = entriesOf(data.core, "task-message");
+  const shownIds = new Set(contextEntries.map(function (entry) { return entry.ref.refId; }));
+  if (!older.has(task.id)) older.set(task.id, { items: [], cursor: null, done: false, pending: false, error: null });
+  const state = older.get(task.id);
+  const olderItems = state.items.filter(function (item) { return !shownIds.has(item.ref.refId); })
+    .sort(function (a, b) { return Date.parse(a.createdAt || 0) - Date.parse(b.createdAt || 0); });
+  // Context lists messages newest first; the feed reads oldest first.
+  const rows = olderItems.map(function (item) { return { entry: { ref: item.ref, summary: item.summary, omitted: true }, at: item.createdAt }; })
+    .concat(contextEntries.slice().reverse().map(function (entry) { return { entry: entry, at: null }; }));
+  const reads = [];
+  rows.forEach(function (row) {
+    row.value = exactValue(row.entry, cache);
+    if (!row.value && !failedReads.has(readKey(row.entry))) {
+      row.reading = true;
+      reads.push(readExact(row.entry, task.id, actions, cache).catch(function () { failedReads.add(readKey(row.entry)); }));
+    }
+    row.at = (row.value && row.value.createdAt) || row.at;
   });
-  if (core.omitted.records) feed.append(h("p.feed-note", null, t("discussion.omitted")));
-  if (!entries.length) {
+  if (rows.every(function (row) { return row.at; })) rows.sort(function (a, b) { return Date.parse(a.at) - Date.parse(b.at); });
+
+  const remaining = totalOf(data.core, "task-message") - shownIds.size - olderItems.length;
+  if (actions.list && remaining > 0 && !state.done) {
+    const more = h("button.show-more.feed-older", { type: "button", disabled: state.pending },
+      state.pending ? t("discussion.olderLoading") : t("discussion.older").replace("{count}", String(remaining)));
+    more.addEventListener("click", function () {
+      more.disabled = true;
+      more.textContent = t("discussion.olderLoading");
+      loadOlder(data, actions, state, shownIds).then(function () { redraw(feed, task.id, true); });
+    });
+    feed.append(more);
+  }
+  if (state.error) feed.append(h("p.feed-note", null, t("records.unavailable") + " " + state.error));
+  if (!rows.length) {
     feed.append(emptyState(t("discussion.empty"), "chat"));
     return;
   }
   let lastDay = "";
-  entries.forEach(function (entry) {
-    if (entry.omitted) { feed.append(recordCard(entry, data.task.id, t, actions, { compact: true })); return; }
-    const value = entry.value;
+  rows.forEach(function (row) {
+    if (!row.value) {
+      const placeholder = recordCard(row.entry, task.id, t, actions, { compact: true });
+      if (row.reading) placeholder.dataset.reading = "true";
+      feed.append(placeholder);
+      return;
+    }
+    const value = row.value;
     const day = value.createdAt ? new Intl.DateTimeFormat(locale, { dateStyle: "medium" }).format(new Date(value.createdAt)) : "";
     if (day && day !== lastDay) { feed.append(h("div.feed-day", null, h("span", null, day))); lastDay = day; }
     const type = (value.author && value.author.type) || "system";
@@ -69,12 +141,24 @@ function drawFeed(feed, data, t, locale, actions) {
       h("header.msg-head", null, h("strong", null, author),
         value.intent ? chip(label(t, "intent", value.intent)) : null,
         value.kind === "role-result" ? chip(label(t, "messageKind", value.kind)) : null,
-        h("time", { dateTime: value.createdAt || "" }, formatShort(value.createdAt, locale))),
+        h("time", { dateTime: value.createdAt || "", title: row.entry.ref.refId }, formatShort(value.createdAt, locale))),
       h("div.msg-bubble", null, richText(null, value.body || "", t, { threshold: 900 })));
-    main.append(recordReader(entry, data.task.id, t, actions));
     message.append(main);
     feed.append(message);
   });
+  if (reads.length) Promise.all(reads).then(function () { redraw(feed, task.id, false); });
+}
+
+// Redraw after a read without losing the reader's place: the bottom stays
+// pinned, and prepended older messages keep the current message in view.
+function redraw(feed, taskId, prepend) {
+  const host = feed.closest("[data-task-id]");
+  const current = latest.get(taskId);
+  if (!feed.isConnected || !host || host.dataset.taskId !== taskId || !current) return;
+  const atEnd = feed.scrollHeight - feed.clientHeight - feed.scrollTop < 40;
+  const fromBottom = feed.scrollHeight - feed.scrollTop;
+  drawFeed(feed, current.data, current.t, current.locale, current.actions);
+  feed.scrollTop = atEnd && !prepend ? feed.scrollHeight : feed.scrollHeight - fromBottom;
 }
 
 // --- Live native Session ----------------------------------------------------------

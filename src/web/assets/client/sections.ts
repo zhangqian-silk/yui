@@ -1,72 +1,42 @@
 export const SECTIONS_SCRIPT = String.raw`
-// Task sections behind the Work, Execution, History and Details tabs.
+// The Runtime and Records tabs. Runtime is what is live now (Roles and their
+// Sessions, open execution, open operations, usage, diagnostics); Records is
+// what happened (a paged timeline of decisions, milestones, executions and
+// questions) plus Task facts. Every #detail-* anchor stays addressable via
+// ?section=.
 import { h, icon, clear } from "/assets/js/dom.js";
 import { formatDateTime } from "/assets/js/format.js";
 import {
-  sectionTitle, card, disclosure, emptyState, note, button, statusBadge, label, tone, dot, chip, mono,
-  kv, richText, pagedList, workItemCard, runCard, reviewCard, roleCard, timeTag, observabilityMetricCard
+  card, listCard, filterChips, disclosure, emptyState, note, button, statusBadge, label, tone, dot, chip, mono,
+  kv, richText, runCard, runBody, roleCard, timeTag, observabilityMetricCard
 } from "/assets/js/components.js";
-import { entriesOf, valuesOf, recordCard, recordReader } from "/assets/js/records.js";
-import { renderEvidence } from "/assets/js/evidence.js";
+import {
+  entriesOf, totalOf, summaryFields, exactRow, lazyRow, recordCard, familyState, loadFamily
+} from "/assets/js/records.js";
 import { controlForm, titleForm } from "/assets/js/forms.js";
 
-function omittedNote(core, t) {
-  return core.omitted.records ? t("records.notIncluded") : t("records.none");
-}
-
-// --- Work -------------------------------------------------------------------------
-export function renderWork(panel, data, t, locale, ctx) {
-  const core = data.core;
-  const items = entriesOf(core, "work-item");
-  const titles = {};
-  valuesOf(core, "work-item").forEach(function (item) { titles[item.id] = item.title; });
-  const rank = function (entry) { return entry.omitted ? 1 : entry.value.status === "open" ? 0 : 2; };
-  const sorted = items.slice().sort(function (a, b) {
-    return rank(a) - rank(b) || Date.parse((b.value && b.value.updatedAt) || 0) - Date.parse((a.value && a.value.updatedAt) || 0);
-  });
-  const work = h("section.section", { id: "detail-work" }, sectionTitle(t("work.title"), items.length));
-  if (!sorted.length) work.append(emptyState(omittedNote(core, t), "layers"));
-  const list = h("div.stack");
-  sorted.forEach(function (entry) {
-    list.append(entry.omitted ? recordCard(entry, data.task.id, t, ctx) : workItemCard(entry.value, t, locale, titles));
-  });
-  work.append(list);
-  panel.append(work);
-
-  const results = h("section.section", { id: "detail-results" }, sectionTitle(t("evidence.title")));
-  const resultsBody = h("div.card-grid.card-grid-1");
-  renderEvidence(resultsBody, data, t, locale, ctx);
-  results.append(resultsBody);
-  panel.append(results);
-
-  const reviews = entriesOf(core, "review-round");
-  const reviewSection = h("section.section", { id: "detail-reviews" }, sectionTitle(t("reviews.title"), reviews.length));
-  if (!reviews.length) reviewSection.append(emptyState(omittedNote(core, t)));
-  else {
-    reviewSection.append(note(t("reviews.hint")));
-    const reviewList = h("div.stack");
-    reviews.forEach(function (entry) {
-      reviewList.append(entry.omitted ? recordCard(entry, data.task.id, t, ctx) : reviewCard(entry.value, t, locale));
-    });
-    reviewSection.append(reviewList);
-  }
-  panel.append(reviewSection);
-}
-
-// --- Execution --------------------------------------------------------------------
-export function renderExecution(panel, data, t, locale, ctx) {
+// --- Runtime ----------------------------------------------------------------------
+export function renderRuntime(panel, data, t, locale, ctx) {
   const core = data.core;
   const task = data.task;
+  const view = data.viewState;
+  view.exact = view.exact || {};
   const runtimeRoles = (data.runtime && data.runtime.roles) || [];
-  const runs = valuesOf(core, "run");
+  // Active runs already read exactly (this view or an earlier render).
+  const knownRuns = entriesOf(core, "run").map(function (entry) {
+    const hit = view.exact["run/" + entry.ref.refId];
+    return hit && hit.digest === entry.ref.digest && hit.result ? hit.result.value : null;
+  }).filter(Boolean);
 
   const roleEntries = entriesOf(core, "role");
-  const roles = h("section.section", { id: "detail-roles" }, sectionTitle(t("roles.title"), roleEntries.length));
-  const roleGrid = h("div.role-grid");
+  const roles = listCard({
+    id: "detail-roles", title: t("roles.title"), icon: "user", count: totalOf(core, "role"), hint: t("roles.hint"),
+    actions: h("div.chip-row", { dataset: { slot: "session-counts" } })
+  });
   roleEntries.forEach(function (entry) {
-    if (entry.omitted) { roleGrid.append(recordCard(entry, task.id, t, ctx)); return; }
+    if (entry.omitted) { roles.list.append(recordCard(entry, task.id, t, ctx)); return; }
     const role = entry.value;
-    const active = runs.find(function (run) { return run.roleName === role.name && run.status === "active"; });
+    const active = knownRuns.find(function (run) { return run.roleName === role.name && run.status === "active"; });
     const runtimeRole = runtimeRoles.find(function (item) { return item.name === role.name; });
     const element = roleCard(role, t, locale, {
       runtimeRole: runtimeRole,
@@ -74,162 +44,228 @@ export function renderExecution(panel, data, t, locale, ctx) {
       launchDrift: active && active.effective && active.effective.sourceDesiredRevision !== role.launchRevision,
       onOpen: task.status === "archived" ? null : ctx.openSession
     });
-    const statusSlot = h("span", { dataset: { roleStatus: role.name } });
-    element.querySelector(".role-head").append(statusSlot);
-    if (!active) element.append(h("p.faint.small", null, t("roles.noActiveRun")));
-    roleGrid.append(element);
+    const head = element.querySelector(".role-head");
+    head.append(h("span", { dataset: { roleStatus: role.name } }));
+    head.after(h("div.role-session", { dataset: { roleSession: role.name } }));
+    roles.list.append(element);
   });
-  if (!roleEntries.length) roleGrid.append(emptyState(omittedNote(core, t)));
-  roles.append(roleGrid);
+  if (!roleEntries.length) roles.list.append(emptyState(t("records.none")));
   panel.append(roles);
 
   const redirect = disclosure(t("control.title"), "control", { className: "card-disclosure", meta: t("control.meta") });
+  redirect.id = "detail-control";
   redirect.body.append(note(t("control.help")), controlForm(task, t, ctx, roleEntries.map(function (entry) { return entry.ref.refId; })));
-  panel.append(h("section.section", { id: "detail-control" }, redirect));
+  panel.append(redirect);
 
   const runEntries = entriesOf(core, "run");
-  const runSection = h("section.section", { id: "detail-exec" });
-  const filters = ["all", "active", "completed", "failed"];
-  let filter = "all";
-  const filterRow = h("div.chip-tabs", { role: "group", "aria-label": t("runs.filter") });
-  const list = h("div.stack");
-  function draw() {
-    clear(list);
-    const visible = runEntries.filter(function (entry) { return filter === "all" || (!entry.omitted && entry.value.status === filter); });
-    if (!visible.length) { list.append(emptyState(omittedNote(core, t), "pulse")); return; }
-    pagedList(list, visible, 12, function (entry) {
-      return entry.omitted ? recordCard(entry, task.id, t, ctx) : runCard({ ...entry.value, execution: entry.execution }, t, locale);
-    }, t);
-  }
-  filters.forEach(function (status) {
-    const count = status === "all" ? runEntries.length : runs.filter(function (run) { return run.status === status; }).length;
-    if (status !== "all" && !count) return;
-    filterRow.append(h("button.chip-tab", {
-      type: "button", "aria-pressed": String(status === filter), dataset: { status },
-      onclick: function () {
-        filter = status;
-        filterRow.querySelectorAll(".chip-tab").forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.status === status)); });
-        draw();
-      }
-    }, status === "all" ? t("filter.all") : label(t, "run", status), h("span.count", null, String(count))));
+  const runTotal = totalOf(core, "run");
+  const runList = listCard({ id: "detail-exec", title: t("runs.title"), icon: "pulse", count: runTotal || null, hint: t("runs.hint") });
+  if (!runEntries.length) runList.list.append(emptyState(t("runs.none"), "pulse"));
+  runEntries.forEach(function (entry) {
+    runList.list.append(exactRow(entry, task.id, t, ctx, view.exact, function (value, result) {
+      return runCard({ ...value, execution: (result && result.execution) || entry.execution }, t, locale);
+    }));
   });
-  runSection.append(sectionTitle(t("runs.title"), runEntries.length), note(t("runs.hint")), filterRow, list);
-  draw();
-  panel.append(runSection);
+  if (runTotal > runEntries.length) runList.list.append(note(t("runs.more").replace("{count}", String(runTotal - runEntries.length))));
+  panel.append(runList);
 
   const jobs = entriesOf(core, "job");
-  const jobSection = h("section.section", { id: "detail-operations" }, sectionTitle(t("jobs.title"), jobs.length));
-  if (!jobs.length) jobSection.append(emptyState(omittedNote(core, t)));
-  else {
-    jobSection.append(note(t("jobs.hint")));
-    const jobList = h("div.stack");
-    jobs.forEach(function (entry) {
-      if (entry.omitted) { jobList.append(recordCard(entry, task.id, t, ctx)); return; }
-      const job = entry.value;
-      jobList.append(h("article.record", null,
+  const jobTotal = totalOf(core, "job");
+  const jobList = listCard({
+    id: "detail-operations", title: t("jobs.title"), icon: "refresh", count: jobTotal || null,
+    hint: jobTotal ? t("jobs.hint") : null
+  });
+  if (!jobs.length) jobList.list.append(emptyState(t("jobs.none")));
+  jobs.forEach(function (entry) {
+    jobList.list.append(exactRow(entry, task.id, t, ctx, view.exact, function (job) {
+      return h("article.record", null,
         h("header.record-head", null, dot(tone("job", job.status)), mono(task.id + "/" + job.id), h("span.spacer"),
           statusBadge(t, "job", "job", job.status)),
         h("p.small", null, t("job." + job.status + ".note", t("job.terminal.note"))),
         h("p.faint.small", null, (job.steps || []).map(function (step) { return step.name; }).join(" → ")),
-        timeTag(job.terminalAt || job.startedAt || job.createdAt, locale, t)));
-    });
-    jobSection.append(jobList);
-  }
-  panel.append(jobSection);
+        timeTag(job.terminalAt || job.startedAt || job.createdAt, locale, t));
+    }));
+  });
+  panel.append(jobList);
 
-  const usage = h("section.section", { id: "detail-usage" }, sectionTitle(t("usage.title")));
+  const usage = card({ id: "detail-usage", title: t("usage.title"), icon: "clock" });
   const usageBody = h("div", { dataset: { slot: "usage" } });
   const metrics = data.runtime && observabilityMetricCard(data.runtime.observability, t);
   usageBody.append(metrics || emptyState(t("usage.unavailable")));
-  usage.append(usageBody);
+  usage.body.append(usageBody);
   panel.append(usage);
 
-  const observations = disclosure(t("observation.title"), "execution", { className: "card-disclosure" });
-  observations.body.append(note(t("observation.help")));
+  const diagnostics = disclosure(t("diagnostics.title"), "diagnostics", { className: "card-disclosure", meta: t("diagnostics.meta") });
+  diagnostics.id = "detail-diagnostics";
+  diagnostics.body.append(note(t("observation.help")));
   (core.observations || []).forEach(function (observation) {
-    observations.body.append(h("p.small.mono-line", null,
+    diagnostics.body.append(h("p.small.mono-line", null,
       observation.source + " · " + observation.status + " · " + observation.coverage + " · " + observation.observedAt));
   });
-  observations.body.append(h("p.faint.small", { dataset: { slot: "runtime-status" } }), h("pre.code-block", { dataset: { slot: "runtime-raw" } }));
-  panel.append(h("section.section", null, observations));
+  diagnostics.body.append(h("div.stack", { dataset: { slot: "session-facts" } }),
+    h("p.faint.small", { dataset: { slot: "runtime-status" } }), h("pre.code-block", { dataset: { slot: "runtime-raw" } }));
+  panel.append(diagnostics);
 }
 
-// --- History ----------------------------------------------------------------------
-export function renderHistory(panel, data, t, locale, ctx) {
+// --- Records ----------------------------------------------------------------------
+// One timeline over four Context families, read as paged summaries. Messages
+// live in the Discussion dock. Ascending families are read in full (bounded);
+// descending runs page on request, and older rows of other families are held
+// back until the run pages reach them so the merged order stays honest.
+const TIMELINE = [
+  { kind: "decision", store: "task-decision", icon: "check", ascending: true },
+  { kind: "milestone", store: "task-milestone", icon: "flag", ascending: true },
+  { kind: "run", store: "run", icon: "pulse", ascending: false },
+  { kind: "question", store: "input-request", icon: "inbox", ascending: true }
+];
+const FULL_PAGES = 5;
+
+function at(item) { return Date.parse(item.createdAt || 0) || 0; }
+
+export function renderRecords(panel, data, t, locale, ctx) {
   const core = data.core;
   const task = data.task;
-  const events = [];
-  entriesOf(core, "task-decision").forEach(function (entry) { events.push({ kind: "decision", entry }); });
-  entriesOf(core, "task-milestone").forEach(function (entry) { events.push({ kind: "milestone", entry }); });
-  entriesOf(core, "task-message").forEach(function (entry) { events.push({ kind: "message", entry }); });
-  const at = function (event) {
-    const value = event.entry.value || {};
-    return Date.parse(value.createdAt || value.updatedAt || 0) || 0;
-  };
-  events.sort(function (a, b) { return at(b) - at(a); });
-  const section = h("section.section", { id: "detail-history" }, sectionTitle(t("history.title"), events.length));
-  const kinds = ["all", "decision", "milestone", "message"];
-  let kind = "all";
-  const filterRow = h("div.chip-tabs", { role: "group", "aria-label": t("history.filter") });
+  const view = data.viewState;
+  view.panels = view.panels || {};
+  view.panels.records = panel;
+  view.exact = view.exact || {};
+  view.openRows = view.openRows || {};
+  if (!TIMELINE.some(function (family) { return family.kind === view.recordsFilter; })) view.recordsFilter = "all";
+  // Values the current snapshot already carries need no read.
+  const known = {};
+  core.records.forEach(function (entry) { if (!entry.omitted) known[entry.ref.store + "/" + entry.ref.refId] = entry; });
+
+  const history = card({
+    id: "detail-history", title: t("history.title"), icon: "history", hint: t("history.hint"),
+    actions: filterChips(t("history.filter"), [{ value: "all", label: t("history.all") }].concat(TIMELINE.map(function (family) {
+      return { value: family.kind, label: t("history." + family.kind) };
+    })), view.recordsFilter, function (value) { view.recordsFilter = value; draw(); })
+  });
   const list = h("ol.timeline");
+  const foot = h("div.list-foot");
+  history.body.append(list, foot);
+
+  function families() {
+    return TIMELINE.filter(function (family) { return view.recordsFilter === "all" || view.recordsFilter === family.kind; });
+  }
   function draw() {
     clear(list);
-    const visible = events.filter(function (event) { return kind === "all" || event.kind === kind; });
-    if (!visible.length) { list.append(h("li.timeline-empty", null, emptyState(omittedNote(core, t), "history"))); return; }
-    pagedList(list, visible, 20, function (event) { return timelineItem(event, task.id, t, locale, ctx); }, t);
-  }
-  kinds.forEach(function (value) {
-    const count = value === "all" ? events.length : events.filter(function (event) { return event.kind === value; }).length;
-    filterRow.append(h("button.chip-tab", {
-      type: "button", "aria-pressed": String(value === kind), dataset: { kind: value },
-      onclick: function () {
-        kind = value;
-        filterRow.querySelectorAll(".chip-tab").forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.kind === value)); });
-        draw();
+    clear(foot);
+    history.querySelectorAll(".chip-tab").forEach(function (chipButton) {
+      chipButton.setAttribute("aria-pressed", String(chipButton.dataset.filter === view.recordsFilter));
+    });
+    const selected = families();
+    const states = selected.map(function (family) { return { family: family, state: familyState(view, family.store) }; });
+    let horizon = -Infinity;
+    states.forEach(function (row) {
+      if (row.state.nextCursor && !row.family.ascending && row.state.items.length) {
+        horizon = Math.max(horizon, Math.min.apply(null, row.state.items.map(at)));
       }
-    }, t("history." + value), h("span.count", null, String(count))));
-  });
-  section.append(filterRow, list);
-  if (core.omitted.records) section.append(note(t("history.omitted")));
-  draw();
-  panel.append(section);
-}
-
-function timelineItem(event, taskId, t, locale, ctx) {
-  const entry = event.entry;
-  const item = h("li.timeline-item.kind-" + event.kind);
-  item.append(h("span.timeline-mark", { "aria-hidden": "true" }, icon(event.kind === "decision" ? "check" : event.kind === "milestone" ? "flag" : "chat", "icon-sm")));
-  if (entry.omitted) { item.append(recordCard(entry, taskId, t, ctx, { compact: true })); return item; }
-  const value = entry.value;
-  const body = h("div.timeline-body");
-  if (event.kind === "message") {
-    const author = (value.author && value.author.roleName) || label(t, "author", (value.author && value.author.type) || "system");
-    body.append(h("header.timeline-head", null, h("strong", null, author),
-      value.kind ? chip(label(t, "messageKind", value.kind)) : null,
-      value.intent ? chip(label(t, "intent", value.intent)) : null,
-      h("span.spacer"), timeTag(value.createdAt, locale, t)));
-    body.append(richText(null, value.body || "", t, { threshold: 480 }));
-    if (value.resultRef) body.append(h("p.faint.small", null, t("history.resultOf") + " ", mono(value.resultRef.runId)));
-  } else if (event.kind === "decision") {
-    body.append(h("header.timeline-head", null, h("strong", null, value.title),
-      value.status ? statusBadge(t, "decision", "decision", value.status) : null, h("span.spacer"), timeTag(value.createdAt, locale, t)));
-    if (value.rationale) body.append(richText(null, value.rationale, t, { muted: true }));
-    if (value.supersededReason) body.append(richText(t("history.superseded"), value.supersededReason, t, { muted: true }));
-  } else {
-    body.append(h("header.timeline-head", null, h("strong", null, value.title), h("span.spacer"), timeTag(value.createdAt, locale, t)));
-    if (value.summary) body.append(richText(null, value.summary, t, { muted: true }));
+    });
+    const items = [];
+    states.forEach(function (row) {
+      row.state.items.forEach(function (item) { if (at(item) >= horizon) items.push({ family: row.family, item: item }); });
+    });
+    items.sort(function (a, b) { return at(b.item) - at(a.item); });
+    const loading = states.some(function (row) { return row.state.pending && !row.state.pages; });
+    const loaded = states.every(function (row) { return row.state.pages || row.state.error; });
+    states.forEach(function (row) {
+      if (row.state.error) list.append(h("li.timeline-empty", null, note(t("history." + row.family.kind) + " · " + t("records.unavailable") + " " + row.state.error, "bad")));
+    });
+    if (!items.length) {
+      list.append(h("li.timeline-empty", null, emptyState(loading || !loaded ? t("history.loading") : t("records.none"), "history")));
+    }
+    items.forEach(function (row) { list.append(timelineItem(row.family, row.item)); });
+    const total = states.reduce(function (sum, row) { return sum + (row.state.total || 0); }, 0);
+    if (!loaded) return;
+    foot.append(h("span.faint.small", null, t("history.loaded").replace("{shown}", String(items.length)).replace("{total}", String(total))));
+    const stale = states.some(function (row) { return row.state.key && row.state.key !== core.coreCursor; });
+    if (stale) {
+      foot.append(button(t("history.stale"), { icon: "refresh", variant: "ghost", onClick: function () { show(true); } }));
+    }
+    if (states.some(function (row) { return row.state.nextCursor; })) {
+      const more = button(t("history.more"), { icon: "chevron", variant: "ghost" });
+      more.addEventListener("click", function () {
+        more.disabled = true;
+        Promise.all(states.filter(function (row) { return row.state.nextCursor; }).map(function (row) {
+          return loadFamily(view, task.id, row.family.store, row.state.key, ctx, { more: true, limit: 40 });
+        })).then(refresh);
+      });
+      foot.append(more);
+    }
   }
-  body.append(h("p.faint.small", null, mono(entry.ref.refId)));
-  body.append(recordReader(entry, taskId, t, ctx));
-  item.append(body);
-  return item;
-}
 
-// --- Details ----------------------------------------------------------------------
-export function renderDetails(panel, data, t, locale, ctx) {
-  const task = data.task;
-  const core = data.core;
-  const facts = card({ title: t("details.facts"), icon: "file" });
+  function timelineItem(family, item) {
+    const fields = summaryFields(item.summary);
+    const entry = known[item.ref.store + "/" + item.ref.refId];
+    const value = entry && entry.ref.digest === item.ref.digest ? entry.value : null;
+    const element = h("li.timeline-item.kind-" + family.kind);
+    element.append(h("span.timeline-mark", { "aria-hidden": "true" }, icon(family.icon, "icon-sm")));
+    const body = h("div.timeline-body");
+    let title;
+    if (family.kind === "run") title = [item.roleName || t("store.run"), item.purpose ? label(t, "run.purpose", item.purpose) : null].filter(Boolean).join(" · ");
+    else if (family.kind === "question") title = fields.question || fields.title || item.ref.refId;
+    else title = fields.title || item.ref.refId;
+    const status = family.kind === "decision" ? statusBadge(t, "decision", "decision", item.status)
+      : family.kind === "run" ? statusBadge(t, "run", "run", item.status)
+        : family.kind === "question" ? statusBadge(t, "input", "inputStatus", item.status) : null;
+    const head = h("div.timeline-summary", null, h("header.timeline-head", null, h("strong.timeline-title", null, title),
+      family.kind === "run" ? mono(item.ref.refId) : null,
+      item.workItemId ? chip(item.workItemId) : null,
+      item.history === "retired" ? chip(t("history.retired")) : null,
+      item.status ? status : null, h("span.spacer"), timeTag(item.createdAt, locale, t)));
+    const preview = value && family.kind === "decision" ? value.rationale : fields.summary !== title ? fields.summary : null;
+    if (preview) head.append(h("p.small.muted.timeline-preview", null, preview));
+    // The row opens in place; its exact record is read on first open.
+    body.append(lazyRow(item, task.id, t, ctx, { cache: view.exact, openRows: view.openRows, head: head, render: function (exact, result) {
+      if (family.kind === "run") return h("div.stack", null, runBody({ ...exact, execution: result && result.execution }, t, locale));
+      if (family.kind === "decision") return h("div.stack", null,
+        exact.rationale ? richText(t("record.rationale"), exact.rationale, t, { muted: true }) : null,
+        exact.supersededReason ? richText(t("history.superseded"), exact.supersededReason, t, { muted: true }) : null);
+      if (family.kind === "milestone") return h("div.stack", null, exact.summary ? richText(null, exact.summary, t) : null);
+      if (family.kind === "question") {
+        const answer = exact.resolution && exact.resolution.answer;
+        return h("div.stack", null, exact.question ? richText(null, exact.question, t) : null,
+          answer ? richText(t("history.answer") + " · " + label(t, "answeredBy", exact.resolution.answeredBy),
+            answer.text || answer.choiceKey, t, { muted: true }) : null,
+          exact.cancellation ? note(exact.cancellation.reason) : null);
+      }
+      return null;
+    } }));
+    element.append(body);
+    return element;
+  }
+
+  // Reads redraw whichever Records panel is current.
+  function refresh() {
+    const current = view.panels.records;
+    if (current && current.isConnected) current.redraw();
+  }
+  function loadFull(family, key) {
+    return loadFamily(view, task.id, family.store, key, ctx, { limit: 40 }).then(function (state) {
+      if (!family.ascending || !state.nextCursor || state.pages >= FULL_PAGES || state.error) return state;
+      return loadFamily(view, task.id, family.store, key, ctx, { more: true, limit: 40 }).then(function () { return loadFull(family, key); });
+    });
+  }
+  // A stale first page re-reads silently; once the user paged further, the
+  // read waits for an explicit refresh so their position is kept.
+  function show(force) {
+    const key = core.coreCursor;
+    TIMELINE.forEach(function (family) {
+      const state = familyState(view, family.store);
+      if (state.pending || state.key === key || (!force && state.errorKey === key)) return;
+      if (!force && state.key && !family.ascending && state.pages > 1) return;
+      loadFull(family, key).then(refresh);
+    });
+    refresh();
+  }
+  panel.redraw = draw;
+  panel.onShow = function () { show(false); };
+  draw();
+  panel.append(history);
+
+  // --- Task information --------------------------------------------------------
+  const facts = card({ id: "detail-facts", title: t("details.facts"), icon: "info" });
   facts.body.append(kv([
     [t("details.id"), mono(task.id)],
     [t("details.status"), statusBadge(t, "task", "status", task.status)],
@@ -240,37 +276,37 @@ export function renderDetails(panel, data, t, locale, ctx) {
     [t("details.updated"), formatDateTime(task.updatedAt, locale)],
     [t("details.workspace"), task.cwd ? mono(task.cwd) : null]
   ]));
-  const edit = card({ title: t("details.title"), icon: "sparkle" });
-  edit.body.append(titleForm(task, t, ctx));
-  const grid = h("div.card-grid");
-  grid.append(facts, edit);
-  panel.append(h("section.section", { id: "detail-facts" }, grid));
+  facts.body.append(h("div.prose-block", null, h("h4.prose-label", null, t("details.title")), titleForm(task, t, ctx)));
+  panel.append(facts);
 
-  const context = disclosure(t("details.context"), "context", { className: "card-disclosure" });
-  context.body.append(h("pre.code-block", null, JSON.stringify({
-    coreCursor: core.coreCursor, throughCursor: core.throughCursor, count: core.count, omitted: core.omitted
+  // --- Advanced -------------------------------------------------------------------
+  const advanced = disclosure(t("advanced.title"), "advanced", { className: "card-disclosure", meta: t("advanced.meta") });
+  advanced.id = "detail-advanced";
+  advanced.body.append(h("h4.sub-head", null, t("details.context")), h("pre.code-block", null, JSON.stringify({
+    coreCursor: core.coreCursor, throughCursor: core.throughCursor, count: core.count, collections: core.collections, omitted: core.omitted
   }, null, 2)), note(t("details.contextHelp")));
-  panel.append(h("section.section", null, context));
-
-  const panels = disclosure(t("panels.title"), "panels", { className: "card-disclosure" });
+  const panels = h("div.stack");
+  advanced.body.append(h("h4.sub-head", null, t("panels.title")), panels);
   let loading = false;
-  panels.addEventListener("toggle", async function () {
-    if (!panels.open || loading) return;
+  let loadedPanels = false;
+  advanced.addEventListener("toggle", async function () {
+    if (!advanced.open || loading || loadedPanels) return;
     loading = true;
-    clear(panels.body);
-    panels.body.append(h("p.faint", null, t("panels.reading")));
+    clear(panels);
+    panels.append(h("p.faint", null, t("panels.reading")));
     try {
       const current = await ctx.panels(task.id);
-      clear(panels.body);
-      panels.body.append(h("p.faint.small", null, t("panels.observed") + " " + formatDateTime(current.observedAt, locale)));
-      if (!current.panels.length) panels.body.append(emptyState(t("panels.none")));
-      current.panels.forEach(function (item) { panels.body.append(panelCard(item, task, t, ctx)); });
+      clear(panels);
+      panels.append(h("p.faint.small", null, t("panels.observed") + " " + formatDateTime(current.observedAt, locale)));
+      if (!current.panels.length) panels.append(emptyState(t("panels.none")));
+      current.panels.forEach(function (item) { panels.append(panelCard(item, task, t, ctx)); });
+      loadedPanels = true;
     } catch (error) {
-      clear(panels.body);
-      panels.body.append(note(t("panels.unavailable") + " " + error.message, "bad"));
+      clear(panels);
+      panels.append(note(t("panels.unavailable") + " " + error.message, "bad"));
     } finally { loading = false; }
   });
-  panel.append(h("section.section", null, panels));
+  panel.append(advanced);
 }
 
 function panelCard(item, task, t, ctx) {

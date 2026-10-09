@@ -9,7 +9,7 @@ import { formatClock } from "/assets/js/format.js";
 import { h } from "/assets/js/dom.js";
 import { renderAttentionBar, renderFilters, renderTasks, STATUS_FILTERS, ATTENTION_KINDS } from "/assets/js/sidebar.js";
 import { renderOverview } from "/assets/js/overview.js";
-import { renderTaskDetail, selectTab, updateObservation, TABS } from "/assets/js/detail.js";
+import { renderTaskDetail, selectTab, updateObservation, TABS, TAB_ALIASES } from "/assets/js/detail.js";
 import { renderDiscussion, discussionHasUnsent, createTerminalController, sameTarget } from "/assets/js/dock.js";
 import { entriesOf } from "/assets/js/records.js";
 
@@ -118,6 +118,7 @@ function detailContext() {
     openSession: function (roleName) { openSession({ scope: "task", taskId: state.selected, roleName: roleName }); },
     answerInput: answerInput,
     inspect: api.inspect,
+    list: api.list,
     artifacts: api.artifacts,
     readArtifact: api.artifact,
     evidence: api.evidence,
@@ -132,6 +133,7 @@ function dockActions() {
   return {
     sendMessage: api.sendMessage,
     inspect: api.inspect,
+    list: api.list,
     afterWrite: function () { refreshDashboard({ quiet: true }); }
   };
 }
@@ -230,15 +232,17 @@ function switchTab(tab, options) {
   if (!(options && options.keepScroll)) el.center.scrollTop = 0;
   setSectionParam(tab);
 }
-// A section may name a tab or any anchored block inside one (for example
-// "reviews" → the Work tab, scrolled to #detail-reviews).
+// A section may name a tab, a retired tab name, or any anchored block inside
+// one (for example "reviews" → the Delivery tab, scrolled to #detail-reviews).
 function applySection(section) {
-  if (!section || TABS.includes(section)) { switchTab(section || "overview"); return; }
-  const anchor = el.detail.querySelector("#detail-" + CSS.escape(section));
+  const tab = (section && TAB_ALIASES[section]) || section;
+  if (!tab || TABS.includes(tab)) { switchTab(tab || "overview"); return; }
+  const anchor = el.detail.querySelector("#detail-" + CSS.escape(tab));
   const panel = anchor && anchor.closest(".tab-panel");
   if (!panel) { switchTab("overview"); return; }
   state.activeTab = panel.id.replace(/^panel-/, "");
   selectTab(el.detail, state.activeTab);
+  if (anchor.tagName === "DETAILS") anchor.open = true;
   anchor.scrollIntoView({ block: "start" });
 }
 
@@ -757,7 +761,7 @@ document.addEventListener("keydown", function (event) {
   else if (key === "r") refreshDashboard();
   else if (key === "o") openOperator();
   else if (key === "d") toggleDock();
-  else if (/^[1-5]$/.test(key) && state.detail) switchTab(TABS[Number(key) - 1]);
+  else if (/^[1-9]$/.test(key) && Number(key) <= TABS.length && state.detail) switchTab(TABS[Number(key) - 1]);
 });
 
 // --- Boot -------------------------------------------------------------------------

@@ -8,6 +8,8 @@
 export const RESPONSIVE_STYLES = `
 @container sidebar (max-width:299px){
   .foot-btn kbd{display:none}
+  .lazy-meta{display:none}
+  .lazy-body{padding-left:16px}
 }
 @container sidebar (max-width:259px){
   .foot-btn{gap:0;padding:0 9px}
@@ -15,11 +17,7 @@ export const RESPONSIVE_STYLES = `
 }
 @media(max-width:1200px){
   :root{--sidebar-w:264px}
-  .card-grid,.card-columns{grid-template-columns:minmax(0,1fr)}
   .metric-strip{grid-template-columns:repeat(3,minmax(0,1fr))}
-}
-@media(max-width:1040px){
-  body.dock-open .overview-layout{grid-template-columns:minmax(0,1fr)}
 }
 @media(max-width:900px){
   .app,body.dock-open .app,body.dock-open.dock-center .app{grid-template-areas:"main";grid-template-columns:minmax(0,1fr)}
@@ -32,7 +30,6 @@ export const RESPONSIVE_STYLES = `
   .dock-divider,.sidebar-divider{display:none}
   .dock{position:fixed;inset:0;z-index:60;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
   #dock-swap{display:none}
-  .overview-layout{grid-template-columns:minmax(0,1fr)}
   .dock-toggle span{display:none}
   .dock-toggle{width:32px;padding:0}
 }
@@ -44,8 +41,13 @@ export const RESPONSIVE_STYLES = `
   .tab{padding:0 12px}
   .field-row{grid-template-columns:minmax(0,1fr)}
   .work-body{padding-left:16px}
+  .card-heading:has(.card-icon) .card-hint{padding-left:0}
+  .role-card>:not(.role-head):not(.role-actions){margin-left:0}
+  .now-card>.card-body{padding:14px 14px 14px 17px}
   .kv{grid-template-columns:minmax(0,1fr)}
   .kv dt{margin-top:4px}
   .foot-btn kbd{display:none}
+  .lazy-meta{display:none}
+  .lazy-body{padding-left:16px}
 }
 `;

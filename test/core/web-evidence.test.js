@@ -89,6 +89,15 @@ test("authenticated Web evidence reads keep a fixed Task file and cannot mutate 
   assert.equal((await surface.artifacts("task-1")).commit, second.commit);
   assert.equal(store.listMessages("task-1").length, 0);
   const base = `http://127.0.0.1:${server.address().port}`;
+  // Paged family discovery is the same read-only summary list as the CLI.
+  const listUrl = base + "/api/tasks/task-1/list?store=task-message&limit=5";
+  assert.equal((await fetch(listUrl)).status, 403);
+  const page = await (await fetch(listUrl, { headers })).json();
+  assert.equal(page.total, 0);
+  assert.deepEqual(page.items, []);
+  assert.equal((await fetch(base + "/api/tasks/task-1/list?store=unknown-family", { headers })).status, 409);
+  assert.equal((await fetch(listUrl.replace("limit=5", "limit=abc"), { headers })).status, 409);
+  assert.equal((await fetch(listUrl, { method: "POST", headers })).status, 405);
   store.saveTask(createTask("task-2", "Different page", new Date()));
   const catalog = await (await fetch(base + "/api/dashboard?search=Read", { headers })).json();
   const sessions = await (await fetch(base + "/api/dashboard/sessions?search=Read", { headers })).json();
