@@ -11,7 +11,7 @@ import { createRuntimeObservation, runtimeObservationTaskEventPayload } from "..
 import { buildTaskObservabilityProjection } from "../../dist/scheduler/taskObservabilityProjection.js";
 import { runExecutionAudit } from "../../dist/observability/executionAudit.js";
 import { renderExecutionAudit } from "../../dist/commands/executionAuditCommands.js";
-import { COMPONENTS_SCRIPT } from "../../dist/web/assets/client/components.js";
+import { METRICS_SCRIPT } from "../../dist/web/assets/client/ui/metrics.js";
 
 const origin = Date.parse("2026-09-13T00:00:00Z");
 const at = seconds => new Date(origin + seconds * 1000).toISOString();
@@ -183,7 +183,7 @@ test("CLI/Web cost and audit share lifetime evidence; reads never collect or wri
     append(...children) { this.childNodes.push(...children); }
   });
   const context = vm.createContext({ node, formatDateTime: value => value });
-  vm.runInContext(COMPONENTS_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
+  vm.runInContext(METRICS_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
   const translate = key => key === "detail.unobserved" ? "unknown" : key;
   const card = context.observabilityMetricCard({ cost, context: {}, dag: {} }, translate);
   const texts = element => [element.textContent, ...element.childNodes.flatMap(texts)];

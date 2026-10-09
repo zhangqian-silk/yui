@@ -1,6 +1,7 @@
 /*
- * MARKDOWN — rendered Agent/user prose. .md is produced by client/markdown.ts
- * (escaped HTML plus a small set of our own inline and block tags).
+ * MARKDOWN — rendered Agent/user prose. .md is produced by
+ * client/lib/markdown.ts (escaped HTML plus a small set of our own inline and
+ * block tags).
  */
 export const MARKDOWN_STYLES = `
 .md{display:grid;gap:7px;min-width:0;font-size:var(--fs-sm);line-height:1.62;color:var(--ink);overflow-wrap:anywhere}

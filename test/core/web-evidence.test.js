@@ -10,8 +10,9 @@ import { saveArtifactCapability } from "../../dist/artifacts/artifactCapability.
 import { createWebTaskSurface } from "../../dist/web/webTaskSurface.js";
 import { createYuiWebServer } from "../../dist/web/webServer.js";
 import { WEB_ASSETS } from "../../dist/web/assets/assetManifest.js";
-import { RECORDS_SCRIPT } from "../../dist/web/assets/client/records.js";
-import { API_SCRIPT } from "../../dist/web/assets/client/api.js";
+import { RECORDS_SCRIPT } from "../../dist/web/assets/client/domain/records.js";
+import { API_SCRIPT } from "../../dist/web/assets/client/lib/api.js";
+import { MARKDOWN_SCRIPT } from "../../dist/web/assets/client/lib/markdown.js";
 
 test("Web source reads expose exact message control facts and the original report without writing", async () => {
   const element = (spec, attrs, ...children) => ({
@@ -24,7 +25,8 @@ test("Web source reads expose exact message control facts and the original repor
   const context = vm.createContext({
     h: element, icon: name => element(name), mono: text => text, note: text => text,
     button: text => element("button", null, text),
-    richText: (title, text) => element("report", null, title, text)
+    richText: (title, text) => element("report", null, title, text),
+    jsonBlock: value => element("pre", null, JSON.stringify(value, null, 2))
   });
   vm.runInContext(RECORDS_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
   const ref = { store: "task-message", refId: "message-1", revision: 3, digest: "exact-digest" };
@@ -50,6 +52,14 @@ test("Web source reads expose exact message control facts and the original repor
   assert.match(JSON.stringify(reader.children), /delivery-unknown.*Original report|Original report.*delivery-unknown/u);
   assert.match(JSON.stringify(reader.children), /Original diagnostic/u);
   assert.equal(calls.length, 1, "only the explicitly requested source read is performed");
+});
+
+test("Web Markdown escapes all agent text, including fenced code, before adding its own elements", () => {
+  const context = vm.createContext({});
+  vm.runInContext(MARKDOWN_SCRIPT.replace(/^export /gm, ""), context);
+  assert.equal(context.renderMarkdown("## <b>Plan</b>\n- `a<b`\n```\n<img src=x onerror=alert(1)> & \"q\"\n```"),
+    "<h5>&lt;b&gt;Plan&lt;/b&gt;</h5><ul><li><code>a&lt;b</code></li></ul>"
+    + "<pre><code>&lt;img src=x onerror=alert(1)&gt; &amp; &quot;q&quot;</code></pre>");
 });
 
 test("authenticated Web evidence reads keep a fixed Task file and cannot mutate or escape its repository", async t => {
@@ -121,7 +131,18 @@ test("authenticated Web evidence reads keep a fixed Task file and cannot mutate 
   assert.equal(original.value?.description, description, "Web must collect all exact original pages before parsing");
   // The shipped UI is JavaScript carried by TypeScript strings; tsc alone
   // cannot catch a syntax error that would make every Task inaccessible.
+  // Module imports must name a served asset and, for client modules, a name
+  // that module exports; a broken import would also blank the page.
   for (const [path, asset] of Object.entries(WEB_ASSETS).filter(([path]) => path.endsWith(".js"))) {
     new vm.Script(asset.body.replace(/^import[\s\S]*?;$/gm, "").replace(/^export /gm, ""), { filename: path });
+    if (path.startsWith("/assets/vendor/")) continue;
+    for (const [, names, target] of asset.body.matchAll(/^import \{([^}]*)\} from "([^"]+)";$/gm)) {
+      assert.ok(WEB_ASSETS[target], `${path} imports unknown asset ${target}`);
+      if (target.startsWith("/assets/vendor/")) continue;
+      for (const name of names.split(",").map(item => item.trim())) {
+        assert.match(WEB_ASSETS[target].body, new RegExp(`^export (?:async )?(?:function|const|let) ${name}\\b`, "m"),
+          `${path} imports ${name}, which ${target} does not export`);
+      }
+    }
   }
 });
