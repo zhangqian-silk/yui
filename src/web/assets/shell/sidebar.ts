@@ -23,6 +23,7 @@ export const SIDEBAR_HTML = `    <aside class="sidebar" aria-label="Tasks" data-
         <input id="search" type="search" autocomplete="off" spellcheck="false" placeholder="Search tasks" data-i18n-placeholder="search.placeholder">
         <kbd>/</kbd>
       </label>
+      <button id="body-search-open" class="foot-btn" type="button">${iconSvg("search")}<span data-i18n="bodySearch.title">Search task contents</span></button>
       <div id="attention-bar" class="attention-bar" aria-live="polite"></div>
       <div id="status-filters" class="status-tabs" role="group" aria-label="Filter by status" data-i18n-aria-label="filters.label"></div>
       <div id="task-list" class="task-list" aria-label="Tasks" data-i18n-aria-label="sidebar.label" aria-live="polite"></div>

@@ -17,7 +17,7 @@ const TABS = ${JSON.stringify(TASK_TABS)};
 //   taskView     app/taskView: 1–4 switch tabs
 export function bindShortcuts(deps) {
   document.addEventListener("keydown", function (event) {
-    if (deps.globalInput.dialog.open || deps.el.settings.open) return;
+    if (document.querySelector("dialog[open]")) return;
     const active = document.activeElement;
     const typing = isEditing(active);
     const inTerminal = deps.el.terminalHost.contains(active);

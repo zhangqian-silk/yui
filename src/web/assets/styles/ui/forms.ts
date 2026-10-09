@@ -21,6 +21,10 @@ export const FORM_STYLES = `
 .dialog-sub{margin-top:4px;color:var(--ink-3);font-size:var(--fs-xs)}
 .dialog-actions{display:flex;gap:8px;justify-content:flex-end}
 .settings-dialog{width:min(460px,calc(100vw - 32px))}
+.body-search-dialog{width:min(880px,calc(100vw - 32px))}
+.body-search-dialog .card-title{overflow-wrap:anywhere}
+.body-search-dialog .dialog-actions{flex-wrap:wrap}
+.body-search-dialog .card{min-width:0}
 .theme-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 .theme-option{display:grid;gap:8px;padding:8px;border:1px solid var(--line-2);border-radius:var(--r-md);background:var(--surface-2);text-align:left;font-size:var(--fs-sm);font-weight:500}
 .theme-option:hover{border-color:var(--line-3)}

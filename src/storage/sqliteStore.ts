@@ -142,6 +142,7 @@ import {
 import { StorageSchemaError } from "./storageSchema.js";
 import { STORAGE_FORMAT, type StorageVersion } from "./storageVersions.js";
 import { queryTaskCatalog, type TaskCatalogQuery } from "./taskCatalog.js";
+import { queryTaskSearch, type TaskSearchQuery } from "./taskSearch.js";
 import {
   CURRENT_CONFIG_SCHEMA_VERSION,
   CURRENT_WORK_MAILBOX_SCHEMA_VERSION,
@@ -1296,6 +1297,10 @@ export class SqliteTaskStore implements TaskStore {
 
   queryTaskCatalog(query: TaskCatalogQuery) {
     return queryTaskCatalog(this.#db, query);
+  }
+
+  queryTaskSearch(query: TaskSearchQuery) {
+    return queryTaskSearch(this.#db, query);
   }
 
   listTaskChoices(): Pick<Task, "id" | "title" | "status">[] {

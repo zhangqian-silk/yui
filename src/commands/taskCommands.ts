@@ -37,6 +37,7 @@ import {
   renderTaskCatalog
 } from "../context/taskCatalog.js";
 import { assertContextRecordReadable, readTaskContextResource } from "../context/taskContext.js";
+import { parseTaskSearchOptions, searchTaskBodies } from "../context/taskSearch.js";
 import { boundedDocument, readOptions, messageReceipt, recordPage } from "../output/boundedRead.js";
 import { referencedWakeRunIds } from "../context/wakeRunReferences.js";
 import {
@@ -723,6 +724,10 @@ function executeTaskCommand(
     case "create": return createTaskCommand(rest, store, options);
     case "update": return output(updateTaskCommand(rest, store, options));
     case "list": return listTaskCommand(rest, store, options.environment);
+    case "search": {
+      const result = searchTaskBodies(store, parseTaskSearchOptions(rest), options.environment);
+      return output(`${JSON.stringify(result, null, 2)}\n`, result);
+    }
     case "show": return showTaskCommand(
       rest,
       store,

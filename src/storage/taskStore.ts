@@ -265,6 +265,7 @@ export type TaskStore = {
   /** Complete lightweight choice array for interactive selectors, not Context. */
   listTaskChoices(): Pick<Task, "id" | "title" | "status">[];
   queryTaskCatalog(query: import("./taskCatalog.js").TaskCatalogQuery): import("./taskCatalog.js").TaskCatalogFacts;
+  queryTaskSearch(query: import("./taskSearch.js").TaskSearchQuery): import("./taskSearch.js").TaskSearchRow[];
   /** Active Task ids only; production SQLite uses its bounded catalog index. */
   listActiveTaskIds(): string[];
   /**

@@ -482,6 +482,12 @@ const taskChildren: readonly NodeInput[] = [
     usage: "yui task list [--all] [--status <status>] [--project <id>] [--search <text>] [--attention <category>] [--limit <1..100>] [--cursor <cursor>]",
     options: ["--all", "--status", "--project", "--search", "--attention", "--limit", "--cursor"]
   },
+  {
+    name: "search", discovery: { surface: "public", audiences: ["public","operator","leader"] },
+    summary: "Search authorized Task bodies and return exact, reference-only source citations.",
+    usage: "yui task search <query> [--task <id>] [--kind <brief|message|decision|result|completion>] [--limit <1..100>] [--cursor <cursor>]",
+    options: ["--task", "--kind", "--limit", "--cursor"]
+  },
   { name: "show", discovery: { surface: "public", audiences: ["public","operator","leader","assignment"] }, summary: "Show Task metadata and counts; long details use contentPage.", usage: "yui task show <id> [--cursor <cursor>]", options: ["--cursor"] },
   {
     name: "artifact", discovery: { surface: "managed", audiences: ["operator","leader"] },
@@ -1682,7 +1688,7 @@ export const ROOT_COMMAND = buildNode({
       sections: [
         { id: "lifecycle", title: "Lifecycle", entries: ["create", "project", "base", "update", "activate", "activation", "execution", "complete", "cancel", "reopen", "retire", "list", "show", "context", "next-action", "remote-delivery", "archive-preflight", "archive", "archive-cleanup", "replace", "reconcile", "upstream", "artifact"] },
         { id: "collaboration", title: "Collaboration", entries: ["message", "input", "grant", "workflow", "publication", "work", "run", "review", "integration", "role", "overlap", "change-set"] },
-        { id: "knowledge", title: "Task Knowledge", entries: ["brief", "decision", "milestone", "event", "continuation", "wake"] }
+        { id: "knowledge", title: "Task Knowledge", entries: ["search", "brief", "decision", "milestone", "event", "continuation", "wake"] }
       ],
       children: taskChildren
     },

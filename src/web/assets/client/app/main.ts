@@ -28,6 +28,7 @@ import { createTerminalController } from "/assets/js/views/dock/terminal.js";
 import { createConversationController } from "/assets/js/views/dock/conversation.js";
 import { bindGlobalInput } from "/assets/js/views/globalInput.js";
 import { bindCreateTask } from "/assets/js/views/createTask.js";
+import { bindBodySearch } from "/assets/js/views/bodySearch.js";
 import { readQuery } from "/assets/js/layout/router.js";
 import { createWorkspace } from "/assets/js/layout/workspace.js";
 import { bindShortcuts } from "/assets/js/layout/shortcuts.js";
@@ -106,6 +107,7 @@ catalog = createCatalog({
 const globalInput = bindGlobalInput({ t: t, api: api });
 bindCreateTask({ t: t, api: api, selectTask: selection.selectTask,
   afterWrite: function () { catalog.refresh({ quiet: true }); } });
+bindBodySearch({ t: t, api: api, selectTask: selection.selectTask });
 bindShortcuts({
   el: el, state: state, globalInput: globalInput, workspace: workspace,
   selection: selection, catalog: catalog, taskView: taskView
