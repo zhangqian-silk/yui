@@ -57,6 +57,7 @@ export function releaseMutation(key) { unresolved.delete(key); }
 const task = function (taskId) { return "/api/tasks/" + encodeURIComponent(taskId); };
 
 export const api = {
+  searchBodies: function (query) { return requestJson("/api/search?" + query); },
   dashboard: function (query) { return requestJson("/api/dashboard?" + query); },
   pageSessions: function (query) {
     return requestJson("/api/dashboard/sessions?" + query, { signal: AbortSignal.timeout(5000) });

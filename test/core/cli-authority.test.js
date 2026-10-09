@@ -115,6 +115,20 @@ test("public CLI fences replaced Operators, Home configuration and cross-Task re
   assert.equal((await cli(["role", "message", "list", "operator"], env)).ok, false);
   assert.equal((await cli(["task", "context", "inspect", "task-1", "--store", "task", "--ref", "task-1"], env)).ok, true);
   assert.equal((await cli(["task", "decision", "list", "task-2"], current)).ok, true);
+  const searched = await cli(["task", "search", "Other rationale"], current);
+  assert.equal(searched.ok, true);
+  assert.equal(searched.data.data.items[0].taskId, "task-2");
+  assert.equal((await cli(["task", "search", "Other rationale"], env)).ok, false);
+  const leader = createRole("task-1", "leader", [binding], agent.id, workspace, now);
+  store.saveRole("task-1", leader);
+  store.saveTaskRoleSessionSet(recordRoleAgentSession(createRoleSessionSet({
+    scope: "task", taskId: "task-1", roleName: "leader"
+  }, agent.id, now), session(leader, "leader-current"), now));
+  const leaderEnv = environment(leader, { scope: "task", taskId: "task-1" }, "leader-current");
+  const scopedSearch = await cli(["task", "search", "Other rationale"], leaderEnv);
+  assert.equal(scopedSearch.ok, true);
+  assert.deepEqual(scopedSearch.data.data.items, []);
+  assert.equal((await cli(["task", "search", "Other rationale", "--task", "task-2"], leaderEnv)).ok, false);
   // A transport-only fixture prevents a regression from starting a scheduler.
   let jobReads = 0;
   server = await startControllerServer(home, method => {

@@ -37,7 +37,7 @@ export function assertTaskInvocationScope(args: readonly string[], env: NodeJS.P
   if (args[0] === "jobs" || (args[0] === "task" && ["create", "overlap"].includes(args[1] ?? ""))) {
     throw usageError("This global operation is outside the caller's Task; use its scoped Context.");
   }
-  if (args[0] !== "task" || args[1] === "list") return;
+  if (args[0] !== "task" || ["list", "search"].includes(args[1] ?? "")) return;
   const diagnostic = taskDiagnosticTarget(args);
   if (diagnostic !== undefined) {
     if (diagnostic !== env.YUI_TASK_ID) throw usageError("Command target is outside the caller's Task.");

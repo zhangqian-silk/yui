@@ -10,6 +10,7 @@ import WebSocket, { WebSocketServer } from "ws";
 
 import { CliError, usageError } from "../errors/cliError.js";
 import { parseTaskCatalogOptions } from "../context/taskCatalog.js";
+import { parseTaskSearchOptions, searchTaskBodies } from "../context/taskSearch.js";
 import type { WebTaskSurface, WebControlInput } from "./webTaskSurface.js";
 import { WebRequestRejected } from "./webMutation.js";
 import type { createWebConversationSurface } from "./webConversation.js";
@@ -466,6 +467,12 @@ async function handleHttpRequest(
         );
       } else if (asset !== null) {
         sendAsset(response, asset, method === "HEAD");
+      } else if (pathname === "/api/search") {
+        const query = new URL(request.url!, "http://localhost").searchParams;
+        if (query.getAll("query").length !== 1) throw usageError("Search requires one query.");
+        const options = parseTaskSearchOptions([query.get("query")!,
+          ...[...query].filter(([key]) => key !== "query").flatMap(([key, value]) => [`--${key}`, value])]);
+        sendJson(response, 200, store.transaction(reader => searchTaskBodies(reader, options)), method === "HEAD");
       } else if (pathname === "/api/dashboard" || pathname === "/api/dashboard/sessions") {
         const query = new URL(request.url!, "http://localhost").searchParams;
         const options = parseTaskCatalogOptions(
