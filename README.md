@@ -171,6 +171,9 @@ the browser's default-view preference survive switching. Native questions and
 approvals answer the original Codex request; Leader Task questions remain on
 the separate InputRequest channel. The default-view preference is shared with
 Settings; saving it does not switch the current view or Session.
+MCP forms and URL confirmations can be completed in Terminal or declined in
+Conversation. Native additional input is saved as a user Message with its exact
+steer receipt before submission.
 Attachments and native configuration changes
 are not supported by this managed text-input surface.
 The detail has four tabs: Overview (user input, progress and key Decisions),

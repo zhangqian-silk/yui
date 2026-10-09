@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { prepareNativeHostSteer } from "./nativeHostInput.js";
 import { archiveLeaderTask } from "../task/leaderArchive.js";
 import { TaskWorkspaceCoordinator } from "../repository/taskWorkspaceCoordinator.js";
 import type { ConfiguredAgent } from "../agent/agent.js";
@@ -864,6 +865,12 @@ export function createRuntimeLifecycleDispatcher(
           error instanceof Error ? error.message : String(error)
         );
       }
+    }
+    if (method === "runtime.native-steer-prepare") {
+      const value = providerTurnControlParams(params);
+      return prepareNativeHostSteer(store, { ...value,
+        nativeTurnId: requiredParam((params as Record<string, JsonValue>).nativeTurnId),
+        boundedText: requiredParam(value.boundedText) });
     }
     if (method === "runtime.provider-turn-begin") {
       const value = providerTurnControlParams(params);

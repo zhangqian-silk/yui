@@ -5,7 +5,7 @@ export type CodexNativeRequest = Readonly<{
   id: string | number;
   method: string;
   threadId: string;
-  turnId: string;
+  turnId: string | null;
   params: JsonObject;
 }>;
 
@@ -15,7 +15,7 @@ export interface CodexNativeAccess {
   readonly requests: readonly CodexNativeRequest[];
   read(method: string, params: JsonObject): Promise<JsonObject>;
   validateTurn(params: JsonObject): void;
-  respond(id: string | number, threadId: string, turnId: string, result: JsonObject): Promise<void>;
+  respond(id: string | number, threadId: string, turnId: string | null, result: JsonObject): Promise<void>;
   events(listener: (message: JsonObject) => void): () => void;
 }
 
@@ -27,7 +27,7 @@ const READS = new Set([
 ]);
 const REQUESTS = new Set([
   "item/commandExecution/requestApproval", "item/fileChange/requestApproval",
-  "item/tool/requestUserInput", "item/permissions/requestApproval"
+  "item/tool/requestUserInput", "item/permissions/requestApproval", "mcpServer/elicitation/request"
 ]);
 
 /** A view of one existing connection, never another Thread or durable input queue.
@@ -49,9 +49,10 @@ export function createCodexNativeAccess(
     if (params?.threadId !== threadId) return;
     if ((typeof message.id === "string" || typeof message.id === "number")
       && typeof message.method === "string" && REQUESTS.has(message.method)
-      && typeof params.turnId === "string") {
+      && (typeof params.turnId === "string"
+        || (message.method === "mcpServer/elicitation/request" && params.turnId == null))) {
       pending.set(message.id, { id: message.id, method: message.method,
-        threadId, turnId: params.turnId, params });
+        threadId, turnId: typeof params.turnId === "string" ? params.turnId : null, params });
     }
     if (message.method === "serverRequest/resolved") pending.delete(params.requestId as string | number);
     if (message.method === "turn/completed") {
@@ -121,7 +122,13 @@ export function createCodexNativeAccess(
 }
 
 function validateNativeResponse(request: CodexNativeRequest, result: JsonObject): void {
-  if (request.method === "item/tool/requestUserInput") {
+  if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("Missing native response.");
+  if (request.method === "mcpServer/elicitation/request") {
+    if (!["accept", "decline", "cancel"].includes(String(result.action))
+      || (result.action !== "accept" && result.content != null)) {
+      throw new Error("Invalid native MCP elicitation response.");
+    }
+  } else if (request.method === "item/tool/requestUserInput") {
     const answers = result.answers;
     const questions = request.params.questions;
     if (!answers || typeof answers !== "object" || Array.isArray(answers) || !Array.isArray(questions)) {

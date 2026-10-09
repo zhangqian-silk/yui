@@ -462,6 +462,7 @@ export const EN = {
   "conversation.leaderQuestions": "Leader questions · Task input channel",
   "conversation.nativeApproval": "Codex is waiting for approval.",
   "conversation.nativeAnswered": "Answer sent to the original native request.",
+  "conversation.nativeForm": "Use Terminal to complete this MCP form or URL confirmation, or decline here.",
   "conversation.approve": "Approve this request",
   "conversation.decline": "Decline",
   "conversation.terminalWriter": "Input belongs to a terminal; detach it to hand input back",

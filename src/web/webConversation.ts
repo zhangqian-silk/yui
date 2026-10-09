@@ -107,7 +107,7 @@ export function createWebConversationSurface(
   live?: (owner: RoleSessionOwner) => Promise<AgentHostSnapshot>,
   access?: {
     hasWriter(owner: RoleSessionOwner): boolean;
-    respond(owner: RoleSessionOwner, id: string, requestId: string | number, turnId: string, result: Record<string, unknown>): Promise<unknown>;
+    respond(owner: RoleSessionOwner, id: string, requestId: string | number, turnId: string | null, result: Record<string, unknown>): Promise<unknown>;
   }
 ) {
   const sessions = (owner: RoleSessionOwner) => {
@@ -263,7 +263,7 @@ export function createWebConversationSurface(
           : { ...common, action: "queue" as const, body: required(body) };
       return owner.scope === "task" ? surface.control(owner.taskId, control) : surface.globalControl(owner.roleName, control);
     },
-    async respond(owner: RoleSessionOwner, id: string, requestId: string | number, turnId: string, result: Record<string, unknown>) {
+    async respond(owner: RoleSessionOwner, id: string, requestId: string | number, turnId: string | null, result: Record<string, unknown>) {
       const { set, session } = select(owner, id);
       if (!access || access.hasWriter(owner) || session.status !== "active"
         || set.sessions[set.activeAgentId] !== session || session.adapterId !== "codex"

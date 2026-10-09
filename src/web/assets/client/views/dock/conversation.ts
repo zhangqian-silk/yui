@@ -144,6 +144,11 @@ export function createConversationController(host, t, locale = function () { ret
         return { answers: Object.fromEntries(Object.entries(answers).map(function (entry) { return [entry[0], { answers: [entry[1].value] }]; })) };
       });
       else if (request.method === "item/permissions/requestApproval") button(t("conversation.decline"), function () { return { permissions: {}, scope: "turn" }; });
+      else if (request.method === "mcpServer/elicitation/request") {
+        card.append(h("p.feed-note", null, request.params.message || ""));
+        card.append(h("p.feed-note", null, t("conversation.nativeForm")));
+        button(t("conversation.decline"), function () { return { action: "decline", content: null }; });
+      }
       else {
         button(t("conversation.approve"), function () { return { decision: "accept" }; });
         button(t("conversation.decline"), function () { return { decision: "decline" }; });

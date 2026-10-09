@@ -14,7 +14,7 @@ export async function openControlledCodexTui(
   payload: AgentHostLaunchPayload, threadId: string, access: CodexNativeAccess,
   input: {
     mutate(method: string, params: JsonObject): Promise<JsonObject>;
-    respond(id: string | number, turnId: string, result: JsonObject): Promise<void>;
+    respond(id: string | number, turnId: string | null, result: JsonObject): Promise<void>;
     onExit(): void;
     onError(error: unknown): void;
   }

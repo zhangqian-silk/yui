@@ -462,6 +462,7 @@ export const ZH_CN: Readonly<Partial<Record<MessageKey, string>>> = {
   "conversation.leaderQuestions": "Leader 问题 · Task 输入通道",
   "conversation.nativeApproval": "Codex 正在等待批准。",
   "conversation.nativeAnswered": "已向原始原生请求发送回答。",
+  "conversation.nativeForm": "请在终端完成此 MCP 表单或 URL 确认，也可在此拒绝。",
   "conversation.approve": "批准本次请求",
   "conversation.decline": "拒绝",
   "conversation.terminalWriter": "输入归终端所有；脱离终端后交回会话",

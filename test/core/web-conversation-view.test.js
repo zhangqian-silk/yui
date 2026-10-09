@@ -251,6 +251,16 @@ test("native answers keep original identity and pending state; Leader questions 
   assert.deepEqual(f.taskAnswers, [["task-1", "input-1", "business answer"]]);
   assert.equal(f.mutations.length, 1, "Task answer is not a second native prompt");
   f.controller.close();
+  const mcp = fixture({ outcome: "accepted" }, { nativeRequests: [{
+    id: "mcp", method: "mcpServer/elicitation/request", turnId: null, params: { message: "Choose" }
+  }] });
+  mcp.controller.open(owner);
+  await flush();
+  await mcp.button("decline").handlers.click();
+  assert.equal(mcp.mutations[0][2].expectedTarget, null, "do not fabricate a Turn for thread-level requests");
+  assert.equal(mcp.mutations[0][2].result.action, "decline");
+  assert.equal(mcp.mutations[0][2].result.content, null);
+  mcp.controller.close();
 });
 
 test("definite interrupt refusal releases input while unknown delivery remains blocked", async () => {

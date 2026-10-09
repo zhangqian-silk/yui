@@ -298,7 +298,8 @@ async function handleHttpRequest(
         const value = body as Record<string, unknown>;
         if (value.action === "native-respond") {
           if ((typeof value.nativeRequestId !== "string" && typeof value.nativeRequestId !== "number")
-            || typeof value.expectedTarget !== "string" || !value.result || typeof value.result !== "object" || Array.isArray(value.result)) {
+            || (typeof value.expectedTarget !== "string" && value.expectedTarget !== null)
+            || !value.result || typeof value.result !== "object" || Array.isArray(value.result)) {
             throw new WebRequestRejected("Expected exact native request and Turn response.");
           }
           result = await dependencies.conversation.respond(owner, safeIdentity(q.get("session"), "Session"),

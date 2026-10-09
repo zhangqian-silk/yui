@@ -33,6 +33,17 @@ test("native access attaches to the same Thread and answers exact requests once"
   emit({ id: 3, method: "item/fileChange/requestApproval", params: { threadId: "thread", turnId: "turn" } });
   emit({ method: "turn/completed", params: { threadId: "thread", turn: { id: "turn" } } });
   assert.equal(access.requests.length, 0);
+  for (const turnId of ["turn", null]) {
+    emit({ id: "mcp", method: "mcpServer/elicitation/request",
+      params: { threadId: "thread", turnId, serverName: "fixture", mode: "form",
+        message: "Choose", requestedSchema: { type: "object", properties: { value: { type: "string" } } } } });
+    assert.equal(access.requests.length, 1);
+    await assert.rejects(access.respond("mcp", "other", turnId, { action: "accept", content: { value: "x" } }));
+    await assert.rejects(access.respond("mcp", "thread", turnId, { decision: "accept" }));
+    await access.respond("mcp", "thread", turnId, { action: "accept", content: { value: "x" } });
+    await assert.rejects(access.respond("mcp", "thread", turnId, { action: "cancel", content: null }));
+    assert.deepEqual(sent.at(-1), { id: "mcp", result: { action: "accept", content: { value: "x" } } });
+  }
 });
 
 test("native TUI relay uses one existing connection and forwards complete prompts and native answers", async t => {
@@ -59,6 +70,12 @@ test("native TUI relay uses one existing connection and forwards complete prompt
       mutations.push({ method, params });
       emit({ id: "approval", method: "item/commandExecution/requestApproval",
         params: { threadId: "thread", turnId: "turn", command: "fixture only" } });
+      emit({ id: "mcp-form", method: "mcpServer/elicitation/request",
+        params: { threadId: "thread", turnId: null, serverName: "fixture", mode: "form",
+          message: "Choose", requestedSchema: { type: "object", properties: { choice: { type: "string" } } } } });
+      emit({ id: "mcp-url", method: "mcpServer/elicitation/request",
+        params: { threadId: "thread", turnId: "turn", serverName: "fixture", mode: "url",
+          message: "Confirm", url: "https://example.invalid", elicitationId: "url-id" } });
       return { turn: { id: "turn", items: [], status: "inProgress", error: null } };
     }, onExit: exited, onError: error => errors.push(error)
   });
@@ -66,7 +83,11 @@ test("native TUI relay uses one existing connection and forwards complete prompt
   await done;
   assert.deepEqual(errors, []);
   assert.deepEqual(mutations, [{ method: "turn/start", params: nativeTurnStart }]);
-  assert.deepEqual(replies, [{ id: "approval", result: { decision: "decline" } }]);
+  assert.deepEqual(replies, [
+    { id: "approval", result: { decision: "decline" } },
+    { id: "mcp-form", result: { action: "accept", content: { choice: "yes" } } },
+    { id: "mcp-url", result: { action: "cancel", content: null } }
+  ]);
 });
 
 test("native access retains pending requests observed during resume", async () => {

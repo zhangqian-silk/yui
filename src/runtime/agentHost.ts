@@ -171,7 +171,7 @@ export type AgentHostNativeControl = Readonly<{
   type: "native-open" | "native-respond";
   nativeSessionId: string;
   requestId?: string | number;
-  nativeTurnId?: string;
+  nativeTurnId?: string | null;
   result?: JsonObject;
 }>;
 
@@ -1325,9 +1325,15 @@ export async function runAgentHost(input: Readonly<{
     if (method === "turn/steer") {
       const turnId = activeNativeTurnId;
       if (params.expectedTurnId !== turnId || !turnId) throw new Error("Native steer targets a different Turn.");
-      // Reuse the same serialized admission and durable disposition as Web.
+      if (!sessionPayload) throw new Error("Native Session launch context is unavailable.");
+      // Persist human intent and the existing steer receipt before Provider
+      // write. A fresh human turn id is not an additional-input binding.
+      const prepared = await callControllerIdempotently(input.home, "runtime.native-steer-prepare", {
+        ...hostRunControlParams(sessionPayload, expected.nativeSessionId, authority, run.attemptId),
+        nativeTurnId: turnId, boundedText
+      }) as { attemptId: string; boundedText: string };
       const result = await handleControl({ protocol: AGENT_HOST_CONTROL_PROTOCOL, type: "steer-turn",
-        nativeSessionId: expected.nativeSessionId, nativeTurnId: turnId, authority, run });
+        nativeSessionId: expected.nativeSessionId, nativeTurnId: turnId, authority, run: prepared });
       if (result.outcome !== "accepted") throw new Error("Native steer acceptance is unconfirmed; do not resubmit.");
       return { turnId };
     }
@@ -1348,7 +1354,7 @@ export async function runAgentHost(input: Readonly<{
           && sessionPayload.environment.YUI_ROLE !== "leader")) throw new Error("Native access requires the current controlled Codex Operator/Leader.");
       if (request.type === "native-respond") {
         await assertHostExecutionEnvironment(input.home, sessionPayload, current.nativeSessionId);
-        await current.nativeAccess.respond(request.requestId!, request.nativeSessionId, request.nativeTurnId!, request.result!);
+        await current.nativeAccess.respond(request.requestId!, request.nativeSessionId, request.nativeTurnId ?? null, request.result!);
       } else if (!nativeTui) {
         if (!process.stdin.isTTY) throw new Error("Native TUI requires the Host's owned terminal.");
         humanConsole?.close();
@@ -2091,7 +2097,7 @@ function validateControl(control: AgentHostControl): AgentHostControl {
   if (control.type === "native-open" || control.type === "native-respond") {
     validateIdentity(control.nativeSessionId, "native Session id");
     if (control.type === "native-respond") {
-      validateIdentity(control.nativeTurnId!, "native Turn id");
+      if (control.nativeTurnId !== null) validateIdentity(control.nativeTurnId!, "native Turn id");
       if ((typeof control.requestId !== "string" && typeof control.requestId !== "number")
         || control.result === null || typeof control.result !== "object" || Array.isArray(control.result)) {
         throw new Error("Invalid native request response.");
