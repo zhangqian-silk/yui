@@ -7,7 +7,7 @@ import { SELECTION_SCRIPT } from "../../dist/web/assets/client/app/selection.js"
 // Exercise the shipped controller with disposable DOM/network boundaries.
 function fixture(submitResult = { state: "submitted" }) {
   const elements = [], storage = new Map(), calls = [];
-  let interval, delayedRead, delayedReceipt;
+  let interval, delayedRead, delayedReceipt, currentSessionId = "thread";
   const h = (spec, attrs, ...children) => {
     const node = { spec, ...attrs, children: children.filter(Boolean), handlers: {}, value: "", scrollTop: 0,
       scrollHeight: 0, clientHeight: 0, textContent: "", hidden: attrs?.hidden ?? false,
@@ -35,7 +35,7 @@ function fixture(submitResult = { state: "submitted" }) {
       if (delayedRead) return new Promise(resolve => { delayedRead.resolve = resolve; });
       if (query.has("session")) return { status: "active", observedAt: "now", nextCursor: "older",
         items: [{ id: "tool", turnId: "turn", kind: "activity", text: "npm test" }] };
-      return { currentSessionId: "thread", sessions: [{ nativeSessionId: "thread", current: true,
+      return { currentSessionId, sessions: [{ nativeSessionId: currentSessionId, current: true,
         status: "active", adapterId: "codex" }], authority: { owner: "controller" },
         turn: { status: "accepted", nativeTurnId: "turn" }, total: 1, nextOffset: null };
     },
@@ -46,6 +46,8 @@ function fixture(submitResult = { state: "submitted" }) {
   return { controller, calls, storage, host,
     button: key => elements.find(n => n.spec.startsWith("button") && n.children.includes("conversation." + key)),
     get input() { return elements.find(n => n.spec.startsWith("textarea")); },
+    get selector() { return elements.find(n => n.spec === "select"); },
+    replaceCurrent: id => { currentSessionId = id; },
     get feed() { return elements.find(n => n.spec === "div.feed"); },
     tick: async () => { interval?.(); await flush(); },
     delayRead: () => { delayedRead = {}; return delayedRead; },
@@ -54,6 +56,30 @@ function fixture(submitResult = { state: "submitted" }) {
   };
 }
 const flush = () => new Promise(resolve => setImmediate(resolve));
+
+test("workbench continuation resolves the current Leader afresh without replaying historical input", async () => {
+  const f = fixture();
+  const owner = { scope: "task", taskId: "task-1", roleName: "leader" };
+  f.controller.open(owner);
+  await flush();
+  f.input.value = "Current draft";
+  f.selector.value = "old-thread";
+  f.selector.handlers.change();
+  await flush();
+  f.input.value = "Historical draft";
+  f.replaceCurrent("replacement-thread");
+  f.controller.open(owner, { current: true });
+  await flush();
+  const query = new URL(f.calls.at(-1), "http://fixture").searchParams;
+  assert.equal(query.get("task"), "task-1");
+  assert.equal(query.get("role"), "leader");
+  assert.equal(query.get("session"), "replacement-thread");
+  assert.equal(f.input.value, "");
+  assert.ok([...f.storage.values()].includes("Current draft"));
+  assert.ok([...f.storage.values()].includes("Historical draft"));
+  assert.equal([...f.storage.keys()].some(k => k.endsWith(".pending")), false);
+  f.controller.close();
+});
 
 test("conversation preserves unsent drafts and reading state while receipts and refreshes arrive", async () => {
   const f = fixture();
@@ -94,6 +120,10 @@ test("definite interrupt refusal releases input while unknown delivery remains b
     const unknown = code === "DELIVERY_UNKNOWN";
     assert.equal(f.button("send").disabled, unknown, code);
     assert.equal([...f.storage.keys()].some(k => k.endsWith(".pending")), unknown, code);
+    assert.equal(f.input.value, "Unsent");
+    f.controller.open({ scope: "global", roleName: "operator" }, { current: true });
+    await flush();
+    assert.equal(f.button("send").disabled, unknown, "opening current does not clear an unknown submission");
     assert.equal(f.input.value, "Unsent");
     f.controller.close();
   }

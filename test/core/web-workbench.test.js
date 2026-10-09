@@ -19,6 +19,9 @@ import { FORMS_SCRIPT } from "../../dist/web/assets/client/ui/forms.js";
 import { TASK_PAGE_SCRIPT } from "../../dist/web/assets/client/views/task/page.js";
 import { CREATE_TASK_SCRIPT } from "../../dist/web/assets/client/views/createTask.js";
 import { buildWebTaskDetail } from "../../dist/web/webSnapshot.js";
+import { WORKSPACE_SCRIPT } from "../../dist/web/assets/client/layout/workspace.js";
+import { TASK_VIEW_SCRIPT } from "../../dist/web/assets/client/app/taskView.js";
+import { TASK_ACTIONS_SCRIPT } from "../../dist/web/assets/client/views/task/actions.js";
 
 test("Web task operations share durable intent, reject authority fields, and return actual lifecycle receipts", async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-workbench-"));
@@ -189,6 +192,39 @@ test("selecting a Task uses its bounded workbench without automatically expandin
   await runtime.load(deps, "task-1", false);
   assert.deepEqual(calls, ["workbench", "observation"]);
   assert.equal(deps.state.detail.briefValue.currentFocus, "Current work");
+});
+
+test("the workbench primary action opens the current Leader conversation, not a native terminal", () => {
+  const node = () => ({ hidden: true, children: [], dataset: {},
+    append(...items) { this.children.push(...items); }, setAttribute() {}, addEventListener() {},
+    querySelectorAll: () => [] });
+  const opened = [];
+  const runtime = vm.createContext({
+    h: node, button: (text, options) => ({ text, ...options }), card: () => ({ body: node() }),
+    document: { body: { classList: { toggle() {} } } },
+    window: { matchMedia: () => ({ matches: true, addEventListener() {} }) },
+    readPreference: (_key, fallback) => fallback, writePreference() {}, markSelected() {},
+    createSizing: () => ({ applySidebarWidth() {} })
+  });
+  for (const script of [WORKSPACE_SCRIPT, TASK_VIEW_SCRIPT, TASK_ACTIONS_SCRIPT]) {
+    vm.runInContext(script.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), runtime);
+  }
+  const el = Object.fromEntries(["dock", "divider", "discussion", "session", "conversation",
+    "dockTabConversation", "dockTabDiscussion", "dockTabSession", "dockSwap", "detail",
+    "operator", "dockClose"].map(key => [key, node()]));
+  const state = { selected: "task-current", activeTab: "overview" };
+  const workspace = runtime.createWorkspace({
+    el, state,
+    terminal: { connected: () => false, open: () => assert.fail("primary action must not open a terminal") },
+    conversation: { current: () => opened.at(-1)?.[0], close() {}, open: (...args) => opened.push(args) }
+  });
+  const ctx = runtime.detailContext({ controller: {}, deps: { state, api: {}, workspace } });
+  runtime.taskActions({ id: "task-current", status: "active" }, key => key, ctx).body.children[0].onClick();
+  assert.equal(el.conversation.hidden, false, "explicit continuation also opens the narrow-screen sheet");
+  assert.equal(el.session.hidden, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(opened)), [[
+    { scope: "task", taskId: "task-current", roleName: "leader" }, { current: true }
+  ]]);
 });
 
 test("Task panels stay lazy and unknown mutations preserve both the input guard and the actual reason", async () => {

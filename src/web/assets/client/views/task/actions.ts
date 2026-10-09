@@ -6,7 +6,7 @@ import { receiptLine, setReceipt, submitWrite } from "/assets/js/ui/forms.js";
 
 export function taskActions(task, t, ctx) {
   const element = card({ title: t("workbench.next"), icon: "chat" });
-  element.body.append(button(t("workbench.continue"), { variant: "primary", onClick: function () { ctx.openSession("leader"); } }));
+  element.body.append(button(t("workbench.continue"), { variant: "primary", onClick: function () { ctx.openConversation(); } }));
   const action = task.status === "draft" ? "activate"
     : ["completed", "cancelled"].includes(task.status) ? "archive" : null;
   if (!action) return element;

@@ -40,6 +40,13 @@ export function createWorkspace(deps) {
     setDockOpen: function (open) { setDockOpen(ws, open); },
     toggleDock: function (mode) { toggleDock(ws, mode); },
     openSession: function (target) { openSession(ws, target); },
+    openConversation: function (target) {
+      showDock(ws, true);
+      ws.dock.mode = "conversation";
+      updateLayout(ws);
+      ws.deps.conversation.open(target, { current: true });
+      syncDockButtons(ws);
+    },
     openOperator: function () { openOperator(ws); },
     // A newly selected Task starts with the narrow-screen sheet closed.
     enterTask: function () {
