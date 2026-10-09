@@ -2,7 +2,7 @@ export const CONVERSATION_SCRIPT = String.raw`
 import { h, clear } from "/assets/js/lib/dom.js";
 import { api, releaseMutation, requestJson, submitMutation } from "/assets/js/lib/api.js";
 import { richText } from "/assets/js/ui/text.js";
-import { readPreference, writePreference } from "/assets/js/lib/prefs.js";
+import { readSessionAccessMode, writeSessionAccessMode } from "/assets/js/lib/prefs.js";
 import { inputCard } from "/assets/js/domain/work.js";
 
 export function createConversationController(host, t, locale = function () { return "en"; }) {
@@ -15,10 +15,14 @@ export function createConversationController(host, t, locale = function () { ret
   const questions = h("div");
   let questionSignature = "";
   const defaultMode = h("select", { "aria-label": t("conversation.defaultMode") },
-    h("option", { value: "conversation" }, t("conversation.title")),
-    h("option", { value: "session" }, t("dock.session")));
-  defaultMode.value = readPreference("yui.session.mode", "conversation");
-  defaultMode.addEventListener("change", function () { writePreference("yui.session.mode", defaultMode.value); });
+    h("option", { value: "structured" }, t("conversation.title")),
+    h("option", { value: "native" }, t("dock.session")));
+  defaultMode.value = readSessionAccessMode();
+  defaultMode.addEventListener("change", function () {
+    const saved = writeSessionAccessMode(defaultMode.value);
+    receipt.textContent = t(saved ? "conversation.defaultSaved" : "settings.storageFailed");
+    defaultMode.value = readSessionAccessMode();
+  });
   const select = h("select", { "aria-label": t("conversation.sessions") });
   const status = h("p.feed-note", { role: "status" });
   const identity = h("p.feed-note");
@@ -60,6 +64,7 @@ export function createConversationController(host, t, locale = function () { ret
     return "/api/conversation?" + q;
   }
   function controls() {
+    defaultMode.value = readSessionAccessMode();
     const active = facts && facts.sessions.find(function (s) { return s.nativeSessionId === selected; });
     const writable = historyOk && active && active.current && active.status === "active" && active.adapterId === "codex"
       && facts.authority && facts.authority.owner === "controller" && !facts.terminalWriter;

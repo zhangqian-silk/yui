@@ -5,7 +5,7 @@ export const WORKSPACE_SCRIPT = String.raw`
 // or a live native Session; on desktop it is a resizable column (at the end or
 // in the center), below the narrow breakpoint a full-screen sheet opened
 // explicitly per Task. Everything here is view state and browser preference.
-import { readPreference, writePreference } from "/assets/js/lib/prefs.js";
+import { readPreference, writePreference, readSessionAccessMode } from "/assets/js/lib/prefs.js";
 import { markSelected } from "/assets/js/lib/dom.js";
 import { createSizing } from "/assets/js/layout/sizing.js";
 
@@ -41,6 +41,7 @@ export function createWorkspace(deps) {
     toggleDock: function (mode) { toggleDock(ws, mode); },
     openSession: function (target) { openSession(ws, target); },
     openConversation: function (target, materials) {
+      ws.deps.terminal.close();
       showDock(ws, true);
       ws.dock.mode = "conversation";
       updateLayout(ws);
@@ -81,7 +82,7 @@ function readDockState() {
 }
 
 function preferredMode() {
-  return readPreference("yui.session.mode", "conversation") === "session" ? "session" : "conversation";
+  return readSessionAccessMode() === "native" ? "session" : "conversation";
 }
 
 function dockVisible(ws) {

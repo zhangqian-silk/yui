@@ -456,6 +456,7 @@ export const ZH_CN: Readonly<Partial<Record<MessageKey, string>>> = {
   "dock.session": "终端",
   "conversation.title": "会话",
   "conversation.defaultMode": "默认展示",
+  "conversation.defaultSaved": "已保存为此浏览器今后打开时的默认展示；当前视图和 Session 未切换。",
   "conversation.nativeRequest": "Codex 原生请求",
   "conversation.nativeOmitted": "更多或较大的原生请求请在终端处理。",
   "conversation.leaderQuestions": "Leader 问题 · Task 输入通道",

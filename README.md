@@ -169,7 +169,9 @@ terminal holds the writer at a time. Returning to Conversation or closing the
 page detaches that browser, without stopping the Agent. Conversation drafts and
 the browser's default-view preference survive switching. Native questions and
 approvals answer the original Codex request; Leader Task questions remain on
-the separate InputRequest channel. Attachments and native configuration changes
+the separate InputRequest channel. The default-view preference is shared with
+Settings; saving it does not switch the current view or Session.
+Attachments and native configuration changes
 are not supported by this managed text-input surface.
 The detail has four tabs: Overview (user input, progress and key Decisions),
 Delivery (WorkItems, Reviews, Integration and remote delivery, read on demand),

@@ -4,10 +4,12 @@ import vm from "node:vm";
 import { CONVERSATION_SCRIPT } from "../../dist/web/assets/client/views/dock/conversation.js";
 import { SELECTION_SCRIPT } from "../../dist/web/assets/client/app/selection.js";
 import { WORKSPACE_SCRIPT } from "../../dist/web/assets/client/layout/workspace.js";
+import { PREFS_SCRIPT } from "../../dist/web/assets/client/lib/prefs.js";
 
 // Exercise the shipped controller with disposable DOM/network boundaries.
 function fixture(submitResult = { state: "submitted" }, extra = {}) {
   const elements = [], storage = new Map(), calls = [], mutations = [], taskAnswers = [];
+  const preferences = new Map();
   let interval, delayedRead, delayedReceipt, currentSessionId = "thread";
   const h = (spec, attrs, ...children) => {
     const node = { spec, ...attrs, children: children.filter(Boolean), handlers: {}, value: "", scrollTop: 0,
@@ -23,7 +25,8 @@ function fixture(submitResult = { state: "submitted" }, extra = {}) {
   const host = h("host");
   const context = vm.createContext({
     h, clear: n => n.replaceChildren(), richText: (_title, text) => h("prose", null, text),
-    readPreference: (_key, fallback) => fallback, writePreference() {},
+    localStorage: { getItem: k => preferences.get(k) ?? null,
+      setItem: (k, v) => { if (extra.storageUnavailable) throw new Error("storage blocked"); preferences.set(k, v); } },
     api: { answerInput: async (...args) => taskAnswers.push(args) }, releaseMutation() {},
     inputCard: (input, _t, _locale, answer) => h("input-card", { answer: value => answer(input, value, {}) }),
     URLSearchParams, crypto: { randomUUID: () => "request-id" }, document: { hidden: false },
@@ -47,14 +50,16 @@ function fixture(submitResult = { state: "submitted" }, extra = {}) {
     },
     submitMutation: async (...args) => { mutations.push(args); return submitResult; }
   });
+  vm.runInContext(PREFS_SCRIPT.replace(/^export /gm, ""), context);
   vm.runInContext(CONVERSATION_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
   const controller = context.createConversationController(host, k => k);
-  return { controller, calls, storage, host, elements, mutations, taskAnswers, writes: mutations,
+  return { controller, calls, storage, host, elements, mutations, taskAnswers, writes: mutations, preferences, context,
     button: key => elements.find(n => n.spec.startsWith("button") && n.children.includes("conversation." + key)),
     get input() { return elements.find(n => n.spec.startsWith("textarea")); },
     get materialList() { return elements.find(n => n.spec === "div.row-stack"); },
     get materialAlert() { return elements.find(n => n.role === "alert"); },
-    get selector() { return elements.find(n => n.spec === "select"); },
+    get selector() { return elements.find(n => n["aria-label"] === "conversation.sessions"); },
+    get defaultMode() { return elements.find(n => n["aria-label"] === "conversation.defaultMode"); },
     replaceCurrent: id => { currentSessionId = id; },
     get feed() { return elements.find(n => n.spec === "div.feed"); },
     tick: async () => { interval?.(); await flush(); },
@@ -121,6 +126,32 @@ test("version feedback fills a draft without sending, persists exact refs, and n
   assert.ok(![...f.storage.entries()].some(([key, value]) => key.includes("task-2") && value.includes(ref.commit)));
   assert.equal(f.writes.length, 1, "owner transitions never send a material");
   f.controller.close();
+});
+
+test("conversation and workspace share Settings access preference without changing the current Session", async () => {
+  const f = fixture();
+  vm.runInContext(WORKSPACE_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), f.context);
+  f.controller.open({ scope: "global", roleName: "operator" });
+  await flush();
+  assert.equal(f.defaultMode.value, "native");
+  assert.equal(f.context.preferredMode(), "session");
+  f.defaultMode.value = "structured";
+  f.defaultMode.handlers.change();
+  assert.equal(f.preferences.get("yui.session.accessMode"), "structured");
+  assert.equal(f.preferences.has("yui.session.mode"), false);
+  assert.equal(f.context.preferredMode(), "conversation");
+  assert.equal(f.selector.value, "thread");
+  assert.equal(f.mutations.length, 0, "saving a browser preference is not runtime adoption");
+  // The Settings page uses this same helper; refresh sees the new preference.
+  f.context.writeSessionAccessMode("native");
+  await f.tick();
+  assert.equal(f.defaultMode.value, "native");
+  f.controller.close();
+  const unavailable = fixture({}, { storageUnavailable: true });
+  unavailable.defaultMode.value = "structured";
+  unavailable.defaultMode.handlers.change();
+  assert.equal(unavailable.defaultMode.value, "native");
+  assert.ok(unavailable.elements.some(n => n.textContent === "settings.storageFailed"));
 });
 
 test("workbench continuation resolves the current Leader afresh without replaying historical input", async () => {

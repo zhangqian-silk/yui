@@ -456,6 +456,7 @@ export const EN = {
   "dock.session": "Terminal",
   "conversation.title": "Conversation",
   "conversation.defaultMode": "Default view",
+  "conversation.defaultSaved": "Saved for future openings in this browser. The current view and Session are unchanged.",
   "conversation.nativeRequest": "Codex native request",
   "conversation.nativeOmitted": "Additional or large native requests are available in Terminal.",
   "conversation.leaderQuestions": "Leader questions · Task input channel",
