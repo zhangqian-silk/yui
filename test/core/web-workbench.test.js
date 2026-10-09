@@ -230,6 +230,14 @@ test("the workbench primary action opens the current Leader conversation, not a 
   assert.deepEqual(JSON.parse(JSON.stringify(opened)), [[
     { scope: "task", taskId: "task-current", roleName: "leader" }, { current: true }
   ]]);
+  const materials = [{ taskId: "task-current", relativePath: "report.md",
+    commit: "a".repeat(40), digest: "b".repeat(64) }];
+  terminalOpen = true;
+  ctx.openConversation(materials);
+  assert.equal(terminalOpen, false, "fixed-version feedback releases the native writer too");
+  assert.deepEqual(JSON.parse(JSON.stringify(opened.at(-1))), [
+    { scope: "task", taskId: "task-current", roleName: "leader" }, { current: true, materials }
+  ]);
 });
 
 test("Task panels stay lazy and unknown mutations preserve both the input guard and the actual reason", async () => {

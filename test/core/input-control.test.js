@@ -114,7 +114,15 @@ test("text uploads and version feedback share Task/Session input authority witho
   withControllerTurn(store, "leader", { attemptId: "old", nativeTurnId: "turn-old" });
   settleLeaderTurn(store, { nativeTurnId: "turn-old", status: "completed" }, evenLater);
   const surface = createWebTaskSurface(store);
-  const conversation = createWebConversationSurface(store, surface, () => { throw Error("No Provider read expected"); });
+  let terminalWriter = false, writerChecksUntilAttach = 0;
+  const conversation = createWebConversationSurface(store, surface, () => { throw Error("No Provider read expected"); },
+    undefined, undefined, {
+      hasWriter() {
+        if (writerChecksUntilAttach && --writerChecksUntilAttach === 0) terminalWriter = true;
+        return terminalWriter;
+      },
+      respond() { assert.fail("Material input must not become a native answer"); }
+    });
   const owner = { scope: "task", taskId: "task-1", roleName: "leader" };
   const server = createYuiWebServer(store, { surface, conversation, token: "material-token" });
   t.after(async () => {
@@ -136,6 +144,16 @@ test("text uploads and version feedback share Task/Session input authority witho
   const ref = await upload.json();
   assert.equal(store.listMessages("task-1").length, 0, "upload is data, not execution or user intent");
   assert.equal(store.listTaskWakes("task-1").length, 0);
+  terminalWriter = true;
+  assert.equal((await post("/api/conversation/material" + query, { ...input, requestId: "writer-upload" })).status, 409);
+  const feedback = { action: "queue", requestId: "writer-feedback", body: "Review this material", materials: [ref] };
+  assert.equal((await post("/api/conversation" + query, feedback)).status, 409);
+  terminalWriter = false;
+  writerChecksUntilAttach = 2;
+  assert.equal((await post("/api/conversation" + query, feedback)).status, 409,
+    "recheck writer after asynchronous material resolution, before durable input");
+  assert.equal(store.listMessages("task-1").length, 0);
+  terminalWriter = false;
   const sent = await post("/api/conversation" + query, {
     action: "queue", requestId: "feedback-1", body: "Review this material", materials: [ref]
   });
