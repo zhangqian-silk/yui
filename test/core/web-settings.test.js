@@ -75,6 +75,12 @@ test("settings use CLI defaults and validation, atomic group writes, stale-read 
   await f.save("tools", [{ key: "tmux-history-limit", value: 2000 }]);
   assert.equal(f.store.getConfig().tmuxHistoryLimit, 2000);
   assert.match(f.service.read("tools").fields.find(f => f.key === "tmux-history-limit").takesEffect, /New tmux sessions/);
+  for (const group of f.service.index().groups) {
+    for (const field of f.service.read(group.id).fields) {
+      assert.ok(f.service.index(field.key).groups.some(g => g.id === group.id),
+        `${group.id} is searchable by its actual field ${field.key}`);
+    }
+  }
 });
 
 test("Agent/Role/Profile settings retain existing ownership, environment references and honest capability failures", async t => {
@@ -148,6 +154,10 @@ test("browser session access preference is isolated, validated and truthful when
   assert.throws(() => context.writeSessionAccessMode("invented"));
   context.localStorage.setItem = () => { throw Error("denied"); };
   assert.equal(context.writeSessionAccessMode("native"), false);
+  context.localStorage.getItem = context.localStorage.removeItem = () => { throw Error("denied"); };
+  assert.equal(context.writeSessionAccessMode("native"), false, "read fallback is not a successful write");
+  assert.equal(context.clearPreference("yui.dock.width"), false);
+  assert.equal(values.get("yui.session.accessMode"), "structured");
 });
 
 test("settings editor retains drafts on rejection and uncertainty, and only replaces them with a saved readback", async () => {
@@ -189,11 +199,18 @@ test("settings editor retains drafts on rejection and uncertainty, and only repl
     window: { addEventListener() {} },
     createI18n: () => ({ t: k => k, subscribe() {} }), createThemeController: () => ({}),
     readSessionAccessMode: () => "native", writeSessionAccessMode: () => true,
-    readPreference() {}, clearPreference() {},
+    readPreference: () => null, clearPreference: () => false,
     requestJson: async () => ({}),
     submitMutation: async () => { submissions++; if (failure) throw failure; return saved; }
   });
   vm.runInContext(SETTINGS_SCRIPT.replace(/^import .*;\n/gm, "").replace("void start();", ""), context);
+  shell.get("#reset-layout").handlers.click();
+  assert.equal(shell.get("#browser-receipt").textContent, "settings.storageFailed");
+  const cleared = [];
+  context.clearPreference = key => { cleared.push(key); return true; };
+  shell.get("#reset-layout").handlers.click();
+  assert.equal(cleared.length, 4);
+  assert.equal(shell.get("#browser-receipt").textContent, "settings.layoutReset");
   const group = { id: "runtime", revision: "first", notice: "next launch",
     fields: [{ key: "delivery-timeout-seconds", label: "Timeout", kind: "number", value: 120, reset: true }] };
   const state = { content: element("div"), pending: false };

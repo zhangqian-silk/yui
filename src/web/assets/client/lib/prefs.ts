@@ -1,17 +1,17 @@
 export const PREFS_SCRIPT = String.raw`
 // Browser-local view preferences (theme, locale, layout). Storage may be
-// unavailable (private mode, policy); every access then degrades to the
-// fallback instead of throwing.
+// unavailable (private mode, policy); reads use a fallback and mutations
+// report failure instead of throwing.
 export function readPreference(key, fallback) {
   try { return localStorage.getItem(key) || fallback; } catch { return fallback; }
 }
 
 export function writePreference(key, value) {
-  try { localStorage.setItem(key, value); } catch {}
+  try { localStorage.setItem(key, value); return true; } catch { return false; }
 }
 
 export function clearPreference(key) {
-  try { localStorage.removeItem(key); } catch {}
+  try { localStorage.removeItem(key); return true; } catch { return false; }
 }
 
 // Shared with session access consumers: no server configuration or live
@@ -23,7 +23,6 @@ export function readSessionAccessMode() {
 
 export function writeSessionAccessMode(value) {
   if (value !== "native" && value !== "structured") throw new Error("Invalid session access mode.");
-  writePreference("yui.session.accessMode", value);
-  return readSessionAccessMode() === value;
+  return writePreference("yui.session.accessMode", value);
 }
 `;

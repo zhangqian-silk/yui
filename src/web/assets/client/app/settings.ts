@@ -3,7 +3,7 @@ import { h } from "/assets/js/lib/dom.js";
 import { requestJson, submitMutation } from "/assets/js/lib/api.js";
 import { createI18n } from "/assets/js/lib/i18n.js";
 import { createThemeController } from "/assets/js/lib/theme.js";
-import { clearPreference, readPreference, readSessionAccessMode, writeSessionAccessMode } from "/assets/js/lib/prefs.js";
+import { clearPreference, readSessionAccessMode, writeSessionAccessMode } from "/assets/js/lib/prefs.js";
 
 const $ = selector => document.querySelector(selector);
 const i18n = createI18n($("#locale-select"));
@@ -17,8 +17,8 @@ access.addEventListener("change", () => {
 });
 $("#reset-layout").addEventListener("click", () => {
   const keys = ["yui.sidebar.width", "yui.dock.width", "yui.dock.side", "yui.dock.open"];
-  keys.forEach(clearPreference);
-  $("#browser-receipt").textContent = keys.every(k => readPreference(k, null) === null) ? t("settings.layoutReset") : t("settings.storageFailed");
+  const results = keys.map(clearPreference);
+  $("#browser-receipt").textContent = results.every(Boolean) ? t("settings.layoutReset") : t("settings.storageFailed");
 });
 
 const container = $("#settings-groups");

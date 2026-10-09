@@ -31,17 +31,19 @@ export function createWebSettings(store: TaskStore, options: {
 }) {
   function groups() {
     return [
-      ...CONFIG_DOMAINS.map(id => ({ id, title: id, section: id === "system" ? "general" : "advanced", advanced: id !== "system",
-        searchText: configDefinitionsForDomain(id).map(d => `${d.key} ${d.label} ${d.summary}`).join(" ") })),
-      ...store.listConfiguredAgents().map(a => ({ id: `agent/${a.id}`, title: a.id, section: "agents", advanced: true, searchText: "command arguments environment 命令 参数 环境引用" })),
-      ...store.listGlobalRoles().map(r => ({ id: `role/${r.name}`, title: r.name, section: "roles", advanced: true, searchText: "model effort permission prompt skills workspace 模型 权限 指令" })),
-      ...store.listAgentProfiles().map(p => ({ id: `profile/${p.id}`, title: p.id, section: "profiles", advanced: true, searchText: "model effort access instructions skills inherit 模型 继承" }))
+      ...CONFIG_DOMAINS.map(id => ({ id, title: id, section: id === "system" ? "general" : "advanced", advanced: id !== "system" })),
+      ...store.listConfiguredAgents().map(a => ({ id: `agent/${a.id}`, title: a.id, section: "agents", advanced: true })),
+      ...store.listGlobalRoles().map(r => ({ id: `role/${r.name}`, title: r.name, section: "roles", advanced: true })),
+      ...store.listAgentProfiles().map(p => ({ id: `profile/${p.id}`, title: p.id, section: "profiles", advanced: true }))
     ];
   }
   function index(query = "", cursor = "0") {
     if (query.length > 256 || !/^\d{1,8}$/.test(cursor)) throw new WebRequestRejected("Invalid settings search or cursor.");
     const needle = query.trim().toLowerCase();
-    const all = groups().filter(g => `${g.id} ${g.section} ${g.searchText}`.toLowerCase().includes(needle));
+    const all = groups().filter(g => !needle || [
+      g.id, g.title, g.section,
+      ...readGroup(g).fields.map(f => `${f.key} ${f.label} ${f.summary ?? ""}`)
+    ].join(" ").toLowerCase().includes(needle));
     const offset = Number(cursor);
     return { groups: all.slice(offset, offset + 50), total: all.length,
       nextCursor: offset + 50 < all.length ? String(offset + 50) : null };
@@ -49,6 +51,10 @@ export function createWebSettings(store: TaskStore, options: {
   function read(id: string): Group {
     const meta = groups().find(group => group.id === id);
     if (!meta) throw new WebRequestRejected("Configuration group not found.");
+    return readGroup(meta);
+  }
+  function readGroup(meta: ReturnType<typeof groups>[number]): Group {
+    const { id } = meta;
     let fields: Field[];
     let notice = "Saved values and effective defaults share the CLI configuration source. Reset removes the stored override; it does not restart services.";
     let observation: unknown;
