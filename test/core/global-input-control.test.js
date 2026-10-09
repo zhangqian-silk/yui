@@ -24,9 +24,39 @@ import { createRuntimeObservation } from "../../dist/runtime/runtimeObservation.
 import { SessionOwnerReconciliation } from "../../dist/controller/sessionOwnerReconciliation.js";
 import { createSessionOwnerIdentity } from "../../dist/runtime/sessionOwnerIdentity.js";
 import { prepareOperatorNewSession } from "../../dist/operator/operatorSessionHistory.js";
+import { prepareNativeHostSteer } from "../../dist/controller/nativeHostInput.js";
+import { resolveAgentHostObservation } from "../../dist/controller/agentHostObservation.js";
 
 const at = new Date("2026-09-11T00:00:00Z");
 const later = new Date("2026-09-11T00:01:00Z");
+
+test("native Global steer uses a durable user Message and exact settlement without replacing the active Turn", t => {
+  const { store, home, role } = globalFixture(t);
+  recordGlobalSession(store, role);
+  const binding = withGlobalControllerTurn(store, role.name, { attemptId: "initial", nativeTurnId: "turn" });
+  const input = { roleName: role.name, agentId: "codex", nativeSessionId: `${role.name}-native`,
+    nativeTurnId: "turn", attemptId: "human:request", authorityEpoch: binding.authority.epoch,
+    authorityOwner: binding.authority.owner, holderId: binding.authority.holderId,
+    boundedText: "Keep my complete additional direction", now: later };
+  const run = prepareNativeHostSteer(store, input);
+  assert.deepEqual(prepareNativeHostSteer(store, input), run);
+  assert.throws(() => prepareNativeHostSteer(store, { ...input, boundedText: "different" }), /different/);
+  const message = store.listGlobalRoleMessages(role.name)[0];
+  assert.equal(message.body, input.boundedText);
+  assert.equal(message.author.type, "user");
+  const observation = createRuntimeObservation({
+    schemaVersion: 1, eventId: "native-steer", semanticKey: "native-steer",
+    kind: "input.accepted", authority: "provider-structured", receivedAt: new Date().toISOString(),
+    fence: { roleName: role.name, agentId: "codex", driverId: "openai/codex",
+      nativeSessionId: input.nativeSessionId, nativeTurnId: "turn", receiptId: run.attemptId },
+    payload: { input: input.boundedText }
+  });
+  const resolved = resolveAgentHostObservation(store, { scope: "global", observation,
+    host: { protocol: "yui-agent-host-events/v1", adapterId: "codex", workspace: home } });
+  assert.equal(new FileSchedulerStoreAdapter(store).observeRuntimeObservation(resolved, new Date()), "applied");
+  assert.equal(store.listGlobalRoleMessages(role.name)[0].control.outcome, "accepted");
+  assert.equal(store.getGlobalRoleSessionSet(role.name).providerBinding.run.attemptId, "initial");
+});
 
 test("Global replacement settles retained input only after native quiescence and preserves its evidence", async t => {
   const { home, store, role, command } = globalFixture(t);

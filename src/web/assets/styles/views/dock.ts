@@ -18,6 +18,11 @@ export const DOCK_STYLES = `
 #dock-conversation .composer-bar{flex-wrap:wrap}
 #dock-conversation .composer-input{width:100%;box-sizing:border-box}
 #dock-conversation .feed details{min-width:0;overflow-wrap:anywhere}
+.conversation-requests{flex:0 1 auto;max-height:35%;overflow-y:auto;overflow-wrap:anywhere}
+.conversation-requests h3{font-size:var(--fs-sm);margin:8px 12px}
+.conversation-requests label{display:grid;gap:4px;margin:8px 0}
+.conversation-requests input{min-width:0;width:100%;box-sizing:border-box}
+.conversation-requests .input-card{margin:8px 12px}
 .feed-day{display:flex;align-items:center;gap:10px;color:var(--ink-4);font-size:var(--fs-2xs);font-weight:500}
 .feed-day::before,.feed-day::after{content:"";flex:1;height:1px;background:var(--line)}
 

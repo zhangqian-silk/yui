@@ -71,7 +71,7 @@ const t = i18n.t;
 const locale = i18n.getLocale;
 const theme = createThemeController(el.themeOptions, t);
 const toast = createToast(el.toast);
-const conversation = createConversationController(el.conversation, t);
+const conversation = createConversationController(el.conversation, t, locale);
 const terminal = createTerminalController({
   host: el.terminalHost, empty: el.terminalEmpty, state: el.terminalState, targets: el.sessionTargets, cli: el.terminalCli
 }, t, locale, toast);
@@ -137,6 +137,7 @@ workspace.updateLayout();
 taskView.showOverview();
 conversation.open({ scope: "global", roleName: "operator" });
 applyStateFromUrl();
+workspace.restoreDefaultMode();
 catalog.refresh();
 window.setInterval(function () { catalog.refresh({ quiet: true }); }, 5000);
 `;

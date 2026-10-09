@@ -1654,7 +1654,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       // before the Provider write; provider-visible userMessage items alone
       // are NOT proof of human authorship (managed prompts use those too).
       // This shares the exact writer/session admission and its transaction.
-      if (input.authorityOwner === "human" && input.roleName === "leader"
+      if ((input.authorityOwner === "human" || input.attemptId.startsWith(`human:${input.holderId}:`)) && input.roleName === "leader"
         && input.runId === undefined && input.boundedText !== undefined) {
         const prior = store.listEvents(input.taskId).find(event =>
           event.type === "message.native-user-input" && event.payload.attemptId === input.attemptId);

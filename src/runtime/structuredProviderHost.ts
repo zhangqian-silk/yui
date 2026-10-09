@@ -46,6 +46,7 @@ import type {
 } from "./launchBroker.js";
 import { PROVIDER_ACCEPT_TIMEOUT_MS } from "./runtimeDeadlines.js";
 import { foldPublicReply, type PublicReply } from "./publicReply.js";
+import { createCodexNativeAccess, type CodexNativeAccess } from "./codexNativeAccess.js";
 
 const CODEX_PROXY_HANDSHAKE_TIMEOUT_MS = 10_000;
 
@@ -149,6 +150,7 @@ export type StructuredProviderDiagnostic = Readonly<{
 }>;
 
 export interface StructuredProviderSession {
+  readonly nativeAccess?: CodexNativeAccess;
   readonly publicReply?: PublicReply;
   /** Exact process whose exit proves the dedicated local execution drained. */
   readonly ownedProcessId?: number;
@@ -520,7 +522,7 @@ class CodexProxyWebSocketChannel {
       return;
     }
     const id = requestId(message.id);
-    const pending = id === undefined ? undefined : this.#pending.get(id);
+    const pending = id === undefined || message.method !== undefined ? undefined : this.#pending.get(id);
     if (pending !== undefined) {
       clearTimeout(pending.timer);
       this.#pending.delete(id!);
@@ -602,6 +604,7 @@ class ChildProcessDuplex extends Duplex {
 }
 
 class CodexStructuredProviderSession implements StructuredProviderSession {
+  nativeAccess!: CodexNativeAccess;
   readonly #turnAttempts = new Map<string, string>();
   readonly adapterId = "codex" as const;
   #activeTurnId: string | undefined;
@@ -714,6 +717,7 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
       mirror,
       optionalId(initialized.codexHome)
     );
+    session.nativeAccess = createCodexNativeAccess(conversationId, initialized, channel, openingMessages);
     session.#activeTurnId = resumedActiveTurnId;
     const ownedTurn = control.kind === "restore" ? control.ownedTurn : undefined;
     session.#clientOwnedTurnId = ownedTurn?.turnId;

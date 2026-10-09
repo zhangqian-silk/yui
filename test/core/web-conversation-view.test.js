@@ -3,10 +3,14 @@ import test from "node:test";
 import vm from "node:vm";
 import { CONVERSATION_SCRIPT } from "../../dist/web/assets/client/views/dock/conversation.js";
 import { SELECTION_SCRIPT } from "../../dist/web/assets/client/app/selection.js";
+import { WORKSPACE_SCRIPT } from "../../dist/web/assets/client/layout/workspace.js";
+import { PREFS_SCRIPT } from "../../dist/web/assets/client/lib/prefs.js";
+import { TERMINAL_SCRIPT } from "../../dist/web/assets/client/views/dock/terminal.js";
 
 // Exercise the shipped controller with disposable DOM/network boundaries.
-function fixture(submitResult = { state: "submitted" }) {
-  const elements = [], storage = new Map(), calls = [], writes = [];
+function fixture(submitResult = { state: "submitted" }, extra = {}) {
+  const elements = [], storage = new Map(), calls = [], mutations = [], taskAnswers = [];
+  const preferences = new Map();
   let interval, delayedRead, delayedReceipt, currentSessionId = "thread";
   const h = (spec, attrs, ...children) => {
     const node = { spec, ...attrs, children: children.filter(Boolean), handlers: {}, value: "", scrollTop: 0,
@@ -22,6 +26,10 @@ function fixture(submitResult = { state: "submitted" }) {
   const host = h("host");
   const context = vm.createContext({
     h, clear: n => n.replaceChildren(), richText: (_title, text) => h("prose", null, text),
+    localStorage: { getItem: k => preferences.get(k) ?? null,
+      setItem: (k, v) => { if (extra.storageUnavailable) throw new Error("storage blocked"); preferences.set(k, v); } },
+    api: { answerInput: async (...args) => taskAnswers.push(args) }, releaseMutation() {},
+    inputCard: (input, _t, _locale, answer) => h("input-card", { answer: value => answer(input, value, {}) }),
     URLSearchParams, crypto: { randomUUID: () => "request-id" }, document: { hidden: false },
     sessionStorage: { getItem: k => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, v), removeItem: k => storage.delete(k) },
     window: { setInterval: fn => { interval = fn; return 1; }, clearInterval: () => { interval = null; } },
@@ -34,21 +42,25 @@ function fixture(submitResult = { state: "submitted" }) {
       }
       if (delayedRead) return new Promise(resolve => { delayedRead.resolve = resolve; });
       if (query.has("session")) return { status: "active", observedAt: "now", nextCursor: "older",
+        nativeRequests: extra.nativeRequests || [],
         items: [{ id: "tool", turnId: "turn", kind: "activity", text: "npm test" }] };
       return { currentSessionId, sessions: [{ nativeSessionId: currentSessionId, current: true,
         status: "active", adapterId: "codex" }], authority: { owner: "controller" },
+        terminalWriter: extra.terminalWriter, leaderQuestions: extra.leaderQuestions,
         turn: { status: "accepted", nativeTurnId: "turn" }, total: 1, nextOffset: null };
     },
-    submitMutation: async (...args) => { writes.push(args); return submitResult; }
+    submitMutation: async (...args) => { mutations.push(args); return submitResult; }
   });
+  vm.runInContext(PREFS_SCRIPT.replace(/^export /gm, ""), context);
   vm.runInContext(CONVERSATION_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
   const controller = context.createConversationController(host, k => k);
-  return { controller, calls, storage, host, writes,
+  return { controller, calls, storage, host, elements, mutations, taskAnswers, writes: mutations, preferences, context,
     button: key => elements.find(n => n.spec.startsWith("button") && n.children.includes("conversation." + key)),
     get input() { return elements.find(n => n.spec.startsWith("textarea")); },
     get materialList() { return elements.find(n => n.spec === "div.row-stack"); },
     get materialAlert() { return elements.find(n => n.role === "alert"); },
-    get selector() { return elements.find(n => n.spec === "select"); },
+    get selector() { return elements.find(n => n["aria-label"] === "conversation.sessions"); },
+    get defaultMode() { return elements.find(n => n["aria-label"] === "conversation.defaultMode"); },
     replaceCurrent: id => { currentSessionId = id; },
     get feed() { return elements.find(n => n.spec === "div.feed"); },
     tick: async () => { interval?.(); await flush(); },
@@ -117,6 +129,32 @@ test("version feedback fills a draft without sending, persists exact refs, and n
   f.controller.close();
 });
 
+test("conversation and workspace share Settings access preference without changing the current Session", async () => {
+  const f = fixture();
+  vm.runInContext(WORKSPACE_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), f.context);
+  f.controller.open({ scope: "global", roleName: "operator" });
+  await flush();
+  assert.equal(f.defaultMode.value, "native");
+  assert.equal(f.context.preferredMode(), "session");
+  f.defaultMode.value = "structured";
+  f.defaultMode.handlers.change();
+  assert.equal(f.preferences.get("yui.session.accessMode"), "structured");
+  assert.equal(f.preferences.has("yui.session.mode"), false);
+  assert.equal(f.context.preferredMode(), "conversation");
+  assert.equal(f.selector.value, "thread");
+  assert.equal(f.mutations.length, 0, "saving a browser preference is not runtime adoption");
+  // The Settings page uses this same helper; refresh sees the new preference.
+  f.context.writeSessionAccessMode("native");
+  await f.tick();
+  assert.equal(f.defaultMode.value, "native");
+  f.controller.close();
+  const unavailable = fixture({}, { storageUnavailable: true });
+  unavailable.defaultMode.value = "structured";
+  unavailable.defaultMode.handlers.change();
+  assert.equal(unavailable.defaultMode.value, "native");
+  assert.ok(unavailable.elements.some(n => n.textContent === "settings.storageFailed"));
+});
+
 test("workbench continuation resolves the current Leader afresh without replaying historical input", async () => {
   const f = fixture();
   const owner = { scope: "task", taskId: "task-1", roleName: "leader" };
@@ -141,6 +179,66 @@ test("workbench continuation resolves the current Leader afresh without replayin
   f.controller.close();
 });
 
+test("terminal hide cancels pending attachment and reopens the actual selected owner", () => {
+  const context = vm.createContext({ writePreference() {} });
+  vm.runInContext(WORKSPACE_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
+  const target = { scope: "task", taskId: "task-1", roleName: "leader", nativeSessionId: "leader-thread" };
+  const switched = { scope: "global", roleName: "operator", nativeSessionId: "operator-thread" };
+  let current = target, closed = 0, reopened, layoutVisible;
+  const ws = {
+    dock: { mode: "session", open: true }, narrow: { matches: false },
+    terminalTarget: target,
+    deps: { state: {}, terminal: {
+      connected: () => false, current: () => current,
+      close: () => { closed++; current = null; }, open: t => { reopened = t; current = t; }
+    }, conversation: { close() {} } }
+  };
+  assert.equal(context.dockVisible(ws), true);
+  // The terminal target chips change the terminal controller directly.
+  current = switched;
+  context.observeLayout = value => { layoutVisible = context.dockVisible(value); };
+  vm.runInContext("updateLayout = observeLayout", context);
+  context.setDockOpen(ws, false);
+  assert.equal(closed, 1);
+  assert.equal(context.dockVisible(ws), false);
+  context.setDockOpen(ws, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(reopened)), { scope: "global", roleName: "operator" },
+    "preserve the chip-selected owner, but resolve its current Session again");
+  assert.equal(context.dockVisible(ws), true);
+  assert.equal(layoutVisible, true, "layout is rendered after restoring the selected target");
+});
+
+test("terminal hide/reopen resolves a replacement Session without replaying input", async () => {
+  let currentSessionId = "thread-a", reads = 0, pending;
+  const connections = [], writes = [];
+  const context = vm.createContext({
+    URLSearchParams, writePreference() {}, clear() {},
+    ResizeObserver: class { observe() {} disconnect() {} },
+    async requestJson() { reads++; return { currentSessionId }; },
+    fakeMount() { return { terminal: { onData() { return { dispose() {} }; }, dispose() {} }, fit: { fit() {} } }; },
+    fakeConnect(target) { connections.push(target.nativeSessionId); return { close() {}, addEventListener() {}, send(data) { writes.push(data); } }; }
+  });
+  for (const script of [TERMINAL_SCRIPT, WORKSPACE_SCRIPT]) {
+    vm.runInContext(script.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
+  }
+  vm.runInContext("mountTerminal = fakeMount; connect = fakeConnect; drawTargets = function() {}; setState = function() {}; updateLayout = function() {}", context);
+  const ctl = { generation: 0, session: null, elements: { host: {}, empty: {}, cli: {} }, notify: assert.fail };
+  const owner = { scope: "task", taskId: "task-1", roleName: "leader" };
+  const ws = { dock: { mode: "session", open: true }, narrow: { matches: false }, terminalTarget: owner, deps: {
+    terminal: { current: () => ctl.current, close: () => context.close(ctl), open: target => { pending = context.open(ctl, target); } },
+    conversation: { close() {} }
+  } };
+  await context.open(ctl, owner);
+  context.setDockOpen(ws, false);
+  currentSessionId = "thread-b";
+  context.setDockOpen(ws, true);
+  await pending;
+  assert.equal(reads, 2);
+  assert.deepEqual(connections, ["thread-a", "thread-b"]);
+  assert.deepEqual(writes, []);
+  context.close(ctl);
+});
+
 test("conversation preserves unsent drafts and reading state while receipts and refreshes arrive", async () => {
   const f = fixture();
   f.controller.open({ scope: "global", roleName: "operator" });
@@ -163,6 +261,39 @@ test("conversation preserves unsent drafts and reading state while receipts and 
   assert.equal(f.feed.children[0], tool, "unchanged item keeps its DOM and expansion");
   assert.equal(tool.open, true);
   f.controller.close();
+});
+
+test("native answers keep original identity and pending state; Leader questions use the Task channel", async () => {
+  const extra = { nativeRequests: [{ id: "native-1", method: "item/commandExecution/requestApproval",
+    turnId: "turn", params: { command: "fixture" } }], leaderQuestions: [{ id: "input-1" }] };
+  const f = fixture({ outcome: "accepted" }, extra);
+  const owner = { scope: "task", taskId: "task-1", roleName: "leader" };
+  f.controller.open(owner);
+  await flush();
+  await f.button("decline").handlers.click();
+  assert.equal(f.mutations[0][2].nativeRequestId, "native-1");
+  assert.equal(f.mutations[0][2].expectedTarget, "turn");
+  assert.equal(f.mutations[0][2].result.decision, "decline");
+  f.controller.close();
+  f.controller.open(owner);
+  await flush();
+  const declines = f.elements.filter(n => n.children.includes("conversation.decline"));
+  assert.equal(declines.at(-1).disabled, true, "reopening never repeats an uncertain native answer");
+  const cards = f.elements.filter(n => n.spec === "input-card");
+  await cards.at(-1).answer("business answer");
+  assert.deepEqual(f.taskAnswers, [["task-1", "input-1", "business answer"]]);
+  assert.equal(f.mutations.length, 1, "Task answer is not a second native prompt");
+  f.controller.close();
+  const mcp = fixture({ outcome: "accepted" }, { nativeRequests: [{
+    id: "mcp", method: "mcpServer/elicitation/request", turnId: null, params: { message: "Choose" }
+  }] });
+  mcp.controller.open(owner);
+  await flush();
+  await mcp.button("decline").handlers.click();
+  assert.equal(mcp.mutations[0][2].expectedTarget, null, "do not fabricate a Turn for thread-level requests");
+  assert.equal(mcp.mutations[0][2].result.action, "decline");
+  assert.equal(mcp.mutations[0][2].result.content, null);
+  mcp.controller.close();
 });
 
 test("definite interrupt refusal releases input while unknown delivery remains blocked", async () => {

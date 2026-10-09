@@ -199,6 +199,7 @@ test("the workbench primary action opens the current Leader conversation, not a 
     append(...items) { this.children.push(...items); }, setAttribute() {}, addEventListener() {},
     querySelectorAll: () => [] });
   const opened = [];
+  let terminalOpen = true;
   const runtime = vm.createContext({
     h: node, button: (text, options) => ({ text, ...options }), card: () => ({ body: node() }),
     document: { body: { classList: { toggle() {} } } },
@@ -215,8 +216,12 @@ test("the workbench primary action opens the current Leader conversation, not a 
   const state = { selected: "task-current", activeTab: "overview" };
   const workspace = runtime.createWorkspace({
     el, state,
-    terminal: { connected: () => false, open: () => assert.fail("primary action must not open a terminal") },
-    conversation: { current: () => opened.at(-1)?.[0], close() {}, open: (...args) => opened.push(args) }
+    terminal: { connected: () => terminalOpen, close: () => { terminalOpen = false; },
+      open: () => assert.fail("primary action must not open a terminal") },
+    conversation: { current: () => opened.at(-1)?.[0], close() {}, open: (...args) => {
+      assert.equal(terminalOpen, false, "conversation must not retain a hidden terminal writer");
+      opened.push(args);
+    } }
   });
   const ctx = runtime.detailContext({ controller: {}, deps: { state, api: {}, workspace } });
   runtime.taskActions({ id: "task-current", status: "active" }, key => key, ctx).body.children[0].onClick();
@@ -225,6 +230,14 @@ test("the workbench primary action opens the current Leader conversation, not a 
   assert.deepEqual(JSON.parse(JSON.stringify(opened)), [[
     { scope: "task", taskId: "task-current", roleName: "leader" }, { current: true }
   ]]);
+  const materials = [{ taskId: "task-current", relativePath: "report.md",
+    commit: "a".repeat(40), digest: "b".repeat(64) }];
+  terminalOpen = true;
+  ctx.openConversation(materials);
+  assert.equal(terminalOpen, false, "fixed-version feedback releases the native writer too");
+  assert.deepEqual(JSON.parse(JSON.stringify(opened.at(-1))), [
+    { scope: "task", taskId: "task-current", roleName: "leader" }, { current: true, materials }
+  ]);
 });
 
 test("Task panels stay lazy and unknown mutations preserve both the input guard and the actual reason", async () => {

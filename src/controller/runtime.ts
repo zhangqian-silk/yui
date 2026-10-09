@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { prepareNativeHostSteer } from "./nativeHostInput.js";
 import { archiveLeaderTask } from "../task/leaderArchive.js";
 import { TaskWorkspaceCoordinator } from "../repository/taskWorkspaceCoordinator.js";
 import type { ConfiguredAgent } from "../agent/agent.js";
@@ -94,7 +95,7 @@ import { createControllerWeb } from "../web/controllerWeb.js";
 import { TmuxWebTerminalService } from "../web/tmuxWebTerminal.js";
 import { createWebTaskSurface } from "../web/webTaskSurface.js";
 import { createWebConversationSurface } from "../web/webConversation.js";
-import { inspectAgentHost } from "../runtime/agentHost.js";
+import { inspectAgentHost, sendAgentHostNativeControl, AGENT_HOST_CONTROL_PROTOCOL } from "../runtime/agentHost.js";
 import { archiveOrdinaryTask } from "../task/ordinaryArchive.js";
 import { createWebSettings } from "../web/webSettings.js";
 import {
@@ -558,6 +559,19 @@ export async function startFileTaskControllerRuntime(
       }
     });
     const surfaces = new SurfaceContributions(kernel.capabilities.registry);
+    const validateNativeWrite = (request: import("../web/webServer.js").WebTerminalRequest) => {
+      const sessions = request.scope === "task" ? store.getTaskRoleSessionSet(request.taskId, request.roleName)
+        : store.getGlobalRoleSessionSet(request.roleName);
+      const selected = sessions?.sessions[sessions.activeAgentId];
+      if (!request.nativeSessionId || selected?.nativeSessionId !== request.nativeSessionId
+        || selected.status !== "active"
+        || (request.scope === "task" && (request.roleName !== "leader"
+          || selected.adapterId !== "codex" || !sessions?.providerBinding
+          || !["active", "draft"].includes(store.getTask(request.taskId)?.status ?? "")
+          || store.getTask(request.taskId)?.executionGate.state !== "enabled"))) {
+        throw new Error("Native input requires the selected current controlled Codex Operator/Leader.");
+      }
+    };
     const web = createControllerWeb(store, {
       settings: createWebSettings(store, {
         environment: options.environment ?? process.env, catalogs,
@@ -569,7 +583,20 @@ export async function startFileTaskControllerRuntime(
       surface: webSurface,
       conversation: createWebConversationSurface(store, webSurface,
         (owner, id) => planner.planNativeControl(owner, id), undefined,
-        (owner) => inspectAgentHost({ home, ...owner })),
+        (owner) => inspectAgentHost({ home, ...owner }), {
+          hasWriter: owner => tmux.hasWritableClient(
+            owner.scope === "task" ? owner.taskId : "operator",
+            owner.scope === "task" ? owner.roleName : undefined
+          ),
+          respond: async (owner, id, requestId, nativeTurnId, result) => {
+            const receipt = await sendAgentHostNativeControl({
+              home, ...owner, control: { protocol: AGENT_HOST_CONTROL_PROTOCOL, type: "native-respond",
+                nativeSessionId: id, requestId, nativeTurnId, result }
+            });
+            if (receipt.outcome !== "accepted") throw new Error(receipt.snapshot.detail ?? "Native answer was not confirmed.");
+            return { outcome: receipt.outcome };
+          }
+        }),
       answerInput: async ({ taskId, inputId, answer }) => webSurface.answer(taskId, inputId, answer),
       panels: {
         list: (taskId) => surfaces.listPanels(kernel.capabilities.authenticateWebQuery(taskId)),
@@ -578,6 +605,22 @@ export async function startFileTaskControllerRuntime(
       terminal: new TmuxWebTerminalService({
         yuiHome: home, tmuxBin: resolveTmuxBin(store.getConfig().tmuxBin), tmux,
         prepareGlobalRole: (roleName) => webWorkflow.prepareGlobalRoleEnter(roleName),
+        prepareNative: async request => {
+          if (!request.nativeSessionId) return false;
+          const sessions = request.scope === "task" ? store.getTaskRoleSessionSet(request.taskId, request.roleName)
+            : store.getGlobalRoleSessionSet(request.roleName);
+          const selected = sessions?.sessions[sessions.activeAgentId];
+          if (request.scope === "task" && (request.roleName !== "leader" || selected?.adapterId !== "codex")) return false;
+          validateNativeWrite(request);
+          // Preserve ordinary global native access on other adapters and the
+          // existing uncontrolled Codex TUI. No lifecycle operation on a switch.
+          if (selected?.adapterId !== "codex" || !sessions?.providerBinding) return request.scope === "global";
+          const result = await sendAgentHostNativeControl({ home, ...request,
+            control: { protocol: AGENT_HOST_CONTROL_PROTOCOL, type: "native-open", nativeSessionId: request.nativeSessionId } });
+          if (result.outcome !== "accepted" || !result.snapshot.nativeTui) throw new Error("Native TUI could not be opened.");
+          return true;
+        },
+        validateWrite: validateNativeWrite,
         environment: options.environment ?? process.env, onError: options.onError
       })
     });
@@ -825,6 +868,12 @@ export function createRuntimeLifecycleDispatcher(
           error instanceof Error ? error.message : String(error)
         );
       }
+    }
+    if (method === "runtime.native-steer-prepare") {
+      const value = providerTurnControlParams(params);
+      return prepareNativeHostSteer(store, { ...value,
+        nativeTurnId: requiredParam((params as Record<string, JsonValue>).nativeTurnId),
+        boundedText: requiredParam(value.boundedText) });
     }
     if (method === "runtime.provider-turn-begin") {
       const value = providerTurnControlParams(params);

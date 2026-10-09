@@ -104,7 +104,11 @@ export function createWebConversationSurface(
   store: TaskStore, surface: WebTaskSurface,
   plan: (owner: RoleSessionOwner, nativeSessionId: string) => NativeControlConnection,
   readPage: typeof readCodexConversationPage = readCodexConversationPage,
-  live?: (owner: RoleSessionOwner) => Promise<AgentHostSnapshot>
+  live?: (owner: RoleSessionOwner) => Promise<AgentHostSnapshot>,
+  access?: {
+    hasWriter(owner: RoleSessionOwner): boolean;
+    respond(owner: RoleSessionOwner, id: string, requestId: string | number, turnId: string | null, result: Record<string, unknown>): Promise<unknown>;
+  }
 ) {
   const sessions = (owner: RoleSessionOwner) => {
     if (owner.scope === "task") {
@@ -126,6 +130,7 @@ export function createWebConversationSurface(
   const writable = (owner: RoleSessionOwner, id: string) => {
     const chosen = select(owner, id);
     const { set, session } = chosen;
+    if (access?.hasWriter(owner)) throw new WebRequestRejected("Terminal owns input. Disconnect it before using conversation input.");
     if (set.sessions[set.activeAgentId] !== session || session.status !== "active") {
       throw new WebRequestRejected("Historical Session is read-only. Select the current Session.");
     }
@@ -190,11 +195,16 @@ export function createWebConversationSurface(
       const binding = set?.providerBinding;
       const conversation = binding?.conversations.find(c => c.epoch === binding.currentConversationEpoch);
       const exact = conversation?.conversationId === current?.nativeSessionId;
+      const questions = owner.scope === "task" && owner.roleName === "leader"
+        ? store.listInputRequests(owner.taskId).filter(input => input.status === "open") : [];
+      const leaderQuestions = questions.slice(0, 3).filter(question => Buffer.byteLength(JSON.stringify(question)) <= 16000);
       return { owner, sessions: all.slice(offset, offset + 30), total: all.length,
+        leaderQuestions, questionsOmitted: questions.length - leaderQuestions.length,
         nextOffset: offset + 30 < all.length ? offset + 30 : null,
         currentSessionId: current?.nativeSessionId ?? null,
         turn: exact ? binding?.run ?? null : null,
         authority: exact ? binding?.authority ?? null : null,
+        terminalWriter: access?.hasWriter(owner) ?? false,
         observedAt: new Date().toISOString() };
     },
     async history(owner: RoleSessionOwner, id: string, cursor?: string) {
@@ -225,7 +235,9 @@ export function createWebConversationSurface(
           text: reply.text, truncated: reply.truncated },
           ...page.items.filter(i => i.id !== reply.id || i.turnId !== reply.turnId)]
         : page.items;
-      return { ...page, ...linkInputs(owner, id, items), live: observed?.publicReplyObservation !== "supported" ? "unavailable" : "connected",
+      return { ...page, ...linkInputs(owner, id, items), nativeRequests: observed?.nativeRequests ?? [],
+        nativeRequestsOmitted: observed?.nativeRequestsOmitted ?? false,
+        live: observed?.publicReplyObservation !== "supported" ? "unavailable" : "connected",
         nextCursor: page.nextCursor === null ? null
         : Buffer.from(JSON.stringify({ owner: JSON.stringify(owner), id, cursor: page.nextCursor })).toString("base64url") };
     },
@@ -250,6 +262,17 @@ export function createWebConversationSurface(
           ? { ...common, action: "steer" as const, to: owner.roleName, expectedTarget: required(input.expectedTarget), body: required(body) }
           : { ...common, action: "queue" as const, body: required(body) };
       return owner.scope === "task" ? surface.control(owner.taskId, control) : surface.globalControl(owner.roleName, control);
+    },
+    async respond(owner: RoleSessionOwner, id: string, requestId: string | number, turnId: string | null, result: Record<string, unknown>) {
+      const { set, session } = select(owner, id);
+      if (!access || access.hasWriter(owner) || session.status !== "active"
+        || set.sessions[set.activeAgentId] !== session || session.adapterId !== "codex"
+        || (owner.scope === "task" && (owner.roleName !== "leader"
+          || !["active", "draft"].includes(store.getTask(owner.taskId)!.status)
+          || store.getTask(owner.taskId)!.executionGate.state !== "enabled"))) {
+        throw new WebRequestRejected("Native response requires current writable Session access.");
+      }
+      return access.respond(owner, id, requestId, turnId, result);
     },
     receipt(owner: RoleSessionOwner, requestId: string) {
       const set = sessions(owner);

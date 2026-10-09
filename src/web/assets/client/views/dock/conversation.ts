@@ -1,13 +1,28 @@
 export const CONVERSATION_SCRIPT = String.raw`
 import { h, clear } from "/assets/js/lib/dom.js";
-import { requestJson, submitMutation } from "/assets/js/lib/api.js";
+import { api, releaseMutation, requestJson, submitMutation } from "/assets/js/lib/api.js";
 import { richText } from "/assets/js/ui/text.js";
+import { readSessionAccessMode, writeSessionAccessMode } from "/assets/js/lib/prefs.js";
+import { inputCard } from "/assets/js/domain/work.js";
 
-export function createConversationController(host, t) {
+export function createConversationController(host, t, locale = function () { return "en"; }) {
   let owner = null, selected = null, facts = null, cursor = null, next = null;
   let generation = 0, busy = false, timer = null, pending = null, historyOk = false;
   let rendered = new Map();
   let materials = [], incomingMaterials = null;
+  let requestSignature = "";
+  const requests = h("div");
+  const questions = h("div");
+  let questionSignature = "";
+  const defaultMode = h("select", { "aria-label": t("conversation.defaultMode") },
+    h("option", { value: "structured" }, t("conversation.title")),
+    h("option", { value: "native" }, t("dock.session")));
+  defaultMode.value = readSessionAccessMode();
+  defaultMode.addEventListener("change", function () {
+    const saved = writeSessionAccessMode(defaultMode.value);
+    receipt.textContent = t(saved ? "conversation.defaultSaved" : "settings.storageFailed");
+    defaultMode.value = readSessionAccessMode();
+  });
   const select = h("select", { "aria-label": t("conversation.sessions") });
   const status = h("p.feed-note", { role: "status" });
   const identity = h("p.feed-note");
@@ -26,7 +41,9 @@ export function createConversationController(host, t) {
   const materialAlert = h("p.feed-note", { role: "alert" });
   const materialBar = h("details", null, h("summary", null, t("materials.attach")), file,
     h("p.feed-note", null, t("materials.boundary")));
-  host.append(h("div.dock-sub", null, select, current, moreSessions), identity, status, feed,
+  host.append(h("div.dock-sub", null, select, current, moreSessions,
+    h("label", null, t("conversation.defaultMode"), defaultMode)), identity, status, feed,
+    h("div.conversation-requests", null, questions, requests),
     h("div.composer-bar", null, older, latest),
     h("div.composer-wrap", null, materialBar, materialList, materialAlert, text, h("div.composer-bar", null, send, stop, check), receipt,
       h("p.feed-note", null, t("conversation.boundary"))));
@@ -47,9 +64,10 @@ export function createConversationController(host, t) {
     return "/api/conversation?" + q;
   }
   function controls() {
+    defaultMode.value = readSessionAccessMode();
     const active = facts && facts.sessions.find(function (s) { return s.nativeSessionId === selected; });
     const writable = historyOk && active && active.current && active.status === "active" && active.adapterId === "codex"
-      && facts.authority && facts.authority.owner === "controller";
+      && facts.authority && facts.authority.owner === "controller" && !facts.terminalWriter;
     const turn = facts && facts.turn;
     send.disabled = busy || !!pending || !writable || (turn && ["submitting", "delivery-unknown"].includes(turn.status));
     stop.disabled = busy || !!pending || !writable || !turn || turn.status !== "accepted" || !turn.nativeTurnId;
@@ -70,6 +88,100 @@ export function createConversationController(host, t) {
         ref.relativePath + " · " + ref.commit + " · sha256:" + ref.digest), remove));
     });
   }
+  function renderRequests(rows) {
+    const signature = JSON.stringify([selected, rows, !!facts.terminalWriter]);
+    if (signature === requestSignature) return;
+    requestSignature = signature; clear(requests);
+    rows.forEach(function (request) {
+      const card = h("section.composer-wrap", null, h("h3", null, t("conversation.nativeRequest")),
+        h("p.feed-note", null, request.method + " · " + request.turnId));
+      const params = request.params, answers = {};
+      const pendingKey = ".nativePending." + request.turnId + "." + request.id;
+      if (request.method === "item/tool/requestUserInput") {
+        (params.questions || []).forEach(function (question) {
+          const field = h("input", { type: question.isSecret ? "password" : "text", "aria-label": question.question });
+          const draftKey = ".nativeDraft." + request.turnId + "." + request.id + "." + question.id;
+          if (!question.isSecret) {
+            field.value = saved(draftKey) || "";
+            field.addEventListener("input", function () { saved(draftKey, field.value); });
+          }
+          card.append(h("label", null, question.question, field));
+          if (question.options) card.append(h("p.feed-note", null, question.options.map(function (o) { return o.label + ": " + o.description; }).join(" · ")));
+          answers[question.id] = field;
+        });
+      } else {
+        card.append(h("p", null, params.reason || params.command || t("conversation.nativeApproval")));
+      }
+      const outcome = h("p.feed-note", { role: "status" });
+      const buttons = [];
+      function button(label, result) {
+        const node = h("button.btn", { type: "button", disabled: !!facts.terminalWriter || !!saved(pendingKey) }, label);
+        buttons.push(node);
+        node.addEventListener("click", async function () {
+          const own = generation;
+          buttons.forEach(function (b) { b.disabled = true; });
+          saved(pendingKey, "pending");
+          // An answer is sent once. Unknown transport state is inspected by the
+          // next read, never retried automatically under a new request id.
+          try {
+            const endpoint = url({ session: selected });
+            await submitMutation(endpoint + "/native/" + request.id, endpoint, {
+              action: "native-respond", requestId: crypto.randomUUID(), nativeRequestId: request.id,
+              expectedTarget: request.turnId, result: result()
+            });
+            outcome.textContent = t("conversation.nativeAnswered");
+          } catch (error) {
+            if (own !== generation) return;
+            outcome.textContent = t("conversation.unknown") + " " + error.message;
+            if (error.disposition === "not-submitted") {
+              saved(pendingKey, null); buttons.forEach(function (b) { b.disabled = !!facts.terminalWriter; });
+            }
+          }
+        });
+        card.append(node);
+      }
+      if (request.method === "item/tool/requestUserInput") button(t("conversation.send"), function () {
+        return { answers: Object.fromEntries(Object.entries(answers).map(function (entry) { return [entry[0], { answers: [entry[1].value] }]; })) };
+      });
+      else if (request.method === "item/permissions/requestApproval") button(t("conversation.decline"), function () { return { permissions: {}, scope: "turn" }; });
+      else if (request.method === "mcpServer/elicitation/request") {
+        card.append(h("p.feed-note", null, request.params.message || ""));
+        card.append(h("p.feed-note", null, t("conversation.nativeForm")));
+        button(t("conversation.decline"), function () { return { action: "decline", content: null }; });
+      }
+      else {
+        button(t("conversation.approve"), function () { return { decision: "accept" }; });
+        button(t("conversation.decline"), function () { return { decision: "decline" }; });
+      }
+      card.append(outcome); requests.append(card);
+    });
+  }
+  function renderQuestions() {
+    const rows = selected === facts.currentSessionId ? facts.leaderQuestions || [] : [];
+    const signature = JSON.stringify([owner, rows, facts.questionsOmitted]);
+    if (signature === questionSignature) return;
+    questionSignature = signature; clear(questions);
+    const taskId = owner.taskId;
+    if (rows.length) questions.append(h("h3", null, t("conversation.leaderQuestions")));
+    rows.forEach(function (input) {
+      questions.append(inputCard(input, t, locale(), async function (original, answer, control) {
+        const own = generation;
+        control.disabled = true;
+        try {
+          await api.answerInput(taskId, original.id, answer);
+          releaseMutation(taskId + "/input/" + original.id);
+          if (own !== generation) return;
+          receipt.textContent = t("input.answered");
+          refresh();
+        } catch (error) {
+          if (own !== generation) return;
+          control.disabled = error.disposition !== "not-submitted";
+          receipt.textContent = error.disposition === "not-submitted" ? error.message : t("input.unknown");
+        }
+      }));
+    });
+    if (facts.questionsOmitted) questions.append(h("p.feed-note", null, t("overview.moreInputs")));
+  }
   function choose(id) {
     if (selected) saved(".draft", text.value);
     generation++; selected = id; cursor = null; next = null; historyOk = false;
@@ -88,6 +200,8 @@ export function createConversationController(host, t) {
     drawMaterials();
     receipt.textContent = pending ? t("conversation.unknown") + " " + pending.requestId : "";
     clear(feed); rendered.clear();
+    clear(requests); requestSignature = "";
+    clear(questions); questionSignature = "";
     controls();
   }
   function finish(own) {
@@ -161,6 +275,7 @@ export function createConversationController(host, t) {
       if (!selected) { status.textContent = t("conversation.noSession"); return; }
       // Preserve a historical choice even if it is outside the newest page.
       drawSessions(facts.sessions, false);
+      renderQuestions();
       const page = await requestJson(url({ session: selected, cursor: cursor }));
       if (own !== generation) return;
       historyOk = true; next = page.nextCursor;
@@ -173,6 +288,9 @@ export function createConversationController(host, t) {
       status.textContent = t("conversation." + state) + " · " + page.observedAt;
       if (page.live === "unavailable" && !cursor) status.textContent += " · " + t("conversation.liveUnavailable");
       if (page.linkedInputsOmitted) status.textContent += " · " + t("conversation.linkedOmitted");
+      if (page.nativeRequestsOmitted) status.textContent += " · " + t("conversation.nativeOmitted");
+      status.textContent += " · " + t(facts.terminalWriter ? "conversation.terminalWriter" : "conversation.structuredWriter");
+      renderRequests(page.nativeRequests || []);
       identity.textContent = (owner.taskId || "Global") + " / " + owner.roleName + " / " + selected
         + (turn ? " / " + (turn.nativeTurnId || turn.attemptId) + (turn.runId ? " / " + turn.runId : "") : "");
       const scroll = feed.scrollTop, atEnd = feed.scrollHeight - feed.clientHeight - scroll < 40;
@@ -283,6 +401,10 @@ export function createConversationController(host, t) {
   controls();
   return {
     current: function () { return owner; },
+    selection: function () {
+      if (!owner || (selected && facts && selected !== facts.currentSessionId)) return null;
+      return { ...owner, ...(selected ? { nativeSessionId: selected } : {}) };
+    },
     reconnect: function () {
       if (!timer) timer = window.setInterval(function () { if (!cursor) refresh(); }, 2000);
       refresh();
@@ -296,6 +418,8 @@ export function createConversationController(host, t) {
         cursor = null; next = null; historyOk = false; rendered.clear();
         text.value = ""; receipt.textContent = ""; identity.textContent = ""; controls();
         materials = []; incomingMaterials = null; clear(materialList); materialAlert.textContent = "";
+        clear(requests); requestSignature = "";
+        clear(questions); questionSignature = "";
       }
       if (options && options.materials) incomingMaterials = options.materials;
       if (!timer) timer = window.setInterval(function () { if (!cursor) refresh(); }, 2000);

@@ -34,10 +34,46 @@ import { createWebTaskSurface } from "../../dist/web/webTaskSurface.js";
 import { createYuiWebServer } from "../../dist/web/webServer.js";
 import { foldSteerLiveReceipt, foldInterruptLiveReceipt } from "../../dist/runtime/agentHost.js";
 import { createWebConversationSurface } from "../../dist/web/webConversation.js";
+import { prepareNativeHostSteer } from "../../dist/controller/nativeHostInput.js";
+import { resolveAgentHostObservation } from "../../dist/controller/agentHostObservation.js";
 
 const at = new Date("2026-09-10T00:00:00Z");
 const later = new Date("2026-09-10T00:01:00Z");
 const evenLater = new Date("2026-09-10T00:02:00Z");
+
+test("native Leader steer persists original intent and the existing exact steer receipt before Provider write", t => {
+  const { store, home } = fixture(t);
+  withControllerTurn(store, "leader", { attemptId: "initial", nativeTurnId: "turn" });
+  const binding = store.getTaskRoleSessionSet("task-1", "leader").providerBinding;
+  const input = { taskId: "task-1", roleName: "leader", agentId: "codex",
+    nativeSessionId: "leader-native", nativeTurnId: "turn", attemptId: "human:request",
+    authorityEpoch: binding.authority.epoch, authorityOwner: binding.authority.owner,
+    holderId: binding.authority.holderId, boundedText: "追加完整方向\n不要丢失", now: later };
+  assert.throws(() => prepareNativeHostSteer(store, { ...input, nativeTurnId: "other" }), /fence/);
+  assert.equal(store.listMessages("task-1").length, 0);
+  const run = prepareNativeHostSteer(store, input);
+  assert.deepEqual(prepareNativeHostSteer(store, input), run);
+  const message = store.listMessages("task-1")[0];
+  assert.equal(store.listMessages("task-1").length, 1);
+  assert.equal(message.body, input.boundedText);
+  assert.equal(message.author.type, "user");
+  assert.equal(message.inputControl.expectedSessionId, input.nativeSessionId);
+  assert.equal(message.inputControl.expectedTarget, input.nativeTurnId);
+  assert.equal(message.control.outcome, "pending");
+  assert.equal(run.attemptId, `steer:task-1/${message.id}`);
+  const adapter = new FileSchedulerStoreAdapter(store);
+  const observation = steerSettlement({ kind: "input.accepted", receiptId: run.attemptId,
+    roleName: "leader", agentId: "codex", nativeSessionId: "leader-native", nativeTurnId: "turn" });
+  const envelope = { scope: "task", taskId: "task-1", observation,
+    host: { protocol: "yui-agent-host-events/v1", adapterId: "codex", workspace: home } };
+  assert.throws(() => resolveAgentHostObservation(store, { ...envelope,
+    observation: { ...observation, fence: { ...observation.fence, receiptId: input.attemptId } }
+  }), /no exact accepted execution binding/);
+  assert.equal(adapter.observeRuntimeObservation(resolveAgentHostObservation(store, envelope), later), "applied");
+  assert.equal(store.listMessages("task-1")[0].control.outcome, "accepted");
+  assert.throws(() => prepareNativeHostSteer(store, input), /already|unconfirmed/);
+  assert.equal(store.getTaskRoleSessionSet("task-1", "leader").providerBinding.run.attemptId, "initial");
+});
 
 test("structured conversation input retains its selected Session and exact receipt across replacement", async t => {
   const { store, command } = fixture(t);
@@ -78,7 +114,15 @@ test("text uploads and version feedback share Task/Session input authority witho
   withControllerTurn(store, "leader", { attemptId: "old", nativeTurnId: "turn-old" });
   settleLeaderTurn(store, { nativeTurnId: "turn-old", status: "completed" }, evenLater);
   const surface = createWebTaskSurface(store);
-  const conversation = createWebConversationSurface(store, surface, () => { throw Error("No Provider read expected"); });
+  let terminalWriter = false, writerChecksUntilAttach = 0;
+  const conversation = createWebConversationSurface(store, surface, () => { throw Error("No Provider read expected"); },
+    undefined, undefined, {
+      hasWriter() {
+        if (writerChecksUntilAttach && --writerChecksUntilAttach === 0) terminalWriter = true;
+        return terminalWriter;
+      },
+      respond() { assert.fail("Material input must not become a native answer"); }
+    });
   const owner = { scope: "task", taskId: "task-1", roleName: "leader" };
   const server = createYuiWebServer(store, { surface, conversation, token: "material-token" });
   t.after(async () => {
@@ -100,6 +144,16 @@ test("text uploads and version feedback share Task/Session input authority witho
   const ref = await upload.json();
   assert.equal(store.listMessages("task-1").length, 0, "upload is data, not execution or user intent");
   assert.equal(store.listTaskWakes("task-1").length, 0);
+  terminalWriter = true;
+  assert.equal((await post("/api/conversation/material" + query, { ...input, requestId: "writer-upload" })).status, 409);
+  const feedback = { action: "queue", requestId: "writer-feedback", body: "Review this material", materials: [ref] };
+  assert.equal((await post("/api/conversation" + query, feedback)).status, 409);
+  terminalWriter = false;
+  writerChecksUntilAttach = 2;
+  assert.equal((await post("/api/conversation" + query, feedback)).status, 409,
+    "recheck writer after asynchronous material resolution, before durable input");
+  assert.equal(store.listMessages("task-1").length, 0);
+  terminalWriter = false;
   const sent = await post("/api/conversation" + query, {
     action: "queue", requestId: "feedback-1", body: "Review this material", materials: [ref]
   });

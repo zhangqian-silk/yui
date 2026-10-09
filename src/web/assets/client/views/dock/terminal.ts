@@ -6,7 +6,7 @@ import { Terminal } from "/assets/vendor/xterm.mjs";
 import { FitAddon } from "/assets/vendor/addon-fit.mjs";
 import { h, icon, clear } from "/assets/js/lib/dom.js";
 import { fill } from "/assets/js/lib/format.js";
-import { pageToken } from "/assets/js/lib/api.js";
+import { pageToken, requestJson } from "/assets/js/lib/api.js";
 import { dot } from "/assets/js/ui/primitives.js";
 
 function cssVar(name, fallback) {
@@ -36,7 +36,7 @@ export function sameTarget(left, right) {
 // elements: { host, empty, state, cli, targets }; locale() reads the current
 // locale; notify(message) shows a toast.
 export function createTerminalController(elements, t, locale, notify) {
-  const ctl = { elements: elements, t: t, locale: locale, notify: notify, session: null, current: null, stateKey: "terminal.idle", targets: [] };
+  const ctl = { elements: elements, t: t, locale: locale, notify: notify, session: null, current: null, generation: 0, stateKey: "terminal.idle", targets: [] };
   drawTargets(ctl);
   return {
     open: function (target) { open(ctl, target); },
@@ -71,6 +71,7 @@ function drawTargets(ctl) {
 }
 
 function dispose(ctl) {
+  ctl.generation++;
   if (!ctl.session) return;
   const owned = ctl.session;
   ctl.session = null;
@@ -90,13 +91,28 @@ function close(ctl) {
   drawTargets(ctl);
 }
 
-function open(ctl, target) {
+async function open(ctl, target) {
   dispose(ctl);
+  const generation = ctl.generation;
   ctl.current = target;
   ctl.elements.empty.hidden = true;
   ctl.elements.cli.textContent = cliFor(target);
   setState(ctl, "terminal.connecting", "connecting");
   drawTargets(ctl);
+  try {
+    if (!target.nativeSessionId) {
+      const query = new URLSearchParams({ scope: target.scope, role: target.roleName });
+      if (target.scope === "task") query.set("task", target.taskId);
+      const facts = await requestJson("/api/conversation?" + query);
+      if (generation !== ctl.generation) return;
+      if (!facts.currentSessionId) throw new Error(ctl.t("conversation.noSession"));
+      target = { ...target, nativeSessionId: facts.currentSessionId };
+      ctl.current = target;
+    }
+  } catch (error) {
+    if (generation === ctl.generation) { setState(ctl, "terminal.error", "error"); ctl.notify(error.message); }
+    return;
+  }
   const view = mountTerminal(ctl.elements.host);
   const terminal = view.terminal;
   const socket = connect(target, terminal);
@@ -112,14 +128,14 @@ function open(ctl, target) {
     }
   });
   resizeObserver.observe(ctl.elements.host);
-  bindSocket(ctl, socket, terminal, link);
+  bindSocket(ctl, socket, terminal, link, generation);
   ctl.session = { terminal, socket, input, resizeObserver };
 }
 
 function mountTerminal(host) {
   const terminal = new Terminal({
     cursorBlink: true,
-    scrollback: 0,
+    scrollback: 5000,
     convertEol: false,
     fontFamily: '"JetBrains Mono","SFMono-Regular",Menlo,Consolas,monospace',
     fontSize: 12.5,
@@ -139,11 +155,13 @@ function connect(target, terminal) {
     scope: target.scope, role: target.roleName, cols: String(terminal.cols), rows: String(terminal.rows), token: pageToken()
   });
   if (target.scope === "task") parameters.set("task", target.taskId);
+  if (target.nativeSessionId) parameters.set("session", target.nativeSessionId);
   return new WebSocket(protocol + "//" + window.location.host + "/api/terminal?" + parameters.toString());
 }
 
-function bindSocket(ctl, socket, terminal, link) {
+function bindSocket(ctl, socket, terminal, link, generation) {
   socket.addEventListener("message", function (event) {
+    if (generation !== ctl.generation) return;
     let message;
     try { message = JSON.parse(event.data); } catch { return; }
     if (message.type === "ready") ready(ctl, message, terminal, link);
@@ -155,10 +173,12 @@ function bindSocket(ctl, socket, terminal, link) {
     }
   });
   socket.addEventListener("close", function () {
+    if (generation !== ctl.generation) return;
     link.writable = false;
     if (ctl.stateKey !== "terminal.error") setState(ctl, "terminal.closed", "closed");
   });
   socket.addEventListener("error", function () {
+    if (generation !== ctl.generation) return;
     link.writable = false;
     setState(ctl, "terminal.error", "error");
     terminal.writeln(ctl.t("terminal.errorDetail"));
