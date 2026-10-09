@@ -196,6 +196,36 @@ async function handleHttpRequest(
     sendJson(response, 403, { error: "Invalid Yui web token.", disposition: "not-submitted" }, method === "HEAD");
     return;
   }
+  if ((pathname === "/api/tasks" || pathname === "/api/projects") && dependencies.surface) {
+    try {
+      if (pathname === "/api/projects" && method === "GET") {
+        const query = new URL(request.url!, "http://localhost").searchParams;
+        if ([...query.keys()].some(key => key !== "after") || query.getAll("after").length > 1) {
+          throw new WebRequestRejected("Project listing accepts only one after cursor.");
+        }
+        sendJson(response, 200, dependencies.surface.projects(query.get("after") ?? undefined), false);
+      } else if (pathname === "/api/tasks" && method === "POST") {
+        const body = await readMutationBody(request);
+        if (!body || typeof body !== "object" || Array.isArray(body)
+          || Object.keys(body).some(key => !["title", "requirements", "projectIds", "plan", "requestId"].includes(key))
+          || !("title" in body) || typeof body.title !== "string" || !body.title.trim() || body.title.length > 200
+          || !("requirements" in body) || typeof body.requirements !== "string" || !body.requirements.trim()
+          || !("projectIds" in body) || !Array.isArray(body.projectIds) || body.projectIds.length > 32
+          || body.projectIds.some(id => typeof id !== "string" || !/^project-[a-zA-Z0-9_-]+$/.test(id))
+          || !("plan" in body) || typeof body.plan !== "boolean"
+          || !("requestId" in body) || typeof body.requestId !== "string" || !body.requestId.trim()) {
+          throw new WebRequestRejected("Expected title, requirements, projectIds, plan and requestId only.");
+        }
+        sendJson(response, 200, { ...dependencies.surface.create(body as {
+          title: string; requirements: string; projectIds: string[]; plan: boolean; requestId: string
+        }), requestId: body.requestId }, false);
+      } else sendJson(response, 405, { error: "Method not allowed.", disposition: "not-submitted" }, false);
+    } catch (error) {
+      sendJson(response, 409, { error: error instanceof Error ? error.message : "Creation unavailable.",
+        disposition: error instanceof WebRequestRejected ? "not-submitted" : "unknown" }, false);
+    }
+    return;
+  }
   const artifactTarget = /^\/api\/tasks\/([^/]+)\/(artifacts|evidence)$/.exec(pathname);
   if (pathname === "/api/conversation" && dependencies.conversation) {
     try {
@@ -325,7 +355,7 @@ async function handleHttpRequest(
     }
     return;
   }
-  const surfaceTarget = /^\/api\/tasks\/([^/]+)\/(context|delta|inspect|list|metadata|messages|control)$/.exec(pathname);
+  const surfaceTarget = /^\/api\/tasks\/([^/]+)\/(workbench|context|delta|inspect|list|metadata|messages|control|activate|archive)$/.exec(pathname);
   if (surfaceTarget && dependencies.surface) {
     try {
       let taskId: string;
@@ -334,7 +364,19 @@ async function handleHttpRequest(
       const action = surfaceTarget[2];
       const query = new URL(request.url!, "http://localhost").searchParams;
       let value: unknown;
-      if (method === "GET" && action === "context") {
+      if (method === "POST" && (action === "activate" || action === "archive")) {
+        const body = await readMutationBody(request);
+        if (!body || typeof body !== "object" || Array.isArray(body)
+          || Object.keys(body).some(key => key !== "requestId")
+          || !("requestId" in body) || typeof body.requestId !== "string" || !body.requestId.trim()) {
+          throw new WebRequestRejected("Expected requestId only.");
+        }
+        value = { requestId: body.requestId, result: action === "activate"
+          ? dependencies.surface.activate(taskId, body.requestId)
+          : await dependencies.surface.archive(taskId) };
+      } else if (method === "GET" && action === "workbench") {
+        value = dependencies.surface.workbench(taskId);
+      } else if (method === "GET" && action === "context") {
         value = await dependencies.surface.read(taskId);
       } else if (method === "GET" && action === "delta") {
         value = dependencies.surface.delta(taskId, {
@@ -414,7 +456,7 @@ async function handleHttpRequest(
         const taskId = decodeURIComponent(pathname.slice("/api/tasks/".length));
         const detail = taskId.length === 0 || taskId.includes("/")
           ? null
-          : buildWebTaskDetail(store, taskId, now());
+          : buildWebTaskDetail(store, taskId, now(), new URL(request.url!, "http://localhost").searchParams.get("compact") === "true");
         sendJson(
           response,
           detail === null ? 404 : 200,

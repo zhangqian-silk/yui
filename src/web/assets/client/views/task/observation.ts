@@ -71,7 +71,8 @@ function nowHead(data, execution, t, locale) {
     statusBadge(t, "exec", "exec.status", execution.status),
     execution.owner === "none" && execution.action === "none" ? null
       : h("span.now-owner", null, label(t, "exec.owner", execution.owner) + " · " + label(t, "exec.action", execution.action)));
-  if (execution.activeRuns && execution.activeRuns.length) head.append(badge(execution.activeRuns.length + " " + t("now.activeRuns"), "info"));
+  const activeCount = execution.activeRunCount === undefined ? (execution.activeRuns || []).length : execution.activeRunCount;
+  if (activeCount) head.append(badge(activeCount + " " + t("now.activeRuns"), "info"));
   if (execution.monitoring === "stopped") head.append(badge(t("now.monitoringStopped"), "warn"));
   if (execution.failClosed) head.append(badge(t("now.failClosed"), "bad"));
   head.append(h("span.spacer"), h("span.faint.small", { title: formatDateTime(data.runtimeObservedAt, locale) },

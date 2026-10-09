@@ -35,9 +35,15 @@ export function renderTaskDetail(container, data, t, locale, ctx) {
     page.append(panels[tab]);
   });
   renderOverviewPanel(panels.overview, data, t, locale, ctx);
-  renderDelivery(panels.delivery, data, t, locale, ctx);
-  renderRuntime(panels.runtime, data, t, locale, ctx);
-  renderRecords(panels.records, data, t, locale, ctx);
+  [["delivery", renderDelivery], ["runtime", renderRuntime], ["records", renderRecords]].forEach(function (entry) {
+    const panel = panels[entry[0]];
+    panel.onShow = function () {
+      panel.onShow = null;
+      entry[1](panel, data, t, locale, ctx);
+      updateObservation(container, data, t, locale, ctx);
+      if (panel.onShow) panel.onShow();
+    };
+  });
   container.append(page);
   updateObservation(container, data, t, locale, ctx);
   const active = panels[ctx.activeTab];

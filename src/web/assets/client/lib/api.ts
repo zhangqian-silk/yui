@@ -62,7 +62,13 @@ export const api = {
     return requestJson("/api/dashboard/sessions?" + query, { signal: AbortSignal.timeout(5000) });
   },
   context: function (taskId) { return requestJson(task(taskId) + "/context"); },
-  observation: function (taskId) { return requestJson(task(taskId), { signal: AbortSignal.timeout(1500) }); },
+  workbench: function (taskId) { return requestJson(task(taskId) + "/workbench"); },
+  observation: function (taskId) { return requestJson(task(taskId) + "?compact=true", { signal: AbortSignal.timeout(1500) }); },
+  projects: function (after) { return requestJson("/api/projects" + (after ? "?after=" + encodeURIComponent(after) : "")); },
+  createTask: function (input) { return submitMutation("task/create", "/api/tasks", input); },
+  taskAction: function (taskId, action, requestId) {
+    return submitMutation(taskId + "/" + action, task(taskId) + "/" + action, { requestId });
+  },
   inspect: async function (taskId, ref) {
     const query = new URLSearchParams({ store: ref.store, ref: ref.refId });
     if (ref.digest) query.set("digest", ref.digest);

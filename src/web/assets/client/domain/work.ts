@@ -22,6 +22,7 @@ export function inputCard(input, t, locale, onAnswer) {
   const facts = inputFacts(input, t);
   if (facts.length) element.append(h("p.input-facts", null, facts.join("  ·  ")));
   element.append(input.choices && input.choices.length ? inputChoices(input, t, onAnswer) : inputAnswerForm(input, t, onAnswer));
+  element.append(h("p.receipt", { role: "status", dataset: { inputReceipt: input.id } }));
   return element;
 }
 
@@ -45,7 +46,7 @@ function inputChoices(input, t, onAnswer) {
 }
 
 function inputAnswerForm(input, t, onAnswer) {
-  const field = h("input", { type: "text", required: true, placeholder: t("input.freeText"), maxLength: 8000 });
+  const field = h("input", { type: "text", required: true, placeholder: t("input.freeText"), "aria-label": input.question, maxLength: 8000 });
   const form = h("form.input-form", null, field,
     h("button.btn.btn-primary", { type: "submit" }, icon("send"), h("span", null, t("actions.answer"))));
   form.addEventListener("input", function () { form.dataset.unsent = field.value ? "true" : "false"; });

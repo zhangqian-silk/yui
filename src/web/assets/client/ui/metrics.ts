@@ -51,7 +51,8 @@ export function observabilityMetricCard(observability, t) {
   grid.append(usageTile(t("usage.toolCalls"), cost.toolCalls, t));
   grid.append(usageTile(t("usage.elapsed"), cost.elapsedSeconds, t, "s"));
   grid.append(usageTile(t("usage.executionSum"), cost.executionSeconds, t, "s"));
-  grid.append(metricTile(t("usage.ready"), ((observability.dag && observability.dag.readyIds) || []).length));
+  grid.append(metricTile(t("usage.ready"), observability.readyCount === undefined
+    ? ((observability.dag && observability.dag.readyIds) || []).length : observability.readyCount));
   grid.append(metricTile(t("usage.contextSnapshots"), context.snapshotCount == null ? t("detail.unobserved") : context.snapshotCount));
   wrap.append(grid);
   const meta = node("p", "usage-meta");

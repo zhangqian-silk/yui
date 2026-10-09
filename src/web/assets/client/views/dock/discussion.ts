@@ -8,7 +8,7 @@ import { fill, formatShort } from "/assets/js/lib/format.js";
 import { chip, emptyState } from "/assets/js/ui/primitives.js";
 import { richText } from "/assets/js/ui/text.js";
 import { label } from "/assets/js/domain/vocab.js";
-import { cachedExact, entriesOf, exactCache, readExact, totalOf } from "/assets/js/domain/context.js";
+import { cachedExact, entriesOf, exactCache, totalOf } from "/assets/js/domain/context.js";
 import { recordCard } from "/assets/js/domain/records.js";
 import { messageComposer } from "/assets/js/domain/taskForms.js";
 
@@ -47,15 +47,10 @@ export function discussionHasUnsent(host) {
   return !!host.querySelector('[data-unsent="true"]');
 }
 
-// The Context read carries the newest messages as summaries; each is read
-// exactly once per digest (kept in the Task's view state) and drawn in full,
-// so a message needs no separate raw-record reader.
-// Older messages are listed on request, newest first, and read the same way.
+// The Context read carries bounded summaries. Full bodies are opened by the
+// reader, never downloaded automatically because the dock was rendered.
 const older = new Map();
-const failedReads = new Set();
 const latest = new Map();
-
-function readKey(entry) { return entry.ref.refId + "@" + entry.ref.digest; }
 
 function exactValue(entry, cache) {
   if (!entry.omitted) return entry.value;
@@ -89,18 +84,13 @@ function olderState(taskId) {
   return older.get(taskId);
 }
 
-// Feed rows oldest first, each with its exact value when already read; rows
-// still unread start their read and are collected in reads.
-function feedRows(olderItems, contextEntries, taskId, actions, cache, reads) {
+// Feed rows oldest first, reusing an exact value only when already read.
+function feedRows(olderItems, contextEntries, cache) {
   // Context lists messages newest first; the feed reads oldest first.
   const rows = olderItems.map(function (item) { return { entry: { ref: item.ref, summary: item.summary, omitted: true }, at: item.createdAt }; })
     .concat(contextEntries.slice().reverse().map(function (entry) { return { entry: entry, at: null }; }));
   rows.forEach(function (row) {
     row.value = exactValue(row.entry, cache);
-    if (!row.value && !failedReads.has(readKey(row.entry))) {
-      row.reading = true;
-      reads.push(readExact(row.entry, taskId, actions, cache).catch(function () { failedReads.add(readKey(row.entry)); }));
-    }
     row.at = (row.value && row.value.createdAt) || row.at;
   });
   if (rows.every(function (row) { return row.at; })) rows.sort(function (a, b) { return Date.parse(a.at) - Date.parse(b.at); });
@@ -116,8 +106,7 @@ function drawFeed(feed, data, t, locale, actions) {
   const state = olderState(task.id);
   const olderItems = state.items.filter(function (item) { return !shownIds.has(item.ref.refId); })
     .sort(function (a, b) { return Date.parse(a.createdAt || 0) - Date.parse(b.createdAt || 0); });
-  const reads = [];
-  const rows = feedRows(olderItems, contextEntries, task.id, actions, cache, reads);
+  const rows = feedRows(olderItems, contextEntries, cache);
   const remaining = totalOf(data.core, "task-message") - shownIds.size - olderItems.length;
   if (actions.list && remaining > 0 && !state.done) {
     feed.append(olderButton(remaining, state, t, function () {
@@ -136,7 +125,6 @@ function drawFeed(feed, data, t, locale, actions) {
     if (day && day !== lastDay) { feed.append(h("div.feed-day", null, h("span", null, day))); lastDay = day; }
     feed.append(messageRow(row, t, locale));
   });
-  if (reads.length) Promise.all(reads).then(function () { redraw(feed, task.id, false); });
 }
 
 function olderButton(remaining, state, t, onLoad) {

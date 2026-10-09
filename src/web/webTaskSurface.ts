@@ -1,7 +1,8 @@
 import { readArtifactCapability } from "../artifacts/artifactCapability.js";
 import { openTaskArtifactRepository } from "../artifacts/taskArtifactRepository.js";
 import { applyGlobalInputControl } from "../commands/globalRoleCommands.js";
-import { applyTaskInputControl, sendTaskMessageCommand, updateTaskMetadataCommand } from "../commands/taskCommands.js";
+import { applyTaskInputControl, runTaskCommand, sendTaskMessageCommand, updateTaskMetadataCommand } from "../commands/taskCommands.js";
+import { runTaskActivationCommand } from "../commands/taskActivationCommands.js";
 import { type TaskCommandExecution, type TaskCommandOptions } from "../commands/taskCommandTypes.js";
 import { runTaskInputCommand } from "../commands/taskInputCommands.js";
 import {
@@ -77,7 +78,8 @@ export function createWebTaskSurface(
   store: TaskStore,
   options: TaskCommandOptions = {},
   observations: readonly ContextObservationProvider[] = [],
-  hostControl: WebHostControlPort = DEFAULT_WEB_HOST_CONTROL
+  hostControl: WebHostControlPort = DEFAULT_WEB_HOST_CONTROL,
+  lifecycle?: Readonly<{ archive(taskId: string): Promise<unknown> }>
 ) {
   const environment = {};
   const commandOptions = { ...options, environment, runtime: undefined };
@@ -88,6 +90,93 @@ export function createWebTaskSurface(
       ? { kind: "role", taskId, roleName: "leader" } : { kind: "task", taskId });
   };
   return {
+    workbench: (taskId: string) => store.transaction(tx => {
+      const task = tx.getTask(taskId);
+      if (!task) throw new WebRequestRejected("Task not found.");
+      const brief = tx.getTaskBrief(taskId);
+      const clip = (value: string | undefined) => value === undefined ? undefined
+        : value.length > 1200 ? value.slice(0, 1200) + "…" : value;
+      return {
+        core: readTaskContext(tx, taskId, environment),
+        task: {
+          id: task.id, title: clip(task.title), status: task.status, updatedAt: task.updatedAt,
+          executionGate: task.executionGate, priority: task.priority, tags: task.tags?.slice(0, 16).map(value => clip(value)),
+          projectBindings: task.projectBindings.slice(0, 32),
+          description: clip(task.description), completionSummary: clip(task.completionSummary),
+          retirementSummary: clip(task.retirementSummary), archiveSummary: clip(task.archiveSummary),
+          archiveReason: clip(task.archiveReason),
+          activationRequest: task.activationRequest && {
+            disposition: task.activationRequest.disposition,
+            outcome: clip(task.activationRequest.outcome),
+            operation: { requestId: task.activationRequest.operation.requestId }
+          }
+        },
+        evidence: {
+          reviews: tx.listReviewRounds(taskId).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 3)
+            .map(round => ({
+              id: round.id, status: round.status, runId: round.reviewerRunId,
+              excerpt: round.reviewerRunId ? clip(tx.getRun(taskId, round.reviewerRunId)?.result?.output) : undefined
+            })),
+          integrations: tx.listIntegrationAttempts(taskId).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 3)
+            .map(attempt => ({
+              id: attempt.id, status: attempt.status, summary: clip(attempt.summary),
+              checks: attempt.checks?.slice(0, 8).map(check => ({ name: clip(check.name), outcome: check.outcome }))
+            }))
+        },
+        brief: brief && {
+          objective: clip(brief.objective), currentFocus: clip(brief.currentFocus),
+          leaderSummary: clip(brief.leaderSummary), technicalApproach: clip(brief.technicalApproach),
+          boundaries: brief.boundaries?.slice(0, 8).map(value => clip(value)),
+          updatedAt: brief.updatedAt
+        }
+      };
+    }),
+    projects: (after?: string) => {
+      const projects = store.listProjects().filter(project => project.status === "active")
+        .sort((a, b) => a.id.localeCompare(b.id));
+      const remaining = projects.filter(project => after === undefined || project.id.localeCompare(after) > 0);
+      const page = remaining.slice(0, 40);
+      return { projects: page.map(({ id, name }) => ({ id, name: name.slice(0, 200) })),
+        total: projects.length, nextCursor: remaining.length > page.length ? page.at(-1)!.id : null };
+    },
+    create: (input: { title: string; requirements: string; projectIds: string[]; plan: boolean; requestId: string }) => {
+      const result = webLocalMutation(store, tx => {
+        // A lost response must be reconciled, never create another Task.
+        if (tx.listTasks().some(task => tx.listMessages(task.id)
+          .some(message => message.submissionKey === input.requestId))) {
+          throw new Error("This creation request was already saved; inspect the Task catalog before continuing.");
+        }
+        const created = runTaskCommand(["create", input.title,
+          ...input.projectIds.flatMap(id => ["--project", id])], tx, commandOptions);
+        if (created.kind !== "output") throw new Error("Unexpected Task creation result.");
+        const taskId = (created.data as { task: { id: string } }).task.id;
+        updateTaskMetadataCommand(tx, taskId, { description: input.requirements }, commandOptions);
+        const submitted = sendTaskMessageCommand(tx, taskId, input.requirements, commandOptions,
+          undefined, input.plan ? "discuss" : "record", input.requestId);
+        return { task: submitted.task, submission: submitted.feedback, messageId: submitted.message.id };
+      });
+      notify(result.task.id, input.plan);
+      return result;
+    },
+    activate: (taskId: string, requestId: string) => {
+      const result = webLocalMutation(store, tx => runTaskActivationCommand([
+        "request", taskId, "--request-id", requestId, "--environment", "empty"
+      ], tx, commandOptions));
+      notify(taskId);
+      return result.kind === "output" ? result.data : result;
+    },
+    archive: async (taskId: string) => {
+      if (!lifecycle) throw new WebRequestRejected("Ordinary archive is unavailable.");
+      // Preflight rejection precedes any physical effects; later errors remain
+      // unknown and must be reconciled from the Task and archive diagnostics.
+      webLocalMutation(store, tx => {
+        const task = tx.getTask(taskId);
+        if (!task || !["completed", "cancelled", "archived"].includes(task.status)) {
+          throw new Error("Only a completed or retired Task can be archived.");
+        }
+      });
+      return lifecycle.archive(taskId);
+    },
     evidence: (taskId: string) => store.transaction(reader => {
       if (reader.getTask(taskId) === null) throw new WebRequestRejected("Task not found.");
       return { taskId, integrations: reader.listIntegrationAttempts(taskId),

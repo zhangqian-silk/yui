@@ -35,6 +35,7 @@ import { DISCUSSION_SCRIPT } from "./views/dock/discussion.js";
 import { CONVERSATION_SCRIPT } from "./views/dock/conversation.js";
 import { TERMINAL_SCRIPT } from "./views/dock/terminal.js";
 import { GLOBAL_INPUT_SCRIPT } from "./views/globalInput.js";
+import { CREATE_TASK_SCRIPT } from "./views/createTask.js";
 import { OVERVIEW_SCRIPT } from "./views/overview.js";
 import { SIDEBAR_SCRIPT } from "./views/sidebar.js";
 import { TASK_DELIVERY_SCRIPT } from "./views/task/delivery.js";
@@ -43,6 +44,7 @@ import { TASK_FILES_SCRIPT } from "./views/task/files.js";
 import { TASK_OBSERVATION_SCRIPT } from "./views/task/observation.js";
 import { TASK_OVERVIEW_SCRIPT } from "./views/task/overview.js";
 import { TASK_PAGE_SCRIPT } from "./views/task/page.js";
+import { TASK_ACTIONS_SCRIPT } from "./views/task/actions.js";
 import { TASK_RECORDS_SCRIPT } from "./views/task/records.js";
 import { TASK_RUNTIME_SCRIPT } from "./views/task/runtime.js";
 import { TASK_TIMELINE_SCRIPT } from "./views/task/timeline.js";
@@ -81,10 +83,12 @@ export const CLIENT_MODULES: Readonly<Record<string, string>> = Object.freeze({
   "views/sidebar": SIDEBAR_SCRIPT,
   "views/overview": OVERVIEW_SCRIPT,
   "views/globalInput": GLOBAL_INPUT_SCRIPT,
+  "views/createTask": CREATE_TASK_SCRIPT,
   "views/dock/discussion": DISCUSSION_SCRIPT,
   "views/dock/conversation": CONVERSATION_SCRIPT,
   "views/dock/terminal": TERMINAL_SCRIPT,
   "views/task/page": TASK_PAGE_SCRIPT,
+  "views/task/actions": TASK_ACTIONS_SCRIPT,
   "views/task/overview": TASK_OVERVIEW_SCRIPT,
   "views/task/observation": TASK_OBSERVATION_SCRIPT,
   "views/task/runtime": TASK_RUNTIME_SCRIPT,

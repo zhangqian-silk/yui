@@ -148,6 +148,7 @@ function detailContext(view) {
     showDock: deps.workspace.toggleDock,
     openSession: function (roleName) { deps.workspace.openSession({ scope: "task", taskId: deps.state.selected, roleName: roleName }); },
     answerInput: function (input, answer, control) { return answerInput(deps, input, answer, control); },
+    taskAction: deps.api.taskAction,
     inspect: api.inspect,
     list: api.list,
     artifacts: api.artifacts,
@@ -174,17 +175,29 @@ function dockActions(deps) {
 async function answerInput(deps, input, answer, control) {
   if (!deps.state.detail) return;
   const taskId = deps.state.detail.task.id;
-  if (control) control.disabled = true;
+  const card = control && control.closest(".input-card");
+  const controls = card ? Array.from(card.querySelectorAll("button, input")) : control ? [control] : [];
+  const receipt = card && card.querySelector("[data-input-receipt]");
+  if (card) card.dataset.unsent = "true";
+  controls.forEach(function (item) { item.disabled = true; });
+  if (receipt) receipt.textContent = deps.t("receipt.waiting");
   try {
-    await deps.api.answerInput(taskId, input.id, answer);
+    const result = await deps.api.answerInput(taskId, input.id, answer);
     releaseMutation(taskId + "/input/" + input.id);
-    deps.toast(deps.t("input.answered"));
+    const text = result.request.id + " · " + result.request.status + " · "
+      + (result.request.resolution ? result.request.resolution.answer.text : "");
+    if (receipt) receipt.textContent = text;
+    if (card) card.dataset.unsent = "false";
+    deps.toast(text);
     const form = control && control.closest("form");
     if (form) form.dataset.unsent = "false";
     await deps.refreshCatalog();
   } catch (error) {
-    if (control) control.disabled = error.disposition !== "not-submitted";
-    deps.toast(error.disposition === "not-submitted" ? error.message : deps.t("input.unknown"));
+    controls.forEach(function (item) { item.disabled = error.disposition !== "not-submitted"; });
+    if (card && error.disposition === "not-submitted") card.dataset.unsent = "false";
+    const text = error.disposition === "not-submitted" ? error.message : deps.t("input.unknown");
+    if (receipt) receipt.textContent = text;
+    deps.toast(text);
   }
 }
 

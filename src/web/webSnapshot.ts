@@ -81,7 +81,8 @@ export type WebDashboardStore = Pick<TaskStore,
 export function buildWebTaskDetail(
   store: WebDashboardStore,
   taskId: string,
-  now: Date = new Date()
+  now: Date = new Date(),
+  compact = false
 ): object | null {
   return store.transaction((reader) => {
     const task = reader.getTask(taskId);
@@ -158,6 +159,39 @@ export function buildWebTaskDetail(
     });
     const execution = buildTaskExecutionProjection(reader, taskId, now);
     if (execution === null) return null;
+    if (compact) {
+      // Observation is not semantic progress. No Task/Message/Run bodies,
+      // Role history or validation logs ride the default polling response.
+      const clip = (text: string | undefined) => text?.slice(0, 1200);
+      const sessions = projectWebSessions({ taskId, sessionSets: reader.listRoleSessionSets(taskId), events, now,
+        policy: resolveRuntimeHealth(reader.getConfig().runtimeHealth) });
+      return {
+        execution: {
+          status: execution.status, owner: execution.owner, action: execution.action, next: execution.next,
+          summary: clip(execution.summary), reason: clip(execution.reason),
+          monitoring: execution.monitoring, failClosed: execution.failClosed,
+          activeRuns: execution.activeRuns.slice(0, 16).map(run => ({ id: run.id })),
+          activeRunCount: execution.activeRuns.length,
+          attention: execution.attention.slice(0, 8).map(item => ({ ...item, summary: clip(item.summary) })),
+          blockers: execution.blockers.slice(0, 8).map(item => ({ ...item, summary: clip(item.summary) }))
+        },
+        roles: roles.slice(0, 16).map(role => ({
+          name: role.name, status: role.status, runtimeSession: role.runtimeSession
+        })),
+        sessions: { ...sessions, sessions: sessions.sessions.slice(0, 16).map(session => ({
+          ...session, reason: session.reason.slice(0, 1200),
+          operations: session.operations.slice(0, 16), background: session.background.slice(0, 16)
+        })) },
+        observability: {
+          cost: execution.observability.cost,
+          readyCount: execution.observability.dag.readyIds.length,
+          context: {
+            snapshotCount: execution.observability.context.snapshotCount,
+            totalBytes: execution.observability.context.totalBytes
+          }
+        }
+      };
+    }
     const remoteDelivery = webRemoteDelivery(reader, task);
     const workItems = reader.listWorkItems(taskId);
     const roleSessionSets = reader.listRoleSessionSets(taskId);

@@ -262,11 +262,7 @@ import { inspectStorageSchema } from "./storage/storageSchema.js";
 import { resolveYuiHome, type TaskStore } from "./storage/taskStore.js";
 import { renderArchiveDiagnostics, taskArchiveDiagnostics } from "./task/archiveDiagnostics.js";
 import { inspectTaskArchive, renderTaskArchivePreflight } from "./task/archivePreflight.js";
-import {
-  assertTaskRemoteDeliveryIntegrated,
-  createTaskRemoteDeliveryProof,
-  type TaskRemoteDeliveryProof
-} from "./task/remoteDeliveryService.js";
+import { archiveOrdinaryTask } from "./task/ordinaryArchive.js";
 import { resolveTaskRecordReference } from "./task/taskRecordReference.js";
 import { openSchedulerTelemetry } from "./telemetry/telemetryWiring.js";
 import { NodeCommandExecutor } from "./tmux/commandExecutor.js";
@@ -1657,8 +1653,6 @@ export async function main(): Promise<void> {
         });
         return;
       }
-      let archiveRemoteDeliveryProof: TaskRemoteDeliveryProof | undefined;
-      let archiveTaskReviewCandidate: TaskReviewCandidate | undefined;
       if (resolved[1] === "archive") {
         const request = parseTaskArchiveArguments(resolved.slice(2));
         if (request.sourceMessage !== undefined) {
@@ -1700,24 +1694,17 @@ export async function main(): Promise<void> {
             { task: current, ...archive });
           return;
         }
+        if (disposition === "integrated") {
+          const result = await archiveOrdinaryTask(workspaceCoordinator, taskId, {
+            runtime, environment: process.env, yuiHome: home
+          });
+          emit(`Archived task ${taskId}\n${renderArchiveDiagnostics(result)}`, false, result);
+          return;
+        }
         {
-          if (disposition === "integrated") {
-            archiveTaskReviewCandidate = task.status === "cancelled" ? await actualTaskReviewCandidateForTaskCommand(
-              resolved,
-              store,
-              workspacePreparer,
-              process.env
-            ) : undefined;
-            archiveRemoteDeliveryProof = createTaskRemoteDeliveryProof(
-              store,
-              task,
-              archiveTaskReviewCandidate ?? null
-            );
-            assertTaskRemoteDeliveryIntegrated(archiveRemoteDeliveryProof.delivery);
-          }
           await workspaceCoordinator.prepareTaskForArchive(task.id);
           runTaskCommand(resolved.slice(1), store, {
-            runtime, environment: process.env, yuiHome: home, archiveRemoteDeliveryProof
+            runtime, environment: process.env, yuiHome: home
           });
           await workspaceCoordinator.cleanupArchivedTask(task.id, disposition);
           const current = store.getTask(task.id)!;
@@ -1895,14 +1882,12 @@ export async function main(): Promise<void> {
           process.env,
           taskFinalReviewContract
         );
-        const actualTaskReviewCandidate = archiveRemoteDeliveryProof === undefined
-          ? await actualTaskReviewCandidateForTaskCommand(
+        const actualTaskReviewCandidate = await actualTaskReviewCandidateForTaskCommand(
             resolved,
             store,
             workspacePreparer,
             process.env
-          )
-          : archiveTaskReviewCandidate;
+          );
         const deltaRecheckPreflight = await deltaRecheckPreflightForTaskCommand(
           resolved.slice(1),
           store,
@@ -1953,9 +1938,6 @@ export async function main(): Promise<void> {
             ...(actualTaskReviewCandidate === undefined
               ? {}
               : { actualTaskReviewCandidate }),
-            ...(archiveRemoteDeliveryProof === undefined
-              ? {}
-              : { archiveRemoteDeliveryProof }),
             ...(deltaRecheckPreflight === undefined
               ? {}
               : { deltaRecheckPreflight }),
