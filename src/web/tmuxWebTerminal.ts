@@ -82,26 +82,29 @@ export class TmuxWebTerminalService {
 
     const nativeWritable = this.options.prepareNative === undefined ? request.scope === "global"
       : await this.options.prepareNative(request);
-    let readOnly = !nativeWritable || this.#writers.has(hostId);
+    const writerRoleName = request.scope === "task" ? request.roleName : undefined;
+    const writerKey = JSON.stringify([hostId, writerRoleName]);
+    let readOnly = !nativeWritable || this.#writers.has(writerKey);
 
     let clientSession: string | undefined;
     let process: PtyProcess;
     try {
       if (!readOnly) {
-        // Publish the same host-scoped lease used by Terminal auto-attach
+        // Publish the existing Role-scoped Task lease (host-scoped for Global)
         // before deciding that this Web client may write. This closes the
         // cross-surface gap where neither client was visible to list-clients.
         clientSession = this.options.tmux.createInteractiveClientSession(
           hostId,
           undefined,
-          "read-write"
+          "read-write",
+          writerRoleName
         );
-        if (this.options.tmux.hasWritableClient(hostId, undefined, clientSession)) {
+        if (this.options.tmux.hasWritableClient(hostId, writerRoleName, clientSession)) {
           this.options.tmux.destroyInteractiveClientSession(clientSession);
           clientSession = undefined;
           readOnly = true;
         } else {
-          this.#writers.add(hostId);
+          this.#writers.add(writerKey);
         }
       }
       clientSession ??= this.options.tmux.createInteractiveClientSession(hostId);
@@ -126,7 +129,7 @@ export class TmuxWebTerminalService {
         }
       );
     } catch (error) {
-      if (!readOnly) this.#writers.delete(hostId);
+      if (!readOnly) this.#writers.delete(writerKey);
       if (clientSession !== undefined) {
         this.destroyClientSession(clientSession);
       }
@@ -138,7 +141,7 @@ export class TmuxWebTerminalService {
     const releaseClient = () => {
       if (clientReleased) return;
       clientReleased = true;
-      if (!readOnly) this.#writers.delete(hostId);
+      if (!readOnly) this.#writers.delete(writerKey);
       this.destroyClientSession(clientSession);
     };
     const dataListeners = new Set<(data: string) => void>();

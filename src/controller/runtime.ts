@@ -584,7 +584,10 @@ export async function startFileTaskControllerRuntime(
       conversation: createWebConversationSurface(store, webSurface,
         (owner, id) => planner.planNativeControl(owner, id), undefined,
         (owner) => inspectAgentHost({ home, ...owner }), {
-          hasWriter: owner => tmux.hasWritableClient(owner.scope === "task" ? owner.taskId : "operator"),
+          hasWriter: owner => tmux.hasWritableClient(
+            owner.scope === "task" ? owner.taskId : "operator",
+            owner.scope === "task" ? owner.roleName : undefined
+          ),
           respond: async (owner, id, requestId, nativeTurnId, result) => {
             const receipt = await sendAgentHostNativeControl({
               home, ...owner, control: { protocol: AGENT_HOST_CONTROL_PROTOCOL, type: "native-respond",

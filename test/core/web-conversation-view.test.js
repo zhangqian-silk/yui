@@ -5,6 +5,7 @@ import { CONVERSATION_SCRIPT } from "../../dist/web/assets/client/views/dock/con
 import { SELECTION_SCRIPT } from "../../dist/web/assets/client/app/selection.js";
 import { WORKSPACE_SCRIPT } from "../../dist/web/assets/client/layout/workspace.js";
 import { PREFS_SCRIPT } from "../../dist/web/assets/client/lib/prefs.js";
+import { TERMINAL_SCRIPT } from "../../dist/web/assets/client/views/dock/terminal.js";
 
 // Exercise the shipped controller with disposable DOM/network boundaries.
 function fixture(submitResult = { state: "submitted" }, extra = {}) {
@@ -201,9 +202,41 @@ test("terminal hide cancels pending attachment and reopens the actual selected o
   assert.equal(closed, 1);
   assert.equal(context.dockVisible(ws), false);
   context.setDockOpen(ws, true);
-  assert.equal(reopened, switched, "never reopen the previous Task after selecting Operator");
+  assert.deepEqual(JSON.parse(JSON.stringify(reopened)), { scope: "global", roleName: "operator" },
+    "preserve the chip-selected owner, but resolve its current Session again");
   assert.equal(context.dockVisible(ws), true);
   assert.equal(layoutVisible, true, "layout is rendered after restoring the selected target");
+});
+
+test("terminal hide/reopen resolves a replacement Session without replaying input", async () => {
+  let currentSessionId = "thread-a", reads = 0, pending;
+  const connections = [], writes = [];
+  const context = vm.createContext({
+    URLSearchParams, writePreference() {}, clear() {},
+    ResizeObserver: class { observe() {} disconnect() {} },
+    async requestJson() { reads++; return { currentSessionId }; },
+    fakeMount() { return { terminal: { onData() { return { dispose() {} }; }, dispose() {} }, fit: { fit() {} } }; },
+    fakeConnect(target) { connections.push(target.nativeSessionId); return { close() {}, addEventListener() {}, send(data) { writes.push(data); } }; }
+  });
+  for (const script of [TERMINAL_SCRIPT, WORKSPACE_SCRIPT]) {
+    vm.runInContext(script.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
+  }
+  vm.runInContext("mountTerminal = fakeMount; connect = fakeConnect; drawTargets = function() {}; setState = function() {}; updateLayout = function() {}", context);
+  const ctl = { generation: 0, session: null, elements: { host: {}, empty: {}, cli: {} }, notify: assert.fail };
+  const owner = { scope: "task", taskId: "task-1", roleName: "leader" };
+  const ws = { dock: { mode: "session", open: true }, narrow: { matches: false }, terminalTarget: owner, deps: {
+    terminal: { current: () => ctl.current, close: () => context.close(ctl), open: target => { pending = context.open(ctl, target); } },
+    conversation: { close() {} }
+  } };
+  await context.open(ctl, owner);
+  context.setDockOpen(ws, false);
+  currentSessionId = "thread-b";
+  context.setDockOpen(ws, true);
+  await pending;
+  assert.equal(reads, 2);
+  assert.deepEqual(connections, ["thread-a", "thread-b"]);
+  assert.deepEqual(writes, []);
+  context.close(ctl);
 });
 
 test("conversation preserves unsent drafts and reading state while receipts and refreshes arrive", async () => {

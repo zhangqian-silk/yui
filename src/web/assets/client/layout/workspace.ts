@@ -148,7 +148,10 @@ function setDockOpen(ws, open) {
   if (!open) ws.deps.conversation.close();
   if (open && ws.dock.mode === "conversation") ws.deps.conversation.reconnect();
   if (open && ws.dock.mode === "session") {
-    ws.deps.terminal.open(ws.terminalTarget || { scope: "global", roleName: "operator" });
+    // Keep the selected owner, not a Session identity cached before hiding.
+    const target = ws.terminalTarget || { scope: "global", roleName: "operator" };
+    ws.deps.terminal.open({ scope: target.scope, roleName: target.roleName,
+      ...(target.scope === "task" ? { taskId: target.taskId } : {}) });
   }
   updateLayout(ws);
 }
