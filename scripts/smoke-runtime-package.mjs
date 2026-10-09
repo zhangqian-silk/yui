@@ -60,6 +60,12 @@ try {
     `#!${process.execPath}\nimport(${JSON.stringify(fakeCodex.href)}).catch(error => { console.error(error); process.exitCode = 1; });\n`,
     { mode: 0o755 });
   symlinkSync(process.execPath, join(fakeBin, "node"));
+  // Optional real Git for the compatibility matrix; never replace system Git.
+  if (process.env.YUI_TEST_GIT !== undefined) {
+    assert.ok(isAbsolute(process.env.YUI_TEST_GIT), "YUI_TEST_GIT must be an absolute executable path");
+    console.log(execFileSync(process.env.YUI_TEST_GIT, ["--version"], { encoding: "utf8" }).trim());
+    symlinkSync(process.env.YUI_TEST_GIT, join(fakeBin, "git"));
+  }
 
   // Linux places tmux in /usr/bin; macOS Homebrew uses /opt/homebrew/bin
   // (Apple Silicon) or /usr/local/bin (Intel). Resolve the host's tmux and

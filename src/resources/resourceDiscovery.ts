@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { readGitWorktrees } from "../repository/gitWorktreeInventory.js";
 
 import { managedProjectPath, type Project } from "../repository/project.js";
 import { managedRuntimeRoot } from "../storage/homeLayout.js";
@@ -96,12 +97,7 @@ export function parseGitWorktreePorcelain(output: string): GitWorktreeEntry[] {
 
 async function listGitWorktrees(repositoryPath: string): Promise<GitWorktreeEntry[]> {
   try {
-    const { stdout } = await executeFile(
-      "git",
-      ["-C", repositoryPath, "worktree", "list", "--porcelain"],
-      { timeout: 10_000 }
-    );
-    return parseGitWorktreePorcelain(stdout);
+    return await readGitWorktrees(repositoryPath);
   } catch (error) {
     throw new Error(
       `Failed to list Git worktrees for ${repositoryPath}: `

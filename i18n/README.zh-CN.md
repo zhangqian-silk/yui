@@ -40,7 +40,7 @@ Yui 是面向编程 Agent 的本地控制面。你只需用自然语言把目标
 npm 包包含 Linux x64、Mac Intel 和 Apple Silicon 的 Yui 预编译程序。
 同一份包在三个平台验证后发布，运行时只选择对应平台的程序。
 
-需要 Linux x64 / glibc 或 macOS（x64 或 Apple Silicon）、Git、tmux，以及
+需要 Linux x64 / glibc 或 macOS（x64 或 Apple Silicon）、Git 2.29.0 或更新版本、tmux，以及
 Node.js `^20.17.0`、`^22.9.0`、`^24.0.0` 或 `^26.0.0`。macOS 上可用
 `brew install tmux` 安装 tmux。最简单的方式是先安装 Codex CLI 或 Claude
 Code CLI，并确保它已经可以使用你自己的账号正常工作。Yui 负责协调 Agent，

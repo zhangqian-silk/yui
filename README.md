@@ -46,7 +46,7 @@ For the self-built coding Agent (without a Controller or Yui Home), see
 [`yui agent`](docs/native-agent.md). Its explicit configuration and product state
 are separate from the orchestration setup below.
 
-You need Linux x64 (glibc) or macOS (x64 or Apple Silicon), Git, tmux, and
+You need Linux x64 (glibc) or macOS (x64 or Apple Silicon), Git 2.29.0 or newer, tmux, and
 Node.js `^20.17.0`, `^22.9.0`, `^24.0.0` or `^26.0.0`. On macOS install tmux with
 `brew install tmux`. For the simplest setup, have Codex CLI or Claude Code CLI
 installed and ready to use with your own account. Yui coordinates those

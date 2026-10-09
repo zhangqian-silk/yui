@@ -17,6 +17,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { supportedGit } from "../repository/gitCompatibility.js";
 import {
   existsSync,
   mkdirSync,
@@ -490,6 +491,7 @@ function quarantineResource(
   const receiptPath = `${quarantinePath}.receipt.json`;
   try {
     if (isGitWorktreePath(record.path)) {
+      const program = supportedGit();
       // Move the linked worktree, including its exact checkout and Git
       // metadata, into the Home-local quarantine. Restore is the inverse
       // move, so the recorded HEAD cannot drift with a branch.
@@ -497,7 +499,7 @@ function quarantineResource(
       // Keep the existing SQLite writer fence through this bounded move, so a
       // Task reopen or new durable owner cannot commit between check and move.
       execFileSync(
-        "git",
+        program.path,
         ["-C", record.path, "worktree", "move", "--", record.path, quarantinePath],
         { timeout: 30_000 }
       );
@@ -616,10 +618,11 @@ function restoreQuarantinedRecord(
         updatedAt: now.toISOString()
       };
     }
+    const program = isGitWorktreePath(quarantine.path) ? supportedGit() : undefined;
     mkdirSync(dirname(quarantine.originalPath), { recursive: true });
-    if (isGitWorktreePath(quarantine.path)) {
+    if (program !== undefined) {
       execFileSync(
-        "git",
+        program.path,
         ["-C", quarantine.path, "worktree", "move", "--", quarantine.path, quarantine.originalPath],
         { timeout: 30_000 }
       );
@@ -738,7 +741,7 @@ export async function purgeResourceQuarantine(
         if (existsSync(quarantine.path)) {
           if (isGitWorktreePath(quarantine.path)) {
             execFileSync(
-              "git",
+              supportedGit().path,
               ["-C", quarantine.path, "worktree", "remove", "--force", "--", quarantine.path],
               { timeout: 30_000 }
             );

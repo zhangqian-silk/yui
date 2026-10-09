@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, utimesSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { WorkItemChangeSetManager } from "../../dist/workspace/workItemChangeSetManager.js";
 import { NodeGitWorkspace } from "../../dist/repository/gitWorkspace.js";
@@ -77,7 +77,7 @@ test("frozen result inspection distinguishes record, commit and HEAD differences
   await assert.rejects(manager.assertIntegrated(item.taskId, item.id), /workspace-path-mismatch/);
   assert.deepEqual(candidate, original, "a diagnosis must not rewrite the frozen Candidate");
   candidate = { ...candidate, workspace: structuredClone(workspace) };
-  const indexPath = git(prepared.path, "rev-parse", "--path-format=absolute", "--git-path", "index");
+  const indexPath = resolve(prepared.path, git(prepared.path, "rev-parse", "--git-path", "index"));
   utimesSync(join(prepared.path, "tracked.txt"), new Date("2020-01-01"), new Date("2020-01-01"));
   const index = existsSync(indexPath) ? readFileSync(indexPath) : undefined;
   await manager.inspectIntegrated(item.taskId, item.id);

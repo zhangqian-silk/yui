@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { supportedGit } from "../repository/gitCompatibility.js";
 
 const executeFile = promisify(execFile);
 
@@ -48,7 +49,7 @@ const HARDENING_FLAGS: readonly string[] = Object.freeze([
   "-c", "protocol.file.allow=never",
   // Hooks / filters / external programs — no committed script may execute.
   "-c", `core.hooksPath=${NULL_DEVICE}`,
-  "-c", "core.fsmonitor=false",
+  "-c", "core.fsmonitor=",
   "-c", "core.pager=cat",
   "-c", "core.editor=false",
   // Signing — never shell out to a signing program.
@@ -91,8 +92,9 @@ function managedGitEnvironment(): NodeJS.ProcessEnv {
     PATH: process.env.PATH ?? "/usr/bin:/bin",
     LANG: "C.UTF-8",
     LC_ALL: "C.UTF-8",
-    // A neutral HOME keeps any accidental lookup inside a controlled area; config
-    // lookups are already redirected to the null device below.
+    // Older supported Git does not recognize GIT_CONFIG_GLOBAL/SYSTEM.
+    // A neutral HOME and absent XDG_CONFIG_HOME also block its global lookup;
+    // GIT_CONFIG_NOSYSTEM is understood by all supported versions.
     HOME: process.platform === "win32" ? (process.env.USERPROFILE ?? "") : "/nonexistent",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_GLOBAL: NULL_DEVICE,
@@ -140,9 +142,10 @@ async function spawnManagedGit(
   options?: ManagedGitOptions
 ): Promise<{ stdout: Buffer; stderr: Buffer }> {
   assertSafeArguments(args);
+  const program = supportedGit();
   try {
     const result = await executeFile(
-      "git",
+      program.path,
       [...HARDENING_FLAGS, "-C", repoPath, ...args],
       {
         encoding: "buffer",

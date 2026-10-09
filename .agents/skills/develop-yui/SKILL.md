@@ -53,6 +53,18 @@ their own explicit `YUI_HOME`.
 
 ## Keep Yui validation lean
 
+Git operations support 2.29.0 and newer, including 2.30.2. Prefer common older
+primitives over version branches. Resolve Git-relative paths against the actual
+invocation directory; preserve whitespace and per-worktree/common-dir identity.
+Do not use old line-oriented worktree porcelain as lock or deletion authority.
+Use the shared read-only inventory and retain unverifiable resources. Keep
+fetch's `FETCH_HEAD`, tracking-ref and maintenance isolation, and atomic
+compare-and-swap batches. Never retry a failed mutating command with older flags.
+The minimum version is bounded by `fetch --no-write-fetch-head`; 2.20 was
+evaluated but is not supported. A version check is not a transport or repository
+health check. Compatibility changes require real old binaries, not spoofed
+version output; isolated local fixtures do not prove remote server behavior.
+
 Read [verification policy](../../../docs/testing/verification-levels.md) when
 selecting checks. Use a focused test-first reproduction for costly behavioral
 regressions; use an existing narrow check for a small low-risk edit.

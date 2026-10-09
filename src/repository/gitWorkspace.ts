@@ -5,8 +5,14 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { cleanupFailure } from "../workspace/cleanupInspection.js";
 import { externalProgramConfigViolations } from "../artifacts/managedGit.js";
+import { compatibleGitArguments, gitOutputLine, supportedGit } from "./gitCompatibility.js";
+import { gitPath, readGitWorktrees } from "./gitWorktreeInventory.js";
 
 const executeFile = promisify(execFile);
+const isolatedFetchOptions = [
+  "--no-tags", "--no-prune", "--no-prune-tags", "--no-recurse-submodules",
+  "--no-auto-gc", "--no-write-fetch-head", "--refmap="
+] as const;
 
 export type GitRepositoryInspection = Readonly<{
   root: string;
@@ -496,13 +502,13 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     const remote = safeRemote(input.remoteUrl);
     const configuredBranch = await safeFetchBranch(input.branch);
     const branch = configuredBranch === "HEAD"
-      ? await resolveRemoteHeadBranch(remote)
+      ? await resolveRemoteHeadBranch(remote, repositoryPath)
       : configuredBranch;
     const fetchedRef = remoteBaselineRef(remote, branch);
     try {
       await git([
         "-C", repositoryPath,
-        "fetch", "--no-tags", "--no-write-fetch-head",
+        "fetch", ...isolatedFetchOptions,
         remote,
         `refs/heads/${branch}:${fetchedRef}`
       ]);
@@ -557,8 +563,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
       // An empty refmap disables opportunistic tracking updates even when the
       // Project URL is a named remote. Ignore configured prune/submodule effects.
       await git([
-        "-C", initial.root, "fetch", "--no-tags", "--no-prune", "--no-prune-tags",
-        "--no-recurse-submodules", "--no-auto-maintenance", "--no-write-fetch-head", "--refmap=",
+        "-C", initial.root, "fetch", ...isolatedFetchOptions,
         remote, `refs/heads/${stableBranch}:${temporaryRef}`
       ]);
       fetchedCommit = await resolveFetchedCommit(initial.root, temporaryRef);
@@ -588,11 +593,11 @@ export class NodeGitWorkspace implements GitWorkspacePort {
         // Verify the stable branch and CAS the one configured destination in
         // the same Git transaction. HEAD/index/worktree still use normal ff.
         await git(["-C", initial.root, "update-ref", "--stdin"], { input: [
-          "start", "option no-deref",
+          "option no-deref",
           `verify refs/heads/${stableBranch} ${fetchedCommit}`,
           "option no-deref",
           `update ${mapping.ref} ${fetchedCommit} ${old}`,
-          "prepare", "commit", ""
+          ""
         ].join("\n") });
         tracking = {
           status: previous === fetchedCommit ? "current" : "updated",
@@ -661,15 +666,15 @@ export class NodeGitWorkspace implements GitWorkspacePort {
   }>): Promise<GitRemoteBaseline> {
     const remote = safeRemote(input.remoteUrl);
     const configuredRef = await safeFetchBranch(input.developmentRef);
-    const branch = configuredRef === "HEAD"
-      ? await resolveRemoteHeadBranch(remote)
-      : configuredRef;
     const repository = await this.inspect(input.repositoryPath, "HEAD");
+    const branch = configuredRef === "HEAD"
+      ? await resolveRemoteHeadBranch(remote, repository.root)
+      : configuredRef;
     const temporaryRef = remoteBaselineRef(remote, branch);
     try {
       await git([
         "-C", repository.root,
-        "fetch", "--no-tags", "--no-write-fetch-head",
+        "fetch", ...isolatedFetchOptions,
         remote,
         `refs/heads/${branch}:${temporaryRef}`
       ]);
@@ -677,7 +682,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
         "-C", repository.root,
         "rev-parse", "--verify", "--end-of-options", `${temporaryRef}^{commit}`
       ]);
-      const advertisedCommit = await resolveRemoteBranchCommit(remote, branch);
+      const advertisedCommit = await resolveRemoteBranchCommit(remote, branch, repository.root);
       if (fetchedCommit.toLowerCase() !== advertisedCommit) {
         throw new Error(
           `Project remote development branch changed while it was fetched: ${branch}.`
@@ -704,8 +709,10 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     branch?: string;
     localBranch?: string;
   }>): Promise<GitRepositoryInspection> {
+    supportedGit();
     const remote = safeRemote(input.remoteUrl);
-    const destination = resolve(requireText(input.destination, "Project destination"));
+    requireText(input.destination, "Project destination");
+    const destination = resolve(input.destination);
     if (await pathKind(destination) !== undefined) {
       throw new Error(`Project destination already exists: ${destination}.`);
     }
@@ -778,13 +785,11 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     const requested = await canonicalDirectory(repositoryPath, "Project");
     const ref = safeRef(baseRef);
     const root = await canonicalDirectory(
-      await gitLine(["-C", requested, "rev-parse", "--show-toplevel"]),
+      await gitPath(requested, ["--show-toplevel"]),
       "Project root"
     );
     const gitDirectory = await canonicalDirectory(
-      await gitLine([
-        "-C", root, "rev-parse", "--path-format=absolute", "--git-common-dir"
-      ]),
+      await gitPath(root, ["--git-common-dir"]),
       "Git common directory"
     );
     const baseCommit = await gitLine([
@@ -868,7 +873,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
         const importedRef = `${importRoot}/${index}`;
         await git([
           "-C", destination.root,
-          "fetch", "--no-tags", "--no-write-fetch-head", "--",
+          "fetch", ...isolatedFetchOptions, "--",
           source.root, `${snapshot.ref}:${importedRef}`
         ]);
         const imported = await resolveRefCommit(destination.root, importedRef);
@@ -963,34 +968,11 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     const excluded = input.excludeWorktreePath === undefined
       ? undefined
       : await realpath(resolve(input.excludeWorktreePath)).catch(() => undefined);
-    const porcelain = await git(["-C", root, "worktree", "list", "--porcelain"]);
-    const records: Array<{ path: string; branch?: string; prunable: boolean }> = [];
-    let current: { path?: string; branch?: string; prunable: boolean } = { prunable: false };
-    for (const line of porcelain.split("\n")) {
-      if (line.length === 0) {
-        const path = current.path;
-        if (path !== undefined) {
-          records.push({ path, branch: current.branch, prunable: current.prunable });
-        }
-        current = { prunable: false };
-        continue;
-      }
-      if (line.startsWith("worktree ")) {
-        current.path = line.slice("worktree ".length);
-      } else if (line.startsWith("branch ")) {
-        current.branch = line.slice("branch ".length);
-      } else if (line.startsWith("prunable")) {
-        current.prunable = true;
-      }
-    }
-    const lastPath = current.path;
-    if (lastPath !== undefined) {
-      records.push({ path: lastPath, branch: current.branch, prunable: current.prunable });
-    }
+    const records = await readGitWorktrees(root);
     for (const record of records) {
       // A dead registration (its directory is gone) occupies nothing; a
       // worktree on another ref or a detached HEAD does not occupy this one.
-      if (record.prunable || record.branch !== wanted) continue;
+      if ((record.prunable && !record.locked) || record.branch !== wanted) continue;
       // git reports canonical absolute paths; compare canonicals so a
       // symlinked workspace root cannot make the recorded worktree look
       // foreign.
@@ -1157,11 +1139,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
 
   async listWorktrees(repositoryPath: string): Promise<readonly string[]> {
     const root = await canonicalDirectory(repositoryPath, "Project");
-    const output = await git(["-C", root, "worktree", "list", "--porcelain"]);
-    return output
-      .split(/\r?\n/u)
-      .filter((line) => line.startsWith("worktree "))
-      .map((line) => line.slice("worktree ".length).trim());
+    return (await readGitWorktrees(root)).map(entry => entry.path);
   }
 
   async listCommitsBetween(input: Readonly<{
@@ -1403,9 +1381,8 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     }
     await assertExpectedBranch(expected, input.branch);
     if (!await this.inspectClean(expected)) return "dirty";
-    const worktrees = (await git(["-C", expected, "worktree", "list", "--porcelain", "-z"]))
-      .split("\0").filter(line => line.startsWith("worktree "));
-    if (worktrees.length !== 1 || worktrees[0] !== `worktree ${expected}`) {
+    const worktrees = await readGitWorktrees(expected);
+    if (worktrees.length !== 1 || worktrees[0]!.path !== expected) {
       cleanupFailure("git-worktree-registrations", "Task clone still owns Git worktree registrations; retained.",
         1, worktrees.length);
     }
@@ -1574,16 +1551,14 @@ async function removeMissingWorktreeRegistration(repositoryRoot: string, path: s
 }
 
 async function inspectMissingWorktreeRegistration(repositoryRoot: string, path: string, branch: string, allowDetached = false): Promise<boolean> {
-  const records = (await git(["-C", repositoryRoot, "worktree", "list", "--porcelain", "-z"])).split("\0\0");
-  const fields = records.map(record => record.split("\0")).find(record => record.includes(`worktree ${path}`));
-  if (fields === undefined) return false;
-  const pinnedDetached = allowDetached && fields.includes("detached")
+  const entry = (await readGitWorktrees(repositoryRoot)).find(record => record.path === path);
+  if (entry === undefined) return false;
+  const pinnedDetached = allowDetached && entry.detached
     && await gitSucceeds(["-C", repositoryRoot, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`])
-    && fields.includes(`HEAD ${await resolveRefCommit(repositoryRoot, `refs/heads/${branch}`)}`);
-  if ((!fields.includes(`branch refs/heads/${branch}`) && !pinnedDetached) || fields.some(field => field.startsWith("locked"))) {
+    && entry.head === await resolveRefCommit(repositoryRoot, `refs/heads/${branch}`);
+  if ((entry.branch !== `refs/heads/${branch}` && !pinnedDetached) || entry.locked) {
     cleanupFailure("git-registration-mismatch", "Missing worktree has uncertain or locked Git ownership; metadata retained.",
-      { branch, locked: false }, { branch: fields.find(field => field.startsWith("branch "))?.slice(7) ?? null,
-        locked: fields.some(field => field.startsWith("locked")) });
+      { branch, locked: false }, { branch: entry.branch ?? null, locked: entry.locked });
   }
   return true;
 }
@@ -1636,8 +1611,7 @@ async function assertExpectedBranch(path: string, expected: string, allowRebase 
     // Rebase temporarily detaches HEAD. Git's per-worktree metadata must still
     // identify this exact Integration branch; unrelated detachment is invalid.
     for (const backend of ["rebase-merge", "rebase-apply"]) {
-      const headNamePath = await gitLine(["-C", path, "rev-parse", "--path-format=absolute",
-        "--git-path", `${backend}/head-name`]);
+      const headNamePath = await gitPath(path, ["--git-path", `${backend}/head-name`]);
       let headName: string;
       try { headName = (await readFile(headNamePath, "utf8")).trim(); }
       catch (error) {
@@ -1669,12 +1643,12 @@ async function assertOwnedWorktree(
   assertContained(container, canonicalPath);
   if (canonicalPath !== path) throw new Error("Managed worktree resolves through a symbolic link.");
   const root = await canonicalDirectory(
-    await gitLine(["-C", path, "rev-parse", "--show-toplevel"]),
+    await gitPath(path, ["--show-toplevel"]),
     "Managed worktree root"
   );
   if (root !== path) throw new Error("Managed worktree root does not match its deterministic path.");
   const common = await canonicalDirectory(
-    await gitLine(["-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir"]),
+    await gitPath(path, ["--git-common-dir"]),
     "Managed Git common directory"
   );
   if (common !== project.gitDirectory) {
@@ -1720,7 +1694,7 @@ async function inspectExactRecordedWorktree(input: Readonly<{
     throw new Error("Recorded managed worktree resolves through a symbolic link.");
   }
   const root = await canonicalDirectory(
-    await gitLine(["-C", path, "rev-parse", "--show-toplevel"]),
+    await gitPath(path, ["--show-toplevel"]),
     "Recorded managed worktree root"
   );
   if (root !== path) {
@@ -1731,7 +1705,7 @@ async function inspectExactRecordedWorktree(input: Readonly<{
     throw new Error(`Recorded managed worktree is on an unexpected branch: ${branch}.`);
   }
   const gitDirectory = await canonicalDirectory(
-    await gitLine(["-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir"]),
+    await gitPath(path, ["--git-common-dir"]),
     "Recorded managed Git common directory"
   );
   const destination = await new NodeGitWorkspace().inspect(input.repositoryPath);
@@ -1848,8 +1822,8 @@ async function cleanupContainer(path: string): Promise<string> {
 }
 
 async function canonicalDirectory(path: string, label: string): Promise<string> {
-  const value = requireText(path, label);
-  const canonical = await realpath(isAbsolute(value) ? value : resolve(value));
+  requireText(path, label);
+  const canonical = await realpath(isAbsolute(path) ? path : resolve(path));
   return canonical;
 }
 
@@ -1889,7 +1863,7 @@ async function readWorktreeStatus(path: string): Promise<string> {
 }
 
 async function readStatusGit(path: string, args: readonly string[]): Promise<string> {
-  return git(["--no-optional-locks", "-c", "core.fsmonitor=false",
+  return git(["--no-optional-locks", "-c", "core.fsmonitor=",
     "-c", "protocol.allow=never", "-c", "protocol.file.allow=never",
     "-C", path, ...args], { environment: { GIT_NO_LAZY_FETCH: "1" } });
 }
@@ -1940,8 +1914,10 @@ async function git(
   args: readonly string[],
   options: Readonly<{ input?: string; environment?: NodeJS.ProcessEnv }> = {}
 ): Promise<string> {
+  const program = supportedGit();
+  const invocation = compatibleGitArguments(args);
   try {
-    const execution = executeFile("git", [...args], {
+    const execution = executeFile(program.path, invocation, {
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
       timeout: 30_000,
@@ -1961,6 +1937,7 @@ async function git(
 }
 
 async function gitSucceeds(args: readonly string[]): Promise<boolean> {
+  supportedGit();
   try {
     await git(args);
     return true;
@@ -1970,7 +1947,7 @@ async function gitSucceeds(args: readonly string[]): Promise<boolean> {
 }
 
 async function gitLine(args: readonly string[]): Promise<string> {
-  const lines = (await git(args)).trimEnd().split("\n");
+  const lines = gitOutputLine(await git(args)).split("\n");
   if (lines.length !== 1 || lines[0]?.length === 0 || lines[0]?.includes("\0")) {
     throw new Error("Git returned invalid output.");
   }
@@ -2128,6 +2105,7 @@ function safeRef(value: string): string {
 }
 
 async function safeFetchBranch(value: string): Promise<string> {
+  supportedGit();
   const configuredRef = safeRef(value);
   if (configuredRef === "HEAD") return configuredRef;
   const branchPrefix = "refs/heads/";
@@ -2233,7 +2211,8 @@ function isCommit(value: string): boolean {
 }
 
 function safeRemote(value: string): string {
-  const remote = requireText(value, "Git remote URL");
+  requireText(value, "Git remote URL");
+  const remote = value;
   if (remote.startsWith("-") || /[\r\n]/.test(remote)) {
     throw new Error("Git remote URL is invalid.");
   }

@@ -3,6 +3,8 @@ import { isAbsolute, join } from "node:path";
 
 import Database from "better-sqlite3";
 import { inspectPty } from "./ptyProbe.js";
+import { gitVersionSupport } from "../repository/gitCompatibility.js";
+import { resolveExecutable } from "../external/pinnedCommandRunner.js";
 
 import {
   configuredAgentToDefinition,
@@ -967,6 +969,14 @@ function checkExecutable(
 ): DoctorCheck {
   try {
     const output = firstLine(executor.run(command, args));
+    if (name === "git") {
+      const support = gitVersionSupport(output);
+      return {
+        name, status: support.supported ? "ok" : "invalid",
+        detail: `${resolveExecutable(command, process.env.PATH) ?? command}: ${support.detail}`
+          + (support.supported ? "" : " Select a supported Git in PATH and rerun doctor; no upgrade was performed.")
+      };
+    }
     return {
       name,
       status: "ok",
