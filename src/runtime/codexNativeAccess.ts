@@ -1,5 +1,7 @@
 import type { JsonObject } from "./jsonLineChannel.js";
 import { isDeepStrictEqual } from "node:util";
+import { unknownAgentRunConfiguration, type AgentRunConfigurationObservation } from "./agentRunConfiguration.js";
+import { CodexPreSubmissionError } from "./codexAppServerRuntime.js";
 
 export type CodexNativeRequest = Readonly<{
   id: string | number;
@@ -13,6 +15,9 @@ export interface CodexNativeAccess {
   readonly attached: boolean;
   readonly initialized: JsonObject;
   readonly requests: readonly CodexNativeRequest[];
+  readonly runConfiguration: AgentRunConfigurationObservation;
+  /** Host serializes this with input, checks writer/Session fencing first. */
+  setModel(model: string): Promise<void>;
   read(method: string, params: JsonObject): Promise<JsonObject>;
   validateTurn(params: JsonObject): void;
   respond(id: string | number, threadId: string, turnId: string | null, result: JsonObject): Promise<void>;
@@ -39,11 +44,21 @@ export function createCodexNativeAccess(
     send(message: JsonObject): Promise<void>;
     onMessage(listener: (message: JsonObject) => void): () => void;
   },
-  openingMessages: readonly JsonObject[] = []
+  openingMessages: readonly JsonObject[] = [],
+  initialConfiguration?: JsonObject
 ): CodexNativeAccess {
   const pending = new Map<string | number, CodexNativeRequest>();
   const listeners = new Set<(message: JsonObject) => void>();
-  let configuration: JsonObject | undefined;
+  let configuration = initialConfiguration;
+  let observedAt = new Date().toISOString();
+  const observed = (): AgentRunConfigurationObservation => typeof configuration?.model !== "string"
+    ? unknownAgentRunConfiguration("No confirmed native model response. Reconnect to restore the fixed launch configuration.")
+    : {
+      status: "observed", observedAt,
+      handshake: { status: "unsupported", reason: "Model reported by Codex thread/start or thread/resume; not a capability handshake." },
+      requested: [],
+      axes: [{ key: "model", category: "model", current: { status: "observed", value: configuration.model }, offered: [] }]
+    };
   const observe = (message: JsonObject): void => {
     const params = message.params as JsonObject | undefined;
     if (params?.threadId !== threadId) return;
@@ -67,6 +82,28 @@ export function createCodexNativeAccess(
     initialized,
     get attached() { return listeners.size > 0; },
     get requests() { return [...pending.values()]; },
+    get runConfiguration() { return observed(); },
+    async setModel(model) {
+      try {
+        if (!model.trim() || model.length > 200 || model.includes("\0")) throw new Error("Invalid model.");
+        const read = await channel.request("thread/read", { threadId, includeTurns: false });
+        const thread = read.thread as JsonObject | undefined;
+        if (thread?.id !== threadId || (thread.status as JsonObject | undefined)?.type !== "idle") {
+          throw new Error("Model switching requires a confirmed idle Thread.");
+        }
+      } catch (error) {
+        throw new CodexPreSubmissionError(error instanceof Error ? error.message : "Native idle state is unavailable.");
+      }
+      // No fork/start, account, permission or Role-default mutation. Do not
+      // preserve an old observation if the native mutation becomes uncertain.
+      configuration = undefined;
+      const result = await channel.request("thread/resume", { threadId, model, excludeTurns: true });
+      if ((result.thread as JsonObject | undefined)?.id !== threadId || result.model !== model) {
+        throw new Error("Native model adoption was not confirmed; inspect before another change.");
+      }
+      configuration = result;
+      observedAt = new Date().toISOString();
+    },
     async read(method, params) {
       // TUI startup attaches to the already opened Thread without resuming it
       // with new options or changing the Host's configured execution boundary.
@@ -76,6 +113,7 @@ export function createCodexNativeAccess(
         configuration = await channel.request("thread/resume", { threadId,
           ...(typeof params.excludeTurns === "boolean" ? { excludeTurns: params.excludeTurns } : {}),
           ...(page ? { initialTurnsPage: { ...page, limit: Math.min(40, typeof page.limit === "number" && page.limit > 0 ? page.limit : 40) } } : {}) });
+        observedAt = new Date().toISOString();
         return configuration;
       }
       if (!READS.has(method)) throw new Error(`Native operation is not available in managed access: ${method}.`);

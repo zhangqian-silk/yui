@@ -103,12 +103,12 @@ export class CodexAppServerRuntime implements
 
   async openConversation(input: CodexThreadOptions & Readonly<{
     cwd: string;
-  }>): Promise<Readonly<{ conversationId: string }>> {
+  }>): Promise<Readonly<{ conversationId: string; raw: JsonRpcObject }>> {
     const result = await this.transport.request("thread/start", {
       cwd: text(input.cwd, "Codex thread cwd"),
       ...threadOptions(input)
     });
-    return { conversationId: threadId(result) };
+    return { conversationId: threadId(result), raw: result };
   }
 
   async resumeConversation(

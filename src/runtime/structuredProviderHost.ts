@@ -660,13 +660,16 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
     await channel.notify("initialized");
     const runtime = new CodexAppServerRuntime(channel);
     let conversationId: string;
+    let nativeConfiguration: JsonObject;
     let resumedActiveTurnId: string | undefined;
     let resumedTurns: import("./codexAppServerRuntime.js").CodexThreadSnapshot["turns"] = [];
     if (control.mode === "new") {
-      conversationId = (await runtime.openConversation({
+      const opened = await runtime.openConversation({
         cwd: payload.cwd,
         ...control.codexThread!
-      })).conversationId;
+      });
+      conversationId = opened.conversationId;
+      nativeConfiguration = opened.raw;
     } else {
       try {
         const resumed = await runtime.resumeConversation(control.nativeSessionId!, {
@@ -674,6 +677,7 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
           ...control.codexThread!
         });
         conversationId = resumed.threadId;
+        nativeConfiguration = resumed.raw;
         resumedActiveTurnId = resumed.activeTurnId;
         resumedTurns = resumed.turns;
       } catch (error) {
@@ -717,7 +721,7 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
       mirror,
       optionalId(initialized.codexHome)
     );
-    session.nativeAccess = createCodexNativeAccess(conversationId, initialized, channel, openingMessages);
+    session.nativeAccess = createCodexNativeAccess(conversationId, initialized, channel, openingMessages, nativeConfiguration);
     session.#activeTurnId = resumedActiveTurnId;
     const ownedTurn = control.kind === "restore" ? control.ownedTurn : undefined;
     session.#clientOwnedTurnId = ownedTurn?.turnId;
@@ -892,11 +896,9 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
     return this.#activeTurnId;
   }
 
-  /**
-   * This implementation has no run-configuration observation reader.
-   */
+  /** Last model confirmation from native start/resume, with its observation time. */
   get runConfiguration(): AgentRunConfigurationObservation {
-    return CODEX_RUN_CONFIGURATION;
+    return this.nativeAccess?.runConfiguration ?? CODEX_RUN_CONFIGURATION;
   }
 
   async submitTurn(

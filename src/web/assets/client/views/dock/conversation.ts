@@ -11,6 +11,7 @@ export function createConversationController(host, t, locale = function () { ret
   let rendered = new Map();
   let materials = [], incomingMaterials = null;
   let requestSignature = "";
+  let modelPending = null, modelCatalog = null, lastModelObservation = null;
   const requests = h("div");
   const questions = h("div");
   let questionSignature = "";
@@ -29,6 +30,18 @@ export function createConversationController(host, t, locale = function () { ret
   const feed = h("div.feed", { tabIndex: 0, "aria-label": t("conversation.history") });
   const text = h("textarea.composer-input", { rows: 3, "aria-label": t("conversation.input"), maxLength: 12000 });
   const receipt = h("p.feed-note", { role: "status" });
+  const draftStatus = h("p.feed-note", { role: "status" });
+  const receiptDetail = h("pre");
+  const modelStatus = h("p.feed-note", { role: "status" });
+  const modelResult = h("p.feed-note", { role: "status" });
+  const modelSelect = h("select", { "aria-label": t("conversation.model") });
+  const modelLoad = h("button.btn", { type: "button" }, t("conversation.modelsLoad"));
+  const modelApply = h("button.btn", { type: "button" }, t("conversation.modelApply"));
+  const modelPanel = h("details", null, h("summary", null, t("conversation.model")),
+    modelStatus, h("div.composer-bar", null, modelLoad, modelSelect, modelApply), modelResult,
+    h("p.feed-note", null, t("conversation.modelBoundary")));
+  const slash = h("div.conversation-slash", { "aria-label": t("conversation.commands") });
+  const literal = h("button.btn", { type: "button", hidden: true }, t("conversation.literal"));
   const send = h("button.btn.btn-primary", { type: "button" }, t("conversation.send"));
   const stop = h("button.btn", { type: "button" }, t("conversation.stop"));
   const check = h("button.btn", { type: "button" }, t("conversation.receipt"));
@@ -45,7 +58,9 @@ export function createConversationController(host, t, locale = function () { ret
     h("label", null, t("conversation.defaultMode"), defaultMode)), identity, status, feed,
     h("div.conversation-requests", null, questions, requests),
     h("div.composer-bar", null, older, latest),
-    h("div.composer-wrap", null, materialBar, materialList, materialAlert, text, h("div.composer-bar", null, send, stop, check), receipt,
+    h("div.composer-wrap", null, modelPanel, materialBar, materialList, materialAlert, text, slash, draftStatus,
+      h("div.composer-bar", null, send, stop, check, literal), receipt,
+      h("details", null, h("summary", null, t("conversation.receiptDetails")), receiptDetail),
       h("p.feed-note", null, t("conversation.boundary"))));
 
   function key() { return "yui.conversation." + JSON.stringify(owner) + "." + selected; }
@@ -54,7 +69,7 @@ export function createConversationController(host, t, locale = function () { ret
       if (value === undefined) return sessionStorage.getItem(key() + suffix);
       if (value === null) sessionStorage.removeItem(key() + suffix);
       else sessionStorage.setItem(key() + suffix, value);
-    } catch {}
+    } catch { draftStatus.textContent = t("conversation.storageFailed"); }
     return null;
   }
   function url(extra) {
@@ -69,13 +84,107 @@ export function createConversationController(host, t, locale = function () { ret
     const writable = historyOk && active && active.current && active.status === "active" && active.adapterId === "codex"
       && facts.authority && facts.authority.owner === "controller" && !facts.terminalWriter;
     const turn = facts && facts.turn;
-    send.disabled = busy || !!pending || !writable || (turn && ["submitting", "delivery-unknown"].includes(turn.status));
+    send.disabled = busy || !!pending || !!modelPending || !writable || (turn && ["submitting", "delivery-unknown"].includes(turn.status));
     stop.disabled = busy || !!pending || !writable || !turn || turn.status !== "accepted" || !turn.nativeTurnId;
     check.disabled = busy || !pending;
     older.disabled = busy || !next;
+    literal.disabled = send.disabled;
+    modelLoad.disabled = busy || !active || active.adapterId !== "codex";
+    modelApply.disabled = busy || !!pending || !!modelPending || !writable || !modelSelect.value
+      || !modelCatalog || modelCatalog.source === "fallback" || !!modelCatalog.failure
+      || turn && ["submitting", "accepted", "delivery-unknown"].includes(turn.status);
     materialBar.hidden = !owner || owner.scope !== "task";
     file.disabled = busy || !!pending || !writable || materials.length >= 8;
     materialList.querySelectorAll("button").forEach(function (control) { control.disabled = busy || !!pending; });
+  }
+  function showReceipt(result) {
+    const refused = result.interrupt && result.interrupt.state === "not-interrupted";
+    const state = refused ? result.interrupt.code === "DELIVERY_UNKNOWN" ? "unknown" : "failed" : result.state || "submitted";
+    receipt.textContent = t("conversation.receipt." + state)
+      + (refused ? " · " + result.interrupt.code : "")
+      + (result.messageId ? " · " + result.messageId : "")
+      + (result.notDelivered ? " · " + (typeof result.notDelivered === "string" ? result.notDelivered : JSON.stringify(result.notDelivered)) : "");
+    receiptDetail.textContent = JSON.stringify(result, null, 2);
+  }
+  function showModel(observation) {
+    const axis = observation && observation.status === "observed"
+      && observation.axes.find(function (a) { return a.key === "model"; });
+    const value = axis && axis.current.status === "observed" ? axis.current.value : null;
+    const session = facts && facts.sessions.find(function (s) { return s.nativeSessionId === selected; });
+    modelStatus.textContent = t("conversation.launchModel") + ": " + (session && session.launchModel || "—")
+      + " · " + t("conversation.confirmedModel") + ": " + (value || t("conversation.unknown"))
+      + (value ? " · " + observation.observedAt : "");
+    if (modelPending) {
+      if (value === modelPending.model && observation.observedAt !== modelPending.previousObservation) {
+        modelPending = null; saved(".modelPending", null);
+        releaseMutation(url({ session: selected }).replace("/api/conversation?", "/api/conversation/model?"));
+      } else modelStatus.textContent += " · " + t("conversation.modelUnknown");
+    }
+    lastModelObservation = value ? observation.observedAt : null;
+  }
+  async function loadModels() {
+    if (modelLoad.disabled) return;
+    const own = generation;
+    busy = true; controls();
+    try {
+      const result = await requestJson(url({ session: selected }).replace("/api/conversation?", "/api/conversation/model?"));
+      if (own !== generation) return;
+      modelCatalog = result; clear(modelSelect);
+      (result.catalog.models || []).forEach(function (m) {
+        modelSelect.append(h("option", { value: m.value }, m.label + " · " + m.value));
+      });
+      modelResult.textContent = result.source + " · " + (result.fetchedAt || result.attemptedAt)
+        + (result.failure ? " · " + result.failure.message : "");
+    } catch (error) { if (own === generation) modelResult.textContent = error.message; }
+    finally { finish(own); }
+  }
+  async function applyModel() {
+    if (modelApply.disabled) return;
+    const own = generation;
+    const endpoint = url({ session: selected }).replace("/api/conversation?", "/api/conversation/model?");
+    modelPending = { model: modelSelect.value, previousObservation: lastModelObservation };
+    saved(".modelPending", JSON.stringify(modelPending));
+    busy = true; controls();
+    modelResult.textContent = t("conversation.modelApplying");
+    try {
+      const result = await submitMutation(endpoint, endpoint, { model: modelPending.model });
+      if (own !== generation) return;
+      modelPending = null; saved(".modelPending", null);
+      showModel(result.runConfiguration);
+      modelResult.textContent = t("conversation.modelConfirmed");
+    } catch (error) {
+      if (own !== generation) return;
+      modelResult.textContent = error.message + " · " + t(error.disposition === "not-submitted" ? "conversation.modelFailed" : "conversation.modelUnknown");
+      if (error.disposition === "not-submitted") { modelPending = null; saved(".modelPending", null); }
+    } finally { finish(own); }
+  }
+  const commands = ["help", "status", "model", "stop", "latest"];
+  function drawCommands() {
+    clear(slash);
+    const value = text.value.trim();
+    literal.hidden = !value.startsWith("/");
+    if (!value.startsWith("/") || /\s/.test(value)) return;
+    commands.filter(function (name) { return ("/" + name).startsWith(value); }).forEach(function (name) {
+      const button = h("button.btn", { type: "button" }, "/" + name + " · " + t("conversation.command." + name));
+      button.addEventListener("click", function () {
+        text.value = "/" + name; saved(".draft", text.value); drawCommands(); text.focus?.();
+      });
+      slash.append(button);
+    });
+  }
+  function runCommand() {
+    const name = text.value.trim().slice(1);
+    if (!commands.includes(name)) { receipt.textContent = t("conversation.commandUnknown"); return; }
+    if (name === "stop") {
+      if (stop.disabled) receipt.textContent = t("conversation.stopUnavailable");
+      else submit(true);
+      return;
+    }
+    if (name === "model") { modelPanel.open = true; loadModels(); }
+    else if (name === "status") refresh();
+    else if (name === "latest") { cursor = null; refresh(); }
+    receipt.textContent = name === "help" ? t("conversation.commandHelp") : t("conversation.command." + name);
+    text.value = ""; saved(".draft", null); drawCommands();
   }
   function saveMaterials() { saved(".materials", JSON.stringify(materials)); }
   function drawMaterials() {
@@ -188,6 +297,9 @@ export function createConversationController(host, t, locale = function () { ret
     text.value = saved(".draft") || "";
     try { pending = JSON.parse(saved(".pending") || "null"); } catch { pending = null; }
     try { materials = JSON.parse(saved(".materials") || "[]"); } catch { materials = []; }
+    try { modelPending = JSON.parse(saved(".modelPending") || "null"); } catch { modelPending = null; }
+    modelCatalog = null; lastModelObservation = null; clear(modelSelect); modelStatus.textContent = ""; modelResult.textContent = ""; receiptDetail.textContent = "";
+    drawCommands();
     materialAlert.textContent = "";
     if (incomingMaterials) {
       const combined = materials.concat(incomingMaterials).filter(function (ref, index, all) {
@@ -291,6 +403,7 @@ export function createConversationController(host, t, locale = function () { ret
       if (page.nativeRequestsOmitted) status.textContent += " · " + t("conversation.nativeOmitted");
       status.textContent += " · " + t(facts.terminalWriter ? "conversation.terminalWriter" : "conversation.structuredWriter");
       renderRequests(page.nativeRequests || []);
+      showModel(page.runConfiguration);
       identity.textContent = (owner.taskId || "Global") + " / " + owner.roleName + " / " + selected
         + (turn ? " / " + (turn.nativeTurnId || turn.attemptId) + (turn.runId ? " / " + turn.runId : "") : "");
       const scroll = feed.scrollTop, atEnd = feed.scrollHeight - feed.clientHeight - scroll < 40;
@@ -299,6 +412,7 @@ export function createConversationController(host, t, locale = function () { ret
     } catch (error) {
       if (own === generation) { historyOk = false; status.textContent = t("conversation.disconnected") + " · " + error.message; }
     } finally { finish(own); }
+    if (own === generation && pending && historyOk) await inspectReceipt();
   }
   async function inspectReceipt() {
     if (!pending || busy) return;
@@ -307,12 +421,13 @@ export function createConversationController(host, t, locale = function () { ret
     try {
       const result = await requestJson(url({ requestId: pending.requestId }));
       if (own !== generation) return;
-      receipt.textContent = JSON.stringify(result);
+      showReceipt(result);
       if (["accepted", "failed"].includes(result.state)) {
         const submitted = pending;
         pending = null; saved(".pending", null);
         if (result.state === "accepted" && submitted.action !== "interrupt" && text.value === submitted.body) {
           text.value = ""; saved(".draft", null);
+          drawCommands();
           materials = materials.filter(function (ref) {
             return !(submitted.materials || []).some(function (sent) {
               return sent.commit === ref.commit && sent.relativePath === ref.relativePath;
@@ -324,9 +439,10 @@ export function createConversationController(host, t, locale = function () { ret
     } catch (error) { if (own === generation) receipt.textContent = t("conversation.unknown") + " " + error.message; }
     finally { finish(own); }
   }
-  async function submit(interrupt) {
+  async function submit(interrupt, asLiteral) {
     if (busy || pending || (interrupt ? stop.disabled : send.disabled)) return;
     if (!interrupt && !text.value.trim()) return;
+    if (!interrupt && !asLiteral && text.value.trim().startsWith("/")) { runCommand(); return; }
     const turn = facts.turn;
     const action = interrupt ? "interrupt" : turn && turn.status === "accepted" ? "steer" : "queue";
     const payload = { action: action, requestId: crypto.randomUUID() };
@@ -339,10 +455,11 @@ export function createConversationController(host, t, locale = function () { ret
     saved(".pending", JSON.stringify(pending)); saved(".draft", text.value);
     const own = generation, endpoint = url({ session: selected });
     busy = true; controls();
+    receipt.textContent = t("conversation.receipt.sending");
     try {
       const result = await submitMutation(endpoint + "/" + payload.requestId, endpoint, payload);
       if (own !== generation) return;
-      receipt.textContent = JSON.stringify(result);
+      showReceipt(result);
       if (action === "interrupt" && result.interrupt?.state === "not-interrupted"
         && ["NO_ACTIVE_TURN", "TARGET_CHANGED", "INTERRUPT_UNSUPPORTED"].includes(result.interrupt.code)) {
         // Preflight proved no native cancel was submitted, so no durable
@@ -352,12 +469,29 @@ export function createConversationController(host, t, locale = function () { ret
       // Saved/queued is not accepted. Only an exact receipt lookup settles it.
     } catch (error) {
       if (own !== generation) return;
-      receipt.textContent = t("conversation.unknown") + " " + error.message;
+      receipt.textContent = t(error.disposition === "not-submitted" ? "conversation.receipt.failed" : "conversation.unknown") + " " + error.message;
       if (error.disposition === "not-submitted") { pending = null; saved(".pending", null); }
     } finally { finish(own); }
     if (own === generation) await inspectReceipt();
   }
-  text.addEventListener("input", function () { if (selected) saved(".draft", text.value); });
+  text.addEventListener("input", function () {
+    if (selected) { draftStatus.textContent = t("conversation.draftSaved"); saved(".draft", text.value); }
+    drawCommands();
+  });
+  text.addEventListener("keydown", function (event) {
+    if (event.isComposing) return;
+    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); submit(false); }
+    if (event.key === "Tab" && text.value.startsWith("/")) {
+      const matches = commands.filter(function (name) { return ("/" + name).startsWith(text.value); });
+      if (matches.length === 1) {
+        event.preventDefault(); text.value = "/" + matches[0]; saved(".draft", text.value); drawCommands();
+      }
+    }
+  });
+  modelLoad.addEventListener("click", loadModels);
+  modelSelect.addEventListener("change", controls);
+  modelApply.addEventListener("click", applyModel);
+  literal.addEventListener("click", function () { submit(false, true); });
   file.addEventListener("change", async function () {
     const chosen = file.files[0];
     if (!chosen || file.disabled) return;
@@ -417,6 +551,9 @@ export function createConversationController(host, t, locale = function () { ret
         generation++; owner = target; selected = null; facts = null; pending = null; clear(select); clear(feed);
         cursor = null; next = null; historyOk = false; rendered.clear();
         text.value = ""; receipt.textContent = ""; identity.textContent = ""; controls();
+        modelPending = null; modelCatalog = null; clear(modelSelect); modelStatus.textContent = "";
+        modelResult.textContent = "";
+        receiptDetail.textContent = ""; draftStatus.textContent = ""; drawCommands();
         materials = []; incomingMaterials = null; clear(materialList); materialAlert.textContent = "";
         clear(requests); requestSignature = "";
         clear(questions); questionSignature = "";

@@ -5,6 +5,7 @@ let input = Buffer.alloc(0);
 let upgraded = false;
 let turnSequence = 0;
 let activeTurnId;
+let model = "fixture-default";
 const controlled = process.env.YUI_FAKE_CONTROLLED === "1";
 let threadId = process.env.YUI_FAKE_THREAD_ID ?? "fake-thread-1";
 // Optional deterministic tool work for offline lifecycle exercises. Ordinary
@@ -84,11 +85,13 @@ function handleMessage(message) {
       respond({ codexHome: process.env.CODEX_HOME ?? "/tmp/fake-codex-home" });
       break;
     case "thread/start":
-      respond({ thread: { id: threadId, status: { type: "idle" }, turns: [] } });
+      model = message.params.model ?? model;
+      respond({ model, thread: { id: threadId, status: { type: "idle" }, turns: [] } });
       break;
     case "thread/resume":
       threadId = message.params.threadId;
-      respond({ thread: { id: message.params.threadId, status: { type: "idle" },
+      model = message.params.model ?? model;
+      respond({ model, thread: { id: message.params.threadId, status: { type: "idle" },
         turns: JSON.parse(process.env.YUI_FAKE_RESUMED_TURNS ?? "[]") } });
       break;
     case "thread/name/set":
