@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import time
+import traceback
 from pathlib import Path
 
 evidence = Path(os.environ["YUI_SMOKE_EVIDENCE"])
@@ -55,7 +56,7 @@ def check(name, action):
         results.append({"name": name, "status": "passed"})
         print("PASS", name)
     except Exception as error:
-        results.append({"name": name, "status": "failed", "error": repr(error)})
+        results.append({"name": name, "status": "failed", "error": traceback.format_exc()})
         capture("failure-" + str(len(results)))
         print("FAIL", name, error)
         js("document.querySelectorAll('dialog[open]').forEach(d=>d.close())")

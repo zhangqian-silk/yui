@@ -446,6 +446,11 @@ http.createServer((req, res) => {
       });
     }
     report.status = report.checks.some(c => c.status === "failed") ? "failed" : "passed";
+    const browserResults = join(evidence, "browser-results.json");
+    if (existsSync(browserResults)) {
+      report.browserChecks = JSON.parse(readFileSync(browserResults, "utf8"));
+      if (report.browserChecks.some(c => c.status === "failed")) report.status = "failed";
+    }
     if (report.status === "failed") process.exitCode = 1;
     await stopWeb();
     const stopped = command(["controller", "stop"], { json: false });
