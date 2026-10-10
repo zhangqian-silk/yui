@@ -33,9 +33,29 @@ independently recheck the existing Context boundary.
 
 The Web sidebar's **Search task contents** opens the same search port,
 `GET /api/search?query=text&limit=20`, behind the existing local-user page token.
-Results offer exact-original reading, source-Task navigation, and a selectable
-reference/excerpt for copying. Search and reading never send input, activate a
-Task, restore a Session, or replay a historical operation.
+Results can be filtered by source type and all accessible Tasks or the selected
+Task. They offer source-Task navigation and readable, pinned original text,
+not the underlying JSON record. The token-authenticated
+`GET /api/tasks/:task/search-source?store=...&ref=...&digest=...&field=...&offset=0`
+uses the same Context authorization and digest checks; only searchable text
+fields are accepted. Each explicitly requested page contains at most 4,000 Unicode
+code points. Previous/next replaces the displayed page rather than accumulating
+the complete body. Source errors remain distinct from an empty search result.
+
+Open the current writable Conversation panel before opening search to insert an
+excerpt into its existing draft. The dialog displays the captured destination
+Task/global Role and native Session. Insert the bounded search excerpt, a selected
+passage, or the displayed original page. Each insertion rechecks the exact source,
+preserves its Task/type/ref/revision/digest/field/code-point range, labels the text
+as reference-only, and appends to the existing conversation draft. It does not
+create a second draft or attachment store. The current composer length limit
+still applies; a rejected insertion leaves the draft unchanged. A hidden,
+historical, switched, busy or otherwise non-writable destination is not an
+insertion target: reopen search from the intended writable Conversation.
+
+Search, reading and draft insertion never send input, activate a Task, restore
+a Session, or replay a historical operation. The user reviews the draft and
+separately chooses whether to send through the existing conversation input path.
 
 To reuse prior work, the user or authorized Operator reads the original, chooses
 the applicable excerpt, and supplies it with its Task/ref/digest and field in the

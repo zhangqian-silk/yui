@@ -49,7 +49,7 @@ function fixture(submitResult = { state: "submitted" }, extra = {}) {
       return { currentSessionId, sessions: [{ nativeSessionId: currentSessionId, current: true,
         status: "active", adapterId: "codex" }], authority: { owner: "controller" },
         terminalWriter: extra.terminalWriter, leaderQuestions: extra.leaderQuestions,
-        turn: extra.idle ? null : { status: "accepted", nativeTurnId: "turn" }, total: 1, nextOffset: null };
+        turn: extra.idle ? null : { status: extra.turnStatus || "accepted", nativeTurnId: "turn" }, total: 1, nextOffset: null };
     },
     submitMutation: async (...args) => { mutations.push(args); return extra.submit ? extra.submit(...args) : submitResult; }
   });
@@ -93,6 +93,24 @@ test("Slash completion is local and unknown commands require explicit literal su
   f.button("literal").handlers.click();
   await flush();
   assert.equal(f.mutations[0][2].body, "/exec untrusted", "explicit literal choice preserves text");
+  f.input.value = "/stop";
+  f.input.handlers.input();
+  const slash = f.elements.find(n => n.spec === "div.conversation-slash");
+  assert.equal(slash.children.length, 1);
+  const target = f.controller.captureDraftTarget();
+  f.controller.insertReference(target, "reference-only\n> history");
+  const quoted = "/stop\n\nreference-only\n> history";
+  assert.equal(f.input.value, quoted, "a leading Slash draft is preserved");
+  assert.equal(slash.children.length, 0, "appending reference text refreshes stale command suggestions");
+  assert.equal(f.button("literal").hidden, false);
+  assert.equal(f.mutations.length, 1, "inserting a reference never executes /stop");
+  f.button("send").handlers.click();
+  await flush();
+  assert.equal(f.mutations.length, 1, "combined text is not a supported Slash command");
+  assert.equal(f.input.value, quoted);
+  f.button("literal").handlers.click();
+  await flush();
+  assert.equal(f.mutations[1][2].body, quoted, "only explicit literal send submits the preserved draft");
   f.controller.close();
 });
 
@@ -104,6 +122,7 @@ test("model adoption preserves drafts and an unknown effect blocks replay across
     const owner = { scope: "global", roleName: "operator" };
     f.controller.open(owner);
     await flush();
+    const target = f.controller.captureDraftTarget();
     f.input.value = "Keep my draft";
     await f.button("modelsLoad").handlers.click();
     const select = f.elements.find(n => n["aria-label"] === "conversation.model");
@@ -118,7 +137,57 @@ test("model adoption preserves drafts and an unknown effect blocks replay across
     assert.equal(!!f.button("send").disabled, disposition === "unknown");
     assert.equal([...f.storage.keys()].some(k => k.endsWith(".modelPending")), disposition === "unknown");
     assert.equal(f.mutations.length, 1, "reopening never replays model adoption");
+    if (disposition === "unknown") {
+      assert.equal(f.controller.captureDraftTarget(), null);
+      assert.throws(() => f.controller.insertReference(target, "history"), /targetChanged/);
+      assert.equal(f.input.value, "Keep my draft");
+    }
     f.controller.close();
+  }
+});
+
+test("history references append to the captured writable draft, never send or cross Sessions", async () => {
+  const f = fixture();
+  const owner = { scope: "task", taskId: "task-1", roleName: "leader" };
+  assert.equal(f.controller.captureDraftTarget(), null);
+  f.controller.open(owner);
+  await flush();
+  const target = f.controller.captureDraftTarget();
+  assert.ok(target);
+  f.input.value = "Unsent draft";
+  f.controller.insertReference(target, "reference-only\n> Source text");
+  assert.equal(f.input.value, "Unsent draft\n\nreference-only\n> Source text");
+  assert.ok([...f.storage.values()].includes(f.input.value));
+  const before = f.input.value;
+  f.host.hidden = true;
+  assert.equal(f.controller.captureDraftTarget(), null);
+  assert.throws(() => f.controller.insertReference(target, "hidden conversation"), /targetChanged/);
+  f.host.hidden = false;
+  assert.throws(() => f.controller.insertReference(target, "x".repeat(12000)), /capacity/);
+  assert.equal(f.input.value, before);
+  f.controller.open({ scope: "global", roleName: "operator" });
+  await flush();
+  assert.throws(() => f.controller.insertReference(target, "wrong owner"), /targetChanged/);
+  f.replaceCurrent("replacement");
+  f.controller.open(owner, { current: true });
+  await flush();
+  assert.throws(() => f.controller.insertReference(target, "wrong Session"), /targetChanged/);
+  f.selector.value = "historical";
+  f.selector.handlers.change();
+  await flush();
+  assert.equal(f.controller.captureDraftTarget(), null);
+  assert.equal(f.mutations.length, 0);
+  f.controller.close();
+  assert.equal(f.controller.captureDraftTarget(), null);
+  for (const extra of [{ terminalWriter: true }, { turnStatus: "submitting" }, { turnStatus: "delivery-unknown" }]) {
+    const blocked = fixture({}, extra);
+    blocked.controller.open(owner);
+    await flush();
+    assert.equal(blocked.controller.captureDraftTarget(), null);
+    assert.throws(() => blocked.controller.insertReference(target, "history"), /targetChanged/);
+    assert.equal(blocked.input.value, "");
+    assert.equal(blocked.mutations.length, 0);
+    blocked.controller.close();
   }
 });
 
@@ -367,6 +436,12 @@ test("definite interrupt refusal releases input while unknown delivery remains b
     await flush();
     assert.equal(f.button("send").disabled, unknown, "opening current does not clear an unknown submission");
     assert.equal(f.input.value, "Unsent");
+    if (unknown) {
+      assert.equal(f.controller.captureDraftTarget(), null);
+      assert.throws(() => f.controller.insertReference(
+        JSON.stringify([{ scope: "global", roleName: "operator" }, "thread"]), "history"), /targetChanged/);
+      assert.equal(f.input.value, "Unsent");
+    }
     f.controller.close();
   }
 });

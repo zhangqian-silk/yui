@@ -1,5 +1,6 @@
 import { openTaskArtifactRepository } from "../artifacts/taskArtifactRepository.js";
 import { compareTextArtifacts, readArtifactPreview } from "./webMaterials.js";
+import { readTaskSearchSource } from "../context/taskSearch.js";
 import { applyGlobalInputControl } from "../commands/globalRoleCommands.js";
 import { applyTaskInputControl, runTaskCommand, sendTaskMessageCommand, updateTaskMetadataCommand } from "../commands/taskCommands.js";
 import { runTaskActivationCommand } from "../commands/taskActivationCommands.js";
@@ -390,6 +391,8 @@ export function createWebTaskSurface(
     ),
     delta: (taskId: string, input: { after: string; continuation?: string }) =>
       readTaskContextDelta(store, taskId, input, environment),
+    searchSource: (taskId: string, input: { store: string; refId: string; digest: string; field: string; offset: number }) =>
+      readTaskSearchSource(store, taskId, input, environment),
     inspect: (taskId: string, input: { store: string; refId: string; digest?: string; cursor?: string }) =>
       inspectTaskContext(store, taskId, input, environment),
     // The same paged family discovery as `task context list`: summaries and

@@ -10,6 +10,37 @@ export type TaskSearchOptions = {
 };
 const PAGE_BYTES = 32 * 1024;
 
+/** Human-readable field pages, using the same source authorization and version
+ * checks as Context. Offsets are Unicode code points, like search snippets. */
+export function readTaskSearchSource(store: TaskStore, taskId: string, input: {
+  store: string; refId: string; digest: string; field: string; offset: number;
+}, environment: NodeJS.ProcessEnv = {}) {
+  if (!input.digest || !Number.isSafeInteger(input.offset) || input.offset < 0) {
+    throw usageError("A pinned digest and non-negative source offset are required.");
+  }
+  const fields: Record<string, RegExp> = {
+    "task-brief": /^\$\.(objective|technicalApproach|currentFocus|leaderSummary|boundaries\[\d+\])$/,
+    "task-message": /^\$\.body$/,
+    "task-decision": /^\$\.(title|rationale|supersededReason)$/,
+    "run": /^\$\.result\.output$/,
+    "task": /^\$\.completionSummary$/
+  };
+  if (!fields[input.store]?.test(input.field)) throw usageError("Unsupported search source field.");
+  const original = readTaskContextResource(store, taskId, input, environment);
+  let value: unknown = original.value;
+  for (const part of input.field.slice(2).replace(/\[(\d+)\]/g, ".$1").split(".")) {
+    value = value && typeof value === "object" ? (value as Record<string, unknown>)[part] : undefined;
+  }
+  if (typeof value !== "string") throw usageError("Search source text is unavailable.");
+  const points = Array.from(value);
+  if (input.offset > points.length) throw usageError("Source offset is outside the text.");
+  const end = Math.min(input.offset + 4000, points.length);
+  return { taskId, ref: original.ref, field: input.field, authority: "reference-only" as const,
+    content: points.slice(input.offset, end).join(""), offset: input.offset,
+    nextOffset: end < points.length ? end : null, totalCharacters: points.length,
+    offsetUnit: "unicode-code-points" as const };
+}
+
 export function parseTaskSearchOptions(args: readonly string[]): TaskSearchOptions {
   const query = args[0]?.trim();
   if (!query || query.length > 256 || query.includes("\0")) throw usageError("Task search requires a query of 1..256 characters.");

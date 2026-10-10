@@ -454,7 +454,7 @@ async function handleHttpRequest(
     }
     return;
   }
-  const surfaceTarget = /^\/api\/tasks\/([^/]+)\/(workbench|context|delta|inspect|list|metadata|messages|control|activate|archive)$/.exec(pathname);
+  const surfaceTarget = /^\/api\/tasks\/([^/]+)\/(workbench|context|delta|inspect|search-source|list|metadata|messages|control|activate|archive)$/.exec(pathname);
   if (surfaceTarget && dependencies.surface) {
     try {
       let taskId: string;
@@ -481,6 +481,13 @@ async function handleHttpRequest(
         value = dependencies.surface.delta(taskId, {
           after: query.get("after") ?? "",
           ...(query.has("continuation") ? { continuation: query.get("continuation")! } : {})
+        });
+      } else if (method === "GET" && action === "search-source") {
+        const offset = query.get("offset") ?? "0";
+        if (!/^\d{1,12}$/.test(offset)) throw new WebRequestRejected("Invalid source offset.");
+        value = dependencies.surface.searchSource(taskId, {
+          store: query.get("store") ?? "", refId: query.get("ref") ?? "",
+          digest: query.get("digest") ?? "", field: query.get("field") ?? "", offset: Number(offset)
         });
       } else if (method === "GET" && action === "inspect") {
         value = dependencies.surface.inspect(taskId, {

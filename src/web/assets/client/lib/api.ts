@@ -58,6 +58,11 @@ const task = function (taskId) { return "/api/tasks/" + encodeURIComponent(taskI
 
 export const api = {
   searchBodies: function (query) { return requestJson("/api/search?" + query); },
+  searchSource: function (item, offset) {
+    return requestJson(task(item.taskId) + "/search-source?" + new URLSearchParams({
+      store: item.ref.store, ref: item.ref.refId, digest: item.ref.digest, field: item.field, offset: String(offset)
+    }));
+  },
   dashboard: function (query) { return requestJson("/api/dashboard?" + query); },
   pageSessions: function (query) {
     return requestJson("/api/dashboard/sessions?" + query, { signal: AbortSignal.timeout(5000) });
