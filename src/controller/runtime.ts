@@ -95,6 +95,7 @@ import { createControllerWeb } from "../web/controllerWeb.js";
 import { TmuxWebTerminalService } from "../web/tmuxWebTerminal.js";
 import { createWebTaskSurface } from "../web/webTaskSurface.js";
 import { createWebConversationSurface } from "../web/webConversation.js";
+import { WebRequestRejected } from "../web/webMutation.js";
 import { inspectAgentHost, sendAgentHostNativeControl, AGENT_HOST_CONTROL_PROTOCOL } from "../runtime/agentHost.js";
 import { archiveOrdinaryTask } from "../task/ordinaryArchive.js";
 import { createWebSettings } from "../web/webSettings.js";
@@ -595,8 +596,20 @@ export async function startFileTaskControllerRuntime(
             });
             if (receipt.outcome !== "accepted") throw new Error(receipt.snapshot.detail ?? "Native answer was not confirmed.");
             return { outcome: receipt.outcome };
+          },
+          setModel: async (owner, id, model) => {
+            const result = await sendAgentHostNativeControl({
+              home, ...owner, control: { protocol: AGENT_HOST_CONTROL_PROTOCOL,
+                type: "native-model", nativeSessionId: id, model }
+            });
+            if (result.outcome !== "accepted") {
+              const detail = result.snapshot.detail ?? "Model adoption is unconfirmed.";
+              if (result.failure?.inputDisposition === "not-accepted") throw new WebRequestRejected(detail);
+              throw new Error(detail);
+            }
+            return { outcome: result.outcome, runConfiguration: result.snapshot.runConfiguration };
           }
-        }),
+        }, catalogs),
       answerInput: async ({ taskId, inputId, answer }) => webSurface.answer(taskId, inputId, answer),
       panels: {
         list: (taskId) => surfaces.listPanels(kernel.capabilities.authenticateWebQuery(taskId)),

@@ -5,6 +5,32 @@ import { openControlledCodexTui } from "../../dist/runtime/controlledCodexTui.js
 import { resolve } from "node:path";
 import { nativeConfiguration, nativeTurnStart } from "../fixtures/managed-codex-native-shape.mjs";
 
+test("model adoption changes only the same idle Thread, confirms native response, and invalidates unknown results", async () => {
+  const calls = [];
+  let state = "idle", fail = false;
+  const access = createCodexNativeAccess("thread", {}, {
+    onMessage() {}, async send() {},
+    async request(method, params) {
+      calls.push({ method, params });
+      if (method === "thread/read") return { thread: { id: "thread", status: { type: state } } };
+      if (fail) throw new Error("transport lost");
+      return { thread: { id: "thread" }, model: params.model };
+    }
+  });
+  await access.setModel("available-model");
+  assert.deepEqual(calls, [
+    { method: "thread/read", params: { threadId: "thread", includeTurns: false } },
+    { method: "thread/resume", params: { threadId: "thread", model: "available-model", excludeTurns: true } }
+  ]);
+  assert.equal(access.runConfiguration.axes[0].current.value, "available-model");
+  state = "active"; calls.length = 0;
+  await assert.rejects(access.setModel("another-model"), /idle/);
+  assert.equal(calls.length, 1, "busy native state prevents mutation");
+  state = "idle"; fail = true;
+  await assert.rejects(access.setModel("another-model"), /transport lost/);
+  assert.equal(access.runConfiguration.status, "unknown");
+});
+
 test("native access attaches to the same Thread and answers exact requests once", async () => {
   const sent = [], reads = [];
   let emit;

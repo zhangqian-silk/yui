@@ -17,6 +17,11 @@ export const DOCK_STYLES = `
 #dock-conversation .feed-note{overflow-wrap:anywhere;margin:4px 12px}
 #dock-conversation .composer-bar{flex-wrap:wrap}
 #dock-conversation .composer-input{width:100%;box-sizing:border-box}
+#dock-conversation .composer-wrap{max-height:60%;overflow-y:auto}
+#dock-conversation .composer-wrap select{min-width:0;max-width:100%;flex:1 1 140px}
+#dock-conversation .composer-wrap pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:160px;overflow:auto}
+.conversation-slash{display:flex;flex-wrap:wrap;gap:4px}
+.conversation-slash:empty{display:none}
 #dock-conversation .feed details{min-width:0;overflow-wrap:anywhere}
 .conversation-requests{flex:0 1 auto;max-height:35%;overflow-y:auto;overflow-wrap:anywhere}
 .conversation-requests h3{font-size:var(--fs-sm);margin:8px 12px}

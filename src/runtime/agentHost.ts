@@ -168,11 +168,12 @@ export type AgentHostControl =
 
 export type AgentHostNativeControl = Readonly<{
   protocol: typeof AGENT_HOST_CONTROL_PROTOCOL;
-  type: "native-open" | "native-respond";
+  type: "native-open" | "native-respond" | "native-model";
   nativeSessionId: string;
   requestId?: string | number;
   nativeTurnId?: string | null;
   result?: JsonObject;
+  model?: string;
 }>;
 
 export type AgentHostProviderState =
@@ -358,6 +359,7 @@ export async function runAgentHost(input: Readonly<{
   let humanConsole: ReturnType<typeof createInterface> | undefined;
   let nativeTui: { close(): void } | undefined;
   let nativeOpening: Promise<{ close(): void }> | undefined;
+  let modelChanging = false;
   const recentSteerAttempts = new Map<string, {
     request: AgentHostSteerRunControl;
     outcome: PromptPushOutcome;
@@ -1347,6 +1349,30 @@ export async function runAgentHost(input: Readonly<{
   };
 
   const handleControl = async (request: AgentHostControl): Promise<AgentHostControlResult> => {
+    if (request.type === "native-model") {
+      return enqueueSerialized(async () => {
+        const current = session;
+        if (!current?.nativeAccess || current.nativeSessionId !== request.nativeSessionId
+          || !sessionPayload || nativeTui || nativeOpening || activeNativeTurnId || authority?.owner !== "controller"
+          || (sessionPayload.environment.YUI_SESSION_SCOPE === "task" && sessionPayload.environment.YUI_ROLE !== "leader")
+          || (sessionPayload.environment.YUI_SESSION_SCOPE === "global" && sessionPayload.environment.YUI_ROLE !== "operator")) {
+          throw new Error("Model switching requires the idle current controlled Codex Session, without a native terminal writer.");
+        }
+        modelChanging = true;
+        try {
+          await assertHostExecutionEnvironment(input.home, sessionPayload, current.nativeSessionId);
+          try { await current.nativeAccess.setModel(request.model!); }
+          catch (error) {
+            if (error instanceof CodexPreSubmissionError) throw error;
+            throw new ProviderDeliveryUnknownError(
+              `Native model adoption is unconfirmed: ${errorText(error)}`,
+              `model:${current.nativeSessionId}`, { cause: error }
+            );
+          }
+          return controlResult("accepted", { ...snapshot, runConfiguration: current.runConfiguration });
+        } finally { modelChanging = false; }
+      });
+    }
     if (request.type === "native-open" || request.type === "native-respond") {
       const current = session;
       if (!current?.nativeAccess || current.nativeSessionId !== request.nativeSessionId
@@ -1356,6 +1382,7 @@ export async function runAgentHost(input: Readonly<{
         await assertHostExecutionEnvironment(input.home, sessionPayload, current.nativeSessionId);
         await current.nativeAccess.respond(request.requestId!, request.nativeSessionId, request.nativeTurnId ?? null, request.result!);
       } else if (!nativeTui) {
+        if (modelChanging) throw new Error("Wait for model adoption before attaching native input.");
         if (!process.stdin.isTTY) throw new Error("Native TUI requires the Host's owned terminal.");
         humanConsole?.close();
         humanConsole = undefined;
@@ -2094,8 +2121,12 @@ function validateControl(control: AgentHostControl): AgentHostControl {
     throw new Error("Agent Host control protocol is invalid.");
   }
   if (control.type === "status") return Object.freeze({ ...control });
-  if (control.type === "native-open" || control.type === "native-respond") {
+  if (control.type === "native-open" || control.type === "native-respond" || control.type === "native-model") {
     validateIdentity(control.nativeSessionId, "native Session id");
+    if (control.type === "native-model" && (typeof control.model !== "string"
+      || !control.model.trim() || control.model.length > 200 || control.model.includes("\0"))) {
+      throw new Error("Invalid native model.");
+    }
     if (control.type === "native-respond") {
       if (control.nativeTurnId !== null) validateIdentity(control.nativeTurnId!, "native Turn id");
       if ((typeof control.requestId !== "string" && typeof control.requestId !== "number")

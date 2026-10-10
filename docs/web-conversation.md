@@ -42,6 +42,48 @@ Stop never clears an unsent draft; message acceptance clears only the submitted
 text if the draft still matches it.
 Native questions/approvals remain on the native entry in this minimum surface.
 
+## Lightweight input and Session model controls
+
+Drafts and unresolved input identities stay scoped to owner and selected Session
+in the current browser tab. Input receipts are read automatically while the
+latest page is open; only confirmed acceptance clears the unchanged submitted
+draft. Plain-language states distinguish sending, saved/queued, accepted, failed
+and unknown, with the exact receipt available separately. Storage failure is
+visible. Ctrl/Command+Enter sends; Enter still inserts a newline.
+
+The small Slash menu implements `/help`, `/status`, `/model`, `/stop` and
+`/latest`. Tab completes a unique match; clicking a suggestion fills the draft,
+not an execution request. These are local Yui actions, not arbitrary shell or
+native CLI commands. Unknown commands remain in the draft; **Send as ordinary
+text** explicitly bypasses command interpretation. `/stop` uses the existing
+exact-Turn interrupt and preserves the draft.
+
+**Session model** reads the existing Agent capability catalog, including its
+source, freshness and discovery errors. Only catalog models are admitted, and
+fallback/failing discovery is not treated as support. Adoption is restricted to
+the current, controlled Codex Operator or Task Leader with no active/unsettled
+Turn or terminal writer. The Host serializes adoption with input, checks native
+idle state, and calls `thread/resume` with only the same Thread ID, model and
+`excludeTurns: true`. It never starts/forks a Thread, edits account settings,
+permissions, Role/default configuration, or rewrites the immutable launch.
+
+The UI separates the fixed launch request from the latest timestamped native
+model confirmation. A response naming another Thread/model is not success.
+Preflight rejection leaves the draft and permits an explicit corrected attempt;
+an uncertain native mutation invalidates the observation and blocks automatic
+replay. The browser retains its unresolved selection across reopening. Inspect
+confirmation first; if it cannot be established, explicitly select a new Session
+through existing lifecycle controls rather than retrying an unknown mutation.
+
+This is a **live-connection selection**, not a permanent Session override:
+Host restoration reapplies the fixed launch configuration. No deferred active-Turn
+switch is scheduled. Older or incompatible native servers fail visibly instead
+of receiving a simulated successful switch. CLI Session inspection and Web read
+the same Host run-configuration observation; only the model axis is reported.
+The protocol basis is the official Codex App Server “Start or resume a thread”
+contract. Deterministic fake-Provider/real-Host checks do not prove support in
+every installed native version or access to a particular real model.
+
 Storage 1.3 adds an optional selected-Session fence to new structured inputs.
 Ordinary CLI Role-addressed inputs preserve their existing semantics. A selected
 Session changing before admission retains the original input with nondelivery

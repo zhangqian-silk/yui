@@ -36,20 +36,22 @@ function fixture(submitResult = { state: "submitted" }, extra = {}) {
     requestJson: async url => {
       calls.push(url);
       const query = new URL(url, "http://fixture").searchParams;
+      if (url.startsWith("/api/conversation/model?")) return { source: "live", catalog: { models: [{ value: "model-new", label: "New" }] } };
       if (query.has("requestId")) {
         if (delayedReceipt) return new Promise(resolve => { delayedReceipt.resolve = resolve; });
         return { state: "accepted" };
       }
       if (delayedRead) return new Promise(resolve => { delayedRead.resolve = resolve; });
       if (query.has("session")) return { status: "active", observedAt: "now", nextCursor: "older",
+        runConfiguration: extra.runConfiguration,
         nativeRequests: extra.nativeRequests || [],
         items: [{ id: "tool", turnId: "turn", kind: "activity", text: "npm test" }] };
       return { currentSessionId, sessions: [{ nativeSessionId: currentSessionId, current: true,
         status: "active", adapterId: "codex" }], authority: { owner: "controller" },
         terminalWriter: extra.terminalWriter, leaderQuestions: extra.leaderQuestions,
-        turn: { status: "accepted", nativeTurnId: "turn" }, total: 1, nextOffset: null };
+        turn: extra.idle ? null : { status: "accepted", nativeTurnId: "turn" }, total: 1, nextOffset: null };
     },
-    submitMutation: async (...args) => { mutations.push(args); return submitResult; }
+    submitMutation: async (...args) => { mutations.push(args); return extra.submit ? extra.submit(...args) : submitResult; }
   });
   vm.runInContext(PREFS_SCRIPT.replace(/^export /gm, ""), context);
   vm.runInContext(CONVERSATION_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
@@ -70,6 +72,55 @@ function fixture(submitResult = { state: "submitted" }, extra = {}) {
   };
 }
 const flush = () => new Promise(resolve => setImmediate(resolve));
+
+test("Slash completion is local and unknown commands require explicit literal submission", async () => {
+  const f = fixture();
+  f.controller.open({ scope: "global", roleName: "operator" });
+  await flush();
+  f.input.value = "/he";
+  let prevented = false;
+  f.input.handlers.keydown({ key: "Tab", preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
+  assert.equal(f.input.value, "/help");
+  f.button("send").handlers.click();
+  await flush();
+  assert.equal(f.mutations.length, 0, "help is not a model prompt or CLI execution");
+  f.input.value = "/exec untrusted";
+  f.button("send").handlers.click();
+  await flush();
+  assert.equal(f.mutations.length, 0);
+  assert.equal(f.input.value, "/exec untrusted");
+  f.button("literal").handlers.click();
+  await flush();
+  assert.equal(f.mutations[0][2].body, "/exec untrusted", "explicit literal choice preserves text");
+  f.controller.close();
+});
+
+test("model adoption preserves drafts and an unknown effect blocks replay across reopen", async () => {
+  for (const disposition of ["not-submitted", "unknown"]) {
+    const f = fixture({}, { idle: true, submit() {
+      throw Object.assign(new Error("fixture failure"), { disposition });
+    } });
+    const owner = { scope: "global", roleName: "operator" };
+    f.controller.open(owner);
+    await flush();
+    f.input.value = "Keep my draft";
+    await f.button("modelsLoad").handlers.click();
+    const select = f.elements.find(n => n["aria-label"] === "conversation.model");
+    select.value = "model-new"; select.handlers.change();
+    assert.equal(!!f.button("modelApply").disabled, false);
+    await f.button("modelApply").handlers.click();
+    assert.equal(f.mutations.length, 1);
+    assert.equal(f.input.value, "Keep my draft");
+    f.controller.open(owner, { current: true });
+    await flush();
+    assert.equal(f.input.value, "Keep my draft");
+    assert.equal(!!f.button("send").disabled, disposition === "unknown");
+    assert.equal([...f.storage.keys()].some(k => k.endsWith(".modelPending")), disposition === "unknown");
+    assert.equal(f.mutations.length, 1, "reopening never replays model adoption");
+    f.controller.close();
+  }
+});
 
 test("a full draft rejects an entire diff pair visibly and admits both versions after space is freed", async () => {
   const f = fixture();

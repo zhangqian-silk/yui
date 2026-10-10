@@ -41,6 +41,34 @@ const at = new Date("2026-09-10T00:00:00Z");
 const later = new Date("2026-09-10T00:01:00Z");
 const evenLater = new Date("2026-09-10T00:02:00Z");
 
+test("Session model selection uses the native catalog and rechecks authority after discovery", async t => {
+  const { store } = fixture(t);
+  withControllerTurn(store, "leader", { attemptId: "old", nativeTurnId: "turn-old" });
+  const owner = { scope: "task", taskId: "task-1", roleName: "leader" };
+  const applied = [];
+  let writer = false, afterDiscovery = () => {};
+  const conversation = createWebConversationSurface(store, createWebTaskSurface(store), () => ({}),
+    undefined, undefined, {
+      hasWriter: () => writer, respond() { assert.fail("not a native answer"); },
+      async setModel(...args) { applied.push(args); return { outcome: "accepted" }; }
+    }, { async resolve() {
+      afterDiscovery();
+      return { source: "live", catalog: { models: [{ value: "catalog-model" }] } };
+    } });
+  await assert.rejects(conversation.setModel(owner, "leader-native", "catalog-model"), /settle/);
+  settleLeaderTurn(store, { nativeTurnId: "turn-old", status: "completed" }, evenLater);
+  await assert.rejects(conversation.setModel(owner, "leader-native", "invented-model"), /catalog/);
+  afterDiscovery = () => { writer = true; };
+  await assert.rejects(conversation.setModel(owner, "leader-native", "catalog-model"), /Terminal/);
+  writer = false; afterDiscovery = () => {};
+  const role = store.getRole("task-1", "leader");
+  const session = store.getTaskRoleSessionSet("task-1", "leader");
+  await conversation.setModel(owner, "leader-native", "catalog-model");
+  assert.deepEqual(applied, [[owner, "leader-native", "catalog-model"]]);
+  assert.deepEqual(store.getRole("task-1", "leader"), role, "Session model is not future Role/default configuration");
+  assert.deepEqual(store.getTaskRoleSessionSet("task-1", "leader"), session, "immutable launch and Thread identity remain unchanged");
+});
+
 test("native Leader steer persists original intent and the existing exact steer receipt before Provider write", t => {
   const { store, home } = fixture(t);
   withControllerTurn(store, "leader", { attemptId: "initial", nativeTurnId: "turn" });

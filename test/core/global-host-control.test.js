@@ -14,7 +14,7 @@ import { FileRoleLaunchPlanner } from "../../dist/executor/fileRoleLaunchPlanner
 import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
 import { startControllerServer } from "../../dist/core/controllerServer.js";
 import { launchBrokerForHome } from "../../dist/runtime/launchBroker.js";
-import { inspectAgentHost, sendAgentHostCancelControl, sendAgentHostSteerControl } from "../../dist/runtime/agentHost.js";
+import { inspectAgentHost, sendAgentHostCancelControl, sendAgentHostSteerControl, sendAgentHostNativeControl } from "../../dist/runtime/agentHost.js";
 import { deliverGlobalInputs } from "../../dist/controller/globalInputDelivery.js";
 import { runGlobalRoleCommand } from "../../dist/commands/globalRoleCommands.js";
 import { FileRuntimeEventInbox } from "../../dist/controller/runtimeEventInbox.js";
@@ -175,6 +175,26 @@ test("Operator natural terminals settle through Host and Inbox and automatically
   await f.wait(() => f.native().attemptId.startsWith("human:") && f.native().status === "completed");
   assert.deepEqual(f.errors, []);
   assert.equal(new FileRuntimeEventInbox(f.home).list().length, 0);
+});
+
+test("real Host adopts a model on the same idle Operator Thread and refuses active or stale targets", async t => {
+  const f = await globalHostFixture(t, "codex", { roleName: "operator" });
+  const set = (id, model) => sendAgentHostNativeControl({
+    home: f.home, scope: "global", roleName: "operator",
+    control: { protocol: "yui-agent-host-control/v1", type: "native-model", nativeSessionId: id, model }
+  });
+  assert.equal((await set("stale-thread", "fixture-new")).outcome, "rejected");
+  const changed = await set(f.nativeSessionId, "fixture-new");
+  assert.equal(changed.outcome, "accepted", JSON.stringify(changed));
+  assert.equal(changed.snapshot.nativeSessionId, f.nativeSessionId);
+  assert.equal(changed.snapshot.runConfiguration.axes[0].current.value, "fixture-new");
+  f.command(["message", "queue", "operator", "ordinary input after adoption", "--request-id", "model-input"]);
+  await f.submitNext();
+  await f.wait(() => f.native()?.status === "accepted");
+  assert.equal((await set(f.nativeSessionId, "fixture-too-late")).outcome, "rejected");
+  const observed = await inspectAgentHost({ home: f.home, scope: "global", roleName: "operator" });
+  assert.equal(observed.runConfiguration.axes[0].current.value, "fixture-new");
+  assert.equal(f.native().nativeTurnId, observed.nativeTurnId);
 });
 
 test("Global planner, console and durable inputs traverse real Host begin, acceptance, steer, cancel and ordered then", async t => {

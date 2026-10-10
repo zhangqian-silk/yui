@@ -10,6 +10,8 @@ import { findTaskInterrupt, taskInterruptReceipt } from "../message/taskInterrup
 import type { AgentHostSnapshot } from "../runtime/agentHost.js";
 import type { GitArtifactRef } from "../artifacts/gitArtifactRef.js";
 import { materialInputBody, saveTextMaterial, type TextMaterialInput } from "./webMaterials.js";
+import type { AgentConfigurationCatalogService } from "../executor/agentConfigurationCatalog.js";
+import { effectiveLaunchConfig } from "../executor/effectiveLaunch.js";
 
 export type ConversationItem = Readonly<{
   id: string; turnId: string; kind: "user" | "assistant" | "activity";
@@ -94,6 +96,7 @@ export function conversationSessions(set: RoleSessionSet | null) {
       adapterId: session.adapterId, title: session.title, status: session.status,
       endReason: session.endReason, createdAt: session.createdAt,
       executionAuthority: session.effective.executionAuthority,
+      launchModel: session.effective.model ?? null,
       current: set.sessions[set.activeAgentId] === session,
       conversationEpoch: set.providerBinding?.conversations.find(c => c.conversationId === session.nativeSessionId)?.epoch ?? null }));
 }
@@ -108,7 +111,9 @@ export function createWebConversationSurface(
   access?: {
     hasWriter(owner: RoleSessionOwner): boolean;
     respond(owner: RoleSessionOwner, id: string, requestId: string | number, turnId: string | null, result: Record<string, unknown>): Promise<unknown>;
-  }
+    setModel?(owner: RoleSessionOwner, id: string, model: string): Promise<unknown>;
+  },
+  catalogs?: Pick<AgentConfigurationCatalogService, "resolve">
 ) {
   const sessions = (owner: RoleSessionOwner) => {
     if (owner.scope === "task") {
@@ -141,6 +146,30 @@ export function createWebConversationSurface(
       throw new WebRequestRejected("This entry supports Task Leader input; other Roles retain their assignment controls.");
     }
     return chosen;
+  };
+  const modelWritable = (owner: RoleSessionOwner, id: string) => {
+    const chosen = writable(owner, id);
+    if (owner.scope === "global" && owner.roleName !== "operator") throw new WebRequestRejected("Model switching supports Operator and Task Leader only.");
+    if (owner.scope === "task") {
+      const task = store.getTask(owner.taskId)!;
+      if (!["active", "draft"].includes(task.status) || task.executionGate.state !== "enabled") {
+        throw new WebRequestRejected("Model switching requires an execution-enabled Task.");
+      }
+    }
+    const binding = chosen.set.providerBinding!;
+    if (binding.conversations.find(c => c.epoch === binding.currentConversationEpoch)?.conversationId !== id
+      || binding.authority.owner !== "controller"
+      || binding.run && ["submitting", "accepted", "delivery-unknown"].includes(binding.run.status)) {
+      throw new WebRequestRejected("Wait for the current Turn to settle before switching model.");
+    }
+    return chosen;
+  };
+  const models = async (owner: RoleSessionOwner, id: string) => {
+    const { session } = select(owner, id);
+    if (!catalogs || session.adapterId !== "codex") throw new WebRequestRejected("Model catalog is unavailable for this Session.");
+    const agent = store.getConfiguredAgent(session.agentId);
+    if (!agent) throw new WebRequestRejected("Configured Agent no longer exists.");
+    return catalogs.resolve({ agent, cwd: session.effective.workspace.root, config: effectiveLaunchConfig(session.effective) });
   };
   // Native queue input is a reference-only notification, not the user's body.
   // Join only selected-Session inputs named by that exact native notification,
@@ -179,6 +208,19 @@ export function createWebConversationSurface(
     return { items: linked, linkedInputsOmitted: omitted };
   };
   return {
+    models,
+    async setModel(owner: RoleSessionOwner, id: string, model: string) {
+      modelWritable(owner, id);
+      if (!access?.setModel) throw new WebRequestRejected("This Host does not support model adoption.");
+      const catalog = await models(owner, id);
+      if (catalog.source === "fallback" || catalog.failure
+        || !catalog.catalog.models.some(choice => choice.value === model)) {
+        throw new WebRequestRejected("Select a model from the available native catalog. Discovery failure is not support.");
+      }
+      // Catalog discovery is asynchronous; preserve exact Session/writer fencing.
+      modelWritable(owner, id);
+      return access.setModel(owner, id, model);
+    },
     async material(owner: RoleSessionOwner, id: string, input: TextMaterialInput) {
       writable(owner, id);
       if (owner.scope !== "task") throw new WebRequestRejected("Text materials require a Task.");
@@ -236,6 +278,7 @@ export function createWebConversationSurface(
           ...page.items.filter(i => i.id !== reply.id || i.turnId !== reply.turnId)]
         : page.items;
       return { ...page, ...linkInputs(owner, id, items), nativeRequests: observed?.nativeRequests ?? [],
+        runConfiguration: observed?.runConfiguration ?? null,
         nativeRequestsOmitted: observed?.nativeRequestsOmitted ?? false,
         live: observed?.publicReplyObservation !== "supported" ? "unavailable" : "connected",
         nextCursor: page.nextCursor === null ? null

@@ -255,7 +255,7 @@ async function handleHttpRequest(
     return;
   }
   const artifactTarget = /^\/api\/tasks\/([^/]+)\/(artifacts|evidence)$/.exec(pathname);
-  if ((pathname === "/api/conversation" || pathname === "/api/conversation/material") && dependencies.conversation) {
+  if (["/api/conversation", "/api/conversation/material", "/api/conversation/model"].includes(pathname) && dependencies.conversation) {
     try {
       const q = new URL(request.url!, "http://localhost").searchParams;
       if ([...q.keys()].some(k => !["scope", "task", "role", "session", "cursor", "offset", "requestId"].includes(k))) {
@@ -267,7 +267,19 @@ async function handleHttpRequest(
         : q.get("scope") === "global" && !q.has("task") ? { scope: "global", roleName }
           : (() => { throw new WebRequestRejected("Invalid conversation scope."); })();
       let result: unknown;
-      if (pathname.endsWith("/material")) {
+      if (pathname.endsWith("/model")) {
+        const id = safeIdentity(q.get("session"), "Session");
+        if (method === "GET") result = await dependencies.conversation.models(owner, id);
+        else if (method === "POST") {
+          const body = await readMutationBody(request);
+          if (!body || typeof body !== "object" || Array.isArray(body)
+            || Object.keys(body).some(k => k !== "model")
+            || typeof (body as Record<string, unknown>).model !== "string") {
+            throw new WebRequestRejected("Expected one native model selection.");
+          }
+          result = await dependencies.conversation.setModel(owner, id, (body as { model: string }).model);
+        } else throw new WebRequestRejected("Model access requires GET or POST.");
+      } else if (pathname.endsWith("/material")) {
         if (method !== "POST") throw new WebRequestRejected("Material upload requires POST.");
         const body = await readMutationBody(request, 2 * 1024 * 1024);
         if (!body || typeof body !== "object" || Array.isArray(body)
