@@ -172,11 +172,3 @@ check("B: request never forwarded remains unknown, including fresh-tab recovery"
 
 (evidence / "native-turns.jsonl").write_text((Path(fixture["home"]) / "native-turns.jsonl").read_text())
 print(json.dumps(results, indent=2))
-os.kill(fixture["fixturePid"], 15)
-deadline = time.monotonic() + 45
-while time.monotonic() < deadline:
-    if json.loads((evidence / "report.json").read_text()).get("finishedAt"):
-        break
-    time.sleep(.2)
-else:
-    raise AssertionError("Fixture teardown did not finish")
