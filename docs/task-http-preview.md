@@ -27,11 +27,27 @@ const server = createServer((request, response) => {
 server.listen(process.env.YUI_PREVIEW_SOCKET);
 ```
 
+For direct Leader delivery, save the application in the bound Project checkout
+and use the Task's managed workspace **root**, not its Project subdirectory:
+
 ```sh
 yui job start --task <task> --project <project> --head <exact-sha> \
-  --workspace <managed-project-checkout> --request-id <new-request-id> \
-  --env YUI_HTTP_PREVIEW=1 --step 'web=/absolute/path/to/node server.mjs'
+  --owner task --workspace <managed-workspace-root> --request-id <new-request-id> \
+  --env YUI_HTTP_PREVIEW=1 \
+  --step 'web=/absolute/path/to/node /absolute/path/to/managed-project-checkout/server.mjs'
 ```
+
+For example, if the Project checkout is `/work/task/main/Yui`, pass
+`--workspace /work/task/main` and launch `/work/task/main/Yui/server.mjs`.
+`--head` is the exact HEAD of that bound Project checkout. The command's
+default working directory is the workspace root; resolve application files
+relative to the script or explicitly change to the Project directory in the
+step when needed. Quote paths containing spaces inside the step command.
+
+A Worker must instead supply `--owner work-item:<work-item-id>` for its
+current Assignment, that WorkItem's managed workspace root, and its bound
+Project checkout/HEAD. It cannot use the Task-main example to escape its
+Assignment.
 
 For development of Yui itself, use the checkout's absolute
 `output/dev/bin/yui` and an independent Home, as required by `AGENTS.md`.
