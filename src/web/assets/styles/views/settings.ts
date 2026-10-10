@@ -11,6 +11,7 @@ export const SETTINGS_STYLES = `
 .settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}
 .settings-field{padding:14px 0;border-bottom:1px solid var(--line);display:grid;gap:8px;min-width:0}
 .settings-field small{color:var(--ink-3);overflow-wrap:anywhere}
+.settings-field small:empty,.settings-field .settings-actions:empty{display:none}
 .settings-field textarea{width:100%;min-height:88px;resize:vertical}
 .settings-field input,.settings-field select{width:100%;min-width:0}
 .settings-field .settings-reset{display:flex;gap:8px;align-items:center;font-size:var(--fs-xs)}
