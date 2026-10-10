@@ -36,7 +36,7 @@ export type RoleSessionContextOptions = Readonly<{
 
 type RoleSessionKind = "operator" | "global" | "leader" | "worker" | "reviewer";
 
-const BUILTIN_YUI_SKILLS = new Set([
+export const BUILTIN_YUI_SKILLS: ReadonlySet<string> = new Set([
   "yui-runtime",
   "yui-operator",
   "yui-leader",
