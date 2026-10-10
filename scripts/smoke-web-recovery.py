@@ -77,6 +77,8 @@ def history():
     wait("document.body.innerText.includes('Fixture history')")
     assert disabled("Send") and disabled("Stop this Turn")
     assert js("document.querySelector('input[type=file]').disabled")
+    stable_turns = count_turns()
+    current_before = read_api(endpoint + "&session=" + current)["body"]
     type_label("Message to the selected Session", "/stop")
     cdp("Input.dispatchKeyEvent", type="keyDown", key="Enter", code="Enter", modifiers=2, windowsVirtualKeyCode=13)
     cdp("Input.dispatchKeyEvent", type="keyUp", key="Enter", code="Enter", modifiers=2, windowsVirtualKeyCode=13)
@@ -94,6 +96,8 @@ def history():
     assert all(r["status"] == 409 and "Historical" in r["body"]["error"] for r in receipts), receipts
     assert cli("task", "message", "list", "task-1") == initial
     assert read_api("/api/tasks/task-1/artifacts")["body"] == artifacts
+    assert count_turns() == stable_turns
+    assert read_api(endpoint + "&session=" + current)["body"].get("runConfiguration", {}).get("axes") == current_before.get("runConfiguration", {}).get("axes")
     assert read_api("/api/conversation?scope=task&task=task-2&role=leader")["body"]["currentSessionId"] == neighbour["currentSessionId"]
     assert not (Path(fixture["home"]) / "artifacts/task-1/materials/historical-material/denied.txt").exists()
     capture("historical-readonly")
