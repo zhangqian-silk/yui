@@ -142,6 +142,32 @@ test("settings HTTP ingress requires page token and reports rejected writes with
   assert.equal((await response.json()).disposition, "not-submitted");
 });
 
+test("Role default model/effort saves validate the selected model without changing a live Session", async t => {
+  const f = fixture(t);
+  const service = createWebSettings(f.store, {
+    environment: {},
+    catalogs: { resolve: async () => ({
+      source: "live", attemptedAt: "2026-10-10T00:00:00Z",
+      catalog: { schemaVersion: 1, agentId: "fixture", adapterId: "codex",
+        fields: [{ key: "model", choices: [], allowCustom: false }],
+        models: [
+          { value: "fast", label: "Fast", isDefault: true, efforts: [{ value: "low", label: "Low" }] },
+          { value: "deep", label: "Deep", isDefault: false, efforts: [{ value: "high", label: "High" }] }
+        ], warnings: [] }
+    }) }
+  });
+  const save = changes => service.save({ id: "role/worker", revision: service.read("role/worker").revision, changes });
+  await save([{ key: "model", value: "fast" }, { key: "effort", value: "low" }]);
+  const before = service.read("role/worker");
+  await assert.rejects(save([{ key: "model", value: "deep" }]), /field=effort/);
+  assert.equal(service.read("role/worker").revision, before.revision);
+  await assert.rejects(save([{ key: "model", value: "missing" }]), /field=model/);
+  await save([{ key: "model", value: "deep" }, { key: "effort", value: "high" }]);
+  await save([{ key: "model", reset: true }, { key: "effort", reset: true }]);
+  assert.equal(f.store.getGlobalRoleSessionSet("worker"), null);
+  assert.equal(service.read("role/worker").fields.find(f => f.key === "model").source, "native/default");
+});
+
 test("browser session access preference is isolated, validated and truthful when storage fails", () => {
   const values = new Map();
   const context = vm.createContext({ localStorage: {
@@ -160,17 +186,30 @@ test("browser session access preference is isolated, validated and truthful when
   assert.equal(values.get("yui.session.accessMode"), "structured");
 });
 
-test("settings editor retains drafts on rejection and uncertainty, and only replaces them with a saved readback", async () => {
+test("settings editor preserves drafts and unknown receipts, with model-dependent capability choices", async () => {
   function element(spec, attrs, ...children) {
     const result = {
       tagName: spec.split(".")[0].toUpperCase(), value: "", checked: false, disabled: false,
       dataset: {}, handlers: {}, children: [], classList: { add() {} },
-      append(...items) { this.children.push(...items.flat().filter(x => x != null)); },
+      append(...items) {
+        const children = items.flat().filter(x => x != null);
+        for (const child of children) if (typeof child === "object") child.parent = this;
+        this.children.push(...children);
+      },
       replaceChildren(...items) { this.children = []; this.append(...items); },
-      addEventListener(name, fn) { this.handlers[name] = fn; },
+      addEventListener(name, fn) {
+        const previous = this.handlers[name];
+        this.handlers[name] = previous ? event => { previous(event); return fn(event); } : fn;
+      },
       setAttribute(name, value) { this[name] = value; },
       remove() {},
       after() {},
+      before(...items) {
+        if (!this.parent) return;
+        for (const item of items) item.parent = this.parent;
+        this.parent.children.splice(this.parent.children.indexOf(this), 0, ...items);
+      },
+      focus() {},
       querySelectorAll(selector) {
         const tags = selector.toUpperCase().split(",");
         const visit = node => typeof node === "object" ? [
@@ -229,6 +268,9 @@ test("settings editor retains drafts on rejection and uncertainty, and only repl
   assert.equal(draft.value, "240");
   assert.equal(state.unknown, true);
   assert.equal(state.save.disabled, true);
+  const unknownReceipt = state.receipt.textContent;
+  draft.value = "300"; draft.handlers.input();
+  assert.equal(state.receipt.textContent, unknownReceipt, "editing never erases the unknown-write warning");
   const count = submissions;
   await state.content.children[0].handlers.submit({ preventDefault() {} });
   assert.equal(submissions, count, "unknown outcome is not replayed");
@@ -242,4 +284,47 @@ test("settings editor retains drafts on rejection and uncertainty, and only repl
   assert.equal(state.dirty, false);
   assert.equal(state.group.revision, "saved");
   assert.equal(state.editors[0].control.value, "240");
+
+  const roleGroup = { id: "role/worker", agentId: "fixture", revision: "role-first", notice: "next launch",
+    fields: [
+      { key: "model", label: "Model", kind: "text", value: "fast", reset: true },
+      { key: "effort", label: "Effort", kind: "text", value: "low", reset: true },
+      { key: "systemPrompt", label: "Instructions", kind: "multiline", value: "" }
+    ] };
+  context.renderGroup(state, roleGroup);
+  const catalog = { agentId: "fixture", models: [
+    { value: "fast", label: "Fast", isDefault: true, efforts: [{ value: "low", label: "Low" }] },
+    { value: "deep", label: "Deep", efforts: [{ value: "high", label: "High" }] }
+  ], fields: [{ key: "model", allowCustom: true }, { key: "effort", allowCustom: true }], warnings: [] };
+  let resolveCapabilities;
+  context.requestJson = () => new Promise(resolve => { resolveCapabilities = resolve; });
+  const query = state.content.querySelectorAll("button").find(button => button.children.includes("settings.queryCapabilities"));
+  const capabilityRead = query.handlers.click();
+  const beforeQuerySubmit = submissions;
+  await state.content.children[0].handlers.submit({ preventDefault() {} });
+  assert.equal(submissions, beforeQuerySubmit, "submission waits for the in-flight capability read");
+  resolveCapabilities({ source: "cache", fetchedAt: "2026-10-10T00:00:00Z", catalog });
+  await capabilityRead;
+  assert.equal(state.capabilityPending, false);
+  assert.equal(query.disabled, false);
+  const [model, effort] = state.editors;
+  assert.equal(model.control.tagName, "SELECT");
+  assert.equal(effort.control.tagName, "SELECT");
+  assert.equal(state.dirty, false, "a capability read does not change defaults");
+  model.control.value = "deep"; model.control.handlers.change();
+  assert.equal(effort.control.value, "low", "model changes never silently replace an effort draft");
+  assert.ok(effort.control.children.some(option => option.value === "high"));
+  effort.control.value = ""; effort.control.handlers.change();
+  assert.equal(effort.change().reset, true, "native default uses the existing clear operation");
+  const custom = model.row.querySelectorAll("button").find(button => button.children.includes("settings.custom"));
+  custom.handlers.click();
+  assert.equal(model.control.tagName, "INPUT");
+  model.control.value = "private-model"; model.control.handlers.change();
+  context.applyCapabilities(state, { catalog });
+  assert.equal(model.control.value, "private-model", "refresh retains custom or unlisted drafts");
+  context.applyCapabilities(state, { catalog: { ...catalog, models: [],
+    fields: [{ key: "model", available: false, allowCustom: false, reason: "Not supported" }] } });
+  assert.equal(model.control.disabled, true);
+  assert.equal(model.control.value, "private-model");
+  assert.equal(model.blocked, true, "unavailable capability cannot submit a changed draft");
 });

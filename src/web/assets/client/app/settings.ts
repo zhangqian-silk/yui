@@ -46,7 +46,8 @@ function inputValue(field, control) {
 }
 
 function editor(field, group, state) {
-  const label = h("label.field", null, h("span", null, field.label));
+  const labelText = t("settings.field." + field.key, field.label);
+  const label = h("label.field", null, h("span", null, labelText));
   let control;
   if (field.kind === "boolean" || field.choices && field.choices.length) {
     const values = field.kind === "boolean" ? ["true", "false"] : field.choices;
@@ -62,35 +63,110 @@ function editor(field, group, state) {
   const reset = h("input", { type: "checkbox" });
   const row = h("div.settings-field", { dataset: { field: field.key } }, label,
     field.summary ? h("p", null, field.summary) : null,
-    h("small", null, t("settings.current") + ": " + format(field.value) +
-      (field.source ? " · " + field.source : "") +
+    h("small", null, t("settings.current") + ": " + (field.value === "" ? t("settings.inherit") : format(field.value)) +
+      (field.source ? " · " + t("settings.source." + field.source, field.source) : "") +
       (Object.hasOwn(field, "defaultValue") ? " · " + t("settings.default") + ": " + format(field.defaultValue) : "")),
     field.takesEffect ? h("small", null, field.takesEffect) : null,
     field.reset ? h("label.settings-reset", null, reset, t("settings.reset")) : null);
+  let unavailable = false;
   function mark() {
-    control.disabled = reset.checked;
+    control.disabled = reset.checked || unavailable;
     state.dirty = state.editors.some(e => e.changed());
-    state.save.disabled = !state.dirty || state.pending || state.unknown;
-    state.receipt.textContent = state.dirty ? t("settings.unsaved") : "";
+    state.save.disabled = !state.dirty || state.pending || state.capabilityPending || state.unknown;
+    if (!state.unknown && !state.pending) state.receipt.textContent = state.dirty ? t("settings.unsaved") : "";
   }
-  control.addEventListener("input", mark);
-  control.addEventListener("change", mark);
+  function listen() {
+    control.addEventListener("input", mark);
+    control.addEventListener("change", () => { mark(); item.onChange?.(); });
+  }
   reset.addEventListener("change", mark);
-  return { row, control, field, changed: () => reset.checked || control.value !== initial,
-    change: () => reset.checked ? { key: field.key, reset: true } : { key: field.key, value: inputValue(field, control) } };
+  const hint = h("small");
+  const choiceActions = h("div.settings-actions");
+  row.append(choiceActions, hint);
+  const item = { row, get control() { return control; }, field,
+    get value() { return reset.checked ? "" : control.value; },
+    get blocked() { return unavailable && !reset.checked && control.value !== "" && control.value !== initial; },
+    changed: () => reset.checked || control.value !== initial,
+    change: () => reset.checked || (["model", "effort"].includes(field.key) && field.reset && control.value === "")
+      ? { key: field.key, reset: true } : { key: field.key, value: inputValue(field, control) },
+    setChoices(choices, options = {}) {
+      const value = control.value;
+      unavailable = options.available === false || (!choices.length && options.allowCustom === false);
+      const values = choices.map(c => c.value);
+      const selected = h("select", null, h("option", { value: "" }, t("settings.inherit")),
+        choices.map(c => h("option", { value: c.value }, c.label)));
+      if (value && !values.includes(value)) selected.append(h("option", { value }, value + " · " + t("settings.notListed")));
+      control = choices.length ? selected : h("input");
+      control.value = value;
+      control.disabled = reset.checked || unavailable;
+      listen();
+      label.replaceChildren(h("span", null, labelText), control);
+      choiceActions.replaceChildren();
+      if (choices.length && options.allowCustom && !unavailable) {
+        const custom = h("button.btn", { type: "button" }, t("settings.custom"));
+        custom.addEventListener("click", () => {
+          const value = control.value;
+          control = h("input", { value });
+          control.disabled = reset.checked;
+          listen(); label.replaceChildren(h("span", null, labelText), control); choiceActions.replaceChildren();
+          control.focus();
+        });
+        choiceActions.append(custom);
+      }
+      hint.textContent = (options.reason || "") +
+        (value && !values.includes(value) ? " " + t("settings.notListedHelp") : "");
+    }
+  };
+  reset.addEventListener("change", () => item.onChange?.());
+  listen();
+  return item;
+}
+
+function applyCapabilities(state, result) {
+  const catalog = result.catalog;
+  const model = state.editors.find(e => e.field.key === "model");
+  const effort = state.editors.find(e => e.field.key === "effort");
+  if (!model) return;
+  const modelField = catalog.fields.find(f => f.key === "model");
+  model.setChoices(catalog.models, modelField || { allowCustom: true });
+  function updateEffort() {
+    if (!effort) return;
+    const selected = !model.value ? catalog.models.find(m => m.isDefault)
+      : catalog.models.find(m => m.value === model.value)
+        || catalog.models.find(m => m.resolvedModel === model.value && !m.isDefault)
+        || catalog.models.find(m => m.resolvedModel === model.value);
+    const field = catalog.fields.find(f => f.key === "effort");
+    const choices = selected?.efforts.length ? selected.efforts : field?.choices || [];
+    effort.setChoices(choices, {
+      allowCustom: !choices.length && field?.allowCustom !== false,
+      available: choices.length ? true : field?.available,
+      reason: selected?.defaultEffort ? t("settings.nativeEffort") + ": " + selected.defaultEffort : field?.reason
+    });
+  }
+  model.onChange = updateEffort;
+  updateEffort();
 }
 
 function renderGroup(state, group) {
+  const generation = state.renderGeneration = (state.renderGeneration || 0) + 1;
   state.group = group; state.editors = []; state.dirty = false; state.unknown = false;
+  state.capabilityPending = false;
   const form = h("form.settings-stack");
   const receipt = h("p.settings-receipt", { role: "status", "aria-live": "polite" });
   const save = h("button.btn.btn-primary", { type: "submit", disabled: true }, t("settings.save"));
   state.save = save; state.receipt = receipt;
   form.append(h("p", null, group.notice));
+  const isRole = group.id.startsWith("role/");
+  if (isRole) form.append(h("p", null, "Agent: " + group.agentId + " · " + t("settings.roleScope")));
+  const advanced = h("details", { open: !!search.value.trim() }, h("summary", null, t("settings.advancedFields")));
+  const common = h("div.settings-grid");
   group.fields.forEach(field => {
     const item = editor(field, group, state);
-    state.editors.push(item); form.append(item.row);
+    state.editors.push(item);
+    if (isRole) (["model", "effort"].includes(field.key) ? common : advanced).append(item.row);
+    else form.append(item.row);
   });
+  if (isRole) form.append(common, advanced);
   const acknowledge = h("input", { type: "checkbox" });
   if (group.id.startsWith("role/") || group.id.startsWith("agent/")) form.append(h("label.settings-reset", null,
     acknowledge, t("settings.acknowledge")));
@@ -99,8 +175,15 @@ function renderGroup(state, group) {
     compare.disabled = true;
     try {
       const current = await requestJson("/api/settings/group?" + new URLSearchParams({ id: group.id }));
-      const values = h("pre.settings-observation", null, JSON.stringify(current, null, 2));
-      const adopt = h("button.btn", { type: "button", disabled: state.unknown }, t("settings.useBaseline"));
+      const values = h("div.settings-observation", null,
+        h("p", null, current.notice),
+        current.fields.map(field => h("p", null,
+          t("settings.field." + field.key, field.label) + ": " +
+          (field.value === "" ? t("settings.inherit") : format(field.value)) +
+          (field.source ? " · " + t("settings.source." + field.source, field.source) : ""))));
+      const agentChanged = current.agentId !== group.agentId;
+      if (agentChanged) values.append(h("p.settings-error", null, t("settings.agentChanged")));
+      const adopt = h("button.btn", { type: "button", disabled: state.unknown || agentChanged }, t("settings.useBaseline"));
       adopt.addEventListener("click", () => {
         state.group = current;
         receipt.textContent = t("settings.baselineChanged");
@@ -113,8 +196,11 @@ function renderGroup(state, group) {
   form.append(h("div.settings-actions", null, save, compare), receipt);
   form.addEventListener("submit", async event => {
     event.preventDefault();
-    if (state.pending || state.unknown) return;
+    if (state.pending || state.capabilityPending || state.unknown) return;
     let changes;
+    if (state.editors.some(e => e.blocked)) {
+      receipt.textContent = t("settings.unsupportedDraft"); return;
+    }
     try { changes = state.editors.filter(e => e.changed()).map(e => e.change()); }
     catch (error) { receipt.textContent = error.message; receipt.classList.add("settings-error"); return; }
     if (!changes.length) return;
@@ -147,24 +233,42 @@ function renderGroup(state, group) {
     const refresh = h("button.btn", { type: "button" }, t("settings.refreshCapabilities"));
     const output = h("div");
     async function load(force) {
+      if (state.pending || state.capabilityPending) return;
+      if (state.editors.some(e => e.field.key === "activeAgentId" && e.changed())) {
+        info.textContent = t("settings.saveAgentFirst"); return;
+      }
+      state.capabilityPending = true; save.disabled = true;
       query.disabled = refresh.disabled = true; info.textContent = t("settings.querying");
       try {
         const result = await requestJson("/api/settings/capabilities?" + new URLSearchParams({ id: group.id, refresh: String(force) }));
-        info.textContent = result.source + " · " + (result.fetchedAt || result.attemptedAt) +
-          (result.failure ? " · " + result.failure.code + ": " + result.failure.message : "");
-        // Preserve query/cache/fallback, field availability and warnings verbatim.
-        output.replaceChildren(h("pre.settings-observation", null, JSON.stringify(result.catalog, null, 2)));
-        const model = state.editors.find(e => e.field.key === "model");
-        if (model && model.control.tagName === "INPUT") {
-          const list = h("datalist", { id: "models-" + group.id.replace(/\W/g, "-") },
-            result.catalog.models.map(m => h("option", { value: m.value }, m.label)));
-          model.control.setAttribute("list", list.id); output.append(list);
+        if (state.renderGeneration !== generation) return;
+        if (state.pending) { info.textContent = t("settings.notQueried"); return; }
+        if (result.catalog.agentId !== group.agentId) {
+          info.textContent = t("settings.agentChanged"); return;
         }
+        if (state.editors.some(e => e.field.key === "activeAgentId" && e.changed())) {
+          info.textContent = t("settings.saveAgentFirst"); return;
+        }
+        info.textContent = t("settings.capability." + result.source, result.source) + " · " + (result.fetchedAt || result.attemptedAt) +
+          (result.failure ? " · " + result.failure.code + ": " + result.failure.message : "");
+        applyCapabilities(state, result);
+        output.replaceChildren(
+          ...result.catalog.warnings.map(w => h("p", null, w)),
+          h("details", null, h("summary", null, t("settings.capabilityDetails")),
+            h("pre.settings-observation", null, JSON.stringify(result.catalog, null, 2))));
       } catch (error) { info.textContent = t("settings.queryFailed") + ": " + error.message; }
-      finally { query.disabled = refresh.disabled = false; }
+      finally {
+        query.disabled = refresh.disabled = false;
+        if (state.renderGeneration === generation) {
+          state.capabilityPending = false;
+          state.save.disabled = !state.dirty || state.pending || state.unknown;
+        }
+      }
     }
     query.addEventListener("click", () => load(false)); refresh.addEventListener("click", () => load(true));
-    form.append(h("div.settings-actions", null, query, refresh), info, output);
+    const capabilities = h("div", null, h("div.settings-actions", null, query, refresh), info, output);
+    if (isRole) common.before(capabilities);
+    else form.append(capabilities);
   }
   state.content.replaceChildren(form);
 }
@@ -203,12 +307,12 @@ async function start(cursor) {
         return;
       }
       const content = h("div");
-      const root = h("details.settings-card", { open: !meta.advanced || !!query },
+      const root = h("details.settings-card", { open: meta.id === "system" || !!query },
         h("summary", null, t("settings.section." + meta.section, meta.section) + " · " + meta.title), content);
       const state = { meta, root, content, dirty: false, loaded: false, loading: false };
       groups.push(state); container.append(root);
       root.addEventListener("toggle", () => { if (root.open) void loadGroup(state); });
-      if (!meta.advanced || query) void loadGroup(state);
+      if (root.open) void loadGroup(state);
     });
     status.textContent = data.total ? String(data.total) + " " + t("settings.groups") : t("settings.noMatches");
     more.hidden = !data.nextCursor;

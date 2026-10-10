@@ -4,7 +4,7 @@ import { effectiveConfigData, runConfigCommand } from "../commands/configCommand
 import { runAgentCommand, type AgentCommandStore } from "../commands/agentCommands.js";
 import { runGlobalRoleCommand } from "../commands/globalRoleCommands.js";
 import { runProfileCommand, previewProfileAgentConfigurationMutation } from "../commands/profileCommands.js";
-import { roleOptionSpecs } from "../commands/roleConfiguration.js";
+import { parseRoleOptions, patchRoleAgentBinding, roleOptionSpecs } from "../commands/roleConfiguration.js";
 import { staticAgentConfigurationFields } from "../executor/agentConfigurationFields.js";
 import { validateAgentLaunchConfiguration, type AgentConfigurationCatalogService } from "../executor/agentConfigurationCatalog.js";
 import { resolveAgentProfileView } from "../profile/agentProfileRuntime.js";
@@ -31,9 +31,10 @@ export function createWebSettings(store: TaskStore, options: {
 }) {
   function groups() {
     return [
-      ...CONFIG_DOMAINS.map(id => ({ id, title: id, section: id === "system" ? "general" : "advanced", advanced: id !== "system" })),
+      { id: "system", title: "system", section: "general", advanced: false },
+      ...store.listGlobalRoles().map(r => ({ id: `role/${r.name}`, title: r.name, section: "roles", advanced: false })),
+      ...CONFIG_DOMAINS.filter(id => id !== "system").map(id => ({ id, title: id, section: "advanced", advanced: true })),
       ...store.listConfiguredAgents().map(a => ({ id: `agent/${a.id}`, title: a.id, section: "agents", advanced: true })),
-      ...store.listGlobalRoles().map(r => ({ id: `role/${r.name}`, title: r.name, section: "roles", advanced: true })),
       ...store.listAgentProfiles().map(p => ({ id: `profile/${p.id}`, title: p.id, section: "profiles", advanced: true }))
     ];
   }
@@ -162,6 +163,19 @@ export function createWebSettings(store: TaskStore, options: {
       return { key: def.key, value: change.value, reset: change.reset === true };
     });
     const args = objectArguments(id, changes);
+    if (id.startsWith("role/") && changes.some(c => c.key === "model" || c.key === "effort")) {
+      if (changes.some(c => c.key === "activeAgentId")) {
+        throw new WebRequestRejected("Save the Agent selection alone, then read its supported settings.");
+      }
+      const role = store.getGlobalRole(id.slice(5))!;
+      const agent = store.getConfiguredAgent(role.activeAgentId)!;
+      const parsed = parseRoleOptions(args, roleOptionSpecs({ update: true, includeWorkspace: true }));
+      const candidate = patchRoleAgentBinding(role.agentBindings[role.activeAgentId]!, parsed).config;
+      const catalog = await options.catalogs.resolve({
+        agent, cwd: parsed.one("--workspace")?.trim() || role.workspace, config: candidate
+      });
+      validateAgentLaunchConfiguration(catalog.catalog, candidate);
+    }
     // Explicit Profile runtime uses the same native catalog validator as CLI.
     const profileMutation = id.startsWith("profile/")
       ? previewProfileAgentConfigurationMutation(["update", id.slice(8), ...args], store) : undefined;
