@@ -91,6 +91,14 @@ test("unresolved send identity survives a new tab without sharing its private dr
   assert.ok(next.calls.some(url => url.includes("requestId=request-id")), "inspect the exact original identity");
   assert.equal(next.input.value, "", "unsent drafts remain tab-local");
   assert.equal(next.mutations.length, 0, "opening never replays input");
+  const alreadyOpen = fixture({}, { idle: true, receiptState: "unknown", preferences: new Map() });
+  alreadyOpen.controller.open(owner);
+  await flush();
+  for (const [key, value] of first.preferences) alreadyOpen.preferences.set(key, value);
+  alreadyOpen.input.value = "Do not resend from an already open tab";
+  await alreadyOpen.button("send").handlers.click();
+  assert.equal(alreadyOpen.mutations.length, 0, "check shared identity again at the send boundary");
+  alreadyOpen.controller.close();
   const other = fixture({}, { idle: true, preferences: first.preferences });
   other.controller.open({ ...owner, taskId: "task-2" });
   await flush();

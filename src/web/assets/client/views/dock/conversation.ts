@@ -465,6 +465,7 @@ export function createConversationController(host, t, locale = function () { ret
     finally { finish(own); }
   }
   async function submit(interrupt, asLiteral) {
+    controls(); // Another tab may have acquired an unresolved input since refresh.
     if (busy || pending || (interrupt ? stop.disabled : send.disabled)) return;
     if (!interrupt && !text.value.trim()) return;
     if (!interrupt && !asLiteral && text.value.trim().startsWith("/")) { runCommand(); return; }
