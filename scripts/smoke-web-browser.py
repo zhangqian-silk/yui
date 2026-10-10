@@ -1,6 +1,7 @@
 # Run through browser-use (its helpers are pre-imported), not plain Python.
 # Start smoke-web-runtime.mjs --serve first. No network interception or fake UI.
 import base64
+import hashlib
 import json
 import os
 import time
@@ -57,6 +58,8 @@ def check(name, action):
         results.append({"name": name, "status": "failed", "error": repr(error)})
         capture("failure-" + str(len(results)))
         print("FAIL", name, error)
+        js("document.querySelectorAll('dialog[open]').forEach(d=>d.close())")
+        cdp("Emulation.clearDeviceMetricsOverride")
     finally:
         (evidence / "browser-results.json").write_text(json.dumps(results, ensure_ascii=False, indent=2))
 
@@ -113,6 +116,30 @@ def artifact():
     capture("pinned-markdown")
 check("98/104: pinned Markdown renders safely; feedback stages reference without sending or replacing draft", artifact)
 
+def image():
+    click_named("pixel.png", prefix=True)
+    wait("document.querySelector('img.artifact-image')?.naturalWidth === 1")
+    js("""(()=>{const s=document.querySelector('select[aria-label="Image zoom"]');
+      if(![...s.options].some(o=>o.value==='200'))throw Error('Missing zoom option');
+      s.value='200';s.dispatchEvent(new Event('change',{bubbles:true}));})()""")
+    assert js("document.querySelector('img.artifact-image').width") == 2
+    downloads = evidence / "downloads"
+    downloads.mkdir(exist_ok=True)
+    cdp("Page.setDownloadBehavior", behavior="allow", downloadPath=str(downloads))
+    try:
+        click_named("Download original file")
+        end = time.monotonic() + 10
+        while not (downloads / "pixel.png").exists() and time.monotonic() < end:
+            time.sleep(.1)
+        data = (downloads / "pixel.png").read_bytes()
+        expected = json.loads((evidence / "report.json").read_text())["native"]["image"]["digest"]
+        assert hashlib.sha256(data).hexdigest() == expected
+        assert len(data) == 68
+        capture("image-zoom-download")
+    finally:
+        cdp("Page.setDownloadBehavior", behavior="default")
+check("104: image zoom changes rendered dimensions; downloaded original matches pinned digest", image)
+
 def search_quote():
     before = read_api("/api/tasks/task-1/list?store=task-message")["body"]
     click_named("Search task contents")
@@ -136,6 +163,34 @@ def search_quote():
     capture("search-unicode-crlf")
     click_named("Close")
 check("99/107: exact Unicode/CRLF selection appends a bounded source reference without sending", search_quote)
+
+def long_search():
+    click_named("Search task contents")
+    click_named("Text to find", "searchbox")
+    js("document.activeElement.select()")
+    cdp("Input.insertText", text="PAGE-MARKER")
+    click_named("Search")
+    wait("document.querySelectorAll('dialog[open] article').length === 20")
+    first = js("[...document.querySelectorAll('dialog[open] h3')].map(e=>e.textContent)")
+    click_named("Next")
+    wait("document.querySelectorAll('dialog[open] article').length === 1")
+    assert js("document.querySelector('dialog[open] h3').textContent") not in first
+    click_named("Text to find", "searchbox")
+    js("document.activeElement.select()")
+    cdp("Input.insertText", text="LONG-REFERENCE")
+    click_named("Search")
+    wait("document.body.innerText.includes('Read exact original')")
+    click_named("Read exact original")
+    wait("document.querySelector('textarea.search-source') !== null")
+    first_page = js("document.querySelector('textarea.search-source').value")
+    # The source's own Next button, not the disabled search-results pager.
+    js("""[...document.querySelectorAll('dialog[open] button')]
+      .find(e=>e.textContent==='Next'&&!e.disabled).click()""")
+    wait("document.querySelector('textarea.search-source')?.value && !document.querySelector('textarea.search-source').value.startsWith('LONG-REFERENCE')")
+    assert len(first_page) > 2000
+    capture("long-source-page")
+    click_named("Close")
+check("99/107: browser result pagination replaces bounded rows and exact source opens a later page", long_search)
 
 def preview():
     click_named("Preview", "tab")
@@ -162,6 +217,75 @@ def preview():
     click_named("Conversation", "tab")
     assert read_api("/api/tasks/task-1/previews")["body"]["services"][0]["state"] == "ready"
 check("105: sandboxed real Runner iframe executes its relative asset; closing the view does not cancel", preview)
+
+def target_drafts():
+    type_label("Message to the selected Session", "Task one private draft")
+    click_named("Active Next Skill snapshot", prefix=True)
+    wait("location.search.includes('task-2')")
+    wait("document.querySelector('textarea[aria-label=\"Message to the selected Session\"]') !== null")
+    assert js("document.querySelector('textarea[aria-label=\"Message to the selected Session\"]').value") == ""
+    type_label("Message to the selected Session", "Task two private draft")
+    click_named("Active Batch regression fixture", prefix=True)
+    wait("location.search.includes('task-1')")
+    wait("document.querySelector('textarea[aria-label=\"Message to the selected Session\"]').value === 'Task one private draft'")
+    capture("target-draft-isolation")
+check("94/103: switching Task targets restores separate unsent drafts", target_drafts)
+
+def terminal_writers():
+    before = read_api("/api/conversation?scope=task&task=task-1&role=leader")["body"]
+    first = current_tab()["targetId"]
+    second = None
+    native_log = Path(json.loads((evidence / "report.json").read_text())["home"]) / "native-tui.jsonl"
+    try:
+        click_named("Terminal", "tab")
+        wait("document.body.innerText.includes('Interactive')")
+        click_named("Terminal input", "textbox")
+        cdp("Input.insertText", text="WRITER-ALLOWED")
+        end = time.monotonic() + 5
+        while "WRITER-ALLOWED" not in native_log.read_text() and time.monotonic() < end:
+            time.sleep(.1)
+        assert "WRITER-ALLOWED" in native_log.read_text()
+        new_tab(base + "/?task=task-1")
+        second = current_tab()["targetId"]
+        wait_for_load()
+        print(page_info())
+        click_named("Terminal", "tab")
+        wait("document.body.innerText.includes('Read only')")
+        click_named("Terminal input", "textbox")
+        cdp("Input.insertText", text="WRITER-DENIED")
+        # Exercise the server fence too, independently of xterm's read-only UI.
+        readonly = js("""new Promise((resolve,reject)=>{
+          const q=new URLSearchParams({scope:'task',task:'task-1',role:'leader',
+            session:__SESSION__,cols:'80',rows:'24',
+            token:document.querySelector('meta[name=yui-web-token]').content});
+          const ws=new WebSocket('ws://'+location.host+'/api/terminal?'+q);
+          const timer=setTimeout(()=>{ws.close();reject(Error('terminal timeout'));},5000);
+          ws.onerror=()=>{clearTimeout(timer);reject(Error('terminal connection failed'));};
+          ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.type==='ready'){
+            ws.send(JSON.stringify({type:'input',data:'SERVER-WRITER-DENIED'}));
+            setTimeout(()=>{clearTimeout(timer);ws.close();resolve(m.readOnly);},200);
+          }};
+        })""".replace("__SESSION__", json.dumps(before["currentSessionId"])))
+        assert readonly is True
+        capture("second-terminal-readonly")
+        time.sleep(.2)
+        assert "WRITER-DENIED" not in native_log.read_text()
+        after = read_api("/api/conversation?scope=task&task=task-1&role=leader")["body"]
+        assert after["currentSessionId"] == before["currentSessionId"]
+        assert after["turn"] == before["turn"], "Opening native view must not create a model Turn"
+        assert after["terminalWriter"] is True
+    finally:
+        if second:
+            cdp("Target.closeTarget", targetId=second)
+        switch_tab(first)
+        click_named("Conversation", "tab")
+    wait("document.querySelector('textarea[aria-label=\"Message to the selected Session\"]') !== null")
+    assert js("document.querySelector('textarea[aria-label=\"Message to the selected Session\"]').value") == "Task one private draft"
+    end = time.monotonic() + 5
+    while read_api("/api/conversation?scope=task&task=task-1&role=leader")["body"]["terminalWriter"] and time.monotonic() < end:
+        time.sleep(.1)
+    assert read_api("/api/conversation?scope=task&task=task-1&role=leader")["body"]["terminalWriter"] is False
+check("95: real Host relay/tmux/PTY keeps one Thread and one writer across two browser windows (fake native UI)", terminal_writers)
 
 def narrow():
     cdp("Emulation.setDeviceMetricsOverride", width=390, height=844, deviceScaleFactor=1, mobile=False)

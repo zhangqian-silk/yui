@@ -14,6 +14,8 @@ if (args.includes("--version")) {
 } else if (args.includes("app-server") && args.includes("proxy")) {
   process.env.YUI_FAKE_THREAD_ID = `fixture-${process.env.YUI_TASK_ID ?? "global"}-${process.env.YUI_ROLE ?? "reader"}`;
   await import("./fake-codex-app-server-proxy.mjs");
+} else if (args.includes("--remote") && process.env.YUI_FAKE_TUI_LOG) {
+  await import("./fake-codex-tui.mjs");
 } else if (args.includes("app-server") && args.includes("--stdio")) {
   const lines = createInterface({ input: process.stdin });
   lines.on("line", line => {

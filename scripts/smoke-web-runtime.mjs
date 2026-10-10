@@ -121,6 +121,7 @@ try {
   writeFileSync(join(bin, "codex"), `#!${process.execPath}
 process.env.YUI_FAKE_TURN_HANDLER = ${JSON.stringify(new URL("../test/fixtures/web-runtime-turn.mjs", import.meta.url).href)};
 process.env.YUI_SMOKE_CLI = ${JSON.stringify(cli)};
+process.env.YUI_FAKE_TUI_LOG = ${JSON.stringify(join(home, "native-tui.jsonl"))};
 process.env.YUI_FAKE_MODELS = ${JSON.stringify(JSON.stringify([
   { id: "fast", model: "fast", displayName: "Fast fixture", isDefault: true,
     supportedReasoningEfforts: [{ reasoningEffort: "low", description: "Low" }], defaultReasoningEffort: "low" },
@@ -213,6 +214,12 @@ http.createServer((req, res) => {
       changes: [{ key: "model", value: "fast" }, { key: "effort", value: "low" }] });
     assert.notEqual(invalid.status, 0, "CLI accepted deep/low although native metadata only allows deep/high");
     assert.deepEqual(afterCli, configured.group);
+    command(["config", "role", "update", "leader", "--model", "deep", "--effort", "high"]);
+    const valid = await api("/api/settings/group?id=role%2Fleader");
+    assert.equal(valid.fields.find(f => f.key === "effort").value, "high");
+    command(["config", "role", "update", "leader", "--clear-effort"]);
+    assert.equal((await api("/api/settings/group?id=role%2Fleader")).fields.find(f => f.key === "effort").value, "");
+    command(["config", "role", "update", "leader", "--model", "fast", "--effort", "low"]);
   });
   await check("94/99: exact Unicode source, request-id conflict, and persisted messages survive Controller restart", async () => {
     const args = ["task", "message", "send", task.id, "来源 😀\r\nKeep this exact body",
@@ -253,6 +260,37 @@ http.createServer((req, res) => {
     const taskRole = await api(`/api/skills/role?scope=task&task=${task.id}&role=leader`);
     await api("/api/skills/role", { target: { scope: "task", task: task.id, role: "leader" },
       revision: taskRole.revision, skills: ["regression"] });
+  });
+  await check("99/107: real search cursors and source pages preserve long Unicode content without overlap", async () => {
+    const body = "LONG-REFERENCE " + "中😀\r\n".repeat(2300) + "END";
+    command(["task", "message", "send", task.id, body, "--intent", "record", "--request-id", "long-source"]);
+    for (let i = 0; i < 21; i++) {
+      command(["task", "message", "send", task.id, `PAGE-MARKER ${i}`,
+        "--intent", "record", "--request-id", `page-${i}`]);
+    }
+    const query = "query=PAGE-MARKER&limit=20";
+    const first = await api(`/api/search?${query}`);
+    assert.equal(first.items.length, 20);
+    assert.ok(first.nextCursor);
+    const second = await api(`/api/search?${query}&cursor=${encodeURIComponent(first.nextCursor)}`);
+    assert.equal(second.items.length, 1);
+    assert.equal(second.nextCursor, null);
+    assert.equal(new Set([...first.items, ...second.items].map(i => i.ref.refId)).size, 21);
+    await api(`/api/search?query=OTHER&limit=20&cursor=${encodeURIComponent(first.nextCursor)}`, undefined, 400);
+    const [item] = (await api("/api/search?query=LONG-REFERENCE")).items;
+    const parameters = new URLSearchParams({ store: item.ref.store, ref: item.ref.refId,
+      digest: item.ref.digest, field: item.field });
+    let offset = 0, actual = "";
+    do {
+      const page = await api(`/api/tasks/${task.id}/search-source?${parameters}&offset=${offset}`);
+      assert.equal(page.offset, offset);
+      actual += page.content;
+      if (page.nextOffset === null) break;
+      assert.equal(page.nextOffset, offset + Array.from(page.content).length);
+      offset = page.nextOffset;
+    } while (offset < Array.from(body).length);
+    assert.equal(actual, body);
+    report.longSource = { item, characters: Array.from(body).length };
   });
   await check("100: scope-only Knowledge changes, exact replay, retirement and CLI/Web Context agree", async () => {
     const propose = scope => command(["project", "knowledge", "propose", project.id, "--task", task.id,
@@ -381,6 +419,10 @@ http.createServer((req, res) => {
   process.exitCode = 1;
 } finally {
   cleaning = true;
+  const nativeLog = join(home, "native-tui.jsonl");
+  if (existsSync(nativeLog)) {
+    report.nativeTuiObservations = readFileSync(nativeLog, "utf8").trim().split("\n").map(line => JSON.parse(line));
+  }
   try {
     for (const job of jobs) {
       const stopped = await api(`/api/tasks/${job.taskId}/previews/${job.id}/stop`, {});
