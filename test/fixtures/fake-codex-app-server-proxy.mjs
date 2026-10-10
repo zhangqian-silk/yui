@@ -115,10 +115,20 @@ function handleMessage(message) {
         thread: {
           id: message.params.threadId ?? threadId,
           status: { type: activeTurnId === undefined ? "idle" : "active" },
-          turns: activeTurnId === undefined ? [] : [{ id: activeTurnId, status: "inProgress", items: [] }]
+          turns: activeTurnId === undefined ? JSON.parse(process.env.YUI_FAKE_RESUMED_TURNS ?? "[]")
+            : [{ id: activeTurnId, status: "inProgress", items: [] }]
         }
       });
       break;
+    case "thread/items/list": {
+      const turns = JSON.parse(process.env.YUI_FAKE_RESUMED_TURNS ?? "[]");
+      const items = turns.flatMap(turn => turn.items.map(item => ({ turnId: turn.id, item }))).reverse();
+      const offset = Number(message.params.cursor ?? 0);
+      const limit = message.params.limit ?? 40;
+      respond({ data: items.slice(offset, offset + limit),
+        nextCursor: offset + limit < items.length ? String(offset + limit) : null });
+      break;
+    }
     case "thread/goal/get":
       respond({ goal: null });
       break;

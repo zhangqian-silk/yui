@@ -21,7 +21,7 @@ if (args.includes("--version")) {
     if (request.id === undefined) return;
     const results = {
       initialize: { userAgent: "fixture" },
-      "model/list": { data: [], nextCursor: null },
+      "model/list": { data: JSON.parse(process.env.YUI_FAKE_MODELS ?? "[]"), nextCursor: null },
       "configRequirements/read": { requirements: null },
       "modelProvider/capabilities/read": { webSearch: false }
     };
