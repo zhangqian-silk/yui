@@ -4,10 +4,12 @@ import { requestJson, submitMutation } from "/assets/js/lib/api.js";
 import { createI18n } from "/assets/js/lib/i18n.js";
 import { createThemeController } from "/assets/js/lib/theme.js";
 import { clearPreference, readSessionAccessMode, writeSessionAccessMode } from "/assets/js/lib/prefs.js";
+import { mountSkills } from "/assets/js/views/skills.js";
 
 const $ = selector => document.querySelector(selector);
 const i18n = createI18n($("#locale-select"));
 const t = i18n.t;
+mountSkills($("#skill-browser"), t);
 const theme = createThemeController($("#theme-options"), t);
 i18n.subscribe(() => theme.render());
 const access = $("#access-mode");

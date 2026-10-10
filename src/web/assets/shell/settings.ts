@@ -26,6 +26,7 @@ export const SETTINGS_HTML = `<!doctype html>
         </div>
       </div>
     </section>
+    <section id="skill-browser" class="settings-card settings-stack"></section>
     <label class="field settings-search"><span data-i18n="settings.search">Find a setting</span><input id="settings-search" type="search" autocomplete="off"></label>
     <p id="settings-status" role="status"></p>
     <div id="settings-groups" class="settings-stack"></div>

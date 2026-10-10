@@ -100,6 +100,7 @@ import { WebRequestRejected } from "../web/webMutation.js";
 import { inspectAgentHost, sendAgentHostNativeControl, AGENT_HOST_CONTROL_PROTOCOL } from "../runtime/agentHost.js";
 import { archiveOrdinaryTask } from "../task/ordinaryArchive.js";
 import { createWebSettings } from "../web/webSettings.js";
+import { createWebSkills } from "../web/webSkills.js";
 import {
   isTaskOwnedWorkspace,
   sameManagedWorkspaceIdentity
@@ -576,6 +577,7 @@ export async function startFileTaskControllerRuntime(
     };
     const web = createControllerWeb(store, {
       previews: () => createTaskPreviews(store, home),
+      skills: createWebSkills(store),
       settings: createWebSettings(store, {
         environment: options.environment ?? process.env, catalogs,
         refreshConfiguration: () => {

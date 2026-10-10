@@ -18,6 +18,7 @@ import type { createTaskPreviews } from "./taskPreviews.js";
 import type { createWebConversationSurface } from "./webConversation.js";
 import type { RoleSessionOwner } from "../executor/agentExecutor.js";
 import type { WebSettings } from "./webSettings.js";
+import type { WebSkills } from "./webSkills.js";
 import { SETTINGS_HTML } from "./assets/shell/settings.js";
 import { TASK_SUBMISSION_INTENTS, type TaskSubmissionIntent } from "../message/message.js";
 import type { SurfaceContributionRef, SurfacePanelContribution } from "../surface/surfaceContributions.js";
@@ -72,6 +73,7 @@ export type WebServerDependencies = Readonly<{
   previews?: () => ReturnType<typeof createTaskPreviews>;
   conversation?: ReturnType<typeof createWebConversationSurface>;
   settings?: WebSettings;
+  skills?: WebSkills;
   panels?: Readonly<{
     list(taskId: string): readonly SurfacePanelContribution[];
     read(taskId: string, ref: SurfaceContributionRef, input: unknown): Promise<CapabilityResult>;
@@ -259,6 +261,33 @@ async function handleHttpRequest(
     } catch (error) {
       sendJson(response, 409, { error: error instanceof Error ? error.message : "Creation unavailable.",
         disposition: error instanceof WebRequestRejected ? "not-submitted" : "unknown" }, false);
+    }
+    return;
+  }
+  if (pathname.startsWith("/api/skills/")) {
+    try {
+      const service = dependencies.skills;
+      if (!service) throw new WebRequestRejected("Skill service unavailable.");
+      const q = new URL(request.url!, "http://localhost").searchParams;
+      if ([...q.keys()].some(k => !["scope", "task", "role", "id", "resource", "frozen", "digest", "run", "q", "cursor"].includes(k)
+        || q.getAll(k).length !== 1)) throw new WebRequestRejected("Unknown or duplicate Skill query.");
+      if (q.has("frozen") && !["true", "false"].includes(q.get("frozen")!)
+        || q.has("run") && q.get("frozen") !== "true") throw new WebRequestRejected("A Run read requires an explicit frozen version.");
+      const selected = { scope: q.get("scope"), role: q.get("role"), ...(q.has("task") ? { task: q.get("task") } : {}) };
+      let value: unknown;
+      if (method === "GET" && pathname === "/api/skills/catalog") value = service.catalog(q.get("q") ?? "", q.get("cursor") ?? "0");
+      else if (method === "GET" && pathname === "/api/skills/roles") value = service.roles(q.get("scope") ?? "", q.get("task") ?? undefined);
+      else if (method === "GET" && pathname === "/api/skills/role") value = service.role(selected);
+      else if (method === "GET" && pathname === "/api/skills/file") value = service.file({
+        id: q.get("id") ?? "", resource: q.get("resource") ?? undefined,
+        frozen: q.get("frozen") === "true", digest: q.get("digest") ?? undefined, run: q.get("run") ?? undefined, target: selected
+      });
+      else if (method === "POST" && pathname === "/api/skills/role") value = service.save(await readMutationBody(request));
+      else { sendJson(response, 405, { error: "Method not allowed.", disposition: "not-submitted" }, false); return; }
+      sendJson(response, 200, value, false);
+    } catch (error) {
+      sendJson(response, 409, { error: error instanceof Error ? error.message : "Skill operation unavailable.",
+        disposition: method === "GET" || error instanceof WebRequestRejected ? "not-submitted" : "unknown" }, false);
     }
     return;
   }

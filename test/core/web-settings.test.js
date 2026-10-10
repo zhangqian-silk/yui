@@ -237,6 +237,7 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
     } },
     window: { addEventListener() {} },
     createI18n: () => ({ t: k => k, subscribe() {} }), createThemeController: () => ({}),
+    mountSkills() {},
     readSessionAccessMode: () => "native", writeSessionAccessMode: () => true,
     readPreference: () => null, clearPreference: () => false,
     requestJson: async () => ({}),
