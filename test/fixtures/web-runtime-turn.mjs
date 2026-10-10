@@ -1,10 +1,12 @@
 // Invoked by the deterministic native protocol fixture, inside the real Host's
 // Session environment. These are ordinary managed CLI operations, not Store seeds.
 import { spawnSync } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-export async function handleTurn({ environment }) {
+export async function handleTurn({ environment, threadId, turnId, input }) {
+  appendFileSync(join(environment.YUI_HOME, "native-turns.jsonl"),
+    JSON.stringify({ at: new Date().toISOString(), threadId, turnId, input }) + "\n");
   const marker = join(environment.YUI_HOME, "web-smoke-native-result.json");
   if (existsSync(marker)) return "Deterministic continuation completed.";
   const cli = environment.YUI_SMOKE_CLI;

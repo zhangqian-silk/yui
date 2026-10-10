@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 const WEB_SOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 let input = Buffer.alloc(0);
@@ -85,6 +85,7 @@ function handleMessage(message) {
       respond({ codexHome: process.env.CODEX_HOME ?? "/tmp/fake-codex-home" });
       break;
     case "thread/start":
+      if (process.env.YUI_FAKE_UNIQUE_THREADS === "1") threadId += `-${randomUUID()}`;
       model = message.params.model ?? model;
       respond({ model, thread: { id: threadId, status: { type: "idle" }, turns: [] } });
       break;

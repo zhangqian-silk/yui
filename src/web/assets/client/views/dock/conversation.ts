@@ -8,6 +8,7 @@ import { inputCard } from "/assets/js/domain/work.js";
 export function createConversationController(host, t, locale = function () { return "en"; }) {
   let owner = null, selected = null, facts = null, cursor = null, next = null;
   let generation = 0, busy = false, timer = null, pending = null, historyOk = false;
+  let recoveryUnavailable = false;
   let rendered = new Map();
   let materials = [], incomingMaterials = null;
   let requestSignature = "";
@@ -64,12 +65,31 @@ export function createConversationController(host, t, locale = function () { ret
       h("p.feed-note", null, t("conversation.boundary"))));
 
   function key() { return "yui.conversation." + JSON.stringify(owner) + "." + selected; }
-  function saved(suffix, value) {
+  function saved(suffix, value, expectedRequestId) {
     try {
+      if (suffix === ".pending") {
+        const shared = localStorage.getItem(key() + suffix);
+        const identity = shared ? JSON.parse(shared) : null;
+        const tab = sessionStorage.getItem(key() + suffix);
+        recoveryUnavailable = false;
+        if (value === undefined) {
+          // Share only the unresolved identity, never another tab's draft.
+          return identity && (!tab || JSON.parse(tab).requestId !== identity.requestId) ? shared : tab;
+        }
+        if (value === null) {
+          if (!identity || identity.requestId === expectedRequestId) localStorage.removeItem(key() + suffix);
+        } else {
+          const record = JSON.parse(value);
+          localStorage.setItem(key() + suffix, JSON.stringify({ requestId: record.requestId, action: record.action }));
+        }
+      }
       if (value === undefined) return sessionStorage.getItem(key() + suffix);
       if (value === null) sessionStorage.removeItem(key() + suffix);
       else sessionStorage.setItem(key() + suffix, value);
-    } catch { draftStatus.textContent = t("conversation.storageFailed"); }
+    } catch {
+      if (suffix === ".pending") recoveryUnavailable = true;
+      draftStatus.textContent = t("conversation.storageFailed");
+    }
     return null;
   }
   function url(extra) {
@@ -79,13 +99,17 @@ export function createConversationController(host, t, locale = function () { ret
     return "/api/conversation?" + q;
   }
   function controls() {
+    if (owner && selected) {
+      try { pending = JSON.parse(saved(".pending") || "null"); }
+      catch { recoveryUnavailable = true; }
+    }
     defaultMode.value = readSessionAccessMode();
     const active = facts && facts.sessions.find(function (s) { return s.nativeSessionId === selected; });
     const writable = historyOk && active && active.current && active.status === "active" && active.adapterId === "codex"
       && facts.authority && facts.authority.owner === "controller" && !facts.terminalWriter;
     const turn = facts && facts.turn;
-    send.disabled = busy || !!pending || !!modelPending || !writable || (turn && ["submitting", "delivery-unknown"].includes(turn.status));
-    stop.disabled = busy || !!pending || !writable || !turn || turn.status !== "accepted" || !turn.nativeTurnId;
+    send.disabled = busy || recoveryUnavailable || !!pending || !!modelPending || !writable || (turn && ["submitting", "delivery-unknown"].includes(turn.status));
+    stop.disabled = busy || recoveryUnavailable || !!pending || !writable || !turn || turn.status !== "accepted" || !turn.nativeTurnId;
     check.disabled = busy || !pending;
     older.disabled = busy || !next;
     literal.disabled = send.disabled;
@@ -417,14 +441,15 @@ export function createConversationController(host, t, locale = function () { ret
   async function inspectReceipt() {
     if (!pending || busy) return;
     const own = generation;
+    const inspected = pending;
     busy = true; controls();
     try {
-      const result = await requestJson(url({ requestId: pending.requestId }));
+      const result = await requestJson(url({ requestId: inspected.requestId }));
       if (own !== generation) return;
       showReceipt(result);
       if (["accepted", "failed"].includes(result.state)) {
-        const submitted = pending;
-        pending = null; saved(".pending", null);
+        const submitted = inspected;
+        pending = null; saved(".pending", null, submitted.requestId);
         if (result.state === "accepted" && submitted.action !== "interrupt" && text.value === submitted.body) {
           text.value = ""; saved(".draft", null);
           drawCommands();
@@ -453,6 +478,7 @@ export function createConversationController(host, t, locale = function () { ret
     if (action !== "queue") payload.expectedTarget = turn.nativeTurnId || turn.attemptId;
     pending = { requestId: payload.requestId, action: action, body: payload.body, materials: payload.materials };
     saved(".pending", JSON.stringify(pending)); saved(".draft", text.value);
+    if (recoveryUnavailable) { controls(); return; }
     const own = generation, endpoint = url({ session: selected });
     busy = true; controls();
     receipt.textContent = t("conversation.receipt.sending");
@@ -464,13 +490,13 @@ export function createConversationController(host, t, locale = function () { ret
         && ["NO_ACTIVE_TURN", "TARGET_CHANGED", "INTERRUPT_UNSUPPORTED"].includes(result.interrupt.code)) {
         // Preflight proved no native cancel was submitted, so no durable
         // interrupt receipt exists. DELIVERY_UNKNOWN must stay unresolved.
-        pending = null; saved(".pending", null);
+        pending = null; saved(".pending", null, payload.requestId);
       }
       // Saved/queued is not accepted. Only an exact receipt lookup settles it.
     } catch (error) {
       if (own !== generation) return;
       receipt.textContent = t(error.disposition === "not-submitted" ? "conversation.receipt.failed" : "conversation.unknown") + " " + error.message;
-      if (error.disposition === "not-submitted") { pending = null; saved(".pending", null); }
+      if (error.disposition === "not-submitted") { pending = null; saved(".pending", null, payload.requestId); }
     } finally { finish(own); }
     if (own === generation) await inspectReceipt();
   }

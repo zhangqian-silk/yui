@@ -10,6 +10,7 @@ import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { jobPreviewSocketRoot } from "../dist/storage/homeLayout.js";
+import { startFaultProxy } from "../test/fixtures/web-fault-proxy.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const serve = process.argv.includes("--serve");
@@ -33,7 +34,7 @@ const report = {
   node: process.version, platform: `${process.platform}-${process.arch}`, cli, sandbox, home, tmuxServer, fixturePid: process.pid,
   startedAt: new Date().toISOString(), checks: [], commands: [], http: [], cleanup: {}
 };
-let web, webExit, token, task, project;
+let web, webExit, token, task, project, stopProxy;
 const jobs = [];
 const activated = [];
 let shuttingDown = false;
@@ -122,6 +123,7 @@ try {
 process.env.YUI_FAKE_TURN_HANDLER = ${JSON.stringify(new URL("../test/fixtures/web-runtime-turn.mjs", import.meta.url).href)};
 process.env.YUI_SMOKE_CLI = ${JSON.stringify(cli)};
 process.env.YUI_FAKE_TUI_LOG = ${JSON.stringify(join(home, "native-tui.jsonl"))};
+process.env.YUI_FAKE_UNIQUE_THREADS = ${JSON.stringify(process.env.YUI_SMOKE_RECOVERY ?? "")};
 process.env.YUI_FAKE_MODELS = ${JSON.stringify(JSON.stringify([
   { id: "fast", model: "fast", displayName: "Fast fixture", isDefault: true,
     supportedReasoningEfforts: [{ reasoningEffort: "low", description: "Low" }], defaultReasoningEffort: "low" },
@@ -396,6 +398,10 @@ http.createServer((req, res) => {
   }
   report.url = `http://127.0.0.1:${port}/`;
   report.taskId = task.id;
+  if (process.env.YUI_SMOKE_RECOVERY === "1") {
+    stopProxy = await startFaultProxy(port + 1, port, join(evidence, "transport.jsonl"));
+    report.proxyUrl = `http://127.0.0.1:${port + 1}/`;
+  }
   report.status = report.checks.some(c => c.status === "failed") ? "failed" : "passed";
   saveReport();
   console.log(`READY ${report.url} ${evidence}`);
@@ -419,6 +425,7 @@ http.createServer((req, res) => {
   process.exitCode = 1;
 } finally {
   cleaning = true;
+  if (stopProxy) await stopProxy();
   const nativeLog = join(home, "native-tui.jsonl");
   if (existsSync(nativeLog)) {
     report.nativeTuiObservations = readFileSync(nativeLog, "utf8").trim().split("\n").map(line => JSON.parse(line));
