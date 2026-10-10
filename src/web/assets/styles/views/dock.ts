@@ -4,6 +4,15 @@
  * The Live session pane is views/terminal; the dock frame is layout/workspace.
  */
 export const DOCK_STYLES = `
+.dock-head{height:auto;min-height:var(--header-h);padding-top:6px;padding-bottom:6px}
+.dock-head .seg{min-width:0;flex-wrap:wrap}
+.dock-actions{flex-shrink:0}
+.dock-preview{display:flex;flex-direction:column;min-height:0;overflow:auto}
+.dock-preview>.feed-note{text-align:left;padding:0 12px;color:var(--ink-3)}
+.preview-services{flex:none;max-height:40%;overflow:auto}
+.preview-service{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:10px 12px;border-bottom:1px solid var(--line)}
+.preview-service small{flex-basis:100%;overflow-wrap:anywhere;color:var(--ink-3)}
+.preview-frame{flex:1 0 240px;width:100%;min-height:240px;border:0;background:white}
 /* Feed */
 .dock-sub{flex:none;display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 10px;padding:12px 16px 10px;border-bottom:1px solid var(--line)}
 .dock-sub-title{font-weight:600;font-size:var(--fs-sm)}

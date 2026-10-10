@@ -14,6 +14,7 @@ import { parseTaskSearchOptions, searchTaskBodies } from "../context/taskSearch.
 import { readTaskUsage } from "../runtime/taskUsageQuery.js";
 import type { WebTaskSurface, WebControlInput } from "./webTaskSurface.js";
 import { WebRequestRejected } from "./webMutation.js";
+import type { createTaskPreviews } from "./taskPreviews.js";
 import type { createWebConversationSurface } from "./webConversation.js";
 import type { RoleSessionOwner } from "../executor/agentExecutor.js";
 import type { WebSettings } from "./webSettings.js";
@@ -68,6 +69,7 @@ export type WebTerminalConnection = Readonly<{
 }>;
 
 export type WebServerDependencies = Readonly<{
+  previews?: () => ReturnType<typeof createTaskPreviews>;
   conversation?: ReturnType<typeof createWebConversationSurface>;
   settings?: WebSettings;
   panels?: Readonly<{
@@ -118,6 +120,7 @@ export function createYuiWebServer(
 ): YuiWebServer {
   const now = dependencies.now ?? (() => new Date());
   const token = dependencies.token ?? randomBytes(24).toString("base64url");
+  const httpDependencies = { ...dependencies, previews: dependencies.previews?.() };
   const webSocketServer = new WebSocketServer({
     noServer: true,
     perMessageDeflate: false,
@@ -128,7 +131,7 @@ export function createYuiWebServer(
       request,
       response,
       store,
-      dependencies,
+      httpDependencies,
       token,
       now
     ).catch(() => {
@@ -179,7 +182,9 @@ async function handleHttpRequest(
   request: IncomingMessage,
   response: ServerResponse,
   store: WebDashboardStore,
-  dependencies: WebServerDependencies,
+  dependencies: Omit<WebServerDependencies, "previews"> & Readonly<{
+    previews?: ReturnType<typeof createTaskPreviews>;
+  }>,
   token: string,
   now: () => Date
 ): Promise<void> {
@@ -201,6 +206,30 @@ async function handleHttpRequest(
   // select Operator/Leader authority; all API reads use this boundary too.
   if (pathname.startsWith("/api/") && !tokenMatches(headerValue(request, "x-yui-web-token"), token)) {
     sendJson(response, 403, { error: "Invalid Yui web token.", disposition: "not-submitted" }, method === "HEAD");
+    return;
+  }
+  if (pathname.startsWith("/preview/") && dependencies.previews) {
+    await dependencies.previews.serve(request, response);
+    return;
+  }
+  const previewMatch = /^\/api\/tasks\/([A-Za-z0-9_-]+)\/previews(?:\/([A-Za-z0-9_-]+)\/stop)?$/.exec(pathname);
+  if (previewMatch && dependencies.previews) {
+    try {
+      if (method === "GET" && !previewMatch[2]) {
+        sendJson(response, 200, await dependencies.previews.list(previewMatch[1]!), false);
+      } else if (method === "POST" && previewMatch[2]) {
+        const body = await readMutationBody(request);
+        if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length) {
+          throw new WebRequestRejected("Stop accepts an empty object; the URL selects the exact service.");
+        }
+        sendJson(response, 200, dependencies.previews.stop(previewMatch[1]!, previewMatch[2]), false);
+      } else sendJson(response, 405, { error: "Method not allowed.", disposition: "not-submitted" }, false);
+    } catch (error) {
+      sendJson(response, error instanceof WebRequestRejected ? 409 : 500, {
+        error: error instanceof Error ? error.message : "Preview request failed.",
+        disposition: error instanceof WebRequestRejected ? "not-submitted" : "unknown"
+      }, false);
+    }
     return;
   }
   if ((pathname === "/api/tasks" || pathname === "/api/projects") && dependencies.surface) {

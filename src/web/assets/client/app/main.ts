@@ -26,6 +26,7 @@ import { api } from "/assets/js/lib/api.js";
 import { createToast } from "/assets/js/ui/toast.js";
 import { createTerminalController } from "/assets/js/views/dock/terminal.js";
 import { createConversationController } from "/assets/js/views/dock/conversation.js";
+import { createPreviewController } from "/assets/js/views/dock/preview.js";
 import { bindGlobalInput } from "/assets/js/views/globalInput.js";
 import { bindCreateTask } from "/assets/js/views/createTask.js";
 import { bindBodySearch } from "/assets/js/views/bodySearch.js";
@@ -48,6 +49,7 @@ const el = {
   dock: $("#dock"), divider: $("#dock-divider"), dockSwap: $("#dock-swap"), dockClose: $("#dock-close"),
   dockTabDiscussion: $("#dock-tab-discussion"), dockTabSession: $("#dock-tab-session"),
   dockTabConversation: $("#dock-tab-conversation"), conversation: $("#dock-conversation"),
+  dockTabPreview: $("#dock-tab-preview"), preview: $("#dock-preview"),
   discussion: $("#dock-discussion"), session: $("#dock-session"),
   terminalHost: $("#terminal-host"), terminalEmpty: $("#terminal-empty"), terminalState: $("#terminal-state"),
   sessionTargets: $("#session-targets"), terminalCli: $("#terminal-cli")
@@ -72,6 +74,7 @@ const locale = i18n.getLocale;
 const theme = createThemeController(el.themeOptions, t);
 const toast = createToast(el.toast);
 const conversation = createConversationController(el.conversation, t, locale);
+const preview = createPreviewController(el.preview, t);
 const terminal = createTerminalController({
   host: el.terminalHost, empty: el.terminalEmpty, state: el.terminalState, targets: el.sessionTargets, cli: el.terminalCli
 }, t, locale, toast);
@@ -83,7 +86,7 @@ let taskView = null;
 let selection = null;
 let catalog = null;
 const workspace = createWorkspace({
-  el: el, state: state, terminal: terminal, conversation: conversation,
+  el: el, state: state, terminal: terminal, conversation: conversation, preview: preview,
   sessionOpened: function () { taskView.updateSessionTargets(); }
 });
 taskView = createTaskView({

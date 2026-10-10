@@ -34,6 +34,7 @@ import type { ManagedWorkspace } from "../worktree/managedWorkspace.js";
 import { assertJobAssignmentScope, JobAssignmentScopeError } from "../job/jobAssignmentScope.js";
 import { assertContextRecordReadable } from "../context/taskContext.js";
 import { assertTaskProjectWriteAuthority } from "../task/taskAuthority.js";
+import { validateHttpPreview } from "../job/httpPreview.js";
 
 /**
  * rr8: The caller identity a `job.start`/`job.cancel` request is bound to.
@@ -110,6 +111,7 @@ export function createDurableJobControl(store: TaskStore): DurableJobControlPort
         const context = authority.authenticate(Object.freeze({ ...params.caller }), params.taskId);
         requireJobAssignment(tx, params, params.caller);
         assertNonSecretJobInput(params);
+        validateHttpPreview(params.env, params.steps);
         const baseKey = durableJobIdempotencyKey({
           owner: params.owner,
           projectId: params.projectId,

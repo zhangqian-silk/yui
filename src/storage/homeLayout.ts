@@ -1,5 +1,6 @@
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { createHash } from "node:crypto";
+import { statSync } from "node:fs";
 
 /**
  * The single authority for every Yui self-managed path derived from a Home.
@@ -70,6 +71,18 @@ export function integrationTmuxSocketRoot(home: string): string {
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   const homeDigest = createHash("sha256").update(homeRoot(home)).digest("hex").slice(0, 16);
   return join("/tmp", `yi-${uid.toString(36)}-${homeDigest}`);
+}
+
+/** Short IPC endpoint for one foreground HTTP Job. Its durable owner and
+ * receipts stay in the Job artifact directory; only the socket lives here. */
+export function jobPreviewSocketRoot(artifactDir: string): string {
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  const identity = statSync(artifactDir);
+  if (!identity.isDirectory()) throw new Error("Preview Job artifacts must be a directory.");
+  const owner = createHash("sha256").update(JSON.stringify([
+    resolve(artifactDir), identity.dev, identity.ino
+  ])).digest("hex").slice(0, 24);
+  return join("/tmp", `yp-${uid.toString(36)}-${owner}`);
 }
 
 /**

@@ -210,12 +210,13 @@ test("the workbench primary action opens the current Leader conversation, not a 
   for (const script of [WORKSPACE_SCRIPT, TASK_VIEW_SCRIPT, TASK_ACTIONS_SCRIPT]) {
     vm.runInContext(script.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), runtime);
   }
-  const el = Object.fromEntries(["dock", "divider", "discussion", "session", "conversation",
-    "dockTabConversation", "dockTabDiscussion", "dockTabSession", "dockSwap", "detail",
+  const el = Object.fromEntries(["dock", "divider", "discussion", "session", "conversation", "preview",
+    "dockTabConversation", "dockTabDiscussion", "dockTabSession", "dockTabPreview", "dockSwap", "detail",
     "operator", "dockClose"].map(key => [key, node()]));
   const state = { selected: "task-current", activeTab: "overview" };
   const workspace = runtime.createWorkspace({
     el, state,
+    preview: { open() {}, close() {} },
     terminal: { connected: () => terminalOpen, close: () => { terminalOpen = false; },
       open: () => assert.fail("primary action must not open a terminal") },
     conversation: { current: () => opened.at(-1)?.[0], close() {}, open: (...args) => {

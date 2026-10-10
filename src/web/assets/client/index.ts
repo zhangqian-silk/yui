@@ -34,6 +34,7 @@ import { WORK_SCRIPT } from "./domain/work.js";
 import { DISCUSSION_SCRIPT } from "./views/dock/discussion.js";
 import { CONVERSATION_SCRIPT } from "./views/dock/conversation.js";
 import { TERMINAL_SCRIPT } from "./views/dock/terminal.js";
+import { PREVIEW_SCRIPT } from "./views/dock/preview.js";
 import { GLOBAL_INPUT_SCRIPT } from "./views/globalInput.js";
 import { CREATE_TASK_SCRIPT } from "./views/createTask.js";
 import { BODY_SEARCH_SCRIPT } from "./views/bodySearch.js";
@@ -90,6 +91,7 @@ export const CLIENT_MODULES: Readonly<Record<string, string>> = Object.freeze({
   "views/dock/discussion": DISCUSSION_SCRIPT,
   "views/dock/conversation": CONVERSATION_SCRIPT,
   "views/dock/terminal": TERMINAL_SCRIPT,
+  "views/dock/preview": PREVIEW_SCRIPT,
   "views/task/page": TASK_PAGE_SCRIPT,
   "views/task/actions": TASK_ACTIONS_SCRIPT,
   "views/task/overview": TASK_OVERVIEW_SCRIPT,

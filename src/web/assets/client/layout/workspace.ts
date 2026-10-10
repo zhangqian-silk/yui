@@ -106,6 +106,11 @@ function updateLayout(ws) {
   el.discussion.hidden = dock.mode !== "discussion";
   el.session.hidden = dock.mode !== "session";
   el.conversation.hidden = dock.mode !== "conversation";
+  el.preview.hidden = dock.mode !== "preview";
+  el.dockTabPreview.setAttribute("aria-selected", String(dock.mode === "preview"));
+  el.dockTabPreview.disabled = !selected;
+  if (visible && dock.mode === "preview" && selected) ws.deps.preview.open(ws.deps.state.selected);
+  else ws.deps.preview.close();
   el.dockTabConversation.setAttribute("aria-selected", String(dock.mode === "conversation"));
   el.dockTabDiscussion.setAttribute("aria-selected", String(dock.mode === "discussion"));
   el.dockTabSession.setAttribute("aria-selected", String(dock.mode === "session"));
@@ -157,6 +162,13 @@ function setDockOpen(ws, open) {
 }
 
 function setDockMode(ws, mode) {
+  if (mode === "preview" && ws.deps.state.selected) {
+    ws.deps.terminal.close();
+    ws.deps.conversation.close();
+    ws.dock.mode = "preview";
+    updateLayout(ws);
+    return;
+  }
   if (mode === "conversation") {
     const target = ws.deps.terminal.current() || ws.deps.conversation.current();
     ws.deps.terminal.close();
@@ -221,6 +233,7 @@ function bindDockControls(ws) {
   el.dockTabDiscussion.addEventListener("click", function () { setDockMode(ws, "discussion"); });
   el.dockTabConversation.addEventListener("click", function () { setDockMode(ws, "conversation"); });
   el.dockTabSession.addEventListener("click", function () { setDockMode(ws, "session"); });
+  el.dockTabPreview.addEventListener("click", function () { setDockMode(ws, "preview"); });
   el.dockClose.addEventListener("click", function () { setDockOpen(ws, false); });
   el.dockSwap.addEventListener("click", function () {
     dock.center = !dock.center;
