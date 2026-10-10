@@ -17,7 +17,7 @@ export const DELIVERY_STYLES = `
 .file-row:hover{background:var(--surface-3);color:var(--ink)}
 .file-row[aria-current="true"]{background:var(--accent-soft);color:var(--ink)}
 .file-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono);font-size:var(--fs-xs)}
-.file-viewer{display:grid;gap:8px}
+.file-viewer{display:grid;grid-template-columns:minmax(0,1fr);min-width:0;gap:8px}
 .file-viewer:empty{display:none}
 .viewer-head{display:flex;align-items:center;gap:8px;font-size:var(--fs-sm)}
 .viewer-ref code{white-space:normal;overflow-wrap:anywhere}

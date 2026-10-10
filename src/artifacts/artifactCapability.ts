@@ -2,6 +2,7 @@ import { openTaskArtifactRepository, type ArtifactEntry } from "./taskArtifactRe
 import { saveArtifactFile, type GitArtifactRef } from "./gitArtifactRef.js";
 import { requireCommitId } from "./managedGit.js";
 import { safeRelativeArtifactPath } from "./artifactPaths.js";
+import { isRasterArtifact, MAX_IMAGE_BYTES, rasterMetadata } from "./imageMetadata.js";
 
 /**
  * Capability-shaped adapter over the per-Task local Git artifact repository.
@@ -14,11 +15,8 @@ import { safeRelativeArtifactPath } from "./artifactPaths.js";
  * self-certifying commit-pinned reference (`taskId + commit + relativePath`),
  * which is the identity used for frozen Candidate/Review/completion evidence.
  *
- * Content is handled as UTF-8 text with the same 8 MiB cap as the former
- * immutable text artifact. Binary artifacts, high-frequency runtime data and
- * very large files are out of scope for this first version by contract (§3.5)
- * and are rejected or referenced through their existing resource boundary, not
- * carried here.
+ * Text is UTF-8 (8 MiB). Static raster images use explicit base64 (4 MiB
+ * decoded), with the same immutable repository and image limits as Web.
  */
 
 /** Text cap for a single artifact file, mirroring the former immutable-artifact limit. */
@@ -26,8 +24,9 @@ const MAX_ARTIFACT_TEXT_BYTES = 8 * 1024 * 1024;
 
 export type ArtifactSaveCapabilityInput = Readonly<{
   relativePath: string;
-  /** UTF-8 text body. Binary artifacts are deferred by contract. */
+  /** UTF-8 text by default; canonical base64 for supported raster images. */
   content: string;
+  encoding?: "utf8" | "base64";
   /** One meaningful update = one commit; a caller-authored save message. */
   message?: string;
   /** Optional expected HEAD so a caller can fail closed on a concurrent advance. */
@@ -40,6 +39,10 @@ export type ArtifactReadCapabilityResult = Readonly<{
   commit: string;
   content: string;
   digest: string;
+  encoding?: "base64";
+  mime?: string;
+  width?: number;
+  height?: number;
 }>;
 
 function requireTextContent(content: string): Buffer {
@@ -60,7 +63,21 @@ export async function saveArtifactCapability(
   taskId: string,
   input: ArtifactSaveCapabilityInput
 ): Promise<GitArtifactRef> {
-  const bytes = requireTextContent(input.content);
+  if (input.encoding !== undefined && input.encoding !== "utf8" && input.encoding !== "base64") {
+    throw new Error("Artifact encoding must be utf8 or base64.");
+  }
+  let bytes: Buffer;
+  if (input.encoding === "base64") {
+    if (!isRasterArtifact(input.relativePath) || typeof input.content !== "string"
+      || input.content.length > Math.ceil(MAX_IMAGE_BYTES / 3) * 4) {
+      throw new Error("Base64 artifacts require a static PNG, JPEG or WebP path and at most 4 MiB.");
+    }
+    bytes = Buffer.from(input.content, "base64");
+    if (bytes.toString("base64") !== input.content) throw new Error("Artifact image must use canonical base64.");
+    rasterMetadata(bytes);
+  } else {
+    bytes = requireTextContent(input.content);
+  }
   return saveArtifactFile(home, taskId, {
     relativePath: input.relativePath,
     bytes,
@@ -71,8 +88,8 @@ export async function saveArtifactCapability(
 
 /**
  * `artifact.read`: read `relativePath` at HEAD, or at a pinned `commit` for
- * frozen evidence. Returns the bytes as UTF-8 text plus the resolved commit and
- * digest, so a caller can record or verify the exact reference.
+ * frozen evidence. Images return explicit base64 and bounded raster metadata;
+ * text returns UTF-8. Both carry the resolved commit and exact digest.
  */
 export async function readArtifactCapability(
   home: string,
@@ -86,12 +103,21 @@ export async function readArtifactCapability(
     safeRelative,
     input.commit === undefined ? undefined : requireCommitId(input.commit)
   );
+  const image = isRasterArtifact(safeRelative) ? rasterMetadata(content.bytes) : null;
+  let text: string;
+  if (image) text = content.bytes.toString("base64");
+  else {
+    try { text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(content.bytes); }
+    catch { throw new Error("Artifact is not readable UTF-8 text or a supported raster image."); }
+    if (text.includes("\0")) throw new Error("Binary artifact is not supported as text.");
+  }
   return {
     taskId,
     relativePath: content.relativePath,
     commit: content.commit,
-    content: content.bytes.toString("utf8"),
-    digest: content.digest
+    content: text,
+    digest: content.digest,
+    ...(image ? { encoding: "base64" as const, ...image } : {})
   };
 }
 

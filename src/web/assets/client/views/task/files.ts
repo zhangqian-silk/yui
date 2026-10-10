@@ -6,7 +6,7 @@ import { h, icon, clear } from "/assets/js/lib/dom.js";
 import { formatBytes } from "/assets/js/lib/format.js";
 import { badge, button, emptyState, mono, note } from "/assets/js/ui/primitives.js";
 import { card } from "/assets/js/ui/containers.js";
-import { richText } from "/assets/js/ui/text.js";
+import { renderMarkdown, resolveMarkdownImage, escapeHtml } from "/assets/js/lib/markdown.js";
 
 export function filesCard(data, t, locale, actions) {
   const state = data.viewState;
@@ -91,12 +91,13 @@ function drawArtifact(viewer, value, taskId, t, actions, read) {
   });
   const feedback = button(t("materials.feedback"), { variant: "ghost" });
   feedback.addEventListener("click", function () {
-    actions.openConversation(value.before ? [value.before, value.after] : [selected]);
+    actions.openConversation((value.before ? [value.before, value.after] : [selected]).map(artifactRef));
   });
   const download = button(t("materials.download"), { variant: "ghost" });
   download.addEventListener("click", async function () {
     download.disabled = true;
     try {
+      if (value.kind === "image") { downloadImage(value); return; }
       const parts = [];
       let offset = 0, page;
       do {
@@ -104,7 +105,7 @@ function drawArtifact(viewer, value, taskId, t, actions, read) {
         parts.push(page.content); offset = page.nextOffset;
       } while (offset !== null);
       const url = URL.createObjectURL(new Blob(parts, { type: "text/plain;charset=utf-8" }));
-      const link = h("a", { href: url, download: selected.relativePath.split("/").pop() + (value.before ? ".diff" : ".txt") });
+      const link = h("a", { href: url, download: selected.relativePath.split("/").pop() + (value.before ? ".diff" : "") });
       link.click(); window.setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
     } catch (error) { viewer.append(note(error.message, "bad")); }
     finally { download.disabled = false; }
@@ -114,16 +115,17 @@ function drawArtifact(viewer, value, taskId, t, actions, read) {
   viewer.append(h("p.viewer-ref", null, mono("sha256:" + selected.digest)));
   if (value.before) viewer.append(h("p.viewer-ref", null, mono("← git:" + value.before.commit + ":" + value.before.relativePath + " · sha256:" + value.before.digest)));
   viewer.append(h("p.faint.small", null, t("evidence.fixedNote")));
-  viewer.append(h("div.record-actions", null, copyText, download, feedback));
+  viewer.append(h("div.record-actions", null, value.kind === "image" ? null : copyText, download, feedback));
+  if (value.kind === "image") { viewer.append(imagePreview(value, t)); return; }
   const before = h("input", { placeholder: t("materials.before"), "aria-label": t("materials.before"), maxLength: 64 });
   const compare = button(t("materials.compare"), { variant: "ghost" });
   compare.addEventListener("click", function () { read(selected.relativePath, selected.commit, 0, before.value); });
   viewer.append(h("div.record-actions", null, before, compare));
-  viewer.append(h("pre.code-block.artifact-text", { tabIndex: 0, "aria-label": t("evidence.fixedText") }, value.content));
+  const source = h("pre.code-block.artifact-text", { tabIndex: 0, "aria-label": t("evidence.fixedText") }, value.content);
   if (!value.before && /\.md$|\.markdown$/i.test(selected.relativePath)) {
-    viewer.append(h("details", null, h("summary", null, t("materials.markdown")),
-      richText(null, value.content, t)));
-  }
+    viewer.append(markdownPreview(value, taskId, t, actions));
+    viewer.append(h("details", null, h("summary", null, t("materials.source")), source));
+  } else viewer.append(source);
   viewer.append(note((value.content.length ? value.offset + 1 : 0) + "–" + (value.offset + value.content.length) + " / " + value.totalCharacters));
   const first = button(t("materials.firstPage"), { variant: "ghost" });
   first.disabled = value.offset === 0;
@@ -132,6 +134,81 @@ function drawArtifact(viewer, value, taskId, t, actions, read) {
   next.disabled = value.nextOffset === null;
   next.addEventListener("click", function () { read(selected.relativePath, selected.commit, value.nextOffset, value.before?.commit); });
   viewer.append(h("div.record-actions", null, first, next));
+}
+
+function artifactRef(value) {
+  return { taskId: value.taskId, commit: value.commit, relativePath: value.relativePath, digest: value.digest };
+}
+
+function downloadImage(value) {
+  const bytes = Uint8Array.from(atob(value.base64), function (char) { return char.charCodeAt(0); });
+  const url = URL.createObjectURL(new Blob([bytes], { type: value.mime }));
+  h("a", { href: url, download: value.relativePath.split("/").pop() }).click();
+  window.setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+}
+
+function imagePreview(value, t, alt) {
+  const image = h("img.artifact-image", { alt: alt || value.relativePath, decoding: "async" });
+  const viewport = h("span.image-viewport", { tabIndex: 0, "aria-label": t("materials.image") }, image);
+  const status = h("span.feed-note", { role: "status" }, value.width + " × " + value.height + " · " + formatBytes(value.byteSize));
+  const scale = h("select", { "aria-label": t("materials.zoom") },
+    h("option", { value: "fit" }, t("materials.fit")),
+    ...[50, 100, 200, 400].map(function (percent) { return h("option", { value: String(percent) }, percent + "%"); }));
+  scale.addEventListener("change", function () {
+    image.classList.toggle("is-zoomed", scale.value !== "fit");
+    if (scale.value === "fit") image.removeAttribute("width");
+    else image.width = Math.round((image.naturalWidth || value.width) * Number(scale.value) / 100);
+  });
+  image.addEventListener("error", function () {
+    image.removeAttribute("src"); image.hidden = true; scale.disabled = true;
+    status.textContent = t("materials.imageError");
+  }, { once: true });
+  image.src = "data:" + value.mime + ";base64," + value.base64;
+  return h("span.image-preview", null, h("span.record-actions", null, scale, status), viewport);
+}
+
+function markdownPreview(value, taskId, t, actions) {
+  const body = h("div.md.artifact-markdown");
+  const images = [];
+  body.innerHTML = renderMarkdown(value.content, { image: function (alt, target) {
+    if (images.length >= 12) return '<span class="feed-note">' + escapeHtml(t("materials.imageLimit")) + "</span>";
+    const index = images.push({ alt, target }) - 1;
+    return '<span class="md-image-slot" data-image-index="' + index + '"></span>';
+  } });
+  let totalBytes = 0, totalPixels = 0, pending = 0;
+  body.querySelectorAll("[data-image-index]").forEach(function (slot) {
+    const entry = images[Number(slot.dataset.imageIndex)];
+    let path;
+    try { path = resolveMarkdownImage(value.relativePath, entry.target); }
+    catch (error) { slot.append(note(entry.alt + ": " + error.message, "bad")); return; }
+    const load = button(t("materials.loadImage") + " · " + (entry.alt || path), { variant: "ghost" });
+    const status = h("span.feed-note", { role: "status" });
+    slot.append(load, status);
+    load.addEventListener("click", async function () {
+      if (pending >= 2) { status.textContent = t("materials.imageBusy"); return; }
+      if (totalBytes >= 16 * 1024 * 1024 || totalPixels >= 32_000_000) { status.textContent = t("materials.imageLimit"); return; }
+      load.disabled = true; pending++; status.textContent = t("evidence.reading");
+      try {
+        const image = await actions.readArtifact(taskId, path, value.commit, 0);
+        if (slot.isConnected === false) return;
+        if (image.kind !== "image") throw new Error(t("materials.imageUnsupported"));
+        if (totalBytes + image.byteSize > 16 * 1024 * 1024 || totalPixels + image.width * image.height > 32_000_000) {
+          throw new Error(t("materials.imageLimit"));
+        }
+        totalBytes += image.byteSize; totalPixels += image.width * image.height;
+        clear(slot);
+        const download = button(t("materials.download"), { variant: "ghost" });
+        download.addEventListener("click", function () { downloadImage(image); });
+        const feedback = button(t("materials.feedback"), { variant: "ghost" });
+        feedback.addEventListener("click", function () { actions.openConversation([artifactRef(value), artifactRef(image)]); });
+        slot.append(imagePreview(image, t, entry.alt), h("span.viewer-ref", null,
+          path + " · git:" + image.commit + " · sha256:" + image.digest),
+          h("span.record-actions", null, download, feedback));
+      } catch (error) { status.textContent = error.message; load.disabled = false; }
+      finally { pending--; }
+    });
+  });
+  return body;
 }
 
 function drawFileList(list, state, t, read) {
