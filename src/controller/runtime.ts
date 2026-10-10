@@ -92,6 +92,7 @@ import { openSchedulerTelemetry } from "../telemetry/telemetryWiring.js";
 import { NodeCommandExecutor } from "../tmux/commandExecutor.js";
 import { TmuxManager, yuiTmuxServerName } from "../tmux/tmuxManager.js";
 import { createControllerWeb } from "../web/controllerWeb.js";
+import { createTaskPreviews } from "../web/taskPreviews.js";
 import { TmuxWebTerminalService } from "../web/tmuxWebTerminal.js";
 import { createWebTaskSurface } from "../web/webTaskSurface.js";
 import { createWebConversationSurface } from "../web/webConversation.js";
@@ -574,6 +575,7 @@ export async function startFileTaskControllerRuntime(
       }
     };
     const web = createControllerWeb(store, {
+      previews: () => createTaskPreviews(store, home),
       settings: createWebSettings(store, {
         environment: options.environment ?? process.env, catalogs,
         refreshConfiguration: () => {

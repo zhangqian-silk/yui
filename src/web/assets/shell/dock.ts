@@ -12,6 +12,7 @@ export const DOCK_HTML = `    <div id="dock-divider" class="dock-divider" role="
           <button id="dock-tab-conversation" class="seg-btn" type="button" role="tab" aria-selected="false" aria-controls="dock-conversation"><span data-i18n="conversation.title">Conversation</span></button>
           <button id="dock-tab-discussion" class="seg-btn" type="button" role="tab" aria-selected="true" aria-controls="dock-discussion">${iconSvg("chat")}<span data-i18n="dock.discussion">Discussion</span></button>
           <button id="dock-tab-session" class="seg-btn" type="button" role="tab" aria-selected="false" aria-controls="dock-session">${iconSvg("terminal")}<span data-i18n="dock.session">Live session</span></button>
+          <button id="dock-tab-preview" class="seg-btn" type="button" role="tab" aria-selected="false" aria-controls="dock-preview" disabled><span data-i18n="preview.title">Preview</span></button>
         </div>
         <div class="dock-actions">
           <button id="dock-swap" class="icon-btn" type="button" aria-label="Swap with task details" data-i18n-aria-label="dock.swap" title="Swap with task details">${iconSvg("swap")}</button>
@@ -20,6 +21,7 @@ export const DOCK_HTML = `    <div id="dock-divider" class="dock-divider" role="
       </header>
       <section id="dock-conversation" class="dock-pane dock-discussion" role="tabpanel" aria-labelledby="dock-tab-conversation" hidden></section>
       <section id="dock-discussion" class="dock-pane dock-discussion" role="tabpanel" aria-labelledby="dock-tab-discussion"></section>
+      <section id="dock-preview" class="dock-pane dock-preview" role="tabpanel" aria-labelledby="dock-tab-preview" hidden></section>
       <section id="dock-session" class="dock-pane dock-session" role="tabpanel" aria-labelledby="dock-tab-session" hidden>
         <div class="session-bar">
           <div id="session-targets" class="session-targets" role="group" aria-label="Session target" data-i18n-aria-label="dock.target"></div>

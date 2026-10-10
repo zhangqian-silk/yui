@@ -21,6 +21,7 @@ import {
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { jobStepDirectory } from "./stepDirectory.js";
+import { prepareHttpPreview, isHttpPreview } from "./httpPreview.js";
 
 import { writeTextFileAtomically } from "../storage/durableFile.js";
 import { readLinuxProcessStartIdentity } from "../controller/domainIdentity.js";
@@ -130,6 +131,7 @@ export async function runDurableJobRunner(
   let exitCode: number | null = 0;
   let signal: string | null = null;
   let failedStep: string | undefined;
+  let preview: ReturnType<typeof prepareHttpPreview> | undefined;
 
   try {
     for (let index = 0; index < spec.steps.length; index += 1) {
@@ -158,25 +160,29 @@ export async function runDurableJobRunner(
         const stepEnv = step.env === undefined
           ? spec.env
           : { ...spec.env, ...step.env };
+        const launchEnv = isHttpPreview(spec.env)
+          ? { ...stepEnv, YUI_PREVIEW_SOCKET: (preview ??= prepareHttpPreview(artifactDir)).socket }
+          : stepEnv;
         // f4: a new process group (detached) lets the runner kill the whole
         // step tree on timeout or cancel, for both argv and shell forms.
         if (step.argv !== undefined) {
           const [file, ...args] = step.argv;
           child = spawn(file, args, {
             cwd: stepCwd,
-            env: stepEnv,
+            env: launchEnv,
             stdio: ["ignore", logFd, logFd],
             detached: true
           });
         } else {
           child = spawn("/bin/sh", ["-lc", step.command], {
             cwd: stepCwd,
-            env: stepEnv,
+            env: launchEnv,
             stdio: ["ignore", logFd, logFd],
             detached: true
           });
         }
       } catch (error) {
+        writeFileSync(logFd, `Unable to start Job step: ${error instanceof Error ? error.message : String(error)}\n`);
         closeSync(logFd);
         completedSteps.push({
           name: step.name,
@@ -255,6 +261,10 @@ export async function runDurableJobRunner(
     }
   } finally {
     clearInterval(heartbeatTimer);
+    // The foreground step has settled. Withdraw only its exact endpoint;
+    // existing Job/resource checks still own surviving descendant evidence.
+    // Failed socket cleanup retains evidence instead of publishing success.
+    preview?.cleanup();
     // f2/rr5: Do NOT remove the signal handlers here. A repeated SIGTERM
     // between the step loop and the exit.json write must still hit the
     // idempotent handler (which ignores it) rather than the default handler
