@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { createTask } from "../../dist/task/task.js";
 import { saveArtifactCapability } from "../../dist/artifacts/artifactCapability.js";
+import { saveArtifactFile } from "../../dist/artifacts/gitArtifactRef.js";
 import { createWebTaskSurface } from "../../dist/web/webTaskSurface.js";
 import { createYuiWebServer } from "../../dist/web/webServer.js";
 import { WEB_ASSETS } from "../../dist/web/assets/assetManifest.js";
@@ -148,11 +149,22 @@ test("authenticated Web evidence reads keep a fixed Task file and cannot mutate 
   const read = await fetch(url + "?" + new URLSearchParams({ path: "plans/result.html", commit: list.commit }), { headers });
   assert.match(read.headers.get("content-type"), /application\/json/);
   assert.equal((await read.json()).content, "<script>throw new Error('must stay text')</script>old result");
+  const picture = await saveArtifactFile(home, "task-1", { relativePath: "plot.png",
+    bytes: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64") });
+  const imageUrl = url + "?" + new URLSearchParams({ path: picture.relativePath, commit: picture.commit });
+  assert.equal((await fetch(imageUrl)).status, 403, "images retain the same authenticated read boundary");
+  const imageResponse = await fetch(imageUrl, { headers });
+  assert.match(imageResponse.headers.get("content-type"), /application\/json/);
+  const image = await imageResponse.json();
+  assert.equal(image.kind, "image");
+  assert.equal(image.digest, picture.digest);
+  assert.equal(image.commit, picture.commit);
   assert.equal((await fetch(url + "?path=plans/result.html", { headers })).status, 409);
   assert.equal((await fetch(url + "?" + new URLSearchParams({ path: "../task-2/secret", commit: first.commit }), { headers })).status, 409);
   assert.equal((await fetch(url + "?" + new URLSearchParams({ path: "plans/result.html", commit: "0".repeat(40) }), { headers })).status, 409);
   assert.equal((await fetch(url, { method: "POST", headers })).status, 405);
-  assert.equal((await surface.artifacts("task-1")).commit, second.commit);
+  assert.equal((await surface.artifacts("task-1")).commit, picture.commit);
+  assert.equal((await surface.artifact("task-1", "plans/result.html", second.commit)).content, "new result");
   assert.equal(store.listMessages("task-1").length, 0);
   const base = `http://127.0.0.1:${server.address().port}`;
   // Paged family discovery is the same read-only summary list as the CLI.

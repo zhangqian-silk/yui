@@ -278,6 +278,10 @@ export function openTaskArtifactRepository(home: string, taskId: string): TaskAr
     if (objectType !== "blob") {
       throw new Error(`Artifact ${safeRelative} at ${pinned} is not a file (${objectType}).`);
     }
+    const size = Number((await managedGit(repoPath, ["cat-file", "-s", objectSpec])).trim());
+    if (!Number.isSafeInteger(size) || size > MAX_ARTIFACT_BYTES) {
+      throw new Error(`Artifact ${safeRelative} exceeds the ${MAX_ARTIFACT_BYTES}-byte limit.`);
+    }
     const bytes = await managedGitBuffer(repoPath, ["cat-file", "blob", objectSpec], {
       maxBuffer: MAX_ARTIFACT_BYTES + 4096
     }).catch((error) => {

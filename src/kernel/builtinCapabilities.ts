@@ -85,7 +85,8 @@ const definitions: readonly Omit<CapabilityDescriptor, "contractVersion" | "prov
   {
     name: "artifact.save", summary: "Save a file artifact by relativePath into the Task's local Git repository; returns a commit-pinned reference.",
     effect: "local-mutation", requiredPermissions: ["task:read"], source: "artifacts.saveArtifactCapability",
-    inputSchema: object({ taskId: text, relativePath: text, content: { type: "string" }, message: text, expectedHead: text },
+    inputSchema: object({ taskId: text, relativePath: text, content: { type: "string" },
+      encoding: { enum: ["utf8", "base64"] }, message: text, expectedHead: text },
       ["taskId", "relativePath", "content"]),
     outputSchema: { type: "object", required: ["taskId", "commit", "relativePath"] }
   },
@@ -343,6 +344,7 @@ export function createBuiltinCapabilities(
       // are the async Git path (the capability layer awaits invoke()).
       if (name === "artifact.save") return saveArtifactCapability(store.rootDirectory(), taskId, {
         relativePath: params.relativePath as string, content: params.content as string,
+        ...(params.encoding === undefined ? {} : { encoding: params.encoding as "utf8" | "base64" }),
         ...(params.message === undefined ? {} : { message: params.message as string }),
         ...(params.expectedHead === undefined ? {} : { expectedHead: params.expectedHead as string })
       });

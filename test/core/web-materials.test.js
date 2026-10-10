@@ -92,3 +92,97 @@ test("file actions page, download and discuss the displayed diff pair without fl
   assert.equal(downloaded.type, "text/plain;charset=utf-8");
   assert.equal(link.download, "code.ts.diff");
 });
+
+test("image controls zoom, download exact bytes, and stage only the frozen reference", async () => {
+  const elements = [], feedback = [];
+  let downloaded, link;
+  const h = (spec, attrs, ...children) => {
+    const element = { spec, ...attrs, children, handlers: {}, classList: { toggle() {} },
+      append(...items) { this.children.push(...items); },
+      removeAttribute(name) { delete this[name]; },
+      addEventListener(name, fn) { this.handlers[name] = fn; }, click() { link = this; } };
+    elements.push(element); return element;
+  };
+  const context = vm.createContext({
+    h, clear: e => { e.children = []; }, icon: () => null, mono: text => text, note: text => text,
+    formatBytes: size => String(size), button: text => h("button", { textContent: text }),
+    Blob, atob, Uint8Array, URL: { createObjectURL: blob => { downloaded = blob; return "blob:fixture"; }, revokeObjectURL() {} },
+    window: { setTimeout: fn => fn() }
+  });
+  vm.runInContext(TASK_FILES_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
+  const image = { taskId: "task-1", relativePath: "plot.png", commit: "a".repeat(40), digest: "b".repeat(64),
+    kind: "image", mime: "image/png", base64: "AAECA/8=", width: 20, height: 10, byteSize: 5 };
+  context.drawArtifact(h("viewer"), image, "task-1", key => key, {
+    openConversation: refs => feedback.push(refs),
+    readArtifact() { throw new Error("Already pinned image must not be reread."); }
+  });
+  const picture = elements.find(e => e.spec === "img.artifact-image");
+  const scale = elements.find(e => e.spec === "select");
+  scale.value = "200"; scale.handlers.change();
+  assert.equal(picture.width, 40);
+  scale.value = "fit"; scale.handlers.change();
+  assert.equal(picture.width, undefined);
+  await elements.find(e => e.textContent === "materials.download").handlers.click();
+  assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), Buffer.from([0, 1, 2, 3, 255]));
+  assert.equal(link.download, "plot.png");
+  elements.find(e => e.textContent === "materials.feedback").handlers.click();
+  assert.deepEqual(JSON.parse(JSON.stringify(feedback)), [[{
+    taskId: image.taskId, relativePath: image.relativePath, commit: image.commit, digest: image.digest
+  }]], "no bytes or rendering fields in the draft; no send action");
+  picture.handlers.error();
+  assert.equal(picture.hidden, true);
+  assert.equal(scale.disabled, true);
+});
+
+test("pinned inline images survive context redraws without rereads or cross-version reuse", async () => {
+  const h = (spec, attrs, ...children) => ({
+    spec, ...attrs, children, dataset: {}, handlers: {}, classList: { toggle() {} },
+    append(...items) { this.children.push(...items); },
+    removeAttribute(name) { delete this[name]; },
+    addEventListener(name, fn) { this.handlers[name] = fn; },
+    set innerHTML(value) { this.children = [h("slot")]; this.children[0].dataset.imageIndex = "0"; },
+    querySelectorAll() { return this.children; }
+  });
+  const context = vm.createContext({
+    h, clear: e => { e.children = []; }, icon: () => null, mono: text => text, note: text => text,
+    formatBytes: String, button: text => h("button", { textContent: text }),
+    renderMarkdown: (_, options) => options.image("plot", "plot.png"),
+    resolveMarkdownImage: () => "plot.png", escapeHtml: text => text
+  });
+  vm.runInContext(TASK_FILES_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
+  const value = { taskId: "task-1", relativePath: "report.md", commit: "a".repeat(40), digest: "b".repeat(64),
+    kind: "markdown", content: "![plot](plot.png)", offset: 0, nextOffset: null, totalCharacters: 17 };
+  const state = { artifact: value }, reads = [];
+  let resolveRead;
+  const actions = { readArtifact: (...args) => {
+    reads.push(args);
+    return new Promise(resolve => { resolveRead = resolve; });
+  } };
+  const draw = () => {
+    const root = h("viewer");
+    context.artifactViewer(root, { viewState: state, task: { id: "task-1" } }, key => key, actions).draw();
+    return root;
+  };
+  const all = root => [root, ...(root.children || []).flat(Infinity).filter(x => x && typeof x === "object").flatMap(all)];
+  const find = (root, spec) => all(root).find(e => e.spec === spec);
+  const first = draw();
+  const pending = all(first).find(e => e.textContent?.startsWith("materials.loadImage")).handlers.click();
+  assert.ok(all(first).some(e => e.dataset.reading === "true"), "polling must defer while reading");
+  // A navigation/redraw can still disconnect the old DOM: completion belongs to the pinned state.
+  find(first, "slot").isConnected = false;
+  const second = draw();
+  resolveRead({ ...value, relativePath: "plot.png", digest: "c".repeat(64),
+    kind: "image", mime: "image/png", base64: "AA==", width: 20, height: 10, byteSize: 1 });
+  await pending;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(find(second, "img.artifact-image"));
+  assert.ok(!all(second).some(e => e.dataset.reading === "true"));
+  const scale = find(second, "select");
+  scale.value = "200"; scale.handlers.change();
+  const third = draw();
+  assert.equal(find(third, "img.artifact-image").width, 40);
+  assert.equal(find(third, "select").value, "200");
+  assert.deepEqual(reads, [["task-1", "plot.png", value.commit, 0]]);
+  state.artifact = { ...value, commit: "d".repeat(40) };
+  assert.equal(find(draw(), "img.artifact-image"), undefined, "new fixed version must require its own image read");
+});

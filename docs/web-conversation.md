@@ -105,8 +105,14 @@ This uses existing records and storage 1.3, without a new attachment schema.
 Delivery → Saved files lists 40 entries per page at one pinned commit. Select a
 file or enter a relative path and full commit to open historical evidence.
 Text and same-path two-commit diffs load at most 12,000 characters per page,
-without splitting a Unicode surrogate pair. Markdown previews use the existing
-escaped renderer; HTML and code remain text, not executable previews.
+without splitting a Unicode surrogate pair. Markdown is read whole, up to
+256 KiB, so code fences and tables are not broken across page boundaries.
+The shared escaped renderer supports headings, emphasis, strike-through,
+inline/fenced code, nested ordered/unordered lists, task lists, quotes, rules,
+tables (up to 32 columns), and explicit/reference HTTP(S)/mailto links.
+This is a bounded prose reader, not full CommonMark, Math, Mermaid or HTML:
+HTML and code stay text and never execute. The rendered document is shown
+first; its source remains available in a disclosure.
 Reference copy, page-text copy and explicit full-text download preserve the
 selected version. **Discuss these versions** fills the current Leader's draft
 with the exact file (or both diff references); it does not send automatically.
@@ -118,3 +124,32 @@ generation has a 20 MiB output cap and five-second budget and fails explicitly
 when exceeded. Unknown upload outcomes show the exact material path to inspect
 in Saved files before any retry. Reading files, diffs or receipts never starts
 an Agent or replays input.
+
+## Fixed-version images
+
+Saved files also reads static PNG, JPEG and WebP, up to 4 MiB, 8192 pixels per
+side and 16 million pixels. Image type and dimensions come from the bytes, not
+the extension or supplied MIME. Header/container validation bounds the read;
+the browser performs decoding and visibly reports corrupt/unsupported images.
+GIF, SVG, animation and other formats are explicitly unsupported; save a
+static PNG/JPEG/WebP instead. No SVG, iframe, script or external image request
+is admitted by Markdown. Images offer fit-width and 50–400% zoom, a scrollable
+viewport, original-byte download, and exact-source feedback to the draft.
+
+Markdown images load only when clicked. Relative and URL-encoded paths resolve
+against the document's directory in its **same Task and commit**, never HEAD,
+the working tree, or a network URL. Parent-directory references must remain
+inside the artifact repository. Each displayed image shows its own path,
+commit and digest. Per document the reader allows at most 12 image slots,
+two simultaneous requests, 16 MiB of loaded image bytes and 32 million pixels.
+Beyond those bounds, open the individual file instead.
+
+The existing `artifact.save` capability accepts `encoding: "base64"` for these
+raster files; the CLI equivalent is
+`yui task artifact save <task> plot.png <canonical-base64> --encoding base64`.
+Default saves remain UTF-8. Image `artifact.read` responses carry
+`encoding: "base64"`, `content`, `mime`, dimensions and the same immutable
+reference/digest. CLI arguments remain subject to the operating system's
+argument-size limit; the capability's decoded image limit is 4 MiB.
+There is no new file store, persistent schema, automatic upload/send, or Web
+image-upload flow. The existing conversation upload remains text-only.

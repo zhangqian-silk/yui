@@ -1301,7 +1301,7 @@ export async function main(): Promise<void> {
         const action = resolved[2];
         const taskId = resolved[3];
         const usage = "Usage: yui task artifact list <task> | read <task> <relative-path> [<commit>] | "
-          + "save <task> <relative-path> <content> [--message <text>] [--expected-head <commit>]";
+          + "save <task> <relative-path> <content> [--encoding utf8|base64] [--message <text>] [--expected-head <commit>]";
         if (taskId === undefined || action === undefined || !["list", "read", "save"].includes(action)) {
           throw usageError(usage);
         }
@@ -1329,14 +1329,16 @@ export async function main(): Promise<void> {
           const rest = resolved.slice(6);
           let message: string | undefined;
           let expectedHead: string | undefined;
+          let encoding: "utf8" | "base64" | undefined;
           for (let index = 0; index < rest.length; index += 1) {
             const value = rest[index + 1];
             if (rest[index] === "--message" && value !== undefined) { message = value; index += 1; continue; }
             if (rest[index] === "--expected-head" && value !== undefined) { expectedHead = value; index += 1; continue; }
+            if (rest[index] === "--encoding" && (value === "utf8" || value === "base64")) { encoding = value; index += 1; continue; }
             throw usageError(usage);
           }
           data = await saveArtifactCapability(home, taskId, {
-            relativePath, content,
+            relativePath, content, ...(encoding === undefined ? {} : { encoding }),
             ...(message === undefined ? {} : { message }),
             ...(expectedHead === undefined ? {} : { expectedHead })
           });

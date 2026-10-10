@@ -1,5 +1,5 @@
 import { openTaskArtifactRepository } from "../artifacts/taskArtifactRepository.js";
-import { compareTextArtifacts, readTextArtifactPage } from "./webMaterials.js";
+import { compareTextArtifacts, readArtifactPreview } from "./webMaterials.js";
 import { applyGlobalInputControl } from "../commands/globalRoleCommands.js";
 import { applyTaskInputControl, runTaskCommand, sendTaskMessageCommand, updateTaskMetadataCommand } from "../commands/taskCommands.js";
 import { runTaskActivationCommand } from "../commands/taskActivationCommands.js";
@@ -192,7 +192,7 @@ export function createWebTaskSurface(
       if (store.getTask(taskId) === null) throw new WebRequestRejected("Task not found.");
       // The browser always names a fixed revision. Never substitute HEAD after
       // a missing object, and never execute/render artifact HTML as an app.
-      return readTextArtifactPage(store.rootDirectory(), taskId, { taskId, relativePath, commit }, offset);
+      return readArtifactPreview(store.rootDirectory(), taskId, { taskId, relativePath, commit }, offset);
     },
     artifactDiff: async (taskId: string, relativePath: string, commit: string, beforeCommit: string, offset = 0) => {
       if (store.getTask(taskId) === null) throw new WebRequestRejected("Task not found.");
