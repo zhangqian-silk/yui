@@ -110,7 +110,9 @@ catalog = createCatalog({
 const globalInput = bindGlobalInput({ t: t, api: api });
 bindCreateTask({ t: t, api: api, selectTask: selection.selectTask,
   afterWrite: function () { catalog.refresh({ quiet: true }); } });
-bindBodySearch({ t: t, api: api, selectTask: selection.selectTask });
+bindBodySearch({ t: t, api: api, selectTask: selection.selectTask,
+  currentTask: function () { return state.selected; },
+  captureDraftTarget: conversation.captureDraftTarget, insertReference: conversation.insertReference });
 bindShortcuts({
   el: el, state: state, globalInput: globalInput, workspace: workspace,
   selection: selection, catalog: catalog, taskView: taskView

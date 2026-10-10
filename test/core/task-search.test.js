@@ -19,6 +19,7 @@ import { createFixtureRun } from "../helpers/runFixture.mjs";
 import { readDocument } from "../helpers/read-document.js";
 import { createYuiWebServer } from "../../dist/web/webServer.js";
 import { createWebTaskSurface } from "../../dist/web/webTaskSurface.js";
+import { readTaskSearchSource } from "../../dist/context/taskSearch.js";
 
 test("body search pages authoritative records, pins originals and never widens Task scope", (t) => {
   const home = mkdtempSync(join(tmpdir(), "yui-search-"));
@@ -79,6 +80,10 @@ test("body search pages authoritative records, pins originals and never widens T
   assert.throws(() => search({ YUI_SESSION_SCOPE: "global", YUI_ROLE: "reviewer" }), /Operator/i);
   const foreign = items.find(item => item.taskId === "task-2");
   assert.throws(() => inspectTaskContext(store, foreign.taskId, foreign.ref, env), /outside/i);
+  assert.throws(() => readTaskSearchSource(store, foreign.taskId,
+    { ...foreign.ref, field: foreign.field, offset: 0 }, env), /outside/i);
+  assert.throws(() => readTaskSearchSource(store, hit.taskId,
+    { ...hit.ref, field: hit.field, offset: 0 }), /changed/i);
 });
 
 test("message/result bodies stay bounded, expand completely, and share the token-authenticated Web port", async (t) => {
@@ -135,6 +140,30 @@ test("message/result bodies stay bounded, expand completely, and share the token
   const params = new URLSearchParams({ store: hit.ref.store, ref: hit.ref.refId, digest: hit.ref.digest });
   const expanded = await (await get(`/api/tasks/${hit.taskId}/inspect?${params}`)).json();
   assert.ok(expanded.contentPage);
+  params.set("field", hit.field);
+  let offset = 0, reconstructed = "";
+  do {
+    params.set("offset", String(offset));
+    const response = await get(`/api/tasks/${hit.taskId}/search-source?${params}`);
+    assert.equal(response.status, 200);
+    const source = await response.json();
+    assert.ok(Array.from(source.content).length <= 4000);
+    assert.equal(source.offset, offset);
+    assert.equal(source.ref.digest, hit.ref.digest);
+    assert.equal(source.authority, "reference-only");
+    reconstructed += source.content;
+    offset = source.nextOffset;
+  } while (offset !== null);
+  assert.equal(reconstructed, body, "text pages preserve Unicode, without leaking record JSON");
+  params.set("offset", String(hit.offset));
+  const match = await (await get(`/api/tasks/${hit.taskId}/search-source?${params}`)).json();
+  assert.ok(match.content.startsWith(hit.snippet));
+  params.set("field", "$.author");
+  assert.equal((await get(`/api/tasks/${hit.taskId}/search-source?${params}`)).status, 409);
+  params.set("field", hit.field);
+  params.delete("digest");
+  assert.equal((await get(`/api/tasks/${hit.taskId}/search-source?${params}`)).status, 409);
+  assert.equal((await fetch(base + `/api/tasks/${hit.taskId}/search-source?${params}`)).status, 403);
   // Many escaped multibyte snippets exercise the byte budget independently
   // of the requested item limit; every page remains resumable.
   for (let i = 2; i <= 35; i++) store.saveMessage("task-1",

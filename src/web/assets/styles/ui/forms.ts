@@ -25,6 +25,10 @@ export const FORM_STYLES = `
 .body-search-dialog .card-title{overflow-wrap:anywhere}
 .body-search-dialog .dialog-actions{flex-wrap:wrap}
 .body-search-dialog .card{min-width:0}
+.body-search-dialog .search-source{width:100%;resize:vertical;line-height:1.6;white-space:pre-wrap}
+.body-search-dialog .faint{overflow-wrap:anywhere}
+.body-search-dialog .dialog-sub{overflow-wrap:anywhere}
+.body-search-dialog .search-snippet{max-height:10em;overflow:auto}
 .theme-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 .theme-option{display:grid;gap:8px;padding:8px;border:1px solid var(--line-2);border-radius:var(--r-md);background:var(--surface-2);text-align:left;font-size:var(--fs-sm);font-weight:500}
 .theme-option:hover{border-color:var(--line-3)}

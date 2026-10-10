@@ -534,6 +534,23 @@ export function createConversationController(host, t, locale = function () { ret
   });
   controls();
   return {
+    captureDraftTarget: function () {
+      controls();
+      return send.disabled || timer === null || host.hidden || host.closest("[hidden]")
+        ? null : JSON.stringify([owner, selected]);
+    },
+    insertReference: function (target, citation) {
+      controls();
+      if (!target || target !== JSON.stringify([owner, selected]) || send.disabled
+        || timer === null || host.hidden || host.closest("[hidden]")) {
+        throw new Error(t("bodySearch.targetChanged"));
+      }
+      const combined = text.value + (text.value ? "\n\n" : "") + citation;
+      if (combined.length > text.maxLength) throw new Error(t("bodySearch.capacity"));
+      text.value = combined;
+      saved(".draft", text.value);
+      drawCommands();
+    },
     current: function () { return owner; },
     selection: function () {
       if (!owner || (selected && facts && selected !== facts.currentSessionId)) return null;
