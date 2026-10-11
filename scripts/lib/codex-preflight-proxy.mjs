@@ -29,6 +29,7 @@ export async function runProbeProxy(native, args, evidence, limit) {
   };
   createInterface({input: process.stdin}).on("line", line => {
     try {
+      if (!line.trim()) {child.stdin.write(line + "\n"); return;}
       const message = JSON.parse(line);
       if (message.method === "thread/start" || message.method === "thread/resume") starts.set(message.id, message.params);
       if (message.method === "turn/start") {
@@ -43,6 +44,7 @@ export async function runProbeProxy(native, args, evidence, limit) {
   });
   createInterface({input: child.stdout}).on("line", async line => {
     try {
+      if (!line.trim()) {process.stdout.write(line + "\n"); return;}
       const message = JSON.parse(line);
       const p = pending.get(message.id);
       if (p) {
