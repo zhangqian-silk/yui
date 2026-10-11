@@ -51,6 +51,34 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.4.0 compatibility and migration notes
+
+This minor ships the unified Web Task/Operator conversations and same-thread
+Codex terminal access, Task workbench, settings, text materials, pinned
+Markdown/image previews, bounded search and exact selection references,
+Task-owned HTTP previews, current-Session model/Slash controls, Skill browsing
+and explicit bindings. Knowledge applicability, complete frozen Skill packages,
+and sourced usage/cost evidence are included. Git 2.29+ compatibility and the
+Task109 model-validation, terminal-reader isolation and unknown-send recovery
+fixes are included; Task110's unmerged work is not part of this release.
+
+Storage is now **1.6**. Use the supported centralized, contiguous same-major
+upgrade path for older supported Homes; do not edit stored records manually.
+Historical missing cost remains unknown. Old Skill provenance is not rebuilt
+from today's files: if restoring an old Session reports missing frozen-package
+evidence, follow its new-Session guidance while preserving the old history.
+Current model adoption is connection-local and does not change future defaults;
+exit the Host-owned native TUI before changing its model (closing a viewer only
+detaches it). Unknown sends must be inspected by their original request ID,
+not replayed from a fresh tab. These are explicit behavioral boundaries, not
+a general backward-compatibility promise.
+
+The [Task109 report](testing/web-coverage-final.md) records Linux browser and
+real-model evidence with its original platform and sandbox limitations.
+Official CI/package smoke is separate evidence, not macOS browser/live-model
+coverage. Real-model checks remain opt-in. Publishing this package does not
+upgrade the global CLI, migrate a user's Home or restart their Controller.
+
 ### 2.3.0 compatibility and migration notes
 
 This minor release separates Task acceptance and verified remote delivery from
