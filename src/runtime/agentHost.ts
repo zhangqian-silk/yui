@@ -1353,10 +1353,13 @@ export async function runAgentHost(input: Readonly<{
       return enqueueSerialized(async () => {
         const current = session;
         if (!current?.nativeAccess || current.nativeSessionId !== request.nativeSessionId
-          || !sessionPayload || nativeTui || nativeOpening || activeNativeTurnId || authority?.owner !== "controller"
+          || !sessionPayload || activeNativeTurnId || authority?.owner !== "controller"
           || (sessionPayload.environment.YUI_SESSION_SCOPE === "task" && sessionPayload.environment.YUI_ROLE !== "leader")
           || (sessionPayload.environment.YUI_SESSION_SCOPE === "global" && sessionPayload.environment.YUI_ROLE !== "operator")) {
           throw new Error("Model switching requires the idle current controlled Codex Session, without a native terminal writer.");
+        }
+        if (nativeTui || nativeOpening) {
+          throw new Error("Exit the native TUI before changing the Session model. Closing a browser terminal viewer only detaches it; the Host-owned TUI remains open.");
         }
         modelChanging = true;
         try {

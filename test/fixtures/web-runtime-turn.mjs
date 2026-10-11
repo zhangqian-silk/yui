@@ -36,6 +36,10 @@ export async function handleTurn({ environment, threadId, turnId, input }) {
   const job = run(["job", "start", "--task", taskId, "--project", entry.projectId,
     "--head", head, "--workspace", workspace.root, "--request-id", "native-preview",
     "--env", "YUI_HTTP_PREVIEW=1", "--step", `http=node ${entry.directory}/server.cjs`]);
-  writeFileSync(marker, JSON.stringify({ artifact, image, job, workspace, nativeSessionId: environment.CODEX_THREAD_ID }, null, 2));
+  const inputRequest = process.env.YUI_SMOKE_INPUT === "1"
+    ? run(["task", "input", "request", taskId, "--question", "Confirm disposable browser fixture",
+      "--choice", "continue=Continue fixture"]) : undefined;
+  writeFileSync(marker, JSON.stringify({ artifact, image, job, workspace, inputRequest,
+    nativeSessionId: environment.CODEX_THREAD_ID }, null, 2));
   return "Native fixture saved pinned artifacts and requested a real managed HTTP Job.";
 }

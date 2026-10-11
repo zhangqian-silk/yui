@@ -27,15 +27,16 @@ failed assertion makes the process exit nonzero after cleanup, retaining its
 isolated Home and the original CLI/HTTP receipts. Independent checks continue
 after failure; failed assertions are not marked expected or skipped.
 
-For rendered-browser coverage, start the same command with `--serve`. Wait for
-`READY`, then run the browser-use harness with the same evidence directory:
+For rendered-browser coverage, use the server wrapper and driver. The driver
+waits for process setup and assertions, then for owned teardown after browser
+execution. Choose a free port and a fresh evidence directory:
 
 ```sh
 YUI_SMOKE_PORT=18819 YUI_SMOKE_EVIDENCE=/absolute/evidence \
-  node scripts/smoke-web-runtime.mjs --serve
-# In another shell with an attached browser-use browser:
-YUI_SMOKE_EVIDENCE=/absolute/evidence \
-  browser-use < scripts/smoke-web-browser.py
+BROWSER_USE=/absolute/path/to/browser-use \
+python3 /absolute/path/to/browser-workflows/scripts/with_server.py \
+  --server 'exec node scripts/smoke-web-runtime.mjs --serve' \
+  --port 18819 --timeout 90 -- node scripts/run-web-browser.mjs
 ```
 
 `smoke-web-browser.py` is a browser-use script with pre-imported CDP helpers,
@@ -46,6 +47,14 @@ rerun: create-only intentionally creates one uniquely named Draft.
 `YUI_SMOKE_BROWSER_ONLY` selects a case-name substring for diagnostic reruns
 and preserves the other recorded results; do not mistake that for a fresh
 complete run.
+The normal `--serve` fixture includes a real managed Leader InputRequest.
+The browser answers it once and observes the existing 60-second notification
+aggregation before the same Session continues; this is not a stuck test.
+The recovery fixture opts out of that question because it owns different
+notification assertions. Model adoption starts in the structured view; a
+later assertion verifies that an open native TUI still fences adoption after
+the browser viewer detaches. Text upload and Skill browse/bind/unbind use real
+rendered controls and check authoritative fixed references and Session state.
 
 Start/stop a browser-use recording around the browser script when a trace is
 needed. On finish, send SIGTERM to the exact `fixturePid` from `report.json`
@@ -58,7 +67,7 @@ The fixture sets only its own reconciliation interval to five seconds.
 The native test double supplies a model catalog and one historical Turn. Its
 managed turn handler invokes the actual CLI to save Markdown/PNG and start a
 Task-owned Job. The Job serves HTTP on the actual Runner socket. It does not
-implement an interactive Codex TUI, real billing, or all upstream history
+implement the actual Codex TUI, real billing, or all upstream history
 semantics.
 
 ## Task109 execution record — 2026-10-10

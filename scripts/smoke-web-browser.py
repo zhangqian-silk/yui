@@ -65,7 +65,17 @@ def check(name, action):
         (evidence / "browser-results.json").write_text(json.dumps(results, ensure_ascii=False, indent=2))
 
 cdp("Emulation.clearDeviceMetricsOverride")
-new_tab(base + "/?task=task-1")
+new_tab(base + "/settings")
+owned_tab = current_tab()["targetId"]
+wait_for_load()
+print(page_info())
+# Select the supported structured-only model path before opening a native TUI.
+# A live TUI retains its configuration even after the browser viewer detaches.
+wait("document.querySelector('#access-mode') !== null")
+js("""(()=>{const s=document.querySelector('#access-mode');
+  if(![...s.options].some(o=>o.value==='structured'))throw Error('Missing structured preference');
+  s.value='structured';s.dispatchEvent(new Event('change',{bubbles:true}));})()""")
+cdp("Page.navigate", url=base + "/?task=task-1")
 wait_for_load()
 # Establish the rendered page and controls before choosing actions.
 print(page_info())
@@ -100,6 +110,91 @@ def slash():
     assert before == after, "Local /help must not create a Message"
 check("103: /help is a local command, not a Message", slash)
 
+def model():
+    endpoint = "/api/conversation?scope=task&task=task-1&role=leader"
+    before = read_api(endpoint)["body"]
+    defaults = read_api("/api/settings/group?id=role%2Fleader")["body"]
+    messages = read_api("/api/tasks/task-1/list?store=task-message")["body"]
+    type_label("Message to the selected Session", "/model")
+    click_named("Send")
+    wait("document.querySelector('select[aria-label=\"Session model\"]').options.length === 2")
+    js("""(()=>{const s=document.querySelector('select[aria-label="Session model"]');
+      if(![...s.options].some(o=>o.value==='fast'))throw Error('Missing rendered model');
+      s.value='fast';s.dispatchEvent(new Event('change',{bubbles:true}));})()""")
+    click_named("Apply while idle")
+    wait("document.body.innerText.includes('Native model adoption confirmed')")
+    after = read_api(endpoint)["body"]
+    assert after["currentSessionId"] == before["currentSessionId"]
+    assert after["turn"] == before["turn"]
+    page = read_api(endpoint + "&session=" + after["currentSessionId"])["body"]
+    assert any(a["key"] == "model" and a["current"]["value"] == "fast" for a in page["runConfiguration"]["axes"])
+    assert read_api("/api/settings/group?id=role%2Fleader")["body"] == defaults
+    assert read_api("/api/tasks/task-1/list?store=task-message")["body"] == messages
+    (evidence / "browser-model.json").write_text(json.dumps({"before": before, "after": after, "page": page, "defaults": defaults}, indent=2))
+check("103: rendered /model adopts current model without a new Thread, Turn, Message or default change", model)
+
+def public_answer():
+    before = read_api("/api/conversation?scope=task&task=task-1&role=leader")["body"]
+    wait("document.body.innerText.includes('Confirm disposable browser fixture')")
+    js("""(()=>{window.__inputAnswer=[];const original=window.fetch.bind(window);
+      window.fetch=async function(url,options){const r=await original(url,options);
+      if(String(url).includes('/inputs/')&&String(url).endsWith('/answer')&&options?.method==='POST')
+        window.__inputAnswer.push({url:String(url),body:JSON.parse(options.body),status:r.status,result:await r.clone().json()});
+      return r;};})()""")
+    click_named("Continue fixture")
+    wait("window.__inputAnswer.length === 1")
+    receipt = js("window.__inputAnswer[0]")
+    assert receipt["status"] == 200
+    request = receipt["result"]["request"]
+    assert request["status"] == "answered"
+    assert request["resolution"]["answeredBy"] == "user"
+    assert request["resolution"]["answer"]["choiceKey"] == "continue"
+    assert request["requester"]["nativeSessionId"] == before["currentSessionId"]
+    # Ordinary input answers use the existing 60-second Leader aggregation,
+    # unlike urgent user-message wakes. Observe it; do not manufacture a wake.
+    end = time.monotonic() + 90
+    after = before
+    while time.monotonic() < end:
+        after = read_api("/api/conversation?scope=task&task=task-1&role=leader")["body"]
+        if after["turn"] != before["turn"] and after["turn"]["status"] == "completed":
+            break
+        time.sleep(.1)
+    (evidence / "browser-input-answer.json").write_text(json.dumps({"receipt": receipt, "before": before, "after": after}, indent=2))
+    assert after["currentSessionId"] == before["currentSessionId"]
+    assert after["turn"] != before["turn"] and after["turn"]["status"] == "completed"
+    wait("!document.querySelector('textarea[aria-label=\"Message to the selected Session\"]').disabled")
+check("96: managed Leader question receives one browser answer and resumes the same Session", public_answer)
+
+def material():
+    before = read_api("/api/tasks/task-1/list?store=task-message")["body"]
+    type_label("Message to the selected Session", "Keep upload draft")
+    upload = evidence / "material.txt"
+    upload.write_bytes("Material 😀\r\n<script>window.uploadInjected=true</script>\n".encode())
+    # Inspect the actual file input, then use the browser's file chooser path.
+    js("""[...document.querySelectorAll('summary')].find(e=>e.textContent==='Attach text material').click()""")
+    root = cdp("DOM.getDocument")["root"]["nodeId"]
+    node = cdp("DOM.querySelector", nodeId=root, selector='input[type="file"][aria-label="Attach text material"]')["nodeId"]
+    assert node
+    wait("!document.querySelector('input[type=\"file\"][aria-label=\"Attach text material\"]').disabled")
+    cdp("DOM.setFileInputFiles", nodeId=node, files=[str(upload)])
+    wait("document.body.innerText.includes('Material saved.')")
+    assert js("document.querySelector('textarea[aria-label=\"Message to the selected Session\"]').value") == "Keep upload draft"
+    assert js("window.uploadInjected === true") is False
+    refs = js("""Object.keys(sessionStorage).filter(k=>k.endsWith('.materials'))
+      .flatMap(k=>JSON.parse(sessionStorage.getItem(k)||'[]')).filter(r=>r.relativePath?.endsWith('/material.txt'))""")
+    assert len(refs) == 1, refs
+    ref = refs[0]
+    assert ref["digest"] == hashlib.sha256(upload.read_bytes()).hexdigest()
+    cdp("Page.reload")
+    wait_for_load()
+    wait("document.body.innerText.includes('material.txt')")
+    assert read_api("/api/tasks/task-1/list?store=task-message")["body"] == before
+    assert js("document.querySelector('textarea[aria-label=\"Message to the selected Session\"]').value") == "Keep upload draft"
+    (evidence / "browser-material.json").write_text(json.dumps(ref, indent=2))
+    click_named("Remove reference")
+    wait("!document.body.innerText.includes('material.txt')")
+check("98: real file upload pins exact bytes, preserves unsent draft on reload and never executes contents", material)
+
 def artifact():
     type_label("Message to the selected Session", "Keep my draft")
     click_named("Delivery", "tab")
@@ -112,6 +207,7 @@ def artifact():
     before = read_api("/api/tasks/task-1/list?store=task-message")["body"]
     click_named("Discuss these versions")
     wait("document.body.innerText.includes('sha256:02328826')")
+    wait("document.querySelector('textarea[aria-label=\"Message to the selected Session\"]').value === 'Keep my draft'")
     assert js("document.querySelector('textarea[aria-label=\"Message to the selected Session\"]').value") == "Keep my draft"
     assert read_api("/api/tasks/task-1/list?store=task-message")["body"] == before
     capture("pinned-markdown")
@@ -154,6 +250,7 @@ def search_quote():
       e.focus();e.setSelectionRange(3,10);return e.value.slice(e.selectionStart,e.selectionEnd);})()""")
     assert selected == "😀\nKeep"
     click_named("Insert selection (or this page)")
+    wait("document.querySelector('textarea[aria-label=\"Message to the selected Session\"]').value.startsWith('Keep my draft\\n')")
     value = js("""[...document.querySelectorAll('textarea')]
       .find(e=>e.getAttribute('aria-label')==='Message to the selected Session').value""")
     assert value.startswith("Keep my draft\n")
@@ -286,7 +383,72 @@ def terminal_writers():
     while read_api("/api/conversation?scope=task&task=task-1&role=leader")["body"]["terminalWriter"] and time.monotonic() < end:
         time.sleep(.1)
     assert read_api("/api/conversation?scope=task&task=task-1&role=leader")["body"]["terminalWriter"] is False
+    endpoint = "/api/conversation?scope=task&task=task-1&role=leader"
+    before_model = read_api(endpoint + "&session=" + before["currentSessionId"])["body"]["runConfiguration"]
+    type_label("Message to the selected Session", "/model")
+    click_named("Send")
+    wait("document.querySelector('select[aria-label=\"Session model\"]').options.length === 2")
+    js("""(()=>{const s=document.querySelector('select[aria-label="Session model"]');
+      s.value='deep';s.dispatchEvent(new Event('change',{bubbles:true}));})()""")
+    click_named("Apply while idle")
+    wait("document.body.innerText.includes('Exit the native TUI before changing')")
+    after_model = read_api(endpoint + "&session=" + before["currentSessionId"])["body"]["runConfiguration"]
+    assert after_model == before_model, "Rejected model adoption must not change native configuration"
+    assert read_api(endpoint)["body"]["turn"] == before["turn"]
+    (evidence / "browser-native-model-fence.json").write_text(json.dumps({
+        "before": before_model, "after": after_model, "body": js("document.body.innerText")}, indent=2))
+    type_label("Message to the selected Session", "Task one private draft")
 check("95: real Host relay/tmux/PTY keeps one Thread and one writer across two browser windows (fake native UI)", terminal_writers)
+
+def skill_bindings():
+    first = current_tab()["targetId"]
+    second = None
+    endpoint = "/api/skills/role?scope=task&task=task-1&role=leader"
+    before = read_api(endpoint)["body"]
+    try:
+        new_tab(base + "/settings")
+        second = current_tab()["targetId"]
+        wait_for_load()
+        print(page_info())
+        wait("document.body.innerText.includes('Skills · browse & bind')")
+        # Select only options read from the rendered labels/options.
+        js("""(()=>{const l=[...document.querySelectorAll('#skill-browser label')]
+          .find(e=>e.querySelector('span')?.textContent==='Scope');
+          const s=l.querySelector('select'); if(![...s.options].some(o=>o.value==='task'))throw Error('Task scope missing');
+          s.value='task';s.dispatchEvent(new Event('change',{bubbles:true}));})()""")
+        type_label("Task ID", "task-1")
+        click_named("Load / reload Role")
+        wait("document.querySelector('#skill-browser').innerText.includes('No additional bindings')")
+        click_named("Find an existing Skill by name or purpose", "searchbox")
+        cdp("Input.insertText", text="regression")
+        click_named("Search")
+        wait("document.querySelectorAll('#skill-browser article').length === 1")
+        click_named("Read current source")
+        wait("document.body.innerText.includes('Read a resource (never executed)')")
+        click_named("Add to selected Role")
+        click_named("Save bindings")
+        wait("document.body.innerText.includes('Bindings saved.')")
+        bound = read_api(endpoint)["body"]
+        assert bound["skills"] == ["regression"]
+        assert bound["session"] == before["session"], "Binding must not rewrite the running Session"
+        click_named("Remove binding")
+        click_named("Save bindings")
+        wait("document.querySelector('#skill-browser').innerText.includes('No additional bindings')")
+        end = time.monotonic() + 5
+        after = read_api(endpoint)["body"]
+        while after["skills"] and time.monotonic() < end:
+            time.sleep(.1)
+            after = read_api(endpoint)["body"]
+        assert after["skills"] == [] and after["session"] == before["session"]
+        source = read_api("/api/skills/file?id=regression&resource=references%2Fguide.md")
+        assert source["body"]["content"] == "attachment v2\n"
+        (evidence / "browser-skills.json").write_text(json.dumps({"before": before, "bound": bound, "after": after}, indent=2))
+        capture("skills-bind-unbind")
+    finally:
+        if second:
+            close_tab(second)
+        switch_tab(first)
+check("108: rendered Skill browse/bind/unbind preserves source and running frozen Session", skill_bindings)
 
 def narrow():
     cdp("Emulation.setDeviceMetricsOverride", width=390, height=844, deviceScaleFactor=1, mobile=False)
@@ -315,5 +477,6 @@ def narrow():
 check("96/responsive: create-only at 390px, no document overflow, durable Draft receipt", narrow)
 
 print(json.dumps(results, ensure_ascii=False))
+close_tab(owned_tab)
 if any(r["status"] == "failed" for r in results):
     raise AssertionError("Browser checks failed; see browser-results.json")

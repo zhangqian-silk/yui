@@ -123,6 +123,7 @@ try {
 process.env.YUI_FAKE_TURN_HANDLER = ${JSON.stringify(new URL("../test/fixtures/web-runtime-turn.mjs", import.meta.url).href)};
 process.env.YUI_SMOKE_CLI = ${JSON.stringify(cli)};
 process.env.YUI_FAKE_TUI_LOG = ${JSON.stringify(join(home, "native-tui.jsonl"))};
+process.env.YUI_SMOKE_INPUT = ${JSON.stringify(serve && process.env.YUI_SMOKE_RECOVERY !== "1" ? "1" : "")};
 process.env.YUI_FAKE_UNIQUE_THREADS = ${JSON.stringify(process.env.YUI_SMOKE_RECOVERY ?? "")};
 process.env.YUI_FAKE_MODELS = ${JSON.stringify(JSON.stringify([
   { id: "fast", model: "fast", displayName: "Fast fixture", isDefault: true,
