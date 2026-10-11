@@ -54,7 +54,9 @@ export async function runProbeProxy(native, args, evidence, limit) {
   const fail = (error) => {
     if (closing) return;
     closing = true;
-    save("preflight-failure.json", {at: new Date().toISOString(), error: String(error.stack ?? error)});
+    save("preflight-failure.json", {at: new Date().toISOString(),
+      phase: fs.existsSync(join(evidence, "preflight.json")) ? "native-transport-after-preflight" : "preflight",
+      error: String(error.stack ?? error)});
     nativeConnection.close(); process.exit(1);
   };
   nativeConnection.onClose(fail);
@@ -87,7 +89,7 @@ export async function runProbeProxy(native, args, evidence, limit) {
       if (params && message.result) {
         starts.delete(message.id);
         const startup = message.result;
-          const environment = params.config?.shell_environment_policy?.set;
+        const environment = params.config?.shell_environment_policy?.set;
         if (environment?.YUI_SESSION_MANIFEST) {
           assert.equal(startup.model, "gpt-6-luna");
           assert.equal(startup.approvalPolicy, "never");
@@ -98,7 +100,7 @@ export async function runProbeProxy(native, args, evidence, limit) {
           save("native-startup.json", {params, startup, environment});
           threadId = startup.thread.id;
           preflight = async () => {
-          if (!fs.existsSync(output)) {
+            if (fs.existsSync(output)) return;
             const daemon = fs.realpathSync(join(process.env.CODEX_HOME, "packages/app-server-daemon/current/bin/codex"));
             const schema = join(evidence, "daemon-schema");
             const generated = spawnSync(daemon, ["app-server", "generate-json-schema", "--out", schema],
@@ -128,7 +130,6 @@ export async function runProbeProxy(native, args, evidence, limit) {
               node: process.execPath, fixture, output
             });
             save("preflight.json", proof);
-          }
           };
         }
       }

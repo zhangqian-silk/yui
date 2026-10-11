@@ -6,8 +6,10 @@ import { createHash } from "node:crypto";
 import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
+import Database from "better-sqlite3";
 
 assert.equal(process.env.YUI_LIVE_CODEX, "authorized", "Explicit live-resource authorization and YUI_LIVE_CODEX=authorized required");
+assert.equal(process.platform, "linux", "This opt-in fixture uses Linux /proc ownership checks; macOS needs its own authorized environment");
 const native = process.env.YUI_LIVE_CODEX_BINARY;
 const sourceHome = process.env.CODEX_HOME;
 assert.ok(native && sourceHome, "Select exact native binary and authorized authentication source");
@@ -104,10 +106,29 @@ await runProbeProxy(${JSON.stringify(native)}, process.argv.slice(2), ${JSON.str
   report.daemon = {path: daemon, sha256: hash(daemon),
     version: spawnSync(daemon, ["--version"], {env, encoding: "utf8"}).stdout.trim()};
   report.ready = true; save(); console.log("LIVE EXECUTION READY");
-  await stopped;
+  const keepAlive = setInterval(() => {}, 1000);
+  try {await stopped;} finally {clearInterval(keepAlive);}
 } catch (error) {
   report.error = String(error.stack ?? error); console.error(report.error); process.exitCode = 1;
 } finally {
+  try {
+    const database = join(codexHome, "thread_history_1.sqlite");
+    if (fs.existsSync(database)) {
+      const db = new Database(database, {readonly: true});
+      try {
+        report.nativeTurns = db.prepare("select thread_id,turn_id,status,started_at,completed_at,duration_ms,error_json from thread_turns order by started_at").all();
+      } finally {db.close();}
+    }
+    const startupPath = join(evidence, "native-startup.json");
+    if (fs.existsSync(startupPath)) {
+      const cwd = JSON.parse(fs.readFileSync(startupPath, "utf8")).startup.cwd;
+      const files = {};
+      for (const name of ["fixture-value.txt", "preflight-proof.json", "business-result.json"]) {
+        if (fs.existsSync(join(cwd,name))) files[name] = fs.readFileSync(join(cwd,name), "utf8");
+      }
+      fs.writeFileSync(join(evidence,"workspace-files.json"), JSON.stringify(files,null,2));
+    }
+  } catch (error) {report.evidenceError = String(error); process.exitCode = 1;}
   try {
     if (task) report.cleanup.execution = command(["task", "execution", "stop", task, "--force", "--reason", "Owned native execution smoke teardown"], {allowFailure: true});
     web?.kill("SIGTERM");
@@ -119,23 +140,52 @@ await runProbeProxy(${JSON.stringify(native)}, process.argv.slice(2), ${JSON.str
     // exact argv under this owned Home before terminating that process only.
     const daemonPath = join(codexHome, "packages/app-server-daemon/current/bin/codex");
     const exact = fs.existsSync(daemonPath) ? fs.realpathSync(daemonPath) : null;
-    report.cleanup.updaters = [];
+    report.cleanup.signals = [];
     for (const pid of fs.readdirSync("/proc").filter(x => /^\d+$/.test(x))) {
       try {
-        if (!exact || fs.readlinkSync(`/proc/${pid}/exe`) !== exact) continue;
+        const executable = fs.readlinkSync(`/proc/${pid}/exe`);
         const args = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean);
-        if (JSON.stringify(args.slice(1)) !== JSON.stringify(["app-server", "daemon", "pid-update-loop"])) continue;
-        process.kill(Number(pid), "SIGTERM"); report.cleanup.updaters.push(Number(pid));
+        const environment = fs.readFileSync(`/proc/${pid}/environ`, "utf8").split("\0");
+        const updater = exact && executable === exact
+          && JSON.stringify(args.slice(1)) === JSON.stringify(["app-server", "daemon", "pid-update-loop"]);
+        const ownedWeb = environment.includes(`YUI_HOME=${home}`) && args.includes("web")
+          && args.includes(String(port)) && args.some(a => a.endsWith("/dist/cli.js"));
+        if (!updater && !ownedWeb) continue;
+        process.kill(Number(pid), "SIGTERM");
+        report.cleanup.signals.push({pid: Number(pid), executable, kind: updater ? "updater" : "web"});
       } catch {}
     }
     await delay(800);
     fs.rmSync(join(codexHome, "auth.json"), {force: true});
     report.cleanup.sourceAuthUnchanged = hash(authSource) === authHash;
     report.cleanup.credentialRemoved = !fs.existsSync(join(codexHome, "auth.json"));
-    const lines = spawnSync("ps", ["-eo", "pid,args"], {encoding: "utf8"}).stdout.split("\n");
-    report.cleanup.remaining = lines.filter(x => x.includes(scratch) || x.includes(codexHome) || x.includes(tmux));
-    // Keep non-secret Homes until the caller has extracted file/native proof.
-    report.cleanup.retained = [scratch, codexHome];
-  } catch (error) {report.cleanup.error = String(error);}
+    report.cleanup.remaining = [];
+    for (const pid of fs.readdirSync("/proc").filter(x => /^\d+$/.test(x))) {
+      try {
+        const args = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8");
+        const environment = fs.readFileSync(`/proc/${pid}/environ`, "utf8").split("\0");
+        if (environment.includes(`YUI_HOME=${home}`) || environment.includes(`CODEX_HOME=${codexHome}`)
+          || args.includes(scratch) || args.includes(codexHome)) report.cleanup.remaining.push(Number(pid));
+      } catch {}
+    }
+    report.cleanup.tmuxRemaining = spawnSync("tmux", ["-L", tmux, "list-sessions"], {encoding: "utf8"}).status === 0;
+    report.cleanup.socketRemaining = fs.existsSync(join(codexHome, "app-server-control/app-server-control.sock"));
+    if (report.cleanup.remaining.length || report.cleanup.tmuxRemaining || report.cleanup.socketRemaining) {
+      report.cleanup.retained = [scratch, codexHome];
+      throw Error("Owned resources remain; preserve their Homes for exact recovery");
+    }
+    // The paths are the exact mkdtemp allocations above, never a shared root.
+    fs.rmSync(scratch, {recursive: true});
+    fs.rmSync(codexHome, {recursive: true});
+    report.cleanup.removed = [scratch, codexHome];
+  } catch (error) {
+    report.cleanup.error = String(error);
+    report.cleanup.retained = [scratch, codexHome].filter(p => fs.existsSync(p));
+    process.exitCode = 1;
+  } finally {
+    // Credential removal is independent of evidence collection and teardown.
+    fs.rmSync(join(codexHome, "auth.json"), {force: true});
+    report.cleanup.credentialRemoved = !fs.existsSync(join(codexHome, "auth.json"));
+  }
   report.finishedAt = new Date().toISOString(); save();
 }

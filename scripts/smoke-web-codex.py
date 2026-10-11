@@ -38,8 +38,9 @@ try:
               "and this Message in full. In your own workspace read fixture-value.txt; its value "
               "has deliberately not been supplied in this prompt. Create exactly one new UTF-8 "
               "file business-result.json with keys taskId (your Task), value (the file value trimmed), "
-              "and result (the value reversed). Use actual tools to read and write. Do not modify "
-              "the fixture or preflight-proof.json. Read back the result, then reply with the "
+              "and result (the value reversed). Use actual tools to read and write. "
+              "Compute and verify the reversal with a programming-language operation, not manual transcription. "
+              "Do not modify the fixture or preflight-proof.json. Read back the result, then reply with the "
               "actual value and result and the output filename. Do not complete the Task, delegate, "
               "make external requests, or create any other work. This one bounded file task is authorized.")
     type_label("Message to the selected Session", prompt)
@@ -60,6 +61,9 @@ try:
     request_id = receipts[0]["body"]["requestId"]
     receipt = read_api(endpoint + "&requestId=" + request_id)
     save("browser-receipt", receipt)
+    assert receipt["status"] == 200 and receipt["body"]["state"] == "accepted"
+    assert receipt["body"]["requestId"] == request_id
+    assert receipt["body"]["messageId"] == receipts[0]["result"]["record"]["id"]
     assert current["currentSessionId"] == thread
     assert current["turn"]["nativeTurnId"] != before["turn"]["nativeTurnId"]
     assert current["turn"]["status"] == "completed", current
@@ -69,8 +73,8 @@ try:
     result = json.loads((workspace / "business-result.json").read_text())
     assert result == {"taskId": fixture["taskId"], "value": original, "result": original[::-1]}, result
     assert original not in prompt
-    assert original in js("document.body.innerText")
-    assert original[::-1] in js("document.body.innerText")
+    wait("document.body.innerText.includes(" + json.dumps(original) + ")", 20)
+    wait("document.body.innerText.includes(" + json.dumps(original[::-1]) + ")", 20)
     assert len(set(i["turnId"] for i in h["items"])) == 2, "Activation plus one business Turn only"
     save("business-proof", {"status": "passed", "threadId": thread,
          "turnId": current["turn"]["nativeTurnId"], "requestId": request_id,

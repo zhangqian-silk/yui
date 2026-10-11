@@ -1,5 +1,10 @@
 # Bounded real Codex / Luna browser verification
 
+Follow-up: [native execution smoke](web-native-execution-smoke.md) diagnoses
+the read-only fixture baseline and records successful context/tool/business
+execution under the explicitly authorized normal development policy. The
+original failures and version distinctions below remain unchanged.
+
 Task109 message-4/5 continuation, 2026-10-11 (Asia/Shanghai). These messages
 explicitly authorized the existing account and at most five short live Turns,
 replacing message-3's local-model-only/network-namespace prerequisite.

@@ -21,9 +21,15 @@ try {
   if (fixture?.fixturePid) {
     try {process.kill(fixture.fixturePid, "SIGTERM");} catch {}
     const end = Date.now() + 45000;
+    let final;
     while (Date.now() < end) {
-      if (JSON.parse(fs.readFileSync(path, "utf8")).finishedAt) break;
+      final = JSON.parse(fs.readFileSync(path, "utf8"));
+      if (final.finishedAt) break;
       await delay(200);
+    }
+    if (!final?.finishedAt || final.cleanup?.error || final.evidenceError) {
+      console.error("Fixture teardown incomplete; inspect report.json and preserve owned Homes.");
+      process.exitCode = 1;
     }
   }
 }
