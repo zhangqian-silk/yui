@@ -1,5 +1,9 @@
 # Historical Sessions and lost HTTP acknowledgements
 
+Follow-up: the separately authorized [2026-10-11 live Codex/Luna run](web-live-luna-smoke.md)
+supersedes C's old local-model-only continuation condition. The A/B results
+and C preflight below remain historical evidence, not claims about that live run.
+
 Task109 message-3 continuation, 2026-10-10. This supplements, rather than
 replaces, [the original report](web-runtime-smoke.md) and
 [the earlier repairs](web-runtime-repair.md).
