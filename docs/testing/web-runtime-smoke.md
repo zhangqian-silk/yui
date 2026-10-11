@@ -3,6 +3,8 @@
 The execution record below preserves the first, test-only delivery.
 The authorized repair and extended verification are recorded in
 [web-runtime-repair.md](web-runtime-repair.md).
+The final cross-requirement matrix is in
+[web-coverage-final.md](web-coverage-final.md).
 
 This opt-in smoke supplements `npm test`; it does not replace the seconds-scale
 core suite. It uses a disposable Home, the explicit checkout launcher, real
