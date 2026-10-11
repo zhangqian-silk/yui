@@ -2,7 +2,10 @@
 // preflight before exposing thread/start success. No native results are mocked.
 import { spawn, spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
-import { createInterface } from "node:readline";
+import { createServer } from "node:http";
+import { Duplex } from "node:stream";
+import { WebSocketServer } from "ws";
+import { openCodexInteractiveConnection } from "../../dist/runtime/structuredProviderHost.js";
 import fs from "node:fs";
 import { join } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
@@ -10,12 +13,36 @@ import { preflightCodexExecution } from "./codex-execution-preflight.mjs";
 
 export async function runProbeProxy(native, args, evidence, limit) {
   const proxy = args.at(-2) === "app-server" && args.at(-1) === "proxy";
-  const child = spawn(native, args, {stdio: proxy ? ["pipe", "pipe", "inherit"] : "inherit"});
-  for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(signal, () => child.kill(signal));
-  child.on("exit", (code) => process.exit(code ?? 1));
-  if (!proxy) return;
+  if (!proxy) {
+    const child = spawn(native, args, {stdio: "inherit"});
+    for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(signal, () => child.kill(signal));
+    child.on("exit", (code) => process.exit(code ?? 1));
+    return;
+  }
+  // app-server proxy transports WebSocket bytes, not stdio JSONL. Reuse Yui's
+  // real native connection and ws framing; do not implement another protocol.
+  const nativeConnection = await openCodexInteractiveConnection({
+    command: native, args, environment: process.env, cwd: process.cwd()
+  }, true);
+  const transport = new Duplex({read() {}, write(chunk, encoding, callback) {
+    process.stdout.write(chunk, encoding, callback);
+  }});
+  process.stdin.on("data", chunk => transport.push(chunk));
+  process.stdin.on("end", () => transport.push(null));
+  const server = createServer(), sockets = new WebSocketServer({noServer: true, perMessageDeflate: false});
+  let client, closing = false;
+  const close = () => {closing = true; nativeConnection.close(); process.exit(0);};
+  server.on("upgrade", (req, socket, head) => sockets.handleUpgrade(req, socket, head, ws => {
+    client = ws;
+    ws.on("message", data => receiveClient(data.toString()));
+    ws.on("close", close);
+  }));
+  server.emit("connection", transport);
+  for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(signal, () => {
+    close();
+  });
   const pending = new Map(), starts = new Map();
-  const send = (message) => child.stdin.write(JSON.stringify(message) + "\n");
+  const send = (message) => void nativeConnection.send(message).catch(fail);
   const save = (name, data) => fs.writeFileSync(join(evidence, name), JSON.stringify(data, null, 2));
   const request = (method, params) => new Promise((resolve, reject) => {
     const id = `execution-preflight-${randomUUID()}`;
@@ -24,12 +51,14 @@ export async function runProbeProxy(native, args, evidence, limit) {
     send({id, method, params});
   });
   const fail = (error) => {
+    if (closing) return;
+    closing = true;
     save("preflight-failure.json", {at: new Date().toISOString(), error: String(error.stack ?? error)});
-    child.kill("SIGTERM");
+    nativeConnection.close(); process.exit(1);
   };
-  createInterface({input: process.stdin}).on("line", line => {
+  nativeConnection.onClose(fail);
+  function receiveClient(line) {
     try {
-      if (!line.trim()) {child.stdin.write(line + "\n"); return;}
       const message = JSON.parse(line);
       if (message.method === "thread/start" || message.method === "thread/resume") starts.set(message.id, message.params);
       if (message.method === "turn/start") {
@@ -41,11 +70,9 @@ export async function runProbeProxy(native, args, evidence, limit) {
       }
       send(message);
     } catch (error) { fail(error); }
-  });
-  createInterface({input: child.stdout}).on("line", async line => {
+  }
+  nativeConnection.onMessage(async message => {
     try {
-      if (!line.trim()) {process.stdout.write(line + "\n"); return;}
-      const message = JSON.parse(line);
       const p = pending.get(message.id);
       if (p) {
         pending.delete(message.id); clearTimeout(p.timer);
@@ -99,8 +126,7 @@ export async function runProbeProxy(native, args, evidence, limit) {
       if (message.method === "item/completed") {
         fs.appendFileSync(join(evidence, "native-items.jsonl"), JSON.stringify(message) + "\n");
       }
-      process.stdout.write(line + "\n");
+      client.send(JSON.stringify(message));
     } catch (error) { fail(error); }
   });
-  process.stdin.on("end", () => child.stdin.end());
 }
