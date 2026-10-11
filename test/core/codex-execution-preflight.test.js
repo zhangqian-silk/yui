@@ -42,7 +42,7 @@ test("opt-in preflight proxy preserves the real WebSocket-over-stdio transport w
     command: process.execPath,
     args: ["--input-type=module", "-e",
       `import {runProbeProxy} from ${JSON.stringify(module)};
-       await runProbeProxy(${JSON.stringify(process.execPath)}, ${JSON.stringify([fake, "app-server", "proxy"])}, ${JSON.stringify(evidence)}, 5);`],
+       await runProbeProxy(${JSON.stringify(process.execPath)}, ${JSON.stringify([fake, "app-server", "proxy"])}, ${JSON.stringify(evidence)});`],
     cwd: evidence, environment: {...process.env}
   });
   t.after(() => connection.close());

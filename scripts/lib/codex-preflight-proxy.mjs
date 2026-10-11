@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import { preflightCodexExecution } from "./codex-execution-preflight.mjs";
 
-export async function runProbeProxy(native, args, evidence, limit) {
+export async function runProbeProxy(native, args, evidence) {
   const proxy = args.at(-2) === "app-server" && args.at(-1) === "proxy";
   if (!proxy) {
     const child = spawn(native, args, {stdio: "inherit"});
@@ -69,8 +69,6 @@ export async function runProbeProxy(native, args, evidence, limit) {
         assert.ok(preflight, "No acknowledged native launch for preflight");
         await preflight();
         const log = join(evidence, "model-requests.jsonl");
-        const count = fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n").length : 0;
-        if (count >= limit) throw Error("Explicit model request budget exhausted; request not forwarded");
         fs.appendFileSync(log, JSON.stringify({at: new Date().toISOString(), id: message.id,
           threadId: message.params.threadId}) + "\n");
       }

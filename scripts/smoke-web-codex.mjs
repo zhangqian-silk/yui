@@ -30,7 +30,7 @@ const env = {HOME: scratch, CODEX_HOME: codexHome, YUI_HOME: home,
 const report = {startedAt: new Date().toISOString(), fixturePid: process.pid, scratch, home, codexHome,
   native, cli, port, url: `http://127.0.0.1:${port}`, node: process.version, platform: `${process.platform}-${process.arch}`,
   commit: spawnSync("git", ["rev-parse", "HEAD"], {encoding: "utf8"}).stdout.trim(),
-  nativeSha256: hash(native), model: "gpt-6-luna", turnLimit: 5, commands: [], cleanup: {}};
+  nativeSha256: hash(native), model: "gpt-6-luna", commands: [], cleanup: {}};
 const tmux = `yui-${createHash("sha256").update(home).digest("hex").slice(0,24)}`;
 let task, web, stopping = false, stop;
 const stopped = new Promise(r => stop = r);
@@ -71,7 +71,7 @@ try {
   const wrapper = join(bin, "codex");
   fs.writeFileSync(wrapper, `#!${process.execPath}
 import {runProbeProxy} from ${JSON.stringify(new URL("./lib/codex-preflight-proxy.mjs", import.meta.url).href)};
-await runProbeProxy(${JSON.stringify(native)}, process.argv.slice(2), ${JSON.stringify(evidence)}, 5);
+await runProbeProxy(${JSON.stringify(native)}, process.argv.slice(2), ${JSON.stringify(evidence)});
 `, {mode: 0o700});
   command(["setup"], {json: false, input: "codex\n"});
   command(["config", "agent", "update", "codex", "--command", wrapper]);

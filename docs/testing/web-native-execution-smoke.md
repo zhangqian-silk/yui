@@ -8,7 +8,7 @@ tool work, not merely an accepted Message or completed model Turn.
 
 This Linux-only fixture consumes a real account/model and is **never part of
 `npm test`**. Run only with explicit authorization for the selected account,
-`gpt-6-luna`, permissions, and bounded Turn budget. A test name, environment
+`gpt-6-luna` and permissions. A test name, environment
 variable, or this document is not authorization.
 
 Use Node 24, `make install-local`, installed Browser Use, an exact native Codex
@@ -35,11 +35,13 @@ python3 /absolute/path/to/browser-workflows/scripts/with_server.py \
 ```
 
 The normal path uses two short Turns: activation, then one browser Message.
-The instrumented native proxy refuses a sixth request within that fixture.
-Count **all** prior attempts against the actual authorization; a fresh evidence
-directory never renews the user's budget. There is no automatic model retry.
+This is one focused scenario, not a total coverage or resource limit. Task109
+message-7 removed the prior fixed Turn cap: run sufficient authorized scenarios
+and repair/retest cycles according to actual coverage needs, recording all
+calls. The proxy records requests without imposing a replacement count cap.
+There is no automatic model retry.
 For an unknown result, inspect the same request-id and Thread. A known failed
-business result may be corrected only as a deliberate new, budgeted request.
+business result may be corrected as a deliberate new authorized request.
 
 ## What the probe actually establishes
 
@@ -80,6 +82,9 @@ the driver. Native auto-update may change the daemon/updater executable; record
 the actual path/version instead of inferring it from the CLI version.
 
 ## 2026-10-11 Task109 outcome
+
+This section records the message-6 execution milestone, not acceptance of the
+subsequent message-7 complete-coverage request. That work remains active.
 
 The previous blocker was the **read-only test baseline on a host that cannot
 initialize the native network namespace**, not an established Yui permission
