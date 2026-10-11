@@ -1,5 +1,5 @@
 // Opt-in smoke instrumentation: transparent native proxy except a model-free
-// preflight before exposing thread/start success. No native results are mocked.
+// preflight before forwarding the first turn/start. No native results are mocked.
 import { spawn, spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -42,6 +42,7 @@ export async function runProbeProxy(native, args, evidence, limit) {
     close();
   });
   const pending = new Map(), starts = new Map();
+  let preflight, threadId;
   const send = (message) => void nativeConnection.send(message).catch(fail);
   const save = (name, data) => fs.writeFileSync(join(evidence, name), JSON.stringify(data, null, 2));
   const request = (method, params) => new Promise((resolve, reject) => {
@@ -57,11 +58,14 @@ export async function runProbeProxy(native, args, evidence, limit) {
     nativeConnection.close(); process.exit(1);
   };
   nativeConnection.onClose(fail);
-  function receiveClient(line) {
+  async function receiveClient(line) {
     try {
       const message = JSON.parse(line);
       if (message.method === "thread/start" || message.method === "thread/resume") starts.set(message.id, message.params);
       if (message.method === "turn/start") {
+        assert.equal(message.params.threadId, threadId, "Probe must belong to the actual acknowledged Thread");
+        assert.ok(preflight, "No acknowledged native launch for preflight");
+        await preflight();
         const log = join(evidence, "model-requests.jsonl");
         const count = fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n").length : 0;
         if (count >= limit) throw Error("Explicit model request budget exhausted; request not forwarded");
@@ -83,7 +87,7 @@ export async function runProbeProxy(native, args, evidence, limit) {
       if (params && message.result) {
         starts.delete(message.id);
         const startup = message.result;
-        const environment = params.config?.shell_environment_policy?.set;
+          const environment = params.config?.shell_environment_policy?.set;
         if (environment?.YUI_SESSION_MANIFEST) {
           assert.equal(startup.model, "gpt-6-luna");
           assert.equal(startup.approvalPolicy, "never");
@@ -92,6 +96,8 @@ export async function runProbeProxy(native, args, evidence, limit) {
           const fixture = join(startup.cwd, "fixture-value.txt");
           const output = join(startup.cwd, "preflight-proof.json");
           save("native-startup.json", {params, startup, environment});
+          threadId = startup.thread.id;
+          preflight = async () => {
           if (!fs.existsSync(output)) {
             const daemon = fs.realpathSync(join(process.env.CODEX_HOME, "packages/app-server-daemon/current/bin/codex"));
             const schema = join(evidence, "daemon-schema");
@@ -114,10 +120,16 @@ export async function runProbeProxy(native, args, evidence, limit) {
               result: sandboxDiagnostic});
             if (!fs.existsSync(fixture)) fs.writeFileSync(fixture, randomUUID() + "\n", {flag: "wx"});
             const proof = await preflightCodexExecution(request, {
-              startup, environment, node: process.execPath, fixture, output
+              startup,
+              // Standalone command/exec has no Thread context. Match the
+              // CODEX_THREAD_ID that native model tools inject, sourced from
+              // this real acknowledged Thread, after Yui has adopted it.
+              environment: {...environment, CODEX_THREAD_ID: threadId},
+              node: process.execPath, fixture, output
             });
             save("preflight.json", proof);
           }
+          };
         }
       }
       if (message.method === "turn/started" || message.method === "turn/completed") {

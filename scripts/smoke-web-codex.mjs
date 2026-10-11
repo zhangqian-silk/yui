@@ -91,8 +91,8 @@ await runProbeProxy(${JSON.stringify(native)}, process.argv.slice(2), ${JSON.str
       token = /name="yui-web-token" content="([^"]+)"/.exec(html)?.[1]; return token;
     } catch { return false; }
   }, "Web");
-  // The transparent proxy holds startup until actual command/exec preflight
-  // passes. Activation's first model request cannot precede that probe.
+  // The transparent proxy holds the first turn/start until command/exec
+  // preflight passes, after Yui adopts the actual Thread identity.
   report.activation = command(["task", "activation", "request", task, "--request-id", "execution-smoke-activation", "--environment", "empty"]);
   await wait(async () => {
     const r = await fetch(`http://127.0.0.1:${port}/api/conversation?scope=task&task=${task}&role=leader`,
