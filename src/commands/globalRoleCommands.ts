@@ -34,7 +34,8 @@ import {
   switchActiveRoleAgent,
   unbindRoleAgent,
   updateGlobalRole,
-  type GlobalRole
+  type GlobalRole,
+  type RoleAgentConfig
 } from "../role/role.js";
 import {
   isSystemRoleName,
@@ -92,7 +93,43 @@ export type GlobalRoleCommandOptions = Readonly<{
   env?: NodeJS.ProcessEnv;
   jsonOutput?: boolean;
   onInputFailure?: (failure: GlobalInputFailure) => void;
+  validateAgentConfiguration?: (input: GlobalRoleAgentConfigurationMutation) => void;
 }>;
+
+type GlobalRoleAgentConfigurationMutation = Readonly<{
+  agentId: string;
+  config: RoleAgentConfig;
+  cwd: string;
+}>;
+
+/** Preview the complete binding, not just the fields supplied by the caller. */
+export function previewGlobalRoleAgentConfigurationMutation(
+  args: readonly string[],
+  store: GlobalRoleStore,
+  options: GlobalRoleCommandOptions = {}
+): GlobalRoleAgentConfigurationMutation | undefined {
+  const [command, rawName, ...tail] = args;
+  if (command !== "add" && command !== "update") return undefined;
+  const name = roleName(rawName);
+  const parsed = parseRoleOptions(tail, roleOptionSpecs({
+    update: command === "update", includeAgent: true, includeWorkspace: true
+  }));
+  if (command === "update" && !hasAgentConfigOptions(parsed)) return undefined;
+  const role = command === "update" ? requireRole(name, store) : undefined;
+  const agentId = command === "add"
+    ? required(parsed.one("--agent"), "--agent")
+    : parsed.one("--agent")?.trim() || role!.activeAgentId;
+  const agent = requireAgent(agentId, store);
+  const binding = patchRoleAgentBinding(
+    role?.agentBindings[agentId] ?? createRoleAgentBinding(definition(agent)), parsed
+  );
+  return {
+    agentId, config: binding.config,
+    cwd: trimmed(parsed.one("--workspace")) ?? role?.workspace
+      ?? (options.yuiHome !== undefined ? managedGlobalRoleWorkspace(options.yuiHome)
+        : store.getConfig().defaultWorkspace ?? process.cwd())
+  };
+}
 
 export type GlobalRoleEnterControl = Readonly<{
   kind: "enter";
@@ -357,6 +394,7 @@ function addRole(
         ? managedGlobalRoleWorkspace(options.yuiHome)
         : tx.getConfig().defaultWorkspace ?? process.cwd());
     const binding = patchRoleAgentBinding(createRoleAgentBinding(definition(agent)), parsed);
+    options.validateAgentConfiguration?.({ agentId, config: binding.config, cwd: workspace });
     const profile = roleProfileFrom(parsed);
     validateConfiguredRoleSkills(options.yuiHome, profile.skills ?? []);
     const role = createGlobalRole(
@@ -457,7 +495,11 @@ function updateRole(
       const agentId = parsed.one("--agent")?.trim() || role.activeAgentId;
       const agent = requireAgent(agentId, tx);
       const binding = role.agentBindings[agentId] ?? createRoleAgentBinding(definition(agent));
-      bindings = { ...role.agentBindings, [agentId]: patchRoleAgentBinding(binding, parsed) };
+      const patched = patchRoleAgentBinding(binding, parsed);
+      options.validateAgentConfiguration?.({
+        agentId, config: patched.config, cwd: workspace ?? role.workspace
+      });
+      bindings = { ...role.agentBindings, [agentId]: patched };
     }
     const updated = updateGlobalRole(role, {
       ...(workspace === undefined ? {} : { workspace }),

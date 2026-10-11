@@ -17,6 +17,7 @@ import { toRuntimeLaunchFailure } from "../../dist/runtime/launchDiagnostics.js"
 import { validateAgentLaunchConfiguration } from "../../dist/executor/agentConfigurationCatalog.js";
 import { renderAgentConfigurationCatalog } from "../../dist/output/agentConfigurationPresentation.js";
 import { routeInvocation } from "../../dist/cli/invocationRouter.js";
+import { runGlobalRoleCommand } from "../../dist/commands/globalRoleCommands.js";
 
 const at = new Date("2026-09-16T00:00:00Z");
 const later = new Date("2026-09-16T00:02:00Z");
@@ -31,6 +32,39 @@ const catalog = {
   fields: [{ key: "model", choices: [], allowCustom: true }],
   warnings: [],
 };
+
+test("Global Role writes validate the complete binding atomically, including retained effort", t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-global-config-"));
+  const store = new SqliteTaskStore(home);
+  t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
+  store.saveConfiguredAgent(createConfiguredAgent("fixture", "codex", "unused", [], [], at));
+  const models = { ...catalog, adapterId: "codex", models: [
+    { value: "small", label: "Small", isDefault: true, efforts: [{ value: "low" }] },
+    { value: "large", label: "Large", isDefault: false, efforts: [{ value: "high" }] }
+  ], fields: [{ key: "model", allowCustom: false }] };
+  const candidates = [];
+  const command = args => runGlobalRoleCommand(args, store, { yuiHome: home, env: {},
+    validateAgentConfiguration: candidate => {
+      candidates.push(candidate);
+      validateAgentLaunchConfiguration(models, candidate.config);
+    }
+  });
+  command(["add", "assistant", "--agent", "fixture", "--model", "small", "--effort", "low"]);
+  const before = store.getGlobalRole("assistant");
+  const revision = store.getStateRevision();
+  assert.throws(() => command(["update", "assistant", "--model", "large",
+    "--description", "Must not persist"]), /field=effort/);
+  assert.deepEqual(store.getGlobalRole("assistant"), before);
+  assert.equal(store.getStateRevision(), revision);
+  assert.equal(candidates.at(-1).config.effort, "low");
+  command(["update", "assistant", "--model", "large", "--effort", "high"]);
+  assert.equal(store.getGlobalRole("assistant").agentBindings.fixture.config.model, "large");
+  assert.throws(() => command(["add", "invalid", "--agent", "fixture", "--model", "large",
+    "--effort", "low"]), /field=effort/);
+  assert.equal(store.getGlobalRole("invalid"), null);
+  command(["update", "assistant", "--clear-effort"]);
+  assert.equal(store.getGlobalRole("assistant").agentBindings.fixture.config.effort, undefined);
+});
 
 test("model validation respects native custom IDs and rejection lists exact native choices", () => {
   assert.doesNotThrow(() => validateAgentLaunchConfiguration(catalog, { model: "sonnet", effort: "low" }));

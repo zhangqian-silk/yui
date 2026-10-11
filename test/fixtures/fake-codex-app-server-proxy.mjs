@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 const WEB_SOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 let input = Buffer.alloc(0);
@@ -85,6 +85,7 @@ function handleMessage(message) {
       respond({ codexHome: process.env.CODEX_HOME ?? "/tmp/fake-codex-home" });
       break;
     case "thread/start":
+      if (process.env.YUI_FAKE_UNIQUE_THREADS === "1") threadId += `-${randomUUID()}`;
       model = message.params.model ?? model;
       respond({ model, thread: { id: threadId, status: { type: "idle" }, turns: [] } });
       break;
@@ -115,10 +116,20 @@ function handleMessage(message) {
         thread: {
           id: message.params.threadId ?? threadId,
           status: { type: activeTurnId === undefined ? "idle" : "active" },
-          turns: activeTurnId === undefined ? [] : [{ id: activeTurnId, status: "inProgress", items: [] }]
+          turns: activeTurnId === undefined ? JSON.parse(process.env.YUI_FAKE_RESUMED_TURNS ?? "[]")
+            : [{ id: activeTurnId, status: "inProgress", items: [] }]
         }
       });
       break;
+    case "thread/items/list": {
+      const turns = JSON.parse(process.env.YUI_FAKE_RESUMED_TURNS ?? "[]");
+      const items = turns.flatMap(turn => turn.items.map(item => ({ turnId: turn.id, item }))).reverse();
+      const offset = Number(message.params.cursor ?? 0);
+      const limit = message.params.limit ?? 40;
+      respond({ data: items.slice(offset, offset + limit),
+        nextCursor: offset + limit < items.length ? String(offset + limit) : null });
+      break;
+    }
     case "thread/goal/get":
       respond({ goal: null });
       break;

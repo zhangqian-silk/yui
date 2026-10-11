@@ -66,6 +66,10 @@ Turn or terminal writer. The Host serializes adoption with input, checks native
 idle state, and calls `thread/resume` with only the same Thread ID, model and
 `excludeTurns: true`. It never starts/forks a Thread, edits account settings,
 permissions, Role/default configuration, or rewrites the immutable launch.
+An already-open native TUI also retains its configuration: exit that TUI before
+changing the model. Closing the browser terminal viewer only detaches the
+viewer, not the Host-owned TUI. The Host rejects adoption while that TUI is open
+rather than leaving its displayed/configured model inconsistent with the Thread.
 
 The UI separates the fixed launch request from the latest timestamped native
 model confirmation. A response naming another Thread/model is not success.

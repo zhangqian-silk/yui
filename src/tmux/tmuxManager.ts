@@ -390,16 +390,16 @@ export class TmuxManager {
       // with terminal output that predates this attach.
       this.run(["set-option", "-t", clientSession, "status", "off"]);
       this.run(["set-option", "-t", clientSession, "mouse", "on"]);
+      // Arm automatic release only after a client has attached. Enabling it
+      // on the initially detached session would destroy it before attach.
+      // A client-detached hook is unsafe: after explicit session destruction,
+      // tmux can resolve that notification in a surviving session's context
+      // and execute its hook, cascading into unrelated viewer/writer leases.
       this.run([
-        "set-hook", "-t", clientSession, "client-detached",
-        `kill-session -t ${clientSession}`
+        "set-hook", "-t", clientSession, "client-attached",
+        `set-option -t ${clientSession} destroy-unattached on`
+          + (attachedNotice === undefined ? "" : ` ; display-message -d 10000 ${tmuxWord(attachedNotice)}`)
       ]);
-      if (attachedNotice !== undefined) {
-        this.run([
-          "set-hook", "-t", clientSession, "client-attached",
-          `display-message -d 10000 ${tmuxWord(attachedNotice)}`
-        ]);
-      }
       return clientSession;
     } catch (error) {
       this.destroyInteractiveClientSession(clientSession);

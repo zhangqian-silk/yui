@@ -2,9 +2,9 @@ import { createHash } from "node:crypto";
 import { CONFIG_DOMAINS, configDefinitionsForDomain, type ConfigDomain } from "../config/configCatalog.js";
 import { effectiveConfigData, runConfigCommand } from "../commands/configCommands.js";
 import { runAgentCommand, type AgentCommandStore } from "../commands/agentCommands.js";
-import { runGlobalRoleCommand } from "../commands/globalRoleCommands.js";
+import { runGlobalRoleCommand, previewGlobalRoleAgentConfigurationMutation } from "../commands/globalRoleCommands.js";
 import { runProfileCommand, previewProfileAgentConfigurationMutation } from "../commands/profileCommands.js";
-import { parseRoleOptions, patchRoleAgentBinding, roleOptionSpecs } from "../commands/roleConfiguration.js";
+import { roleOptionSpecs } from "../commands/roleConfiguration.js";
 import { staticAgentConfigurationFields } from "../executor/agentConfigurationFields.js";
 import { validateAgentLaunchConfiguration, type AgentConfigurationCatalogService } from "../executor/agentConfigurationCatalog.js";
 import { resolveAgentProfileView } from "../profile/agentProfileRuntime.js";
@@ -163,29 +163,30 @@ export function createWebSettings(store: TaskStore, options: {
       return { key: def.key, value: change.value, reset: change.reset === true };
     });
     const args = objectArguments(id, changes);
-    if (id.startsWith("role/") && changes.some(c => c.key === "model" || c.key === "effort")) {
-      if (changes.some(c => c.key === "activeAgentId")) {
-        throw new WebRequestRejected("Save the Agent selection alone, then read its supported settings.");
-      }
-      const role = store.getGlobalRole(id.slice(5))!;
-      const agent = store.getConfiguredAgent(role.activeAgentId)!;
-      const parsed = parseRoleOptions(args, roleOptionSpecs({ update: true, includeWorkspace: true }));
-      const candidate = patchRoleAgentBinding(role.agentBindings[role.activeAgentId]!, parsed).config;
-      const catalog = await options.catalogs.resolve({
-        agent, cwd: parsed.one("--workspace")?.trim() || role.workspace, config: candidate
-      });
-      validateAgentLaunchConfiguration(catalog.catalog, candidate);
+    if (id.startsWith("role/") && changes.some(c => c.key === "activeAgentId") && changes.length !== 1) {
+      throw new WebRequestRejected("Save the Agent selection alone, then read its supported settings.");
     }
-    // Explicit Profile runtime uses the same native catalog validator as CLI.
-    const profileMutation = id.startsWith("profile/")
-      ? previewProfileAgentConfigurationMutation(["update", id.slice(8), ...args], store) : undefined;
+    // The same complete candidate and transactional recheck as the CLI.
+    const mutation = id.startsWith("profile/")
+      ? previewProfileAgentConfigurationMutation(["update", id.slice(8), ...args], store)
+      : id.startsWith("role/") && !changes.some(c => c.key === "activeAgentId")
+        ? previewGlobalRoleAgentConfigurationMutation(["update", id.slice(5), ...args], store,
+          { yuiHome: store.rootDirectory() }) : undefined;
     let validated: Awaited<ReturnType<typeof options.catalogs.resolve>> | undefined;
-    if (profileMutation) {
-      const agent = store.getConfiguredAgent(profileMutation.agentId);
+    if (mutation) {
+      const agent = store.getConfiguredAgent(mutation.agentId);
       if (!agent) throw new WebRequestRejected("Configured Agent not found.");
-      validated = await options.catalogs.resolve({ agent, cwd: profileMutation.cwd, config: profileMutation.config });
-      validateAgentLaunchConfiguration(validated.catalog, profileMutation.config);
+      validated = await options.catalogs.resolve({ agent, cwd: mutation.cwd, config: mutation.config });
+      validateAgentLaunchConfiguration(validated.catalog, mutation.config);
     }
+    const validation = {
+      validateAgentConfiguration: (candidate: NonNullable<typeof mutation>) => {
+        if (!mutation || JSON.stringify(candidate) !== JSON.stringify(mutation) || !validated) {
+          throw new Error("Agent configuration changed after capability validation. Read it again.");
+        }
+        validateAgentLaunchConfiguration(validated.catalog, candidate.config);
+      }
+    };
     mutationEntered = true;
     const output = webLocalMutation(store, tx => {
       if (read(id).revision !== body.revision) throw new Error("Configuration changed since it was read. Compare current values before saving again.");
@@ -201,16 +202,11 @@ export function createWebSettings(store: TaskStore, options: {
         return runGlobalRoleCommand(binding
           ? ["bind", id.slice(5), text(binding.value)]
           : ["update", id.slice(5), ...args, ...ack],
-        tx as unknown as Parameters<typeof runGlobalRoleCommand>[1], { yuiHome: store.rootDirectory(), env: options.environment });
+        tx as unknown as Parameters<typeof runGlobalRoleCommand>[1], {
+          yuiHome: store.rootDirectory(), env: options.environment, ...validation
+        });
       }
-      return runProfileCommand(["update", id.slice(8), ...args], tx, () => new Date(), {
-        validateAgentConfiguration: candidate => {
-          if (!profileMutation || JSON.stringify(candidate) !== JSON.stringify(profileMutation) || !validated) {
-            throw new Error("Profile runtime changed after capability validation. Read it again.");
-          }
-          validateAgentLaunchConfiguration(validated.catalog, candidate.config);
-        }
-      }).output;
+      return runProfileCommand(["update", id.slice(8), ...args], tx, () => new Date(), validation).output;
     });
     let refresh = "not-required";
     if (changes.some(c => c.key === "reconciliation-interval-seconds")) {

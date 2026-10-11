@@ -10,7 +10,7 @@ import { TERMINAL_SCRIPT } from "../../dist/web/assets/client/views/dock/termina
 // Exercise the shipped controller with disposable DOM/network boundaries.
 function fixture(submitResult = { state: "submitted" }, extra = {}) {
   const elements = [], storage = new Map(), calls = [], mutations = [], taskAnswers = [];
-  const preferences = new Map();
+  const preferences = extra.preferences ?? new Map();
   let interval, delayedRead, delayedReceipt, currentSessionId = "thread";
   const h = (spec, attrs, ...children) => {
     const node = { spec, ...attrs, children: children.filter(Boolean), handlers: {}, value: "", scrollTop: 0,
@@ -27,7 +27,8 @@ function fixture(submitResult = { state: "submitted" }, extra = {}) {
   const context = vm.createContext({
     h, clear: n => n.replaceChildren(), richText: (_title, text) => h("prose", null, text),
     localStorage: { getItem: k => preferences.get(k) ?? null,
-      setItem: (k, v) => { if (extra.storageUnavailable) throw new Error("storage blocked"); preferences.set(k, v); } },
+      setItem: (k, v) => { if (extra.storageUnavailable) throw new Error("storage blocked"); preferences.set(k, v); },
+      removeItem: k => preferences.delete(k) },
     api: { answerInput: async (...args) => taskAnswers.push(args) }, releaseMutation() {},
     inputCard: (input, _t, _locale, answer) => h("input-card", { answer: value => answer(input, value, {}) }),
     URLSearchParams, crypto: { randomUUID: () => "request-id" }, document: { hidden: false },
@@ -39,7 +40,7 @@ function fixture(submitResult = { state: "submitted" }, extra = {}) {
       if (url.startsWith("/api/conversation/model?")) return { source: "live", catalog: { models: [{ value: "model-new", label: "New" }] } };
       if (query.has("requestId")) {
         if (delayedReceipt) return new Promise(resolve => { delayedReceipt.resolve = resolve; });
-        return { state: "accepted" };
+        return { state: extra.receiptState ?? "accepted" };
       }
       if (delayedRead) return new Promise(resolve => { delayedRead.resolve = resolve; });
       if (query.has("session")) return { status: "active", observedAt: "now", nextCursor: "older",
@@ -72,6 +73,51 @@ function fixture(submitResult = { state: "submitted" }, extra = {}) {
   };
 }
 const flush = () => new Promise(resolve => setImmediate(resolve));
+
+test("unresolved send identity survives a new tab without sharing its private draft", async () => {
+  const owner = { scope: "task", taskId: "task-1", roleName: "leader" };
+  const first = fixture({}, { idle: true, receiptState: "unknown", submit() { throw Error("lost acknowledgement"); } });
+  first.controller.open(owner);
+  await flush();
+  first.input.value = "One intended input";
+  await first.button("send").handlers.click();
+  assert.equal(first.button("send").disabled, true);
+  first.controller.close();
+  const options = { idle: true, receiptState: "unknown", preferences: first.preferences };
+  const next = fixture({}, options);
+  next.controller.open(owner);
+  await flush();
+  assert.equal(next.button("send").disabled, true, "closing the old tab must not release uncertain effects");
+  assert.ok(next.calls.some(url => url.includes("requestId=request-id")), "inspect the exact original identity");
+  assert.equal(next.input.value, "", "unsent drafts remain tab-local");
+  assert.equal(next.mutations.length, 0, "opening never replays input");
+  const alreadyOpen = fixture({}, { idle: true, receiptState: "unknown", preferences: new Map() });
+  alreadyOpen.controller.open(owner);
+  await flush();
+  for (const [key, value] of first.preferences) alreadyOpen.preferences.set(key, value);
+  alreadyOpen.input.value = "Do not resend from an already open tab";
+  await alreadyOpen.button("send").handlers.click();
+  assert.equal(alreadyOpen.mutations.length, 0, "check shared identity again at the send boundary");
+  alreadyOpen.controller.close();
+  const other = fixture({}, { idle: true, preferences: first.preferences });
+  other.controller.open({ ...owner, taskId: "task-2" });
+  await flush();
+  assert.equal(!!other.button("send").disabled, false, "unresolved identity is scoped to its exact owner and Thread");
+  other.controller.close();
+  options.receiptState = "accepted";
+  await next.tick();
+  assert.equal(!!next.button("send").disabled, false);
+  assert.equal([...next.preferences.keys()].some(k => k.endsWith(".pending")), false);
+  assert.equal(next.mutations.length, 0);
+  next.controller.close();
+  const blocked = fixture({}, { idle: true, storageUnavailable: true });
+  blocked.controller.open(owner);
+  await flush();
+  blocked.input.value = "Cannot safely remember request";
+  await blocked.button("send").handlers.click();
+  assert.equal(blocked.mutations.length, 0, "do not submit if recovery identity cannot be saved");
+  blocked.controller.close();
+});
 
 test("Slash completion is local and unknown commands require explicit literal submission", async () => {
   const f = fixture();

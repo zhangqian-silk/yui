@@ -70,6 +70,7 @@ import {
 } from "./commands/executionAuditCommands.js";
 import {
   runGlobalRoleCommand,
+  previewGlobalRoleAgentConfigurationMutation,
   type GlobalRoleCommandOptions
 } from "./commands/globalRoleCommands.js";
 import { runJobCommand } from "./commands/jobCommands.js";
@@ -910,7 +911,8 @@ export async function main(): Promise<void> {
       const domain = resolved[1];
       const roleOptions: GlobalRoleCommandOptions = {
         yuiHome: home,
-        env: process.env
+        env: process.env,
+        ...(validateAgentConfiguration === undefined ? {} : { validateAgentConfiguration })
       };
       if (domain === "show") {
         const result = runConfigOverview(
@@ -3362,7 +3364,10 @@ async function preflightAgentConfigurationMutation(
   catalogs: AgentConfigurationCatalogService
 ): Promise<AgentConfigurationMutationValidator | undefined> {
   const mutation = profileAgentConfigurationMutation(commandArgs, store)
-    ?? taskRoleAgentConfigurationMutation(commandArgs, store);
+    ?? taskRoleAgentConfigurationMutation(commandArgs, store)
+    ?? (commandArgs[0] === "config" && commandArgs[1] === "role"
+      ? previewGlobalRoleAgentConfigurationMutation(commandArgs.slice(2), store, { yuiHome: store.rootDirectory() })
+      : undefined);
   if (mutation === undefined) {
     await warmConfigurationMutationCatalog(commandArgs, store, catalogs);
     return undefined;
