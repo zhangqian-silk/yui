@@ -14,10 +14,11 @@ their summaries. Resolve links relative to the file containing them.
 
 Current Context is a bounded working set, not all Task history. Use
 `task context list <task> --store <store>` or a domain list for discovery,
-then an exact detail read. A wake contains original Message/Run read pointers,
-not copied reports. Follow Runtime's `nextCursor` and `contentPage` rules:
-read the full relevant window and originals before disposition, without
-unconditionally walking unrelated history.
+then an exact detail read. A wake contains attributed change summaries and
+original Message/Run pointers, not complete reports. Follow `yui-runtime`'s
+`nextCursor` and `contentPage` rules: read the complete focused wake view and
+relevant originals before disposition; use `wake show --history` only when
+window history/diagnostics matter. Summaries never decide completion.
 
 Before WorkItem dispatch, put the complete bounded requirements in the WorkItem
 or explicitly select up to 16 relevant readable materials with repeated

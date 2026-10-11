@@ -24,8 +24,7 @@ export function createOperatorBatchPresentation(
     receiptId: `operator-batch:${batchId}`,
     text: [
       "[Yui updates]",
-      "Yui recorded the following durable updates. Inspect the referenced records and present only information that changes the user's understanding, authorization, or next action.",
-      "This notification is not a new execution assignment or authorization to replay prior operations.",
+      "Apply yui-operator from the current Manifest: inspect these originals and present material changes or decisions.",
       ...items.flatMap(renderItem)
     ].join("\n")
   };

@@ -110,8 +110,10 @@ frozen Review or its original report.
 
 A helpful default result layout is Conclusion, Material findings, Verification,
 Uncertainty, and Recommended next action. Markdown or JSON are both acceptable.
-Yui preserves the original text and does not parse, normalize, or reject it for
-missing headings, field names, or formatting.
+Yui preserves the original text and does not parse a verdict or reject it for
+missing headings, field names, or formatting. Follow `yui-runtime`'s optional
+`Yui-Summary:` first-line convention for attributed notification text; retain
+material findings and uncertainty rather than implying automatic approval.
 
 For normal software delivery, follow the applicable Project Policy. The
 Leader decides whether risk warrants one independent Task-final Review of the

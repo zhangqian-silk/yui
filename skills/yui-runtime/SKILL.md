@@ -16,6 +16,24 @@ workspace layout, native transcript, or an earlier AgentRun.
 
 ## Enter through the current context
 
+Stable instructions and dynamic facts have different lifetimes. On first entry,
+new Session, Manifest/version change, or missing instructions (including after
+compaction/recovery), read the exact Session Manifest and fully load its profile
+and named Skills: `yui-runtime` plus the referenced `yui-leader`, `yui-worker`,
+`yui-reviewer`, `yui-operator`, or custom Role Skills. Resolve IDs to paths and
+versions through that Manifest, never another installed namesake. If those exact
+same-version instructions are already fully available in current context, apply
+them without mechanically rereading. Same Session, prior delivery, and prior
+reads do not prove availability. The short Manifest pointer remains a recovery
+entry, not a cache or authority receipt.
+
+Refresh dynamic Task/Session facts before the relevant decision regardless of
+instruction reuse. Leader notifications use the Manifest's `currentCommand`;
+explicit AgentRuns use `loadCommand`/`expandCommand` with the actual newest
+dispatched Run identity. Never execute `<run-id>` placeholders or substitute a
+notification's wake ID for a Run. CLI/Controller identity, scope, Snapshot and
+permission checks remain authoritative on every operation.
+
 There are two normal Task entry points. A user may continue directly with the
 current, unrevoked Leader Session: read current context using
 `yui task context <task-id> --json`. Do not request a self-wake, reopen a Task,
@@ -167,8 +185,13 @@ and digest. A source-change error requires a fresh read, not mixing old and
 new chunks. Never use a read cursor to repeat a mutation.
 
 Read all pages of a relevant original requirement, result, or authorization
-before acting on it. For a wake, read its complete fixed window and the
-referenced original Messages; the wake itself contains pointers, not reports.
+before acting on it. For a wake, read its complete focused input/result view and
+relevant original Messages. `task wake show <task> <wake>` preserves the fixed
+window and explicit older refs, deduplicates inputs, and provides exact original
+reads. Use `--history` when window history or diagnostics is needed; unrelated
+events and merely started Runs are not required for ordinary result disposition.
+Follow any `contentPage` continuation for either view. The wake contains pointers
+and attributed summaries, not complete reports.
 For unrelated discovery, stop once the necessary evidence is found. Task
 event deltas retain their fixed upper bound and are history, not replacement
 current state. No read acknowledges implementation or consumes a queue.
@@ -243,6 +266,24 @@ state the material gap, and optionally recommend a separate follow-up. Do not
 create an InputRequest merely to solicit permission for it.
 
 ## Return evidence and recover within scope
+
+When authoring a durable Message or managed final report, put a concise
+`Yui-Summary: <one line>` first when useful for notification readers. Keep the
+summary itself at most 512 UTF-8 bytes, and preserve material failure,
+unverified-result, pending-decision and authority qualifications. Do this as
+part of producing the original, not a separate model call. The optional line
+remains part of the original text; missing or oversized summaries use factual
+templates without blocking delivery. Core may reuse that line as explicitly
+attributed presentation, never parse it into acceptance, review verdict or
+Task state. A returned execution result is not completed requirements; a
+returned review is not approval. Summaries do not replace reading full
+requirements, results or authorizations before decisions.
+
+Ordinary Task/Global notifications grant no new Assignment or authority and
+require no separate execution report. Read the referenced originals and advance
+outstanding work within existing authority under the relevant Role Skill.
+Reading context or accepting notification delivery does not implement input.
+Unknown delivery must not be replayed; use the recovery contract below.
 
 Provider acceptance, Context load, AgentRun completion, and Task completion are
 separate facts. For an explicitly dispatched managed Task AgentRun, end with one truthful

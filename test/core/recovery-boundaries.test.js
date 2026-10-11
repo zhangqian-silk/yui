@@ -23,6 +23,7 @@ import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerSt
 import { createManagedWorkspace } from "../../dist/worktree/managedWorkspace.js";
 import { claimPending } from "../../dist/coordination/workMailbox.js";
 import { createTaskWake } from "../../dist/scheduler/taskWake.js";
+import { createTaskEvent } from "../../dist/event/taskEvent.js";
 import { readTaskContext, inspectTaskContext } from "../../dist/context/taskContext.js";
 import { resolveManagedTaskCaller, resolveManagedTaskReader } from "../../dist/runtime/managedCaller.js";
 import { pendingCompletionMessages } from "../../dist/task/completionReadiness.js";
@@ -71,6 +72,70 @@ function fixture(t) {
   };
   return { store, home, agent, command, leader, scheduler: new FileSchedulerStoreAdapter(store) };
 }
+
+test("wake focus keeps exact older input and full originals while history is opt-in", t => {
+  const { store, command } = fixture(t);
+  const body = "Yui-Summary: Validation failed; decision pending.\n\n" + "原始要求".repeat(5000);
+  command(["message", "send", "task-1", body, "--intent", "record"]);
+  store.saveEvent("task-1", createTaskEvent("event-900", "task-1", "task.updated", {}, later));
+  store.saveTaskWake("task-1", createTaskWake({
+    id: "wake-1", taskId: "task-1", reasons: ["user-message"],
+    refs: [{ type: "message", taskId: "task-1", id: "message-1" }],
+    fromCursor: later.toISOString(), toCursor: new Date(later.getTime() + 1000).toISOString(), now: later
+  }));
+  const focused = command(["wake", "show", "task-1", "wake-1"]).data;
+  assert.equal(focused.messages.length, 1);
+  assert.equal(focused.events.length, 0);
+  assert.equal(focused.messages[0].read, "task message show task-1/message-1");
+  assert.equal(focused.messages[0].summary, "Validation failed; decision pending.");
+  assert.equal(focused.messages[0].summarySource, "message-body");
+  // The same record is in-window AND explicit: no duplicate, diagnostics only in history.
+  store.saveTaskWake("task-1", createTaskWake({
+    id: "wake-2", taskId: "task-1", reasons: ["user-message"],
+    refs: [{ type: "message", taskId: "task-1", id: "message-1" }],
+    fromCursor: at.toISOString(), toCursor: later.toISOString(), now: later
+  }));
+  assert.equal(command(["wake", "show", "task-1", "wake-2"]).data.messages.length, 1);
+  const history = command(["wake", "show", "task-1", "wake-2", "--history"]).data;
+  assert.ok(history.events.some(e => e.id === "event-900"));
+  let result = command(["message", "show", "task-1/message-1"]).data;
+  let text = "";
+  while (result.contentPage) {
+    text += result.contentPage.text;
+    if (result.contentPage.complete) break;
+    result = command(["message", "show", "task-1/message-1", "--cursor", result.contentPage.nextCursor]).data;
+  }
+  assert.equal(JSON.parse(text).body, body, "Summary never replaces or truncates the paged original.");
+  for (let i = 0; i < 30; i++) {
+    command(["message", "send", "task-1", `Yui-Summary: ${"detail ".repeat(65)}unverified ${i}\nOriginal ${i}`,
+      "--intent", "record"]);
+  }
+  const aggregate = ["wake", "show", "task-1", "wake-2"];
+  result = command(aggregate).data;
+  assert.ok(result.contentPage, "A large focused view must use the existing bounded detail transport.");
+  text = "";
+  for (;;) {
+    text += result.contentPage.text;
+    if (result.contentPage.complete) break;
+    result = command([...aggregate, "--cursor", result.contentPage.nextCursor]).data;
+  }
+  const all = JSON.parse(text).messages;
+  assert.equal(all.length, 31);
+  assert.equal(new Set(all.map(message => message.id)).size, 31);
+  assert.ok(all.at(-1).summary.endsWith("unverified 29"));
+  store.saveEvent("task-1", createTaskEvent("event-9900", "task-1", "input.auto-answered",
+    { requestId: "input-1", choiceKey: "continue" }, at));
+  store.saveTaskWake("task-1", createTaskWake({
+    id: "wake-3", taskId: "task-1", reasons: ["input-timeout:input-1"],
+    fromCursor: later.toISOString(), toCursor: later.toISOString(), now: later
+  }));
+  store.saveEvent("task-1", createTaskEvent("event-9901", "task-1", "input.auto-answered",
+    { requestId: "input-1", choiceKey: "stop" }, new Date(later.getTime() + 1000)));
+  const decisionSources = command(["wake", "show", "task-1", "wake-3"]).data.events;
+  assert.equal(decisionSources.length, 1, "Reason matching never expands the fixed upper bound.");
+  assert.equal(decisionSources[0].read,
+    "task event show task-1 event-9900", "Reason-only decision sources survive even outside the window.");
+});
 
 test("explicit reopen and keyed input preserve acceptance history without replaying old work", async t => {
   const { store, command, scheduler } = fixture(t);

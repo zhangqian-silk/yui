@@ -40,6 +40,7 @@ import { assertContextRecordReadable, readTaskContextResource } from "../context
 import { parseTaskSearchOptions, searchTaskBodies } from "../context/taskSearch.js";
 import { boundedDocument, readOptions, messageReceipt, recordPage } from "../output/boundedRead.js";
 import { referencedWakeRunIds } from "../context/wakeRunReferences.js";
+import { taskMessagePresentation, wakeChangeLabels, wakeMessages } from "../interaction/notificationPresentation.js";
 import {
   completeProcessing,
   releaseProcessing,
@@ -206,7 +207,7 @@ import {
   RUN_PROGRESS_EVENT,
   RUN_RECOVERED_EVENT
 } from "../scheduler/roleRunStall.js";
-import { renderWakeReason, wakeReason } from "../scheduler/wakeReason.js";
+import { parseWakeReason, renderWakeReason, wakeReason } from "../scheduler/wakeReason.js";
 import { queueLeaderWakeup } from "../scheduler/wakeupQueue.js";
 import { planningRuntimeCwd } from "../storage/homeLayout.js";
 import { StorageConflictError } from "../storage/taskStore.js";
@@ -8891,11 +8892,14 @@ function taskWakeInspectionCommand(
     return output(`${JSON.stringify(data)}\n`, data);
   }
   if (command === "show") {
-    const usage = "Task wake show usage: yui task wake show <task> <wake>.";
-    exactPositionals(rest, 2, usage);
-    const task = requireTask(store, rest[0]);
-    const wake = store.getTaskWake(task.id, rest[1]);
-    if (wake === null) throw dataError(`Wake not found: ${rest[1]}.`);
+    const usage = "Task wake show usage: yui task wake show <task> <wake> [--history].";
+    const history = rest.includes("--history");
+    const positional = history ? rest.filter(arg => arg !== "--history") : rest;
+    exactPositionals(positional, 2, usage);
+    if (rest.filter(arg => arg === "--history").length > 1) throw usageError(usage);
+    const task = requireTask(store, positional[0]);
+    const wake = store.getTaskWake(task.id, positional[1]);
+    if (wake === null) throw dataError(`Wake not found: ${positional[1]}.`);
     const timeZone = store.getConfig().timeZone;
     const fromMs = Date.parse(wake.fromCursor);
     const toMs = Date.parse(wake.toCursor);
@@ -8913,14 +8917,26 @@ function taskWakeInspectionCommand(
     const referenced = (type: MailboxEntityRef["type"], id: string) =>
       wake.refs?.some(ref => ref.type === type && ref.id === id
         && (!("taskId" in ref) || ref.taskId === task.id)) === true;
-    const events = allEvents.filter((e) => inWindow(e.createdAt) || referenced("event", e.id));
-    const messages = store.listMessages(task.id).filter((m) => inWindow(m.createdAt) || referenced("message", m.id));
+    // Some existing producers carry the exact source only in a reason tag
+    // (e.g. input-timeout:<request>). Do not hide its decision behind --history.
+    const reasonRefs = new Set(wake.reasons.flatMap(tag => {
+      const reason = parseWakeReason(tag);
+      return reason.kind !== "force-wake" && reason.ref !== undefined ? [reason.ref] : [];
+    }));
+    const reasonEvent = (event: TaskEvent) => Date.parse(event.createdAt) <= toMs && [
+      event.id, event.payload.runId, event.payload.requestId, event.payload.jobId,
+      event.payload.workItemId, event.payload.reviewRoundId
+    ].some(id => id !== undefined && reasonRefs.has(id));
+    const windowEvents = allEvents.filter((e) => inWindow(e.createdAt) || referenced("event", e.id) || reasonEvent(e));
+    const events = history ? windowEvents : windowEvents.filter(e => referenced("event", e.id)
+      || reasonEvent(e) || ["run.completed", "run.failed", "run.cancelled"].includes(e.type));
+    const messages = wakeMessages(wake, store.listMessages(task.id));
     const allRuns = store.listRuns(task.id);
     const referencedRunIds = new Set(referencedWakeRunIds(allRuns, allEvents, events));
     for (const run of allRuns) if (referenced("run", run.id)) referencedRunIds.add(run.id);
     for (const message of messages) if (message.resultRef?.type === "agent-run-result") referencedRunIds.add(message.resultRef.runId);
     const runs = operationalTaskRecords(allRuns, allEvents, "run").filter((run) => (
-      inWindow(run.createdAt) || referencedRunIds.has(run.id)
+      history && inWindow(run.createdAt) || referencedRunIds.has(run.id)
     ));
     const lines: string[] = [
       `Wake: ${wake.id}`,
@@ -8937,15 +8953,21 @@ function taskWakeInspectionCommand(
         `Recovery: correct the cause, then yui task wake retry ${task.id} ${wake.id} --reason <correction>.`
       ]),
       `Reasons: ${wake.reasons.map(renderWakeReason).join(", ")}`,
+      `Changes: ${wakeChangeLabels(wake.reasons).join("; ")}`,
       `Delta window: ${wake.fromCursor} → ${wake.toCursor}`,
       `Dispatched: ${presentTime(wake.createdAt, timeZone)}`,
       ...(wake.consumedAt === undefined
         ? []
         : [`Consumed: ${presentTime(wake.consumedAt, timeZone)}`]),
       `Events (${events.length}):`,
-      ...events.map((e) => `  ${e.id} ${e.type} ${presentTime(e.createdAt, timeZone)}`),
+      ...events.map((e) => `  ${e.id} ${e.type} ${presentTime(e.createdAt, timeZone)} → yui task event show ${task.id} ${e.id}`),
       `Messages (${messages.length}):`,
-      ...messages.map((m) => `  ${m.id} [${taskMessageAuthorLabel(m.author)}] ${presentTime(m.createdAt, timeZone)}`),
+      ...messages.map((m) => {
+        const item = taskMessagePresentation(m, (taskId, runId) => store.getRun(taskId, runId));
+        return `  ${m.id} [${taskMessageAuthorLabel(m.author)}] ${item.fact}`
+          + (item.summary === undefined ? "" : `; author summary (${item.summarySource}): ${JSON.stringify(item.summary)}`)
+          + ` → yui task message show ${task.id}/${m.id}`;
+      }),
       `AgentRuns (${runs.length}):`,
       ...runs.map((run) => (
         `  ${run.id} [${run.status}/${run.purpose}] ${run.roleName} `
@@ -8953,15 +8975,20 @@ function taskWakeInspectionCommand(
         + `${referencedRunIds.has(run.id)
           ? ` → yui task run show ${task.id}/${run.id}`
           : ""}`
-      ))
+      )),
+      ...(!history ? [`History/diagnostics: yui task wake show ${task.id} ${wake.id} --history`,
+        "Read relevant originals in full; follow contentPage.nextCursor when present."] : [])
     ];
     return output(lines.join("\n").concat("\n"), {
       taskId: task.id,
       deliveryEvents,
       wake,
+      view: history ? "history" : "focus",
+      historyRead: `task wake show ${task.id} ${wake.id} --history`,
       events: events.map(event => ({ id: event.id, type: event.type, createdAt: event.createdAt,
         read: `task event show ${task.id} ${event.id}` })),
       messages: messages.map(message => ({ id: message.id, kind: message.kind, author: message.author,
+        ...taskMessagePresentation(message, (taskId, runId) => store.getRun(taskId, runId)),
         resultRef: message.resultRef, read: `task message show ${task.id}/${message.id}` })),
       runs: runs.map(run => ({ id: run.id, status: run.status, purpose: run.purpose, roleName: run.roleName,
         read: `task run show ${task.id}/${run.id}` }))

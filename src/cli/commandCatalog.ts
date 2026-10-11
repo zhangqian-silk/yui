@@ -1191,7 +1191,7 @@ const taskChildren: readonly NodeInput[] = [
     sections: [{ id: "manage", title: "Commands", entries: ["list", "show", "retry", "resolve"] }],
     children: [
       { name: "list", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "List recorded Leader wakes.", usage: "yui task wake list <task> [--limit <1..100>] [--cursor <cursor>]", options: ["--limit", "--cursor"] },
-      { name: "show", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Show a fixed wake window and exact detail reads.", usage: "yui task wake show <task> <wake> [--cursor <cursor>]", options: ["--cursor"] },
+      { name: "show", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Show fixed wake inputs/results; expand diagnostics with --history.", usage: "yui task wake show <task> <wake> [--history] [--cursor <cursor>]", options: ["--history", "--cursor"] },
       { name: "retry", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Retry a rejected notification after correcting its cause; preserve original input.",
         usage: "yui task wake retry <task> <wake> --reason <correction>", options: ["--reason"] },
       { name: "resolve", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Release an unknown notification claim after explicit quiescence evidence, without replay.",

@@ -23,6 +23,7 @@ import {
 } from "../context/roleSessionContext.js";
 import {
   materializeSessionBootstrap,
+  sessionContextInstructions,
   type SessionEntryPoint
 } from "../context/sessionBootstrapManifest.js";
 import { ResourceRegistrar } from "../resources/resourceRegistrar.js";
@@ -517,7 +518,7 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
     }
     const sessionContext = {
       ...baseSessionContext,
-      developerInstructions: `Read and follow the exact Yui Session Manifest at ${bootstrap.manifestPath}.`,
+      developerInstructions: sessionContextInstructions(bootstrap.manifestPath, bootstrap.manifest.digest),
       managedContextFile: bootstrap.manifestPath,
       sessionManifestPath: bootstrap.manifestPath,
       sessionManifestDigest: bootstrap.manifest.digest

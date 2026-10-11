@@ -1553,7 +1553,7 @@ test("Leader notifications settle their accepted mailbox batch without creating 
   );
   assert.equal(results[0].status, "dispatched");
   assert.equal(notifications.length, 1);
-  assert.match(notifications[0].text, /No separate final report is required/u);
+  assert.match(notifications[0].text, /yui task wake show task-1 wake-1 --json/u);
   assert.equal(store.listRuns(task.id).length, 0);
   assert.equal(store.getActiveRun(task.id, leader.name), null);
   assert.deepEqual(store.getPendingWakeup(task.id).reasons, ["later-external-message"]);

@@ -69,6 +69,14 @@ Run Pack is a reference directory: read the relevant requirement and message
 bodies before acting, rather than treating a successful load as the deliverable.
 Planning Packs expose no Project write scope or Task-completion permission.
 
+The Manifest pointer is a recovery locator, not a read receipt. Load its exact
+`yui-runtime`, Role Skills and profile on first entry, a new/version-changed
+Session, or missing context after compaction/recovery. Reuse instructions only
+when the same-version full content is still available; Yui stores no "already
+read" state. Always refresh dynamic facts. Leader notifications use
+`currentCommand`; dispatched AgentRuns use the actual Run ID with
+`loadCommand`/`expandCommand`, never their placeholder templates.
+
 Every new Run, including planning, Review and continuation, binds an explicit
 frozen Snapshot before dispatch. Context reads validate its full identity and
 content digest, then read its stored values without rebuilding current Task
@@ -122,6 +130,20 @@ not duplicated Task narrative.
 Human input, explicit execution entry and activation failure are delivered
 promptly through the existing wake mechanism. Worker results retain their
 aggregation window. Busy native input still preserves pending messages.
+
+Normal and retry notifications share the same bounded presentation: factual
+change labels, attributed optional author summaries, and original read entries.
+An author can begin a Message/report with `Yui-Summary: <one line>` (summary
+at most 512 UTF-8 bytes). It remains in the original record; no schema migration,
+summary store, read-acknowledgement or extra model call is involved. Missing or
+oversized summaries fall back to facts without clipping qualifications.
+Summaries never grant authority, accept results or mark reviews approved.
+
+`task wake show <task> <wake>` now defaults to inputs/results and explicit
+references, including older referenced originals. It omits unrelated diagnostic
+events and merely started Runs; `--history` restores full fixed-window discovery.
+Both views retain the fixed window, deduplication, exact detail commands and
+bounded `contentPage` continuations. Read decision-relevant originals in full.
 
 | Evidence | Disposition |
 | --- | --- |
