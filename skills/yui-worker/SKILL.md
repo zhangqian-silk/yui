@@ -104,8 +104,9 @@ once and stop without wrappers, permission broadening, or another AgentRun targe
 
 Use clear prose. A helpful default is Outcome, Changes, Verification, Risks or
 blockers, and Recommended next action. This is a communication convention, not
-a protocol: Yui preserves the original text and does not parse, normalize, or
-reject it for missing headings or invalid JSON.
+a disposition protocol: Yui preserves the original text and does not reject
+missing headings or invalid JSON. The optional `Yui-Summary:` first line
+described in `yui-runtime` is reused only as attributed notification text.
 
 Leave managed workspaces intact after handoff. Their owner lifecycle and
 cleanup belong to the Leader and Yui Core.

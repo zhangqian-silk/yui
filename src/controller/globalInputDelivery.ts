@@ -5,6 +5,7 @@ import { hasRuntimeCleanupObligation, runtimeLifecycleTarget } from "../runtime/
 import { markGlobalRoleMessageNotDelivered, type GlobalRoleMessage } from "../message/message.js";
 import { providerRetryPending } from "../runtime/providerRetry.js";
 import { settleGlobalRetryInput } from "../message/globalProviderRetry.js";
+import { globalMessagePresentation } from "../interaction/notificationPresentation.js";
 
 /** Messages are the only queue. Host's atomic begin arbitrates native writers. */
 export async function deliverGlobalInputs(
@@ -116,10 +117,7 @@ export async function deliverGlobalInputs(
           protocol: AGENT_HOST_CONTROL_PROTOCOL, type: "submit-turn", nativeSessionId,
           authority: { epoch: binding.authority.epoch, owner: "controller",
             holderId: binding.authority.holderId! },
-          run: { attemptId, boundedText: [
-            `Yui Global Message: role=${role.name} message=${next.id}.`,
-            "Read your Session Context and the referenced Message in full, then act on its durable input."
-          ].join("\n") }
+          run: { attemptId, boundedText: globalMessagePresentation(role.name, next.id, next) }
         }
       });
       if (result.outcome === "rejected") {

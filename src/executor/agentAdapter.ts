@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
+import { sessionContextInstructions } from "../context/sessionBootstrapManifest.js";
 import type { AgentDefinition } from "../agent/agent.js";
 import { isAgentAdapterId, supportedAgentAdapterIds, type AgentAdapterId } from "../agent/adapterCatalog.js";
 import {
@@ -688,10 +689,7 @@ function acpSessionBootstrap(input: CompileInput<AcpAgentConfig>): string | unde
         ])
       ]
     : [
-        `Yui managed Session. Read and follow the Session Manifest at `
-        + `${input.sessionManifestPath} (digest ${input.sessionManifestDigest ?? "unknown"}). `
-        + "Load each Skill and Role Profile by its manifest path before acting; Task "
-        + "content is available only through the manifest's exact Context API."
+        sessionContextInstructions(input.sessionManifestPath, input.sessionManifestDigest)
       ];
   const bootstrap = sections
     .filter((value): value is string => value !== undefined && value.trim().length > 0)
@@ -761,7 +759,7 @@ function codexThreadOptions(
 
 function codexSessionInstructions(input: CompileInput<CodexAgentConfig>): string | undefined {
   if (input.sessionManifestPath !== undefined) {
-    return `Yui managed Session. Read and follow the Session Manifest at ${input.sessionManifestPath} (digest ${input.sessionManifestDigest ?? "unknown"}). Load each Skill and Role Profile by its manifest path before acting; Task content is available only through the manifest's exact Context API.`;
+    return sessionContextInstructions(input.sessionManifestPath, input.sessionManifestDigest);
   }
   const instructions = [
     input.developerInstructions,

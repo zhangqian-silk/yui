@@ -24,6 +24,7 @@ import type { TaskStore } from "../storage/taskStore.js";
 import type { MailboxKey } from "./controller.js";
 import { retryIntentBlocker } from "./providerRetryAdmission.js";
 import { recordGlobalRuntimeAttention } from "./globalRuntimeAttention.js";
+import { globalMessagePresentation, taskNotificationPresentation } from "../interaction/notificationPresentation.js";
 
 type RetryDeliveryPorts = Readonly<{
   now?: () => Date;
@@ -188,11 +189,14 @@ export function createProviderRetryHooks(home: string, store: TaskStore, ports: 
                 });
               });
             } else {
+              const wake = retry.input.kind === "wake" ? store.getTaskWake(retry.input.taskId, retry.input.wakeId) : null;
               const original = retry.input.kind === "text" ? retry.input.text
                 : retry.input.kind === "wake"
-                  ? `Yui Task notification: task=${retry.input.taskId} wake=${retry.input.wakeId}.\nRead current Task context and that fixed wake window, including original Messages in full. This is not an execution assignment.`
+                  ? wake === null ? undefined : taskNotificationPresentation(wake, store)
                   : retry.input.kind === "message"
-                    ? `Yui Global Message: role=${retry.input.roleName} message=${retry.input.messageId}.\nRead your Session Context and referenced original Message in full.`
+                    ? globalMessagePresentation(retry.input.roleName, retry.input.messageId,
+                      store.listGlobalRoleMessages(retry.input.roleName).find(message =>
+                        retry.input.kind === "message" && message.id === retry.input.messageId))
                     : undefined;
               if (original === undefined) { stop(set, "original-input-unavailable", at); continue; }
               const result = await (ports.submit ?? sendAgentHostRunControl)({

@@ -94,15 +94,7 @@ export async function processLeaderWakeups(
       attempted = true;
       const outcome = await delivery.sendOnce({
         delivery: ready, receiptId: notification.attemptId, notificationId: notification.wakeId,
-        text: [
-          `Yui Task notification: task=${task.id} wake=${notification.wakeId}.`,
-          `Read current context: yui task context ${task.id} --json.`,
-          `Read the fixed notification window: yui task wake show ${task.id} ${notification.wakeId}.`,
-          "Read referenced result Messages in full before deciding their disposition.",
-          "Follow the Leader Skill to advance outstanding Task work from these durable facts, or record the exact decision/authority needed.",
-          "This is a notification, not an execution assignment. No separate final report is required.",
-          "Reading context is not an acknowledgement that its requirements have been implemented."
-        ].join("\n")
+        text: notification.presentation
       });
       const accepted = outcome.status === "sent" || outcome.status === "already-sent";
       const disposition = accepted ? "accepted"

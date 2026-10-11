@@ -24,6 +24,7 @@ import { standardAgentError } from "../../dist/runtime/agentError.js";
 import { mapCodexAgentError } from "../../dist/runtime/builtinAgentErrorMappers.js";
 import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
 import { createProviderRetryHooks } from "../../dist/controller/providerRetryDelivery.js";
+import { taskNotificationPresentation, globalMessagePresentation } from "../../dist/interaction/notificationPresentation.js";
 import { SessionOwnerReconciliation } from "../../dist/controller/sessionOwnerReconciliation.js";
 import { createSessionOwnerIdentity } from "../../dist/runtime/sessionOwnerIdentity.js";
 import { createRuntimeLifecycleDispatcher } from "../../dist/controller/runtime.js";
@@ -273,6 +274,9 @@ test("Task no-Run retry preserves its wake and original Message, and duplicate p
   assert.equal(f.store.listMessages("task-1")[0].body, f.body);
   assert.equal(f.store.listTaskWakes("task-1").length, 1);
   assert.match(f.submissions[0].control.run.boundedText, /task=task-1 wake=wake-1/);
+  assert.equal(f.submissions[0].control.run.boundedText,
+    taskNotificationPresentation(f.store.getTaskWake("task-1", "wake-1"), f.store),
+    "Retry uses the normal fixed-wake source presentation, not a reduced second contract.");
   assert.throws(() => f.observe("turn.completed", f.originalAttempt, "native-original",
     { output: "Late original result" }), /Conflicting terminal/);
   assert.equal(f.read().retry.status, "in-flight", "Old terminal cannot recover the successor.");
@@ -297,6 +301,9 @@ test("Global original Message survives rejected delivery and same-Session retry 
   assert.equal(f.submissions.length, 1);
   assert.equal(f.submissions[0].control.nativeSessionId, f.nativeSessionId);
   assert.match(f.submissions[0].control.run.boundedText, /role=assistant message=global-message-1/);
+  assert.equal(f.submissions[0].control.run.boundedText,
+    globalMessagePresentation("assistant", "global-message-1",
+      f.store.listGlobalRoleMessages("assistant").find(message => message.id === "global-message-1")));
   assert.equal(f.store.listTasks().length, 0);
   assert.equal(f.read().run.runId, undefined);
   const messages = f.store.listGlobalRoleMessages(f.roleName).filter(message => message.kind === "user");

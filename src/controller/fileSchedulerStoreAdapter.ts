@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { contextSnapshotRef } from "../context/contextSnapshot.js";
 import { freezeRunContextSnapshot } from "../context/runContextPack.js";
+import { taskNotificationPresentation } from "../interaction/notificationPresentation.js";
 import { settleGlobalRetryInput } from "../message/globalProviderRetry.js";
 import { interruptThenTerminalState, prepareMessageContinuations } from "../message/messageContinuation.js";
 import { assertExecutionEnvironmentCurrent } from "../runtime/executionEnvironment.js";
@@ -2397,7 +2398,10 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         }
         const nextAttempt = `notification:${taskId}/${wakeId}/${randomUUID()}`;
         store.saveWorkMailbox({ ...mailbox, processing: { ...processing, batchId: nextAttempt } });
-        return { wakeId, attemptId: nextAttempt, disposition: "submit" };
+        const wake = store.getTaskWake(taskId, wakeId);
+        if (wake === null) throw new Error(`Notification wake is unavailable: ${taskId}/${wakeId}.`);
+        return { wakeId, attemptId: nextAttempt, disposition: "submit",
+          presentation: taskNotificationPresentation(wake, store) };
       }
       if (mailbox.pending === null || (provider !== null && provider !== undefined
         && ["submitting", "accepted", "delivery-unknown"].includes(provider.status))) return null;
@@ -2464,7 +2468,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       // batch, rather than delivering them with the chosen immediate successor.
       if (remainingRefs.length > 0) enqueueWork(store, target, "user-message", now, remainingRefs,
         { source: "controller", dedupeKey: `then-remainder:${wakeId}` });
-      return { wakeId, attemptId, disposition: "submit" };
+      return { wakeId, attemptId, disposition: "submit", presentation: taskNotificationPresentation(wake, store) };
     });
   }
 

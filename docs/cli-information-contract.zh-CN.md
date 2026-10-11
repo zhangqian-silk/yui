@@ -18,7 +18,7 @@ CLI 调用成功，不代表 Task、原生 Turn 或远端投递完成。
 | 发生了什么变化？ | `task context delta <task> --after <cursor>` | 固定上界内的不可变事件，不是可变当前状态的快照 |
 | Global 收到了什么？ | `session context <role>` | 身份、Profile、权限、当前原生 Turn/retry，以及分别有界的 pending/recent Message 页 |
 | 读取 Global 输入 | `role message list <role> [--pending]`、`role message show <role> <id>` | 在自身范围内发现，再读完整原文；队列接受不删除历史 |
-| 本次唤醒带来什么？ | `task wake show <task> <wake>` | 固定窗口与 Message/Run/Event 读取指针，不重复正文 |
+| 本次唤醒带来什么？ | `task wake show <task> <wake>` | 固定窗口的输入/结果、标明来源的可选摘要和确切原文入口；`--history` 展开诊断历史 |
 | 分配了什么？ | `task run context <task>/<run>` | 冻结授权与一份带摘要的 `pointers` 目录；`deltaRefs` 表示变化身份；当前观察独立 |
 | 实际配置是什么？ | `task role session inspect <task> <role>` | Task/Role 身份、期望绑定、冻结 Session、当前 Provider 绑定、retry 与显式 Host 观察；不复制整个 Task/Role 或 Provider 会话历史 |
 

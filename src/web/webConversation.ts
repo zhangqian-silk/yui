@@ -181,14 +181,14 @@ export function createWebConversationSurface(
       if (item.kind !== "user") return [item];
       let messages: Array<{ id: string; body: string; inputControl?: { action: string; expectedSessionId?: string } }> = [];
       if (owner.scope === "task") {
-        const ref = /^Yui Task notification: task=([A-Za-z0-9_-]+) wake=([A-Za-z0-9_-]+)\.\nRead current context: /m.exec(item.text);
+        const ref = /^Yui Task notification: task=([A-Za-z0-9_-]+) wake=([A-Za-z0-9_-]+)\.$/m.exec(item.text);
         if (ref?.[1] === owner.taskId) {
           const wake = store.listTaskWakes(owner.taskId).find(w => w.id === ref[2] && w.status === "consumed");
           const ids = new Set(wake?.refs?.filter(r => r.type === "message").map(r => r.id));
           messages = store.listMessages(owner.taskId).filter(m => ids.has(m.id));
         }
       } else {
-        const ref = /^Yui Global Message: role=([A-Za-z0-9_-]+) message=([A-Za-z0-9_-]+)\.\nRead your Session Context/m.exec(item.text);
+        const ref = /^Yui Global Message: role=([A-Za-z0-9_-]+) message=([A-Za-z0-9_-]+)\.$/m.exec(item.text);
         if (ref?.[1] === owner.roleName) messages = store.listGlobalRoleMessages(owner.roleName)
           .filter(m => m.id === ref[2] && m.delivery?.via === "provider" && m.deliveryTarget?.nativeSessionId === id);
       }

@@ -51,11 +51,18 @@ export function withSessionContextPointer(
   const manifest = environment.YUI_SESSION_MANIFEST;
   if (manifest === undefined) return text;
   return [
-    `Read the Yui Session Manifest at ${manifest}.`,
-    "Follow its referenced Role Skills and role profile. It gives the exact Context load command.",
+    sessionContextInstructions(manifest),
     "",
     text
   ].join("\n");
+}
+
+/** No remembered/sent flag can prove instructions survived context compaction. */
+export function sessionContextInstructions(manifestPath: string, digest?: string): string {
+  return `Yui Session Manifest: ${manifestPath}${digest === undefined ? "" : ` (digest ${digest})`}. `
+    + "Apply yui-runtime and its Role Skills/profile by exact manifest paths. "
+    + "Load on first entry, version change or missing context; reuse only same-version instructions "
+    + "fully available now, never infer availability from prior reads.";
 }
 
 /** Explicit entry for self-contained Global Context reads across clients. */

@@ -420,7 +420,8 @@ notification; no active AgentRun is required.
 
 Before ending authorized execution:
 
-1. Inspect the wake delta, resolve every referenced Worker or Reviewer AgentRun
+1. Inspect the focused wake inputs/results (expand `--history` when needed),
+   resolve every referenced Worker or Reviewer AgentRun
    with `yui task run show`, read each original result in full, and make the
    next decision.
 2. Persist actual WorkItem lifecycle and material Brief, Decision, Milestone,

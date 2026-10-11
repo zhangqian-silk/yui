@@ -207,8 +207,13 @@ export type SchedulerReconcileSelection = Readonly<{
 export type LeaderNotification = Readonly<{
   wakeId: string;
   attemptId: string;
-  disposition: "submit" | "pending" | "unknown" | "rejected";
-}>;
+} & ({
+  disposition: "submit";
+  /** Derived from the claimed fixed wake and its original source records. */
+  presentation: string;
+} | {
+  disposition: "pending" | "unknown" | "rejected";
+})>;
 
 export type SchedulerMailboxClaimInput = Readonly<{
   target: MailboxTarget;

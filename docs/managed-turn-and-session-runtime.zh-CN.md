@@ -55,6 +55,21 @@ Run Context 冻结 Assignment、来源引用、生效配置和工作区边界。
 和消息正文，而不是把加载成功当成交付物。规划 Pack 不暴露 Project 写范围或 Task 完成
 权限。
 
+Manifest 指针是恢复定位入口，不是已读凭据。首次进入、新会话、版本变化、压缩或恢复后
+说明缺失时，从其确切路径加载 `yui-runtime`、Role Skills 和 profile；仅当同版本全文仍在
+当前可用上下文中，才复用而不机械重读。系统不保存“已经读过”状态。动态事实仍须刷新：
+Leader 通知使用 `currentCommand`，显式 AgentRun 使用真实 Run ID 的
+`loadCommand`/`expandCommand`，不可直接执行占位模板。
+
+正常和重试通知共用有界呈现：流程事实、标明作者来源的可选摘要与原文入口。Agent 可在
+Message/报告首行写 `Yui-Summary: <单行摘要>`（摘要最多 512 UTF-8 字节），保留失败、
+未验证、待决定等限定。摘要存在原文本身，不新增数据格式、摘要存储、已读状态或模型调用；
+缺失或超长时使用事实模板，不截断关键限定。摘要不是授权、验收或审查通过结论。
+
+`task wake show <task> <wake>` 默认展示消息、结果与明确引用（包括窗口外原文），
+不再枚举无关诊断事件和仅启动的 Run；`--history` 展开完整固定窗口历史。两个视图保留
+去重、固定窗口、确切原文命令及 `contentPage` 续读。决策所依赖的原文仍须全文读取。
+
 新 Run（包括规划、Review 和消息续接）必须在派发前绑定明确冻结的 Snapshot。
 Context 读取校验完整身份与内容 digest，然后直接读取已保存的值，不重新收集当前
 Task 记录。聚合执行从该 Snapshot 读取已选择的 Producer 结果；可写 Project 来自

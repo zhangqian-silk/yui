@@ -20,7 +20,7 @@ schema migration or new snapshot/cache store is introduced.
 | What changed? | `task context delta <task> --after <cursor>` | Immutable events with a fixed upper bound, not a snapshot of current mutable state |
 | Which Global input? | `session context <role>` | Identity, profile, authority, current native Turn/retry and separate bounded pending/recent Message pages |
 | Read Global input | `role message list <role> [--pending]`, `role message show <role> <id>` | Scoped discovery, then exact original; queue acceptance never erases history |
-| What arrived in this wake? | `task wake show <task> <wake>` | Fixed window and Message/Run/Event read pointers, not duplicated bodies |
+| What arrived in this wake? | `task wake show <task> <wake>` | Fixed-window inputs/results, attributed optional summaries and exact original reads; `--history` expands diagnostics |
 | What was assigned? | `task run context <task>/<run>` | Frozen authority and a single `pointers` inventory with summaries; changed identities in `deltaRefs`; current observations remain separate |
 | Which configuration is real? | `task role session inspect <task> <role>` | Task/Role identity, desired binding, frozen Session, current Provider binding, retry and explicit Host observation; no full Task/Role copies or Provider conversation history |
 
