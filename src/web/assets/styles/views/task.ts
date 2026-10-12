@@ -53,6 +53,20 @@ export const TASK_STYLES = `
 .next-line .icon{color:var(--accent)}
 .next-line strong{color:var(--ink)}
 
+/* Next step: a compact action bar — prompt left, actions right; the foot
+   (condition + receipt) is one quiet line under a hairline. */
+.next-card>.card-body{gap:0;padding:14px 16px 14px 20px}
+.next-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px 20px}
+.next-lead{display:grid;gap:3px;flex:1 1 280px;min-width:0}
+.next-kicker{color:var(--ink-4);font-size:var(--fs-2xs);font-weight:600;letter-spacing:.08em;text-transform:uppercase}
+.next-prompt{color:var(--ink-2);font-size:var(--fs-sm);line-height:1.5}
+.next-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;flex:none}
+.next-actions .btn{height:34px;padding:0 14px}
+.next-foot{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:4px 16px;margin-top:12px;padding-top:10px;border-top:1px dashed var(--line)}
+.next-hint{flex:1 1 320px;min-width:0;color:var(--ink-4);font-size:var(--fs-xs);line-height:1.5}
+.next-foot .receipt:empty{display:none}
+@media(max-width:560px){.next-actions{flex:1 1 100%}.next-actions .btn{flex:1 1 0}}
+
 /* Needs you / input requests */
 .needs-card{border-color:var(--warn);box-shadow:0 0 0 3px var(--warn-soft)}
 .needs-card .card-icon{background:var(--warn-soft);color:var(--warn)}
