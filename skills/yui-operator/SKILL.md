@@ -160,7 +160,9 @@ does not establish remote merge.
 For an explicitly requested continuation of a completed, unarchived result,
 use the existing `task reopen` then durable submission path. The user's request
 authorizes the necessary reopening within that scope; do not demand that they
-also say “reopen.” Ordinary messages do not auto-reopen a Task. Keep cancelled,
+also say “reopen.” A current matching Leader may also reopen its own Task and
+continue an already-received authorized request; Operator routing is not a
+mandatory handoff. Ordinary messages do not auto-reopen a Task. Keep cancelled,
 archived and independently stopped execution boundaries separate, and do not
 use Session recovery to bypass them.
 

@@ -193,6 +193,36 @@ test("explicit reopen and keyed input preserve acceptance history without replay
   assert.deepEqual(store.listRuns("task-1"), [], "Notifications do not fabricate AgentRuns.");
 });
 
+test("the current Leader can reopen only its own completed intent without replaying or self-waking", t => {
+  const { store, command, leader } = fixture(t);
+  const reopen = (taskId = "task-1", environment = leader) =>
+    runTaskCommand(["reopen", taskId], store, { now: () => later, environment });
+  command(["message", "send", "task-1", "Original requirement", "--intent", "record"]);
+  command(["complete", "task-1", "--summary", "Accepted original result"]);
+  const completion = store.listEvents("task-1").find(event => event.type === "task.completed");
+  const messages = store.listMessages("task-1");
+  const session = store.getTaskRoleSessionSet("task-1", "leader");
+  assert.throws(() => reopen("task-1", { ...leader, YUI_NATIVE_SESSION_ID: "stale" }), /current native Session/);
+  store.saveTask({ ...store.getTask("task-1"), id: "task-2" });
+  assert.throws(() => reopen("task-2"), /matching Leader/);
+  assert.equal(store.getTask("task-2").status, "completed");
+
+  reopen();
+  assert.equal(store.getTask("task-1").status, "active");
+  assert.deepEqual(store.listEvents("task-1").find(event => event.id === completion.id), completion);
+  assert.deepEqual(store.listMessages("task-1"), messages);
+  assert.deepEqual(store.getTaskRoleSessionSet("task-1", "leader"), session);
+  assert.equal(store.listEvents("task-1").find(event => event.type === "task.reopened").payload.by, "leader");
+  assert.equal(store.getWorkMailbox({ kind: "role", taskId: "task-1", roleName: "leader" }), null);
+  assert.deepEqual(store.listRuns("task-1"), []);
+
+  store.saveTask(retireTask(store.getTask("task-1"), { by: "user", summary: "Do not restore" }, later));
+  assert.throws(() => reopen(), /user or Operator authority/);
+  assert.equal(store.getTask("task-1").status, "cancelled");
+  store.saveTask(archiveTask(store.getTask("task-1"), later));
+  assert.throws(() => reopen(), /archived/);
+});
+
 test("reopen preserves an independent execution stop and cannot revive archived intent", async t => {
   const { store, command, scheduler } = fixture(t);
   stopTaskExecutionCommand({ taskId: "task-1", reason: "Explicit safety stop" }, store,

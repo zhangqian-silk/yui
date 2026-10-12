@@ -253,10 +253,11 @@ External-effect authorization must be explicit: development does not grant
 push/PR/merge, and merge does not grant release, production update or archive.
 
 When the user explicitly requests further implementation or delivery of the same
-completed, unarchived result, the Operator may perform the necessary
-`task reopen <task>` before submitting the new scoped request. The user need not
-add a mechanical “reopen” confirmation. These existing operations suffice; no
-auto-reopen option or post-completion execution protocol is needed. Ordinary
+completed, unarchived result, the current matching Leader may perform the necessary
+`task reopen <task>` for its own Task and continue that bounded request; Operator
+handoff is not mandatory. The Operator may still reopen before routing new input.
+Neither path needs a mechanical “reopen” confirmation. These existing operations
+suffice; no auto-reopen option or post-completion execution protocol is needed. Ordinary
 send/queue/submit, including `--intent develop`, still refuses a completed Task
 before saving new input. Queries, record-only input and discussion do not grant
 reopening authority.
@@ -266,10 +267,14 @@ preserving original events, fixed heads/reports and Publication history. The
 Leader separately verifies and accepts the new result; old validation does not
 automatically cover it. Reopen preserves an independent execution stop: only the
 authorized `task execution start` path can lift that gate after cleanup.
-Cancelled intent requires separate restoration authority; archived Tasks cannot
-reopen, and retained workspaces or Session replacement do not bypass lifecycle.
+Cancelled/retired intent requires separate explicit user/Operator restoration
+authority and cannot be restored by the Leader; archived Tasks cannot reopen,
+and retained workspaces or Session replacement do not bypass lifecycle.
+Delivery still requires the current Session's delivery authority and legal
+workspace; reopening does not promote a planning Session or expand write scope.
 
-Reopening and submitting are two atomic operations with separate outcomes.
+For routed input, reopening and submitting are two atomic operations with
+separate outcomes.
 Inspect the lifecycle result and saved/queued receipt; if submission fails,
 read current state and continue only the unapplied step within the same authority.
 Keep the same key for a matching submission retry, never replay unknown effects,
@@ -277,6 +282,10 @@ and do not reopen again merely to retry after another completion or cancellation
 The reopen notification can arrive before the new Message: the Leader waits for
 the actual request, without rerunning accepted work or immediately completing
 again. Once the request arrives, it proceeds without another “continue.”
+When the Leader already has the new request, it uses that original input after
+reopening rather than resubmitting or creating a self-wake. Preserve a direct
+conversation's request and boundaries in Task records without impersonating
+user/Operator input.
 
 Publication upsert, diff/adopt and verify remain separate, authorized atomic
 operations for completed, unarchived results. They need no reopening when no new

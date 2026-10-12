@@ -194,8 +194,10 @@ CLI、当前 Leader Context 和 Web 从同一组事实推导覆盖，不联网�
 WorkItem/ReviewRound Assignment。外部效果必须明确获授权：开发不授予
 push/PR/merge，合并不授予发版、生产升级或归档。
 
-用户明确要求继续同一个已完成、未归档成果的实现或交付时，Operator 可以先执行必要的
-`task reopen <task>`，再提交这次有界请求。用户无需机械地额外确认“重开”。
+用户明确要求继续同一个已完成、未归档成果的实现或交付时，当前有效且匹配该 Task 的
+Leader 可以自行执行 `task reopen <task>`，重开自己的任务并继续这次有界请求，
+不必转交 Operator。Operator 仍可在路由新输入前重开。两条路径都无需用户机械地
+额外确认“重开”。
 现有两步即可满足目标，不需要自动重开开关或后完成执行协议。普通 send/queue/submit
 （包括 `--intent develop`）仍会在保存新输入前拒绝 completed Task；只读查询、
 record-only 输入和讨论本身不授予重开权限。
@@ -203,14 +205,18 @@ record-only 输入和讨论本身不授予重开权限。
 重开回到 active，撤下当前完成元数据，同时保留原事件、固定 head/报告和 Publication
 历史。Leader 对新结果单独验证与验收，不能把旧验证直接宣称为新结果的证据。
 重开保留独立的执行停止决定；只有获授权且完成清理的 `task execution start` 路径
-可以解除 gate。恢复 cancelled 意图需要单独明确授权；archived Task 不能重开，
-保留工作区或 Session 替换都不能绕过生命周期。
+可以解除 gate。恢复 cancelled/retired 意图需要单独明确授权并由 user/Operator 执行，
+Leader 不能自行恢复；archived Task 不能重开，保留工作区或 Session 替换都不能绕过生命周期。
+交付仍要求当前 Session 的 delivery 权限和合法工作区；重开不会把 planning Session
+升级为交付 Session，也不扩大写入范围。
 
-重开与提交是两个有独立结果的原子操作。分别检查生命周期结果和 saved/queued 回执；
+路由新输入时，重开与提交是两个有独立结果的原子操作。分别检查生命周期结果和 saved/queued 回执；
 提交失败时读取当前状态，仅在权限未变时继续尚未生效的那一步。相同提交重试保留原 key，
 不重放效果未知的操作，也不因重试而再次重开已经重新完成或取消的 Task。
 重开通知可能先于新 Message 到达：Leader 等待具体新请求，不重跑已验收工作，
 也不立即再次 complete；请求到达后不再要求额外“继续”。
+Leader 已收到新请求时，重开后使用该原始输入，不重新提交或制造 self-wake。
+直接对话中的请求及边界按需保存在 Task 记录中，不冒充 user/Operator 输入。
 
 Publication upsert、diff/adopt、verify 仍是未归档已完成成果的独立授权原子操作，
 没有新执行请求时不必重开。重开后的工作记录自己的新完成证据，不改写旧基线，
