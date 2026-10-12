@@ -8,7 +8,7 @@ import { captureRoleRunDispatch } from "../../dist/coordination/workMailboxQueue
 import { readAcpSessionConfiguration } from "../../dist/runtime/acpProtocol.js";
 import { acquireHandoverLock, isForeignHandoverLockHeld } from "../../dist/release/runtimeRelease.js";
 import { createReleaseWorkflowPorts } from "../../dist/release/releaseWorkflowPorts.js";
-import Database from "better-sqlite3";
+import Database from "../../dist/sqlite/driver.js";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { runTaskCommand } from "../../dist/commands/taskCommands.js";
 import { createTask } from "../../dist/task/task.js";

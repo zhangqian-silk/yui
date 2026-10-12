@@ -69,9 +69,12 @@
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
-    "better-sqlite3": "^12.11.1",
     "node-pty": "1.2.0-beta.15",
     "smol-toml": "1.8.0",
     "ws": "^8.21.1"
+  },
+  "optionalDependencies": {
+    "sqlite-modern": "npm:better-sqlite3@12.11.1",
+    "sqlite-compat": "npm:better-sqlite3@10.1.0"
   }
 }

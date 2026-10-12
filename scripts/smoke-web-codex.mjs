@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
-import Database from "better-sqlite3";
+import Database from "../dist/sqlite/driver.js";
 
 assert.equal(process.env.YUI_LIVE_CODEX, "authorized", "Explicit live-resource authorization and YUI_LIVE_CODEX=authorized required");
 assert.equal(process.platform, "linux", "This opt-in fixture uses Linux /proc ownership checks; macOS needs its own authorized environment");

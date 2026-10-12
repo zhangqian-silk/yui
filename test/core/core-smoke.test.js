@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import Database from "better-sqlite3";
+import Database from "../../dist/sqlite/driver.js";
 import { nativeExecutable } from "../../dist/runtime/nativeExecutable.js";
 
 import {

@@ -29,15 +29,23 @@ runs:
       uses: actions/cache@v6
       with:
         path: |
-          node_modules/better-sqlite3/build
+          node_modules/sqlite-modern/build
+          node_modules/sqlite-compat/build
           node_modules/node-pty/build
-        key: yui-native-v1-${{ steps.native-fingerprint.outputs.key }}
+        key: yui-native-v2-${{ steps.native-fingerprint.outputs.key }}
 
     - name: Build native dependencies
       if: steps.native-cache.outputs.cache-hit != 'true'
       shell: bash
-      run: npm rebuild better-sqlite3 node-pty --prefer-offline --no-audit --no-fund
+      run: |
+        npm rebuild node-pty --prefer-offline --no-audit --no-fund
+        # Each fixed SQLite candidate is optional. Verification below requires
+        # one genuinely usable driver through the runtime selection contract.
+        npm rebuild sqlite-modern --prefer-offline --no-audit --no-fund || true
+        npm rebuild sqlite-compat --prefer-offline --no-audit --no-fund || true
 
     - name: Verify native dependencies
       shell: bash
-      run: node scripts/ci-native-dependencies.mjs verify
+      run: |
+        npm run build
+        node scripts/ci-native-dependencies.mjs verify

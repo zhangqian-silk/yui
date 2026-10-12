@@ -67,6 +67,23 @@ Native first-run confirmations may still require your input.
 npm install -g @zq-silk/yui
 ```
 
+SQLite is selected lazily before opening your Home: Yui probes a disposable
+in-memory connection with `sqlite-modern` (`better-sqlite3@12.11.1`) first,
+then tries `sqlite-compat` (`better-sqlite3@10.1.0`) only for identified missing
+native bindings, Node ABI or system-library incompatibility. Each process keeps
+its successful selection. Home permissions, corruption, locks, SQL and migration
+errors never trigger a driver switch. `yui doctor` reports the driver version,
+actual SQLite engine and fallback reason separately from Home health.
+
+npm attempts **both** fixed optional aliases during installation; it does not
+install the older one only after the newer one fails. This increases download
+size and installation/build time. Optional installation failures may leave npm
+successful, but Yui cannot run without a usable candidate; do not use
+`--omit=optional`. The compatibility driver uses older SQLite (3.46.0), without
+later fixes, and is not guaranteed on every old glibc/toolchain or newer Node
+ABI. The supported Node range above is unchanged; an OS/toolchain upgrade may
+still be necessary. Selection does not downgrade or migrate Home data.
+
 ### 2. Set up, yourself or with an Agent
 
 Run the interactive setup:

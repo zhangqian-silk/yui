@@ -204,6 +204,11 @@ try {
   const doctorStarted = Date.now();
   const doctor = json("doctor");
   assert.equal(doctor.storage.healthy, true);
+  const sqliteCheck = doctor.checks.find(check => check.name === "sqlite driver");
+  assert.equal(sqliteCheck?.status, "ok");
+  assert.match(sqliteCheck.detail, /sqlite-(modern|compat)@.*SQLite \d+\.\d+\.\d+/);
+  assert.match(sqliteCheck.detail, /fallback/);
+  console.log(`SQLite Doctor: ${sqliteCheck.detail}`);
   const ptyChecks = doctor.checks.filter(check => check.name === "node-pty" || check.name.startsWith("pty "));
   assert.ok(ptyChecks.some(check => check.name === "pty spawn"));
   assert.ok(ptyChecks.every(check => check.status === "ok"), JSON.stringify(ptyChecks));

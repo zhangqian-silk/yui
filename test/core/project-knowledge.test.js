@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import Database from "better-sqlite3";
+import Database from "../../dist/sqlite/driver.js";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { addProjectKnowledge, createProject, knowledgeProposalFingerprint } from "../../dist/repository/project.js";
 import { createTask } from "../../dist/task/task.js";

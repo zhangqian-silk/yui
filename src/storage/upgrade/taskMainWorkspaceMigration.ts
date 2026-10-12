@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import Database from "better-sqlite3";
+import Database from "../../sqlite/driver.js";
 import { updateRole, validateTaskRole, type TaskRole } from "../../role/role.js";
 import { validateRoleSessionSet, type TaskRoleSessionSet } from "../../executor/agentExecutor.js";
 import { validateTask, type Task } from "../../task/task.js";

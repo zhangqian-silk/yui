@@ -87,6 +87,10 @@ setup、输入跨重启持久化及幂等、scratch 激活、原生结果入库�
 npm bin、依赖、受支持 Node 版本、产物和 provenance 边界。这证明运行时集成，不证明
 真实模型行为。纯契约与安全检查保留在 `test/core`，生产组件组装在这里验证，
 不只依赖模拟端口。
+同一发布矩阵还针对消费者安装包运行 `test/core/sqlite-driver.test.js`，验证原生
+选择边界，并对每个可用的可选 SQLite 候选执行真实 SQL、事务、JSON/RETURNING、
+WAL 和备份检查。不可用候选会明确标记跳过，不视为兼容；正常选择路径仍必须通过。
+Doctor 冒烟报告选中的驱动、引擎和回退原因。该矩阵不能证明旧 glibc 环境兼容。
 原生依赖检查必须通过 PTY 启动固定本地程序，确认输出和正常退出。安装包 smoke
 明确断言默认 Doctor 的 PTY 检查成功，并从消费者安装目录解析依赖。macOS 还会
 在可丢弃的依赖副本中移除 spawn-helper 执行权限，验证 Doctor 报出实际 helper

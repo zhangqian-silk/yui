@@ -15,7 +15,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
-import Database from "better-sqlite3";
+import Database from "../sqlite/driver.js";
 
 import { validateSqliteSchema } from "../storage/sqliteSchema.js";
 import {

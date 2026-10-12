@@ -120,6 +120,13 @@ freshly installed package through
 artifact and provenance boundaries. This validates runtime integration, not
 real-model behavior. Pure contract and safety tests remain in `test/core`;
 production wiring is exercised here rather than only through mocked ports.
+The same release matrix runs `test/core/sqlite-driver.test.js` against the
+installed consumer: native selection boundaries plus real SQL, transactions,
+JSON/RETURNING, WAL and backup for each usable optional SQLite candidate.
+An unavailable optional candidate is explicitly skipped, not reported as
+compatible; the normal selected-driver path must still pass. Doctor smoke
+reports the selected driver, engine and fallback reason. This matrix does not
+prove old-glibc compatibility.
 The native dependency check launches a fixed local program through PTY and
 requires its output and normal exit. Installed-package smoke explicitly checks
 default Doctor's PTY results using dependencies resolved from the consumer.

@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const command = process.argv[2];
 
@@ -17,7 +18,8 @@ if (command === "fingerprint") {
 function printFingerprint() {
   const lock = JSON.parse(readFileSync(join(process.cwd(), "package-lock.json"), "utf8"));
   const packagePaths = [
-    "node_modules/better-sqlite3",
+    "node_modules/sqlite-modern",
+    "node_modules/sqlite-compat",
     "node_modules/node-pty",
     "node_modules/node-addon-api"
   ];
@@ -47,19 +49,21 @@ async function verifyNativeDependencies() {
   // Resolve from the consumer when verifying a final tarball, never this script.
   const root = resolve(process.env.YUI_INSTALLED_ROOT ?? process.cwd());
   const require = createRequire(join(root, "package.json"));
-  const Database = require("better-sqlite3");
+  const { selectSqliteDriver } = await import(pathToFileURL(join(root, "dist/sqlite/driver.js")).href);
+  const selected = selectSqliteDriver();
+  const Database = selected.Database;
   const database = new Database(":memory:");
 
   try {
     const result = database.prepare("SELECT 1 AS value").get();
     if (result?.value !== 1) {
-      throw new Error("better-sqlite3 native query returned an unexpected result");
+      throw new Error("SQLite native query returned an unexpected result");
     }
   } finally {
     database.close();
   }
-  // This check also runs before TypeScript is built. Keep the bounded native
-  // launch here; installed Doctor below exercises its richer diagnostics.
+  console.log(`SQLite ${selected.name}@${selected.version}; engine ${selected.sqliteVersion}; fallback: ${selected.fallbackReason ?? "none"}`);
+  // Installed Doctor below exercises richer PTY diagnostics.
   const result = spawnSync(process.execPath, ["-e", `
     const pty = require(${JSON.stringify(require.resolve("node-pty"))});
     const marker = "yui-native-pty-ok";

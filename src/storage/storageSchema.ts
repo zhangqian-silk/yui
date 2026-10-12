@@ -1,7 +1,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-import Database from "better-sqlite3";
+import Database from "../sqlite/driver.js";
 
 import {
   inspectSqliteSchema,

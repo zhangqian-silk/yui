@@ -32,7 +32,7 @@
  * including writes, reads and explicit Home diagnostics. There is no weaker
  * in-process contract or deferred validation phase.
  */
-import Database from "better-sqlite3";
+import Database from "../sqlite/driver.js";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";

@@ -9,7 +9,7 @@ import {
   rmSync
 } from "node:fs";
 
-import Database from "better-sqlite3";
+import Database from "../../sqlite/driver.js";
 import {
   RUNTIME_OBSERVATION_TASK_EVENT,
   createRuntimeObservation,
