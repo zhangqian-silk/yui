@@ -21,6 +21,10 @@ next input. Agents still own semantic recovery and acceptance.
 - An explicit manual retry of the same Run retains its recovery lineage,
   automatic count and original deadline. It is not charged as an automatic
   attempt, but a further failure cannot replenish automatic allowance.
+  If no automatic chain exists, it can still use the current binding's exact
+  accepted failed Turn and original input. The error need not have qualified
+  for automation; manual intent does not waive Session, authority, latest-Turn
+  or background-quiescence checks.
 
 The records live on the existing Provider binding, with indexed pending-record
 reads and the existing Controller deadline timer. There is no retry Task status,
@@ -55,6 +59,13 @@ text), exact Session/attempt identities, the preserved error, the latest Turn
 failure and earlier chain references. A changed error that still satisfies the
 same safe retry rule continues within the original budget. Loss of that rule,
 authority or budget stops automatic submission.
+
+Codex's structured `codexErrorInfo: "serverOverloaded"` qualifies as temporary
+capacity failure. Capacity prose alone does not grant replay eligibility.
+Native nonterminal error/retry notifications do not create a Yui retry; only
+the exact failed terminal does. A missing retry record therefore does not
+prove budget exhaustion or an unrecoverable Session: inspect the original
+error and current Turn before choosing explicit recovery.
 
 Task errors retain their original `runtime.agent-error` evidence and notify the
 Leader, or the Operator when the affected Role is the Leader. Global failures

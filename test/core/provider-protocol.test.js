@@ -140,6 +140,9 @@ test("Codex native terminals preserve exact ownership through result publication
     method: "turn/completed", params: { threadId: id, turn: nativeTurn }
   });
   const { session } = await peer(t, "codex", [
+    { method: "error", params: { threadId, turnId, willRetry: true,
+      error: { message: "Selected model is at capacity.", codexErrorInfo: "serverOverloaded" } } },
+    event({ ...turn, status: "inProgress" }),
     event({ ...turn, status: undefined }),
     event({ ...turn, status: "future" }),
     event({ ...turn, id: undefined }),

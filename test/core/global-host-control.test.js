@@ -25,9 +25,11 @@ import { enqueueOperatorEvent } from "../../dist/scheduler/operatorEvent.js";
 import { processOperatorInputNotifications } from "../../dist/scheduler/operatorInputNotificationProcessor.js";
 import { FileTaskController } from "../../dist/controller/controller.js";
 import { FileRuntimeEventProcessor } from "../../dist/controller/runtimeEventProcessor.js";
+import { createRuntimeLifecycleDispatcher } from "../../dist/controller/runtime.js";
+import { createProviderRetryHooks } from "../../dist/controller/providerRetryDelivery.js";
 
 async function globalHostFixture(t, adapterId = "codex", {
-  controlled = true, roleName = "assistant", autoDeliver = false
+  controlled = true, roleName = "assistant", autoDeliver = false, capacityFailure = false
 } = {}) {
   const home = mkdtempSync(join(tmpdir(), "yui-global-host-"));
   const store = new SqliteTaskStore(home);
@@ -58,6 +60,8 @@ async function globalHostFixture(t, adapterId = "codex", {
   assert.equal(planned.role.workspace, effective.workspace.root);
   const nativeSessionId = adapterId === "codex" ? "fake-thread-1" : planned.launch.providerControl.nativeSessionId;
   const scheduler = new FileSchedulerStoreAdapter(store);
+  const lifecycle = createRuntimeLifecycleDispatcher(store, scheduler, {});
+  let fakeNow;
   const command = args => {
     const result = runGlobalRoleCommand(args, store, { env: {}, jsonOutput: true });
     return result.kind === "output" ? result.data : result;
@@ -68,7 +72,13 @@ async function globalHostFixture(t, adapterId = "codex", {
     assert.ok(event.host, "Host must retain its raw source envelope");
     assert.equal(event.scope, "global");
     assert.equal(event.observation.fence.runId, undefined);
-    const outcome = scheduler.observeAgentHostObservation(event);
+    // The Controller clock and native event clock advance together in the
+    // recovery fixture; no wall-clock backoff sleep is needed.
+    const timed = fakeNow === undefined ? event : { ...event,
+      receivedAt: fakeNow.toISOString(),
+      observation: { ...event.observation, observedAt: fakeNow.toISOString(), receivedAt: fakeNow.toISOString() }
+    };
+    const outcome = scheduler.observeAgentHostObservation(timed, fakeNow ?? new Date());
     if (outcome !== "deferred") inbox.acknowledge(event.id);
     return outcome;
   };
@@ -79,12 +89,10 @@ async function globalHostFixture(t, adapterId = "codex", {
     }
     if (method === "runtime.launch-redeem") return launchBrokerForHome(home).redeem(params.ticket);
     if (method === "runtime.provider-turn-begin") {
-      scheduler.beginAgentHostProviderTurn({ ...params, now: new Date(params.observedAt) });
-      return { recorded: true };
+      return lifecycle(method, { ...params, ...(fakeNow === undefined ? {} : { observedAt: fakeNow.toISOString() }) });
     }
     if (method === "runtime.provider-turn-submission-resolve") {
-      scheduler.resolveAgentHostProviderTurnSubmission({ ...params, now: new Date(params.observedAt) });
-      return { recorded: true };
+      return lifecycle(method, params);
     }
     if (method === "runtime.host-observation-apply") {
       const event = inbox.read(params.eventId);
@@ -100,7 +108,8 @@ async function globalHostFixture(t, adapterId = "codex", {
       : [resolve("test/fixtures/fake-claude-stream.mjs"), nativeSessionId],
     cwd: planned.role.cwd ?? planned.role.workspace,
     childLifecycle: planned.launch.childLifecycle, startMode: "provider",
-    environment: { ...planned.launch.env, YUI_FAKE_CONTROLLED: controlled ? "1" : "0" },
+    environment: { ...planned.launch.env, YUI_FAKE_CONTROLLED: controlled ? "1" : "0",
+      ...(capacityFailure ? { YUI_FAKE_CAPACITY_FAILURE: "1" } : {}) },
     providerControl: planned.launch.providerControl
   });
   host = spawn(process.execPath, ["--input-type=module", "-e",
@@ -146,8 +155,36 @@ async function globalHostFixture(t, adapterId = "codex", {
   const native = () => store.getGlobalRoleSessionSet(role.name).providerBinding.run;
   return { store, home, role, command, submitNext, native, wait, host, errors, scheduler,
     environment: planned.launch.env,
+    advanceTo: at => { fakeNow = new Date(at); },
     nativeSessionId, output: () => output };
 }
+
+test("capacity recovery traverses Controller, real Host and Codex adapter on the same systemError Session", async t => {
+  const f = await globalHostFixture(t, "codex", { controlled: false, capacityFailure: true });
+  const original = f.command(["message", "queue", f.role.name, "Preserve existing work",
+    "--request-id", "capacity-recovery"]).message;
+  const binding = () => f.store.getGlobalRoleSessionSet(f.role.name).providerBinding;
+  await f.submitNext();
+  await f.wait(() => binding().retry?.status === "waiting");
+  assert.equal(f.native().status, "failed");
+  const failed = structuredClone(binding().retry);
+  assert.equal(failed.error.retryable, true);
+  assert.equal(JSON.parse(failed.error.raw).codexErrorInfo, "serverOverloaded");
+  const now = new Date(failed.nextEligibleAt);
+  f.advanceTo(now);
+  const hooks = createProviderRetryHooks(f.home, f.store, { now: () => now, monotonicNow: () => 0 });
+  await hooks.reconcile();
+  await f.wait(() => binding().retry?.status === "recovered").catch(error => {
+    throw new Error(JSON.stringify(binding()), { cause: error });
+  });
+  await hooks.reconcile();
+  assert.equal(f.native().nativeTurnId, "fake-turn-2");
+  assert.equal(binding().retry.attempts, 1);
+  assert.equal(binding().retry.failedNativeTurnId, "fake-turn-1");
+  assert.equal(binding().retry.nativeSessionId, f.nativeSessionId);
+  assert.deepEqual(binding().retry.input, { kind: "message", roleName: f.role.name, messageId: original.id });
+  assert.deepEqual(f.errors, []);
+});
 
 test("Operator natural terminals settle through Host and Inbox and automatically wake the next Global input", async t => {
   const f = await globalHostFixture(t, "codex", {

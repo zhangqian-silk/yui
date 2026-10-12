@@ -5,6 +5,7 @@ let input = Buffer.alloc(0);
 let upgraded = false;
 let turnSequence = 0;
 let activeTurnId;
+let latestTurn;
 let model = "fixture-default";
 const controlled = process.env.YUI_FAKE_CONTROLLED === "1";
 let threadId = process.env.YUI_FAKE_THREAD_ID ?? "fake-thread-1";
@@ -115,11 +116,14 @@ function handleMessage(message) {
       respond({
         thread: {
           id: message.params.threadId ?? threadId,
-          status: { type: activeTurnId === undefined ? "idle" : "active" },
-          turns: activeTurnId === undefined ? JSON.parse(process.env.YUI_FAKE_RESUMED_TURNS ?? "[]")
+          status: { type: activeTurnId !== undefined ? "active" : latestTurn?.status === "failed" ? "systemError" : "idle" },
+          turns: activeTurnId === undefined ? (latestTurn ? [latestTurn] : JSON.parse(process.env.YUI_FAKE_RESUMED_TURNS ?? "[]"))
             : [{ id: activeTurnId, status: "inProgress", items: [] }]
         }
       });
+      break;
+    case "thread/turns/list":
+      respond({ data: latestTurn ? [latestTurn] : JSON.parse(process.env.YUI_FAKE_RESUMED_TURNS ?? "[]"), nextCursor: null });
       break;
     case "thread/items/list": {
       const turns = JSON.parse(process.env.YUI_FAKE_RESUMED_TURNS ?? "[]");
@@ -153,6 +157,17 @@ function handleMessage(message) {
           method: "turn/started",
           params: { threadId, turn: { id: turnId, status: "inProgress", items: [] } }
         });
+        if (process.env.YUI_FAKE_CAPACITY_FAILURE === "1" && turnSequence === 1) {
+          const error = {
+            message: "Selected model is at capacity. Please try a different model.",
+            codexErrorInfo: "serverOverloaded", additionalDetails: null, misalignment: null
+          };
+          sendJson({ method: "error", params: { threadId, turnId, error, willRetry: true } });
+          sendJson({ method: "turn/completed", params: {
+            threadId, turn: { id: turnId, status: "failed", error, items: [] }
+          } });
+          return;
+        }
         if (controlled) return;
         let text = "Native Codex result.";
         let failure;
@@ -200,6 +215,12 @@ function handleMessage(message) {
 }
 
 function sendJson(value) {
+  if (value.method === "turn/completed" && value.params.threadId === threadId
+    && typeof value.params.turn?.id === "string"
+    && ["completed", "failed", "interrupted"].includes(value.params.turn.status)) {
+    latestTurn = value.params.turn;
+    if (activeTurnId === latestTurn.id) activeTurnId = undefined;
+  }
   sendFrame(0x1, Buffer.from(JSON.stringify(value), "utf8"));
 }
 
