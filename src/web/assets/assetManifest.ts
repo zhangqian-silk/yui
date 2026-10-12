@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 
 import { APP_SCRIPT, CLIENT_MODULES } from "./client/index.js";
+import { THEME_BOOTSTRAP_SCRIPT } from "./client/lib/theme.js";
 import { FONT_WOFF2_BASE64 } from "./fontData.js";
 import { DASHBOARD_HTML } from "./shell/index.js";
 import { STYLESHEETS } from "./styles/index.js";
@@ -22,6 +23,7 @@ const JS = "text/javascript; charset=utf-8";
 export const WEB_ASSETS: Readonly<Record<string, WebAsset>> = Object.freeze({
   ...Object.fromEntries(STYLESHEETS.map(({ name, body }) => [`/assets/css/${name}.css`, { contentType: CSS, body }])),
   ...Object.fromEntries(Object.entries(CLIENT_MODULES).map(([path, body]) => [`/assets/js/${path}.js`, { contentType: JS, body }])),
+  "/assets/theme.js": { contentType: JS, body: THEME_BOOTSTRAP_SCRIPT },
   "/assets/app.js": { contentType: JS, body: APP_SCRIPT },
   ...fontAssets(),
   "/assets/vendor/xterm.mjs": vendorAsset("@xterm/xterm/lib/xterm.mjs", JS),
