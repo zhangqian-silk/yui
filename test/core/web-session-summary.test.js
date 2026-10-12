@@ -35,6 +35,30 @@ const project = (sets, events, seconds = 30) => projectWebSessions({
   semanticProgressAt: at(0)
 });
 
+test("an exactly observed ready Session without a submitted Turn is idle, not unknown work", () => {
+  const current = set();
+  current.providerBinding.run = null;
+  const sessionFence = { nativeTurnId: undefined, receiptId: undefined };
+  const ready = event("session.ready", 2, {}, sessionFence);
+  const native = project([current], [ready]);
+  assert.equal(native.counts.idle, 1);
+  assert.equal(nativeActivityRows(native).length, 0);
+  const execution = jobs => projectTaskExecution({
+    task: { id: "task-1", status: "active", executionGate: { state: "enabled" } },
+    roles: [], runs: [], jobs, nativeSessions: native, now: new Date(at(30))
+  });
+  assert.equal(execution([{ id: "job-1", status: "running" }]).status, "waiting-on-jobs");
+  assert.notEqual(execution([]).status, "attention");
+  assert.equal(project([current], []).counts.unknown, 1, "missing readiness is not empty execution");
+  assert.equal(project([current], [event("session.ready", 2, {}, {
+    ...sessionFence, nativeSessionId: "another-session"
+  })]).counts.unknown, 1, "another Session cannot supply readiness");
+  const goal = { ...current, providerBinding: { ...current.providerBinding, goal: { status: "active" } } };
+  assert.equal(project([goal], [ready]).counts.unknown, 1, "an active Goal is not proven idle");
+  assert.equal(project([current], [ready, event("host.observed", 3,
+    { alive: false }, sessionFence)]).counts.unknown, 1);
+});
+
 test("empty selected Sessions do not invent execution and retained children keep one original Run identity", () => {
   const empty = { ...set(), sessions: {}, providerBinding: null };
   const native = project([empty], []);

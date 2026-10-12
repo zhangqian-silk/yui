@@ -92,8 +92,21 @@ export function projectTaskSessions(input: Readonly<{
       continue;
     }
     if (!turn) {
+      const sessionEvents = sessionFacts.filter(({ observation }) => {
+        const f = observation!.fence;
+        return f.runId === undefined && f.nativeTurnId === undefined
+          && f.receiptId === undefined && f.continuationId === undefined;
+      }).map(entry => entry.event);
+      const projection = projectRuntimeTaskEvents(fence, session.createdAt, sessionEvents);
+      const ready = session.status !== "ended" && projection.session === "ready"
+        && projection.host !== "exited" && projection.run === "none"
+        && projection.observer.status !== "unavailable" && projection.observer.status !== "degraded"
+        && projection.goal !== "active" && binding.goal?.status !== "active"
+        && Object.keys(projection.operations).length === 0;
       sessions.push({ ...row, background, ...(background.length ? {
         group: "background", reason: "Retained background execution is not settled."
+      } : ready ? {
+        group: "idle", reason: "The selected Session is ready with no submitted native input."
       } : {}) });
       continue;
     }

@@ -9,19 +9,22 @@ import { richText } from "/assets/js/ui/text.js";
 import { cachedExact, readExact, summaryFields, entriesOf, totalOf, exactCache } from "/assets/js/domain/context.js";
 
 // Current-family counts and pages use exactly the Context current filter.
-// A changed Context resets the loaded membership; stale continuations never
-// silently mix versions. Loading a list does not eagerly inspect its bodies.
+// A changed Context revalidates already-loaded membership with one bounded
+// page. Only the family's own digest invalidates its pages, not unrelated
+// runtime events. Loading a list does not eagerly inspect its bodies.
 export function currentRecordCard(data, store, t, actions, options) {
   const view = data.viewState;
   exactCache(view);
   view.currentLists = view.currentLists || {};
   let state = view.currentLists[store];
-  if (!state || state.key !== data.core.coreCursor) {
+  if (!state || (!state.started && state.key !== data.core.coreCursor)) {
     state = view.currentLists[store] = {
       key: data.core.coreCursor, items: entriesOf(data.core, store),
       total: totalOf(data.core, store), started: false, cursor: null, error: null, pending: false
     };
   }
+  const revalidate = state.key !== data.core.coreCursor;
+  state.key = data.core.coreCursor;
   const element = listCard({ id: options.id, title: options.title, icon: options.icon || "pulse", count: state.total });
   const rows = h("div.stack"), footer = h("div.stack", { "aria-live": "polite" });
   element.list.append(rows, footer);
@@ -58,12 +61,16 @@ export function currentRecordCard(data, store, t, actions, options) {
     try {
       const page = await actions.list(data.task.id, store, { view: "current", limit: 20, cursor: more ? state.cursor : null });
       if (busy()) throw new Error(t("activity.busy"));
-      state.items = more ? state.items.concat(page.items) : page.items;
-      state.total = page.total; state.cursor = page.nextCursor; state.started = true; state.error = null;
+      if (more || !state.started || state.digest !== page.digest) {
+        state.items = more ? state.items.concat(page.items) : page.items;
+        state.cursor = page.nextCursor;
+      }
+      state.digest = page.digest; state.total = page.total; state.started = true; state.error = null;
     } catch (error) { state.error = error.message; }
     finally { state.pending = false; draw(!state.error); }
   }
   draw();
+  if (revalidate) load(false);
   return element;
 }
 

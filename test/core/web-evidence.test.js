@@ -17,6 +17,79 @@ import { MARKDOWN_SCRIPT } from "../../dist/web/assets/client/lib/markdown.js";
 import { CONTEXT_SCRIPT } from "../../dist/web/assets/client/domain/context.js";
 import { TASK_RECORDS_SCRIPT } from "../../dist/web/assets/client/views/task/records.js";
 import { RUNS_SCRIPT } from "../../dist/web/assets/client/domain/runs.js";
+import { TASK_RUNTIME_SCRIPT } from "../../dist/web/assets/client/views/task/runtime.js";
+
+test("current record and native pages survive unrelated polling and converge on changed collections", async () => {
+  const element = (spec, attrs, ...children) => ({
+    spec, dataset: {}, children: children.filter(child => child != null),
+    append(...items) { this.children.push(...items); },
+    replaceChildren(...items) { this.children = items; },
+    addEventListener() {}, querySelector() { return null; }
+  });
+  const context = vm.createContext({
+    h: element, icon: name => name, mono: text => text, note: text => text,
+    button: (text, options) => ({ text, ...options }),
+    card: () => Object.assign(element("card"), { body: element("body") }),
+    listCard: () => Object.assign(element("card"), { list: element("list") }),
+    setCardCount() {}
+  });
+  for (const script of [CONTEXT_SCRIPT, RECORDS_SCRIPT, TASK_RUNTIME_SCRIPT]) {
+    vm.runInContext(script.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
+  }
+  const tick = () => new Promise(resolve => setImmediate(resolve));
+  const click = (node, label) => {
+    if (node?.text?.startsWith(label)) return node.onClick();
+    for (const child of node?.children || []) {
+      const result = click(child, label);
+      if (result !== undefined) return result;
+    }
+  };
+  for (const native of [false, true]) {
+    let digest = "unchanged", total = 43, fail = false;
+    const calls = [];
+    const items = Array.from({ length: 43 }, (_, i) => ({
+      id: `item-${i}`, kind: "background", roleName: "leader", status: "active", summary: `item ${i}`,
+      ref: { store: "job", refId: `job-${i}`, digest: `job-${i}` }, omitted: true
+    }));
+    const read = async (...args) => {
+      const options = args.at(-1);
+      calls.push(options);
+      if (fail) throw new Error("observation unavailable");
+      const offset = options.cursor ? Number(options.cursor) : 0;
+      return { items: items.slice(offset, Math.min(offset + 20, total)), total, digest,
+        nextCursor: offset + 20 < total ? String(offset + 20) : null,
+        readAt: "now", coverage: "partial" };
+    };
+    const data = { task: { id: "task-1" }, viewState: {},
+      core: { coreCursor: "1", records: items.slice(0, 8), collections: [{ store: "job", total }] } };
+    const render = () => native
+      ? context.nativeCard(data, key => key, { activity: read })
+      : context.currentRecordCard(data, "job", key => key, { list: read }, { id: "jobs", title: "Jobs" });
+    const state = () => native ? data.viewState.nativeActivity : data.viewState.currentLists.job;
+    const root = node => native ? node.body : node.list;
+    let card = render();
+    assert.equal(calls.length, 0, "first render stays bounded and on-demand");
+    click(root(card), "activity.more"); await tick();
+    click(root(card), "activity.more"); await tick();
+    assert.equal(state().items.length, 40);
+    data.core.coreCursor = "2";
+    card = render(); await tick();
+    assert.equal(state().items.length, 40, "unrelated Context change must preserve loaded pages");
+    click(root(card), "activity.more"); await tick();
+    assert.equal(state().items.length, 43);
+    fail = true;
+    data.core.coreCursor = "3";
+    render(); await tick();
+    assert.equal(state().items.length, 43, "failed revalidation preserves evidence with an error");
+    assert.match(state().error, /unavailable/);
+    fail = false; digest = "settled"; total = 3;
+    data.core.coreCursor = "4";
+    render(); await tick();
+    assert.equal(state().items.length, 3, "changed membership removes settled records");
+    assert.equal(state().error, null);
+    assert.ok(calls.every(options => options.limit === 20), "each validation remains bounded");
+  }
+});
 
 test("Role facts distinguish unloaded Session samples from observed absence", () => {
   const context = vm.createContext({ mono: text => text });

@@ -86,9 +86,11 @@ function jobsCard(data, t, locale, ctx) {
 function nativeCard(data, t, ctx) {
   const element = card({ id: "detail-native-activity", title: t("activity.native"), icon: "pulse" });
   let state = data.viewState.nativeActivity;
-  if (!state || state.key !== data.core.coreCursor) {
+  if (!state) {
     state = data.viewState.nativeActivity = { key: data.core.coreCursor, items: [], page: null, pending: false, error: null };
   }
+  const revalidate = state.page && state.key !== data.core.coreCursor;
+  state.key = data.core.coreCursor;
   function draw() {
     element.body.replaceChildren(note(t("activity.scope")));
     if (!state.page) element.body.append(note(t("activity.notLoaded")));
@@ -118,12 +120,19 @@ function nativeCard(data, t, ctx) {
     state.pending = true; draw();
     try {
       const page = await ctx.activity(data.task.id, { limit: 20, ...(more ? { cursor: state.page.nextCursor } : {}) });
-      state.items = more ? state.items.concat(page.items) : page.items;
-      state.page = page; state.error = null;
+      if (!more && state.page && state.page.digest === page.digest) {
+        // Refresh observation metadata without discarding unchanged loaded pages.
+        state.page = { ...page, nextCursor: state.page.nextCursor };
+      } else {
+        state.items = more ? state.items.concat(page.items) : page.items;
+        state.page = page;
+      }
+      state.error = null;
     } catch (error) { state.error = error.message; }
     finally { state.pending = false; draw(); }
   }
   draw();
+  if (revalidate) load(false);
   return element;
 }
 
