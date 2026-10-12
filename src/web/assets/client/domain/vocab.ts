@@ -23,7 +23,7 @@ export function label(t, prefix, value) {
 const TONES = {
   task: { draft: "warn", active: "info", completed: "ok", cancelled: "idle", archived: "idle" },
   exec: {
-    "needs-leader-action": "accent", "waiting-on-agents": "info", "waiting-user": "warn",
+    "needs-leader-action": "accent", "waiting-on-agents": "info", "waiting-on-jobs": "info", "waiting-user": "warn",
     recovering: "warn", attention: "bad", "progressing-with-attention": "warn", blocked: "bad",
     conflicted: "warn", working: "info", completed: "ok", retired: "idle", cancelled: "idle",
     accepted: "ok", open: "info", archived: "idle"

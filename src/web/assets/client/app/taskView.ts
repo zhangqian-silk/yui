@@ -154,6 +154,7 @@ function detailContext(view) {
     taskAction: deps.api.taskAction,
     inspect: api.inspect,
     list: api.list,
+    activity: api.activity,
     artifacts: api.artifacts,
     readArtifact: api.artifact,
     evidence: api.evidence,

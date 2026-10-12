@@ -12,6 +12,7 @@ import { CliError, usageError } from "../errors/cliError.js";
 import { parseTaskCatalogOptions } from "../context/taskCatalog.js";
 import { parseTaskSearchOptions, searchTaskBodies } from "../context/taskSearch.js";
 import { readTaskUsage } from "../runtime/taskUsageQuery.js";
+import { readWebTaskActivity } from "./webTaskActivity.js";
 import type { WebTaskSurface, WebControlInput } from "./webTaskSurface.js";
 import { WebRequestRejected } from "./webMutation.js";
 import type { createTaskPreviews } from "./taskPreviews.js";
@@ -529,6 +530,7 @@ async function handleHttpRequest(
         if (limit !== null && !/^\d{1,3}$/u.test(limit)) throw new WebRequestRejected("Invalid list limit.");
         value = dependencies.surface.list(taskId, {
           store: query.get("store") ?? "",
+          ...(query.has("view") ? { view: query.get("view")! } : {}),
           ...(query.has("status") ? { status: query.get("status")! } : {}),
           ...(query.has("cursor") ? { cursor: query.get("cursor")! } : {}),
           ...(limit === null ? {} : { limit: Number(limit) })
@@ -593,6 +595,14 @@ async function handleHttpRequest(
           ? buildWebPageSessions(store, options, now())
           : buildWebTaskCatalog(store, options);
         sendJson(response, 200, snapshot, method === "HEAD");
+      } else if (/^\/api\/tasks\/[^/]+\/activity$/u.test(pathname)) {
+        const taskId = decodeURIComponent(pathname.split("/")[3]!);
+        const query = new URL(request.url!, "http://localhost").searchParams;
+        if ([...query.keys()].some(key => !["limit", "cursor"].includes(key))) throw usageError("Invalid activity option.");
+        sendJson(response, 200, readWebTaskActivity(store, taskId, {
+          ...(query.has("limit") ? { limit: Number(query.get("limit")) } : {}),
+          ...(query.has("cursor") ? { cursor: query.get("cursor")! } : {})
+        }, now()), method === "HEAD");
       } else if (/^\/api\/tasks\/[^/]+\/usage$/u.test(pathname)) {
         const taskId = decodeURIComponent(pathname.split("/")[3]!);
         const query = new URL(request.url!, "http://localhost").searchParams;

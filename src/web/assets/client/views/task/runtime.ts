@@ -3,38 +3,36 @@ export const TASK_RUNTIME_SCRIPT = String.raw`
 // control, open execution, open operations, usage and diagnostics. Session
 // lines, counts and raw facts are [data-slot]s the observation fills in.
 import { h } from "/assets/js/lib/dom.js";
-import { fill } from "/assets/js/lib/format.js";
-import { dot, emptyState, mono, note, timeTag } from "/assets/js/ui/primitives.js";
-import { card, cardDisclosure, listCard } from "/assets/js/ui/containers.js";
+import { dot, button, emptyState, mono, note, timeTag } from "/assets/js/ui/primitives.js";
+import { card, cardDisclosure } from "/assets/js/ui/containers.js";
 import { observabilityMetricCard } from "/assets/js/ui/metrics.js";
 import { statusBadge, tone } from "/assets/js/domain/vocab.js";
-import { cachedExact, entriesOf, exactCache, totalOf } from "/assets/js/domain/context.js";
-import { exactRow, recordCard } from "/assets/js/domain/records.js";
+import { cachedExact, entriesOf, exactCache } from "/assets/js/domain/context.js";
+import { currentRecordCard } from "/assets/js/domain/records.js";
 import { roleCard, runCard } from "/assets/js/domain/runs.js";
 import { controlForm } from "/assets/js/domain/taskForms.js";
 
 export function renderRuntime(panel, data, t, locale, ctx) {
   exactCache(data.viewState);
   const roleEntries = entriesOf(data.core, "role");
-  panel.append(rolesCard(data, roleEntries, t, locale, ctx));
+  panel.append(rolesCard(data, t, locale, ctx));
   panel.append(controlCard(data.task, roleEntries, t, ctx));
   panel.append(runsCard(data, t, locale, ctx));
   panel.append(jobsCard(data, t, locale, ctx));
+  panel.append(currentRecordCard(data, "review-round", t, ctx, { id: "detail-reviews", title: t("activity.reviews") }));
+  panel.append(nativeCard(data, t, ctx));
   panel.append(usageCard(data, t));
   panel.append(diagnosticsCard(data.core, t));
 }
 
 // --- Roles -------------------------------------------------------------------
-function rolesCard(data, roleEntries, t, locale, ctx) {
+function rolesCard(data, t, locale, ctx) {
   const runs = knownRuns(data);
-  const roles = listCard({
-    id: "detail-roles", title: t("roles.title"), icon: "user", count: totalOf(data.core, "role"), hint: t("roles.hint"),
-    actions: h("div.chip-row", { dataset: { slot: "session-counts" } })
+  const roles = currentRecordCard(data, "role", t, ctx, {
+    id: "detail-roles", title: t("roles.title"), icon: "user",
+    render: function (role, result, entry) { return roleRow({ ...entry, value: role }, data, runs, t, locale, ctx); }
   });
-  roleEntries.forEach(function (entry) {
-    roles.list.append(entry.omitted ? recordCard(entry, data.task.id, t, ctx) : roleRow(entry, data, runs, t, locale, ctx));
-  });
-  if (!roleEntries.length) roles.list.append(emptyState(t("records.none")));
+  roles.list.prepend(h("div.chip-row", { dataset: { slot: "session-counts" } }));
   return roles;
 }
 
@@ -72,31 +70,70 @@ function controlCard(task, roleEntries, t, ctx) {
 
 // --- Execution and operations --------------------------------------------------
 function runsCard(data, t, locale, ctx) {
-  const runEntries = entriesOf(data.core, "run");
-  const runTotal = totalOf(data.core, "run");
-  const runList = listCard({ id: "detail-exec", title: t("runs.title"), icon: "pulse", count: runTotal || null, hint: t("runs.hint") });
-  if (!runEntries.length) runList.list.append(emptyState(t("runs.none"), "pulse"));
-  runEntries.forEach(function (entry) {
-    runList.list.append(exactRow(entry, data.task.id, t, ctx, data.viewState.exact, function (value, result) {
-      return runCard({ ...value, execution: (result && result.execution) || entry.execution }, t, locale);
-    }));
+  return currentRecordCard(data, "run", t, ctx, {
+    id: "detail-exec", title: t("runs.title"),
+    render: function (value, result) { return runCard({ ...value, execution: result && result.execution }, t, locale); }
   });
-  if (runTotal > runEntries.length) runList.list.append(note(fill(t("runs.more"), { count: runTotal - runEntries.length })));
-  return runList;
 }
 
 function jobsCard(data, t, locale, ctx) {
-  const jobs = entriesOf(data.core, "job");
-  const jobTotal = totalOf(data.core, "job");
-  const jobList = listCard({
-    id: "detail-operations", title: t("jobs.title"), icon: "refresh", count: jobTotal || null,
-    hint: jobTotal ? t("jobs.hint") : null
+  return currentRecordCard(data, "job", t, ctx, {
+    id: "detail-operations", title: t("jobs.title"), icon: "refresh",
+    render: function (job) { return jobRecord(job, data.task, t, locale); }
   });
-  if (!jobs.length) jobList.list.append(emptyState(t("jobs.none")));
-  jobs.forEach(function (entry) {
-    jobList.list.append(exactRow(entry, data.task.id, t, ctx, data.viewState.exact, function (job) { return jobRecord(job, data.task, t, locale); }));
-  });
-  return jobList;
+}
+
+function nativeCard(data, t, ctx) {
+  const element = card({ id: "detail-native-activity", title: t("activity.native"), icon: "pulse" });
+  let state = data.viewState.nativeActivity;
+  if (!state) {
+    state = data.viewState.nativeActivity = { key: data.core.coreCursor, items: [], page: null, pending: false, error: null };
+  }
+  const revalidate = state.page && state.key !== data.core.coreCursor;
+  state.key = data.core.coreCursor;
+  function draw() {
+    element.body.replaceChildren(note(t("activity.scope")));
+    if (!state.page) element.body.append(note(t("activity.notLoaded")));
+    else {
+      element.body.append(note(t("activity.loaded") + " " + state.items.length + " / " + state.page.total
+        + " · " + state.page.coverage + " · " + state.page.readAt));
+      if (!state.page.total) element.body.append(note(t("activity.none")));
+    }
+    state.items.forEach(function (item) {
+      element.body.append(h("article.record", null,
+        h("header.record-head", null, mono(item.roleName + " / " + item.kind), h("span.spacer"), item.status),
+        h("p.small", null, item.summary),
+        h("p.faint.small.mono-line", null, [item.nativeSessionId, item.runId, item.sourceUpdatedAt].filter(Boolean).join(" · ")),
+        button(t("activity.openSession"), { onClick: function () { ctx.openSession(item.roleName); } })));
+    });
+    if (state.error) element.body.append(note(state.error + " · " + t("activity.refreshHint"), "bad"));
+    const controls = h("div.chip-row");
+    if (!state.page || state.page.nextCursor) controls.append(button(t("activity.more"), {
+      disabled: state.pending, onClick: function () { load(!!state.page); }
+    }));
+    controls.append(button(t("activity.refresh"), { disabled: state.pending, onClick: function () { load(false); } }));
+    element.body.append(controls);
+    element.dataset.reading = String(state.pending);
+  }
+  async function load(more) {
+    if (state.pending) return;
+    state.pending = true; draw();
+    try {
+      const page = await ctx.activity(data.task.id, { limit: 20, ...(more ? { cursor: state.page.nextCursor } : {}) });
+      if (!more && state.page && state.page.digest === page.digest) {
+        // Refresh observation metadata without discarding unchanged loaded pages.
+        state.page = { ...page, nextCursor: state.page.nextCursor };
+      } else {
+        state.items = more ? state.items.concat(page.items) : page.items;
+        state.page = page;
+      }
+      state.error = null;
+    } catch (error) { state.error = error.message; }
+    finally { state.pending = false; draw(); }
+  }
+  draw();
+  if (revalidate) load(false);
+  return element;
 }
 
 function jobRecord(job, task, t, locale) {

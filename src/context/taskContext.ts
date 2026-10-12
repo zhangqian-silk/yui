@@ -225,12 +225,15 @@ export function readTaskContextResource(
  */
 export function listTaskContext(
   store: TaskStore, taskId: string, family: string,
-  options: ReadPageOptions & { status?: string; after?: string; workItemId?: string } = {},
+  options: ReadPageOptions & { view?: string; status?: string; after?: string; workItemId?: string } = {},
   environment: NodeJS.ProcessEnv = {}
 ) {
   return store.readTransaction(reader => {
     const scope = authorizeContext(reader, taskId, environment);
-    const sources = authorizedSources(reader, scope, false, family);
+    if (options.view !== undefined && !["current", "all"].includes(options.view)) {
+      throw usageError("Context list view must be current or all.");
+    }
+    const sources = authorizedSources(reader, scope, options.view === "current", family, true);
     if (!CONTEXT_FAMILIES.includes(family)) throw usageError(`Unknown Context store: ${family}.`);
     if (options.after !== undefined && !Number.isFinite(Date.parse(options.after))) throw usageError("Invalid --after timestamp.");
     const retiredKind = family === "task-message" ? "message" : family === "run" ? "run" : undefined;
@@ -252,7 +255,7 @@ export function listTaskContext(
       }
     }
     return recordPage(records, `task:${taskId}/${family}/${JSON.stringify({
-      status: options.status, after: options.after, workItemId: options.workItemId
+      view: options.view ?? "all", status: options.status, after: options.after, workItemId: options.workItemId
     })}`, options);
   });
 }
@@ -488,7 +491,7 @@ function inspectValue(
 type EntrySource = { family: string; count: number; read(offset?: number): Iterable<Entry> };
 
 function authorizedSources(store: TaskStore, { task, allow, caller }: ReturnType<typeof authorizeContext>,
-  current = false, requestedFamily?: string): EntrySource[] {
+  current = false, requestedFamily?: string, discovery = false): EntrySource[] {
   const taskId = task.id;
   const sources: EntrySource[] = [];
   const add = (family: string, id: string, value: unknown) => {
@@ -502,7 +505,7 @@ function authorizedSources(store: TaskStore, { task, allow, caller }: ReturnType
     const { count } = store.queryContextRecords(taskId, { ...selection, limit: 0 });
     sources.push({ family, count, *read(offset = 0) {
       for (const { id, value } of store.queryContextRecords(taskId, {
-        ...selection, offset, limit: current ? 8 : MAX_RECORDS
+        ...selection, offset, limit: current && !discovery ? 8 : MAX_RECORDS
       }).records) yield materialize(family, id, value);
     } });
   };

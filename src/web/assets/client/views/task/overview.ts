@@ -7,8 +7,8 @@ import { formatDateTime } from "/assets/js/lib/format.js";
 import { bulletList, button, codeBlock, dot, emptyState, note, timeTag } from "/assets/js/ui/primitives.js";
 import { card, disclosure } from "/assets/js/ui/containers.js";
 import { richText } from "/assets/js/ui/text.js";
-import { entriesOf, exactCache, totalOf, valuesOf } from "/assets/js/domain/context.js";
-import { lazyRow, recordCard } from "/assets/js/domain/records.js";
+import { entriesOf, totalOf, valuesOf } from "/assets/js/domain/context.js";
+import { currentRecordCard, recordCard } from "/assets/js/domain/records.js";
 import { inputCard } from "/assets/js/domain/work.js";
 import { taskActions } from "/assets/js/views/task/actions.js";
 
@@ -30,45 +30,12 @@ export function renderOverviewPanel(panel, data, t, locale, ctx) {
 // Needs you: open InputRequests with their answer controls. Open questions
 // the bounded read did not carry are listed by reference.
 function needsCard(data, t, locale, ctx) {
-  const task = data.task;
-  const openInputs = data.core.attention.openInputs;
-  const inputs = entriesOf(data.core, "input-request").filter(function (entry) { return !entry.omitted && entry.value.status === "open"; });
-  const missing = openInputs.refs.filter(function (ref) {
-    return !inputs.some(function (entry) { return entry.ref.refId === ref.refId; });
+  return currentRecordCard(data, "input-request", t, ctx, {
+    id: "detail-attention", title: t("overview.needsYou"), icon: "inbox",
+    render: function (value) {
+      return value.status === "open" ? inputCard(value, t, locale, ctx.answerInput) : note(value.id + " · " + value.status);
+    }
   });
-  const needs = card({ title: t("overview.needsYou"), icon: "inbox", count: openInputs.count, className: "needs-card" });
-  needs.id = "detail-attention";
-  inputs.forEach(function (entry) { needs.body.append(inputCard(entry.value, t, locale, ctx.answerInput)); });
-  const seen = new Set(inputs.map(function (entry) { return entry.ref.refId; }));
-  function deferredInput(item) {
-    seen.add(item.ref.refId);
-    return lazyRow(item, task.id, t, ctx, {
-      head: h("span", null, item.summary || item.ref.refId),
-      cache: exactCache(data.viewState),
-      render: function (value) {
-        return value.status === "open" ? inputCard(value, t, locale, ctx.answerInput)
-          : note(value.id + " · " + value.status);
-      }
-    });
-  }
-  missing.forEach(function (ref) {
-    const entry = entriesOf(data.core, "input-request").find(function (entry) { return entry.ref.refId === ref.refId; });
-    needs.body.append(deferredInput({ ref: ref, summary: entry && entry.summary }));
-  });
-  if (openInputs.count > inputs.length + missing.length) {
-    let cursor;
-    const more = button(t("overview.moreInputs"), { onClick: async function () {
-      more.disabled = true;
-      try {
-        const page = await ctx.list(task.id, "input-request", { status: "open", limit: 20, cursor: cursor });
-        page.items.forEach(function (item) { if (!seen.has(item.ref.refId)) needs.body.insertBefore(deferredInput(item), more); });
-        cursor = page.nextCursor;
-        more.disabled = !cursor;
-      } catch (error) { needs.body.append(note(error.message, "bad")); more.disabled = false; }
-    } });
-    needs.body.append(more);
-  }
-  return needs;
 }
 
 function briefOf(data) {

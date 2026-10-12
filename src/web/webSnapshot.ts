@@ -159,13 +159,13 @@ export function buildWebTaskDetail(
           && effectiveLaunch.sourceDesiredRevision !== role.launchRevision
       };
     });
-    const execution = buildTaskExecutionProjection(reader, taskId, now);
-    if (execution === null) return null;
     const brief = reader.getTaskBrief(taskId);
     const roleSessionSets = reader.listRoleSessionSets(taskId);
     const sessions = projectWebSessions({ taskId, sessionSets: roleSessionSets, events, now,
       ...(brief?.updatedAt === undefined ? {} : { semanticProgressAt: brief.updatedAt }),
       policy: resolveRuntimeHealth(reader.getConfig().runtimeHealth) });
+    const execution = buildTaskExecutionProjection(reader, taskId, now, sessions);
+    if (execution === null) return null;
     if (compact) {
       // Observation is not semantic progress. No Task/Message/Run bodies,
       // Role history or validation logs ride the default polling response.
@@ -177,15 +177,19 @@ export function buildWebTaskDetail(
           monitoring: execution.monitoring, failClosed: execution.failClosed,
           activeRuns: execution.activeRuns.slice(0, 16).map(run => ({ id: run.id })),
           activeRunCount: execution.activeRuns.length,
+          activity: execution.activity,
           attention: execution.attention.slice(0, 8).map(item => ({ ...item, summary: clip(item.summary) })),
           blockers: execution.blockers.slice(0, 8).map(item => ({ ...item, summary: clip(item.summary) }))
         },
+        roleCount: roles.length,
         roles: roles.slice(0, 16).map(role => ({
           name: role.name, status: role.status, runtimeSession: role.runtimeSession
         })),
-        sessions: { ...sessions, sessions: sessions.sessions.slice(0, 16).map(session => ({
+        sessions: { ...sessions, total: sessions.sessions.length, coverageStatus: "partial",
+          sessions: sessions.sessions.slice(0, 16).map(session => ({
           ...session, reason: session.reason.slice(0, 1200),
-          operations: session.operations.slice(0, 16), background: session.background.slice(0, 16)
+          operationCount: session.operations.length, backgroundCount: session.background.length,
+          operations: [], background: []
         })) },
         observability: {
           cost: execution.observability.cost,

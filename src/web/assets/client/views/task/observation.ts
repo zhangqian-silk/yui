@@ -73,6 +73,14 @@ function nowHead(data, execution, t, locale) {
       : h("span.now-owner", null, label(t, "exec.owner", execution.owner) + " · " + label(t, "exec.action", execution.action)));
   const activeCount = execution.activeRunCount === undefined ? (execution.activeRuns || []).length : execution.activeRunCount;
   if (activeCount) head.append(badge(activeCount + " " + t("now.activeRuns"), "info"));
+  if (execution.activity) {
+    const jobs = execution.activity.jobs, native = execution.activity.native;
+    head.append(badge(t("jobs.title") + " · " + t("job.running") + " " + jobs.running
+      + " / " + t("job.queued") + " " + jobs.queued + " / " + t("detail.unobserved") + " " + jobs.unknown, jobs.unknown ? "warn" : "info"));
+    head.append(badge(t("activity.native") + " · " + (native.active + native.waiting)
+      + " / " + t("sessions.background") + " " + native.background
+      + " / " + t("detail.unobserved") + " " + native.unknown, native.unknown ? "warn" : "info"));
+  }
   if (execution.monitoring === "stopped") head.append(badge(t("now.monitoringStopped"), "warn"));
   if (execution.failClosed) head.append(badge(t("now.failClosed"), "bad"));
   head.append(h("span.spacer"), h("span.faint.small", { title: formatDateTime(data.runtimeObservedAt, locale) },
@@ -123,7 +131,8 @@ function drawSessions(container, observation, t, locale) {
 function drawRoleSession(slot, session, observation, t, locale) {
   clear(slot);
   if (!session) {
-    slot.append(h("span.faint.small", null, observation ? t("session.noneRecorded") : t("sessions.unavailable")));
+    slot.append(h("span.faint.small", null, !observation ? t("sessions.unavailable")
+      : observation.total > observation.sessions.length ? t("activity.notLoaded") : t("session.noneRecorded")));
     return;
   }
   slot.append(h("div.role-session-head", null, dot(tone("session", session.group)),
@@ -143,8 +152,8 @@ function drawSessionFacts(facts, observation, sessions, t, locale) {
       [t("sessions.role"), session.roleName],
       [t("sessions.lastActivity"), session.lastActivityAt ? formatDateTime(session.lastActivityAt, locale) : t("sessions.unobserved")],
       [t("sessions.inputUpdated"), formatDateTime(session.sourceUpdatedAt, locale)],
-      [t("sessions.operations"), session.operations.length ? session.operations.join(", ") : null],
-      [t("sessions.background"), session.background.length ? session.background.map(function (item) { return item.id + " · " + item.execution; }).join(", ") : null],
+      [t("sessions.operations"), (session.operationCount ?? session.operations.length) + " · " + session.operations.join(", ")],
+      [t("sessions.background"), (session.backgroundCount ?? session.background.length) + " · " + session.background.map(function (item) { return item.id + " · " + item.execution; }).join(", ")],
       [t("sessions.identity"), mono([session.nativeSessionId, session.nativeTurnId, session.attemptId].filter(Boolean).join(" / "))]
     ]));
   });
