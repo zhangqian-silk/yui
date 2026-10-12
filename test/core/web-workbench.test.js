@@ -195,7 +195,7 @@ test("selecting a Task uses its bounded workbench without automatically expandin
 });
 
 test("the workbench primary action opens the current Leader conversation, not a native terminal", () => {
-  const node = () => ({ hidden: true, children: [], dataset: {},
+  const node = (_tag, _attrs, ...kids) => ({ hidden: true, children: kids.flat().filter(Boolean), dataset: {},
     append(...items) { this.children.push(...items); }, setAttribute() {}, addEventListener() {},
     querySelectorAll: () => [] });
   const opened = [];
@@ -225,7 +225,9 @@ test("the workbench primary action opens the current Leader conversation, not a 
     } }
   });
   const ctx = runtime.detailContext({ controller: {}, deps: { state, api: {}, workspace } });
-  runtime.taskActions({ id: "task-current", status: "active" }, key => key, ctx).body.children[0].onClick();
+  const find = (item, text) => item?.text === text ? item
+    : (item?.children || []).map(child => find(child, text)).find(Boolean);
+  find(runtime.taskActions({ id: "task-current", status: "active" }, key => key, ctx).body, "workbench.continue").onClick();
   assert.equal(el.conversation.hidden, false, "explicit continuation also opens the narrow-screen sheet");
   assert.equal(el.session.hidden, true);
   assert.deepEqual(JSON.parse(JSON.stringify(opened)), [[
