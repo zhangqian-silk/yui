@@ -5,6 +5,8 @@ import { createRuntimeObservation, runtimeObservationTaskEventPayload } from "..
 import { createProviderRuntimeBinding, beginProviderTurn, acceptProviderTurn, settleProviderTurn } from "../../dist/runtime/providerRuntimeIdentity.js";
 import { recordProviderFailure, admitProviderRetry } from "../../dist/runtime/providerRetry.js";
 import { readWebTaskActivity } from "../../dist/web/webTaskActivity.js";
+import { nativeActivityRows } from "../../dist/web/webTaskActivity.js";
+import { projectTaskExecution } from "../../dist/scheduler/taskExecutionProjection.js";
 
 const at = n => new Date(Date.parse("2026-09-13T00:00:00Z") + n * 1000).toISOString();
 const set = (status = "accepted") => ({
@@ -31,6 +33,42 @@ function event(kind, n, payload = {}, fence = {}) {
 const project = (sets, events, seconds = 30) => projectWebSessions({
   taskId: "task-1", sessionSets: sets, events, now: new Date(at(seconds)),
   semanticProgressAt: at(0)
+});
+
+test("empty selected Sessions do not invent execution and retained children keep one original Run identity", () => {
+  const empty = { ...set(), sessions: {}, providerBinding: null };
+  const native = project([empty], []);
+  assert.equal(native.sessions.length, 0);
+  assert.equal(projectTaskExecution({
+    task: { id: "task-1", status: "active", executionGate: { state: "enabled" } },
+    roles: [], runs: [], jobs: [{ id: "job-1", status: "running" }], nativeSessions: native,
+    now: new Date(at(30))
+  }).status, "waiting-on-jobs");
+  assert.equal(project([{ ...empty, providerBinding: set().providerBinding }], []).counts.unknown, 1,
+    "real input with missing Session remains unknown");
+
+  const fence = { runId: "run-1", nativeTurnId: "turn-1", receiptId: "attempt-1" };
+  const events = [
+    event("operation.started", 8, { operation: "subagent", operationId: "child-1" }, fence),
+    event("continuation.started", 8, { execution: "active", outcome: "pending",
+      attachment: "attached", observationQuality: "exact", mayWriteWorkspace: true },
+      { ...fence, continuationId: "child-1" })
+  ];
+  const current = set("completed");
+  current.providerBinding.run.runId = "run-2";
+  for (const selected of [current, empty]) {
+    const rows = nativeActivityRows(project([selected], events)).filter(row => row.kind === "background");
+    assert.equal(rows.length, 1, "operation and continuation describe one child");
+    assert.equal(rows[0].runId, "run-1", "never borrow the selected Turn's Run");
+  }
+  const operationOnly = nativeActivityRows(project([current], events.slice(0, 1)))
+    .filter(row => row.kind === "background");
+  assert.equal(operationOnly.length, 1);
+  assert.equal(operationOnly[0].runId, "run-1");
+  const otherRun = event("operation.started", 9, { operation: "subagent", operationId: "child-1" },
+    { ...fence, runId: "run-3" });
+  assert.equal(nativeActivityRows(project([current], [...events, otherRun]))
+    .filter(row => row.kind === "background").length, 2, "same child ID in a different Run is distinct");
 });
 
 test("Web counts a direct native Turn once and never borrows a prior Turn or Session's activity", () => {

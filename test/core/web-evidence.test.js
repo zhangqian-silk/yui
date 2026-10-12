@@ -16,6 +16,17 @@ import { API_SCRIPT } from "../../dist/web/assets/client/lib/api.js";
 import { MARKDOWN_SCRIPT } from "../../dist/web/assets/client/lib/markdown.js";
 import { CONTEXT_SCRIPT } from "../../dist/web/assets/client/domain/context.js";
 import { TASK_RECORDS_SCRIPT } from "../../dist/web/assets/client/views/task/records.js";
+import { RUNS_SCRIPT } from "../../dist/web/assets/client/domain/runs.js";
+
+test("Role facts distinguish unloaded Session samples from observed absence", () => {
+  const context = vm.createContext({ mono: text => text });
+  vm.runInContext(RUNS_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
+  const role = { name: "worker-19" };
+  const facts = options => context.roleFacts(role, key => key, "en", options)[0][1];
+  assert.equal(facts({}), "activity.notLoaded");
+  assert.equal(facts({ runtimeRole: { runtimeSession: null } }), "role.noSession");
+  assert.equal(facts({ runtimeRole: { runtimeSession: { nativeSessionId: "session-19" } } }), "session-19");
+});
 
 test("Web knowledge reads summaries on open, then exact source and history only on row expansion", async () => {
   const element = (spec, attrs, ...children) => ({

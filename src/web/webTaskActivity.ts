@@ -27,7 +27,7 @@ export function nativeActivityRows(projection: ReturnType<typeof projectTaskSess
         status: "unsettled", summary: operation.slice(0, 1200)
       })),
       ...session.background.map(child => ({
-        ...identity, id: `${key}/background/${child.id}`, kind: "background",
+        ...identity, runId: child.runId, id: `${key}/background/${child.id}`, kind: "background",
         status: child.execution, summary: child.id.slice(0, 1200)
       }))
     ];

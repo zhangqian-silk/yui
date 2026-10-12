@@ -107,7 +107,8 @@ export function roleCard(role, t, locale, options) {
 function roleFacts(role, t, locale, opts) {
   const session = opts.runtimeRole && opts.runtimeRole.runtimeSession;
   const rows = [];
-  rows.push([t("role.session"), session && session.nativeSessionId ? mono(session.nativeSessionId) : t("role.noSession")]);
+  rows.push([t("role.session"), session && session.nativeSessionId ? mono(session.nativeSessionId)
+    : !opts.runtimeRole ? t("activity.notLoaded") : t("role.noSession")]);
   if (role.launchRevision !== undefined) rows.push([t("role.desired"), "r" + role.launchRevision + (opts.launchDrift ? " · " + t("role.drift") : "")]);
   if (role.defaultAccess !== undefined) rows.push([t("role.access"), role.defaultAccess]);
   if (opts.retry) rows.push([t("role.providerRetry"), label(t, "retry", opts.retry.status) + " · "

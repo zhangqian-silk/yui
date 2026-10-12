@@ -14,7 +14,7 @@ export type WebSession = Readonly<{
   group: WebSessionGroup; reason: string; layer: string | null;
   lastActivityAt: string | null; semanticProgressAt: string | null;
   sourceUpdatedAt: string; waitingReason: string | null; operations: readonly string[];
-  background: readonly Readonly<{ id: string; execution: string }>[];
+  background: readonly Readonly<{ id: string; runId: string | null; execution: string }>[];
 }>;
 
 /** Read-only presentation of the selected native connections, never an AgentRun
@@ -39,6 +39,9 @@ export function projectTaskSessions(input: Readonly<{
     const binding = set.providerBinding;
     const conversation = binding?.conversations.find(c =>
       c.epoch === binding.currentConversationEpoch && c.status === "current");
+    // Replacement can leave an empty set. That is absence, not uncertain
+    // execution; retained child facts are still discovered below.
+    if (!session && !conversation && !binding?.run) continue;
     const nativeSessionId = session?.nativeSessionId ?? conversation?.conversationId ?? null;
     const identity = JSON.stringify([binding?.providerNamespace ?? session?.adapterId,
       binding?.accountScope ?? set.activeAgentId, nativeSessionId ?? set.owner.roleName]);
@@ -205,10 +208,14 @@ function backgroundForRuns(fence: RuntimeObservationFence, since: string, groups
     return [
       ...Object.entries(projection.continuations)
         .filter(([, child]) => child.execution !== "quiescent" || child.identityConflict)
-        .map(([id, child]) => ({ id: `${runId ?? "native"}/${id}`,
+        .map(([id, child]) => ({ id: `${runId ?? "native"}/${id}`, runId: runId ?? null,
           execution: child.identityConflict ? "unknown" : child.execution })),
-      ...Object.entries(projection.operations).filter(([, operation]) => operation.kind === "subagent")
-        .map(([id]) => ({ id: `${runId ?? "native"}/operation:${id}`, execution: "unsettled" }))
+      // Drivers may emit both forms for one child. This fold is already
+      // fenced to Task/Role/Agent/driver/Session/Run; continuation is richer.
+      ...Object.entries(projection.operations).filter(([id, operation]) =>
+        operation.kind === "subagent" && !Object.hasOwn(projection.continuations, id))
+        .map(([id]) => ({ id: `${runId ?? "native"}/operation:${id}`, runId: runId ?? null,
+          execution: "unsettled" }))
     ];
   });
 }
