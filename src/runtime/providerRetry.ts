@@ -65,11 +65,18 @@ export function providerRunRetry(
   if (turn.status !== "failed" || turn.nativeTurnId === undefined || turn.input === undefined
     || turn.retrySupported !== true || failure?.error.inputDisposition !== "accepted"
     || failure.error.sessionDisposition !== "recoverable") return undefined;
+  // A manual attempt can cancel automation when its error changes character.
+  // Refresh its failed-Turn proof without granting the same input a new budget.
+  const continuing = previous?.status !== "recovered" && previous?.currentAttemptId === turn.attemptId
+    && previous.authorityEpoch === binding.authority.epoch && previous.nativeSessionId === nativeSessionId;
   return {
-    policyVersion: 1, chainId: turn.attemptId, status: "waiting",
-    input: turn.input, nativeSessionId, authorityEpoch: binding.authority.epoch,
-    attempts: 0, transportSequence: 0, startedAt: iso(at), intentAt: iso(at),
-    deadline: iso(at + PROVIDER_RETRY_BUDGET_MS), nextEligibleAt: iso(at), updatedAt: iso(at),
+    policyVersion: 1, chainId: continuing ? previous.chainId : turn.attemptId, status: "waiting",
+    input: continuing ? previous.input : turn.input, nativeSessionId, authorityEpoch: binding.authority.epoch,
+    attempts: continuing ? previous.attempts : 0,
+    transportSequence: continuing ? previous.transportSequence : 0,
+    startedAt: continuing ? previous.startedAt : iso(at), intentAt: iso(at),
+    deadline: continuing ? previous.deadline : iso(at + PROVIDER_RETRY_BUDGET_MS),
+    nextEligibleAt: iso(at), updatedAt: iso(at),
     failedAttemptId: turn.attemptId, failureAttemptId: turn.attemptId,
     failedNativeTurnId: turn.nativeTurnId, previousRunId: runId,
     failureRef: failure.ref, error: failure.error, successorAutomatic: false

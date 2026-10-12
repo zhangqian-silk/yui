@@ -755,14 +755,14 @@ test("manual recovery after exhaustion retains the original automatic count and 
     });
   f.store.saveRun(run);
   f.store.saveActiveRun(run);
-  const failCurrent = nativeTurnId => {
+  const failCurrent = (nativeTurnId, error = transient) => {
     f.begin(`task-1/turn/${run.id}`, f.body, run.id);
     assert.equal(f.observe("turn.accepted", undefined, nativeTurnId), "applied");
     f.advanceTo(f.now().getTime() + 1);
-    assert.equal(f.observe("turn.failed", undefined, nativeTurnId, { failure: { error: transient } }), "applied");
+    assert.equal(f.observe("turn.failed", undefined, nativeTurnId, { failure: { error } }), "applied");
   };
   failCurrent("initial-native");
-  const { chainId, deadline } = f.read().retry;
+  const { chainId, deadline, startedAt } = f.read().retry;
   const hooks = f.hooks();
   for (let n = 1; n <= 5; n++) {
     f.due();
@@ -774,6 +774,21 @@ test("manual recovery after exhaustion retains the original automatic count and 
   assert.equal(f.read().retry.attempts, 5);
   runTaskCommand(["run", "retry", `task-1/${run.id}`], f.store, { now: f.now, environment: {} });
   run = f.store.getActiveRun("task-1", f.roleName);
+  const disconnected = standardAgentError({
+    source: "provider", phase: "turn-execute", message: "stream disconnected",
+    raw: "stream disconnected", inputDisposition: "accepted",
+    classification: mapCodexAgentError({ message: "stream disconnected" })
+  });
+  assert.equal(disconnected.retryable, undefined);
+  failCurrent("manual-disconnected", disconnected);
+  assert.equal(f.read().retry.status, "cancelled");
+  runTaskCommand(["run", "retry", `task-1/${run.id}`], f.store, { now: f.now, environment: {} });
+  assert.equal(f.read().retry.chainId, chainId);
+  assert.equal(f.read().retry.startedAt, startedAt);
+  assert.equal(f.read().retry.deadline, deadline);
+  assert.equal(f.read().retry.attempts, 5);
+  assert.equal(f.read().retry.failedNativeTurnId, "manual-disconnected");
+  run = f.store.getActiveRun("task-1", f.roleName);
   failCurrent("manual-native");
   assert.equal(f.read().retry.chainId, chainId);
   assert.equal(f.read().retry.deadline, deadline);
@@ -781,7 +796,7 @@ test("manual recovery after exhaustion retains the original automatic count and 
   assert.equal(f.read().retry.status, "exhausted");
   await hooks.reconcile();
   assert.equal(f.store.getActiveRun("task-1", f.roleName), null);
-  assert.equal(f.store.listRuns("task-1").length, 7);
+  assert.equal(f.store.listRuns("task-1").length, 8);
 });
 
 test("same-Round review recovery preserves its candidate and workspace, and cancellation fences a later-created Run", async t => {
