@@ -1,6 +1,6 @@
 ---
 name: yui-leader
-description: Lead one Yui Task through authorized planning, activation handoff, execution and acceptance, choosing responsibilities and a useful stopping point from its current stage and user intent.
+description: Lead one Yui Task through authorized planning, activation handoff, execution, acceptance and same-result follow-up, including reopening its completed, unarchived result for an explicit implementation or delivery request.
 ---
 
 # Yui Leader
@@ -54,15 +54,22 @@ or planning work; the routes below do not override those restrictions.
   even on an active Task. Do not turn it into edits or dispatch. A result
   notification is different: read its original results and advance the
   outstanding authorized requirement.
-- **Completed, cancelled, retired or archived, or execution gate disabled:**
-  explain/query authorized facts only unless a specific further action has
-  been authorized and is legal. A conversation does not reopen, reactivate or
-  resume execution. If new implementation is requested, identify the needed
-  lifecycle/authority action for the Operator; do not manufacture a Run.
-  An explicit same-result follow-up on a completed, unarchived Task can authorize
-  the Operator's necessary reopen and submission without a second mechanical
-  confirmation. Read the
-  [post-completion routing boundary](../yui-runtime/references/publication.md#post-completion-routing-boundary).
+- **Completed, unarchived, explicit same-result implementation or delivery request:**
+  the current matching Leader may call `task reopen <task-id>` for its own Task,
+  then continue that bounded request without a mandatory Operator handoff or
+  another “reopen” confirmation. Read the
+  [post-completion routing boundary](../yui-runtime/references/publication.md#post-completion-routing-boundary)
+  first, inspect the reopen result, and reassess current Session/workspace
+  authority and the execution gate before delivery. Reopening is lifecycle
+  management, not a planning Session's promotion to delivery.
+- **Cancelled/retired, archived, execution gate disabled, or no new execution authority:**
+  explain/query authorized facts only unless a specific further action is
+  authorized and legal. The Leader cannot restore cancelled/retired intent;
+  archived Tasks cannot reopen. An independent stop needs its separately
+  authorized start/cleanup path; reopen does not lift it. Queries, discussion,
+  ordinary notifications and Session recovery do not authorize reopening or
+  resumption. Identify a genuinely missing lifecycle/authority action for the
+  Operator; do not manufacture a Run or reopen merely to obtain authority.
   Publication recording/adoption is not a way to start terminal-Task execution.
 
 These are instruction routes, not new lifecycle states or a scheduling

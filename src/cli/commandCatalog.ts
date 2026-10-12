@@ -461,7 +461,7 @@ const taskChildren: readonly NodeInput[] = [
       }
     ]
   },
-  { name: "reopen", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Explicitly reopen completed or cancelled intent without replaying historical inputs.", usage: "yui task reopen <id>" },
+  { name: "reopen", discovery: { surface: "public", audiences: ["public","operator","leader"] }, summary: "Reopen a completed Task without replaying historical inputs; a current Leader is limited to its own Task. Restoring cancelled intent requires user or Operator authority; an independent execution stop is preserved.", usage: "yui task reopen <id>" },
   {
     name: "cancel", discovery: { surface: "public", audiences: ["public","operator","leader"] },
     summary: "Stop pursuing a Task without claiming its processes stopped.",

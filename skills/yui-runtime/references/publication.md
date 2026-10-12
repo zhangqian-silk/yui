@@ -8,9 +8,19 @@ to push, publish, merge, query an external provider or archive.
 
 An explicit user request to continue implementation or delivery of the same
 completed, unarchived result authorizes its necessary reopening within that
-request's scope. The Operator need not ask the user to additionally say “reopen.”
-Read the original completion, fixed heads/reports, Publication and current
-authority first, then use the existing two operations:
+request's scope. The current matching Leader may call `task reopen <task>` for
+its own Task and continue that request; an Operator handoff is not mandatory,
+and neither Role needs the user to additionally say “reopen.” Read the original
+completion, fixed heads/reports, Publication, new request and current authority
+first. Inspect the reopen result and current Context before executing; delivery
+still requires the current Session's delivery authority, legal workspace and an
+enabled execution gate.
+
+If the Leader already received the request, use its original durable input and
+continue after reopening; do not resend it or create a self-wake. Preserve a
+direct-conversation request and its boundaries in Task records when needed,
+without impersonating user/Operator input. When the Operator or user is routing
+new input, use the existing two operations:
 
 ```sh
 yui task reopen <task>
@@ -30,8 +40,9 @@ intact. The Leader must assess the new request and separately accept any new
 result, not pretend old validation proves changed work. Reopen does not replay
 historical Messages/Runs, change the Role's Agent/model/permissions, or lift an
 independent execution stop. Queries, ordinary record/discussion input and Session
-recovery do not authorize resumption. Cancelled intent needs its own explicit
-restoration authority; archived Tasks cannot reopen. A stopped gate still needs
+recovery do not authorize resumption. Cancelled intent needs explicit
+user/Operator restoration authority and cannot be restored by the Leader;
+archived Tasks cannot reopen. A stopped gate still needs
 the separately authorized start/cleanup path.
 
 These are two atomic operations, not one transaction. Read the reopen result and

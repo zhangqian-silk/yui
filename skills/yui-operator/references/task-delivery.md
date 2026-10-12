@@ -39,6 +39,8 @@ Separate lifecycle, execution gate and Session authority:
   necessary `task reopen` before submitting that bounded request. Follow the
   [authorized two-step path](../../yui-runtime/references/publication.md#post-completion-routing-boundary);
   do not require a second mechanical “reopen” confirmation.
+  The current matching Leader may perform that reopen itself and continue
+  an already-received request; it need not send the work back to Operator.
 - Cancelled/retired intent is not active work. An archived Task cannot be reopened;
   retained workspaces and historical Sessions do not authorize execution.
 - Session loss or replacement is not a new result or an automatic lifecycle

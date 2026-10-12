@@ -41,7 +41,12 @@ or reuse an old completed AgentRun snapshot merely to obtain authority. Pending
 delivery, unknown execution evidence and missing reports do not themselves
 revoke Session authority. Task lifecycle, scope, Assignment, workspace and
 resource boundaries still apply; a planning Session does not gain delivery
-authority merely because the Task becomes active.
+authority merely because the Task becomes active. An explicit, legal same-result
+implementation or delivery follow-up may instead authorize the current Leader
+to reopen its own completed, unarchived Task; follow the
+[post-completion routing boundary](references/publication.md#post-completion-routing-boundary).
+Queries, discussion, ordinary notifications and Session recovery grant no such
+authority, and reopening never lifts an independent execution stop.
 Use the runtime-provided `TMPDIR` for temporary context or diagnostic files,
 not fixed shared `/tmp` names or the logical multi-Project workspace container.
 Save durable reports in Task artifacts/results before releasing their temporary

@@ -18,12 +18,15 @@ test("native Codex identity discovers the same offline catalog as transport iden
   const tree = discoveryCommandTree(leader);
   assert.deepEqual(tree, discoveryCommandTree({ ...leader, CODEX_THREAD_ID: undefined,
     YUI_NATIVE_SESSION_ID: "native" }));
-  for (const path of [["task", "brief", "update"], ["task", "publication", "upsert"], ["task", "input", "request"]]) {
+  for (const path of [["task", "brief", "update"], ["task", "publication", "upsert"], ["task", "input", "request"],
+    ["task", "reopen"]]) {
     assert.ok(findCommandNode(path, tree), path.join(" "));
   }
   assert.match(renderCommandHelp(findCommandNode(["task", "brief"], tree), "test"), /update/);
   const ports = { call() { throw new Error("Offline discovery must not query runtime state"); } };
   assert.ok((await resolveCompletionCandidates({ words: ["task", "brief"], current: "", ports, root: tree })).includes("update"));
+  assert.ok((await resolveCompletionCandidates({ words: ["task"], current: "", ports, root: tree })).includes("reopen"));
+  assert.equal(routeInvocation(["help", "task", "reopen"], tree).kind, "help");
   for (const id of ["", " native", "native ", "bad\0id"]) {
     assert.equal(discoveryAudience({ ...leader, CODEX_THREAD_ID: id, YUI_NATIVE_SESSION_ID: "fallback" }), "unbound");
   }
@@ -46,6 +49,7 @@ test("one caller projection drives help and completion without restricting direc
   assert.ok(!listPublicCommandPaths(publicTree).some(path => path.startsWith("internal")));
   assert.ok(!listPublicCommandPaths(worker).some(path => path.startsWith("operator")));
   assert.ok(!listPublicCommandPaths(worker).includes("task artifact save"));
+  assert.ok(!listPublicCommandPaths(worker).includes("task reopen"));
   assert.ok(listPublicCommandPaths(worker).includes("task artifact read"));
   const task = findCommandNode(["task"], worker);
   assert.doesNotMatch(renderCommandHelp(task, "test"), /work dispatch|task create/);
