@@ -45,6 +45,37 @@ export function providerRetryPending(binding: ProviderRuntimeBinding | null | un
   return binding?.retry?.status === "waiting" || binding?.retry?.status === "in-flight";
 }
 
+/** An explicit Run retry can carry exact failed-input proof even when the
+ * error did not qualify for automation. This does not grant automatic replay:
+ * the shared admission and native latest-Turn/quiescence checks still apply. */
+export function providerRunRetry(
+  binding: ProviderRuntimeBinding, runId: string, at: number
+): ProviderRetry | undefined {
+  const turn = binding.run;
+  const nativeSessionId = binding.conversations.find(c => c.epoch === binding.currentConversationEpoch)?.conversationId;
+  if (turn?.runId !== runId || !["failed", "rejected", "deferred"].includes(turn.status)
+    || binding.authority.owner !== "controller" || turn.authorityEpoch !== binding.authority.epoch
+    || nativeSessionId === undefined) return undefined;
+  const previous = binding.retry;
+  if (previous?.previousRunId === runId && previous.status !== "recovered"
+    && previous.failedAttemptId === turn.attemptId
+    && previous.authorityEpoch === binding.authority.epoch
+    && previous.nativeSessionId === nativeSessionId) return previous;
+  const failure = turn.failure;
+  if (turn.status !== "failed" || turn.nativeTurnId === undefined || turn.input === undefined
+    || turn.retrySupported !== true || failure?.error.inputDisposition !== "accepted"
+    || failure.error.sessionDisposition !== "recoverable") return undefined;
+  return {
+    policyVersion: 1, chainId: turn.attemptId, status: "waiting",
+    input: turn.input, nativeSessionId, authorityEpoch: binding.authority.epoch,
+    attempts: 0, transportSequence: 0, startedAt: iso(at), intentAt: iso(at),
+    deadline: iso(at + PROVIDER_RETRY_BUDGET_MS), nextEligibleAt: iso(at), updatedAt: iso(at),
+    failedAttemptId: turn.attemptId, failureAttemptId: turn.attemptId,
+    failedNativeTurnId: turn.nativeTurnId, previousRunId: runId,
+    failureRef: failure.ref, error: failure.error, successorAutomatic: false
+  };
+}
+
 /** Called only in the transaction recording the exact failed/rejected input. */
 export function recordProviderFailure(
   binding: ProviderRuntimeBinding,

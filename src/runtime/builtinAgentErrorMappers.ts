@@ -37,7 +37,7 @@ function mapClaudeDisplayError(input: AgentDriverErrorInput): AgentErrorClassifi
 export function mapCodexAgentError(
   input: AgentDriverErrorInput
 ): AgentErrorClassification {
-  return withTransientEvidence(mapCodexDisplayError(input), input);
+  return withTransientEvidence(mapCodexDisplayError(input), input, true);
 }
 
 function mapCodexDisplayError(input: AgentDriverErrorInput): AgentErrorClassification {
@@ -239,7 +239,7 @@ function sessionUnavailable(code: string): AgentErrorClassification {
 
 /** Replay qualification is stricter than the readable, best-effort category.
  * Never promote a number occurring in provider prose to submission safety. */
-function structuredTransientError(input: AgentDriverErrorInput): AgentErrorClassification | undefined {
+function structuredTransientError(input: AgentDriverErrorInput, codex: boolean): AgentErrorClassification | undefined {
   if (/insufficient[_ -]quota|quota.{0,25}(exhaust|exceed)|billing[_ -]hard[_ -]limit|usageLimitExceeded|credits?.{0,20}(exhaust|insufficient)/iu.test(
     `${input.message}\n${input.raw}`
   )) return { category: "access", code: "provider.quota-exhausted", retryable: false };
@@ -256,7 +256,8 @@ function structuredTransientError(input: AgentDriverErrorInput): AgentErrorClass
   try { visit(JSON.parse(input.raw), 0); } catch { /* Display classification may still use prose. */ }
   const codes = nodes.flatMap(n => [n.code, n.type, n.error, n.codexErrorInfo]).filter(v => typeof v === "string");
   if (codes.some(c => ["authentication_error", "permission_error", "invalid_api_key", "invalid_model",
-    "model_not_found", "usage_limit_exceeded", "insufficient_quota"].includes(c))) {
+    "model_not_found", "usage_limit_exceeded", "insufficient_quota"].includes(c))
+    || codex && nodes.some(n => ["usageLimitExceeded", "unauthorized", "badRequest"].includes(String(n.codexErrorInfo)))) {
     return { category: "access", code: "provider.access-denied", retryable: false };
   }
   const statuses = nodes.flatMap(n => [n.httpStatusCode, n.statusCode, n.status]).filter(v => typeof v === "number");
@@ -267,6 +268,8 @@ function structuredTransientError(input: AgentDriverErrorInput): AgentErrorClass
   let result: AgentErrorClassification | undefined;
   if (statuses.includes(429) || codes.includes("rate_limit_error") || nativeCode === "rate_limit_error") {
     result = recoverable("rate-limit", "provider.rate-limit");
+  } else if (codex && nodes.some(n => n.codexErrorInfo === "serverOverloaded")) {
+    result = recoverable("availability", "provider.model-capacity");
   } else if (statuses.some(s => [500, 502, 503, 504].includes(s))
     || codes.some(c => ["server_error", "overloaded_error"].includes(c))
     || ["server_error", "overloaded_error"].includes(nativeCode)) {
@@ -298,8 +301,8 @@ function structuredTransientError(input: AgentDriverErrorInput): AgentErrorClass
 
 /** Add positive evidence without renaming established diagnostics or letting
  * a transient nested cause override a known fatal Session/request failure. */
-function withTransientEvidence(base: AgentErrorClassification, input: AgentDriverErrorInput): AgentErrorClassification {
-  const evidence = structuredTransientError(input);
+function withTransientEvidence(base: AgentErrorClassification, input: AgentDriverErrorInput, codex = false): AgentErrorClassification {
+  const evidence = structuredTransientError(input, codex);
   if (evidence === undefined) return base;
   const possiblyTransient = ["rate-limit", "availability", "transport", "unknown"].includes(base.category);
   if (evidence.retryable === false) return possiblyTransient ? evidence : { ...base, retryable: false };

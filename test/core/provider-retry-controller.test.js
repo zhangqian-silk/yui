@@ -43,6 +43,7 @@ import { providerDeliveryFailureFrom } from "../../dist/runtime/agentError.js";
 import { ProviderContinuationReconciliationService } from "../../dist/runtime/providerContinuationReconciliationService.js";
 import { blockingProviderContinuations } from "../../dist/runtime/runtimeContinuationProjection.js";
 import { createInputRequest, answerInputRequest, cancelInputRequest } from "../../dist/input/inputRequest.js";
+import { CodexAppServerRuntime } from "../../dist/runtime/codexAppServerRuntime.js";
 
 const epoch = Date.parse("2026-09-13T00:00:00Z");
 const rawFailure = JSON.stringify({
@@ -592,8 +593,9 @@ test("an explicit no-Run input supersedes waiting automatic recovery at the same
   assert.equal(f.store.listRuns("task-1").length, 0);
 });
 
-test("manual and automatic managed Run retries share one successor without charging manual work to the automatic limit", async t => {
-  for (const manual of [false, true]) {
+test("manual and automatic managed Run retries share exact failed proof, including without an automatic chain", async t => {
+  for (const mode of ["automatic", "manual", "manual-without-chain"]) {
+    const manual = mode !== "automatic";
     const f = fixture(t);
     const previous = createFixtureRun(f.store, f.store.nextRunId("task-1"), "task-1", f.roleName, "resume",
       createRunInput({ source: { type: "yui", channel: "task-dispatch" },
@@ -605,11 +607,16 @@ test("manual and automatic managed Run retries share one successor without charg
     f.begin(`task-1/turn/${previous.id}`, f.body, previous.id);
     assert.equal(f.observe("turn.accepted"), "applied");
     f.advanceTo(epoch + 1);
-    assert.equal(f.observe("turn.failed", undefined, "native-original", { failure: { error: transient } }), "applied");
+    const error = mode === "manual-without-chain" ? { ...transient, retryable: undefined } : transient;
+    assert.equal(f.observe("turn.failed", undefined, "native-original", { failure: { error } }), "applied");
     assert.equal(f.store.getRun("task-1", previous.id).status, "failed");
-    assert.equal(f.read().retry.previousRunId, previous.id);
-    const chainId = f.read().retry.chainId;
-    f.due();
+    const failedRun = f.store.getRun("task-1", previous.id);
+    const chainId = f.read().run.attemptId;
+    if (mode === "manual-without-chain") assert.equal(f.read().retry, undefined);
+    else {
+      assert.equal(f.read().retry.previousRunId, previous.id);
+      f.due();
+    }
     const retryCommand = () => runTaskCommand(["run", "retry", `task-1/${previous.id}`],
       f.store, { now: f.now, environment: {} });
     if (manual) retryCommand();
@@ -623,13 +630,39 @@ test("manual and automatic managed Run retries share one successor without charg
     assert.equal(f.store.listEvents("task-1").filter(event => event.type === "run.retried").length, 1);
     assert.equal(f.read().retry.successorRunId, successor.id);
     assert.equal(f.read().retry.successorAutomatic, !manual);
-    f.begin(`task-1/turn/${successor.id}`, "Read the exact successor Run.", successor.id);
+    const dispatch = createRuntimeLifecycleDispatcher(f.store, new FileSchedulerStoreAdapter(f.store), {});
+    const admission = await dispatch("runtime.provider-turn-begin", {
+      taskId: "task-1", roleName: f.roleName, agentId: "codex", nativeSessionId: f.nativeSessionId,
+      runId: successor.id, attemptId: `task-1/turn/${successor.id}`,
+      authorityEpoch: 1, authorityOwner: "controller", holderId: "controller",
+      observedAt: f.now().toISOString(), boundedText: "Read the exact successor Run.",
+      retrySupport: "codex-failed-turn-v1"
+    });
+    assert.equal(admission.retryInput?.expectedFailedNativeTurnId, "native-original");
+    assert.match(admission.retryInput.text, /Preserve local changes/);
+    const calls = [];
+    const native = new CodexAppServerRuntime({ request: async method => {
+      calls.push(method);
+      if (method === "thread/read") return { thread: {
+        id: f.nativeSessionId, status: { type: "systemError" }, turns: []
+      } };
+      if (method === "thread/turns/list") return { data: [{ id: "native-original", status: "failed" }], nextCursor: null };
+      if (method === "thread/backgroundTerminals/list") return { data: [], nextCursor: null };
+      if (method === "turn/start") return { turn: { id: "recovered-native" } };
+      assert.fail(method);
+    } });
+    assert.equal((await native.submitTurn({
+      conversationId: f.nativeSessionId, attemptId: `task-1/turn/${successor.id}`,
+      ...admission.retryInput, requireQuiescent: true
+    })).status, "accepted");
+    assert.deepEqual(calls, ["thread/read", "thread/turns/list", "thread/backgroundTerminals/list", "turn/start"]);
     assert.equal(f.read().retry.chainId, chainId);
     assert.equal(f.read().retry.attempts, manual ? 0 : 1);
     assert.deepEqual(f.read().run.input, { kind: "run", taskId: "task-1", runId: previous.id });
     assert.equal(f.read().run.runId, successor.id);
     assert.equal(f.loadSessions().sessions.codex.nativeSessionId, f.nativeSessionId);
     assert.equal(f.submissions.length, 0, "Run delivery remains in the ordinary dispatch path.");
+    assert.deepEqual(f.store.getRun("task-1", previous.id), failedRun, "Failure history is immutable.");
   }
 });
 
@@ -752,7 +785,8 @@ test("manual recovery after exhaustion retains the original automatic count and 
 });
 
 test("same-Round review recovery preserves its candidate and workspace, and cancellation fences a later-created Run", async t => {
-  for (const cancel of [false, true]) {
+  for (const mode of ["automatic", "cancel", "manual-without-chain"]) {
+    const cancel = mode === "cancel";
     const f = reviewFixture(t);
     const initial = f.dispatch();
     assert.ok(initial);
@@ -760,18 +794,21 @@ test("same-Round review recovery preserves its candidate and workspace, and canc
     assert.equal(f.observe("turn.accepted"), "applied");
     f.advanceTo(f.now().getTime() + 1);
     assert.equal(f.observe("turn.failed", undefined, "native-original", {
-      failure: { error: transient }
+      failure: { error: mode === "manual-without-chain" ? { ...transient, retryable: undefined } : transient }
     }), "applied");
     assert.equal(f.store.getReviewRound("task-1", f.round.id).status, "failed");
-    f.due();
+    if (mode !== "manual-without-chain") f.due();
     const hooks = createProviderRetryHooks(f.home, f.store, {
       now: f.now, snapshotTaskCandidate: async () => f.candidate,
       onError: error => { throw error; },
       submit: async () => { assert.fail("Review uses its ordinary Run dispatch path."); }
     });
-    await hooks.reconcile();
+    if (mode === "manual-without-chain") runTaskCommand(["run", "retry", `task-1/${initial.id}`], f.store, {
+      now: f.now, environment: {}, actualTaskReviewCandidate: f.candidate
+    });
+    else await hooks.reconcile();
     const pending = f.store.getReviewRound("task-1", f.round.id);
-    assert.equal(pending.requestedBy, "policy", "Automatic infrastructure retry does not invent a user request.");
+    assert.equal(pending.requestedBy, mode === "manual-without-chain" ? "user" : "policy");
     assert.equal(pending.status, "pending");
     assert.deepEqual(pending.taskCandidate, f.candidate);
     assert.deepEqual(pending.workspace, f.workspace);
@@ -794,7 +831,7 @@ test("same-Round review recovery preserves its candidate and workspace, and canc
     } else {
       admit();
       assert.equal(f.read().retry.status, "in-flight");
-      assert.equal(f.read().retry.attempts, 1);
+      assert.equal(f.read().retry.attempts, mode === "manual-without-chain" ? 0 : 1);
       assert.equal(f.read().retry.successorRunId, successor.id);
       assert.equal(f.loadSessions().sessions.codex.nativeSessionId, f.nativeSessionId);
     }
