@@ -89,8 +89,25 @@ skipped／缺失检查不算通过。工作区所有权不证明可清理；既�
 `GET /api/tasks/<id>/artifacts` 列出固定仓库版本；
 `?path=<relative-path>&commit=<full-commit>` 读取该版本文本；
 `GET /api/tasks/<id>/evidence` 读取原检查／Review／工作区记录；
-`GET /api/tasks/<id>/list?store=<family>[&status&cursor&limit]` 返回与
+`GET /api/tasks/<id>/list?store=<family>[&view=current|all&status&cursor&limit]` 返回与
 `task context list` 相同的分页摘要。
+
+`task context list <task> --store <family> --view current` 与紧凑 Context
+计数使用同一筛选：active Run、pending/running Review、open InputRequest，
+以及 queued/running/unknown Job。默认 `all` 保留历史。分页游标绑定筛选后的
+集合，来源变化时明确拒绝继续拼接；应刷新重读。运行页展示已加载/总数、继续
+加载、刷新及读取失败，记录原文仍按需展开。
+
+`GET /api/tasks/<id>/activity[?cursor=...&limit=20]` 是经过 token 鉴权的只读
+原生会话、operation 和后台活动分页。复用共享运行投影，覆盖会话更换后身份
+明确的保留子活动，不探测系统进程或 Provider。每页最多 100 项、32 KiB，
+包含分类计数、读取时间和明确的 partial 覆盖范围。紧凑观测返回完整计数及
+有限的会话样本，不携带嵌套子活动清单。原生事实与 AgentRun 可能指向同一
+执行，计数不可相加；未知、未加载和观测不可用都不能表示没有活动。
+
+执行摘要同时考虑 Job、原生事实、用户输入和 AgentRun。`waiting-on-jobs`
+只是派生展示/下一步状态，不改变 Task 生命周期。等待用户不隐藏并行工作；
+未知 Job 结果和原生活动保留为关注事实，不能据此判定完成或授权重放。
 读取不启动运行时、不访问远端、不写业务状态、不引入迁移或新持久协议。
 
 ## 执行审计

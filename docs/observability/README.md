@@ -108,8 +108,32 @@ All routes use the local Web token and Task boundary.
 `GET /api/tasks/<id>/artifacts` lists a fixed repository revision;
 `?path=<relative-path>&commit=<full-commit>` reads its exact text file.
 `GET /api/tasks/<id>/evidence` reads original check/Review/workspace records.
-`GET /api/tasks/<id>/list?store=<family>[&status&cursor&limit]` returns the same
+`GET /api/tasks/<id>/list?store=<family>[&view=current|all&status&cursor&limit]` returns the same
 paged summaries as `task context list`.
+
+`task context list <task> --store <family> --view current` uses the same
+membership as the compact Context counts: active runs, pending/running reviews,
+open InputRequests and queued/running/unknown Jobs. The default `all` view
+preserves history. Each continuation binds the filtered collection and rejects
+changed sources; refresh instead of mixing versions. Runtime lists expose
+loaded/total counts, continuation, explicit refresh and read failures. Exact
+record bodies remain on demand.
+
+`GET /api/tasks/<id>/activity[?cursor=...&limit=20]` is a token-authenticated,
+read-only page of recorded native Session, operation and background facts.
+It uses the shared runtime projection, including retained, exactly fenced
+children after Session replacement; it never probes processes or Providers.
+Pages contain at most 100 items and 32 KiB, with separate category counts,
+read time and explicit partial coverage. Compact observations carry full
+counts with bounded Session samples, not nested child lists. Native facts and
+AgentRuns can describe the same execution; their counts are not additive.
+Unknown, unloaded and unavailable observations must not mean no activity.
+
+The execution summary includes Job and native facts alongside open inputs and
+AgentRuns. `waiting-on-jobs` is a derived display/next-action state, not a Task
+lifecycle value. Waiting for a user keeps parallel work visible; unknown Job
+outcomes or native activity remain attention facts, never completion or replay
+authority.
 These reads do not start a runtime, fetch a remote, write business state, require
 a migration, or introduce a new persistent protocol.
 

@@ -29,6 +29,8 @@ import {
   type TaskObservabilityProjection
 } from "./taskObservabilityProjection.js";
 import type { ContextSnapshot } from "../context/contextSnapshot.js";
+import type { DurableJob } from "../job/durableJob.js";
+import { projectTaskSessions } from "../runtime/taskSessions.js";
 import { isRoleRunStalled, latestStallProgressAt } from "./roleRunStall.js";
 import { resolveRuntimeHealth } from "../config/yuiConfig.js";
 import type { RuntimeHealthPolicy } from "../runtime/runtimeHealthPolicy.js";
@@ -46,6 +48,7 @@ export type TaskExecutionStatus =
   | "stopped"
   | "needs-leader-action"
   | "waiting-on-agents"
+  | "waiting-on-jobs"
   | "waiting-user"
   | "recovering"
   | "attention"
@@ -68,6 +71,7 @@ export type TaskExecutionOwner =
 export type TaskExecutionAction =
   | "advance-task"
   | "wait-for-agents"
+  | "wait-for-jobs"
   | "recover-execution"
   | "answer-input"
   | "inspect-attention"
@@ -127,6 +131,13 @@ export type TaskExecutionProjection = Readonly<{
   monitoring: "active" | "stopped";
   failClosed: boolean;
   activeRuns: readonly TaskExecutionRun[];
+  /** Parallel categories, not additive executor counts: native Sessions may
+   * describe the same execution as an AgentRun. */
+  activity: Readonly<{
+    jobs: Readonly<{ queued: number; running: number; unknown: number }>;
+    openInputs: number;
+    native: Readonly<{ active: number; waiting: number; unknown: number; background: number }>;
+  }>;
   /** Read-only Leader aggregation for every unified execution Group. */
   executionGroups: readonly ExecutionGroupHealthSummary[];
   /** Shared DAG, cost, context, and stage projection for CLI/Web consumers. */
@@ -149,6 +160,7 @@ export type TaskExecutionReadStore = Pick<TaskStore,
   | "listEvents" | "getWorkMailbox" | "getPendingWakeup" | "getLeaderFailure"
   | "getRoleSession" | "getTaskRoleSessionSet" | "getConfig" | "listContextSnapshots"
   | "readTaskUsageFacts"
+  | "listDurableJobs" | "listRoleSessionSets"
 >;
 
 type TaskExecutionTask = Readonly<Pick<
@@ -167,6 +179,8 @@ export type TaskExecutionFacts = Readonly<{
     status?: string;
   }>[];
   runs: readonly AgentRun[];
+  jobs?: readonly DurableJob[];
+  nativeSessions?: ReturnType<typeof projectTaskSessions>;
   /** Lifetime usage includes obsolete runs; scheduling still uses current runs. */
   usageRuns?: readonly AgentRun[];
   usageFacts?: import("../runtime/taskUsageQuery.js").TaskUsageFacts;
@@ -202,7 +216,8 @@ export type TaskExecutionFacts = Readonly<{
 export function buildTaskExecutionProjection(
   store: TaskExecutionReadStore,
   taskId: string,
-  now = new Date()
+  now = new Date(),
+  nativeSessions?: ReturnType<typeof projectTaskSessions>
 ): TaskExecutionProjection | null {
   const task = store.getTask(taskId);
   if (task === null) return null;
@@ -216,6 +231,7 @@ export function buildTaskExecutionProjection(
     events,
     "run"
   );
+  const brief = store.getTaskBrief(taskId);
   const leaderMailbox = store.getWorkMailbox({
     kind: "role",
     taskId,
@@ -229,6 +245,12 @@ export function buildTaskExecutionProjection(
   });
   return projectTaskExecution({
     task,
+    jobs: store.listDurableJobs(taskId),
+    nativeSessions: nativeSessions ?? projectTaskSessions({
+      taskId, sessionSets: store.listRoleSessionSets(taskId), events, now,
+      ...(brief?.updatedAt === undefined ? {} : { semanticProgressAt: brief.updatedAt }),
+      policy: resolveRuntimeHealth(store.getConfig().runtimeHealth)
+    }),
     usageFacts: store.readTaskUsageFacts(taskId),
     roles,
     runs,
@@ -249,7 +271,7 @@ export function buildTaskExecutionProjection(
     changeSets: store.listChangeSets(taskId),
     integrations: store.listIntegrationAttempts(taskId),
     events,
-    brief: store.getTaskBrief(taskId),
+    brief,
     pendingWakeup: store.getPendingWakeup(taskId),
     leaderMailbox,
     leaderFailure: store.getLeaderFailure(taskId),
@@ -331,8 +353,27 @@ export function projectTaskExecution(
     now
   });
   const laneRecovery = actionableExecutionLaneRecoveries(groupSummaries)[0];
+  const jobs = facts.jobs ?? [];
+  const native = facts.nativeSessions;
+  const activity: TaskExecutionProjection["activity"] = {
+    jobs: {
+      queued: jobs.filter(job => job.status === "queued").length,
+      running: jobs.filter(job => job.status === "running").length,
+      unknown: jobs.filter(job => job.status === "unknown-needs-attention").length
+    },
+    openInputs: inputRequests.filter(input => input.status === "open").length,
+    native: {
+      active: (native?.counts.active ?? 0) + (native?.counts.quiet ?? 0),
+      waiting: native?.counts.waiting ?? 0,
+      unknown: (native?.counts.unknown ?? 0) + (native?.counts.diagnostic ?? 0)
+        + (native?.sessions.reduce((sum, session) => sum
+          + session.background.filter(child => child.execution === "unknown").length, 0) ?? 0),
+      background: native?.sessions.reduce((sum, session) => sum + session.background.length, 0) ?? 0
+    }
+  };
   const render = (input: ProjectionInput): TaskExecutionProjection => projection({
     ...input,
+    activity,
     executionGroups: groupSummaries,
     observability
   });
@@ -341,10 +382,12 @@ export function projectTaskExecution(
     const known = facts.runDelivery?.[run.id];
     if (known !== undefined && known !== "unobserved") return known;
     const observed = events.map(runtimeObservationFromTaskEvent).filter((event) =>
-      event?.fence.runId === run.id && event.authority !== "transport"
+      event?.fence.runId === run.id && event.fence.taskId === task.id
+      && event.fence.roleName === run.roleName && event.fence.agentId === run.effective.agentId
+      && event.authority !== "transport"
       && ["turn.accepted", "turn.completed", "turn.failed", "turn.cancelled"].includes(event.kind)).at(-1);
     return observed === undefined || observed === null ? "unobserved"
-      : observed.kind.slice("run.".length) as ProviderTurnStatus;
+      : observed.kind.slice("turn.".length) as ProviderTurnStatus;
   };
   const runHasSession = (run: AgentRun): boolean => roleSessions.some((session) => (
     session.roleName === run.roleName
@@ -426,7 +469,7 @@ export function projectTaskExecution(
   const activeLeader = activeRuns.find((run) => run.roleName === "leader");
   const pendingDeliveryRuns = activeRuns.filter((run) => deliveryOf(run) !== "accepted");
   const hasPendingLeaderWork = pendingWakeup !== null
-    || leaderMailbox?.pending !== null;
+    || leaderMailbox?.pending != null;
   const recoveryPending = isRecoveryPending(
     pendingWakeup,
     leaderMailbox,
@@ -485,11 +528,29 @@ export function projectTaskExecution(
       summary: openInputs[0].question,
       reason: "open-input-request",
       monitoring,
-      failClosed: false,
+      failClosed: activity.jobs.unknown > 0 || activity.native.unknown > 0,
       activeRuns: activeRunViews,
       attention,
       blockers,
       pendingWakeup
+    });
+  }
+  if (activity.jobs.unknown > 0 || activity.native.unknown > 0) {
+    return render({
+      task, status: "attention", owner: "leader", action: "inspect-attention",
+      summary: `${activity.jobs.unknown} Job(s) have unknown outcomes; ${activity.native.unknown} native observation(s) need attention. Other parallel activity remains visible; do not infer completion or replay.`,
+      reason: "parallel-execution-unknown", monitoring, failClosed: true,
+      activeRuns: activeRunViews, attention, blockers, pendingWakeup
+    });
+  }
+  const nativeWait = native?.sessions.find(session =>
+    session.group === "waiting" && ["user", "permission"].includes(session.waitingReason ?? ""));
+  if (nativeWait) {
+    return render({
+      task, status: "waiting-user", owner: "user", action: "inspect-attention",
+      summary: `Native Session ${nativeWait.roleName} is waiting for ${nativeWait.waitingReason}; other activity remains visible.`,
+      reason: "native-input-wait", monitoring, failClosed: false,
+      activeRuns: activeRunViews, attention, blockers, pendingWakeup
     });
   }
   if (laneRecovery !== undefined && (laneRecovery.runId === undefined || !recoveringRunIds.has(laneRecovery.runId))) {
@@ -610,6 +671,15 @@ export function projectTaskExecution(
       pendingWakeup
     });
   }
+  if (native?.sessions.some(session => session.roleName === "leader"
+    && ["active", "quiet"].includes(session.group))) {
+    return render({
+      task, status: "working", owner: "leader", action: "advance-task",
+      summary: "Leader native input is accepted; managed AgentRuns and parallel background work remain separate facts.",
+      reason: "leader-native-turn", monitoring, failClosed: false,
+      activeRuns: activeRunViews, attention, blockers, pendingWakeup
+    });
+  }
   if (hasPendingLeaderWork) {
     return render({
       task,
@@ -677,6 +747,22 @@ export function projectTaskExecution(
       pendingWakeup
     });
   }
+  if (activity.jobs.queued + activity.jobs.running > 0) {
+    return render({
+      task, status: "waiting-on-jobs", owner: "none", action: "wait-for-jobs",
+      summary: `${activity.jobs.running} background Job(s) running; ${activity.jobs.queued} queued. Leader is not currently executing.`,
+      reason: "background-jobs", monitoring, failClosed: false,
+      activeRuns: activeRunViews, attention, blockers, pendingWakeup
+    });
+  }
+  if (activity.native.active + activity.native.waiting + activity.native.background > 0) {
+    return render({
+      task, status: "waiting-on-agents", owner: "none", action: "wait-for-agents",
+      summary: "Recorded native execution or retained background activity remains unsettled; this is separate from managed AgentRuns.",
+      reason: "native-execution", monitoring, failClosed: false,
+      activeRuns: activeRunViews, attention, blockers, pendingWakeup
+    });
+  }
   if (candidateReady || unresolvedIntegration) {
     return render({
       task,
@@ -715,14 +801,14 @@ export function projectTaskExecution(
 
 type ProjectionInput = Omit<
   TaskExecutionProjection,
-  "next" | "taskId" | "taskStatus" | "executionGroups" | "observability"
+  "next" | "taskId" | "taskStatus" | "executionGroups" | "observability" | "activity"
 > & Readonly<{
   task: Readonly<Pick<Task, "id" | "status">>;
   executionGroups?: readonly ExecutionGroupHealthSummary[];
 }>;
 
 function projection(
-  input: ProjectionInput & Readonly<{ observability: TaskObservabilityProjection }>
+  input: ProjectionInput & Readonly<{ observability: TaskObservabilityProjection; activity: TaskExecutionProjection["activity"] }>
 ): TaskExecutionProjection {
   return {
     taskId: input.task.id,
@@ -735,6 +821,7 @@ function projection(
     monitoring: input.monitoring,
     failClosed: input.failClosed,
     activeRuns: input.activeRuns,
+    activity: input.activity,
     executionGroups: input.executionGroups ?? [],
     observability: input.observability,
     attention: input.attention,

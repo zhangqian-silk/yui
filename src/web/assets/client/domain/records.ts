@@ -4,9 +4,68 @@ export const RECORDS_SCRIPT = String.raw`
 // never acknowledges or accepts anything.
 import { h, icon } from "/assets/js/lib/dom.js";
 import { button, jsonBlock, mono, note } from "/assets/js/ui/primitives.js";
-import { rawDisclosure } from "/assets/js/ui/containers.js";
+import { rawDisclosure, listCard, setCardCount } from "/assets/js/ui/containers.js";
 import { richText } from "/assets/js/ui/text.js";
-import { cachedExact, readExact, summaryFields } from "/assets/js/domain/context.js";
+import { cachedExact, readExact, summaryFields, entriesOf, totalOf, exactCache } from "/assets/js/domain/context.js";
+
+// Current-family counts and pages use exactly the Context current filter.
+// A changed Context resets the loaded membership; stale continuations never
+// silently mix versions. Loading a list does not eagerly inspect its bodies.
+export function currentRecordCard(data, store, t, actions, options) {
+  const view = data.viewState;
+  exactCache(view);
+  view.currentLists = view.currentLists || {};
+  let state = view.currentLists[store];
+  if (!state || state.key !== data.core.coreCursor) {
+    state = view.currentLists[store] = {
+      key: data.core.coreCursor, items: entriesOf(data.core, store),
+      total: totalOf(data.core, store), started: false, cursor: null, error: null, pending: false
+    };
+  }
+  const element = listCard({ id: options.id, title: options.title, icon: options.icon || "pulse", count: state.total });
+  const rows = h("div.stack"), footer = h("div.stack", { "aria-live": "polite" });
+  element.list.append(rows, footer);
+  function draw(updateRows) {
+    setCardCount(element, state.total);
+    if (updateRows !== false) {
+      rows.replaceChildren();
+      state.items.forEach(function (item) {
+        rows.append(!item.omitted && item.value && options.render ? options.render(item.value, null, item)
+          : lazyRow(item, data.task.id, t, actions, {
+            cache: view.exact,
+            head: h("span", null, item.ref.refId + (item.summary ? " · " + item.summary : "")),
+            render: options.render
+          }));
+      });
+    }
+    footer.replaceChildren(note(t("activity.loaded") + " " + state.items.length + " / " + state.total));
+    if (!state.total) footer.append(note(t("activity.none")));
+    if (state.error) footer.append(note(state.error + " · " + t("activity.refreshHint"), "bad"));
+    if ((!state.started && state.items.length < state.total) || state.cursor) {
+      footer.append(button(t("activity.more") + " (" + Math.max(0, state.total - state.items.length) + ")", {
+        disabled: state.pending, onClick: function () { load(state.started); }
+      }));
+    }
+    footer.append(button(t("activity.refresh"), { disabled: state.pending, onClick: function () { load(false); } }));
+    element.dataset.reading = String(state.pending);
+  }
+  async function load(more) {
+    if (state.pending) return;
+    const busy = function () { return !!rows.querySelector('[data-unsent="true"], [data-reading="true"]'); };
+    if (busy()) { state.error = t("activity.busy"); draw(false); return; }
+    state.pending = true;
+    draw(false);
+    try {
+      const page = await actions.list(data.task.id, store, { view: "current", limit: 20, cursor: more ? state.cursor : null });
+      if (busy()) throw new Error(t("activity.busy"));
+      state.items = more ? state.items.concat(page.items) : page.items;
+      state.total = page.total; state.cursor = page.nextCursor; state.started = true; state.error = null;
+    } catch (error) { state.error = error.message; }
+    finally { state.pending = false; draw(!state.error); }
+  }
+  draw();
+  return element;
+}
 
 // A row drawn from its exact value: synchronously when cached, otherwise the
 // summary card until the read returns and replaces it in place.

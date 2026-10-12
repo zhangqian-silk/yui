@@ -70,6 +70,9 @@ export const api = {
   context: function (taskId) { return requestJson(task(taskId) + "/context"); },
   workbench: function (taskId) { return requestJson(task(taskId) + "/workbench"); },
   observation: function (taskId) { return requestJson(task(taskId) + "?compact=true", { signal: AbortSignal.timeout(1500) }); },
+  activity: function (taskId, options) {
+    return requestJson(task(taskId) + "/activity?" + new URLSearchParams(options || {}));
+  },
   projects: function (after) { return requestJson("/api/projects" + (after ? "?after=" + encodeURIComponent(after) : "")); },
   createTask: function (input) { return submitMutation("task/create", "/api/tasks", input); },
   taskAction: function (taskId, action, requestId) {
@@ -99,7 +102,7 @@ export const api = {
   // One page of a Context family: summaries and exact references, no bodies.
   list: function (taskId, store, options) {
     const query = new URLSearchParams({ store: store });
-    ["status", "cursor", "limit"].forEach(function (key) {
+    ["view", "status", "cursor", "limit"].forEach(function (key) {
       if (options && options[key] !== undefined && options[key] !== null) query.set(key, String(options[key]));
     });
     return requestJson(task(taskId) + "/list?" + query);

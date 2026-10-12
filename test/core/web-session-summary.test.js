@@ -4,6 +4,7 @@ import { projectWebSessions } from "../../dist/web/webSessions.js";
 import { createRuntimeObservation, runtimeObservationTaskEventPayload } from "../../dist/runtime/runtimeObservation.js";
 import { createProviderRuntimeBinding, beginProviderTurn, acceptProviderTurn, settleProviderTurn } from "../../dist/runtime/providerRuntimeIdentity.js";
 import { recordProviderFailure, admitProviderRetry } from "../../dist/runtime/providerRetry.js";
+import { readWebTaskActivity } from "../../dist/web/webTaskActivity.js";
 
 const at = n => new Date(Date.parse("2026-09-13T00:00:00Z") + n * 1000).toISOString();
 const set = (status = "accepted") => ({
@@ -70,6 +71,18 @@ test("Web keeps waiting, missing observation, current failure and unsettled chil
   const result = project([set("completed")], [child]);
   assert.equal(result.counts.background, 1);
   assert.equal(result.sessions[0].background[0].execution, "unknown");
+  const replacedChild = event("continuation.started", 8, {
+    execution: "active", outcome: "pending", attachment: "detached",
+    observationQuality: "exact", mayWriteWorkspace: true, identityConflict: false
+  }, { nativeSessionId: "replaced-session", continuationId: "retained-child" });
+  const retained = project([set("completed")], [replacedChild]);
+  assert.equal(retained.sessions.length, 2);
+  assert.equal(retained.sessions[1].nativeSessionId, "replaced-session");
+  assert.equal(retained.counts.background, 1, "a selected Session cannot hide an older recorded unsettled child");
+  assert.equal(project([missing], [child]).sessions.length, 1, "missing foreground binding does not duplicate a native Session");
+  assert.equal(project([missing], [child]).sessions[0].background.length, 1);
+  const foreignChild = { ...replacedChild, taskId: "task-2" };
+  assert.equal(project([set("completed")], [foreignChild]).counts.background, 0);
   const operation = event("operation.started", 8, { operation: "subagent", operationId: "child-operation" });
   assert.equal(project([set("completed")], [operation, event("turn.completed", 9)]).counts.background, 1);
 });
@@ -107,4 +120,45 @@ test("Web preserves Controller-owned retry waiting and observes only its exact s
   assert.equal(project([{ ...set(), providerBinding: binding }], [old, active]).counts.active, 1);
   const unknown = { ...binding, run: { ...binding.run, status: "delivery-unknown" } };
   assert.equal(project([{ ...set(), providerBinding: unknown }], [old, active]).counts.unknown, 1);
+});
+
+test("native activity pages discover every recorded child and Session, fence Tasks, and reject stale membership", () => {
+  const sets = Array.from({ length: 19 }, (_, i) => {
+    const value = set();
+    return { ...value, owner: { ...value.owner, roleName: i ? `worker-${i}` : "leader" },
+      sessions: { codex: { ...value.sessions.codex, nativeSessionId: `session-${i + 1}` } },
+      providerBinding: { ...value.providerBinding, conversations: [
+        { conversationId: `session-${i + 1}`, epoch: 1, status: "current" }
+      ] } };
+  });
+  const events = Array.from({ length: 23 }, (_, i) => event("continuation.started", 11, {
+    execution: "active", outcome: "pending", attachment: "detached",
+    observationQuality: "exact", mayWriteWorkspace: false, identityConflict: false
+  }, { continuationId: `child-${i}` }));
+  const foreign = { ...set(), owner: { scope: "task", taskId: "task-2", roleName: "foreign" } };
+  const store = {
+    readTransaction: read => read(store), getTask: () => ({}), getConfig: () => ({}),
+    listRoleSessionSets: () => [...sets, foreign], listEvents: () => events
+  };
+  const first = readWebTaskActivity(store, "task-1", { limit: 16 }, new Date(at(30)));
+  assert.equal(first.total, 42);
+  assert.deepEqual(first.counts, { sessions: 19, operations: 0, background: 23 });
+  assert.equal(first.coverage, "partial");
+  assert.ok(Buffer.byteLength(JSON.stringify(first)) < 32768);
+  const ids = first.items.map(item => item.id);
+  let cursor = first.nextCursor;
+  while (cursor) {
+    const page = readWebTaskActivity(store, "task-1", { limit: 16, cursor }, new Date(at(31)));
+    ids.push(...page.items.map(item => item.id));
+    cursor = page.nextCursor;
+  }
+  assert.equal(ids.length, 42);
+  assert.equal(new Set(ids).size, 42);
+  assert.throws(() => readWebTaskActivity(store, "task-2", { cursor: first.nextCursor }, new Date(at(30))), /source|scope|cursor/);
+  events.push(event("continuation.settled", 12, {
+    execution: "quiescent", outcome: "succeeded", attachment: "detached",
+    observationQuality: "exact", mayWriteWorkspace: false, identityConflict: false
+  }, { continuationId: "child-0" }));
+  assert.throws(() => readWebTaskActivity(store, "task-1", { cursor: first.nextCursor }, new Date(at(30))), /changed/);
+  assert.equal(readWebTaskActivity(store, "task-1", {}, new Date(at(30))).total, 41);
 });

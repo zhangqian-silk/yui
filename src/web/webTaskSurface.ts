@@ -397,8 +397,9 @@ export function createWebTaskSurface(
       inspectTaskContext(store, taskId, input, environment),
     // The same paged family discovery as `task context list`: summaries and
     // exact references, never bodies; continuations keep their filters.
-    list: (taskId: string, input: { store: string; status?: string; cursor?: string; limit?: number }) =>
+    list: (taskId: string, input: { store: string; view?: string; status?: string; cursor?: string; limit?: number }) =>
       listTaskContext(store, taskId, input.store, {
+        ...(input.view === undefined ? {} : { view: input.view }),
         ...(input.status === undefined ? {} : { status: input.status }),
         ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
         ...(input.limit === undefined ? {} : { limit: input.limit })

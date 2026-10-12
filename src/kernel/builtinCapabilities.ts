@@ -73,7 +73,7 @@ const definitions: readonly Omit<CapabilityDescriptor, "contractVersion" | "prov
     name: "context.list", summary: "Discover one authorized record family with bounded summaries and exact references.",
     effect: "query", requiredPermissions: ["task:read"], source: "listTaskContext",
     inputSchema: object({ taskId: text, store: text, cursor: text, limit: { type: "integer" },
-      status: text, after: text, workItemId: text }, ["taskId", "store"]),
+      view: { type: "string", enum: ["current", "all"] }, status: text, after: text, workItemId: text }, ["taskId", "store"]),
     outputSchema: { type: "object", required: ["items", "total", "complete", "nextCursor"] }
   },
   {
@@ -330,6 +330,7 @@ export function createBuiltinCapabilities(
         limit: params.limit as number | undefined
       }, callerEnvironment(caller));
       if (name === "context.list") return listTaskContext(store, taskId, params.store as string, {
+        view: params.view as string | undefined,
         cursor: params.cursor as string | undefined, limit: params.limit as number | undefined,
         status: params.status as string | undefined, after: params.after as string | undefined,
         workItemId: params.workItemId as string | undefined

@@ -149,6 +149,12 @@ test("Web task operations share durable intent, reject authority fields, and ret
   assert.equal(store.getTask(id).description, long, "summaries never overwrite original requirements");
   const observation = await (await fetch(base + `/api/tasks/${id}?compact=true`, { headers })).json();
   for (const field of ["messages", "runs", "brief", "workItems", "task"]) assert.equal(observation[field], undefined);
+  assert.equal((await fetch(base + `/api/tasks/${id}/activity`)).status, 403);
+  const nativePage = await (await fetch(base + `/api/tasks/${id}/activity?limit=20`, { headers })).json();
+  assert.equal(nativePage.coverage, "partial");
+  assert.equal(nativePage.total, 0);
+  assert.deepEqual(nativePage.items, []);
+  assert.equal((await fetch(base + `/api/tasks/${id}/activity?limit=101`, { headers })).status, 400);
   const started = new Date(now.getTime() - 20 * 60000).toISOString();
   // Feed the same selected native Turn to both snapshot modes. No live model
   // or managed execution is needed to compare their read-only classification.
@@ -171,7 +177,10 @@ test("Web task operations share durable intent, reject authority fields, and ret
   const full = buildWebTaskDetail(dashboard, id, now);
   const compact = buildWebTaskDetail(dashboard, id, now, true);
   assert.equal(full.sessions.counts.quiet, 1);
-  assert.deepEqual(compact.sessions, full.sessions, "compact output must preserve the full projection's facts");
+  assert.deepEqual(compact.sessions.counts, full.sessions.counts, "compact counts must preserve the full projection's facts");
+  assert.equal(compact.sessions.total, full.sessions.sessions.length);
+  assert.equal(compact.sessions.sessions[0].group, full.sessions.sessions[0].group);
+  assert.deepEqual(compact.execution.activity, full.execution.activity);
 });
 
 test("selecting a Task uses its bounded workbench without automatically expanding original bodies", async () => {

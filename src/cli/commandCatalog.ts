@@ -503,8 +503,9 @@ const taskChildren: readonly NodeInput[] = [
   {
     name: "context", discovery: { surface: "public", audiences: ["public","operator","leader","assignment","unbound"] },
     summary: "Read compact authorized facts, fixed-bound delta, or inspect a Context reference.",
-    usage: "yui task context [read|list|delta|inspect] <task> [--after <cursor>] [--continuation <cursor>] [--cursor <cursor>] [--limit <n>] [--store <store> --ref <id>] [--digest <digest>]",
-    options: ["--after", "--continuation", "--cursor", "--limit", "--store", "--ref", "--digest", "--status", "--work-item"]
+    usage: "yui task context [read|list|delta|inspect] <task> [--after <cursor>] [--continuation <cursor>] [--cursor <cursor>] [--limit <n>] [--store <store> --ref <id>] [--digest <digest>] [--view <current|all>]",
+    options: ["--after", "--continuation", "--cursor", "--limit", "--store", "--ref", "--digest", "--status", "--work-item", "--view"],
+    optionValues: { "--view": ["current", "all"] }
   },
   {
     name: "next-action", discovery: { surface: "managed", audiences: ["operator","leader"] },

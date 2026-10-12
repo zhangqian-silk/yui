@@ -16,7 +16,7 @@ export function runCard(run, t, locale) {
     run.purpose ? chip(label(t, "run.purpose", run.purpose)) : null,
     run.workItemId ? chip(run.workItemId) : null,
     h("span.spacer"),
-    statusBadge(t, "run", "run", run.status)), runBody(run, t, locale));
+    statusBadge(t, "run", "run", run.status)), ...runBody(run, t, locale));
   return element;
 }
 

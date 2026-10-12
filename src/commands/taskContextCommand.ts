@@ -23,13 +23,13 @@ export function runTaskContextCommand(
   const action = explicit ? args[0]! : "read";
   const taskId = args[explicit ? 1 : 0];
   if (!taskId || taskId.startsWith("--")) throw usageError(
-    "Task context usage: yui task context [read|list|delta|inspect] <task> [--after <cursor|timestamp>] [--continuation <cursor>] [--cursor <cursor>] [--limit <1..100>] [--store <store> --ref <id> --digest <digest>] [--status <status>] [--work-item <id>]."
+    "Task context usage: yui task context [read|list|delta|inspect] <task> [--after <cursor|timestamp>] [--continuation <cursor>] [--cursor <cursor>] [--limit <1..100>] [--store <store> --ref <id> --digest <digest>] [--view <current|all>] [--status <status>] [--work-item <id>]."
   );
   const options = new Map<string, string>();
   const rest = args.slice(explicit ? 2 : 1);
   const allowed = action === "read" ? [] : action === "delta"
     ? ["--after", "--continuation", "--limit"] : action === "list"
-      ? ["--store", "--cursor", "--limit", "--status", "--after", "--work-item"] : ["--store", "--ref", "--digest", "--cursor"];
+      ? ["--store", "--cursor", "--limit", "--status", "--after", "--work-item", "--view"] : ["--store", "--ref", "--digest", "--cursor"];
   for (let i = 0; i < rest.length; i += 2) {
     const flag = rest[i]!;
     const value = rest[i + 1];
@@ -45,6 +45,7 @@ export function runTaskContextCommand(
     if (family === undefined) throw usageError("Context list requires --store.");
     data = listTaskContext(store, taskId, family, {
       cursor: options.get("--cursor"),
+      view: options.get("--view"),
       status: options.get("--status"), after: options.get("--after"), workItemId: options.get("--work-item"),
       ...(options.has("--limit") ? { limit: Number(options.get("--limit")) } : {})
     }, environment);
