@@ -51,6 +51,33 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.6.0 compatibility and migration notes
+
+This minor includes Task111's paged current activity and parallel execution
+summary. Task runtime lists can discover all current Roles, Runs, Reviews,
+Jobs and open InputRequests beyond the compact samples; exact record details
+remain on demand. `task context list --view current` selects current membership,
+while the default `all` retains history. Refresh a changed collection instead
+of reusing its stale pagination cursor.
+
+Execution consumers must handle the additional derived `waiting-on-jobs`
+status and `wait-for-jobs` action, and the parallel `activity` categories.
+These are not Task lifecycle states or new scheduling authority. Waiting for
+user input no longer hides concurrent work. Unknown outcomes remain unknown
+and never authorize replay.
+
+Compact native observations now return category totals and bounded Session
+samples with `operationCount`/`backgroundCount`, not embedded child lists.
+Consumers needing those rows must page `/api/tasks/<id>/activity`.
+Coverage is explicitly partial: selected native Sessions and retained,
+exactly fenced child observations, not a live process inventory. Native facts
+may describe an AgentRun and must not be added to it as separate executors.
+
+No storage migration is added; storage remains **1.6**. Existing acceptance
+evidence uses deterministic tests and isolated browser fixtures, not real-model
+validation. Publishing this package does not upgrade a global CLI, migrate a
+Home or restart a Controller.
+
 ### 2.5.0 compatibility and migration notes
 
 This minor includes Task110's notification and context-loading improvements.
