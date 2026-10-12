@@ -196,7 +196,7 @@ import {
   runtimeLifecycleTarget
 } from "../runtime/lifecycleReservation.js";
 import { currentManagedRuntime, resolveManagedTaskReader } from "../runtime/managedCaller.js";
-import { controlProviderRetry, providerRetryProjection, renderProviderRetry } from "../runtime/providerRetry.js";
+import { controlProviderRetry, providerRunRetry, providerRetryProjection, renderProviderRetry } from "../runtime/providerRetry.js";
 import { currentProviderConversation, transferProviderAuthority } from "../runtime/providerRuntimeIdentity.js";
 import { projectProviderContinuations } from "../runtime/runtimeContinuationProjection.js";
 import { runtimeObservationFromTaskEvent } from "../runtime/runtimeObservation.js";
@@ -6242,7 +6242,9 @@ function retryRun(
       return output(`Retry already recorded as ${existing.payload.runId}; retry that exact successor if needed.\n`);
     }
     const sessions = tx.getTaskRoleSessionSet(previous.taskId, previous.roleName);
-    const retry = sessions?.providerBinding?.retry;
+    const retry = options.providerRetryChainId !== undefined ? sessions?.providerBinding?.retry
+      : sessions?.providerBinding == null ? undefined
+      : providerRunRetry(sessions.providerBinding, previous.id, clock(options).getTime());
     if (options.providerRetryChainId !== undefined
       && (retry?.chainId !== options.providerRetryChainId || retry.status !== "waiting"
         || retry.previousRunId !== previous.id || clock(options).getTime() < Date.parse(retry.nextEligibleAt)
@@ -6254,7 +6256,10 @@ function retryRun(
       const successor = tx.getActiveRun(previous.taskId, previous.roleName);
       tx.saveTaskRoleSessionSet({
         ...sessions, providerBinding: {
-          ...sessions.providerBinding, retry: {
+          ...sessions.providerBinding,
+          ...(sessions.providerBinding.retry !== undefined && sessions.providerBinding.retry.chainId !== retry.chainId
+            ? { retryHistory: [...(sessions.providerBinding.retryHistory ?? []), sessions.providerBinding.retry] } : {}),
+          retry: {
             ...retry, status: "waiting", successorAutomatic: options.providerRetryChainId !== undefined,
             ...(options.providerRetryChainId === undefined ? {
               intentAt: clock(options).toISOString(),

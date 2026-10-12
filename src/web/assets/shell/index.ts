@@ -19,6 +19,7 @@ export const DASHBOARD_HTML = `<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark light">
   <meta name="yui-web-token" content="__YUI_WEB_TOKEN__">
+  <script src="/assets/theme.js"></script>
   <link rel="icon" href="data:,">
   <title>Yui</title>
   <link rel="preload" href="/assets/fonts/inter-500.woff2" as="font" type="font/woff2" crossorigin>

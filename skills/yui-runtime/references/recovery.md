@@ -93,6 +93,15 @@ Assignment from memory. A new Host process need not mean a new native Session.
 Preserve frozen Review candidates and selected synthesis sources on retry.
 An infrastructure failure is not a defect in the business result.
 
+Native internal retries are not failed terminals: observe without submitting
+another input. A missing automatic retry record is not evidence of exhausted
+budget or a damaged Session. An explicit `task run retry <task>/<run>` can
+continue from the current exact failed Turn even without an earlier automatic
+chain. Codex `systemError` alone does not require replacement; the normal
+submission path checks that the latest Turn is that failed Turn and background
+execution is empty. Missing or changed proof is a refusal, not permission to
+replay, change models or silently replace the Session.
+
 ## Replace a Session deliberately
 
 An authorized Leader or Operator may request:

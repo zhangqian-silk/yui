@@ -6,9 +6,9 @@ import {
 } from "../../dist/runtime/providerRuntimeIdentity.js";
 import {
   recordProviderFailure, admitProviderRetry, providerRetryProjection,
-  cancelProviderRetry, deferProviderRetry, providerRetryAttemptId, providerRetryPrompt
+  cancelProviderRetry, deferProviderRetry, providerRetryAttemptId, providerRetryPrompt, providerRunRetry
 } from "../../dist/runtime/providerRetry.js";
-import { mapCodexAgentError } from "../../dist/runtime/builtinAgentErrorMappers.js";
+import { mapCodexAgentError, mapClaudeAgentError } from "../../dist/runtime/builtinAgentErrorMappers.js";
 
 const epoch = Date.parse("2026-09-13T00:00:00Z");
 const iso = ms => new Date(ms).toISOString();
@@ -39,6 +39,39 @@ function fail(value, at, error = failure) {
   });
   return recordProviderFailure(value, { error, failureRef: value.run.attemptId, at, random: () => 0 });
 }
+
+test("structured Codex capacity is retryable without granting replay from capacity prose", () => {
+  const message = "Selected model is at capacity. Please try a different model.";
+  const raw = JSON.stringify({ message, codexErrorInfo: "serverOverloaded", additionalDetails: null, misalignment: null });
+  const classification = mapCodexAgentError({ message, raw });
+  assert.equal(classification.retryable, true);
+  assert.equal(classification.sessionDisposition, "recoverable");
+  assert.equal(fail(binding(), epoch, { ...failure, ...classification, message, raw }).retry.status, "waiting");
+  assert.equal(mapCodexAgentError({ message, raw: message }).retryable, undefined);
+  for (const codexErrorInfo of ["usageLimitExceeded", "unauthorized", "badRequest"]) {
+    assert.notEqual(mapCodexAgentError({
+      message, raw: JSON.stringify({ codexErrorInfo })
+    }).retryable, true);
+  }
+  assert.equal(mapClaudeAgentError({ message: "overloaded_error", raw: '{"type":"overloaded_error"}' }).retryable, true);
+  assert.notEqual(mapClaudeAgentError({ message, raw }).retryable, true);
+});
+
+test("explicit recovery requires current accepted failure proof, not an automatic classification", () => {
+  const failed = fail(binding(), epoch, { ...failure, retryable: undefined });
+  const original = { ...failed, run: { ...failed.run, runId: "run-1" } };
+  const retry = providerRunRetry(original, "run-1", epoch + 1);
+  assert.equal(retry.failedNativeTurnId, "turn-0");
+  assert.equal(retry.error.retryable, undefined, "Manual intent must not manufacture automatic qualification.");
+  assert.equal(retry.successorAutomatic, false);
+  assert.equal(providerRunRetry(original, "another-run", epoch + 1), undefined);
+  for (const change of [
+    { status: "accepted" }, { status: "delivery-unknown" }, { nativeTurnId: undefined },
+    { authorityEpoch: 2 }, { input: undefined }, { retrySupported: false },
+    { failure: { ...original.run.failure, error: { ...failure, inputDisposition: "unknown" } } },
+    { failure: { ...original.run.failure, error: { ...failure, sessionDisposition: "unrecoverable" } } }
+  ]) assert.equal(providerRunRetry({ ...original, run: { ...original.run, ...change } }, "run-1", epoch + 1), undefined);
+});
 
 test("five consecutive automatic attempts survive new Turns; only exact success resets the chain", () => {
   let value = fail(binding(), epoch);
