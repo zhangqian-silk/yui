@@ -21,17 +21,17 @@ import { TASK_RUNTIME_SCRIPT } from "../../dist/web/assets/client/views/task/run
 
 test("current record and native pages survive unrelated polling and converge on changed collections", async () => {
   const element = (spec, attrs, ...children) => ({
-    spec, dataset: {}, children: children.filter(child => child != null),
+    spec, dataset: {}, children: children.filter(child => child != null), handlers: {},
     append(...items) { this.children.push(...items); },
     replaceChildren(...items) { this.children = items; },
-    addEventListener() {}, querySelector() { return null; }
+    addEventListener(name, handler) { this.handlers[name] = handler; }, querySelector() { return null; }
   });
   const context = vm.createContext({
     h: element, icon: name => name, mono: text => text, note: text => text,
     button: (text, options) => ({ text, ...options }),
     card: () => Object.assign(element("card"), { body: element("body") }),
     listCard: () => Object.assign(element("card"), { list: element("list") }),
-    setCardCount() {}
+    setCardCount() {}, rawDisclosure: (_, value) => element("raw", null, value)
   });
   for (const script of [CONTEXT_SCRIPT, RECORDS_SCRIPT, TASK_RUNTIME_SCRIPT]) {
     vm.runInContext(script.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
@@ -64,7 +64,9 @@ test("current record and native pages survive unrelated polling and converge on 
       core: { coreCursor: "1", records: items.slice(0, 8), collections: [{ store: "job", total }] } };
     const render = () => native
       ? context.nativeCard(data, key => key, { activity: read })
-      : context.currentRecordCard(data, "job", key => key, { list: read }, { id: "jobs", title: "Jobs" });
+      : context.currentRecordCard(data, "job", key => key, {
+        list: read, inspect: async () => ({ value: { status: "running" } })
+      }, { id: "jobs", title: "Jobs" });
     const state = () => native ? data.viewState.nativeActivity : data.viewState.currentLists.job;
     const root = node => native ? node.body : node.list;
     let card = render();
@@ -72,9 +74,15 @@ test("current record and native pages survive unrelated polling and converge on 
     click(root(card), "activity.more"); await tick();
     click(root(card), "activity.more"); await tick();
     assert.equal(state().items.length, 40);
+    if (!native) {
+      const row = card.list.children[0].children[0];
+      row.open = true; row.handlers.toggle(); await tick();
+    }
     data.core.coreCursor = "2";
     card = render(); await tick();
     assert.equal(state().items.length, 40, "unrelated Context change must preserve loaded pages");
+    if (!native) assert.equal(card.list.children[0].children[0].open, true,
+      "polling preserves an expanded current record");
     click(root(card), "activity.more"); await tick();
     assert.equal(state().items.length, 43);
     fail = true;

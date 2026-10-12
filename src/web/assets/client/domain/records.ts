@@ -15,6 +15,7 @@ import { cachedExact, readExact, summaryFields, entriesOf, totalOf, exactCache }
 export function currentRecordCard(data, store, t, actions, options) {
   const view = data.viewState;
   exactCache(view);
+  view.openRows = view.openRows || {};
   view.currentLists = view.currentLists || {};
   let state = view.currentLists[store];
   if (!state || (!state.started && state.key !== data.core.coreCursor)) {
@@ -36,6 +37,7 @@ export function currentRecordCard(data, store, t, actions, options) {
         rows.append(!item.omitted && item.value && options.render ? options.render(item.value, null, item)
           : lazyRow(item, data.task.id, t, actions, {
             cache: view.exact,
+            openRows: view.openRows,
             head: h("span", null, item.ref.refId + (item.summary ? " · " + item.summary : "")),
             render: options.render
           }));

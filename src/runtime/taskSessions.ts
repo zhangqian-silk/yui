@@ -105,6 +105,8 @@ export function projectTaskSessions(input: Readonly<{
         && Object.keys(projection.operations).length === 0;
       sessions.push({ ...row, background, ...(background.length ? {
         group: "background", reason: "Retained background execution is not settled."
+      } : session.status === "ended" || projection.session === "ended" ? {
+        group: "stopped", reason: "The selected Session ended with no submitted native input."
       } : ready ? {
         group: "idle", reason: "The selected Session is ready with no submitted native input."
       } : {}) });

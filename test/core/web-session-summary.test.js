@@ -57,6 +57,20 @@ test("an exactly observed ready Session without a submitted Turn is idle, not un
   assert.equal(project([goal], [ready]).counts.unknown, 1, "an active Goal is not proven idle");
   assert.equal(project([current], [ready, event("host.observed", 3,
     { alive: false }, sessionFence)]).counts.unknown, 1);
+  const ended = event("session.ended", 4, {}, sessionFence);
+  const stopped = project([current], [ready, ended]);
+  assert.equal(stopped.counts.stopped, 1);
+  assert.equal(nativeActivityRows(stopped).length, 0);
+  assert.equal(projectTaskExecution({
+    task: { id: "task-1", status: "active", executionGate: { state: "enabled" } },
+    roles: [], runs: [], jobs: [{ id: "job-1", status: "running" }],
+    nativeSessions: stopped, now: new Date(at(30))
+  }).status, "waiting-on-jobs");
+  const endedSession = { ...current, sessions: { codex: { ...current.sessions.codex, status: "ended" } } };
+  assert.equal(project([endedSession], []).counts.stopped, 1);
+  const child = event("operation.started", 3, { operation: "subagent", operationId: "child" });
+  assert.equal(project([endedSession], [ready, child, ended]).counts.background, 1,
+    "Session terminal does not settle a retained child");
 });
 
 test("empty selected Sessions do not invent execution and retained children keep one original Run identity", () => {
