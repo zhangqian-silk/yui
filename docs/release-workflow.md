@@ -51,6 +51,32 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.5.0 compatibility and migration notes
+
+This minor includes Task110's notification and context-loading improvements.
+Normal and recovery notifications share bounded facts, optional attributed
+author summaries and exact action entries. A summary is not acceptance or
+authority: relevant requirements, user messages and execution results must
+still be read in full.
+
+Session instructions name the required Skills explicitly. Reuse is conditional
+on the complete same-version instructions remaining available in context;
+first entry, changed instructions or missing/compacted content require loading
+the exact Manifest and referenced files again. There is no persistent read
+receipt, instruction cache or additional model call for summarization.
+
+`task wake show` now focuses on relevant messages, results and referenced
+evidence by default. Use `--history` for the broader fixed-window diagnostic
+view and follow pagination when present. Consumers must not treat the focused
+view as all history. Original records, exact older references, deduplication,
+snapshot boundaries and unknown-input no-replay rules are preserved.
+
+No storage migration is added; storage remains **1.6**. Deterministic tests and
+package smoke do not prove real-model instruction reuse or compaction recovery.
+Byte measurements are not token savings and can increase for a simple first
+entry. Publishing this package does not upgrade a global CLI, migrate a Home
+or restart a Controller.
+
 ### 2.4.0 compatibility and migration notes
 
 This minor ships the unified Web Task/Operator conversations and same-thread
