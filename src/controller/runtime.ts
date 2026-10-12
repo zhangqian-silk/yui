@@ -733,9 +733,9 @@ export async function startFileTaskControllerRuntime(
           }
         }),
         jobSupervisor,
-        globalInputDelivery: () => deliverGlobalInputs(home, store, async (roleName) => {
+        globalInputDelivery: (deliveryOptions) => deliverGlobalInputs(home, store, async (roleName) => {
           await lifecycleDispatcher("runtime.ensure-role-session", { scope: "global", roleName });
-        }, options.onError ?? (() => undefined)),
+        }, options.onError ?? (() => undefined), deliveryOptions),
         jobControl,
         capabilityDispatcher: createCapabilityDispatcher(kernel.capabilities),
         ...(continuationReconciler === undefined ? {} : { continuationReconciler }),

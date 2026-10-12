@@ -139,6 +139,50 @@ summary store, read-acknowledgement or extra model call is involved. Missing or
 oversized summaries fall back to facts without clipping qualifications.
 Summaries never grant authority, accept results or mark reviews approved.
 
+### Operator backlog and periodic recovery
+
+Task completion/cancellation/retirement, publication records/adoption and input
+requests enqueue Operator attention in the same transaction as their durable
+event. Existing Run failure routing keeps its retry and supervisor guards.
+The ready mailbox is the incremental recovery source: a lost scheduler signal
+or Controller restart does not require a Leader report or a scan of historical
+Tasks. The existing periodic pass retries outstanding mailbox work; an unchanged,
+settled mailbox creates neither a Message nor a model call.
+
+At most one unsent engineering notice is queued. Further facts coalesce in the
+mailbox until that notice is accepted or conclusively not delivered. Each handoff
+claims at most 64 source signals and reads exact records, retaining the unclaimed
+suffix. Global delivery reads at most 64 pending Messages per Role per pass;
+conclusively stale originals retain their nondelivery evidence, with later pages
+handled by subsequent passes. Reserved interrupt-then inputs remain discoverable
+beyond that ordinary page. FIFO user inputs and unknown-effect fences are not
+reordered to make notifications appear healthy. SQL aggregates still inspect
+matching stored rows; these bounds limit materialized records and per-pass
+delivery work, not the size of the persisted mailbox or database.
+
+A full reconciliation may ask the original Host to republish an already observed,
+client-owned terminal for the exact Session, authority, attempt and native Turn.
+This uses the existing Inbox and canonical observer, including the original result.
+It does not submit input, query another native client, restart a Host, or infer
+quiescence from elapsed time/idle state. Normal terminal processing signals again
+after releasing Host occupancy. Unknown acceptance remains isolated unless exact
+evidence settles that input. Explicit stop/replacement and external writers remain
+hard boundaries.
+
+`yui session context <role> --json` includes bounded `backlog` diagnostics: pending
+count, oldest timestamp, target and attempt identities, blocking reason and
+recovery guidance. Live age is in `backlogObservation`, outside the paged source
+digest. `in-flight-or-unobserved-terminal` deliberately does not label a
+long-running accepted Turn as stuck. An unavailable/older Host or missing retained
+terminal produces one record-only runtime-attention Message per exact attempt;
+inspect it through the existing message list/show commands. No recovery Agent,
+private timer, migration or new acknowledgement state is introduced. If the
+Provider itself never reported a terminal, or the original Host lost its evidence,
+automatic reconciliation cannot prove completion: restore the compatible observation
+path or explicitly stop/replace only with the required native quiescence evidence.
+This change does not backfill arbitrary pre-existing historical events, adopt old
+Hosts, or authorize production upgrades/restarts.
+
 `task wake show <task> <wake>` now defaults to inputs/results and explicit
 references, including older referenced originals. It omits unrelated diagnostic
 events and merely started Runs; `--history` restores full fixed-window discovery.

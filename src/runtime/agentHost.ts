@@ -122,6 +122,16 @@ export type AgentHostStatusControl = Readonly<{
   type: "status";
 }>;
 
+/** Republish already observed evidence; never submit input or infer a terminal. */
+export type AgentHostReconcileTurnControl = Readonly<{
+  protocol: typeof AGENT_HOST_CONTROL_PROTOCOL;
+  type: "reconcile-turn";
+  nativeSessionId: string;
+  attemptId: string;
+  nativeTurnId?: string;
+  authority: ProviderAuthorityFence;
+}>;
+
 export type AgentHostSubmitRunControl = Readonly<{
   protocol: typeof AGENT_HOST_CONTROL_PROTOCOL;
   type: "submit-turn";
@@ -158,6 +168,7 @@ export type AgentHostCancelControl = Readonly<{
 }>;
 
 export type AgentHostControl =
+  | AgentHostReconcileTurnControl
   | AgentHostLaunchControl
   | AgentHostStatusControl
   | AgentHostSubmitRunControl
@@ -235,6 +246,7 @@ export type AgentHostControlResult = Readonly<{
   /** Structured cause when the Host could not complete the request. */
   failure?: ProviderDeliveryFailure;
   cancellation?: AgentEndpointCancellation;
+  reconciliation?: "terminal-republished" | "unobserved";
 }>;
 
 /**
@@ -528,6 +540,7 @@ export async function runAgentHost(input: Readonly<{
           conversationId: terminal.conversationId,
           ...authorityFields()
         }));
+        signalRoleMailbox(input.home, currentPayload);
         promptHuman();
       } catch (error) {
         updateSnapshot(hostSnapshot("failed", {
@@ -1406,6 +1419,43 @@ export async function runAgentHost(input: Readonly<{
       }
       return controlResult("accepted", { ...snapshot, nativeTui: !!nativeTui });
     }
+    if (request.type === "reconcile-turn") {
+      if (session === undefined || session.nativeSessionId !== request.nativeSessionId
+        || authority === undefined || !sameProviderAuthorityFence(authority, request.authority)) {
+        throw new Error("Terminal reconciliation targets a different Session or authority.");
+      }
+      const terminal = lastTerminal;
+      const terminalPayload = lastTerminalPayload;
+      if (terminal?.clientOwned !== true || terminalPayload === undefined
+        || terminal.nativeSessionId !== request.nativeSessionId
+        || terminal.attemptId !== request.attemptId
+        || request.nativeTurnId !== undefined && terminal.nativeTurnId !== request.nativeTurnId) {
+        return { ...controlResult("status", snapshot), reconciliation: "unobserved" };
+      }
+      // Serialize with submission/terminal persistence. The original Host and
+      // original launch envelope remain the observer, including the full result.
+      await enqueueSerialized(async () => {
+        if (session?.nativeSessionId !== request.nativeSessionId || authority === undefined
+          || !sameProviderAuthorityFence(authority, request.authority)) {
+          throw new Error("Session changed before terminal reconciliation.");
+        }
+        await publishStructuredProviderTerminal({
+          home: input.home, environment: terminalPayload.environment, terminal
+        });
+        if (activeRunAttemptId === terminal.attemptId) {
+          activeRunPayload = undefined;
+          activeRunAttemptId = undefined;
+          activeNativeTurnId = undefined;
+          updateSnapshot(hostSnapshot(session!.inspect().activeNativeTurnId === undefined ? "idle" : "busy", {
+            adapterId: session!.adapterId, processInstanceId: session!.processInstanceId,
+            nativeSessionId: session!.nativeSessionId, conversationId: session!.conversationId,
+            ...authorityFields()
+          }));
+        }
+        signalRoleMailbox(input.home, terminalPayload);
+      });
+      return { ...controlResult("status", snapshot), reconciliation: "terminal-republished" };
+    }
     if (request.type === "status") {
       // Read the Agent's configuration at answer time, not from the stored
       // snapshot. The Agent may have changed it since the last state
@@ -1766,6 +1816,15 @@ export async function inspectAgentHost(input: Readonly<{
   return result.snapshot;
 }
 
+export async function reconcileAgentHostTurn(input: Readonly<{
+  home: string; scope: string; taskId?: string; roleName: string;
+  control: AgentHostReconcileTurnControl;
+}>): Promise<AgentHostControlResult> {
+  // Periodic observation must not hold the scheduler behind an unavailable Host.
+  // A timeout is only an observation failure, never permission to submit again.
+  return exchangeAgentHostControl(agentHostControlSocketPath(input), input.control, 1_000);
+}
+
 export async function waitForAgentHostLaunchAck(input: Readonly<{
   home: string;
   scope: string;
@@ -1961,7 +2020,7 @@ export async function openAgentHostControl(
             ...result,
             snapshot: {
               ...result.snapshot,
-              ...(payload.environment.YUI_SESSION_SCOPE !== "task" ? {} : {
+              ...(!["task", "global"].includes(payload.environment.YUI_SESSION_SCOPE ?? "") ? {} : {
                 eventDelivery: structuredProviderEventDelivery(home, payload.environment, result.snapshot.nativeSessionId)
               })
             }
@@ -2044,7 +2103,8 @@ function boundControlResponse(result: AgentHostControlResult): AgentHostControlR
       validateSnapshot(result.snapshot),
       result.failure === undefined ? undefined : providerDeliveryFailure(result.failure)
     ),
-    ...(result.cancellation === undefined ? {} : { cancellation: result.cancellation })
+    ...(result.cancellation === undefined ? {} : { cancellation: result.cancellation }),
+    ...(result.reconciliation === undefined ? {} : { reconciliation: result.reconciliation })
   };
   if (withinControlBound(result)) return result;
   if (result.snapshot.publicReply !== undefined) {
@@ -2061,7 +2121,7 @@ function boundControlResponse(result: AgentHostControlResult): AgentHostControlR
   };
   // Never make an omitted option list look like a complete empty enumeration.
   if (result.snapshot.runConfiguration?.status === "observed") {
-    result = controlResult(
+    result = { ...result, ...controlResult(
       result.outcome,
       validateSnapshot({
         ...result.snapshot,
@@ -2072,26 +2132,26 @@ function boundControlResponse(result: AgentHostControlResult): AgentHostControlR
         )
       }),
       result.failure
-    );
+    ) };
     if (withinControlBound(result)) return result;
   }
-  let bounded = controlResult(
+  let bounded = { ...result, ...controlResult(
     result.outcome,
     {
       ...result.snapshot,
       ...(result.snapshot.detail === undefined ? {} : { detail: clip(result.snapshot.detail, 1200) })
     },
     result.failure === undefined ? undefined : { ...result.failure, detail: clip(result.failure.detail, 1200) }
-  );
+  ) };
   const raw = bounded.failure?.raw;
   if (withinControlBound(bounded) || raw === undefined) return bounded;
   let chars = raw.length;
   while (!withinControlBound(bounded) && chars > 0) {
     chars = Math.floor(chars / 2);
-    bounded = controlResult(bounded.outcome, bounded.snapshot, {
+    bounded = { ...bounded, ...controlResult(bounded.outcome, bounded.snapshot, {
       ...bounded.failure!,
       raw: clip(raw, chars)
-    });
+    }) };
   }
   return bounded;
 }
@@ -2124,6 +2184,13 @@ function validateControl(control: AgentHostControl): AgentHostControl {
     throw new Error("Agent Host control protocol is invalid.");
   }
   if (control.type === "status") return Object.freeze({ ...control });
+  if (control.type === "reconcile-turn") {
+    validateIdentity(control.nativeSessionId, "native Session id");
+    validateIdentity(control.attemptId, "Provider input attempt id");
+    if (control.nativeTurnId !== undefined) validateIdentity(control.nativeTurnId, "native Turn id");
+    validateProviderAuthorityFence(control.authority);
+    return Object.freeze({ ...control });
+  }
   if (control.type === "native-open" || control.type === "native-respond" || control.type === "native-model") {
     validateIdentity(control.nativeSessionId, "native Session id");
     if (control.type === "native-model" && (typeof control.model !== "string"

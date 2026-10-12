@@ -95,6 +95,7 @@ import { standardAgentError } from "../runtime/agentError.js";
 import { recordTaskAgentError } from "./taskAgentError.js";
 import { recordGlobalRuntimeAttention, recordGlobalRuntimeFailure } from "./globalRuntimeAttention.js";
 import { queueOperatorNotification } from "./operatorNotification.js";
+import { claimOperatorAttention } from "../scheduler/operatorEvent.js";
 import {
   builtinAgentDriverRegistry
 } from "../runtime/builtinAgentDrivers.js";
@@ -1155,6 +1156,11 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
     ));
   }
   getTask(taskId: string) { return this.store.getTask(taskId); }
+  getEvent(taskId: string, eventId: string): TaskEvent | null {
+    return this.store.queryContextRecords(taskId, {
+      family: "task-event", ids: [eventId], limit: 1
+    }).records[0]?.value as TaskEvent | undefined ?? null;
+  }
   getTaskWorkspace(taskId: string) { return this.store.getTaskWorkspace(taskId); }
   getTaskBrief(taskId: string) { return this.store.getTaskBrief(taskId); }
   listDecisions(taskId: string) { return this.store.listDecisions(taskId); }
@@ -2059,7 +2065,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       if (mailbox.processing !== null) {
         return { status: "processing", processing: mailbox.processing };
       }
-      let claimed = claimPending(mailbox, {
+      let claimed = (input.target.kind === "operator" ? claimOperatorAttention : claimPending)(mailbox, {
         batchId: input.batchId,
         owner: input.owner,
         startedAt: input.now.toISOString()

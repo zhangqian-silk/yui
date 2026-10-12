@@ -185,7 +185,8 @@ export type SchedulerOperatorDeliveryTarget = Readonly<{
 
 export type OperatorNotificationQueueResult =
   | Readonly<{ status: "queued" | "already-queued"; messageId: string }>
-  | Readonly<{ status: "unavailable" }>;
+  | Readonly<{ status: "unavailable" }>
+  | Readonly<{ status: "deferred" }>;
 
 export type AutoResolvedInput = Readonly<{
   inputRequestId: string;
@@ -326,6 +327,7 @@ export interface SchedulerStorePort {
   ): import("../executor/agentExecutor.js").TaskRoleSessionSet | null;
   /** Immutable runtime facts used by the low-frequency stall projection. */
   listEvents(taskId: string): readonly TaskEvent[];
+  getEvent?(taskId: string, eventId: string): TaskEvent | null;
   /** Required authoritative reads; an unavailable reader is not an empty family. */
   listRuns(taskId: string): readonly SchedulerRun[];
   listWorkItems(taskId: string): readonly import("../workItem/workItem.js").WorkItem[];

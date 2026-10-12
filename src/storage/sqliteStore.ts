@@ -51,6 +51,7 @@ import {
 } from "../coordination/workMailbox.js";
 import type { Decision } from "../decision/decision.js";
 import type { TaskEvent } from "../event/taskEvent.js";
+import { enqueueDurableOperatorFact } from "../scheduler/operatorEvent.js";
 import type { GlobalRoleSessionSet, RoleAgentSession, TaskRoleSessionSet } from "../executor/agentExecutor.js";
 import type { CapabilityGrant } from "../grant/capabilityGrant.js";
 import type { InputRequest } from "../input/inputRequest.js";
@@ -1283,6 +1284,41 @@ export class SqliteTaskStore implements TaskStore {
       this.#listPayload<GlobalRoleMessage>("global_role_messages", "name = ?", [roleName]),
       (message) => message.id
     );
+  }
+
+  queryGlobalRoleMessages(roleName: string, query: import("../message/globalMessageQuery.js").GlobalMessageQuery):
+    import("../message/globalMessageQuery.js").GlobalMessagePage {
+    if (!Number.isSafeInteger(query.limit) || query.limit < 0 || query.limit > 64
+      || !Number.isSafeInteger(query.afterSequence ?? 0) || (query.afterSequence ?? 0) < 0) {
+      throw new Error("Global Message query exceeds its bounded contract.");
+    }
+    const where = ["name = @name"];
+    const params: Record<string, string | number> = { name: roleName };
+    if (query.pending) where.push(`json_extract(payload, '$.delivery') IS NULL
+      AND json_extract(payload, '$.notDelivered') IS NULL
+      AND (json_extract(payload, '$.inputControl.action') = 'queue'
+        OR json_extract(payload, '$.interruptThen') IS NOT NULL)`);
+    if (query.interruptThen) where.push("json_extract(payload, '$.interruptThen') IS NOT NULL");
+    if (query.operatorNotice) where.push("json_extract(payload, '$.inputControl.requestId') LIKE 'operator-notice:%'");
+    if (query.afterSequence !== undefined) {
+      where.push("seq > @after"); params.after = query.afterSequence;
+    }
+    if (query.id !== undefined) { where.push("message_id = @id"); params.id = query.id; }
+    if (query.requestId !== undefined) {
+      where.push("COALESCE(json_extract(payload, '$.inputControl.requestId'), json_extract(payload, '$.interruptThen.reusedInput.requestId')) = @request");
+      params.request = query.requestId;
+    }
+    const filter = where.join(" AND ");
+    const summary = this.#db.prepare(`SELECT count(*) AS count, min(created_at) AS oldestCreatedAt
+      FROM global_role_messages WHERE ${filter}`).get(params) as { count: number; oldestCreatedAt: string | null };
+    const rows = this.#db.prepare(`SELECT payload FROM global_role_messages WHERE ${filter}
+      ORDER BY seq ${query.descending ? "DESC" : "ASC"} LIMIT @limit`)
+      .all({ ...params, limit: query.limit }) as { payload: string }[];
+    return { ...summary, messages: rows.map(row => {
+      const message = this.#parse<GlobalRoleMessage>(row.payload);
+      validateGlobalRoleMessage(message);
+      return message;
+    }) };
   }
 
   updateGlobalRoleMessage(message: GlobalRoleMessage): void {
@@ -2917,6 +2953,7 @@ export class SqliteTaskStore implements TaskStore {
         `INSERT INTO events (task_id, event_id, type, occurred_at, payload) VALUES (?, ?, ?, ?, ?)`
       ).run(taskId, event.id, event.type, event.createdAt, this.#recordJson("events", event));
       this.#observeHighWater(taskId, "event", seq);
+      enqueueDurableOperatorFact(this, event);
     });
   }
 

@@ -1,7 +1,34 @@
 import { enqueueWork, type WorkMailboxQueueStore } from "../coordination/workMailboxQueue.js";
 import { createTaskEvent, type TaskEvent, type TaskEventPayload } from "../event/taskEvent.js";
+import { claimPending, type ClaimOptions, type WorkMailbox } from "../coordination/workMailbox.js";
 
 export const LEADER_ATTENTION_REQUIRED_EVENT = "leader.attention-required";
+
+/** Bound each Operator pass, retaining the exact unclaimed sequence suffix. */
+export function claimOperatorAttention(mailbox: WorkMailbox, options: ClaimOptions): WorkMailbox {
+  const pending = mailbox.pending;
+  if (pending === null || pending.requestCount <= 64) return claimPending(mailbox, options);
+  // Production Operator signals bind one exact ref to one durable source key.
+  // Never guess a sequence/ref association for a differently shaped batch.
+  const refs = new Map(pending.refs.map(ref => [
+    ref.type === "event" || ref.type === "input" ? `operator-${ref.type}:${ref.taskId}:${ref.id}` : "", ref
+  ]));
+  if (pending.requestCount !== pending.dedupeKeys.length || refs.size !== pending.requestCount
+    || pending.dedupeKeys.some(key => !refs.has(key))) {
+    throw new Error("Operator attention batch cannot be safely partitioned; inspect its source refs and sequence before retrying.");
+  }
+  const prefixKeys = pending.dedupeKeys.slice(0, 64);
+  const suffixKeys = pending.dedupeKeys.slice(64);
+  const through = pending.fromSequence + 63;
+  const prefix = { ...pending, toSequence: through, requestCount: 64,
+    dedupeKeys: prefixKeys, refs: prefixKeys.map(key => refs.get(key)!) };
+  const claimed = claimPending({ ...mailbox, pending: prefix }, {
+    ...options, batchId: `operator:${prefix.fromSequence}-${prefix.toSequence}`
+  });
+  return { ...claimed, pending: { ...pending, fromSequence: through + 1,
+    requestCount: pending.requestCount - 64, dedupeKeys: suffixKeys,
+    refs: suffixKeys.map(key => refs.get(key)!) } };
+}
 
 type OperatorEventStore = WorkMailboxQueueStore & Readonly<{
   nextEventId(taskId: string): string;
@@ -9,6 +36,24 @@ type OperatorEventStore = WorkMailboxQueueStore & Readonly<{
 }>;
 
 type RoleEventStore = WorkMailboxQueueStore;
+
+/**
+ * Fixed source admission at the durable event write, in the same transaction.
+ * The existing mailbox is the incremental restart cursor: periodic scheduling
+ * reads only outstanding refs, never re-scans or replays historical events.
+ * Context, idle observations and ordinary progress are deliberately absent.
+ */
+export function enqueueDurableOperatorFact(store: WorkMailboxQueueStore, event: TaskEvent): void {
+  const now = new Date(event.createdAt);
+  if (event.type === "input.requested" && typeof event.payload.requestId === "string") {
+    enqueueWork(store, { kind: "operator" }, "input-requested", now,
+      [{ type: "input", taskId: event.taskId, id: event.payload.requestId }],
+      { source: "input-request", dedupeKey: `operator-input:${event.taskId}:${event.payload.requestId}` });
+  } else if (["task.completed", "task.cancelled", "task.retired", "publication.recorded",
+    "publication.candidate-adopted", LEADER_ATTENTION_REQUIRED_EVENT].includes(event.type)) {
+    enqueueOperatorEvent(store, event, event.type.startsWith("task.") ? "task-terminal" : event.type, now);
+  }
+}
 
 /** One event, one supervisor signal; the Leader wake is this mailbox's projection. */
 export function enqueueSupervisorEvent(

@@ -3,6 +3,7 @@ import { hasManagedIdentity } from "../runtime/managedIdentity.js";
 import { boundedDocument, recordPage, readOptions, readDigest, messageReceipt } from "../output/boundedRead.js";
 import { controlProviderRetry, providerRetryProjection, renderProviderRetry } from "../runtime/providerRetry.js";
 import { settleGlobalRetryInput } from "../message/globalProviderRetry.js";
+import { globalInputBacklog } from "../message/globalInputBacklog.js";
 import {
   createRoleSessionSet,
   recordRoleAgentSession,
@@ -67,6 +68,8 @@ import {
 } from "./roleRuntimeGuard.js";
 
 type GlobalRoleTransactionStore = AgentCommandTransactionStore & RoleRuntimeGuardStore & Readonly<{
+  getWorkMailbox(target: import("../coordination/workMailbox.js").MailboxTarget):
+    import("../coordination/workMailbox.js").WorkMailbox | null;
   getConfig(): Readonly<{ defaultWorkspace?: string }>;
   createGlobalRoleIfAbsent(role: GlobalRole): GlobalRole | null;
   listGlobalRoles(): GlobalRole[];
@@ -287,6 +290,11 @@ function roleContext(
         && (message.interruptThen !== undefined || message.inputControl?.action === "queue"));
   const pending = recordPage(queued.map(globalMessageSummary), `global:${name}/messages/pending`, { limit: 8 });
   const recent = recordPage([...messages].reverse().map(globalMessageSummary), `global:${name}/messages/all`, { limit: 8 });
+  const observedAt = new Date();
+  const { oldestAgeMs, ...backlog } = globalInputBacklog(queued, sessions, observedAt, {
+    attention: name === "operator" ? store.getWorkMailbox({ kind: "operator" }) : null,
+    lifecycle: store.getWorkMailbox({ kind: "global-role-runtime", roleName: name })
+  });
   const context = Object.freeze({
     schemaVersion: 1,
     protocol: "yui-managed-context/v1",
@@ -324,6 +332,7 @@ function roleContext(
     // Reading pending input is neither delivery nor implementation.
     pending,
     recent,
+    backlog,
     reads: {
       messages: `role message list ${name}`,
       pending: `role message list ${name} --pending`,
@@ -337,7 +346,10 @@ function roleContext(
     skillPackages: session?.effective.skillPackages ?? null,
     cliCommand: "yui"
   });
-  const data = boundedDocument(context, `global:${name}/context`, parsed.cursor);
+  // Elapsed wall-clock time is live display metadata, not a changing source
+  // fact: keep it outside the digest so a long Context remains pageable.
+  const data = { ...boundedDocument(context, `global:${name}/context`, parsed.cursor),
+    backlogObservation: { observedAt: observedAt.toISOString(), oldestAgeMs } };
   return { kind: "output", data, output: [
     `Role Context: ${role.name}`,
     `Scope: global (${context.identity.roleKind})`,

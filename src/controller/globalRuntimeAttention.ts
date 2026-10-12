@@ -31,7 +31,7 @@ export function recordGlobalRuntimeAttention(
   // diagnostic readable; never create a Role or launch a substitute Agent.
   const recipient = store.getGlobalRole("operator") === null ? roleName : "operator";
   const requestId = `runtime-attention:${createHash("sha256").update(`${roleName}\0${identity}`).digest("hex")}`;
-  if (store.listGlobalRoleMessages(recipient).some(message => message.inputControl?.requestId === requestId)) return;
+  if (store.queryGlobalRoleMessages(recipient, { requestId, limit: 1 }).messages.length > 0) return;
   const message = createGlobalRoleMessage(store.nextGlobalRoleMessageId(), recipient, [
     `Global Role ${roleName} needs attention. No recovery or new authority is implied.`,
     "Inspect the exact Session and original input before choosing a next action; unknown effects must not be replayed.",

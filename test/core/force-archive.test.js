@@ -219,6 +219,7 @@ test("late events retain complete source evidence without replaying or acknowled
   const { store, home, task, target, command } = fixture(t);
   command(["archive", task.id, "--integrated", "--force"]);
   const mailbox = store.getWorkMailbox(target);
+  const operatorMailbox = store.getWorkMailbox({ kind: "operator" });
   const scheduler = new FileSchedulerStoreAdapter(store);
   const inbox = new FileRuntimeEventInbox(home, () => now);
   const terminal = inbox.enqueueRunTerminal({
@@ -247,7 +248,8 @@ test("late events retain complete source evidence without replaying or acknowled
   scheduler.enqueueLeaderWakeup(task.id, "late-result", now);
   assert.equal(scheduler.claimLeaderNotification(task.id, now), null);
   assert.deepEqual(store.getWorkMailbox(target), mailbox);
-  assert.equal(store.getWorkMailbox({ kind: "operator" }), null);
+  assert.deepEqual(store.getWorkMailbox({ kind: "operator" }), operatorMailbox,
+    "Late archived input cannot add to or consume pre-existing terminal attention.");
   assert.deepEqual(store.listRuns(task.id), []);
   assert.equal(store.getTask(task.id).status, "archived");
 });

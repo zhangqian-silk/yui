@@ -14,7 +14,7 @@ import { FileRoleLaunchPlanner } from "../../dist/executor/fileRoleLaunchPlanner
 import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
 import { startControllerServer } from "../../dist/core/controllerServer.js";
 import { launchBrokerForHome } from "../../dist/runtime/launchBroker.js";
-import { inspectAgentHost, sendAgentHostCancelControl, sendAgentHostSteerControl, sendAgentHostNativeControl } from "../../dist/runtime/agentHost.js";
+import { inspectAgentHost, reconcileAgentHostTurn, sendAgentHostCancelControl, sendAgentHostSteerControl, sendAgentHostNativeControl } from "../../dist/runtime/agentHost.js";
 import { deliverGlobalInputs } from "../../dist/controller/globalInputDelivery.js";
 import { runGlobalRoleCommand } from "../../dist/commands/globalRoleCommands.js";
 import { FileRuntimeEventInbox } from "../../dist/controller/runtimeEventInbox.js";
@@ -29,7 +29,8 @@ import { createRuntimeLifecycleDispatcher } from "../../dist/controller/runtime.
 import { createProviderRetryHooks } from "../../dist/controller/providerRetryDelivery.js";
 
 async function globalHostFixture(t, adapterId = "codex", {
-  controlled = true, roleName = "assistant", autoDeliver = false, capacityFailure = false
+  controlled = true, roleName = "assistant", autoDeliver = false, capacityFailure = false,
+  omitTerminalOnce = false
 } = {}) {
   const home = mkdtempSync(join(tmpdir(), "yui-global-host-"));
   const store = new SqliteTaskStore(home);
@@ -96,6 +97,11 @@ async function globalHostFixture(t, adapterId = "codex", {
     }
     if (method === "runtime.host-observation-apply") {
       const event = inbox.read(params.eventId);
+      if (omitTerminalOnce && event?.observation.kind === "turn.completed") {
+        omitTerminalOnce = false;
+        inbox.acknowledge(event.id);
+        return { outcome: "applied" };
+      }
       return { outcome: event === null ? "applied" : applyHost(event) };
     }
     if (method === "runtime.observation-apply") assert.fail("Host bypassed raw Inbox ingress");
@@ -184,6 +190,49 @@ test("capacity recovery traverses Controller, real Host and Codex adapter on the
   assert.equal(binding().retry.nativeSessionId, f.nativeSessionId);
   assert.deepEqual(binding().retry.input, { kind: "message", roleName: f.role.name, messageId: original.id });
   assert.deepEqual(f.errors, []);
+});
+
+test("periodic Global recovery republishes only the original Host's exact missing terminal", async t => {
+  const f = await globalHostFixture(t, "codex", {
+    controlled: false, roleName: "operator", omitTerminalOnce: true
+  });
+  const first = f.command(["message", "queue", "operator", "first", "--request-id", "missing-terminal"]).message;
+  await f.submitNext();
+  await f.wait(async () => (await inspectAgentHost({
+    home: f.home, scope: "global", roleName: "operator"
+  })).state === "idle");
+  assert.equal(f.native().status, "accepted", "Host finished but the canonical terminal is missing.");
+  const original = structuredClone(f.native());
+  const authority = f.store.getGlobalRoleSessionSet("operator").providerBinding.authority;
+  const stale = await reconcileAgentHostTurn({
+    home: f.home, scope: "global", roleName: "operator",
+    control: { protocol: "yui-agent-host-control/v1", type: "reconcile-turn",
+      nativeSessionId: f.nativeSessionId, attemptId: original.attemptId,
+      nativeTurnId: "another-native-turn", authority }
+  });
+  assert.equal(stale.reconciliation, "unobserved");
+  assert.deepEqual(f.native(), original);
+  const wrongAuthority = await reconcileAgentHostTurn({
+    home: f.home, scope: "global", roleName: "operator",
+    control: { protocol: "yui-agent-host-control/v1", type: "reconcile-turn",
+      nativeSessionId: f.nativeSessionId, attemptId: original.attemptId,
+      nativeTurnId: original.nativeTurnId, authority: { ...authority, epoch: authority.epoch + 1 } }
+  });
+  assert.equal(wrongAuthority.outcome, "rejected");
+  assert.deepEqual(f.native(), original);
+  const next = f.command(["message", "queue", "operator", "next", "--request-id", "next"]).message;
+  const controller = new FileTaskController(f.scheduler, {}, {
+    globalInputDelivery: options => deliverGlobalInputs(f.home, f.store, async () => {},
+      error => f.errors.push(error), options)
+  });
+  try {
+    await controller.pump();
+    await f.wait(() => f.native()?.attemptId === `global-input:operator/${next.id}` && f.native().status === "completed");
+    await controller.pump();
+    assert.equal(f.native().nativeTurnId, "fake-turn-2", "Reconciliation is not another model turn.");
+    assert.ok(f.store.listGlobalRoleMessages("operator").find(m => m.id === first.id).delivery);
+    assert.deepEqual(f.errors, []);
+  } finally { await controller.shutdownAndDrain(); }
 });
 
 test("Operator natural terminals settle through Host and Inbox and automatically wake the next Global input", async t => {
