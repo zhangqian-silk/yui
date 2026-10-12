@@ -6,6 +6,7 @@ export const SETTINGS_HTML = `<!doctype html>
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="yui-web-token" content="__YUI_WEB_TOKEN__">
+  <script src="/assets/theme.js"></script>
   <link rel="icon" href="data:,"><title>Yui · Settings</title>
   ${STYLESHEETS.map(s => `<link rel="stylesheet" href="/assets/css/${s.name}.css">`).join("\n")}
 </head>
