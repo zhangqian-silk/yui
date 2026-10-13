@@ -188,6 +188,54 @@ then handoff. An accepted or unconfirmed steer must not be submitted again by
 changing its request id or composing then. A conclusive rejection permits an
 explicit new control attempt; uncertainty does not.
 
+## Handle your own inbox in the current turn
+
+After loading authorized context, at useful work boundaries and before handing
+off, use `yui inbox list --json` to discover pending input addressed to your
+current managed identity. This applies to Operator, custom GlobalRole, Leader,
+Worker and Reviewer. Do not poll an empty inbox or create another model turn.
+No target Role, Task or native Session is supplied: Yui resolves your current
+identity. A native child gains no separate actor or inbox.
+
+1. Read the selected `yui inbox show <entry> --json`. Reads never consume input.
+   Follow `nextCursor` and all `contentPage` pages using the rules below.
+2. Before processing, reserve exact entries with
+   `yui inbox claim <entry> [<entry> ...] --request-id <stable-id> --json`.
+   At most 16 entries are allowed, with independent per-entry results. Retain
+   each successful returned ID and request ID; do not replay successful items
+   when another item fails. A changed pending window requires a fresh list.
+3. Read complete originals and referenced results, then handle the request
+   within its existing authority. Leader claims move one exact pending window
+   into a durable wake: use the returned `originals` command, follow every
+   relevant original Message/Run reference, and use its returned wake ID for
+   acknowledgement. Later arrivals remain in the next pending window. Worker
+   and Reviewer inbox reads expose only messages for their current Assignment;
+   they supplement the frozen pack without expanding it or changing candidates.
+4. Only after handling, explicitly acknowledge each successful item:
+   `yui inbox ack <returned-entry> --request-id <stable-id> --reason "<disposition>" --json`.
+   Record an obsolete notification as requiring no further action only after
+   checking its originals and current facts, never based solely on age.
+
+Claiming prevents ordinary automatic delivery; it is not processing completion.
+Acknowledgement records Agent handling, not Host acceptance, result acceptance,
+Task completion, publication or archive. Never acknowledge merely to empty the
+list. On failure or interruption, leave the claim unacknowledged; it remains
+discoverable and does not expire or replay automatically. A current rightful
+successor must inspect original input and prior effects before finishing and
+acknowledging a retained claim. Never replay uncertain external actions.
+An Assignment change does not inherit handling authority. If the original Run
+stopped before acknowledgement, ask the Leader to inspect its exact native
+terminal and use the existing `task message handoff` to the current authorized
+Assignment. The original claim remains; handoff never resubmits it automatically.
+
+In-flight, unknown, previously delivered, explicit interrupt-then and
+unsettled steer inputs retain their existing owner/receipt and report a bounded
+reason instead of being taken over. Use existing exact-receipt recovery when
+needed; do not change request IDs, clear identity, or copy input to bypass it.
+An accepted notification still follows its normal handling path, not another
+inbox delivery. Original Messages, wake windows and handling receipts remain
+readable after acknowledgement.
+
 ## Read bounded information completely when required
 
 Structured CLI results live in the top-level `data`, not a JSON-encoded

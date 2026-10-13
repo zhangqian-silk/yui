@@ -19,6 +19,7 @@ export async function deliverGlobalInputs(
 ): Promise<void> {
   for (const role of store.listGlobalRoles()) {
     try {
+      if (store.queryGlobalRoleMessages(role.name, { handling: true, limit: 0 }).count > 0) continue;
       let pending = store.queryGlobalRoleMessages(role.name, { pending: true, limit: 64 }).messages;
       if (pending.length === 0 || hasRuntimeCleanupObligation(store.getWorkMailbox(
         runtimeLifecycleTarget({ scope: "global", roleName: role.name })))) continue;
@@ -134,7 +135,7 @@ export async function deliverGlobalInputs(
           return false;
         });
       }
-      if (next === undefined) continue;
+      if (next === undefined || next.inbox !== undefined) continue;
       const attemptId = `global-input:${role.name}/${next.id}`;
       if (current?.attemptId === attemptId) continue;
       if (next.control !== undefined && next.control.outcome !== "rejected") continue;
@@ -151,7 +152,7 @@ export async function deliverGlobalInputs(
       if (binding == null || binding.authority.owner !== "controller") continue;
       const nativeSessionId = currentProviderConversation(binding).conversationId;
       const persisted = store.queryGlobalRoleMessages(role.name, { id: next.id, limit: 1 }).messages[0];
-      if (persisted === undefined || JSON.stringify(persisted) !== JSON.stringify(next)) continue;
+      if (persisted === undefined || persisted.inbox !== undefined || JSON.stringify(persisted) !== JSON.stringify(next)) continue;
       const claim = next.interruptThen;
       if (!matchesTarget(next) || claim !== undefined
         && (sessions?.activeAgentId !== claim.targetAgentId
@@ -179,7 +180,7 @@ export async function deliverGlobalInputs(
       if (result.outcome === "rejected") {
         store.transaction(tx => {
           const latest = tx.queryGlobalRoleMessages(role.name, { id: next!.id, limit: 1 }).messages[0];
-          if (latest === undefined || latest.delivery !== undefined || latest.notDelivered !== undefined) return;
+          if (latest === undefined || latest.inbox !== undefined || latest.delivery !== undefined || latest.notDelivered !== undefined) return;
           const turn = tx.getGlobalRoleSessionSet(role.name)?.providerBinding?.run;
           if (providerRetryPending(tx.getGlobalRoleSessionSet(role.name)?.providerBinding)) return;
           // A later canonical acceptance wins over transport diagnostics.

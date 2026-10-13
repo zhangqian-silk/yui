@@ -184,8 +184,13 @@ export function interruptThenTerminalState(
  * remain the pending authority; Mailbox is only the existing scheduling hint.
  * Reserving inputs and creating the next Run is one atomic effect. */
 export function prepareMessageContinuations(store: TaskStore, taskId: string, now: Date, roleName: string): void {
+  // An interrupted active handler retains order, including for later input.
+  // Only an explicit disposition releases its ownership, never elapsed time.
+  if (store.listMessages(taskId).some(message => message.recipient?.roleName === roleName
+    && message.inbox !== undefined && message.inbox.ack === undefined)) return;
   const pending = store.listMessages(taskId).filter((message) =>
     message.recipient?.roleName === roleName && message.recipient.ownerRunId !== undefined
+    && message.inbox === undefined
     && message.continuation?.runId === undefined
     // A steer targets the exact current native turn, never a queued next Run.
     // If its live attempt did not submit, the message stays saved for the

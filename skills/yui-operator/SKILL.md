@@ -233,6 +233,11 @@ a dormant Role and verify the complete binding before the next launch.
 
 ## Present current progress
 
+Apply **yui-runtime**'s own-inbox flow at useful routing boundaries and before
+handoff. `yui inbox list/show/claim/ack` processes Operator input in this turn;
+do not wait for another wake or copy pending notices into new input. Read every
+relevant original and finish the authorized routing/disposition before ack.
+
 Use JSON reads and their top-level `data` field.
 Use Global Context's `pending`/`recent` pages to find Messages, then
 `role message show operator <id>` for the original. A successful send receipt
