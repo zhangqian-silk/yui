@@ -5,7 +5,8 @@ description: Review the exact frozen WorkItem Candidate or unified Task-final sc
 
 # Yui Reviewer
 
-Follow [yui-runtime](../yui-runtime/SKILL.md) first and load the exact current
+Follow [yui-runtime](../yui-runtime/SKILL.md) first, including its per-turn
+version/availability check and conditional full reload, and load the exact current
 AgentRun Context Pack. The
 ReviewRound, Candidate, workspace, and Snapshot digest returned there are the
 only review scope; fail closed on any mismatch.

@@ -33,6 +33,10 @@ import {
 } from "../../dist/controller/structuredProviderObservation.js";
 import { FileRuntimeEventInbox } from "../../dist/controller/runtimeEventInbox.js";
 import { FileRuntimeEventProcessor } from "../../dist/controller/runtimeEventProcessor.js";
+import Database from "../../dist/sqlite/driver.js";
+import { runStorageUpgrade } from "../../dist/storage/upgrade/upgradeOrchestrator.js";
+import { FileRoleLaunchPlanner } from "../../dist/executor/fileRoleLaunchPlanner.js";
+import { checkSessionSkills } from "../../dist/context/sessionBootstrapManifest.js";
 
 const now = new Date("2026-09-18T00:00:00Z");
 
@@ -84,6 +88,16 @@ function fixture(t) {
     home, cleanup,
     get store() { return store; },
     reopen() { store.close(); store = new SqliteTaskStore(home); },
+    async upgradeFrom14() {
+      store.close();
+      const db = new Database(join(home, "yui.db"));
+      // These records use the valid 1.4 shape: no optional frozen Skill evidence.
+      // The historical 1.4/1.5 transition has the same physical SQL schema.
+      db.prepare("UPDATE storage_schema SET minor=4 WHERE id=1").run();
+      db.close();
+      assert.equal((await runStorageUpgrade({ home, mode: "execute" })).outcome, "upgraded");
+      store = new SqliteTaskStore(home);
+    },
     user(body) {
       const result = runGlobalRoleCommand(["message", "queue", "operator", body,
         "--request-id", body], store, { env: {}, jsonOutput: true });
@@ -145,6 +159,51 @@ function fixture(t) {
   };
   return f;
 }
+
+test("pre-1.5 Operator resumes after upgrade and drains original backlog without fabricating Skill or delivery evidence", async t => {
+  const f = fixture(t);
+  const inputs = [f.user("First original"), f.user("Second original")];
+  const original = f.store.listGlobalRoleMessages("operator");
+  const sessions = f.store.getGlobalRoleSessionSet("operator");
+  assert.equal(sessions.sessions.codex.effective.skillPackages, undefined);
+  await f.upgradeFrom14();
+  assert.deepEqual(f.store.getGlobalRoleSessionSet("operator"), sessions);
+  assert.deepEqual(f.store.listGlobalRoleMessages("operator"), original);
+  let checks = 0;
+  const ensure = async () => {
+    const planned = new FileRoleLaunchPlanner(f.home, f.store, {
+      environment: { HOME: f.home, PATH: process.env.PATH }
+    }).planGlobalRole({ roleName: "operator", agentId: "codex", adapterId: "codex",
+      mode: "resume", nativeSessionId: "operator-native" });
+    assert.deepEqual(checkSessionSkills(f.home, planned.launch.env.YUI_SESSION_MANIFEST).skills.map(s => s.id),
+      ["yui-runtime", "yui-operator"]);
+    checks++;
+  };
+  const deliver = () => deliverGlobalInputs(f.home, f.store, ensure, error => { throw error; });
+  const provider = await f.provider();
+  await deliver();
+  assert.equal(checks, 1);
+  inputs.push(f.user("New input after the old window"));
+  f.reopen();
+  await deliver();
+  assert.equal(checks, 1, "Accepted in-flight input cannot be replayed across restart.");
+  for (const input of inputs.slice(1)) {
+    f.observe("turn.completed");
+    await deliver();
+    assert.equal(provider.attempts.at(-1), `global-input:operator/${input.id}`);
+  }
+  f.observe("turn.completed");
+  await deliver();
+  assert.equal(checks, 3);
+  assert.deepEqual(provider.attempts, inputs.map(m => `global-input:operator/${m.id}`));
+  for (const before of original) {
+    const { delivery, control, ...after } = f.store.listGlobalRoleMessages("operator").find(m => m.id === before.id);
+    assert.equal(delivery.via, "provider");
+    assert.deepEqual(after, before);
+  }
+  assert.equal(f.user("First original").id, inputs[0].id);
+  assert.equal(f.store.getGlobalRoleSessionSet("operator").sessions.codex.effective.skillPackages, undefined);
+});
 
 test("Operator notices coalesce while busy and hand off once after Provider acceptance", async t => {
   const f = fixture(t);

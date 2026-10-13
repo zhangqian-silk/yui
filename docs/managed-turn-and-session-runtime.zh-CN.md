@@ -55,9 +55,19 @@ Run Context 冻结 Assignment、来源引用、生效配置和工作区边界。
 和消息正文，而不是把加载成功当成交付物。规划 Pack 不暴露 Project 写范围或 Task 完成
 权限。
 
-Manifest 指针是恢复定位入口，不是已读凭据。首次进入、新会话、版本变化、压缩或恢复后
-说明缺失时，从其确切路径加载 `yui-runtime`、Role Skills 和 profile；仅当同版本全文仍在
-当前可用上下文中，才复用而不机械重读。系统不保存“已经读过”状态。动态事实仍须刷新：
+Manifest 指针是恢复定位入口，不是已读凭据。每轮开始通过本 Session 的 CLI/Home 执行
+`yui session skills --json`，轻量检查当前路径、内部 `VERSION` 和文件可读性，不读取
+正文或遍历/冻结资源。内置入口是当前安装目录的 `skills/<id>`，自定义入口是
+`YUI_HOME/skills/<id>`，不包含 Session/内容摘要；安装位置变化后由检查重新解析当前入口。
+Global Manifest 的 `skillCheckCommand` 使用自包含的 `session context <role>`，
+同时返回 Skill 元数据，因此切换到 Desktop 后不依赖启动 shell 的环境；
+旧 Global Manifest 的 `loadCommand` 也能执行相同检查。
+首次进入、版本变化、恢复，以及压缩后全文缺失或可用性不确定时，读取当前 Runtime、
+Role/custom Skills 全文及必要引用、Manifest 的 profile。只有版本未变且全文仍在当前
+上下文时才复用。系统不保存“已经读过”状态，也不声称检查了模型上下文。
+历史冻结包仅作审计：缺失或损坏不阻止合法 Session 恢复与消息投递；当前文件缺失则
+报告具体路径和修复动作。身份、作用域、writer fence 与实际 CLI/Home 不兼容仍会拒绝。
+动态事实仍须刷新：
 Leader 通知使用 `currentCommand`，显式 AgentRun 使用真实 Run ID 的
 `loadCommand`/`expandCommand`，不可直接执行占位模板。
 

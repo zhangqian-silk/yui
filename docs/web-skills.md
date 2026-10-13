@@ -18,7 +18,7 @@ Saving uses the same Role commands as CLI:
 
 The Web adapter requires the read revision, preserves runtime/lifecycle guards,
 and validates the entire package before changing the Role. A live global Session
-requires explicit acknowledgement that it retains its existing version. A stale
+requires explicit acknowledgement that it retains its existing bindings. A stale
 read must be reloaded. A save with an unknown outcome is not automatically retried:
 reload and compare before editing again.
 
@@ -39,6 +39,24 @@ show their frozen package provenance.
 Current-source reads are labelled `current-source` and carry a **file** SHA-256,
 not a claimed frozen package version. A resource edit may change the next loaded
 package even when `SKILL.md` is unchanged.
+
+## Current loading and internal versions
+
+Bindings remain Session-scoped, but instruction content is current. Every managed
+turn checks `yui session skills --json`: builtins resolve to the current installed
+`skills/<id>` directory, configured Skills to `YUI_HOME/skills/<id>`, never to a
+Session-specific frozen package. Each directory must include a readable `VERSION`
+file containing a positive integer (initially `1`). Increment it for substantive
+changes to `SKILL.md` or required references. Existing configured Skills without
+this declaration need a `VERSION` file before current loading; diagnostics name
+the exact path. Do not change the npm version to version instructions.
+
+The check reads only versions and file availability. First use, changed versions,
+recovery or missing/compacted/uncertain context requires the full current Skill
+and necessary references. Unchanged versions permit reuse only if the full
+instructions are still present in context. Missing historical packages never
+mean a valid Session must be replaced, and current reads never repair historical
+evidence. None of these observations consumes input or proves Agent execution.
 
 ## Scope and limits
 

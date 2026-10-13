@@ -16,16 +16,34 @@ workspace layout, native transcript, or an earlier AgentRun.
 
 ## Enter through the current context
 
-Stable instructions and dynamic facts have different lifetimes. On first entry,
-new Session, Manifest/version change, or missing instructions (including after
-compaction/recovery), read the exact Session Manifest and fully load its profile
-and named Skills: `yui-runtime` plus the referenced `yui-leader`, `yui-worker`,
-`yui-reviewer`, `yui-operator`, or custom Role Skills. Resolve IDs to paths and
-versions through that Manifest, never another installed namesake. If those exact
-same-version instructions are already fully available in current context, apply
-them without mechanically rereading. Same Session, prior delivery, and prior
-reads do not prove availability. The short Manifest pointer remains a recovery
-entry, not a cache or authority receipt.
+Stable instructions and dynamic facts have different lifetimes. At the start of
+**every turn**, run the Manifest's `contextProtocol.skillCheckCommand`.
+For an older Manifest, use `yui session skills --json` through the Session's
+CLI/Home; a Global Manifest's self-contained `loadCommand` also checks current
+Skills and works without the launching shell's environment (for example Desktop).
+This lightweight read checks the applicable Skills' current stable paths,
+internal `VERSION` files and readability without loading their bodies. Its
+current paths supersede frozen-package paths in an older Session Manifest.
+Skill versions are independent of npm versions, Session revisions and Task
+Snapshots. A version observation is never evidence that instructions were read.
+
+On first entry, version change, new/restored Session, Host recovery, or missing,
+compacted or uncertain instructions, read the exact Session Manifest's profile
+and fully load the current `yui-runtime` plus the applicable Role/custom Skills
+from the check result, including necessary references. If their versions are
+unchanged **and** their full instructions are still available in current context,
+reuse them without rereading all bodies. Do not infer availability from the same
+Session, an earlier read, successful delivery or an unchanged version. Native
+children without their own managed identity use their parent's checked paths
+and inherited scope, never impersonate its Session.
+
+Historical frozen packages remain audit evidence only. Missing or damaged
+historical Skill evidence alone does not revoke a valid Session or block its
+messages, and current source cannot prove a historical load. A missing/unreadable
+current entry or version is a concrete installation/configuration error: report
+the path and legal recovery action, preserve input and authority, and check again
+after repair. Never clear identity, change Session or replay unknown input as a
+Skill-loading workaround. CLI/Home protocol and storage checks still apply.
 
 Refresh dynamic Task/Session facts before the relevant decision regardless of
 instruction reuse. Leader notifications use the Manifest's `currentCommand`;

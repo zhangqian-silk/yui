@@ -4,6 +4,8 @@ import { boundedDocument, recordPage, readOptions, readDigest, messageReceipt } 
 import { controlProviderRetry, providerRetryProjection, renderProviderRetry } from "../runtime/providerRetry.js";
 import { settleGlobalRetryInput } from "../message/globalProviderRetry.js";
 import { globalInputBacklog } from "../message/globalInputBacklog.js";
+import { checkCurrentSkills, SKILL_REUSE_RULE } from "../context/currentSkills.js";
+import { roleSkillIds } from "../context/roleSessionContext.js";
 import {
   createRoleSessionSet,
   recordRoleAgentSession,
@@ -283,6 +285,8 @@ function roleContext(
   const effective = resolveEffectiveLaunch({ role, purpose: "execution" });
   const sessions = store.getGlobalRoleSessionSet(name);
   const session = sessions?.sessions[role.activeAgentId];
+  const currentSkills = checkCurrentSkills(options.yuiHome ?? environment.YUI_HOME,
+    roleSkillIds(session?.effective.context ?? role, role.name === "operator" ? "operator" : "global"));
   // Only the controlled Endpoint's accepted receipt consumes a queued Message.
   const messages = store.listGlobalRoleMessages(name);
   const queued = messages.filter((message) => message.delivery === undefined
@@ -343,6 +347,9 @@ function roleContext(
     // Historical interrupt receipts are available through Session inspection;
     // only this Turn's exact identity is required at entry.
     sessionManifestPath: environment.YUI_SESSION_MANIFEST,
+    skillCheckCommand: "yui session skills --json",
+    currentSkills,
+    skillLoadingRule: SKILL_REUSE_RULE,
     skillPackages: session?.effective.skillPackages ?? null,
     cliCommand: "yui"
   });

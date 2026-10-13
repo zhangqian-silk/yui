@@ -1,5 +1,6 @@
 import { usageError } from "../errors/cliError.js";
 import { loadYuiSkillContexts } from "../context/roleSessionContext.js";
+import { checkCurrentSkills } from "../context/currentSkills.js";
 import type { ParsedRoleOptions } from "./roleConfiguration.js";
 
 const ROLE_LAUNCH_CONTEXT_OPTIONS = new Set([
@@ -41,6 +42,7 @@ export function validateConfiguredRoleSkills(
       throw usageError(`Configured Skill id is invalid: ${id}.`);
     }
     try {
+      checkCurrentSkills(yuiHome, [id]);
       loadYuiSkillContexts(yuiHome, [id]);
     } catch (error) {
       throw usageError(`Configured Skill not found, unreadable or invalid: ${id}. ${error instanceof Error ? error.message : ""}`);

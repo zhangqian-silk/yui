@@ -46,6 +46,7 @@ export type AgentRunContextPack = Readonly<{
   }>;
   snapshot: ContextSnapshotRef;
   skillPackages: AgentRun["effective"]["skillPackages"] | null;
+  skillCheckCommand: string;
   input: AgentRun["inputs"][number]["input"];
   authority: Readonly<{
     view: AgentRunContextView;
@@ -491,6 +492,8 @@ export function buildRunContextPack(store: TaskStore, taskId: string, runId: str
   const preliminaryBytes = Buffer.byteLength(JSON.stringify({ ...body, digest }), "utf8");
   const pack = Object.freeze({
     ...body,
+    // Current loading guidance is not part of the frozen Assignment digest.
+    skillCheckCommand: "yui session skills --json",
     inventory: Object.freeze({
       refs: pointers.length,
       frozenBytes: preliminaryBytes,

@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { snapshotSkillPackage, verifySkillPackage, type SkillPackageRef } from "./skillPackage.js";
+import { BUILTIN_YUI_SKILLS, checkCurrentSkills } from "./currentSkills.js";
+export { BUILTIN_YUI_SKILLS } from "./currentSkills.js";
 
 import type { GlobalRole, TaskRole } from "../role/role.js";
 import {
@@ -14,6 +16,8 @@ export type RoleSkillContext = Readonly<{
   id: string;
   path: string;
   content: string;
+  version?: string;
+  versionPath?: string;
   package?: SkillPackageRef;
 }>;
 
@@ -31,18 +35,9 @@ export type RoleSessionOwner = Readonly<
 
 export type RoleSessionContextOptions = Readonly<{
   purpose?: "execution" | "review" | "planning";
-  skillPackages?: readonly SkillPackageRef[];
 }>;
 
 type RoleSessionKind = "operator" | "global" | "leader" | "worker" | "reviewer";
-
-export const BUILTIN_YUI_SKILLS: ReadonlySet<string> = new Set([
-  "yui-runtime",
-  "yui-operator",
-  "yui-leader",
-  "yui-worker",
-  "yui-reviewer"
-]);
 
 /**
  * Compiles stable Role policy for an Agent-native instruction channel.
@@ -55,15 +50,9 @@ export function compileRoleSessionContext(
   options: RoleSessionContextOptions = {}
 ): RoleSessionContext {
   const kind = roleSessionKind(role, owner, options.purpose ?? "execution");
-  const builtInSkillId = kind === "global" ? undefined : `yui-${kind}`;
-  const skillIds = unique([
-    "yui-runtime",
-    ...(builtInSkillId === undefined ? [] : [builtInSkillId]),
-    ...(role.skills ?? [])
-  ]);
-  const skills = options.skillPackages === undefined
-    ? loadYuiSkillContexts(yuiHome, skillIds)
-    : options.skillPackages.map(loadSkillPackageContext);
+  const skills = checkCurrentSkills(yuiHome, roleSkillIds(role, kind)).map(skill => ({
+    ...skill, content: readFileSync(join(skill.path, "SKILL.md"), "utf8").trim()
+  }));
   return {
     developerInstructions: renderDeveloperInstructions(kind, role, owner),
     skills,
@@ -71,6 +60,15 @@ export function compileRoleSessionContext(
       ? {}
       : { managedContextFile: roleContextFile(yuiHome, role, owner, kind) })
   };
+}
+
+export function roleSkillIds(role: Pick<GlobalRole | TaskRole, "skills">, kind: RoleSessionKind): string[] {
+  const builtInSkillId = kind === "global" ? undefined : `yui-${kind}`;
+  return unique([
+    "yui-runtime",
+    ...(builtInSkillId === undefined ? [] : [builtInSkillId]),
+    ...(role.skills ?? [])
+  ]);
 }
 
 function renderDeveloperInstructions(

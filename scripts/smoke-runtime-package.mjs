@@ -96,6 +96,13 @@ try {
   // references, in the installed tree. Source-only references cannot satisfy
   // this check; prose/heading changes do not invalidate the contract.
   const skillRoot = resolve(root, "skills");
+  const { checkCurrentSkills } = await import(pathToFileURL(join(root, "dist/context/currentSkills.js")).href);
+  const installedSkills = checkCurrentSkills(yuiHome, skills);
+  assert.deepEqual(installedSkills.map(skill => skill.path), skills.map(id => join(skillRoot, id)));
+  for (const skill of installedSkills) {
+    assert.match(skill.version, /^[1-9][0-9]*$/);
+    assert.equal(skill.versionPath, join(skill.path, "VERSION"));
+  }
   const pendingSkills = skills.map((skill) => join(skillRoot, skill, "SKILL.md"));
   const checkedSkills = new Set();
   while (pendingSkills.length > 0) {
@@ -305,6 +312,20 @@ try {
   assert.equal(json("task", "show", task.id).task.status, "active");
   assert.equal(existsSync(join(yuiHome, "runtime", "session-cli")), false,
     "Launching and waking a Leader must not generate a Session CLI script.");
+  const { checkSessionSkills, readSessionBootstrapManifest } =
+    await import(pathToFileURL(join(root, "dist/context/sessionBootstrapManifest.js")).href);
+  const manifests = () => readdirSync(join(yuiHome, "runtime/session-manifests")).map(file =>
+    join(yuiHome, "runtime/session-manifests", file));
+  const leaderManifestPath = manifests().find(path => {
+    const manifest = readSessionBootstrapManifest(path);
+    return manifest.owner.scope === "task" && manifest.owner.taskId === task.id;
+  });
+  assert.ok(leaderManifestPath);
+  const leaderSkills = checkSessionSkills(yuiHome, leaderManifestPath);
+  assert.deepEqual(leaderSkills.skills.map(skill => skill.id), ["yui-runtime", "yui-leader"]);
+  assert.equal(readSessionBootstrapManifest(leaderManifestPath).contextProtocol.skillCheckCommand,
+    "yui session skills --json");
+  for (const skill of leaderSkills.skills) assert.equal(skill.path, join(skillRoot, skill.id));
   json("task", "complete", task.id, "--summary", "The deterministic Provider result is accepted.");
   assert.equal(json("task", "show", task.id).task.status, "completed");
 
@@ -512,9 +533,42 @@ try {
   json("role", "message", "queue", "operator", queuedBody, "--request-id", "update-pending");
   assert.equal(listItems("role", "message", "list", "operator").filter(message => message.id === queued.id).length, 1);
   assert.deepEqual(context().nativeTurn, completedTurn, "Retrying the same saved request must not start another Turn.");
+  // Restore an idle, valid historical Session shape through the real package/
+  // Controller/Host chain. Removing optional audit metadata in this disposable
+  // fixture does not forge any native acceptance or change the original queue.
+  const { SqliteTaskStore } = await import(pathToFileURL(join(root, "dist/storage/sqliteStore.js")).href);
+  const fixtureStore = new SqliteTaskStore(yuiHome);
+  try {
+    fixtureStore.transaction(store => {
+      const sessions = store.getGlobalRoleSessionSet("operator");
+      const active = sessions.sessions[sessions.activeAgentId];
+      const { skillPackages, ...historicalEffective } = active.effective;
+      store.saveGlobalRoleSessionSet({ ...sessions, sessions: { ...sessions.sessions,
+        [sessions.activeAgentId]: { ...active, effective: historicalEffective } } });
+    });
+  } finally { fixtureStore.close(); }
+  const beforeHostRestart = listItems("role", "message", "list", "operator");
+  await waitFor(async () => (await inspectAgentHost(target)).state === "idle",
+    "Only an idle fixture Host may be restarted.");
+  process.kill(hostPid, "SIGTERM");
+  await waitFor(() => processExited(hostPid), "Original fixture Host did not exit.");
+  await callFileTaskController(yuiHome, "runtime.ensure-role-session",
+    { scope: "global", roleName: "operator" }, { environment, requestTimeoutMs: 15_000 });
+  await waitFor(async () => (await inspectAgentHost(target)).state === "idle",
+    "Historical Session did not restore after Host restart.");
+  operatorHostPid = Number(tmux("list-panes", "-a", "-F", "#{pane_pid}").trim());
+  assert.ok(Number.isInteger(operatorHostPid) && operatorHostPid > 0 && operatorHostPid !== hostPid);
+  assert.equal((await inspectAgentHost(target)).nativeSessionId, hostBefore.nativeSessionId);
+  assert.equal(context().skillPackages, null, "Restore must not invent historical Skill provenance.");
+  assert.deepEqual(listItems("role", "message", "list", "operator"), beforeHostRestart);
+  const restoredInput = json("role", "message", "queue", "operator", "Continue the same restored Session.",
+    "--request-id", "restored-session-input").message;
+  await waitFor(() => context().nativeTurn?.status === "completed"
+    && json("role", "message", "show", "operator", restoredInput.id).delivery?.via === "provider",
+    "The restored historical Session did not process its new input.");
   // Teardown live work before the Controller, not just a tmux server sweep.
   runCli(cli, ["session", "stop", "--all"], environment);
-  await waitFor(() => processExited(hostPid), "The fixture Operator Host did not exit.");
+  await waitFor(() => processExited(operatorHostPid), "The fixture Operator Host did not exit.");
   assert.equal(updatePorts.controllerStatus(yuiHome).running, false,
     "Session maintenance must stop its Controller after releasing the Host.");
   process.stdout.write(`Update handover lifecycle smoke passed (${Math.round(performance.now() - updateStarted)} ms).\n`);

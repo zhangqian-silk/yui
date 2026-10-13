@@ -27,6 +27,7 @@ function fixture(t) {
   const source = join(home, "skills", "sample");
   mkdirSync(join(source, "references"), { recursive: true });
   writeFileSync(join(source, "SKILL.md"), "---\nname: sample\ndescription: A useful sample\n---\nRead references/guide.md");
+  writeFileSync(join(source, "VERSION"), "1\n");
   writeFileSync(join(source, "references/guide.md"), "original");
   return { home, store, source, service: createWebSkills(store) };
 }
@@ -36,7 +37,7 @@ test("Skill browsing is bounded read-only data; missing, oversized and escaping 
   const catalog = service.catalog("useful sample");
   assert.deepEqual(catalog.items.map(s => s.id), ["sample"]);
   assert.equal(existsSync(join(home, "runtime", "skill-packages")), false, "browsing does not snapshot");
-  assert.deepEqual(service.file({ id: "sample" }).files, ["SKILL.md", "references/guide.md"]);
+  assert.deepEqual(service.file({ id: "sample" }).files, ["SKILL.md", "VERSION", "references/guide.md"]);
   assert.equal(service.file({ id: "sample", resource: "references/guide.md" }).content, "original");
   assert.throws(() => service.file({ id: "../sample" }), /Invalid/);
   assert.throws(() => service.file({ id: "sample", resource: "../../outside" }), /not in/);

@@ -114,6 +114,11 @@ separate work, not a reason to add a background protocol to the normal path.
 - For Role Skill changes, inspect the shared Runtime contract and affected
   Role instructions together. Keep Project-specific rules here. Check local
   references in the installed package as well as the source checkout.
+  Each managed Runtime/Role Skill has a positive integer `VERSION` beside
+  `SKILL.md`, independent of npm, Session and storage versions. Increment the
+  owning Skill's version for substantive body or required-reference changes.
+  Cross-Role references retain their own versions. Do not regenerate historical
+  snapshots or introduce an Agent loading receipt.
 - For release or package changes, read the relevant section of
   [release workflow](../../../docs/release-workflow.md); verification does not
   authorize publishing. Apply AGENTS.md's release boundary: no version release

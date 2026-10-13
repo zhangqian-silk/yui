@@ -80,7 +80,7 @@ export function taskNotificationPresentation(
     ...(messages.length > 4 ? [`${messages.length - 4} more messages in the fixed wake.`] : []),
     `Refresh: yui task context ${wake.taskId} --json`,
     `Read inputs/results: yui task wake show ${wake.taskId} ${wake.id} --json`,
-    "Apply yui-leader (from the current Manifest); read relevant originals in full and advance authorized work."
+    "Check current Skills each turn: yui session skills --json. Apply current yui-leader; read relevant originals in full and advance authorized work."
   ].join("\n");
 }
 
@@ -92,6 +92,6 @@ export function globalMessagePresentation(roleName: string, messageId: string, m
     ...(summary === undefined ? [] : [`Author summary (message-body): ${JSON.stringify(summary)}`]),
     "Refresh Session Context using the current Manifest's loadCommand.",
     `Read original: yui role message show ${roleName} ${messageId} --json`,
-    `Apply ${roleName === "operator" ? "yui-operator" : "yui-runtime"} from the current Manifest within existing authority.`
+    `The Global loadCommand checks current Skill versions each turn. Apply current ${roleName === "operator" ? "yui-operator" : "yui-runtime"} within existing authority.`
   ].join("\n");
 }

@@ -13,6 +13,7 @@ import { createRole, createGlobalRole, createRoleAgentBinding } from "../../dist
 import { createRoleSessionSet, recordRoleAgentSession, updateRoleAgentSessionStatus } from "../../dist/executor/agentExecutor.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
 import { materializeSessionBootstrap } from "../../dist/context/sessionBootstrapManifest.js";
+import { compileRoleSessionContext } from "../../dist/context/roleSessionContext.js";
 import { createRun } from "../../dist/agentRun/agentRun.js";
 import { createRunInput } from "../../dist/context/runInputContract.js";
 import { freezeRunContextSnapshot } from "../../dist/context/runContextPack.js";
@@ -54,7 +55,8 @@ test("public CLI fences replaced Operators, Home configuration and cross-Task re
     CODEX_HOME: join(root, "codex"), CLAUDE_CONFIG_DIR: join(root, "claude"), YUI_STORE_WORKER: "false" };
   const environment = (role, owner, nativeSessionId) => {
     const manifest = materializeSessionBootstrap({ yuiHome: home, role, owner,
-      roleKind: owner.scope === "global" ? "operator" : role.name, skills: [],
+      roleKind: owner.scope === "global" ? "operator" : role.name,
+      skills: compileRoleSessionContext(home, role, owner).skills,
       entryPoint: { executable: process.execPath, cliEntry: resolve("dist/cli.js") } });
     return { ...base, YUI_SESSION_SCOPE: owner.scope, YUI_ROLE: role.name,
       ...(owner.taskId ? { YUI_TASK_ID: owner.taskId } : {}),
@@ -70,6 +72,10 @@ test("public CLI fences replaced Operators, Home configuration and cross-Task re
   };
   const old = environment(operator, { scope: "global" }, "operator-old");
   const current = environment(operator, { scope: "global" }, "operator-current");
+  assert.equal((await cli(["session", "skills"], old)).ok, false, "An instruction check cannot revive a replaced caller.");
+  const currentSkills = await cli(["session", "skills"], current);
+  assert.equal(currentSkills.ok, true, JSON.stringify(currentSkills));
+  assert.deepEqual(currentSkills.data.data.skills.map(s => s.id), ["yui-runtime", "yui-operator"]);
   const knowledge = ["project", "knowledge", "add", "project-1", "Authority", "--body", "Bounded fixture."];
   assert.equal((await cli(knowledge, old)).ok, false, "Replaced Operator cannot write Knowledge.");
   assert.equal(store.getProject("project-1").knowledge.length, 0);
@@ -92,6 +98,10 @@ test("public CLI fences replaced Operators, Home configuration and cross-Task re
       contextSnapshotRef: contextSnapshotRef(snapshot), deltaRefIds: [] }),
     now, { workItemId: "work-item-1", effective: session(worker, "worker-current").effective }));
   const env = environment(worker, { scope: "task", taskId: "task-1" }, "worker-current");
+  const workerSkills = await cli(["session", "skills"], env);
+  assert.equal(workerSkills.ok, true, JSON.stringify(workerSkills));
+  assert.deepEqual(workerSkills.data.data.skills.map(s => s.id), ["yui-runtime", "yui-worker"]);
+  assert.equal((await cli(["session", "skills"], { ...env, YUI_TASK_ID: "task-2" })).ok, false);
   const config = ["config", "resources", "set", "resources-gc-auto-quarantine", "true"];
   for (const partial of [{ YUI_SESSION_MANIFEST: current.YUI_SESSION_MANIFEST }, { YUI_TASK_ID: "task-1" }]) {
     const incomplete = { ...base, ...partial };
