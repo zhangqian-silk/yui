@@ -8,26 +8,32 @@ export const LEADER_ATTENTION_REQUIRED_EVENT = "leader.attention-required";
 export function claimOperatorAttention(mailbox: WorkMailbox, options: ClaimOptions): WorkMailbox {
   const pending = mailbox.pending;
   if (pending === null || pending.requestCount <= 64) return claimPending(mailbox, options);
-  // Production Operator signals bind one exact ref to one durable source key.
-  // Never guess a sequence/ref association for a differently shaped batch.
-  const refs = new Map(pending.refs.map(ref => [
-    ref.type === "event" || ref.type === "input" ? `operator-${ref.type}:${ref.taskId}:${ref.id}` : "", ref
-  ]));
-  if (pending.requestCount !== pending.dedupeKeys.length || refs.size !== pending.requestCount
-    || pending.dedupeKeys.some(key => !refs.has(key))) {
+  // Operator producers append one unique source ref per signal. Mailbox merge
+  // preserves insertion order for refs and keys, including the supported
+  // default sequence keys used by Provider retry attention. Preserve those
+  // keys verbatim; they are valid current data, not a migration or repair.
+  if (pending.requestCount !== pending.dedupeKeys.length
+    || pending.refs.length !== pending.requestCount
+    || pending.toSequence - pending.fromSequence + 1 !== pending.requestCount
+    || pending.dedupeKeys.some((key, index) => {
+      const ref = pending.refs[index]!;
+      return (ref.type !== "event" && ref.type !== "input")
+        || key !== `operator-${ref.type}:${ref.taskId}:${ref.id}`
+          && key !== `sequence:${pending.fromSequence + index}`;
+    })) {
     throw new Error("Operator attention batch cannot be safely partitioned; inspect its source refs and sequence before retrying.");
   }
   const prefixKeys = pending.dedupeKeys.slice(0, 64);
   const suffixKeys = pending.dedupeKeys.slice(64);
   const through = pending.fromSequence + 63;
   const prefix = { ...pending, toSequence: through, requestCount: 64,
-    dedupeKeys: prefixKeys, refs: prefixKeys.map(key => refs.get(key)!) };
+    dedupeKeys: prefixKeys, refs: pending.refs.slice(0, 64) };
   const claimed = claimPending({ ...mailbox, pending: prefix }, {
     ...options, batchId: `operator:${prefix.fromSequence}-${prefix.toSequence}`
   });
   return { ...claimed, pending: { ...pending, fromSequence: through + 1,
     requestCount: pending.requestCount - 64, dedupeKeys: suffixKeys,
-    refs: suffixKeys.map(key => refs.get(key)!) } };
+    refs: pending.refs.slice(64) } };
 }
 
 type OperatorEventStore = WorkMailboxQueueStore & Readonly<{

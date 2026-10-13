@@ -305,6 +305,43 @@ test("one Global pass exposes stale unsent notices and reaches the successor's u
   f.observe("turn.completed");
 });
 
+test("mixed-source backlog survives deferred release, restart and bounded claims without losing facts", async t => {
+  const f = fixture(t);
+  await f.provider();
+  f.enqueue();
+  await f.process();
+  const events = [];
+  for (let i = 0; i < 65; i++) {
+    if (i === 32 || i === 64) {
+      const event = createTaskEvent(f.store.nextEventId("task-1"), "task-1",
+        "provider.retry-unconfirmed", { roleName: "leader" }, now);
+      f.store.saveEvent("task-1", event);
+      // Existing supported retry producers used the mailbox's sequence key.
+      enqueueWork(f.store, { kind: "operator" }, "provider-retry-needs-attention",
+        now, [{ type: "event", taskId: "task-1", id: event.id }]);
+      events.push(event);
+    } else events.push(f.enqueue());
+  }
+  const before = f.store.getWorkMailbox({ kind: "operator" }).pending;
+  assert.equal((await f.process()).length, 64);
+  assert.deepEqual(f.store.getWorkMailbox({ kind: "operator" }).pending, before,
+    "Deferred release retains the original sequence keys, refs and ordering.");
+  events.push(f.enqueue());
+  f.reopen();
+  await f.deliver();
+  f.observe("turn.completed");
+  const first = await f.process();
+  assert.equal(first.length, 64);
+  await f.deliver();
+  f.observe("turn.completed");
+  const rest = await f.process();
+  assert.deepEqual([...first, ...rest].map(item => item.sourceId), events.map(event => event.id));
+  await f.deliver();
+  f.observe("turn.completed");
+  assert.deepEqual(await f.process(), []);
+  assert.equal(f.store.listGlobalRoleMessages("operator").length, 3);
+});
+
 test("large backlogs use bounded source batches and message pages, preserving unknown fences and diagnostics", async t => {
   const f = fixture(t);
   const provider = await f.provider();
