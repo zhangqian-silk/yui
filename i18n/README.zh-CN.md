@@ -57,11 +57,15 @@ npm install -g @zq-silk/yui
 ```
 
 打开真实 Home 前，Yui 会惰性选择 SQLite：先用 `sqlite-modern`
-（`better-sqlite3@12.11.1`）建立可丢弃的内存连接，仅在明确的原生绑定缺失、
+（`better-sqlite3@13.0.3`，N-API）建立可丢弃的内存连接，仅在明确的原生绑定缺失、
 Node ABI 或系统动态库不兼容时尝试 `sqlite-compat`（`better-sqlite3@10.1.0`）。
 每个进程固定首次成功的选择；Home 权限、损坏、锁定、SQL 与迁移错误都不会
 触发驱动切换。`yui doctor` 单独报告驱动版本、实际 SQLite 引擎和回退原因，
 与 Home 健康检查区分。
+
+N-API 驱动避开了旧驱动在 Node 24.19/24.20 上的原生 `ObjectWrap` 垃圾回收崩溃。
+它要求 Node 22 或更高版本；Node 20 安装使用兼容候选。此依赖修正不要求更换
+全局 Node 或迁移 Home。
 
 npm 安装时会**分别尝试两个**固定 optional alias，并非新版失败后才安装旧版，
 因此下载体积、安装和编译时间可能增加。可选依赖安装失败不一定使 npm 失败，

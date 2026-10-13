@@ -74,7 +74,7 @@
     "ws": "^8.21.1"
   },
   "optionalDependencies": {
-    "sqlite-modern": "npm:better-sqlite3@12.11.1",
+    "sqlite-modern": "npm:better-sqlite3@13.0.3",
     "sqlite-compat": "npm:better-sqlite3@10.1.0"
   }
 }
