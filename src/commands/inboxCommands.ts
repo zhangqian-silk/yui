@@ -6,7 +6,7 @@ import { createTaskWake, latestTaskWake, type TaskWake } from "../scheduler/task
 import { expandTaskMessageResult, type GlobalRoleMessage, type TaskMessage } from "../message/message.js";
 import { messageAssignmentBlocker } from "../message/messageContinuation.js";
 import type { InboxActor, InboxReceipt } from "../message/inboxReceipt.js";
-import { isLeaderSteer, taskMessageInboxReceipt, unfinishedLeaderInbox } from "../message/taskInboxOwnership.js";
+import { isLeaderSteer, latestMessageUpdate, taskMessageInboxReceipt, unfinishedLeaderInbox } from "../message/taskInboxOwnership.js";
 import { hasRuntimeCleanupObligation, runtimeLifecycleTarget } from "../runtime/lifecycleReservation.js";
 import { isTaskRecordRetired, retiredTaskRecordIds } from "../task/taskRecordRetirement.js";
 
@@ -231,8 +231,19 @@ export function runInboxCommand(
         }
       }
       const latest = latestTaskWake(tx.listTaskWakes(current.taskId!));
+      // Pin each mutable Draft original's existing update event, not a clock
+      // comparison. A later edit is distinct input even within the same tick.
+      const refs = [...mailbox.pending.refs];
+      for (const ref of mailbox.pending.refs) {
+        if (ref.type !== "message" || ref.taskId !== current.taskId) continue;
+        const message = tx.listMessages(current.taskId!).find(message => message.id === ref.id);
+        const revision = message === undefined ? undefined : latestMessageUpdate(tx, message);
+        if (revision !== undefined && !refs.some(ref => ref.type === "event" && ref.id === revision.id)) {
+          refs.push({ type: "event", taskId: current.taskId!, id: revision.id });
+        }
+      }
       const wake = createTaskWake({ id: tx.nextTaskWakeId(current.taskId!), taskId: current.taskId!,
-        reasons: mailbox.pending.reasons, refs: mailbox.pending.refs,
+        reasons: mailbox.pending.reasons, refs,
         fromCursor: latest?.toCursor ?? tx.getTask(current.taskId!)!.createdAt,
         toCursor: new Date(Math.max(now.getTime(), Date.parse(mailbox.pending.lastQueuedAt))).toISOString(), now });
       entry = { ...wake, inbox: { claim: { requestId, actor: current, at: now.toISOString() } },

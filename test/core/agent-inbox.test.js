@@ -191,12 +191,13 @@ test("an unsubmitted Global steer can be explicitly handled without replay or bl
   assert.equal(retained.delivery, undefined);
 });
 
-function taskFixture(t) {
+function taskFixture(t, draft = false) {
   const f = fixture(t, "operator");
   const { store } = f;
   const home = store.rootDirectory();
-  store.saveTask(activateTask(createTask("task-1", "Own inbox", now, { cwd: home }), now));
-  store.saveManagedWorkspace(createManagedWorkspace({
+  const taskRecord = createTask("task-1", "Own inbox", now, draft ? {} : { cwd: home });
+  store.saveTask(draft ? taskRecord : activateTask(taskRecord, now));
+  if (!draft) store.saveManagedWorkspace(createManagedWorkspace({
     owner: { type: "task", taskId: "task-1" }, root: home, entries: []
   }, now));
   for (const name of ["leader", "worker", "reviewer"]) {
@@ -214,6 +215,40 @@ function taskFixture(t) {
   const task = args => runTaskCommand(args, store, { now: () => now, environment: {} });
   return { ...f, task, inbox, envFor };
 }
+
+test("Draft edits have distinct inbox ownership even under the same clock", t => {
+  const { store, task, inbox } = taskFixture(t, true);
+  task(["message", "send", "task-1", "A", "--intent", "discuss"]);
+  const claim = request => inbox("leader", "claim",
+    inbox("leader", "list").items.find(item => item.id.startsWith("pending-")).id, "--request-id", request);
+  const first = claim("A");
+  inbox("leader", "ack", first.id, "--request-id", "A-done", "--reason", "Handled A");
+  task(["message", "update", "task-1/message-1", "B"]);
+  assert.deepEqual(pendingCompletionMessages(store, "task-1").map(message => message.id), ["message-1"]);
+  const second = claim("B");
+  assert.notEqual(second.id, first.id);
+  inbox("leader", "ack", second.id, "--request-id", "B-done", "--reason", "Handled B");
+  task(["message", "update", "task-1/message-1", "C"]);
+  const next = new FileSchedulerStoreAdapter(store).claimLeaderNotification("task-1", now);
+  assert.equal(next.disposition, "submit");
+  assert.equal(store.listMessages("task-1")[0].body, "C");
+  assert.equal(store.getTaskWake("task-1", first.id).inbox.ack.reason, "Handled A");
+});
+
+test("retired Leader steer claim preserves audit without blocking new input", t => {
+  const { store, task, inbox } = taskFixture(t);
+  task(["message", "steer", "task-1", "Old", "--to", "leader", "--expected-target", "missing", "--request-id", "old"]);
+  inbox("leader", "claim", "message-1", "--request-id", "old-claim");
+  task(["message", "retire", "task-1/message-1", "--reason", "Inspected; obsolete"]);
+  task(["message", "queue", "task-1", "New", "--request-id", "new"]);
+  const pending = inbox("leader", "list").items[0];
+  assert.equal(pending.blocked, null);
+  const next = inbox("leader", "claim", pending.id, "--request-id", "new-claim");
+  inbox("leader", "ack", next.id, "--request-id", "new-done", "--reason", "Handled new");
+  task(["message", "queue", "task-1", "Later", "--request-id", "later"]);
+  assert.equal(new FileSchedulerStoreAdapter(store).claimLeaderNotification("task-1", now).disposition, "submit");
+  assert.equal(store.listMessages("task-1")[0].inbox.ack, undefined);
+});
 
 test("a successor Leader settles an exact-Session window without replaying its originals", t => {
   const { store, inbox, envFor, task } = taskFixture(t);
