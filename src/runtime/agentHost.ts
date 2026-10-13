@@ -351,6 +351,14 @@ export async function runAgentHost(input: Readonly<{
   let activeRunPayload: AgentHostLaunchPayload | undefined;
   let lastTerminalPayload: AgentHostLaunchPayload | undefined;
   let lastTerminal: StructuredProviderTurnTerminal | undefined;
+  // One exact direct Turn witnessed by this Endpoint under its original fence.
+  // This is recovery evidence, never ownership of the Desktop client's input.
+  let directObservation: {
+    started: StructuredProviderTurnStarted;
+    payload: AgentHostLaunchPayload;
+    authority: ProviderAuthorityFence;
+    terminal?: StructuredProviderTurnTerminal;
+  } | undefined;
   let activeRunAttemptId: string | undefined;
   let activeNativeTurnId: string | undefined;
   let codexClientAttachedAt: number | undefined;
@@ -434,6 +442,7 @@ export async function runAgentHost(input: Readonly<{
     observedPayload: AgentHostLaunchPayload | undefined = sessionPayload
   ): void => {
     if (started.clientOwned || observedPayload === undefined) return;
+    const observedAuthority = authority === undefined ? undefined : { ...authority };
     updateSnapshot(hostSnapshot("busy", {
       adapterId: observedPayload.providerControl?.adapterId,
       processInstanceId: session?.processInstanceId,
@@ -443,6 +452,22 @@ export async function runAgentHost(input: Readonly<{
       ...authorityFields()
     }));
     void enqueueSerialized(async () => {
+      // Desktop can start another Turn before the Controller's periodic pass.
+      // Persist the previous exact terminal before replacing its bounded cache
+      // or publishing the new start. Never clear the newer native writer.
+      const previous = directObservation;
+      if (previous?.terminal !== undefined && authority !== undefined
+        && sameProviderAuthorityFence(previous.authority, authority)
+        && previous.started.nativeSessionId === session?.nativeSessionId) {
+        await publishStructuredProviderTerminal({
+          home: input.home, environment: previous.payload.environment, terminal: previous.terminal
+        });
+      }
+      if (session !== undefined && started.nativeSessionId === session.nativeSessionId
+        && started.conversationId === session.conversationId && observedAuthority !== undefined
+        && authority !== undefined && sameProviderAuthorityFence(observedAuthority, authority)) {
+        directObservation = { started, payload: observedPayload, authority: observedAuthority };
+      }
       await publishStructuredProviderStarted({
         home: input.home,
         environment: observedPayload.environment,
@@ -464,6 +489,14 @@ export async function runAgentHost(input: Readonly<{
       // AgentRun audit record. It has no WorkItem ownership and no managed input
       // fence; the runtime observer records only visible input/output.
       void enqueueSerialized(async () => {
+        const direct = directObservation;
+        if (direct !== undefined && authority !== undefined
+          && sameProviderAuthorityFence(direct.authority, authority)
+          && direct.started.nativeSessionId === terminal.nativeSessionId
+          && direct.started.conversationId === terminal.conversationId
+          && direct.started.nativeTurnId === terminal.nativeTurnId) {
+          direct.terminal = terminal;
+        }
         await publishStructuredProviderTerminal({
           home: input.home,
           environment: busyPayload.environment,
@@ -878,6 +911,7 @@ export async function runAgentHost(input: Readonly<{
         await recordProviderConnection(input.home, next, started.session);
         lastTerminalPayload = undefined;
         lastTerminal = undefined;
+        directObservation = undefined;
         // Recoverable means a later process can rebind this Conversation by
         // its native id. The Endpoint answers that from the Driver capability
         // or, where the protocol settles it per connection, from what this
@@ -1424,11 +1458,18 @@ export async function runAgentHost(input: Readonly<{
         || authority === undefined || !sameProviderAuthorityFence(authority, request.authority)) {
         throw new Error("Terminal reconciliation targets a different Session or authority.");
       }
-      const terminal = lastTerminal;
-      const terminalPayload = lastTerminalPayload;
-      if (terminal?.clientOwned !== true || terminalPayload === undefined
+      const direct = directObservation;
+      const directMatch = direct?.terminal !== undefined
+        && request.nativeTurnId !== undefined
+        && request.attemptId === `direct:${request.nativeTurnId}`
+        && direct.started.nativeTurnId === request.nativeTurnId
+        && direct.started.nativeSessionId === request.nativeSessionId
+        && sameProviderAuthorityFence(direct.authority, request.authority);
+      const terminal = directMatch ? direct!.terminal : lastTerminal;
+      const terminalPayload = directMatch ? direct!.payload : lastTerminalPayload;
+      if (terminal === undefined || terminalPayload === undefined
         || terminal.nativeSessionId !== request.nativeSessionId
-        || terminal.attemptId !== request.attemptId
+        || !directMatch && (terminal.clientOwned !== true || terminal.attemptId !== request.attemptId)
         || request.nativeTurnId !== undefined && terminal.nativeTurnId !== request.nativeTurnId) {
         return { ...controlResult("status", snapshot), reconciliation: "unobserved" };
       }
@@ -1436,13 +1477,14 @@ export async function runAgentHost(input: Readonly<{
       // original launch envelope remain the observer, including the full result.
       await enqueueSerialized(async () => {
         if (session?.nativeSessionId !== request.nativeSessionId || authority === undefined
-          || !sameProviderAuthorityFence(authority, request.authority)) {
+          || !sameProviderAuthorityFence(authority, request.authority)
+          || directMatch && directObservation !== direct) {
           throw new Error("Session changed before terminal reconciliation.");
         }
         await publishStructuredProviderTerminal({
           home: input.home, environment: terminalPayload.environment, terminal
         });
-        if (activeRunAttemptId === terminal.attemptId) {
+        if (!directMatch && activeRunAttemptId === terminal.attemptId) {
           activeRunPayload = undefined;
           activeRunAttemptId = undefined;
           activeNativeTurnId = undefined;

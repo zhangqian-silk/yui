@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
+import { createServer } from "node:net";
+import { writeFileSync } from "node:fs";
 
 const WEB_SOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 let input = Buffer.alloc(0);
@@ -13,6 +15,22 @@ let threadId = process.env.YUI_FAKE_THREAD_ID ?? "fake-thread-1";
 // package smoke keeps its existing fixed reply and does not load a handler.
 const turnHandler = process.env.YUI_FAKE_TURN_HANDLER === undefined ? undefined
   : (await import(process.env.YUI_FAKE_TURN_HANDLER)).handleTurn;
+
+// Fixture-only ingress for notifications emitted by another Desktop client.
+// It never calls turn/start on the Host's transport.
+if (process.env.YUI_FAKE_DIRECT_PORT_FILE) {
+  const server = createServer(socket => {
+    let data = "";
+    socket.on("data", chunk => {
+      data += chunk;
+      if (!data.endsWith("\n")) return;
+      for (const event of JSON.parse(data)) sendJson(event);
+      socket.end("observed\n");
+    });
+  });
+  server.listen(0, "127.0.0.1", () =>
+    writeFileSync(process.env.YUI_FAKE_DIRECT_PORT_FILE, String(server.address().port)));
+}
 
 process.stdin.on("data", (chunk) => {
   input = Buffer.concat([input, chunk]);
@@ -215,6 +233,9 @@ function handleMessage(message) {
 }
 
 function sendJson(value) {
+  if (value.method === "turn/started" && value.params.threadId === threadId) {
+    activeTurnId = value.params.turn.id;
+  }
   if (value.method === "turn/completed" && value.params.threadId === threadId
     && typeof value.params.turn?.id === "string"
     && ["completed", "failed", "interrupted"].includes(value.params.turn.status)) {

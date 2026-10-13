@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { createConnection } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { createConfiguredAgent } from "../../dist/agent/agent.js";
@@ -30,7 +31,7 @@ import { createProviderRetryHooks } from "../../dist/controller/providerRetryDel
 
 async function globalHostFixture(t, adapterId = "codex", {
   controlled = true, roleName = "assistant", autoDeliver = false, capacityFailure = false,
-  omitTerminalOnce = false
+  omitTerminalOnce = false, direct = false
 } = {}) {
   const home = mkdtempSync(join(tmpdir(), "yui-global-host-"));
   const store = new SqliteTaskStore(home);
@@ -68,8 +69,10 @@ async function globalHostFixture(t, adapterId = "codex", {
     return result.kind === "output" ? result.data : result;
   };
   const errors = [];
+  const observations = [];
   const inbox = new FileRuntimeEventInbox(home);
   const applyHost = event => {
+    observations.push(event.observation);
     assert.ok(event.host, "Host must retain its raw source envelope");
     assert.equal(event.scope, "global");
     assert.equal(event.observation.fence.runId, undefined);
@@ -83,7 +86,7 @@ async function globalHostFixture(t, adapterId = "codex", {
     if (outcome !== "deferred") inbox.acknowledge(event.id);
     return outcome;
   };
-  controller = await startControllerServer(home, (method, params) => {
+  const handleController = (method, params) => {
     if (method === "scheduler.signal") {
       schedulerRuntime?.signal(params.key);
       return {};
@@ -106,7 +109,12 @@ async function globalHostFixture(t, adapterId = "codex", {
     }
     if (method === "runtime.observation-apply") assert.fail("Host bypassed raw Inbox ingress");
     return {};
-  }, undefined, { release: null, storageBackend: "sqlite", workerEnabled: false });
+  };
+  const startController = async () => {
+    controller = await startControllerServer(home, handleController, undefined,
+      { release: null, storageBackend: "sqlite", workerEnabled: false });
+  };
+  await startController();
   const { ticket } = launchBrokerForHome(home).reserve({
     schemaVersion: 1, command: process.execPath,
     args: adapterId === "codex"
@@ -115,6 +123,7 @@ async function globalHostFixture(t, adapterId = "codex", {
     cwd: planned.role.cwd ?? planned.role.workspace,
     childLifecycle: planned.launch.childLifecycle, startMode: "provider",
     environment: { ...planned.launch.env, YUI_FAKE_CONTROLLED: controlled ? "1" : "0",
+      ...(direct ? { YUI_FAKE_DIRECT_PORT_FILE: join(home, "direct.port") } : {}),
       ...(capacityFailure ? { YUI_FAKE_CAPACITY_FAILURE: "1" } : {}) },
     providerControl: planned.launch.providerControl
   });
@@ -159,11 +168,107 @@ async function globalHostFixture(t, adapterId = "codex", {
     onError: error => errors.push(error)
   });
   const native = () => store.getGlobalRoleSessionSet(role.name).providerBinding.run;
-  return { store, home, role, command, submitNext, native, wait, host, errors, scheduler,
+  return { store, home, role, command, submitNext, native, wait, host, errors, observations, scheduler,
+    stopController: async () => { await controller.close(); },
+    startController,
+    direct: events => new Promise((resolve, reject) => {
+      const socket = createConnection({ host: "127.0.0.1",
+        port: Number(readFileSync(join(home, "direct.port"), "utf8")) });
+      socket.once("error", reject);
+      socket.once("connect", () => socket.write(`${JSON.stringify(events)}\n`));
+      socket.once("data", () => { socket.end(); resolve(); });
+    }),
     environment: planned.launch.env,
     advanceTo: at => { fakeNow = new Date(at); },
     nativeSessionId, output: () => output };
 }
+
+test("Desktop direct terminal recovery uses the original observer, across Roles and Controller restart", async t => {
+  for (const roleName of ["operator", "assistant"]) {
+    const f = await globalHostFixture(t, "codex", {
+      controlled: false, roleName, direct: true, omitTerminalOnce: true
+    });
+    const target = { home: f.home, scope: "global", roleName };
+    const event = (method, id, status) => ({ method, params: {
+      threadId: f.nativeSessionId, turn: { id, status,
+        items: [{ id: "direct-output", type: "agentMessage", text: "Original direct output" }] }
+    } });
+    await f.direct([event("turn/started", "desktop-1", "inProgress")]);
+    await f.wait(() => f.native()?.attemptId === "direct:desktop-1");
+    const message = f.command(["message", "queue", roleName, "Queued after Desktop",
+      "--request-id", "after-direct"]).message;
+    await f.submitNext();
+    assert.equal(f.native().attemptId, "direct:desktop-1", "A busy direct writer stays fenced.");
+    await f.direct([event("turn/completed", "desktop-1", "completed")]);
+    await f.wait(async () => (await inspectAgentHost(target)).state === "idle");
+    assert.equal(f.native().status, "accepted", "The original Host observed a terminal omitted from canonical state.");
+    const authority = f.store.getGlobalRoleSessionSet(roleName).providerBinding.authority;
+    const staleAuthority = await reconcileAgentHostTurn({ ...target, control: {
+      protocol: "yui-agent-host-control/v1", type: "reconcile-turn",
+      nativeSessionId: f.nativeSessionId, attemptId: "direct:desktop-1", nativeTurnId: "desktop-1",
+      authority: { ...authority, epoch: authority.epoch + 1 }
+    } });
+    assert.equal(staleAuthority.outcome, "rejected");
+    for (const identity of [
+      { attemptId: "direct:another", nativeTurnId: "desktop-1" },
+      { attemptId: "direct:desktop-1", nativeTurnId: "another" },
+      { attemptId: "direct:desktop-1" }
+    ]) {
+      const result = await reconcileAgentHostTurn({ ...target, control: {
+        protocol: "yui-agent-host-control/v1", type: "reconcile-turn",
+        nativeSessionId: f.nativeSessionId, authority, ...identity
+      } });
+      assert.equal(result.reconciliation, "unobserved");
+      assert.equal(f.native().status, "accepted");
+    }
+    if (roleName === "operator") {
+      // Desktop is not gated by Yui's queue. A newer direct start must not
+      // erase the only recovery evidence for the previous accepted Turn.
+      await f.direct([event("turn/started", "desktop-successor", "inProgress")]);
+      await f.wait(() => f.native()?.attemptId === "direct:desktop-successor");
+      await deliverGlobalInputs(f.home, f.store, async () => {}, error => f.errors.push(error),
+        { reconcile: true });
+      assert.equal(f.native().status, "accepted", "Recovery of A cannot release B's native occupancy.");
+      assert.equal(f.store.listGlobalRoleMessages(roleName).find(m => m.id === message.id).delivery, undefined);
+      await f.direct([event("turn/completed", "desktop-successor", "completed")]);
+      await f.wait(() => f.native().status === "completed");
+    }
+    await deliverGlobalInputs(f.home, f.store, async () => {}, error => f.errors.push(error),
+      { reconcile: true });
+    await f.wait(() => f.native()?.attemptId === `global-input:${roleName}/${message.id}`
+      && f.native().status === "completed");
+    assert.equal(f.native().nativeTurnId, "fake-turn-1", "Direct recovery never submits another native input.");
+    assert.ok(f.observations.some(observation => observation.kind === "turn.completed"
+      && observation.fence.nativeTurnId === "desktop-1"
+      && observation.payload.output === "Original direct output"));
+    await f.wait(async () => (await inspectAgentHost(target)).state === "idle");
+
+    // The Host survives a Controller outage. Its immutable Inbox, not a new
+    // client or a guessed idle observation, carries the exact direct terminal.
+    await f.direct([event("turn/started", "desktop-2", "inProgress")]);
+    await f.wait(() => f.native()?.attemptId === "direct:desktop-2");
+    const next = f.command(["message", "queue", roleName, "After Controller restart",
+      "--request-id", "after-restart"]).message;
+    await f.stopController();
+    await f.direct([event("turn/completed", "desktop-2", "completed")]);
+    await f.wait(async () => (await inspectAgentHost(target)).state === "idle");
+    assert.equal(f.native().status, "accepted");
+    await f.startController();
+    const controller = new FileTaskController(f.scheduler, {}, {
+      runtimeEventProcessor: new FileRuntimeEventProcessor(new FileRuntimeEventInbox(f.home), f.scheduler),
+      globalInputDelivery: options => deliverGlobalInputs(f.home, f.store, async () => {},
+        error => f.errors.push(error), options)
+    });
+    try {
+      await controller.pump();
+      await f.wait(() => f.native()?.attemptId === `global-input:${roleName}/${next.id}`
+        && f.native().status === "completed");
+      assert.equal(f.native().nativeTurnId, "fake-turn-2");
+      assert.equal(f.store.listGlobalRoleMessages(roleName).filter(m => m.delivery).length, 2);
+      assert.deepEqual(f.errors, []);
+    } finally { await controller.shutdownAndDrain(); }
+  }
+});
 
 test("capacity recovery traverses Controller, real Host and Codex adapter on the same systemError Session", async t => {
   const f = await globalHostFixture(t, "codex", { controlled: false, capacityFailure: true });
@@ -237,8 +342,12 @@ test("periodic Global recovery republishes only the original Host's exact missin
 
 test("Operator natural terminals settle through Host and Inbox and automatically wake the next Global input", async t => {
   const f = await globalHostFixture(t, "codex", {
-    controlled: false, roleName: "operator", autoDeliver: true
+    controlled: false, roleName: "operator", autoDeliver: true, direct: true
   });
+  await f.direct([{ method: "turn/started", params: {
+    threadId: f.nativeSessionId, turn: { id: "desktop-normal", status: "inProgress" }
+  } }]);
+  await f.wait(() => f.native()?.attemptId === "direct:desktop-normal");
   const now = new Date();
   f.store.saveTask(createTask("task-1", "Notification source", now));
   const event = createTaskEvent("event-1", "task-1", "task.completed", { summary: "Source result" }, now);
@@ -249,6 +358,10 @@ test("Operator natural terminals settle through Host and Inbox and automatically
   const next = f.command(["message", "queue", "operator", "After the natural terminal",
     "--request-id", "after-terminal"]).message;
   await f.submitNext();
+  assert.equal(f.native().attemptId, "direct:desktop-normal");
+  await f.direct([{ method: "turn/completed", params: {
+    threadId: f.nativeSessionId, turn: { id: "desktop-normal", status: "completed", items: [] }
+  } }]);
   // No second manual delivery call and no periodic full pump: only the real
   // Host's post-terminal signal can admit the queued successor here.
   await f.wait(() => f.native()?.attemptId === `global-input:operator/${next.id}`
