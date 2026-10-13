@@ -86,6 +86,12 @@ a blacklist of retired field names.
 ## Skill and instruction changes
 
 Review the shared Runtime contract and affected Role/Project Skills together.
+Managed Skills ship a separate integer `VERSION`; bump the owning version for
+substantive body or required-reference changes. The per-turn read reports current
+stable paths/versions, not remembered model state or a historical load receipt.
+Regressions cover pre-1.5 Session records upgraded from an isolated 1.4 Home,
+current Skill loading on resume, preserved original queued input and newly
+arriving suffixes, plus missing current files versus missing audit packages.
 Check instruction boundaries with a few relevant scenarios: analysis remains
 read-only, existing mechanisms are reused, Session loss preserves Task intent,
 and execution failure does not prevent authorized supervision. This is a

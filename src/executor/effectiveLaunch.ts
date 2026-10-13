@@ -24,7 +24,7 @@ import {
   type CodexAgentConfig,
   type RoleAgentConfig
 } from "./agentAdapter.js";
-import { compileRoleSessionContext, roleSessionKind } from "../context/roleSessionContext.js";
+import { loadYuiSkillContexts, roleSessionKind, roleSkillIds } from "../context/roleSessionContext.js";
 import { validateSkillPackageRef, type SkillPackageRef } from "../context/skillPackage.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import { isAgentAdapterId } from "../agent/adapterCatalog.js";
@@ -150,9 +150,9 @@ export function resolveEffectiveLaunch(
   const continuing = existing?.status === "active";
   const skillPackages = continuing ? existing.effective.skillPackages
     : home === undefined ? undefined
-    : compileRoleSessionContext(home, input.role,
+    : loadYuiSkillContexts(home, roleSkillIds(input.role, roleSessionKind(input.role,
       "taskId" in input.role ? { scope: "task", taskId: input.role.taskId } : { scope: "global" },
-      { purpose: input.purpose }).skills.map(skill => skill.package!);
+      input.purpose))).map(skill => skill.package!);
   return snapshotFromConfig({
     executionAuthority: input.executionAuthority ?? (input.purpose === "planning" ? "planning" : "delivery"),
     sourceDesiredRevision: input.role.launchRevision,

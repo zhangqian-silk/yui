@@ -1,9 +1,8 @@
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 import { verifySkillPackage, type SkillPackageRef } from "./skillPackage.js";
-import { BUILTIN_YUI_SKILLS } from "./roleSessionContext.js";
+import { BUILTIN_YUI_SKILLS, currentSkillPath } from "./currentSkills.js";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/u;
 const MAX_TEXT = 256 * 1024;
@@ -14,7 +13,7 @@ export function skillSource(home: string, id: string) {
   if (!SAFE_ID.test(id)) throw new Error("Invalid Skill id.");
   const builtin = BUILTIN_YUI_SKILLS.has(id);
   return { kind: builtin ? "builtin" as const : "configured" as const,
-    path: builtin ? fileURLToPath(new URL(`../../skills/${id}`, import.meta.url)) : resolve(home, "skills", id) };
+    path: currentSkillPath(home, id) };
 }
 
 function physical(path: string) {

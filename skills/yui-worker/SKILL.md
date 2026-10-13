@@ -5,7 +5,8 @@ description: Complete a bounded Yui WorkItem AgentRun or native child assignment
 
 # Yui Worker
 
-Follow [yui-runtime](../yui-runtime/SKILL.md) first. For a managed AgentRun,
+Follow [yui-runtime](../yui-runtime/SKILL.md) first, including its per-turn
+version/availability check and conditional full reload. For a managed AgentRun,
 load its exact Context Pack and
 use only the returned WorkItem, refs, workspace, writable Project IDs, and
 completion actions. The launch Envelope is a pointer, not an execution brief.

@@ -149,7 +149,7 @@ for (const name of RUNTIME_DOCUMENTS) {
 
 const expectedSkills = [];
 for (const skill of RUNTIME_SKILLS) {
-  const resources = ["SKILL.md"];
+  const resources = ["SKILL.md", "VERSION"];
   const references = resolve(root, "skills", skill, "references");
   if (existsSync(references)) {
     if (!lstatSync(references).isDirectory() || lstatSync(references).isSymbolicLink()) {

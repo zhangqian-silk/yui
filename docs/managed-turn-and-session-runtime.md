@@ -69,11 +69,27 @@ Run Pack is a reference directory: read the relevant requirement and message
 bodies before acting, rather than treating a successful load as the deliverable.
 Planning Packs expose no Project write scope or Task-completion permission.
 
-The Manifest pointer is a recovery locator, not a read receipt. Load its exact
-`yui-runtime`, Role Skills and profile on first entry, a new/version-changed
-Session, or missing context after compaction/recovery. Reuse instructions only
-when the same-version full content is still available; Yui stores no "already
-read" state. Always refresh dynamic facts. Leader notifications use
+The Manifest pointer is a recovery locator, not a read receipt. At the start of
+every turn run `yui session skills --json` through the Session's CLI/Home. It
+checks current paths, internal `VERSION` files and readability, without reading
+Skill bodies or walking/snapshotting resources. Builtins use the running
+installation's `skills/<id>` entry; configured Skills use `YUI_HOME/skills/<id>`.
+These paths do not contain a Session/content digest. After changing installation
+locations the check resolves the current installation, not an old recorded path.
+For Global Sessions the Manifest's `skillCheckCommand` is its self-contained
+`session context <role>` read, which also returns current Skill metadata and works
+after moving to Desktop without the launch shell's environment. An older Global
+Manifest's existing `loadCommand` provides the same check.
+
+Load current `yui-runtime`, applicable Role/custom Skills and necessary references,
+plus the Manifest's profile, on first entry, a version change, recovery, or missing/
+compacted/uncertain context. Reuse only when versions are unchanged and the full
+instructions remain available now. Yui stores no "already read" state and does
+not claim to inspect the model's context. Historical packages remain audit only;
+missing/corrupt snapshots do not prevent valid Session resume or input delivery.
+Missing current files report their exact path and recovery action. Session
+identity, scope, writer fences and real CLI/Home incompatibility still reject.
+Always refresh dynamic facts. Leader notifications use
 `currentCommand`; dispatched AgentRuns use the actual Run ID with
 `loadCommand`/`expandCommand`, never their placeholder templates.
 

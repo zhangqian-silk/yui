@@ -5,7 +5,8 @@ description: Route requests and follow-up delivery through the owning Task Leade
 
 # Yui Operator
 
-Follow [yui-runtime](../yui-runtime/SKILL.md) for the Session's authorized entry. A global Operator reads
+Follow [yui-runtime](../yui-runtime/SKILL.md) for the Session's authorized entry,
+per-turn version/availability check and conditional full reload. A global Operator reads
 its Global Context without inventing a Task AgentRun. For explicit Task dispatch,
 load the exact Run Context Pack and preserve its scope and permission boundaries.
 

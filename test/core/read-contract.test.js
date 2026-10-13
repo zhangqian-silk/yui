@@ -71,7 +71,14 @@ test("daily Context, discovery and original reads stay bounded as history grows 
   }
   const revision = store.getStateRevision();
   const before = store.listGlobalRoleMessages("operator");
-  const context = global(["context", "operator"]);
+  // Current Skill metadata can push this deliberately large Unicode Context
+  // over the inline limit; use the existing exact-document continuation.
+  const context = readDocument(cursor => {
+    const page = global(["context", "operator", ...(cursor === undefined ? [] : ["--cursor", cursor])]);
+    assert.ok(bytes(page) < 32768);
+    return page;
+  });
+  assert.deepEqual(context.currentSkills.map(skill => skill.id), ["yui-runtime", "yui-operator"]);
   assert.equal(context.pending.total, 200);
   assert.equal(context.pending.items.length, 8);
   const pendingIds = [...context.pending.items.map(m => m.id)];

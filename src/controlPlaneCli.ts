@@ -141,7 +141,7 @@ import { runWorkflowCommandAsync } from "./commands/workflowCommands.js";
 import { FileCompletionManager } from "./completion/fileCompletionManager.js";
 import { CONFIG_DOMAINS, type ConfigDomain } from "./config/configCatalog.js";
 import { resolveTmuxBin, resolveTmuxHistoryLimit } from "./config/yuiConfig.js";
-import { readSessionBootstrapManifest } from "./context/sessionBootstrapManifest.js";
+import { checkSessionSkills, readSessionBootstrapManifest } from "./context/sessionBootstrapManifest.js";
 import {
   assertFileTaskControllerStorageCompatible,
   ensureFileTaskController,
@@ -1032,6 +1032,16 @@ export async function main(): Promise<void> {
       return;
     }
     if (resolved[0] === "session") {
+      if (resolved[1] === "skills") {
+        if (resolved.length !== 2) throw usageError("Usage: yui session skills --json");
+        const path = process.env.YUI_SESSION_MANIFEST;
+        if (!["task", "global"].includes(process.env.YUI_SESSION_SCOPE ?? "") || path === undefined) {
+          throw usageError("Skill checks require the current managed Session and its Manifest.");
+        }
+        const data = checkSessionSkills(home, path);
+        emit(JSON.stringify(data, null, 2), false, data);
+        return;
+      }
       if (resolved[1] === "stop") {
         const options = parseSessionStopOptions(resolved.slice(2));
         const result = await runSessionStopCommand({

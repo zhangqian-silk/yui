@@ -6,6 +6,7 @@ import type { GlobalRole, TaskRole } from "../role/role.js";
 import { writeTextFileAtomically } from "../storage/durableFile.js";
 import type { RoleSessionOwner, RoleSkillContext } from "./roleSessionContext.js";
 import { validateSkillPackageRef, type SkillPackageRef } from "./skillPackage.js";
+import { checkCurrentSkills, SKILL_CHECK_COMMAND, SKILL_REUSE_RULE } from "./currentSkills.js";
 import {
   SESSION_BOOTSTRAP_MANIFEST_SCHEMA_VERSION,
   SESSION_CONTEXT_PROTOCOL,
@@ -26,9 +27,11 @@ export type SessionBootstrapManifest = Readonly<{
   roleKind: SessionRoleKind;
   /** Stable compatibility identity; distinct from this materialization's byte digest. */
   compatibilityDigest: string;
-  skills: readonly Readonly<{ id: string; path: string; digest: string; package?: SkillPackageRef }>[];
+  skills: readonly Readonly<{ id: string; path: string; digest: string; package?: SkillPackageRef;
+    version?: string; versionPath?: string }>[];
   roleProfileRef: Readonly<{ digest: string; path: string }>;
   contextProtocol: Readonly<{
+    skillCheckCommand?: string;
     loadCommand: string;
     expandCommand?: string;
     currentCommand?: string;
@@ -60,9 +63,23 @@ export function withSessionContextPointer(
 /** No remembered/sent flag can prove instructions survived context compaction. */
 export function sessionContextInstructions(manifestPath: string, digest?: string): string {
   return `Yui Session Manifest: ${manifestPath}${digest === undefined ? "" : ` (digest ${digest})`}. `
-    + "Apply yui-runtime and its Role Skills/profile by exact manifest paths. "
-    + "Load on first entry, version change or missing context; reuse only same-version instructions "
-    + "fully available now, never infer availability from prior reads.";
+    + `Before work on every turn run the Manifest's contextProtocol.skillCheckCommand `
+    + `(older Manifests: ${SKILL_CHECK_COMMAND}; Global loadCommand also checks current Skills). `
+    + "Use its current stable Skill paths instead of historical frozen-package paths; preserve the Manifest's Role profile. "
+    + SKILL_REUSE_RULE;
+}
+
+/** The caller must already pass the ordinary managed Session/CLI/Home checks.
+ * Old manifests remain immutable audit records, while this read resolves their
+ * Skill IDs against the currently executing installation and Home. */
+export function checkSessionSkills(home: string, manifestPath: string) {
+  const manifest = readSessionBootstrapManifest(manifestPath);
+  return {
+    skills: checkCurrentSkills(home, manifest.skills.map(skill => skill.id)),
+    roleProfileRef: manifest.roleProfileRef,
+    rule: SKILL_REUSE_RULE,
+    historicalPackagesAreAuditOnly: true
+  };
 }
 
 /** Explicit entry for self-contained Global Context reads across clients. */
@@ -122,6 +139,10 @@ export function readSessionBootstrapManifest(path: string): SessionBootstrapMani
     requireText(entry.id, "Session Manifest Skill id");
     requireText(entry.path, "Session Manifest Skill path");
     requireDigest(entry.digest, "Session Manifest Skill digest");
+    if (entry.version !== undefined) {
+      requireText(entry.version, "Session Manifest Skill version");
+      requireText(entry.versionPath, "Session Manifest Skill version path");
+    }
     if (entry.package !== undefined) {
       const ref = entry.package as SkillPackageRef;
       validateSkillPackageRef(ref);
@@ -185,6 +206,7 @@ export function materializeSessionBootstrap(input: Readonly<{
       id: skill.id,
       path: skill.path,
       digest: skill.package?.digest ?? digest(skill.content),
+      ...(skill.version === undefined ? {} : { version: skill.version, versionPath: skill.versionPath }),
       ...(skill.package === undefined ? {} : { package: skill.package })
     })),
     roleProfileRef: { digest: profileDigest, path: roleProfilePath },
@@ -197,11 +219,15 @@ export function materializeSessionBootstrap(input: Readonly<{
             input.entryPoint,
             home,
             input.role.name
-          )
+          ),
+          // Same self-contained read remains usable from Desktop without the
+          // launching shell's managed environment or PATH.
+          skillCheckCommand: renderGlobalContextCommand(input.entryPoint, home, input.role.name)
         }
       : {
           loadCommand: `yui task run context ${quoteShellWord(`${input.owner.taskId}/<run-id>`)} --json`,
           expandCommand: `yui task run context expand ${quoteShellWord(`${input.owner.taskId}/<run-id>`)} <ref-id> --store <store> --mode full --json`,
+          skillCheckCommand: SKILL_CHECK_COMMAND,
           ...(input.role.name === "leader" ? {
             currentCommand: `yui task context ${quoteShellWord(input.owner.taskId)} --json`
           } : {})

@@ -649,6 +649,7 @@ test("Global Codex Sessions use the shared daemon and retain a process-independe
   assert.doesNotMatch(bootstrap.manifest.contextProtocol.loadCommand, /--yui-control/u);
   assert.match(bootstrap.manifest.contextProtocol.loadCommand, /session context 'operator' --json/u);
   assert.match(bootstrap.manifest.contextProtocol.loadCommand, /YUI_HOME=/u);
+  assert.equal(bootstrap.manifest.contextProtocol.skillCheckCommand, bootstrap.manifest.contextProtocol.loadCommand);
   const directContext = JSON.parse(execFileSync(
     "/bin/sh",
     ["-c", bootstrap.manifest.contextProtocol.loadCommand],
@@ -657,6 +658,8 @@ test("Global Codex Sessions use the shared daemon and retain a process-independe
   const directContextData = directContext.data;
   assert.equal(directContextData.identity.roleName, "operator");
   assert.equal(directContextData.identity.scope, "global");
+  assert.deepEqual(directContextData.currentSkills.map(skill => skill.id), ["yui-runtime", "yui-operator"]);
+  assert.ok(directContextData.currentSkills.every(skill => skill.version && !skill.path.includes("skill-packages")));
 });
 
 test("Managed Codex performs the App Server WebSocket handshake through its proxy", async (t) => {
@@ -1473,13 +1476,13 @@ test("a wake names a completed Turn even when that Turn predates the delta curso
   assert.match(shown.output, /yui task run show task-1\/turn-1/u);
 });
 
-test("Leader notifications settle their accepted mailbox batch without creating an AgentRun", async (t) => {
+test("pre-1.5 Leader resumes after upgrade and settles only its accepted notification window", async (t) => {
   const home = mkdtempSync(join(tmpdir(), "yui-leader-wake-window-smoke-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
-  const store = new SqliteTaskStore(home);
+  let store = new SqliteTaskStore(home);
   t.after(() => store.close());
   const firstEventAt = new Date("2026-08-31T01:00:00.000Z");
-  const workspaceRoot = "/tmp/yui-leader-wake-window-smoke";
+  const workspaceRoot = home;
   const task = activateTask(createTask("task-1", "Aggregate Leader events", firstEventAt, {
     cwd: workspaceRoot
   }), firstEventAt);
@@ -1500,6 +1503,7 @@ test("Leader notifications settle their accepted mailbox batch without creating 
     firstEventAt
   );
   store.saveRole(task.id, leader);
+  store.saveConfiguredAgent(createConfiguredAgent("codex", "codex", "false", [], [], firstEventAt));
   const effective = resolveEffectiveLaunch({ role: leader, purpose: "execution" });
   let sessions = recordRoleAgentSession(createRoleSessionSet(
     { scope: "task", taskId: task.id, roleName: leader.name },
@@ -1521,6 +1525,14 @@ test("Leader notifications settle their accepted mailbox batch without creating 
   });
   sessions = bindTaskRoleProviderRuntime(sessions, provider, firstEventAt);
   store.saveTaskRoleSessionSet(sessions);
+  assert.equal(sessions.sessions.codex.effective.skillPackages, undefined);
+  store.close();
+  const historical = new Database(join(home, "yui.db"));
+  historical.prepare("UPDATE storage_schema SET minor=4 WHERE id=1").run();
+  historical.close();
+  assert.equal((await runStorageUpgrade({ home, mode: "execute" })).outcome, "upgraded");
+  store = new SqliteTaskStore(home);
+  assert.deepEqual(store.getTaskRoleSessionSet(task.id, leader.name), sessions);
   const adapter = new FileSchedulerStoreAdapter(store);
   adapter.enqueueLeaderWakeup(task.id, "worker-completed", firstEventAt);
 
@@ -1528,6 +1540,11 @@ test("Leader notifications settle their accepted mailbox batch without creating 
   const delivery = {
     prepareRoleSession: async (request) => {
       assert.equal(request.runId, undefined);
+      const planned = new roleLaunchPlanner.FileRoleLaunchPlanner(home, store, {
+        environment: { HOME: home, PATH: process.env.PATH, CODEX_HOME: join(home, "account") }
+      }).plan({ taskId: task.id, roleName: leader.name, agentId: "codex",
+        adapterId: "codex", mode: "resume", nativeSessionId: "thread-1" });
+      assert.ok(planned.launch.env.YUI_SESSION_MANIFEST);
       return { session: sessions.sessions[agent.agentId] };
     },
     waitUntilReady: async (prepared) => prepared,
@@ -1560,6 +1577,7 @@ test("Leader notifications settle their accepted mailbox batch without creating 
   assert.equal(store.getWorkMailbox({ kind: "role", taskId: task.id, roleName: "leader" }).processing, null);
   assert.equal(store.listTaskWakes(task.id)[0].status, "consumed");
   assert.equal(store.listTaskWakes(task.id)[0].runId, undefined);
+  assert.equal(store.getTaskRoleSessionSet(task.id, leader.name).sessions.codex.effective.skillPackages, undefined);
 });
 
 test("an active Task without a durable event remains quiet", async (t) => {

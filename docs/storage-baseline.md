@@ -28,9 +28,10 @@ The 1.4 → 1.5 transition introduces complete Skill package references in
 effective launch snapshots and Session Manifests. Historical records and their
 digests are preserved byte-for-byte; missing package metadata explicitly means
 legacy entrypoint-only/unrecorded evidence. Migration cannot recover resources
-that were never captured. Existing running Hosts keep their original inputs;
-restoring a legacy Session requires explicitly selecting a new Session. No
-ordinary reader backfills historical versions from mutable sources.
+that were never captured. Existing running Hosts keep their original inputs.
+Current loading uses stable source paths and internal versions; restoring a
+valid legacy Session does not require frozen-package evidence or replacement.
+No ordinary reader backfills historical versions from mutable sources.
 
 New launches snapshot raw resources under `runtime/skill-packages/<digest>`.
 The version covers sorted relative paths, SHA-256 byte digests, sizes and
@@ -40,9 +41,12 @@ Symlinks and special files are rejected, as are packages exceeding 2,048 files,
 8 MiB per file, 32 MiB total or 32 directory levels. Scripts are retained,
 never run on import. Sources must be readable and physically rooted.
 Sessions and AgentRuns retain the compact source/version/inventory pointers;
-file bodies stay in the package. Changing a source affects a new Session only.
-Lost or corrupted packages fail closed rather than being rebuilt from current
-sources.
+file bodies stay in the package. These records describe captured source, not
+proof of model loading. Source changes apply to current Skill loading after the
+per-turn version check, including existing Sessions. Lost or corrupted audit
+packages fail explicit historical reads, not current Session admission, and are
+never rebuilt from current sources. The loading change adds no persisted DB
+fields or storage migration; storage remains 1.6.
 
 Yui 1.0.0 starts from one clean persistent contract. The package version,
 storage schema, record envelopes and Controller protocol are separate

@@ -490,16 +490,14 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
         ? {}
         : taskRuntimeIsolationEnvironment(runtimeIsolation)
     );
-    const skillPackages = input.mode === "resume"
-      ? existingSession?.effective.skillPackages : effective.skillPackages;
-    if (skillPackages === undefined) {
-      throw new Error("This launch has no frozen Skill package evidence (pre-1.5 or externally recorded Session). Create a new Session from current Role configuration; historical Skill versions cannot be reconstructed.");
-    }
+    // Frozen packages describe historical materialization, not Session identity
+    // or current instruction availability. Never require or reconstruct them
+    // when reconnecting a valid old Session.
     const baseSessionContext = compileRoleSessionContext(
       this.home,
       launchRole,
       owner,
-      { ...sessionPolicy, skillPackages }
+      sessionPolicy
     );
     const bootstrap = materializeSessionBootstrap({
       yuiHome: this.home,

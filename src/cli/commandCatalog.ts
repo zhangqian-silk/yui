@@ -282,6 +282,11 @@ const roleChildren: readonly NodeInput[] = [
 ];
 
 const globalSessionChildren: readonly NodeInput[] = [
+  {
+    name: "skills", discovery: { surface: "managed", audiences: ["operator","leader","assignment","global","unbound"] },
+    summary: "Check current Skill paths, versions and availability for this managed Session without reading bodies.",
+    usage: "yui session skills"
+  },
   { name: "enter", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Enter a global Role's native session.", usage: "yui session enter <role>" },
   {
     name: "context", discovery: { surface: "managed", audiences: ["operator","global","unbound"] },
@@ -1680,6 +1685,7 @@ export const ROOT_COMMAND = buildNode({
         "yui session reconcile --report"
       ],
       sections: [
+        { id: "instructions", title: "Managed instructions", entries: ["skills"] },
         { id: "global", title: "Global Role sessions", entries: ["context", "enter", "record", "replace"] },
         { id: "maintenance", title: "Maintenance", entries: ["stop"] },
         { id: "recovery", title: "Recovery", entries: ["reconcile", "retry"] }

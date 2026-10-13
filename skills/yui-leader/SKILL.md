@@ -5,7 +5,9 @@ description: Lead one Yui Task through authorized planning, activation handoff, 
 
 # Yui Leader
 
-Follow [yui-runtime](../yui-runtime/SKILL.md) first. Load the exact Context Pack
+Follow [yui-runtime](../yui-runtime/SKILL.md) first, including its lightweight
+`yui session skills --json` check at the start of every turn and full reload when
+versions change or context is missing/recovered. Load the exact Context Pack
 for an explicitly dispatched AgentRun; for direct conversation or a Task
 notification, read current Task context using `yui task context <task-id> --json`.
 No self-dispatch or old completed Run is needed. Read the actual Task

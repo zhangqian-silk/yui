@@ -51,6 +51,21 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### Unreleased: current Skill loading
+
+Runtime and Role instructions now use stable current source paths and independent
+integer `VERSION` files. Every managed turn checks `yui session skills --json`;
+only unchanged full instructions still present in context may be reused.
+Recovery, version changes and missing/uncertain context require full reload.
+Configured Skills must supply `VERSION` beside `SKILL.md`.
+
+Frozen packages remain historical audit, not a Session admission condition.
+Valid pre-1.5 Sessions may resume without that evidence; no historical read,
+native acceptance or input consumption is fabricated. Identity, scope, writer,
+lifecycle, protocol/storage and unknown-input fences are unchanged. There is no
+DB schema change: storage remains **1.6**. This is development guidance, not a
+release or authorization to update a production installation.
+
 ### 2.6.0 compatibility and migration notes
 
 This minor includes Task111's paged current activity and parallel execution
@@ -118,8 +133,9 @@ fixes are included; Task110's unmerged work is not part of this release.
 Storage is now **1.6**. Use the supported centralized, contiguous same-major
 upgrade path for older supported Homes; do not edit stored records manually.
 Historical missing cost remains unknown. Old Skill provenance is not rebuilt
-from today's files: if restoring an old Session reports missing frozen-package
-evidence, follow its new-Session guidance while preserving the old history.
+from today's files. The original 2.4 restoration restriction for missing packages
+is superseded by the current Skill-loading contract above; preserve old history
+without making that audit evidence a Session admission condition.
 Current model adoption is connection-local and does not change future defaults;
 exit the Host-owned native TUI before changing its model (closing a viewer only
 detaches it). Unknown sends must be inspected by their original request ID,
