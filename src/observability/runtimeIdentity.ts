@@ -13,7 +13,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-import Database from "better-sqlite3";
+import Database from "../sqlite/driver.js";
 
 import {
   CURRENT_STORAGE_VERSION,

@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import Database from "../../sqlite/driver.js";
 import { createHash, randomUUID } from 'node:crypto';
 import type { SessionDocument } from './contracts.js';
 import { encode, inspectDocument, migrateSessionDocument, revision, SessionError, sessionLimits } from './format.js';

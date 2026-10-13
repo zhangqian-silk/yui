@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import Database from "better-sqlite3";
+import Database from "../../dist/sqlite/driver.js";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { runStorageUpgrade } from "../../dist/storage/upgrade/upgradeOrchestrator.js";
 import { createTask, setTaskActivationRequest } from "../../dist/task/task.js";

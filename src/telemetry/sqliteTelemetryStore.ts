@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import Database from "../sqlite/driver.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { CURRENT_DATABASE_FILENAME as COMMITTED_DATABASE_FILENAME } from "../storage/currentTaskStore.js";

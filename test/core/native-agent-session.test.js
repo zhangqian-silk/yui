@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import Database from 'better-sqlite3';
+import Database from "../../dist/sqlite/driver.js";
 import { createHash } from 'node:crypto';
 import { createAgent } from '../../dist/nativeAgent/index.js';
 import {

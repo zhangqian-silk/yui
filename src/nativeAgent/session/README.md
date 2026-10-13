@@ -107,7 +107,7 @@ Session 内唯一；Session 的执行由调用方串行管理，存储不是执�
 后端所有权。多个 SQLite 连接可指向同一文件，事务内 CAS 防止失更新，
 但这不授权多个内核同时执行同 Session。
 
-SQLite 使用当前仓库已有的 `better-sqlite3`，显式绝对文件路径、DELETE
+SQLite 使用共享的惰性 SQLite 驱动入口（现代候选优先，仅原生兼容性错误回退），显式绝对文件路径、DELETE
 journal、`synchronous=FULL`、1 秒锁等待。会话完整 JSON 与 revision/digest
 及其只读事件查询投影在同一事务更新。投影没有独立写入 API；已有文档仍是
 必要记录与恢复的权威。digest 用于发现意外不一致，不是防篡改签名。

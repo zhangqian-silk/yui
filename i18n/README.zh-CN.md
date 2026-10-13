@@ -56,6 +56,20 @@ Claude 自身的 key 确认、目录信任等交互仍可能需要你完成。
 npm install -g @zq-silk/yui
 ```
 
+打开真实 Home 前，Yui 会惰性选择 SQLite：先用 `sqlite-modern`
+（`better-sqlite3@12.11.1`）建立可丢弃的内存连接，仅在明确的原生绑定缺失、
+Node ABI 或系统动态库不兼容时尝试 `sqlite-compat`（`better-sqlite3@10.1.0`）。
+每个进程固定首次成功的选择；Home 权限、损坏、锁定、SQL 与迁移错误都不会
+触发驱动切换。`yui doctor` 单独报告驱动版本、实际 SQLite 引擎和回退原因，
+与 Home 健康检查区分。
+
+npm 安装时会**分别尝试两个**固定 optional alias，并非新版失败后才安装旧版，
+因此下载体积、安装和编译时间可能增加。可选依赖安装失败不一定使 npm 失败，
+但两个候选都不可用时 Yui 仍无法运行；不要使用 `--omit=optional`。
+兼容驱动使用旧 SQLite（3.46.0），不包含后续修复，也不保证兼容任意旧 glibc、
+编译器或较新的 Node ABI。上述 Node 支持范围不变；仍可能需要升级系统或工具链。
+驱动选择不会降级或迁移 Home 数据。
+
 ### 2. 自己初始化，或交给 Agent
 
 在终端中运行交互式初始化：

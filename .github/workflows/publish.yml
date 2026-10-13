@@ -207,6 +207,7 @@ jobs:
           consumer="$(mktemp -d)"
           npm install --engine-strict --prefix "$consumer" "$YUI_TGZ"
           YUI_INSTALLED_ROOT="$consumer/node_modules/@zq-silk/yui" node scripts/ci-native-dependencies.mjs verify
+          YUI_INSTALLED_ROOT="$consumer/node_modules/@zq-silk/yui" node --test test/core/sqlite-driver.test.js
           YUI_INSTALLED_ROOT="$consumer/node_modules/@zq-silk/yui" node scripts/smoke-runtime-package.mjs
 
   publish:

@@ -264,7 +264,7 @@ function readControllerDiscoveryForReset(homePath, homeId, discoveryPath) {
 async function readHomeIdForReset(homePath) {
   const databasePath = join(homePath, "yui.db");
   let homeId;
-  const { default: Database } = await import("better-sqlite3");
+  const { default: Database } = await import("../dist/sqlite/driver.js");
   const database = new Database(databasePath, { readonly: true, fileMustExist: true });
   try {
     const row = database.prepare(

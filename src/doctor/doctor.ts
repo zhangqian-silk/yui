@@ -1,7 +1,7 @@
 import { accessSync, constants, existsSync, lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 
-import Database from "better-sqlite3";
+import Database, { selectSqliteDriver } from "../sqlite/driver.js";
 import { inspectPty } from "./ptyProbe.js";
 import { gitVersionSupport } from "../repository/gitCompatibility.js";
 import { resolveExecutable } from "../external/pinnedCommandRunner.js";
@@ -96,6 +96,7 @@ export type DoctorReviewReport = Readonly<{
  * and never block an update.
  */
 export const STORAGE_DOCTOR_CHECK_NAMES = Object.freeze([
+  "sqlite driver",
   "storage schema",
   "storage compatibility",
   "storage state"
@@ -144,7 +145,7 @@ export type DoctorReport = Readonly<{
 /**
  * Classify the storage checks into a machine-readable health verdict. This is the
  * canonical, parseable signal the update post-verify consumes (P1-3): storage is
- * healthy only when schema, compatibility, and state are all `ok`. Any
+ * healthy only when driver, schema, compatibility, and state are all `ok`. Any
  * `unsupported` (version mismatch / needs-new-version), `invalid` (corrupted /
  * unreadable), or `missing` (uninitialized) storage check is blocking — even
  * and the machine-readable command exits non-zero.
@@ -282,6 +283,7 @@ async function inspectDoctor(
 ): Promise<DoctorInspection> {
   const home = resolveYuiHome(env);
   const homeCheck = checkHome(home);
+  const driverCheck = checkSqliteDriver();
   const schema = readSchema(home);
   const compatibility = inspectCompatibility(home, homeCheck, schema);
   const schemaCheck = checkSchema(schema);
@@ -305,6 +307,7 @@ async function inspectDoctor(
   return {
     checks: [
       homeCheck,
+      driverCheck,
       schemaCheck,
       compatibility.check,
       storage.check,
@@ -317,6 +320,26 @@ async function inspectDoctor(
     ],
     review: review.report
   };
+}
+
+export function checkSqliteDriver(): DoctorCheck {
+  try {
+    const selected = selectSqliteDriver();
+    return {
+      name: "sqlite driver",
+      status: "ok",
+      detail: `${selected.name}@${selected.version}; SQLite ${selected.sqliteVersion}; `
+        + (selected.fallbackReason === undefined
+          ? "no fallback"
+          : `fallback: ${selected.fallbackReason}`)
+        + ". Isolated native connection probe; does not validate Home data."
+    };
+  } catch (error) {
+    return {
+      name: "sqlite driver", status: "invalid",
+      detail: `Native driver probe failed (not a Home diagnosis): ${error instanceof Error ? error.message : String(error)}`
+    };
+  }
 }
 
 /** Query the authenticated Controller endpoint without starting it. */

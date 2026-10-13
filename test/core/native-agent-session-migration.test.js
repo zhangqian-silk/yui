@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import Database from 'better-sqlite3';
+import Database from "../../dist/sqlite/driver.js";
 import { createSessionStore, createSqliteSessionBackend } from '../../dist/nativeAgent/session/index.js';
 
 test('declared v1 migration preserves original facts; corrupt source rolls back without invented settlements', async () => {

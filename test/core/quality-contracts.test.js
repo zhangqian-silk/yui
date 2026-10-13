@@ -14,7 +14,7 @@ import { parseDurableJobStartParams } from "../../dist/controller/jobControl.js"
 import { createDurableJob, durableJobIdempotencyKey } from "../../dist/job/durableJob.js";
 import { runDurableJobRunner } from "../../dist/job/jobRunner.js";
 import { routeInvocation } from "../../dist/cli/invocationRouter.js";
-import Database from "better-sqlite3";
+import Database from "../../dist/sqlite/driver.js";
 import { SqliteTelemetryStore } from "../../dist/telemetry/sqliteTelemetryStore.js";
 import { createTask } from "../../dist/task/task.js";
 import { createTaskEvent } from "../../dist/event/taskEvent.js";

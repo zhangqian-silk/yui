@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import Database from "better-sqlite3";
+import Database from "../sqlite/driver.js";
 import { BASELINE_SCHEMA_SQL, SQLITE_SCHEMA_TABLES } from "./baselineSchema.js";
 import { migrateTaskMainWorkspaces } from "./upgrade/taskMainWorkspaceMigration.js";
 import { migrateProjectKnowledge } from "./upgrade/projectKnowledgeMigration.js";

@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import Database from 'better-sqlite3';
+import Database from "../../dist/sqlite/driver.js";
 import {
   createSessionStore, createMemorySessionBackend, createSqliteSessionBackend,
 } from '../../dist/nativeAgent/index.js';

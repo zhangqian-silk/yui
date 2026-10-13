@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import Database from "../../sqlite/driver.js";
 import { randomUUID } from 'node:crypto';
 import { isAbsolute, resolve } from 'node:path';
 import { existsSync, lstatSync } from 'node:fs';

@@ -198,7 +198,10 @@ const runtimePackage = {
   homepage: sourcePackage.homepage,
   ...(sourcePackage.dependencies === undefined
     ? {}
-    : { dependencies: sourcePackage.dependencies })
+    : { dependencies: sourcePackage.dependencies }),
+  ...(sourcePackage.optionalDependencies === undefined
+    ? {}
+    : { optionalDependencies: sourcePackage.optionalDependencies })
 };
 writeFileSync(
   resolve(output, "package.json"),
