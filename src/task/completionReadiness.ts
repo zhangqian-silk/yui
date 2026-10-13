@@ -5,6 +5,7 @@ import {
 } from "../integration/deliveryObligation.js";
 import type { DurableJob } from "../job/durableJob.js";
 import type { TaskMessage } from "../message/message.js";
+import { isLeaderSteer, taskMessageInboxReceipt } from "../message/taskInboxOwnership.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import type { ManagedWorkspace } from "../worktree/managedWorkspace.js";
 import type { NextActionFacts, NextActionRef } from "./nextAction.js";
@@ -86,6 +87,9 @@ export type CompletionReadinessFacts = NextActionFacts & Readonly<{
 export function pendingCompletionMessages(store: TaskStore, taskId: string): TaskMessage[] {
   const mailbox = store.getWorkMailbox({ kind: "role", taskId, roleName: "leader" });
   const refs = [...(mailbox?.pending?.refs ?? [])];
+  for (const wake of store.listTaskWakes(taskId)) {
+    if (wake.inbox !== undefined && wake.inbox.ack === undefined) refs.push(...(wake.refs ?? []));
+  }
   const processing = mailbox?.processing;
   if (processing?.owner.startsWith("agent-inbox:")) refs.push(...processing.batch.refs);
   if (processing?.owner.startsWith("leader-notification:")) {
@@ -97,7 +101,8 @@ export function pendingCompletionMessages(store: TaskStore, taskId: string): Tas
   }
   const ids = new Set(refs.filter(ref => ref.type === "message" && ref.taskId === taskId).map(ref => ref.id));
   return operationalTaskRecords(store.listMessages(taskId), store.listEvents(taskId), "message")
-    .filter(message => ids.has(message.id)
+    .filter(message => (ids.has(message.id) || isLeaderSteer(message) && message.inbox !== undefined)
+      && taskMessageInboxReceipt(store, message)?.ack === undefined
       && (message.kind === "user" || message.kind === "operator"));
 }
 

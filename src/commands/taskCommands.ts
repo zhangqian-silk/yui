@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { taskMessageInboxReceipt } from "../message/taskInboxOwnership.js";
 import type { ConfiguredAgent } from "../agent/agent.js";
 import { agentExecutionComponentLabel } from "../agent/executionComponents.js";
 import { assertLeaderArchiveAdmission } from "../task/leaderArchiveAuthority.js";
@@ -2641,9 +2642,7 @@ function steerTaskInput(
     // The recipient may claim between Message persistence and control
     // admission. A Leader window owns its referenced originals even after ack;
     // never re-submit them through a delayed steer.
-    if (saved === undefined || requestId === undefined || saved.inbox !== undefined
-      || leaderTarget && tx.listTaskWakes(result.task.id).some(wake =>
-        wake.inbox !== undefined && wake.refs?.some(ref => ref.type === "message" && ref.id === saved.id))) return false;
+    if (saved === undefined || requestId === undefined || taskMessageInboxReceipt(tx, saved) !== undefined) return false;
     tx.updateMessage(result.task.id, recordTaskMessageControlOutcome(saved, {
       requestId, receiptId, outcome: "pending", observedAt: clock(options)
     }));
@@ -3240,7 +3239,7 @@ function registerInterruptThen(
   }
   // A Message that already delivered, or was already ruled undeliverable, is not
   // a fresh input to reuse; reusing it would replay or resurrect a settled fact.
-  if (message.inbox !== undefined) {
+  if (taskMessageInboxReceipt(store, message) !== undefined) {
     return { code: "TARGET_CHANGED", detail: `Message ${thenMessageRef} is owned by active inbox handling.` };
   }
   if (message.continuation?.runId !== undefined) {

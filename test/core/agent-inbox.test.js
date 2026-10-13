@@ -25,6 +25,7 @@ import { createFixtureRun } from "../helpers/runFixture.mjs";
 import { acceptProviderTurn, beginProviderTurn, createProviderRuntimeBinding } from "../../dist/runtime/providerRuntimeIdentity.js";
 import { failRun } from "../../dist/agentRun/agentRun.js";
 import { createProject } from "../../dist/repository/project.js";
+import { stopTaskExecutionCommand, startTaskExecutionCommand } from "../../dist/commands/taskExecutionCommands.js";
 
 const now = new Date("2026-10-13T00:00:00Z");
 function fixture(t, name) {
@@ -224,6 +225,11 @@ test("a successor Leader settles an exact-Session window without replaying its o
   enqueueWork(store, target, "user-message", now, [{ type: "message", taskId: "task-1", id: "message-1" }]);
   const pending = inbox("leader", "list").items[0].id;
   const claimed = inbox("leader", "claim", pending, "--request-id", "old-window");
+  const options = { environment: {}, now: () => now };
+  stopTaskExecutionCommand({ taskId: "task-1", reason: "Pause execution" }, store, options);
+  startTaskExecutionCommand("task-1", store, options);
+  assert.deepEqual(pendingCompletionMessages(store, "task-1").map(message => message.id), ["message-1"]);
+  assert.equal(new FileSchedulerStoreAdapter(store).claimLeaderNotification("task-1", now), null);
   const ended = updateRoleAgentSessionStatus(store.getTaskRoleSessionSet("task-1", "leader"), "codex", "ended", now, "stopped");
   store.saveTaskRoleSessionSet(recordRoleAgentSession(ended, { ...ended.sessions.codex,
     status: "active", endReason: undefined, nativeSessionId: "successor" }, new Date(now.getTime() + 1000)));
@@ -261,12 +267,6 @@ for (const roleName of ["worker", "leader"]) test(`${roleName} unsubmitted steer
   const steer = (request, expected) => task(["message", "steer", "task-1", "Correction", ...scope,
     "--request-id", request, "--expected-target", expected]);
   const claim = request => {
-    if (roleName === "leader" && !inbox(roleName, "list").items.length) {
-      // A notification may explicitly reference a saved steer; test its window
-      // ownership as well as the Worker's direct Message claim.
-      enqueueWork(store, { kind: "role", taskId: "task-1", roleName }, "user-message", now,
-        [{ type: "message", taskId: "task-1", id: store.listMessages("task-1").at(-1).id }]);
-    }
     const id = inbox(roleName, "list").items[0].id;
     return inbox(roleName, "claim", id, "--request-id", request);
   };
@@ -292,6 +292,23 @@ for (const roleName of ["worker", "leader"]) test(`${roleName} unsubmitted steer
   assert.equal(store.listMessages("task-1").at(-1).control, undefined);
   assert.equal(steer("native-wins", "current").kind, "input-steer");
   assert.throws(() => claim("too-late"), /delivery-pending|existing.*delivery owner/);
+});
+
+test("Leader interrupt-then cannot reuse a claimed or acknowledged window original", t => {
+  const { store, task, inbox } = taskFixture(t);
+  task(["message", "queue", "task-1", "Original", "--request-id", "original"]);
+  const claimed = inbox("leader", "claim", inbox("leader", "list").items[0].id, "--request-id", "window");
+  let binding = createProviderRuntimeBinding({ providerNamespace: "openai/codex", accountScope: "codex",
+    conversationId: "leader-native", startedAt: now.toISOString() });
+  binding = beginProviderTurn(binding, { attemptId: "active", authorityEpoch: 1, submittedAt: now.toISOString() });
+  binding = acceptProviderTurn(binding, { attemptId: "active", nativeTurnId: "current", acceptedAt: now.toISOString() });
+  store.saveTaskRoleSessionSet(bindTaskRoleProviderRuntime(store.getTaskRoleSessionSet("task-1", "leader"), binding, now));
+  const interrupt = request => task(["role", "interrupt", "task-1", "leader",
+    "--expected-target", "current", "--then-message", "task-1/message-1", "--request-id", request]);
+  assert.equal(interrupt("claimed").data.interrupt.code, "TARGET_CHANGED");
+  inbox("leader", "ack", claimed.id, "--request-id", "done", "--reason", "Handled original");
+  assert.equal(interrupt("acknowledged").data.interrupt.code, "TARGET_CHANGED");
+  assert.equal(store.listMessages("task-1")[0].interruptThen, undefined);
 });
 
 test("Leader claims one fixed window without accepting results, consuming later input, or fabricating native delivery", t => {

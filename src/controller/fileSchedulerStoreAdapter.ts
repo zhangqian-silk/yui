@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { taskMessageInboxReceipt, unfinishedLeaderInbox } from "../message/taskInboxOwnership.js";
 import { contextSnapshotRef } from "../context/contextSnapshot.js";
 import { freezeRunContextSnapshot } from "../context/runContextPack.js";
 import { taskNotificationPresentation } from "../interaction/notificationPresentation.js";
@@ -2410,6 +2411,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         return { wakeId, attemptId: nextAttempt, disposition: "submit",
           presentation: taskNotificationPresentation(wake, store) };
       }
+      if (unfinishedLeaderInbox(store, taskId)) return null;
       if (mailbox.pending === null || (provider !== null && provider !== undefined
         && ["submitting", "accepted", "delivery-unknown"].includes(provider.status))) return null;
       const pending = mailbox.pending;
@@ -2419,6 +2421,11 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       const sessions = store.getTaskRoleSessionSet(taskId, "leader");
       const session = sessions?.sessions[sessions.activeAgentId];
       const obsoleteIds = new Set<string>();
+      for (const message of store.listMessages(taskId)) {
+        if (pendingMessageIds.has(message.id) && taskMessageInboxReceipt(store, message) !== undefined) {
+          obsoleteIds.add(message.id);
+        }
+      }
       for (const message of store.listMessages(taskId)) {
         if (!pendingMessageIds.has(message.id) || message.inputControl?.expectedSessionId === undefined) continue;
         if (message.inputControl.expectedSessionId !== session?.nativeSessionId

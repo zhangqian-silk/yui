@@ -6,6 +6,7 @@ import { createTaskWake, latestTaskWake, type TaskWake } from "../scheduler/task
 import { expandTaskMessageResult, type GlobalRoleMessage, type TaskMessage } from "../message/message.js";
 import { messageAssignmentBlocker } from "../message/messageContinuation.js";
 import type { InboxActor, InboxReceipt } from "../message/inboxReceipt.js";
+import { isLeaderSteer, taskMessageInboxReceipt, unfinishedLeaderInbox } from "../message/taskInboxOwnership.js";
 import { hasRuntimeCleanupObligation, runtimeLifecycleTarget } from "../runtime/lifecycleReservation.js";
 import { isTaskRecordRetired, retiredTaskRecordIds } from "../task/taskRecordRetirement.js";
 
@@ -32,6 +33,7 @@ function addressOf(store: TaskStore, env: NodeJS.ProcessEnv): Address {
 }
 
 function ownsMessage(store: TaskStore, address: Address, message: TaskMessage): boolean {
+  if (address.roleName === "leader" && message.taskId === address.taskId && isLeaderSteer(message)) return true;
   if (address.runId === undefined || message.taskId !== address.taskId
     || message.recipient?.roleName !== address.roleName) return false;
   const current = store.getRun(address.taskId!, address.runId!);
@@ -85,6 +87,9 @@ function blocker(store: TaskStore, address: Address, entry: Entry): string | und
     if (entry.status === "consumed") return "already-delivered";
     return "automatic-notification-owns-window";
   }
+  if (address.scope === "task" && taskMessageInboxReceipt(store, entry as TaskMessage) !== undefined) {
+    return "claimed-by-notification-window";
+  }
   if (entry.interruptThen !== undefined) return "explicit-interrupt-handoff";
   if (entry.control !== undefined && entry.control.outcome !== "rejected") return `delivery-${entry.control.outcome}`;
   // Both steer paths reserve pending control before submission and arbitrate
@@ -103,7 +108,7 @@ function blocker(store: TaskStore, address: Address, entry: Entry): string | und
     if (message.continuation?.runId !== undefined) return "continuation-already-dispatched";
     if (message.inputControl?.expectedSessionId !== undefined
       && message.inputControl.expectedSessionId !== address.nativeSessionId) return "selected-native-session-changed";
-    return messageAssignmentBlocker(store, message);
+    return address.roleName === "leader" && isLeaderSteer(message) ? undefined : messageAssignmentBlocker(store, message);
   }
   return undefined;
 }
@@ -157,7 +162,7 @@ export function runInboxCommand(
       const mailbox = store.getWorkMailbox(target(address));
       if (mailbox?.pending != null) items.push({ id: pendingId(mailbox.pending), kind: "notification-window",
         summary: mailbox.pending.reasons.join(", ").slice(0, 240),
-        blocked: mailbox.processing === null ? null : "earlier-window-owned",
+        blocked: mailbox.processing === null && !unfinishedLeaderInbox(store, address.taskId!) ? null : "earlier-window-owned",
         read: `yui inbox show ${pendingId(mailbox.pending)}` });
     }
     return recordPage(items, source(address), parsed);
@@ -209,13 +214,16 @@ export function runInboxCommand(
       }
       const mailbox = tx.getWorkMailbox(target(current));
       if (!mailbox?.pending || pendingId(mailbox.pending) !== id) throw new Error("Pending window changed; list the inbox again.");
-      if (mailbox.processing !== null) throw new Error("An earlier automatic or active inbox claim owns the notification window.");
+      if (mailbox.processing !== null || unfinishedLeaderInbox(tx, current.taskId!)) {
+        throw new Error("An earlier automatic or active inbox claim owns the notification window.");
+      }
       // A pending Leader input with an exact transport/interrupt owner cannot be
       // hidden inside an actively consumed window.
       for (const ref of mailbox.pending.refs) {
         if (ref.type !== "message") continue;
         const message = tx.listMessages(current.taskId!).find(message => message.id === ref.id);
-        if (message?.interruptThen !== undefined
+        if (message !== undefined && taskMessageInboxReceipt(tx, message) !== undefined
+          || message?.interruptThen !== undefined
           || message?.control !== undefined && message.control.outcome !== "rejected"
           || message?.inputControl?.expectedSessionId !== undefined
             && message.inputControl.expectedSessionId !== current.nativeSessionId) {
@@ -265,7 +273,8 @@ export function runInboxCommand(
             if (messageIds.has(message.id)) assertSelectedTarget(claimant, message);
           }
         } else assertSelectedTarget(claimant, entry);
-        if (!isWake(entry) && current.scope === "task") {
+        if (!isWake(entry) && current.scope === "task"
+          && !(current.roleName === "leader" && isLeaderSteer(entry as TaskMessage))) {
           const invalid = messageAssignmentBlocker(tx, entry as TaskMessage);
           if (invalid !== undefined) throw new Error(`Assignment no longer authorizes this inbox disposition: ${invalid}.`);
         }
@@ -280,9 +289,12 @@ export function runInboxCommand(
           ack: { requestId, actor: current, at: now.toISOString(), reason: reason! } };
         if (isWake(entry)) {
           const mailbox = tx.getWorkMailbox(target(current));
-          if (!mailbox?.processing || mailbox.processing.owner !== `agent-inbox:${entry.id}`
-            || mailbox.processing.batchId !== `inbox:${entry.id}`) throw new Error("Exact inbox window ownership changed.");
-          tx.saveWorkMailbox(completeProcessing(mailbox, mailbox.processing.batchId));
+          // stop/start removes operational mailboxes, not durable claim
+          // ownership. Settle that receipt without touching a later batch.
+          if (mailbox?.processing?.owner === `agent-inbox:${entry.id}`
+            && mailbox.processing.batchId === `inbox:${entry.id}`) {
+            tx.saveWorkMailbox(completeProcessing(mailbox, mailbox.processing.batchId));
+          }
         }
         entry = { ...entry, inbox };
       }
