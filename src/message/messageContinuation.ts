@@ -34,8 +34,9 @@ export function resolveMessageRecipient(
   return { roleName, ownerRunId: previous.id, ...scope };
 }
 
-/** Bounded diagnosis, not automatic ownership repair. */
-export function messageContinuationBlocker(store: TaskStore, message: TaskMessage): string | undefined {
+/** Current Assignment authority, independent of eligibility to start a new Run.
+ * A Reviewer still owns its frozen clarification when Task main advances. */
+export function messageAssignmentBlocker(store: TaskStore, message: TaskMessage): string | undefined {
   if (isTaskRecordRetired(store.listEvents(message.taskId), "message", message.id)) return "message-retired";
   const target = message.recipient;
   if (target?.ownerRunId === undefined) return "recipient-assignment-missing";
@@ -78,19 +79,28 @@ export function messageContinuationBlocker(store: TaskStore, message: TaskMessag
   if (latest !== undefined && latest.id !== owner.id
     && latest.inputs[0]?.input.source.channel !== "message-continuation") return "assignment-changed";
   if (target.reviewRoundId !== undefined) {
-    const round = store.getReviewRound(message.taskId, target.reviewRoundId);
-    if (round === null) return "review-round-missing";
+    const validation = validateExactRunReviewRound(store, latest ?? owner, { allowTerminal: true });
+    if (validation.disposition !== "applied") return validation.reason ?? "review-candidate-stale";
+  }
+  return undefined;
+}
+
+/** Starting another Run additionally requires the reviewed candidate to remain current. */
+export function messageContinuationBlocker(store: TaskStore, message: TaskMessage): string | undefined {
+  const invalid = messageAssignmentBlocker(store, message);
+  if (invalid !== undefined) return invalid;
+  const reviewRoundId = message.recipient?.reviewRoundId;
+  if (reviewRoundId !== undefined) {
+    const round = store.getReviewRound(message.taskId, reviewRoundId)!;
     if (round.scope === "task") {
+      const task = store.getTask(message.taskId)!;
       if (round.taskCandidate?.projects.some((project) =>
         task.projectBindings.find((binding) => binding.projectId === project.projectId)?.currentCommit !== project.commit)) {
         return "review-candidate-stale";
       }
-    } else {
-      const item = store.getWorkItem(message.taskId, round.workItemId!);
-      if (item?.candidates.at(-1)?.id !== round.candidateId) return "review-candidate-stale";
+    } else if (store.getWorkItem(message.taskId, round.workItemId!)?.candidates.at(-1)?.id !== round.candidateId) {
+      return "review-candidate-stale";
     }
-    const validation = validateExactRunReviewRound(store, latest ?? owner, { allowTerminal: true });
-    if (validation.disposition !== "applied") return validation.reason ?? "review-candidate-stale";
   }
   return undefined;
 }

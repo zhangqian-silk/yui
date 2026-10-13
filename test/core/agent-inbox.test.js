@@ -17,12 +17,14 @@ import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerSt
 import { enqueueWork } from "../../dist/coordination/workMailboxQueue.js";
 import { pendingCompletionMessages } from "../../dist/task/completionReadiness.js";
 import { deliverGlobalInputs } from "../../dist/controller/globalInputDelivery.js";
-import { prepareMessageContinuations } from "../../dist/message/messageContinuation.js";
+import { messageContinuationBlocker, prepareMessageContinuations } from "../../dist/message/messageContinuation.js";
+import { applyGlobalInputControl } from "../../dist/commands/globalRoleCommands.js";
 import { readDocument } from "../helpers/read-document.js";
-import { createReviewRound, attachReviewRoundWorkspace, startReviewRound } from "../../dist/review/reviewRound.js";
+import { createReviewRound, createTaskReviewRound, attachReviewRoundWorkspace, startReviewRound } from "../../dist/review/reviewRound.js";
 import { createFixtureRun } from "../helpers/runFixture.mjs";
 import { createProviderRuntimeBinding } from "../../dist/runtime/providerRuntimeIdentity.js";
 import { failRun } from "../../dist/agentRun/agentRun.js";
+import { createProject } from "../../dist/repository/project.js";
 
 const now = new Date("2026-10-13T00:00:00Z");
 function fixture(t, name) {
@@ -156,6 +158,28 @@ test("a successor can finish retained role-addressed handling, while the replace
   assert.equal(ack.inbox.ack.actor.nativeSessionId, "successor");
 });
 
+test("an unsubmitted Global steer can be explicitly handled without replay or blocking later input", t => {
+  const { store, command, add } = fixture(t, "operator");
+  const result = applyGlobalInputControl("operator", { action: "steer", body: "Old correction",
+    requestId: "no-turn", expectedTarget: "absent-turn", to: "operator" }, store, { env: {} });
+  assert.equal(result.data.steer.code, "NO_ACTIVE_TURN");
+  const original = store.listGlobalRoleMessages("operator")[0];
+  const later = add("Later ordinary input");
+  assert.throws(() => command("claim", later, "--request-id", "skip-old"), /Earlier/);
+  command("claim", original.id, "--request-id", "handle-old");
+  // A delayed control writer read before the claim cannot admit a native steer.
+  assert.throws(() => store.updateGlobalRoleMessage({ ...original, control: {
+    requestId: "no-turn", receiptId: `steer:operator/${original.id}`,
+    outcome: "pending", observedAt: now.toISOString()
+  } }), /ownership changed/);
+  command("ack", original.id, "--request-id", "old-done", "--reason", "Read original; no action remains");
+  command("claim", later, "--request-id", "handle-later");
+  const retained = command("show", original.id);
+  assert.equal(retained.inputControl.action, "steer", "explicit handling never downgrades steer to queue");
+  assert.equal(retained.control, undefined);
+  assert.equal(retained.delivery, undefined);
+});
+
 function taskFixture(t) {
   const f = fixture(t, "operator");
   const { store } = f;
@@ -271,7 +295,7 @@ for (const roleName of ["worker", "leader"]) test(`${roleName} own Assignment in
   assert.equal(ownInbox("show", interrupted).inbox.ack.actor.runId, store.getActiveRun("task-1", roleName).id);
 });
 
-test("Reviewer reads only its frozen ReviewRound mailbox; handling does not finish the Review", t => {
+for (const scope of ["work-item", "task"]) test(`Reviewer reads only its frozen ${scope} ReviewRound mailbox; handling does not finish the Review`, t => {
   const { store, inbox, task } = taskFixture(t);
   task(["work", "create", "task-1", "Reviewable result"]);
   task(["work", "update", "task-1/work-item-1", "running"]);
@@ -279,6 +303,17 @@ test("Reviewer reads only its frozen ReviewRound mailbox; handling does not fini
   const candidate = store.getWorkItem("task-1", "work-item-1").candidates.at(-1);
   let round = createReviewRound("review-round-1", "task-1", "work-item-1", candidate.id,
     "reviewer", "leader", "b".repeat(40), now);
+  if (scope === "task") {
+    store.saveProject(createProject("project-1", "Fixture", join(store.rootDirectory(), "project"),
+      { stable: "main", development: "main" }, now));
+    store.saveTask({ ...store.getTask("task-1"), projectBindings: [{
+      projectId: "project-1", directory: "project", baseRef: "main",
+      baseCommit: "b".repeat(40), currentCommit: "b".repeat(40)
+    }] });
+    round = createTaskReviewRound("review-round-1", "task-1", "reviewer", "leader", {
+      schemaVersion: 1, projects: [{ projectId: "project-1", commit: "b".repeat(40) }]
+    }, now);
+  }
   const workspace = createManagedWorkspace({ owner: { type: "review-round", taskId: "task-1", reviewRoundId: round.id },
     root: join(store.rootDirectory(), "review"), entries: [{
       projectId: "project-1", directory: "project", access: "write",
@@ -290,7 +325,8 @@ test("Reviewer reads only its frozen ReviewRound mailbox; handling does not fini
   store.saveManagedWorkspace(workspace);
   const run = createFixtureRun(store, store.nextRunId("task-1"), "task-1", "reviewer", "new",
     { source: { type: "yui", channel: "workitem-dispatch" }, deltaRefIds: [] }, now,
-    { purpose: "review", workItemId: "work-item-1", reviewRoundId: round.id, workspace, effective });
+    { purpose: "review", ...(scope === "task" ? {} : { workItemId: "work-item-1" }),
+      reviewRoundId: round.id, workspace, effective });
   round = startReviewRound(attachReviewRoundWorkspace(round, workspace), run.id);
   store.saveReviewRound("task-1", round);
   store.saveRun(run);
@@ -305,13 +341,33 @@ test("Reviewer reads only its frozen ReviewRound mailbox; handling does not fini
   const id = inbox("reviewer", "list").items[0].id;
   assert.equal(inbox("reviewer", "show", id).body, "Review clarification");
   inbox("reviewer", "claim", id, "--request-id", "review-claim");
+  if (scope === "task") {
+    store.saveTask({ ...store.getTask("task-1"), projectBindings: store.getTask("task-1").projectBindings
+      .map(binding => ({ ...binding, currentCommit: "c".repeat(40) })) });
+    assert.equal(messageContinuationBlocker(store, store.listMessages("task-1")[0]), "review-candidate-stale",
+      "a new continuation still needs a current candidate");
+  }
   inbox("reviewer", "ack", id, "--request-id", "review-handled", "--reason", "Included in the review analysis");
+  if (scope === "task") {
+    task(["message", "queue", "task-1", "Later frozen clarification", "--to", "reviewer",
+      "--review-round", round.id, "--request-id", "later-review-input"]);
+    const later = store.listMessages("task-1").at(-1).id;
+    inbox("reviewer", "claim", later, "--request-id", "later-review-claim");
+    const saved = store.getReviewRoundWorkspace("task-1", round.id);
+    store.saveManagedWorkspace({ ...saved, entries: saved.entries.map(entry => ({
+      ...entry, baseRef: "d".repeat(40), baseCommit: "d".repeat(40)
+    })) });
+    assert.throws(() => inbox("reviewer", "ack", later, "--request-id", "drift",
+      "--reason", "Must not authorize changed workspace"), /review-workspace-drift/);
+    store.saveManagedWorkspace(saved);
+    inbox("reviewer", "ack", later, "--request-id", "later-review-done", "--reason", "Reviewed frozen clarification");
+  }
   assert.equal(store.getReviewRound("task-1", round.id).status, "running");
   assert.equal(store.getWorkItem("task-1", "work-item-1").status, "open");
-  store.saveMessage("task-1", createTaskMessage("message-2", "task-1", "Another assignment",
+  store.saveMessage("task-1", createTaskMessage("message-3", "task-1", "Another assignment",
     "system", { type: "system" }, now, { recipient: { roleName: "reviewer",
       ownerRunId: run.id, reviewRoundId: "review-round-2", workItemId: "work-item-1" } }));
-  assert.throws(() => inbox("reviewer", "show", "message-2"), /scope/);
+  assert.throws(() => inbox("reviewer", "show", "message-3"), /scope/);
 });
 
 test("retained claims fence only their Assignment, with explicit retirement preserving original evidence", t => {

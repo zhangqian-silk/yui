@@ -4,7 +4,7 @@ import { boundedDocument, readDigest, readOptions, recordPage } from "../output/
 import { claimPending, completeProcessing } from "../coordination/workMailbox.js";
 import { createTaskWake, latestTaskWake, type TaskWake } from "../scheduler/taskWake.js";
 import { expandTaskMessageResult, type GlobalRoleMessage, type TaskMessage } from "../message/message.js";
-import { messageContinuationBlocker } from "../message/messageContinuation.js";
+import { messageAssignmentBlocker } from "../message/messageContinuation.js";
 import type { InboxActor, InboxReceipt } from "../message/inboxReceipt.js";
 import { hasRuntimeCleanupObligation, runtimeLifecycleTarget } from "../runtime/lifecycleReservation.js";
 import { isTaskRecordRetired, retiredTaskRecordIds } from "../task/taskRecordRetirement.js";
@@ -40,7 +40,7 @@ function ownsMessage(store: TaskStore, address: Address, message: TaskMessage): 
   return current !== null && owner !== null && current.roleName === owner.roleName
     && owner.workItemId === message.recipient.workItemId && owner.reviewRoundId === message.recipient.reviewRoundId
     && current.workItemId === owner.workItemId && current.reviewRoundId === owner.reviewRoundId
-    && (owner.id === current.id || messageContinuationBlocker(store, message) === undefined);
+    && (owner.id === current.id || messageAssignmentBlocker(store, message) === undefined);
 }
 
 function entries(store: TaskStore, address: Address): Entry[] {
@@ -87,7 +87,10 @@ function blocker(store: TaskStore, address: Address, entry: Entry): string | und
   }
   if (entry.interruptThen !== undefined) return "explicit-interrupt-handoff";
   if (entry.control !== undefined && entry.control.outcome !== "rejected") return `delivery-${entry.control.outcome}`;
-  if (entry.inputControl?.action === "steer" && entry.control?.outcome !== "rejected") return "steer-attempt-not-settled";
+  // Global steer persists pending control before submission. No control means
+  // unsubmitted; the store's immutable claim check fences a delayed writer.
+  if (address.scope === "task" && entry.inputControl?.action === "steer"
+    && entry.control?.outcome !== "rejected") return "steer-attempt-not-settled";
   if (address.scope === "global") {
     const message = entry as GlobalRoleMessage;
     if (message.delivery !== undefined) return `already-delivered-${message.delivery.via}`;
@@ -102,7 +105,7 @@ function blocker(store: TaskStore, address: Address, entry: Entry): string | und
     if (message.continuation?.runId !== undefined) return "continuation-already-dispatched";
     if (message.inputControl?.expectedSessionId !== undefined
       && message.inputControl.expectedSessionId !== address.nativeSessionId) return "selected-native-session-changed";
-    return messageContinuationBlocker(store, message);
+    return messageAssignmentBlocker(store, message);
   }
   return undefined;
 }
@@ -262,7 +265,7 @@ export function runInboxCommand(
           }
         } else assertSelectedTarget(current, entry);
         if (!isWake(entry) && current.scope === "task") {
-          const invalid = messageContinuationBlocker(tx, entry as TaskMessage);
+          const invalid = messageAssignmentBlocker(tx, entry as TaskMessage);
           if (invalid !== undefined) throw new Error(`Assignment no longer authorizes this inbox disposition: ${invalid}.`);
         }
         // Current rightful successor may settle a prior Session's unfinished
