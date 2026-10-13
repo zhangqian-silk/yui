@@ -2,7 +2,8 @@ import { createRequire } from "node:module";
 import type NativeDatabase from "better-sqlite3";
 
 export const SQLITE_CANDIDATES = Object.freeze([
-  Object.freeze({ name: "sqlite-modern", version: "12.11.1" }),
+  // N-API avoids node::ObjectWrap's GC cleanup abort on Node 24.19/24.20.
+  Object.freeze({ name: "sqlite-modern", version: "13.0.3" }),
   Object.freeze({ name: "sqlite-compat", version: "10.1.0" })
 ]);
 type Candidate = typeof SQLITE_CANDIDATES[number];
@@ -18,7 +19,12 @@ function nativeUnavailable(error: unknown, candidate: Candidate): boolean {
   const code = (error as NodeJS.ErrnoException).code;
   const firstLine = error.message.split("\n")[0];
   if (code === "MODULE_NOT_FOUND") {
-    return firstLine === `Cannot find module '${candidate.name}'`;
+    if (firstLine === `Cannot find module '${candidate.name}'`) return true;
+    // v13 loads its bundled prebuild or these node-gyp paths directly.
+    // Do not swallow an unrelated missing transitive JS dependency.
+    const missing = /^Cannot find module '([^']+)'$/.exec(firstLine)?.[1];
+    return missing !== undefined && ["Debug", "Release"].some((mode) =>
+      missing.endsWith(`/node_modules/${candidate.name}/build/${mode}/better_sqlite3.node`));
   }
   const tries = (error as Error & { tries?: unknown }).tries;
   if (error.message.startsWith("Could not locate the bindings file.") && Array.isArray(tries)) {
