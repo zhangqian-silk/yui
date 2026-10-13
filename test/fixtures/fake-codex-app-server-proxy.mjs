@@ -30,6 +30,9 @@ if (process.env.YUI_FAKE_DIRECT_PORT_FILE) {
   });
   server.listen(0, "127.0.0.1", () =>
     writeFileSync(process.env.YUI_FAKE_DIRECT_PORT_FILE, String(server.address().port)));
+  // The Host's stdio transport owns this fake Provider's lifetime. The optional
+  // Desktop ingress must not keep it alive after that transport closes.
+  server.unref();
 }
 
 process.stdin.on("data", (chunk) => {

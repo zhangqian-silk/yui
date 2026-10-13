@@ -2,6 +2,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
+import { createConnection } from "node:net";
 import {
   chmodSync,
   cpSync,
@@ -44,6 +45,7 @@ const canonicalYuiHome = (() => {
 const tmuxServer = `yui-${createHash("sha256").update(canonicalYuiHome).digest("hex").slice(0, 24)}`;
 let cli;
 let environment;
+let operatorHostPid;
 const skills = [
   "yui-leader",
   "yui-worker",
@@ -396,6 +398,47 @@ try {
   await waitFor(() => processExited(serverPid), "The empty fixture tmux server did not exit.");
 
   const updateStarted = performance.now();
+  // Keep a real Host alive across the updater's Controller replacement. Only
+  // the external Provider is fake; its direct notifications represent Desktop
+  // input, not another managed turn/start or a fabricated durable terminal.
+  const directPort = join(sandbox, "direct.port");
+  writeFileSync(join(fakeBin, "codex"),
+    `#!${process.execPath}\nprocess.env.YUI_FAKE_DIRECT_PORT_FILE = ${JSON.stringify(directPort)};\n`
+    + `import(${JSON.stringify(fakeCodex.href)}).catch(error => { console.error(error); process.exitCode = 1; });\n`,
+    { mode: 0o755 });
+  const { callFileTaskController } = await import(pathToFileURL(join(root, "dist/controller/clientRuntime.js")).href);
+  const { inspectAgentHost } = await import(pathToFileURL(join(root, "dist/runtime/agentHost.js")).href);
+  const { FileRuntimeEventInbox } = await import(pathToFileURL(join(root, "dist/controller/runtimeEventInbox.js")).href);
+  const target = { home: yuiHome, scope: "global", roleName: "operator" };
+  await callFileTaskController(yuiHome, "runtime.ensure-role-session",
+    { scope: "global", roleName: "operator" }, { environment, requestTimeoutMs: 15_000 });
+  const pending = () => listItems("role", "message", "list", "operator", "--pending");
+  const context = () => json("session", "context", "operator");
+  await waitFor(async () => (await inspectAgentHost(target)).state === "idle" && pending().length === 0,
+    "Operator startup did not settle.");
+  const hostBefore = await inspectAgentHost(target);
+  const hostPid = Number(tmux("list-panes", "-a", "-F", "#{pane_pid}").trim());
+  assert.ok(Number.isInteger(hostPid) && hostPid > 0);
+  operatorHostPid = hostPid;
+  const directEvent = (method, status) => ({ method, params: {
+    threadId: hostBefore.nativeSessionId,
+    turn: { id: "desktop-update", status,
+      items: [{ id: "update-output", type: "agentMessage", text: "Original update-window result." }] }
+  } });
+  await sendDirect(directPort, directEvent("turn/started", "inProgress"));
+  await waitFor(() => context().nativeTurn?.attemptId === "direct:desktop-update",
+    "Desktop input was not observed before handover.");
+  const queuedBody = "Preserve this input across update.";
+  const queued = json("role", "message", "queue", "operator", queuedBody,
+    "--request-id", "update-pending").message;
+  const notificationTask = json("task", "create", "update notification fixture").task;
+  json("task", "cancel", notificationTask.id, "--summary", "Notify the busy Operator.");
+  await waitFor(() => pending().some(message => message.id !== queued.id),
+    "The Task fact did not produce a pending engineering notice.");
+  const queuedBefore = pending().map(message => json("role", "message", "show", "operator", message.id));
+  assert.ok(queuedBefore.some(message => message.id !== queued.id && message.body.includes(notificationTask.id)),
+    "The pending engineering notice must reference this exact Task fact.");
+  assert.equal(context().nativeTurn.status, "accepted", "Busy Desktop input must fence queued delivery.");
   const beforeUpdate = updatePorts.controllerStatus(yuiHome);
   assert.equal(beforeUpdate.running, true);
   const beforeUpdateMessages = json("task", "message", "list", task.id);
@@ -424,6 +467,17 @@ try {
     assert.equal(stopped.stopped, true);
     assert.equal(stopped.pid, beforeUpdate.pid);
     assert.equal(processExited(beforeUpdate.pid), true, "Update must drain its exact Controller.");
+    assert.equal(processExited(hostPid), false, "Controller replacement must preserve the original Host.");
+    await sendDirect(directPort, directEvent("turn/completed", "completed"));
+    const inbox = new FileRuntimeEventInbox(yuiHome);
+    const terminal = () => inbox.list().find(event => event.type === "runtime-observation"
+      && event.observation.kind === "turn.completed"
+      && event.observation.fence.nativeSessionId === hostBefore.nativeSessionId
+      && event.observation.fence.nativeTurnId === "desktop-update");
+    await waitFor(() => terminal() !== undefined,
+    "The surviving Host did not persist its terminal while the Controller was offline.");
+    const retainedTerminal = terminal();
+    assert.match(JSON.stringify(retainedTerminal.observation.payload), /Original update-window result\./);
     updatePorts.restoreController(yuiHome, beforeUpdate.identity);
     const restored = updatePorts.controllerStatus(yuiHome);
     assert.equal(restored.running, true);
@@ -434,12 +488,43 @@ try {
     releaseHandover();
   }
   assert.deepEqual(json("task", "message", "list", task.id), beforeUpdateMessages);
-  process.stdout.write(`Update handover lifecycle smoke passed (${Math.round(performance.now() - updateStarted)} ms).\n`);
-  const stopped = runCli(cli, ["controller", "stop"], environment);
-  if (!stopped.includes("Controller stopped.")) {
-    throw new Error("Installed CLI controller did not stop cleanly.");
+  await waitFor(() => pending().length === 0 && context().nativeTurn?.status === "completed",
+    "Replacement Controller did not consume the retained terminal and drain pending inputs.",
+    () => JSON.stringify(context()));
+  const hostAfter = await inspectAgentHost(target);
+  for (const key of ["nativeSessionId", "processInstanceId", "endpointImplementation",
+    "authorityEpoch", "authorityOwner", "authorityHolderId"]) {
+    assert.deepEqual(hostAfter[key], hostBefore[key], `Handover must preserve the original Host's ${key}.`);
   }
+  assert.equal(processExited(hostPid), false);
+  for (const original of queuedBefore) {
+    const delivered = json("role", "message", "show", "operator", original.id);
+    assert.ok(delivered.delivery, `Pending input ${original.id} was not accepted.`);
+    const { delivery, control, ...retained } = delivered;
+    assert.deepEqual(retained, original, "Delivery must retain each original input, target and request identity.");
+  }
+  const completedTurn = context().nativeTurn;
+  json("role", "message", "queue", "operator", queuedBody, "--request-id", "update-pending");
+  assert.equal(listItems("role", "message", "list", "operator").filter(message => message.id === queued.id).length, 1);
+  assert.deepEqual(context().nativeTurn, completedTurn, "Retrying the same saved request must not start another Turn.");
+  // Teardown live work before the Controller, not just a tmux server sweep.
+  runCli(cli, ["session", "stop", "--all"], environment);
+  await waitFor(() => processExited(hostPid), "The fixture Operator Host did not exit.");
+  assert.equal(updatePorts.controllerStatus(yuiHome).running, false,
+    "Session maintenance must stop its Controller after releasing the Host.");
+  process.stdout.write(`Update handover lifecycle smoke passed (${Math.round(performance.now() - updateStarted)} ms).\n`);
 } finally {
+  // Even a failed handover check must stop its live fixture Host before
+  // stopping the Controller or deleting the Home it could still write.
+  if (environment !== undefined) {
+    try { tmux("kill-server"); }
+    catch (error) {
+      if (!/no server running|No such file or directory/.test(String(error.stderr))) throw error;
+    }
+    if (operatorHostPid !== undefined) {
+      await waitFor(() => processExited(operatorHostPid), "Fixture Host cleanup failed; Home retained.");
+    }
+  }
   // setup can start a Controller before any Task command succeeds. Inspect the
   // fixture we own instead of setting a late "started" flag. Do not erase the
   // Home when shutdown fails: another Agent needs its exact identity to clean it.
@@ -448,12 +533,6 @@ try {
       runCli(cli, ["controller", "stop"], environment);
     } catch (error) {
       throw new Error(`Runtime smoke cleanup failed; fixture retained at ${sandbox}.`, { cause: error });
-    }
-  }
-  if (environment !== undefined) {
-    try { tmux("kill-server"); }
-    catch (error) {
-      if (!/no server running|No such file or directory/.test(String(error.stderr))) throw error;
     }
   }
   // tmux kill-server tears its panes down asynchronously; a Host inside a
@@ -533,8 +612,18 @@ function processExited(pid) {
 async function waitFor(check, message, diagnostics = () => "") {
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
-    if (check()) return;
+    if (await check()) return;
     await delay(50);
   }
   throw new Error(`${message} Fixture: ${sandbox}\n${diagnostics()}`);
+}
+
+function sendDirect(portFile, event) {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection({ host: "127.0.0.1", port: Number(readFileSync(portFile, "utf8")) });
+    socket.setTimeout(5000, () => socket.destroy(new Error("Direct fixture notification timed out.")));
+    socket.once("error", reject);
+    socket.once("connect", () => socket.write(`${JSON.stringify([event])}\n`));
+    socket.once("data", () => { socket.end(); resolve(); });
+  });
 }
