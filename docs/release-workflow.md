@@ -51,7 +51,21 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
-### Unreleased: current Skill loading
+### 2.7.0 compatibility and migration notes
+
+This minor adds own-scope Agent inbox discovery, full reads, claims and
+acknowledgements for GlobalRoles and Task Leaders, Workers and Reviewers.
+Use `yui inbox list/show/claim/ack` from the current managed Session; reads do
+not consume input, claims do not grant additional authority, and an
+acknowledgement is not execution-result acceptance. Durable receipts arbitrate
+with automatic delivery without replaying unknown native input.
+
+Storage advances from **1.6 to 1.7** through the centralized additive migration
+for Message and Leader-wake inbox receipts. Use `yui update --version 2.7.0`
+for an exact upgrade; the updater preflights the target Home, takes a backup
+when migration is required, and coordinates the exact Controller replacement.
+Do not edit stored records manually. Task, Session and original input history
+remain authoritative.
 
 Runtime and Role instructions now use stable current source paths and independent
 integer `VERSION` files. Every managed turn checks `yui session skills --json`;
@@ -62,9 +76,19 @@ Configured Skills must supply `VERSION` beside `SKILL.md`.
 Frozen packages remain historical audit, not a Session admission condition.
 Valid pre-1.5 Sessions may resume without that evidence; no historical read,
 native acceptance or input consumption is fabricated. Identity, scope, writer,
-lifecycle, protocol/storage and unknown-input fences are unchanged. There is no
-DB schema change: storage remains **1.6**. This is development guidance, not a
-release or authorization to update a production installation.
+lifecycle, protocol/storage and unknown-input fences are unchanged. The Skill
+loading change itself adds no storage migration.
+
+This release also recovers Operator notification backlogs and Desktop-direct
+terminal facts across Controller replacement, retaining exact input and Turn
+identities. SQLite prefers the pinned modern N-API driver, with a bounded
+compatibility fallback when that optional native candidate is unavailable;
+this fixes the reproduced Node 24 native GC abort.
+
+Deterministic core checks and isolated assembled/fresh-install package smoke
+are the release evidence; they do not establish real-model behavior.
+Publishing this package alone does not authorize a global CLI update, Home
+migration or Controller replacement.
 
 ### 2.6.0 compatibility and migration notes
 
