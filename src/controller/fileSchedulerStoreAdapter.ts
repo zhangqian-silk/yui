@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { taskMessageInboxReceipt, unfinishedLeaderInbox } from "../message/taskInboxOwnership.js";
 import { contextSnapshotRef } from "../context/contextSnapshot.js";
 import { freezeRunContextSnapshot } from "../context/runContextPack.js";
 import { taskNotificationPresentation } from "../interaction/notificationPresentation.js";
@@ -1539,7 +1540,8 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
           throw new AgentHostProviderSessionBusyError("The next Global input belongs to an explicit then handoff.");
         }
         if (message !== undefined) {
-          if (message.delivery !== undefined || message.notDelivered !== undefined
+          if (store.queryGlobalRoleMessages(input.roleName, { handling: true, limit: 0 }).count > 0
+            || message.inbox !== undefined || message.delivery !== undefined || message.notDelivered !== undefined
             || message.control !== undefined && message.control.outcome !== "rejected"
             || message.deliveryTarget?.agentId !== input.agentId
             || message.deliveryTarget?.nativeSessionId !== input.nativeSessionId) {
@@ -2298,7 +2300,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
 
   prepareMessageContinuations(taskId: string, now: Date): void {
     const roles = new Set(this.store.listMessages(taskId).flatMap((message) =>
-      message.recipient?.ownerRunId !== undefined && message.continuation?.runId === undefined ? [message.recipient.roleName] : []));
+      message.inbox === undefined && message.recipient?.ownerRunId !== undefined && message.continuation?.runId === undefined ? [message.recipient.roleName] : []));
     for (const roleName of roles) {
       try {
         this.store.transaction((store) => prepareMessageContinuations(store, taskId, now, roleName));
@@ -2306,7 +2308,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         const reason = `preparation-failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 1000);
         this.store.transaction((store) => {
           for (const message of store.listMessages(taskId)) {
-            if (message.recipient?.roleName === roleName && message.recipient.ownerRunId !== undefined && message.continuation?.runId === undefined
+            if (message.inbox === undefined && message.recipient?.roleName === roleName && message.recipient.ownerRunId !== undefined && message.continuation?.runId === undefined
               && message.continuation?.notDeliveredReason !== reason) {
               store.updateMessage(taskId, { ...message, continuation: { notDeliveredReason: reason } });
             }
@@ -2409,6 +2411,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         return { wakeId, attemptId: nextAttempt, disposition: "submit",
           presentation: taskNotificationPresentation(wake, store) };
       }
+      if (unfinishedLeaderInbox(store, taskId)) return null;
       if (mailbox.pending === null || (provider !== null && provider !== undefined
         && ["submitting", "accepted", "delivery-unknown"].includes(provider.status))) return null;
       const pending = mailbox.pending;
@@ -2418,6 +2421,11 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       const sessions = store.getTaskRoleSessionSet(taskId, "leader");
       const session = sessions?.sessions[sessions.activeAgentId];
       const obsoleteIds = new Set<string>();
+      for (const message of store.listMessages(taskId)) {
+        if (pendingMessageIds.has(message.id) && taskMessageInboxReceipt(store, message) !== undefined) {
+          obsoleteIds.add(message.id);
+        }
+      }
       for (const message of store.listMessages(taskId)) {
         if (!pendingMessageIds.has(message.id) || message.inputControl?.expectedSessionId === undefined) continue;
         if (message.inputControl.expectedSessionId !== session?.nativeSessionId

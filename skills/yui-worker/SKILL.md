@@ -24,6 +24,12 @@ Resolve Skill links relative to this Skill's directory.
 
 ## Execute within the exact boundary
 
+Use **yui-runtime**'s own-inbox flow at useful work boundaries and before the
+final report. Current-Assignment `inbox show` is an authorized way to read new
+directed clarification during this turn without redispatch. Claim before
+handling and ack only after disposition; never use it to read another
+Assignment, expand Project permissions, or accept your own result.
+
 Leader clarification and continuation arrive as Messages in the exact bounded
 Context Pack. Read those authorized refs; do not request pack-external Leader
 messages or require redispatch/status changes merely to answer a question.

@@ -68,12 +68,18 @@ npm install -g @zq-silk/yui
 ```
 
 SQLite is selected lazily before opening your Home: Yui probes a disposable
-in-memory connection with `sqlite-modern` (`better-sqlite3@12.11.1`) first,
+in-memory connection with `sqlite-modern` (`better-sqlite3@13.0.3`, N-API) first,
 then tries `sqlite-compat` (`better-sqlite3@10.1.0`) only for identified missing
 native bindings, Node ABI or system-library incompatibility. Each process keeps
 its successful selection. Home permissions, corruption, locks, SQL and migration
 errors never trigger a driver switch. `yui doctor` reports the driver version,
 actual SQLite engine and fallback reason separately from Home health.
+
+The N-API driver avoids the native `ObjectWrap` garbage-collection abort seen
+with the earlier driver on Node 24.19/24.20. It requires Node-API 10;
+runtimes with an older API (including Node 20 and Node 22.9) skip it before
+native loading and use the compatibility candidate. No global Node change
+or Home migration is needed for this dependency correction.
 
 npm attempts **both** fixed optional aliases during installation; it does not
 install the older one only after the newer one fails. This increases download

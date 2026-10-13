@@ -329,7 +329,13 @@ function copyProductionDependencies(root, output) {
     }
     const target = resolve(targetRoot, packageRelative);
     mkdirSync(dirname(target), { recursive: true, mode: 0o755 });
-    cpSync(source, target, { recursive: true });
+    cpSync(source, target, {
+      recursive: true,
+      // node-gyp's local Python launcher is build tooling, not runtime data.
+      // Preserve native build/Release outputs; do not follow or allow arbitrary
+      // symlinks in the immutable package to make this helper copyable.
+      filter: (path) => !(basename(path) === "node_gyp_bins" && basename(dirname(path)) === "build")
+    });
   }
 }
 

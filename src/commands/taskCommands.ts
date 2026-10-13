@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { taskMessageInboxReceipt } from "../message/taskInboxOwnership.js";
 import type { ConfiguredAgent } from "../agent/agent.js";
 import { agentExecutionComponentLabel } from "../agent/executionComponents.js";
 import { assertLeaderArchiveAdmission } from "../task/leaderArchiveAuthority.js";
@@ -2352,8 +2353,25 @@ function taskMessageCommand(
     const message = store.transaction((tx) => {
       assertTaskDeliveryAuthority(tx, options.environment, ref.taskId);
       const current = tx.listMessages(ref.taskId).find((entry) => entry.id === ref.localId);
-      if (current?.recipient?.ownerRunId === undefined || current.continuation?.runId !== undefined) {
+      if (current?.inbox?.ack !== undefined || current?.recipient?.ownerRunId === undefined || current.continuation?.runId !== undefined) {
         throw usageError("Only an unassigned pending Message can be explicitly handed off.");
+      }
+      if (current.inbox !== undefined) {
+        const actor = current.inbox.claim.actor;
+        for (const runId of new Set([actor.runId, current.recipient.ownerRunId])) {
+          const handler = runId === undefined ? null : tx.getRun(ref.taskId, runId);
+          const observation = handler === null ? undefined : runExecutionObservation(handler,
+            tx.getTaskRoleSessionSet(ref.taskId, handler.roleName)?.providerBinding, tx.listEvents(ref.taskId));
+          if (handler === null || handler.status === "active"
+            || handler.result?.failureReason === "delivery-unknown"
+            || handler.result?.provider === undefined
+            || runId === actor.runId && handler.result.provider.conversationId !== actor.nativeSessionId
+            || !["completed", "failed", "cancelled"].includes(observation?.delivery ?? "")) {
+            throw usageError("The original and current inbox handlers must have exact stopped native execution before explicit handoff.");
+          }
+        }
+        // Preserve the original claim: the new authorized Assignment must
+        // inspect prior effects and ack explicitly, never auto-replay the input.
       }
       const recipient = resolveMessageRecipient(tx, ref.taskId, requiredOption(parsed.options, "--to"), {
         ...(current.recipient.workItemId === undefined ? {} : { workItemId: current.recipient.workItemId }),
@@ -2618,14 +2636,23 @@ function steerTaskInput(
   // and idempotent, so the Host's later settlement fold promotes it to a proven
   // terminal and never rewinds it. An idempotent replay above already returned
   // the saved Message, so this records the attempt exactly once.
-  store.transaction((tx) => {
+  const admitted = store.transaction((tx) => {
     const saved = tx.listMessages(result.task.id).find((entry) => entry.id === result.message.id);
     const requestId = saved?.inputControl?.requestId;
-    if (saved === undefined || requestId === undefined) return;
+    // The recipient may claim between Message persistence and control
+    // admission. A Leader window owns its referenced originals even after ack;
+    // never re-submit them through a delayed steer.
+    if (saved === undefined || requestId === undefined || taskMessageInboxReceipt(tx, saved) !== undefined) return false;
     tx.updateMessage(result.task.id, recordTaskMessageControlOutcome(saved, {
       requestId, receiptId, outcome: "pending", observedAt: clock(options)
     }));
+    return true;
   });
+  if (!admitted) {
+    return output(`Steer message ${result.message.id} saved but not delivered (TARGET_CHANGED: inbox handling owns the input).\n`,
+      { taskId: result.task.id, message: messageReceipt(result.message),
+        steer: { state: "not-steered", code: "TARGET_CHANGED", detail: "Inbox handling already owns the original input." } });
+  }
   return {
     kind: "input-steer",
     taskId: result.task.id,
@@ -3212,6 +3239,9 @@ function registerInterruptThen(
   }
   // A Message that already delivered, or was already ruled undeliverable, is not
   // a fresh input to reuse; reusing it would replay or resurrect a settled fact.
+  if (taskMessageInboxReceipt(store, message) !== undefined) {
+    return { code: "TARGET_CHANGED", detail: `Message ${thenMessageRef} is owned by active inbox handling.` };
+  }
   if (message.continuation?.runId !== undefined) {
     return { code: "TARGET_CHANGED", detail: `Message ${thenMessageRef} was already delivered by ${message.continuation.runId}.` };
   }

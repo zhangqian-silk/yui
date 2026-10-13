@@ -91,6 +91,16 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   targetChecksum: CURRENT_SCHEMA_CHECKSUM,
   // Optional sourced monetary observations; historical missing costs stay unknown.
   sql: ""
+}, {
+  fromVersion: "1.6",
+  toVersion: "1.7",
+  name: "agent-inbox-consumption",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Additive handling receipts on canonical Messages and wakes. Never invent
+  // historical processing or Provider acceptance; existing records stay intact.
+  sql: ""
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {

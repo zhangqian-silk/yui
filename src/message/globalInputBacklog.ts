@@ -35,6 +35,9 @@ export function globalInputBacklog(
   } else if (run && ["submitting", "accepted", "delivery-unknown"].includes(run.status)) {
     reason = run.status === "accepted" ? "in-flight-or-unobserved-terminal" : run.status;
     recovery = "Age does not prove a stalled Turn. Periodic reconciliation asks only the original Host for exact retained terminal evidence. Inspect recent runtime-attention Messages if the Host is unobservable; never resend unknown input.";
+  } else if (first?.inbox) {
+    reason = "agent-inbox-handling";
+    recovery = "Read the exact inbox original and prior handling claim; explicitly acknowledge after processing. No automatic replay or timeout release.";
   } else if (first?.control && first.control.outcome !== "rejected") {
     reason = "message-acceptance-unresolved";
     recovery = "Inspect this original Message's exact control receipt; do not replay or bypass uncertain input.";

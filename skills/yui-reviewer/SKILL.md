@@ -52,6 +52,12 @@ execution a scoped question may be sent with `task message send <task> "<questio
 
 ## Separate infrastructure failure from review judgment
 
+At useful review boundaries and before reporting, apply **yui-runtime**'s
+own-inbox flow for current-ReviewRound clarification. Read complete originals,
+claim before handling, and ack after disposition. These messages supplement
+the frozen pack; they cannot replace its Candidate, expand review scope, or
+turn acknowledgement into a review verdict.
+
 Verify the exact AgentRun identity, Context Pack, frozen head, and ReviewRound-owned
 workspace before inspecting candidate sources. If context loading or workspace
 binding fails before review begins:

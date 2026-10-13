@@ -64,6 +64,7 @@ import {
 } from "../job/durableJob.js";
 import type { TaskMessage } from "../message/message.js";
 import { validateGlobalRoleMessage, type GlobalRoleMessage } from "../message/message.js";
+import { assertInboxReceiptPreserved, type InboxReceipt } from "../message/inboxReceipt.js";
 import type { Milestone } from "../milestone/milestone.js";
 import {
   validatePluginIntent,
@@ -1294,7 +1295,10 @@ export class SqliteTaskStore implements TaskStore {
     }
     const where = ["name = @name"];
     const params: Record<string, string | number> = { name: roleName };
+    if (query.handling) where.push(`json_extract(payload, '$.inbox.claim') IS NOT NULL
+      AND json_extract(payload, '$.inbox.ack') IS NULL`);
     if (query.pending) where.push(`json_extract(payload, '$.delivery') IS NULL
+      AND json_extract(payload, '$.inbox.ack') IS NULL
       AND json_extract(payload, '$.notDelivered') IS NULL
       AND (json_extract(payload, '$.inputControl.action') = 'queue'
         OR json_extract(payload, '$.interruptThen') IS NOT NULL)`);
@@ -1325,6 +1329,10 @@ export class SqliteTaskStore implements TaskStore {
     validateGlobalRoleMessage(message);
     this.#requireGlobalRole(message.roleName);
     this.#mutate(() => {
+      const existing = this.#db.prepare("SELECT payload FROM global_role_messages WHERE name = ? AND message_id = ?")
+        .get(message.roleName, message.id) as { payload: string } | undefined;
+      assertInboxReceiptPreserved(existing === undefined ? undefined
+        : this.#parse<{ inbox?: InboxReceipt }>(existing.payload).inbox, message.inbox);
       const seq = this.#globalMessageSequence(message.id);
       const result = this.#db.prepare(
         `UPDATE global_role_messages SET seq = ?, payload = ? WHERE name = ? AND message_id = ?`
@@ -2820,6 +2828,10 @@ export class SqliteTaskStore implements TaskStore {
     }
     this.#requireTask(taskId);
     this.#mutate(() => {
+      const existing = this.#db.prepare("SELECT payload FROM messages WHERE task_id = ? AND message_id = ?")
+        .get(taskId, message.id) as { payload: string } | undefined;
+      assertInboxReceiptPreserved(existing === undefined ? undefined
+        : this.#parse<{ inbox?: InboxReceipt }>(existing.payload).inbox, message.inbox);
       const result = this.#db.prepare(
         `UPDATE messages SET payload = ? WHERE task_id = ? AND message_id = ?`
       ).run(this.#recordJson("messages", message), taskId, message.id);
@@ -2987,6 +2999,10 @@ export class SqliteTaskStore implements TaskStore {
     validateTaskWake(wake);
     this.#requireTask(taskId);
     this.#mutate(() => {
+      const existing = this.#db.prepare("SELECT payload FROM task_wakes WHERE task_id = ? AND wake_id = ?")
+        .get(taskId, wake.id) as { payload: string } | undefined;
+      assertInboxReceiptPreserved(existing === undefined ? undefined
+        : this.#parse<{ inbox?: InboxReceipt }>(existing.payload).inbox, wake.inbox);
       const seq = this.#idSequence(wake.id, "taskWake");
       this.#db.prepare(
         `INSERT INTO task_wakes

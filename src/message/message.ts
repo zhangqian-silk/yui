@@ -2,6 +2,7 @@ import { validateTaskRecordReference } from "../task/taskRecordReference.js";
 import type { AgentRun } from "../agentRun/agentRun.js";
 import type { SubmissionReceipt } from "../task/taskSubmission.js";
 import { requireKnownFields } from "../domain/validation.js";
+import { validateInboxReceipt, type InboxReceipt } from "./inboxReceipt.js";
 
 export const TASK_MESSAGE_KINDS = ["user", "operator", "role-result", "system"] as const;
 
@@ -164,6 +165,7 @@ export type TaskMessageRecipient = Readonly<{
 }>;
 
 export type TaskMessage = {
+  inbox?: InboxReceipt;
   schemaVersion: 1;
   id: string;
   taskId: string;
@@ -448,8 +450,9 @@ export function validateTaskMessage(message: TaskMessage): void {
   if (message.schemaVersion !== 1) throw new Error("Task Message must use schemaVersion 1.");
   requireKnownFields(message, [
     "schemaVersion","id","taskId","kind","author","body","intent","submissionKey","submissionReceipt",
-    "inputControl","interruptThen","control","runId","resultRef","workItemId","recipient","continuation","handovers","createdAt"
+    "inputControl","interruptThen","control","runId","resultRef","workItemId","recipient","continuation","handovers","createdAt","inbox"
   ] satisfies readonly (keyof TaskMessage)[], "Task Message");
+  validateInboxReceipt(message.inbox);
   validateTaskRecordReference({ taskId: message.taskId, localId: message.id }, "message");
   requireText(message.body, "Message body");
   validateKindAndAuthor(message.kind, message.author);
@@ -625,6 +628,7 @@ export type GlobalRoleMessageAuthor =
  * global-role-runtime mailbox, not a new private queue.
  */
 export type GlobalRoleMessage = {
+  inbox?: InboxReceipt;
   schemaVersion: 1;
   id: string;
   /** The explicit Global owner; a Global Role name, never a Task id. */
@@ -733,6 +737,7 @@ export function createGlobalRoleMessage(
 }
 
 export function validateGlobalRoleMessage(message: GlobalRoleMessage): void {
+  validateInboxReceipt(message.inbox);
   if (message.schemaVersion !== 1) throw new Error("Global Role Message must use schemaVersion 1.");
   validateGlobalRoleMessageId(message.id);
   requireSafeIdentity(message.roleName, "Global message Role name");
@@ -859,6 +864,7 @@ export function claimGlobalRoleMessageInterruptThen(
   message: GlobalRoleMessage,
   claim: Omit<GlobalRoleMessageInterruptThen, "reusedInput">
 ): GlobalRoleMessage {
+  if (message.inbox !== undefined) throw new Error("Agent inbox handling already owns this Message; it cannot be replayed through interrupt-then.");
   const { inputControl, notDelivered: _priorNondelivery, ...rest } = message;
   const claimed: GlobalRoleMessage = {
     ...rest,

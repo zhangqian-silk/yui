@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,7 +15,31 @@ const { default: Database, createSqliteDriverSelector, selectSqliteDriver, SQLIT
 const { initializeSqliteSchema, validateSqliteSchema } =
   await import(pathToFileURL(join(root, "dist/storage/sqliteSchema.js")));
 
-function fixture(failures = {}) {
+test("selected SQLite driver survives allocation-driven statement collection", () => {
+  // Explicit global.gc() does not reproduce context-less ObjectWrap teardown.
+  // A small young generation exercises natural GC without a large/slow fixture.
+  const result = spawnSync(process.execPath, ["--max-semi-space-size=1", "--input-type=module", "-e", `
+    import assert from "node:assert/strict";
+    import Database from ${JSON.stringify(pathToFileURL(join(root, "dist/sqlite/driver.js")).href)};
+    const db = new Database(":memory:");
+    let junk = [];
+    try {
+      for (let i = 0; i < 10000; i++) {
+        assert.equal(db.prepare("SELECT ? AS value").get(i).value, i);
+        junk.push({ i, text: "x".repeat(1000) });
+        if (junk.length > 1000) junk = [];
+      }
+    } finally {
+      db.close();
+    }
+    console.log("sqlite-gc-ok");
+  `], { encoding: "utf8", timeout: 10000, maxBuffer: 64 * 1024 });
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, `signal=${result.signal}\n${result.stderr}`);
+  assert.equal(result.stdout.trim(), "sqlite-gc-ok");
+});
+
+function fixture(failures = {}, napiVersion = 10) {
   const calls = [];
   const closed = [];
   const select = createSqliteDriverSelector((candidate) => {
@@ -31,9 +56,22 @@ function fixture(failures = {}) {
       }
       close() { closed.push(candidate.name); }
     };
-  });
+  }, napiVersion);
   return { select, calls, closed };
 }
+
+test("incompatible Node-API candidates are excluded before any native load", () => {
+  const f = fixture({}, 9);
+  assert.equal(f.select().name, "sqlite-compat");
+  assert.deepEqual(f.calls, ["sqlite-compat"]);
+  assert.match(f.select().fallbackReason, /Node-API 10.*9/);
+  const missing = Object.assign(new Error("Cannot find module 'sqlite-compat'"), { code: "MODULE_NOT_FOUND" });
+  assert.throws(fixture({ "sqlite-compat": { load: missing } }, 9).select, error => {
+    assert.match(error.message, /Node-API 10.*9/);
+    assert.equal(error.errors[1], missing);
+    return true;
+  });
+});
 
 test("SQLite selection probes once, closes connections, and never retries real Home errors", () => {
   const f = fixture();
@@ -50,6 +88,7 @@ test("SQLite selection probes once, closes connections, and never retries real H
 test("only identified native installation failures allow the fixed compatibility candidate", () => {
   const unavailable = [
     Object.assign(new Error("Cannot find module 'sqlite-modern'\nRequire stack:\n- driver.js"), { code: "MODULE_NOT_FOUND" }),
+    Object.assign(new Error("Cannot find module '/app/node_modules/sqlite-modern/build/Release/better_sqlite3.node'\nRequire stack:\n- binding.js"), { code: "MODULE_NOT_FOUND" }),
     Object.assign(new Error("Could not locate the bindings file. Tried:\n → /app/node_modules/sqlite-modern/build/Release/better_sqlite3.node"), {
       tries: ["/app/node_modules/sqlite-modern/build/Release/better_sqlite3.node"]
     }),
@@ -72,6 +111,7 @@ test("unknown load/SQL errors do not fall back, and dual failure preserves both 
   for (const error of [
     new Error("unknown bug"),
     Object.assign(new Error("Cannot find module 'transitive-package'"), { code: "MODULE_NOT_FOUND" }),
+    Object.assign(new Error("Cannot find module '/app/node_modules/unrelated/build/Release/better_sqlite3.node'"), { code: "MODULE_NOT_FOUND" }),
     Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" }),
     Object.assign(new Error("file is not a database"), { code: "SQLITE_NOTADB" }),
     Object.assign(new Error("permission denied"), { code: "EACCES" })
@@ -91,7 +131,7 @@ test("unknown load/SQL errors do not fall back, and dual failure preserves both 
     "sqlite-compat": { load: missing("sqlite-compat") }
   });
   assert.throws(both.select, (error) => {
-    assert.match(error.message, /sqlite-modern@12\.11\.1/);
+    assert.match(error.message, /sqlite-modern@13\.0\.3/);
     assert.match(error.message, /sqlite-compat@10\.1\.0/);
     assert.match(error.message, /optional/);
     assert.equal(error.errors.length, 2);
@@ -112,6 +152,10 @@ test("unknown load/SQL errors do not fall back, and dual failure preserves both 
 
 for (const candidate of SQLITE_CANDIDATES) {
   test(`${candidate.name} real native SQL, transactions, WAL and backup`, async t => {
+    if (candidate.name === "sqlite-modern" && Number(process.versions.napi ?? 0) < 10) {
+      t.skip("sqlite-modern requires Node-API 10; do not invoke an incompatible native constructor");
+      return;
+    }
     const require = createRequire(join(root, "package.json"));
     let Driver;
     try {
