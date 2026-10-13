@@ -132,8 +132,13 @@ The package smoke also checks unconditional status identity and update-owned
 resource/identity capture through the assembled package. Real lifecycle children
 stop the exact Controller and restore its captured launch identity while their
 parent holds the handover lock. Unrelated callers remain fenced, the lock stays
-owned by the parent, and durable input survives. These checks have no installation
-or publication effect.
+owned by the parent, and durable input survives. A live Operator Host also spans
+that replacement: a Desktop-direct terminal is persisted during Controller
+downtime, then the successor drains the queued user input and engineering notice
+without changing their original identities or replacing the Host. This is a
+current-contract process-handover regression, not proof of compatibility with
+every historical Host build. These checks have no installation or publication
+effect.
 
 Configured Agents acting as developers or reviewers are ordinary execution
 resources. Using a live provider or model as the subject of validation is
