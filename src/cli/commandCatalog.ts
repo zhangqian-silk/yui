@@ -1224,7 +1224,7 @@ export const ROOT_COMMAND = buildNode({
     { id: "general", title: "General", entries: [
       "help", "version", "update", "upgrade", "setup", "start", "doctor"
     ] },
-    { id: "workflow", title: "Workflow", entries: ["agent", "operator", "role", "project", "task"] },
+    { id: "workflow", title: "Workflow", entries: ["agent", "operator", "role", "inbox", "project", "task"] },
     { id: "configuration", title: "Configuration", entries: ["config"] },
     { id: "operations", title: "Operations", entries: ["web", "controller", "session", "execution", "capability", "job", "jobs", "telemetry", "release"] },
     { id: "resources", title: "Resources", entries: ["resources"] },
@@ -1248,6 +1248,26 @@ export const ROOT_COMMAND = buildNode({
         ...catalogCommands.map(name => ({ name, discovery: { surface: "public" as const, audiences: ["public" as const, "operator" as const] },
           summary: "Use the real persistent Session catalog without starting execution.",
           options: catalogCommandOptions(name) }))
+      ]
+    },
+    {
+      name: "inbox",
+      summary: "Read and explicitly handle the current managed Agent's own inbox.",
+      sections: [{ id: "commands", title: "Commands", entries: ["list", "show", "claim", "ack"] }],
+      children: [
+        { name: "list", discovery: { surface: "managed", audiences: ["operator","global","leader","assignment"] },
+          summary: "Discover bounded own-address entries without consuming them.",
+          usage: "yui inbox list [--limit <1..100>] [--cursor <cursor>]", options: ["--limit", "--cursor"] },
+        { name: "show", discovery: { surface: "managed", audiences: ["operator","global","leader","assignment"] },
+          summary: "Read an exact original or fixed notification window without acknowledgement.",
+          usage: "yui inbox show <entry> [--cursor <cursor>]", options: ["--cursor"] },
+        { name: "claim", discovery: { surface: "managed", audiences: ["operator","global","leader","assignment"] },
+          summary: "Reserve 1..16 exact entries for handling in this turn; never starts a model turn.",
+          usage: "yui inbox claim <entry> [<entry> ...] --request-id <id>", options: ["--request-id"] },
+        { name: "ack", discovery: { surface: "managed", audiences: ["operator","global","leader","assignment"] },
+          summary: "Confirm handling of claimed entries with an auditable disposition, not Provider acceptance.",
+          usage: "yui inbox ack <entry> [<entry> ...] --request-id <id> --reason <disposition>",
+          options: ["--request-id", "--reason"] }
       ]
     },
     {

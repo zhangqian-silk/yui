@@ -283,9 +283,11 @@ function roleContext(
   const effective = resolveEffectiveLaunch({ role, purpose: "execution" });
   const sessions = store.getGlobalRoleSessionSet(name);
   const session = sessions?.sessions[role.activeAgentId];
-  // Only the controlled Endpoint's accepted receipt consumes a queued Message.
+  // Native delivery and explicit Agent handling settle the same queued input
+  // through distinct receipts; a context read does neither.
   const messages = store.listGlobalRoleMessages(name);
   const queued = messages.filter((message) => message.delivery === undefined
+        && message.inbox?.ack === undefined
         && message.notDelivered === undefined
         && (message.interruptThen !== undefined || message.inputControl?.action === "queue"));
   const pending = recordPage(queued.map(globalMessageSummary), `global:${name}/messages/pending`, { limit: 8 });
@@ -334,6 +336,7 @@ function roleContext(
     recent,
     backlog,
     reads: {
+      ownInbox: "yui inbox list --json",
       messages: `role message list ${name}`,
       pending: `role message list ${name} --pending`,
       detail: `role message show ${name} <message-id>`
@@ -851,6 +854,7 @@ function globalRoleMessage(
     } else {
       if (parsed.positionals.length !== 0) throw usageError("Role message list <role> [--pending] [--limit <n>] [--cursor <cursor>].");
       const selected = pending ? messages.filter(message => message.delivery === undefined
+        && message.inbox?.ack === undefined
         && message.notDelivered === undefined
         && (message.interruptThen !== undefined || message.inputControl?.action === "queue")) : [...messages].reverse();
       data = recordPage(selected.map(globalMessageSummary), `global:${name}/messages/${pending ? "pending" : "all"}`, parsed);

@@ -6,6 +6,7 @@ import {
 } from "../domain/validation.js";
 import { TASK_RECORD_ID_PREFIXES } from "../task/taskRecordReference.js";
 import { copyRef, type MailboxEntityRef } from "../coordination/workMailbox.js";
+import { validateInboxReceipt, type InboxReceipt } from "../message/inboxReceipt.js";
 
 export const CURRENT_TASK_WAKE_SCHEMA_VERSION = 1 as const;
 
@@ -25,6 +26,9 @@ export type TaskWakeStatus = "dispatched" | "consumed";
  * its first window at Task creation, independently of AgentRun history.
  */
 export type TaskWake = Readonly<{
+  inbox?: InboxReceipt;
+  /** Exact read-only pending-window identity moved into this durable wake. */
+  inboxPendingId?: string;
   schemaVersion: typeof CURRENT_TASK_WAKE_SCHEMA_VERSION;
   id: string;
   taskId: string;
@@ -72,6 +76,10 @@ export function createTaskWake(input: Readonly<{
 }
 
 export function validateTaskWake(wake: TaskWake): void {
+  validateInboxReceipt(wake.inbox);
+  if (wake.inboxPendingId !== undefined && (!/^pending-[a-f0-9]{64}$/.test(wake.inboxPendingId) || !wake.inbox)) {
+    throw new Error("An active inbox wake requires its exact pending identity and handling claim.");
+  }
   if (Object.hasOwn(wake, "runId")) throw new Error("Run-backed wakes are not current notification records.");
   if (wake.refs !== undefined) {
     if (!Array.isArray(wake.refs)) throw new Error("Wake references must be an array.");

@@ -23,6 +23,7 @@ import { createDurableJob } from "../../dist/job/durableJob.js";
 import { createDurableJobControl, parseDurableJobRefParams } from "../../dist/controller/jobControl.js";
 import { startControllerServer } from "../../dist/core/controllerServer.js";
 import { installDevLauncher } from "../../scripts/manage-dev-launcher.mjs";
+import { createGlobalRoleMessage } from "../../dist/message/message.js";
 
 const execute = promisify(execFile);
 
@@ -63,7 +64,7 @@ test("public CLI fences replaced Operators, Home configuration and cross-Task re
   };
   const cli = async (args, env) => {
     try {
-      const { stdout } = await execute("yui", [...args, "--json"],
+      const { stdout } = await execute(launcherPath, [...args, "--json"],
         { cwd: workspace, env, timeout: 10000 });
       return { ok: true, data: JSON.parse(stdout) };
     } catch (error) { return { ok: false, error: error.stderr }; }
@@ -77,6 +78,21 @@ test("public CLI fences replaced Operators, Home configuration and cross-Task re
   assert.equal((await cli(["role", "message", "list", "operator"], old)).ok, true,
     "Separating Message reads must preserve historical self-read without restoring writes.");
   assert.equal((await cli(knowledge, current)).ok, true);
+  const inboxId = store.nextGlobalRoleMessageId();
+  store.saveGlobalRoleMessage(createGlobalRoleMessage(inboxId, "operator", "Handle in this turn",
+    "user", { type: "user" }, now, { inputControl: { action: "queue", requestId: "inbox-cli" } }));
+  assert.equal((await cli(["inbox", "list"], old)).ok, false);
+  const inboxList = await cli(["inbox", "list"], current);
+  assert.equal(inboxList.ok, true, inboxList.error);
+  assert.equal(inboxList.data.data.items[0].id, inboxId);
+  assert.equal((await cli(["inbox", "show", inboxId], current)).data.data.body, "Handle in this turn");
+  assert.equal(store.listGlobalRoleMessages("operator")[0].inbox, undefined);
+  const claim = await cli(["inbox", "claim", inboxId, "--request-id", "claim-cli"], current);
+  assert.equal(claim.ok, true, claim.error);
+  const ack = await cli(["inbox", "ack", inboxId, "--request-id", "ack-cli", "--reason", "Routed and verified"], current);
+  assert.equal(ack.ok, true, ack.error);
+  assert.equal(store.listGlobalRoleMessages("operator")[0].inbox.ack.reason, "Routed and verified");
+  assert.equal(store.listGlobalRoleMessages("operator")[0].delivery, undefined);
   for (const id of ["task-1", "task-2"]) store.saveTask(activateTask(createTask(id, id, now), now));
   const worker = createRole("task-1", "worker", [binding], agent.id, workspace, now);
   store.saveRole("task-1", worker);

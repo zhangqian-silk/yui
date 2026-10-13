@@ -74,6 +74,7 @@ import {
   type GlobalRoleCommandOptions
 } from "./commands/globalRoleCommands.js";
 import { runJobCommand } from "./commands/jobCommands.js";
+import { runInboxCommand } from "./commands/inboxCommands.js";
 import {
   applyOperatorSessionControl,
   runOperatorCommand,
@@ -820,6 +821,11 @@ export async function main(): Promise<void> {
     return;
   }
   assertTaskInvocationScope(resolved, process.env);
+  if (resolved[0] === "inbox") {
+    const result = runInboxCommand(resolved.slice(1), store, process.env);
+    emit(JSON.stringify(result, null, 2), false, result);
+    return;
+  }
   if (resolved[0] === "task" && resolved[1] === "role" && resolved[2] === "capabilities") {
     const query = parseTaskAgentCapabilityQuery(resolved.slice(3));
     const result = await callController(home, "task.role-capabilities", {

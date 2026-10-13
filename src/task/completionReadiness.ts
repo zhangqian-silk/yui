@@ -81,13 +81,13 @@ export type CompletionReadinessFacts = NextActionFacts & Readonly<{
   durableJobs: readonly DurableJob[];
 }>;
 
-/** Mailbox refs locate original durable user intent. No separate acknowledgement
- * state is introduced: finish the current native turn and let the existing
- * notification delivery present the new input before declaring completion. */
+/** Mailbox refs locate original durable user intent. Active inbox handling
+ * retains the same completion fence until the exact window is acknowledged. */
 export function pendingCompletionMessages(store: TaskStore, taskId: string): TaskMessage[] {
   const mailbox = store.getWorkMailbox({ kind: "role", taskId, roleName: "leader" });
   const refs = [...(mailbox?.pending?.refs ?? [])];
   const processing = mailbox?.processing;
+  if (processing?.owner.startsWith("agent-inbox:")) refs.push(...processing.batch.refs);
   if (processing?.owner.startsWith("leader-notification:")) {
     const native = store.getTaskRoleSessionSet(taskId, "leader")?.providerBinding?.run;
     if (native?.attemptId !== processing.batchId

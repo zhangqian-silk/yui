@@ -2352,8 +2352,25 @@ function taskMessageCommand(
     const message = store.transaction((tx) => {
       assertTaskDeliveryAuthority(tx, options.environment, ref.taskId);
       const current = tx.listMessages(ref.taskId).find((entry) => entry.id === ref.localId);
-      if (current?.recipient?.ownerRunId === undefined || current.continuation?.runId !== undefined) {
+      if (current?.inbox?.ack !== undefined || current?.recipient?.ownerRunId === undefined || current.continuation?.runId !== undefined) {
         throw usageError("Only an unassigned pending Message can be explicitly handed off.");
+      }
+      if (current.inbox !== undefined) {
+        const actor = current.inbox.claim.actor;
+        for (const runId of new Set([actor.runId, current.recipient.ownerRunId])) {
+          const handler = runId === undefined ? null : tx.getRun(ref.taskId, runId);
+          const observation = handler === null ? undefined : runExecutionObservation(handler,
+            tx.getTaskRoleSessionSet(ref.taskId, handler.roleName)?.providerBinding, tx.listEvents(ref.taskId));
+          if (handler === null || handler.status === "active"
+            || handler.result?.failureReason === "delivery-unknown"
+            || handler.result?.provider === undefined
+            || runId === actor.runId && handler.result.provider.conversationId !== actor.nativeSessionId
+            || !["completed", "failed", "cancelled"].includes(observation?.delivery ?? "")) {
+            throw usageError("The original and current inbox handlers must have exact stopped native execution before explicit handoff.");
+          }
+        }
+        // Preserve the original claim: the new authorized Assignment must
+        // inspect prior effects and ack explicitly, never auto-replay the input.
       }
       const recipient = resolveMessageRecipient(tx, ref.taskId, requiredOption(parsed.options, "--to"), {
         ...(current.recipient.workItemId === undefined ? {} : { workItemId: current.recipient.workItemId }),
@@ -3212,6 +3229,9 @@ function registerInterruptThen(
   }
   // A Message that already delivered, or was already ruled undeliverable, is not
   // a fresh input to reuse; reusing it would replay or resurrect a settled fact.
+  if (message.inbox !== undefined) {
+    return { code: "TARGET_CHANGED", detail: `Message ${thenMessageRef} is owned by active inbox handling.` };
+  }
   if (message.continuation?.runId !== undefined) {
     return { code: "TARGET_CHANGED", detail: `Message ${thenMessageRef} was already delivered by ${message.continuation.runId}.` };
   }

@@ -2,7 +2,13 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.6. The declared 1.5 → 1.6 transition adds optional
+Current storage is 1.7. The declared 1.6 → 1.7 transition adds optional Agent
+inbox claim and acknowledgement receipts to canonical Messages and Leader
+wakes, including the exact pending-window identity. Historical records and
+frozen Context digests remain unchanged; missing handling evidence is never
+backfilled as delivery or consumption. The SQL layout is unchanged.
+
+The declared 1.5 → 1.6 transition adds optional
 source-attributed monetary evidence to canonical runtime observations. Existing
 observations remain unchanged: absent amounts and prices stay unknown. The SQL
 layout is unchanged.

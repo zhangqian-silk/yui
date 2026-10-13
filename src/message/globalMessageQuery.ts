@@ -3,6 +3,7 @@ import type { GlobalRoleMessage } from "./message.js";
 export type GlobalMessageQuery = Readonly<{
   limit: number;
   pending?: boolean;
+  handling?: boolean;
   descending?: boolean;
   afterSequence?: number;
   id?: string;
