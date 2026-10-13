@@ -205,11 +205,12 @@ identity. A native child gains no separate actor or inbox.
    each successful returned ID and request ID; do not replay successful items
    when another item fails. A changed pending window requires a fresh list.
 3. Read complete originals and referenced results, then handle the request
-   within its existing authority. Leader claims move one exact pending window
+   within its existing authority. Leader notification-window claims move one exact pending window
    into a durable wake: use the returned `originals` command, follow every
    relevant original Message/Run reference, and use its returned wake ID for
-   acknowledgement. Later arrivals remain in the next pending window. Worker
-   and Reviewer inbox reads expose only messages for their current Assignment;
+   acknowledgement. Later arrivals remain in the next pending window.
+   Assignment inbox reads (including a managed Leader Assignment) expose only
+   messages for the current Assignment;
    they supplement the frozen pack without expanding it or changing candidates.
 4. Only after handling, explicitly acknowledge each successful item:
    `yui inbox ack <returned-entry> --request-id <stable-id> --reason "<disposition>" --json`.

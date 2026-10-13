@@ -92,9 +92,11 @@ the failed target need not be running for you to act.
 ## Maintain useful durable context
 
 Apply **yui-runtime**'s own-inbox flow before acceptance or completion and at
-useful work boundaries. A Leader inbox entry is its exact notification window,
-not every Task Message. Read its full focused wake and relevant originals,
-dispose of results explicitly, then ack that window. Inbox acknowledgement
+useful work boundaries. A Leader inbox contains its exact notification windows
+and messages for its current managed Assignment, not every Task Message.
+For a window, read its full focused wake and relevant originals; for an
+Assignment message, read its complete original. Dispose of results explicitly,
+then ack the exact entry. Inbox acknowledgement
 never accepts a Candidate or completes the Task.
 
 The DB Brief is the current summary, not a full plan or a history of messages.
