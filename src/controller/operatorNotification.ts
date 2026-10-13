@@ -15,8 +15,7 @@ export function queueOperatorNotification(
 ): OperatorNotificationQueueResult {
   return store.transaction(tx => {
     const requestId = `operator-notice:${encodeURIComponent(input.receiptId)}`;
-    const previous = tx.listGlobalRoleMessages("operator").find(entry =>
-      (entry.inputControl ?? entry.interruptThen?.reusedInput)?.requestId === requestId);
+    const previous = tx.queryGlobalRoleMessages("operator", { requestId, limit: 1 }).messages[0];
     const mailbox = tx.getWorkMailbox({ kind: "operator" });
     const claimed = mailbox?.processing?.batchId === input.batchId;
     if (previous !== undefined) {
@@ -24,6 +23,11 @@ export function queueOperatorNotification(
       return { status: "already-queued", messageId: previous.id };
     }
     if (!claimed) throw new Error(`Operator notification claim changed: ${input.batchId}`);
+    // At most one unsent engineering notice. New facts coalesce in the existing
+    // mailbox while busy, without rewriting originals or overtaking user input.
+    if (tx.queryGlobalRoleMessages("operator", { pending: true, operatorNotice: true, limit: 1 }).count > 0) {
+      return { status: "deferred" };
+    }
     const sessions = tx.getGlobalRoleSessionSet("operator");
     const session = sessions?.sessions[sessions.activeAgentId];
     if (session?.status !== "active" || sessions?.providerBinding == null) return { status: "unavailable" };

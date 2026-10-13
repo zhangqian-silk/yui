@@ -1,24 +1,24 @@
 import type { TaskStore } from "../storage/taskStore.js";
-import { sendAgentHostRunControl, AGENT_HOST_CONTROL_PROTOCOL } from "../runtime/agentHost.js";
+import { sendAgentHostRunControl, reconcileAgentHostTurn, AGENT_HOST_CONTROL_PROTOCOL } from "../runtime/agentHost.js";
 import { currentProviderConversation } from "../runtime/providerRuntimeIdentity.js";
 import { hasRuntimeCleanupObligation, runtimeLifecycleTarget } from "../runtime/lifecycleReservation.js";
 import { markGlobalRoleMessageNotDelivered, type GlobalRoleMessage } from "../message/message.js";
 import { providerRetryPending } from "../runtime/providerRetry.js";
 import { settleGlobalRetryInput } from "../message/globalProviderRetry.js";
 import { globalMessagePresentation } from "../interaction/notificationPresentation.js";
+import { recordGlobalRuntimeAttention } from "./globalRuntimeAttention.js";
 
 /** Messages are the only queue. Host's atomic begin arbitrates native writers. */
 export async function deliverGlobalInputs(
   home: string,
   store: TaskStore,
   ensure: (roleName: string) => Promise<void>,
-  onError: (error: unknown) => void
+  onError: (error: unknown) => void,
+  options: { reconcile?: boolean; now?: Date } = {}
 ): Promise<void> {
   for (const role of store.listGlobalRoles()) {
     try {
-      let pending = store.listGlobalRoleMessages(role.name).filter(message =>
-        message.delivery === undefined && message.notDelivered === undefined
-        && (message.inputControl?.action === "queue" || message.interruptThen !== undefined));
+      let pending = store.queryGlobalRoleMessages(role.name, { pending: true, limit: 64 }).messages;
       if (pending.length === 0 || hasRuntimeCleanupObligation(store.getWorkMailbox(
         runtimeLifecycleTarget({ scope: "global", roleName: role.name })))) continue;
       let sessions = store.getGlobalRoleSessionSet(role.name);
@@ -28,14 +28,59 @@ export async function deliverGlobalInputs(
       if (sessions?.providerBinding?.retry !== undefined && !providerRetryPending(sessions.providerBinding)) {
         store.transaction(tx => settleGlobalRetryInput(tx, role.name,
           tx.getGlobalRoleSessionSet(role.name)?.providerBinding, new Date()));
-        pending = store.listGlobalRoleMessages(role.name).filter(message =>
-          message.delivery === undefined && message.notDelivered === undefined
-          && (message.inputControl?.action === "queue" || message.interruptThen !== undefined));
+        pending = store.queryGlobalRoleMessages(role.name, { pending: true, limit: 64 }).messages;
         if (pending.length === 0) continue;
       }
       if (providerRetryPending(sessions?.providerBinding)) continue;
-      const current = sessions?.providerBinding?.run;
-      const obsolete = pending.filter(message => {
+      let current = sessions?.providerBinding?.run;
+      const bindingBefore = sessions?.providerBinding;
+      if (options.reconcile && current != null
+        && ["submitting", "accepted", "delivery-unknown"].includes(current.status)
+        && bindingBefore?.authority.owner === "controller" && bindingBefore.authority.holderId !== undefined) {
+        const ownedTurn = current;
+        // Only ask the original Host to republish evidence it already holds.
+        // Busy, unknown, unavailable and older Hosts never authorize replay,
+        // Session creation, native reads through another client, or timeout settlement.
+        try {
+          const observed = await reconcileAgentHostTurn({
+            home, scope: "global", roleName: role.name,
+            control: { protocol: AGENT_HOST_CONTROL_PROTOCOL, type: "reconcile-turn",
+              nativeSessionId: currentProviderConversation(bindingBefore).conversationId,
+              attemptId: current.attemptId, nativeTurnId: current.nativeTurnId,
+              authority: { epoch: bindingBefore.authority.epoch, owner: "controller",
+                holderId: bindingBefore.authority.holderId } }
+          });
+          if (observed.outcome === "rejected" || ["idle", "failed", "exited"].includes(observed.snapshot.state)
+            && observed.reconciliation !== "terminal-republished") {
+            throw new Error(observed.failure?.detail ?? observed.snapshot.detail ?? "Host cannot reconcile this exact terminal.");
+          }
+        } catch (error) {
+          store.transaction(tx => recordGlobalRuntimeAttention(tx, role.name,
+            `terminal-reconcile:${currentProviderConversation(bindingBefore).conversationId}:${ownedTurn.attemptId}`,
+            { attemptId: ownedTurn.attemptId, nativeTurnId: ownedTurn.nativeTurnId,
+              nativeSessionId: currentProviderConversation(bindingBefore).conversationId,
+              reason: "host-terminal-unobservable",
+              detail: error instanceof Error ? error.message : String(error),
+              recovery: "Inspect the original Host, Session and input. Restore the compatible Host observation path, or explicitly stop/replace with exact native quiescence evidence. Do not resend unknown input.",
+              confirmed: ownedTurn.status, unknown: "Native terminal and remaining writer ownership." },
+            options.now ?? new Date()));
+          continue;
+        }
+        sessions = store.getGlobalRoleSessionSet(role.name);
+        current = sessions?.providerBinding?.run;
+        if (sessions?.sessions[sessions.activeAgentId]?.status !== "active"
+          || providerRetryPending(sessions?.providerBinding)
+          || hasRuntimeCleanupObligation(store.getWorkMailbox(
+            runtimeLifecycleTarget({ scope: "global", roleName: role.name })))) continue;
+        pending = store.queryGlobalRoleMessages(role.name, { pending: true, limit: 64 }).messages;
+        if (pending.length === 0) continue;
+      }
+      // Interrupt-then reserves the next legal slot even behind a large queue.
+      const reservedPage = store.queryGlobalRoleMessages(role.name, {
+        pending: true, interruptThen: true, limit: 64
+      });
+      const reserved = reservedPage.messages;
+      const obsolete = reserved.filter(message => {
         const claim = message.interruptThen;
         return claim !== undefined && (sessions?.activeAgentId !== claim.targetAgentId
           || sessions.sessions[claim.targetAgentId]?.nativeSessionId !== claim.targetNativeSessionId
@@ -44,13 +89,15 @@ export async function deliverGlobalInputs(
       });
       for (const message of obsolete) store.updateGlobalRoleMessage(
         markGlobalRoleMessageNotDelivered(message, "native-session-or-authority-changed", new Date()));
-      pending = pending.filter(message => !obsolete.includes(message));
+      const obsoleteIds = new Set(obsolete.map(message => message.id));
+      pending = pending.filter(message => !obsoleteIds.has(message.id));
       if (pending.length === 0) continue;
+      if (reservedPage.count > reserved.length && obsolete.length === reserved.length) continue;
       if (current != null && ["submitting", "accepted", "delivery-unknown"].includes(current.status)) continue;
       const matchesTarget = (message: GlobalRoleMessage) => message.deliveryTarget === undefined
         || sessions?.activeAgentId === message.deliveryTarget.agentId
           && sessions.sessions[message.deliveryTarget.agentId]?.nativeSessionId === message.deliveryTarget.nativeSessionId;
-      const claims = pending.filter(message => message.interruptThen !== undefined);
+      const claims = reserved.filter(message => !obsolete.includes(message));
       let next: GlobalRoleMessage | undefined;
       if (claims.length > 0) {
         next = claims.find(message => {
@@ -94,7 +141,7 @@ export async function deliverGlobalInputs(
       const binding = sessions?.providerBinding;
       if (binding == null || binding.authority.owner !== "controller") continue;
       const nativeSessionId = currentProviderConversation(binding).conversationId;
-      const persisted = store.listGlobalRoleMessages(role.name).find(message => message.id === next!.id);
+      const persisted = store.queryGlobalRoleMessages(role.name, { id: next.id, limit: 1 }).messages[0];
       if (persisted === undefined || JSON.stringify(persisted) !== JSON.stringify(next)) continue;
       const claim = next.interruptThen;
       if (!matchesTarget(next) || claim !== undefined
@@ -122,7 +169,7 @@ export async function deliverGlobalInputs(
       });
       if (result.outcome === "rejected") {
         store.transaction(tx => {
-          const latest = tx.listGlobalRoleMessages(role.name).find(message => message.id === next!.id);
+          const latest = tx.queryGlobalRoleMessages(role.name, { id: next!.id, limit: 1 }).messages[0];
           if (latest === undefined || latest.delivery !== undefined || latest.notDelivered !== undefined) return;
           const turn = tx.getGlobalRoleSessionSet(role.name)?.providerBinding?.run;
           if (providerRetryPending(tx.getGlobalRoleSessionSet(role.name)?.providerBinding)) return;

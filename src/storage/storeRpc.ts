@@ -155,6 +155,7 @@ const READ_ONLY_STORE_METHODS: ReadonlySet<string> = new Set([
   "getGlobalRoleSessionSet",
   "listGlobalRoleSessionSets",
   "listGlobalRoleMessages",
+  "queryGlobalRoleMessages",
   "listTasks",
   "getTask",
   "readNextActionFacts",

@@ -16,7 +16,7 @@ type OperatorDeliveryOutcome = Readonly<{
   taskId: string;
   status: "queued" | "already-queued" | "skipped" | "failed";
   messageId?: string;
-  reason?: "operator-unavailable";
+  reason?: "operator-unavailable" | "notice-pending";
   error?: string;
 }>;
 
@@ -55,8 +55,9 @@ export async function processOperatorInputNotifications(
           : [];
       }
       if (ref.type !== "event") return [];
-      const event = store.listEvents(ref.taskId).find(({ id }) => id === ref.id);
-      return event === undefined ? [] : [{ kind: "event", event }];
+      const event = store.getEvent !== undefined ? store.getEvent(ref.taskId, ref.id)
+        : store.listEvents(ref.taskId).find(({ id }) => id === ref.id);
+      return event == null ? [] : [{ kind: "event", event }];
     }
   ));
   if (attentions.length === 0) {
@@ -73,9 +74,10 @@ export async function processOperatorInputNotifications(
       receiptId: presentation.receiptId,
       text: presentation.text
     }, now);
-    if (outcome.status === "unavailable") {
+    if (outcome.status === "unavailable" || outcome.status === "deferred") {
       store.releaseWorkMailbox(targetMailbox, processing.batchId);
-      return attentions.map((attention) => skipped(attention, "operator-unavailable"));
+      return attentions.map((attention) => skipped(attention,
+        outcome.status === "deferred" ? "notice-pending" : "operator-unavailable"));
     }
     return attentions.map((attention) => ({
       ...attentionIdentity(attention),

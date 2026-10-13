@@ -1,7 +1,7 @@
 import { performance } from "node:perf_hooks";
 import type { AgentRun } from "../agentRun/agentRun.js";
 import { runTaskCommand } from "../commands/taskCommands.js";
-import { enqueueWork } from "../coordination/workMailboxQueue.js";
+import { routeRoleEvent } from "../scheduler/operatorEvent.js";
 import { createTaskEvent } from "../event/taskEvent.js";
 import type { RoleSessionSet } from "../executor/agentExecutor.js";
 import { settleGlobalRetryInput } from "../message/globalProviderRetry.js";
@@ -79,9 +79,7 @@ export function createProviderRetryHooks(home: string, store: TaskStore, ports: 
           roleName: owner.roleName, chainId: binding.retry!.chainId, reason
         }, new Date(at));
         store.saveEvent(owner.taskId, event);
-        enqueueWork(store, owner.roleName === "leader" ? { kind: "operator" }
-          : { kind: "role", taskId: owner.taskId, roleName: "leader" },
-        "provider-retry-needs-attention", new Date(at), [{ type: "event", taskId: owner.taskId, id: event.id }]);
+        routeRoleEvent(store, event, owner.roleName, "provider-retry-needs-attention", new Date(at));
       }
     });
   };
@@ -159,9 +157,7 @@ export function createProviderRetryHooks(home: string, store: TaskStore, ports: 
                     roleName: owner.roleName, attemptId: retry.currentAttemptId!, nativeSessionId: retry.nativeSessionId, detail
                   }, new Date(at));
                   store.saveEvent(owner.taskId, event);
-                  enqueueWork(store, owner.roleName === "leader" ? { kind: "operator" }
-                    : { kind: "role", taskId: owner.taskId, roleName: "leader" },
-                  "provider-retry-needs-attention", new Date(at), [{ type: "event", taskId: owner.taskId, id: event.id }]);
+                  routeRoleEvent(store, event, owner.roleName, "provider-retry-needs-attention", new Date(at));
                 }
               });
             }

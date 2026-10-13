@@ -18,7 +18,8 @@ import { processOperatorInputNotifications } from "../../dist/scheduler/operator
 import { createTask } from "../../dist/task/task.js";
 import { createTaskEvent } from "../../dist/event/taskEvent.js";
 import { enqueueOperatorEvent } from "../../dist/scheduler/operatorEvent.js";
-import { markGlobalRoleMessageNotDelivered } from "../../dist/message/message.js";
+import { createGlobalRoleMessage, markGlobalRoleMessageNotDelivered } from "../../dist/message/message.js";
+import { globalInputBacklog } from "../../dist/message/globalInputBacklog.js";
 import { createOperatorBatchPresentation } from "../../dist/interaction/operatorPresentation.js";
 import { createRuntimeObservation } from "../../dist/runtime/runtimeObservation.js";
 import { deliverGlobalInputs } from "../../dist/controller/globalInputDelivery.js";
@@ -34,6 +35,26 @@ import { FileRuntimeEventInbox } from "../../dist/controller/runtimeEventInbox.j
 import { FileRuntimeEventProcessor } from "../../dist/controller/runtimeEventProcessor.js";
 
 const now = new Date("2026-09-18T00:00:00Z");
+
+test("important facts atomically queue attention without a producer wake, and restart stays quiet after handoff", async t => {
+  const f = fixture(t);
+  const event = createTaskEvent("event-1", "task-1", "publication.recorded",
+    { publicationId: "publication-1", state: "merged", verification: "verified" }, now);
+  const saveMailbox = f.store.saveWorkMailbox;
+  f.store.saveWorkMailbox = () => { throw new Error("injected source admission failure"); };
+  assert.throws(() => f.store.saveEvent("task-1", event), /source admission failure/);
+  assert.deepEqual(f.store.listEvents("task-1"), [], "Fact and incremental attention commit together.");
+  f.store.saveWorkMailbox = saveMailbox;
+  f.store.saveEvent("task-1", event);
+  f.reopen();
+  const results = await f.process();
+  assert.equal(results.length, 1);
+  assert.equal(results[0].status, "queued");
+  assert.match(f.store.listGlobalRoleMessages("operator")[0].body, /task-1 event-1/);
+  f.reopen();
+  assert.deepEqual(await f.process(), []);
+  assert.equal(f.store.listGlobalRoleMessages("operator").length, 1);
+});
 
 function fixture(t) {
   const home = mkdtempSync(join(tmpdir(), "yui-operator-notification-"));
@@ -125,29 +146,39 @@ function fixture(t) {
   return f;
 }
 
-test("Operator notices hand off once without overlapping new events before Provider acceptance", async t => {
+test("Operator notices coalesce while busy and hand off once after Provider acceptance", async t => {
   const f = fixture(t);
   const first = f.enqueue();
   const queued = await f.process();
   assert.equal(queued[0].status, "queued");
   f.reopen();
-  const second = f.enqueue();
+  f.store.saveTask(createTask("task-2", "Another notification source", now));
+  const second = createTaskEvent("event-1", "task-2", "task.completed", { summary: "Independent fact" }, now);
+  f.store.saveEvent("task-2", second);
+  enqueueOperatorEvent(f.store, second, "task-terminal", now);
   const input = createInputRequest("input-1", "task-1",
     { taskId: "task-1", roleName: "leader", agentId: "codex", nativeSessionId: "leader-native" },
     { question: "Keep this authorization request open", choices: [], blockedRefs: [] }, now);
   f.store.saveInputRequest("task-1", input);
   enqueueWork(f.store, { kind: "operator" }, "input-request", now,
     [{ type: "input", taskId: "task-1", id: input.id }]);
+  assert.equal((await f.process())[0].reason, "notice-pending");
+  assert.equal(f.store.listGlobalRoleMessages("operator").length, 1);
+  const provider = await f.provider();
+  await f.deliver();
   await f.process();
   const messages = f.store.listGlobalRoleMessages("operator");
   assert.equal(messages.length, 2);
   assert.match(messages[0].body, new RegExp(`task-1/${first.id}\\b`));
   assert.doesNotMatch(messages[1].body, new RegExp(`task-1/${first.id}\\b`));
-  assert.match(messages[1].body, new RegExp(`task-1/${second.id}\\b`));
+  assert.match(messages[1].body, new RegExp(`task-2/${second.id}\\b`));
   assert.match(messages[1].body, /yui task input show task-1\/input-1/u);
   assert.deepEqual(f.store.getInputRequest("task-1", input.id), input, "Queuing attention cannot answer or cancel an authorization request.");
-  assert.ok(messages.every(message => message.delivery === undefined));
+  assert.equal(messages[0].delivery.via, "provider");
+  assert.equal(messages[1].delivery, undefined);
+  assert.equal(provider.attempts.length, 1);
   assert.equal(f.store.getWorkMailbox({ kind: "operator" }).pending, null);
+  f.observe("turn.completed");
 });
 
 test("Operator handoff rolls back both writes and preserves a newer pending suffix across reopen", async t => {
@@ -176,10 +207,13 @@ test("Operator handoff rolls back both writes and preserves a newer pending suff
   assert.deepEqual(replay, { status: "already-queued", messageId: result[0].messageId });
   assert.deepEqual(f.store.getWorkMailbox({ kind: "operator" }).pending.refs,
     [{ type: "event", taskId: "task-1", id: second.id }], "Old receipt cannot consume a later batch.");
+  await f.provider();
+  await f.deliver();
   await f.process();
   const messages = f.store.listGlobalRoleMessages("operator");
   assert.equal(messages.length, 2);
   assert.doesNotMatch(messages[1].body, new RegExp(`task-1/${first.id}\\b`));
+  f.observe("turn.completed");
 });
 
 test("unavailable Operator retains attention; definitively undelivered notices retain evidence without replay", async t => {
@@ -214,9 +248,7 @@ test("Global delivery keeps busy and unknown notices fenced, then advances to or
   await f.process();
   f.enqueue();
   await f.process();
-  const laterUser = f.user("Later user input");
-  const messages = f.store.listGlobalRoleMessages("operator");
-  assert.equal(messages.length, 4);
+  assert.equal(f.store.listGlobalRoleMessages("operator").length, 2);
   await f.deliver();
   assert.deepEqual(provider.attempts, [`global-input:operator/${user.id}`]);
   f.observe("turn.completed");
@@ -228,12 +260,17 @@ test("Global delivery keeps busy and unknown notices fenced, then advances to or
   await f.deliver();
   assert.equal(provider.attempts.length, 2);
   assert.deepEqual(f.store.listGlobalRoleMessages("operator")[1], originalUnknown);
-  assert.deepEqual(await f.process(), []);
+  assert.equal((await f.process())[0].reason, "notice-pending");
   f.observe("turn.accepted");
   f.observe("turn.completed");
+  await f.process();
+  const laterUser = f.user("Later user input");
+  const messages = f.store.listGlobalRoleMessages("operator").filter(m =>
+    m.inputControl && !m.inputControl.requestId.startsWith("runtime-attention:"));
+  assert.equal(messages.length, 4);
   provider.outcome = "rejected";
   await f.deliver();
-  const rejected = f.store.listGlobalRoleMessages("operator")[2];
+  const rejected = f.store.listGlobalRoleMessages("operator").find(m => m.id === messages[2].id);
   assert.equal(rejected.notDelivered.reason, "fixture-rejected");
   f.reopen();
   provider.outcome = "accepted";
@@ -262,10 +299,147 @@ test("one Global pass exposes stale unsent notices and reaches the successor's u
   const user = f.user("Successor user input");
   await f.deliver();
   assert.deepEqual(provider.attempts, [`global-input:operator/${user.id}`]);
-  const preserved = f.store.listGlobalRoleMessages("operator").slice(0, 2);
+  const preserved = f.store.listGlobalRoleMessages("operator").slice(0, messages.length);
   assert.ok(preserved.every(message => message.notDelivered.reason === "native-session-changed"));
   assert.deepEqual(preserved.map(message => message.body), messages.map(message => message.body));
   f.observe("turn.completed");
+});
+
+test("mixed-source backlog survives deferred release, restart and bounded claims without losing facts", async t => {
+  const f = fixture(t);
+  await f.provider();
+  f.enqueue();
+  await f.process();
+  const events = [];
+  for (let i = 0; i < 65; i++) {
+    if (i === 32 || i === 64) {
+      const event = createTaskEvent(f.store.nextEventId("task-1"), "task-1",
+        "provider.retry-unconfirmed", { roleName: "leader" }, now);
+      f.store.saveEvent("task-1", event);
+      // Existing supported retry producers used the mailbox's sequence key.
+      enqueueWork(f.store, { kind: "operator" }, "provider-retry-needs-attention",
+        now, [{ type: "event", taskId: "task-1", id: event.id }]);
+      events.push(event);
+    } else events.push(f.enqueue());
+  }
+  const before = f.store.getWorkMailbox({ kind: "operator" }).pending;
+  assert.equal((await f.process()).length, 64);
+  assert.deepEqual(f.store.getWorkMailbox({ kind: "operator" }).pending, before,
+    "Deferred release retains the original sequence keys, refs and ordering.");
+  events.push(f.enqueue());
+  f.reopen();
+  await f.deliver();
+  f.observe("turn.completed");
+  const first = await f.process();
+  assert.equal(first.length, 64);
+  await f.deliver();
+  f.observe("turn.completed");
+  const rest = await f.process();
+  assert.deepEqual([...first, ...rest].map(item => item.sourceId), events.map(event => event.id));
+  await f.deliver();
+  f.observe("turn.completed");
+  assert.deepEqual(await f.process(), []);
+  assert.equal(f.store.listGlobalRoleMessages("operator").length, 3);
+});
+
+test("large backlogs use bounded source batches and message pages, preserving unknown fences and diagnostics", async t => {
+  const f = fixture(t);
+  const provider = await f.provider();
+  for (let i = 0; i < 140; i++) f.enqueue();
+  const adapter = new FileSchedulerStoreAdapter(f.store);
+  adapter.listEvents = () => assert.fail("Operator reconciliation must not deserialize Task history");
+  const first = await processOperatorInputNotifications(adapter, undefined, now);
+  assert.equal(first.length, 64);
+  assert.equal(f.store.getWorkMailbox({ kind: "operator" }).pending.requestCount, 76);
+  await f.deliver();
+  f.observe("turn.completed");
+  f.reopen();
+  assert.equal((await f.process()).length, 64);
+  await f.deliver();
+  f.observe("turn.completed");
+  assert.equal((await f.process()).length, 12);
+  await f.deliver();
+  f.observe("turn.completed");
+  assert.equal(provider.attempts.length, 3);
+  assert.deepEqual(await f.process(), []);
+  for (let i = 0; i < 129; i++) {
+    f.store.saveGlobalRoleMessage({
+      ...createGlobalRoleMessage(f.store.nextGlobalRoleMessageId(), "operator", `original-${i}`,
+        "system", { type: "system" }, now,
+        { inputControl: { action: "queue", requestId: `historical-${i}` } }),
+      deliveryTarget: { agentId: "codex", nativeSessionId: "old-native" }
+    });
+  }
+  const user = f.user("User input after the old backlog");
+  const pending = f.store.queryGlobalRoleMessages("operator", { pending: true, limit: 64 });
+  assert.equal(pending.count, 130);
+  assert.equal(pending.messages.length, 64);
+  const diagnostic = globalInputBacklog(
+    f.store.listGlobalRoleMessages("operator").filter(m => !m.delivery && !m.notDelivered),
+    f.store.getGlobalRoleSessionSet("operator"), new Date(now.getTime() + 60_000));
+  assert.equal(diagnostic.reason, "stale-target");
+  assert.equal(diagnostic.pendingCount, 130);
+  assert.equal(diagnostic.oldestAgeMs, 60_000);
+  assert.equal(diagnostic.messages.length, 8);
+  await f.deliver();
+  assert.equal(f.store.queryGlobalRoleMessages("operator", { pending: true, limit: 0 }).count, 66);
+  await f.deliver();
+  await f.deliver();
+  assert.equal(provider.attempts.at(-1), `global-input:operator/${user.id}`);
+  assert.equal(f.store.listGlobalRoleMessages("operator").filter(m => m.notDelivered).length, 129);
+  f.observe("turn.completed");
+});
+
+test("unobservable Global Host emits one durable diagnosis, never replays or steals an unknown writer", async t => {
+  const f = fixture(t);
+  const provider = await f.provider();
+  f.user("Owned input");
+  await f.deliver();
+  f.user("Must wait");
+  const before = structuredClone(f.store.getGlobalRoleSessionSet("operator"));
+  // Fixture Host intentionally implements submit only: a current Controller
+  // cannot manufacture the missing observation capability of an older Host.
+  await deliverGlobalInputs(f.home, f.store, async () => assert.fail("Do not restore a busy Host"),
+    error => { throw error; }, { reconcile: true, now });
+  await deliverGlobalInputs(f.home, f.store, async () => assert.fail("Do not restore a busy Host"),
+    error => { throw error; }, { reconcile: true, now });
+  assert.deepEqual(f.store.getGlobalRoleSessionSet("operator"), before);
+  assert.equal(provider.attempts.length, 1);
+  const evidence = f.store.listGlobalRoleMessages("operator").filter(m => m.inputControl?.requestId.startsWith("runtime-attention:"));
+  assert.equal(evidence.length, 1);
+  assert.match(evidence[0].body, /host-terminal-unobservable/);
+  assert.ok(evidence[0].notDelivered);
+  const queued = f.store.queryGlobalRoleMessages("operator", { pending: true, limit: 64 }).messages;
+  assert.equal(globalInputBacklog(queued, before, now).reason, "in-flight-or-unobserved-terminal");
+  const external = { ...before, providerBinding: { ...before.providerBinding,
+    authority: { ...before.providerBinding.authority, owner: "human" } } };
+  f.store.saveGlobalRoleSessionSet(external);
+  assert.equal(globalInputBacklog(queued, external, now).reason, "external-or-unknown-writer");
+  await deliverGlobalInputs(f.home, f.store, async () => assert.fail("No takeover"),
+    error => { throw error; }, { reconcile: true, now });
+  assert.equal(provider.attempts.length, 1);
+});
+
+test("live backlog age does not invalidate paginated Global Context", t => {
+  const f = fixture(t);
+  f.user("Pending original");
+  f.store.saveGlobalRole({ ...f.store.getGlobalRole("operator"), description: "context ".repeat(3000) });
+  const read = cursor => runGlobalRoleCommand(["context", "operator", ...(cursor ? ["--cursor", cursor] : [])],
+    f.store, { env: {}, jsonOutput: true }).data;
+  t.mock.timers.enable({ apis: ["Date"], now: now.getTime() + 60_000 });
+  let page = read();
+  assert.ok(page.contentPage);
+  assert.ok(page.backlogObservation.oldestAgeMs >= 0);
+  let text = page.contentPage.text;
+  while (!page.contentPage.complete) {
+    t.mock.timers.tick(1000);
+    page = read(page.contentPage.nextCursor);
+    text += page.contentPage.text;
+  }
+  const context = JSON.parse(text);
+  assert.equal(context.backlog.pendingCount, 1);
+  assert.equal(context.backlog.messages.length, 1);
+  assert.equal(f.store.listGlobalRoleMessages("operator")[0].delivery, undefined);
 });
 
 test("a stale target does not let successor input bypass an uncertain original Message", async t => {

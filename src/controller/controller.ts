@@ -169,7 +169,7 @@ export type ControllerRuntimeOptions = Readonly<{
    * runners, harvests terminal evidence, and enqueues Leader wakeups.
    */
   jobSupervisor?: Readonly<{ reconcile(now: Date): void }>;
-  globalInputDelivery?: () => Promise<void>;
+  globalInputDelivery?: (options: { reconcile: boolean; now: Date }) => Promise<void>;
   providerRetry?: Readonly<{
     reconcile(): Promise<void>;
     deadlines(): readonly { key: MailboxKey; at: number }[];
@@ -1462,7 +1462,7 @@ export class FileTaskController {
           }
           const firstRuntimeDrain = await this.#drainRuntimeEvents();
           await this.#providerRetry?.reconcile();
-          await this.#globalInputDelivery?.();
+          await this.#globalInputDelivery?.({ reconcile: scope.kind === "full", now: this.#now() });
           for (const taskId of runtimeTaskFailureIds(firstRuntimeDrain)) {
             runtimeFailedTaskIds.add(taskId);
           }
@@ -1576,7 +1576,8 @@ export class FileTaskController {
             || scope.keys.some((key) => key !== "operator")
             || runtimeAdvanced
           ) {
-            this.#signalOperatorMailbox(runtimeAdvanced);
+            this.#signalOperatorMailbox(runtimeAdvanced || scope.kind === "full"
+              || scope.kind === "dirty" && scope.keys.some(key => parseMailboxKey(key).kind === "global-role"));
           }
         } catch (error) {
           if (scope.kind === "full") {

@@ -260,6 +260,8 @@ export type TaskStore = {
    * Message in place (decision-3 §4/§9), keeping its minted id and seq. */
   updateGlobalRoleMessage(message: GlobalRoleMessage): void;
   listGlobalRoleMessages(roleName: string): GlobalRoleMessage[];
+  queryGlobalRoleMessages(roleName: string, query: import("../message/globalMessageQuery.js").GlobalMessageQuery):
+    import("../message/globalMessageQuery.js").GlobalMessagePage;
   nextTaskId(): string;
   saveTask(task: Task): void;
   listTasks(): Task[];
