@@ -76,8 +76,9 @@ errors never trigger a driver switch. `yui doctor` reports the driver version,
 actual SQLite engine and fallback reason separately from Home health.
 
 The N-API driver avoids the native `ObjectWrap` garbage-collection abort seen
-with the earlier driver on Node 24.19/24.20. It requires Node 22 or newer;
-Node 20 installations use the compatibility candidate. No global Node change
+with the earlier driver on Node 24.19/24.20. It requires Node-API 10;
+runtimes with an older API (including Node 20 and Node 22.9) skip it before
+native loading and use the compatibility candidate. No global Node change
 or Home migration is needed for this dependency correction.
 
 npm attempts **both** fixed optional aliases during installation; it does not

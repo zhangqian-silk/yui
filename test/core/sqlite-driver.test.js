@@ -39,7 +39,7 @@ test("selected SQLite driver survives allocation-driven statement collection", (
   assert.equal(result.stdout.trim(), "sqlite-gc-ok");
 });
 
-function fixture(failures = {}) {
+function fixture(failures = {}, napiVersion = 10) {
   const calls = [];
   const closed = [];
   const select = createSqliteDriverSelector((candidate) => {
@@ -56,9 +56,22 @@ function fixture(failures = {}) {
       }
       close() { closed.push(candidate.name); }
     };
-  });
+  }, napiVersion);
   return { select, calls, closed };
 }
+
+test("incompatible Node-API candidates are excluded before any native load", () => {
+  const f = fixture({}, 9);
+  assert.equal(f.select().name, "sqlite-compat");
+  assert.deepEqual(f.calls, ["sqlite-compat"]);
+  assert.match(f.select().fallbackReason, /Node-API 10.*9/);
+  const missing = Object.assign(new Error("Cannot find module 'sqlite-compat'"), { code: "MODULE_NOT_FOUND" });
+  assert.throws(fixture({ "sqlite-compat": { load: missing } }, 9).select, error => {
+    assert.match(error.message, /Node-API 10.*9/);
+    assert.equal(error.errors[1], missing);
+    return true;
+  });
+});
 
 test("SQLite selection probes once, closes connections, and never retries real Home errors", () => {
   const f = fixture();
@@ -139,6 +152,10 @@ test("unknown load/SQL errors do not fall back, and dual failure preserves both 
 
 for (const candidate of SQLITE_CANDIDATES) {
   test(`${candidate.name} real native SQL, transactions, WAL and backup`, async t => {
+    if (candidate.name === "sqlite-modern" && Number(process.versions.napi ?? 0) < 10) {
+      t.skip("sqlite-modern requires Node-API 10; do not invoke an incompatible native constructor");
+      return;
+    }
     const require = createRequire(join(root, "package.json"));
     let Driver;
     try {

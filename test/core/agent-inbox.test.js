@@ -220,54 +220,55 @@ test("Leader claims one fixed window without accepting results, consuming later 
   assert.throws(() => inbox("leader", "claim", automatic.wakeId, "--request-id", "steal"), /automatic/);
 });
 
-test("Worker own Assignment inbox excludes Task-wide, foreign-role and foreign-Assignment input", t => {
+for (const roleName of ["worker", "leader"]) test(`${roleName} own Assignment inbox excludes Task-wide, foreign-role and foreign-Assignment input`, t => {
   const { store, inbox, task, envFor } = taskFixture(t);
-  task(["work", "create", "task-1", "Bounded work", "--role", "worker"]);
+  const ownInbox = (...args) => inbox(roleName, ...args);
+  task(["work", "create", "task-1", "Bounded work", "--role", roleName]);
   task(["work", "dispatch", "task-1/work-item-1"]);
-  const run = store.getActiveRun("task-1", "worker");
+  const run = store.getActiveRun("task-1", roleName);
   store.saveTaskRoleSessionSet(recordRoleAgentSession(createRoleSessionSet(
-    { scope: "task", taskId: "task-1", roleName: "worker" }, "codex", now), {
-    agentId: "codex", adapterId: "codex", nativeSessionId: "worker-native",
+    { scope: "task", taskId: "task-1", roleName }, "codex", now), {
+    agentId: "codex", adapterId: "codex", nativeSessionId: `${roleName}-native`,
     policy: "fixed", status: "active", effective: run.effective
   }, now));
-  task(["message", "queue", "task-1", "Worker correction", "--to", "worker",
+  task(["message", "queue", "task-1", "Worker correction", "--to", roleName,
     "--work-item", "work-item-1", "--request-id", "worker-input"]);
-  const id = inbox("worker", "list").items[0].id;
+  const id = ownInbox("list").items.find(item => item.kind === "message").id;
   store.saveMessage("task-1", createTaskMessage("message-2", "task-1", "Leader only", "user", { type: "user" }, now));
-  assert.throws(() => inbox("worker", "show", "message-2"), /scope/);
-  assert.equal(inbox("worker", "show", id).body, "Worker correction");
-  inbox("worker", "claim", id, "--request-id", "worker-claim");
-  prepareMessageContinuations(store, "task-1", now, "worker");
+  assert.throws(() => ownInbox("show", "message-2"), /scope/);
+  assert.equal(ownInbox("show", id).body, "Worker correction");
+  ownInbox("claim", id, "--request-id", "worker-claim");
+  prepareMessageContinuations(store, "task-1", now, roleName);
   assert.equal(store.listRuns("task-1").length, 1);
-  inbox("worker", "ack", id, "--request-id", "worker-done", "--reason", "Applied to the bounded assignment");
+  ownInbox("ack", id, "--request-id", "worker-done", "--reason", "Applied to the bounded assignment");
   assert.equal(store.getWorkItem("task-1", "work-item-1").status, "open");
   assert.equal(store.getRun("task-1", run.id).status, "active");
   assert.equal(store.listMessages("task-1")[0].continuation.runId, undefined);
-  assert.throws(() => runInboxCommand(["show", id], store, { ...envFor("worker"), YUI_TASK_ID: "task-2" }), /exists|current/);
+  assert.throws(() => runInboxCommand(["show", id], store, { ...envFor(roleName), YUI_TASK_ID: "task-2" }), /exists|current/);
   assert.throws(() => runInboxCommand(["ack", id, "--request-id", "old", "--reason", "bad"], store,
-    { ...envFor("worker"), CODEX_THREAD_ID: "old" }), /Session/);
-  task(["message", "queue", "task-1", "Interrupted clarification", "--to", "worker",
+    { ...envFor(roleName), CODEX_THREAD_ID: "old" }), /Session/);
+  task(["message", "queue", "task-1", "Interrupted clarification", "--to", roleName,
     "--work-item", "work-item-1", "--request-id", "interrupted"]);
-  const interrupted = inbox("worker", "list").items[0].id;
-  inbox("worker", "claim", interrupted, "--request-id", "before-interruption");
-  assert.throws(() => task(["message", "handoff", `task-1/${interrupted}`, "--to", "worker"]), /stopped|terminal|pending/i);
+  const interrupted = ownInbox("list").items.find(item => item.kind === "message").id;
+  ownInbox("claim", interrupted, "--request-id", "before-interruption");
+  assert.throws(() => task(["message", "handoff", `task-1/${interrupted}`, "--to", roleName]), /stopped|terminal|pending/i);
   const failed = failRun(run, "runtime-failed", "Interrupted while handling", now, {
-    providerNamespace: "openai/codex", accountScope: "codex", conversationId: "worker-native",
+    providerNamespace: "openai/codex", accountScope: "codex", conversationId: `${roleName}-native`,
     nativeTurnId: "worker-turn", status: "failed"
   });
   store.saveRun(failed);
-  store.clearActiveRun("task-1", "worker");
+  store.clearActiveRun("task-1", roleName);
   task(["work", "dispatch", "task-1/work-item-1"]);
-  assert.throws(() => inbox("worker", "show", interrupted), /scope/);
-  task(["message", "handoff", `task-1/${interrupted}`, "--to", "worker"]);
-  const retained = inbox("worker", "show", interrupted);
+  assert.throws(() => ownInbox("show", interrupted), /scope/);
+  task(["message", "handoff", `task-1/${interrupted}`, "--to", roleName]);
+  const retained = ownInbox("show", interrupted);
   assert.equal(retained.inbox.claim.actor.runId, run.id, "handoff preserves the interrupted handler's audit");
-  assert.throws(() => task(["message", "handoff", `task-1/${interrupted}`, "--to", "worker"]), /stopped/);
-  prepareMessageContinuations(store, "task-1", now, "worker");
+  assert.throws(() => task(["message", "handoff", `task-1/${interrupted}`, "--to", roleName]), /stopped/);
+  prepareMessageContinuations(store, "task-1", now, roleName);
   assert.equal(store.listRuns("task-1").length, 2, "handoff does not replay a claimed message");
-  inbox("worker", "ack", interrupted, "--request-id", "after-interruption",
+  ownInbox("ack", interrupted, "--request-id", "after-interruption",
     "--reason", "Read prior handling evidence and finished the clarification");
-  assert.equal(inbox("worker", "show", interrupted).inbox.ack.actor.runId, store.getActiveRun("task-1", "worker").id);
+  assert.equal(ownInbox("show", interrupted).inbox.ack.actor.runId, store.getActiveRun("task-1", roleName).id);
 });
 
 test("Reviewer reads only its frozen ReviewRound mailbox; handling does not finish the Review", t => {
@@ -311,4 +312,61 @@ test("Reviewer reads only its frozen ReviewRound mailbox; handling does not fini
     "system", { type: "system" }, now, { recipient: { roleName: "reviewer",
       ownerRunId: run.id, reviewRoundId: "review-round-2", workItemId: "work-item-1" } }));
   assert.throws(() => inbox("reviewer", "show", "message-2"), /scope/);
+});
+
+test("retained claims fence only their Assignment, with explicit retirement preserving original evidence", t => {
+  const { store, inbox, task } = taskFixture(t);
+  const dispatch = title => {
+    task(["work", "create", "task-1", title, "--role", "worker"]);
+    const work = store.listWorkItems("task-1").at(-1);
+    task(["work", "dispatch", `task-1/${work.id}`]);
+    const run = store.getActiveRun("task-1", "worker");
+    store.saveTaskRoleSessionSet(recordRoleAgentSession(createRoleSessionSet(
+      { scope: "task", taskId: "task-1", roleName: "worker" }, "codex", now), {
+      agentId: "codex", adapterId: "codex", nativeSessionId: "worker-native",
+      policy: "fixed", status: "active", effective: run.effective
+    }, now));
+    task(["message", "queue", "task-1", title, "--to", "worker",
+      "--work-item", work.id, "--request-id", work.id]);
+    return { run, work, message: store.listMessages("task-1").at(-1) };
+  };
+  const stop = run => {
+    store.saveRun(failRun(run, "runtime-failed", "Exact native terminal", now, {
+      providerNamespace: "openai/codex", accountScope: "codex", conversationId: "worker-native",
+      nativeTurnId: `turn-${run.id}`, status: "failed"
+    }));
+    store.clearActiveRun("task-1", "worker");
+  };
+  const old = dispatch("Old assignment");
+  inbox("worker", "claim", old.message.id, "--request-id", "old-claim");
+  stop(old.run);
+  task(["work", "retire", `task-1/${old.work.id}`, "--summary", "No further implementation"]);
+  const next = dispatch("Independent assignment");
+  stop(next.run);
+  prepareMessageContinuations(store, "task-1", now, "worker");
+  assert.equal(store.listMessages("task-1").find(m => m.id === next.message.id).continuation.runId, "run-3");
+  assert.throws(() => inbox("worker", "show", old.message.id), /scope/);
+  assert.throws(() => inbox("worker", "ack", old.message.id, "--request-id", "foreign",
+    "--reason", "Other assignment cannot settle it"), /scope/);
+  task(["message", "retire", `task-1/${old.message.id}`, "--reason", "Reviewed original and effects; assignment obsolete"]);
+  const retained = store.listMessages("task-1").find(m => m.id === old.message.id);
+  assert.equal(retained.body, old.message.body);
+  assert.equal(retained.inbox.claim.actor.runId, old.run.id);
+  assert.equal(retained.inbox.ack, undefined, "retirement is not fabricated Agent acknowledgement");
+  const continuation = store.getActiveRun("task-1", "worker");
+  task(["message", "queue", "task-1", "Interrupted current handling", "--to", "worker",
+    "--work-item", next.work.id, "--request-id", "current-claim"]);
+  const current = store.listMessages("task-1").at(-1);
+  inbox("worker", "claim", current.id, "--request-id", "current");
+  task(["message", "queue", "task-1", "Later same-assignment input", "--to", "worker",
+    "--work-item", next.work.id, "--request-id", "later"]);
+  const later = store.listMessages("task-1").at(-1);
+  stop(continuation);
+  prepareMessageContinuations(store, "task-1", now, "worker");
+  assert.equal(store.getActiveRun("task-1", "worker"), null, "unfinished claim still fences its own Assignment");
+  task(["message", "retire", `task-1/${current.id}`, "--reason", "Original and effects inspected; no action remains"]);
+  prepareMessageContinuations(store, "task-1", now, "worker");
+  assert.equal(store.listMessages("task-1").find(m => m.id === later.id).continuation.runId, "run-4");
+  assert.equal(store.listMessages("task-1").find(m => m.id === current.id).continuation.runId, undefined,
+    "explicit retirement unblocks later input without replaying the retired claim");
 });

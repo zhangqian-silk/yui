@@ -12,6 +12,7 @@ import { validateExactRunReviewRound } from "../lifecycle/exactRunTerminalizatio
 import { sourceRunContextValue } from "../context/sourceRunContext.js";
 import { requireManagedTaskCaller } from "../runtime/managedCaller.js";
 import { runtimeObservationFromTaskEvent } from "../runtime/runtimeObservation.js";
+import { isTaskRecordRetired, operationalTaskRecords } from "../task/taskRecordRetirement.js";
 
 export function resolveMessageRecipient(
   store: TaskStore, taskId: string, roleName: string,
@@ -35,6 +36,7 @@ export function resolveMessageRecipient(
 
 /** Bounded diagnosis, not automatic ownership repair. */
 export function messageContinuationBlocker(store: TaskStore, message: TaskMessage): string | undefined {
+  if (isTaskRecordRetired(store.listEvents(message.taskId), "message", message.id)) return "message-retired";
   const target = message.recipient;
   if (target?.ownerRunId === undefined) return "recipient-assignment-missing";
   const task = store.getTask(message.taskId);
@@ -184,11 +186,10 @@ export function interruptThenTerminalState(
  * remain the pending authority; Mailbox is only the existing scheduling hint.
  * Reserving inputs and creating the next Run is one atomic effect. */
 export function prepareMessageContinuations(store: TaskStore, taskId: string, now: Date, roleName: string): void {
-  // An interrupted active handler retains order, including for later input.
-  // Only an explicit disposition releases its ownership, never elapsed time.
-  if (store.listMessages(taskId).some(message => message.recipient?.roleName === roleName
-    && message.inbox !== undefined && message.inbox.ack === undefined)) return;
-  const pending = store.listMessages(taskId).filter((message) =>
+  const messages = operationalTaskRecords(store.listMessages(taskId), store.listEvents(taskId), "message");
+  const claims = messages.filter(message => message.recipient?.roleName === roleName
+    && message.inbox !== undefined && message.inbox.ack === undefined);
+  const pending = messages.filter((message) =>
     message.recipient?.roleName === roleName && message.recipient.ownerRunId !== undefined
     && message.inbox === undefined
     && message.continuation?.runId === undefined
@@ -198,6 +199,11 @@ export function prepareMessageContinuations(store: TaskStore, taskId: string, no
     && message.inputControl?.action !== "steer");
   for (const message of pending) {
     const recipient = message.recipient!;
+    // Retain ordering within the claimed Assignment, not across unrelated
+    // work owned by the same Role. Only ack or explicit retirement settles a
+    // claim's scheduling obligation; neither time nor a failed Run does.
+    if (claims.some(claim => claim.recipient?.workItemId === recipient.workItemId
+      && claim.recipient?.reviewRoundId === recipient.reviewRoundId)) continue;
     const blocker = messageContinuationBlocker(store, message);
     if (blocker !== undefined) {
       markNotDelivered(store, message, blocker);

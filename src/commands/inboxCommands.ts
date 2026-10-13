@@ -7,6 +7,7 @@ import { expandTaskMessageResult, type GlobalRoleMessage, type TaskMessage } fro
 import { messageContinuationBlocker } from "../message/messageContinuation.js";
 import type { InboxActor, InboxReceipt } from "../message/inboxReceipt.js";
 import { hasRuntimeCleanupObligation, runtimeLifecycleTarget } from "../runtime/lifecycleReservation.js";
+import { isTaskRecordRetired, retiredTaskRecordIds } from "../task/taskRecordRetirement.js";
 
 type Entry = GlobalRoleMessage | TaskMessage | TaskWake;
 type Address = InboxActor;
@@ -31,7 +32,8 @@ function addressOf(store: TaskStore, env: NodeJS.ProcessEnv): Address {
 }
 
 function ownsMessage(store: TaskStore, address: Address, message: TaskMessage): boolean {
-  if (message.taskId !== address.taskId || message.recipient?.roleName !== address.roleName) return false;
+  if (address.runId === undefined || message.taskId !== address.taskId
+    || message.recipient?.roleName !== address.roleName) return false;
   const current = store.getRun(address.taskId!, address.runId!);
   const owner = message.recipient.ownerRunId === undefined ? null
     : store.getRun(address.taskId!, message.recipient.ownerRunId);
@@ -44,8 +46,8 @@ function ownsMessage(store: TaskStore, address: Address, message: TaskMessage): 
 function entries(store: TaskStore, address: Address): Entry[] {
   if (address.scope === "global") return store.listGlobalRoleMessages(address.roleName)
     .filter(message => message.inputControl !== undefined || message.interruptThen !== undefined);
-  if (address.roleName === "leader") return store.listTaskWakes(address.taskId!);
-  return store.listMessages(address.taskId!).filter(message => ownsMessage(store, address, message));
+  const messages = store.listMessages(address.taskId!).filter(message => ownsMessage(store, address, message));
+  return address.roleName === "leader" ? [...store.listTaskWakes(address.taskId!), ...messages] : messages;
 }
 
 function getEntry(store: TaskStore, address: Address, id: string): Entry {
@@ -73,6 +75,8 @@ function save(store: TaskStore, address: Address, entry: Entry): void {
 /** The same durable claim is checked at automatic delivery admission. No lease
  * expires, and neither a receipt nor a cursor gives a caller identity. */
 function blocker(store: TaskStore, address: Address, entry: Entry): string | undefined {
+  if (!isWake(entry) && address.scope === "task"
+    && isTaskRecordRetired(store.listEvents(address.taskId!), "message", entry.id)) return "message-retired";
   if (entry.inbox?.ack !== undefined) return "acknowledged";
   if (entry.inbox !== undefined) {
     return sameSession(entry.inbox.claim.actor, address) ? undefined : "claimed-by-previous-session";
@@ -141,7 +145,9 @@ export function runInboxCommand(
   if (action === "list") {
     const parsed = readOptions(tail);
     if (parsed.positionals.length) throw new Error("Inbox list accepts only --limit and --cursor.");
-    const selected = entries(store, address).filter(entry => entry.inbox?.ack === undefined
+    const retired = address.scope === "task" ? retiredTaskRecordIds(store.listEvents(address.taskId!), "message") : new Set();
+    const selected = entries(store, address).filter(entry => (isWake(entry) || !retired.has(entry.id))
+      && entry.inbox?.ack === undefined
       && (isWake(entry) ? entry.status !== "consumed"
         : address.scope === "global" ? (entry as GlobalRoleMessage).delivery === undefined
           : (entry as TaskMessage).continuation?.runId === undefined));
@@ -238,6 +244,8 @@ export function runInboxCommand(
         for (const previous of entries(tx, current)) {
           if (previous.id === entry.id) break;
           if (isWake(previous) || previous.inbox?.ack !== undefined) continue;
+          if (current.scope === "task"
+            && isTaskRecordRetired(tx.listEvents(current.taskId!), "message", previous.id)) continue;
           if (current.scope === "global" && ((previous as GlobalRoleMessage).delivery !== undefined
             || (previous as GlobalRoleMessage).notDelivered !== undefined)) continue;
           if (current.scope === "task" && (previous as TaskMessage).continuation?.runId !== undefined) continue;

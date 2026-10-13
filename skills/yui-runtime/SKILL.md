@@ -227,6 +227,11 @@ An Assignment change does not inherit handling authority. If the original Run
 stopped before acknowledgement, ask the Leader to inspect its exact native
 terminal and use the existing `task message handoff` to the current authorized
 Assignment. The original claim remains; handoff never resubmits it automatically.
+If that Assignment is obsolete, the Leader may inspect the original and prior
+effects, then explicitly use `task message retire <task/message> --reason "<disposition>"`.
+Retirement preserves the original claim and records the management decision;
+it neither fabricates an acknowledgement nor proves native execution stopped.
+An unfinished claim fences its Assignment, not unrelated work of the same Role.
 
 In-flight, unknown, previously delivered, explicit interrupt-then and
 unsettled steer inputs retain their existing owner/receipt and report a bounded

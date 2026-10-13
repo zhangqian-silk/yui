@@ -3,8 +3,8 @@ import type NativeDatabase from "better-sqlite3";
 
 export const SQLITE_CANDIDATES = Object.freeze([
   // N-API avoids node::ObjectWrap's GC cleanup abort on Node 24.19/24.20.
-  Object.freeze({ name: "sqlite-modern", version: "13.0.3" }),
-  Object.freeze({ name: "sqlite-compat", version: "10.1.0" })
+  Object.freeze({ name: "sqlite-modern", version: "13.0.3", minimumNapi: 10 }),
+  Object.freeze({ name: "sqlite-compat", version: "10.1.0", minimumNapi: 0 })
 ]);
 type Candidate = typeof SQLITE_CANDIDATES[number];
 export type SqliteSelection = Readonly<Candidate & {
@@ -56,13 +56,20 @@ function selectionFailure(failures: unknown[]): AggregateError {
  * Loader injection supports deterministic native-failure tests, not user config.
  */
 export function createSqliteDriverSelector(
-  load: (candidate: Candidate) => typeof NativeDatabase = (candidate) => require(candidate.name)
+  load: (candidate: Candidate) => typeof NativeDatabase = (candidate) => require(candidate.name),
+  napiVersion = Number(process.versions.napi ?? 0)
 ): () => SqliteSelection {
   let selected: SqliteSelection | undefined;
   return () => {
     if (selected) return selected;
     const failures: Error[] = [];
     for (const candidate of SQLITE_CANDIDATES) {
+      // An unsupported Node-API constructor can crash outside JS exception
+      // handling. Exclude it before loading native code, not after probing.
+      if (napiVersion < candidate.minimumNapi) {
+        failures.push(new Error(`${candidate.name} requires Node-API ${candidate.minimumNapi}; runtime provides ${napiVersion}`));
+        continue;
+      }
       let Driver: typeof NativeDatabase;
       let probe: NativeDatabase.Database;
       try {

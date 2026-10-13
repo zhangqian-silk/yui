@@ -64,7 +64,8 @@ Node ABI 或系统动态库不兼容时尝试 `sqlite-compat`（`better-sqlite3@
 与 Home 健康检查区分。
 
 N-API 驱动避开了旧驱动在 Node 24.19/24.20 上的原生 `ObjectWrap` 垃圾回收崩溃。
-它要求 Node 22 或更高版本；Node 20 安装使用兼容候选。此依赖修正不要求更换
+它要求 Node-API 10；旧 API 的运行时（包括 Node 20 与 Node 22.9）会在加载
+原生模块前跳过它，使用兼容候选。此依赖修正不要求更换
 全局 Node 或迁移 Home。
 
 npm 安装时会**分别尝试两个**固定 optional alias，并非新版失败后才安装旧版，
