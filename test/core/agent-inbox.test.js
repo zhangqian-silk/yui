@@ -7,7 +7,7 @@ import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { createConfiguredAgent } from "../../dist/agent/agent.js";
 import { createGlobalRole, createRole, createRoleAgentBinding } from "../../dist/role/role.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
-import { bindGlobalRoleProviderRuntime, createRoleSessionSet, recordRoleAgentSession, updateRoleAgentSessionStatus } from "../../dist/executor/agentExecutor.js";
+import { bindGlobalRoleProviderRuntime, bindTaskRoleProviderRuntime, createRoleSessionSet, recordRoleAgentSession, updateRoleAgentSessionStatus } from "../../dist/executor/agentExecutor.js";
 import { createGlobalRoleMessage, createTaskMessage } from "../../dist/message/message.js";
 import { runInboxCommand } from "../../dist/commands/inboxCommands.js";
 import { createTask, activateTask } from "../../dist/task/task.js";
@@ -22,7 +22,7 @@ import { applyGlobalInputControl } from "../../dist/commands/globalRoleCommands.
 import { readDocument } from "../helpers/read-document.js";
 import { createReviewRound, createTaskReviewRound, attachReviewRoundWorkspace, startReviewRound } from "../../dist/review/reviewRound.js";
 import { createFixtureRun } from "../helpers/runFixture.mjs";
-import { createProviderRuntimeBinding } from "../../dist/runtime/providerRuntimeIdentity.js";
+import { acceptProviderTurn, beginProviderTurn, createProviderRuntimeBinding } from "../../dist/runtime/providerRuntimeIdentity.js";
 import { failRun } from "../../dist/agentRun/agentRun.js";
 import { createProject } from "../../dist/repository/project.js";
 
@@ -142,9 +142,15 @@ test("native admission and active consumption arbitrate atomically on the origin
   assert.equal(command("show", second).control.outcome, "pending");
 });
 
-test("a successor can finish retained role-addressed handling, while the replaced Session is denied", t => {
+for (const targeted of [false, true]) test(`a successor can settle retained handling (Session target: ${targeted}) without retargeting`, t => {
   const { store, command, add, env } = fixture(t, "operator");
   const id = add("Preserve across an interrupted handler");
+  if (targeted) {
+    const original = store.listGlobalRoleMessages("operator")[0];
+    store.updateGlobalRoleMessage({ ...original, inputControl: {
+      ...original.inputControl, expectedSessionId: "operator-native"
+    } });
+  }
   command("claim", id, "--request-id", "old-claim");
   const set = updateRoleAgentSessionStatus(store.getGlobalRoleSessionSet("operator"), "codex", "ended", now, "stopped");
   store.saveGlobalRoleSessionSet(recordRoleAgentSession(set, { ...set.sessions.codex,
@@ -156,6 +162,10 @@ test("a successor can finish retained role-addressed handling, while the replace
     "--reason", "Read original and verified prior effects, completed handling"], store, successor);
   assert.equal(ack.inbox.claim.actor.nativeSessionId, "operator-native");
   assert.equal(ack.inbox.ack.actor.nativeSessionId, "successor");
+  assert.equal(runInboxCommand(["show", id], store, successor).inputControl.expectedSessionId,
+    targeted ? "operator-native" : undefined);
+  const next = add("Later input");
+  runInboxCommand(["claim", next, "--request-id", "next"], store, successor);
 });
 
 test("an unsubmitted Global steer can be explicitly handled without replay or blocking later input", t => {
@@ -203,6 +213,86 @@ function taskFixture(t) {
   const task = args => runTaskCommand(args, store, { now: () => now, environment: {} });
   return { ...f, task, inbox, envFor };
 }
+
+test("a successor Leader settles an exact-Session window without replaying its originals", t => {
+  const { store, inbox, envFor, task } = taskFixture(t);
+  const target = { kind: "role", taskId: "task-1", roleName: "leader" };
+  store.saveMessage("task-1", createTaskMessage("message-1", "task-1", "Old request", "user",
+    { type: "user" }, now, { inputControl: {
+      action: "queue", requestId: "original", expectedSessionId: "leader-native"
+    } }));
+  enqueueWork(store, target, "user-message", now, [{ type: "message", taskId: "task-1", id: "message-1" }]);
+  const pending = inbox("leader", "list").items[0].id;
+  const claimed = inbox("leader", "claim", pending, "--request-id", "old-window");
+  const ended = updateRoleAgentSessionStatus(store.getTaskRoleSessionSet("task-1", "leader"), "codex", "ended", now, "stopped");
+  store.saveTaskRoleSessionSet(recordRoleAgentSession(ended, { ...ended.sessions.codex,
+    status: "active", endReason: undefined, nativeSessionId: "successor" }, new Date(now.getTime() + 1000)));
+  const successor = (...args) => runInboxCommand(args, store, { ...envFor("leader"), CODEX_THREAD_ID: "successor" }, now);
+  task(["message", "retire", "task-1/message-1", "--reason", "Inspected effects; obsolete"]);
+  successor("ack", claimed.id, "--request-id", "settle", "--reason", "Original and prior effects inspected; no action remains");
+  assert.equal(store.getTaskWake("task-1", claimed.id).inbox.claim.actor.nativeSessionId, "leader-native");
+  assert.equal(store.listMessages("task-1")[0].inputControl.expectedSessionId, "leader-native");
+  assert.equal(store.getWorkMailbox(target).processing, null);
+  task(["message", "queue", "task-1", "Next request", "--request-id", "next"]);
+  const next = successor("list").items[0].id;
+  successor("claim", next, "--request-id", "next-window");
+});
+
+for (const roleName of ["worker", "leader"]) test(`${roleName} unsubmitted steer is explicitly consumable and arbitrates against live admission`, t => {
+  const { store, task, inbox } = taskFixture(t);
+  let run;
+  if (roleName === "worker") {
+    task(["work", "create", "task-1", "Bounded work", "--role", roleName]);
+    task(["work", "dispatch", "task-1/work-item-1"]);
+    run = store.getActiveRun("task-1", roleName);
+    store.saveTaskRoleSessionSet(recordRoleAgentSession(createRoleSessionSet(
+      { scope: "task", taskId: "task-1", roleName }, "codex", now), {
+      agentId: "codex", adapterId: "codex", nativeSessionId: `${roleName}-native`,
+      policy: "fixed", status: "active", effective: run.effective
+    }, now));
+  }
+  let binding = createProviderRuntimeBinding({ providerNamespace: "openai/codex", accountScope: "codex",
+    conversationId: `${roleName}-native`, startedAt: now.toISOString() });
+  binding = beginProviderTurn(binding, { ...(run ? { runId: run.id } : {}), attemptId: "active",
+    authorityEpoch: 1, submittedAt: now.toISOString() });
+  binding = acceptProviderTurn(binding, { attemptId: "active", nativeTurnId: "current", acceptedAt: now.toISOString() });
+  store.saveTaskRoleSessionSet(bindTaskRoleProviderRuntime(store.getTaskRoleSessionSet("task-1", roleName), binding, now));
+  const scope = roleName === "worker" ? ["--to", roleName, "--work-item", "work-item-1"] : ["--to", roleName];
+  const steer = (request, expected) => task(["message", "steer", "task-1", "Correction", ...scope,
+    "--request-id", request, "--expected-target", expected]);
+  const claim = request => {
+    if (roleName === "leader" && !inbox(roleName, "list").items.length) {
+      // A notification may explicitly reference a saved steer; test its window
+      // ownership as well as the Worker's direct Message claim.
+      enqueueWork(store, { kind: "role", taskId: "task-1", roleName }, "user-message", now,
+        [{ type: "message", taskId: "task-1", id: store.listMessages("task-1").at(-1).id }]);
+    }
+    const id = inbox(roleName, "list").items[0].id;
+    return inbox(roleName, "claim", id, "--request-id", request);
+  };
+  assert.equal(steer("missed", "absent").data.steer.code, "TARGET_CHANGED");
+  const old = claim("old");
+  inbox(roleName, "ack", old.id, "--request-id", "old-done", "--reason", "Inspected missed correction");
+  // Interleave a real claim after persistence, before live-control admission.
+  const originalRead = store.getTaskRoleSessionSet.bind(store);
+  let interleaved;
+  store.getTaskRoleSessionSet = (...args) => {
+    const result = originalRead(...args);
+    if (!interleaved && store.listMessages("task-1").some(message => message.inputControl?.requestId === "racing")) {
+      interleaved = true;
+      const claimed = claim("race-winner");
+      inbox(roleName, "ack", claimed.id, "--request-id", "race-done", "--reason", "Handled before steer submission");
+    }
+    return result;
+  };
+  const racing = steer("racing", "current");
+  store.getTaskRoleSessionSet = originalRead;
+  assert.equal(racing.kind, "output", "no live steer intent after manual handling won");
+  assert.equal(racing.data.steer.code, "TARGET_CHANGED");
+  assert.equal(store.listMessages("task-1").at(-1).control, undefined);
+  assert.equal(steer("native-wins", "current").kind, "input-steer");
+  assert.throws(() => claim("too-late"), /delivery-pending|existing.*delivery owner/);
+});
 
 test("Leader claims one fixed window without accepting results, consuming later input, or fabricating native delivery", t => {
   const { store, inbox } = taskFixture(t);

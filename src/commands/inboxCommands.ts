@@ -87,10 +87,8 @@ function blocker(store: TaskStore, address: Address, entry: Entry): string | und
   }
   if (entry.interruptThen !== undefined) return "explicit-interrupt-handoff";
   if (entry.control !== undefined && entry.control.outcome !== "rejected") return `delivery-${entry.control.outcome}`;
-  // Global steer persists pending control before submission. No control means
-  // unsubmitted; the store's immutable claim check fences a delayed writer.
-  if (address.scope === "task" && entry.inputControl?.action === "steer"
-    && entry.control?.outcome !== "rejected") return "steer-attempt-not-settled";
+  // Both steer paths reserve pending control before submission and arbitrate
+  // with inbox claims. No control is unsubmitted, not an unknown delivery.
   if (address.scope === "global") {
     const message = entry as GlobalRoleMessage;
     if (message.delivery !== undefined) return `already-delivered-${message.delivery.via}`;
@@ -219,7 +217,6 @@ export function runInboxCommand(
         const message = tx.listMessages(current.taskId!).find(message => message.id === ref.id);
         if (message?.interruptThen !== undefined
           || message?.control !== undefined && message.control.outcome !== "rejected"
-          || message?.inputControl?.action === "steer" && message.control?.outcome !== "rejected"
           || message?.inputControl?.expectedSessionId !== undefined
             && message.inputControl.expectedSessionId !== current.nativeSessionId) {
           throw new Error("Window contains an input with an existing or foreign delivery owner; inspect its original receipt.");
@@ -258,12 +255,16 @@ export function runInboxCommand(
         entry = { ...entry, inbox: { claim: { requestId, actor: current, at: now.toISOString() } } };
       } else {
         if (!entry.inbox) throw new Error("Claim the exact entry before handling and acknowledgement.");
+        // Ack settles already-owned handling; it never submits or retargets
+        // the original. The current rightful successor may settle a claim
+        // acquired by the exact selected Session, retaining both identities.
+        const claimant = entry.inbox.claim.actor;
         if (isWake(entry)) {
           const messageIds = new Set(entry.refs?.filter(ref => ref.type === "message").map(ref => ref.id));
           for (const message of tx.listMessages(current.taskId!)) {
-            if (messageIds.has(message.id)) assertSelectedTarget(current, message);
+            if (messageIds.has(message.id)) assertSelectedTarget(claimant, message);
           }
-        } else assertSelectedTarget(current, entry);
+        } else assertSelectedTarget(claimant, entry);
         if (!isWake(entry) && current.scope === "task") {
           const invalid = messageAssignmentBlocker(tx, entry as TaskMessage);
           if (invalid !== undefined) throw new Error(`Assignment no longer authorizes this inbox disposition: ${invalid}.`);

@@ -2635,14 +2635,25 @@ function steerTaskInput(
   // and idempotent, so the Host's later settlement fold promotes it to a proven
   // terminal and never rewinds it. An idempotent replay above already returned
   // the saved Message, so this records the attempt exactly once.
-  store.transaction((tx) => {
+  const admitted = store.transaction((tx) => {
     const saved = tx.listMessages(result.task.id).find((entry) => entry.id === result.message.id);
     const requestId = saved?.inputControl?.requestId;
-    if (saved === undefined || requestId === undefined) return;
+    // The recipient may claim between Message persistence and control
+    // admission. A Leader window owns its referenced originals even after ack;
+    // never re-submit them through a delayed steer.
+    if (saved === undefined || requestId === undefined || saved.inbox !== undefined
+      || leaderTarget && tx.listTaskWakes(result.task.id).some(wake =>
+        wake.inbox !== undefined && wake.refs?.some(ref => ref.type === "message" && ref.id === saved.id))) return false;
     tx.updateMessage(result.task.id, recordTaskMessageControlOutcome(saved, {
       requestId, receiptId, outcome: "pending", observedAt: clock(options)
     }));
+    return true;
   });
+  if (!admitted) {
+    return output(`Steer message ${result.message.id} saved but not delivered (TARGET_CHANGED: inbox handling owns the input).\n`,
+      { taskId: result.task.id, message: messageReceipt(result.message),
+        steer: { state: "not-steered", code: "TARGET_CHANGED", detail: "Inbox handling already owns the original input." } });
+  }
   return {
     kind: "input-steer",
     taskId: result.task.id,

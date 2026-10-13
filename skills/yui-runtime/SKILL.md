@@ -224,6 +224,10 @@ list. On failure or interruption, leave the claim unacknowledged; it remains
 discoverable and does not expire or replay automatically. A current rightful
 successor must inspect original input and prior effects before finishing and
 acknowledging a retained claim. Never replay uncertain external actions.
+For an exact-Session input already claimed by its selected Session, a rightful
+successor may explicitly settle that handling after inspecting the original
+and prior effects. This preserves the original target and claim; it grants no
+permission to submit or execute the input in a different Session.
 An Assignment change does not inherit handling authority. If the original Run
 stopped before acknowledgement, ask the Leader to inspect its exact native
 terminal and use the existing `task message handoff` to the current authorized
@@ -238,6 +242,8 @@ In-flight, unknown, previously delivered, explicit interrupt-then and
 unsettled steer inputs retain their existing owner/receipt and report a bounded
 reason instead of being taken over. Use existing exact-receipt recovery when
 needed; do not change request IDs, clear identity, or copy input to bypass it.
+A steer with no control receipt was not submitted; it may be explicitly handled
+and acknowledged in its authorized inbox, without converting it into a queue.
 An accepted notification still follows its normal handling path, not another
 inbox delivery. Original Messages, wake windows and handling receipts remain
 readable after acknowledgement.
