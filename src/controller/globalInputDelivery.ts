@@ -1,5 +1,6 @@
 import type { TaskStore } from "../storage/taskStore.js";
-import { sendAgentHostRunControl, reconcileAgentHostTurn, AGENT_HOST_CONTROL_PROTOCOL } from "../runtime/agentHost.js";
+import { sendAgentHostRunControl, reconcileAgentHostTurn, AGENT_HOST_CONTROL_PROTOCOL,
+  type AgentHostControlResult } from "../runtime/agentHost.js";
 import { currentProviderConversation } from "../runtime/providerRuntimeIdentity.js";
 import { hasRuntimeCleanupObligation, runtimeLifecycleTarget } from "../runtime/lifecycleReservation.js";
 import { markGlobalRoleMessageNotDelivered, type GlobalRoleMessage } from "../message/message.js";
@@ -41,8 +42,9 @@ export async function deliverGlobalInputs(
         // Only ask the original Host to republish evidence it already holds.
         // Busy, unknown, unavailable and older Hosts never authorize replay,
         // Session creation, native reads through another client, or timeout settlement.
+        let observed: AgentHostControlResult | undefined;
         try {
-          const observed = await reconcileAgentHostTurn({
+          observed = await reconcileAgentHostTurn({
             home, scope: "global", roleName: role.name,
             control: { protocol: AGENT_HOST_CONTROL_PROTOCOL, type: "reconcile-turn",
               nativeSessionId: currentProviderConversation(bindingBefore).conversationId,
@@ -60,8 +62,15 @@ export async function deliverGlobalInputs(
             { attemptId: ownedTurn.attemptId, nativeTurnId: ownedTurn.nativeTurnId,
               nativeSessionId: currentProviderConversation(bindingBefore).conversationId,
               reason: "host-terminal-unobservable",
+              cause: observed === undefined ? "host-control-unavailable"
+                : observed.outcome === "rejected" ? "host-control-rejected" : "exact-terminal-not-retained",
+              hostState: observed?.snapshot.state ?? null,
+              endpointImplementation: observed?.snapshot.endpointImplementation ?? null,
+              eventDelivery: observed?.snapshot.eventDelivery ?? null,
+              // Endpoint generation is not a loaded Host/package version.
+              inputKind: ownedTurn.attemptId.startsWith("direct:") ? "direct" : "managed",
               detail: error instanceof Error ? error.message : String(error),
-              recovery: "Inspect the original Host, Session and input. Restore the compatible Host observation path, or explicitly stop/replace with exact native quiescence evidence. Do not resend unknown input.",
+              recovery: "Inspect the original Host, Session, input and raw Inbox. Controller restart preserves live Hosts; it does not upgrade their loaded observation code. Restore the supported observation path, or explicitly stop/replace with exact native quiescence evidence. Missing eventDelivery means unreported, not healthy. Do not resend unknown input.",
               confirmed: ownedTurn.status, unknown: "Native terminal and remaining writer ownership." },
             options.now ?? new Date()));
           continue;

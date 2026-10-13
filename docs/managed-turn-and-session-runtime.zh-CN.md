@@ -123,8 +123,10 @@ Task 完成／取消／退役、Publication 记录／采用及 InputRequest 与�
 interrupt-then 的预留输入不会因超出普通页而被跳过，用户输入顺序和未知效果围栏保持不变。
 SQL 聚合仍检查匹配的存储行；这些上界约束物化记录和每轮投递工作，不限制持久邮箱或数据库大小。
 
-完整周期协调可要求原 Host 重发它已经观察到的、客户端所属的精确终态，严格绑定 Session、
-authority、attempt 和 native Turn，通过原 Inbox 和规范观察器处理完整结果；不提交新输入、
+完整周期协调可要求原 Host 重发它已经观察到的精确终态，严格绑定 Session、
+authority、attempt 和 native Turn。Desktop direct 回合还要求该 Host 保留同一 writer 围栏下
+精确匹配的开始和结束，同时核对 `direct:<nativeTurnId>` 与 native Turn；只保留最近一次
+观察，不把 direct 输入改为 client-owned。通过原 Inbox 和规范观察器处理完整结果；不提交新输入、
 另开原生客户端查询、重启 Host，也不凭时间或 idle 推定静止。正常终态在释放 Host 占用后
 再次发出队列信号。未知接受只有精确证据才能结算，显式停止／替换及外部 writer 仍是硬边界。
 
@@ -136,6 +138,15 @@ runtime-attention Message，可通过既有 message list/show 查看，不自动
 如果 Provider 从未报告终态，或原 Host 已失去证据，则不能自动证明完成；须恢复兼容观察路径，
 或在取得原生静止证据后显式停止／替换。不新增私有定时器、迁移或 ack 状态，不猜补任意旧历史、
 收养旧 Host，也不授权生产升级／重启。
+
+Controller 重启保留存活 Host，不替换它们已加载的代码。支持当前协议的原 Host 在 Controller
+停机期间仍把原始观察写入不可变 Inbox，重启后由 Controller 按当前 Session 围栏应用。
+冻结 Manifest 的旧 CLI/storage 不匹配是 Context 读取失败，不足以证明 Host 发布失败：
+发布器使用 Inbox/RPC，不执行该 CLI。Endpoint 的 checkout generation 也不是完整 Host
+构建身份。runtime-attention 区分控制通道不可达、控制被拒绝（包括实现不支持协调）和
+精确终态未保留，并附已报告的 Endpoint/eventDelivery 观察；缺少诊断表示未报告，而非健康。
+再次重启 Controller 或猜测 adoption 不能修复不支持的存活代码；须检查原证据，并为必要的
+生命周期恢复另行取得明确授权。
 
 | 证据 | 处置 |
 | --- | --- |

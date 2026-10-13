@@ -408,6 +408,7 @@ test("unobservable Global Host emits one durable diagnosis, never replays or ste
   const evidence = f.store.listGlobalRoleMessages("operator").filter(m => m.inputControl?.requestId.startsWith("runtime-attention:"));
   assert.equal(evidence.length, 1);
   assert.match(evidence[0].body, /host-terminal-unobservable/);
+  assert.match(evidence[0].body, /host-control-rejected/);
   assert.ok(evidence[0].notDelivered);
   const queued = f.store.queryGlobalRoleMessages("operator", { pending: true, limit: 64 }).messages;
   assert.equal(globalInputBacklog(queued, before, now).reason, "in-flight-or-unobserved-terminal");

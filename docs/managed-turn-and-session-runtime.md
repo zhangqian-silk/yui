@@ -160,8 +160,11 @@ reordered to make notifications appear healthy. SQL aggregates still inspect
 matching stored rows; these bounds limit materialized records and per-pass
 delivery work, not the size of the persisted mailbox or database.
 
-A full reconciliation may ask the original Host to republish an already observed,
-client-owned terminal for the exact Session, authority, attempt and native Turn.
+A full reconciliation may ask the original Host to republish an already observed
+terminal for the exact Session, authority, attempt and native Turn. For a Desktop
+direct Turn, that Host must have retained both the exact start and terminal under
+the unchanged writer fence; `direct:<nativeTurnId>` and the native Turn are both
+required. This bounded latest observation does not make the input client-owned.
 This uses the existing Inbox and canonical observer, including the original result.
 It does not submit input, query another native client, restart a Host, or infer
 quiescence from elapsed time/idle state. Normal terminal processing signals again
@@ -182,6 +185,19 @@ automatic reconciliation cannot prove completion: restore the compatible observa
 path or explicitly stop/replace only with the required native quiescence evidence.
 This change does not backfill arbitrary pre-existing historical events, adopt old
 Hosts, or authorize production upgrades/restarts.
+
+Controller restart preserves live Hosts; it does not replace their loaded code.
+A supported surviving Host writes raw observations to the immutable Inbox even
+while the Controller is down; the restarted Controller applies them under current
+Session fences. A frozen Manifest's CLI/storage mismatch is a context-read failure,
+not proof that the Host publisher failed: this publisher uses the Inbox/RPC, not
+that CLI. An Endpoint checkout generation is not a complete Host build identity.
+The runtime-attention evidence distinguishes an unavailable control channel,
+rejected control (including implementations without reconciliation), and a missing
+exact retained terminal, with reported Endpoint/event-delivery observations.
+Missing delivery diagnostics mean unreported, not healthy. Unsupported live code
+cannot be repaired by another Controller restart or guessed adoption; inspect the
+original evidence and explicitly authorize any necessary lifecycle recovery.
 
 `task wake show <task> <wake>` now defaults to inputs/results and explicit
 references, including older referenced originals. It omits unrelated diagnostic
