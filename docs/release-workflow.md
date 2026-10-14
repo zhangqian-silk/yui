@@ -51,7 +51,12 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
-### 2.7.0 compatibility and migration notes
+### 2.7.1 compatibility and migration notes
+
+This release delivers the intended 2.7 feature line. The `v2.7.0` attempt stopped
+before npm publication because package smoke compared a macOS temporary path
+with its physical alias. The smoke now uses the physical package root; its
+assertions and the cross-platform release gate remain intact.
 
 This minor adds own-scope Agent inbox discovery, full reads, claims and
 acknowledgements for GlobalRoles and Task Leaders, Workers and Reviewers.
@@ -61,7 +66,7 @@ acknowledgement is not execution-result acceptance. Durable receipts arbitrate
 with automatic delivery without replaying unknown native input.
 
 Storage advances from **1.6 to 1.7** through the centralized additive migration
-for Message and Leader-wake inbox receipts. Use `yui update --version 2.7.0`
+for Message and Leader-wake inbox receipts. Use `yui update --version 2.7.1`
 for an exact upgrade; the updater preflights the target Home, takes a backup
 when migration is required, and coordinates the exact Controller replacement.
 Do not edit stored records manually. Task, Session and original input history

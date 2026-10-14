@@ -26,7 +26,9 @@ const assembled = process.argv[2] === "--assembled";
 if (process.argv.length !== (assembled ? 4 : 2)) {
   throw new Error("Usage: smoke-runtime-package.mjs [--assembled <package-root>]");
 }
-const root = resolve(assembled ? process.argv[3] : process.env.YUI_INSTALLED_ROOT ?? process.cwd());
+// Imports resolve physically, including macOS /var -> /private/var. Compare
+// installed Skill paths against that same package identity.
+const root = realpathSync(resolve(assembled ? process.argv[3] : process.env.YUI_INSTALLED_ROOT ?? process.cwd()));
 const sandbox = mkdtempSync(join(tmpdir(), "yui-runtime-package-smoke-"));
 const isolatedHome = join(sandbox, "home");
 const yuiHome = join(isolatedHome, ".yui");
