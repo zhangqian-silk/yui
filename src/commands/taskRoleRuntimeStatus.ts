@@ -131,6 +131,7 @@ export function taskRoleHostDiagnostic(host: TaskRoleHostObservation): string {
   const delivery = snapshot.eventDelivery;
   return [
     `Provider Host=${snapshot.state}`,
+    `terminal reconciliation=${snapshot.controlCapabilities?.includes("reconcile-turn") ? "supported" : "unreported/unsupported"}`,
     delivery === undefined ? "event delivery=unreported" :
       `pending facts=${delivery.pending}; native terminals awaiting acknowledgement=${delivery.pendingTerminals}`,
     delivery?.failure === undefined ? undefined :
@@ -151,6 +152,7 @@ export function withTaskRoleHostObservation(
   }
   const reportingNeedsAttention = snapshot !== undefined && (
     snapshot.state === "failed" || snapshot.state === "exited"
+    || snapshot.eventDelivery === undefined
     || snapshot.eventDelivery?.failure !== undefined
     || (snapshot.eventDelivery?.pendingTerminals ?? 0) > 0
   );

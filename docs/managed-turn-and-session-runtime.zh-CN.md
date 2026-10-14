@@ -175,10 +175,18 @@ runtime-attention Message，可通过既有 message list/show 查看，不自动
 
 Controller 重启保留存活 Host，不替换它们已加载的代码。支持当前协议的原 Host 在 Controller
 停机期间仍把原始观察写入不可变 Inbox，重启后由 Controller 按当前 Session 围栏应用。
+Inbox 写入故障时，Host 保留尚未持久化的原始 start 与完整终态，不能被后续直接 Turn
+覆盖；修复后按原始观察顺序补收。Task 与 Global 完整协调也覆盖没有后续输入的最后
+一个未结算 Turn。补收不重执行；落盘前进程丢失仍是明确的恢复缺口。
 冻结 Manifest 的旧 CLI/storage 不匹配是 Context 读取失败，不足以证明 Host 发布失败：
 发布器使用 Inbox/RPC，不执行该 CLI。Endpoint 的 checkout generation 也不是完整 Host
 构建身份。runtime-attention 区分控制通道不可达、控制被拒绝（包括实现不支持协调）和
 精确终态未保留，并附已报告的 Endpoint/eventDelivery 观察；缺少诊断表示未报告，而非健康。
+status 的 `controlCapabilities` 决定可用的 v1 增量命令，未声明 `reconcile-turn` 时
+直接返回 unsupported，不发送已知无效请求，仍可消费原始 Inbox。
+`hostImplementation` 在 Host 加载时捕获，不借磁盘当前安装或 Endpoint generation
+冒充运行代码。兼容构建差异不阻止安全释放后的同一原生 Session 恢复，
+不改变模型、账号、原生权限或工作域。
 再次重启 Controller 或猜测 adoption 不能修复不支持的存活代码；须检查原证据，并为必要的
 生命周期恢复另行取得明确授权。
 

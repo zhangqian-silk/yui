@@ -21,6 +21,7 @@ import {
   publishStructuredProviderOpened,
   publishStructuredProviderStarted,
   publishStructuredProviderTerminal,
+  replayStructuredProviderPersistence,
   structuredProviderEventDelivery
 } from "../controller/structuredProviderObservation.js";
 import {
@@ -53,6 +54,7 @@ import {
 } from "./agentError.js";
 import type { AgentHostEventDelivery } from "./agentHostProtocol.js";
 import { AGENT_HOST_CONTROL_PROTOCOL } from "./agentHostProtocol.js";
+import { AGENT_HOST_IMPLEMENTATION } from "./agentHostImplementation.js";
 import { closeAgentHostEndpoints } from "./agentHostCleanup.js";
 import {
   readAgentRunConfigurationObservation,
@@ -218,6 +220,10 @@ export type AgentHostSnapshot = Readonly<{
   authorityOwner?: ProviderAuthorityFence["owner"];
   authorityHolderId?: string;
   endpointImplementation?: ImplementationRef;
+  /** Loaded Host bridge, distinct from the native Endpoint and disk install. */
+  hostImplementation?: ImplementationRef;
+  /** Additive v1 operations. Missing advertisement means support is unknown. */
+  controlCapabilities?: readonly string[];
   /** Live-only status reading, rebuilt on each query and never persisted. */
   runConfiguration?: AgentRunConfigurationObservation;
   eventDelivery?: AgentHostEventDelivery;
@@ -246,7 +252,7 @@ export type AgentHostControlResult = Readonly<{
   /** Structured cause when the Host could not complete the request. */
   failure?: ProviderDeliveryFailure;
   cancellation?: AgentEndpointCancellation;
-  reconciliation?: "terminal-republished" | "unobserved";
+  reconciliation?: "terminal-republished" | "unobserved" | "unsupported";
 }>;
 
 /**
@@ -461,6 +467,9 @@ export async function runAgentHost(input: Readonly<{
         && previous.started.nativeSessionId === session?.nativeSessionId) {
         await publishStructuredProviderTerminal({
           home: input.home, environment: previous.payload.environment, terminal: previous.terminal
+        }).catch(() => {
+          // The publisher retains the original unpersisted bytes. Still
+          // observe the new start; a failed old write must not hide its writer.
         });
       }
       if (session !== undefined && started.nativeSessionId === session.nativeSessionId
@@ -855,6 +864,8 @@ export async function runAgentHost(input: Readonly<{
       throw new Error("Agent Host accepts only managed Provider control launches.");
     }
     if (activeRunPayload !== undefined
+      || sessionPayload !== undefined
+        && (structuredProviderEventDelivery(input.home, sessionPayload.environment).unpersisted ?? 0) > 0
       || ["starting", "ready", "settling", "delivery-unknown"].includes(snapshot.state)) {
       throw new Error("Agent Host still owns an unsettled Provider Turn.");
     }
@@ -886,8 +897,7 @@ export async function runAgentHost(input: Readonly<{
           || providerControl.mode !== "resume"
           || providerControl.nativeSessionId !== session.nativeSessionId
           || (providerControl.endpointImplementation !== undefined
-            && (providerControl.endpointImplementation.id !== session.configuration.implementation.id
-              || providerControl.endpointImplementation.generation !== session.configuration.implementation.generation))) {
+            && providerControl.endpointImplementation.id !== session.configuration.implementation.id)) {
           throw new Error("Agent Host launch does not match its live Provider Conversation.");
         }
         sessionPayload = next;
@@ -899,9 +909,8 @@ export async function runAgentHost(input: Readonly<{
         }
         // The Controller revalidates the adopted execution environment while
         // redeeming this launch; a persistent Host must not reopen its schema.
-        // Pin before opening: the Session holds this exact generation for every
-        // later Turn. A pinned reference naming code this process is not running
-        // fails here, rather than silently starting on a different generation.
+        // Hold the code actually loaded by this Host. Historical build identity
+        // is provenance; native resume and current authority remain mandatory.
         endpointLease ??= endpointOwner.pin(providerControl.adapterId, providerControl.endpointImplementation);
         endpointAdapterId = providerControl.adapterId;
         const started = await (providerControl.mode === "new"
@@ -1044,6 +1053,7 @@ export async function runAgentHost(input: Readonly<{
       throw new Error("Agent Host rejected a stale Provider writer fence.");
     }
     if (activeRunPayload !== undefined || snapshot.state === "settling"
+      || (structuredProviderEventDelivery(input.home, sessionPayload.environment).unpersisted ?? 0) > 0
       || session.inspect().activeNativeTurnId !== undefined) {
       operation.failure = providerDeliveryFailure({
         detail: "Agent Host still owns an unsettled Provider Turn.",
@@ -1329,7 +1339,9 @@ export async function runAgentHost(input: Readonly<{
     if (session === undefined || request.nativeSessionId !== session.nativeSessionId) {
       throw new Error("Agent Host authority targets a different Provider Conversation.");
     }
-    if (activeRunPayload !== undefined
+    if (activeRunPayload !== undefined || session.inspect().activeNativeTurnId !== undefined
+      || sessionPayload !== undefined
+        && (structuredProviderEventDelivery(input.home, sessionPayload.environment).unpersisted ?? 0) > 0
       || ["starting", "ready", "settling", "delivery-unknown"].includes(snapshot.state)) {
       throw new Error("Agent Host authority cannot transfer while a AgentRun is unsettled.");
     }
@@ -1400,7 +1412,9 @@ export async function runAgentHost(input: Readonly<{
       return enqueueSerialized(async () => {
         const current = session;
         if (!current?.nativeAccess || current.nativeSessionId !== request.nativeSessionId
-          || !sessionPayload || activeNativeTurnId || authority?.owner !== "controller"
+          || !sessionPayload || activeRunPayload || activeNativeTurnId
+          || (structuredProviderEventDelivery(input.home, sessionPayload.environment).unpersisted ?? 0) > 0
+          || authority?.owner !== "controller"
           || (sessionPayload.environment.YUI_SESSION_SCOPE === "task" && sessionPayload.environment.YUI_ROLE !== "leader")
           || (sessionPayload.environment.YUI_SESSION_SCOPE === "global" && sessionPayload.environment.YUI_ROLE !== "operator")) {
           throw new Error("Model switching requires the idle current controlled Codex Session, without a native terminal writer.");
@@ -1458,6 +1472,27 @@ export async function runAgentHost(input: Readonly<{
         || authority === undefined || !sameProviderAuthorityFence(authority, request.authority)) {
         throw new Error("Terminal reconciliation targets a different Session or authority.");
       }
+      const recovered = await enqueueSerialized(async () => {
+        if (session?.nativeSessionId !== request.nativeSessionId || authority === undefined
+          || !sameProviderAuthorityFence(authority, request.authority)) {
+          throw new Error("Session changed before original event persistence recovery.");
+        }
+        const persisted = await replayStructuredProviderPersistence(input.home, sessionPayload!.environment);
+        if (persisted.length > 0 && activeRunPayload === undefined) {
+          const active = session.inspect().activeNativeTurnId;
+          updateSnapshot(hostSnapshot(active === undefined ? "idle" : "busy", {
+            adapterId: session.adapterId, processInstanceId: session.processInstanceId,
+            nativeSessionId: session.nativeSessionId, conversationId: session.conversationId,
+            nativeTurnId: active, ...authorityFields()
+          }));
+        }
+        return persisted.some(event => ["turn.completed", "turn.failed", "turn.cancelled"].includes(event.kind)
+          && event.fence.nativeSessionId === request.nativeSessionId
+          && (request.nativeTurnId === undefined || event.fence.nativeTurnId === request.nativeTurnId)
+          && (event.fence.receiptId === request.attemptId
+            || event.fence.receiptId === undefined && request.nativeTurnId !== undefined
+              && request.attemptId === `direct:${request.nativeTurnId}`));
+      });
       const direct = directObservation;
       const directMatch = direct?.terminal !== undefined
         && request.nativeTurnId !== undefined
@@ -1471,7 +1506,8 @@ export async function runAgentHost(input: Readonly<{
         || terminal.nativeSessionId !== request.nativeSessionId
         || !directMatch && (terminal.clientOwned !== true || terminal.attemptId !== request.attemptId)
         || request.nativeTurnId !== undefined && terminal.nativeTurnId !== request.nativeTurnId) {
-        return { ...controlResult("status", snapshot), reconciliation: "unobserved" };
+        return { ...controlResult("status", snapshot),
+          reconciliation: recovered ? "terminal-republished" : "unobserved" };
       }
       // Serialize with submission/terminal persistence. The original Host and
       // original launch envelope remain the observer, including the full result.
@@ -1864,7 +1900,17 @@ export async function reconcileAgentHostTurn(input: Readonly<{
 }>): Promise<AgentHostControlResult> {
   // Periodic observation must not hold the scheduler behind an unavailable Host.
   // A timeout is only an observation failure, never permission to submit again.
-  return exchangeAgentHostControl(agentHostControlSocketPath(input), input.control, 1_000);
+  const path = agentHostControlSocketPath(input);
+  const observed = await exchangeAgentHostControl(path, {
+    protocol: AGENT_HOST_CONTROL_PROTOCOL, type: "status"
+  }, 1_000);
+  if (observed.outcome === "rejected") return observed;
+  if (!observed.snapshot.controlCapabilities?.includes("reconcile-turn")) {
+    // Older v1 Hosts still serve status and their immutable Inbox remains
+    // consumable. Neither idle nor absent eventDelivery proves a terminal.
+    return { ...observed, reconciliation: "unsupported" };
+  }
+  return exchangeAgentHostControl(path, input.control, 1_000);
 }
 
 export async function waitForAgentHostLaunchAck(input: Readonly<{
@@ -2062,6 +2108,11 @@ export async function openAgentHostControl(
             ...result,
             snapshot: {
               ...result.snapshot,
+              hostImplementation: AGENT_HOST_IMPLEMENTATION,
+              controlCapabilities: payload.providerControl === undefined ? ["status"] : [
+                "status", "launch", "submit-turn", "steer-turn", "cancel", "set-authority",
+                "native-open", "native-respond", "native-model", "reconcile-turn"
+              ],
               ...(!["task", "global"].includes(payload.environment.YUI_SESSION_SCOPE ?? "") ? {} : {
                 eventDelivery: structuredProviderEventDelivery(home, payload.environment, result.snapshot.nativeSessionId)
               })
@@ -2337,6 +2388,12 @@ function validateSnapshot(snapshot: AgentHostSnapshot): AgentHostSnapshot {
   if (snapshot.inputAcceptance !== undefined
     && snapshot.inputAcceptance !== "provider" && snapshot.inputAcceptance !== "transport") {
     throw new Error("Agent Host input acceptance evidence is invalid.");
+  }
+  if (snapshot.controlCapabilities !== undefined && (
+    !Array.isArray(snapshot.controlCapabilities) || snapshot.controlCapabilities.length > 64
+    || snapshot.controlCapabilities.some(value => typeof value !== "string"
+      || value.length === 0 || value.length > 64 || value.includes("\0")))) {
+    throw new Error("Agent Host control capability advertisement is invalid.");
   }
   const authorityFields = [
     snapshot.authorityEpoch,

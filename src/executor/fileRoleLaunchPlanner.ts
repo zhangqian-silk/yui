@@ -410,15 +410,10 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
     const existingSession = owner.scope === "task"
       ? this.store.getTaskRoleSessionSet(owner.taskId, role.name)?.sessions[input.agentId]
       : this.store.getGlobalRoleSessionSet(role.name)?.sessions[input.agentId];
-    // A resume carries the Session's recorded generation forward unchanged. This
-    // planner runs in the Controller, which after an upgrade is already the new
-    // code, so it cannot speak for the still-running Agent Host that owns the
-    // Session: rejecting here would end live Sessions on Controller upgrade,
-    // while rewriting to current code would silently move a Session onto code it
-    // never started on. The Host that actually executes the implementation makes
-    // the decision — a reused live Host accepts its own generation, and a newly
-    // started Host running different code fails closed
-    // (`agentEndpointOwnership.pin` -> `requireBuiltinAgentEndpointImplementation`).
+    // Retain original launch provenance. The Host reports its actually loaded
+    // build separately and checks adapter/native identity, not build equality.
+    // A compatible new Host can resume this exact Session after safe release;
+    // this planner never silently replaces a live Host or native conversation.
     const endpointImplementation = input.mode === "resume"
       ? validateAgentEndpointImplementation(existingSession!.endpointImplementation)
       : builtinAgentEndpointImplementation(binding.adapterId);

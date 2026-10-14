@@ -170,6 +170,7 @@ export type ControllerRuntimeOptions = Readonly<{
    */
   jobSupervisor?: Readonly<{ reconcile(now: Date): void }>;
   globalInputDelivery?: (options: { reconcile: boolean; now: Date }) => Promise<void>;
+  hostTerminalRecovery?: () => Promise<void>;
   providerRetry?: Readonly<{
     reconcile(): Promise<void>;
     deadlines(): readonly { key: MailboxKey; at: number }[];
@@ -1104,6 +1105,7 @@ export class FileTaskController {
   readonly #globalInputDelivery: ControllerRuntimeOptions["globalInputDelivery"];
   readonly #providerRetry: ControllerRuntimeOptions["providerRetry"];
   readonly #continuationReconciler: ControllerRuntimeOptions["continuationReconciler"];
+  readonly #hostTerminalRecovery: ControllerRuntimeOptions["hostTerminalRecovery"];
   #current: Promise<ControllerSchedulerResult> | undefined;
   #operatorCurrent: Promise<void> | undefined;
   #runtimeObserverCurrent: Promise<void> | undefined;
@@ -1198,6 +1200,7 @@ export class FileTaskController {
     this.#leaderWakeFence = options.leaderWakeFence;
     this.#jobSupervisor = options.jobSupervisor;
     this.#continuationReconciler = options.continuationReconciler;
+    this.#hostTerminalRecovery = options.hostTerminalRecovery;
     this.#globalInputDelivery = options.globalInputDelivery;
     this.#providerRetry = options.providerRetry;
     this.#signalScheduler = new MailboxScheduler(
@@ -1461,6 +1464,9 @@ export class FileTaskController {
             }
           }
           const firstRuntimeDrain = await this.#drainRuntimeEvents();
+          if (scope.kind === "full" && this.#hostTerminalRecovery !== undefined) {
+            await this.#observeMaintenance("Host terminal recovery", this.#hostTerminalRecovery);
+          }
           await this.#providerRetry?.reconcile();
           await this.#globalInputDelivery?.({ reconcile: scope.kind === "full", now: this.#now() });
           for (const taskId of runtimeTaskFailureIds(firstRuntimeDrain)) {

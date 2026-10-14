@@ -351,13 +351,27 @@ Home database, including for process custody, native account locations, or
 execution-environment checks. Only the Controller owns storage and resolves
 durable facts; malformed current input fails at its normal protocol boundary.
 
-Breaking upgrades do not inherit historical Hosts or processes. Runtime startup,
-`upgrade`, `update`, and release activation no longer scan old Host sockets or
-processes, infer their capabilities, or negotiate a compatibility handoff. Use a
-clean runtime environment; this is not permission to discard pending work or
-kill resources of uncertain ownership. Current Controller restart, exact
-process-generation checks, handover locks, Session authority and event replay
-protection remain enforced.
+Compatible upgrades retain logical Sessions and live Hosts. A build generation
+is diagnostic provenance, not a native-resume gate: after a safe authorized Host
+release, the current built-in adapter may resume the same native identity.
+Model, account, permissions, workspace and current authority are not relaxed.
+No module hot-replacement or old-code installation is used.
+
+The supported interoperability range is the existing control/event v1 and RPC
+version 1, not arbitrary historical processes. Host status now advertises
+`controlCapabilities` and `hostImplementation` captured at process load, separate
+from the Endpoint build. Controllers request `reconcile-turn` only when
+advertised. Pre-advertisement v1 Hosts still support status and raw Inbox
+consumption; exact terminal republication is unavailable, not guessed from a
+package version. Unknown protocols remain refused.
+
+`update` reports program/storage completion separately from retained Host state.
+It neither interrupts compatible busy Hosts nor automatically replaces an
+unsupported one. A required refresh uses the existing explicit lifecycle, with
+exact Turn, background execution and writer-release evidence before reattachment.
+Idle status alone is insufficient; uncertain state blocks refresh rather than
+authorizing force-kill, input replay or a new native identity. Controller
+handover locks, process-generation fences and Session authority remain enforced.
 
 Storage upgrades are limited to the current major's explicit minor steps.
 Cross-major conversion is independently authorized and is not a runtime fallback.
@@ -375,6 +389,13 @@ reporting alongside durable Run state. Pending native results or known reporting
 failures require attention; they do not mean the Provider failed, the Run ended,
 or the work was accepted. The Host's live diagnostics inspect only its own event
 file identities and never parse or quarantine another producer's newer payload.
+Missing event delivery is unreported, not healthy. `unpersisted` counts original
+facts still held in the Host after an Inbox write failure. Reconciliation first
+retries those exact bytes in observation order, then republishes retained exact
+terminal evidence; it does not execute input. Keep this Host alive until its
+bytes are durable. A filesystem fault followed by process loss cannot be
+repaired by inventing a result. Task and Global full reconciliation use the
+same capability-gated operation, including a final input with no queued successor.
 
 ## CLI and Controller release boundary
 

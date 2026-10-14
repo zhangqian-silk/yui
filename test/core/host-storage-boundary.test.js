@@ -33,6 +33,7 @@ import { FileRoleLaunchPlanner } from "../../dist/executor/fileRoleLaunchPlanner
 import { TmuxSessionHost } from "../../dist/runtime/tmuxAdapters.js";
 import { launchBrokerForHome } from "../../dist/runtime/launchBroker.js";
 import { createSessionOwnerIdentity } from "../../dist/runtime/sessionOwnerIdentity.js";
+import { recoverTaskHostTerminals } from "../../dist/controller/taskHostTerminalRecovery.js";
 
 function executionFixture(t) {
   const home = mkdtempSync(join(tmpdir(), "yui-host-execution-"));
@@ -392,4 +393,32 @@ test("Controller resolves Host facts, retains ACK-loss replay and rejects wrong/
   assert.equal(status.data.role.activeRun.id, successor.id);
   assert.equal(store.getRun("task-1", successor.id).status, "active", "A reporting failure is not a model or business terminal.");
   assert.match(status.output, /supported storage contract/);
+});
+
+test("Task periodic recovery asks only the original Host for its exact unsettled terminal", async t => {
+  const { home, store, environment, identity, run, scheduler } = executionFixture(t);
+  const errors = [];
+  const requests = [];
+  await recoverTaskHostTerminals(home, store, error => errors.push(error), async request => {
+    requests.push(request);
+    assert.equal(request.control.type, "reconcile-turn");
+    assert.equal(request.control.attemptId, identity.attemptId);
+    assert.equal(request.control.nativeSessionId, identity.nativeSessionId);
+    await publishStructuredProviderTerminal({ home, environment,
+      terminal: { ...identity, clientOwned: true, status: "completed",
+        output: "Recovered Task report", observedAt: new Date().toISOString() } });
+    return { protocol: "yui-agent-host-control/v1", outcome: "status",
+      reconciliation: "terminal-republished", snapshot: {
+        schemaVersion: 1, state: "idle", updatedAt: new Date().toISOString()
+      } };
+  });
+  const processor = new FileRuntimeEventProcessor(new FileRuntimeEventInbox(home), scheduler);
+  assert.deepEqual(processor.drain(new Date()).failed, []);
+  assert.equal(store.getRun("task-1", run.id).result.output, "Recovered Task report");
+  await recoverTaskHostTerminals(home, store, error => errors.push(error), async () => {
+    assert.fail("A settled Turn needs no further Host recovery.");
+  });
+  assert.equal(requests.length, 1);
+  assert.deepEqual(errors, []);
+  assert.equal(store.listRuns("task-1").length, 1);
 });

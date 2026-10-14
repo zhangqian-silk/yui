@@ -19,9 +19,8 @@ export async function deliverGlobalInputs(
 ): Promise<void> {
   for (const role of store.listGlobalRoles()) {
     try {
-      if (store.queryGlobalRoleMessages(role.name, { handling: true, limit: 0 }).count > 0) continue;
       let pending = store.queryGlobalRoleMessages(role.name, { pending: true, limit: 64 }).messages;
-      if (pending.length === 0 || hasRuntimeCleanupObligation(store.getWorkMailbox(
+      if (hasRuntimeCleanupObligation(store.getWorkMailbox(
         runtimeLifecycleTarget({ scope: "global", roleName: role.name })))) continue;
       let sessions = store.getGlobalRoleSessionSet(role.name);
       // A detached Host keeps an active Session and may reconnect. An explicit
@@ -53,6 +52,9 @@ export async function deliverGlobalInputs(
               authority: { epoch: bindingBefore.authority.epoch, owner: "controller",
                 holderId: bindingBefore.authority.holderId } }
           });
+          if (observed.reconciliation === "unsupported") {
+            throw new Error("Host does not advertise reconcile-turn. Preserve the accepted input and original Host; consume retained Inbox evidence or use an explicitly authorized, quiescence-verified refresh.");
+          }
           if (observed.outcome === "rejected" || ["idle", "failed", "exited"].includes(observed.snapshot.state)
             && observed.reconciliation !== "terminal-republished") {
             throw new Error(observed.failure?.detail ?? observed.snapshot.detail ?? "Host cannot reconcile this exact terminal.");
@@ -64,9 +66,12 @@ export async function deliverGlobalInputs(
               nativeSessionId: currentProviderConversation(bindingBefore).conversationId,
               reason: "host-terminal-unobservable",
               cause: observed === undefined ? "host-control-unavailable"
+                : observed.reconciliation === "unsupported" ? "host-control-unsupported"
                 : observed.outcome === "rejected" ? "host-control-rejected" : "exact-terminal-not-retained",
               hostState: observed?.snapshot.state ?? null,
               endpointImplementation: observed?.snapshot.endpointImplementation ?? null,
+              hostImplementation: observed?.snapshot.hostImplementation ?? null,
+              controlCapabilities: observed?.snapshot.controlCapabilities ?? null,
               eventDelivery: observed?.snapshot.eventDelivery ?? null,
               // Endpoint generation is not a loaded Host/package version.
               inputKind: ownedTurn.attemptId.startsWith("direct:") ? "direct" : "managed",
@@ -85,6 +90,7 @@ export async function deliverGlobalInputs(
         pending = store.queryGlobalRoleMessages(role.name, { pending: true, limit: 64 }).messages;
         if (pending.length === 0) continue;
       }
+      if (store.queryGlobalRoleMessages(role.name, { handling: true, limit: 0 }).count > 0) continue;
       // Interrupt-then reserves the next legal slot even behind a large queue.
       const reservedPage = store.queryGlobalRoleMessages(role.name, {
         pending: true, interruptThen: true, limit: 64

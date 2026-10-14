@@ -30,11 +30,18 @@ import {
 import { redactAgentErrorText } from "../runtime/agentError.js";
 
 let structuredSequence = 0;
-let deliveryFailure: AgentHostEventDelivery["failure"];
+const deliveryFailures = new Map<string, NonNullable<AgentHostEventDelivery["failure"]>>();
 // Only live diagnostics for this process's immutable files, not another queue.
 // No payload, retry, or authoritative delivery state is kept in this map.
 const emittedEvents = new Map<string, Readonly<{
   home: string; taskId?: string; roleName: string; nativeSessionId?: string; terminal: boolean;
+}>>();
+// Only facts whose immutable Inbox write has not succeeded. The original
+// process must retain these bytes during a filesystem fault: another direct
+// native turn can arrive without Yui admission and replace a last-turn cache.
+// No new durable queue or execution retry; discard only after durable enqueue.
+const unpersistedEvents = new Map<string, Readonly<{
+  home: string; observation: RuntimeObservation; host: AgentHostObservationSource;
 }>>();
 
 /** Retained in the existing Host Inbox; it never settles a Turn or a resource. */
@@ -72,6 +79,7 @@ export function structuredProviderEventDelivery(
   home: string, environment: NodeJS.ProcessEnv, nativeSessionId?: string
 ): AgentHostEventDelivery {
   try {
+    const deliveryFailure = deliveryFailures.get(deliveryKey(home, environment));
     const inbox = new FileRuntimeEventInbox(home);
     const pending = [];
     for (const [id, entry] of emittedEvents) {
@@ -80,14 +88,44 @@ export function structuredProviderEventDelivery(
       if (entry.taskId === environment.YUI_TASK_ID && entry.roleName === environment.YUI_ROLE
         && (nativeSessionId === undefined || entry.nativeSessionId === nativeSessionId)) pending.push(entry);
     }
+    const retained = pendingPersistence(home, environment);
     return {
-      pending: pending.length,
-      pendingTerminals: pending.filter(event => event.terminal).length,
+      pending: pending.length + retained.length,
+      unpersisted: retained.length,
+      pendingTerminals: pending.filter(event => event.terminal).length
+        + retained.filter(event =>
+          ["turn.completed", "turn.failed", "turn.cancelled"].includes(event.observation.kind)).length,
       ...(deliveryFailure === undefined ? {} : { failure: deliveryFailure })
     };
   } catch (error) {
-    return { pending: 0, pendingTerminals: 0, failure: deliveryFault("persistence", error) };
+    const retained = pendingPersistence(home, environment);
+    return {
+      pending: retained.length, unpersisted: retained.length,
+      pendingTerminals: retained.filter(event =>
+        ["turn.completed", "turn.failed", "turn.cancelled"].includes(event.observation.kind)).length,
+      failure: deliveryFault("persistence", error)
+    };
   }
+}
+
+function deliveryKey(home: string, environment: NodeJS.ProcessEnv): string {
+  return JSON.stringify([home, environment.YUI_TASK_ID, environment.YUI_ROLE, environment.YUI_AGENT_ID]);
+}
+
+function pendingPersistence(home: string, environment: NodeJS.ProcessEnv) {
+  return [...unpersistedEvents.values()].filter(event => event.home === home
+    && event.observation.fence.taskId === environment.YUI_TASK_ID
+    && event.observation.fence.roleName === environment.YUI_ROLE
+    && event.observation.fence.agentId === environment.YUI_AGENT_ID);
+}
+
+/** Retry only original native facts, under the original Host's control fence. */
+export async function replayStructuredProviderPersistence(
+  home: string, environment: NodeJS.ProcessEnv
+): Promise<readonly RuntimeObservation[]> {
+  const retained = pendingPersistence(home, environment).map(event => event.observation);
+  await persistAndApply(home, [], environment);
+  return retained;
 }
 
 function deliveryFault(stage: "persistence" | "controller", error: unknown): NonNullable<AgentHostEventDelivery["failure"]> {
@@ -546,26 +584,33 @@ async function persistAndApply(
   startupRunId?: string
 ): Promise<void> {
   const inbox = new FileRuntimeEventInbox(home);
+  const key = deliveryKey(home, environment);
   const host: AgentHostObservationSource = {
     protocol: AGENT_HOST_EVENT_PROTOCOL,
     adapterId: requireIdentity(environment.YUI_ADAPTER_ID, "Agent adapter id"),
     workspace: requireIdentity(environment.YUI_WORKSPACE, "Yui workspace"),
     ...(connection === undefined ? {} : { connection })
   };
-  let events;
+  const source = { ...host, ...(startupRunId === undefined ? {} : { startupRunId }) };
+  for (const observation of observations) {
+    unpersistedEvents.set(observation.eventId, { home, observation, host: source });
+  }
+  const events = [];
   try {
     structuredProviderEventDelivery(home, environment); // prune ACKed local diagnostics
-    events = observations.map(entry => inbox.enqueueObservation(entry, {
-      ...host,
-      ...(startupRunId === undefined ? {} : { startupRunId })
-    }).event);
-    for (const event of events) emittedEvents.set(event.id, {
-      home, taskId: event.taskId!, roleName: event.observation.fence.roleName,
-      nativeSessionId: event.observation.fence.nativeSessionId,
-      terminal: ["turn.completed", "turn.failed", "turn.cancelled"].includes(event.observation.kind)
-    });
+    for (const retained of pendingPersistence(home, environment)) {
+      const event = inbox.enqueueObservation(retained.observation, retained.host).event;
+      events.push(event);
+      unpersistedEvents.delete(retained.observation.eventId);
+      emittedEvents.set(event.id, {
+        home, taskId: event.taskId, roleName: event.observation.fence.roleName,
+        nativeSessionId: event.observation.fence.nativeSessionId,
+        terminal: ["turn.completed", "turn.failed", "turn.cancelled"].includes(event.observation.kind)
+      });
+    }
+    if (deliveryFailures.get(key)?.stage === "persistence") deliveryFailures.delete(key);
   } catch (error) {
-    deliveryFailure = deliveryFault("persistence", error);
+    deliveryFailures.set(key, deliveryFault("persistence", error));
     throw error;
   }
   // The immutable inbox is authoritative. During a release/update handover the
@@ -592,7 +637,7 @@ async function persistAndApply(
             "CONTROLLER_DELIVERY_UNKNOWN"].includes(error.code))) return;
       // The native fact is already durable. An incompatible/refusing
       // Controller is a reporting fault, not Provider execution failure.
-      deliveryFailure = deliveryFault("controller", error);
+      deliveryFailures.set(key, deliveryFault("controller", error));
       return;
     }
     // A fast Provider can accept the initial AgentRun before the scheduler call
@@ -601,12 +646,12 @@ async function persistAndApply(
     // `deferred` therefore means "retained for replay", not delivery failure.
     // The signal below schedules the replay after the transport transaction.
     if (result.outcome !== "applied" && result.outcome !== "deferred") {
-      deliveryFailure = deliveryFault("controller",
-        `Structured Provider observation was rejected: ${result.outcome ?? "unknown"}. Event: ${entry.id}`);
+      deliveryFailures.set(key, deliveryFault("controller",
+        `Structured Provider observation was rejected: ${result.outcome ?? "unknown"}. Event: ${entry.id}`));
       return;
     }
   }
-  if (deliveryFailure?.stage === "controller") deliveryFailure = undefined;
+  if (events.length > 0 && deliveryFailures.get(key)?.stage === "controller") deliveryFailures.delete(key);
   await signalController(home, hostTaskId(environment), requireIdentity(environment.YUI_ROLE, "Role"));
 }
 

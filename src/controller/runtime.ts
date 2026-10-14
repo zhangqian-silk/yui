@@ -98,6 +98,7 @@ import { createWebTaskSurface } from "../web/webTaskSurface.js";
 import { createWebConversationSurface } from "../web/webConversation.js";
 import { WebRequestRejected } from "../web/webMutation.js";
 import { inspectAgentHost, sendAgentHostNativeControl, AGENT_HOST_CONTROL_PROTOCOL } from "../runtime/agentHost.js";
+import { recoverTaskHostTerminals } from "./taskHostTerminalRecovery.js";
 import { archiveOrdinaryTask } from "../task/ordinaryArchive.js";
 import { createWebSettings } from "../web/webSettings.js";
 import { createWebSkills } from "../web/webSkills.js";
@@ -733,6 +734,7 @@ export async function startFileTaskControllerRuntime(
           }
         }),
         jobSupervisor,
+        hostTerminalRecovery: () => recoverTaskHostTerminals(home, store, options.onError ?? (() => undefined)),
         globalInputDelivery: (deliveryOptions) => deliverGlobalInputs(home, store, async (roleName) => {
           await lifecycleDispatcher("runtime.ensure-role-session", { scope: "global", roleName });
         }, options.onError ?? (() => undefined), deliveryOptions),

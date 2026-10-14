@@ -83,9 +83,9 @@ type SessionHold = {
  * owns its own Host in its own process and never holds an Endpoint client, so
  * the reference facts for a Session live where the Session actually runs.
  *
- * Only the running code can be attached here. Selecting between generations is
- * the launch decision recorded in the durable Session; this owner proves the
- * chosen generation is really held and really released.
+ * Only the running code can be attached here. This owner proves the loaded
+ * generation is held and released; historical launch generations do not select
+ * old code or block a compatible native resume.
  */
 export function createAgentEndpointOwner(
   factory: AgentEndpointFactory = createAgentEndpointFactory()
@@ -125,9 +125,8 @@ export function createAgentEndpointOwner(
   };
 
   /**
-   * Pin the implementation for one Session. A pinned reference from the durable
-   * Session must name this exact code; a mismatch is an explicit inability to
-   * resume, never a silent start on a different generation.
+   * Hold the current implementation for one Session. A historical reference
+   * must name the same built-in adapter, not the same package build.
    */
   const pin = (adapterId: string, pinned?: ImplementationRef): AgentEndpointLease => {
     if (pinned !== undefined) requireBuiltinAgentEndpointImplementation(adapterId, pinned);
