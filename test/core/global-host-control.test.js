@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
@@ -115,7 +115,7 @@ async function globalHostFixture(t, adapterId = "codex", {
       { release: null, storageBackend: "sqlite", workerEnabled: false });
   };
   await startController();
-  const { ticket } = launchBrokerForHome(home).reserve({
+  const launchPayload = {
     schemaVersion: 1, command: process.execPath,
     args: adapterId === "codex"
       ? [resolve("test/fixtures/fake-codex-app-server-proxy.mjs")]
@@ -126,17 +126,21 @@ async function globalHostFixture(t, adapterId = "codex", {
       ...(direct ? { YUI_FAKE_DIRECT_PORT_FILE: join(home, "direct.port") } : {}),
       ...(capacityFailure ? { YUI_FAKE_CAPACITY_FAILURE: "1" } : {}) },
     providerControl: planned.launch.providerControl
-  });
-  host = spawn(process.execPath, ["--input-type=module", "-e",
+  };
+  const startHost = providerControl => {
+    const { ticket } = launchBrokerForHome(home).reserve({ ...launchPayload, providerControl });
+    host = spawn(process.execPath, ["--input-type=module", "-e",
     `import {runAgentHost} from ${JSON.stringify(new URL("../../dist/runtime/agentHost.js", import.meta.url).href)};
      Object.defineProperty(process.stdin, "isTTY", {value: true});
      await runAgentHost(${JSON.stringify({ home, ticket })});`], {
     cwd: home, env: { PATH: process.env.PATH, HOME: home }, stdio: ["pipe", "pipe", "pipe"]
   });
+    host.stdout.on("data", chunk => { output += chunk; });
+    host.stderr.on("data", chunk => { logs += chunk; });
+  };
   let logs = "";
   let output = "";
-  host.stdout.on("data", chunk => { output += chunk; });
-  host.stderr.on("data", chunk => { logs += chunk; });
+  startHost(planned.launch.providerControl);
   const wait = async predicate => {
     const deadline = Date.now() + 5000;
     while (Date.now() < deadline) {
@@ -169,6 +173,17 @@ async function globalHostFixture(t, adapterId = "codex", {
   });
   const native = () => store.getGlobalRoleSessionSet(role.name).providerBinding.run;
   return { store, home, role, command, submitNext, native, wait, host, errors, observations, scheduler,
+    restartQuiescentFixtureHost: async () => {
+      assert.equal((await inspectAgentHost({ home, scope: "global", roleName: role.name })).state, "idle");
+      host.kill("SIGTERM");
+      await once(host, "exit");
+      startHost({ ...planned.launch.providerControl, kind: "restore", mode: "resume", nativeSessionId,
+        endpointImplementation: { id: `yui.agent-endpoint.${adapterId}`, generation: "previous-compatible-build" } });
+      await wait(async () => {
+        try { return (await inspectAgentHost({ home, scope: "global", roleName: role.name })).state === "idle"; }
+        catch { return false; }
+      });
+    },
     stopController: async () => { await controller.close(); },
     startController,
     direct: events => new Promise((resolve, reject) => {
@@ -182,6 +197,26 @@ async function globalHostFixture(t, adapterId = "codex", {
     advanceTo: at => { fakeNow = new Date(at); },
     nativeSessionId, output: () => output };
 }
+
+test("a stopped fixture Host resumes the same native Session across a compatible build without replay", async t => {
+  const f = await globalHostFixture(t, "codex", { controlled: false });
+  const message = f.command(["message", "queue", f.role.name, "Original input", "--request-id", "before-refresh"]).message;
+  await f.submitNext();
+  await f.wait(() => f.native()?.status === "completed");
+  const before = structuredClone(f.store.getGlobalRoleSessionSet(f.role.name));
+  const role = structuredClone(f.store.getGlobalRole(f.role.name));
+  const target = { home: f.home, scope: "global", roleName: f.role.name };
+  await f.wait(async () => (await inspectAgentHost(target)).state === "idle");
+  await f.restartQuiescentFixtureHost();
+  const after = await inspectAgentHost(target);
+  assert.equal(after.nativeSessionId, before.sessions[before.activeAgentId].nativeSessionId);
+  assert.notEqual(after.endpointImplementation.generation, "previous-compatible-build");
+  assert.equal(after.hostImplementation.id, "yui.agent-host");
+  assert.ok(after.controlCapabilities.includes("reconcile-turn"));
+  assert.deepEqual(f.store.getGlobalRole(f.role.name), role, "No model, account, permissions or workspace change.");
+  assert.deepEqual(f.native(), before.providerBinding.run, "Host resume cannot execute the accepted input again.");
+  assert.ok(f.store.listGlobalRoleMessages(f.role.name).find(m => m.id === message.id).delivery);
+});
 
 test("Desktop direct terminal recovery uses the original observer, across Roles and Controller restart", async t => {
   for (const roleName of ["operator", "assistant"]) {
@@ -325,6 +360,10 @@ test("periodic Global recovery republishes only the original Host's exact missin
   });
   assert.equal(wrongAuthority.outcome, "rejected");
   assert.deepEqual(f.native(), original);
+  await deliverGlobalInputs(f.home, f.store, async () => assert.fail("Recovery must not launch"),
+    error => f.errors.push(error), { reconcile: true });
+  assert.equal(f.native().status, "completed", "The final Turn recovers even without queued successor input.");
+  assert.equal(f.native().nativeTurnId, original.nativeTurnId);
   const next = f.command(["message", "queue", "operator", "next", "--request-id", "next"]).message;
   const controller = new FileTaskController(f.scheduler, {}, {
     globalInputDelivery: options => deliverGlobalInputs(f.home, f.store, async () => {},
@@ -338,6 +377,46 @@ test("periodic Global recovery republishes only the original Host's exact missin
     assert.ok(f.store.listGlobalRoleMessages("operator").find(m => m.id === first.id).delivery);
     assert.deepEqual(f.errors, []);
   } finally { await controller.shutdownAndDrain(); }
+});
+
+test("Host retains full direct terminals through persistence failure and does not release a newer writer", async t => {
+  const f = await globalHostFixture(t, "codex", { roleName: "operator", direct: true });
+  const target = { home: f.home, scope: "global", roleName: f.role.name };
+  const event = (method, id) => ({ method, params: { threadId: f.nativeSessionId,
+    turn: { id, status: method === "turn/started" ? "inProgress" : "completed",
+      items: [{ id: `output-${id}`, type: "agentMessage", text: `Full result ${id}\n中文` }] } } });
+  await f.direct([event("turn/started", "disk-a")]);
+  await f.wait(() => f.native()?.attemptId === "direct:disk-a");
+  const authority = f.store.getGlobalRoleSessionSet(f.role.name).providerBinding.authority;
+  await f.stopController();
+  const inboxPath = join(f.home, "runtime", "inbox");
+  renameSync(inboxPath, `${inboxPath}-saved`);
+  writeFileSync(inboxPath, "fixture: persistence unavailable");
+  await f.direct([event("turn/completed", "disk-a")]);
+  await f.wait(async () => (await inspectAgentHost(target)).eventDelivery?.failure?.stage === "persistence");
+  await f.direct([event("turn/started", "disk-b"), event("turn/completed", "disk-b"),
+    event("turn/started", "disk-c")]);
+  await f.wait(async () => (await inspectAgentHost(target)).nativeTurnId === "disk-c");
+  rmSync(inboxPath);
+  renameSync(`${inboxPath}-saved`, inboxPath);
+  await f.startController();
+  const result = await reconcileAgentHostTurn({ ...target, control: {
+    protocol: "yui-agent-host-control/v1", type: "reconcile-turn",
+    nativeSessionId: f.nativeSessionId, attemptId: "direct:disk-a", nativeTurnId: "disk-a", authority
+  } });
+  assert.notEqual(result.outcome, "rejected");
+  const processor = new FileRuntimeEventProcessor(new FileRuntimeEventInbox(f.home), f.scheduler);
+  assert.deepEqual(processor.drain(new Date()).failed, []);
+  for (const id of ["disk-a", "disk-b"]) {
+    assert.ok(f.observations.some(observation => observation.kind === "turn.completed"
+      && observation.fence.nativeTurnId === id && observation.payload.output === `Full result ${id}\n中文`),
+    `Full terminal ${id} must survive the next native turn.`);
+  }
+  assert.equal(f.native().attemptId, "direct:disk-c");
+  assert.equal(f.native().status, "accepted");
+  const recovered = await inspectAgentHost(target);
+  assert.equal(recovered.state, "busy");
+  assert.equal(recovered.eventDelivery.failure, undefined, "A repaired persistence path must stop reporting the old failure.");
 });
 
 test("Operator natural terminals settle through Host and Inbox and automatically wake the next Global input", async t => {

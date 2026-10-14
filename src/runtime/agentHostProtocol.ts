@@ -7,6 +7,8 @@ export const AGENT_HOST_CONTROL_PROTOCOL = "yui-agent-host-control/v1" as const;
 export type AgentHostEventDelivery = Readonly<{
   pending: number;
   pendingTerminals: number;
+  /** Volatile original facts retained by this Host after a failed Inbox write. */
+  unpersisted?: number;
   failure?: Readonly<{
     stage: "persistence" | "controller";
     detail: string;

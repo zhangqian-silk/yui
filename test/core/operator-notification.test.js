@@ -129,6 +129,9 @@ function fixture(t) {
       host = await openAgentHostControl(home, {
         environment: { YUI_SESSION_SCOPE: "global", YUI_ROLE: "operator" }
       }, () => snapshot("ready"), async control => {
+        if (control.type === "status") return {
+          protocol: AGENT_HOST_CONTROL_PROTOCOL, outcome: "status", snapshot: snapshot("ready")
+        };
         assert.equal(control.type, "submit-turn");
         attempts.push(control.run.attemptId);
         const adapter = new FileSchedulerStoreAdapter(store);
@@ -456,7 +459,7 @@ test("unobservable Global Host emits one durable diagnosis, never replays or ste
   await f.deliver();
   f.user("Must wait");
   const before = structuredClone(f.store.getGlobalRoleSessionSet("operator"));
-  // Fixture Host intentionally implements submit only: a current Controller
+  // Fixture Host intentionally implements submit/status only: a current Controller
   // cannot manufacture the missing observation capability of an older Host.
   await deliverGlobalInputs(f.home, f.store, async () => assert.fail("Do not restore a busy Host"),
     error => { throw error; }, { reconcile: true, now });
@@ -467,7 +470,7 @@ test("unobservable Global Host emits one durable diagnosis, never replays or ste
   const evidence = f.store.listGlobalRoleMessages("operator").filter(m => m.inputControl?.requestId.startsWith("runtime-attention:"));
   assert.equal(evidence.length, 1);
   assert.match(evidence[0].body, /host-terminal-unobservable/);
-  assert.match(evidence[0].body, /host-control-rejected/);
+  assert.match(evidence[0].body, /host-control-unsupported/);
   assert.ok(evidence[0].notDelivered);
   const queued = f.store.queryGlobalRoleMessages("operator", { pending: true, limit: 64 }).messages;
   assert.equal(globalInputBacklog(queued, before, now).reason, "in-flight-or-unobserved-terminal");

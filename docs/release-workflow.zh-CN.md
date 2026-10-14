@@ -265,10 +265,20 @@ Controller RPC 版本 1。Host 不打开 Home 数据库，包括进程归属、�
 执行环境校验。只有 Controller 拥有存储并解析持久事实；非法当前输入在正常协议
 边界得到明确错误。
 
-破坏性升级不承接历史 Host 或进程。启动、`upgrade`、`update` 和 release activation
-不再扫描旧 Host socket／进程、推断旧能力或协商兼容交接。使用干净的运行时环境；
-这不授权丢弃未决工作或终止归属不确定的资源。当前 Controller 正常重启、准确进程
-代际校验、交接锁、Session 权限与事件防重放继续生效。
+兼容升级保留逻辑 Session 和存活 Host。构建 generation 仅作历史诊断，不再作为
+原生恢复门槛；通过已有获授权生命周期安全释放旧 Host 后，当前内置 adapter 可恢复
+同一原生身份，不改变模型、账号、权限或工作区，也不热替换模块或安装旧实现。
+
+支持范围明确为现有 control/event v1 与 RPC 版本 1，不承诺任意历史进程兼容。
+Host status 用 `controlCapabilities` 声明控制能力，并用进程加载时捕获的
+`hostImplementation` 区别于 Endpoint 构建。Controller 仅在明确声明时发送
+`reconcile-turn`。没有能力字段的 v1 Host 仍可读取 status、消费原始 Inbox；
+精确终态重发能力不可用，不根据包版本猜测。未知协议仍拒绝。
+
+`update` 区分程序／存储完成与保留 Host 的状态，不打断兼容的忙碌 Host，也不自动
+替换不支持的 Host。必要刷新沿用显式生命周期：先证明精确 Turn、后台执行与写入者
+已释放，再重新附着。仅 idle 不足以证明安全；状态未知时保留现场，不能强杀、
+重放输入或静默新建原生身份。Controller 交接锁、进程身份围栏与 Session 权限继续有效。
 
 存储升级仅包含同主版本内明确的小版本步骤。跨主版本转换独立授权，
 不构成运行时回退。
@@ -282,6 +292,10 @@ Global Context 命令保持自足，供远端 TUI/Desktop 使用。必须正确�
 显示 Host 上报观测。原生结果待落库或已知上报故障需要关注，但不代表 Provider 失败、
 Run 已结束或业务已验收。Host 诊断只检查自己已投递文件的身份是否存在，不解析或隔离
 其他生产者的新格式事件。
+缺少 eventDelivery 表示未报告而非健康。`unpersisted` 是 Inbox 写入失败后仍保留在
+原 Host 内的原始事实数；协调先按观察顺序重试这些字节，再补发保留的精确终态，
+不重新执行输入。必须保留该 Host 直至落盘，不能在文件系统故障又进程丢失后编造结果。
+Task 与 Global 的完整协调都使用同一能力检查，包括没有后续排队输入的最后一个 Turn。
 
 ## CLI 与 Controller 发布边界
 

@@ -215,12 +215,17 @@ terminal for the exact Session, authority, attempt and native Turn. For a Deskto
 direct Turn, that Host must have retained both the exact start and terminal under
 the unchanged writer fence; `direct:<nativeTurnId>` and the native Turn are both
 required. This bounded latest observation does not make the input client-owned.
+During an Inbox persistence failure, the Host additionally retains every
+unpersisted original fact, including starts and full terminals, until the
+existing Inbox accepts it. Later direct turns must not overwrite those bytes.
 This uses the existing Inbox and canonical observer, including the original result.
 It does not submit input, query another native client, restart a Host, or infer
 quiescence from elapsed time/idle state. Normal terminal processing signals again
 after releasing Host occupancy. Unknown acceptance remains isolated unless exact
 evidence settles that input. Explicit stop/replacement and external writers remain
-hard boundaries.
+hard boundaries. Full Task and Global reconciliation also covers an unsettled
+final input with no queued successor. A filesystem repair retries observations,
+not native execution; process loss before persistence remains a disclosed gap.
 
 `yui session context <role> --json` includes bounded `backlog` diagnostics: pending
 count, oldest timestamp, target and attempt identities, blocking reason and
@@ -245,6 +250,13 @@ that CLI. An Endpoint checkout generation is not a complete Host build identity.
 The runtime-attention evidence distinguishes an unavailable control channel,
 rejected control (including implementations without reconciliation), and a missing
 exact retained terminal, with reported Endpoint/event-delivery observations.
+The status `controlCapabilities` advertisement gates additive v1 commands.
+Missing `reconcile-turn` support yields `unsupported` without sending the
+invalid request. The original Inbox remains usable; no alternative native
+input or guessed terminal is generated. `hostImplementation` identifies code
+captured when the Host loaded, not the current install or Endpoint generation.
+Compatible build changes do not block exact native Session resume after an
+authorized safe release. They never change the user's launch configuration.
 Missing delivery diagnostics mean unreported, not healthy. Unsupported live code
 cannot be repaired by another Controller restart or guessed adoption; inspect the
 original evidence and explicitly authorize any necessary lifecycle recovery.

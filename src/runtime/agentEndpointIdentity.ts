@@ -85,15 +85,19 @@ export function validateAgentEndpointImplementation(ref: ImplementationRef): Imp
   return ref;
 }
 
-/** Missing old code is an explicit inability to resume, never a Provider fallback. */
+/**
+ * The built-in adapter identity is the supported native connection contract.
+ * Build generations are provenance, not a requirement to retain old code.
+ * Actual native resume still validates the conversation/account/configuration.
+ */
 export function requireBuiltinAgentEndpointImplementation(
   adapterId: string,
   ref: ImplementationRef
 ): ImplementationRef {
   validateAgentEndpointImplementation(ref);
   const current = builtinAgentEndpointImplementation(adapterId);
-  if (ref.id !== current.id || ref.generation !== current.generation) {
-    throw new Error(`Session Endpoint ${ref.id}@${ref.generation} is unavailable; explicitly select a new Session.`);
+  if (ref.id !== current.id) {
+    throw new Error(`Session Endpoint ${ref.id} is incompatible with adapter ${adapterId}.`);
   }
-  return ref;
+  return current;
 }

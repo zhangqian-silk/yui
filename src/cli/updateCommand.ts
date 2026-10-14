@@ -74,6 +74,9 @@ export function renderUpdateResult(result: UpdateResult): string {
   })();
   return [
     rendered,
+    ...(result.outcome === "updated" ? [
+      "Runtime: existing Hosts are retained, not upgraded in place. Host control capabilities and event delivery are checked separately; accepted input is never replayed."
+    ] : []),
     ...(result.controllerReconciliation === undefined ? [] : [
       `Controller reconciliation: ${JSON.stringify(result.controllerReconciliation)}`
     ]),
