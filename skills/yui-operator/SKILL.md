@@ -239,12 +239,16 @@ do not wait for another wake or copy pending notices into new input. Read every
 relevant original and finish the authorized routing/disposition before ack.
 
 Use JSON reads and their top-level `data` field.
-Use Global Context's `pending`/`recent` pages to find Messages, then
+Use Global Context's bounded `pending` page to find Messages, then
 `role message show operator <id>` for the original. A successful send receipt
 contains saved identity and delivery/control facts, not another copy of the
 submitted body. Follow Runtime's bounded-read contract for list continuations
 and long `contentPage` details; do not decode `output` as nested JSON or print
 an entire Context again merely to extract one already-returned reference.
+History and diagnostic aggregates are explicit `role message list` reads.
+Use `--diagnostics` for classified occurrence counts and `--diagnostic <key>`
+for evidence discovery within the caller's authorized Role scope. Do not
+automatically traverse all history or ask a failing Operator to wake itself.
 
 Report the facts needed to understand the outcome:
 

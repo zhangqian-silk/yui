@@ -14,14 +14,15 @@ schema migration or new snapshot/cache store is introduced.
 | Question | Entry | Default information / further reading |
 | --- | --- | --- |
 | Which Task? | `task list` | Existing bounded catalog, filters, attention and cursor |
-| What is current? | `task context <task>` | Current Task/Brief/Role/Project/workspace facts, active work and Runs, open inputs, active decisions, unresolved jobs, recent Message references; no event or terminal-Run dump |
+| What is current? | `task context <task>` | Current facts, active work, open inputs, active decisions, unresolved jobs and unacknowledged Message references; no event or terminal-Run dump |
 | What records exist? | `task context list <task> --store <family>` | One authorized family, summaries and exact digest-bearing references |
 | What does it actually say? | `task context inspect <task> --store <family> --ref <id> --digest <digest>` | Exact current record, including original result expansion; long documents are paged |
 | What changed? | `task context delta <task> --after <cursor>` | Immutable events with a fixed upper bound, not a snapshot of current mutable state |
-| Which Global input? | `session context <role>` | Identity, profile, authority, current native Turn/retry and separate bounded pending/recent Message pages |
+| Which Global input? | `session context <role>` | Identity, Profile read pointer, authority, current native Turn/retry facts and a bounded pending Message page; history is opt-in |
 | Read Global input | `role message list <role> [--pending]`, `role message show <role> <id>` | Scoped discovery, then exact original; queue acceptance never erases history |
 | What arrived in this wake? | `task wake show <task> <wake>` | Fixed-window inputs/results, attributed optional summaries and exact original reads; `--history` expands diagnostics |
-| What was assigned? | `task run context <task>/<run>` | Frozen authority and a single `pointers` inventory with summaries; changed identities in `deltaRefs`; current observations remain separate |
+| What was assigned? | `task run context <task>/<run>` | Frozen authority, up to 16 `pointers`, sampled changed identities and live observations with totals; `--view refs` pages references, `--view full` reads the full pack |
+| Which repeated failure? | `role message list <role> --diagnostics` | Derived classified groups with count, first/latest and recovery evidence; `--diagnostic <key>` pages original occurrences |
 | Which configuration is real? | `task role session inspect <task> <role>` | Task/Role identity, desired binding, frozen Session, current Provider binding, retry and explicit Host observation; no full Task/Role copies or Provider conversation history |
 
 Domain lists for Task Messages, events, WorkItems, Runs, decisions, milestones,
@@ -35,23 +36,35 @@ workspaces and other authorized record families. `--status`, `--after` and
 `--work-item` narrow Context discovery; every continuation must retain filters.
 Run listing accepts a Task or `task/work` target.
 
-Current Context's `attention.messages` counts all authorized Messages, not only
-undelivered input. `collections` counts and `omitted` explicitly describe
-incomplete discovery. Recent samples are not proof that no older pending or
+Current Context's `attention.messages` excludes explicit acknowledgements and
+retirements; delivery alone is not handling. The exact wake receipt and latest
+Message revision determine coverage. `--view current` continues that view;
+the default family list still includes history. `collections` counts and `omitted`
+explicitly describe incomplete discovery. Samples are not proof that no older pending or
 relevant input exists. Read the relevant fixed wake and original Messages;
 use family discovery when a broader requirement/history audit is needed.
 
 ## Budgets and continuations
 
-- Discovery pages default to 20 items, accept 1–100, and reserve a 32 KiB
-  compact-JSON budget. Items contain summaries, never full Message/report bodies.
+- Discovery pages default to 20 items, accept 1–100, and enforce a 32 KiB
+  compact-JSON budget including the success envelope, escaped identities,
+  continuation and nested structure. Summaries are at most 512 UTF-8 bytes.
 - Current Task Context has at most 64 records, with a 24 KiB record/attention
   budget inside a 32 KiB response budget. Single inline values are at most
   2 KiB; large values and Message/Run/WorkItem/Knowledge bodies use references.
   Each collection contributes at most eight sampled records at entry.
-- Global entry samples up to eight pending and eight recent Messages separately.
-  They have independent continuations, so a long historical list cannot crowd
-  pending input out of the entry view.
+- Global entry samples up to eight unacknowledged inputs, including claimed or
+  uncertain ones. It does not repeat recent history, Profile bodies, frozen Skill
+  packages or accumulated retry details. The Manifest is the Profile pointer;
+  explicit Message and Session retry reads retain history and original evidence.
+- Run entry samples up to eight records per live category and 16 frozen refs.
+  Pointer continuation uses `--view refs` and `pointerPage.nextCursor`; full pack
+  document continuation uses `--view full`. Neither changes the frozen authority.
+  Read `--view input` before acting when `input.directiveOmitted` is true: the
+  entry's bounded directive summary is not the assigned instruction body.
+- `session skills [--cursor ...]` checks only current metadata/readability. It
+  does not read Skill bodies or historical packages, and uses document pagination
+  only when the configured metadata exceeds the inline budget.
 - Detail documents up to 16 KiB remain ordinary JSON. Larger documents return
   `contentPage`: exact source, SHA-256 digest, JSON-character offset, total bytes
   and characters, text, completeness and a next cursor. Chunks contain at most
@@ -77,6 +90,24 @@ continuations intentionally do not promise uninterrupted traversal during
 concurrent writes. For append-only event traversal use fixed-bound Context delta.
 Discovery currently scans the selected authorized family to fingerprint it;
 its output, not total storage-reading cost, is bounded.
+
+## Runtime diagnostics
+
+Global failure evidence remains ordinary record-only Messages; no aggregate
+table, Message envelope change, memory store or recovery state machine is added.
+Grouping is a derived view of new evidence documents. Older documents remain
+readable in ordinary history, not heuristically reclassified. Classified source,
+Host/Session, error category/code and explicit effect distinctions determine
+equivalence; unclassified faults are not merged. Original affected IDs and raw
+evidence remain in exact documents, never a growing array in one notification.
+Counts represent distinct observations, not repeat polls of the same identity.
+
+One queued notice represents an unchanged failure episode. Only a new group,
+changed impact or exact successful recovery observation produces a new notice.
+Recovery ends the corresponding episode without acknowledging inputs or proving
+absence of previous effects. Recurrence after recovery gets a new episode.
+Operator's own failures/recovery notices are retained without self-delivery.
+Discovery and every evidence page retain the existing Role read boundary.
 
 ## Effects and exceptions
 

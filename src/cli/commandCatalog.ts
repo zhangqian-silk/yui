@@ -285,7 +285,8 @@ const globalSessionChildren: readonly NodeInput[] = [
   {
     name: "skills", discovery: { surface: "managed", audiences: ["operator","leader","assignment","global","unbound"] },
     summary: "Check current Skill paths, versions and availability for this managed Session without reading bodies.",
-    usage: "yui session skills"
+    usage: "yui session skills [--cursor <cursor>]",
+    options: ["--cursor"]
   },
   { name: "enter", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Enter a global Role's native session.", usage: "yui session enter <role>" },
   {
@@ -1006,9 +1007,9 @@ const taskChildren: readonly NodeInput[] = [
       },
       {
         name: "context", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] },
-        summary: "Load the exact authorized AgentRun context.",
-        usage: "yui task run context <task>/<run> [--cursor <cursor>] [--json]",
-        options: ["--cursor", "--json"],
+        summary: "Load bounded AgentRun entry facts; discover refs or read the full authorized pack explicitly.",
+        usage: "yui task run context <task>/<run> [--view current|refs|input|full] [--cursor <cursor>] [--json]",
+        options: ["--view", "--cursor", "--json"],
         executable: true,
         hidden: true,
         sections: [{ id: "load", title: "Commands", entries: ["expand", "delta"] }],
@@ -1286,8 +1287,8 @@ export const ROOT_COMMAND = buildNode({
           children: [
             {
               name: "list", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Discover Global Messages without consuming input.",
-              usage: "yui role message list <role> [--pending] [--limit <1..100>] [--cursor <cursor>]",
-              options: ["--pending", "--limit", "--cursor"]
+              usage: "yui role message list <role> [--pending|--diagnostics|--diagnostic <key>] [--limit <1..100>] [--cursor <cursor>]",
+              options: ["--pending", "--diagnostics", "--diagnostic", "--limit", "--cursor"]
             },
             {
               name: "show", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Read one exact Global Message; follow contentPage.nextCursor for long content.",

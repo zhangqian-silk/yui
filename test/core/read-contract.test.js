@@ -14,6 +14,8 @@ import { runGlobalRoleCommand } from "../../dist/commands/globalRoleCommands.js"
 import { createConfiguredAgent } from "../../dist/agent/agent.js";
 import { createGlobalRole, createRoleAgentBinding } from "../../dist/role/role.js";
 import { readDocument } from "../helpers/read-document.js";
+import { createTaskWake } from "../../dist/scheduler/taskWake.js";
+import { runContextEntry, runContextPointerPage } from "../../dist/context/runContextPack.js";
 
 test("bounded discovery and exact long-document reads preserve content and reject mixed sources", () => {
   const original = { body: "需求😀\n".repeat(20000), result: { output: "原始结果".repeat(20000) } };
@@ -42,6 +44,21 @@ test("bounded discovery and exact long-document reads preserve content and rejec
   assert.throws(() => recordPage(records, "global:other", { cursor: first.nextCursor }), /cursor|scope/i);
   assert.throws(() => recordPage(records.slice(1), "global:operator", { cursor: first.nextCursor }), /changed/i);
   assert.throws(() => recordPage(records, "global:operator", { limit: 10000 }), /limit/i);
+});
+
+test("list budget includes escaped identities, continuation and the response envelope", () => {
+  const records = Array.from({ length: 100 }, (_, id) => ({ id, summary: "界".repeat(330) }));
+  const source = "\u0000".repeat(1024);
+  let cursor;
+  const found = [];
+  do {
+    const page = recordPage(records, source, { limit: 100, cursor },
+      { identity: { nativeSessionId: "界".repeat(1000) } });
+    assert.ok(Buffer.byteLength(JSON.stringify({ ok: true, data: page })) <= 32768);
+    found.push(...page.items.map(item => item.id));
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor !== undefined);
+  assert.deepEqual(found, records.map(item => item.id));
 });
 
 test("daily Context, discovery and original reads stay bounded as history grows without consuming inputs", t => {
@@ -113,5 +130,66 @@ test("daily Context, discovery and original reads stay bounded as history grows 
   assert.equal(original.body, body);
   assert.ok(pages > 1);
   for (const sample of sizes) for (const key of ["task", "global", "events"]) assert.ok(sample[key] < 32768);
+  const actor = { scope: "task", taskId: "task-1", roleName: "leader", agentId: "codex", nativeSessionId: "fixture" };
+  const claim = { actor, at: now.toISOString(), requestId: "claim" };
+  const inbox = { claim, ack: { ...claim, reason: "Handled exact input" } };
+  store.updateMessage("task-1", { ...store.listMessages("task-1")[0], inbox });
+  store.saveTaskWake("task-1", { ...createTaskWake({
+    id: "wake-1", taskId: "task-1", reasons: ["user-message"], now,
+    fromCursor: now.toISOString(), toCursor: now.toISOString(),
+    refs: [{ type: "message", taskId: "task-1", id: "message-2" }]
+  }), inbox });
+  assert.equal(readTaskContext(store, "task-1").attention.messages.count, 199);
+  assert.equal(listTaskContext(store, "task-1", "task-message", { view: "current" }).total, 199);
+  assert.equal(listTaskContext(store, "task-1", "task-message").total, 201, "Original history remains readable.");
+  store.saveEvent("task-1", createTaskEvent("event-201", "task-1", "message.updated", { messageId: "message-2" }, now));
+  assert.equal(readTaskContext(store, "task-1").attention.messages.count, 200, "A changed original is not covered by an earlier ack.");
+  for (const [id, receipt] of [["wake-2", { claim }], ["wake-3", inbox]]) {
+    store.saveTaskWake("task-1", { ...createTaskWake({
+      id, taskId: "task-1", reasons: ["user-message"], now,
+      fromCursor: now.toISOString(), toCursor: now.toISOString(),
+      refs: [{ type: "message", taskId: "task-1", id: "message-3" }]
+    }), inbox: receipt });
+  }
+  assert.equal(readTaskContext(store, "task-1").attention.messages.count, 200,
+    "The original unacknowledged owner is not replaced by a later window's acknowledgement.");
+  const globalMessages = store.listGlobalRoleMessages("operator");
+  const globalClaim = { ...claim, actor: { ...actor, scope: "global", taskId: undefined, roleName: "operator" } };
+  delete globalClaim.actor.taskId;
+  store.updateGlobalRoleMessage({ ...globalMessages[0], inbox: { claim: globalClaim, ack: { ...globalClaim, reason: "Handled" } } });
+  store.updateGlobalRoleMessage({ ...globalMessages[1], control: {
+    requestId: "unknown", receiptId: "unknown", outcome: "delivery-unknown", observedAt: now.toISOString()
+  } });
+  const pending = global(["message", "list", "operator", "--pending"]);
+  assert.equal(pending.total, 199);
+  assert.ok(pending.items.some(item => item.control?.outcome === "delivery-unknown"));
+  assert.equal(pending.items.find(item => item.control?.outcome === "delivery-unknown").deliveryState, "delivery-unknown");
+  assert.ok(pending.items.every(item => item.handling === "unclaimed"));
+  assert.equal(context.recent, undefined);
   t.diagnostic(`Returned compact JSON bytes: ${JSON.stringify(sizes)}; original read pages=${pages}`);
+});
+
+test("Run entry samples references and live lists without changing frozen authority", () => {
+  const pointers = Array.from({ length: 100 }, (_, i) => ({
+    store: "task-message", refId: `message-${i}`, digest: "d".repeat(64), summary: "摘要😀".repeat(400)
+  }));
+  const pack = {
+    identity: { taskId: "task-1", runId: "run-1" }, snapshot: { digest: "frozen" },
+    authority: { writableProjectIds: ["project-1"] }, pointers, deltaRefs: pointers,
+    input: { source: { type: "yui", channel: "task-dispatch" }, directive: "完整要求".repeat(10000) },
+    skillPackages: ["historical"], inventory: { refs: 100, frozenBytes: 100000, complete: true },
+    liveTaskState: { activeRuns: pointers, activeTaskReviews: [], providerRetries: [] }
+  };
+  const entry = runContextEntry(pack);
+  assert.equal(entry.pointers.length, 16);
+  assert.equal(entry.pointerPage.total, 100);
+  assert.equal(entry.inventory.complete, false);
+  assert.equal(entry.liveTaskState.activeRuns.length, 8);
+  assert.equal(entry.skillPackages, undefined);
+  assert.equal(entry.input.directive, undefined);
+  assert.equal(entry.input.directiveOmitted, true);
+  assert.deepEqual(entry.authority, pack.authority);
+  const next = runContextPointerPage(pack, { cursor: entry.pointerPage.nextCursor });
+  assert.equal(next.items[0].refId, "message-16");
+  assert.equal(pack.pointers.length, 100);
 });

@@ -815,9 +815,9 @@ test("Global unknown survives restart, late evidence settles it, and conclusive 
   reloadedScheduler.resolveAgentHostProviderTurnSubmission({ roleName: role.name, attemptId: rejectedAttempt,
     status: "rejected", reason: "Provider refused this input", raw: "Provider refused this input", now: later });
   const context = contextSelfRead(reopened, role.name);
-  assert.equal(context.recent.items.find(entry => entry.id === rejected.id).notDelivered.summary, "Provider refused this input");
+  assert.equal(context.pending.items.find(entry => entry.id === rejected.id).notDelivered.summary, "Provider refused this input");
   assert.equal(command(["message", "show", role.name, rejected.id]).notDelivered.reason, "Provider refused this input");
-  assert.equal(context.recent.items.find(entry => entry.id === rejected.id).control.outcome, "rejected");
+  assert.equal(context.pending.items.find(entry => entry.id === rejected.id).control.outcome, "rejected");
   await deliverGlobalInputs(home, reopened, async () => { calls += 1; }, error => { throw error; });
   assert.equal(calls, 0);
 });

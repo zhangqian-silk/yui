@@ -229,7 +229,7 @@ export function providerRetryPrompt(retry: ProviderRetry, original: string): str
   ].join("\n");
 }
 
-/** The same presentation is consumed by CLI, Context and Web. */
+/** The same presentation is consumed by explicit detail reads and Web. */
 export function providerRetryProjection(binding: ProviderRuntimeBinding | null | undefined) {
   const retry = binding?.retry;
   if (retry === undefined) return null;
@@ -259,6 +259,24 @@ export function providerRetryProjection(binding: ProviderRuntimeBinding | null |
     })),
     ...(retry.previousRunId === undefined ? {} : { previousRunId: retry.previousRunId }),
     ...(retry.successorRunId === undefined ? {} : { successorRunId: retry.successorRunId })
+  };
+}
+
+/** Entry-point facts, never accumulated retry history or raw diagnostics.
+ * Exact Session retry/show and failureRef retain the original evidence. */
+export function providerRetrySummary(binding: ProviderRuntimeBinding | null | undefined) {
+  const view = providerRetryProjection(binding);
+  if (view === null) return null;
+  const { history, error, currentTurn, ...facts } = view;
+  return {
+    ...facts,
+    error: { source: error.source, phase: error.phase, category: error.category,
+      code: error.code, inputDisposition: error.inputDisposition,
+      sessionDisposition: error.sessionDisposition, retryable: error.retryable },
+    currentTurn: currentTurn === null ? null : {
+      attemptId: currentTurn.attemptId, status: currentTurn.status, nativeTurnId: currentTurn.nativeTurnId
+    },
+    historyCount: history.length, detailOmitted: true
   };
 }
 

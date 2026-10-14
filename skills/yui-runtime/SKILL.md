@@ -102,8 +102,15 @@ For every explicitly dispatched managed Task AgentRun:
    and Adapter match the Envelope and Session Manifest. Stop and report a
    context-load failure if the pack is missing, stale, unauthorized, malformed,
    or mismatched. Never request an inline/full-prompt fallback.
-4. Use the pack's `pointers` (including each pointer's summary) first. They are
-   the single readable-ref inventory; `deltaRefs` contains only changed identities.
+4. Use the entry's `pointers` (including each pointer's summary) first. They are
+   a bounded window into the frozen readable-ref inventory. `pointerPage`
+   reports total/complete/nextCursor; discover further relevant refs with
+   `task run context <task>/<run> --view refs [--cursor <cursor>]`.
+   `deltaRefs` samples changed identities, with `deltaRefsTotal` reporting coverage.
+   `--view full` explicitly reads the complete pack when needed; do not load or
+   traverse every historical reference merely to make an entry window complete.
+   If `input.directiveOmitted` is true, read the complete assigned input with
+   `--view input` before acting; its entry summary is not the instruction body.
    Expand only an authorized ref when
    its full value is needed, selecting it by the pointer's exact `store` and
    `refId`:
@@ -182,13 +189,20 @@ TUI, with the configured Agent, permissions and workspace unchanged. A live
 unmanaged Session is not silently replaced or adopted; use an explicit Session
 lifecycle action before enabling controlled delivery.
 
-Context reads never consume queue entries. Global Context returns bounded
-`pending` and `recent` discovery pages, not Message bodies. Read a referenced
+Context reads never consume queue entries. Global Context returns a bounded
+`pending` discovery page, not Message bodies, Profile bodies, recent history or
+accumulated retry details. The Manifest retains the exact Role profile.
+Read a referenced
 original with `role message show <role> <message-id> --json`. Follow a pending
 page's `nextCursor` using `role message list <role> --pending --cursor <cursor>`
 when it is incomplete; accepted delivery does not erase the Message from the
 separate all-message list. Native/transport acceptance is not implementation, and
 `interrupt-requested` is not a stopped Turn or stopped background resources.
+`role message list <role> --diagnostics` projects repeated classified failures
+from original evidence with first/latest occurrence, count and recovery evidence.
+`--diagnostic <key>` pages the original affected observations. Counts cover
+distinct observations, not repeated polling of one identity. A recovery notice
+is neither an input acknowledgement nor proof that prior effects were undone.
 Saving a Task Message or Brief is not notification delivery to Operator. A
 Task Role uses the existing Task InputRequest path for a genuinely missing
 user decision, not global Role input controls or fabricated progress questions.
@@ -285,6 +299,12 @@ family, then `task context inspect <task> --store <store> --ref <refId>
 --digest <digest>` to read its exact current value. Common Task lists use the
 same `items`, `total`, `complete`, and `nextCursor` contract. Do not treat the
 first page or a summary as complete requirements.
+The 32 KiB compact-JSON read budget includes nested data, cursors and structure;
+summaries are at most 512 UTF-8 bytes. Current Task Message discovery excludes
+explicit acknowledgements and retirements, not uncertain delivery. Use
+`--view current` for its continuation and the default all view for history.
+Skill checks remain metadata-only; unusually large checks use the same explicit
+document pagination. A small default window is not a request to fetch all history.
 
 Long detail reads return `contentPage` instead of the ordinary value (under
 `data.context` for Run context/expand, `data.contextDelta` for Run Context delta). Repeat the same read with

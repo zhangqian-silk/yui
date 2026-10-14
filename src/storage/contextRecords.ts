@@ -32,6 +32,8 @@ export type ContextRecordQuery = Readonly<{
   descending?: boolean;
   limit: number;
   offset?: number;
+  /** Presentation only: acknowledgement/retirement come from existing receipts. */
+  unhandledMessages?: boolean;
 }>;
 export type ContextRecordPage = Readonly<{
   count: number;
@@ -84,6 +86,33 @@ export function queryContextRecords(
   if (query.ids !== undefined) {
     where.push(`${id} IN (SELECT value FROM json_each(@ids))`);
     params.ids = JSON.stringify(query.ids);
+  }
+  if (query.unhandledMessages) {
+    if (query.family !== "task-message") throw new Error("Unhandled selection requires Messages.");
+    where.push(`json_extract(r.payload, '$.inbox.ack') IS NULL`);
+    where.push(`NOT EXISTS (SELECT 1 FROM events e WHERE e.task_id = r.task_id
+      AND e.type = 'task.record-retired'
+      AND json_extract(e.payload, '$.payload.recordKind') = 'message'
+      AND json_extract(e.payload, '$.payload.recordId') = r.message_id)`);
+    // Match taskMessageInboxReceipt: a direct claim owns the Message, otherwise
+    // a wake receipt covers its exact reference and latest revision event.
+    where.push(`(json_extract(r.payload, '$.inbox') IS NOT NULL OR (
+      SELECT json_extract(w.payload, '$.inbox.ack') FROM task_wakes w
+      WHERE w.task_id = r.task_id AND json_extract(w.payload, '$.inbox') IS NOT NULL
+        AND EXISTS (SELECT 1 FROM json_each(w.payload, '$.refs') ref
+          WHERE json_extract(ref.value, '$.type') = 'message'
+            AND json_extract(ref.value, '$.taskId') = r.task_id
+            AND json_extract(ref.value, '$.id') = r.message_id)
+        AND (NOT EXISTS (SELECT 1 FROM events e WHERE e.task_id = r.task_id AND e.type = 'message.updated'
+          AND json_extract(e.payload, '$.payload.messageId') = r.message_id)
+        OR EXISTS (SELECT 1 FROM json_each(w.payload, '$.refs') update_ref
+          WHERE json_extract(update_ref.value, '$.type') = 'event'
+            AND json_extract(update_ref.value, '$.taskId') = r.task_id
+            AND json_extract(update_ref.value, '$.id') = (
+              SELECT e.event_id FROM events e WHERE e.task_id = r.task_id AND e.type = 'message.updated'
+                AND json_extract(e.payload, '$.payload.messageId') = r.message_id
+              ORDER BY CAST(substr(e.event_id, 7) AS INTEGER) DESC LIMIT 1)))
+      ORDER BY w.seq ASC LIMIT 1) IS NULL)`);
   }
   for (const [label, statuses, not] of [
     ["statuses", query.statuses, ""],

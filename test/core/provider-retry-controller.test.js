@@ -257,7 +257,11 @@ test("Task no-Run retry preserves its wake and original Message, and duplicate p
     { now: f.now, environment: {} }).data.retry;
   const context = readTaskContext(f.store, "task-1", {}).records.find(r => r.ref.store === "role").providerRetry;
   const web = buildWebTaskDetail(f.store, "task-1", f.now()).roles.find(r => r.name === f.roleName).providerRetry;
-  assert.deepEqual(cli, context);
+  assert.equal(cli.chainId, context.chainId);
+  assert.equal(cli.status, context.status);
+  assert.equal(cli.failureRef, context.failureRef);
+  assert.equal(context.error.raw, undefined, "Default Context does not repeat raw retry history.");
+  assert.equal(context.historyCount, cli.history.length);
   assert.deepEqual(cli, web);
   const hooks = f.hooks();
   assert.equal(hooks.deadlines().length, 1);
@@ -490,9 +494,13 @@ test("Host diagnostic Inbox preserves Task and Global errors without settling or
       assert.equal(errors[0].payload.attemptId, stage === "idle" ? undefined : f.originalAttempt);
       assert.ok(f.store.getWorkMailbox({ kind: "operator" }).pending);
     } else {
-      const notices = f.store.listGlobalRoleMessages(f.roleName).filter(m => m.kind === "system");
+      const evidence = f.store.listGlobalRoleMessages(f.roleName).filter(m => m.kind === "system" && !m.inputControl);
+      assert.equal(evidence.length, 1, "The original diagnostic remains separately readable.");
+      assert.match(evidence[0].body, /socket refused/);
+      assert.doesNotMatch(evidence[0].body, /secret-value-123/);
+      const notices = f.store.listGlobalRoleMessages(f.roleName).filter(m => m.kind === "system" && m.inputControl);
       assert.equal(notices.length, 1);
-      assert.match(notices[0].body, /socket refused/);
+      assert.match(notices[0].body, /listener failed/);
       assert.doesNotMatch(notices[0].body, /secret-value-123/);
       assert.ok(notices[0].notDelivered, "No Operator means visible evidence, not self-retry.");
     }

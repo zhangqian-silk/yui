@@ -7,7 +7,7 @@ import { markGlobalRoleMessageNotDelivered, type GlobalRoleMessage } from "../me
 import { providerRetryPending } from "../runtime/providerRetry.js";
 import { settleGlobalRetryInput } from "../message/globalProviderRetry.js";
 import { globalMessagePresentation } from "../interaction/notificationPresentation.js";
-import { recordGlobalRuntimeAttention } from "./globalRuntimeAttention.js";
+import { recordGlobalRuntimeAttention, recordGlobalRuntimeRecovery } from "./globalRuntimeAttention.js";
 
 /** Messages are the only queue. Host's atomic begin arbitrates native writers. */
 export async function deliverGlobalInputs(
@@ -58,6 +58,13 @@ export async function deliverGlobalInputs(
           if (observed.outcome === "rejected" || ["idle", "failed", "exited"].includes(observed.snapshot.state)
             && observed.reconciliation !== "terminal-republished") {
             throw new Error(observed.failure?.detail ?? observed.snapshot.detail ?? "Host cannot reconcile this exact terminal.");
+          }
+          if (observed.reconciliation === "terminal-republished") {
+            store.transaction(tx => recordGlobalRuntimeRecovery(tx, role.name,
+              `terminal-reconcile:${ownedTurn.attemptId}`, {
+                nativeSessionId: currentProviderConversation(bindingBefore).conversationId,
+                reason: "host-terminal-unobservable", evidence: "exact-terminal-republished"
+              }, options.now ?? new Date()));
           }
         } catch (error) {
           store.transaction(tx => recordGlobalRuntimeAttention(tx, role.name,

@@ -1,5 +1,5 @@
 import type { AgentRun } from "../agentRun/agentRun.js";
-import { providerRetryProjection } from "../runtime/providerRetry.js";
+import { providerRetrySummary } from "../runtime/providerRetry.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import { operationalTaskRecords } from "../task/taskRecordRetirement.js";
 import { TASK_COMPLETION_PUBLISHED_TREE_AUTHORIZED_EVENT } from "../task/publicationReference.js";
@@ -24,6 +24,7 @@ import {
 } from "./contextSnapshot.js";
 import { MAX_SYNTHESIS_SOURCE_RUNS, sourceRunContextValue } from "./sourceRunContext.js";
 import type { TaskReviewCandidate } from "../review/reviewRound.js";
+import { recordPage, summaryText, type ReadPageOptions } from "../output/boundedRead.js";
 
 export const RUN_CONTEXT_PACK_SCHEMA_VERSION = 1 as const;
 
@@ -79,7 +80,7 @@ export type AgentRunContextPack = Readonly<{
 export type AgentRunContextLiveTaskState = Readonly<{
   providerRetries: readonly Readonly<{
     roleName: string;
-    retry: ReturnType<typeof import("../runtime/providerRetry.js").providerRetryProjection>;
+    retry: ReturnType<typeof providerRetrySummary>;
   }>[];
   activeRuns: readonly Readonly<{
     runId: string;
@@ -505,6 +506,43 @@ export function buildRunContextPack(store: TaskStore, taskId: string, runId: str
   return pack;
 }
 
+/** The frozen pack remains authority. Entry is a bounded discovery projection;
+ * historical Skill packages and complete inventories are explicit reads only. */
+export function runContextPointerPage(pack: AgentRunContextPack, options: ReadPageOptions = {}) {
+  const priority = ["task", "work-item", "review-round", "role-profile"];
+  const pointers = [...pack.pointers].sort((a, b) => {
+    const rank = (store: string) => priority.includes(store) ? priority.indexOf(store) : priority.length;
+    return rank(a.store) - rank(b.store);
+  }).map(pointer => ({ ...pointer, summary: summaryText(pointer.summary ?? "") }));
+  return recordPage(pointers, `run:${pack.identity.taskId}/${pack.identity.runId}/refs/${pack.snapshot.digest}`, options);
+}
+
+export function runContextEntry(pack: AgentRunContextPack) {
+  const { skillPackages: _packages, pointers: _pointers, deltaRefs, liveTaskState, input, ...identity } = pack;
+  const { directive, ...inputIdentity } = input;
+  const { items, ...pointerPage } = runContextPointerPage(pack, { limit: 16 });
+  return {
+    ...identity, input: { ...inputIdentity, ...(directive === undefined ? {} : {
+      directiveSummary: summaryText(directive), directiveOmitted: true
+    }) }, pointers: items, pointerPage,
+    deltaRefs: deltaRefs.slice(0, 16), deltaRefsTotal: deltaRefs.length,
+    inventory: { ...pack.inventory, complete: pointerPage.complete },
+    liveTaskState: {
+      providerRetries: liveTaskState.providerRetries.slice(0, 8),
+      activeRuns: liveTaskState.activeRuns.slice(0, 8),
+      activeTaskReviews: liveTaskState.activeTaskReviews.slice(0, 8),
+      totals: { providerRetries: liveTaskState.providerRetries.length,
+        activeRuns: liveTaskState.activeRuns.length, activeTaskReviews: liveTaskState.activeTaskReviews.length }
+    },
+    reads: {
+      refs: `yui task run context ${pack.identity.taskId}/${pack.identity.runId} --view refs`,
+      full: `yui task run context ${pack.identity.taskId}/${pack.identity.runId} --view full`,
+      input: `yui task run context ${pack.identity.taskId}/${pack.identity.runId} --view input`,
+      live: `yui task context ${pack.identity.taskId}`
+    }
+  };
+}
+
 /** Reads the Task's current in-flight execution, outside the frozen contract. */
 function readLiveTaskState(store: TaskStore, taskId: string): AgentRunContextLiveTaskState {
   const activeRuns = store.listActiveRuns(taskId)
@@ -527,7 +565,7 @@ function readLiveTaskState(store: TaskStore, taskId: string): AgentRunContextLiv
     }));
   return Object.freeze({
     providerRetries: Object.freeze(store.listRoleSessionSets(taskId).flatMap(set => set.providerBinding?.retry === undefined
-      ? [] : [{ roleName: set.owner.roleName, retry: providerRetryProjection(set.providerBinding) }])),
+      ? [] : [{ roleName: set.owner.roleName, retry: providerRetrySummary(set.providerBinding) }])),
     activeRuns: Object.freeze(activeRuns),
     activeTaskReviews: Object.freeze(activeTaskReviews)
   });

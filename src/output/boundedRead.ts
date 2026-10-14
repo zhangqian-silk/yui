@@ -3,6 +3,28 @@ import { usageError } from "../errors/cliError.js";
 
 export const READ_PAGE_BYTES = 32 * 1024;
 export const INLINE_DOCUMENT_BYTES = 16 * 1024;
+/** Compact JSON wire budget, including the CLI envelope and small command
+ * wrappers (for example Run Context's `context` field). Never count just items. */
+export function fitsReadBudget(value: unknown, bytes = READ_PAGE_BYTES): boolean {
+  return Buffer.byteLength(JSON.stringify({ ok: true, data: value })) + 256 <= bytes;
+}
+export function summaryText(text: string, bytes = 512): string {
+  if (Buffer.byteLength(text) <= bytes) return text;
+  let result = "";
+  let size = 0;
+  for (const character of text) {
+    const length = Buffer.byteLength(character);
+    if (size + length + 3 > bytes) break;
+    result += character;
+    size += length;
+  }
+  return result + "…";
+}
+/** List-only nested metadata. The containing entry must expose an exact read. */
+export function summaryMetadata<T>(value: T, budget = 2048): T | { omitted: true; digest: string; bytes: number } {
+  const bytes = Buffer.byteLength(JSON.stringify(value));
+  return bytes <= budget ? value : { omitted: true, digest: readDigest(value), bytes };
+}
 export type ReadPageOptions = Readonly<{ cursor?: string; limit?: number }>;
 type Cursor = { source: string; digest: string; offset: number };
 
@@ -29,7 +51,7 @@ export function encodeReadCursor(cursor: Cursor): string {
 export function decodeReadCursor(raw: string, source: string, digest: string): number {
   let cursor: Cursor;
   try {
-    if (raw.length > 4096) throw new Error();
+    if (raw.length > 16 * 1024) throw new Error();
     cursor = JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) as Cursor;
     if (cursor.source !== source || !Number.isSafeInteger(cursor.offset) || cursor.offset < 0
       || typeof cursor.digest !== "string") throw new Error();
@@ -49,29 +71,34 @@ export function readLimit(value?: number): number {
 /** For small in-memory authorized collections. Authorize/filter BEFORE calling.
  * Cursors bind the selected collection, never grant access, and store no state.
  */
-export function recordPage<T>(records: readonly T[], source: string, options: ReadPageOptions = {}) {
+export function recordPage<T, M extends object = Record<string, never>>(
+  records: readonly T[], source: string, options: ReadPageOptions = {}, metadata: M = {} as M
+) {
   assertSource(source);
   const limit = readLimit(options.limit);
   const digest = readDigest(records);
   const offset = options.cursor === undefined ? 0 : decodeReadCursor(options.cursor, source, digest);
   if (offset > records.length) throw usageError("Read cursor exceeds this collection.");
   const items: T[] = [];
-  // Reserve room for identities, counts and continuation. Oversized individual
-  // records belong in a document read, not silently truncated list metadata.
-  let bytes = 0;
+  const page = () => {
+    const end = offset + items.length;
+    return {
+      ...metadata,
+      source, digest, items, total: records.length, complete: end === records.length,
+      nextCursor: end < records.length ? encodeReadCursor({ source, digest, offset: end }) : null,
+      limits: { items: limit, bytes: READ_PAGE_BYTES }
+    };
+  };
   for (const record of records.slice(offset, offset + limit)) {
     const size = Buffer.byteLength(JSON.stringify(record)) + 1;
     if (size > READ_PAGE_BYTES / 2) throw usageError("List entry exceeds its summary budget; read the exact record.");
-    if (bytes + size > READ_PAGE_BYTES - 4096) break;
     items.push(record);
-    bytes += size;
+    if (!fitsReadBudget(page())) { items.pop(); break; }
   }
-  const end = offset + items.length;
-  return {
-    source, digest, items, total: records.length, complete: end === records.length,
-    nextCursor: end < records.length ? encodeReadCursor({ source, digest, offset: end }) : null,
-    limits: { items: limit, bytes: READ_PAGE_BYTES }
-  };
+  if (!fitsReadBudget(page()) || items.length === 0 && offset < records.length) {
+    throw usageError("List entry and read identity exceed the response budget; read the exact record.");
+  }
+  return page();
 }
 
 /** Small exact details stay native JSON. Large details explicitly become a

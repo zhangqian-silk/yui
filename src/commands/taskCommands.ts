@@ -21,6 +21,8 @@ import type { TaskStore } from "../storage/taskStore.js";
 import {
   buildRunContextDelta,
   buildRunContextPack,
+  runContextEntry,
+  runContextPointerPage,
   contextSnapshotDeltaRefIds,
   expandRunContextRef,
   freezeReviewStageContextSnapshot,
@@ -6080,14 +6082,18 @@ function runContextCommand(
       parsed.cursor);
     return output(`${JSON.stringify(data)}\n`, { contextDelta: data });
   }
-  const parsed = readOptions(rest, ["--cursor"]);
+  const parsed = readOptions(rest, ["--cursor", "--view"]);
   if (first === undefined || parsed.positionals.length !== 0) {
     throw usageError("Task run context usage: yui task run context <task>/<run>.");
   }
   const { taskId, runId } = parseRunContextReference(first);
   authorizeRunContext(store, taskId, runId, options.environment);
   const pack = store.transaction((tx) => buildRunContextPack(tx, taskId, runId));
-  const data = boundedDocument(pack, `run:${taskId}/${runId}/context`, parsed.cursor);
+  const view = parsed.values.get("--view") ?? "current";
+  if (!["current", "full", "refs", "input"].includes(view)) throw usageError("Run Context view must be current, refs, input or full.");
+  const data = view === "refs" ? runContextPointerPage(pack, parsed)
+    : boundedDocument(view === "full" ? pack : view === "input" ? pack.input : runContextEntry(pack),
+      `run:${taskId}/${runId}/context/${view}`, parsed.cursor);
   return output(`${JSON.stringify(data)}\n`, { context: data });
 }
 
