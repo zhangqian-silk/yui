@@ -1,5 +1,6 @@
 import { requireKnownFields, requireText, requireTimestamp } from "../domain/validation.js";
 import { isDeepStrictEqual } from "node:util";
+import type { GlobalRoleMessage } from "./message.js";
 
 /** Agent handling evidence on the original record, never a transport receipt.
  * Claims have no timeout: a crash cannot prove that handling did not happen. */
@@ -15,6 +16,30 @@ export type InboxReceipt = Readonly<{
   claim: Readonly<{ requestId: string; actor: InboxActor; at: string }>;
   ack?: Readonly<{ requestId: string; actor: InboxActor; at: string; reason: string }>;
 }>;
+
+/** Semantic handling and transport delivery are independent facts. Projections
+ * must not infer handling from delivery, a native terminal, or an empty queue. */
+export function inboxHandlingState(receipt: InboxReceipt | undefined): "unclaimed" | "claimed-unacknowledged" | "handled" {
+  return receipt?.ack !== undefined ? "handled" : receipt !== undefined ? "claimed-unacknowledged" : "unclaimed";
+}
+
+export function isGlobalInboxMessage(message: GlobalRoleMessage): boolean {
+  return message.inputControl !== undefined || message.interruptThen !== undefined;
+}
+
+/** Unhandled own-role input, including accepted and unknown delivery. This is
+ * NOT the scheduler's deliverable queue; selecting it never authorizes replay. */
+export function pendingGlobalInboxMessages(messages: readonly GlobalRoleMessage[]): GlobalRoleMessage[] {
+  return messages.filter(message => isGlobalInboxMessage(message) && inboxHandlingState(message.inbox) !== "handled");
+}
+
+/** Original message evidence only. A missing receipt is not proof of
+ * non-submission; admission additionally inspects the exact native attempt. */
+export function globalInboxDeliveryState(message: GlobalRoleMessage):
+  "unobserved" | "pending" | "accepted" | "rejected" | "delivery-unknown" {
+  return message.control?.outcome ?? (message.delivery?.via === "provider" ? "accepted"
+    : message.delivery === undefined ? "unobserved" : "delivery-unknown");
+}
 
 export function validateInboxReceipt(receipt: InboxReceipt | undefined): void {
   if (receipt === undefined) return;
@@ -40,5 +65,20 @@ export function assertInboxReceiptPreserved(previous: InboxReceipt | undefined, 
   if (previous !== undefined && (!isDeepStrictEqual(previous.claim, next?.claim)
     || previous.ack !== undefined && !isDeepStrictEqual(previous.ack, next?.ack))) {
     throw new Error("Inbox handling ownership changed; reread the original instead of overwriting its receipt.");
+  }
+}
+
+/** A receipt cannot silently acknowledge different content under the same ID.
+ * Operational delivery/Assignment fields may evolve with their existing
+ * guards, but handled originals must be submitted as new Messages to change.
+ */
+export function assertInboxOriginalPreserved(
+  previous: { inbox?: InboxReceipt; body: string; author: unknown; kind: string; inputControl?: unknown } | undefined,
+  next: { inbox?: InboxReceipt; body: string; author: unknown; kind: string; inputControl?: unknown }
+): void {
+  assertInboxReceiptPreserved(previous?.inbox, next.inbox);
+  if (previous?.inbox !== undefined && (previous.body !== next.body || previous.kind !== next.kind
+    || !isDeepStrictEqual(previous.author, next.author) || !isDeepStrictEqual(previous.inputControl, next.inputControl))) {
+    throw new Error("Inbox receipt binds the exact original Message; submit changed content as a new Message.");
   }
 }

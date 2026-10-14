@@ -328,6 +328,24 @@ try {
   assert.equal(readSessionBootstrapManifest(leaderManifestPath).contextProtocol.skillCheckCommand,
     "yui session skills --json");
   for (const skill of leaderSkills.skills) assert.equal(skill.path, join(skillRoot, skill.id));
+  // Desktop entry has only the native identity. The fixture explicitly
+  // acknowledges its handled originals; a fake terminal is not that receipt.
+  const leaderNative = events().find(event => event.type === "runtime.native-connection-bound"
+    && event.payload.roleName === "leader").payload.nativeSessionId;
+  const desktopLeader = { ...environment, CODEX_THREAD_ID: leaderNative };
+  const acknowledgeWindows = () => {
+    const pending = JSON.parse(runCli(cli, ["--json", "inbox", "list"], desktopLeader)).data;
+    assert.equal(pending.identity.roleName, "leader");
+    for (const item of pending.items.filter(item => item.kind === "notification-window" && item.blocked === null)) {
+      runCli(cli, ["inbox", "show", item.id, "--json"], desktopLeader);
+      runCli(cli, ["inbox", "claim", item.id, "--request-id", `fixture-claim-${item.id}`], desktopLeader);
+      runCli(cli, ["inbox", "ack", item.id, "--request-id", `fixture-ack-${item.id}`,
+        "--reason", "Fixture inspected original and deterministic result."], desktopLeader);
+    }
+  };
+  const desktopSkills = JSON.parse(runCli(cli, ["session", "skills", "--json"], desktopLeader)).data;
+  assert.deepEqual(desktopSkills.skills.map(skill => skill.id), ["yui-runtime", "yui-leader"]);
+  acknowledgeWindows();
   json("task", "complete", task.id, "--summary", "The deterministic Provider result is accepted.");
   assert.equal(json("task", "show", task.id).task.status, "completed");
 
@@ -371,6 +389,7 @@ try {
   }, "The exact follow-up Message did not traverse CLI/Controller/Host/native terminal.");
   assert.equal(events().filter(event => event.type === "task.reopened").length, 1);
   assert.deepEqual(events().find(event => event.id === originalCompletion.id), originalCompletion);
+  acknowledgeWindows();
   json("task", "complete", task.id, "--summary", "The authorized follow-up is separately accepted.");
   assert.equal(json("task", "show", task.id).task.status, "completed");
   assert.equal(events().filter(event => event.type === "task.completed").length, 2);

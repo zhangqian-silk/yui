@@ -91,6 +91,15 @@ test("public CLI fences replaced Operators, Home configuration and cross-Task re
   const inboxList = await cli(["inbox", "list"], current);
   assert.equal(inboxList.ok, true, inboxList.error);
   assert.equal(inboxList.data.data.items[0].id, inboxId);
+  const desktop = { ...base, CODEX_THREAD_ID: "operator-current" };
+  const desktopInbox = await cli(["inbox", "list"], desktop);
+  assert.equal(desktopInbox.ok, true, desktopInbox.error);
+  assert.equal(desktopInbox.data.data.identity.roleName, "operator");
+  assert.equal(desktopInbox.data.data.items[0].id, inboxId);
+  const desktopSkills = await cli(["session", "skills"], desktop);
+  assert.equal(desktopSkills.ok, true, desktopSkills.error);
+  assert.deepEqual(desktopSkills.data.data.skills.map(s => s.id), ["yui-runtime", "yui-operator"]);
+  assert.equal((await cli(["inbox", "list"], { ...desktop, YUI_ROLE: "foreign" })).ok, false);
   assert.equal((await cli(["inbox", "show", inboxId], current)).data.data.body, "Handle in this turn");
   assert.equal(store.listGlobalRoleMessages("operator")[0].inbox, undefined);
   const claim = await cli(["inbox", "claim", inboxId, "--request-id", "claim-cli"], current);
@@ -117,6 +126,9 @@ test("public CLI fences replaced Operators, Home configuration and cross-Task re
   const workerSkills = await cli(["session", "skills"], env);
   assert.equal(workerSkills.ok, true, JSON.stringify(workerSkills));
   assert.deepEqual(workerSkills.data.data.skills.map(s => s.id), ["yui-runtime", "yui-worker"]);
+  const desktopWorker = { ...base, CODEX_THREAD_ID: "worker-current" };
+  assert.equal((await cli(["inbox", "list"], desktopWorker)).ok, true);
+  assert.equal((await cli(["task", "context", "task-2"], desktopWorker)).ok, false);
   assert.equal((await cli(["session", "skills"], { ...env, YUI_TASK_ID: "task-2" })).ok, false);
   const config = ["config", "resources", "set", "resources-gc-auto-quarantine", "true"];
   for (const partial of [{ YUI_SESSION_MANIFEST: current.YUI_SESSION_MANIFEST }, { YUI_TASK_ID: "task-1" }]) {

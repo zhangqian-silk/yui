@@ -1,12 +1,12 @@
 import type { TaskStore } from "../storage/taskStore.js";
-import { requireManagedGlobalCaller, requireManagedTaskCaller } from "../runtime/managedCaller.js";
+import { requireManagedCaller } from "../runtime/sessionCaller.js";
 import { boundedDocument, readDigest, readOptions, recordPage } from "../output/boundedRead.js";
 import { claimPending, completeProcessing } from "../coordination/workMailbox.js";
 import { createTaskWake, latestTaskWake, type TaskWake } from "../scheduler/taskWake.js";
 import { expandTaskMessageResult, type GlobalRoleMessage, type TaskMessage } from "../message/message.js";
 import { messageAssignmentBlocker } from "../message/messageContinuation.js";
-import type { InboxActor, InboxReceipt } from "../message/inboxReceipt.js";
-import { isLeaderSteer, latestMessageUpdate, taskMessageInboxReceipt, unfinishedLeaderInbox } from "../message/taskInboxOwnership.js";
+import { globalInboxDeliveryState, inboxHandlingState, isGlobalInboxMessage, pendingGlobalInboxMessages, type InboxActor, type InboxReceipt } from "../message/inboxReceipt.js";
+import { deliveredMessageWake, isLeaderSteer, pinMessageRevisions, taskMessageInboxReceipt, unfinishedLeaderInbox } from "../message/taskInboxOwnership.js";
 import { hasRuntimeCleanupObligation, runtimeLifecycleTarget } from "../runtime/lifecycleReservation.js";
 import { isTaskRecordRetired, retiredTaskRecordIds } from "../task/taskRecordRetirement.js";
 
@@ -19,11 +19,10 @@ const sameSession = (a: InboxActor, b: InboxActor) => a.scope === b.scope && a.t
   && a.roleName === b.roleName && a.agentId === b.agentId && a.nativeSessionId === b.nativeSessionId;
 
 function addressOf(store: TaskStore, env: NodeJS.ProcessEnv): Address {
-  if (env.YUI_SESSION_SCOPE === "global") {
-    const caller = requireManagedGlobalCaller(store, env);
+  const caller = requireManagedCaller(store, env);
+  if (caller.scope === "global") {
     return { scope: "global", roleName: caller.roleName, agentId: caller.agentId, nativeSessionId: caller.nativeSessionId };
   }
-  const caller = requireManagedTaskCaller(store, env);
   if (caller.roleName !== "leader" && caller.currentRunId === undefined) {
     throw new Error("An Assignment inbox requires its current active AgentRun.");
   }
@@ -47,7 +46,7 @@ function ownsMessage(store: TaskStore, address: Address, message: TaskMessage): 
 
 function entries(store: TaskStore, address: Address): Entry[] {
   if (address.scope === "global") return store.listGlobalRoleMessages(address.roleName)
-    .filter(message => message.inputControl !== undefined || message.interruptThen !== undefined);
+    .filter(isGlobalInboxMessage);
   const messages = store.listMessages(address.taskId!).filter(message => ownsMessage(store, address, message));
   return address.roleName === "leader" ? [...store.listTaskWakes(address.taskId!), ...messages] : messages;
 }
@@ -59,6 +58,10 @@ function getEntry(store: TaskStore, address: Address, id: string): Entry {
 }
 
 function isWake(entry: Entry): entry is TaskWake { return "fromCursor" in entry; }
+function acceptedInput(entry: Entry): boolean {
+  return isWake(entry) ? entry.status === "consumed" : "roleName" in entry
+    ? globalInboxDeliveryState(entry) === "accepted" : entry.control?.outcome === "accepted";
+}
 function assertSelectedTarget(address: Address, message: TaskMessage | GlobalRoleMessage): void {
   const selected = message.inputControl?.expectedSessionId;
   const globalTarget = "roleName" in message ? message.deliveryTarget : undefined;
@@ -84,19 +87,29 @@ function blocker(store: TaskStore, address: Address, entry: Entry): string | und
     return sameSession(entry.inbox.claim.actor, address) ? undefined : "claimed-by-previous-session";
   }
   if (isWake(entry)) {
-    if (entry.status === "consumed") return "already-delivered";
+    // Native acceptance releases transport ownership, not semantic handling.
+    // The current Leader may explicitly claim the fixed delivered window.
+    if (entry.status === "consumed") return undefined;
     return "automatic-notification-owns-window";
   }
   if (address.scope === "task" && taskMessageInboxReceipt(store, entry as TaskMessage) !== undefined) {
     return "claimed-by-notification-window";
   }
-  if (entry.interruptThen !== undefined) return "explicit-interrupt-handoff";
-  if (entry.control !== undefined && entry.control.outcome !== "rejected") return `delivery-${entry.control.outcome}`;
+  if (entry.control !== undefined && ["pending", "delivery-unknown"].includes(entry.control.outcome)) {
+    return `delivery-${entry.control.outcome}`;
+  }
+  const accepted = acceptedInput(entry);
+  if (entry.interruptThen !== undefined && !accepted
+    && !(address.scope === "task" && (entry as TaskMessage).continuation?.runId === address.runId
+      && address.runId !== undefined)) return "explicit-interrupt-handoff";
   // Both steer paths reserve pending control before submission and arbitrate
   // with inbox claims. No control is unsubmitted, not an unknown delivery.
   if (address.scope === "global") {
     const message = entry as GlobalRoleMessage;
-    if (message.delivery !== undefined) return `already-delivered-${message.delivery.via}`;
+    if (message.delivery !== undefined && !accepted) return `already-delivered-${message.delivery.via}`;
+    // Explicitly settling delivered input is not a new submission or target
+    // selection. A current rightful successor retains the original target.
+    if (accepted) return undefined;
     if (message.deliveryTarget !== undefined && (message.deliveryTarget.nativeSessionId !== address.nativeSessionId
       || message.deliveryTarget.agentId !== address.agentId)) return "selected-native-session-changed";
     if (message.inputControl?.expectedSessionId !== undefined
@@ -105,8 +118,10 @@ function blocker(store: TaskStore, address: Address, entry: Entry): string | und
     if (turn?.attemptId === `global-input:${address.roleName}/${entry.id}`) return `native-attempt-${turn.status}`;
   } else {
     const message = entry as TaskMessage;
-    if (message.continuation?.runId !== undefined) return "continuation-already-dispatched";
-    if (message.inputControl?.expectedSessionId !== undefined
+    if (message.continuation?.runId !== undefined && message.continuation.runId !== address.runId) {
+      return "continuation-already-dispatched";
+    }
+    if (!accepted && message.inputControl?.expectedSessionId !== undefined
       && message.inputControl.expectedSessionId !== address.nativeSessionId) return "selected-native-session-changed";
     return address.roleName === "leader" && isLeaderSteer(message) ? undefined : messageAssignmentBlocker(store, message);
   }
@@ -131,6 +146,13 @@ function summary(store: TaskStore, address: Address, entry: Entry) {
   return { id: entry.id, kind: isWake(entry) ? "notification-window" : "message",
     createdAt: entry.createdAt, summary: isWake(entry) ? entry.reasons.join(", ").slice(0, 240) : entry.body.slice(0, 240),
     blocked: blocker(store, address, entry) ?? null, inbox: entry.inbox ?? null,
+    handling: inboxHandlingState(entry.inbox),
+    delivery: isWake(entry) ? entry.status : {
+      control: entry.control ?? null,
+      ...(address.scope === "global" ? { receipt: (entry as GlobalRoleMessage).delivery ?? null,
+        state: globalInboxDeliveryState(entry as GlobalRoleMessage) }
+        : { continuation: (entry as TaskMessage).continuation ?? null })
+    },
     read: `yui inbox show ${entry.id}`, ...(isWake(entry)
       ? { originals: `yui task wake show ${entry.taskId} ${entry.id} --json` } : {}) };
 }
@@ -152,11 +174,9 @@ export function runInboxCommand(
     const parsed = readOptions(tail);
     if (parsed.positionals.length) throw new Error("Inbox list accepts only --limit and --cursor.");
     const retired = address.scope === "task" ? retiredTaskRecordIds(store.listEvents(address.taskId!), "message") : new Set();
-    const selected = entries(store, address).filter(entry => (isWake(entry) || !retired.has(entry.id))
-      && entry.inbox?.ack === undefined
-      && (isWake(entry) ? entry.status !== "consumed"
-        : address.scope === "global" ? (entry as GlobalRoleMessage).delivery === undefined
-          : (entry as TaskMessage).continuation?.runId === undefined));
+    const selected = address.scope === "global" ? pendingGlobalInboxMessages(store.listGlobalRoleMessages(address.roleName))
+      : entries(store, address).filter(entry => (isWake(entry) || !retired.has(entry.id))
+        && inboxHandlingState(entry.inbox) !== "handled");
     const items: object[] = selected.map(entry => summary(store, address, entry));
     if (address.scope === "task" && address.roleName === "leader") {
       const mailbox = store.getWorkMailbox(target(address));
@@ -165,7 +185,7 @@ export function runInboxCommand(
         blocked: mailbox.processing === null && !unfinishedLeaderInbox(store, address.taskId!) ? null : "earlier-window-owned",
         read: `yui inbox show ${pendingId(mailbox.pending)}` });
     }
-    return recordPage(items, source(address), parsed);
+    return { ...recordPage(items, source(address), parsed), identity: address };
   }
   if (action === "show") {
     const parsed = readOptions(tail, ["--cursor"]);
@@ -222,7 +242,8 @@ export function runInboxCommand(
       for (const ref of mailbox.pending.refs) {
         if (ref.type !== "message") continue;
         const message = tx.listMessages(current.taskId!).find(message => message.id === ref.id);
-        if (message !== undefined && taskMessageInboxReceipt(tx, message) !== undefined
+        if (message !== undefined && (taskMessageInboxReceipt(tx, message) !== undefined
+          || deliveredMessageWake(tx, message) !== undefined)
           || message?.interruptThen !== undefined
           || message?.control !== undefined && message.control.outcome !== "rejected"
           || message?.inputControl?.expectedSessionId !== undefined
@@ -233,15 +254,7 @@ export function runInboxCommand(
       const latest = latestTaskWake(tx.listTaskWakes(current.taskId!));
       // Pin each mutable Draft original's existing update event, not a clock
       // comparison. A later edit is distinct input even within the same tick.
-      const refs = [...mailbox.pending.refs];
-      for (const ref of mailbox.pending.refs) {
-        if (ref.type !== "message" || ref.taskId !== current.taskId) continue;
-        const message = tx.listMessages(current.taskId!).find(message => message.id === ref.id);
-        const revision = message === undefined ? undefined : latestMessageUpdate(tx, message);
-        if (revision !== undefined && !refs.some(ref => ref.type === "event" && ref.id === revision.id)) {
-          refs.push({ type: "event", taskId: current.taskId!, id: revision.id });
-        }
-      }
+      const refs = pinMessageRevisions(tx, current.taskId!, mailbox.pending.refs);
       const wake = createTaskWake({ id: tx.nextTaskWakeId(current.taskId!), taskId: current.taskId!,
         reasons: mailbox.pending.reasons, refs,
         fromCursor: latest?.toCursor ?? tx.getTask(current.taskId!)!.createdAt,
@@ -260,14 +273,19 @@ export function runInboxCommand(
         }
         const blocked = blocker(tx, current, entry);
         if (blocked !== undefined) throw new Error(`Inbox entry cannot be claimed: ${blocked}.`);
+        if (isWake(entry) && !acceptedInput(entry)) {
+          for (const ref of entry.refs ?? []) {
+            if (ref.type !== "message") continue;
+            const message = tx.listMessages(current.taskId!).find(message => message.id === ref.id);
+            if (message !== undefined) assertSelectedTarget(current, message);
+          }
+        } else if (!isWake(entry) && !acceptedInput(entry)) assertSelectedTarget(current, entry);
         for (const previous of entries(tx, current)) {
           if (previous.id === entry.id) break;
           if (isWake(previous) || previous.inbox?.ack !== undefined) continue;
           if (current.scope === "task"
             && isTaskRecordRetired(tx.listEvents(current.taskId!), "message", previous.id)) continue;
-          if (current.scope === "global" && ((previous as GlobalRoleMessage).delivery !== undefined
-            || (previous as GlobalRoleMessage).notDelivered !== undefined)) continue;
-          if (current.scope === "task" && (previous as TaskMessage).continuation?.runId !== undefined) continue;
+          if (current.scope === "global" && (previous as GlobalRoleMessage).notDelivered !== undefined) continue;
           if (previous.inbox !== undefined && sameSession(previous.inbox.claim.actor, current)) continue;
           throw new Error(`Earlier inbox entry ${previous.id} must be handled first; input order is preserved.`);
         }
@@ -278,12 +296,12 @@ export function runInboxCommand(
         // the original. The current rightful successor may settle a claim
         // acquired by the exact selected Session, retaining both identities.
         const claimant = entry.inbox.claim.actor;
-        if (isWake(entry)) {
+        if (isWake(entry) && !acceptedInput(entry)) {
           const messageIds = new Set(entry.refs?.filter(ref => ref.type === "message").map(ref => ref.id));
           for (const message of tx.listMessages(current.taskId!)) {
             if (messageIds.has(message.id)) assertSelectedTarget(claimant, message);
           }
-        } else assertSelectedTarget(claimant, entry);
+        } else if (!isWake(entry) && !acceptedInput(entry)) assertSelectedTarget(claimant, entry);
         if (!isWake(entry) && current.scope === "task"
           && !(current.roleName === "leader" && isLeaderSteer(entry as TaskMessage))) {
           const invalid = messageAssignmentBlocker(tx, entry as TaskMessage);

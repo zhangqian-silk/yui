@@ -51,11 +51,27 @@ export function requireManagedGlobalCaller(store: ManagedGlobalCallerStore, env:
     || !role || !binding || !set || !session || session.status !== "active"
     || set.activeAgentId !== role.activeAgentId || session.agentId !== binding.agentId
     || session.adapterId !== binding.adapterId || nativeSessionId !== session.nativeSessionId
+    || (env.YUI_WORKSPACE !== undefined && env.YUI_WORKSPACE !== session.effective.workspace.root)
     || (env.YUI_AGENT_ID !== undefined && env.YUI_AGENT_ID !== session.agentId)
     || (env.YUI_ADAPTER_ID !== undefined && env.YUI_ADAPTER_ID !== session.adapterId)) {
     throw new ManagedRuntimeDriftError("This command requires the current managed global native Session; the previous Session has no write authority.");
   }
   return { roleName: role.name, agentId: session.agentId, adapterId: session.adapterId, nativeSessionId };
+}
+
+/** Historical self diagnostics remain readable, but never authorize inbox
+ * handling, configuration, another Role's records, or lifecycle mutation. */
+export function requireManagedGlobalReader(store: ManagedGlobalCallerStore, env: NodeJS.ProcessEnv): void {
+  try { requireManagedGlobalCaller(store, env); return; } catch (error) {
+    const set = env.YUI_ROLE === undefined ? null : store.getGlobalRoleSessionSet(env.YUI_ROLE);
+    const known = [...Object.values(set?.sessions ?? {}), ...Object.values(set?.history ?? {})].some(session =>
+      session.nativeSessionId === identity(session.adapterId === "codex"
+        ? env.CODEX_THREAD_ID ?? env.YUI_NATIVE_SESSION_ID : env.YUI_NATIVE_SESSION_ID)
+      && (env.YUI_AGENT_ID === undefined || env.YUI_AGENT_ID === session.agentId)
+      && (env.YUI_ADAPTER_ID === undefined || env.YUI_ADAPTER_ID === session.adapterId)
+      && (env.YUI_WORKSPACE === undefined || env.YUI_WORKSPACE === session.effective.workspace.root));
+    if (env.YUI_SESSION_SCOPE !== "global" || env.YUI_TASK_ID !== undefined || !known) throw error;
+  }
 }
 
 /** Immutable self-identity a managed Task Session asserts about its own process. */
@@ -114,7 +130,12 @@ export function resolveManagedTaskCaller(
 ): ManagedTaskCaller | undefined {
   const self = managedTaskSessionIdentity(environment);
   if (self === undefined) return undefined;
-  return requireCurrentRuntime(store, self);
+  const caller = requireCurrentRuntime(store, self);
+  if (environment?.YUI_AGENT_ID !== undefined && environment.YUI_AGENT_ID !== caller.agentId
+    || environment?.YUI_ADAPTER_ID !== undefined && environment.YUI_ADAPTER_ID !== caller.adapterId) {
+    throw new ManagedRuntimeDriftError("Managed Task Agent/adapter hints conflict with the current native Session.");
+  }
+  return caller;
 }
 
 /** Same as resolveManagedTaskCaller, but requires a managed Task Session. */

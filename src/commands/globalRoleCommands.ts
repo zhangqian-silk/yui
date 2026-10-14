@@ -1,5 +1,6 @@
 import { roleNotFound, usageError } from "../errors/cliError.js";
 import { hasManagedIdentity } from "../runtime/managedIdentity.js";
+import { requireManagedGlobalCaller } from "../runtime/managedCaller.js";
 import { boundedDocument, recordPage, readOptions, readDigest, messageReceipt } from "../output/boundedRead.js";
 import { controlProviderRetry, providerRetryProjection, renderProviderRetry } from "../runtime/providerRetry.js";
 import { settleGlobalRetryInput } from "../message/globalProviderRetry.js";
@@ -221,13 +222,7 @@ function assertGlobalInputAuthority(store: GlobalRoleStore, options: GlobalRoleC
     throw usageError("Global input mutation is outside the exact Session authority.");
   }
   if (env.YUI_SESSION_SCOPE === "global") {
-    const caller = store.getGlobalRoleSessionSet(env.YUI_ROLE ?? "");
-    const session = caller?.sessions[caller.activeAgentId];
-    if (session === undefined || session.status !== "active" || env.YUI_AGENT_ID !== session.agentId
-      || env.YUI_ADAPTER_ID !== session.adapterId
-      || (env.CODEX_THREAD_ID ?? env.YUI_NATIVE_SESSION_ID) !== session.nativeSessionId) {
-      throw usageError("Global input mutation requires the current native caller Session.");
-    }
+    requireManagedGlobalCaller(store, env);
   } else if (hasManagedIdentity(env)) {
     throw usageError("Incomplete managed identity cannot acquire user authority.");
   }
@@ -275,9 +270,6 @@ function roleContext(
   if (selfRead) {
     if (environment.YUI_SESSION_SCOPE !== "global" || environment.YUI_ROLE !== name) {
       throw usageError("Managed GlobalRole context is outside the exact Session authority.");
-    }
-    if (environment.YUI_SESSION_MANIFEST === undefined) {
-      throw usageError("Managed GlobalRole context requires its Session Manifest.");
     }
   }
   const role = requireRole(name, store);

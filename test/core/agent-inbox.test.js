@@ -26,6 +26,8 @@ import { acceptProviderTurn, beginProviderTurn, createProviderRuntimeBinding } f
 import { failRun } from "../../dist/agentRun/agentRun.js";
 import { createProject } from "../../dist/repository/project.js";
 import { stopTaskExecutionCommand, startTaskExecutionCommand } from "../../dist/commands/taskExecutionCommands.js";
+import { requireManagedCaller, sessionCallerEnvironment } from "../../dist/runtime/sessionCaller.js";
+import { createTaskEvent } from "../../dist/event/taskEvent.js";
 
 const now = new Date("2026-10-13T00:00:00Z");
 function fixture(t, name) {
@@ -58,6 +60,7 @@ for (const role of ["operator", "assistant"]) test(`${role} own inbox reads, cla
   const revision = store.getStateRevision();
   assert.equal(command("list").items[0].id, id);
   assert.equal(command("show", id).body, "Complete original");
+  assert.equal(runInboxCommand(["show", id], store, { CODEX_THREAD_ID: env.CODEX_THREAD_ID }).body, "Complete original");
   assert.equal(store.getStateRevision(), revision);
   assert.throws(() => command("ack", id, "--request-id", "read-is-not-handled", "--reason", "handled"), /claim/i);
   const claimed = command("claim", id, "--request-id", "claim-one");
@@ -70,6 +73,7 @@ for (const role of ["operator", "assistant"]) test(`${role} own inbox reads, cla
   assert.equal(original.delivery, undefined);
   assert.equal(original.inbox.ack.reason, "Processed original");
   assert.equal(original.body, "Complete original");
+  assert.throws(() => store.updateGlobalRoleMessage({ ...original, body: "Different input" }), /exact original/);
   assert.throws(() => runInboxCommand(["list"], store, { ...env, CODEX_THREAD_ID: "replaced" }), /Session/);
   assert.throws(() => runInboxCommand(["list"], store, {}), /managed/i);
 });
@@ -113,6 +117,36 @@ test("partial batches, long originals, restart and unknown delivery preserve eac
   } while (cursor !== null);
   assert.equal(new Set(seen).size, 129);
   assert.equal(command("show", second).inbox, undefined, "reading every page still does not consume input");
+});
+
+test("accepted automatic input stays visible until explicit handling; unknown effects never become replayable", t => {
+  const { store, command, add, env } = fixture(t, "operator");
+  const id = add("Automatically delivered original");
+  const original = store.listGlobalRoleMessages("operator")[0];
+  store.updateGlobalRoleMessage({ ...original,
+    deliveryTarget: { agentId: "codex", nativeSessionId: env.CODEX_THREAD_ID },
+    delivery: { deliveredAt: now.toISOString(), via: "provider" },
+    control: { requestId: id, receiptId: `global-input:operator/${id}`, outcome: "accepted", observedAt: now.toISOString() }
+  });
+  assert.equal(command("list").items[0].id, id, "native acceptance is not semantic handling");
+  const delivery = command("show", id).delivery;
+  command("claim", id, "--request-id", "received");
+  command("ack", id, "--request-id", "processed", "--reason", "Verified original and completed its effects");
+  assert.deepEqual(command("show", id).delivery, delivery);
+  assert.equal(command("list").items.length, 0);
+  const later = add("Accepted before an interruption");
+  store.updateGlobalRoleMessage({ ...store.listGlobalRoleMessages("operator")[1],
+    deliveryTarget: { agentId: "codex", nativeSessionId: env.CODEX_THREAD_ID },
+    delivery: { deliveredAt: now.toISOString(), via: "provider" }
+  });
+  const set = updateRoleAgentSessionStatus(store.getGlobalRoleSessionSet("operator"), "codex", "ended", now, "stopped");
+  store.saveGlobalRoleSessionSet(recordRoleAgentSession(set, { ...set.sessions.codex,
+    status: "active", endReason: undefined, nativeSessionId: "successor" }, new Date(now.getTime() + 1000)));
+  const successor = (...args) => runInboxCommand(args, store, { CODEX_THREAD_ID: "successor" }, now);
+  successor("claim", later, "--request-id", "inspect-previous-effects");
+  successor("ack", later, "--request-id", "settle-previous", "--reason", "Inspected original delivery and external effect receipt; no replay needed");
+  assert.equal(successor("show", later).deliveryTarget.nativeSessionId, "operator-native");
+  assert.equal(successor("show", later).inbox.ack.actor.nativeSessionId, "successor");
 });
 
 test("native admission and active consumption arbitrate atomically on the original Global Message", t => {
@@ -215,6 +249,57 @@ function taskFixture(t, draft = false) {
   const task = args => runTaskCommand(args, store, { now: () => now, environment: {} });
   return { ...f, task, inbox, envFor };
 }
+
+test("native-only callers resolve their current role without borrowing hints, Home or child identity", t => {
+  const { store, envFor, inbox } = taskFixture(t);
+  assert.deepEqual(sessionCallerEnvironment(store, {}), {}, "a plain user remains explicitly unbound");
+  assert.equal(requireManagedCaller(store, { CODEX_THREAD_ID: "operator-native" }).scope, "global");
+  assert.equal(requireManagedCaller(store, { CODEX_THREAD_ID: "leader-native" }).roleName, "leader");
+  assert.equal(requireManagedCaller(store, { YUI_NATIVE_SESSION_ID: "leader-native" }).taskId, "task-1");
+  const globalSet = store.getGlobalRoleSessionSet("operator");
+  store.saveGlobalRoleSessionSet({ ...globalSet, sessions: { codex: { ...globalSet.sessions.codex,
+    nativeSessionId: "leader-native" } } });
+  assert.throws(() => requireManagedCaller(store, { CODEX_THREAD_ID: "leader-native" }), /ambiguous/);
+  store.saveGlobalRoleSessionSet(globalSet);
+  for (const hints of [
+    { YUI_ROLE: "operator" }, { YUI_TASK_ID: "foreign" }, { YUI_AGENT_ID: "foreign" },
+    { YUI_ADAPTER_ID: "claude" }, { YUI_WORKSPACE: "/foreign" }
+  ]) assert.throws(() => requireManagedCaller(store, { CODEX_THREAD_ID: "leader-native", ...hints }), /conflict/);
+  assert.throws(() => requireManagedCaller(store, { ...envFor("leader"), CODEX_THREAD_ID: "native-child",
+    YUI_NATIVE_SESSION_ID: "leader-native" }), /not registered/);
+  assert.throws(() => requireManagedCaller(store, { YUI_ROLE: "operator" }), /no native/);
+  assert.throws(() => requireManagedCaller(store, { CODEX_THREAD_ID: "" }), /invalid/);
+  const other = fixture(t, "other");
+  assert.throws(() => requireManagedCaller(other.store, { CODEX_THREAD_ID: "leader-native" }), /YUI_HOME/);
+  store.saveEvent("task-1", createTaskEvent(store.nextEventId("task-1"), "task-1", "role.agent-bound", {
+    role: "leader", revokedNativeSessionId: "leader-native"
+  }, now));
+  assert.throws(() => inbox("leader", "list"), /revoked/);
+});
+
+test("automatic windows pin same-tick revisions and require explicit acknowledgement independently of native acceptance", t => {
+  const { store, task, inbox } = taskFixture(t, true);
+  task(["message", "send", "task-1", "A", "--intent", "discuss"]);
+  task(["message", "update", "task-1/message-1", "B"]);
+  const adapter = new FileSchedulerStoreAdapter(store);
+  const first = adapter.claimLeaderNotification("task-1", now);
+  adapter.settleLeaderNotification("task-1", first.attemptId, "accepted", now);
+  enqueueWork(store, { kind: "role", taskId: "task-1", roleName: "leader" }, "user-message", now,
+    [{ type: "message", taskId: "task-1", id: "message-1" }]);
+  assert.equal(adapter.claimLeaderNotification("task-1", now), null, "duplicate notification cannot replay a delivered revision");
+  assert.equal(pendingCompletionMessages(store, "task-1").length, 1);
+  assert.equal(inbox("leader", "list").items[0].id, first.wakeId);
+  inbox("leader", "claim", first.wakeId, "--request-id", "automatic-B");
+  task(["message", "update", "task-1/message-1", "C"]);
+  inbox("leader", "ack", first.wakeId, "--request-id", "B-handled", "--reason", "Handled B; C is later input");
+  assert.equal(pendingCompletionMessages(store, "task-1").length, 1, "old acknowledgement cannot handle new revision");
+  const second = adapter.claimLeaderNotification("task-1", now);
+  adapter.settleLeaderNotification("task-1", second.attemptId, "accepted", now);
+  inbox("leader", "claim", second.wakeId, "--request-id", "automatic-C");
+  inbox("leader", "ack", second.wakeId, "--request-id", "C-handled", "--reason", "Handled C");
+  assert.equal(pendingCompletionMessages(store, "task-1").length, 0);
+  assert.throws(() => store.saveTaskWake("task-1", { ...store.getTaskWake("task-1", first.wakeId), refs: [] }), /immutable/);
+});
 
 test("Draft edits have distinct inbox ownership even under the same clock", t => {
   const { store, task, inbox } = taskFixture(t, true);
@@ -403,6 +488,7 @@ for (const roleName of ["worker", "leader"]) test(`${roleName} own Assignment in
   store.saveMessage("task-1", createTaskMessage("message-2", "task-1", "Leader only", "user", { type: "user" }, now));
   assert.throws(() => ownInbox("show", "message-2"), /scope/);
   assert.equal(ownInbox("show", id).body, "Worker correction");
+  assert.equal(runInboxCommand(["show", id], store, { CODEX_THREAD_ID: `${roleName}-native` }).body, "Worker correction");
   ownInbox("claim", id, "--request-id", "worker-claim");
   prepareMessageContinuations(store, "task-1", now, roleName);
   assert.equal(store.listRuns("task-1").length, 1);
@@ -410,7 +496,7 @@ for (const roleName of ["worker", "leader"]) test(`${roleName} own Assignment in
   assert.equal(store.getWorkItem("task-1", "work-item-1").status, "open");
   assert.equal(store.getRun("task-1", run.id).status, "active");
   assert.equal(store.listMessages("task-1")[0].continuation.runId, undefined);
-  assert.throws(() => runInboxCommand(["show", id], store, { ...envFor(roleName), YUI_TASK_ID: "task-2" }), /exists|current/);
+  assert.throws(() => runInboxCommand(["show", id], store, { ...envFor(roleName), YUI_TASK_ID: "task-2" }), /exists|current|conflict/);
   assert.throws(() => runInboxCommand(["ack", id, "--request-id", "old", "--reason", "bad"], store,
     { ...envFor(roleName), CODEX_THREAD_ID: "old" }), /Session/);
   task(["message", "queue", "task-1", "Interrupted clarification", "--to", roleName,
@@ -482,6 +568,7 @@ for (const scope of ["work-item", "task"]) test(`Reviewer reads only its frozen 
     "--review-round", round.id, "--request-id", "review-input"]);
   const id = inbox("reviewer", "list").items[0].id;
   assert.equal(inbox("reviewer", "show", id).body, "Review clarification");
+  assert.equal(runInboxCommand(["show", id], store, { CODEX_THREAD_ID: "reviewer-native" }).body, "Review clarification");
   inbox("reviewer", "claim", id, "--request-id", "review-claim");
   if (scope === "task") {
     store.saveTask({ ...store.getTask("task-1"), projectBindings: store.getTask("task-1").projectBindings
@@ -552,6 +639,9 @@ test("retained claims fence only their Assignment, with explicit retirement pres
   assert.equal(retained.inbox.claim.actor.runId, old.run.id);
   assert.equal(retained.inbox.ack, undefined, "retirement is not fabricated Agent acknowledgement");
   const continuation = store.getActiveRun("task-1", "worker");
+  inbox("worker", "claim", next.message.id, "--request-id", "received-continuation");
+  inbox("worker", "ack", next.message.id, "--request-id", "handled-continuation",
+    "--reason", "Inspected and handled the automatically dispatched continuation");
   task(["message", "queue", "task-1", "Interrupted current handling", "--to", "worker",
     "--work-item", next.work.id, "--request-id", "current-claim"]);
   const current = store.listMessages("task-1").at(-1);

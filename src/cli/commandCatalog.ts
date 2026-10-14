@@ -1261,7 +1261,7 @@ export const ROOT_COMMAND = buildNode({
       sections: [{ id: "commands", title: "Commands", entries: ["list", "show", "claim", "ack"] }],
       children: [
         { name: "list", discovery: { surface: "managed", audiences: ["operator","global","leader","assignment"] },
-          summary: "Discover bounded own-address entries without consuming them.",
+          summary: "Discover unhandled own-address entries, including accepted delivery, with current identity and separate handling receipts.",
           usage: "yui inbox list [--limit <1..100>] [--cursor <cursor>]", options: ["--limit", "--cursor"] },
         { name: "show", discovery: { surface: "managed", audiences: ["operator","global","leader","assignment"] },
           summary: "Read an exact original or fixed notification window without acknowledgement.",
