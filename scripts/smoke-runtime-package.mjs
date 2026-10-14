@@ -459,7 +459,12 @@ try {
   const target = { home: yuiHome, scope: "global", roleName: "operator" };
   await callFileTaskController(yuiHome, "runtime.ensure-role-session",
     { scope: "global", roleName: "operator" }, { environment, requestTimeoutMs: 15_000 });
-  const pending = () => listItems("role", "message", "list", "operator", "--pending");
+  // --pending is an Agent handling view, not a delivery queue. This smoke uses
+  // a fake Provider without semantic inbox acknowledgements; only test its
+  // original delivery receipts here, never infer that it handled the inputs.
+  const pending = () => listItems("role", "message", "list", "operator", "--pending")
+    .filter(message => message.delivery === undefined && message.notDelivered === undefined
+      && (message.inputAction === "queue" || message.interruptThen));
   const context = () => json("session", "context", "operator");
   await waitFor(async () => (await inspectAgentHost(target)).state === "idle" && pending().length === 0,
     "Operator startup did not settle.");
@@ -580,7 +585,14 @@ try {
   operatorHostPid = Number(tmux("list-panes", "-a", "-F", "#{pane_pid}").trim());
   assert.ok(Number.isInteger(operatorHostPid) && operatorHostPid > 0 && operatorHostPid !== hostPid);
   assert.equal((await inspectAgentHost(target)).nativeSessionId, hostBefore.nativeSessionId);
-  assert.equal(context().skillPackages, null, "Restore must not invent historical Skill provenance.");
+  assert.equal(Object.hasOwn(context(), "skillPackages"), false,
+    "Default Context must not carry historical Skill packages.");
+  const restoredStore = new SqliteTaskStore(yuiHome);
+  try {
+    const sessions = restoredStore.getGlobalRoleSessionSet("operator");
+    assert.equal(sessions.sessions[sessions.activeAgentId].effective.skillPackages, undefined,
+      "Restore must not invent historical Skill provenance.");
+  } finally { restoredStore.close(); }
   assert.deepEqual(listItems("role", "message", "list", "operator"), beforeHostRestart);
   const restoredInput = json("role", "message", "queue", "operator", "Continue the same restored Session.",
     "--request-id", "restored-session-input").message;

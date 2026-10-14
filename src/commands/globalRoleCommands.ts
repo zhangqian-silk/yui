@@ -1,11 +1,13 @@
 import { roleNotFound, usageError } from "../errors/cliError.js";
 import { hasManagedIdentity } from "../runtime/managedIdentity.js";
 import { requireManagedGlobalCaller } from "../runtime/managedCaller.js";
-import { boundedDocument, recordPage, readOptions, readDigest, messageReceipt } from "../output/boundedRead.js";
-import { controlProviderRetry, providerRetryProjection, renderProviderRetry } from "../runtime/providerRetry.js";
+import { boundedDocument, recordPage, readOptions, readDigest, messageReceipt, summaryText, summaryMetadata } from "../output/boundedRead.js";
+import { controlProviderRetry, providerRetryProjection, providerRetrySummary, renderProviderRetry } from "../runtime/providerRetry.js";
+import { pendingGlobalInboxMessages, inboxHandlingState, globalInboxDeliveryState } from "../message/inboxReceipt.js";
 import { settleGlobalRetryInput } from "../message/globalProviderRetry.js";
 import { globalInputBacklog } from "../message/globalInputBacklog.js";
 import { checkCurrentSkills, SKILL_REUSE_RULE } from "../context/currentSkills.js";
+import { runtimeDiagnosticGroups, runtimeDiagnosticEvidence } from "../controller/globalRuntimeAttention.js";
 import { roleSkillIds } from "../context/roleSessionContext.js";
 import {
   createRoleSessionSet,
@@ -286,10 +288,10 @@ function roleContext(
         && message.inbox?.ack === undefined
         && message.notDelivered === undefined
         && (message.interruptThen !== undefined || message.inputControl?.action === "queue"));
-  const pending = recordPage(queued.map(globalMessageSummary), `global:${name}/messages/pending`, { limit: 8 });
-  const recent = recordPage([...messages].reverse().map(globalMessageSummary), `global:${name}/messages/all`, { limit: 8 });
+  const pending = recordPage(pendingGlobalInboxMessages(messages).map(globalMessageSummary),
+    `global:${name}/messages/pending`, { limit: 8 });
   const observedAt = new Date();
-  const { oldestAgeMs, ...backlog } = globalInputBacklog(queued, sessions, observedAt, {
+  const { oldestAgeMs, messages: _backlogMessages, ...backlog } = globalInputBacklog(queued, sessions, observedAt, {
     attention: name === "operator" ? store.getWorkMailbox({ kind: "operator" }) : null,
     lifecycle: store.getWorkMailbox({ kind: "global-role-runtime", roleName: name })
   });
@@ -309,10 +311,7 @@ function roleContext(
         : { nativeSessionId: session.nativeSessionId })
     },
     profile: {
-      description: role.description,
-      responsibilities: role.responsibilities ?? [],
-      constraints: role.constraints ?? [],
-      expectedOutput: role.expectedOutput,
+      read: "Read roleProfileRef from the current Session Manifest; it is not repeated at each entry.",
       skillIds: [
         "yui-runtime",
         ...(role.name === "operator" ? ["yui-operator"] : []),
@@ -329,23 +328,27 @@ function roleContext(
     },
     // Reading pending input is neither delivery nor implementation.
     pending,
-    recent,
     backlog,
     reads: {
       ownInbox: "yui inbox list --json",
       messages: `role message list ${name}`,
       pending: `role message list ${name} --pending`,
-      detail: `role message show ${name} <message-id>`
+      detail: `role message show ${name} <message-id>`,
+      diagnostics: `role message list ${name} --diagnostics`,
+      retry: `session retry ${name} show`
     },
-    nativeTurn: sessions?.providerBinding?.run ?? null,
-    retry: providerRetryProjection(sessions?.providerBinding),
+    nativeTurn: sessions?.providerBinding?.run == null ? null : {
+      attemptId: sessions.providerBinding.run.attemptId,
+      nativeTurnId: sessions.providerBinding.run.nativeTurnId,
+      status: sessions.providerBinding.run.status
+    },
+    retry: providerRetrySummary(sessions?.providerBinding),
     // Historical interrupt receipts are available through Session inspection;
     // only this Turn's exact identity is required at entry.
     sessionManifestPath: environment.YUI_SESSION_MANIFEST,
     skillCheckCommand: "yui session skills --json",
     currentSkills,
     skillLoadingRule: SKILL_REUSE_RULE,
-    skillPackages: session?.effective.skillPackages ?? null,
     cliCommand: "yui"
   });
   // Elapsed wall-clock time is live display metadata, not a changing source
@@ -360,7 +363,7 @@ function roleContext(
     `Effective revision: ${role.launchRevision}`,
     `Skills: ${context.profile.skillIds.join(", ") || "none"}`,
     `Authority: ${context.authority.view}; Task implementation: no`,
-    `Pending messages: ${pending.total}; recent messages: ${recent.total}`,
+    `Pending messages: ${pending.total}; history is available on demand`,
     JSON.stringify(data),
     ""
   ].join("\n") };
@@ -369,12 +372,15 @@ function roleContext(
 function globalMessageSummary(message: GlobalRoleMessage) {
   return {
     id: message.id, createdAt: message.createdAt, kind: message.kind,
-    digest: readDigest(message), summary: message.body.slice(0, 240),
+    digest: readDigest(message), summary: summaryText(message.body),
+    read: `role message show ${message.roleName} ${message.id}`,
     delivery: message.delivery === undefined ? undefined : { deliveredAt: message.delivery.deliveredAt },
-    notDelivered: message.notDelivered === undefined ? undefined : { summary: message.notDelivered.reason.slice(0, 240) },
+    notDelivered: message.notDelivered === undefined ? undefined : { summary: summaryText(message.notDelivered.reason) },
     control: message.control === undefined ? undefined : { outcome: message.control.outcome, observedAt: message.control.observedAt },
     inputAction: message.inputControl?.action,
-    deliveryTarget: message.deliveryTarget,
+    handling: inboxHandlingState(message.inbox),
+    deliveryState: globalInboxDeliveryState(message),
+    deliveryTarget: message.deliveryTarget === undefined ? undefined : summaryMetadata(message.deliveryTarget),
     interruptThen: message.interruptThen === undefined ? undefined : true
   };
 }
@@ -841,8 +847,12 @@ function globalRoleMessage(
     }
     requireRole(name, store);
     const pending = tail.includes("--pending");
-    const parsed = readOptions(tail.filter(arg => arg !== "--pending"), action === "list"
-      ? ["--cursor", "--limit"] : ["--cursor"]);
+    const diagnostics = tail.includes("--diagnostics");
+    const parsed = readOptions(tail.filter(arg => arg !== "--pending" && arg !== "--diagnostics"), action === "list"
+      ? ["--cursor", "--limit", "--diagnostic"] : ["--cursor"]);
+    const diagnostic = parsed.values.get("--diagnostic");
+    if (Number(pending) + Number(diagnostics) + Number(diagnostic !== undefined) > 1
+      || action === "show" && diagnostics) throw usageError("Choose one Message discovery view.");
     const messages = store.listGlobalRoleMessages(name);
     let data: unknown;
     if (action === "show") {
@@ -852,11 +862,18 @@ function globalRoleMessage(
       data = boundedDocument(message, `global:${name}/message/${message.id}`, parsed.cursor);
     } else {
       if (parsed.positionals.length !== 0) throw usageError("Role message list <role> [--pending] [--limit <n>] [--cursor <cursor>].");
-      const selected = pending ? messages.filter(message => message.delivery === undefined
-        && message.inbox?.ack === undefined
-        && message.notDelivered === undefined
-        && (message.interruptThen !== undefined || message.inputControl?.action === "queue")) : [...messages].reverse();
-      data = recordPage(selected.map(globalMessageSummary), `global:${name}/messages/${pending ? "pending" : "all"}`, parsed);
+      if (diagnostics) {
+        data = recordPage(runtimeDiagnosticGroups(messages).reverse().map(group => ({
+          ...group, source: summaryMetadata(group.source),
+          read: `role message show ${name} ${group.latestEvidence}`
+        })),
+          `global:${name}/diagnostics`, parsed);
+        return { kind: "output", output: `${JSON.stringify(data)}\n`, data };
+      }
+      const selected = diagnostic !== undefined ? runtimeDiagnosticEvidence(messages, diagnostic)
+        : pending ? pendingGlobalInboxMessages(messages) : [...messages].reverse();
+      data = recordPage(selected.map(globalMessageSummary),
+        `global:${name}/messages/${diagnostic === undefined ? pending ? "pending" : "all" : `diagnostic/${diagnostic}`}`, parsed);
     }
     return { kind: "output", output: `${JSON.stringify(data, null, 2)}\n`, data };
   }

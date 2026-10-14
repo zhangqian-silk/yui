@@ -5,7 +5,7 @@ import type { TaskEvent } from "../event/taskEvent.js";
 import { expandTaskMessageResult, type TaskMessage } from "../message/message.js";
 import { resolveManagedTaskReader } from "../runtime/managedCaller.js";
 import { hasManagedIdentity } from "../runtime/managedIdentity.js";
-import { providerRetryProjection } from "../runtime/providerRetry.js";
+import { providerRetrySummary } from "../runtime/providerRetry.js";
 import type { ContextRecordFamily, ContextRecordQuery } from "../storage/contextRecords.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import { projectTaskRemoteDeliveryFromStore } from "../task/remoteDeliveryService.js";
@@ -14,7 +14,7 @@ import { managedWorkspaceKey } from "../worktree/managedWorkspace.js";
 import { contextContentDigest } from "./contextSnapshot.js";
 import { buildRunContextPack } from "./runContextPack.js";
 import { sourceRunContextValue } from "./sourceRunContext.js";
-import { boundedDocument, recordPage, type ReadPageOptions } from "../output/boundedRead.js";
+import { boundedDocument, fitsReadBudget, summaryText, recordPage, type ReadPageOptions } from "../output/boundedRead.js";
 
 const MAX_RECORDS = 64;
 const MAX_VALUE_BYTES = 2048;
@@ -31,6 +31,7 @@ export type ContextObservation = Readonly<{
   coverage: "known" | "partial" | "unknown";
   status: "available" | "unavailable";
   value?: unknown;
+  omitted?: boolean;
 }>;
 export type ContextObservationProvider = Readonly<{
   source: string;
@@ -61,14 +62,14 @@ export function readTaskContext(
       if (records.filter(record => record.ref.store === source.family).length >= 8) continue;
       if (entry.ref.store === "run") runtimeEvents ??= reader.listEventsByType(taskId, ["runtime.agent-error"]);
       const valueBytes = Buffer.byteLength(JSON.stringify(entry.value));
-      const content = valueBytes > MAX_VALUE_BYTES || ["task-message", "run", "work-item", "project-knowledge"].includes(entry.ref.store)
+      const content = valueBytes > MAX_VALUE_BYTES || ["role", "task-message", "run", "work-item", "project-knowledge"].includes(entry.ref.store)
         ? { ref: entry.ref, summary: summarize(entry.value), omitted: true }
         : { ...entry, omitted: false };
       const record = { ...content, ...(entry.ref.store === "run" ? {
         execution: runExecutionObservation(entry.value as AgentRun,
           reader.getTaskRoleSessionSet(taskId, (entry.value as AgentRun).roleName)?.providerBinding, runtimeEvents)
       } : {}), ...(entry.ref.store === "role" ? {
-        providerRetry: providerRetryProjection(reader.getTaskRoleSessionSet(taskId,
+        providerRetry: providerRetrySummary(reader.getTaskRoleSessionSet(taskId,
           (entry.value as { name: string }).name)?.providerBinding)
       } : {}) };
       const size = Buffer.byteLength(JSON.stringify(record));
@@ -76,7 +77,7 @@ export function readTaskContext(
       records.push(record);
       bytes += size;
     }
-    return {
+    const result = {
       taskId, coreCursor: encode(cursor), throughCursor: encode(cursor),
       view: "current",
       collections: Object.entries(sources.reduce((counts, source) => {
@@ -100,6 +101,17 @@ export function readTaskContext(
       limits: { records: MAX_RECORDS, valueBytes: MAX_VALUE_BYTES, pageBytes: 32 * 1024, recordBytes: MAX_PAGE_BYTES,
         attentionRefsPerCategory: MAX_ATTENTION_REFS, attentionRefBytesPerCategory: MAX_VALUE_BYTES }
     };
+    // Account for nested retry facts, collection counts, commands and JSON
+    // structure together. Exact omitted records stay discoverable by family.
+    while (!fitsReadBudget(result) && records.length > 0) {
+      records.pop();
+      result.collections.forEach(collection => {
+        collection.returned = records.filter(record => record.ref.store === collection.store).length;
+      });
+      result.omitted = { records: count - records.length, values: records.filter(record => record.omitted).length };
+    }
+    if (!fitsReadBudget(result)) throw usageError("Context identities exceed the response budget; use scoped discovery.");
+    return result;
   });
 }
 
@@ -115,7 +127,8 @@ function summarizeAttention(store: TaskStore, taskId: string, allow: Set<string>
     ["messages", "task-message", undefined]
   ] as const) {
     const page = store.queryContextRecords(taskId, {
-      family, statuses, descending: category === "messages", ids: allowedIds(allow, family), limit: MAX_ATTENTION_REFS
+      family, statuses, descending: category === "messages",
+      unhandledMessages: category === "messages", ids: allowedIds(allow, family), limit: MAX_ATTENTION_REFS
     });
     const summary = attention[category];
     summary.count = page.count;
@@ -305,17 +318,27 @@ export async function withContextObservations(
       ]);
       if (!["known", "partial", "unknown"].includes(value.coverage)
         || Buffer.byteLength(JSON.stringify(value)) > MAX_VALUE_BYTES) throw new Error("unbounded observation");
-      return { source: provider.source.slice(0, 200), observedAt: new Date().toISOString(),
+      return { source: summaryText(provider.source, 200), observedAt: new Date().toISOString(),
         coverage: value.coverage, status: "available", value: JSON.parse(JSON.stringify(value.value)) };
     } catch {
-      return { source: provider.source.slice(0, 200), observedAt: new Date().toISOString(),
+      return { source: summaryText(provider.source, 200), observedAt: new Date().toISOString(),
         coverage: "unknown", status: "unavailable" };
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       controller.abort();
     }
   }));
-  return { ...core, observations };
+  const result = { ...core, observations: [] as ContextObservation[] };
+  for (const observation of observations) {
+    result.observations.push(observation);
+    if (!fitsReadBudget(result)) {
+      result.observations.pop();
+      const { value: _value, ...identity } = observation;
+      result.observations.push({ ...identity, omitted: true });
+      if (!fitsReadBudget(result)) result.observations.pop();
+    }
+  }
+  return { ...result, omittedObservations: observations.length - result.observations.length };
 }
 
 /** Shared current/historical Session read identity; discovery may only narrow it. */
@@ -548,7 +571,7 @@ function authorizedSources(store: TaskStore, { task, allow, caller }: ReturnType
       store.getRun(taskId, caller.currentRunId)?.workspace ?? null);
   }
   if (!current) query("change-set");
-  query("task-message", { descending: true });
+  query("task-message", { descending: true, unhandledMessages: current });
   query("run", { descending: true, ...(current ? { statuses: ["active"] } : {}) });
   for (const id of allowedIds(allow, "source-turn") ?? []) {
     const run = store.getRun(taskId, id);
@@ -611,8 +634,8 @@ function freeze<T>(value: T): T {
 }
 function summarize(value: unknown): string {
   const record = value as Record<string, unknown>;
-  return ["title", "scope", "expiresWhen", "version", "objective", "question", "summary", "body", "status", "type"]
+  return summaryText(["title", "name", "activeAgentId", "scope", "expiresWhen", "version", "objective", "question", "summary", "body", "status", "type"]
     .flatMap((key) => typeof record[key] === "string" || (key === "version" && typeof record[key] === "number")
       ? [`${key}: ${record[key]}`] : [])
-    .join("; ").slice(0, 400);
+    .join("; "));
 }

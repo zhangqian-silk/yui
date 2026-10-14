@@ -146,6 +146,7 @@ import { FileCompletionManager } from "./completion/fileCompletionManager.js";
 import { CONFIG_DOMAINS, type ConfigDomain } from "./config/configCatalog.js";
 import { resolveTmuxBin, resolveTmuxHistoryLimit } from "./config/yuiConfig.js";
 import { checkSessionSkills, readSessionBootstrapManifest } from "./context/sessionBootstrapManifest.js";
+import { boundedDocument, readOptions } from "./output/boundedRead.js";
 import {
   assertFileTaskControllerStorageCompatible,
   ensureFileTaskController,
@@ -1042,7 +1043,8 @@ export async function main(): Promise<void> {
     }
     if (resolved[0] === "session") {
       if (resolved[1] === "skills") {
-        if (resolved.length !== 2) throw usageError("Usage: yui session skills --json");
+        const parsed = readOptions(resolved.slice(2), ["--cursor"]);
+        if (parsed.positionals.length !== 0) throw usageError("Usage: yui session skills [--cursor <cursor>] --json");
         const path = process.env.YUI_SESSION_MANIFEST;
         const caller = requireManagedCaller(store, process.env);
         const set = caller.scope === "global" ? store.getGlobalRoleSessionSet(caller.roleName)
@@ -1050,11 +1052,12 @@ export async function main(): Promise<void> {
         const effective = set!.sessions[caller.agentId]!.effective;
         const kind = caller.scope === "global" ? caller.roleName === "operator" ? "operator" : "global"
           : effective.reviewRoundId !== undefined ? "reviewer" : caller.roleName === "leader" ? "leader" : "worker";
-        const data = path === undefined ? {
+        const checked = path === undefined ? {
           skills: checkCurrentSkills(home, roleSkillIds(effective.context, kind)),
           profile: effective.context, identity: caller, rule: SKILL_REUSE_RULE,
           historicalPackagesAreAuditOnly: true
         } : checkSessionSkills(home, path);
+        const data = boundedDocument(checked, "session:current-skills", parsed.cursor);
         emit(JSON.stringify(data, null, 2), false, data);
         return;
       }

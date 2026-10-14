@@ -12,14 +12,14 @@ CLI 调用成功，不代表 Task、原生 Turn 或远端投递完成。
 | 问题 | 入口 | 默认信息与下一步 |
 | --- | --- | --- |
 | 找哪个 Task？ | `task list` | 既有有界目录、过滤器、attention 与游标 |
-| 当前有什么？ | `task context <task>` | 当前 Task/Brief/Role/Project/工作区事实、活跃工作与 Run、开放输入、有效决策、未解决 Job、近期 Message 引用；不倾倒事件或终态 Run |
+| 当前有什么？ | `task context <task>` | 当前事实、活跃工作、开放输入、有效决策、未解决 Job、未确认处理的 Message 引用；不倾倒事件或终态 Run |
 | 有哪些记录？ | `task context list <task> --store <family>` | 一种获授权的记录、摘要与带 digest 的确切引用 |
 | 原文是什么？ | `task context inspect <task> --store <family> --ref <id> --digest <digest>` | 确切当前记录，含原始结果展开；长文档分页 |
 | 发生了什么变化？ | `task context delta <task> --after <cursor>` | 固定上界内的不可变事件，不是可变当前状态的快照 |
-| Global 收到了什么？ | `session context <role>` | 身份、Profile、权限、当前原生 Turn/retry，以及分别有界的 pending/recent Message 页 |
+| Global 收到了什么？ | `session context <role>` | 身份、Profile 读取指针、权限、当前 Turn/retry 事实与小窗口 pending 页；历史按需读取 |
 | 读取 Global 输入 | `role message list <role> [--pending]`、`role message show <role> <id>` | 在自身范围内发现，再读完整原文；队列接受不删除历史 |
 | 本次唤醒带来什么？ | `task wake show <task> <wake>` | 固定窗口的输入/结果、标明来源的可选摘要和确切原文入口；`--history` 展开诊断历史 |
-| 分配了什么？ | `task run context <task>/<run>` | 冻结授权与一份带摘要的 `pointers` 目录；`deltaRefs` 表示变化身份；当前观察独立 |
+| 分配了什么？ | `task run context <task>/<run>` | 冻结授权与有限 `pointers` 窗口，变化身份和活跃观察附总数；`--view refs/full` 按需扩展 |
 | 实际配置是什么？ | `task role session inspect <task> <role>` | Task/Role 身份、期望绑定、冻结 Session、当前 Provider 绑定、retry 与显式 Host 观察；不复制整个 Task/Role 或 Provider 会话历史 |
 
 Task Message、事件、WorkItem、Run、决策、里程碑、publication 和 InputRequest 列表
@@ -31,17 +31,26 @@ Context 列表还暴露候选、Review、Job、Project Knowledge、工作区等�
 `--status`、`--after`、`--work-item` 缩小发现范围；续读必须保留过滤条件。
 Run 列表接受 Task 或 `task/work` 目标。
 
-当前 Context 的 `attention.messages` 统计全部获授权 Message，不仅是未投递输入。
-`collections` 计数与 `omitted` 明确表达发现不完整。近期抽样不能证明没有更早的待处理
+当前 Context 的 `attention.messages` 排除明确 ack 或退役的 Message；投递成功不代表
+处理完成。精确 wake 回执必须覆盖最新原文版本。用 `--view current` 续读当前视图，
+默认分类列表仍保留完整历史。`collections` 计数与 `omitted` 明确表达发现不完整。抽样不能证明没有更早的待处理
 或相关输入。读取相关固定 wake 与原始 Message；更广的需求/历史审计使用分类发现。
 
 ## 预算与续读
 
-- 发现页默认 20 条，可选 1–100，紧凑 JSON 预算 32 KiB。条目包含摘要，不含完整报告正文。
+- 发现页默认 20 条，可选 1–100，紧凑 JSON 预算 32 KiB，计入成功 envelope、
+  转义身份、游标和嵌套结构。摘要至多 512 UTF-8 字节，不含完整报告正文。
 - 当前 Task Context 至多 64 条，记录与 attention 共 24 KiB，响应预算 32 KiB。
   单个内联值至多 2 KiB；大值及 Message/Run/WorkItem/Knowledge 正文用引用。
   入口每个集合最多抽样八条。
-- Global 入口分别抽样八条 pending 与八条 recent；独立续读，历史不能挤掉待处理输入。
+- Global 入口最多八条未确认处理的输入，保留已领取或效果未知项；不重复 recent、
+  Profile 正文、历史 Skill 包和累计 retry 详情。Profile 由 Manifest 精确指向。
+- Run 入口最多 16 个冻结引用和每类八条活跃观察，附总数。`--view refs` 配合
+  `pointerPage.nextCursor` 发现更多引用；`--view full` 显式读取完整冻结包。
+  若 `input.directiveOmitted` 为 true，行动前用 `--view input` 全文读取分配指令；
+  默认入口的指令摘要不是指令正文。
+- `session skills [--cursor ...]` 只检查当前元信息和可读性，不读技能正文；
+  配置元信息过大时使用相同文档分页。
 - 不超过 16 KiB 的详情保持普通 JSON。更大详情返回 `contentPage`：确切来源、
   SHA-256 digest、JSON 字符偏移、总字节数/字符数、文本、完整性与下一游标。
   每块最多 4096 个 UTF-16 单元，不拆代理对，转义后的输出低于 32 KiB。
@@ -60,6 +69,18 @@ Run 列表接受 Task 或 `task/work` 目标。
 重新读取，不混合版本；无需持久分页 Session。可变集合不保证并发写入期间无中断遍历。
 追加事件遍历使用固定上界 Context delta。目前分类发现扫描选定的授权集合来计算指纹；
 有界的是输出，不是总存储读取成本。
+
+## 重复运行时诊断
+
+`role message list <role> --diagnostics` 从原始 record-only Message 派生故障组，
+给出首次/最近时间、不同观察的数量及恢复证据；`--diagnostic <key>` 分页发现原文。
+按明确的 Host/Session、来源、故障类别/代码及效果边界区分；未分类错误不猜测合并。
+同一观察重复轮询不新增记录或计数，同组跨 Turn 不重复唤醒。新故障、影响变化、
+精确成功恢复或恢复后再发生可产生通知。Operator 自身诊断保留但不自动唤醒自身。
+恢复不等于消息 ack、Task 完成或撤销旧副作用。
+
+聚合不持久化，也不累计受影响 ID 数组；不增加表、消息 envelope 字段或第二状态机。
+旧证据仍由普通历史读取，不启发式重新分类。每页沿用现有 Role 权限边界。
 
 ## 效果与例外
 

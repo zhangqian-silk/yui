@@ -94,7 +94,7 @@ import { SYSTEM_OPERATOR_ROLE } from "../role/systemRoles.js";
 import type { AgentDriverRegistry } from "../runtime/agentDriver.js";
 import { standardAgentError } from "../runtime/agentError.js";
 import { recordTaskAgentError } from "./taskAgentError.js";
-import { recordGlobalRuntimeAttention, recordGlobalRuntimeFailure } from "./globalRuntimeAttention.js";
+import { recordGlobalRuntimeAttention, recordGlobalRuntimeFailure, recordGlobalRuntimeRecovery } from "./globalRuntimeAttention.js";
 import { queueOperatorNotification } from "./operatorNotification.js";
 import { claimOperatorAttention } from "../scheduler/operatorEvent.js";
 import {
@@ -631,6 +631,9 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         binding = settleProviderTurn(binding, { attemptId: receipt, nativeTurnId: fence.nativeTurnId,
           status: input.kind === "turn.completed" ? "completed" : input.kind === "turn.cancelled" ? "cancelled" : "failed",
           settledAt: at });
+        if (input.kind === "turn.completed") recordGlobalRuntimeRecovery(store, fence.roleName, input.eventId, {
+          nativeSessionId: fence.nativeSessionId!, evidence: `provider-structured:${receipt}`
+        }, now);
         if (fence.nativeTurnId !== undefined) sessions = rememberRoleAgentCompletedTurn(
           sessions, fence.agentId, fence.nativeSessionId!, fence.nativeTurnId, new Date(at));
       } else if (["input.accepted", "input.rejected", "input.delivery-unknown"].includes(input.kind)) {

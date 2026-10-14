@@ -328,7 +328,7 @@ test("Global delivery keeps busy and unknown notices fenced, then advances to or
   await f.process();
   const laterUser = f.user("Later user input");
   const messages = f.store.listGlobalRoleMessages("operator").filter(m =>
-    m.inputControl && !m.inputControl.requestId.startsWith("runtime-attention:"));
+    m.inputControl && !/^runtime-(attention|recovery):/.test(m.inputControl.requestId));
   assert.equal(messages.length, 4);
   provider.outcome = "rejected";
   await f.deliver();
@@ -483,25 +483,25 @@ test("unobservable Global Host emits one durable diagnosis, never replays or ste
   assert.equal(provider.attempts.length, 1);
 });
 
-test("live backlog age does not invalidate paginated Global Context", t => {
+test("Global entry omits large Profile bodies and keeps live backlog age separate", t => {
   const f = fixture(t);
   f.user("Pending original");
   f.store.saveGlobalRole({ ...f.store.getGlobalRole("operator"), description: "context ".repeat(3000) });
   const read = cursor => runGlobalRoleCommand(["context", "operator", ...(cursor ? ["--cursor", cursor] : [])],
     f.store, { env: {}, jsonOutput: true }).data;
-  t.mock.timers.enable({ apis: ["Date"], now: now.getTime() + 60_000 });
-  let page = read();
-  assert.ok(page.contentPage);
+  t.mock.timers.enable({ apis: ["Date"],
+    now: Date.parse(f.store.listGlobalRoleMessages("operator")[0].createdAt) + 60_000 });
+  const page = read();
+  assert.equal(page.contentPage, undefined);
   assert.ok(page.backlogObservation.oldestAgeMs >= 0);
-  let text = page.contentPage.text;
-  while (!page.contentPage.complete) {
-    t.mock.timers.tick(1000);
-    page = read(page.contentPage.nextCursor);
-    text += page.contentPage.text;
-  }
-  const context = JSON.parse(text);
-  assert.equal(context.backlog.pendingCount, 1);
-  assert.equal(context.backlog.messages.length, 1);
+  assert.equal(page.profile.description, undefined);
+  assert.equal(page.backlog.pendingCount, 1);
+  assert.equal(page.pending.items.length, 1);
+  const { backlogObservation: first, ...facts } = page;
+  t.mock.timers.tick(1000);
+  const { backlogObservation: second, ...laterFacts } = read();
+  assert.deepEqual(facts, laterFacts);
+  assert.equal(second.oldestAgeMs, first.oldestAgeMs + 1000);
   assert.equal(f.store.listGlobalRoleMessages("operator")[0].delivery, undefined);
 });
 

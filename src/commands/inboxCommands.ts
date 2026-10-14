@@ -1,6 +1,6 @@
 import type { TaskStore } from "../storage/taskStore.js";
 import { requireManagedCaller } from "../runtime/sessionCaller.js";
-import { boundedDocument, readDigest, readOptions, recordPage } from "../output/boundedRead.js";
+import { boundedDocument, readDigest, readOptions, recordPage, summaryMetadata, summaryText } from "../output/boundedRead.js";
 import { claimPending, completeProcessing } from "../coordination/workMailbox.js";
 import { createTaskWake, latestTaskWake, type TaskWake } from "../scheduler/taskWake.js";
 import { expandTaskMessageResult, type GlobalRoleMessage, type TaskMessage } from "../message/message.js";
@@ -144,15 +144,15 @@ function checkMutation(store: TaskStore, address: Address): void {
 
 function summary(store: TaskStore, address: Address, entry: Entry) {
   return { id: entry.id, kind: isWake(entry) ? "notification-window" : "message",
-    createdAt: entry.createdAt, summary: isWake(entry) ? entry.reasons.join(", ").slice(0, 240) : entry.body.slice(0, 240),
-    blocked: blocker(store, address, entry) ?? null, inbox: entry.inbox ?? null,
+    createdAt: entry.createdAt, summary: summaryText(isWake(entry) ? entry.reasons.join(", ") : entry.body),
+    blocked: blocker(store, address, entry) ?? null, inbox: summaryMetadata(entry.inbox ?? null),
     handling: inboxHandlingState(entry.inbox),
-    delivery: isWake(entry) ? entry.status : {
+    delivery: isWake(entry) ? entry.status : summaryMetadata({
       control: entry.control ?? null,
       ...(address.scope === "global" ? { receipt: (entry as GlobalRoleMessage).delivery ?? null,
         state: globalInboxDeliveryState(entry as GlobalRoleMessage) }
         : { continuation: (entry as TaskMessage).continuation ?? null })
-    },
+    }),
     read: `yui inbox show ${entry.id}`, ...(isWake(entry)
       ? { originals: `yui task wake show ${entry.taskId} ${entry.id} --json` } : {}) };
 }
@@ -181,11 +181,11 @@ export function runInboxCommand(
     if (address.scope === "task" && address.roleName === "leader") {
       const mailbox = store.getWorkMailbox(target(address));
       if (mailbox?.pending != null) items.push({ id: pendingId(mailbox.pending), kind: "notification-window",
-        summary: mailbox.pending.reasons.join(", ").slice(0, 240),
+        summary: summaryText(mailbox.pending.reasons.join(", ")),
         blocked: mailbox.processing === null && !unfinishedLeaderInbox(store, address.taskId!) ? null : "earlier-window-owned",
         read: `yui inbox show ${pendingId(mailbox.pending)}` });
     }
-    return { ...recordPage(items, source(address), parsed), identity: address };
+    return recordPage(items, source(address), parsed, { identity: address });
   }
   if (action === "show") {
     const parsed = readOptions(tail, ["--cursor"]);
