@@ -106,6 +106,7 @@ test("Controller failure reaches the CLI with recovery guidance while offline re
   const cli = resolve("dist/cli.js");
   const environment = { ...process.env, YUI_HOME: home, YUI_STORE_WORKER: "false" };
   for (const name of Object.keys(environment)) if (name.startsWith("YUI_")) delete environment[name];
+  delete environment.CODEX_THREAD_ID;
   environment.YUI_HOME = home;
   environment.YUI_STORE_WORKER = "false";
   const read = spawnSync(process.execPath, [cli, "task", "list"], { env: environment, encoding: "utf8" });

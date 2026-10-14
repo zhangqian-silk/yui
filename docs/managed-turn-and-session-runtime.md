@@ -39,6 +39,40 @@ automatically create Runs. Explicit dispatch loads one exact Run Context Pack.
 
 ## Context
 
+### Current caller and durable handling
+
+Desktop and TUI use the same current-Session authority. A Desktop command carrying
+only `CODEX_THREAD_ID` resolves its owner from the selected Home's existing active
+Session inventory, then verifies the current Role/Agent binding, revocation and
+captured workspace. Codex's native ID takes precedence over an inherited transport
+ID, so a native child cannot borrow its parent's identity. Unknown native IDs,
+wrong Homes and conflicting hints fail closed; only a terminal with no managed or
+native identity is a plain user. Environment variables and a Manifest locate
+context, not continuing authority. A replaced Session retains only its bounded
+self-diagnostic reads, not inbox or mutation permission.
+
+`yui inbox list` exposes the current identity, delivery evidence, handling state
+and blockers separately. Reads never consume input. Automatically accepted
+Global messages, delivered Leader windows and the current Assignment's
+continuation messages still need `claim` and explicit `ack --reason` after their
+originals and effects have been handled. Claiming delivered input does not resend
+it. Pending/unknown acceptance cannot be taken over; an accepted Global input or
+Leader window can be explicitly settled by its rightful successor without
+changing its original delivery target. Include useful result/effect receipt
+references in the reason. Task completion still requires handling user inputs,
+not merely a native terminal.
+
+Receipts remain on the existing Message/TaskWake records. Both notification
+paths pin mutable Draft revisions by existing `message.updated` event IDs,
+not timestamps; a later revision cannot inherit an old acknowledgement.
+Claimed Message content and fixed window references cannot be silently replaced.
+Duplicate accepted notifications do not re-submit that revision. If a handler
+crashes or ack fails after an external effect, inspect the original claim and
+effect receipt, finish only unfinished work, and retry the same acknowledgement.
+No lease expires and no installation upgrade or context compaction resets
+handling. This reuses storage 1.7 payloads without adding a message system,
+schema transition or an arbitrary external exactly-once guarantee.
+
 ```sh
 yui task context <task> --json
 yui task context list <task> --store <store> [--cursor <cursor>]

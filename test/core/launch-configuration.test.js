@@ -182,7 +182,8 @@ test("rejected Leader startup stays quiet across reopen, preserves input and exp
   assert.equal(store.listTaskWakes("task-1").at(-1).status, "consumed");
   assert.throws(() => command(["wake", "retry", "task-1", store.listTaskWakes("task-1").at(-1).id,
     "--reason", "Accepted input must not be replayed"]), /accepted notification/);
-  assert.deepEqual(pendingCompletionMessages(store, "task-1"), []);
+  assert.deepEqual(pendingCompletionMessages(store, "task-1").map(m => m.body),
+    ["Original requirement", "Later input"], "Native acceptance alone cannot acknowledge semantic handling.");
   assert.equal(store.listMessages("task-1").length, 2);
   assert.equal(store.listRuns("task-1").length, 0);
   await reconcile();

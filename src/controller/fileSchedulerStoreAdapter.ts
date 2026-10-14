@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { taskMessageInboxReceipt, unfinishedLeaderInbox } from "../message/taskInboxOwnership.js";
+import { deliveredMessageWake, pinMessageRevisions, taskMessageInboxReceipt, unfinishedLeaderInbox } from "../message/taskInboxOwnership.js";
 import { contextSnapshotRef } from "../context/contextSnapshot.js";
 import { freezeRunContextSnapshot } from "../context/runContextPack.js";
 import { taskNotificationPresentation } from "../interaction/notificationPresentation.js";
@@ -2422,7 +2422,8 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       const session = sessions?.sessions[sessions.activeAgentId];
       const obsoleteIds = new Set<string>();
       for (const message of store.listMessages(taskId)) {
-        if (pendingMessageIds.has(message.id) && taskMessageInboxReceipt(store, message) !== undefined) {
+        if (pendingMessageIds.has(message.id) && (taskMessageInboxReceipt(store, message) !== undefined
+          || deliveredMessageWake(store, message) !== undefined)) {
           obsoleteIds.add(message.id);
         }
       }
@@ -2469,7 +2470,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       const wakeId = store.nextTaskWakeId(taskId);
       const wake = createTaskWake({
         id: wakeId, taskId, reasons: mailbox.pending.reasons,
-        refs: selectedRefs,
+        refs: pinMessageRevisions(store, taskId, selectedRefs),
         fromCursor: latest?.toCursor ?? task.createdAt,
         toCursor: new Date(Math.max(now.getTime(), Date.parse(mailbox.pending.lastQueuedAt))).toISOString(), now
       });

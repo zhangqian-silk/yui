@@ -88,7 +88,7 @@ export function pendingCompletionMessages(store: TaskStore, taskId: string): Tas
   const mailbox = store.getWorkMailbox({ kind: "role", taskId, roleName: "leader" });
   const refs = [...(mailbox?.pending?.refs ?? [])];
   for (const wake of store.listTaskWakes(taskId)) {
-    if (wake.inbox !== undefined && wake.inbox.ack === undefined) refs.push(...(wake.refs ?? []));
+    if (wake.inbox?.ack === undefined) refs.push(...(wake.refs ?? []));
   }
   const processing = mailbox?.processing;
   if (processing?.owner.startsWith("agent-inbox:")) refs.push(...processing.batch.refs);
@@ -126,8 +126,8 @@ export function projectCompletionReadiness(
     blockers.push({
       code: "pending-user-input",
       ref: ref("message", message.id),
-      reason: `User message ${message.id} is still awaiting Leader delivery.`,
-      fix: `finish the current native turn, read the next notification and message ${message.id}, then reconsider completion`
+      reason: `User message ${message.id} is still awaiting Leader delivery or explicit handling.`,
+      fix: `read message ${message.id} and its inbox window; claim and acknowledge after handling, or finish this turn if delivery is still pending`
     });
   }
 

@@ -2,6 +2,30 @@
 
 # Session、AgentRun 与通知
 
+## 当前身份与持久处理回执
+
+桌面与 TUI 使用相同的当前 Session 授权。只有 `CODEX_THREAD_ID` 的桌面命令
+先在所选 Home 的现有活动 Session 索引中定位角色，再校验当前绑定、撤销状态、
+工作域和 Assignment。Codex 原生线程 ID 优先于继承的 transport ID，原生子
+Agent 不能借用父身份。错误 Home、未知线程和冲突提示会明确拒绝，不降为公共
+用户；只有不带受管或原生身份的终端才是普通用户。环境变量和 Manifest 是
+定位提示，不是持续授权。旧 Session 仅保留限定的自身诊断读取。
+
+`yui inbox list` 分别返回当前身份、投递事实、处理状态和阻断原因。自动接受的
+Global 消息、已投递的 Leader 窗口及当前 Assignment 续接消息仍须显式 claim，
+核对原文和既有副作用，完成处理后再 `ack --reason`。这不会重新投递输入；
+pending/unknown 不能借 claim 接管。合法继任者可以核对并结清已接受的 Global
+输入或 Leader 窗口，保留原投递目标。说明中可引用结果和外部操作回执。
+native terminal 不能替代用户输入处理，也不能单独满足 Task 完成条件。
+
+回执继续保存在现有 Message/TaskWake 中。自动通知和主动领取都以既有
+`message.updated` 事件 ID 绑定可变 Draft 修订，同时间戳的修改也不会沿用旧
+ack。已领取消息的原文和固定窗口引用不能被悄悄替换，重复通知不会重新提交
+已投递修订。处理崩溃或副作用完成后 ack 失败时，先读回 claim 和外部回执，
+只完成未完成工作，再重试相同确认。上下文压缩、Session 续接和升级不清空回执。
+实现复用 storage 1.7 的现有字段，不新增消息系统或 schema 迁移，也不承诺
+任意外部系统的天然 exactly-once。
+
 Global Session 停止／替换与 Task Session 共用精确的原生执行静止确认边界。
 Host 消失或 Session 已入历史不代表已接受输入结束：须先检查并停止保留的
 Provider binding，再结算执行占用。Global 停止证据保存为仅记录的 system Message，

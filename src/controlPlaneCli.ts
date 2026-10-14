@@ -35,7 +35,10 @@ import {
 import { routeInvocation } from "./cli/invocationRouter.js";
 import { operatorOfflineCommand, taskDiagnosticTarget } from "./cli/managedDiagnostics.js";
 import { assertConfigurationAuthority, assertTaskInvocationScope } from "./cli/invocationAuthority.js";
-import { requireManagedGlobalCaller, ManagedRuntimeDriftError } from "./runtime/managedCaller.js";
+import { requireManagedGlobalCaller, requireManagedGlobalReader, ManagedRuntimeDriftError } from "./runtime/managedCaller.js";
+import { sessionCallerEnvironment, requireManagedCaller } from "./runtime/sessionCaller.js";
+import { checkCurrentSkills, SKILL_REUSE_RULE } from "./context/currentSkills.js";
+import { roleSkillIds } from "./context/roleSessionContext.js";
 import { hasManagedIdentity } from "./runtime/managedIdentity.js";
 import { resolveOperatorWizardArguments } from "./cli/operatorWizard.js";
 import {
@@ -1041,10 +1044,17 @@ export async function main(): Promise<void> {
       if (resolved[1] === "skills") {
         if (resolved.length !== 2) throw usageError("Usage: yui session skills --json");
         const path = process.env.YUI_SESSION_MANIFEST;
-        if (!["task", "global"].includes(process.env.YUI_SESSION_SCOPE ?? "") || path === undefined) {
-          throw usageError("Skill checks require the current managed Session and its Manifest.");
-        }
-        const data = checkSessionSkills(home, path);
+        const caller = requireManagedCaller(store, process.env);
+        const set = caller.scope === "global" ? store.getGlobalRoleSessionSet(caller.roleName)
+          : store.getTaskRoleSessionSet(caller.taskId, caller.roleName);
+        const effective = set!.sessions[caller.agentId]!.effective;
+        const kind = caller.scope === "global" ? caller.roleName === "operator" ? "operator" : "global"
+          : effective.reviewRoundId !== undefined ? "reviewer" : caller.roleName === "leader" ? "leader" : "worker";
+        const data = path === undefined ? {
+          skills: checkCurrentSkills(home, roleSkillIds(effective.context, kind)),
+          profile: effective.context, identity: caller, rule: SKILL_REUSE_RULE,
+          historicalPackagesAreAuditOnly: true
+        } : checkSessionSkills(home, path);
         emit(JSON.stringify(data, null, 2), false, data);
         return;
       }
@@ -2426,6 +2436,15 @@ async function preflightManagedTaskControlPlane(): Promise<ManagedTaskControlPla
   if (taskFinalReviewInvocation.error !== undefined) {
     throw new Error(taskFinalReviewInvocation.error);
   }
+  // Desktop clients may carry only their provider-native identity. Resolve
+  // command-local hints before any public/Task/Global routing. This reads this
+  // Home only, and never creates a Session or mutates its registration.
+  if ((process.env.CODEX_THREAD_ID !== undefined || process.env.YUI_NATIVE_SESSION_ID !== undefined)
+    && (process.env.YUI_SESSION_SCOPE === undefined || process.env.YUI_ROLE === undefined)) {
+    const registry = openCurrentTaskStore(resolveYuiHome(process.env));
+    try { Object.assign(process.env, sessionCallerEnvironment(registry, process.env)); }
+    finally { registry.close(); }
+  }
   if (process.env.YUI_SESSION_SCOPE !== "task") {
     if (process.env.YUI_SESSION_SCOPE === "global") {
       return await preflightManagedGlobalControlPlane();
@@ -2519,8 +2538,8 @@ async function preflightManagedGlobalControlPlane(): Promise<ManagedTaskControlP
   const home = resolveYuiHome(process.env);
   const manifest = assertManagedSessionManifest(home, "global");
   const expectedRoleKind = process.env.YUI_ROLE === "operator" ? "operator" : "global";
-  if (manifest.owner.scope !== "global"
-    || manifest.roleKind !== expectedRoleKind) {
+  if (manifest !== undefined && (manifest.owner.scope !== "global"
+    || manifest.roleKind !== expectedRoleKind)) {
     throw new ManagedRuntimeDriftError("Managed global invocation does not match its Session Manifest.");
   }
   if (expectedRoleKind === "operator" && ["doctor", "upgrade", "update"].includes(args[0] ?? "")) {
@@ -2534,8 +2553,14 @@ async function preflightManagedGlobalControlPlane(): Promise<ManagedTaskControlP
   const verifiedStore = openCurrentTaskStore(home);
   const internalCallback = args[0] === "internal"
     && ["agent-host", "session-notify", "runtime-hook"].includes(args[1] ?? "");
-  if (!internalCallback && !operatorOfflineCommand(args)) {
-    try { requireManagedGlobalCaller(verifiedStore, process.env); }
+  if (!internalCallback) {
+    const selfRead = args[0] === "session" && args[1] === "context" && args[2] === process.env.YUI_ROLE
+      || args[0] === "role" && args[1] === "message" && ["list", "show"].includes(args[2] ?? "")
+        && args[3] === process.env.YUI_ROLE;
+    try {
+      if (selfRead) requireManagedGlobalReader(verifiedStore, process.env);
+      else requireManagedGlobalCaller(verifiedStore, process.env);
+    }
     catch (error) { verifiedStore.close(); throw error; }
   }
   return { contract: undefined, verifiedStore };
@@ -2547,7 +2572,9 @@ function assertManagedSessionManifest(
 ) {
   const manifestPath = process.env.YUI_SESSION_MANIFEST;
   if (manifestPath === undefined) {
-    throw new ManagedRuntimeDriftError("Managed control-plane invocation requires its Session Manifest.");
+    // A Manifest is a context pointer, not an authority credential. Native
+    // identity is validated against the current Home immediately below.
+    return undefined;
   }
   let manifest: ReturnType<typeof readSessionBootstrapManifest>;
   try {

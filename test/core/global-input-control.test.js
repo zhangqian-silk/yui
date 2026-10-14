@@ -717,7 +717,7 @@ test("Global input authority precedes persistence and retired Sessions cannot im
   assert.throws(() => runGlobalRoleCommand(args, store, { env: {
     YUI_SESSION_SCOPE: "global", YUI_ROLE: "assistant", YUI_AGENT_ID: "codex",
     YUI_ADAPTER_ID: "codex", CODEX_THREAD_ID: "retired-session"
-  } }), /current native caller Session/);
+  } }), /current managed global native Session/);
   assert.deepEqual(store.listGlobalRoleMessages("assistant"), []);
   runGlobalRoleCommand(args, store, { env: {
     YUI_SESSION_SCOPE: "global", YUI_ROLE: "assistant", YUI_AGENT_ID: "codex",

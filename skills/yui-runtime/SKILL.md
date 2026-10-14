@@ -79,6 +79,15 @@ installation with the same protocol and storage versions. If the entry or Home
 is wrong or unavailable, report that fact and use the explicitly authorized
 entry/environment; do not guess another installation or clear Session identity.
 
+Desktop commands may carry only `CODEX_THREAD_ID`. The CLI resolves that native
+identity in the selected Home's current Session registry before routing Task or
+Global operations. Environment and Manifest values are location hints, not
+continuing grants. Conflicting, unregistered, replaced or revoked identities
+do not become public-user callers; a plain user terminal has no managed/native
+identity. `inbox list` reports the resolved current identity. Do not add or clear
+environment fields to repair a mismatch. Without a Manifest environment pointer,
+`session skills` returns current Skill paths and the Session's captured profile.
+
 For every explicitly dispatched managed Task AgentRun:
 
 1. Read the exact AgentRun identity from the newest Bootstrap Envelope.
@@ -238,15 +247,32 @@ Retirement preserves the original claim and records the management decision;
 it neither fabricates an acknowledgement nor proves native execution stopped.
 An unfinished claim fences its Assignment, not unrelated work of the same Role.
 
-In-flight, unknown, previously delivered, explicit interrupt-then and
+In-flight, unknown, not-yet-delivered explicit interrupt-then and
 unsettled steer inputs retain their existing owner/receipt and report a bounded
 reason instead of being taken over. Use existing exact-receipt recovery when
 needed; do not change request IDs, clear identity, or copy input to bypass it.
 A steer with no control receipt was not submitted; it may be explicitly handled
 and acknowledged in its authorized inbox, without converting it into a queue.
 An accepted notification still follows its normal handling path, not another
-inbox delivery. Original Messages, wake windows and handling receipts remain
-readable after acknowledgement.
+native delivery. Accepted Global inputs, delivered Leader windows and current
+Assignment continuations remain in the inbox until explicitly handled. Claim the
+received entry, inspect its originals and existing effects, then ack with a
+concrete disposition (including result or effect receipt references when useful).
+This claim never sends the input again. A current rightful successor may settle
+an accepted Global input or Leader window while retaining the original delivery
+target; it must inspect prior effects first. Pending/unknown acceptance stays
+blocked and cannot use claim as a replay path.
+
+An ack belongs to the exact original and revision: fixed windows pin
+`message.updated` event identities, including same-timestamp edits. A later
+revision still needs its own handling. Before Task completion, settle handled
+user-input windows; native acceptance or a terminal does not settle them.
+Original Messages, wake windows and handling receipts remain readable after
+acknowledgement. Lost context, Session continuation and installation upgrades
+do not reset receipts. If ack fails after an external effect, read back the
+original claim and the external receipt before retrying the same ack; do not
+repeat the effect. This is durable handling evidence, not arbitrary external
+exactly-once execution.
 
 ## Read bounded information completely when required
 

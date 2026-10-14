@@ -375,7 +375,8 @@ test("Leader queue waits through Session cleanup and only its accepted wake cons
   assert.equal(store.getTaskWake("task-1", successor.wakeId).status, "consumed");
   assert.equal(store.getTaskWake("task-1", first.wakeId).status, "dispatched",
     "Successor acceptance must not fabricate acceptance of the discarded wake.");
-  assert.deepEqual(pendingCompletionMessages(store, "task-1").map(m => m.body), ["Later input"]);
+  assert.deepEqual(pendingCompletionMessages(store, "task-1").map(m => m.body), ["Original input", "Later input"],
+    "Acceptance settles delivery, while handling still needs an explicit receipt.");
   assert.equal(store.listRuns("task-1").length, 0, "Notification acceptance is not execution completion.");
 });
 

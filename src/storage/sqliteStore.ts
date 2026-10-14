@@ -64,7 +64,7 @@ import {
 } from "../job/durableJob.js";
 import type { TaskMessage } from "../message/message.js";
 import { validateGlobalRoleMessage, type GlobalRoleMessage } from "../message/message.js";
-import { assertInboxReceiptPreserved, type InboxReceipt } from "../message/inboxReceipt.js";
+import { assertInboxOriginalPreserved, assertInboxReceiptPreserved, type InboxReceipt } from "../message/inboxReceipt.js";
 import type { Milestone } from "../milestone/milestone.js";
 import {
   validatePluginIntent,
@@ -1331,8 +1331,8 @@ export class SqliteTaskStore implements TaskStore {
     this.#mutate(() => {
       const existing = this.#db.prepare("SELECT payload FROM global_role_messages WHERE name = ? AND message_id = ?")
         .get(message.roleName, message.id) as { payload: string } | undefined;
-      assertInboxReceiptPreserved(existing === undefined ? undefined
-        : this.#parse<{ inbox?: InboxReceipt }>(existing.payload).inbox, message.inbox);
+      assertInboxOriginalPreserved(existing === undefined ? undefined
+        : this.#parse<GlobalRoleMessage>(existing.payload), message);
       const seq = this.#globalMessageSequence(message.id);
       const result = this.#db.prepare(
         `UPDATE global_role_messages SET seq = ?, payload = ? WHERE name = ? AND message_id = ?`
@@ -2830,8 +2830,8 @@ export class SqliteTaskStore implements TaskStore {
     this.#mutate(() => {
       const existing = this.#db.prepare("SELECT payload FROM messages WHERE task_id = ? AND message_id = ?")
         .get(taskId, message.id) as { payload: string } | undefined;
-      assertInboxReceiptPreserved(existing === undefined ? undefined
-        : this.#parse<{ inbox?: InboxReceipt }>(existing.payload).inbox, message.inbox);
+      assertInboxOriginalPreserved(existing === undefined ? undefined
+        : this.#parse<TaskMessage>(existing.payload), message);
       const result = this.#db.prepare(
         `UPDATE messages SET payload = ? WHERE task_id = ? AND message_id = ?`
       ).run(this.#recordJson("messages", message), taskId, message.id);
@@ -3001,6 +3001,10 @@ export class SqliteTaskStore implements TaskStore {
     this.#mutate(() => {
       const existing = this.#db.prepare("SELECT payload FROM task_wakes WHERE task_id = ? AND wake_id = ?")
         .get(taskId, wake.id) as { payload: string } | undefined;
+      const previous = existing === undefined ? undefined : this.#parse<TaskWake>(existing.payload);
+      if (previous !== undefined && !isDeepStrictEqual(previous.refs, wake.refs)) {
+        throw new StorageRecordError("A notification window's original revision references are immutable.");
+      }
       assertInboxReceiptPreserved(existing === undefined ? undefined
         : this.#parse<{ inbox?: InboxReceipt }>(existing.payload).inbox, wake.inbox);
       const seq = this.#idSequence(wake.id, "taskWake");
