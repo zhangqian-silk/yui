@@ -48,6 +48,8 @@ export const MODELS_STYLES = `
 .models-results{display:grid;gap:0;min-width:0}
 .models-results>.models-count{padding:8px 16px 0}
 .models-results>.models-empty{padding:12px 16px 16px}
+.models-catalog-results>.models-count{padding:0 0 8px}
+.models-catalog-results>.models-empty{padding:0}
 
 /* Provider table */
 .models-table-wrap{min-width:0;overflow-x:auto}

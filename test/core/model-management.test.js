@@ -182,12 +182,23 @@ test("Model HTTP boundary persists only references and requires token, origin an
     assert.match(html, /name="yui-web-token" content="fixture-token"/);
     assert.doesNotMatch(html, /__YUI_WEB_TOKEN__/);
     const assets = [...html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)];
-    assert.ok(assets.some(match => match[1] === "/assets/js/app/manage.js"));
+    assert.ok(assets.some(match => match[1].startsWith("/assets/js/app/manage.js?v=")));
     for (const path of ["/models/providers", "/models/catalog", "/models/quota",
       "/settings/preferences", "/settings/skills", "/settings/server", "/settings/connection"]) {
       assert.equal(await (await fetch(url + path)).text(), html, "every direct management URL serves the same document");
     }
-    for (const [, asset] of assets) assert.equal((await fetch(url + asset)).status, 200, asset);
+    for (const [, asset] of assets) {
+      const response = await fetch(url + asset);
+      assert.equal(response.status, 200, asset);
+      assert.match(response.headers.get("cache-control"), /private, max-age=31536000, immutable/);
+    }
+    const entryUrl = assets.find(match => match[1].startsWith("/assets/js/app/manage.js?v="))[1];
+    const entry = await (await fetch(url + entryUrl)).text();
+    assert.match(entry, /app\/settings\.js\?v=[a-f0-9]+/);
+    assert.match(html, /rel="modulepreload"/);
+    assert.equal((await fetch(url + "/models")).headers.get("cache-control"), "no-store");
+    assert.equal((await fetch(url + "/assets/app.js")).headers.get("cache-control"), "no-store");
+    assert.equal((await fetch(url + "/assets/app.js?v=stale")).status, 404);
     const head = await fetch(`${url}/models`, { method: "HEAD" });
     assert.equal(head.status, 200);
     assert.equal(await head.text(), "");

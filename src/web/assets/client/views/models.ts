@@ -94,10 +94,8 @@ export function mountModels(root, deps) {
     } }, text);
   }
   function head(name, hint, actions) {
-    // Connection settings belong to the Settings area of the shared navigation.
-    const area = name === "connection" ? t("settings.title") : t("models.title");
     return h("header.manage-head", null,
-      h("div.manage-heading", null, h("p.kicker", null, area),
+      h("div.manage-heading", null,
         h("h1", { id: "models-" + name + "-title" }, t("models.section." + name)), hint ? h("p", null, hint) : null),
       actions && actions.length ? h("div.card-actions", null, actions) : null);
   }
@@ -440,7 +438,7 @@ export function mountModels(root, deps) {
     return observation.error ? h("p.settings-error", null, observation.error) : null;
   }
 
-  const catalogResults = h("div.models-results");
+  const catalogResults = h("div.models-results.models-catalog-results");
   function catalogMatches(item) {
     const catalog = state.catalog;
     if (catalog.source !== "all" && item.source !== catalog.source) return false;

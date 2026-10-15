@@ -23,6 +23,11 @@ TypeScript 字符串里的 JavaScript，由 `tsc` 编译进 `dist/`，再由
 新增客户端模块 = 新文件导出 `XXX_SCRIPT` + 在 `client/index.ts` 注册
 `"<layer>/<name>"`。新增样式表 = 新文件 + 在 `styles/index.ts` 按层叠顺序插入。
 
+HTTP 输出由 `prepareWebDocument` 为资源及其依赖附加内容版本，并为当前入口的静态
+import 图生成 `modulepreload`，避免跨工作台/管理页重复下载与逐层等待。
+只有匹配当前版本的静态资源允许私有长期缓存；HTML、API 和无版本资源仍为
+`no-store`，旧版本 URL 返回 404。更改任意资源都会更新整个依赖图的版本。
+
 ## 分层
 
 ```

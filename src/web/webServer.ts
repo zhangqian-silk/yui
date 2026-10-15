@@ -25,7 +25,7 @@ import { MODELS_HTML } from "./assets/shell/models.js";
 import { TASK_SUBMISSION_INTENTS, type TaskSubmissionIntent } from "../message/message.js";
 import type { SurfaceContributionRef, SurfacePanelContribution } from "../surface/surfaceContributions.js";
 import type { CapabilityResult } from "../kernel/capabilityRegistry.js";
-import { DASHBOARD_HTML, findWebAsset, type WebAsset } from "./assets/assetManifest.js";
+import { DASHBOARD_HTML, findWebAsset, prepareWebDocument, WEB_ASSET_VERSION, type WebAsset } from "./assets/assetManifest.js";
 import {
   buildWebTaskCatalog,
   buildWebPageSessions,
@@ -605,18 +605,20 @@ async function handleHttpRequest(
 
   if (method === "GET" || method === "HEAD") {
     try {
-      const asset = findWebAsset(pathname);
+      const assetVersion = new URL(request.url!, "http://localhost").searchParams.get("v");
+      const asset = findWebAsset(pathname, assetVersion);
       const managementPage = /^\/(?:models(?:\/(?:providers|catalog|quota))?|settings(?:\/(?:preferences|skills|server|connection))?)\/?$/.test(pathname);
       if (pathname === "/" || pathname === "/index.html" || managementPage) {
         sendText(
           response,
           200,
           "text/html; charset=utf-8",
-          managementPage ? MODELS_HTML.replace("__YUI_WEB_TOKEN__", token) : dashboardHtml(token),
+          prepareWebDocument(managementPage ? MODELS_HTML.replace("__YUI_WEB_TOKEN__", token) : dashboardHtml(token),
+            managementPage ? "/assets/js/app/manage.js" : "/assets/app.js"),
           method === "HEAD"
         );
       } else if (asset !== null) {
-        sendAsset(response, asset, method === "HEAD");
+        sendAsset(response, asset, method === "HEAD", assetVersion === WEB_ASSET_VERSION);
       } else if (pathname === "/api/search") {
         const query = new URL(request.url!, "http://localhost").searchParams;
         if (query.getAll("query").length !== 1) throw usageError("Search requires one query.");
@@ -1068,12 +1070,12 @@ function sendText(
   response.end(head ? undefined : body);
 }
 
-function sendAsset(response: ServerResponse, asset: WebAsset, head: boolean): void {
+function sendAsset(response: ServerResponse, asset: WebAsset, head: boolean, versioned = false): void {
   const payload = asset.encoding === "base64"
     ? Buffer.from(asset.body, "base64")
     : Buffer.from(asset.body, "utf-8");
-  if (asset.contentType.startsWith("font/") || asset.contentType.startsWith("image/")) {
-    response.setHeader("cache-control", "public, max-age=31536000, immutable");
+  if (versioned) {
+    response.setHeader("cache-control", "private, max-age=31536000, immutable");
   }
   response.statusCode = 200;
   response.setHeader("content-type", asset.contentType);

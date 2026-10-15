@@ -57,8 +57,7 @@ ${options.main}
 </body></html>`;
 }
 
-// The common section heading: area kicker, title and one explanatory line.
-export function manageHead(area: ManageArea, id: string, key: string, label: string, hintKey: string, hint: string): string {
-  const areaKey = area === "models" ? "models.title" : "settings.title";
-  return `<header class="manage-head"><div class="manage-heading"><p class="kicker" data-i18n="${areaKey}">${area === "models" ? "Models" : "Settings"}</p><h1 id="${id}" data-i18n="${key}">${escapeHtml(label)}</h1><p data-i18n="${hintKey}">${escapeHtml(hint)}</p></div></header>`;
+// The common section heading: title and one explanatory line.
+export function manageHead(id: string, key: string, label: string, hintKey: string, hint: string): string {
+  return `<header class="manage-head"><div class="manage-heading"><h1 id="${id}" data-i18n="${key}">${escapeHtml(label)}</h1><p data-i18n="${hintKey}">${escapeHtml(hint)}</p></div></header>`;
 }
