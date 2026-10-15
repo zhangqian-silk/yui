@@ -22,6 +22,7 @@ import type { WebSettings } from "./webSettings.js";
 import type { createModelManagement } from "../models/modelManagement.js";
 import type { WebSkills } from "./webSkills.js";
 import { SETTINGS_HTML } from "./assets/shell/settings.js";
+import { MODELS_HTML } from "./assets/shell/models.js";
 import { TASK_SUBMISSION_INTENTS, type TaskSubmissionIntent } from "../message/message.js";
 import type { SurfaceContributionRef, SurfacePanelContribution } from "../surface/surfaceContributions.js";
 import type { CapabilityResult } from "../kernel/capabilityRegistry.js";
@@ -606,12 +607,13 @@ async function handleHttpRequest(
   if (method === "GET" || method === "HEAD") {
     try {
       const asset = findWebAsset(pathname);
-      if (pathname === "/" || pathname === "/index.html" || pathname === "/settings") {
+      if (pathname === "/" || pathname === "/index.html" || pathname === "/settings" || pathname === "/models") {
         sendText(
           response,
           200,
           "text/html; charset=utf-8",
-          pathname === "/settings" ? SETTINGS_HTML.replace("__YUI_WEB_TOKEN__", token) : dashboardHtml(token),
+          pathname === "/models" ? MODELS_HTML.replace("__YUI_WEB_TOKEN__", token)
+            : pathname === "/settings" ? SETTINGS_HTML.replace("__YUI_WEB_TOKEN__", token) : dashboardHtml(token),
           method === "HEAD"
         );
       } else if (asset !== null) {

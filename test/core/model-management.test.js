@@ -107,6 +107,17 @@ test("Model HTTP boundary persists only references and requires token, origin an
     await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
     const url = `http://127.0.0.1:${server.address().port}`;
     const api = `${url}/api/models`;
+    const shell = await fetch(`${url}/models`);
+    assert.equal(shell.status, 200);
+    const html = await shell.text();
+    assert.match(html, /name="yui-web-token" content="fixture-token"/);
+    assert.doesNotMatch(html, /__YUI_WEB_TOKEN__/);
+    const assets = [...html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)];
+    assert.ok(assets.some(match => match[1] === "/assets/js/app/models.js"));
+    for (const [, asset] of assets) assert.equal((await fetch(url + asset)).status, 200, asset);
+    const head = await fetch(`${url}/models`, { method: "HEAD" });
+    assert.equal(head.status, 200);
+    assert.equal(await head.text(), "");
     assert.equal((await fetch(api)).status, 403);
     const headers = { "x-yui-web-token": "fixture-token", "content-type": "application/json" };
     const view = await (await fetch(api, { headers })).json();
