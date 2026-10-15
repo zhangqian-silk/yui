@@ -664,8 +664,17 @@ function collectAuthorizedContext(
   const view = contextView(run);
   const result: MaterializedRef[] = [materialize("L2", "task", task.id, task)];
   const brief = store.getTaskBrief(task.id);
-  if (brief !== null && view === "leader") {
+  if (brief !== null && (view === "leader" || view === "reviewer")) {
     result.push(materialize("L2", "task-brief", task.id, brief));
+  }
+  // Reviewers need the current material index and effective decisions, not
+  // only the original Task description. Freeze them with the candidate so
+  // later edits cannot silently change the review contract. Artifact bodies
+  // remain on-demand, commit-pinned reads; do not crawl prose or Task history.
+  if (view === "reviewer") {
+    for (const decision of store.listDecisions(task.id).filter(({ status }) => status === "active")) {
+      result.push(materialize("L2", "task-decision", decision.id, decision));
+    }
   }
   result.push(...collectRunContextOverlays(store, run));
   result.push(...collectSourceRunContext(store, run));

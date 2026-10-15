@@ -26,6 +26,8 @@ import { createTaskEvent } from "../../dist/event/taskEvent.js";
 import { prepareMessageContinuations } from "../../dist/message/messageContinuation.js";
 import { addProjectKnowledge, createProject, retireProjectKnowledge } from "../../dist/repository/project.js";
 import { createIntegrationAttempt } from "../../dist/integration/integrationAttempt.js";
+import { createTaskBrief } from "../../dist/brief/taskBrief.js";
+import { createDecision, supersedeDecision } from "../../dist/decision/decision.js";
 
 test("managed dispatch freezes explicit materials and candidate reports; continuation preserves their exact evidence", t => {
   const home = mkdtempSync(join(tmpdir(), "yui-dispatch-evidence-"));
@@ -159,6 +161,17 @@ test("managed dispatch freezes explicit materials and candidate reports; continu
   }, later);
   const reviewContract = { taskId: task.id, roleName: "reviewer", purpose: "review",
     workItemId: candidate.workItemId, reviewRoundId: round.id, workspace: reviewWorkspace };
+  const brief = createTaskBrief({
+    objective: "Bounded repair", boundaries: ["No external effects"],
+    currentFocus: "Review complete candidate", updatedBy: "leader",
+    leaderSummary: `Materials: git:${"c".repeat(40)}:review/index.md`
+  }, later);
+  const decision = createDecision("decision-1", task.id, "Preserve partial results",
+    "Successful entries remain visible; failures are reported separately.\n".repeat(1200), later);
+  store.saveTaskBrief(task.id, brief);
+  store.saveDecision(task.id, decision);
+  store.saveDecision(task.id, supersedeDecision(createDecision("decision-2", task.id,
+    "Obsolete all-or-nothing behavior", "Old contract", now), "Replaced", later));
   const snapshot = freezeRunContextSnapshot(store, reviewContract, later);
   const review = createRun(store.nextRunId(task.id), task.id, "reviewer", "new", createRunInput({
     source: { type: "yui", channel: "workitem-dispatch" },
@@ -168,6 +181,20 @@ test("managed dispatch freezes explicit materials and candidate reports; continu
     effective: resolveEffectiveLaunch({ role: store.getRole(task.id, "reviewer"), purpose: "review",
       workspace: reviewWorkspace, reviewRoundId: round.id, reviewBaseCommit: round.reviewBaseCommit }) });
   store.saveRun(review);
+  assert.equal(expandRunContextRef(store, task.id, review.id, task.id, "task-brief")
+    .value.leaderSummary, brief.leaderSummary);
+  const reviewedDecision = readDocument(cursor => command(["run", "context", "expand",
+    `${task.id}/${review.id}`, decision.id, "--store", "task-decision",
+    ...(cursor === undefined ? [] : ["--cursor", cursor])]).data.context);
+  assert.equal(reviewedDecision.value.rationale, decision.rationale);
+  assert.throws(() => expandRunContextRef(store, task.id, review.id, "decision-2",
+    "task-decision"), /not.*(available|authorized|found)|outside|not in/i);
+  store.saveTaskBrief(task.id, { ...brief, leaderSummary: "Newer candidate materials" });
+  store.saveDecision(task.id, supersedeDecision(decision, "Later replacement", later));
+  assert.equal(expandRunContextRef(store, task.id, review.id, task.id, "task-brief")
+    .value.leaderSummary, brief.leaderSummary);
+  assert.equal(expandRunContextRef(store, task.id, review.id, decision.id, "task-decision")
+    .value.status, "active");
   const expanded = readDocument(cursor => command(["run", "context", "expand",
     `${task.id}/${review.id}`, worker.id, "--store", "source-run",
     ...(cursor === undefined ? [] : ["--cursor", cursor])]).data.context);
@@ -187,8 +214,12 @@ test("managed dispatch freezes explicit materials and candidate reports; continu
   }, later);
   store.saveReviewRound(task.id, finalRound);
   const finalContext = { ...reviewContract, workItemId: undefined, reviewRoundId: finalRound.id };
-  assert.equal(freezeRunContextSnapshot(store, finalContext, later).resources
-    .find(({ ref }) => ref.store === "source-run").value.result.output, report);
+  const finalSnapshot = freezeRunContextSnapshot(store, finalContext, later);
+  assert.equal(finalSnapshot.resources.find(({ ref }) => ref.store === "source-run").value.result.output, report);
+  assert.equal(finalSnapshot.resources.find(({ ref }) => ref.store === "task-brief")
+    .value.leaderSummary, "Newer candidate materials");
+  assert.equal(finalSnapshot.resources.some(({ ref }) => ref.store === "task-decision"), false,
+    "A new full review uses current effective decisions, not superseded history");
   const integration = createIntegrationAttempt({
     id: "integration-1", taskId: task.id, projectId: "project-1", targetRef: "fixture",
     beforeCommit: "a".repeat(40), source: { kind: "work-item",

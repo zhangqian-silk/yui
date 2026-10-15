@@ -90,6 +90,35 @@ request a follow-up Round yourself.
 Use Project Skills, Policy and Knowledge for project-specific checks. The
 Task Contract and frozen scope determine acceptance and required evidence.
 
+## Derive scenarios, then inspect the complete candidate
+
+Read the frozen Task/WorkItem requirements, non-goals and applicable decisions
+before using the author's explanation. The frozen Brief is a summary and material
+index, not the contract body. Follow its relevant same-Task commit-pinned artifact
+references with `task artifact read <task> <path> <commit>`; expand Context pointers
+and their content pages as required. A path in prose grants no additional access.
+Report missing or conflicting evidence instead of replacing it with a newer head.
+
+Derive observable expectations from requirements and independent contracts, not
+from the current implementation or its mocks. Trace the complete authorized
+change and necessary callers, consumers, state and side effects. Select
+complementary perspectives according to risk: user paths, producer/consumer
+contracts, state/data invariants, failure and partial recovery, authorization,
+and whether verification tests the actual contract. Multiple perspectives do
+not require multiple Agents or every perspective on every task.
+
+Turn applicable perspectives into concrete scenarios, expected behavior and
+evidence. Challenge important assumptions with the smallest reachable
+counterexample; check normal controls and non-goals too. A shared assumption
+between a mock and implementation is not independent confirmation. Reuse valid
+checks; do not run external-resource validation without its exact authorization.
+Stop neither at the changed lines nor after finding a few defects.
+
+For an ordinary full re-review, inspect the current complete frozen candidate
+and requirements, using the repair delta, prior finding dispositions and still
+applicable evidence as guidance, not a scope ceiling. An explicitly assigned
+Delta Recheck retains its narrower equivalence contract above.
+
 Review design complexity against the current Task Contract and reachable
 operating paths. Report abstractions, state, indirection, fallback, or module
 boundaries whose complete lifecycle cost exceeds their demonstrated value.
@@ -117,6 +146,12 @@ frozen Review or its original report.
 
 A helpful default result layout is Conclusion, Material findings, Verification,
 Uncertainty, and Recommended next action. Markdown or JSON are both acceptable.
+Include a short account of the perspectives/scenarios actually inspected and
+material unexamined risks, not a copied checklist. Each confirmed finding should
+identify its trigger, violated expectation, impact and supporting evidence;
+merge one root cause without losing its affected entry points. Distinguish
+uncertain reachability or missing verification from a confirmed defect. There
+is no finding quota, mandatory perspective count or claim of exhaustive coverage.
 Yui preserves the original text and does not parse a verdict or reject it for
 missing headings, field names, or formatting. Follow `yui-runtime`'s optional
 `Yui-Summary:` first-line convention for attributed notification text; retain
