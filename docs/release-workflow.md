@@ -51,6 +51,36 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.8.0 compatibility and migration notes
+
+This minor adds native metabridge model management: provider configuration,
+cached model catalogs, and manual subscription-quota observations through the
+supported CPA extensions. Models and Settings share navigation, canonical
+section URLs, browser history, locale and theme handling. Content-versioned
+static assets improve repeat navigation; HTML and account APIs remain uncached.
+The release also includes the chat-style Conversation dock, bounded runtime
+diagnostics, native caller/inbox corrections, and review-context improvements
+merged since 2.7.1.
+
+Storage advances from **1.7 to 1.8** through the centralized additive transition
+for optional, non-secret model connection references. Existing Homes remain
+unconfigured. A separately authorized upgrade can use
+`yui update --version 2.8.0`; the updater owns preflight, backup, migration and
+Controller replacement. Do not open an upgraded Home with an older binary or
+edit its storage manually.
+
+metabridge and CPA remain separately operated services; installing Yui does not
+start, reload or adopt them. Configure their connection references explicitly.
+Saving provider configuration does not prove it is applied or validate inference.
+CPA still owns its upstream OAuth/account pool. Quota refresh may query billing
+services but does not renew credentials, reset quota or run inference. Unknown,
+partial and stale observations remain distinct.
+
+Release evidence is deterministic core CI and isolated, fresh-install package
+smoke on supported Linux/macOS and Node versions, not real-model validation.
+Publishing this package alone does not authorize a global CLI update, a Home
+migration, or any production-service restart.
+
 ### 2.7.1 compatibility and migration notes
 
 This release delivers the intended 2.7 feature line. The `v2.7.0` attempt stopped
