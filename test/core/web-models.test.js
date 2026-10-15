@@ -50,7 +50,7 @@ function view(revision, extra = {}) {
     providers: [
       { id: "official", name: "Official", via: "unknown", baseUrl: "https://upstream.invalid", prefix: "", enabled: true,
         editable: false, reason: "official subscription route", credentialPresent: true, owner: "metabridge" },
-      { id: "mine", name: "Mine", via: "direct", baseUrl: "https://mine.invalid", prefix: "mine", enabled: true,
+      { id: "mine", name: "Mine", via: "direct", baseUrl: "https://mine.invalid", prefix: "mine/", enabled: true,
         editable: true, reason: null, credentialPresent: true, owner: "metabridge" }
     ], ...extra };
 }
@@ -103,11 +103,17 @@ test("connection and provider writes carry the read revision, never echo keys an
   const official = find(root, n => n.dataset.provider === "official");
   assert.match(text(official), /official subscription route/);
   assert.equal(all(official, n => n.tagName === "BUTTON").length, 0);
+  // The server returns the prefix with its trailing slash; it is shown as-is.
+  const mine = text(find(root, n => n.dataset.provider === "mine"));
+  assert.match(mine, /mine\//);
+  assert.doesNotMatch(mine, /mine\/\//);
 
   // Connection save sends all five fields with the read revision.
   const connectionForm = find(root, n => n.tagName === "FORM");
   const urlInput = find(connectionForm, n => n.tagName === "INPUT");
+  assert.ok(button(connectionForm, "models.discard").disabled);
   urlInput.value = " http://127.0.0.1:10 "; urlInput.handlers.input();
+  assert.equal(button(connectionForm, "models.discard").disabled, false, "the first edit enables discard");
   await submit(connectionForm); await tick();
   const [, sent] = api.calls.find(c => c[0] === "connection");
   assert.deepEqual(sent, { revision: "r1", connection: connection({ bridgeUrl: "http://127.0.0.1:10" }) });
@@ -122,10 +128,21 @@ test("connection and provider writes carry the read revision, never echo keys an
   assert.equal(key.autocomplete, "new-password");
   name.value = "New"; name.handlers.input();
   baseUrl.value = "https://new.invalid"; baseUrl.handlers.input();
-  prefix.value = "new"; prefix.handlers.input();
+  assert.equal(prefix.placeholder, "mine/");
+  prefix.value = "new/"; prefix.handlers.input();
   await submit(form);
   assert.equal(api.calls.filter(c => c[0] === "provider").length, 0, "new provider without key is not submitted");
   assert.match(text(root), /models\.providerNewRequired/);
+  for (const invalid of ["new", "a/b/", "bad prefix/", "x".repeat(65) + "/"]) {
+    form = find(root, n => n.className.includes("models-provider-form"));
+    all(form, n => n.tagName === "INPUT")[2].value = invalid;
+    find(form, n => n.type === "password").value = "sk-fixture-secret";
+    await submit(form);
+    assert.match(text(root), /models\.prefixInvalid/, invalid);
+  }
+  assert.equal(api.calls.filter(c => c[0] === "provider").length, 0, "prefixes outside the server contract are not submitted");
+  form = find(root, n => n.className.includes("models-provider-form"));
+  all(form, n => n.tagName === "INPUT")[2].value = "new/";
 
   api.saveModelProvider = async input => {
     api.calls.push(["provider", copy(input)]);
@@ -137,7 +154,7 @@ test("connection and provider writes carry the read revision, never echo keys an
   await submit(form); await tick();
   const [, rejected] = api.calls.filter(c => c[0] === "provider").at(-1);
   assert.deepEqual(rejected, { revision: "r2", operation: "save",
-    provider: { name: "New", via: "direct", baseUrl: "https://new.invalid", prefix: "new", enabled: true, apiKey: "sk-fixture-secret" } });
+    provider: { name: "New", via: "direct", baseUrl: "https://new.invalid", prefix: "new/", enabled: true, apiKey: "sk-fixture-secret" } });
   assert.equal(keyInput.value, "", "key input is cleared after submission");
   assert.doesNotMatch(JSON.stringify(page.state), /sk-fixture-secret/);
   assert.doesNotMatch(text(root), /sk-fixture-secret/);
@@ -224,4 +241,96 @@ test("catalog and quota stay separate and never present unknown, failed or stale
   assert.deepEqual(api.calls.at(-1), ["refresh", { revision: "r1", kind: "quota", source: "command-code" }]);
   assert.equal(page.state.quota.observation, null, "a failed refresh does not keep the previous value");
   assert.match(text(root), /models\.quotaFailed billing unreachable/);
+});
+
+const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
+
+test("observations are invalidated with the configuration revision and late responses are fenced", async () => {
+  const success = (items, extra = {}) => ({ ...observation("success", { observedAt: "t1", items }), total: items.length, nextCursor: null, ...extra });
+  const reads = [];
+  const quotaReads = [];
+  const api = fakeApi({
+    current: view("r1", { connection: connection({ cpaUrl: "http://127.0.0.1:8", managementKeyFile: "/fixture/key" }) }),
+    modelCatalog: async cursor => { api.calls.push(["catalog", cursor]); const d = deferred(); reads.push(d); return d.promise; },
+    modelQuota: async source => { api.calls.push(["quota", source]); const d = deferred(); quotaReads.push(d); return d.promise; }
+  });
+  const { root, page } = mount(api);
+  await tick();
+  reads.shift().resolve(success([{ id: "old/a", source: "metabridge" }]));
+  quotaReads.shift().resolve(observation("success", { items: [{ id: "old-acct", source: "factory", status: "success", windows: [], balance: 1, periodEnd: null, error: null }] }));
+  await page.ready; await tick();
+  assert.match(text(root), /old\/a/);
+  assert.match(text(root), /old-acct/);
+
+  // An explicit refresh for r1 is still in flight when the connection changes.
+  const lateRefresh = deferred();
+  api.refreshModels = async input => { api.calls.push(["refresh", copy(input)]); return lateRefresh.promise; };
+  button(root, "models.refreshCatalog").handlers.click(); await tick();
+  const connectionForm = find(root, n => n.tagName === "FORM");
+  find(connectionForm, n => n.tagName === "INPUT").value = "http://127.0.0.1:11";
+  await submit(connectionForm); await tick();
+
+  const refreshes = api.calls.filter(c => c[0] === "refresh").length;
+  assert.equal(page.state.view.revision, "r2");
+  assert.doesNotMatch(text(root), /old\/a|old-acct/, "r1 observations are not shown under r2");
+  assert.equal(api.calls.filter(c => c[0] === "catalog").length, 2, "the new cache is read");
+  assert.equal(api.calls.filter(c => c[0] === "quota").length, 2);
+
+  lateRefresh.resolve(success([{ id: "old/late", source: "metabridge" }])); await tick();
+  assert.doesNotMatch(text(root), /old\/late/, "a late r1 response is fenced");
+  reads.shift().resolve(success([{ id: "new/a", source: "metabridge" }]));
+  quotaReads.shift().reject(new Error("cache read failed")); await tick();
+  assert.match(text(root), /new\/a/);
+  assert.equal(page.state.quota.observation, null);
+  assert.equal(api.calls.filter(c => c[0] === "refresh").length, refreshes, "no external refresh is sent automatically");
+
+  // Reconciling an unknown write that landed invalidates the same way.
+  api.saveModelProvider = async input => { api.calls.push(["provider", copy(input)]); throw Object.assign(new Error("reset"), { disposition: "unknown" }); };
+  button(find(root, n => n.dataset.provider === "mine"), "models.removeProvider").handlers.click(); await tick();
+  api.current = view("r3");
+  button(root, "models.readFacts").handlers.click(); await tick();
+  assert.equal(page.state.catalog.page, null);
+  assert.equal(api.calls.filter(c => c[0] === "catalog").length, 3);
+
+  // A failed observation with no items is unknown, not empty.
+  reads.shift().resolve({ ...observation("failed", { error: "bridge down" }), total: 0, nextCursor: null });
+  quotaReads.shift().resolve(observation("failed", { error: "billing down" })); await tick();
+  assert.match(text(root), /models\.catalogItemsUnknown/);
+  assert.match(text(root), /models\.quotaItemsUnknown/);
+  assert.doesNotMatch(text(root), /models\.catalogEmpty|models\.quotaEmpty/);
+});
+
+test("a stale-revision rejection keeps the draft and offers an explicit re-read without replay", async () => {
+  const api = fakeApi();
+  const { root, page } = mount(api);
+  await page.ready;
+  api.saveModelConnection = async input => {
+    api.calls.push(["connection", copy(input)]);
+    throw Object.assign(new Error("revision is stale"), { disposition: "not-submitted" });
+  };
+  let form = find(root, n => n.tagName === "FORM");
+  const urlInput = find(form, n => n.tagName === "INPUT");
+  urlInput.value = "http://127.0.0.1:12"; urlInput.handlers.input();
+  await submit(form); await tick();
+  assert.match(text(root), /models\.rejected revision is stale/);
+  assert.equal(page.state.connectionDraft.bridgeUrl, "http://127.0.0.1:12");
+
+  // Writes are blocked while the facts are being read again.
+  const reread = deferred();
+  api.models = async () => { api.calls.push(["models"]); return reread.promise; };
+  button(root, "models.readFacts").handlers.click(); await tick();
+  form = find(root, n => n.tagName === "FORM");
+  assert.ok(find(form, n => n.type === "submit").disabled);
+  await submit(form);
+  assert.equal(api.calls.filter(c => c[0] === "connection").length, 1, "no save races the re-read");
+  reread.resolve(view("r5")); await tick();
+
+  assert.match(text(root), /models\.rereadChanged/);
+  assert.ok(!api.calls.some(c => c[0] === "release"), "a rejection holds no unresolved write key");
+  assert.equal(api.calls.filter(c => c[0] === "connection").length, 1, "nothing is replayed automatically");
+  form = find(root, n => n.tagName === "FORM");
+  assert.equal(find(form, n => n.tagName === "INPUT").value, "http://127.0.0.1:12", "the draft is kept");
+  api.saveModelConnection = async input => { api.calls.push(["connection", copy(input)]); return view("r6"); };
+  await submit(form); await tick();
+  assert.equal(api.calls.filter(c => c[0] === "connection").at(-1)[1].revision, "r5", "the next save carries the re-read revision");
 });

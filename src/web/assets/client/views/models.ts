@@ -13,6 +13,8 @@ import { formatDateTime } from "/assets/js/lib/format.js";
 export const QUOTA_SOURCES = ["factory", "command-code"];
 const CONNECTION_FIELDS = ["bridgeUrl", "bridgeConfigFile", "cpaUrl", "managementKeyFile", "catalogKeyFile"];
 const OBSERVATION_TONES = { success: "ok", partial: "warn", failed: "bad", unsupported: "idle", "not-queried": "idle" };
+// Server contract: the prefix is sent and returned with its trailing slash.
+export const PREFIX_PATTERN = /^[a-zA-Z0-9_-]{1,64}\/$/;
 
 export function mountModels(root, deps) {
   const t = deps.t;
@@ -23,7 +25,9 @@ export function mountModels(root, deps) {
     view: null, loading: false, loadError: null,
     // One write at a time; an unknown outcome blocks every write until the
     // reader explicitly reads current facts again.
-    pending: false, unknown: false, receipt: null,
+    // A rejected write (for example a stale revision) keeps its draft and
+    // offers an explicit re-read; nothing is replayed automatically.
+    pending: false, unknown: false, rejected: false, receipt: null,
     connectionDraft: null, providerDraft: null,
     catalog: { page: null, items: [], loading: false, error: null, note: null, generation: 0 },
     quota: { source: QUOTA_SOURCES[0], observation: null, loading: false, error: null, unavailable: false, generation: 0 }
@@ -40,13 +44,16 @@ export function mountModels(root, deps) {
   function tone(name, text) { return h("span.badge.tone-" + name, null, text); }
   function when(iso) { return iso ? formatDateTime(iso, locale()) : t("models.unknown"); }
   function known(value, render) { return value === null || value === undefined ? t("models.unknown") : render ? render(value) : String(value); }
-  function writesBlocked() { return !state.view || state.pending || state.unknown; }
+  // Re-reading facts also blocks writes so no save races the new revision.
+  function writesBlocked() { return !state.view || state.pending || state.unknown || state.loading; }
   function heading(id, key) { return h("h2", { id: id }, t(key)); }
   function receiptNode(scope) {
     if (!state.receipt || state.receipt.scope !== scope) return null;
     const line = h("p.receipt.models-receipt", { role: "status", "aria-live": "polite" }, state.receipt.text);
     line.dataset.state = state.receipt.state;
-    return line;
+    if (!(state.rejected && state.receipt.rejected && !state.unknown)) return line;
+    return h("div.models-receipt-group", null, line, h("div.settings-actions", null,
+      h("button.btn", { type: "button", disabled: state.loading || state.pending, onclick: function () { void reconcile(); } }, t("models.readFacts"))));
   }
   function field(labelText, control, hint) {
     return h("label.field", null, h("span", null, labelText), control, hint ? h("small.faint", null, hint) : null);
@@ -96,6 +103,7 @@ export function mountModels(root, deps) {
     const blocked = writesBlocked();
     const form = h("form.settings-stack", { novalidate: true });
     const inputs = {};
+    const discard = h("button.btn.btn-ghost", { type: "button", disabled: !state.connectionDraft || state.pending }, t("models.discard"));
     CONNECTION_FIELDS.forEach(function (key) {
       const input = h("input", { type: key.endsWith("Url") ? "url" : "text", autocomplete: "off", spellcheck: "false",
         value: values[key], disabled: blocked, required: key === "bridgeUrl" });
@@ -104,13 +112,13 @@ export function mountModels(root, deps) {
         const draft = Object.assign({}, connectionValues());
         draft[key] = input.value;
         state.connectionDraft = draft;
+        discard.disabled = state.pending;
       });
       inputs[key] = input;
       form.append(field(t("models.connection." + key), input, t("models.connection." + key + "Help")));
     });
     const save = h("button.btn.btn-primary", { type: "submit", disabled: blocked }, t("models.saveConnection"));
     const disconnect = h("button.btn", { type: "button", disabled: blocked || !(view && view.connection) }, t("models.disconnect"));
-    const discard = h("button.btn.btn-ghost", { type: "button", disabled: !state.connectionDraft || state.pending }, t("models.discard"));
     form.addEventListener("submit", function (event) {
       event.preventDefault();
       if (writesBlocked()) return;
@@ -118,12 +126,12 @@ export function mountModels(root, deps) {
       CONNECTION_FIELDS.forEach(function (key) { connection[key] = inputs[key].value.trim(); });
       if (!connection.bridgeUrl) { setReceipt(t("models.bridgeUrlRequired"), "bad", "connection"); renderConnection(); return; }
       void write(function (revision) { return api.saveModelConnection({ revision: revision, connection: connection }); },
-        { scope: "connection", clearConnection: true, reloadObservations: true });
+        { scope: "connection", clearConnection: true });
     });
     disconnect.addEventListener("click", function () {
       if (writesBlocked() || !confirm(t("models.disconnectConfirm"))) return;
       void write(function (revision) { return api.saveModelConnection({ revision: revision, connection: null }); },
-        { scope: "connection", clearConnection: true, reloadObservations: true });
+        { scope: "connection", clearConnection: true });
     });
     discard.addEventListener("click", function () { state.connectionDraft = null; renderConnection(); });
     form.append(h("p", null, t("models.connectionHelp")),
@@ -149,7 +157,7 @@ export function mountModels(root, deps) {
     const blocked = writesBlocked();
     const facts = h("div.models-facts", null,
       h("span.chip", null, t("models.via." + provider.via, provider.via)),
-      provider.prefix ? h("code.id", null, provider.prefix + "/") : h("span.chip", null, t("models.noPrefix")),
+      provider.prefix ? h("code.id", null, provider.prefix) : h("span.chip", null, t("models.noPrefix")),
       tone(provider.enabled ? "ok" : "idle", provider.enabled ? t("models.enabled") : t("models.disabled")),
       tone(provider.credentialPresent ? "info" : "idle", provider.credentialPresent ? t("models.credentialStored") : t("models.credentialMissing")));
     const actions = h("div.settings-actions");
@@ -193,7 +201,8 @@ export function mountModels(root, deps) {
     via.addEventListener("change", function () { draft.via = via.value; describeVia(); });
     const baseUrl = bind(h("input", { type: "url", autocomplete: "off", spellcheck: "false", disabled: blocked, value: draft.baseUrl }), "baseUrl", function (c) { return c.value; });
     baseUrl.value = draft.baseUrl;
-    const prefix = bind(h("input", { autocomplete: "off", spellcheck: "false", disabled: blocked, value: draft.prefix }), "prefix", function (c) { return c.value; });
+    const prefix = bind(h("input", { autocomplete: "off", spellcheck: "false", disabled: blocked, value: draft.prefix,
+      placeholder: "mine/", maxlength: "65" }), "prefix", function (c) { return c.value; });
     prefix.value = draft.prefix;
     const enabled = bind(h("input", { type: "checkbox", disabled: blocked }), "enabled", function (c) { return c.checked; });
     enabled.checked = !!draft.enabled;
@@ -214,6 +223,7 @@ export function mountModels(root, deps) {
       const missing = !provider.name || !provider.baseUrl || (isNew && !provider.prefix) || (isNew && !key)
         || (provider.via !== "direct" && provider.via !== "cpa");
       if (missing) { setReceipt(t(isNew ? "models.providerNewRequired" : "models.providerRequired"), "bad", "provider"); renderProviders(); return; }
+      if (!PREFIX_PATTERN.test(provider.prefix)) { setReceipt(t("models.prefixInvalid"), "bad", "provider"); renderProviders(); return; }
       if (key) provider.apiKey = key;
       void write(function (revision) { return api.saveModelProvider({ revision: revision, operation: "save", provider: provider }); },
         { scope: "provider", clearProvider: true });
@@ -272,7 +282,9 @@ export function mountModels(root, deps) {
     if (catalog.note) children.push(h("p", { role: "status" }, catalog.note));
     if (page) {
       children.push(observationLine(page), observationError(page));
-      if (!catalog.items.length) children.push(h("p", null, page.status === "not-queried" ? t("models.catalogNotQueried") : t("models.catalogEmpty")));
+      // Only a successful observation can say the catalog is really empty.
+      if (!catalog.items.length) children.push(h("p", null, t(page.status === "not-queried" ? "models.catalogNotQueried"
+        : page.status === "success" ? "models.catalogEmpty" : "models.catalogItemsUnknown")));
       else {
         children.push(h("p.faint", null, t("models.catalogCount").replace("{shown}", String(catalog.items.length)).replace("{total}", String(page.total))),
           h("ul.models-list.models-catalog", null, catalog.items.map(function (item) {
@@ -322,7 +334,7 @@ export function mountModels(root, deps) {
       children.push(observationLine(observation), observationError(observation));
       if (observation.status === "not-queried") children.push(h("p", null, t("models.quotaNotQueried")));
       else if (observation.status === "unsupported") children.push(h("p", null, t("models.quotaUnsupported")));
-      else if (!observation.items.length) children.push(h("p", null, t("models.quotaEmpty")));
+      else if (!observation.items.length) children.push(h("p", null, t(observation.status === "success" ? "models.quotaEmpty" : "models.quotaItemsUnknown")));
       else children.push(h("ul.models-list", null, observation.items.map(quotaItem)));
     }
     sections.quota.replaceChildren.apply(sections.quota, children.filter(Boolean));
@@ -331,9 +343,30 @@ export function mountModels(root, deps) {
   // ---- Reads and writes -------------------------------------------------
   function setReceipt(text, receiptState, scope) { state.receipt = { text: text, state: receiptState, scope: scope }; }
 
+  // Observations belong to one configuration revision: the server drops its
+  // caches when the revision changes, so the page does too. Bumping each
+  // generation fences responses still in flight for the old revision, and only
+  // the new caches are read (GET); no external refresh is sent automatically.
+  function adoptView(view) {
+    const previous = state.view;
+    state.view = view;
+    if (!previous || previous.revision === view.revision) return false;
+    invalidateObservations();
+    return true;
+  }
+  function invalidateObservations() {
+    const catalog = state.catalog;
+    catalog.generation++;
+    catalog.page = null; catalog.items = []; catalog.error = null; catalog.note = null; catalog.loading = false;
+    const quota = state.quota;
+    quota.generation++;
+    quota.observation = null; quota.error = null; quota.unavailable = false; quota.loading = false;
+    void loadCatalog(null); void loadQuota();
+  }
+
   async function load() {
     state.loading = true; state.loadError = null; renderAll();
-    try { state.view = await api.models(); }
+    try { adoptView(await api.models()); }
     catch (error) { state.loadError = error.message; }
     finally { state.loading = false; renderAll(); }
     return !state.loadError;
@@ -342,32 +375,44 @@ export function mountModels(root, deps) {
   // An unknown write is never resent. Reading current facts again lets the
   // reader see whether it landed; later writes carry that fresh revision, so
   // the server's revision check rejects anything based on the old view.
+  // After a rejection the same explicit read refreshes the revision while the
+  // non-secret drafts stay for the reader to review and save again.
   async function reconcile() {
-    if (state.pending) return;
+    if (state.pending || state.loading) return;
     const view = state.view;
+    const wasUnknown = state.unknown;
     if (!(await load())) return;
-    setReceipt(t(view && state.view.revision === view.revision ? "models.reconciledUnchanged" : "models.reconciledChanged"), "warn", "summary");
-    state.unknown = false;
-    api.releaseModelWrites();
-    state.connectionDraft = null;
+    const unchanged = !!view && state.view.revision === view.revision;
+    if (wasUnknown) {
+      setReceipt(t(unchanged ? "models.reconciledUnchanged" : "models.reconciledChanged"), "warn", "summary");
+      state.unknown = false;
+      api.releaseModelWrites();
+      state.connectionDraft = null;
+    } else {
+      setReceipt(t(unchanged ? "models.rereadUnchanged" : "models.rereadChanged"), unchanged ? "ok" : "warn", "summary");
+    }
+    state.rejected = false;
     renderAll();
   }
 
   async function write(send, options) {
     if (writesBlocked()) return;
     state.pending = true;
+    state.rejected = false;
     setReceipt(t("models.saving"), "pending", options.scope);
     renderAll();
     try {
       const view = await send(state.view.revision);
-      state.view = view;
       if (options.clearConnection) state.connectionDraft = null;
       if (options.clearProvider) state.providerDraft = null;
       setReceipt(t("models.saved") + (view.notice ? " " + view.notice : ""), "ok", options.scope);
-      if (options.reloadObservations) { void loadCatalog(null); void loadQuota(); }
+      adoptView(view);
     } catch (error) {
-      if (error.disposition === "not-submitted") setReceipt(t("models.rejected") + " " + error.message, "bad", options.scope);
-      else {
+      if (error.disposition === "not-submitted") {
+        state.rejected = true;
+        setReceipt(t("models.rejected") + " " + error.message, "bad", options.scope);
+        state.receipt.rejected = true;
+      } else {
         state.unknown = true;
         setReceipt(t("models.unknownWrite") + " " + error.message, "warn", options.scope);
       }
@@ -380,7 +425,11 @@ export function mountModels(root, deps) {
   async function loadCatalog(cursor) {
     const catalog = state.catalog;
     const generation = ++catalog.generation;
-    catalog.loading = true; catalog.error = null; catalog.note = null; renderCatalog();
+    catalog.loading = true; catalog.error = null; catalog.note = null;
+    // A first-page read replaces the observation; the old one is never kept on
+    // screen while loading or after a failure.
+    if (!cursor) { catalog.page = null; catalog.items = []; }
+    renderCatalog();
     try {
       const page = await api.modelCatalog(cursor || "0");
       if (generation !== catalog.generation) return;
@@ -411,7 +460,8 @@ export function mountModels(root, deps) {
       if (generation !== catalog.generation) return;
       catalog.page = page; catalog.items = page.items.slice();
     } catch (error) {
-      if (generation === catalog.generation) catalog.error = error.message;
+      // Like quota: an unanswered refresh leaves the catalog unknown.
+      if (generation === catalog.generation) { catalog.error = error.message; catalog.page = null; catalog.items = []; }
     } finally {
       if (generation === catalog.generation) { catalog.loading = false; renderCatalog(); }
     }

@@ -19,6 +19,7 @@ export const MODELS_STYLES = `
 .models-windows{list-style:none;margin:0;padding:0;display:grid;gap:6px}
 .models-windows li{display:flex;flex-wrap:wrap;gap:4px 16px;font-size:var(--fs-sm);color:var(--ink-2)}
 .models-receipt{white-space:pre-wrap;overflow-wrap:anywhere}
+.models-receipt-group .settings-actions{margin-top:8px}
 .models-page input[type=checkbox]{width:16px;height:16px;padding:0;accent-color:var(--accent)}
 @media(max-width:640px){.models-catalog-item{flex-wrap:wrap}}
 `;
