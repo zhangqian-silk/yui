@@ -102,6 +102,10 @@ including cross-Role links. Entry points and their referenced Markdown must
 ship together. File/format checks establish availability, not Agent behavior;
 do not add prose-matching tests or claim model validation from static checks.
 
+For review-material handoff and the small original development corpus, see
+[review evaluation](review-evaluation.md). Its offline contract probes and
+adjudication aggregation are deterministic; they do not run or measure a model.
+
 ## CI and release
 
 `ci.yml` runs core plus one assembled-package normal-path smoke per supported

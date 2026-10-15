@@ -31,6 +31,9 @@ Retry main synthesis through its exact AgentRun, preserving the source snapshot.
 
 A Producer independently inspects or implements its exact frozen Assignment
 in the supplied Lane workspace and returns one complete original result.
+For Review, give Producers common requirements/contracts and the same candidate.
+Different risk emphases are not file ownership or permission to omit cross-layer
+interactions. Form independent initial results before reading sibling conclusions.
 Its evidence does not authorize a Candidate, ChangeSet, Integration or
 acceptance decision outside the assigned protocol.
 
@@ -40,3 +43,7 @@ judgment, and returns one authoritative report. Do not mutate source results,
 omit selected evidence, rerun Producers, or substitute a winning Lane for
 synthesis. A Review report remains evidence for Task acceptance, not acceptance
 itself.
+Deduplicate by root cause while retaining distinct triggers, coverage and
+unexamined risks. Explain disagreements and unresolved evidence; do not discard
+a valid minority finding or substitute voting for checking its contract and
+reachability.

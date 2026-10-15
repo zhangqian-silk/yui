@@ -303,6 +303,24 @@ authority. Never invent authorization, impersonate Operator, or modify the core 
 
 ## Validate and make the review judgment
 
+Prepare useful evidence, not a documentation gate. Supply or reference the
+effective goals/non-goals and decisions, independently grounded expected
+behavior, key user paths/constraints, contract entry points and relevant callers.
+Keep three things distinct: a behavioral scenario and its expectation, an
+executable test reference, and an actual result with candidate/environment/
+command. Disclose real gaps rather than deriving acceptance from current code.
+
+Small tasks can reference existing materials directly. For complex tasks, put a
+short review index in Task artifacts and its commit-pinned reference in Brief.
+Keep Brief an up-to-date summary, not a copy of documents or accumulated history.
+Review Context carries the frozen Brief and active decisions; inspect the
+actual pointer inventory when a material's delivery is uncertain. Read referenced
+same-Task artifacts at their fixed commits, not HEAD. Do not assume a path in
+`--input`, a WorkItem-only `--context-ref` option, or a summary grants Review
+access. Recover a missing authorized reference through existing mechanisms;
+do not ask the Reviewer to bypass scope. Materials guide independent inspection,
+not its upper bound.
+
 Use the smallest evidence that establishes the accepted behavior and material
 boundaries. Do not repeat a successful unchanged check. Run the Project's
 complete local delivery validation once on the final candidate when its Policy
@@ -328,6 +346,10 @@ Use one direct main Reviewer by default. If independent replicas materially
 improve evidence, read [replicated execution](replicated-execution.md)
 before dispatch or synthesis. Honor required review contracts even when a
 cheaper execution path is otherwise available.
+One Reviewer should use the applicable complementary perspectives in one round.
+Consider independent replication for genuinely complementary cross-system risks,
+not a fixed headcount or file/frontend/backend partition. Keep the same candidate
+and common requirements; risk emphasis must not hide cross-layer contracts.
 
 When several WorkItems contribute to one outcome, prefer one independent
 Task-final Review after their accepted results are integrated over repeating a
@@ -357,6 +379,13 @@ main synthesis through its exact AgentRun, preserving its selected source snapsh
 
 A Worker or Reviewer AgentRun result is evidence, not acceptance. Inspect the
 result, diff, checks, and current Candidate before deciding.
+
+Group confirmed findings by root cause and repair other reachable instances
+within scope together. For ordinary full re-review, preserve the current complete
+candidate and requirements; add repair delta, prior finding dispositions and
+still-valid evidence. Delta is an attention aid, not the full-review boundary.
+Do not conflate this with an explicitly authorized equivalence Delta Recheck.
+Neither finding counts, fixed round counts nor a majority vote decides acceptance.
 
 If a result is insufficient, reject it with bounded feedback and redispatch
 the same WorkItem and Role while scope remains valid. Before accepting isolated
