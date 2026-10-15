@@ -1168,6 +1168,7 @@ function routeUserSubmission(
         requestId: `submit-${message.id}`,
         actorId: identity.actorId,
         authorityRef: identity.authorityRef,
+        sourceMessageId: message.id,
         environmentPlan: routing.environmentPlan
       }, now);
       activationRef = taskActivationOperationRef(task.id, `submit-${message.id}`);
@@ -8971,7 +8972,7 @@ function taskWakeInspectionCommand(
     const windowEvents = allEvents.filter((e) => inWindow(e.createdAt) || referenced("event", e.id) || reasonEvent(e));
     const events = history ? windowEvents : windowEvents.filter(e => referenced("event", e.id)
       || reasonEvent(e) || ["run.completed", "run.failed", "run.cancelled"].includes(e.type));
-    const messages = wakeMessages(wake, store.listMessages(task.id));
+    const messages = wakeMessages(wake, store.listMessages(task.id), history);
     const allRuns = store.listRuns(task.id);
     const referencedRunIds = new Set(referencedWakeRunIds(allRuns, allEvents, events));
     for (const run of allRuns) if (referenced("run", run.id)) referencedRunIds.add(run.id);

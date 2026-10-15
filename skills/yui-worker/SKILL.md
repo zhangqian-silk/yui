@@ -29,6 +29,11 @@ final report. Current-Assignment `inbox show` is an authorized way to read new
 directed clarification during this turn without redispatch. Claim before
 handling and ack only after disposition; never use it to read another
 Assignment, expand Project permissions, or accept your own result.
+For delayed or conflicting material, follow Runtime's
+[temporal read contract](../yui-runtime/references/context-ordering.md).
+Refresh relevant current originals without replacing the frozen Assignment.
+Report genuine scope conflicts to Leader; older stage-only wording is not a
+new prohibition after a legally authorized handoff.
 
 Leader clarification and continuation arrive as Messages in the exact bounded
 Context Pack. Read those authorized refs; do not request pack-external Leader

@@ -16,6 +16,7 @@ import {
 } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { recordArchiveCleanup } from "../task/archiveDiagnostics.js";
+import { activationWakeRefs } from "../context/taskPhase.js";
 
 import type { AgentRun } from "../agentRun/agentRun.js";
 import { enqueueWork } from "../coordination/workMailboxQueue.js";
@@ -2832,7 +2833,7 @@ function recordTaskActivation(
     { kind: "role", taskId: active.id, roleName: LEADER_ROLE },
     "execution-started",
     now,
-    [{ type: "task", id: active.id }]
+    [{ type: "task", id: active.id }, ...activationWakeRefs(store, active)]
   );
   enqueueWork(
     store,

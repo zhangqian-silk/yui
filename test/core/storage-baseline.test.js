@@ -20,12 +20,12 @@ import { createTaskMessage } from "../../dist/message/message.js";
 import { contextContentDigest, createContextSnapshot } from "../../dist/context/contextSnapshot.js";
 import { usePre19Layout } from "../helpers/pre19Storage.mjs";
 
-test("fresh storage creates only the current 1.10 contract", () => {
-  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.10");
+test("fresh storage creates only the current 1.11 contract", () => {
+  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.11");
   const db = new Database(":memory:");
   try {
     schema.initializeSqliteSchema(db);
-    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.10");
+    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.11");
     assert.equal(schema.inspectSqliteSchema(db).targetChecksum, schema.CURRENT_SCHEMA_CHECKSUM);
     assert.equal(db.prepare("SELECT count(*) AS n FROM storage_schema").get().n, 1);
     assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='schema_migrations'").get(), undefined);
@@ -83,7 +83,8 @@ test("1.1 upgrade preserves valid Operator authority without inventing user prov
         ["1.6", "1.7", "agent-inbox-consumption"],
         ["1.7", "1.8", "model-management-connection"],
         ["1.8", "1.9", "job-definitions-and-runs"],
-        ["1.9", "1.10", "persistent-schedules"]]);
+        ["1.9", "1.10", "persistent-schedules"],
+        ["1.10", "1.11", "activation-input-provenance"]]);
   }
   finally { current.close(); }
 });

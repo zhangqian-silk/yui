@@ -3,7 +3,7 @@ import { isGitArtifactRefString, parseGitArtifactRef } from "../artifacts/gitArt
 import { taskNotFound, usageError } from "../errors/cliError.js";
 import type { TaskEvent } from "../event/taskEvent.js";
 import { expandTaskMessageResult, type TaskMessage } from "../message/message.js";
-import { resolveManagedTaskReader } from "../runtime/managedCaller.js";
+import { currentManagedRuntime, resolveManagedTaskReader } from "../runtime/managedCaller.js";
 import { hasManagedIdentity } from "../runtime/managedIdentity.js";
 import { providerRetrySummary } from "../runtime/providerRetry.js";
 import type { ContextRecordFamily, ContextRecordQuery } from "../storage/contextRecords.js";
@@ -15,6 +15,7 @@ import { contextContentDigest } from "./contextSnapshot.js";
 import { buildRunContextPack } from "./runContextPack.js";
 import { sourceRunContextValue } from "./sourceRunContext.js";
 import { boundedDocument, fitsReadBudget, summaryText, recordPage, type ReadPageOptions } from "../output/boundedRead.js";
+import { taskBriefGuard, taskPhase } from "./taskPhase.js";
 
 const MAX_RECORDS = 64;
 const MAX_VALUE_BYTES = 2048;
@@ -23,8 +24,8 @@ const MAX_EVENTS = 100;
 const MAX_ATTENTION_REFS = 8;
 type Ref = Readonly<{ store: string; refId: string; revision: string; digest: string }>;
 type Entry = Readonly<{ ref: Ref; value: unknown }>;
-type Cursor = Readonly<{ taskId: string; sequence: number; revision: number }>;
-type PageCursor = Cursor & Readonly<{ after: number }>;
+type Cursor = Readonly<{ taskId: string; source: string; sequence: number; revision: number }>;
+type PageCursor = Cursor & Readonly<{ after: number; baseline: string }>;
 export type ContextObservation = Readonly<{
   source: string;
   observedAt: string;
@@ -50,6 +51,9 @@ export function readTaskContext(
     const sources = authorizedSources(reader, scope, true);
     const count = sources.reduce((total, source) => total + source.count, 0);
     const cursor = currentCursor(reader, taskId);
+    const phase = scope.allow === undefined ? taskPhase(reader, scope.task) : undefined;
+    const phaseSource = phase?.activation?.source;
+    const priorMessageId = phaseSource?.priorMessageId;
     // Reserve a small, classified view before ordinary history consumes the
     // page. Counts and samples come from the exact same authorized read.
     const attention = summarizeAttention(reader, taskId, scope.allow);
@@ -65,7 +69,20 @@ export function readTaskContext(
       const content = valueBytes > MAX_VALUE_BYTES || ["role", "task-message", "run", "work-item", "project-knowledge"].includes(entry.ref.store)
         ? { ref: entry.ref, summary: summarize(entry.value), omitted: true }
         : { ...entry, omitted: false };
-      const record = { ...content, ...(entry.ref.store === "run" ? {
+      const revisedAfterActivation = entry.ref.store === "task-message" && phaseSource?.ref !== undefined
+        && reader.queryContextRecords(taskId, {
+          family: "task-event", eventTypes: ["message.updated"], eventMessageId: entry.ref.refId,
+          afterSequence: sequence(phaseSource.ref.refId), limit: 0
+        }).count > 0;
+      const record = { ...content,
+        ...(entry.ref.store === "task-message" && phase?.activation?.disposition === "adopted"
+          && priorMessageId !== undefined ? {
+            phaseRelation: revisedAfterActivation ? "revised-after-activation-request"
+              : entry.ref.refId === phaseSource?.messageId ? "activation-source"
+              : Number(entry.ref.refId.slice("message-".length)) <= Number(priorMessageId.slice("message-".length))
+                ? "recorded-before-activation-request" : "recorded-after-activation-request"
+          } : {}),
+        ...(entry.ref.store === "run" ? {
         execution: runExecutionObservation(entry.value as AgentRun,
           reader.getTaskRoleSessionSet(taskId, (entry.value as AgentRun).roleName)?.providerBinding, runtimeEvents)
       } : {}), ...(entry.ref.store === "role" ? {
@@ -80,6 +97,14 @@ export function readTaskContext(
     const result = {
       taskId, coreCursor: encode(cursor), throughCursor: encode(cursor),
       view: "current",
+      ...(scope.allow === undefined ? {
+        phase,
+        briefWriteGuard: taskBriefGuard(reader, scope.task)
+      } : {}),
+      caller: scope.caller === undefined ? { kind: "unmanaged-or-global" } : {
+        role: scope.caller.roleName,
+        executionAuthority: currentManagedRuntime(reader, environment, taskId)?.executionAuthority ?? "historical-read-only"
+      },
       collections: Object.entries(sources.reduce((counts, source) => {
         counts[source.family] = (counts[source.family] ?? 0) + source.count;
         return counts;
@@ -159,11 +184,16 @@ export function readTaskContextDelta(
     const start = decode(input.after, taskId);
     const now = currentCursor(reader, taskId);
     const continuation = input.continuation === undefined ? undefined : decodePage(input.continuation, taskId);
+    if (continuation !== undefined && continuation.baseline !== encode(start)) {
+      throw usageError("Context continuation belongs to a different baseline; restart from the original starting cursor.");
+    }
     const bound = continuation ?? now;
     const after = continuation?.after ?? start.sequence;
-    if (start.sequence > bound.sequence || after < start.sequence || after > bound.sequence
+    if (start.source !== now.source || bound.source !== now.source
+      || start.sequence > bound.sequence || after < start.sequence || after > bound.sequence
+      || start.revision > bound.revision
       || bound.sequence > now.sequence || start.revision > now.revision || bound.revision > now.revision) {
-      throw usageError("Context cursor is outside the current Task history.");
+      throw usageError(`Context cursor is outside the current Task history; reread task context ${taskId} for a new bounded baseline.`);
     }
     const limit = input.limit ?? MAX_EVENTS;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_EVENTS) {
@@ -188,11 +218,14 @@ export function readTaskContextDelta(
     }
     const last = page.at(-1)?.ref.refId;
     const more = selected.count > page.length;
-    const through = { taskId, sequence: bound.sequence, revision: bound.revision };
+    const through = { taskId, source: bound.source, sequence: bound.sequence, revision: bound.revision };
     return {
-      taskId, events: page, count: selected.count, throughCursor: encode(through),
+      taskId, kind: "event-history" as const, fromCursor: encode(start),
+      events: page, count: selected.count, complete: !more, throughCursor: encode(through),
+      stateChanged: start.revision !== bound.revision,
+      currentRead: `task context ${taskId}`,
       ...(more && last !== undefined
-        ? { continuation: encode({ ...through, after: sequence(last) }) } : {}),
+        ? { continuation: encode({ ...through, after: sequence(last), baseline: encode(start) }) } : {}),
       observations: [] as ContextObservation[]
     };
   });
@@ -601,7 +634,8 @@ export function materialize(store: string, refId: string, value: unknown): Entry
   return { ref: { store, refId, revision: String(record.revision ?? record.updatedAt ?? record.createdAt ?? digest), digest }, value };
 }
 function currentCursor(store: TaskStore, taskId: string): Cursor {
-  return { taskId, sequence: store.latestEventSequence(taskId), revision: store.getStateRevision() };
+  return { taskId, source: store.getHomeIdentity().homeId,
+    sequence: store.latestEventSequence(taskId), revision: store.getStateRevision() };
 }
 function sequence(id: string): number {
   const result = /^event-(\d+)$/.exec(id);
@@ -615,15 +649,19 @@ function decode(value: string, taskId: string): Cursor {
   try {
     if (value.length > 1024) throw new Error("size");
     const cursor = JSON.parse(Buffer.from(value, "base64url").toString()) as Cursor;
-    if (cursor.taskId !== taskId || !Number.isSafeInteger(cursor.sequence) || cursor.sequence < 0
+    if (cursor.taskId !== taskId || typeof cursor.source !== "string"
+      || !Number.isSafeInteger(cursor.sequence) || cursor.sequence < 0
       || !Number.isSafeInteger(cursor.revision) || cursor.revision < 0) throw new Error("shape");
-    return cursor;
-  } catch { throw usageError("Invalid Context cursor for this Task."); }
+    return { taskId: cursor.taskId, source: cursor.source, sequence: cursor.sequence, revision: cursor.revision };
+  } catch { throw usageError("Invalid or expired Context cursor for this Task; reread current Context for a new bounded baseline."); }
 }
 function decodePage(value: string, taskId: string): PageCursor {
-  const cursor = decode(value, taskId) as PageCursor;
-  if (!Number.isSafeInteger(cursor.after) || cursor.after < 0) throw usageError("Invalid Context continuation.");
-  return cursor;
+  const base = decode(value, taskId);
+  const cursor = JSON.parse(Buffer.from(value, "base64url").toString()) as PageCursor;
+  if (!Number.isSafeInteger(cursor.after) || cursor.after < 0 || typeof cursor.baseline !== "string") {
+    throw usageError("Invalid or expired Context continuation; reread current Context and start a new bounded window.");
+  }
+  return { ...base, after: cursor.after, baseline: cursor.baseline };
 }
 function freeze<T>(value: T): T {
   if (value !== null && typeof value === "object") {

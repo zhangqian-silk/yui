@@ -42,6 +42,11 @@ transcript or process.
 
 Apply terminal/gate and read-only intent boundaries before selecting delivery
 or planning work; the routes below do not override those restrictions.
+When old discussion text differs from new intent, apply
+[current intent and temporal reads](../yui-runtime/references/context-ordering.md):
+inspect exact sources before treating normal stage progression as a conflict.
+An adopted same-scope development request supersedes the earlier discussion-only
+stage, not independent restrictions. Never use active status or Brief alone.
 
 - **Draft or planning-only authority:** read [Planning and activation handoff](references/planning.md).
   Use the recorded submission intent (`record`, `discuss`, `develop`) and
@@ -100,7 +105,8 @@ then ack the exact entry. Inbox acknowledgement
 never accepts a Candidate or completes the Task.
 
 The DB Brief is the current summary, not a full plan or a history of messages.
-After meaningful progress, use `task brief update` with only intended fields;
+After meaningful progress, read `task brief show` and use
+`task brief update --if-current <writeGuard>` with only intended fields;
 read `task event list` before deliberately restoring an older value. Keep
 references to substantial plans, prototypes and reports in that summary.
 When a delivered correction resolves a recorded blocker or changes the next
@@ -111,6 +117,10 @@ before `task complete`. The completion summary is the terminal conclusion;
 do not copy it into Brief merely to create a second completion record. Brief
 maintenance is not a new completion gate, and routine unchanged steps do not
 need an update.
+Also reconcile the summary at requirement changes and phase handoffs; carry the
+exact activation/input references. Core projects current lifecycle and source
+diagnostics without rewriting historical messages. A stale-guard rejection
+requires reading the new input and reconciling, not retrying the old text.
 Decisions contain the actual decision, reason and necessary boundaries, not
 the entire proposal. Label recommendations as recommendations, not user
 decisions.

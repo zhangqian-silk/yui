@@ -1,5 +1,5 @@
 import { createTaskBrief, updateTaskBrief } from "../brief/taskBrief.js";
-import { assertContextRecordReadable } from "../context/taskContext.js";
+import { assertContextRecordReadable, resolveContextReader } from "../context/taskContext.js";
 import { taskRecordList } from "./taskContextCommand.js";
 import { materialize } from "../context/taskContext.js";
 import {
@@ -32,6 +32,7 @@ import {
 } from "./taskCommandSupport.js";
 import type { TaskCommandExecution, TaskCommandOptions, TaskWorkflowStore } from "./taskCommandTypes.js";
 import { failureCapabilitiesCommand } from "../runtime/agentFailureContext.js";
+import { taskBriefGuard, taskPhase } from "../context/taskPhase.js";
 export function taskBriefCommand(
   args: string[],
   store: TaskWorkflowStore,
@@ -40,11 +41,17 @@ export function taskBriefCommand(
   const [command, ...rest] = args;
   if (command === "show") {
     exactPositionals(rest, 1, "Task brief show usage: yui task brief show <task>.");
-    const task = requireTask(store, rest[0]);
-    assertContextRecordReadable(store, task.id, "task-brief", task.id, options.environment);
-    const brief = store.getTaskBrief(task.id);
+    const { task, brief, writeGuard, phase } = store.readTransaction(reader => {
+      const task = requireTask(reader, rest[0]);
+      assertContextRecordReadable(reader, task.id, "task-brief", task.id, options.environment);
+      const caller = resolveContextReader(reader, options.environment ?? {});
+      const shared = caller === undefined || caller.roleName === "leader";
+      return { task, brief: reader.getTaskBrief(task.id),
+        writeGuard: shared ? taskBriefGuard(reader, task) : undefined,
+        phase: shared ? taskPhase(reader, task) : undefined };
+    });
     if (brief === null) {
-      return output(`Task ${task.id} has no brief.\n`, { taskId: task.id, brief: null });
+      return output(`Task ${task.id} has no brief.\n${writeGuard === undefined ? "" : `Write guard: ${writeGuard}\n`}`, { taskId: task.id, brief: null, writeGuard, phase });
     }
     const timeZone = store.getConfig().timeZone;
     const working = task.status === "draft" || task.status === "active";
@@ -60,14 +67,15 @@ export function taskBriefCommand(
       `${working ? "Current focus" : "Last working focus"}: ${brief.currentFocus}`,
       `${working ? "Leader summary" : "Last working summary"}: ${brief.leaderSummary}`,
       `Updated by: ${brief.updatedBy}`,
-      `Updated at: ${presentTime(brief.updatedAt, timeZone)}`
-    ].join("\n").concat("\n"), { taskId: task.id, brief });
+      `Updated at: ${presentTime(brief.updatedAt, timeZone)}`,
+      ...(writeGuard === undefined ? [] : [`Write guard: ${writeGuard}`])
+    ].join("\n").concat("\n"), { taskId: task.id, brief, writeGuard, phase });
   }
   if (command === "update") {
-    const usage = "Task brief update usage: yui task brief update <task> [--objective <text>] [--boundary <text> ...] [--approach <text>] [--focus <text>] [--leader-summary <text>].";
+    const usage = "Task brief update usage: yui task brief update <task> --if-current <writeGuard> [--objective <text>] [--boundary <text> ...] [--approach <text>] [--focus <text>] [--leader-summary <text>].";
     const parsed = parseMultiValueTail(
       rest,
-      new Set(["--objective", "--approach", "--focus", "--leader-summary"]),
+      new Set(["--objective", "--approach", "--focus", "--leader-summary", "--if-current"]),
       new Set(["--boundary"]),
       usage
     );
@@ -86,6 +94,9 @@ export function taskBriefCommand(
       assertTaskOpen(task);
       const existing = tx.getTaskBrief(task.id);
       const updatedBy = taskActor(tx, options, task.id);
+      if (parsed.options.get("--if-current") !== taskBriefGuard(tx, task)) {
+        throw usageError(`Task context or Brief changed, or --if-current is missing; read task brief show ${task.id}, reconcile new input, then retry with its writeGuard.`);
+      }
       const brief = existing === null
         ? createTaskBrief({
             objective: requiredText(parsed.options.get("--objective"), "--objective"),
@@ -300,9 +311,10 @@ export function taskEventCommand(
     exactPositionals(rest, 2, "Task event show usage: yui task event show <task> <event>.");
     const task = requireTask(store, rest[0]);
     assertContextRecordReadable(store, task.id, "task-event", rest[1]!, options.environment);
-    const events = store.listEvents(task.id);
-    const event = events.find((e) => e.id === rest[1]) ?? null;
-    if (event === null) throw dataError(`Event not found: ${rest[1]}.`);
+    const event = store.queryContextRecords(task.id, {
+      family: "task-event", ids: [rest[1]!], limit: 1
+    }).records[0]?.value as import("../event/taskEvent.js").TaskEvent | undefined;
+    if (event === undefined) throw dataError(`Event not found: ${rest[1]}.`);
     const timeZone = store.getConfig().timeZone;
     const capabilitiesCommand = event.type === "runtime.agent-error" && event.payload.roleName
       ? failureCapabilitiesCommand(task.id, event.payload.roleName, event.id) : undefined;

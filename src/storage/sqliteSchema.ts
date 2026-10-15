@@ -135,6 +135,17 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   sourceChecksum: JOB_SCHEMA_CHECKSUM,
   targetChecksum: CURRENT_SCHEMA_CHECKSUM,
   sql: SCHEDULE_SCHEMA_SQL
+}, {
+  fromVersion: "1.10",
+  toVersion: "1.11",
+  name: "activation-input-provenance",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Activation event payloads may now name an exact input or contain attributed
+  // native input text. Existing events remain immutable; missing old provenance
+  // stays explicitly missing. No historical source is guessed from timestamps.
+  sql: ""
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {

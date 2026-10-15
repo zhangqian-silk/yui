@@ -57,6 +57,10 @@ own-inbox flow for current-ReviewRound clarification. Read complete originals,
 claim before handling, and ack after disposition. These messages supplement
 the frozen pack; they cannot replace its Candidate, expand review scope, or
 turn acknowledgement into a review verdict.
+Use Runtime's [temporal read contract](../yui-runtime/references/context-ordering.md)
+for stale summaries or delayed input. Current facts can explain a handoff but
+cannot silently replace the frozen candidate. Read original source relations
+before reporting a historical planning-stage restriction as a current conflict.
 
 Verify the exact AgentRun identity, Context Pack, frozen head, and ReviewRound-owned
 workspace before inspecting candidate sources. If context loading or workspace

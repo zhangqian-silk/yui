@@ -6,8 +6,9 @@ saved/requested/accepted/unknown facts; `ok: true` means the CLI invocation
 succeeded, not that a Task, native Turn or remote delivery completed.
 
 This is the current wire contract, not a compatibility mode. Stored Tasks,
-Messages, results, Snapshots and Session histories are unchanged. No persistent
-schema migration or new snapshot/cache store is introduced.
+Messages, results, Snapshots and Session histories are unchanged. Read projections
+add no snapshot/cache store. New activation-source event attributes use the
+declared storage 1.10 → 1.11 transition; historical sources are never invented.
 
 ## Daily read path
 
@@ -90,6 +91,44 @@ continuations intentionally do not promise uninterrupted traversal during
 concurrent writes. For append-only event traversal use fixed-bound Context delta.
 Discovery currently scans the selected authorized family to fingerprint it;
 its output, not total storage-reading cost, is bounded.
+
+## Intent, source and temporal consistency
+
+Current Leader/public Task context projects `phase` (lifecycle, gate, activation
+source and Brief freshness) separately from the managed `caller`'s actual
+execution authority. These are facts, not a semantic permission decision.
+Old Message records carry recording/revision relationships to the adopted
+activation, not an automatic “superseded” verdict.
+
+Activation requests accept either `--source-message <id>` or
+`--source-text <exact-input>`; a Leader must provide one. Develop submissions
+link their saved Message automatically. Exact text is retained in the existing
+immutable event with caller attribution, including native Session identity for
+Leader captures. It is not a Provider-verified user Message and is never queued
+again. Same-request retries cannot change that source. The activation wake
+references the event/original explicitly. Missing or changed sources have a
+diagnostic and original-read route, not a fabricated approval or rejection.
+
+`task brief show` returns `writeGuard`; `task brief update` requires
+`--if-current <writeGuard>`. New semantic input/results, phase changes or edits
+invalidate stale writers transactionally, independently of timestamps and
+runtime heartbeats. On rejection, reread and reconcile intended fields.
+Core indicates `refresh-needed`; Leader maintains the actual summary at
+meaningful boundaries. No completion gate or automatic prose rewrite is added.
+
+Task event cursors bind the Home and Task. Delta returns `kind: event-history`,
+`fromCursor`, `complete`, `stateChanged` and a fixed `throughCursor`. Keep the
+original `--after` across every `--continuation`; advance only on completion.
+New arrivals remain outside that window. Empty events do not erase a baseline,
+and shared state can change without Task events. Invalid/old cursors require a
+fresh bounded current read. Event numeric IDs order recording within one Task,
+not occurrence, delivery, handling or unrelated Tasks.
+
+Run delta uses its exact frozen parent Snapshot and returns complete changed
+`refs` plus `removedRefs`, with normal document pagination. The clipped launch
+`deltaRefs` remains a hint only. Mutable Task facts never widen that Assignment.
+Focused wakes with exact refs no longer absorb other messages merely because
+timestamps overlap; `--history` retains timestamp-window discovery.
 
 ## Runtime diagnostics
 

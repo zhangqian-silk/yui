@@ -447,9 +447,9 @@ export function contextSnapshotDeltaRefIds(
     throw new Error(`Context Snapshot parent is missing or drifted: ${snapshot.parentRef.id}.`);
   }
   validateContextSnapshot(parent);
-  const previous = new Map(parent.refs.map((ref) => [ref.refId, ref]));
+  const previous = new Map(parent.refs.map((ref) => [`${ref.store}:${ref.refId}`, ref]));
   const changed = snapshot.refs.filter((ref) => {
-    const before = previous.get(ref.refId);
+    const before = previous.get(`${ref.store}:${ref.refId}`);
     return before === undefined
       || before.digest !== ref.digest
       || before.revision !== ref.revision
@@ -607,10 +607,12 @@ export function buildRunContextDelta(
   taskId: string,
   runId: string,
   after: string
-): Readonly<{ schemaVersion: 1; after: string; cursor: string; refs: readonly ContextRef[] }> {
+): Readonly<{ schemaVersion: 1; after: string; cursor: string; refs: readonly ContextRef[];
+  removedRefs: readonly Readonly<{ store: string; refId: string }>[];
+  complete: true }> {
   const pack = buildRunContextPack(store, taskId, runId);
   if (after === pack.digest || after === pack.snapshot.digest) {
-    return Object.freeze({ schemaVersion: 1, after, cursor: pack.digest, refs: [] });
+    return Object.freeze({ schemaVersion: 1, after, cursor: pack.digest, refs: [], removedRefs: [], complete: true });
   }
   const run = requireExactRun(store, taskId, runId);
   const snapshot = readRunContextSnapshot(store, run);
@@ -619,11 +621,30 @@ export function buildRunContextDelta(
     || (parentDigest === undefined && after === "none"))) {
     throw new Error("AgentRun Context delta cursor is outside the frozen Snapshot lineage.");
   }
+  const parent = snapshot.parentRef === undefined ? null
+    : store.getContextSnapshot(taskId, snapshot.parentRef.id);
+  if (snapshot.parentRef !== undefined && (parent === null || parent.digest !== parentDigest
+    || parent.sequence !== snapshot.parentRef.sequence)) {
+    throw new Error("AgentRun Context parent changed or is unavailable; reload the exact current pack.");
+  }
+  if (parent !== null) validateContextSnapshot(parent);
+  const identity = (ref: Pick<ContextRef, "store" | "refId">) => `${ref.store}:${ref.refId}`;
+  const previous = new Map((parent?.refs ?? []).map(ref => [identity(ref), ref]));
+  const present = new Set(pack.pointers.map(identity));
   return Object.freeze({
     schemaVersion: 1,
     after,
     cursor: pack.digest,
-    refs: pack.pointers.filter(ref => pack.deltaRefs.some(delta => delta.store === ref.store && delta.refId === ref.refId))
+    // deltaRefs is only a bounded launch hint. The immutable inventory (<=256)
+    // is the authority for a complete patch, including removals and changes
+    // beyond that hint's limit. Transport paginates large documents as usual.
+    refs: pack.pointers.filter(ref => {
+      const before = previous.get(identity(ref));
+      return before === undefined || contextContentDigest(before) !== contextContentDigest(ref);
+    }),
+    removedRefs: (parent?.refs ?? []).filter(ref => !present.has(identity(ref)))
+      .map(({ store, refId }) => ({ store, refId })),
+    complete: true
   });
 }
 

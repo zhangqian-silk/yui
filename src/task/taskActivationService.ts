@@ -19,6 +19,8 @@ import {
   type TaskActivationStartMode
 } from "./taskActivation.js";
 import { setTaskActivationRequest, recordTaskActivationRequestEvidence, type Task } from "./task.js";
+import { contextContentDigest } from "../context/contextSnapshot.js";
+import { activationSourceEvent } from "../context/taskPhase.js";
 
 /**
  * The terminal outcome already recorded for a requestId, or `undefined` if it
@@ -58,6 +60,11 @@ export type RequestTaskActivationInput = Readonly<{
    * caller never waits for its own Turn to end.
    */
   callerRunId?: string;
+  /** Exact existing input, or a caller-attributed verbatim native input.
+   * Capturing it records evidence only: it never submits or executes input. */
+  sourceMessageId?: string;
+  sourceText?: string;
+  sourceNativeSessionId?: string;
 }>;
 
 export type RequestTaskActivationResult = Readonly<{
@@ -120,6 +127,20 @@ export function recordTaskActivationRequestInTransaction(
     ? "immediate"
     : "after-planning-turn";
   const existing = task.activationRequest;
+  if (input.sourceMessageId !== undefined && input.sourceText !== undefined) {
+    throw new Error("Activation source requires either a Message or exact text, not both.");
+  }
+  if (input.sourceText !== undefined && (!input.sourceText.trim() || input.sourceText.includes("\0"))) {
+    throw new Error("Activation source text must be nonempty exact input.");
+  }
+  const sourceMessage = input.sourceMessageId === undefined ? undefined : tx.queryContextRecords(task.id, {
+    family: "task-message", ids: [input.sourceMessageId], limit: 1
+  }).records[0]?.value as { kind: string; body: string; recipient?: unknown; workItemId?: string } | undefined;
+  if (input.sourceMessageId !== undefined && (!sourceMessage
+    || !["user", "operator"].includes(sourceMessage.kind) || sourceMessage.recipient !== undefined
+    || sourceMessage.workItemId !== undefined)) {
+    throw new Error("Activation source must reference an existing shared user/Operator Message in this Task.");
+  }
   // A requestId whose outcome was already decided is never re-opened, whether
   // it still holds the slot or a later request displaced it. Cancelling A,
   // requesting B and then retrying A must not resurrect A: the withdrawal is
@@ -140,6 +161,11 @@ export function recordTaskActivationRequestInTransaction(
     );
   }
   if (existing?.operation.requestId === input.requestId) {
+    const source = activationSourceEvent(tx, task)?.payload;
+    if (source?.sourceMessageId !== input.sourceMessageId || source?.sourceText !== input.sourceText
+      || (sourceMessage !== undefined && source?.sourceBodyDigest !== contextContentDigest(sourceMessage.body))) {
+      throw new Error(`Activation requestId ${input.requestId} was already used with a different source.`);
+    }
     const digest = taskActivationInputDigest(task.id, {
       startMode,
       ...(planningRun === undefined ? {} : { afterPlanningRun: planningRun }),
@@ -175,6 +201,9 @@ export function recordTaskActivationRequestInTransaction(
     environmentPlan: plan
   }, now);
   tx.saveTask(setTaskActivationRequest(task, request, now));
+  const priorMessageId = tx.queryContextRecords(task.id, {
+    family: "task-message", descending: true, limit: 1
+  }).records[0]?.id;
   tx.saveEvent(task.id, createTaskEvent(
     tx.nextEventId(task.id),
     task.id,
@@ -184,6 +213,17 @@ export function recordTaskActivationRequestInTransaction(
       startMode: request.startMode,
       environmentPlan: describeEnvironmentPlan(request.environmentPlan),
       actor: request.operation.actorId,
+      ...(priorMessageId === undefined ? {} : { priorMessageId }),
+      ...(input.sourceMessageId === undefined ? {} : {
+        sourceMessageId: input.sourceMessageId,
+        sourceBodyDigest: contextContentDigest(sourceMessage!.body),
+        sourceKind: "task-message"
+      }),
+      ...(input.sourceText === undefined ? {} : {
+        sourceText: input.sourceText,
+        sourceKind: input.actorId.startsWith("task:") ? "leader-attested-native-input" : "caller-provided-input",
+        ...(input.sourceNativeSessionId === undefined ? {} : { sourceNativeSessionId: input.sourceNativeSessionId })
+      }),
       ...(request.afterPlanningRun === undefined
         ? {}
         : { afterPlanningRun: request.afterPlanningRun })

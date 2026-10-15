@@ -5,7 +5,8 @@ Yui 将命令的效果、发现和完整证据读取分开。查询不会消费 
 CLI 调用成功，不代表 Task、原生 Turn 或远端投递完成。
 
 这是当前通信契约，不是兼容模式。已保存的 Task、Message、结果、Snapshot 和 Session
-历史保持不变；没有持久 schema 迁移，也没有新增快照或缓存存储。
+历史保持不变；读取投影没有新增快照或缓存存储。新激活事件的来源字段使用已声明的
+存储 1.10 → 1.11 迁移，不补造历史来源。
 
 ## 日常读取路径
 
@@ -69,6 +70,34 @@ Run 列表接受 Task 或 `task/work` 目标。
 重新读取，不混合版本；无需持久分页 Session。可变集合不保证并发写入期间无中断遍历。
 追加事件遍历使用固定上界 Context delta。目前分类发现扫描选定的授权集合来计算指纹；
 有界的是输出，不是总存储读取成本。
+
+## 意图、来源与时序一致性
+
+Leader/公开 Task 当前视图的 `phase` 投影生命周期、执行开关、激活来源与 Brief
+新鲜度；`caller` 单独展示当前 Session 的实际权限，不代替语义授权判断。
+旧 Message 标明与激活请求的记录/修订先后关系，不自动判为整体失效。
+
+激活请求接受 `--source-message <id>` 或 `--source-text <exact-input>`，Leader
+必须提供其一。develop 提交自动关联已保存的 Message。直接原生输入原文保存在既有
+不可变事件中，带调用者及 Leader Session 归属，不伪装成 Provider 验证过的用户
+Message，也不再次入队。相同 request ID 重试不得更换来源。交接 wake 显式引用
+原始事件/Message；缺失或变更来源有诊断和原文入口，不自动批准或拒绝开发。
+
+`task brief show` 返回 `writeGuard`；更新必须携带 `--if-current <writeGuard>`。
+新语义输入、结果、阶段变化或编辑在事务中使旧写入失效，不依赖墙钟时间，也不因
+普通运行时心跳反复失效。拒绝后重读并协调目标字段。Core 只提示 `refresh-needed`，
+Leader 在关键节点维护实际摘要，不新增完成门禁或自动改写原文。
+
+Task 事件游标绑定 Home 与 Task。增量返回 `kind: event-history`、`fromCursor`、
+`complete`、`stateChanged` 和固定 `throughCursor`。续页保留最初的 `--after`，
+用 `--continuation` 读完再推进游标；并发新输入留在下一窗口。空增量不清空基线，
+共享状态也可能在没有 Task 事件时变化。失效游标须重新读取有界当前视图。
+事件序号只表达单 Task 记录顺序，不混同发生、投递、消费或跨 Task 因果关系。
+
+Run 增量基于精确父 Snapshot，返回完整变更 `refs` 与 `removedRefs`，长文档照常
+分页；截断的 `deltaRefs` 仅作启动提示。可变 Task 事实不扩大冻结 Assignment。
+带精确引用的 focused wake 不再仅因时间戳重叠纳入其他 Message；`--history`
+仍可发现时间窗口历史。
 
 ## 重复运行时诊断
 

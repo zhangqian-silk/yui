@@ -14,6 +14,7 @@ import {
   taskActivationOperationRef
 } from "../task/taskActivationService.js";
 import { taskLocalActor } from "../task/taskAuthority.js";
+import { taskPhase } from "../context/taskPhase.js";
 import type { TaskCommandExecution, TaskCommandOptions, TaskWorkflowStore } from "./taskCommandTypes.js";
 
 /**
@@ -34,7 +35,7 @@ export function runTaskActivationCommand(
   switch (command) {
     case "request": return requestActivation(rest, store, options);
     case "cancel": return cancelActivation(rest, store, options);
-    case "show": return showActivation(rest, store);
+    case "show": return store.readTransaction((reader) => showActivation(rest, reader));
     default:
       throw usageError(command === undefined
         ? "Task activation command is required."
@@ -43,7 +44,8 @@ export function runTaskActivationCommand(
 }
 
 const REQUEST_USAGE = "Task activation request usage: yui task activation request <task> "
-  + "--request-id <id> --environment <empty|scratch|local:<resource>:<read|write>>.";
+  + "--request-id <id> --environment <empty|scratch|local:<resource>:<read|write>> "
+  + "[--source-message <message-id> | --source-text <exact-input>].";
 
 /**
  * Records the request and returns its reference immediately.
@@ -59,7 +61,7 @@ function requestActivation(
   store: TaskWorkflowStore,
   options: TaskCommandOptions
 ): TaskCommandExecution {
-  const parsed = parseTail(args, new Set(["--request-id", "--environment"]), REQUEST_USAGE);
+  const parsed = parseTail(args, new Set(["--request-id", "--environment", "--source-message", "--source-text"]), REQUEST_USAGE);
   exactPositionals(parsed.positionals, 1, REQUEST_USAGE);
   const taskId = parsed.positionals[0]!;
   const requestId = requiredOption(parsed.options, "--request-id", REQUEST_USAGE);
@@ -69,12 +71,19 @@ function requestActivation(
   );
   const now = options.now?.() ?? new Date();
   const caller = activationCaller(store, options, taskId);
+  const sourceMessageId = parsed.options.get("--source-message");
+  const sourceText = parsed.options.get("--source-text");
+  if (caller.actorId.startsWith("task:") && sourceMessageId === undefined && sourceText === undefined) {
+    throw usageError("Leader activation requires --source-message or --source-text with the exact new user input. Read the original; do not substitute a Brief summary.", REQUEST_USAGE);
+  }
   const result = attempt(REQUEST_USAGE, () => requestTaskActivation(store, {
     taskId,
     requestId,
     actorId: caller.actorId,
     authorityRef: caller.authorityRef,
     environmentPlan,
+    sourceMessageId, sourceText,
+    sourceNativeSessionId: caller.nativeSessionId,
     ...(caller.planningRunId === undefined ? {} : { callerRunId: caller.planningRunId })
   }, now));
   // An immediate request has nothing left to wait for, so ask the Controller to
@@ -93,6 +102,7 @@ function requestActivation(
     void options.runtime?.notifyMailboxChanged({ kind: "task", taskId });
   }
   const request = result.request;
+  const source = taskPhase(store, { ...requireTask(store, taskId), activationRequest: request }).activation?.source;
   const lines = [
     `${result.created ? "Requested" : "Existing"} activation ${result.operationRef}`,
     `Task: ${taskId} (draft)`,
@@ -101,6 +111,7 @@ function requestActivation(
     }`,
     `Environment: ${describeEnvironmentPlan(request.environmentPlan)}`,
     `Disposition: ${request.disposition}`,
+    ...(source?.read === undefined ? [] : [`Source: yui ${source.read}`]),
     result.startMode === "after-planning-turn"
       ? "This reference is returned now; the request is adopted after the planning Turn ends."
       : `Adopt it with: yui task activate ${taskId}`
@@ -112,7 +123,8 @@ function requestActivation(
     ...(result.afterPlanningRun === undefined
       ? {}
       : { afterPlanningRun: result.afterPlanningRun }),
-    request
+    request,
+    source
   });
 }
 
@@ -186,7 +198,8 @@ function showActivation(args: string[], store: TaskWorkflowStore): TaskCommandEx
     `Requested at: ${request.requestedAt}`,
     ...settledLines
   ];
-  return output(`${lines.join("\n")}\n`, { task, request, settledRequests: settled });
+  return output(`${lines.join("\n")}\n`, { task, request, settledRequests: settled,
+    phase: taskPhase(store, task) });
 }
 
 /**
@@ -201,7 +214,7 @@ function activationCaller(
   store: TaskWorkflowStore,
   options: TaskCommandOptions,
   taskId: string
-): Readonly<{ actorId: string; authorityRef: string; planningRunId?: string }> {
+): Readonly<{ actorId: string; authorityRef: string; planningRunId?: string; nativeSessionId?: string }> {
   const actor = taskLocalActor(store, options.environment, taskId);
   if (actor === "leader") {
     const runtime = currentManagedRuntime(
@@ -220,6 +233,7 @@ function activationCaller(
       : store.getRun(taskId, runtime.currentRunId);
     return {
       actorId: `task:${taskId}/role:${SYSTEM_LEADER_ROLE}`,
+      nativeSessionId: runtime.nativeSessionId,
       // Non-secret binding fingerprint of the live Session, matching the Job
       // boundary: reattaching the same Session keeps it, replacing it does not.
       authorityRef: fingerprint([

@@ -2,7 +2,12 @@
 
 # 存储基线 1.0
 
-当前存储为 1.10。1.9 → 1.10 追加独立 [Schedule](schedules.md) 表和到期索引，
+当前存储为 1.11。1.10 → 1.11 为新 activation-request 事件增加来源证据：
+已有 Message 及正文 digest，或带调用者归属的原生输入原文，以及当时的 Message 序号边界。
+历史事件保持原样，不推测缺失来源、不重放输入；缺失来源通过读取诊断明确展示。
+SQL 布局及冻结 digest 不变，集中迁移不改写历史正文。
+
+1.9 → 1.10 追加独立 [Schedule](schedules.md) 表和到期索引，
 不改写历史 Job/Run，也不自动启用任何计划。
 
 1.8 → 1.9 新增稳定 Job 定义和 global Run；每条历史 Task 执行

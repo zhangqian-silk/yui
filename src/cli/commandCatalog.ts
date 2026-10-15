@@ -409,8 +409,8 @@ const taskChildren: readonly NodeInput[] = [
         name: "request", discovery: { surface: "public", audiences: ["public","operator","leader"] },
         summary: "Record an Activation request. Every active Task gets a managed main workspace. empty adds no execution environment; scratch adopts a separate scratch environment; local requires a registered Resource and grant, not a Project ID.",
         usage: "yui task activation request <task> --request-id <id> "
-          + "--environment <empty|scratch|local:<resource>:<read|write>>",
-        options: ["--request-id", "--environment"],
+          + "--environment <empty|scratch|local:<resource>:<read|write>> [--source-message <id> | --source-text <exact-input>]",
+        options: ["--request-id", "--environment", "--source-message", "--source-text"],
         examples: [
           "yui task activation request <task> --request-id start-1 --environment empty",
           "yui task activation request <task> --request-id start-1 --environment scratch"
@@ -1111,15 +1111,15 @@ const taskChildren: readonly NodeInput[] = [
   },
   {
     name: "brief", discovery: { surface: "managed", audiences: ["operator","leader"] },
-    summary: "Manage the Task Brief, the authoritative summary of current task state.",
+    summary: "Manage the Leader-maintained Task summary; live lifecycle and authority remain separate facts.",
     sections: [{ id: "manage", title: "Commands", entries: ["show", "update"] }],
     children: [
       { name: "show", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Show the Task Brief.", usage: "yui task brief show <task> [--cursor <cursor>]", options: ["--cursor"] },
       {
         name: "update", discovery: { surface: "managed", audiences: ["operator","leader"] },
         summary: "Create or update the Task Brief.",
-        usage: "yui task brief update <task> [--objective <text>] [--boundary <text> ...] [--approach <text>] [--focus <text>] [--leader-summary <text>]",
-        options: ["--objective", "--boundary", "--approach", "--focus", "--leader-summary"]
+        usage: "yui task brief update <task> --if-current <writeGuard> [--objective <text>] [--boundary <text> ...] [--approach <text>] [--focus <text>] [--leader-summary <text>]",
+        options: ["--if-current", "--objective", "--boundary", "--approach", "--focus", "--leader-summary"]
       }
     ]
   },
