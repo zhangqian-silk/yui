@@ -101,6 +101,16 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   // Additive handling receipts on canonical Messages and wakes. Never invent
   // historical processing or Provider acceptance; existing records stay intact.
   sql: ""
+}, {
+  fromVersion: "1.7",
+  toVersion: "1.8",
+  name: "model-management-connection",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Optional non-secret connection references. Existing Homes remain unconfigured;
+  // never infer local credentials or adopt an existing external service.
+  sql: ""
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {

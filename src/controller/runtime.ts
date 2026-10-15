@@ -101,6 +101,7 @@ import { inspectAgentHost, sendAgentHostNativeControl, AGENT_HOST_CONTROL_PROTOC
 import { recoverTaskHostTerminals } from "./taskHostTerminalRecovery.js";
 import { archiveOrdinaryTask } from "../task/ordinaryArchive.js";
 import { createWebSettings } from "../web/webSettings.js";
+import { createModelManagement } from "../models/modelManagement.js";
 import { createWebSkills } from "../web/webSkills.js";
 import {
   isTaskOwnedWorkspace,
@@ -579,6 +580,7 @@ export async function startFileTaskControllerRuntime(
     const web = createControllerWeb(store, {
       previews: () => createTaskPreviews(store, home),
       skills: createWebSkills(store),
+      models: createModelManagement(store),
       settings: createWebSettings(store, {
         environment: options.environment ?? process.env, catalogs,
         refreshConfiguration: () => {

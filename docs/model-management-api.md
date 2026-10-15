@@ -69,3 +69,33 @@ accessible forms; an ordinary `/models` shell is appropriate. Worker owns the
 asset manifest, shell, navigation and client assets. Leader owns server route
 wiring, controller dependency wiring, types, configuration and tests of backend
 behavior. Do not edit each other's files without coordination.
+
+## Supported configuration boundary
+
+This implementation targets metabridge source
+`73d9963acdb0fc913702ab0ad851df1004f6bbe0`. It handles both inline `backends` and
+`providerFiles` layouts without importing the application or running its scripts.
+It preserves advanced fields on existing editable providers and never converts
+official authentication. The local file adapter requires owned non-symlink files
+and non-group-writable parent directories for writes. New/rewritten files are
+0600. The current filesystem integration uses optimistic byte comparison and
+atomic rename, not a metabridge cross-client transactional/CAS API. Avoid editing
+the same file simultaneously from another manager.
+
+API key management here configures a metabridge Responses connection or its CPA
+client connection, not CPA's upstream OAuth/account pool. CPA remains its owner.
+Removal retains referenced provider files and separate key files. A failed
+multi-file addition may retain an unreferenced private provider file; uncertain
+effects are not replayed or automatically deleted.
+
+Outbound observations accept explicit loopback endpoints and public HTTPS.
+Other private/link-local targets, DNS rebinding and redirects are rejected;
+there is no proxy inheritance or TLS verification bypass. Reads use hard
+deadlines and a 2 MiB response cap; catalogs are limited to 2,000 models.
+Quota uses only the two fixed read-only extension routes, never the consuming
+CPA usage queue. Neither route availability nor catalog visibility establishes
+inference compatibility.
+
+Yui storage 1.7 → 1.8 is an additive connection-reference transition. Existing
+installations remain unconfigured. No Home migration, service reload or
+deployment is performed by this feature's development.
