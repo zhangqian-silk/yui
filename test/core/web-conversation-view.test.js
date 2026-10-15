@@ -25,7 +25,7 @@ function fixture(submitResult = { state: "submitted" }, extra = {}) {
   };
   const host = h("host");
   const context = vm.createContext({
-    h, clear: n => n.replaceChildren(), richText: (_title, text) => h("prose", null, text),
+    h, icon: name => h("icon", { name }), clear: n => n.replaceChildren(), richText: (_title, text) => h("prose", null, text),
     localStorage: { getItem: k => preferences.get(k) ?? null,
       setItem: (k, v) => { if (extra.storageUnavailable) throw new Error("storage blocked"); preferences.set(k, v); },
       removeItem: k => preferences.delete(k) },
@@ -43,10 +43,14 @@ function fixture(submitResult = { state: "submitted" }, extra = {}) {
         return { state: extra.receiptState ?? "accepted" };
       }
       if (delayedRead) return new Promise(resolve => { delayedRead.resolve = resolve; });
-      if (query.has("session")) return { status: "active", observedAt: "now", nextCursor: "older",
-        runConfiguration: extra.runConfiguration,
-        nativeRequests: extra.nativeRequests || [],
-        items: [{ id: "tool", turnId: "turn", kind: "activity", text: "npm test" }] };
+      if (query.has("session")) {
+        const tool = [{ id: "tool", turnId: "turn", kind: "activity", text: "npm test" }];
+        const older = query.has("cursor");
+        return { status: "active", observedAt: "now", nextCursor: older && extra.olderItems ? null : "older",
+          runConfiguration: extra.runConfiguration,
+          nativeRequests: extra.nativeRequests || [],
+          items: older ? extra.olderItems ?? tool : extra.items ?? tool };
+      }
       return { currentSessionId, sessions: [{ nativeSessionId: currentSessionId, current: true,
         status: "active", adapterId: "codex" }], authority: { owner: "controller" },
         terminalWriter: extra.terminalWriter, leaderQuestions: extra.leaderQuestions,
@@ -58,7 +62,8 @@ function fixture(submitResult = { state: "submitted" }, extra = {}) {
   vm.runInContext(CONVERSATION_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
   const controller = context.createConversationController(host, k => k);
   return { controller, calls, storage, host, elements, mutations, taskAnswers, writes: mutations, preferences, context,
-    button: key => elements.find(n => n.spec.startsWith("button") && n.children.includes("conversation." + key)),
+    button: key => elements.find(n => n.spec.startsWith("button")
+      && (n.children.includes("conversation." + key) || n["aria-label"] === "conversation." + key)),
     get input() { return elements.find(n => n.spec.startsWith("textarea")); },
     get materialList() { return elements.find(n => n.spec === "div.row-stack"); },
     get materialAlert() { return elements.find(n => n.role === "alert"); },
@@ -526,5 +531,24 @@ test("owner switch during an older-page read eventually reads the new owner with
   assert.ok(f.calls.some(url => url.includes("scope=global")));
   assert.equal(f.feed.children.length, 1);
   assert.equal(f.storage.size, 1, "only the old draft was saved, no input was replayed");
+  f.controller.close();
+});
+
+test("a turn folds its process into one collapsed row and older pages accumulate in place", async () => {
+  const turn = (id, kind, text, turnId = "t2") => ({ id, turnId, kind, text });
+  const f = fixture(undefined, {
+    items: [turn("a3", "assistant", "done"), turn("c2", "activity", "commandExecution · ls"),
+      turn("a2", "assistant", "checking"), turn("c1", "activity", "commandExecution · pwd"), turn("u2", "user", "go")],
+    olderItems: [turn("a1", "assistant", "earlier answer", "t1"), turn("u1", "user", "first", "t1")]
+  });
+  f.controller.open({ scope: "global", roleName: "operator" });
+  await flush();
+  assert.deepEqual(f.feed.children.map(n => n.spec.split(".").slice(0, 2).join(".")),
+    ["article.cv-msg", "details.cv-activity", "article.cv-msg"], "user, one folded process row, final reply");
+  assert.ok(!f.feed.children[1].open, "process starts collapsed");
+  f.button("older").handlers.click();
+  await flush();
+  assert.equal(f.calls.filter(url => url.includes("cursor=")).length, 1);
+  assert.equal(f.feed.children.length, 5, "older turn is prepended without dropping the latest page");
   f.controller.close();
 });

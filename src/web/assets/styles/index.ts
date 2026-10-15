@@ -8,6 +8,7 @@ import { CONTROL_STYLES } from "./ui/controls.js";
 import { FORM_STYLES } from "./ui/forms.js";
 import { SURFACE_STYLES } from "./ui/surfaces.js";
 import { DELIVERY_STYLES } from "./views/delivery.js";
+import { CONVERSATION_STYLES } from "./views/conversation.js";
 import { DOCK_STYLES } from "./views/dock.js";
 import { PAGE_STYLES } from "./views/page.js";
 import { RECORD_STYLES } from "./views/records.js";
@@ -35,6 +36,7 @@ export const STYLESHEETS: readonly { name: string; body: string }[] = Object.fre
   { name: "views/records", body: RECORD_STYLES },
   { name: "views/delivery", body: DELIVERY_STYLES },
   { name: "views/dock", body: DOCK_STYLES },
+  { name: "views/conversation", body: CONVERSATION_STYLES },
   { name: "views/terminal", body: TERMINAL_STYLES },
   { name: "views/settings", body: SETTINGS_STYLES },
   { name: "markdown", body: MARKDOWN_STYLES },

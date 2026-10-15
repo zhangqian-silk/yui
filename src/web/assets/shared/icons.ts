@@ -15,6 +15,8 @@ export const ICON_PATHS: Readonly<Record<string, readonly string[]>> = Object.fr
   broadcast: ["M12 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2z", "M8.5 8.5a5 5 0 0 0 0 7", "M15.5 8.5a5 5 0 0 1 0 7", "M5.6 5.6a9 9 0 0 0 0 12.8", "M18.4 5.6a9 9 0 0 1 0 12.8"],
   chevron: ["M9 6l6 6-6 6"],
   down: ["M6 9l6 6 6-6"],
+  up: ["M12 19V5", "M6 11l6-6 6 6"],
+  stop: ["M8 8h8v8H8z"],
   check: ["M5 12.5l4.5 4.5L19 7.5"],
   alert: ["M12 4l9 16H3z", "M12 10v4", "M12 17v.5"],
   clock: ["M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z", "M12 7v5l3 2"],
