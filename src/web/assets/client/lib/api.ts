@@ -137,6 +137,18 @@ export const api = {
   globalState: function (role) { return requestJson("/api/roles/" + encodeURIComponent(role) + "/control"); },
   globalControl: function (role, input) {
     return submitMutation("global/" + role, "/api/roles/" + encodeURIComponent(role) + "/control", input);
-  }
+  },
+  // Model management. Configuration writes share one key: the view revision
+  // covers the connection and providers together, so an unknown outcome
+  // blocks every model write until the page reads current facts again.
+  models: function () { return requestJson("/api/models"); },
+  modelCatalog: function (cursor) { return requestJson("/api/models/catalog?" + new URLSearchParams({ cursor: cursor || "0" })); },
+  modelQuota: function (source) { return requestJson("/api/models/quota?" + new URLSearchParams({ source: source })); },
+  saveModelConnection: function (input) { return submitMutation("models/configuration", "/api/models/connection", input); },
+  saveModelProvider: function (input) { return submitMutation("models/configuration", "/api/models/provider", input); },
+  releaseModelWrites: function () { releaseMutation("models/configuration"); },
+  // An explicit refresh is an observation, not a configuration write; a
+  // failed or unknown refresh may be requested again by the reader.
+  refreshModels: function (input) { return postJson("/api/models/refresh", input); }
 };
 `;

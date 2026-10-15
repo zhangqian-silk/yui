@@ -12,7 +12,7 @@ export const SETTINGS_HTML = `<!doctype html>
 </head>
 <body class="settings-body">
   <main class="settings-page">
-    <header class="settings-header"><a class="btn" href="/">← Yui</a><h1 data-i18n="settings.title">Settings</h1></header>
+    <header class="settings-header"><a class="btn" href="/">← Yui</a><h1 data-i18n="settings.title">Settings</h1><a class="btn" href="/models" data-i18n="models.title">Models</a></header>
     <p data-i18n="settings.scope">Browser preferences apply here immediately. Server settings are desired configuration, not proof that existing Sessions adopted them.</p>
     <section class="settings-card">
       <h2 data-i18n="settings.browser">This browser</h2>

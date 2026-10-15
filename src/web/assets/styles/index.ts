@@ -16,6 +16,7 @@ import { SIDEBAR_STYLES } from "./views/sidebar.js";
 import { TASK_STYLES } from "./views/task.js";
 import { TERMINAL_STYLES } from "./views/terminal.js";
 import { SETTINGS_STYLES } from "./views/settings.js";
+import { MODELS_STYLES } from "./views/models.js";
 
 // The stylesheet registry, in cascade order: foundations (fonts, tokens,
 // element defaults), the workspace frame, shared UI primitives, then one
@@ -39,6 +40,7 @@ export const STYLESHEETS: readonly { name: string; body: string }[] = Object.fre
   { name: "views/conversation", body: CONVERSATION_STYLES },
   { name: "views/terminal", body: TERMINAL_STYLES },
   { name: "views/settings", body: SETTINGS_STYLES },
+  { name: "views/models", body: MODELS_STYLES },
   { name: "markdown", body: MARKDOWN_STYLES },
   { name: "layout/responsive", body: RESPONSIVE_STYLES }
 ]);

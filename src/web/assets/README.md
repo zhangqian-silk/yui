@@ -17,6 +17,7 @@ TypeScript 字符串里的 JavaScript，由 `tsc` 编译进 `dist/`，再由
 | `styles/index.ts` 的 `STYLESHEETS`（有序） | `/assets/css/<name>.css` | 同上；外壳按此顺序 `<link>` |
 | `client/index.ts` 的 `CLIENT_MODULES` | `/assets/js/<path>.js` | 同上 |
 | `client/app/main.ts` 的 `APP_SCRIPT` | `/assets/app.js`（入口） | 同上 |
+| `shell/settings.ts` 的 `SETTINGS_HTML`、`shell/models.ts` 的 `MODELS_HTML` | `/settings`、`/models`（注入页面 token） | `webServer.ts`；入口分别为 `app/settings`、`app/models` |
 | `fonts.ts` / `fontData.ts`、xterm 包 | `/assets/fonts/*`、`/assets/vendor/*` | 同上 |
 
 新增客户端模块 = 新文件导出 `XXX_SCRIPT` + 在 `client/index.ts` 注册

@@ -71,4 +71,5 @@ export const SIDEBAR_STYLES = `
 .foot-btn[aria-pressed="true"]{color:var(--accent);border-color:var(--accent-line);background:var(--accent-soft)}
 .foot-btn kbd{margin-left:2px}
 .side-foot .icon-btn{margin-left:auto}
+.side-foot .icon-btn+.icon-btn{margin-left:0}
 `;

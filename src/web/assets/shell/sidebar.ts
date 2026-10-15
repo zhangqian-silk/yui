@@ -40,6 +40,7 @@ export const SIDEBAR_HTML = `    <aside class="sidebar" aria-label="Tasks" data-
         <button id="global-input-open" class="foot-btn" type="button" title="Global input" data-i18n-title="global.open">
           ${iconSvg("broadcast")}<span data-i18n="global.open">Global input</span>
         </button>
+        <a id="models-open" class="icon-btn" href="/models" aria-label="Models" data-i18n-aria-label="models.title" title="Models" data-i18n-title="models.title">${iconSvg("layers")}</a>
         <button id="settings-open" class="icon-btn" type="button" aria-label="Settings" data-i18n-aria-label="settings.title" title="Settings">${iconSvg("settings")}</button>
       </footer>
     </aside>
