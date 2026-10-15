@@ -343,6 +343,7 @@ function providerView(provider: Provider): ModelProviderView {
     baseUrl: safeUrl(p.base_url ?? p.base), prefix: safeText(p.prefix, 128) ?? "",
     enabled: p.enabled !== false, editable, reason: editable ? null : "Official, implicit-policy, shared-route or unsupported provider; manage with its existing owner.",
     credentialPresent: typeof auth.key === "string" && !!auth.key || typeof auth.file === "string" && !!auth.file,
+    credentialKind: p.protocol === "codex-subscription" ? "subscription" : "key",
     owner: "metabridge"
   };
 }

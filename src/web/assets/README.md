@@ -17,7 +17,7 @@ TypeScript 字符串里的 JavaScript，由 `tsc` 编译进 `dist/`，再由
 | `styles/index.ts` 的 `STYLESHEETS`（有序） | `/assets/css/<name>.css` | 同上；外壳按此顺序 `<link>` |
 | `client/index.ts` 的 `CLIENT_MODULES` | `/assets/js/<path>.js` | 同上 |
 | `client/app/main.ts` 的 `APP_SCRIPT` | `/assets/app.js`（入口） | 同上 |
-| `shell/settings.ts` 的 `SETTINGS_HTML`、`shell/models.ts` 的 `MODELS_HTML`（都由 `shell/manage.ts` 的 `manageDocument` 组装） | `/settings`、`/models`（注入页面 token） | `webServer.ts`；入口分别为 `app/settings`、`app/models` |
+| `shell/models.ts` 的共享管理文档（`SETTINGS_HTML` 为同一文档） | `/settings/*`、`/models/*`（注入页面 token） | `webServer.ts`；统一入口 `app/manage`，组合 settings/models 控制器 |
 | `fonts.ts` / `fontData.ts`、xterm 包 | `/assets/fonts/*`、`/assets/vendor/*` | 同上 |
 
 新增客户端模块 = 新文件导出 `XXX_SCRIPT` + 在 `client/index.ts` 注册
@@ -45,7 +45,7 @@ client/   浏览器 ES 模块，只向下依赖：
             dock/*（discussion、terminal）。纯渲染，回调由上层传入。
   layout/   工作区列与 dock（workspace）、列宽（sizing/resizer）、
             URL 状态（router）、键盘快捷键（shortcuts）、管理页导航
-            （manageShell：当前项、本页分区拦截、草稿标记）
+            （manageShell：统一路由、history、当前项、草稿标记）
   app/      组装根 main + 持有视图状态的控制器
   i18n/     en.ts（参考目录，定义 MessageKey）、zh-CN.ts（按 en 键类型约束）
 ```
@@ -100,7 +100,7 @@ shortcuts。主要流程：
 | 写入表单 | 表单本身 `client/domain/taskForms.ts`；提交通道 `client/ui/forms.ts` |
 | 新的 API 读写 | `client/lib/api.ts`，经控制器 `deps.api` 或 Task 页上下文传入 |
 | 选中 / URL / 加载顺序 | `client/app/selection.ts`、`client/layout/router.ts` |
-| 模型 / 设置页的导航与分区归属 | 分区表 `shared/manageNav.ts`；导航栏 `shell/manage.ts`；当前项与切换 `client/layout/manageShell.ts`；外观 `styles/views/manage.ts`。模型连接属于“设置”但仍由 `/models?section=connection` 提供；跨页链接走浏览器原生导航，以保留各页的未保存提示 |
+| 模型 / 设置页的导航与分区归属 | 分区表 `shared/manageNav.ts`；导航栏 `shell/manage.ts`；统一路由 `client/layout/manageShell.ts`；外观 `styles/views/manage.ts`。标准 URL 为 `/models/providers\|catalog\|quota` 与 `/settings/preferences\|skills\|server\|connection`。旧 query 链接以 replaceState 规范化；管理分区不卸载控制器，离开管理文档才触发未保存提示；语言切换保留观测与草稿，不重新请求数据 |
 
 ## 陷阱
 

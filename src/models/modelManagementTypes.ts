@@ -17,6 +17,7 @@ export type ModelProviderView = {
   editable: boolean;
   reason: string | null;
   credentialPresent: boolean;
+  credentialKind?: "subscription" | "key";
   owner: "metabridge";
 };
 
@@ -42,6 +43,7 @@ export type ModelQuotaItem = {
 };
 
 export type ModelManagementView = {
+  readOnly?: boolean;
   revision: string;
   connection: ModelConnection | null;
   providers: ModelProviderView[];

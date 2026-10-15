@@ -239,7 +239,8 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
       return shell.get(key);
     }, querySelectorAll: () => panels },
     window: { addEventListener() {}, location: { search: "?section=server" }, history: { pushState() {} }, scrollTo() {} },
-    createI18n: () => ({ t: k => k, subscribe() {} }), createThemeController: () => ({}),
+    i18n: { t: k => k, subscribe() {} }, createThemeController: () => ({}),
+    registerManagePage() {}, navigateManage() {},
     pageSections: () => ["preferences", "skills", "server"],
     createManageShell: () => ({ set: section => shown.push(section), setDirty() {}, render() {} }),
     mountSkills: (root, t, options) => { skillOptions = options; },

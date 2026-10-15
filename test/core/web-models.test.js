@@ -6,6 +6,7 @@ import { MODELS_HTML } from "../../dist/web/assets/shell/models.js";
 import { SIDEBAR_HTML } from "../../dist/web/assets/shell/sidebar.js";
 import { SETTINGS_HTML } from "../../dist/web/assets/shell/settings.js";
 import { WEB_ASSETS } from "../../dist/web/assets/assetManifest.js";
+import { MANAGE_SHELL_SCRIPT } from "../../dist/web/assets/client/layout/manageShell.js";
 
 // Minimal DOM: enough for h(), forms and buttons; no browser required.
 function element(spec, attrs, ...children) {
@@ -44,6 +45,40 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 const submit = form => form.handlers.submit({ preventDefault() {} });
 const connectionForm = root => find(root, n => n.tagName === "FORM" && n.className.includes("models-connection-form"));
 
+test("management navigation shares history across areas and normalizes direct URLs", () => {
+  const elements = new Map();
+  const document = { querySelector(key) {
+    if (!elements.has(key)) elements.set(key, { hidden: true, querySelectorAll: () => [] });
+    return elements.get(key);
+  }, addEventListener() {} };
+  const location = new URL("http://localhost/models?section=quota&source=command-code");
+  const history = { state: null, pushes: 0,
+    replaceState(state, _, url) { this.state = state; if (url) location.href = new URL(url, location).href; },
+    pushState(state, _, url) { this.pushes++; this.replaceState(state, _, url); } };
+  const handlers = {};
+  const shown = [];
+  const window = { scrollY: 120, scrollTo(_, y) { this.scrollY = y; }, addEventListener(name, fn) { handlers[name] = fn; } };
+  const ctx = vm.createContext({ URL, document, location, history, window,
+    createI18n: () => ({ t: key => key, subscribe() {} }) });
+  vm.runInContext(MANAGE_SHELL_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), ctx);
+  for (const page of ["models", "settings"]) ctx.registerManagePage(page, { show: route => shown.push({ ...route }) });
+  ctx.startManagement();
+  assert.equal(location.pathname + location.search, "/models/quota?source=command-code");
+  assert.equal(history.pushes, 0, "normalizing a direct URL must not add a Back step");
+  ctx.navigateManage({ page: "settings", section: "preferences" });
+  ctx.navigateManage({ page: "models", section: "connection" });
+  assert.equal(location.pathname, "/settings/connection");
+  assert.equal(elements.get("#models-root").hidden, false);
+  ctx.navigateManage({ page: "models", section: "connection" });
+  assert.equal(history.pushes, 2, "clicking the selected destination is a no-op");
+  location.href = "http://localhost/settings/server";
+  history.state = { scroll: 70 };
+  handlers.popstate();
+  assert.equal(shown.at(-1).section, "server");
+  assert.equal(elements.get("#settings-root").hidden, false);
+  assert.equal(window.scrollY, 70);
+});
+
 function connection(extra = {}) {
   return { bridgeUrl: "http://127.0.0.1:9", bridgeConfigFile: "/fixture/bridge.yaml", cpaUrl: "", managementKeyFile: "", catalogKeyFile: "", ...extra };
 }
@@ -77,6 +112,22 @@ test("initial observations wait for the configuration baseline", async () => {
   resolveView(view("new", { connection: connection({ bridgeUrl: "http://127.0.0.1:10" }) }));
   await page.ready;
   assert.deepEqual(api.calls.map(call => call[0]), ["catalog", "quota"]);
+});
+
+test("language changes retain current observations and drafts without loading again", async () => {
+  let reads = 0;
+  const api = fakeApi({ models: async () => { reads++; return view("r1"); } });
+  const { page } = mount(api);
+  await page.ready;
+  const observation = page.state.catalog.page;
+  page.state.connectionDraft = { ...connection(), bridgeUrl: "http://127.0.0.1:91" };
+  const calls = api.calls.length;
+  page.translate();
+  assert.equal(reads, 1);
+  assert.equal(api.calls.length, calls);
+  assert.equal(page.state.catalog.page, observation);
+  assert.equal(page.state.connectionDraft.bridgeUrl, "http://127.0.0.1:91");
+  assert.equal(page.dirty(), true);
 });
 
 test("cached observations become stale locally without requests or replacing controls", async () => {
@@ -122,13 +173,13 @@ test("models shell is served and linked from the dashboard navigation", () => {
   assert.ok(WEB_ASSETS["/assets/js/app/models.js"] && WEB_ASSETS["/assets/js/views/models.js"]);
   assert.ok(WEB_ASSETS["/assets/css/views/models.css"]);
   assert.match(MODELS_HTML, /__YUI_WEB_TOKEN__/);
-  assert.match(MODELS_HTML, /src="\/assets\/js\/app\/models\.js"/);
+  assert.match(MODELS_HTML, /src="\/assets\/js\/app\/manage\.js"/);
   assert.match(SIDEBAR_HTML, /href="\/models"/);
   // The shared rail links back to Yui and Settings and gives every section a real URL.
   assert.match(MODELS_HTML, /href="\/"/);
   assert.match(MODELS_HTML, /href="\/settings"/);
   for (const section of ["providers", "catalog", "quota", "connection"]) {
-    assert.match(MODELS_HTML, new RegExp(`href="/models\\?section=${section}" data-page="models" data-section="${section}"`));
+    assert.match(MODELS_HTML, new RegExp(`href="/${section === "connection" ? "settings" : "models"}/${section}" data-page="models" data-section="${section}"`));
   }
 });
 
@@ -143,14 +194,14 @@ test("models and settings share one management rail with the same navigation", (
   for (const section of ["providers", "catalog", "quota"]) assert.match(models, new RegExp(`data-section="${section}"`));
   assert.doesNotMatch(models, /data-section="connection"/);
   for (const section of ["preferences", "skills", "server"]) {
-    assert.match(settings, new RegExp(`href="/settings\\?section=${section}" data-page="settings" data-section="${section}"`));
+    assert.match(settings, new RegExp(`href="/settings/${section}" data-page="settings" data-section="${section}"`));
   }
-  assert.match(settings, /href="\/models\?section=connection" data-page="models" data-section="connection"/);
+  assert.match(settings, /href="\/settings\/connection" data-page="models" data-section="connection"/);
   assert.match(nav, /Agents &amp; server/, "labels are HTML-escaped");
   for (const section of ["preferences", "skills", "server"]) assert.match(SETTINGS_HTML, new RegExp(`data-section="${section}"`));
   assert.match(SETTINGS_HTML, /id="settings-search"/);
   assert.match(SETTINGS_HTML, /id="skill-browser"/);
-  assert.match(SETTINGS_HTML, /src="\/assets\/js\/app\/settings\.js"/);
+  assert.match(SETTINGS_HTML, /src="\/assets\/js\/app\/manage\.js"/);
   assert.ok(WEB_ASSETS["/assets/js/layout/manageShell.js"] && WEB_ASSETS["/assets/css/views/manage.css"]);
 });
 
@@ -160,10 +211,10 @@ test("connection and provider writes carry the read revision, never echo keys an
   await page.ready;
   assert.match(text(root), /models\.application\.unverified/);
   assert.doesNotMatch(text(root), /\b(null|undefined)\b/, "empty slots never render as text");
-  assert.match(text(root), /notice-r1/);
+  assert.match(text(root), /models\.scope/, "the ownership notice uses the current UI language");
   // Read-only providers expose their reason, never edit controls.
   const official = find(root, n => n.dataset.provider === "official");
-  assert.match(text(official), /official subscription route/);
+  assert.match(text(official), /models\.providerReadOnlyHelp/);
   assert.equal(all(official, n => n.tagName === "BUTTON").length, 0);
   // The server returns the prefix with its trailing slash; it is shown as-is.
   const mine = text(find(root, n => n.dataset.provider === "mine"));
@@ -179,7 +230,7 @@ test("connection and provider writes carry the read revision, never echo keys an
   await submit(form0); await tick();
   const [, sent] = api.calls.find(c => c[0] === "connection");
   assert.deepEqual(sent, { revision: "r1", connection: connection({ bridgeUrl: "http://127.0.0.1:10" }) });
-  assert.match(text(root), /models\.saved notice-r2/);
+  assert.match(text(root), /models\.saved/);
 
   // New provider: key is required, sent once and cleared; it never enters page state.
   button(root, "models.addProvider").handlers.click();
@@ -471,7 +522,7 @@ test("quota groups windows by the server's own labels and never draws unknown as
   assert.doesNotMatch(core, /0%|models\.used/, "unknown is not rendered as zero or as empty used/cap pairs");
   const account = text(find(root, n => n.className.includes("models-account")));
   assert.match(account, /factory-0123456789ab/);
-  assert.match(account, /models\.accountIdHelp/);
+  assert.ok(find(root, n => n.title === "models.accountIdHelp"), "opaque identity explanation remains accessible");
   assert.doesNotMatch(account, /models\.periodEnd|models\.balance\s+models\.unknown/, "Factory does not repeat fields it never reports");
   assert.match(account, /models\.balance\.extra-usage-usd\s+0/);
 });

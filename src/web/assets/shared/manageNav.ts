@@ -1,7 +1,7 @@
 // The management navigation shared by the static rail (shell/manage) and the
 // rail controller (client/layout/manageShell): every section, the page that
-// serves it and the area it belongs to. The model connection settings belong
-// to Settings although /models?section=connection serves them.
+// owns its state and the area it belongs to. The model controller owns
+// connection state, but its public route is /settings/connection.
 export type ManagePage = "models" | "settings";
 export type ManageArea = "models" | "settings";
 
@@ -20,4 +20,3 @@ export const MANAGE_SECTIONS: Readonly<Record<ManageArea, readonly ManageSection
     { page: "models", section: "connection", key: "models.section.connection", label: "Model connection" }
   ]
 });
-

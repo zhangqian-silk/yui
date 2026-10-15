@@ -1,20 +1,15 @@
 export const SETTINGS_SCRIPT = String.raw`
-// Entry for the /settings page inside the shared management rail
-// (layout/manageShell). Its sections (?section=preferences|skills|server)
-// stay mounted and are only hidden, so moving between them, including
-// browser back/forward, never drops a draft; the URL alone decides what a
-// direct open or a refresh shows. Leaving the page keeps the beforeunload
-// prompt for unsaved server groups (Skills guard their own bindings).
+// Settings controller in the shared management document. Sections stay
+// mounted across model/settings navigation. Leaving the document protects
+// unsaved server groups; Skills guard their own bindings.
 import { h } from "/assets/js/lib/dom.js";
 import { requestJson, submitMutation } from "/assets/js/lib/api.js";
-import { createI18n } from "/assets/js/lib/i18n.js";
 import { createThemeController } from "/assets/js/lib/theme.js";
 import { clearPreference, readSessionAccessMode, writeSessionAccessMode } from "/assets/js/lib/prefs.js";
-import { createManageShell, pageSections } from "/assets/js/layout/manageShell.js";
+import { i18n, createManageShell, pageSections, registerManagePage, navigateManage } from "/assets/js/layout/manageShell.js";
 import { mountSkills } from "/assets/js/views/skills.js";
 
 const $ = selector => document.querySelector(selector);
-const i18n = createI18n([$("#locale-select"), $("#settings-locale")]);
 const t = i18n.t;
 const SECTIONS = pageSections("settings");
 const dirtySections = { skills: false, server: false };
@@ -26,23 +21,22 @@ let section = readSection();
 const shell = createManageShell({ page: "settings", t, onNavigate: navigate });
 function showSection(next) {
   section = next;
-  document.querySelectorAll(".manage-section[data-section]").forEach(panel => { panel.hidden = panel.dataset.section !== next; });
+  document.querySelectorAll("#settings-root > .manage-section[data-section]").forEach(panel => { panel.hidden = panel.dataset.section !== next; });
   shell.set(next);
 }
 function navigate(next) {
-  if (next !== section || !window.location.search) window.history.pushState(null, "", "/settings?section=" + next);
-  showSection(next);
-  window.scrollTo(0, 0);
+  navigateManage({ page: "settings", section: next });
 }
 function markDirty(name, value) {
   if (dirtySections[name] === value) return;
   dirtySections[name] = value;
   shell.setDirty(dirtySections);
 }
-window.addEventListener("popstate", () => showSection(readSection()));
+registerManagePage("settings", { show: next => showSection(next.section) });
 i18n.subscribe(() => shell.render());
 showSection(section);
-mountSkills($("#skill-browser"), t, { heading: false, onDirty: value => markDirty("skills", value) });
+const skills = mountSkills($("#skill-browser"), t, { heading: false, onDirty: value => markDirty("skills", value) });
+i18n.subscribe(() => skills?.translate());
 const theme = createThemeController($("#theme-options"), t);
 i18n.subscribe(() => theme.render());
 const access = $("#access-mode");
@@ -81,8 +75,8 @@ function inputValue(field, control) {
 }
 
 function editor(field, group, state) {
-  const labelText = t("settings.field." + field.key, field.label);
-  const label = h("label.field", null, h("span", null, labelText));
+  const fieldLabel = () => h("span", { "data-i18n": "settings.field." + field.key, "data-i18n-fallback": field.label }, t("settings.field." + field.key, field.label));
+  const label = h("label.field", null, fieldLabel());
   let control;
   if (field.kind === "boolean" || field.choices && field.choices.length) {
     const values = field.kind === "boolean" ? ["true", "false"] : field.choices;
@@ -136,7 +130,7 @@ function editor(field, group, state) {
       control.value = value;
       control.disabled = reset.checked || unavailable;
       listen();
-      label.replaceChildren(h("span", null, labelText), control);
+      label.replaceChildren(fieldLabel(), control);
       choiceActions.replaceChildren();
       if (choices.length && options.allowCustom && !unavailable) {
         const custom = h("button.btn", { type: "button" }, t("settings.custom"));
@@ -144,7 +138,7 @@ function editor(field, group, state) {
           const value = control.value;
           control = h("input", { value });
           control.disabled = reset.checked;
-          listen(); label.replaceChildren(h("span", null, labelText), control); choiceActions.replaceChildren();
+          listen(); label.replaceChildren(fieldLabel(), control); choiceActions.replaceChildren();
           control.focus();
         });
         choiceActions.append(custom);
@@ -190,7 +184,7 @@ function renderGroup(state, group) {
   markDirty("server", groups.some(g => g.dirty));
   const form = h("form.settings-stack");
   const receipt = h("p.settings-receipt", { role: "status", "aria-live": "polite" });
-  const save = h("button.btn.btn-primary", { type: "submit", disabled: true }, t("settings.save"));
+  const save = h("button.btn.btn-primary", { type: "submit", disabled: true, "data-i18n": "settings.save" }, t("settings.save"));
   state.save = save; state.receipt = receipt;
   form.append(h("p", null, group.notice));
   const isRole = group.id.startsWith("role/");
@@ -207,7 +201,7 @@ function renderGroup(state, group) {
   const acknowledge = h("input", { type: "checkbox" });
   if (group.id.startsWith("role/") || group.id.startsWith("agent/")) form.append(h("label.settings-reset", null,
     acknowledge, t("settings.acknowledge")));
-  const compare = h("button.btn", { type: "button" }, t("settings.compare"));
+  const compare = h("button.btn", { type: "button", "data-i18n": "settings.compare" }, t("settings.compare"));
   compare.addEventListener("click", async () => {
     compare.disabled = true;
     try {
@@ -357,5 +351,8 @@ async function start(cursor) {
   } catch (error) { status.textContent = error.message; }
   finally { if (generation === searchGeneration) more.disabled = false; }
 }
+i18n.subscribe(() => {
+  more.textContent = t("settings.more");
+});
 void start();
 `;

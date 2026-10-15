@@ -7,8 +7,9 @@ import { requestJson, submitMutation } from "/assets/js/lib/api.js";
 export function mountSkills(root, t, options = {}) {
   if (!root) return;
   const tr = (key, fallback) => t("skills.browser." + key, fallback);
-  const scope = h("select", null, h("option", { value: "global" }, tr("global", "Global Role")),
-    h("option", { value: "task" }, tr("task", "Task Role")));
+  const translated = key => ({ "data-i18n": "skills.browser." + key });
+  const scope = h("select", null, h("option", { value: "global", ...translated("global") }, tr("global", "Global Role")),
+    h("option", { value: "task", ...translated("task") }, tr("task", "Task Role")));
   const task = h("input", { placeholder: "task-123", disabled: true });
   const roles = h("select");
   const status = h("p", { role: "status", "aria-live": "polite" });
@@ -18,15 +19,15 @@ export function mountSkills(root, t, options = {}) {
   const catalog = h("div.settings-stack");
   const reader = h("div.settings-stack", { tabindex: "-1" });
   const acknowledge = h("input", { type: "checkbox" });
-  const acknowledgement = h("label.settings-reset", null, acknowledge, tr("ack", "Keep any live global Session on its existing version."));
-  const save = h("button.btn.btn-primary", { type: "button", disabled: true }, tr("save", "Save bindings"));
-  const reload = h("button.btn", { type: "button" }, tr("reload", "Load / reload Role"));
-  const more = h("button.btn", { type: "button", hidden: true }, tr("more", "More Skills"));
-  const search = h("button.btn", { type: "button" }, tr("search", "Search"));
+  const acknowledgement = h("label.settings-reset", null, acknowledge, h("span", translated("ack"), tr("ack", "Keep any live global Session on its existing version.")));
+  const save = h("button.btn.btn-primary", { type: "button", disabled: true, ...translated("save") }, tr("save", "Save bindings"));
+  const reload = h("button.btn", { type: "button", ...translated("reload") }, tr("reload", "Load / reload Role"));
+  const more = h("button.btn", { type: "button", hidden: true, ...translated("more") }, tr("more", "More Skills"));
+  const search = h("button.btn", { type: "button", ...translated("search") }, tr("search", "Search"));
   let state = null, draft = [], busy = false, uncertain = false, generation = 0, catalogGeneration = 0, readerGeneration = 0;
   const selected = () => ({ scope: scope.value, role: roles.value, ...(scope.value === "task" ? { task: task.value.trim() } : {}) });
   const params = object => new URLSearchParams(object).toString();
-  const label = (text, control) => h("label.field", null, h("span", null, text), control);
+  const label = (text, control, key) => h("label.field", null, h("span", key ? translated(key) : null, text), control);
   function dirty() { return !!state && JSON.stringify(draft) !== JSON.stringify(state.skills); }
   function invalidate() {
     generation++; state = null; draft = []; bindings.replaceChildren(); frozen.replaceChildren(); save.disabled = true;
@@ -110,8 +111,8 @@ export function mountSkills(root, t, options = {}) {
         h("h3", null, item.id), h("p", null, item.description || item.error),
         h("small.mono-line", null, item.source.kind + " · " + item.source.path),
         h("div.settings-actions", null,
-          h("button.btn", { type: "button", onclick: () => read({ id: item.id }) }, tr("readSource", "Read current source")),
-          h("button.btn", { type: "button", disabled: !!item.error, onclick: () => {
+          h("button.btn", { type: "button", ...translated("readSource"), onclick: () => read({ id: item.id }) }, tr("readSource", "Read current source")),
+          h("button.btn", { type: "button", ...translated("add"), disabled: !!item.error, onclick: () => {
             if (!state || busy || uncertain) { status.textContent = tr("choose", "Load an explicit Role before editing bindings."); return; }
             if (!draft.includes(item.id)) draft.push(item.id);
             renderBindings(); status.textContent = tr("unsaved", "Unsaved bindings. Review the selected Role and save.");
@@ -148,10 +149,11 @@ export function mountSkills(root, t, options = {}) {
   const heading = options.heading === false ? [] : [h("h2", null, tr("title", "Skills · browse & bind")),
     h("p", null, tr("intro", "Read existing packages and choose additional bindings for one explicit Role. Scripts are displayed as data, never run."))];
   root.replaceChildren(...heading,
-    h("div.settings-grid", null, label(tr("scope", "Scope"), scope), label(tr("taskId", "Task ID"), task), label("Role", roles)),
+    h("div.settings-grid", null, label(tr("scope", "Scope"), scope, "scope"), label(tr("taskId", "Task ID"), task, "taskId"), label("Role", roles)),
     h("div.settings-actions", null, reload), status, bindings, acknowledgement,
-    h("div.settings-actions", null, save), frozen, label(tr("query", "Find an existing Skill by name or purpose"), query),
+    h("div.settings-actions", null, save), frozen, label(tr("query", "Find an existing Skill by name or purpose"), query, "query"),
     h("div.settings-actions", null, search), catalog, more, reader);
   void loadRole(); void loadCatalog();
+  return { translate: () => { if (state) { renderBindings(); renderEvidence(state); } } };
 }
 `;

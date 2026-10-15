@@ -3,6 +3,13 @@
 // domain vocabulary (statuses, owners, actions) keeps the exact product terms.
 // Placeholders such as {count} are filled by fill() in lib/format.
 export const EN = {
+  "models.subscriptionAuth": "Subscription",
+  "models.account": "Account",
+  "models.providerReadOnlyHelp": "Managed by its provider. Edit the configuration in the owning service.",
+  "models.readOnlyService": "Read-only connection. Configuration is managed by the running service.",
+  "models.window.5h": "5 hours",
+  "models.window.weekly": "Weekly",
+  "models.window.monthly": "Monthly",
   "manage.nav": "Main navigation",
   "manage.workbench": "Workbench",
   "settings.section.preferences": "Preferences",

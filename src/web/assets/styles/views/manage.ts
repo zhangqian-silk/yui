@@ -13,6 +13,7 @@ import { BREAKPOINTS } from "../../shared/geometry.js";
 export const MANAGE_STYLES = `
 .manage-body{display:block;height:auto;min-height:100vh;min-height:100dvh;overflow:auto}
 .manage-app{display:grid;grid-template-columns:240px minmax(0,1fr);min-height:100vh;min-height:100dvh}
+.manage-app[hidden],#models-root[hidden],#settings-root[hidden]{display:none}
 
 /* Rail */
 .manage-rail{position:sticky;top:0;display:flex;flex-direction:column;height:100vh;height:100dvh;min-width:0;overflow-y:auto;background:var(--surface);border-right:1px solid var(--line)}

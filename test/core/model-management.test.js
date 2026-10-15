@@ -182,7 +182,11 @@ test("Model HTTP boundary persists only references and requires token, origin an
     assert.match(html, /name="yui-web-token" content="fixture-token"/);
     assert.doesNotMatch(html, /__YUI_WEB_TOKEN__/);
     const assets = [...html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)];
-    assert.ok(assets.some(match => match[1] === "/assets/js/app/models.js"));
+    assert.ok(assets.some(match => match[1] === "/assets/js/app/manage.js"));
+    for (const path of ["/models/providers", "/models/catalog", "/models/quota",
+      "/settings/preferences", "/settings/skills", "/settings/server", "/settings/connection"]) {
+      assert.equal(await (await fetch(url + path)).text(), html, "every direct management URL serves the same document");
+    }
     for (const [, asset] of assets) assert.equal((await fetch(url + asset)).status, 200, asset);
     const head = await fetch(`${url}/models`, { method: "HEAD" });
     assert.equal(head.status, 200);

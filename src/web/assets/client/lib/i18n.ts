@@ -30,7 +30,7 @@ export function createI18n(select) {
   function apply() {
     document.documentElement.lang = locale;
     document.title = t("app.title");
-    document.querySelectorAll("[data-i18n]").forEach(function (element) { element.textContent = t(element.dataset.i18n); });
+    document.querySelectorAll("[data-i18n]").forEach(function (element) { element.textContent = t(element.dataset.i18n, element.dataset.i18nFallback); });
     TRANSLATED_ATTRIBUTES.forEach(function (attribute) {
       document.querySelectorAll("[data-i18n-" + attribute + "]").forEach(function (element) {
         element.setAttribute(attribute, t(element.getAttribute("data-i18n-" + attribute)));

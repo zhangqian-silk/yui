@@ -3,6 +3,13 @@ import type { MessageKey } from "./en.js";
 // Simplified Chinese UI copy. Typed against the English catalog, so a key that
 // does not exist in en.ts is a compile error; a missing key falls back to en.
 export const ZH_CN: Readonly<Partial<Record<MessageKey, string>>> = {
+  "models.subscriptionAuth": "官方订阅",
+  "models.account": "账号",
+  "models.providerReadOnlyHelp": "由来源服务管理，请在对应服务中修改配置。",
+  "models.readOnlyService": "只读接入，配置由运行中的服务管理。",
+  "models.window.5h": "5 小时",
+  "models.window.weekly": "每周",
+  "models.window.monthly": "每月",
   "manage.nav": "主导航",
   "manage.workbench": "工作台",
   "settings.section.preferences": "偏好设置",
@@ -132,7 +139,7 @@ export const ZH_CN: Readonly<Partial<Record<MessageKey, string>>> = {
   "models.moreCatalog": "加载更多模型",
   "models.refreshCatalog": "刷新目录",
   "models.quota": "订阅额度",
-  "models.quotaHelp": "各来源分别读取。刷新需手动触发，可能经 CPA 扩展访问上游计费服务；不会续期凭据、重置额度或执行推理。",
+  "models.quotaHelp": "按账号查看订阅窗口与余额。手动刷新获取最新额度。",
   "models.source": "来源",
   "models.refreshQuota": "刷新额度",
   "models.quotaNeedsCpa": "刷新额度需要 CPA URL 和管理密钥文件。",

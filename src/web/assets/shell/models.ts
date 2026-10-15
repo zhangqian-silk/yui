@@ -1,9 +1,8 @@
 import { manageDocument } from "./manage.js";
+import { SETTINGS_MAIN } from "./settingsContent.js";
 
-// The /models page inside the shared management frame. Access, catalog and
-// quota are daily model management; the connection section is listed under
-// Settings in the shared navigation but stays on this page and endpoint
-// (?section=connection). The client renders every section into #models-root.
+// One document for /models/* and /settings/*. Both controllers stay mounted
+// across history navigation, preserving drafts, observations and locale.
 export const MODELS_HTML = manageDocument({ page: "models", title: "Models", main: `
-      <p class="manage-scope" data-i18n="models.scope">Manage the metabridge and CLIProxyAPI connection Yui reads. Saved configuration is not applied until metabridge is reloaded, and nothing here runs inference.</p>
-      <div id="models-root" class="models-root"></div>` });
+      <div id="settings-root" hidden>${SETTINGS_MAIN}</div>
+      <div id="models-root" class="models-root" hidden></div>` });

@@ -79,15 +79,16 @@ export function mountModels(root, deps) {
   function when(iso) { return iso ? formatDateTime(iso, locale()) : t("models.unknown"); }
   function known(value, render) { return value === null || value === undefined ? t("models.unknown") : render ? render(value) : String(value); }
   function percent(fraction) { return Math.round(fraction * 1000) / 10 + "%"; }
+  function number(value) { return new Intl.NumberFormat(locale(), { maximumFractionDigits: 2 }).format(value); }
   // Re-reading facts also blocks writes so no save races the new revision.
-  function writesBlocked() { return !state.view || state.pending || state.unknown || state.loading; }
+  function writesBlocked() { return !state.view || state.view.readOnly || state.pending || state.unknown || state.loading; }
   function go(route) {
     const next = normalizeRoute(Object.assign({}, state.route, route));
     if (deps.navigate) deps.navigate(next);
     else show(next);
   }
   function sectionLink(section, text) {
-    return h("a.btn-link", { href: "/models?section=" + section, onclick: function (event) {
+    return h("a.btn-link", { href: (section === "connection" ? "/settings/" : "/models/") + section, onclick: function (event) {
       if (event.defaultPrevented || event.button > 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       event.preventDefault(); go({ section: section });
     } }, text);
@@ -136,6 +137,7 @@ export function mountModels(root, deps) {
     state.route = next;
     state.quota.source = next.source;
     SECTIONS.forEach(function (name) { sections[name].hidden = name !== next.section; });
+    renderStatus();
     if (sourceChanged) void loadQuota();
     else renderQuota();
     notify();
@@ -153,11 +155,11 @@ export function mountModels(root, deps) {
     const view = state.view;
     const children = [];
     if (state.loading && !view) children.push(h("p", { role: "status" }, t("models.loading")));
-    if (view) {
+    if (view && (state.route.section === "connection" || state.route.section === "providers")) {
       children.push(h("div.models-facts", null,
         tone(view.connection ? "info" : "idle", view.connection ? t("models.connected") : t("models.disconnected")),
         tone("warn", t("models.application." + view.application, view.application)),
-        view.notice ? h("small.faint.models-notice", null, view.notice) : null));
+        h("small.faint.models-notice", null, t(view.readOnly ? "models.readOnlyService" : "models.scope"))));
     }
     if (state.loadError) {
       children.push(h("div.models-alert", { role: "alert" }, icon("alert"), h("p.settings-error", null, t("models.loadFailed") + " " + state.loadError),
@@ -242,7 +244,7 @@ export function mountModels(root, deps) {
   // ---- Access (providers) -----------------------------------------------
   function configurable() {
     const view = state.view;
-    return !!(view && view.connection && view.connection.bridgeConfigFile);
+    return !!(view && !view.readOnly && view.connection && view.connection.bridgeConfigFile);
   }
   function startProvider(provider) {
     if (state.providerDraft && !confirm(t("models.discardProvider"))) return;
@@ -280,11 +282,12 @@ export function mountModels(root, deps) {
         } }, t("models.removeProvider")));
     } else {
       actions.append(h("span.chip", null, t("models.readOnly")));
-      if (provider.reason) actions.append(h("small.faint.models-reason", null, provider.reason));
+      if (provider.reason) actions.append(h("small.faint.models-reason", null,
+        t(provider.reason === "read-only-service" ? "models.readOnlyService" : "models.providerReadOnlyHelp")));
     }
     return h("tr", { dataset: { provider: provider.id }, "aria-current": editing ? "true" : null },
       h("td", { dataset: { label: t("models.column.provider") } },
-        h("div.models-cell-main", null, h("strong", null, provider.name), h("code.id", null, provider.id))),
+        h("div.models-cell-main", null, h("strong", null, provider.name), h("code.id", { title: provider.id }, provider.id.slice(0, 12)))),
       h("td", { dataset: { label: t("models.column.baseUrl") } },
         h("span.mono-line.models-url", { title: provider.baseUrl || "" }, provider.baseUrl || t("models.unknown"))),
       h("td", { dataset: { label: t("models.column.prefix") } },
@@ -292,7 +295,8 @@ export function mountModels(root, deps) {
       h("td", { dataset: { label: t("models.column.route") } }, h("span.chip", null, t("models.via." + provider.via, provider.via))),
       h("td", { dataset: { label: t("models.column.state") } }, h("div.models-facts", null,
         tone(provider.enabled ? "ok" : "idle", provider.enabled ? t("models.enabled") : t("models.disabled")),
-        tone(provider.credentialPresent ? "info" : "idle", provider.credentialPresent ? t("models.credentialStored") : t("models.credentialMissing")))),
+        tone(provider.credentialPresent ? "info" : "idle", provider.credentialKind === "subscription" ? t("models.subscriptionAuth")
+          : provider.credentialPresent ? t("models.credentialStored") : t("models.credentialMissing")))),
       h("td", { dataset: { label: t("models.column.actions") } }, actions));
   }
   function providerForm() {
@@ -397,10 +401,10 @@ export function mountModels(root, deps) {
     const view = state.view;
     const add = h("button.btn.btn-primary", { type: "button", disabled: writesBlocked() || !configurable() || !!state.providerDraft,
       onclick: function () { startProvider(null); } }, icon("plus"), t("models.addProvider"));
-    const children = [head("providers", t("models.providersHelp"), view ? [add] : null)];
+    const children = [head("providers", t("models.providersHelp"), view && !view.readOnly ? [add] : null)];
     if (!view) children.push(h("p.models-empty", null, state.loading ? t("models.loading") : t("models.unavailable")));
     else {
-      if (!configurable()) children.push(h("p.models-note", null, icon("info"), t("models.configFileRequired") + " ",
+      if (!configurable() && !view.readOnly) children.push(h("p.models-note", null, icon("info"), t("models.configFileRequired") + " ",
         sectionLink("connection", t("models.openConnection"))));
       children.push(receiptNode("provider"));
       if (state.providerDraft) children.push(h("div.card.models-card.models-editor", null, h("div.card-body", null, providerForm())));
@@ -503,7 +507,7 @@ export function mountModels(root, deps) {
     const parts = splitWindowLabel(entry.label);
     const fraction = entry.remainingFraction;
     const level = fraction === null ? "idle" : fraction >= 0.5 ? "ok" : fraction >= 0.2 ? "warn" : "bad";
-    const name = parts.window || entry.label;
+    const name = t("models.window." + (parts.window || entry.label), parts.window || entry.label);
     // An unknown fraction draws an empty, unlabelled track, never 0%.
     const bar = fraction === null
       ? h("div.models-meter.is-unknown", { "aria-hidden": "true" })
@@ -511,7 +515,7 @@ export function mountModels(root, deps) {
         "aria-valuenow": String(Math.round(fraction * 100)), "aria-valuetext": t("models.remaining") + " " + percent(fraction) },
         meterFill(fraction));
     const details = [entry.resetTime ? t("models.resets") + " " + when(entry.resetTime) : t("models.resetUnknown")];
-    if (entry.used !== null || entry.cap !== null) details.push(t("models.used") + " " + known(entry.used) + " / " + known(entry.cap));
+    if (entry.used !== null || entry.cap !== null) details.push(t("models.used") + " " + known(entry.used, number) + " / " + known(entry.cap, number));
     return h("li.models-window", null,
       h("div.models-window-line", null, h("span.models-window-name", null, name),
         h("span.models-window-value", null, t("models.remaining") + " " + known(fraction, percent))),
@@ -527,23 +531,24 @@ export function mountModels(root, deps) {
     });
     return groups;
   }
-  function quotaItem(item) {
+  function quotaItem(item, index) {
     const facts = (item.balanceDetails || []).map(function (entry) {
-      return h("div", null, h("dt", null, t("models.balance." + entry.kind)), h("dd", null, known(entry.value)));
+      return h("div", null, h("dt", null, t("models.balance." + entry.kind)), h("dd", { title: String(entry.value) }, known(entry.value, number)));
     });
     // Only Command Code reports a total and a period; Factory has neither, so
     // its absence there is not repeated as an unknown on every account.
     if (item.source === "command-code" || item.balance !== null) {
-      facts.push(h("div", null, h("dt", null, t("models.balance")), h("dd", null, known(item.balance))));
+      facts.push(h("div", null, h("dt", null, t("models.balance")), h("dd", { title: String(item.balance ?? "") }, known(item.balance, number))));
     }
     if (item.source === "command-code" || item.periodEnd) {
       facts.push(h("div", null, h("dt", null, t("models.periodEnd")), h("dd", null, when(item.periodEnd))));
     }
     return h("li.card.models-account", null,
       h("div.card-head", null, h("div.card-heading", null,
-        h("div.card-title", null, h("span", null, item.id),
+        h("div.card-title", null, h("span", { title: item.id }, t("models.source." + item.source, item.source) +
+          (item.source === "factory" ? " · " + t("models.account") + " " + (index + 1) : "")),
           tone(OBSERVATION_TONES[item.status] || "idle", t("models.status." + item.status, item.status))),
-        item.source === "factory" ? h("span.card-hint", null, t("models.accountIdHelp")) : null)),
+        item.source === "factory" ? h("span.card-hint", { title: t("models.accountIdHelp") }, item.id) : null)),
       h("div.card-body", null,
         item.error ? h("p.settings-error", null, item.error) : null,
         item.windows.length ? h("div.models-groups", null, quotaGroups(item.windows).map(function (group) {
@@ -648,7 +653,7 @@ export function mountModels(root, deps) {
       const view = await send(state.view.revision);
       if (options.clearConnection) state.connectionDraft = null;
       if (options.clearProvider) state.providerDraft = null;
-      setReceipt(t("models.saved") + (view.notice ? " " + view.notice : ""), "ok", options.scope);
+      setReceipt(t("models.saved"), "ok", options.scope);
       await adoptView(view);
     } catch (error) {
       if (error.disposition === "not-submitted") {
@@ -759,6 +764,14 @@ export function mountModels(root, deps) {
     ready: ready,
     state: state,
     show: show,
+    translate: function () {
+      // Keep data and drafts in this mount; never reload on language change.
+      const password = root.querySelector?.('input[type="password"]');
+      const value = password?.value;
+      renderAll();
+      const replacement = root.querySelector?.('input[type="password"]');
+      if (replacement && value !== undefined) replacement.value = value;
+    },
     updateFreshness: updateFreshness,
     dirty: function () { return !!state.connectionDraft || !!state.providerDraft || state.pending; }
   };

@@ -1,74 +1,19 @@
 export const MODELS_SCRIPT = String.raw`
-// Entry for the /models page. The page body lives in views/models and the
-// shared management rail in layout/manageShell; this module owns the URL
-// (?section=...&source=...), translation and the unsaved-draft guard. The URL
-// alone decides what a direct open or a refresh shows; in-page navigation
-// pushes history entries so back/forward restore the same section and source.
-// Leaving for /settings or the workbench is ordinary navigation, guarded by
-// beforeunload while a draft exists.
 import { api } from "/assets/js/lib/api.js";
-import { createI18n } from "/assets/js/lib/i18n.js";
-import { createManageShell } from "/assets/js/layout/manageShell.js";
-import { mountModels, normalizeRoute } from "/assets/js/views/models.js";
-
-const i18n = createI18n(document.querySelector("#locale-select"));
-const t = i18n.t;
-const root = document.querySelector("#models-root");
-let flags = {};
-
-function readRoute() {
-  const query = new URLSearchParams(window.location.search);
-  return normalizeRoute({ section: query.get("section"), source: query.get("source") });
-}
-function href(route) {
-  const query = new URLSearchParams({ section: route.section });
-  if (route.section === "quota") query.set("source", route.source);
-  return "/models?" + query.toString();
-}
-let route = readRoute();
-const shell = createManageShell({ page: "models", t: t,
-  onNavigate: function (section) { navigate({ section: section, source: route.source }); } });
-
-function decorate() {
-  // The quota link returns to the source last shown.
-  const quota = shell.link("quota");
-  if (quota) quota.setAttribute("href", href({ section: "quota", source: route.source }));
-  shell.setDirty({ providers: !!flags.provider, connection: !!flags.connection });
-  shell.set(route.section);
-}
-function apply(next) {
-  route = page.show(next);
-  decorate();
-}
-function navigate(next) {
-  const target = normalizeRoute(next);
-  if (href(target) === href(route) && window.location.search) { apply(target); return; }
-  window.history.pushState(null, "", href(target));
-  apply(target);
-  window.scrollTo(0, 0);
-}
-function mount() {
-  return mountModels(root, { t: t, locale: i18n.getLocale, api: api, route: route, navigate: navigate,
-    onChange: function (next) { flags = next; decorate(); } });
-}
-
-let page = mount();
-// Local badge updates only; never poll billing or remount draft controls.
-window.setInterval(function () { page.updateFreshness(); }, 1000);
-document.addEventListener("visibilitychange", function () {
-  if (!document.hidden) page.updateFreshness();
+import { i18n, createManageShell, registerManagePage, navigateManage, readManageRoute } from "/assets/js/layout/manageShell.js";
+import { mountModels } from "/assets/js/views/models.js";
+const shell = createManageShell({ page: "models", t: i18n.t });
+const initial = readManageRoute(new URL(location.href));
+const page = mountModels(document.querySelector("#models-root"), {
+  t: i18n.t, locale: i18n.getLocale, api, route: initial,
+  navigate: next => navigateManage({ page: "models", ...next }),
+  onChange: flags => shell.setDirty({ providers: !!flags.provider, connection: !!flags.connection })
 });
-decorate();
-// Sections stay mounted, so back/forward between them never drops a draft.
-window.addEventListener("popstate", function () { apply(readRoute()); });
-// A language switch re-reads the page unless that would drop a draft or an
-// unresolved-write warning; those keep the current language until reload.
-i18n.subscribe(function () {
-  decorate();
-  if (page.dirty() || page.state.unknown) return;
-  page = mount();
-});
-window.addEventListener("beforeunload", function (event) {
+registerManagePage("models", { show: next => page.show(next) });
+window.setInterval(() => page.updateFreshness(), 1000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) page.updateFreshness(); });
+i18n.subscribe(() => page.translate());
+window.addEventListener("beforeunload", event => {
   if (!page.dirty()) return;
   event.preventDefault(); event.returnValue = "";
 });

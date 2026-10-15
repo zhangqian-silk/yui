@@ -3,19 +3,13 @@ import { DEFAULT_DARK_THEME } from "../shared/themes.js";
 import { iconSvg } from "../shared/icons.js";
 import { MANAGE_SECTIONS, type ManageArea, type ManagePage, type ManageSection } from "../shared/manageNav.js";
 
-// Shared frame for the management pages (/models and /settings). Both pages
-// render the same rail: the brand, the fixed main navigation (Workbench,
-// Models, Settings) and every management section, grouped by area, then the
-// language control. A section belongs to exactly one area even when another
-// page serves it: the model connection settings are part of Settings but are
-// still served by /models?section=connection, the endpoint they already use.
-// Each page's entry module marks the current area and section, intercepts
-// links to its own sections and leaves links to the other page to the
-// browser, so leaving a page keeps its unsaved-draft prompt.
+// One frame and entry point for /models/* and /settings/*. The shared router
+// changes sections without unloading their controllers or drafts. Leaving
+// the management document still uses the browser's unsaved-draft prompt.
 const escapeHtml = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
 
 const sectionLink = (item: ManageSection) =>
-  `<a class="manage-link" href="/${item.page}?section=${item.section}" data-page="${item.page}" data-section="${item.section}"><span data-i18n="${item.key}">${escapeHtml(item.label)}</span><i class="manage-dirty" aria-hidden="true"></i></a>`;
+  `<a class="manage-link" href="/${item.section === "connection" ? "settings" : item.page}/${item.section}" data-page="${item.page}" data-section="${item.section}"><span data-i18n="${item.key}">${escapeHtml(item.label)}</span><i class="manage-dirty" aria-hidden="true"></i></a>`;
 
 const area = (name: ManageArea, icon: string, key: string, label: string) => `
         <div class="manage-area" data-area-group="${name}">
@@ -53,13 +47,13 @@ export function manageDocument(options: Readonly<{
   ${STYLESHEETS.map(s => `<link rel="stylesheet" href="/assets/css/${s.name}.css">`).join("\n  ")}
 </head>
 <body class="manage-body ${options.page}-body">
-  <div class="manage-app" data-page="${options.page}">
+  <div class="manage-app" data-page="${options.page}" hidden>
     ${RAIL}
     <main class="manage-main" id="manage-main">
 ${options.main}
     </main>
   </div>
-  <script type="module" src="/assets/js/app/${options.page}.js"></script>
+  <script type="module" src="/assets/js/app/manage.js"></script>
 </body></html>`;
 }
 
