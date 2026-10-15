@@ -37,7 +37,8 @@ namespace/mapping and is mandatory for newly managed providers. Existing
 editable prefixes and save inputs include the trailing slash: for example
 `factory/`, matching `^[a-zA-Z0-9_-]{1,64}/$`. Render that value as returned,
 without appending another slash. Existing
-official/subscription and unprefixed shared routes are read-only. Render
+official/subscription, implicit-policy (no explicit `via`) and unprefixed shared
+routes are read-only. Render
 `editable/reason` rather than guessing. Removal unlinks the provider but retains
 its file/credentials; the result notice reports that fact.
 
@@ -78,8 +79,13 @@ behavior. Do not edit each other's files without coordination.
 This implementation targets metabridge source
 `73d9963acdb0fc913702ab0ad851df1004f6bbe0`. It handles both inline `backends` and
 `providerFiles` layouts without importing the application or running its scripts.
-It preserves advanced fields on existing editable providers and never converts
-official authentication. The local file adapter requires owned non-symlink files
+It preserves advanced fields on existing editable providers, including the
+distinct upstream path semantics of `base` and `base_url`, and never converts
+official authentication or implicitly opts existing providers into new request
+or compaction defaults. Writes must retain at least one enabled backend and
+must not break existing provider `webSearch.backend` references by renaming,
+removing or disabling their target. Adjust those references with their existing
+owner first. The local file adapter requires owned non-symlink files
 and non-group-writable parent directories for writes. New/rewritten files are
 0600. The current filesystem integration uses optimistic byte comparison and
 atomic rename, not a metabridge cross-client transactional/CAS API. Avoid editing

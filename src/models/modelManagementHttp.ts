@@ -36,7 +36,9 @@ export async function readModelJson(base: string, suffix: string, key: string, t
       const request = (url.protocol === "https:" ? httpsRequest : httpRequest)(url, {
         method: "GET", signal: abort.signal, agent: false,
         headers: { accept: "application/json", ...(key ? { authorization: `Bearer ${key}` } : {}) },
-        lookup: (_name, _options, callback) => callback(null, selected.address, selected.family)
+        lookup: (_name, options, callback) => options.all
+          ? callback(null, addresses)
+          : callback(null, selected.address, selected.family)
       }, response => {
         if (response.statusCode !== 200) {
           response.destroy();

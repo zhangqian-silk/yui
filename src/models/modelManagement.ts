@@ -124,9 +124,6 @@ export function createModelManagement(store: Store, options: {
     if (target && !providerView(target).editable) throw new WebRequestRejected("This provider is read-only.");
     if (removing && !target) throw new WebRequestRejected("Select the exact provider to remove.");
     if (!removing && !target && state.providers.length >= 100) throw new WebRequestRejected("Provider limit reached.");
-    if (removing && state.providers.length === 1 && state.root.value.providerFiles !== undefined) {
-      throw new WebRequestRejected("metabridge requires a nonempty providerFiles list. Disable the last provider instead.");
-    }
     let value: Record<string, unknown> | undefined;
     if (draft) {
       if (typeof draft.name !== "string" || !/^[a-zA-Z0-9_-]{1,64}$/.test(draft.name)
@@ -148,12 +145,29 @@ export function createModelManagement(store: Store, options: {
       value = { ...(target?.value ?? {
         wire_api: "responses", protocol: "responses", requestMode: "passthrough",
         compaction: { mode: "passthrough" }, catalog: { source: "remote" }, priority: 50
-      }), name: draft.name, via: draft.via, base_url: draft.baseUrl, prefix: draft.prefix, enabled: draft.enabled };
-      delete value.base;
+      }), name: draft.name, via: draft.via, prefix: draft.prefix, enabled: draft.enabled };
+      // metabridge's base prepends /v1; base_url is already a complete API root.
+      // Keep the existing spelling even when the address is intentionally edited.
+      value[target?.value.base !== undefined ? "base" : "base_url"] = draft.baseUrl;
       if (key) {
         const auth = target?.value.auth as Record<string, unknown> | undefined;
         value.auth = auth && ["static", "gateway"].includes(String(auth.type))
           ? { ...auth, key } : { type: "static", key };
+      }
+    }
+    const backends = state.providers.filter(p => p !== target).map(p => p.value);
+    if (!removing) backends.push(value!);
+    if (!backends.some(p => p.enabled !== false)) {
+      throw new WebRequestRejected("Keep at least one enabled backend before saving.");
+    }
+    // Existing cross-provider web search references must still resolve. Do not
+    // rewrite references or silently select another provider on the user's behalf.
+    for (const provider of backends) {
+      const search = provider.webSearch;
+      if (!search || typeof search !== "object" || Array.isArray(search)) continue;
+      const destination = backends.find(p => p.name === (search as Record<string, unknown>).backend);
+      if (!destination || (provider.enabled !== false && destination.enabled === false)) {
+        throw new WebRequestRejected("This change would break a webSearch backend reference; manage the reference with its owner first.");
       }
     }
     // External files never participate in Yui's DB transaction. Synchronous CAS
@@ -261,6 +275,9 @@ function providerView(provider: Provider): ModelProviderView {
   const p = provider.value;
   const auth = p.auth && typeof p.auth === "object" ? p.auth as Record<string, unknown> : {};
   const editable = (p.protocol ?? "responses") === "responses"
+    // Declaring via on an implicit chain changes metabridge's request and
+    // compaction defaults. This editor does not migrate those policies.
+    && (p.via === "direct" || p.via === "cpa")
     && ["static", "keyfile", "gateway"].includes(String(auth.type))
     && typeof p.prefix === "string" && /^[a-zA-Z0-9_-]{1,64}\/$/.test(p.prefix)
     && p.routeModels === undefined && p.http_headers === undefined;
@@ -268,7 +285,7 @@ function providerView(provider: Provider): ModelProviderView {
     id: provider.id, name: safeText(p.name, 128) ?? "unnamed",
     via: p.via === "direct" || p.via === "cpa" ? p.via : "unknown",
     baseUrl: safeUrl(p.base_url ?? p.base), prefix: safeText(p.prefix, 128) ?? "",
-    enabled: p.enabled !== false, editable, reason: editable ? null : "Official, shared-route or unsupported provider; manage with its existing owner.",
+    enabled: p.enabled !== false, editable, reason: editable ? null : "Official, implicit-policy, shared-route or unsupported provider; manage with its existing owner.",
     credentialPresent: typeof auth.key === "string" && !!auth.key || typeof auth.file === "string" && !!auth.file,
     owner: "metabridge"
   };

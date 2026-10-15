@@ -163,3 +163,63 @@ test("file-backed providers retain external files on removal and refuse symlink 
     assert.equal(service.read().providers.length, 0);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("provider edits preserve address semantics and reject broken backend dependencies before writing", () => {
+  for (const layout of ["backends", "providerFiles"]) {
+    const root = mkdtempSync(join(tmpdir(), "yui-models-policy-"));
+    try {
+      const file = join(root, "config.json");
+      const tools = { name: "tools", via: "direct", protocol: "responses", base: "https://example.com",
+        prefix: "tools/", auth: { type: "static", key: "fixture-key" } };
+      const implicit = { ...tools, name: "implicit", prefix: "implicit/", sanitize: "gateway" };
+      delete implicit.via;
+      const command = { name: "command", protocol: "command-code", enabled: true,
+        webSearch: { backend: "tools", model: "demo" } };
+      const config = { schemaVersion: 1, modelManagement: {
+        bridgeUrl: "http://localhost:8318", bridgeConfigFile: file, cpaUrl: "", managementKeyFile: "", catalogKeyFile: ""
+      } };
+      const store = { getConfig: () => config };
+      const write = providers => {
+        if (layout === "backends") writeFileSync(file, JSON.stringify({ officialModels: { enabled: false }, backends: providers }), { mode: 0o600 });
+        else {
+          providers.forEach(p => writeFileSync(join(root, p.name + ".json"), JSON.stringify(p), { mode: 0o600 }));
+          writeFileSync(file, JSON.stringify({ providerFiles: providers.map(p => p.name + ".json") }), { mode: 0o600 });
+        }
+      };
+      write([tools, implicit, command]);
+      const service = createModelManagement(store);
+      let view = service.read();
+      const target = view.providers.find(p => p.name === "tools");
+      const draft = { id: target.id, name: "tools", via: "direct", baseUrl: target.baseUrl, prefix: "tools/", enabled: true };
+      const implicitView = view.providers.find(p => p.name === "implicit");
+      assert.equal(implicitView.editable, false, "implicit request/compaction policies stay with their owner");
+      assert.throws(() => service.saveProvider({ revision: view.revision, operation: "save",
+        provider: { ...draft, id: implicitView.id, name: "implicit", prefix: "implicit/" } }), /read.only/i);
+      assert.equal(service.read().revision, view.revision);
+      view = service.saveProvider({ revision: view.revision, operation: "save", provider: draft });
+      const saved = layout === "backends" ? JSON.parse(readFileSync(file)).backends[0] : JSON.parse(readFileSync(join(root, "tools.json")));
+      assert.equal(saved.base, tools.base);
+      assert.equal(saved.base_url, undefined, "base must not become a complete API root");
+      for (const change of [{ name: "renamed" }, { enabled: false }]) {
+        assert.throws(() => service.saveProvider({ revision: view.revision, operation: "save", provider: { ...draft, ...change } }), /referenc/i);
+        assert.equal(service.read().revision, view.revision);
+      }
+      assert.throws(() => service.saveProvider({ revision: view.revision, operation: "remove", id: target.id }), /referenc/i);
+      assert.equal(service.read().revision, view.revision);
+      write([tools]);
+      view = service.read();
+      assert.throws(() => service.saveProvider({ revision: view.revision, operation: "save",
+        provider: { ...draft, id: view.providers[0].id, enabled: false } }), /enabled backend/i);
+      assert.throws(() => service.saveProvider({ revision: view.revision, operation: "remove", id: view.providers[0].id }), /enabled backend/i);
+      assert.equal(service.read().revision, view.revision);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }
+});
+
+test("domain observations honor Node all-address lookup without losing pinned target checks", async () => {
+  const server = createServer((_req, res) => res.end('{"data":[]}'));
+  try {
+    await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+    assert.deepEqual(await readModelJson(`http://localhost:${server.address().port}`, "/v1/models", "", 1000), { data: [] });
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
