@@ -33,7 +33,7 @@ export const MODELS_STYLES = `
 .models-rail-foot{margin-top:auto;gap:8px}
 .models-rail-foot .foot-btn{text-decoration:none}
 .models-locale{margin-left:auto;min-width:0}
-.models-locale select{height:32px;width:auto;max-width:120px}
+.models-locale select{height:32px;width:auto;max-width:132px;padding:0 28px 0 10px;line-height:30px;font-size:var(--fs-sm)}
 
 /* Reading column */
 .models-main{min-width:0;padding:28px var(--gutter) 72px}
@@ -145,11 +145,12 @@ export const MODELS_STYLES = `
   .models-home span{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
   .models-rail-foot{order:3;margin:0;padding:0 10px 0 0;border-top:0}
   .models-rail-foot .foot-btn span{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-  .models-nav{order:4;flex:1 0 100%;flex-direction:row;gap:2px;padding:0 10px 6px;overflow-x:auto;scrollbar-width:none;border-top:1px solid var(--line)}
-  .models-nav::-webkit-scrollbar{display:none}
+  /* Links wrap instead of scrolling, so every section stays visible and the
+     active one is never parked off-screen by a direct visit or history step. */
+  .models-nav{order:4;flex:1 0 100%;flex-direction:row;flex-wrap:wrap;gap:4px 2px;padding:6px 10px;border-top:1px solid var(--line)}
   .models-nav-group{display:none}
-  .models-nav-link{flex:none;height:34px;margin-top:6px}
-  .models-nav-link[aria-current="page"]::before{left:10px;right:10px;top:auto;bottom:-3px;width:auto;height:2px;border-radius:2px}
+  .models-nav-link{flex:0 1 auto;max-width:100%;height:32px;padding:0 9px;gap:7px}
+  .models-nav-link[aria-current="page"]::before{left:9px;right:9px;top:auto;bottom:2px;width:auto;height:2px;border-radius:2px}
   .models-rail-tag{display:none}
   .models-main{padding:18px 14px 56px}
 }
@@ -168,5 +169,7 @@ export const MODELS_STYLES = `
   .models-row-actions{justify-content:flex-start}
   .models-reason{text-align:left;max-width:none}
   .models-catalog{grid-template-columns:minmax(0,1fr)}
+  .models-nav-link{padding:0 8px;gap:6px;font-size:var(--fs-sm)}
+  .models-nav-link .icon{width:14px;height:14px}
 }
 `;
