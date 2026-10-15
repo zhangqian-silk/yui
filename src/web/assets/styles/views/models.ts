@@ -91,7 +91,7 @@ export const MODELS_STYLES = `
 .models-catalog-item code{font-family:var(--font-mono);font-size:var(--fs-xs);color:var(--ink);overflow-wrap:anywhere;min-width:0}
 
 /* Quota accounts, groups and meters */
-.models-accounts{list-style:none;margin:0;padding:0;display:grid;gap:14px;min-width:0}
+.models-accounts{list-style:none;margin:0 auto;padding:0;display:grid;gap:14px;min-width:0}
 .models-account .card-title>span:first-child{font-family:var(--font-mono);font-size:var(--fs-sm)}
 .models-groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px 28px;min-width:0}
 .models-group{display:grid;align-content:start;gap:10px;min-width:0}
