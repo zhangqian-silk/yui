@@ -2,7 +2,9 @@ export const SKILLS_SCRIPT = String.raw`
 import { h } from "/assets/js/lib/dom.js";
 import { requestJson, submitMutation } from "/assets/js/lib/api.js";
 
-export function mountSkills(root, t) {
+// options: heading (default true) renders the card's own title; onDirty(dirty)
+// reports whether unsaved bindings exist, for the page navigation.
+export function mountSkills(root, t, options = {}) {
   if (!root) return;
   const tr = (key, fallback) => t("skills.browser." + key, fallback);
   const scope = h("select", null, h("option", { value: "global" }, tr("global", "Global Role")),
@@ -30,6 +32,7 @@ export function mountSkills(root, t) {
     generation++; state = null; draft = []; bindings.replaceChildren(); frozen.replaceChildren(); save.disabled = true;
     scope.disabled = roles.disabled = false; task.disabled = scope.value !== "task";
     acknowledgement.hidden = scope.value !== "global";
+    options.onDirty?.(false);
   }
   function renderBindings() {
     // A draft remains attached to the exact Role baseline until saved or explicitly reloaded.
@@ -41,6 +44,7 @@ export function mountSkills(root, t) {
         h("button.btn", { type: "button", onclick: () => read({ id }) }, tr("readSource", "Read current source")))));
     if (!draft.length) bindings.append(h("p", null, tr("none", "No additional bindings. Built-in Role Skills are loaded automatically.")));
     save.disabled = busy || uncertain || !dirty();
+    options.onDirty?.(dirty());
   }
   function renderEvidence(data) {
     frozen.replaceChildren(h("h3", null, tr("frozen", "Current Session · frozen evidence")));
@@ -141,8 +145,9 @@ export function mountSkills(root, t) {
   search.addEventListener("click", () => loadCatalog());
   query.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); void loadCatalog(); } });
   window.addEventListener("beforeunload", event => { if (dirty()) { event.preventDefault(); event.returnValue = ""; } });
-  root.replaceChildren(h("h2", null, tr("title", "Skills · browse & bind")),
-    h("p", null, tr("intro", "Read existing packages and choose additional bindings for one explicit Role. Scripts are displayed as data, never run.")),
+  const heading = options.heading === false ? [] : [h("h2", null, tr("title", "Skills · browse & bind")),
+    h("p", null, tr("intro", "Read existing packages and choose additional bindings for one explicit Role. Scripts are displayed as data, never run."))];
+  root.replaceChildren(...heading,
     h("div.settings-grid", null, label(tr("scope", "Scope"), scope), label(tr("taskId", "Task ID"), task), label("Role", roles)),
     h("div.settings-actions", null, reload), status, bindings, acknowledgement,
     h("div.settings-actions", null, save), frozen, label(tr("query", "Find an existing Skill by name or purpose"), query),

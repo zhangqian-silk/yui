@@ -1,52 +1,25 @@
 import { BREAKPOINTS } from "../../shared/geometry.js";
 
 /*
- * MODELS VIEW — the /models page: a rail in the dashboard sidebar's language
- * (brand, back link, section links, footer) beside a reading column of routed
- * sections. Cards, badges, chips, segmented controls and fields come from the
- * shared ui stylesheets; these rules add the rail, the provider table, the
- * catalog list and the quota meters. Below the narrow breakpoint the rail
- * becomes a top bar and the provider table becomes stacked rows.
+ * MODELS VIEW — the content of the /models sections. The rail, reading column
+ * and section headings come from views/manage; cards, badges, chips,
+ * segmented controls and fields from the shared ui stylesheets. These rules
+ * add the provider table, the catalog list and the quota meters. On phones
+ * the provider table becomes stacked rows.
  */
 export const MODELS_STYLES = `
-.models-main .seg-btn[aria-pressed="true"]{background:var(--surface-2);color:var(--ink);box-shadow:var(--shadow-1),0 0 0 1px var(--line-2)}
-.models-body{height:auto;min-height:100vh;min-height:100dvh;overflow:auto}
-.models-app{display:grid;grid-template-columns:232px minmax(0,1fr);min-height:100vh;min-height:100dvh}
-
-/* Rail */
-.models-rail{position:sticky;top:0;display:flex;flex-direction:column;gap:2px;height:100vh;height:100dvh;min-width:0;background:var(--surface);border-right:1px solid var(--line)}
-.models-rail-head{gap:8px}
-.models-rail-head .brand{color:var(--ink);text-decoration:none;flex:none}
-.models-rail-tag{margin-left:auto}
-.models-nav{display:flex;flex-direction:column;gap:2px;padding:0 8px;min-width:0}
-.models-nav-group{margin:14px 10px 4px;color:var(--ink-4);font-size:var(--fs-2xs);font-weight:600;letter-spacing:.07em;text-transform:uppercase}
-.models-nav-link{position:relative;display:flex;align-items:center;gap:9px;min-width:0;height:34px;padding:0 10px;border-radius:var(--r-md);color:var(--ink-2);font-size:var(--fs-md);font-weight:500;text-decoration:none;white-space:nowrap;transition:background var(--t-fast),color var(--t-fast)}
-.models-nav-link span{overflow:hidden;text-overflow:ellipsis}
-.models-nav-link .icon{width:16px;height:16px;flex:none;color:var(--ink-4)}
-.models-nav-link:hover{background:var(--surface-3);color:var(--ink)}
-.models-nav-link[aria-current="page"]{background:var(--surface-3);color:var(--ink);box-shadow:inset 0 0 0 1px var(--line-2)}
-.models-nav-link[aria-current="page"]::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:0 3px 3px 0;background:var(--accent)}
-.models-nav-link[aria-current="page"] .icon{color:var(--accent)}
-.models-nav-dirty{display:none;width:7px;height:7px;margin-left:auto;flex:none;border-radius:50%;background:var(--warn);box-shadow:0 0 0 3px var(--warn-soft)}
-.models-nav-link[data-dirty="true"] .models-nav-dirty{display:inline-block}
-.models-home{margin:10px 8px 0;color:var(--ink-3);font-size:var(--fs-sm)}
-.models-rail-foot{margin-top:auto;gap:8px}
-.models-rail-foot .foot-btn{text-decoration:none}
-.models-locale{margin-left:auto;min-width:0}
-.models-locale select{height:32px;width:auto;max-width:132px;padding:0 28px 0 10px;line-height:30px;font-size:var(--fs-sm)}
-
-/* Reading column */
-.models-main{min-width:0;padding:28px var(--gutter) 72px}
-.models-main>*{max-width:1120px;margin-left:auto;margin-right:auto}
-.models-scope{margin-bottom:14px;color:var(--ink-3);font-size:var(--fs-xs);line-height:1.5}
+/* Heading first, as on every management page: the page scope and the shared
+   connection status sit under the current section's heading. The wrappers
+   flatten into one column so only order changes, never the DOM. */
+.models-body .manage-main{display:flex;flex-direction:column;gap:14px}
+.models-body .models-root,.models-body .models-section:not([hidden]){display:contents}
+.models-body .manage-main>*,.models-root>*,.models-section>*{width:100%;max-width:1120px;margin-left:auto;margin-right:auto}
+.models-section>.manage-head{order:-1}
+.models-body .manage-scope{margin-bottom:0}
+.models-root .seg-btn[aria-pressed="true"]{background:var(--surface-2);color:var(--ink);box-shadow:var(--shadow-1),0 0 0 1px var(--line-2)}
 .models-root{display:grid;gap:16px;min-width:0}
-.models-section{display:grid;gap:14px;min-width:0}
-.models-section[hidden]{display:none}
-.models-head{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px 20px;min-width:0}
-.models-heading{display:grid;gap:4px;flex:1 1 320px;min-width:0}
-.models-heading h1{font-size:var(--fs-2xl);font-weight:650;letter-spacing:-.02em;line-height:1.2}
-.models-heading p,.models-section p{color:var(--ink-2);font-size:var(--fs-sm);line-height:1.55;overflow-wrap:anywhere}
-.models-heading p{color:var(--ink-3)}
+.models-section p:not(.kicker){color:var(--ink-2);font-size:var(--fs-sm);line-height:1.55;overflow-wrap:anywhere}
+.models-section .manage-heading p:not(.kicker){color:var(--ink-3)}
 .models-card{overflow:hidden}
 .models-card>.card-body{gap:12px}
 .models-status{display:grid;gap:8px;min-width:0}
@@ -64,7 +37,6 @@ export const MODELS_STYLES = `
 .models-count{color:var(--ink-4);font-size:var(--fs-xs)!important;font-variant-numeric:tabular-nums}
 .models-receipt{white-space:pre-wrap;overflow-wrap:anywhere}
 .models-receipt-group .settings-actions{margin-top:8px}
-.models-page input[type=checkbox],.models-body input[type=checkbox]{width:16px;height:16px;padding:0;accent-color:var(--accent)}
 
 /* Toolbars: search plus segmented filters */
 .models-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;padding:12px 16px;border-bottom:1px solid var(--line);min-width:0}
@@ -138,25 +110,7 @@ export const MODELS_STYLES = `
 .models-balances dt{color:var(--ink-3);font-size:var(--fs-xs)}
 .models-balances dd{margin:0;color:var(--ink);font-weight:500;font-variant-numeric:tabular-nums}
 
-@media(max-width:${BREAKPOINTS.narrow}px){
-  .models-app{grid-template-columns:minmax(0,1fr)}
-  .models-rail{position:sticky;top:0;z-index:10;height:auto;flex-direction:row;flex-wrap:wrap;align-items:center;gap:0;border-right:0;border-bottom:1px solid var(--line)}
-  .models-rail-head{order:1;flex:1 1 auto;height:48px;border-bottom:0}
-  .models-home{order:2;margin:0 4px 0 0;padding:0 8px;height:32px}
-  .models-home span{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-  .models-rail-foot{order:3;margin:0;padding:0 10px 0 0;border-top:0}
-  .models-rail-foot .foot-btn span{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-  /* Links wrap instead of scrolling, so every section stays visible and the
-     active one is never parked off-screen by a direct visit or history step. */
-  .models-nav{order:4;flex:1 0 100%;flex-direction:row;flex-wrap:wrap;gap:4px 2px;padding:6px 10px;border-top:1px solid var(--line)}
-  .models-nav-group{display:none}
-  .models-nav-link{flex:0 1 auto;max-width:100%;height:32px;padding:0 9px;gap:7px}
-  .models-nav-link[aria-current="page"]::before{left:9px;right:9px;top:auto;bottom:2px;width:auto;height:2px;border-radius:2px}
-  .models-rail-tag{display:none}
-  .models-main{padding:18px 14px 56px}
-}
 @media(max-width:${BREAKPOINTS.small}px){
-  .models-heading h1{font-size:var(--fs-xl)}
   .models-connection-form{grid-template-columns:minmax(0,1fr)}
   .models-provider-form .settings-grid{grid-template-columns:minmax(0,1fr)}
   .models-search{max-width:none;flex-basis:100%}
@@ -170,7 +124,5 @@ export const MODELS_STYLES = `
   .models-row-actions{justify-content:flex-start}
   .models-reason{text-align:left;max-width:none}
   .models-catalog{grid-template-columns:minmax(0,1fr)}
-  .models-nav-link{padding:0 8px;gap:6px;font-size:var(--fs-sm)}
-  .models-nav-link .icon{width:14px;height:14px}
 }
 `;

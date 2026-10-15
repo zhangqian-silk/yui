@@ -4,6 +4,7 @@ import vm from "node:vm";
 import { MODELS_VIEW_SCRIPT } from "../../dist/web/assets/client/views/models.js";
 import { MODELS_HTML } from "../../dist/web/assets/shell/models.js";
 import { SIDEBAR_HTML } from "../../dist/web/assets/shell/sidebar.js";
+import { SETTINGS_HTML } from "../../dist/web/assets/shell/settings.js";
 import { WEB_ASSETS } from "../../dist/web/assets/assetManifest.js";
 
 // Minimal DOM: enough for h(), forms and buttons; no browser required.
@@ -123,12 +124,34 @@ test("models shell is served and linked from the dashboard navigation", () => {
   assert.match(MODELS_HTML, /__YUI_WEB_TOKEN__/);
   assert.match(MODELS_HTML, /src="\/assets\/js\/app\/models\.js"/);
   assert.match(SIDEBAR_HTML, /href="\/models"/);
-  // The rail links back to Yui and Settings and gives every section a real URL.
+  // The shared rail links back to Yui and Settings and gives every section a real URL.
   assert.match(MODELS_HTML, /href="\/"/);
   assert.match(MODELS_HTML, /href="\/settings"/);
   for (const section of ["providers", "catalog", "quota", "connection"]) {
-    assert.match(MODELS_HTML, new RegExp(`href="/models\\?section=${section}" data-section="${section}"`));
+    assert.match(MODELS_HTML, new RegExp(`href="/models\\?section=${section}" data-page="models" data-section="${section}"`));
   }
+});
+
+test("models and settings share one management rail with the same navigation", () => {
+  const rail = html => html.match(/<aside class="manage-rail">[\s\S]*?<\/aside>/)[0];
+  assert.equal(rail(MODELS_HTML), rail(SETTINGS_HTML), "both pages render the identical shared rail");
+  const nav = rail(MODELS_HTML);
+  for (const area of ["workbench", "models", "settings"]) assert.match(nav, new RegExp(`data-area="${area}"`));
+  // Daily model work stays under Models; the connection is a Settings section still served by /models.
+  const models = nav.match(/data-area-group="models">[\s\S]*?<\/div>\s*<\/div>/)[0];
+  const settings = nav.match(/data-area-group="settings">[\s\S]*?<\/div>\s*<\/div>/)[0];
+  for (const section of ["providers", "catalog", "quota"]) assert.match(models, new RegExp(`data-section="${section}"`));
+  assert.doesNotMatch(models, /data-section="connection"/);
+  for (const section of ["preferences", "skills", "server"]) {
+    assert.match(settings, new RegExp(`href="/settings\\?section=${section}" data-page="settings" data-section="${section}"`));
+  }
+  assert.match(settings, /href="\/models\?section=connection" data-page="models" data-section="connection"/);
+  assert.match(nav, /Agents &amp; server/, "labels are HTML-escaped");
+  for (const section of ["preferences", "skills", "server"]) assert.match(SETTINGS_HTML, new RegExp(`data-section="${section}"`));
+  assert.match(SETTINGS_HTML, /id="settings-search"/);
+  assert.match(SETTINGS_HTML, /id="skill-browser"/);
+  assert.match(SETTINGS_HTML, /src="\/assets\/js\/app\/settings\.js"/);
+  assert.ok(WEB_ASSETS["/assets/js/layout/manageShell.js"] && WEB_ASSETS["/assets/css/views/manage.css"]);
 });
 
 test("connection and provider writes carry the read revision, never echo keys and never resend unknown outcomes", async () => {

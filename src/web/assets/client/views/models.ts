@@ -69,7 +69,7 @@ export function mountModels(root, deps) {
     quota: { source: initial.source, observation: null, loading: false, error: null, unavailable: false, generation: 0 }
   };
   function panel(name) {
-    return h("section.models-section", { dataset: { section: name }, "aria-labelledby": "models-" + name + "-title" });
+    return h("section.manage-section.models-section", { dataset: { section: name }, "aria-labelledby": "models-" + name + "-title" });
   }
   const status = h("div.models-status", { "aria-live": "polite" });
   const sections = { providers: panel("providers"), catalog: panel("catalog"), quota: panel("quota"), connection: panel("connection") };
@@ -93,8 +93,11 @@ export function mountModels(root, deps) {
     } }, text);
   }
   function head(name, hint, actions) {
-    return h("header.models-head", null,
-      h("div.models-heading", null, h("h1", { id: "models-" + name + "-title" }, t("models.section." + name)), hint ? h("p", null, hint) : null),
+    // Connection settings belong to the Settings area of the shared navigation.
+    const area = name === "connection" ? t("settings.title") : t("models.title");
+    return h("header.manage-head", null,
+      h("div.manage-heading", null, h("p.kicker", null, area),
+        h("h1", { id: "models-" + name + "-title" }, t("models.section." + name)), hint ? h("p", null, hint) : null),
       actions && actions.length ? h("div.card-actions", null, actions) : null);
   }
   function receiptNode(scope) {
@@ -233,7 +236,7 @@ export function mountModels(root, deps) {
       h("div.card.models-card", null, h("div.card-body.models-explain", null,
         h("h2", null, t("models.applicationTitle")),
         h("p", null, t("models.applicationHelp")),
-        h("p", null, t("models.agentSettings") + " ", h("a.btn-link", { href: "/settings" }, t("models.openSettings")))))].filter(Boolean));
+        h("p", null, t("models.agentSettings") + " ", h("a.btn-link", { href: "/settings?section=server" }, t("models.openSettings")))))].filter(Boolean));
   }
 
   // ---- Access (providers) -----------------------------------------------

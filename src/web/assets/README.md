@@ -17,7 +17,7 @@ TypeScript 字符串里的 JavaScript，由 `tsc` 编译进 `dist/`，再由
 | `styles/index.ts` 的 `STYLESHEETS`（有序） | `/assets/css/<name>.css` | 同上；外壳按此顺序 `<link>` |
 | `client/index.ts` 的 `CLIENT_MODULES` | `/assets/js/<path>.js` | 同上 |
 | `client/app/main.ts` 的 `APP_SCRIPT` | `/assets/app.js`（入口） | 同上 |
-| `shell/settings.ts` 的 `SETTINGS_HTML`、`shell/models.ts` 的 `MODELS_HTML` | `/settings`、`/models`（注入页面 token） | `webServer.ts`；入口分别为 `app/settings`、`app/models` |
+| `shell/settings.ts` 的 `SETTINGS_HTML`、`shell/models.ts` 的 `MODELS_HTML`（都由 `shell/manage.ts` 的 `manageDocument` 组装） | `/settings`、`/models`（注入页面 token） | `webServer.ts`；入口分别为 `app/settings`、`app/models` |
 | `fonts.ts` / `fontData.ts`、xterm 包 | `/assets/fonts/*`、`/assets/vendor/*` | 同上 |
 
 新增客户端模块 = 新文件导出 `XXX_SCRIPT` + 在 `client/index.ts` 注册
@@ -27,12 +27,13 @@ TypeScript 字符串里的 JavaScript，由 `tsc` 编译进 `dist/`，再由
 
 ```
 shared/   TS 端单一事实源：themes（主题令牌）、geometry（断点/列宽）、
-          taskTabs（Task 页四个分区与别名）、icons。外壳、样式、客户端
+          taskTabs（Task 页四个分区与别名）、manageNav（管理页导航分区）、icons。外壳、样式、客户端
           都在构建期插值引用，三方不会漂移。
 styles/   CSS 字符串。tokens/base → layout/workspace → ui/* → views/* →
           markdown → layout/responsive（断点最后，覆盖前面所有）。
 shell/    静态 HTML：sidebar、dock、dialogs 三个区域 + index 组装。只固定
-          区域和需要跨重绘保持身份的控件；其余由客户端渲染。
+          区域和需要跨重绘保持身份的控件；其余由客户端渲染。manage 是
+          /models 与 /settings 共用的管理页框架（同一条导航栏与分区标题）。
 client/   浏览器 ES 模块，只向下依赖：
   lib/      DOM、格式化、偏好存储、i18n、主题、API、Markdown（无业务）
   ui/       与领域无关的组件：primitives、containers、controls、
@@ -43,7 +44,8 @@ client/   浏览器 ES 模块，只向下依赖：
             task/*（page + overview/delivery/runtime/records 四个分区）、
             dock/*（discussion、terminal）。纯渲染，回调由上层传入。
   layout/   工作区列与 dock（workspace）、列宽（sizing/resizer）、
-            URL 状态（router）、键盘快捷键（shortcuts）
+            URL 状态（router）、键盘快捷键（shortcuts）、管理页导航
+            （manageShell：当前项、本页分区拦截、草稿标记）
   app/      组装根 main + 持有视图状态的控制器
   i18n/     en.ts（参考目录，定义 MessageKey）、zh-CN.ts（按 en 键类型约束）
 ```
@@ -98,6 +100,7 @@ shortcuts。主要流程：
 | 写入表单 | 表单本身 `client/domain/taskForms.ts`；提交通道 `client/ui/forms.ts` |
 | 新的 API 读写 | `client/lib/api.ts`，经控制器 `deps.api` 或 Task 页上下文传入 |
 | 选中 / URL / 加载顺序 | `client/app/selection.ts`、`client/layout/router.ts` |
+| 模型 / 设置页的导航与分区归属 | 分区表 `shared/manageNav.ts`；导航栏 `shell/manage.ts`；当前项与切换 `client/layout/manageShell.ts`；外观 `styles/views/manage.ts`。模型连接属于“设置”但仍由 `/models?section=connection` 提供；跨页链接走浏览器原生导航，以保留各页的未保存提示 |
 
 ## 陷阱
 

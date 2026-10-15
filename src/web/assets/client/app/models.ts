@@ -1,17 +1,19 @@
 export const MODELS_SCRIPT = String.raw`
-// Entry for the standalone /models page. The page body lives in
-// views/models; this module owns the URL (?section=...&source=...), the
-// section navigation, translation and the unsaved-draft guard. The URL alone
-// decides what a direct open or a refresh shows; in-page navigation pushes
-// history entries so back/forward restore the same section and source.
+// Entry for the /models page. The page body lives in views/models and the
+// shared management rail in layout/manageShell; this module owns the URL
+// (?section=...&source=...), translation and the unsaved-draft guard. The URL
+// alone decides what a direct open or a refresh shows; in-page navigation
+// pushes history entries so back/forward restore the same section and source.
+// Leaving for /settings or the workbench is ordinary navigation, guarded by
+// beforeunload while a draft exists.
 import { api } from "/assets/js/lib/api.js";
 import { createI18n } from "/assets/js/lib/i18n.js";
+import { createManageShell } from "/assets/js/layout/manageShell.js";
 import { mountModels, normalizeRoute } from "/assets/js/views/models.js";
 
 const i18n = createI18n(document.querySelector("#locale-select"));
 const t = i18n.t;
 const root = document.querySelector("#models-root");
-const links = Array.from(document.querySelectorAll("a[data-section]"));
 let flags = {};
 
 function readRoute() {
@@ -24,19 +26,15 @@ function href(route) {
   return "/models?" + query.toString();
 }
 let route = readRoute();
+const shell = createManageShell({ page: "models", t: t,
+  onNavigate: function (section) { navigate({ section: section, source: route.source }); } });
 
 function decorate() {
-  links.forEach(function (link) {
-    const section = link.dataset.section;
-    // The quota link returns to the source last shown.
-    link.setAttribute("href", href({ section: section, source: route.source }));
-    if (section === route.section) link.setAttribute("aria-current", "page");
-    else link.removeAttribute("aria-current");
-    const dirty = section === "providers" ? flags.provider : section === "connection" ? flags.connection : false;
-    if (dirty) link.dataset.dirty = "true";
-    else delete link.dataset.dirty;
-  });
-  document.title = t("models.section." + route.section) + " · " + t("models.title") + " · Yui";
+  // The quota link returns to the source last shown.
+  const quota = shell.link("quota");
+  if (quota) quota.setAttribute("href", href({ section: "quota", source: route.source }));
+  shell.setDirty({ providers: !!flags.provider, connection: !!flags.connection });
+  shell.set(route.section);
 }
 function apply(next) {
   route = page.show(next);
@@ -61,13 +59,6 @@ document.addEventListener("visibilitychange", function () {
   if (!document.hidden) page.updateFreshness();
 });
 decorate();
-links.forEach(function (link) {
-  link.addEventListener("click", function (event) {
-    if (event.defaultPrevented || event.button > 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    event.preventDefault();
-    navigate({ section: link.dataset.section, source: route.source });
-  });
-});
 // Sections stay mounted, so back/forward between them never drops a draft.
 window.addEventListener("popstate", function () { apply(readRoute()); });
 // A language switch re-reads the page unless that would drop a draft or an

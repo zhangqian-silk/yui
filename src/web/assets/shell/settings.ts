@@ -1,36 +1,33 @@
-import { STYLESHEETS } from "../styles/index.js";
-import { DEFAULT_DARK_THEME } from "../shared/themes.js";
+import { manageDocument, manageHead } from "./manage.js";
 
-export const SETTINGS_HTML = `<!doctype html>
-<html lang="en" data-theme="${DEFAULT_DARK_THEME.id}">
-<head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="yui-web-token" content="__YUI_WEB_TOKEN__">
-  <script src="/assets/theme.js"></script>
-  <link rel="icon" href="data:,"><title>Yui · Settings</title>
-  ${STYLESHEETS.map(s => `<link rel="stylesheet" href="/assets/css/${s.name}.css">`).join("\n")}
-</head>
-<body class="settings-body">
-  <main class="settings-page">
-    <header class="settings-header"><a class="btn" href="/">← Yui</a><h1 data-i18n="settings.title">Settings</h1><a class="btn" href="/models" data-i18n="models.title">Models</a></header>
-    <p data-i18n="settings.scope">Browser preferences apply here immediately. Server settings are desired configuration, not proof that existing Sessions adopted them.</p>
-    <section class="settings-card">
-      <h2 data-i18n="settings.browser">This browser</h2>
-      <div class="settings-grid">
-        <fieldset class="field"><legend data-i18n="settings.theme">Theme</legend><div id="theme-options" class="theme-options"></div></fieldset>
-        <div class="settings-stack">
-          <label class="field"><span data-i18n="settings.language">Language</span><select id="locale-select"><option value="en">English</option><option value="zh-CN">简体中文</option></select></label>
-          <label class="field"><span data-i18n="settings.accessMode">Default session access</span><select id="access-mode"><option value="native" data-i18n="settings.native">Native terminal</option><option value="structured" data-i18n="settings.structured">Structured view</option></select></label>
-          <p data-i18n="settings.accessHelp">Preference for subsequent session selection where supported. It does not switch a live Session.</p>
-          <button id="reset-layout" type="button" class="btn" data-i18n="settings.resetLayout">Reset saved workspace layout</button>
-          <p id="browser-receipt" role="status"></p>
-        </div>
-      </div>
-    </section>
-    <section id="skill-browser" class="settings-card settings-stack"></section>
-    <label class="field settings-search"><span data-i18n="settings.search">Find a setting</span><input id="settings-search" type="search" autocomplete="off"></label>
-    <p id="settings-status" role="status"></p>
-    <div id="settings-groups" class="settings-stack"></div>
-  </main>
-  <script type="module" src="/assets/js/app/settings.js"></script>
-</body></html>`;
+// The /settings page inside the shared management frame. Its three sections
+// (?section=preferences|skills|server) stay mounted and are only hidden, so
+// moving between them never drops a draft. The model connection settings are
+// listed in the same Settings navigation but served by /models.
+export const SETTINGS_HTML = manageDocument({ page: "settings", title: "Settings", main: `
+      <section class="manage-section" data-section="preferences" aria-labelledby="settings-preferences-title">
+        ${manageHead("settings", "settings-preferences-title", "settings.section.preferences", "Preferences", "settings.hint.preferences", "Theme, language and workspace layout for this browser. Changes apply here immediately and are never sent to the server.")}
+        <section class="card settings-card">
+          <h2 data-i18n="settings.browser">This browser</h2>
+          <div class="settings-grid">
+            <fieldset class="field"><legend data-i18n="settings.theme">Theme</legend><div id="theme-options" class="theme-options"></div></fieldset>
+            <div class="settings-stack">
+              <label class="field"><span data-i18n="settings.language">Language</span><select id="settings-locale"><option value="en">English</option><option value="zh-CN">简体中文</option></select></label>
+              <label class="field"><span data-i18n="settings.accessMode">Default session access</span><select id="access-mode"><option value="native" data-i18n="settings.native">Native terminal</option><option value="structured" data-i18n="settings.structured">Structured view</option></select></label>
+              <p data-i18n="settings.accessHelp">Preference for subsequent session selection where supported. It does not switch a live Session.</p>
+              <button id="reset-layout" type="button" class="btn" data-i18n="settings.resetLayout">Reset saved workspace layout</button>
+              <p id="browser-receipt" role="status"></p>
+            </div>
+          </div>
+        </section>
+      </section>
+      <section class="manage-section" data-section="skills" aria-labelledby="settings-skills-title" hidden>
+        ${manageHead("settings", "settings-skills-title", "settings.section.skills", "Skills", "skills.browser.intro", "Read existing packages and choose additional bindings for one explicit Role. Scripts are displayed as data, never run.")}
+        <section id="skill-browser" class="card settings-card settings-stack"></section>
+      </section>
+      <section class="manage-section" data-section="server" aria-labelledby="settings-server-title" hidden>
+        ${manageHead("settings", "settings-server-title", "settings.section.server", "Agents & server", "settings.hint.server", "Desired configuration for Yui, Roles, Agents and Profiles. Saving targets later launches; it is not proof that existing Sessions adopted it.")}
+        <label class="field settings-search"><span data-i18n="settings.search">Find a setting</span><input id="settings-search" type="search" autocomplete="off"></label>
+        <p id="settings-status" role="status"></p>
+        <div id="settings-groups" class="settings-stack"></div>
+      </section>` });

@@ -15,6 +15,7 @@ import { RECORD_STYLES } from "./views/records.js";
 import { SIDEBAR_STYLES } from "./views/sidebar.js";
 import { TASK_STYLES } from "./views/task.js";
 import { TERMINAL_STYLES } from "./views/terminal.js";
+import { MANAGE_STYLES } from "./views/manage.js";
 import { SETTINGS_STYLES } from "./views/settings.js";
 import { MODELS_STYLES } from "./views/models.js";
 
@@ -39,6 +40,7 @@ export const STYLESHEETS: readonly { name: string; body: string }[] = Object.fre
   { name: "views/dock", body: DOCK_STYLES },
   { name: "views/conversation", body: CONVERSATION_STYLES },
   { name: "views/terminal", body: TERMINAL_STYLES },
+  { name: "views/manage", body: MANAGE_STYLES },
   { name: "views/settings", body: SETTINGS_STYLES },
   { name: "views/models", body: MODELS_STYLES },
   { name: "markdown", body: MARKDOWN_STYLES },

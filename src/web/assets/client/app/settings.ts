@@ -1,15 +1,48 @@
 export const SETTINGS_SCRIPT = String.raw`
+// Entry for the /settings page inside the shared management rail
+// (layout/manageShell). Its sections (?section=preferences|skills|server)
+// stay mounted and are only hidden, so moving between them, including
+// browser back/forward, never drops a draft; the URL alone decides what a
+// direct open or a refresh shows. Leaving the page keeps the beforeunload
+// prompt for unsaved server groups (Skills guard their own bindings).
 import { h } from "/assets/js/lib/dom.js";
 import { requestJson, submitMutation } from "/assets/js/lib/api.js";
 import { createI18n } from "/assets/js/lib/i18n.js";
 import { createThemeController } from "/assets/js/lib/theme.js";
 import { clearPreference, readSessionAccessMode, writeSessionAccessMode } from "/assets/js/lib/prefs.js";
+import { createManageShell, pageSections } from "/assets/js/layout/manageShell.js";
 import { mountSkills } from "/assets/js/views/skills.js";
 
 const $ = selector => document.querySelector(selector);
-const i18n = createI18n($("#locale-select"));
+const i18n = createI18n([$("#locale-select"), $("#settings-locale")]);
 const t = i18n.t;
-mountSkills($("#skill-browser"), t);
+const SECTIONS = pageSections("settings");
+const dirtySections = { skills: false, server: false };
+function readSection() {
+  const section = new URLSearchParams(window.location.search).get("section");
+  return SECTIONS.includes(section) ? section : SECTIONS[0];
+}
+let section = readSection();
+const shell = createManageShell({ page: "settings", t, onNavigate: navigate });
+function showSection(next) {
+  section = next;
+  document.querySelectorAll(".manage-section[data-section]").forEach(panel => { panel.hidden = panel.dataset.section !== next; });
+  shell.set(next);
+}
+function navigate(next) {
+  if (next !== section || !window.location.search) window.history.pushState(null, "", "/settings?section=" + next);
+  showSection(next);
+  window.scrollTo(0, 0);
+}
+function markDirty(name, value) {
+  if (dirtySections[name] === value) return;
+  dirtySections[name] = value;
+  shell.setDirty(dirtySections);
+}
+window.addEventListener("popstate", () => showSection(readSection()));
+i18n.subscribe(() => shell.render());
+showSection(section);
+mountSkills($("#skill-browser"), t, { heading: false, onDirty: value => markDirty("skills", value) });
 const theme = createThemeController($("#theme-options"), t);
 i18n.subscribe(() => theme.render());
 const access = $("#access-mode");
@@ -74,6 +107,7 @@ function editor(field, group, state) {
   function mark() {
     control.disabled = reset.checked || unavailable;
     state.dirty = state.editors.some(e => e.changed());
+    markDirty("server", groups.some(g => g.dirty));
     state.save.disabled = !state.dirty || state.pending || state.capabilityPending || state.unknown;
     if (!state.unknown && !state.pending) state.receipt.textContent = state.dirty ? t("settings.unsaved") : "";
   }
@@ -153,6 +187,7 @@ function renderGroup(state, group) {
   const generation = state.renderGeneration = (state.renderGeneration || 0) + 1;
   state.group = group; state.editors = []; state.dirty = false; state.unknown = false;
   state.capabilityPending = false;
+  markDirty("server", groups.some(g => g.dirty));
   const form = h("form.settings-stack");
   const receipt = h("p.settings-receipt", { role: "status", "aria-live": "polite" });
   const save = h("button.btn.btn-primary", { type: "submit", disabled: true }, t("settings.save"));

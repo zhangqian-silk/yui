@@ -226,6 +226,9 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
     return result;
   }
   const shell = new Map();
+  const shown = [];
+  const panels = ["preferences", "skills", "server"].map(section => ({ hidden: false, dataset: { section } }));
+  let skillOptions;
   let failure = Object.assign(Error("Invalid value"), { disposition: "not-submitted" });
   let saved;
   let submissions = 0;
@@ -234,16 +237,23 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
     document: { querySelector: key => {
       if (!shell.has(key)) shell.set(key, element("div"));
       return shell.get(key);
-    } },
-    window: { addEventListener() {} },
+    }, querySelectorAll: () => panels },
+    window: { addEventListener() {}, location: { search: "?section=server" }, history: { pushState() {} }, scrollTo() {} },
     createI18n: () => ({ t: k => k, subscribe() {} }), createThemeController: () => ({}),
-    mountSkills() {},
+    pageSections: () => ["preferences", "skills", "server"],
+    createManageShell: () => ({ set: section => shown.push(section), setDirty() {}, render() {} }),
+    mountSkills: (root, t, options) => { skillOptions = options; },
     readSessionAccessMode: () => "native", writeSessionAccessMode: () => true,
     readPreference: () => null, clearPreference: () => false,
     requestJson: async () => ({}),
     submitMutation: async () => { submissions++; if (failure) throw failure; return saved; }
   });
   vm.runInContext(SETTINGS_SCRIPT.replace(/^import .*;\n/gm, "").replace("void start();", ""), context);
+  // A direct open of ?section=server shows only that section in the shared rail.
+  assert.deepEqual(shown, ["server"]);
+  assert.deepEqual(panels.map(panel => panel.hidden), [true, true, false]);
+  assert.equal(skillOptions.heading, false, "the section heading replaces the Skills card title");
+  assert.equal(typeof skillOptions.onDirty, "function");
   shell.get("#reset-layout").handlers.click();
   assert.equal(shell.get("#browser-receipt").textContent, "settings.storageFailed");
   const cleared = [];
