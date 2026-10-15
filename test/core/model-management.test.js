@@ -57,13 +57,24 @@ test("Model management preserves official routes, guards revisions and never ret
 test("Model observations use bounded reads; failed quota is not zero or stale success", async () => {
   const root = mkdtempSync(join(tmpdir(), "yui-models-http-"));
   let fail = false;
+  let catalogItems = [{ id: "factory/claude", api_key: "do-not-project" }];
+  let catalogError = null;
+  let healthUnavailable = false;
   const requested = [];
   const server = createServer((req, res) => {
     requested.push(req.url);
     res.setHeader("content-type", "application/json");
     if (fail) { res.statusCode = 500; res.end("secret-test-value"); return; }
     if (req.url === "/v1/models") {
-      res.end(JSON.stringify({ data: [{ id: "factory/claude", api_key: "do-not-project" }] })); return;
+      res.end(JSON.stringify({ data: catalogItems })); return;
+    }
+    if (req.url === "/healthz") {
+      if (healthUnavailable) { res.statusCode = 404; res.end("{}"); return; }
+      res.end(JSON.stringify({ ok: true, service: "metabridge", models: catalogItems.length,
+        backends: { factory: { ok: !catalogError, error: catalogError },
+          unused: { ok: false, error: "disabled" } },
+        officialModels: { ok: false, count: 0, error: null }, degraded: catalogError }));
+      return;
     }
     assert.equal(req.headers.authorization, "Bearer secret-test-value");
     res.end(JSON.stringify({ accounts: [{ id: "private-account", quota: {
@@ -84,6 +95,21 @@ test("Model observations use bounded reads; failed quota is not zero or stale su
     const catalog = await service.refresh({ revision, kind: "catalog" });
     assert.equal(catalog.status, "success");
     assert.deepEqual(catalog.items, [{ id: "factory/claude", source: "factory" }]);
+    catalogError = "upstream failed with secret-test-value";
+    const partial = await service.refresh({ revision, kind: "catalog" });
+    assert.equal(partial.status, "partial");
+    assert.equal(partial.items.length, 1);
+    assert.equal(JSON.stringify(partial).includes("secret-test-value"), false);
+    catalogItems = [];
+    const emptyFailed = await service.refresh({ revision, kind: "catalog" });
+    assert.equal(emptyFailed.status, "failed", "HTTP 200 with no models is not successful when upstream failed");
+    assert.equal(emptyFailed.observedAt, null);
+    catalogError = null;
+    assert.equal((await service.refresh({ revision, kind: "catalog" })).status, "success", "healthy empty catalog stays distinguishable");
+    healthUnavailable = true;
+    assert.equal((await service.refresh({ revision, kind: "catalog" })).status, "failed");
+    catalogItems = [{ id: "factory/claude" }];
+    assert.equal((await service.refresh({ revision, kind: "catalog" })).status, "partial");
     const quota = await service.refresh({ revision, kind: "quota", source: "factory" });
     assert.equal(quota.status, "success");
     assert.equal(quota.items[0].windows[0].remainingFraction, 0);
@@ -101,6 +127,28 @@ test("Model observations use bounded reads; failed quota is not zero or stale su
     await new Promise(resolve => server.close(resolve));
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("connection origin changes cannot silently reuse existing credential references", () => {
+  const connection = { bridgeUrl: "https://bridge.example", bridgeConfigFile: "",
+    cpaUrl: "https://cpa.example", managementKeyFile: "/private/management", catalogKeyFile: "/private/catalog" };
+  let config = { schemaVersion: 1, modelManagement: connection };
+  const store = { getConfig: () => config, saveConfig: c => { config = c; }, transaction: fn => fn(store) };
+  const service = createModelManagement(store);
+  let view = service.read();
+  for (const field of ["bridgeUrl", "cpaUrl"]) {
+    assert.throws(() => service.saveConnection({ revision: view.revision,
+      connection: { ...connection, [field]: "https://other.example" } }), /credential|key/i);
+    assert.equal(service.read().revision, view.revision);
+  }
+  view = service.saveConnection({ revision: view.revision,
+    connection: { ...connection, bridgeUrl: "https://BRIDGE.example:443/" } });
+  assert.equal(view.connection.catalogKeyFile, connection.catalogKeyFile);
+  view = service.saveConnection({ revision: view.revision,
+    connection: { ...connection, bridgeUrl: "https://other.example", catalogKeyFile: "/private/new-catalog",
+      cpaUrl: "", managementKeyFile: "" } });
+  assert.equal(view.connection.catalogKeyFile, "/private/new-catalog");
+  assert.equal(view.connection.managementKeyFile, "");
 });
 
 test("Model HTTP boundary persists only references and requires token, origin and JSON", async () => {

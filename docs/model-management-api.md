@@ -21,6 +21,11 @@ Bridge URL is required; bridgeConfigFile enables local configuration management.
 CPA URL and a private management-key file are needed for quota refresh. Catalog
 key is independent from the management key. Secrets are never returned.
 Disconnecting never stops services or deletes credentials.
+Changing a service URL's origin cannot silently retain its previous nonempty
+key-file reference. Supply a new reference, or clear the reference and save
+before explicitly binding it again. Equivalent URL spelling (including default
+ports and trailing slashes) does not change the origin. Saving never contacts
+either service.
 
 `POST /api/models/provider` accepts:
 
@@ -59,6 +64,13 @@ first catalog page, or `{revision,kind:"quota",source:"factory"|"command-code"}`
 and returns `ModelObservation<ModelQuotaItem>`. Quota refresh is explicit and
 may contact the upstream billing service via the installed CPA extension.
 It does not renew credentials, reset quota or run inference. No polling.
+Catalog refresh reads both `/v1/models` and `/healthz` from metabridge, each with
+an 8-second deadline. HTTP 200 alone does not prove upstream catalog success.
+Degraded health returns `partial` when models are available and `failed` when
+empty; unavailable/invalid health or differing snapshot counts likewise never
+produce a complete success. Only bounded error codes are exposed, not upstream
+diagnostics. These are observations of metabridge's cached catalog, not proof of
+a new upstream fetch or inference compatibility.
 
 `GET /api/models/quota?source=factory` (or command-code) reads only that cached
 observation. Sources stay separate. Null means unknown, not zero. Failed refresh

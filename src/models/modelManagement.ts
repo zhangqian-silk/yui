@@ -96,6 +96,18 @@ export function createModelManagement(store: Store, options: {
     modelFields(body, ["revision", "connection"]);
     const state = checkRevision(body);
     const connection = body.connection === null ? null : validateModelConnection(body.connection);
+    if (connection && state.connection) {
+      for (const [address, credential] of [
+        ["bridgeUrl", "catalogKeyFile"], ["cpaUrl", "managementKeyFile"]
+      ] as const) {
+        const previous = state.connection;
+        const origin = (url: string) => url ? modelUrl(url).origin : "";
+        if (previous[credential] && previous[credential] === connection[credential]
+          && origin(previous[address]) !== origin(connection[address])) {
+          throw new WebRequestRejected(`Changing ${address} origin requires a new ${credential} reference, or clear the old reference and save before explicitly binding it again.`);
+        }
+      }
+    }
     // No external I/O inside the store transaction.
     webLocalMutation(store as TaskStore, tx => {
       if (modelDigest(tx.getConfig().modelManagement ?? null) !== modelDigest(state.connection)) {
@@ -250,14 +262,24 @@ export function createModelManagement(store: Store, options: {
       try {
         const c = state.connection!;
         if (kind === "catalog") {
-          const raw = modelObject(await request(c.bridgeUrl, "/v1/models", modelKey(c.catalogKeyFile), 8_000));
+          const key = modelKey(c.catalogKeyFile);
+          const raw = modelObject(await request(c.bridgeUrl, "/v1/models", key, 8_000));
           if (!Array.isArray(raw.data) || raw.data.length > 2000) throw new Error("invalid-or-oversize-catalog");
           const items = raw.data.map(item => {
             const row = modelObject(item);
             if (typeof row.id !== "string" || !row.id || row.id.length > 2048) throw new Error("invalid-catalog");
             return { id: row.id, source: row.id.includes("/") ? row.id.split("/")[0]! : "metabridge" };
           });
-          observation = { status: "success", items, attemptedAt, observedAt: now().toISOString(), stale: false, error: null };
+          // metabridge serves HTTP 200 even when some/all upstream catalogs fail.
+          // Its separate health read is bounded too; never expose raw upstream
+          // diagnostics, which can contain credentials or private addresses.
+          let healthError: string | null;
+          try {
+            healthError = catalogHealthError(await request(c.bridgeUrl, "/healthz", key, 8_000), items.length);
+          } catch { healthError = "catalog-health-unavailable"; }
+          if (healthError && !items.length) throw new Error(healthError);
+          observation = { status: healthError ? "partial" : "success", items, attemptedAt,
+            observedAt: now().toISOString(), stale: false, error: healthError };
         } else {
           if (!c.cpaUrl || !c.managementKeyFile) throw new Error("quota-not-configured");
           const suffix = source === "factory" ? "accounts" : "command-code";
@@ -282,6 +304,22 @@ export function createModelManagement(store: Store, options: {
     try { return await operation; } finally { pending.delete(identity); }
   }
   return { read, saveConnection, saveProvider, readCatalog, readQuota, refresh };
+}
+
+function catalogHealthError(value: unknown, count: number): string | null {
+  const health = modelObject(value);
+  const backends = Object.values(modelObject(health.backends));
+  const official = modelObject(health.officialModels);
+  if (health.service !== "metabridge" || health.ok !== true || !backends.length || backends.length > 100
+    || typeof official.ok !== "boolean" || typeof health.models !== "number") {
+    throw new Error("invalid-catalog-health");
+  }
+  const active = backends.map(modelObject).filter(row => row.error !== "disabled");
+  if (!active.length || active.some(row => typeof row.ok !== "boolean")) throw new Error("invalid-catalog-health");
+  if (health.degraded || active.some(row => !row.ok || row.error) || official.error) return "catalog-upstream-failed";
+  // The two routes have no shared snapshot token. A changed count cannot
+  // establish a complete observation, even if both HTTP reads succeeded.
+  return health.models === count ? null : "catalog-health-mismatch";
 }
 
 function providerView(provider: Provider): ModelProviderView {
