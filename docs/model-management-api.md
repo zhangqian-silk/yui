@@ -93,7 +93,12 @@ the same file simultaneously from another manager.
 
 API key management here configures a metabridge Responses connection or its CPA
 client connection, not CPA's upstream OAuth/account pool. CPA remains its owner.
-Removal retains referenced provider files and separate key files. A failed
+Removal retains referenced provider files and separate key files. For an inline
+provider, it first retains a complete 0600 copy beside the bridge configuration;
+the success notice names that unreferenced file. An uncertain removal retains
+the copy and is not replayed automatically. Semantically equivalent URL spelling
+(including trailing slashes) preserves the original address and does not require
+a replacement credential; a changed destination still does. A failed
 multi-file addition may retain an unreferenced private provider file; uncertain
 effects are not replayed or automatically deleted.
 

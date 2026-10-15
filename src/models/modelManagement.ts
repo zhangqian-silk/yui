@@ -139,7 +139,9 @@ export function createModelManagement(store: Store, options: {
       }
       const key = typeof draft.apiKey === "string" ? draft.apiKey.trim() : "";
       if (!target && !key) throw new WebRequestRejected("A new API-key connection requires a key.");
-      if (target && draft.baseUrl !== (target.value.base_url ?? target.value.base) && !key) {
+      const previousBase = target?.value.base_url ?? target?.value.base;
+      const sameDestination = target && safeUrl(draft.baseUrl) === safeUrl(previousBase);
+      if (target && !sameDestination && !key) {
         throw new WebRequestRejected("Changing the credential destination requires a newly supplied key.");
       }
       value = { ...(target?.value ?? {
@@ -148,7 +150,7 @@ export function createModelManagement(store: Store, options: {
       }), name: draft.name, via: draft.via, prefix: draft.prefix, enabled: draft.enabled };
       // metabridge's base prepends /v1; base_url is already a complete API root.
       // Keep the existing spelling even when the address is intentionally edited.
-      value[target?.value.base !== undefined ? "base" : "base_url"] = draft.baseUrl;
+      value[target?.value.base !== undefined ? "base" : "base_url"] = sameDestination ? previousBase : draft.baseUrl;
       if (key) {
         const auth = target?.value.auth as Record<string, unknown> | undefined;
         value.auth = auth && ["static", "gateway"].includes(String(auth.type))
@@ -174,6 +176,7 @@ export function createModelManagement(store: Store, options: {
     // detects observed edits; metabridge has no cross-writer locking protocol.
     checkRevision(body);
     const root = state.root;
+    let retainedFile: string | undefined;
     if (root.value.providerFiles !== undefined) {
       if (target && !removing) replaceModelFile(target.file, value);
       else {
@@ -191,13 +194,23 @@ export function createModelManagement(store: Store, options: {
     } else {
       const backends = state.providers.map(p => p.value);
       if (target) {
-        if (removing) backends.splice(state.providers.indexOf(target), 1);
+        if (removing) {
+          // Inline auth may be the only copy. Preserve the complete provider in
+          // an owned 0600 file before unlinking, just as providerFiles removal
+          // leaves its existing file. Never delete this copy on uncertain save.
+          retainedFile = newModelFile(dirname(root.path), "retained", target.value);
+          backends.splice(state.providers.indexOf(target), 1);
+        }
         else backends[state.providers.indexOf(target)] = value!;
       } else backends.push(value!);
-      replaceModelFile(root, { ...root.value, backends });
+      try { replaceModelFile(root, { ...root.value, backends }); }
+      catch (error) {
+        if (retainedFile) throw new Error(`Provider copy retained in ${retainedFile}; removal was not confirmed. Read current facts before retrying.`, { cause: error });
+        throw error;
+      }
     }
     const view = read();
-    if (removing) view.notice = `Provider unlinked. Referenced files and credentials were retained; no service was stopped. ${NOTICE}`;
+    if (removing) view.notice = `Provider unlinked. Referenced files and credentials were retained; no service was stopped.${retainedFile ? ` Inline provider retained beside the bridge configuration in ${retainedFile}.` : ""} ${NOTICE}`;
     return view;
   }
 
@@ -291,7 +304,7 @@ function providerView(provider: Provider): ModelProviderView {
   };
 }
 function safeUrl(value: unknown): string {
-  try { return modelUrl(typeof value === "string" ? value : "").toString().replace(/\/$/, ""); }
+  try { return modelUrl(typeof value === "string" ? value : "").toString().replace(/\/+$/, ""); }
   catch { return ""; }
 }
 function safeText(value: unknown, limit = 128): string | null {

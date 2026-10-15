@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync, symlinkSync, statSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, mkdirSync, rmSync, symlinkSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
@@ -45,6 +45,12 @@ test("Model management preserves official routes, guards revisions and never ret
     assert.equal(saved.backends[1].auth.key, "secret-test-value");
     view = service.saveProvider({ revision: view.revision, operation: "remove", id: view.providers[1].id });
     assert.equal(view.providers.length, 1);
+    const retained = readdirSync(root).find(name => name.startsWith("yui-provider-retained-"));
+    assert.ok(retained, "inline removal retains the only credential in a private unreferenced file");
+    assert.equal(JSON.parse(readFileSync(join(root, retained))).auth.key, "secret-test-value");
+    assert.equal(statSync(join(root, retained)).mode & 0o077, 0);
+    assert.ok(view.notice.includes(retained));
+    assert.equal(JSON.stringify(view).includes("secret-test-value"), false);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -169,7 +175,7 @@ test("provider edits preserve address semantics and reject broken backend depend
     const root = mkdtempSync(join(tmpdir(), "yui-models-policy-"));
     try {
       const file = join(root, "config.json");
-      const tools = { name: "tools", via: "direct", protocol: "responses", base: "https://example.com",
+      const tools = { name: "tools", via: "direct", protocol: "responses", base: "https://example.com/v1/",
         prefix: "tools/", auth: { type: "static", key: "fixture-key" } };
       const implicit = { ...tools, name: "implicit", prefix: "implicit/", sanitize: "gateway" };
       delete implicit.via;
@@ -200,6 +206,9 @@ test("provider edits preserve address semantics and reject broken backend depend
       const saved = layout === "backends" ? JSON.parse(readFileSync(file)).backends[0] : JSON.parse(readFileSync(join(root, "tools.json")));
       assert.equal(saved.base, tools.base);
       assert.equal(saved.base_url, undefined, "base must not become a complete API root");
+      assert.throws(() => service.saveProvider({ revision: view.revision, operation: "save",
+        provider: { ...draft, baseUrl: "https://other.example/v1" } }), /newly supplied key/i);
+      assert.equal(service.read().revision, view.revision, "a truly changed credential destination remains protected");
       for (const change of [{ name: "renamed" }, { enabled: false }]) {
         assert.throws(() => service.saveProvider({ revision: view.revision, operation: "save", provider: { ...draft, ...change } }), /referenc/i);
         assert.equal(service.read().revision, view.revision);
