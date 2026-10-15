@@ -8,9 +8,9 @@ export const MODELS_STYLES = `
 .models-provider,.models-quota-item{display:grid;gap:8px;padding:14px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface-2);min-width:0}
 .models-provider .settings-actions{margin-top:4px}
 .models-provider-head{display:flex;flex-wrap:wrap;gap:10px;align-items:center;min-width:0}
-.models-provider-head code{overflow-wrap:anywhere}
-.models-provider-form{padding:16px;border:1px solid var(--line-2);border-radius:var(--r-md)}
-.models-provider-form h3{font-size:var(--fs-sm)}
+.models-provider-head code{overflow-wrap:anywhere;white-space:normal;min-width:0;max-width:100%}
+.models-provider-form{padding:16px;border:1px solid var(--line-2);border-radius:var(--r-md);min-width:0}
+.models-provider-form h3{font-size:var(--fs-sm);overflow-wrap:anywhere;min-width:0}
 .models-provider-form .settings-grid{align-items:start}
 .models-quota-controls{align-items:end}
 .models-catalog{max-height:420px;overflow:auto;gap:4px}
