@@ -3,6 +3,7 @@
 // fonts and xterm from their packages; the shell links them in this order.
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
 
 import { APP_SCRIPT, CLIENT_MODULES } from "./client/index.js";
 import { THEME_BOOTSTRAP_SCRIPT } from "./client/lib/theme.js";
@@ -33,8 +34,38 @@ export const WEB_ASSETS: Readonly<Record<string, WebAsset>> = Object.freeze({
 
 export { DASHBOARD_HTML };
 
-export function findWebAsset(pathname: string): WebAsset | null {
-  return WEB_ASSETS[pathname] ?? null;
+// One content revision covers the complete import graph: changing a dependency
+// invalidates its importers too. Only these static assets may be cached.
+export const WEB_ASSET_VERSION = createHash("sha256")
+  .update(JSON.stringify(WEB_ASSETS)).digest("hex").slice(0, 20);
+
+function versionReferences(body: string): string {
+  return body.replace(/\/assets\/[\w./-]+/g, path =>
+    WEB_ASSETS[path] ? `${path}?v=${WEB_ASSET_VERSION}` : path);
+}
+
+const VERSIONED_ASSETS: Readonly<Record<string, WebAsset>> = Object.fromEntries(
+  Object.entries(WEB_ASSETS).map(([path, asset]) => [path, asset.encoding === "base64" ? asset :
+    { ...asset, body: versionReferences(asset.body) }])
+);
+
+export function findWebAsset(pathname: string, version?: string | null): WebAsset | null {
+  if (version && version !== WEB_ASSET_VERSION) return null;
+  return (version ? VERSIONED_ASSETS : WEB_ASSETS)[pathname] ?? null;
+}
+
+export function prepareWebDocument(html: string, entry: string): string {
+  const modules = new Set<string>();
+  function visit(path: string): void {
+    if (modules.has(path) || !WEB_ASSETS[path]) return;
+    modules.add(path);
+    for (const match of WEB_ASSETS[path].body.matchAll(/^import (?:.*? from )?["'](\/assets\/[^"']+)["'];/gm)) {
+      visit(match[1]!);
+    }
+  }
+  visit(entry);
+  const preload = [...modules].map(path => `<link rel="modulepreload" href="${path}?v=${WEB_ASSET_VERSION}">`).join("\n");
+  return versionReferences(html).replace("</head>", `${preload}\n</head>`);
 }
 
 function vendorAsset(specifier: string, contentType: string): WebAsset {

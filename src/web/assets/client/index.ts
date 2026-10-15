@@ -60,11 +60,16 @@ import { SELECTION_SCRIPT } from "./app/selection.js";
 import { TASK_VIEW_SCRIPT } from "./app/taskView.js";
 import { SETTINGS_SCRIPT } from "./app/settings.js";
 import { SKILLS_SCRIPT } from "./views/skills.js";
+import { MODELS_VIEW_SCRIPT } from "./views/models.js";
+import { MODELS_SCRIPT } from "./app/models.js";
+import { MANAGE_SHELL_SCRIPT } from "./layout/manageShell.js";
+import { MANAGE_SCRIPT } from "./app/manage.js";
 
 export { APP_SCRIPT } from "./app/main.js";
 
 export const CLIENT_MODULES: Readonly<Record<string, string>> = Object.freeze({
   "views/skills": SKILLS_SCRIPT,
+  "views/models": MODELS_VIEW_SCRIPT,
   "lib/dom": DOM_SCRIPT,
   "lib/format": FORMAT_SCRIPT,
   "lib/prefs": PREFS_SCRIPT,
@@ -109,8 +114,11 @@ export const CLIENT_MODULES: Readonly<Record<string, string>> = Object.freeze({
   "layout/workspace": WORKSPACE_SCRIPT,
   "layout/router": ROUTER_SCRIPT,
   "layout/shortcuts": SHORTCUTS_SCRIPT,
+  "layout/manageShell": MANAGE_SHELL_SCRIPT,
   "app/catalog": CATALOG_SCRIPT,
   "app/taskView": TASK_VIEW_SCRIPT,
   "app/settings": SETTINGS_SCRIPT,
+  "app/manage": MANAGE_SCRIPT,
+  "app/models": MODELS_SCRIPT,
   "app/selection": SELECTION_SCRIPT
 });

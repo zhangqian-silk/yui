@@ -3,6 +3,7 @@ import test from "node:test";
 import vm from "node:vm";
 import { WEB_ASSETS, DASHBOARD_HTML } from "../../dist/web/assets/assetManifest.js";
 import { SETTINGS_HTML } from "../../dist/web/assets/shell/settings.js";
+import { MODELS_HTML } from "../../dist/web/assets/shell/models.js";
 import { PREFS_SCRIPT } from "../../dist/web/assets/client/lib/prefs.js";
 import { THEME_SCRIPT } from "../../dist/web/assets/client/lib/theme.js";
 
@@ -59,7 +60,7 @@ function initializeBeforeStyles(html, context) {
   }
 }
 
-test("both Web entry pages resolve persisted/system themes before styles and keep that theme at client startup", () => {
+test("every Web entry page resolves persisted/system themes before styles and keeps that theme at client startup", () => {
   const cases = [
     { saved: "washi", light: false, expected: "washi", preference: "washi" },
     { saved: "sumi", light: true, expected: "sumi", preference: "sumi" },
@@ -71,7 +72,7 @@ test("both Web entry pages resolve persisted/system themes before styles and kee
     { saved: "unknown", light: true, expected: "washi", preference: "system" },
     { saved: "washi", light: false, denied: true, expected: "sumi", preference: "system" }
   ];
-  for (const html of [DASHBOARD_HTML, SETTINGS_HTML]) for (const scenario of cases) {
+  for (const html of [DASHBOARD_HTML, SETTINGS_HTML, MODELS_HTML]) for (const scenario of cases) {
     const f = fixture(html, scenario.saved, scenario.light, scenario.denied);
     initializeBeforeStyles(html, f.context);
     assert.equal(f.dataset.theme, scenario.expected, "theme is correct while application modules are still unloaded");

@@ -18,7 +18,9 @@ function preferredLocale() {
   return languages.some(function (language) { return String(language).toLowerCase().startsWith("zh"); }) ? "zh-CN" : "en";
 }
 
+// select: one language <select>, a list of them (kept in sync), or none.
 export function createI18n(select) {
+  const selects = (Array.isArray(select) ? select : [select]).filter(Boolean);
   let locale = preferredLocale();
   const subscribers = new Set();
   function t(key, fallback) {
@@ -28,13 +30,13 @@ export function createI18n(select) {
   function apply() {
     document.documentElement.lang = locale;
     document.title = t("app.title");
-    document.querySelectorAll("[data-i18n]").forEach(function (element) { element.textContent = t(element.dataset.i18n); });
+    document.querySelectorAll("[data-i18n]").forEach(function (element) { element.textContent = t(element.dataset.i18n, element.dataset.i18nFallback); });
     TRANSLATED_ATTRIBUTES.forEach(function (attribute) {
       document.querySelectorAll("[data-i18n-" + attribute + "]").forEach(function (element) {
         element.setAttribute(attribute, t(element.getAttribute("data-i18n-" + attribute)));
       });
     });
-    if (select) select.value = locale;
+    selects.forEach(function (control) { control.value = locale; });
   }
   function setLocale(next) {
     if (!SUPPORTED_LOCALES.includes(next) || next === locale) return;
@@ -43,7 +45,7 @@ export function createI18n(select) {
     apply();
     subscribers.forEach(function (subscriber) { subscriber(locale); });
   }
-  if (select) select.addEventListener("change", function () { setLocale(select.value); });
+  selects.forEach(function (control) { control.addEventListener("change", function () { setLocale(control.value); }); });
   apply();
   return {
     t: t,

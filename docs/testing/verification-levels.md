@@ -50,12 +50,12 @@ is required.
 ## Permanent core smoke
 
 `npm test` and `npm run test:core` build the checkout and run the maintained suite.
-The stable suite owns current storage 1.7 and its declared 1.0/1.1/1.2/1.3/1.4/1.5/1.6 minor
+The stable suite owns current storage 1.8 and its declared 1.0/1.1/1.2/1.3/1.4/1.5/1.6/1.7 minor
 transition. It contains no undeclared historical format compatibility path.
 
 Current coverage includes:
 
-1. Fresh storage 1.7, exact schema/record validation, no initialization over
+1. Fresh storage 1.8, exact schema/record validation, no initialization over
    unknown data, and rejection of old integer formats without mutation.
 2. Exact-version staging, mismatched-target refusal, same-major contiguous
    minor preflight, explicit maintenance-owner identity across handover, and

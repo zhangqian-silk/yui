@@ -19,12 +19,13 @@ import type { createTaskPreviews } from "./taskPreviews.js";
 import type { createWebConversationSurface } from "./webConversation.js";
 import type { RoleSessionOwner } from "../executor/agentExecutor.js";
 import type { WebSettings } from "./webSettings.js";
+import type { createModelManagement } from "../models/modelManagement.js";
 import type { WebSkills } from "./webSkills.js";
-import { SETTINGS_HTML } from "./assets/shell/settings.js";
+import { MODELS_HTML } from "./assets/shell/models.js";
 import { TASK_SUBMISSION_INTENTS, type TaskSubmissionIntent } from "../message/message.js";
 import type { SurfaceContributionRef, SurfacePanelContribution } from "../surface/surfaceContributions.js";
 import type { CapabilityResult } from "../kernel/capabilityRegistry.js";
-import { DASHBOARD_HTML, findWebAsset, type WebAsset } from "./assets/assetManifest.js";
+import { DASHBOARD_HTML, findWebAsset, prepareWebDocument, WEB_ASSET_VERSION, type WebAsset } from "./assets/assetManifest.js";
 import {
   buildWebTaskCatalog,
   buildWebPageSessions,
@@ -74,6 +75,7 @@ export type WebServerDependencies = Readonly<{
   previews?: () => ReturnType<typeof createTaskPreviews>;
   conversation?: ReturnType<typeof createWebConversationSurface>;
   settings?: WebSettings;
+  models?: ReturnType<typeof createModelManagement>;
   skills?: WebSkills;
   panels?: Readonly<{
     list(taskId: string): readonly SurfacePanelContribution[];
@@ -289,6 +291,41 @@ async function handleHttpRequest(
     } catch (error) {
       sendJson(response, 409, { error: error instanceof Error ? error.message : "Skill operation unavailable.",
         disposition: method === "GET" || error instanceof WebRequestRejected ? "not-submitted" : "unknown" }, false);
+    }
+    return;
+  }
+  if (pathname === "/api/models" || pathname.startsWith("/api/models/")) {
+    try {
+      const service = dependencies.models;
+      if (!service) throw new WebRequestRejected("Model management unavailable.");
+      const query = new URL(request.url!, "http://localhost").searchParams;
+      if ([...query.keys()].some(k => !["cursor", "source"].includes(k) || query.getAll(k).length !== 1)) {
+        throw new WebRequestRejected("Unknown Model query.");
+      }
+      let value: unknown;
+      if (method === "GET" && pathname === "/api/models") value = service.read();
+      else if (method === "GET" && pathname === "/api/models/catalog") value = service.readCatalog(query.get("cursor") ?? "0");
+      else if (method === "GET" && pathname === "/api/models/quota") value = service.readQuota(query.get("source") ?? "factory");
+      else if (method === "POST") {
+        // Credential-bearing forms require an exact same-origin browser request.
+        if (headerValue(request, "origin") !== `http://${headerValue(request, "host")}`) {
+          throw new WebRequestRejected("Model changes require a same-origin request.");
+        }
+        if (headerValue(request, "content-type")?.split(";")[0]?.trim() !== "application/json") {
+          throw new WebRequestRejected("Model changes require JSON.");
+        }
+        const body = await readMutationBody(request);
+        if (pathname === "/api/models/connection") value = service.saveConnection(body);
+        else if (pathname === "/api/models/provider") value = service.saveProvider(body);
+        else if (pathname === "/api/models/refresh") value = await service.refresh(body);
+        else throw new WebRequestRejected("Unknown Model operation.");
+      } else { sendJson(response, 405, { error: "Method not allowed.", disposition: "not-submitted" }, false); return; }
+      sendJson(response, 200, value, false);
+    } catch (error) {
+      sendJson(response, 409, {
+        error: error instanceof WebRequestRejected ? error.message : "Model operation failed. Inspect the current state before retrying.",
+        disposition: method === "GET" || error instanceof WebRequestRejected ? "not-submitted" : "unknown"
+      }, false);
     }
     return;
   }
@@ -568,17 +605,20 @@ async function handleHttpRequest(
 
   if (method === "GET" || method === "HEAD") {
     try {
-      const asset = findWebAsset(pathname);
-      if (pathname === "/" || pathname === "/index.html" || pathname === "/settings") {
+      const assetVersion = new URL(request.url!, "http://localhost").searchParams.get("v");
+      const asset = findWebAsset(pathname, assetVersion);
+      const managementPage = /^\/(?:models(?:\/(?:providers|catalog|quota))?|settings(?:\/(?:preferences|skills|server|connection))?)\/?$/.test(pathname);
+      if (pathname === "/" || pathname === "/index.html" || managementPage) {
         sendText(
           response,
           200,
           "text/html; charset=utf-8",
-          pathname === "/settings" ? SETTINGS_HTML.replace("__YUI_WEB_TOKEN__", token) : dashboardHtml(token),
+          prepareWebDocument(managementPage ? MODELS_HTML.replace("__YUI_WEB_TOKEN__", token) : dashboardHtml(token),
+            managementPage ? "/assets/js/app/manage.js" : "/assets/app.js"),
           method === "HEAD"
         );
       } else if (asset !== null) {
-        sendAsset(response, asset, method === "HEAD");
+        sendAsset(response, asset, method === "HEAD", assetVersion === WEB_ASSET_VERSION);
       } else if (pathname === "/api/search") {
         const query = new URL(request.url!, "http://localhost").searchParams;
         if (query.getAll("query").length !== 1) throw usageError("Search requires one query.");
@@ -1030,12 +1070,12 @@ function sendText(
   response.end(head ? undefined : body);
 }
 
-function sendAsset(response: ServerResponse, asset: WebAsset, head: boolean): void {
+function sendAsset(response: ServerResponse, asset: WebAsset, head: boolean, versioned = false): void {
   const payload = asset.encoding === "base64"
     ? Buffer.from(asset.body, "base64")
     : Buffer.from(asset.body, "utf-8");
-  if (asset.contentType.startsWith("font/") || asset.contentType.startsWith("image/")) {
-    response.setHeader("cache-control", "public, max-age=31536000, immutable");
+  if (versioned) {
+    response.setHeader("cache-control", "private, max-age=31536000, immutable");
   }
   response.statusCode = 200;
   response.setHeader("content-type", asset.contentType);

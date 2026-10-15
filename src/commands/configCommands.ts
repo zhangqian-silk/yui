@@ -134,6 +134,7 @@ export function effectiveConfigData(
   const health = resolveRuntimeHealth(config.runtimeHealth);
   const all: Record<keyof YuiConfig, unknown> = {
     schemaVersion: config.schemaVersion,
+    modelManagement: config.modelManagement ?? null,
     defaultAgent: config.defaultAgent ?? null,
     defaultWorkspace: config.defaultWorkspace ?? null,
     timeZone: resolveTimeZone(config.timeZone),

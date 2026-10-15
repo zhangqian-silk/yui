@@ -19,12 +19,12 @@ import { addProjectKnowledge, createProject } from "../../dist/repository/projec
 import { createTaskMessage } from "../../dist/message/message.js";
 import { contextContentDigest, createContextSnapshot } from "../../dist/context/contextSnapshot.js";
 
-test("fresh storage creates only the current 1.7 contract", () => {
-  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.7");
+test("fresh storage creates only the current 1.8 contract", () => {
+  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.8");
   const db = new Database(":memory:");
   try {
     schema.initializeSqliteSchema(db);
-    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.7");
+    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.8");
     assert.equal(db.prepare("SELECT count(*) AS n FROM storage_schema").get().n, 1);
     assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='schema_migrations'").get(), undefined);
     for (const name of ["coordination_locks", "work_item_candidates", "idx_input_open"]) {
@@ -77,7 +77,8 @@ test("1.1 upgrade preserves valid Operator authority without inventing user prov
         ["1.3", "1.4", "project-knowledge-applicability"],
         ["1.4", "1.5", "frozen-skill-packages"],
         ["1.5", "1.6", "runtime-cost-evidence"],
-        ["1.6", "1.7", "agent-inbox-consumption"]]);
+        ["1.6", "1.7", "agent-inbox-consumption"],
+        ["1.7", "1.8", "model-management-connection"]]);
   }
   finally { current.close(); }
 });
@@ -94,7 +95,7 @@ test("default storage upgrades advance only the minor version of the same major"
   }
 });
 
-for (const minor of [0, 1, 2, 3, 4, 5, 6]) test(`1.${minor} migration preserves Session evidence and leaves absent costs unknown`, async t => {
+for (const minor of [0, 1, 2, 3, 4, 5, 6, 7]) test(`1.${minor} migration preserves Session evidence and leaves absent costs unknown`, async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-skill-upgrade-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const at = new Date("2026-09-01T00:00:00Z");

@@ -2,7 +2,12 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.7. The declared 1.6 → 1.7 transition adds optional Agent
+Current storage is 1.8. The declared 1.7 → 1.8 transition permits an optional
+Model management connection in Yui configuration. Only service addresses and
+file references are stored; no credentials are imported. Existing Homes remain
+unconfigured, and the SQL layout is unchanged.
+
+The declared 1.6 → 1.7 transition adds optional Agent
 inbox claim and acknowledgement receipts to canonical Messages and Leader
 wakes, including the exact pending-window identity. Historical records and
 frozen Context digests remain unchanged; missing handling evidence is never
