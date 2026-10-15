@@ -226,7 +226,9 @@ test("catalog and quota stay separate and never present unknown, failed or stale
   assert.match(text(root), /models\.catalogChanged/);
 
   quotaRead = async source => observation("partial", { stale: true, observedAt: "t0", items: [{ id: "acct", source, status: "partial",
-    windows: [{ label: "weekly", remainingFraction: null, used: 5, cap: null, resetTime: null }], balance: null, periodEnd: null, error: "window missing" }] });
+    windows: [{ label: "weekly", remainingFraction: null, used: 5, cap: null, resetTime: null }], balance: null,
+    balanceDetails: [{ kind: "purchased-credits", value: 12.5 }, { kind: "extra-usage-usd", value: 0 }],
+    periodEnd: null, error: "window missing" }] });
   const select = find(root, n => n.tagName === "SELECT");
   select.value = "command-code"; select.handlers.change(); await tick();
   assert.deepEqual(api.calls.filter(c => c[0] === "quota").map(c => c[1]), ["factory", "command-code"]);
@@ -235,6 +237,8 @@ test("catalog and quota stay separate and never present unknown, failed or stale
   assert.match(quota, /models\.remaining models\.unknown/);
   assert.match(quota, /models\.used 5 \/ models\.unknown/);
   assert.match(quota, /models\.balance models\.unknown/);
+  assert.match(quota, /models\.balance\.purchased-credits 12\.5/);
+  assert.match(quota, /models\.balance\.extra-usage-usd 0/);
 
   api.refreshModels = async input => { api.calls.push(["refresh", copy(input)]); throw new Error("billing unreachable"); };
   button(root, "models.refreshQuota").handlers.click(); await tick();

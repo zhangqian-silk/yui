@@ -60,6 +60,7 @@ test("Model observations use bounded reads; failed quota is not zero or stale su
   let catalogItems = [{ id: "factory/claude", api_key: "do-not-project" }];
   let catalogError = null;
   let healthUnavailable = false;
+  let commandQuota = { windows: [], credits: { purchasedCredits: 12.5 } };
   const requested = [];
   const server = createServer((req, res) => {
     requested.push(req.url);
@@ -77,8 +78,12 @@ test("Model observations use bounded reads; failed quota is not zero or stale su
       return;
     }
     assert.equal(req.headers.authorization, "Bearer secret-test-value");
+    if (req.url.endsWith("/command-code")) {
+      res.end(JSON.stringify(commandQuota)); return;
+    }
     res.end(JSON.stringify({ accounts: [{ id: "private-account", quota: {
-      groups: [{ displayName: "Standard", buckets: [{ window: "weekly", remainingFraction: 0 }] }]
+      groups: [{ displayName: "Standard", buckets: [{ window: "weekly", remainingFraction: 0 }] }],
+      summary: [{ key: "extra_usage_balance", value: 12.5, currency: "USD" }]
     } }] }));
   });
   try {
@@ -114,6 +119,16 @@ test("Model observations use bounded reads; failed quota is not zero or stale su
     assert.equal(quota.status, "success");
     assert.equal(quota.items[0].windows[0].remainingFraction, 0);
     assert.equal(quota.items[0].balance, null);
+    assert.deepEqual(quota.items[0].balanceDetails, [{ kind: "extra-usage-usd", value: 12.5 }]);
+    const command = await service.refresh({ revision, kind: "quota", source: "command-code" });
+    assert.equal(command.status, "partial");
+    assert.equal(command.items[0].balance, null, "one known pool is not a complete total");
+    assert.deepEqual(command.items[0].balanceDetails, [{ kind: "purchased-credits", value: 12.5 }]);
+    commandQuota = { windows: [], credits: { monthlyCredits: 0, purchasedCredits: 12.5, freeCredits: 0 }, balance: 12.5 };
+    const completeCommand = await service.refresh({ revision, kind: "quota", source: "command-code" });
+    assert.equal(completeCommand.status, "success");
+    assert.equal(completeCommand.items[0].balance, 12.5);
+    assert.deepEqual(completeCommand.items[0].balanceDetails.map(row => row.value), [0, 12.5, 0]);
     assert.equal(JSON.stringify(quota).includes("private-account"), false);
     fail = true;
     const failed = await service.refresh({ revision, kind: "quota", source: "factory" });
@@ -269,6 +284,17 @@ test("provider edits preserve address semantics and reject broken backend depend
         provider: { ...draft, id: view.providers[0].id, enabled: false } }), /enabled backend/i);
       assert.throws(() => service.saveProvider({ revision: view.revision, operation: "remove", id: view.providers[0].id }), /enabled backend/i);
       assert.equal(service.read().revision, view.revision);
+      write([{ name: "official", protocol: "codex-subscription", auth: { type: "passthrough" } },
+        { ...tools, enabled: false, auth: { type: "static" } }]);
+      view = service.read();
+      const unconfigured = { ...draft, id: view.providers.find(p => p.name === "tools").id };
+      view = service.saveProvider({ revision: view.revision, operation: "save", provider: { ...unconfigured, enabled: false } });
+      assert.throws(() => service.saveProvider({ revision: view.revision, operation: "save",
+        provider: unconfigured }), /key|credential/i);
+      assert.equal(service.read().revision, view.revision, "missing credential must be rejected before either layout is written");
+      view = service.saveProvider({ revision: view.revision, operation: "save",
+        provider: { ...unconfigured, apiKey: "new-fixture-key" } });
+      assert.equal(view.providers.find(p => p.name === "tools").enabled, true);
     } finally { rmSync(root, { recursive: true, force: true }); }
   }
 });

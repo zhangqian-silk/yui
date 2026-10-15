@@ -310,6 +310,9 @@ export function mountModels(root, deps) {
           h("span", null, t("models.used") + " " + known(entry.used) + " / " + known(entry.cap)),
           h("span", null, t("models.resets") + " " + when(entry.resetTime)));
       })) : h("p.faint", null, t("models.noWindows")),
+      (item.balanceDetails || []).map(function (entry) {
+        return h("p.faint", null, t("models.balance." + entry.kind) + " " + known(entry.value));
+      }),
       h("p.faint", null, t("models.balance") + " " + known(item.balance) + " · " + t("models.periodEnd") + " " + when(item.periodEnd)));
   }
   function quotaReady() {

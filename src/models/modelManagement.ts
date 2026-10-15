@@ -168,6 +168,11 @@ export function createModelManagement(store: Store, options: {
         value.auth = auth && ["static", "gateway"].includes(String(auth.type))
           ? { ...auth, key } : { type: "static", key };
       }
+      const auth = value.auth as Record<string, unknown>;
+      if (draft.enabled && ["static", "gateway"].includes(String(auth.type))
+        && (typeof auth.key !== "string" || !auth.key.trim())) {
+        throw new WebRequestRejected("Enabling this provider requires an API key; supply one or keep the provider disabled.");
+      }
     }
     const backends = state.providers.filter(p => p !== target).map(p => p.value);
     if (!removing) backends.push(value!);
@@ -364,17 +369,35 @@ function normalizeQuota(source: "factory" | "command-code", value: unknown): Mod
   const raw = modelObject(value);
   if (source === "command-code") {
     if (!Array.isArray(raw.windows) || raw.windows.length > 32) throw new Error("invalid-quota-response");
-    return [{ id: "command-code", source, status: "success",
+    const credits = raw.credits === undefined ? {} : modelObject(raw.credits);
+    const balanceDetails: ModelQuotaItem["balanceDetails"] = [];
+    for (const [field, kind] of [
+      ["monthlyCredits", "monthly-credits"], ["purchasedCredits", "purchased-credits"], ["freeCredits", "free-credits"]
+    ] as const) {
+      const value = finite(credits[field]);
+      if (value !== null) balanceDetails.push({ kind, value });
+    }
+    // The extension supplies a total only when all three pools are known.
+    // Keep partial pools visible without inventing that total.
+    const balance = balanceDetails.length === 3 ? finite(raw.balance) : null;
+    return [{ id: "command-code", source, status: balance === null ? "partial" : "success",
       windows: raw.windows.map((w, i) => windowView(w, safeText(modelObject(w).window) ?? `window-${i + 1}`)),
-      balance: finite(raw.balance), periodEnd: time(raw.periodEnd), error: null }];
+      balance, balanceDetails, periodEnd: time(raw.periodEnd), error: balance === null ? "quota-total-unknown" : null }];
   }
   if (!Array.isArray(raw.accounts) || raw.accounts.length > 16) throw new Error("invalid-quota-response");
   return raw.accounts.map((account, i) => {
     const row = modelObject(account);
     const result: ModelQuotaItem = { id: `factory-${modelDigest(typeof row.id === "string" ? row.id : i).slice(0, 12)}`,
-      source, status: "failed", windows: [], balance: null, periodEnd: null, error: "account-query-failed" };
+      source, status: "failed", windows: [], balance: null, balanceDetails: [], periodEnd: null, error: "account-query-failed" };
     if (row.error || !row.quota) return result;
     const quota = modelObject(row.quota);
+    if (Array.isArray(quota.summary)) {
+      if (quota.summary.length > 32) return result;
+      const extra = quota.summary.find(metric => metric && typeof metric === "object"
+        && metric.key === "extra_usage_balance" && metric.currency === "USD");
+      const value = finite(extra?.value);
+      if (value !== null) result.balanceDetails.push({ kind: "extra-usage-usd", value });
+    }
     if (!Array.isArray(quota.groups) || quota.groups.length > 16) return result;
     for (const group of quota.groups) {
       const g = modelObject(group);

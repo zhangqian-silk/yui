@@ -36,6 +36,7 @@ export type ModelQuotaItem = {
   status: "success" | "partial" | "failed";
   windows: { label: string; remainingFraction: number | null; used: number | null; cap: number | null; resetTime: string | null }[];
   balance: number | null;
+  balanceDetails: { kind: "extra-usage-usd" | "monthly-credits" | "purchased-credits" | "free-credits"; value: number }[];
   periodEnd: string | null;
   error: string | null;
 };

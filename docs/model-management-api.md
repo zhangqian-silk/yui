@@ -34,6 +34,8 @@ either service.
 
 An absent id creates a provider. An omitted/empty apiKey preserves the existing
 credential; a nonempty value replaces it. New API-key providers require a key.
+An existing disabled static/gateway provider may stay unconfigured while
+disabled, but enabling it requires a nonempty stored or newly supplied key.
 Use a password input, never rehydrate it, clear it after submission, and never
 put it in URLs, logs, localStorage or error messages.
 `via` is direct or cpa. For cpa the key is a CPA **client inference key**,
@@ -73,7 +75,12 @@ diagnostics. These are observations of metabridge's cached catalog, not proof of
 a new upstream fetch or inference compatibility.
 
 `GET /api/models/quota?source=factory` (or command-code) reads only that cached
-observation. Sources stay separate. Null means unknown, not zero. Failed refresh
+observation. Sources stay separate. Null means unknown, not zero. Successful
+source responses preserve known balance components: `balanceDetails` labels
+Factory extra usage in USD separately from Command Code monthly, purchased and
+free credits. Factory extra usage is not a subscription total. Command Code's
+`balance` is only retained when all three pools and the upstream total are
+present; missing total means `partial`, not a sum invented by Yui. Failed refresh
 does not retain a successful current value. A timestamped stale success must be
 visibly marked stale. A 404 alone is an unavailable/unknown extension route, not
 proof that the plugin is uninstalled. Unsupported or failed quota must not block
