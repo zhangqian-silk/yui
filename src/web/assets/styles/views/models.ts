@@ -53,6 +53,7 @@ export const MODELS_STYLES = `
 .models-status:empty{display:none}
 .models-facts{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;min-width:0}
 .models-facts small{overflow-wrap:anywhere}
+.models-facts .badge[hidden]{display:none}
 .models-notice{flex:1 1 280px;min-width:0}
 .models-alert{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:10px 14px;border:1px solid var(--bad-soft);border-radius:var(--r-md);background:var(--bad-soft)}
 .models-alert>.icon{width:16px;height:16px;color:var(--bad);flex:none}

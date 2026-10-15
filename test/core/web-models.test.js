@@ -57,15 +57,47 @@ function view(revision, extra = {}) {
 }
 const observation = (status, extra = {}) => ({ status, attemptedAt: null, observedAt: null, stale: false, error: null, items: [], ...extra });
 
-function mount(api) {
+function mount(api, extra = {}) {
   const context = vm.createContext({ h: element, icon: name => element("svg.icon." + name), formatDateTime: iso => "at:" + iso, window: {} });
   vm.runInContext(MODELS_VIEW_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
   const root = element("div");
   const confirmations = [];
   const page = context.mountModels(root, { t: (key, fallback) => key, api,
-    confirm: message => { confirmations.push(message); return true; } });
+    confirm: message => { confirmations.push(message); return true; }, ...extra });
   return { root, page, confirmations };
 }
+
+test("initial observations wait for the configuration baseline", async () => {
+  let resolveView;
+  const api = fakeApi({ models: () => new Promise(resolve => { resolveView = resolve; }) });
+  const { page } = mount(api);
+  await tick();
+  assert.equal(api.calls.length, 0, "no observation may precede the first configuration read");
+  resolveView(view("new", { connection: connection({ bridgeUrl: "http://127.0.0.1:10" }) }));
+  await page.ready;
+  assert.deepEqual(api.calls.map(call => call[0]), ["catalog", "quota"]);
+});
+
+test("cached observations become stale locally without requests or replacing controls", async () => {
+  let now = Date.parse("2026-10-15T00:00:00Z");
+  const api = fakeApi({
+    modelCatalog: async () => ({ ...observation("success", { observedAt: new Date(now).toISOString() }), total: 0, nextCursor: null }),
+    modelQuota: async () => observation("success", { observedAt: new Date(now).toISOString() })
+  });
+  const { root, page } = mount(api, { now: () => now });
+  root.querySelectorAll = () => all(root, node => node.dataset.observationTime !== undefined);
+  await page.ready;
+  const badges = root.querySelectorAll();
+  assert.equal(badges.length, 2);
+  assert.ok(badges.every(node => node.hidden));
+  const form = connectionForm(root);
+  const calls = api.calls.length;
+  now += 61_000;
+  page.updateFreshness();
+  assert.ok(badges.every(node => !node.hidden));
+  assert.equal(connectionForm(root), form);
+  assert.equal(api.calls.length, calls, "expiry makes no network request");
+});
 
 function fakeApi(overrides = {}) {
   const calls = [];

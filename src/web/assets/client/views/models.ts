@@ -50,6 +50,7 @@ export function splitWindowLabel(label) {
 export function mountModels(root, deps) {
   const t = deps.t;
   const api = deps.api;
+  const now = deps.now || Date.now;
   const locale = deps.locale || function () { return "en"; };
   const confirm = deps.confirm || function (text) { return window.confirm(text); };
   const onChange = deps.onChange || function () {};
@@ -407,11 +408,25 @@ export function mountModels(root, deps) {
   }
 
   // ---- Observations -----------------------------------------------------
+  function expired(observedAt) {
+    return !!observedAt && now() - Date.parse(observedAt) > 60000;
+  }
+  // Update only the badge: expiry must not rebuild forms, steal focus or
+  // query an upstream service. The entry module supplies the local clock tick.
+  function updateFreshness() {
+    root.querySelectorAll("[data-observation-time]").forEach(function (badge) {
+      badge.hidden = !(badge.dataset.serverStale === "true" || expired(badge.dataset.observationTime));
+    });
+  }
   function observationLine(observation) {
     const status = observation.status;
+    const stale = tone("warn", t("models.stale"));
+    stale.dataset.observationTime = observation.observedAt || "";
+    stale.dataset.serverStale = String(observation.stale);
+    stale.hidden = !(observation.stale || expired(observation.observedAt));
     return h("div.models-facts", { role: "status" },
       tone(OBSERVATION_TONES[status] || "idle", t("models.status." + status, status)),
-      observation.stale ? tone("warn", t("models.stale")) : null,
+      stale,
       h("small.faint", null, t("models.attempted") + " " + when(observation.attemptedAt) + " · " + t("models.observed") + " " + when(observation.observedAt)));
   }
   function observationError(observation) {
@@ -576,9 +591,8 @@ export function mountModels(root, deps) {
   function adoptView(view) {
     const previous = state.view;
     state.view = view;
-    if (!previous || previous.revision === view.revision) return false;
-    invalidateObservations();
-    return true;
+    if (previous && previous.revision === view.revision) return;
+    return invalidateObservations();
   }
   function invalidateObservations() {
     const catalog = state.catalog;
@@ -587,12 +601,12 @@ export function mountModels(root, deps) {
     const quota = state.quota;
     quota.generation++;
     quota.observation = null; quota.error = null; quota.unavailable = false; quota.loading = false;
-    void loadCatalog(null); void loadQuota();
+    return Promise.all([loadCatalog(null), loadQuota()]);
   }
 
   async function load() {
     state.loading = true; state.loadError = null; renderAll();
-    try { adoptView(await api.models()); }
+    try { await adoptView(await api.models()); }
     catch (error) { state.loadError = error.message; }
     finally { state.loading = false; renderAll(); }
     return !state.loadError;
@@ -632,7 +646,7 @@ export function mountModels(root, deps) {
       if (options.clearConnection) state.connectionDraft = null;
       if (options.clearProvider) state.providerDraft = null;
       setReceipt(t("models.saved") + (view.notice ? " " + view.notice : ""), "ok", options.scope);
-      adoptView(view);
+      await adoptView(view);
     } catch (error) {
       if (error.disposition === "not-submitted") {
         state.rejected = true;
@@ -650,6 +664,7 @@ export function mountModels(root, deps) {
   }
 
   async function loadCatalog(cursor) {
+    if (!state.view) return;
     const catalog = state.catalog;
     const generation = ++catalog.generation;
     catalog.loading = true; catalog.error = null; catalog.note = null;
@@ -703,6 +718,7 @@ export function mountModels(root, deps) {
   }
 
   async function loadQuota() {
+    if (!state.view) return;
     const quota = state.quota;
     const generation = ++quota.generation;
     const source = quota.source;
@@ -734,11 +750,13 @@ export function mountModels(root, deps) {
   }
 
   renderAll();
-  const ready = Promise.all([load(), loadCatalog(null), loadQuota()]);
+  // Establish the connection/revision before requesting its cached facts.
+  const ready = load();
   return {
     ready: ready,
     state: state,
     show: show,
+    updateFreshness: updateFreshness,
     dirty: function () { return !!state.connectionDraft || !!state.providerDraft || state.pending; }
   };
 }

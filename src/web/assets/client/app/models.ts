@@ -55,6 +55,11 @@ function mount() {
 }
 
 let page = mount();
+// Local badge updates only; never poll billing or remount draft controls.
+window.setInterval(function () { page.updateFreshness(); }, 1000);
+document.addEventListener("visibilitychange", function () {
+  if (!document.hidden) page.updateFreshness();
+});
 decorate();
 links.forEach(function (link) {
   link.addEventListener("click", function (event) {
