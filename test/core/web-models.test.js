@@ -41,6 +41,7 @@ const button = (root, label) => find(root, n => n.tagName === "BUTTON" && n.chil
 const copy = value => JSON.parse(JSON.stringify(value));
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const submit = form => form.handlers.submit({ preventDefault() {} });
+const connectionForm = root => find(root, n => n.tagName === "FORM" && n.className.includes("models-connection-form"));
 
 function connection(extra = {}) {
   return { bridgeUrl: "http://127.0.0.1:9", bridgeConfigFile: "/fixture/bridge.yaml", cpaUrl: "", managementKeyFile: "", catalogKeyFile: "", ...extra };
@@ -57,7 +58,7 @@ function view(revision, extra = {}) {
 const observation = (status, extra = {}) => ({ status, attemptedAt: null, observedAt: null, stale: false, error: null, items: [], ...extra });
 
 function mount(api) {
-  const context = vm.createContext({ h: element, formatDateTime: iso => "at:" + iso, window: {} });
+  const context = vm.createContext({ h: element, icon: name => element("svg.icon." + name), formatDateTime: iso => "at:" + iso, window: {} });
   vm.runInContext(MODELS_VIEW_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
   const root = element("div");
   const confirmations = [];
@@ -90,6 +91,12 @@ test("models shell is served and linked from the dashboard navigation", () => {
   assert.match(MODELS_HTML, /__YUI_WEB_TOKEN__/);
   assert.match(MODELS_HTML, /src="\/assets\/js\/app\/models\.js"/);
   assert.match(SIDEBAR_HTML, /href="\/models"/);
+  // The rail links back to Yui and Settings and gives every section a real URL.
+  assert.match(MODELS_HTML, /href="\/"/);
+  assert.match(MODELS_HTML, /href="\/settings"/);
+  for (const section of ["providers", "catalog", "quota", "connection"]) {
+    assert.match(MODELS_HTML, new RegExp(`href="/models\\?section=${section}" data-section="${section}"`));
+  }
 });
 
 test("connection and provider writes carry the read revision, never echo keys and never resend unknown outcomes", async () => {
@@ -109,12 +116,12 @@ test("connection and provider writes carry the read revision, never echo keys an
   assert.doesNotMatch(mine, /mine\/\//);
 
   // Connection save sends all five fields with the read revision.
-  const connectionForm = find(root, n => n.tagName === "FORM");
-  const urlInput = find(connectionForm, n => n.tagName === "INPUT");
-  assert.ok(button(connectionForm, "models.discard").disabled);
+  const form0 = connectionForm(root);
+  const urlInput = find(form0, n => n.tagName === "INPUT");
+  assert.ok(button(form0, "models.discard").disabled);
   urlInput.value = " http://127.0.0.1:10 "; urlInput.handlers.input();
-  assert.equal(button(connectionForm, "models.discard").disabled, false, "the first edit enables discard");
-  await submit(connectionForm); await tick();
+  assert.equal(button(form0, "models.discard").disabled, false, "the first edit enables discard");
+  await submit(form0); await tick();
   const [, sent] = api.calls.find(c => c[0] === "connection");
   assert.deepEqual(sent, { revision: "r1", connection: connection({ bridgeUrl: "http://127.0.0.1:10" }) });
   assert.match(text(root), /models\.saved notice-r2/);
@@ -174,7 +181,7 @@ test("connection and provider writes carry the read revision, never echo keys an
   assert.match(text(root), /models\.unknownBlocked/);
   form = find(root, n => n.className.includes("models-provider-form"));
   assert.ok(find(form, n => n.tagName === "BUTTON" && n.type === "submit").disabled);
-  await submit(form); await submit(find(root, n => n.tagName === "FORM"));
+  await submit(form); await submit(connectionForm(root));
   assert.equal(api.calls.filter(c => c[0] === "provider" || c[0] === "connection").length, count + 1, "nothing is resent");
   assert.ok(!api.calls.some(c => c[0] === "release"));
 
@@ -229,16 +236,15 @@ test("catalog and quota stay separate and never present unknown, failed or stale
     windows: [{ label: "weekly", remainingFraction: null, used: 5, cap: null, resetTime: null }], balance: null,
     balanceDetails: [{ kind: "purchased-credits", value: 12.5 }, { kind: "extra-usage-usd", value: 0 }],
     periodEnd: null, error: "window missing" }] });
-  const select = find(root, n => n.tagName === "SELECT");
-  select.value = "command-code"; select.handlers.change(); await tick();
+  button(root, "models.source.command-code").handlers.click(); await tick();
   assert.deepEqual(api.calls.filter(c => c[0] === "quota").map(c => c[1]), ["factory", "command-code"]);
   const quota = text(root);
   assert.match(quota, /models\.stale/);
   assert.match(quota, /models\.remaining models\.unknown/);
   assert.match(quota, /models\.used 5 \/ models\.unknown/);
-  assert.match(quota, /models\.balance models\.unknown/);
-  assert.match(quota, /models\.balance\.purchased-credits 12\.5/);
-  assert.match(quota, /models\.balance\.extra-usage-usd 0/);
+  assert.match(quota, /models\.balance\s+models\.unknown/);
+  assert.match(quota, /models\.balance\.purchased-credits\s+12\.5/);
+  assert.match(quota, /models\.balance\.extra-usage-usd\s+0/);
 
   api.refreshModels = async input => { api.calls.push(["refresh", copy(input)]); throw new Error("billing unreachable"); };
   button(root, "models.refreshQuota").handlers.click(); await tick();
@@ -270,9 +276,9 @@ test("observations are invalidated with the configuration revision and late resp
   const lateRefresh = deferred();
   api.refreshModels = async input => { api.calls.push(["refresh", copy(input)]); return lateRefresh.promise; };
   button(root, "models.refreshCatalog").handlers.click(); await tick();
-  const connectionForm = find(root, n => n.tagName === "FORM");
-  find(connectionForm, n => n.tagName === "INPUT").value = "http://127.0.0.1:11";
-  await submit(connectionForm); await tick();
+  const form0 = connectionForm(root);
+  find(form0, n => n.tagName === "INPUT").value = "http://127.0.0.1:11";
+  await submit(form0); await tick();
 
   const refreshes = api.calls.filter(c => c[0] === "refresh").length;
   assert.equal(page.state.view.revision, "r2");
@@ -312,7 +318,7 @@ test("a stale-revision rejection keeps the draft and offers an explicit re-read 
     api.calls.push(["connection", copy(input)]);
     throw Object.assign(new Error("revision is stale"), { disposition: "not-submitted" });
   };
-  let form = find(root, n => n.tagName === "FORM");
+  let form = connectionForm(root);
   const urlInput = find(form, n => n.tagName === "INPUT");
   urlInput.value = "http://127.0.0.1:12"; urlInput.handlers.input();
   await submit(form); await tick();
@@ -323,7 +329,7 @@ test("a stale-revision rejection keeps the draft and offers an explicit re-read 
   const reread = deferred();
   api.models = async () => { api.calls.push(["models"]); return reread.promise; };
   button(root, "models.readFacts").handlers.click(); await tick();
-  form = find(root, n => n.tagName === "FORM");
+  form = connectionForm(root);
   assert.ok(find(form, n => n.type === "submit").disabled);
   await submit(form);
   assert.equal(api.calls.filter(c => c[0] === "connection").length, 1, "no save races the re-read");
@@ -332,9 +338,103 @@ test("a stale-revision rejection keeps the draft and offers an explicit re-read 
   assert.match(text(root), /models\.rereadChanged/);
   assert.ok(!api.calls.some(c => c[0] === "release"), "a rejection holds no unresolved write key");
   assert.equal(api.calls.filter(c => c[0] === "connection").length, 1, "nothing is replayed automatically");
-  form = find(root, n => n.tagName === "FORM");
+  form = connectionForm(root);
   assert.equal(find(form, n => n.tagName === "INPUT").value, "http://127.0.0.1:12", "the draft is kept");
   api.saveModelConnection = async input => { api.calls.push(["connection", copy(input)]); return view("r6"); };
   await submit(form); await tick();
   assert.equal(api.calls.filter(c => c[0] === "connection").at(-1)[1].revision, "r5", "the next save carries the re-read revision");
+});
+
+
+test("sections are routed without remounting, so drafts and typed keys survive navigation and filtering", async () => {
+  const api = fakeApi();
+  const routes = [];
+  const flags = [];
+  const context = vm.createContext({ h: element, icon: name => element("svg.icon." + name), formatDateTime: iso => "at:" + iso, window: {} });
+  vm.runInContext(MODELS_VIEW_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
+  assert.deepEqual({ ...context.normalizeRoute({ section: "bogus", source: "nope" }) }, { section: "providers", source: "factory" });
+  const root = element("div");
+  const page = context.mountModels(root, { t: key => key, api, confirm: () => true,
+    route: { section: "quota", source: "command-code" },
+    navigate: route => { routes.push({ ...route }); page.show(route); },
+    onChange: next => flags.push({ ...next }) });
+  await page.ready;
+  const section = name => find(root, n => n.dataset.section === name);
+  assert.equal(section("quota").hidden, false);
+  assert.equal(section("providers").hidden, true);
+  assert.deepEqual(api.calls.filter(c => c[0] === "quota").map(c => c[1]), ["command-code"], "a direct open reads the routed source");
+
+  // In-page links go through navigate(); the quota source is part of the route.
+  button(root, "models.source.factory").handlers.click(); await tick();
+  assert.deepEqual(routes.at(-1), { section: "quota", source: "factory" });
+  assert.deepEqual(api.calls.filter(c => c[0] === "quota").map(c => c[1]), ["command-code", "factory"]);
+
+  // A connection draft and a provider editor with a typed key survive section
+  // changes, back/forward (show) and provider filtering.
+  const urlInput = find(connectionForm(root), n => n.tagName === "INPUT");
+  urlInput.value = "http://127.0.0.1:99"; urlInput.handlers.input();
+  page.show({ section: "providers" });
+  assert.equal(flags.at(-1).connection, true, "the rail can mark the section with a draft");
+  button(find(root, n => n.dataset.provider === "mine"), "models.editProvider").handlers.click();
+  const key = find(root, n => n.type === "password");
+  key.value = "sk-typed";
+  const search = find(section("providers"), n => n.type === "search");
+  search.value = "official"; search.handlers.input();
+  assert.equal(find(root, n => n.dataset.provider === "mine"), undefined, "search filters rows");
+  assert.match(text(section("providers")), /models\.providerCount/);
+  button(section("providers"), "models.filter.readonly").handlers.click();
+  assert.ok(find(root, n => n.dataset.provider === "official"));
+  assert.equal(find(root, n => n.type === "password"), key, "filtering never rebuilds the editor");
+  assert.equal(key.value, "sk-typed");
+  page.show({ section: "catalog" }); page.show({ section: "providers" });
+  assert.equal(find(root, n => n.type === "password").value, "sk-typed");
+  assert.equal(connectionForm(root).children.length > 0 && find(connectionForm(root), n => n.tagName === "INPUT").value, "http://127.0.0.1:99");
+  assert.equal(page.state.quota.source, "factory", "leaving quota keeps its source for the way back");
+  assert.ok(page.dirty());
+});
+
+test("quota groups windows by the server's own labels and never draws unknown as zero", async () => {
+  const api = fakeApi({
+    current: view("r1", { connection: connection({ cpaUrl: "http://127.0.0.1:8", managementKeyFile: "/fixture/key" }) }),
+    modelQuota: async source => observation("success", { observedAt: "t1", items: [{ id: "factory-0123456789ab", source, status: "success",
+      windows: [
+        { label: "Standard / 5h", remainingFraction: 0.92, used: null, cap: null, resetTime: "2026-10-15T08:34:51Z" },
+        { label: "Standard / weekly", remainingFraction: 0.1, used: null, cap: null, resetTime: null },
+        { label: "Droid Core / 5h", remainingFraction: null, used: null, cap: null, resetTime: null }
+      ], balance: null, balanceDetails: [{ kind: "extra-usage-usd", value: 0 }], periodEnd: null, error: null }] })
+  });
+  const { root, page } = mount(api);
+  await page.ready; await tick();
+  const groups = all(root, n => n.className.includes("models-group") && !n.className.includes("models-groups"));
+  assert.deepEqual(groups.map(g => find(g, n => n.tagName === "H3").children[0]), ["Standard", "Droid Core"]);
+  const bars = all(root, n => n.role === "progressbar");
+  assert.deepEqual(bars.map(b => b["aria-valuenow"]), ["92", "10"], "only known fractions get a progress bar");
+  assert.match(bars[1].className, /tone-bad/);
+  const core = text(groups[1]);
+  assert.match(core, /models\.remaining models\.unknown/);
+  assert.match(core, /models\.resetUnknown/);
+  assert.doesNotMatch(core, /0%|models\.used/, "unknown is not rendered as zero or as empty used/cap pairs");
+  const account = text(find(root, n => n.className.includes("models-account")));
+  assert.match(account, /factory-0123456789ab/);
+  assert.match(account, /models\.accountIdHelp/);
+  assert.doesNotMatch(account, /models\.periodEnd|models\.balance\s+models\.unknown/, "Factory does not repeat fields it never reports");
+  assert.match(account, /models\.balance\.extra-usage-usd\s+0/);
+});
+
+test("catalog search covers loaded pages only and says so", async () => {
+  const api = fakeApi({
+    modelCatalog: async cursor => ({ ...observation("success", { observedAt: "t1", items: [
+      { id: "factory/claude-opus", source: "factory" }, { id: "cpa/gpt", source: "cpa" }, { id: "plain", source: "metabridge" }] }),
+    total: 250, nextCursor: "3" })
+  });
+  const { root, page } = mount(api);
+  await page.ready; await tick();
+  const catalog = find(root, n => n.dataset.section === "catalog");
+  const search = find(catalog, n => n.type === "search");
+  search.value = "OPUS"; search.handlers.input();
+  assert.deepEqual(all(catalog, n => n.className === "models-catalog-item").map(n => text(n).trim().split(/\s+/)[0]), ["factory/claude-opus"]);
+  assert.match(text(catalog), /models\.catalogCount · models\.catalogMatches/);
+  assert.ok(button(catalog, "models.moreCatalog"), "paging stays available while searching");
+  button(catalog, "cpa").handlers.click();
+  assert.match(text(catalog), /models\.noCatalogMatches/);
 });
