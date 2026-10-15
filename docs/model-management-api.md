@@ -34,6 +34,9 @@ put it in URLs, logs, localStorage or error messages.
 `via` is direct or cpa. For cpa the key is a CPA **client inference key**,
 not an upstream account key or a management key. Prefix is the explicit model
 namespace/mapping and is mandatory for newly managed providers. Existing
+editable prefixes and save inputs include the trailing slash: for example
+`factory/`, matching `^[a-zA-Z0-9_-]{1,64}/$`. Render that value as returned,
+without appending another slash. Existing
 official/subscription and unprefixed shared routes are read-only. Render
 `editable/reason` rather than guessing. Removal unlinks the provider but retains
 its file/credentials; the result notice reports that fact.
