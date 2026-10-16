@@ -18,6 +18,8 @@ import { createRunInput } from "../../dist/context/runInputContract.js";
 import { createDurableJobControl, authorizeJobStart } from "../../dist/controller/jobControl.js";
 import { createBuiltinCapabilities } from "../../dist/kernel/builtinCapabilities.js";
 import { InstanceHost } from "../../dist/kernel/instanceHost.js";
+import { createJobDefinitionControl, admitJobRun } from "../../dist/controller/jobDefinitionControl.js";
+import { cancelQueuedDurableJob } from "../../dist/job/durableJob.js";
 
 test("Job admission, management and spawn keep a Worker inside its current Assignment", async t => {
   const root = mkdtempSync(join(tmpdir(), "yui-job-assignment-"));
@@ -83,6 +85,32 @@ test("Job admission, management and spawn keep a Worker inside its current Assig
   // An older queued record must also be rejected at the actual spawn boundary.
   assert.throws(() => authorizeJobStart(store, { ...own.job, owner: outside.owner, workspace: main, head }), /[Aa]ssignment/);
   const leaderJob = control.startJob({ ...outside, caller: caller("leader") }, at).job;
+  const definitions = createJobDefinitionControl(store, join(root, "home"));
+  const scope = { kind: "task", taskId: task.id };
+  const configuration = { kind: "shell", owner: { kind: "task" }, projectId: project.id,
+    head, workspace: main, env: {}, steps: [{ name: "first", command: "true" }] };
+  const definition = definitions({ op: "define", id: "repeatable", title: "Repeated check",
+    scope, caller: caller("leader"), configuration }, at);
+  assert.throws(() => definitions({ op: "show", id: definition.id, scope, caller: caller("worker") }, at), /Assignment/i);
+  const first = admitJobRun(store, root, scope, definition.id, caller("leader"), { source: "manual", key: "one" }, at);
+  assert.equal(first.created, true);
+  assert.equal(admitJobRun(store, root, scope, definition.id, caller("leader"), { source: "manual", key: "one" }, at).run.id, first.run.id);
+  assert.equal(admitJobRun(store, root, scope, definition.id, caller("leader"), { source: "manual", key: "two" }, at).reason, "overlap");
+  store.saveDurableJob(task.id, cancelQueuedDurableJob(first.run, at));
+  const original = store.getDurableJob(task.id, first.run.id);
+  definitions({ op: "update", id: definition.id, scope, caller: caller("leader"), expectedRevision: 1,
+    title: "Changed check", configuration: { ...configuration, steps: [{ name: "second", command: "echo second" }] } }, at);
+  assert.throws(() => admitJobRun(store, root, scope, definition.id, caller("leader"), { source: "manual", key: "one" }, at), /conflict/i);
+  const second = admitJobRun(store, root, scope, definition.id, caller("leader"), { source: "manual", key: "two" }, at);
+  assert.notEqual(second.run.id, first.run.id);
+  assert.equal(second.run.definitionRevision, 2);
+  assert.deepEqual(store.getDurableJob(task.id, first.run.id), original);
+  store.saveDurableJob(task.id, cancelQueuedDurableJob(second.run, at));
+  assert.throws(() => store.transaction(tx => {
+    admitJobRun(tx, root, scope, definition.id, caller("leader"), { source: "schedule", key: "atomic-tick" }, at);
+    throw new Error("rollback schedule");
+  }), /rollback schedule/);
+  assert.equal(store.listDurableJobs(task.id).filter(run => run.definitionId === definition.id).length, 2);
   assert.throws(() => control.startJob({ ...params, requestId: "leader-private-workspace",
     caller: caller("leader") }, at), /Assignment/);
   assert.throws(() => control.getJob(task.id, leaderJob.id, caller("worker")), /Assignment/i);

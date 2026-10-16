@@ -8,6 +8,7 @@ import { validateInputRequest } from "../input/inputRequest.js";
 import { validateChangeSet, type ChangeSet } from "../integration/changeSet.js";
 import { validateIntegrationAttempt } from "../integration/integrationAttempt.js";
 import { validateDurableJob } from "../job/durableJob.js";
+import { validateJobDefinition } from "../job/jobDefinition.js";
 import { validateGlobalRoleMessage, validateTaskMessage } from "../message/message.js";
 import { validateMilestone } from "../milestone/milestone.js";
 import { validatePluginIntent } from "../plugins/pluginIntent.js";
@@ -55,6 +56,8 @@ const validators = {
   change_sets: check<ChangeSet>(validateChangeSet),
   integration_attempts: check(validateIntegrationAttempt),
   durable_jobs: check(validateDurableJob),
+  job_definitions: check(validateJobDefinition),
+  global_job_runs: check(validateDurableJob),
   context_snapshots: check(validateContextSnapshot),
   managed_workspaces: check(validateManagedWorkspace),
   input_requests: check(validateInputRequest),

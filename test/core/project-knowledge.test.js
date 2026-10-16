@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { usePre19Layout } from "../helpers/pre19Storage.mjs";
 import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -154,6 +155,7 @@ test(`1.${minor} migration preserves knowledge, frozen Context and input intent 
       knowledgeProposals: [proposal, { ...proposal, id: "proposal-2", status: "pending",
         scope: "Maintenance and review", decidedBy: undefined, decidedAt: undefined, knowledgeId: undefined }]
     }), base.id);
+    usePre19Layout(database);
     database.prepare("UPDATE storage_schema SET minor=? WHERE id=1").run(minor);
     const expectedChain = [
       ["1.0", "1.1", "task-main-workspace"],
@@ -163,7 +165,8 @@ test(`1.${minor} migration preserves knowledge, frozen Context and input intent 
       ["1.4", "1.5", "frozen-skill-packages"],
       ["1.5", "1.6", "runtime-cost-evidence"],
       ["1.6", "1.7", "agent-inbox-consumption"],
-      ["1.7", "1.8", "model-management-connection"]
+      ["1.7", "1.8", "model-management-connection"],
+      ["1.8", "1.9", "job-definitions-and-runs"]
     ];
     assert.deepEqual(storageMinorUpgradePlan(`1.${minor}`).map(step =>
       [step.fromVersion, step.toVersion, step.name]), expectedChain.slice(minor));
@@ -171,7 +174,7 @@ test(`1.${minor} migration preserves knowledge, frozen Context and input intent 
     const inputBefore = database.prepare("SELECT payload FROM messages").get();
     assert.throws(() => new SqliteTaskStore(home), /current|upgrade|storage/i);
     applySqliteMinorUpgrades(database, home);
-    assert.equal(inspectSqliteSchema(database).currentVersion, "1.8");
+    assert.equal(inspectSqliteSchema(database).currentVersion, "1.9");
     assert.deepEqual(database.prepare("SELECT payload,digest FROM context_snapshots").get(), snapshotBefore);
     assert.deepEqual(database.prepare("SELECT payload FROM messages").get(), inputBefore);
   } finally { database.close(); }

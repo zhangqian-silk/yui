@@ -34,7 +34,8 @@ import {
   rejectQueuedDurableJob,
   startDurableJob,
   touchDurableJobHeartbeat,
-  type DurableJob,
+  executionNamespace,
+  type JobRun as DurableJob,
   type DurableJobCheckpoint,
   type DurableJobExit,
   type DurableJobResult,
@@ -191,7 +192,7 @@ export class DurableJobSupervisor {
       try {
         this.#reconcileJob(job, now);
       } catch (error) {
-        this.#onError(new Error(`DurableJob supervision failed for ${job.taskId}/${job.id}: `
+        this.#onError(new Error(`DurableJob supervision failed for ${executionNamespace(job)}/${job.id}: `
           + `${error instanceof Error ? error.message : String(error)}. `
           + "Inspect retained process/artifact evidence before retry or cancellation; effects remain unconfirmed.",
         { cause: error }));
@@ -212,15 +213,15 @@ export class DurableJobSupervisor {
 
   /** Composite key for the SIGKILL deadline map. */
   #sigkillKey(job: DurableJob): string {
-    return `${job.taskId}/${job.id}`;
+    return `${executionNamespace(job)}/${job.id}`;
   }
 
   /** Adopt observed execution, preserve unknown, or start an unattempted request. */
   #reconcileQueued(job: DurableJob, now: Date): void {
-    const marker = this.#artifacts.readStartMarker(job.taskId, job.id);
+    const marker = this.#artifacts.readStartMarker(executionNamespace(job), job.id);
     const spawned = this.#spawnedProcessFromEvidence(job, marker);
     if (job.cancelRequestedAt !== undefined) {
-      this.#artifacts.writeCancelFence(job.taskId, job.id);
+      this.#artifacts.writeCancelFence(executionNamespace(job), job.id);
       if (spawned !== null) {
         this.#process.signalIfOwned(spawned.pid, spawned.startIdentity, "SIGTERM");
       }
@@ -233,7 +234,7 @@ export class DurableJobSupervisor {
       // A send intent was committed but no acceptance can be proved. Absence
       // of a file is not proof of no external effect. Never respawn unknown.
       const terminal = this.#store.transitionDurableJob(
-        job.taskId, job.id,
+        executionNamespace(job), job.id,
         (current) => markDurableJobWakeupNotified(markDurableJobUnknown(
           current, "runner acceptance is unknown; inspect the original request",
           current.checkpoint?.completedSteps ?? [], now
@@ -247,7 +248,7 @@ export class DurableJobSupervisor {
     if (job.cancelRequestedAt !== undefined) {
       // No effect attempted. Cancellation and its wake commit atomically.
       const terminal = this.#store.transitionDurableJob(
-        job.taskId,
+        executionNamespace(job),
         job.id,
         (current) => markDurableJobWakeupNotified(
           cancelQueuedDurableJob(current, now),
@@ -278,7 +279,7 @@ export class DurableJobSupervisor {
     // around the spawn), while ready.json is written by the runner itself
     // before any side effect. A disagreement (PID reuse, spawn retry, stale
     // /proc read) is resolved in favor of ready.json.
-    const ready = this.#artifacts.readReadyFile(job.taskId, job.id);
+    const ready = this.#artifacts.readReadyFile(executionNamespace(job), job.id);
     if (ready !== null) {
       return { pid: ready.pid, startIdentity: ready.startIdentity };
     }
@@ -300,13 +301,13 @@ export class DurableJobSupervisor {
     now: Date
   ): void {
     this.#store.transitionDurableJob(
-      job.taskId,
+      executionNamespace(job),
       job.id,
       (current) => startDurableJob(current, process, now),
       now
     );
     // The runner may already have finished while the Controller was down.
-    const exit = this.#artifacts.readExitJson(job.taskId, job.id);
+    const exit = this.#artifacts.readExitJson(executionNamespace(job), job.id);
     if (exit !== null) {
       this.#harvestExit(job, exit, now);
       return;
@@ -329,19 +330,19 @@ export class DurableJobSupervisor {
     }
     const spec: DurableJobSpec = {
       jobId: job.id,
-      taskId: job.taskId,
+      ...("taskId" in job ? { taskId: job.taskId } : { scope: "global" as const }),
       workspace: job.workspace,
       env: job.env,
       steps: job.steps,
       defaultStepTimeoutMs: DEFAULT_STEP_TIMEOUT_MS,
-      artifactDir: this.#artifacts.artifactDir(job.taskId, job.id),
+      artifactDir: this.#artifacts.artifactDir(executionNamespace(job), job.id),
       head: job.head
     };
-    const specPath = this.#artifacts.writeSpec(job.taskId, job.id, spec);
+    const specPath = this.#artifacts.writeSpec(executionNamespace(job), job.id, spec);
     let attempted: DurableJob | null;
     try {
       attempted = this.#store.transitionDurableJob(
-        job.taskId, job.id,
+        executionNamespace(job), job.id,
         (current) => {
           if (current.status !== "queued" || current.operation.effect !== "none") {
             throw new Error("Job already attempted; inspect the original request.");
@@ -361,7 +362,7 @@ export class DurableJobSupervisor {
     if (attempted === null) return;
     // Both the request and possible-effect boundary precede spawn. A missing
     // acceptance after this point is unknown, never permission to respawn.
-    this.#artifacts.writeStartMarker(job.taskId, job.id, {
+    this.#artifacts.writeStartMarker(executionNamespace(job), job.id, {
       pid: 0,
       startIdentity: "pending",
       spawnedAt: now.toISOString()
@@ -371,7 +372,7 @@ export class DurableJobSupervisor {
     // the runner's own ready.json is the fallback: the next reconcile reads
     // ready and adopts. The runner checks ready with O_EXCL and exits if it
     // already exists, preventing duplicate execution.
-    this.#artifacts.writeStartMarker(job.taskId, job.id, {
+    this.#artifacts.writeStartMarker(executionNamespace(job), job.id, {
       pid: spawned.pid,
       startIdentity: spawned.startIdentity ?? String(spawned.pid),
       spawnedAt: now.toISOString()
@@ -383,8 +384,8 @@ export class DurableJobSupervisor {
     // terminalized or no longer exists; the recovery interval stays the
     // cross-restart fallback. No new timer is pinned while the Controller is
     // idle — each wake is a single event-driven signal.
-    spawned.onExit?.(() => this.#wake(job.taskId));
-    this.#wake(job.taskId);
+    spawned.onExit?.(() => this.#wake(executionNamespace(job)));
+    this.#wake(executionNamespace(job));
   }
 
   #rejectStart(job: DurableJob, error: unknown, now: Date): void {
@@ -392,7 +393,7 @@ export class DurableJobSupervisor {
     // errors still propagate; never infer rejection from an unavailable read.
     if (!(error instanceof Error) || error.name !== "CoreJobError") throw error;
     const terminal = this.#store.transitionDurableJob(
-      job.taskId, job.id,
+      executionNamespace(job), job.id,
       (current) => markDurableJobWakeupNotified(
         rejectQueuedDurableJob(current, error.message, now), now
       ),
@@ -403,7 +404,7 @@ export class DurableJobSupervisor {
 
   #superviseRunning(job: DurableJob, now: Date): void {
     // 1. Harvest exit.json if present.
-    const exit = this.#artifacts.readExitJson(job.taskId, job.id);
+    const exit = this.#artifacts.readExitJson(executionNamespace(job), job.id);
     if (exit !== null) {
       this.#harvestExit(job, exit, now);
       return;
@@ -411,7 +412,7 @@ export class DurableJobSupervisor {
 
     // 2. Cancel requested: write fence + SIGTERM.
     if (job.cancelRequestedAt !== undefined && job.process !== undefined) {
-      this.#artifacts.writeCancelFence(job.taskId, job.id);
+      this.#artifacts.writeCancelFence(executionNamespace(job), job.id);
       this.#process.signalIfOwned(
         job.process.pid,
         job.process.startIdentity,
@@ -432,7 +433,7 @@ export class DurableJobSupervisor {
     }
 
     // 4. Heartbeat freshness.
-    const heartbeatMtime = this.#artifacts.heartbeatMtime(job.taskId, job.id);
+    const heartbeatMtime = this.#artifacts.heartbeatMtime(executionNamespace(job), job.id);
     if (heartbeatMtime !== null) {
       const staleMs = now.getTime() - heartbeatMtime;
       if (staleMs > HEARTBEAT_STALE_MS && job.process !== undefined) {
@@ -451,7 +452,7 @@ export class DurableJobSupervisor {
         : 0;
       if (heartbeatMtime > recordHeartbeat) {
         this.#store.transitionDurableJob(
-          job.taskId,
+          executionNamespace(job),
           job.id,
           (current) => touchDurableJobHeartbeat(current, new Date(heartbeatMtime)),
           now
@@ -474,7 +475,7 @@ export class DurableJobSupervisor {
   #harvestExit(job: DurableJob, exit: DurableJobExit, now: Date): void {
     // Persist the original receipt locator before interpreting its output.
     // A bad schema cannot erase evidence of an already executed runner.
-    this.#store.transitionDurableJob(job.taskId, job.id, (current) => ({
+    this.#store.transitionDurableJob(executionNamespace(job), job.id, (current) => ({
       ...current,
       operation: recordOperationEvidence(current.operation, {
         effect: "confirmed",
@@ -499,7 +500,7 @@ export class DurableJobSupervisor {
     // A separate #notifyWakeup pass would lose the wakeup if the Controller
     // died between the terminal write and the flag flip.
     const terminal = this.#store.transitionDurableJob(
-      job.taskId,
+      executionNamespace(job),
       job.id,
       (current) => {
         let completed: DurableJob;
@@ -522,7 +523,7 @@ export class DurableJobSupervisor {
   }
 
   #handleDeadProcess(job: DurableJob, now: Date): void {
-    const checkpoint = this.#artifacts.readCheckpoint(job.taskId, job.id);
+    const checkpoint = this.#artifacts.readCheckpoint(executionNamespace(job), job.id);
     const proven = checkpoint === null ? null : proveOutcomeFromCheckpoint(job, checkpoint);
     // rr4/finding-7: Same atomic wakeup composition as #harvestExit — the
     // terminal transition and the Leader wakeup commit together.
@@ -531,7 +532,7 @@ export class DurableJobSupervisor {
       // every planned step: the outcome is still provable from durable
       // evidence. No false pass — the checkpoint is the runner's own record.
       const terminal = this.#store.transitionDurableJob(
-        job.taskId,
+        executionNamespace(job),
         job.id,
         (current) => markDurableJobWakeupNotified(
           completeDurableJob(current, { ...proven, evidenceSource: "checkpoint" }, now),
@@ -544,7 +545,7 @@ export class DurableJobSupervisor {
     } else {
       const completedSteps = checkpoint?.completedSteps ?? [];
       const terminal = this.#store.transitionDurableJob(
-        job.taskId,
+        executionNamespace(job),
         job.id,
         (current) => markDurableJobWakeupNotified(
           markDurableJobUnknown(
@@ -573,8 +574,9 @@ export class DurableJobSupervisor {
    */
   #deliverTerminalEvent(job: DurableJob | null): void {
     if (job === null || !isDurableJobTerminal(job.status)) return;
+    if (!("taskId" in job)) return; // The durable Operator mailbox owns global notices.
     this.#terminalEvents?.deliverTerminalEvent({
-      taskId: job.taskId,
+      taskId: executionNamespace(job),
       jobId: job.id,
       status: job.status,
       outcome: job.result?.outcome ?? job.status
@@ -584,9 +586,10 @@ export class DurableJobSupervisor {
 }
 
 function wakeupRefs(job: DurableJob): readonly MailboxEntityRef[] {
-  const refs: MailboxEntityRef[] = [{ type: "task", id: job.taskId }];
+  if (!("taskId" in job)) return [];
+  const refs: MailboxEntityRef[] = [{ type: "task", id: executionNamespace(job) }];
   if (job.owner.kind === "work-item") {
-    refs.push({ type: "work-item", taskId: job.taskId, id: job.owner.workItemId });
+    refs.push({ type: "work-item", taskId: executionNamespace(job), id: job.owner.workItemId });
   }
   return refs;
 }

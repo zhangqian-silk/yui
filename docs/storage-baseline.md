@@ -2,7 +2,12 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.8. The declared 1.7 → 1.8 transition permits an optional
+Current storage is 1.9. The declared 1.8 → 1.9 transition adds stable Job
+definitions and global Runs, and links each historical Task execution to its
+own definition while preserving exact IDs, artifacts and Integration references.
+Original Job payload bytes are archived. See [Job/Run contracts](job-runs.md).
+
+The declared 1.7 → 1.8 transition permits an optional
 Model management connection in Yui configuration. Only service addresses and
 file references are stored; no credentials are imported. Existing Homes remain
 unconfigured, and the SQL layout is unchanged.

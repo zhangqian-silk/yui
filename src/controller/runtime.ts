@@ -127,6 +127,7 @@ import {
 } from "./fileSchedulerStoreAdapter.js";
 import { deliverGlobalInputs } from "./globalInputDelivery.js";
 import { authorizeJobStart } from "./jobControl.js";
+import { authorizeGlobalJobStart, createJobDefinitionControl } from "./jobDefinitionControl.js";
 import {
   createFileArtifactPort,
   createLinuxProcessPort,
@@ -649,7 +650,7 @@ export async function startFileTaskControllerRuntime(
       store: schedulerStore,
       process: kernel.runner,
       artifacts: createFileArtifactPort(home),
-      authorizeStart: (job) => authorizeJobStart(store, job),
+      authorizeStart: (job) => "taskId" in job ? authorizeJobStart(store, job) : authorizeGlobalJobStart(store, job),
       // rr6/f1: Bounded supervision wake. The supervisor signals the Controller
       // after spawning a runner (queued→running adoption) and when a runner
       // exits (terminal harvest), so a quick job converges without waiting for
@@ -658,7 +659,7 @@ export async function startFileTaskControllerRuntime(
       // no-op. The recovery interval stays the cross-restart fallback.
       wake: (taskId) => {
         try {
-          runningRuntime?.signal(`task:${taskId}`);
+          runningRuntime?.signal(taskId === "global" ? "operator" : `task:${taskId}`);
         } catch {
           // Controller stopped; the recovery interval remains the fallback.
         }
@@ -741,6 +742,7 @@ export async function startFileTaskControllerRuntime(
           await lifecycleDispatcher("runtime.ensure-role-session", { scope: "global", roleName });
         }, options.onError ?? (() => undefined), deliveryOptions),
         jobControl,
+        jobDefinitions: createJobDefinitionControl(store, home),
         capabilityDispatcher: createCapabilityDispatcher(kernel.capabilities),
         ...(continuationReconciler === undefined ? {} : { continuationReconciler }),
         ...(resourceReaper === undefined ? {} : { resourceReaper }),

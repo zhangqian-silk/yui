@@ -19,7 +19,7 @@ import type { RuntimeObservationInboxEvent } from "./runtimeEventInbox.js";
 import { RuntimeHookRunFenceError } from "./runtimeHookRunFence.js";
 
 import type { MailboxEntityRef } from "../coordination/workMailbox.js";
-import type { DurableJob } from "../job/durableJob.js";
+import type { JobRun } from "../job/durableJob.js";
 import {
   type SchedulerTelemetry,
   type TelemetryProgressEntry
@@ -2007,9 +2007,11 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
     });
   }
 
-  listActiveDurableJobs(): readonly DurableJob[] {
-    return this.store.listActiveDurableJobs();
+  listActiveDurableJobs(): readonly JobRun[] {
+    return [...this.store.listActiveDurableJobs(), ...this.store.listActiveGlobalJobRuns()];
   }
+
+  getGlobalJobRun(id: string) { return this.store.getGlobalJobRun(id); }
 
   /**
    * Apply one durable-job transition and, in the SAME transaction, enqueue
@@ -2023,14 +2025,26 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
   transitionDurableJob(
     taskId: string,
     jobId: string,
-    transition: (job: DurableJob) => DurableJob,
+    transition: (job: JobRun) => JobRun,
     now: Date,
     wakeup?: { reason: string; refs: readonly MailboxEntityRef[] }
-  ): DurableJob | null {
+  ): JobRun | null {
     return this.store.transaction((store) => {
+      if (taskId === "global") {
+        const current = store.getGlobalJobRun(jobId);
+        if (current === null) return null;
+        const next = transition(current);
+        if ("taskId" in next) throw new Error("A global JobRun cannot change scope.");
+        store.saveGlobalJobRun(next);
+        if (wakeup !== undefined) enqueueWork(store, { kind: "operator" },
+          "global-job-finished", now, [{ type: "global-job-run", id: jobId }],
+          { source: "global-job", dedupeKey: `operator-global-job-run:${jobId}` });
+        return next;
+      }
       const current = store.getDurableJob(taskId, jobId);
       if (current === null) return null;
       const next = transition(current);
+      if (!("taskId" in next)) throw new Error("A Task JobRun cannot change scope.");
       store.saveDurableJob(taskId, next);
       if (wakeup !== undefined) {
         enqueueWork(

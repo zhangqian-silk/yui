@@ -9,7 +9,7 @@
  * preserves its admitted Job across authorized Session replacement.
  */
 import { execSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { resolve, sep } from "node:path";
 
 import type { JsonValue } from "../core/protocol.js";
@@ -35,6 +35,7 @@ import { assertJobAssignmentScope, JobAssignmentScopeError } from "../job/jobAss
 import { assertContextRecordReadable } from "../context/taskContext.js";
 import { assertTaskProjectWriteAuthority } from "../task/taskAuthority.js";
 import { validateHttpPreview } from "../job/httpPreview.js";
+import { definitionFromTaskRun, type JobTrigger } from "../job/jobDefinition.js";
 
 /**
  * rr8: The caller identity a `job.start`/`job.cancel` request is bound to.
@@ -62,6 +63,9 @@ export type DurableJobCaller = Readonly<{
 }>;
 
 export type DurableJobStartParams = Readonly<{
+  /** Internal definition admission; never accepted by the legacy RPC parser. */
+  definitionId?: string;
+  trigger?: JobTrigger;
   taskId: string;
   owner: DurableJobOwner;
   projectId: string;
@@ -112,7 +116,7 @@ export function createDurableJobControl(store: TaskStore): DurableJobControlPort
         requireJobAssignment(tx, params, params.caller);
         assertNonSecretJobInput(params);
         validateHttpPreview(params.env, params.steps);
-        const baseKey = durableJobIdempotencyKey({
+        const specificationKey = durableJobIdempotencyKey({
           owner: params.owner,
           projectId: params.projectId,
           head: params.head,
@@ -120,6 +124,11 @@ export function createDurableJobControl(store: TaskStore): DurableJobControlPort
           workspace: params.workspace,
           env: params.env
         });
+        const definition = params.definitionId === undefined ? null
+          : tx.getJobDefinition({ kind: "task", taskId: params.taskId }, params.definitionId);
+        if (params.definitionId !== undefined && definition === null) throw jobDomainError("Job definition not found.");
+        const baseKey = definition === null ? specificationKey : createHash("sha256")
+          .update(JSON.stringify([specificationKey, definition.id, definition.revision, params.trigger])).digest("hex");
         const inputDigest = params.retryOf === undefined
           ? baseKey
           : retryDurableJobIdempotencyKey(baseKey, params.retryOf);
@@ -157,9 +166,28 @@ export function createDurableJobControl(store: TaskStore): DurableJobControlPort
         }
         authority.authorize(context, params.taskId);
         validateStartParams(tx, params);
+        const previous = params.retryOf === undefined ? null : tx.getDurableJob(params.taskId, params.retryOf);
+        if (previous !== null) {
+          requireJobAssignment(tx, previous, params.caller);
+          if (definition === null && durableJobIdempotencyKey(previous) !== specificationKey) {
+            throw jobDomainError("Legacy retry must preserve the original Run specification; update its Job definition for a changed configuration.");
+          }
+        }
+        const definitionId = definition?.id ?? previous?.definitionId;
+        if (definitionId !== undefined) {
+          const active = tx.listDurableJobs(params.taskId).find(run => run.definitionId === definitionId
+            && (run.status === "queued" || run.status === "running" || run.status === "unknown-needs-attention"));
+          if (active !== undefined) throw jobDomainError(`Job is already occupied by Run ${active.id} (${active.status}); no new Run was admitted.`);
+        }
         const id = tx.nextDurableJobId(params.taskId);
         const job = createDurableJob({
           id,
+          definitionId: definitionId ?? `definition-${randomUUID()}`,
+          definitionRevision: definition?.revision ?? previous?.definitionRevision,
+          trigger: params.trigger ?? {
+            source: params.retryOf !== undefined ? "retry" : params.owner.kind === "integration-attempt" ? "integration" : "manual",
+            key: requestId
+          },
           taskId: params.taskId,
           owner: params.owner,
           projectId: params.projectId,
@@ -174,6 +202,9 @@ export function createDurableJobControl(store: TaskStore): DurableJobControlPort
           artifactsLocator: `artifacts/jobs/${params.taskId}/${id}`,
           ...(params.retryOf === undefined ? {} : { retryOf: params.retryOf })
         }, now);
+        if (tx.getJobDefinition({ kind: "task", taskId: params.taskId }, job.definitionId) === null) {
+          tx.saveJobDefinition(definitionFromTaskRun(job));
+        }
         tx.saveDurableJob(params.taskId, job);
         return { job, created: true };
       });
@@ -269,7 +300,7 @@ function assertLeaderJobWriteScope(
   }
 }
 
-function requireJobAssignment(
+export function requireJobAssignment(
   store: TaskStore,
   target: Pick<DurableJob, "taskId" | "owner" | "projectId" | "workspace">,
   caller: Pick<DurableJobCaller, "scope" | "role">
@@ -281,7 +312,7 @@ function requireJobAssignment(
   }
 }
 
-function jobAuthorityBinding(store: TaskStore, scope: string, roleName: string, taskId: string): string {
+export function jobAuthorityBinding(store: TaskStore, scope: string, roleName: string, taskId: string): string {
   // A Host detach/reattach preserves the native Session and its queued work.
   // Authenticate the live launch at ingress, but bind accepted Jobs to the
   // caller's durable Session identity, not its disposable Host generation.
@@ -311,7 +342,7 @@ function jobAuthorityBinding(store: TaskStore, scope: string, roleName: string, 
   ])).digest("hex");
 }
 
-function assertNonSecretJobInput(params: DurableJobStartParams): void {
+export function assertNonSecretJobInput(params: DurableJobStartParams): void {
   // Existing Jobs persist commands and environments. This boundary accepts
   // non-secret executable specifications only; credential resolution is not a
   // Job feature. Never hash a known secret then call the digest sanitized.
@@ -343,7 +374,7 @@ function assertNonSecretJobInput(params: DurableJobStartParams): void {
  * workspace was not the stable checkout. Now it binds the job to the exact
  * managed workspace, verifies write access, and requires an active Task.
  */
-function validateStartParams(store: TaskStore, params: DurableJobStartParams): void {
+export function validateStartParams(store: TaskStore, params: DurableJobStartParams): void {
   validateJobTarget(store, params);
   assertCallerAuthorized(store, params.caller, params.taskId);
   assertLeaderJobWriteScope(store, params, params.caller);
@@ -504,7 +535,7 @@ function validateJobTarget(store: TaskStore, params: Omit<DurableJobStartParams,
  * identity contract does not defend against another process with the same
  * user's filesystem access. Bare user calls cannot start or cancel Jobs.
  */
-function assertCallerAuthorized(
+export function assertCallerAuthorized(
   store: Pick<
     TaskStore,
     "getRun" | "getActiveRun" | "getRole" | "getTaskRoleSessionSet" | "listEventsByType"

@@ -2,7 +2,11 @@
 
 # 存储基线 1.0
 
-当前存储为 1.8。1.7 → 1.8 允许在 Yui 配置中保存可选的 Model 管理连接，
+当前存储为 1.9。1.8 → 1.9 新增稳定 Job 定义和 global Run；每条历史 Task 执行
+独立映射为定义，保留原执行 ID、产物与 Integration 精确引用，并归档原始 payload。
+详见 [Job/Run 契约](job-runs.md)。
+
+1.7 → 1.8 允许在 Yui 配置中保存可选的 Model 管理连接，
 仅保存服务地址及文件引用，不导入凭据；已有 Home 保持未配置，SQL 布局不变。
 
 1.6 → 1.7 为规范 Message 和 Leader wake 增加可选的 Agent

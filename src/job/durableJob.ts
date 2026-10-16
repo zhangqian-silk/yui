@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { JobTrigger } from "./jobDefinition.js";
 import {
   requireIdentity,
   requirePositiveInteger,
@@ -98,6 +99,10 @@ export type DurableJobProcess = Readonly<{
 export type DurableJob = Readonly<{
   schemaVersion: typeof CURRENT_DURABLE_JOB_SCHEMA_VERSION;
   id: string;
+  /** Stable definition; id remains the exact execution (Run) reference. */
+  definitionId: string;
+  definitionRevision: number;
+  trigger: JobTrigger;
   taskId: string;
   owner: DurableJobOwner;
   projectId: string;
@@ -128,10 +133,23 @@ export type DurableJob = Readonly<{
   updatedAt: string;
 }>;
 
+/** Global executions have no Task identity, Assignment or Task lifecycle gate. */
+export type GlobalJobRun = Omit<DurableJob, "taskId" | "owner" | "projectId"> & Readonly<{
+  scope: "global";
+  action: string;
+  actionInput: import("../core/protocol.js").JsonValue;
+  projectId?: string;
+}>;
+export type JobRun = DurableJob | GlobalJobRun;
+export function executionNamespace(run: JobRun): string {
+  return "taskId" in run ? run.taskId : "global";
+}
+
 /** The spec the Controller writes for the runner to consume. */
 export type DurableJobSpec = Readonly<{
   jobId: string;
-  taskId: string;
+  taskId?: string;
+  scope?: "global";
   workspace: string;
   env: Readonly<Record<string, string>>;
   steps: readonly DurableJobStep[];
@@ -157,6 +175,9 @@ export function isDurableJobTerminal(status: DurableJobStatus): boolean {
 export function createDurableJob(
   input: Readonly<{
     id: string;
+    definitionId?: string;
+    definitionRevision?: number;
+    trigger?: JobTrigger;
     taskId: string;
     owner: DurableJobOwner;
     projectId: string;
@@ -177,6 +198,9 @@ export function createDurableJob(
   return validateDurableJob({
     schemaVersion: CURRENT_DURABLE_JOB_SCHEMA_VERSION,
     id: input.id,
+    definitionId: input.definitionId ?? input.id,
+    definitionRevision: input.definitionRevision ?? 1,
+    trigger: input.trigger ?? { source: "manual", key: input.operation.requestId },
     taskId: input.taskId,
     owner: input.owner,
     projectId: input.projectId,
@@ -202,11 +226,11 @@ export function createDurableJob(
   });
 }
 
-export function startDurableJob(
-  job: DurableJob,
+export function startDurableJob<T extends JobRun>(
+  job: T,
   process: DurableJobProcess,
   now: Date
-): DurableJob {
+): T {
   validateDurableJob(job);
   if (job.status !== "queued") {
     throw new Error(`DurableJob can only start from queued: ${job.status}.`);
@@ -226,10 +250,10 @@ export function startDurableJob(
   });
 }
 
-export function touchDurableJobHeartbeat(
-  job: DurableJob,
+export function touchDurableJobHeartbeat<T extends JobRun>(
+  job: T,
   now: Date
-): DurableJob {
+): T {
   validateDurableJob(job);
   if (job.status !== "running") {
     throw new Error(`DurableJob heartbeat only applies to running jobs: ${job.status}.`);
@@ -241,11 +265,11 @@ export function touchDurableJobHeartbeat(
   });
 }
 
-export function completeDurableJob(
-  job: DurableJob,
+export function completeDurableJob<T extends JobRun>(
+  job: T,
   result: DurableJobResult,
   now: Date
-): DurableJob {
+): T {
   validateDurableJob(job);
   if (job.status !== "running") {
     throw new Error(`DurableJob can only complete from running: ${job.status}.`);
@@ -269,11 +293,11 @@ export function completeDurableJob(
 }
 
 /** A refused, unattempted request has a known failed outcome, not an unknown effect. */
-export function rejectQueuedDurableJob(
-  job: DurableJob,
+export function rejectQueuedDurableJob<T extends JobRun>(
+  job: T,
   reason: string,
   now: Date
-): DurableJob {
+): T {
   validateDurableJob(job);
   if (job.status !== "queued" || job.operation.effect !== "none") {
     throw new Error("Only an unattempted queued Job can be rejected.");
@@ -291,12 +315,12 @@ export function rejectQueuedDurableJob(
   });
 }
 
-export function markDurableJobUnknown(
-  job: DurableJob,
+export function markDurableJobUnknown<T extends JobRun>(
+  job: T,
   unknownReason: string,
   completedSteps: readonly DurableJobStepResult[],
   now: Date
-): DurableJob {
+): T {
   validateDurableJob(job);
   if (job.status !== "running" && !(job.status === "queued" && job.operation.effect !== "none")) {
     throw new Error(`DurableJob can only be marked unknown after an attempted effect: ${job.status}.`);
@@ -320,10 +344,10 @@ export function markDurableJobUnknown(
   });
 }
 
-export function requestDurableJobCancel(
-  job: DurableJob,
+export function requestDurableJobCancel<T extends JobRun>(
+  job: T,
   now: Date
-): DurableJob {
+): T {
   validateDurableJob(job);
   // A terminal job is already past cancellation: return it unchanged so the
   // caller (e.g. `task integration abort` after the job finished but before
@@ -344,10 +368,10 @@ export function requestDurableJobCancel(
  * spawning a runner. A queued job has no steps to prove, so the result is
  * an empty cancelled outcome.
  */
-export function cancelQueuedDurableJob(
-  job: DurableJob,
+export function cancelQueuedDurableJob<T extends JobRun>(
+  job: T,
   now: Date
-): DurableJob {
+): T {
   validateDurableJob(job);
   if (job.status !== "queued") {
     throw new Error(`DurableJob can only cancel-queued from queued: ${job.status}.`);
@@ -367,10 +391,10 @@ export function cancelQueuedDurableJob(
   });
 }
 
-export function markDurableJobWakeupNotified(
-  job: DurableJob,
+export function markDurableJobWakeupNotified<T extends JobRun>(
+  job: T,
   now: Date
-): DurableJob {
+): T {
   validateDurableJob(job);
   if (!isDurableJobTerminal(job.status)) {
     throw new Error("DurableJob wakeup notification requires a terminal job.");
@@ -389,10 +413,10 @@ export function markDurableJobWakeupNotified(
  * longer blocks Task lifecycle gates. Only unknown jobs can be acknowledged,
  * and the flag is one-way (a terminal job stays terminal).
  */
-export function acknowledgeUnknownDurableJob(
-  job: DurableJob,
+export function acknowledgeUnknownDurableJob<T extends JobRun>(
+  job: T,
   now: Date
-): DurableJob {
+): T {
   validateDurableJob(job);
   if (job.status !== "unknown-needs-attention") {
     throw new Error(
@@ -435,57 +459,30 @@ export function retryDurableJobIdempotencyKey(
     .digest("hex");
 }
 
-export function validateDurableJob(job: DurableJob): DurableJob {
+export function validateDurableJob<T extends JobRun>(job: T): T {
   if (job.schemaVersion !== CURRENT_DURABLE_JOB_SCHEMA_VERSION) {
     throw new Error(
       `DurableJob must use schemaVersion ${CURRENT_DURABLE_JOB_SCHEMA_VERSION}.`
     );
   }
   validateOperationFacts(job.operation);
-  validateTaskRecordReference({
-    taskId: job.taskId,
-    localId: job.id
-  }, "durableJob");
-  validateDurableJobOwner(job.owner, job.taskId);
-  requireIdentity(job.projectId, "DurableJob project id");
-  requireCommit(job.head, "DurableJob head");
-  requireText(job.workspace, "DurableJob workspace");
-  if (!job.workspace.startsWith("/")) {
-    throw new Error("DurableJob workspace must be an absolute path.");
+  requireIdentity(job.definitionId, "Job definition id");
+  requirePositiveInteger(job.definitionRevision, "Job definition revision");
+  requireText(job.trigger?.key, "Job trigger key");
+  if (!["manual", "retry", "schedule", "integration", "migration"].includes(job.trigger.source)) {
+    throw new Error("Invalid JobRun trigger source.");
   }
-  validateEnvMap(job.env);
-  if (!Array.isArray(job.steps) || job.steps.length === 0) {
-    throw new Error("DurableJob requires at least one step.");
+  if ("taskId" in job) {
+    validateTaskRecordReference({ taskId: job.taskId, localId: job.id }, "durableJob");
+    validateDurableJobOwner(job.owner, job.taskId);
+    requireIdentity(job.projectId, "DurableJob project id");
+  } else {
+    if (job.scope !== "global") throw new Error("Invalid global JobRun scope.");
+    requireIdentity(job.id, "JobRun id");
+    requireText(job.action, "JobRun builtin action");
+    if (job.projectId !== undefined) requireIdentity(job.projectId, "JobRun Project id");
   }
-  const stepNames = new Set<string>();
-  for (const step of job.steps) {
-    const name = requireText(step.name, "DurableJob step name");
-    if (stepNames.has(name)) {
-      throw new Error(`DurableJob step names must be unique: ${name}.`);
-    }
-    stepNames.add(name);
-    requireText(step.command, `DurableJob step command (${name})`);
-    if (step.argv !== undefined) {
-      if (!Array.isArray(step.argv) || step.argv.length === 0) {
-        throw new Error(`DurableJob step argv must be a non-empty array (${name}).`);
-      }
-      for (const value of step.argv) {
-        requireText(value, `DurableJob step argv (${name})`);
-      }
-    }
-    if (step.cwd !== undefined) {
-      requireText(step.cwd, `DurableJob step cwd (${name})`);
-      if (!step.cwd.startsWith("/")) {
-        throw new Error(`DurableJob step cwd must be absolute (${name}).`);
-      }
-    }
-    if (step.env !== undefined) {
-      validateEnvMap(step.env);
-    }
-    if (step.timeoutMs !== undefined) {
-      requirePositiveInteger(step.timeoutMs, `DurableJob step timeout (${name})`);
-    }
-  }
+  validateJobExecutionConfiguration(job);
   requireText(job.idempotencyKey, "DurableJob idempotency key");
   if (!/^[a-f0-9]{64}$/u.test(job.idempotencyKey)) {
     throw new Error("DurableJob idempotency key is invalid.");
@@ -530,10 +527,8 @@ export function validateDurableJob(job: DurableJob): DurableJob {
     normalizeDurableJobResult(job.result);
   }
   if (job.retryOf !== undefined) {
-    validateTaskRecordReference(
-      { taskId: job.taskId, localId: job.retryOf },
-      "durableJob"
-    );
+    if ("taskId" in job) validateTaskRecordReference({ taskId: job.taskId, localId: job.retryOf }, "durableJob");
+    else requireIdentity(job.retryOf, "JobRun retryOf");
   }
   if (job.cancelRequestedAt !== undefined) {
     requireTimestamp(job.cancelRequestedAt, "DurableJob cancelRequestedAt");
@@ -557,19 +552,24 @@ export function validateDurableJob(job: DurableJob): DurableJob {
 }
 
 export function validDurableJobTransition(
-  before: DurableJob,
-  after: DurableJob
+  before: JobRun,
+  after: JobRun
 ): boolean {
   if (
     before.id !== after.id
-    || before.taskId !== after.taskId
+    || before.definitionId !== after.definitionId
+    || before.definitionRevision !== after.definitionRevision
+    || !isDeepStrictEqual(before.trigger, after.trigger)
+    || before.retryOf !== after.retryOf
+    || executionNamespace(before) !== executionNamespace(after)
     || before.projectId !== after.projectId
     || before.head !== after.head
     || before.workspace !== after.workspace
     || before.idempotencyKey !== after.idempotencyKey
     || before.artifactsLocator !== after.artifactsLocator
     || before.createdAt !== after.createdAt
-    || !isDeepStrictEqual(before.owner, after.owner)
+    || !isDeepStrictEqual("owner" in before ? before.owner : [before.action, before.actionInput],
+      "owner" in after ? after.owner : [after.action, after.actionInput])
     || !isDeepStrictEqual(before.env, after.env)
     || !isDeepStrictEqual(before.steps, after.steps)
     || before.operation.requestId !== after.operation.requestId
@@ -593,7 +593,10 @@ export function validDurableJobTransition(
     const wakeupFlip = before.wakeupNotified !== true && after.wakeupNotified === true;
     const acknowledgeFlip = before.acknowledgedAt === undefined
       && after.acknowledgedAt !== undefined;
-    return before.status === after.status
+    const { wakeupNotified: _beforeWake, acknowledgedAt: _beforeAck, updatedAt: _beforeTime, ...beforeFacts } = before;
+    const { wakeupNotified: _afterWake, acknowledgedAt: _afterAck, updatedAt: _afterTime, ...afterFacts } = after;
+    return isDeepStrictEqual(beforeFacts, afterFacts)
+      && before.status === after.status
       && isDeepStrictEqual(before.result, after.result)
       && isDeepStrictEqual(before.operation, after.operation)
       && before.terminalAt === after.terminalAt
@@ -618,7 +621,7 @@ export function validDurableJobTransition(
   return (allowed[before.status] ?? []).includes(after.status);
 }
 
-function validateDurableJobOwner(owner: DurableJobOwner, taskId: string): void {
+export function validateDurableJobOwner(owner: DurableJobOwner, taskId: string): void {
   if (owner.kind === "integration-attempt") {
     validateTaskRecordReference(
       { taskId, localId: owner.integrationAttemptId },
@@ -631,6 +634,32 @@ function validateDurableJobOwner(owner: DurableJobOwner, taskId: string): void {
     );
   } else if (owner.kind !== "task") {
     throw new Error(`DurableJob owner kind is invalid: ${String((owner as { kind?: string }).kind)}.`);
+  }
+}
+
+export function validateJobExecutionConfiguration(job: Pick<DurableJob, "head" | "workspace" | "env" | "steps">): void {
+  requireCommit(job.head, "DurableJob head");
+  requireText(job.workspace, "DurableJob workspace");
+  if (!job.workspace.startsWith("/")) throw new Error("DurableJob workspace must be an absolute path.");
+  validateEnvMap(job.env);
+  if (!Array.isArray(job.steps) || job.steps.length === 0) {
+    throw new Error("DurableJob requires at least one step.");
+  }
+  const names = new Set<string>();
+  for (const step of job.steps) {
+    const name = requireText(step.name, "DurableJob step name");
+    if (names.has(name)) throw new Error(`DurableJob step names must be unique: ${name}.`);
+    names.add(name);
+    requireText(step.command, `DurableJob step command (${name})`);
+    if (step.argv !== undefined) {
+      if (!Array.isArray(step.argv) || step.argv.length === 0) throw new Error("Step argv must be nonempty.");
+      for (const value of step.argv) requireText(value, `DurableJob step argv (${name})`);
+    }
+    if (step.cwd !== undefined && !requireText(step.cwd, "Step cwd").startsWith("/")) {
+      throw new Error("DurableJob step cwd must be absolute.");
+    }
+    if (step.env !== undefined) validateEnvMap(step.env);
+    if (step.timeoutMs !== undefined) requirePositiveInteger(step.timeoutMs, "Step timeout");
   }
 }
 

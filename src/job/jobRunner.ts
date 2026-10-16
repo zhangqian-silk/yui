@@ -294,7 +294,8 @@ function readSpec(specPath: string): DurableJobSpec {
   if (typeof spec.jobId !== "string" || spec.jobId.length === 0) {
     throw new Error("DurableJob spec is missing jobId.");
   }
-  if (typeof spec.taskId !== "string" || spec.taskId.length === 0) {
+  if (spec.scope === "global" ? spec.taskId !== undefined
+    : typeof spec.taskId !== "string" || spec.taskId.length === 0) {
     throw new Error("DurableJob spec is missing taskId.");
   }
   if (typeof spec.workspace !== "string" || !spec.workspace.startsWith("/")) {

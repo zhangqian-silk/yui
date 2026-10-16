@@ -18,13 +18,15 @@ import { readTaskUsage } from "../../dist/runtime/taskUsageQuery.js";
 import { addProjectKnowledge, createProject } from "../../dist/repository/project.js";
 import { createTaskMessage } from "../../dist/message/message.js";
 import { contextContentDigest, createContextSnapshot } from "../../dist/context/contextSnapshot.js";
+import { usePre19Layout } from "../helpers/pre19Storage.mjs";
 
-test("fresh storage creates only the current 1.8 contract", () => {
-  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.8");
+test("fresh storage creates only the current 1.9 contract", () => {
+  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.9");
   const db = new Database(":memory:");
   try {
     schema.initializeSqliteSchema(db);
-    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.8");
+    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.9");
+    assert.equal(schema.inspectSqliteSchema(db).targetChecksum, schema.CURRENT_SCHEMA_CHECKSUM);
     assert.equal(db.prepare("SELECT count(*) AS n FROM storage_schema").get().n, 1);
     assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='schema_migrations'").get(), undefined);
     for (const name of ["coordination_locks", "work_item_candidates", "idx_input_open"]) {
@@ -64,6 +66,7 @@ test("1.1 upgrade preserves valid Operator authority without inventing user prov
   store.saveCapabilityGrant("task-1", grant);
   store.close();
   const old = new Database(join(home, "yui.db"));
+  usePre19Layout(old);
   old.prepare("UPDATE storage_schema SET minor=1 WHERE id=1").run();
   old.close();
   assert.equal((await runStorageUpgrade({ home, mode: "execute" })).outcome, "upgraded");
@@ -78,7 +81,8 @@ test("1.1 upgrade preserves valid Operator authority without inventing user prov
         ["1.4", "1.5", "frozen-skill-packages"],
         ["1.5", "1.6", "runtime-cost-evidence"],
         ["1.6", "1.7", "agent-inbox-consumption"],
-        ["1.7", "1.8", "model-management-connection"]]);
+        ["1.7", "1.8", "model-management-connection"],
+        ["1.8", "1.9", "job-definitions-and-runs"]]);
   }
   finally { current.close(); }
 });
@@ -127,6 +131,7 @@ for (const minor of [0, 1, 2, 3, 4, 5, 6, 7]) test(`1.${minor} migration preserv
   }
   store.close();
   const db = new Database(join(home, "yui.db"));
+  usePre19Layout(db);
   const before = db.prepare("SELECT payload FROM role_session_sets").get().payload;
   const retained = minor >= 4 ? ["projects", "messages", "context_snapshots"].map(table =>
     [table, db.prepare(`SELECT * FROM ${table}`).all()]) : [];
@@ -160,6 +165,7 @@ test("1.0 upgrade adopts the main workspace of an active Project-free Task", asy
     agent.id, join(home, "old-cwd"), at));
   store.close();
   const old = new Database(join(home, "yui.db"));
+  usePre19Layout(old);
   old.prepare("UPDATE storage_schema SET minor=0 WHERE id=1").run();
   old.close();
 
@@ -194,6 +200,7 @@ test("1.0 upgrade preserves a live Project-free Session and retries after it end
   store.close();
   const databasePath = join(home, "yui.db");
   const old = new Database(databasePath);
+  usePre19Layout(old);
   old.prepare("UPDATE storage_schema SET minor=0 WHERE id=1").run();
   old.close();
 

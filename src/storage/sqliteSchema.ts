@@ -1,17 +1,22 @@
 import { createHash } from "node:crypto";
 import Database from "../sqlite/driver.js";
-import { BASELINE_SCHEMA_SQL, SQLITE_SCHEMA_TABLES } from "./baselineSchema.js";
+import { BASELINE_SCHEMA_SQL, SQLITE_SCHEMA_TABLES as BASELINE_SCHEMA_TABLES } from "./baselineSchema.js";
 import { migrateTaskMainWorkspaces } from "./upgrade/taskMainWorkspaceMigration.js";
 import { migrateProjectKnowledge } from "./upgrade/projectKnowledgeMigration.js";
+import { JOB_SCHEMA_SQL } from "./jobSchema.js";
+import { migrateJobDefinitions } from "./upgrade/jobDefinitionMigration.js";
 import {
   CURRENT_STORAGE_VERSION, MIN_SUPPORTED_STORAGE_VERSION, STORAGE_FORMAT,
   isMinorStorageUpgrade, isStorageVersion, storageVersionParts, type StorageVersion
 } from "./storageVersions.js";
 
-export { BASELINE_SCHEMA_SQL, SQLITE_SCHEMA_TABLES };
+export { BASELINE_SCHEMA_SQL };
+export const SQLITE_SCHEMA_TABLES = [...BASELINE_SCHEMA_TABLES, "job_definitions", "global_job_runs"] as const;
 export const TELEMETRY_KEEP_PER_RUN = 200;
 export const TELEMETRY_RUN_CAP = 50_000;
-export const CURRENT_SCHEMA_CHECKSUM = createHash("sha256").update(BASELINE_SCHEMA_SQL).digest("hex");
+export const BASELINE_SCHEMA_CHECKSUM = createHash("sha256").update(BASELINE_SCHEMA_SQL).digest("hex");
+export const CURRENT_SCHEMA_SQL = BASELINE_SCHEMA_SQL + JOB_SCHEMA_SQL;
+export const CURRENT_SCHEMA_CHECKSUM = createHash("sha256").update(CURRENT_SCHEMA_SQL).digest("hex");
 
 export class SqliteSchemaError extends Error {
   constructor(detail: string, readonly code: "STORAGE_SCHEMA_INVALID" | "STORAGE_FORMAT_UNSUPPORTED" = "STORAGE_SCHEMA_INVALID") {
@@ -27,7 +32,7 @@ export type StorageMinorUpgrade = Readonly<{
   sourceChecksum: string;
   targetChecksum: string;
   sql: string;
-  dataMigration?: "task-main-workspace" | "project-knowledge";
+  dataMigration?: "task-main-workspace" | "project-knowledge" | "job-definitions";
 }>;
 
 // Only explicit, contiguous minor changes in this baseline may be added here.
@@ -36,8 +41,8 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   toVersion: "1.1",
   name: "task-main-workspace",
   introducedIn: "1.1.0",
-  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
-  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  sourceChecksum: BASELINE_SCHEMA_CHECKSUM,
+  targetChecksum: BASELINE_SCHEMA_CHECKSUM,
   sql: "",
   dataMigration: "task-main-workspace"
 }, {
@@ -45,8 +50,8 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   toVersion: "1.2",
   name: "task-authorization-source",
   introducedIn: "next",
-  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
-  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  sourceChecksum: BASELINE_SCHEMA_CHECKSUM,
+  targetChecksum: BASELINE_SCHEMA_CHECKSUM,
   // New grants can carry source evidence. Valid historical Operator grants
   // remain unchanged; migration must not invent authorization provenance.
   sql: ""
@@ -55,8 +60,8 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   toVersion: "1.3",
   name: "selected-session-input",
   introducedIn: "next",
-  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
-  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  sourceChecksum: BASELINE_SCHEMA_CHECKSUM,
+  targetChecksum: BASELINE_SCHEMA_CHECKSUM,
   // Optional explicit Session fences apply only to new inputs. Preserve old
   // Role-addressed messages; never infer a historical user's Session choice.
   sql: ""
@@ -65,8 +70,8 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   toVersion: "1.4",
   name: "project-knowledge-applicability",
   introducedIn: "next",
-  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
-  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  sourceChecksum: BASELINE_SCHEMA_CHECKSUM,
+  targetChecksum: BASELINE_SCHEMA_CHECKSUM,
   sql: "",
   dataMigration: "project-knowledge"
 }, {
@@ -74,8 +79,8 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   toVersion: "1.5",
   name: "frozen-skill-packages",
   introducedIn: "next",
-  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
-  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  sourceChecksum: BASELINE_SCHEMA_CHECKSUM,
+  targetChecksum: BASELINE_SCHEMA_CHECKSUM,
   // Additive effective-launch/manifest package evidence. Historical envelopes
   // and their digests remain unchanged: absence explicitly means entrypoint-only
   // provenance, not an invitation to invent packages from today's source files.
@@ -87,8 +92,8 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   toVersion: "1.6",
   name: "runtime-cost-evidence",
   introducedIn: "next",
-  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
-  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  sourceChecksum: BASELINE_SCHEMA_CHECKSUM,
+  targetChecksum: BASELINE_SCHEMA_CHECKSUM,
   // Optional sourced monetary observations; historical missing costs stay unknown.
   sql: ""
 }, {
@@ -96,8 +101,8 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   toVersion: "1.7",
   name: "agent-inbox-consumption",
   introducedIn: "next",
-  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
-  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  sourceChecksum: BASELINE_SCHEMA_CHECKSUM,
+  targetChecksum: BASELINE_SCHEMA_CHECKSUM,
   // Additive handling receipts on canonical Messages and wakes. Never invent
   // historical processing or Provider acceptance; existing records stay intact.
   sql: ""
@@ -106,11 +111,20 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   toVersion: "1.8",
   name: "model-management-connection",
   introducedIn: "next",
-  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
-  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  sourceChecksum: BASELINE_SCHEMA_CHECKSUM,
+  targetChecksum: BASELINE_SCHEMA_CHECKSUM,
   // Optional non-secret connection references. Existing Homes remain unconfigured;
   // never infer local credentials or adopt an existing external service.
   sql: ""
+}, {
+  fromVersion: "1.8",
+  toVersion: "1.9",
+  name: "job-definitions-and-runs",
+  introducedIn: "next",
+  sourceChecksum: BASELINE_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  sql: JOB_SCHEMA_SQL,
+  dataMigration: "job-definitions"
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {
@@ -137,7 +151,7 @@ let expectedObjects: readonly SchemaObject[] | undefined;
 function validateSchemaObjects(db: Database.Database): void {
   if (expectedObjects === undefined) {
     const reference = new Database(":memory:");
-    try { reference.exec(BASELINE_SCHEMA_SQL); expectedObjects = objects(reference); }
+    try { reference.exec(CURRENT_SCHEMA_SQL); expectedObjects = objects(reference); }
     finally { reference.close(); }
   }
   const actual = objects(db);
@@ -204,7 +218,7 @@ export function initializeSqliteSchema(db: Database.Database): SqliteSchemaState
   }
   const { major, minor } = storageVersionParts(CURRENT_STORAGE_VERSION);
   return db.transaction(() => {
-    db.exec(BASELINE_SCHEMA_SQL);
+    db.exec(CURRENT_SCHEMA_SQL);
     db.prepare("INSERT INTO storage_schema VALUES (1,?,?,?,?,?)")
       .run(STORAGE_FORMAT, major, minor, CURRENT_SCHEMA_CHECKSUM, new Date().toISOString());
     return validateSqliteSchema(db);
@@ -231,6 +245,7 @@ export function applySqliteMinorUpgrades(
         migrateTaskMainWorkspaces(db, home, createdRoots);
       }
       if (step.dataMigration === "project-knowledge") migrateProjectKnowledge(db);
+      if (step.dataMigration === "job-definitions") migrateJobDefinitions(db);
       const { major, minor } = storageVersionParts(step.toVersion);
       db.prepare("UPDATE storage_schema SET major=?,minor=?,checksum=? WHERE id=1")
         .run(major, minor, step.targetChecksum);

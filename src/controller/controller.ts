@@ -181,6 +181,7 @@ export type ControllerRuntimeOptions = Readonly<{
   }>;
   /** Serves the socket `job.*` methods; absent methods report METHOD_NOT_FOUND. */
   jobControl?: DurableJobControlPort;
+  jobDefinitions?: (params: JsonValue, now: Date) => unknown;
   capabilityDispatcher?: ControllerDispatcher;
 }>;
 
@@ -2234,6 +2235,17 @@ export async function startFileTaskController(
         const request = Promise.resolve(options.capabilityDispatcher(method, params));
         lifecycleRequests.add(request);
         try { return await request; } finally { lifecycleRequests.delete(request); }
+      }
+      if (method === "job.definition") {
+        if (options.jobDefinitions === undefined) throw controllerApplicationError("METHOD_NOT_FOUND", "Job definitions unavailable.");
+        let result: unknown;
+        try { result = options.jobDefinitions(params, new Date()); }
+        catch (error) {
+          if (error instanceof Error && error.name === "Error") error.name = "CoreJobError";
+          throw error;
+        }
+        runtime.signal("jobs");
+        return jobControlJson(result);
       }
       if (method === "job.start" || method === "job.get" || method === "job.cancel" || method === "job.acknowledge") {
         const control = options.jobControl;

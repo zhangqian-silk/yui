@@ -328,6 +328,7 @@ export interface SchedulerStorePort {
   /** Immutable runtime facts used by the low-frequency stall projection. */
   listEvents(taskId: string): readonly TaskEvent[];
   getEvent?(taskId: string, eventId: string): TaskEvent | null;
+  getGlobalJobRun?(id: string): import("../job/durableJob.js").GlobalJobRun | null;
   /** Required authoritative reads; an unavailable reader is not an empty family. */
   listRuns(taskId: string): readonly SchedulerRun[];
   listWorkItems(taskId: string): readonly import("../workItem/workItem.js").WorkItem[];

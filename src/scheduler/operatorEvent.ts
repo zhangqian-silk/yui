@@ -17,6 +17,7 @@ export function claimOperatorAttention(mailbox: WorkMailbox, options: ClaimOptio
     || pending.toSequence - pending.fromSequence + 1 !== pending.requestCount
     || pending.dedupeKeys.some((key, index) => {
       const ref = pending.refs[index]!;
+      if (ref.type === "global-job-run") return key !== `operator-global-job-run:${ref.id}`;
       return (ref.type !== "event" && ref.type !== "input")
         || key !== `operator-${ref.type}:${ref.taskId}:${ref.id}`
           && key !== `sequence:${pending.fromSequence + index}`;
