@@ -44,6 +44,7 @@ import {
   type ControllerRouteMetrics
 } from "../core/controllerTelemetry.js";
 import type { JsonValue } from "../core/protocol.js";
+import type { JobScope } from "../job/jobDefinition.js";
 import type { TaskWorkspacePreparer } from "../repository/taskWorkspacePreparer.js";
 import { isProjectMaintenanceFenced } from "../repository/projectMaintenanceLock.js";
 import { isHandoverLockHeld } from "../release/runtimeRelease.js";
@@ -2244,7 +2245,12 @@ export async function startFileTaskController(
           if (error instanceof Error && error.name === "Error") error.name = "CoreJobError";
           throw error;
         }
-        runtime.signal("jobs");
+        // The service has validated this scope. Only execution mutations need
+        // reconciliation; definition reads/edits do not start background work.
+        const input = params as { op: string; scope: JobScope };
+        if (["run", "run-cancel", "run-acknowledge"].includes(input.op)) {
+          runtime.signal(input.scope.kind === "task" ? `task:${input.scope.taskId}` : "operator");
+        }
         return jobControlJson(result);
       }
       if (method === "job.start" || method === "job.get" || method === "job.cancel" || method === "job.acknowledge") {

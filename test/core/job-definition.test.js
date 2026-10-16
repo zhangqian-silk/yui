@@ -20,6 +20,8 @@ import { applySqliteMinorUpgrades } from "../../dist/storage/sqliteSchema.js";
 import Database from "../../dist/sqlite/driver.js";
 import { usePre19Layout } from "../helpers/pre19Storage.mjs";
 import { processOperatorInputNotifications } from "../../dist/scheduler/operatorInputNotificationProcessor.js";
+import { startFileTaskController } from "../../dist/controller/controller.js";
+import { runDurableJobCommand } from "../../dist/commands/durableJobCommands.js";
 
 test("Job configuration revisions preserve ownership and previous snapshots", () => {
   const at = new Date("2026-10-16T00:00:00Z");
@@ -42,7 +44,8 @@ test("Job configuration revisions preserve ownership and previous snapshots", ()
 test("global Runs reuse the runner, retain independent results, reject Task callers and never replay uncertainty", async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-global-job-"));
   const store = new SqliteTaskStore(home);
-  t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
+  let controller;
+  t.after(async () => { await controller?.close(); store.close(); rmSync(home, { recursive: true, force: true }); });
   const at = new Date();
   const agent = createConfiguredAgent("codex", "codex", "false", [], [], at);
   store.saveConfiguredAgent(agent);
@@ -55,7 +58,16 @@ test("global Runs reuse the runner, retain independent results, reject Task call
   const caller = { scope: "global", role: "operator", nativeSessionId: "operator-test" };
   const control = createJobDefinitionControl(store, home);
   const base = { scope: { kind: "global" }, id: "noop", caller };
-  control({ ...base, op: "define", title: "Probe", configuration: { kind: "builtin", action: "system.noop", input: {} } }, at);
+  controller = await startFileTaskController(home, new FileSchedulerStoreAdapter(store), {}, undefined, {
+    jobDefinitions: control, signalWindowMs: 60_000, intervalMs: 60_000
+  });
+  const command = async (op, ...args) => JSON.parse(await runDurableJobCommand(
+    [op, "--global", "--job", base.id, ...args], {
+      home, environment: { YUI_SESSION_SCOPE: "global", YUI_ROLE: "operator", YUI_NATIVE_SESSION_ID: "operator-test" }
+    }));
+  assert.equal((await command("define", "--title", "Probe", "--input",
+    JSON.stringify({ kind: "builtin", action: "system.noop", input: {} }))).id, base.id);
+  assert.equal((await command("show")).revision, 1);
   for (const bad of [{ scope: "task", taskId: "task-1", role: "leader" }, { scope: "user" },
     { ...caller, nativeSessionId: "revoked" }]) {
     assert.throws(() => control({ ...base, op: "run", caller: bad, trigger: { source: "manual", key: "deny" } }, at));
@@ -79,9 +91,12 @@ test("global Runs reuse the runner, retain independent results, reject Task call
       signalIfOwned: () => { throw new Error("No process remains after synchronous fixture execution."); }
     }
   });
-  const first = control({ ...base, op: "run", trigger: { source: "manual", key: "one" } }, at);
+  const first = await command("run", "--request-id", "one");
   assert.equal(first.created, true);
   assert.equal("taskId" in first.run, false);
+  assert.equal((await command("runs"))[0].id, first.run.id);
+  await controller.close();
+  controller = undefined;
   assert.equal(control({ ...base, op: "run", trigger: { source: "manual", key: "two" } }, at).reason, "overlap");
   supervisor().reconcile(new Date());
   // A replacement supervisor recovers exactly the original process/result.

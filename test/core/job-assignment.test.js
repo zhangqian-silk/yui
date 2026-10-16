@@ -118,6 +118,7 @@ test("Job admission, management and spawn keep a Worker inside its current Assig
   assert.throws(() => control.acknowledgeJob(task.id, leaderJob.id, at, caller("worker")), /[Aa]ssignment/);
   assert.equal(store.getDurableJob(task.id, leaderJob.id).cancelRequestedAt, undefined);
   assert.ok(control.cancelJob(task.id, own.job.id, at, caller("worker")).cancelRequestedAt);
+  const workerRun = store.getActiveRun(task.id, "worker");
   store.clearActiveRun(task.id, "worker");
   assert.throws(() => authorizeJobStart(store, own.job), /[Aa]ssignment/);
   authorizeJobStart(store, leaderJob);
@@ -132,4 +133,21 @@ test("Job admission, management and spawn keep a Worker inside its current Assig
   assert.throws(() => control.startJob({ ...outside, requestId: "old-scope", caller: caller("leader") }, at), /captured/);
   assert.ok(control.cancelJob(task.id, leaderJob.id, at, caller("leader")).cancelRequestedAt,
     "Scope denial must not prevent safe cancellation of an owned Job.");
+  // Updating a stable definition authorizes the old owner, not its stale
+  // execution snapshot. Only the replacement configuration must be runnable.
+  store.saveTaskRoleSessionSet(leaderSet);
+  store.saveActiveRun(workerRun);
+  execFileSync("git", ["-C", main, "-c", "user.name=Fixture", "-c", "user.email=fixture@local",
+    "commit", "--allow-empty", "-m", "advance"]);
+  const advancedHead = execFileSync("git", ["-C", main, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const update = { op: "update", id: definition.id, scope, caller: caller("leader"),
+    expectedRevision: 2, title: "Advanced check", configuration: { ...configuration, head: advancedHead } };
+  assert.throws(() => definitions({ ...update, caller: caller("worker") }, at), /Assignment/i);
+  assert.throws(() => definitions({ ...update, configuration }, at), /HEAD/i);
+  assert.equal(store.getJobDefinition(scope, definition.id).revision, 2);
+  assert.equal(definitions(update, at).revision, 3);
+  const advanced = admitJobRun(store, root, scope, definition.id, caller("leader"),
+    { source: "manual", key: "advanced" }, at);
+  assert.equal(advanced.run.head, advancedHead);
+  assert.deepEqual(store.getDurableJob(task.id, first.run.id), original);
 });

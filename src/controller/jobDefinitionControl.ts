@@ -171,7 +171,9 @@ export function createJobDefinitionControl(store: TaskStore, home: string) {
           return next;
         }
         if (existing === null || existing.revision !== input.expectedRevision) throw new Error("Job revision changed or Job missing.");
-        authorizeDefinition(tx, existing, input.caller, true);
+        // The old snapshot may no longer be runnable (for example HEAD moved).
+        // Check its ownership before validating the replacement for execution.
+        authorizeDefinition(tx, existing, input.caller, false);
         const next = reviseJobDefinition(existing, fields, now);
         authorizeDefinition(tx, next, input.caller, true);
         tx.saveJobDefinition(next);
