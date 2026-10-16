@@ -58,6 +58,11 @@ export function listJobRuns(store: TaskStore, job: JobDefinition): JobRun[] {
     .filter(run => run.definitionId === job.id);
 }
 
+function authorizeRunRead(store: TaskStore, run: JobRun, caller: DurableJobCaller): void {
+  // A revised definition's Assignment does not grant access to earlier Runs.
+  if ("taskId" in run) createDurableJobControl(store).getJob(run.taskId, run.id, caller);
+}
+
 /**
  * The narrow Schedule seam: call inside the SAME TaskStore transaction as
  * schedule advancement. No external effects occur here; rollback removes the
@@ -77,6 +82,7 @@ export function admitJobRun(
     const runs = listJobRuns(tx, job);
     const same = runs.find(run => run.trigger.key === trigger.key && run.trigger.source === trigger.source);
     if (same !== undefined) {
+      authorizeRunRead(tx, same, caller);
       if (same.definitionRevision !== job.revision || same.retryOf !== retryOf) {
         throw new Error(`JobRun trigger conflicts with its original snapshot: ${same.id}.`);
       }
@@ -85,7 +91,10 @@ export function admitJobRun(
     authorizeDefinition(tx, job, caller, true);
     const occupied = runs.find(run => run.status === "queued" || run.status === "running"
       || run.status === "unknown-needs-attention");
-    if (occupied !== undefined) return { run: occupied, created: false, reason: "overlap" };
+    if (occupied !== undefined) {
+      authorizeRunRead(tx, occupied, caller);
+      return { run: occupied, created: false, reason: "overlap" };
+    }
     if (retryOf !== undefined && !runs.some(run => run.id === retryOf
       && ["failed", "cancelled", "timed-out"].includes(run.status))) {
       throw new Error("Retry requires an exact failed/cancelled/timed-out Run of this Job.");
@@ -184,8 +193,7 @@ export function createJobDefinitionControl(store: TaskStore, home: string) {
       authorizeDefinition(tx, existing, input.caller, false);
       if (input.op === "show") return existing;
       if (input.op === "runs") return listJobRuns(tx, existing).filter(run => {
-        if (!("taskId" in run)) return true;
-        try { createDurableJobControl(tx).getJob(run.taskId, run.id, input.caller); return true; }
+        try { authorizeRunRead(tx, run, input.caller); return true; }
         catch { return false; }
       });
       if (input.op === "run") {
@@ -196,7 +204,7 @@ export function createJobDefinitionControl(store: TaskStore, home: string) {
       }
       const run = listJobRuns(tx, existing).find(candidate => candidate.id === input.runId);
       if (run === undefined) throw new Error("Exact JobRun not found.");
-      if ("taskId" in run) createDurableJobControl(tx).getJob(run.taskId, run.id, input.caller);
+      authorizeRunRead(tx, run, input.caller);
       if (input.op === "run-get") return run;
       if (input.op === "logs") {
         const steps = run.result?.steps ?? createFileArtifactPort(home)

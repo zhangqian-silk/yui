@@ -10,7 +10,7 @@ import { createProject } from "../../dist/repository/project.js";
 import { createWorkItem } from "../../dist/workItem/workItem.js";
 import { createManagedWorkspace } from "../../dist/worktree/managedWorkspace.js";
 import { createConfiguredAgent } from "../../dist/agent/agent.js";
-import { createRole, createRoleAgentBinding } from "../../dist/role/role.js";
+import { createRole, createGlobalRole, createRoleAgentBinding } from "../../dist/role/role.js";
 import { createRoleSessionSet, recordRoleAgentSession } from "../../dist/executor/agentExecutor.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
 import { createFixtureRun } from "../helpers/runFixture.mjs";
@@ -150,4 +150,30 @@ test("Job admission, management and spawn keep a Worker inside its current Assig
     { source: "manual", key: "advanced" }, at);
   assert.equal(advanced.run.head, advancedHead);
   assert.deepEqual(store.getDurableJob(task.id, first.run.id), original);
+
+  // An Operator can retarget a definition, but that does not grant the new
+  // Assignment permission to read an already-admitted Run's old snapshot.
+  const operator = createGlobalRole("operator", [createRoleAgentBinding(agent)], agent.id, root, at);
+  store.createGlobalRoleIfAbsent(operator);
+  store.saveGlobalRoleSessionSet(recordRoleAgentSession(createRoleSessionSet(
+    { scope: "global", roleName: "operator" }, agent.id, at
+  ), { agentId: agent.id, adapterId: agent.adapterId, nativeSessionId: "session-operator",
+    status: "active", policy: "fixed", effective: resolveEffectiveLaunch({ role: operator, purpose: "execution" }) }, at));
+  const operatorCaller = { scope: "global", role: "operator", nativeSessionId: "session-operator" };
+  definitions({ ...update, caller: operatorCaller, expectedRevision: 3, configuration: {
+    ...configuration, owner: params.owner, workspace: worker, head: workerHead
+  } }, at);
+  const workerRequest = { id: definition.id, scope, caller: caller("worker") };
+  assert.throws(() => definitions({ ...workerRequest, op: "run-get", runId: advanced.run.id }, at), /Assignment/i);
+  assert.deepEqual(definitions({ ...workerRequest, op: "runs" }, at), []);
+  const trigger = { source: "manual", key: "retargeted" };
+  assert.throws(() => definitions({ ...workerRequest, op: "run", trigger }, at),
+    error => error.code === "UNAUTHORIZED" && /Assignment/i.test(error.message));
+  assert.throws(() => definitions({ ...workerRequest, op: "run", trigger: advanced.run.trigger }, at),
+    error => error.code === "UNAUTHORIZED" && /Assignment/i.test(error.message));
+  const overlap = admitJobRun(store, root, scope, definition.id, operatorCaller, trigger, at);
+  assert.equal(overlap.reason, "overlap");
+  assert.equal(overlap.run.id, advanced.run.id);
+  assert.equal(store.listDurableJobs(task.id).filter(run => run.definitionId === definition.id).length, 3);
+  assert.deepEqual(store.getDurableJob(task.id, advanced.run.id), advanced.run);
 });

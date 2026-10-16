@@ -41,6 +41,10 @@ Replay returns the original Run; reusing that identity after a configuration
 change or with a different retry target is a conflict. A new key after a
 terminal result admits a new Run. Queued, running or unknown-effect executions
 return `{created:false,reason:"overlap",run:<existing>}` rather than queueing.
+Returning an existing Run (including replay or overlap) requires permission to
+read that exact Run's original Assignment. If a definition was retargeted and
+the caller cannot read the earlier Run, admission fails with `UNAUTHORIZED`
+without exposing its snapshot or creating another Run.
 Unknown outcomes are never automatically replayed, even after acknowledgement.
 Explicit retry uses `--retry-of <exact-failed-cancelled-or-timed-out-run>`.
 Cancellation addresses a Run, not a future Schedule. Log reads return up to
