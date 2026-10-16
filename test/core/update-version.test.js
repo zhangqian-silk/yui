@@ -7,6 +7,20 @@ import { runUpdateCommand } from "../../dist/cli/updateCommand.js";
 import { activatedControllerEntrypoint, createUpdatePorts } from "../../dist/cli/updatePorts.js";
 import { findCommandNode } from "../../dist/cli/commandCatalog.js";
 
+test("staged preflight retains structured failure diagnostics without admitting failure", () => {
+  const stderr = Buffer.from(JSON.stringify({ ok: false,
+    code: "RUNTIME_ERROR",
+    message: "Native Session is not registered in this YUI_HOME. Use the registered Operator Session."
+  }));
+  const ports = createUpdatePorts({}, () => ({ pid: 1, output: [null, Buffer.alloc(0), stderr],
+    stdout: Buffer.alloc(0), stderr, status: 5, signal: null }));
+  const result = ports.preflight({ binaryPath: "/unused/yui", version: "2.8.1" }, "/unused/home");
+  assert.equal(result.status, "blocked");
+  assert.equal(result.stage, "preflight");
+  assert.match(result.message, /Native Session is not registered/);
+  assert.match(result.message, /registered Operator/);
+});
+
 test("update accepts an exact version and retains target-owned preflight refusal", () => {
   assert.ok(findCommandNode(["update"]).options.includes("--version"));
   const calls = [];

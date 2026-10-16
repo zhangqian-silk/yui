@@ -134,7 +134,7 @@ function objects(db: Database.Database): SchemaObject[] {
     WHERE name NOT GLOB 'sqlite_*' ORDER BY type,name`).all() as SchemaObject[];
 }
 let expectedObjects: readonly SchemaObject[] | undefined;
-function validateSchemaObjects(db: Database.Database): void {
+export function validateSqliteSchemaObjects(db: Database.Database): void {
   if (expectedObjects === undefined) {
     const reference = new Database(":memory:");
     try { reference.exec(BASELINE_SCHEMA_SQL); expectedObjects = objects(reference); }
@@ -180,7 +180,7 @@ export function inspectSqliteSchema(db: Database.Database): SqliteSchemaState {
   if (expectedChecksum !== undefined && row.checksum !== expectedChecksum) {
     throw new SqliteSchemaError("baseline checksum does not match its version.");
   }
-  if (version === CURRENT_STORAGE_VERSION) validateSchemaObjects(db);
+  if (version === CURRENT_STORAGE_VERSION) validateSqliteSchemaObjects(db);
   return {
     currentVersion: version, currentChecksum: row.checksum,
     targetVersion: CURRENT_STORAGE_VERSION, targetChecksum: CURRENT_SCHEMA_CHECKSUM,
