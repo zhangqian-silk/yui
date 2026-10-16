@@ -14,6 +14,7 @@ import { createGlobalRole, createRoleAgentBinding } from "../../dist/role/role.j
 import { createRoleSessionSet, recordRoleAgentSession } from "../../dist/executor/agentExecutor.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
 import { createJobDefinitionControl, authorizeGlobalJobStart } from "../../dist/controller/jobDefinitionControl.js";
+import { createScheduleControl, reconcileSchedules } from "../../dist/controller/scheduleControl.js";
 import { DurableJobSupervisor, createFileArtifactPort } from "../../dist/controller/jobSupervisor.js";
 import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
 import { sanitizedTestEnv } from "../helpers/sanitizedEnv.mjs";
@@ -58,7 +59,9 @@ test("controlled Project Jobs fast-forward through the real runner and isolate r
   git(seed, "add", "file"); git(seed, "commit", "-m", "one"); git(seed, "push", "origin", "main");
   const before = git(seed, "rev-parse", "HEAD");
   mkdirSync(join(home, "projects"));
-  const at = new Date();
+  // Keep injected admission times behind the real runner's terminal clock.
+  const at = new Date(Date.now() - 10 * 60_000);
+  let clock = at;
   for (const id of ["project-1", "project-2"]) {
     const path = join(home, "projects", id);
     git(home, "clone", remote, path);
@@ -78,7 +81,7 @@ test("controlled Project Jobs fast-forward through the real runner and isolate r
     status: "active", policy: "fixed", effective: resolveEffectiveLaunch({ role, purpose: "execution" }) }, at));
   const control = createJobDefinitionControl(store, home);
   const call = (id, op, fields = {}) => control({ scope: { kind: "global" },
-    caller: { scope: "global", role: "operator", nativeSessionId: "refresh-test" }, id, op, ...fields }, new Date());
+    caller: { scope: "global", role: "operator", nativeSessionId: "refresh-test" }, id, op, ...fields }, clock);
   const define = (id, projectId) => call(id, "define", { title: projectId,
     configuration: { kind: "builtin", action: "project.refresh", projectId, input: {} } });
   assert.throws(() => control({ scope: { kind: "global" }, id: "forbidden", op: "define",
@@ -124,6 +127,36 @@ test("controlled Project Jobs fast-forward through the real runner and isolate r
   assert.equal(evidence.refresh.toCommit, after);
   assert.deepEqual(evidence.remoteCheck, { status: "verified", commit: after });
   assert.equal(evidence.trigger.key, "clean");
+  const schedules = createScheduleControl(store, home);
+  const schedule = (op, extra = {}) => schedules({ scope: { kind: "global" },
+    caller: { scope: "global", role: "operator", nativeSessionId: "refresh-test" },
+    id: "periodic-refresh", op, ...extra }, at);
+  const due = offset => new Date(at.getTime() + offset * 60_000);
+  schedule("create", { jobId: "refresh-two",
+    rule: { kind: "interval", everyMs: 60_000, anchor: due(1).toISOString() } });
+  writeFileSync(join(seed, "file"), "three\n");
+  git(seed, "commit", "-am", "three"); git(seed, "push", "origin", "main");
+  const scheduledHead = git(seed, "rev-parse", "HEAD");
+  const scheduledRuns = [];
+  for (const offset of [5, 6]) {
+    reconcileSchedules(store, home, due(offset), error => { throw error; });
+    const current = schedule("show").schedule;
+    assert.equal(current.nextDue, due(offset + 1).toISOString(), "missed periods coalesce");
+    const scheduled = store.getGlobalJobRun(current.lastAttempt.runId);
+    assert.equal(scheduled.trigger.source, "schedule");
+    assert.equal(scheduled.definitionId, "refresh-two");
+    supervisor.reconcile(new Date()); supervisor.reconcile(new Date());
+    assert.equal(store.getGlobalJobRun(scheduled.id).status, "succeeded");
+    scheduledRuns.push(scheduled.id);
+  }
+  assert.notEqual(scheduledRuns[0], scheduledRuns[1], "each period creates an independent Run");
+  assert.equal(git(join(home, "projects/project-2"), "rev-parse", "HEAD"), scheduledHead);
+  assert.equal(schedule("show").lastSuccess.id, scheduledRuns[1]);
+  const scheduledCount = call("refresh-two", "runs").length;
+  schedule("disable", { expectedRevision: schedule("show").schedule.revision });
+  reconcileSchedules(store, home, due(100), error => { throw error; });
+  assert.equal(call("refresh-two", "runs").length, scheduledCount, "disabled refresh does not admit");
+  clock = new Date();
   const originalTarget = store.getProject("project-2");
   store.saveProject({ ...originalTarget, remoteUrl: seed });
   const rebind = revision => call("refresh-two", "update", { expectedRevision: revision, title: "Rebind",
@@ -137,9 +170,9 @@ test("controlled Project Jobs fast-forward through the real runner and isolate r
   store.saveProject(retireProject(store.getProject("project-2"), "fixture retirement", "operator", new Date()));
   supervisor.reconcile(new Date());
   assert.equal(store.getGlobalJobRun(retired.id).status, "failed");
-  assert.equal(starts, 2, "retired target is rejected before spawn");
+  assert.equal(starts, 4, "retired target is rejected before spawn");
   assert.equal(call("refresh-two", "show").refresh.lastAttempt.runId, retired.id);
-  assert.equal(call("refresh-two", "show").refresh.lastSuccessfulRefresh.runId, clean.id);
+  assert.equal(call("refresh-two", "show").refresh.lastSuccessfulRefresh.runId, scheduledRuns[1]);
   assert.equal(store.listTasks().length, 0);
   call("refresh-one", "update", { expectedRevision: 1, title: "No longer maintenance",
     configuration: { kind: "builtin", action: "system.noop", input: {} } });
@@ -156,7 +189,7 @@ test("controlled Project Jobs fast-forward through the real runner and isolate r
     configuration: { kind: "builtin", action: "project.refresh", projectId: "project-1", input: {} } });
   assert.equal(call("refresh-two", "show").refresh.lastSuccessfulRefresh, null,
     "a retargeted definition must not display another Project's success");
-  assert.equal(call("refresh-two", "runs").length, 2, "old exact evidence remains readable");
+  assert.equal(call("refresh-two", "runs").length, 4, "old exact evidence remains readable");
 
   // No processes are created in this concurrency probe. All artifacts/rows
   // belong to the fixture and are removed by the registered teardown.

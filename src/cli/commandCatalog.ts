@@ -1232,7 +1232,7 @@ export const ROOT_COMMAND = buildNode({
     ] },
     { id: "workflow", title: "Workflow", entries: ["agent", "operator", "role", "inbox", "project", "task"] },
     { id: "configuration", title: "Configuration", entries: ["config"] },
-    { id: "operations", title: "Operations", entries: ["web", "controller", "session", "execution", "capability", "job", "jobs", "telemetry", "release"] },
+    { id: "operations", title: "Operations", entries: ["web", "controller", "session", "execution", "capability", "job", "schedule", "jobs", "telemetry", "release"] },
     { id: "resources", title: "Resources", entries: ["resources"] },
     { id: "internal", title: "Internal", entries: ["internal"] }
   ],
@@ -1754,6 +1754,19 @@ export const ROOT_COMMAND = buildNode({
         { name: "cancel", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] }, summary: "Request cancellation of a running or queued DurableJob.", usage: "yui job cancel --task <id> --job <job-id>" },
         { name: "acknowledge", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] }, summary: "Acknowledge an unknown-needs-attention DurableJob so Task lifecycle gates can proceed.", usage: "yui job acknowledge --task <id> --job <job-id>" }
       ]
+    },
+    {
+      name: "schedule", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] },
+      summary: "Manage persistent time plans referencing scoped Jobs.",
+      sections: [{ id: "manage", title: "Commands", entries: ["create", "list", "show", "update", "enable", "disable"] }],
+      children: ["create", "list", "show", "update", "enable", "disable"].map(name => ({
+        name, discovery: { surface: "managed" as const, audiences: ["operator", "leader", "assignment"] as const },
+        summary: `${name} a Schedule; disabling never cancels an admitted Run.`,
+        usage: `yui schedule ${name} (--global|--task <id>)${name === "list" ? "" : " --schedule <id>"}`
+          + (name === "create" ? " --job <id> --rule <json>" : "")
+          + (name === "update" ? " --rule <json> [--job <id>]" : "")
+          + (["update", "enable", "disable"].includes(name) ? " --revision <observed>" : "")
+      }))
     },
     {
       name: "jobs", discovery: { surface: "public", audiences: ["public","operator"] },

@@ -27,7 +27,7 @@ export type RunAdmission = Readonly<{
   reason?: "overlap";
 }>;
 
-function authorizeScope(store: TaskStore, scope: JobScope, caller: DurableJobCaller): void {
+export function authorizeScope(store: TaskStore, scope: JobScope, caller: DurableJobCaller): void {
   parseDurableJobCaller(caller as unknown as JsonValue);
   jobScopeKey(scope);
   // Match Task Context's Operator-only boundary for global callers as well
@@ -46,7 +46,7 @@ function taskParams(job: JobDefinition, caller: DurableJobCaller, requestId: str
   return { ...job.configuration, taskId: job.scope.taskId, caller, requestId };
 }
 
-function authorizeDefinition(store: TaskStore, job: JobDefinition, caller: DurableJobCaller, write: boolean): void {
+export function authorizeDefinition(store: TaskStore, job: JobDefinition, caller: DurableJobCaller, write: boolean): void {
   authorizeScope(store, job.scope, caller);
   if (job.scope.kind === "task") {
     const params = taskParams(job, caller, "definition-validation");

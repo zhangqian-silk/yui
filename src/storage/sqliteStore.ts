@@ -114,6 +114,7 @@ import {
 import { writeTelemetryBatch } from "../telemetry/sqliteTelemetryBatch.js";
 import { STORED_RECORD_TABLES, validateStoredRecord, type StoredRecordTable } from "./recordValidation.js";
 import { jobScopeKey, validateJobDefinition, type JobDefinition, type JobScope } from "../job/jobDefinition.js";
+import { validateSchedule, type Schedule } from "../schedule/schedule.js";
 import type { GlobalJobRun } from "../job/durableJob.js";
 import type { TelemetryProgressEntry } from "../telemetry/telemetryStore.js";
 import {
@@ -1367,6 +1368,24 @@ export class SqliteTaskStore implements TaskStore {
       throw new StorageRecordError("Task id is required.");
     }
     this.#mutate(() => {
+      const schedules = this.listSchedules({ kind: "task", taskId: task.id });
+      if (task.status === "completed" && schedules.some(s => s.rule.kind === "once"
+        && (s.state === "enabled" || s.state === "needs-attention"))) {
+        throw new StorageRecordError("Task has unfulfilled once Schedules; inspect and explicitly disable them before completion.");
+      }
+      if (["completed", "cancelled", "archived"].includes(task.status)) {
+        for (const schedule of schedules.filter(s => s.state === "enabled" || s.state === "needs-attention")) {
+          this.saveSchedule({ ...schedule, state: "retired", revision: schedule.revision + 1,
+            reason: `Task ${task.status}; no future admission. Pending intent and Run history retained.`,
+            updatedAt: task.updatedAt });
+        }
+      } else if (task.executionGate.state === "stopped") {
+        for (const schedule of schedules.filter(s => s.state === "enabled")) {
+          this.saveSchedule({ ...schedule, state: "needs-attention", revision: schedule.revision + 1,
+            reason: "Task execution stopped; inspect and explicitly enable after execution resumes.",
+            updatedAt: task.updatedAt });
+        }
+      }
       for (const binding of task.projectBindings) {
         const found = this.#db.prepare("SELECT 1 FROM projects WHERE id = ?").get(binding.projectId);
         if (found === undefined) throw new StorageRecordError(`Task Project not found: ${binding.projectId}`);
@@ -1628,6 +1647,30 @@ export class SqliteTaskStore implements TaskStore {
   }
 
   // -- durable jobs -----------------------------------------------------------
+
+  saveSchedule(schedule: Schedule): void {
+    validateSchedule(schedule);
+    this.#mutate(() => {
+      this.#db.prepare(`INSERT INTO schedules VALUES(?,?,?,?,?)
+        ON CONFLICT(scope_key,schedule_id) DO UPDATE SET payload=excluded.payload,state=excluded.state,next_due=excluded.next_due`)
+        .run(jobScopeKey(schedule.scope), schedule.id, this.#recordJson("schedules", schedule), schedule.state, schedule.nextDue);
+    });
+  }
+
+  getSchedule(scope: JobScope, id: string): Schedule | null {
+    return this.#getPayload<Schedule>("schedules", "scope_key=? AND schedule_id=?", [jobScopeKey(scope), id]);
+  }
+
+  listSchedules(scope: JobScope): Schedule[] {
+    return this.#listPayload<Schedule>("schedules", "scope_key=?", [jobScopeKey(scope)]);
+  }
+
+  listDueSchedules(now: string, limit: number): Schedule[] {
+    const rows = this.#db.prepare(`SELECT payload FROM schedules
+      WHERE state='enabled' AND next_due<=?
+      ORDER BY COALESCE(json_extract(payload,'$.lastAttempt.at'),''),next_due,scope_key,schedule_id LIMIT ?`).all(now, limit) as { payload: string }[];
+    return rows.map(row => validateSchedule(JSON.parse(row.payload) as Schedule));
+  }
 
   saveJobDefinition(job: JobDefinition): void {
     validateJobDefinition(job);
