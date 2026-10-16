@@ -37,6 +37,7 @@ import { operatorOfflineCommand, taskDiagnosticTarget } from "./cli/managedDiagn
 import { assertConfigurationAuthority, assertTaskInvocationScope } from "./cli/invocationAuthority.js";
 import { requireManagedGlobalCaller, requireManagedGlobalReader, ManagedRuntimeDriftError } from "./runtime/managedCaller.js";
 import { sessionCallerEnvironment, requireManagedCaller } from "./runtime/sessionCaller.js";
+import { maintenanceCallerEnvironment } from "./storage/maintenanceCaller.js";
 import { checkCurrentSkills, SKILL_REUSE_RULE } from "./context/currentSkills.js";
 import { roleSkillIds } from "./context/roleSessionContext.js";
 import { hasManagedIdentity } from "./runtime/managedIdentity.js";
@@ -2439,6 +2440,23 @@ async function preflightManagedTaskControlPlane(): Promise<ManagedTaskControlPla
   if (taskFinalReviewInvocation.error !== undefined) {
     throw new Error(taskFinalReviewInvocation.error);
   }
+  if (["doctor", "upgrade", "update"].includes(args[0] ?? "")) {
+    const home = resolveYuiHome(process.env);
+    Object.assign(process.env, maintenanceCallerEnvironment(home, process.env, args[0] !== "doctor"));
+    if (!hasManagedIdentity(process.env)
+      || (process.env.YUI_SESSION_SCOPE === "global" && process.env.YUI_ROLE === "operator")) {
+      if (process.env.YUI_SESSION_SCOPE === "global") {
+        const manifest = assertManagedSessionManifest(home, "global");
+        if (manifest !== undefined && manifest.roleKind !== "operator") {
+          throw new ManagedRuntimeDriftError("Managed global invocation does not match its Session Manifest.");
+        }
+      }
+      if (taskFinalReviewInvocation.request !== undefined) {
+        throw new Error("Task final-review contract cannot be established by Home maintenance.");
+      }
+      return { contract: undefined, verifiedStore: undefined };
+    }
+  }
   // Desktop clients may carry only their provider-native identity. Resolve
   // command-local hints before any public/Task/Global routing. This reads this
   // Home only, and never creates a Session or mutates its registration.
@@ -2544,11 +2562,6 @@ async function preflightManagedGlobalControlPlane(): Promise<ManagedTaskControlP
   if (manifest !== undefined && (manifest.owner.scope !== "global"
     || manifest.roleKind !== expectedRoleKind)) {
     throw new ManagedRuntimeDriftError("Managed global invocation does not match its Session Manifest.");
-  }
-  if (expectedRoleKind === "operator" && ["doctor", "upgrade", "update"].includes(args[0] ?? "")) {
-    // These commands inspect/adopt the storage contract themselves. Requiring
-    // current storage before reaching upgrade would make recovery impossible.
-    return { contract: undefined, verifiedStore: undefined };
   }
   await assertRuntimeCoherence({ actualHome: home }, {
     checkController: !(expectedRoleKind === "operator" && operatorOfflineCommand(args))

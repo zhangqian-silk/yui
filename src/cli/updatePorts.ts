@@ -1063,6 +1063,20 @@ function interpretPreflight(result: SpawnSyncReturns<Buffer>): UpdatePreflight {
   // error is not a safe preflight — block rather than proceed to a switch.
   const data = parseSuccessEnvelopeData(result);
   if (data === null) {
+    // CLI bootstrap failures use an ok:false envelope on stderr. Preserve its
+    // already-sanitized diagnosis (including recovery guidance), never promote
+    // an error envelope to a successful storage preflight.
+    for (const stream of [result.stderr, result.stdout]) {
+      let failure: unknown;
+      try { failure = JSON.parse(stream.toString("utf8").trim()); } catch { continue; }
+      if (!isRecord(failure) || failure.ok !== false || typeof failure.message !== "string") continue;
+      return {
+        status: "blocked",
+        stage: "preflight",
+        message: `Staged binary preflight failed (exit ${result.status ?? "null"}): ${failure.message}`,
+        action: "Resolve the reported staged-binary failure using the same Home and matching CLI; do not force the update."
+      };
+    }
     return {
       status: "blocked",
       stage: "preflight",
