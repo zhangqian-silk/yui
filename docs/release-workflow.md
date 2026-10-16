@@ -51,6 +51,28 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.8.1 compatibility and migration notes
+
+This patch fixes maintenance startup for an existing Operator conversation
+that supplies only its native identity, including Codex Desktop. `doctor`,
+`upgrade` and `update` authenticate against the supported Home before requiring
+current storage, so an older Home can reach the updater's read-only preflight.
+Structured preflight failures retain their original diagnosis and recovery
+guidance. Ordinary commands still require current storage and current authority.
+
+Storage remains **1.8**. The existing contiguous **1.0 through 1.8** migration
+chain, backup, maintenance lock and exact Controller handover are unchanged.
+Use `yui update --version 2.8.1`; no manual intermediate upgrade or replacement
+native Session is required for supported Homes. Pre-1.0 / 0.x Home formats are
+outside this release's supported migration contract; no historical authorization
+exception or legacy conversion is introduced.
+
+Verification includes an isolated published 2.7.1 CLI with storage 1.7 and a
+live Controller/Host: one native-only update preserves the original Host and
+native conversation, migrates storage and processes new input afterward.
+Only the external Provider is simulated. Publishing does not update a user's
+global CLI, Home or production Controller.
+
 ### 2.8.0 compatibility and migration notes
 
 This minor adds native metabridge model management: provider configuration,
