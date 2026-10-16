@@ -26,6 +26,7 @@ import { startControllerServer } from "../../dist/core/controllerServer.js";
 import { installDevLauncher } from "../../scripts/manage-dev-launcher.mjs";
 import { createGlobalRoleMessage } from "../../dist/message/message.js";
 import Database from "../../dist/sqlite/driver.js";
+import { usePre19Layout } from "../helpers/pre19Storage.mjs";
 
 const execute = promisify(execFile);
 
@@ -42,8 +43,9 @@ test("maintenance authenticates native-only Operators before migrating an old Ho
     { agentId: agent.id, adapterId: agent.adapterId, nativeSessionId: "desktop-current",
       status: "active", policy: "fixed", effective: resolveEffectiveLaunch({ role, purpose: "execution" }) }, now));
   store.close();
-  // 1.7 -> 1.8 is additive with unchanged Role/Session records and SQL.
+  // Historical Role/Session records survive the declared 1.7 -> 1.9 path.
   const db = new Database(join(home, "yui.db"));
+  usePre19Layout(db);
   db.prepare("UPDATE storage_schema SET minor=7").run();
   db.close();
   const { launcherPath } = installDevLauncher({ projectRoot: process.cwd(), outputDir: join(home, "dev") });
@@ -64,6 +66,9 @@ test("maintenance authenticates native-only Operators before migrating an old Ho
   check.close();
   await assert.rejects(execute(launcherPath, ["--json", "inbox", "list"], { env: base, timeout: 10000 }),
     /storage version 1.7/);
+  const malformed = new Database(join(home, "yui.db"));
+  try { malformed.exec("CREATE TABLE unexpected (id TEXT)"); } finally { malformed.close(); }
+  await assert.rejects(preflight(base), /unexpected schema objects/);
 });
 
 test("public CLI fences replaced Operators, Home configuration and cross-Task reads", async t => {

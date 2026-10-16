@@ -147,17 +147,29 @@ function objects(db: Database.Database): SchemaObject[] {
   return db.prepare(`SELECT type,name,sql FROM sqlite_master
     WHERE name NOT GLOB 'sqlite_*' ORDER BY type,name`).all() as SchemaObject[];
 }
-let expectedObjects: readonly SchemaObject[] | undefined;
-export function validateSqliteSchemaObjects(db: Database.Database): void {
+const schemaObjectsByChecksum = new Map<string, readonly SchemaObject[]>();
+export function validateSqliteSchemaObjects(db: Database.Database, version: StorageVersion = CURRENT_STORAGE_VERSION): void {
+  // Maintenance authenticates before migration. Validate the declared source
+  // layout, not current-only tables that the migration has yet to create.
+  const checksum = version === CURRENT_STORAGE_VERSION
+    ? CURRENT_SCHEMA_CHECKSUM : storageMinorUpgradePlan(version)?.[0]?.sourceChecksum;
+  const sql = checksum === CURRENT_SCHEMA_CHECKSUM ? CURRENT_SCHEMA_SQL
+    : checksum === BASELINE_SCHEMA_CHECKSUM ? BASELINE_SCHEMA_SQL : undefined;
+  if (sql === undefined || checksum === undefined) throw new SqliteSchemaError(`unsupported schema definition for storage ${version}.`);
+  let expectedObjects = schemaObjectsByChecksum.get(checksum);
   if (expectedObjects === undefined) {
     const reference = new Database(":memory:");
-    try { reference.exec(CURRENT_SCHEMA_SQL); expectedObjects = objects(reference); }
+    try {
+      reference.exec(sql);
+      expectedObjects = objects(reference);
+      schemaObjectsByChecksum.set(checksum, expectedObjects);
+    }
     finally { reference.close(); }
   }
   const actual = objects(db);
   for (const expected of expectedObjects) {
     const found = actual.find(object => object.type === expected.type && object.name === expected.name);
-    if (found?.sql !== expected.sql) throw new SqliteSchemaError(`required ${expected.type} '${expected.name}' differs from the current definition.`);
+    if (found?.sql !== expected.sql) throw new SqliteSchemaError(`required ${expected.type} '${expected.name}' differs from the storage ${version} definition.`);
   }
   if (actual.length !== expectedObjects.length) throw new SqliteSchemaError("unexpected schema objects; preserve the database for diagnosis.");
 }
