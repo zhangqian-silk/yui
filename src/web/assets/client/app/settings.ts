@@ -8,6 +8,7 @@ import { createThemeController } from "/assets/js/lib/theme.js";
 import { clearPreference, readSessionAccessMode, writeSessionAccessMode } from "/assets/js/lib/prefs.js";
 import { i18n, createManageShell, pageSections, registerManagePage, navigateManage } from "/assets/js/layout/manageShell.js";
 import { mountSkills } from "/assets/js/views/skills.js";
+import { mountJobs } from "/assets/js/views/jobs.js";
 
 const $ = selector => document.querySelector(selector);
 const t = i18n.t;
@@ -18,11 +19,13 @@ function readSection() {
   return SECTIONS.includes(section) ? section : SECTIONS[0];
 }
 let section = readSection();
+let jobs;
 const shell = createManageShell({ page: "settings", t, onNavigate: navigate });
 function showSection(next) {
   section = next;
   document.querySelectorAll("#settings-root > .manage-section[data-section]").forEach(panel => { panel.hidden = panel.dataset.section !== next; });
   shell.set(next);
+  if (next === "jobs" && !jobs) jobs = mountJobs($("#global-jobs"), t);
 }
 function navigate(next) {
   navigateManage({ page: "settings", section: next });
@@ -34,6 +37,9 @@ function markDirty(name, value) {
 }
 registerManagePage("settings", { show: next => showSection(next.section) });
 i18n.subscribe(() => shell.render());
+i18n.subscribe(() => {
+  if (jobs && !jobs.isDirty() && !jobs.isBusy()) jobs = mountJobs($("#global-jobs"), t);
+});
 showSection(section);
 const skills = mountSkills($("#skill-browser"), t, { heading: false, onDirty: value => markDirty("skills", value) });
 i18n.subscribe(() => skills?.translate());
@@ -59,7 +65,7 @@ let searchTimer;
 const more = h("button.btn", { type: "button", hidden: true }, t("settings.more"));
 container.after(more);
 window.addEventListener("beforeunload", event => {
-  if (!groups.some(g => g.dirty)) return;
+  if (!groups.some(g => g.dirty) && !jobs?.isDirty()) return;
   event.preventDefault(); event.returnValue = "";
 });
 

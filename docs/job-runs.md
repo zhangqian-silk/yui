@@ -85,7 +85,7 @@ execution audit, readiness/archive checks and HTTP preview tickets likewise
 refer to exact Runs. Definitions alone never count as active execution or block
 Task completion. Started Runs and retained unknown process evidence keep the
 existing Task lifecycle and physical-cleanup boundaries. The management UI
-is a separate feature; its consumers must not replace exact refs with latest.
+retains exact references rather than replacing them with latest.
 
 ## Extension seams for Schedule, Project refresh and management UI
 
@@ -191,3 +191,34 @@ global definition and use its existing admission seam, never a second Project
 automation state. The isolated core scenario covers interval-triggered refresh
 Runs, missed-period coalescing and disable behavior against a local Git remote.
 This does not enable a cadence for any real Project.
+
+## Local Web management
+
+The Task's **Jobs** tab manages only that Task. **Settings → Jobs & schedules**
+manages global definitions. Both use the same component and public services.
+Create/edit a definition, run it immediately, select an exact historical Run
+and read its snapshot/results/logs, or request cancellation of that Run.
+Task shell configuration uses the same explicit managed-workspace specification
+as the CLI; global creation offers only `system.noop` and `project.refresh`.
+Creating or reading a Job never executes it.
+
+The HTTP routes are `/api/tasks/:taskId/jobs|schedules` and
+`/api/settings/jobs|schedules`. GET takes `op`, `id` and optional `runId`; POST
+takes the corresponding public operation fields, with `requestId` for manual
+Run admission. Routes fix scope. Browser-supplied `caller`, `scope` or trigger
+authority is rejected. The loopback token authenticates the local-user ingress,
+and writes additionally require an exact same Origin. The adapter resolves the
+current Operator Session from the server store on every call; if none is
+available, management reports that prerequisite rather than fabricating one.
+Its accepted Jobs/Schedules retain the normal Operator binding/revocation
+semantics. Managed RPC callers retain their existing authentication and cannot
+borrow this local-user adapter.
+
+Schedule forms support once, anchored interval and five-field cron with an
+explicit timezone. Displayed next due and last success come from the service.
+Disable affects future admissions, cancellation affects one exact Run, and a
+manual Run does not move the cadence. Once `completed` means admitted, not
+successful. Errors retain the draft; an unknown write is not automatically
+resent. Refresh only reads facts and keeps the selected Run exact. No new
+tables, scheduling loop, Project switch, implicit refresh or deletion semantics
+are introduced.

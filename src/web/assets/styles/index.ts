@@ -18,6 +18,7 @@ import { TERMINAL_STYLES } from "./views/terminal.js";
 import { MANAGE_STYLES } from "./views/manage.js";
 import { SETTINGS_STYLES } from "./views/settings.js";
 import { MODELS_STYLES } from "./views/models.js";
+import { JOBS_STYLES } from "./views/jobs.js";
 
 // The stylesheet registry, in cascade order: foundations (fonts, tokens,
 // element defaults), the workspace frame, shared UI primitives, then one
@@ -43,6 +44,7 @@ export const STYLESHEETS: readonly { name: string; body: string }[] = Object.fre
   { name: "views/manage", body: MANAGE_STYLES },
   { name: "views/settings", body: SETTINGS_STYLES },
   { name: "views/models", body: MODELS_STYLES },
+  { name: "views/jobs", body: JOBS_STYLES },
   { name: "markdown", body: MARKDOWN_STYLES },
   { name: "layout/responsive", body: RESPONSIVE_STYLES }
 ]);

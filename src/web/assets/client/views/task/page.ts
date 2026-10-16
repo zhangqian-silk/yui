@@ -13,6 +13,7 @@ import { updateObservation } from "/assets/js/views/task/observation.js";
 import { renderDelivery } from "/assets/js/views/task/delivery.js";
 import { renderRuntime } from "/assets/js/views/task/runtime.js";
 import { renderRecords } from "/assets/js/views/task/records.js";
+import { mountJobs } from "/assets/js/views/jobs.js";
 
 // Overview: where it stands. Delivery: what it produced. Runtime: what is
 // live now. Records: what happened. Retired section names stay addressable.
@@ -21,9 +22,12 @@ export const TAB_ALIASES = ${JSON.stringify(TASK_TAB_ALIASES)};
 const TAB_ICONS = ${JSON.stringify(TASK_TAB_ICONS)};
 
 export function renderTaskDetail(container, data, t, locale, ctx) {
+  const savedJobs = container.dataset.taskId === data.task.id && container.dataset.jobsLocale === locale
+    ? container.querySelector("#panel-jobs") : null;
   clear(container);
   const task = data.task;
   container.dataset.taskId = task.id;
+  container.dataset.jobsLocale = locale;
   data.viewState.coreKey = data.core.coreCursor;
   const page = h("div.page.task-page");
   page.append(h("header.task-header", null, taskBar(task, t, ctx)),
@@ -31,10 +35,16 @@ export function renderTaskDetail(container, data, t, locale, ctx) {
     h("div.tabs-wrap", null, taskTabs(data.core, t, ctx)));
   const panels = {};
   TABS.forEach(function (tab) {
-    panels[tab] = h("section.tab-panel", { id: "panel-" + tab, role: "tabpanel", "aria-labelledby": "tab-" + tab, hidden: ctx.activeTab !== tab });
+    panels[tab] = tab === "jobs" && savedJobs ? savedJobs
+      : h("section.tab-panel", { id: "panel-" + tab, role: "tabpanel", "aria-labelledby": "tab-" + tab });
+    panels[tab].hidden = ctx.activeTab !== tab;
     page.append(panels[tab]);
   });
   renderOverviewPanel(panels.overview, data, t, locale, ctx);
+  if (!savedJobs) panels.jobs.onShow = () => {
+    panels.jobs.onShow = null;
+    mountJobs(panels.jobs, t, task.id);
+  };
   [["delivery", renderDelivery], ["runtime", renderRuntime], ["records", renderRecords]].forEach(function (entry) {
     const panel = panels[entry[0]];
     panel.onShow = function () {
