@@ -78,13 +78,16 @@ export function listJobRuns(store: TaskStore, job: JobDefinition): JobRun[] {
 /** Read-only presentation; attempts/results remain owned by exact JobRuns. */
 function presentDefinition(store: TaskStore, job: JobDefinition) {
   if (job.configuration.kind !== "builtin" || job.configuration.action !== "project.refresh") return job;
-  const runs = listJobRuns(store, job).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const projectId = job.configuration.projectId;
+  const runs = listJobRuns(store, job).filter(run => !("taskId" in run)
+    && run.action === "project.refresh" && run.projectId === projectId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const summarize = (run: JobRun | undefined) => run === undefined ? null : {
     runId: run.id, definitionRevision: run.definitionRevision, trigger: run.trigger,
     status: run.status, attemptedAt: run.createdAt, finishedAt: run.terminalAt ?? null
   };
   return { ...job, refresh: {
-    projectId: job.configuration.projectId, lastAttempt: summarize(runs[0]),
+    projectId, lastAttempt: summarize(runs[0]),
     lastSuccessfulRefresh: summarize(runs.find(run => run.status === "succeeded"))
   } };
 }

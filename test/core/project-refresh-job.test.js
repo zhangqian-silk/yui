@@ -132,6 +132,13 @@ test("controlled Project Jobs fast-forward through the real runner and isolate r
   assert.equal(call("refresh-two", "show").refresh.lastAttempt.runId, retired.id);
   assert.equal(call("refresh-two", "show").refresh.lastSuccessfulRefresh.runId, clean.id);
   assert.equal(store.listTasks().length, 0);
+  call("refresh-one", "update", { expectedRevision: 1, title: "No longer maintenance",
+    configuration: { kind: "builtin", action: "system.noop", input: {} } });
+  call("refresh-two", "update", { expectedRevision: 1, title: "Other target",
+    configuration: { kind: "builtin", action: "project.refresh", projectId: "project-1", input: {} } });
+  assert.equal(call("refresh-two", "show").refresh.lastSuccessfulRefresh, null,
+    "a retargeted definition must not display another Project's success");
+  assert.equal(call("refresh-two", "runs").length, 2, "old exact evidence remains readable");
 
   // No processes are created in this concurrency probe. All artifacts/rows
   // belong to the fixture and are removed by the registered teardown.
