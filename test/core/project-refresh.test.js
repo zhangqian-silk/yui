@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -48,11 +48,13 @@ function fixture(t) {
 test("refresh keeps HEAD and the configured tracking ref consistent, including tracking-only repair", async (t) => {
   const f = fixture(t);
   const workspace = new NodeGitWorkspace();
+  writeFileSync(join(f.checkout, ".git", "FETCH_HEAD"), "preserved fetch observation\n");
   const refreshed = await workspace.refresh(f.input);
   assert.equal(refreshed.changed, true);
   assert.equal(git(f.checkout, "rev-parse", "HEAD"), f.after);
   assert.equal(git(f.checkout, "rev-parse", "refs/remotes/origin/main"), f.after);
   assert.equal(git(f.checkout, "rev-list", "--count", "@{upstream}..HEAD"), "0");
+  assert.equal(readFileSync(join(f.checkout, ".git", "FETCH_HEAD"), "utf8"), "preserved fetch observation\n");
 
   // The mapping, not the remote name or a default branch, owns the destination.
   git(f.checkout, "remote", "rename", "origin", "source");
@@ -72,6 +74,27 @@ test("refresh keeps HEAD and the configured tracking ref consistent, including t
   })).ref, repaired.tracking.ref);
   assert.equal((await workspace.refresh(f.input)).tracking.status, "current");
   assert.equal(git(f.checkout, "for-each-ref", "--format=%(refname)", "refs/yui"), "");
+});
+
+test("refresh refuses a wrong branch and divergence without discarding local history", async t => {
+  const f = fixture(t);
+  const workspace = new NodeGitWorkspace();
+  git(f.checkout, "checkout", "-b", "work");
+  await assert.rejects(workspace.refresh(f.input), /branch/);
+  assert.equal(git(f.checkout, "symbolic-ref", "--short", "HEAD"), "work");
+  git(f.checkout, "checkout", "main");
+  writeFileSync(join(f.checkout, "local"), "local history\n");
+  git(f.checkout, "add", "local"); git(f.checkout, "commit", "-m", "local");
+  const local = git(f.checkout, "rev-parse", "HEAD");
+  await assert.rejects(workspace.refresh(f.input), error => {
+    assert.match(error.message, /cannot be fast-forwarded/);
+    assert.equal(error.result.fromCommit, local);
+    assert.equal(error.result.toCommit, local);
+    assert.equal(error.result.verifiedCommit, f.after);
+    return true;
+  });
+  assert.equal(git(f.checkout, "rev-parse", "HEAD"), local);
+  assert.equal(readFileSync(join(f.checkout, "local"), "utf8"), "local history\n");
 });
 
 test("a tracking race after fast-forward reports partial progress without overwriting the competing ref", async (t) => {

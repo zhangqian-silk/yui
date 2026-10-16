@@ -11,7 +11,8 @@ import {
   acknowledgeUnknownDurableJob, requestDurableJobCancel, validateDurableJob,
   JOB_RUNNER_IMPLEMENTATION, executionNamespace, type GlobalJobRun, type JobRun
 } from "../job/durableJob.js";
-import { prepareBuiltinJob } from "../job/builtinJob.js";
+import { prepareBuiltinJob, projectRefreshDigest } from "../job/builtinJob.js";
+import { projectRefreshTargetDigest, requireRefreshProject } from "../repository/projectRefresh.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import {
   assertCallerAuthorized, assertNonSecretJobInput, createDurableJobControl,
@@ -56,12 +57,36 @@ function authorizeDefinition(store: TaskStore, job: JobDefinition, caller: Durab
   } else if (write) {
     if (job.configuration.kind !== "builtin") throw new Error("Global Jobs require builtin actions.");
     prepareBuiltinJob(job.configuration, "/");
+    if (job.configuration.action === "project.refresh") {
+      const project = requireRefreshProject(store, job.configuration.projectId!, true);
+      if (projectRefreshDigest(job.configuration) !== projectRefreshTargetDigest(project)) {
+        throw new Error("Project refresh target changed; inspect the Project and explicitly update the Job.");
+      }
+      const duplicate = store.listJobDefinitions({ kind: "global" }).find(other =>
+        other.id !== job.id && other.configuration.kind === "builtin"
+        && other.configuration.action === "project.refresh" && other.configuration.projectId === project.id);
+      if (duplicate) throw new Error(`Project refresh Job already exists: ${duplicate.id}.`);
+    }
   }
 }
 
 export function listJobRuns(store: TaskStore, job: JobDefinition): JobRun[] {
   return (job.scope.kind === "task" ? store.listDurableJobs(job.scope.taskId) : store.listGlobalJobRuns())
     .filter(run => run.definitionId === job.id);
+}
+
+/** Read-only presentation; attempts/results remain owned by exact JobRuns. */
+function presentDefinition(store: TaskStore, job: JobDefinition) {
+  if (job.configuration.kind !== "builtin" || job.configuration.action !== "project.refresh") return job;
+  const runs = listJobRuns(store, job).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const summarize = (run: JobRun | undefined) => run === undefined ? null : {
+    runId: run.id, definitionRevision: run.definitionRevision, trigger: run.trigger,
+    status: run.status, attemptedAt: run.createdAt, finishedAt: run.terminalAt ?? null
+  };
+  return { ...job, refresh: {
+    projectId: job.configuration.projectId, lastAttempt: summarize(runs[0]),
+    lastSuccessfulRefresh: summarize(runs.find(run => run.status === "succeeded"))
+  } };
 }
 
 function authorizeRunRead(store: TaskStore, run: JobRun, caller: DurableJobCaller): void {
@@ -115,7 +140,7 @@ export function admitJobRun(
     if (job.configuration.kind !== "builtin") throw new Error("Global Jobs require builtin actions.");
     const id = `job-${randomUUID()}`;
     const locator = `artifacts/jobs/global/${id}`;
-    const spec = prepareBuiltinJob(job.configuration, join(home, locator));
+    const spec = prepareBuiltinJob(job.configuration, join(home, locator), { home, runId: id });
     const actorId = `global:${caller.role}`;
     const run: GlobalJobRun = validateDurableJob({
       schemaVersion: 1, scope: "global", id, definitionId: job.id, definitionRevision: job.revision,
@@ -143,13 +168,30 @@ export function authorizeGlobalJobStart(store: TaskStore, run: GlobalJobRun): vo
     || jobAuthorityBinding(store, "global", "operator", "") !== run.operation.authorityRef) {
     throw Object.assign(new Error("Global JobRun caller binding was revoked; no execution was started."), { name: "CoreJobError" });
   }
-  const compiled = prepareBuiltinJob({
-    kind: "builtin", action: run.action, input: run.actionInput,
-    ...(run.projectId === undefined ? {} : { projectId: run.projectId })
-  }, run.workspace);
-  if (JSON.stringify(compiled.steps) !== JSON.stringify(run.steps)
-    || JSON.stringify(compiled.env) !== JSON.stringify(run.env) || compiled.head !== run.head) {
-    throw Object.assign(new Error("Global JobRun does not match its controlled action."), { name: "CoreJobError" });
+  // Storage failures are not domain refusals or proof of no execution.
+  const projects = run.action === "project.refresh" ? store.listProjects() : [];
+  const home = store.rootDirectory();
+  try {
+    const compiled = prepareBuiltinJob({
+      kind: "builtin", action: run.action, input: run.actionInput,
+      ...(run.projectId === undefined ? {} : { projectId: run.projectId })
+    }, run.workspace, { home, runId: run.id });
+    if (run.action === "project.refresh") {
+      const project = requireRefreshProject({ listProjects: () => projects, rootDirectory: () => home }, run.projectId!, true);
+      if (projectRefreshTargetDigest(project) !== projectRefreshDigest({
+        kind: "builtin", action: run.action, projectId: run.projectId, input: run.actionInput
+      })) throw new Error("Project refresh target changed before execution.");
+      if (run.workspace !== join(home, "artifacts/jobs/global", run.id)) {
+        throw new Error("Project refresh Run workspace does not match its artifact directory.");
+      }
+    }
+    if (JSON.stringify(compiled.steps) !== JSON.stringify(run.steps)
+      || JSON.stringify(compiled.env) !== JSON.stringify(run.env) || compiled.head !== run.head) {
+      throw new Error("Global JobRun does not match its controlled action.");
+    }
+  } catch (error) {
+    throw Object.assign(new Error(error instanceof Error ? error.message : String(error), { cause: error }),
+      { name: "CoreJobError" });
   }
 }
 
@@ -167,12 +209,20 @@ export function createJobDefinitionControl(store: TaskStore, home: string) {
       if (input.op === "list") {
         return tx.listJobDefinitions(input.scope).filter(job => {
           try { authorizeDefinition(tx, job, input.caller, false); return true; } catch { return false; }
-        });
+        }).map(job => presentDefinition(tx, job));
       }
       if (typeof input.id !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u.test(input.id)) throw new Error("An explicit safe Job id is required.");
       const existing = tx.getJobDefinition(input.scope, input.id);
       if (input.op === "define" || input.op === "update") {
-        const fields = { title: input.title!, configuration: input.configuration! };
+        let configuration = input.configuration!;
+        // Empty input is an explicit request to bind the current catalog target.
+        // A saved digest is never silently refreshed on run/retry.
+        if (input.scope.kind === "global" && configuration?.kind === "builtin"
+          && configuration.action === "project.refresh" && JSON.stringify(configuration.input) === "{}") {
+          const project = requireRefreshProject(tx, configuration.projectId!, true);
+          configuration = { ...configuration, input: { targetDigest: projectRefreshTargetDigest(project) } };
+        }
+        const fields = { title: input.title!, configuration };
         if (input.op === "define") {
           const next = createJobDefinition({ id: input.id, scope: input.scope, ...fields }, now);
           authorizeDefinition(tx, next, input.caller, true);
@@ -197,7 +247,7 @@ export function createJobDefinitionControl(store: TaskStore, home: string) {
       if (existing === null) throw new Error("Job definition not found.");
       validateJobDefinition(existing);
       authorizeDefinition(tx, existing, input.caller, false);
-      if (input.op === "show") return existing;
+      if (input.op === "show") return presentDefinition(tx, existing);
       if (input.op === "runs") return listJobRuns(tx, existing).filter(run => {
         try { authorizeRunRead(tx, run, input.caller); return true; }
         catch { return false; }

@@ -188,8 +188,19 @@ export class DurableJobSupervisor {
 
   reconcile(now: Date): void {
     const jobs = this.#store.listActiveDurableJobs();
-    for (const job of jobs) {
+    const refresh = (job: DurableJob) => !("taskId" in job) && job.action === "project.refresh";
+    const waiting = (job: DurableJob) => refresh(job) && job.status === "queued"
+      && job.operation.effect === "none" && !job.cancelRequestedAt;
+    // Harvest/recover existing attempts first. Network operations remain in
+    // detached runners, with at most four outstanding Project refreshes.
+    const ordered = [...jobs.filter(job => !waiting(job)), ...jobs.filter(waiting)];
+    for (const job of ordered) {
       try {
+        if (waiting(job)) {
+          const occupied = this.#store.listActiveDurableJobs().filter(candidate =>
+            refresh(candidate) && (candidate.status === "running" || candidate.operation.effect !== "none"));
+          if (occupied.length >= 4) break;
+        }
         this.#reconcileJob(job, now);
       } catch (error) {
         this.#onError(new Error(`DurableJob supervision failed for ${executionNamespace(job)}/${job.id}: `
