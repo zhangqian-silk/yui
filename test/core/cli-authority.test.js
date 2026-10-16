@@ -25,8 +25,46 @@ import { createDurableJobControl, parseDurableJobRefParams } from "../../dist/co
 import { startControllerServer } from "../../dist/core/controllerServer.js";
 import { installDevLauncher } from "../../scripts/manage-dev-launcher.mjs";
 import { createGlobalRoleMessage } from "../../dist/message/message.js";
+import Database from "../../dist/sqlite/driver.js";
 
 const execute = promisify(execFile);
+
+test("maintenance authenticates native-only Operators before migrating an old Home", async t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-maintenance-authority-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const store = new SqliteTaskStore(home);
+  const now = new Date("2026-09-16T00:00:00Z");
+  const agent = createConfiguredAgent("fixture", "codex", "false", [], [], now);
+  const role = createGlobalRole("operator", [createRoleAgentBinding(agent)], agent.id, home, now);
+  store.saveGlobalRole(role);
+  store.saveGlobalRoleSessionSet(recordRoleAgentSession(
+    createRoleSessionSet({ scope: "global", roleName: "operator" }, agent.id, now),
+    { agentId: agent.id, adapterId: agent.adapterId, nativeSessionId: "desktop-current",
+      status: "active", policy: "fixed", effective: resolveEffectiveLaunch({ role, purpose: "execution" }) }, now));
+  store.close();
+  // 1.7 -> 1.8 is additive with unchanged Role/Session records and SQL.
+  const db = new Database(join(home, "yui.db"));
+  db.prepare("UPDATE storage_schema SET minor=7").run();
+  db.close();
+  const { launcherPath } = installDevLauncher({ projectRoot: process.cwd(), outputDir: join(home, "dev") });
+  const base = { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: home,
+    YUI_HOME: home, CODEX_THREAD_ID: "desktop-current", YUI_STORE_WORKER: "false" };
+  const preflight = env => execute(launcherPath, ["--json", "upgrade", "--update-preflight"],
+    { env, timeout: 10000 });
+  const result = JSON.parse((await preflight(base)).stdout);
+  assert.equal(result.data.status, "migration-ready");
+  for (const env of [
+    { ...base, CODEX_THREAD_ID: "replaced" },
+    { ...base, YUI_SESSION_SCOPE: "global", YUI_ROLE: "operator", CODEX_THREAD_ID: "replaced" },
+    { ...base, YUI_SESSION_SCOPE: "task", YUI_ROLE: "leader", YUI_TASK_ID: "task-1" },
+    { ...base, YUI_ROLE: "other" }
+  ]) await assert.rejects(preflight(env));
+  const check = new Database(join(home, "yui.db"), { readonly: true });
+  assert.equal(check.prepare("SELECT minor FROM storage_schema").get().minor, 7);
+  check.close();
+  await assert.rejects(execute(launcherPath, ["--json", "inbox", "list"], { env: base, timeout: 10000 }),
+    /storage version 1.7/);
+});
 
 test("public CLI fences replaced Operators, Home configuration and cross-Task reads", async t => {
   const root = mkdtempSync(join(tmpdir(), "yui-cli-authority-"));
