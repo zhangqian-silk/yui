@@ -124,6 +124,15 @@ test("controlled Project Jobs fast-forward through the real runner and isolate r
   assert.equal(evidence.refresh.toCommit, after);
   assert.deepEqual(evidence.remoteCheck, { status: "verified", commit: after });
   assert.equal(evidence.trigger.key, "clean");
+  const originalTarget = store.getProject("project-2");
+  store.saveProject({ ...originalTarget, remoteUrl: seed });
+  const rebind = revision => call("refresh-two", "update", { expectedRevision: revision, title: "Rebind",
+    configuration: { kind: "builtin", action: "project.refresh", projectId: "project-2", input: {} } });
+  rebind(1);
+  assert.equal(call("refresh-two", "show").refresh.lastSuccessfulRefresh, null,
+    "a new remote binding has no successful refresh observation");
+  store.saveProject(originalTarget);
+  rebind(2);
   const retired = run("refresh-two", "retired");
   store.saveProject(retireProject(store.getProject("project-2"), "fixture retirement", "operator", new Date()));
   supervisor.reconcile(new Date());
@@ -134,7 +143,16 @@ test("controlled Project Jobs fast-forward through the real runner and isolate r
   assert.equal(store.listTasks().length, 0);
   call("refresh-one", "update", { expectedRevision: 1, title: "No longer maintenance",
     configuration: { kind: "builtin", action: "system.noop", input: {} } });
-  call("refresh-two", "update", { expectedRevision: 1, title: "Other target",
+  const noop = run("refresh-one", "noop");
+  supervisor.reconcile(new Date()); supervisor.reconcile(new Date());
+  assert.equal(store.getGlobalJobRun(noop.id).status, "succeeded");
+  call("refresh-one", "update", { expectedRevision: 2, title: "Maintenance again",
+    configuration: { kind: "builtin", action: "project.refresh", projectId: "project-1", input: {} } });
+  assert.equal(call("refresh-one", "show").refresh.lastSuccessfulRefresh, null,
+    "a successful noop is not evidence of Project refresh");
+  call("refresh-one", "update", { expectedRevision: 3, title: "No longer maintenance",
+    configuration: { kind: "builtin", action: "system.noop", input: {} } });
+  call("refresh-two", "update", { expectedRevision: 3, title: "Other target",
     configuration: { kind: "builtin", action: "project.refresh", projectId: "project-1", input: {} } });
   assert.equal(call("refresh-two", "show").refresh.lastSuccessfulRefresh, null,
     "a retargeted definition must not display another Project's success");

@@ -79,8 +79,11 @@ export function listJobRuns(store: TaskStore, job: JobDefinition): JobRun[] {
 function presentDefinition(store: TaskStore, job: JobDefinition) {
   if (job.configuration.kind !== "builtin" || job.configuration.action !== "project.refresh") return job;
   const projectId = job.configuration.projectId;
+  const targetDigest = projectRefreshDigest(job.configuration);
   const runs = listJobRuns(store, job).filter(run => !("taskId" in run)
-    && run.action === "project.refresh" && run.projectId === projectId)
+    && run.action === "project.refresh" && run.projectId === projectId
+    && projectRefreshDigest({ kind: "builtin", action: run.action,
+      projectId: run.projectId, input: run.actionInput }) === targetDigest)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const summarize = (run: JobRun | undefined) => run === undefined ? null : {
     runId: run.id, definitionRevision: run.definitionRevision, trigger: run.trigger,

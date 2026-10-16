@@ -172,6 +172,9 @@ For UI consumers (Task129), the action label is `project.refresh`, target is
 `configuration.projectId`, and `job show/list` adds a **derived** `refresh`
 projection with `lastAttempt` and `lastSuccessfulRefresh` exact Run references,
 revision, trigger, status and timestamps. It is not separately stored.
+A projection includes only refresh Runs for the definition's exact Project and
+target digest; changing action or rebinding a remote/path/branch does not inherit
+another target's successful observation. Full history remains in `job runs`.
 A failed or unknown attempt never advances success. The Run supplies trigger
 source, status, terminal error and artifact identity. `job logs` returns bounded
 step output: successful refresh JSON contains `projectId`, `trigger`, observed
