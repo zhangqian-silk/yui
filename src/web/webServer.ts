@@ -21,6 +21,7 @@ import type { RoleSessionOwner } from "../executor/agentExecutor.js";
 import type { WebSettings } from "./webSettings.js";
 import type { createModelManagement } from "../models/modelManagement.js";
 import type { WebSkills } from "./webSkills.js";
+import type { createWebJobs } from "./webJobs.js";
 import { MODELS_HTML } from "./assets/shell/models.js";
 import { TASK_SUBMISSION_INTENTS, type TaskSubmissionIntent } from "../message/message.js";
 import type { SurfaceContributionRef, SurfacePanelContribution } from "../surface/surfaceContributions.js";
@@ -77,6 +78,7 @@ export type WebServerDependencies = Readonly<{
   settings?: WebSettings;
   models?: ReturnType<typeof createModelManagement>;
   skills?: WebSkills;
+  jobs?: ReturnType<typeof createWebJobs>;
   panels?: Readonly<{
     list(taskId: string): readonly SurfacePanelContribution[];
     read(taskId: string, ref: SurfaceContributionRef, input: unknown): Promise<CapabilityResult>;
@@ -326,6 +328,31 @@ async function handleHttpRequest(
         error: error instanceof WebRequestRejected ? error.message : "Model operation failed. Inspect the current state before retrying.",
         disposition: method === "GET" || error instanceof WebRequestRejected ? "not-submitted" : "unknown"
       }, false);
+    }
+    return;
+  }
+  const jobTarget = /^\/api\/(?:settings|(tasks)\/([^/]+))\/(jobs|schedules)$/.exec(pathname);
+  if (jobTarget) {
+    try {
+      if (!dependencies.jobs) throw new WebRequestRejected("Job management unavailable.");
+      const scope = jobTarget[1] ? { kind: "task" as const, taskId: decodeURIComponent(jobTarget[2]!) }
+        : { kind: "global" as const };
+      const family = jobTarget[3] as "jobs" | "schedules";
+      let value: unknown;
+      if (method === "GET") {
+        const query = new URL(request.url!, "http://localhost").searchParams;
+        if ([...query.keys()].some(key => !["op", "id", "runId"].includes(key))) throw new WebRequestRejected("Unknown Job query.");
+        value = dependencies.jobs.read(scope, family, Object.fromEntries(query), now());
+      } else if (method === "POST") {
+        if (headerValue(request, "origin") !== `http://${headerValue(request, "host")}`) {
+          throw new WebRequestRejected("Job changes require a same-origin request.");
+        }
+        value = dependencies.jobs.mutate(scope, family, await readMutationBody(request), now());
+      } else throw new WebRequestRejected("Method not allowed.");
+      sendJson(response, 200, value, false);
+    } catch (error) {
+      sendJson(response, 409, { error: error instanceof Error ? error.message : "Job operation failed.",
+        disposition: error instanceof WebRequestRejected ? "not-submitted" : "unknown" }, false);
     }
     return;
   }
