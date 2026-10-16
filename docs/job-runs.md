@@ -35,7 +35,7 @@ credential on the existing Controller socket. Task Sessions cannot inspect,
 create, modify or run global Jobs. The initial global action is `system.noop`,
 a fixed local no-op implemented by the same standalone runner. It accepts only
 empty input and no Project; it does not call a model or external service.
-`project.refresh` belongs to its separate feature. Arbitrary global commands,
+`project.refresh` is the controlled Project maintenance action below. Arbitrary global commands,
 environments, workspaces and Agent calls are not accepted.
 
 `job run --request-id` is a stable trigger identity within the scoped Job.
@@ -117,3 +117,76 @@ is a separate feature; its consumers must not replace exact refs with latest.
 No cron parser, due-time calculation, background queue, independent daemon,
 cross-Task dependency engine or release behavior is introduced here. Subsequent
 persistent changes must append after 1.9, not claim the same migration number.
+
+## Controlled Project refresh
+
+An authenticated Operator can explicitly install one maintenance definition
+per registered managed Project, inspect it, and request independent Runs:
+
+```sh
+yui job define --global --job project-refresh-project-7 --title "Refresh Project 7" \
+  --input '{"kind":"builtin","action":"project.refresh","projectId":"project-7","input":{}}'
+yui job show --global --job project-refresh-project-7
+yui job run --global --job project-refresh-project-7 --request-id refresh-001
+yui job runs --global --job project-refresh-project-7
+yui job run-get --global --job project-refresh-project-7 --run <exact-run-id>
+yui job logs --global --job project-refresh-project-7 --run <exact-run-id>
+```
+
+These examples configure intent; installation, migration and Project registration
+never install or run a default Job or Schedule. Task Sessions cannot use this
+entry point. The Job remains global; `configuration.projectId` identifies its
+target, not an owning Task. Duplicate refresh definitions for the same Project
+are refused with the existing Job ID; `job list --global` also discovers it.
+
+Empty action input explicitly binds the current catalog's Project ID, path,
+ownership, lifecycle, remote URL and stable/development branches into
+`input.targetDigest`. The digest is generated from authoritative configuration,
+not a caller-supplied checkout path. Each Run retains this immutable input.
+Admission, pre-spawn authorization and the domain action after lock acquisition
+recheck the current target. Missing/retired/external Projects and changed targets
+fail closed. After inspecting an intentional configuration change, use
+`job update --revision <observed-revision>` with the same action and empty input
+to bind it explicitly. Run/retry never silently rebinds an old definition.
+
+`project refresh <project>` and the Job call the same Project domain service and
+maintenance lock. The existing manual external-Project behavior is unchanged;
+automatic writes require active **managed** ownership. Both require matching
+stable and development branches. Git checks clean/untracked state, exact branch
+and HEAD; fetch isolates FETCH_HEAD, unrelated tracking refs and maintenance;
+only verified fast-forward and compare-and-swap tracking updates are allowed.
+There is no reset, rebase, guessed checkout, user remote rewrite or semantic
+Knowledge/Skill update. Lock waiting is bounded and never retries the Git action.
+
+The existing detached Job runner invokes a fixed Project-domain executable.
+That action reads current catalog/Run authority through a read-only Store and
+writes Git only through the shared service. The generic runner remains
+artifact-only. Runtime-owned PATH, HOME, SSH agent socket and Git config
+locations are passed for Git discovery/authentication; callers cannot supply
+commands or environment. Interactive Git prompts are disabled, and the action
+has a ten-minute timeout. At most four supervised Project refresh attempts
+are started concurrently; one Project's failure does not stop another.
+Cancellation/timeout uses the existing process-group and unknown-effect contract.
+
+For UI consumers (Task129), the action label is `project.refresh`, target is
+`configuration.projectId`, and `job show/list` adds a **derived** `refresh`
+projection with `lastAttempt` and `lastSuccessfulRefresh` exact Run references,
+revision, trigger, status and timestamps. It is not separately stored.
+A projection includes only refresh Runs for the definition's exact Project and
+target digest; changing action or rebinding a remote/path/branch does not inherit
+another target's successful observation. Full history remains in `job runs`.
+A failed or unknown attempt never advances success. The Run supplies trigger
+source, status, terminal error and artifact identity. `job logs` returns bounded
+step output: successful refresh JSON contains `projectId`, `trigger`, observed
+time, verified remote commit and `refresh.fromCommit/toCommit/tracking`.
+Git-stage failures include `details.refresh` with observed partial HEAD/tracking
+effects and any retained temporary ref. Earlier refusals have no successful
+remote observation. Missing exit evidence, timeout or cancellation must not be
+presented as successful synchronization; inspect retained evidence before retry.
+The Run's all-zero `head` is not a Project revision; use the action's observations.
+
+No persistent envelope/table change is needed: action input and output use the
+existing JobDefinition/JobRun JSON and logs. Schedule should reference this same
+global definition and use its existing admission seam, never a second Project
+automation state. Periodic integration is a separate Task127/series validation;
+the immediate path alone does not prove periodic triggering or disable behavior.

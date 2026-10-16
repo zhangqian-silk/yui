@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { readdir, rename, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
-import { CliError, usageError } from "../errors/cliError.js";
+import { usageError } from "../errors/cliError.js";
 import { defaultTableWidth, renderTable } from "../output/table.js";
 import { boundedDocument, readOptions, recordPage } from "../output/boundedRead.js";
 import {
@@ -11,10 +11,11 @@ import {
   swapManagedCheckout
 } from "../repository/checkoutSwap.js";
 import {
-  GitWorkspaceRefreshError, NodeGitWorkspace,
+  NodeGitWorkspace,
   type GitWorkspacePort, type GitWorkspaceRefresh
 } from "../repository/gitWorkspace.js";
 import { acquireProjectMaintenanceLock } from "../repository/projectMaintenanceLock.js";
+import { refreshRegisteredProject } from "../repository/projectRefresh.js";
 import {
   addProjectKnowledge,
   addKnowledgeProposal,
@@ -168,37 +169,7 @@ async function refreshProject(
     throw usageError("Project refresh usage: yui project refresh <project>.");
   }
   const project = requireProject(store, args[0]!);
-  assertProjectActive(project, "refresh");
-  if (project.remoteUrl === undefined) {
-    throw usageError(`Project refresh requires a remote URL: ${project.id}.`);
-  }
-  if (project.stableBranch !== project.developmentBranch) {
-    throw usageError(
-      `Project refresh requires matching stable and development branches: ${project.id}.`
-    );
-  }
-  // RFC Phase 1: hold the per-Project maintenance fence for the whole refresh
-  // so Task workspace preparation and other maintenance cannot interleave
-  // with the canonical branch/working-tree move.
-  const releaseMaintenance = await acquireProjectMaintenanceLock(store.rootDirectory(), project.id, { signal: options.signal });
-  try {
-    const current = requireUnchangedMaintenanceProject(store, project, "refresh");
-    const refreshed = await (options.git ?? new NodeGitWorkspace()).refresh({
-      repositoryPath: current.path,
-      remoteUrl: current.remoteUrl!,
-      stableRef: current.stableBranch
-    });
-    return { project: current, ...refreshed };
-  } catch (error) {
-    if (error instanceof GitWorkspaceRefreshError) {
-      throw new CliError("RUNTIME_ERROR", error.message, undefined, {
-        projectId: project.id, refresh: error.result
-      });
-    }
-    throw error;
-  } finally {
-    releaseMaintenance();
-  }
+  return refreshRegisteredProject(store, project.id, options);
 }
 
 /**
