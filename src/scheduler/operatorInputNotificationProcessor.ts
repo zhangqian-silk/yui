@@ -1,5 +1,6 @@
 import type { TaskEvent } from "../event/taskEvent.js";
 import type { InputRequest } from "../input/inputRequest.js";
+import type { GlobalJobRun } from "../job/durableJob.js";
 import {
   createOperatorBatchPresentation,
   type OperatorPresentationItem
@@ -11,9 +12,9 @@ import type {
 import { mailboxHasWork, nextPendingBatch } from "../coordination/workMailbox.js";
 
 type OperatorDeliveryOutcome = Readonly<{
-  sourceKind: "input" | "event";
+  sourceKind: "input" | "event" | "global-job-run";
   sourceId: string;
-  taskId: string;
+  taskId?: string;
   status: "queued" | "already-queued" | "skipped" | "failed";
   messageId?: string;
   reason?: "operator-unavailable" | "notice-pending";
@@ -23,6 +24,7 @@ type OperatorDeliveryOutcome = Readonly<{
 export type OperatorInputNotificationResult = OperatorDeliveryOutcome;
 
 type PendingOperatorAttention =
+  | Readonly<{ kind: "global-job-run"; run: GlobalJobRun }>
   | Readonly<{ kind: "input"; request: InputRequest }>
   | Readonly<{ kind: "event"; event: TaskEvent }>;
 
@@ -48,6 +50,10 @@ export async function processOperatorInputNotifications(
   const processing = claim.processing;
   const attentions = deduplicateAttention(processing.batch.refs.flatMap(
     (ref): PendingOperatorAttention[] => {
+      if (ref.type === "global-job-run") {
+        const run = store.getGlobalJobRun?.(ref.id);
+        return run == null ? [] : [{ kind: "global-job-run", run }];
+      }
       if (ref.type === "input") {
         const request = store.getInputRequest(ref.taskId, ref.id);
         return request !== null && request.status === "open"
@@ -109,6 +115,7 @@ function attentionIdentity(attention: PendingOperatorAttention): Pick<
   OperatorInputNotificationResult,
   "sourceKind" | "sourceId" | "taskId"
 > {
+  if (attention.kind === "global-job-run") return { sourceKind: "global-job-run", sourceId: attention.run.id };
   return attention.kind === "input"
     ? {
         sourceKind: "input",
@@ -123,6 +130,7 @@ function attentionIdentity(attention: PendingOperatorAttention): Pick<
 }
 
 function toPresentationItem(attention: PendingOperatorAttention): OperatorPresentationItem {
+  if (attention.kind === "global-job-run") return attention;
   return attention.kind === "input"
     ? { kind: "input-request", request: attention.request }
     : { kind: "task-event", event: attention.event };

@@ -1,7 +1,9 @@
 import type { TaskEvent } from "../event/taskEvent.js";
 import type { InputRequest } from "../input/inputRequest.js";
+import type { GlobalJobRun } from "../job/durableJob.js";
 
 export type OperatorPresentationItem =
+  | Readonly<{ kind: "global-job-run"; run: GlobalJobRun }>
   | Readonly<{ kind: "input-request"; request: InputRequest }>
   | Readonly<{ kind: "task-event"; event: TaskEvent }>;
 
@@ -31,6 +33,10 @@ export function createOperatorBatchPresentation(
 }
 
 function renderItem(item: OperatorPresentationItem): string[] {
+  if (item.kind === "global-job-run") return [
+    `- Global Job Run ${item.run.status}: ${item.run.definitionId}/${item.run.id}`,
+    `  Inspect: yui job run-get --global --job ${item.run.definitionId} --run ${item.run.id}`
+  ];
   if (item.kind === "input-request") {
     const { request } = item;
     return [

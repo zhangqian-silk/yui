@@ -17,10 +17,11 @@ export type MailboxEntityType =
   | "input"
   | "session"
   | "message"
+  | "global-job-run"
   | "event";
 
 export type MailboxEntityRef =
-  | Readonly<{ type: "task" | "session"; id: string }>
+  | Readonly<{ type: "task" | "session" | "global-job-run"; id: string }>
   | Readonly<{
       type: "run" | "work-item" | "input" | "message" | "event";
       taskId: string;
@@ -441,10 +442,10 @@ function parseTarget(value: unknown): MailboxTarget {
 function parseRef(value: unknown, label: string): MailboxEntityRef {
   const ref = record(value, label);
   const types: readonly MailboxEntityType[] = [
-    "task", "run", "work-item", "input", "session", "message", "event"
+    "task", "run", "work-item", "input", "session", "message", "event", "global-job-run"
   ];
   if (!types.includes(ref.type as MailboxEntityType)) throw new Error(`${label} type is invalid`);
-  if (ref.type === "task" || ref.type === "session") {
+  if (ref.type === "task" || ref.type === "session" || ref.type === "global-job-run") {
     exact(ref, ["type", "id"], label);
     return { type: ref.type, id: requireString(ref.id, `${label} id`) };
   }
@@ -487,7 +488,7 @@ function copyTarget(target: MailboxTarget): MailboxTarget {
 
 export function copyRef(ref: MailboxEntityRef): MailboxEntityRef {
   if (!("taskId" in ref)) {
-    if (ref.type !== "task" && ref.type !== "session") {
+    if (ref.type !== "task" && ref.type !== "session" && ref.type !== "global-job-run") {
       throw new Error(`entity reference taskId is required for ${ref.type}`);
     }
     return { type: ref.type, id: requireText(ref.id, "entity reference id") };

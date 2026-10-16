@@ -26,7 +26,7 @@ export function maintenanceCallerEnvironment(
       if (storageMinorUpgradePlan(schema.currentVersion) === null) {
         throw new ManagedRuntimeDriftError("Maintenance cannot authenticate an unsupported Home storage version.");
       }
-      validateSqliteSchemaObjects(db);
+      validateSqliteSchemaObjects(db, schema.currentVersion);
       const read = <T>(table: StoredRecordTable, where: string, params: string[]): T | null => {
         const row = db.prepare(`SELECT payload FROM ${table} WHERE ${where}`).get(...params) as
           { payload: string } | undefined;

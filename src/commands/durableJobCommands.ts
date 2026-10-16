@@ -1,5 +1,7 @@
 import { usageError } from "../errors/cliError.js";
 import { ensureFileTaskController } from "../controller/clientRuntime.js";
+import { callFileTaskController } from "../controller/clientRuntime.js";
+import type { JsonValue } from "../core/protocol.js";
 import {
   acknowledgeDurableJob,
   cancelDurableJob,
@@ -35,6 +37,9 @@ export async function runDurableJobCommand(
   options: DurableJobCommandOptions
 ): Promise<string> {
   const [command, ...rest] = args;
+  if (command !== undefined && ["define", "update", "list", "show", "run", "runs", "run-get", "run-cancel", "run-acknowledge", "logs"].includes(command)) {
+    return definitionCommand(command, rest, options);
+  }
   if (command === "start") return startJob(rest, options);
   if (command === "get") return getJob(rest, options);
   if (command === "cancel") return cancelJob(rest, options);
@@ -50,6 +55,42 @@ export async function runDurableJobCommand(
       + "yui job cancel --task <id> --job <job-id>\n"
       + "yui job acknowledge --task <id> --job <job-id>"
   );
+}
+
+async function definitionCommand(command: string, args: string[], options: DurableJobCommandOptions): Promise<string> {
+  const flags = new Map<string, string>();
+  for (let i = 0; i < args.length; i++) {
+    const flag = args[i]!;
+    if (!["--global", "--task", "--job", "--title", "--input", "--revision", "--request-id", "--retry-of", "--run"].includes(flag)
+      || flags.has(flag)) throw usageError(`Unknown or repeated Job flag: ${flag}.`);
+    if (flag === "--global") { flags.set(flag, "true"); continue; }
+    const value = args[++i];
+    if (value === undefined || value.startsWith("--")) throw usageError(`Missing value: ${flag}.`);
+    flags.set(flag, value);
+  }
+  if (flags.has("--global") === flags.has("--task")) throw usageError("Choose exactly one of --task <id> or --global.");
+  const taskId = flags.get("--task");
+  const caller = resolveJobCaller(options.environment, taskId ?? "");
+  const scope = taskId === undefined ? { kind: "global" } : { kind: "task", taskId };
+  let configuration: JsonValue | undefined;
+  if (flags.has("--input")) {
+    try { configuration = JSON.parse(flags.get("--input")!); }
+    catch { throw usageError("--input must be a JSON Job configuration."); }
+  }
+  const requestId = flags.get("--request-id");
+  if (command === "run" && !requestId) throw usageError("job run requires --request-id.");
+  const params = {
+    op: command, scope, caller,
+    ...(flags.has("--job") ? { id: flags.get("--job") } : {}),
+    ...(flags.has("--title") ? { title: flags.get("--title") } : {}),
+    ...(configuration === undefined ? {} : { configuration }),
+    ...(flags.has("--revision") ? { expectedRevision: Number(flags.get("--revision")) } : {}),
+    ...(flags.has("--run") ? { runId: flags.get("--run") } : {}),
+    ...(flags.has("--retry-of") ? { retryOf: flags.get("--retry-of") } : {}),
+    ...(command === "run" ? { trigger: { source: flags.has("--retry-of") ? "retry" : "manual", key: requestId } } : {})
+  };
+  const result = await callFileTaskController(options.home, "job.definition", params as JsonValue, { environment: options.environment });
+  return `${JSON.stringify(result, null, 2)}\n`;
 }
 
 async function startJob(

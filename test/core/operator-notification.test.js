@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { usePre19Layout } from "../helpers/pre19Storage.mjs";
 import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -91,6 +92,7 @@ function fixture(t) {
     async upgradeFrom14() {
       store.close();
       const db = new Database(join(home, "yui.db"));
+      usePre19Layout(db);
       // These records use the valid 1.4 shape: no optional frozen Skill evidence.
       // The historical 1.4/1.5 transition has the same physical SQL schema.
       db.prepare("UPDATE storage_schema SET minor=4 WHERE id=1").run();

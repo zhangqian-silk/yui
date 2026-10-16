@@ -113,6 +113,8 @@ import {
 } from "../task/taskRecordRetirement.js";
 import { writeTelemetryBatch } from "../telemetry/sqliteTelemetryBatch.js";
 import { STORED_RECORD_TABLES, validateStoredRecord, type StoredRecordTable } from "./recordValidation.js";
+import { jobScopeKey, validateJobDefinition, type JobDefinition, type JobScope } from "../job/jobDefinition.js";
+import type { GlobalJobRun } from "../job/durableJob.js";
 import type { TelemetryProgressEntry } from "../telemetry/telemetryStore.js";
 import {
   gateArtifactKey,
@@ -1626,6 +1628,56 @@ export class SqliteTaskStore implements TaskStore {
   }
 
   // -- durable jobs -----------------------------------------------------------
+
+  saveJobDefinition(job: JobDefinition): void {
+    validateJobDefinition(job);
+    if (job.scope.kind === "task") this.#requireTask(job.scope.taskId);
+    const previous = this.getJobDefinition(job.scope, job.id);
+    if (previous !== null && (job.revision !== previous.revision + 1
+      || job.createdAt !== previous.createdAt || Date.parse(job.updatedAt) < Date.parse(previous.updatedAt))) {
+      throw new StorageRecordError("Job definition revision changed; reload before editing.");
+    }
+    this.#mutate(() => {
+      this.#db.prepare(`INSERT INTO job_definitions VALUES(?,?,?)
+        ON CONFLICT(scope_key,definition_id) DO UPDATE SET payload=excluded.payload`)
+        .run(jobScopeKey(job.scope), job.id, this.#recordJson("job_definitions", job));
+    });
+  }
+
+  getJobDefinition(scope: JobScope, id: string): JobDefinition | null {
+    return this.#getPayload<JobDefinition>("job_definitions", "scope_key=? AND definition_id=?", [jobScopeKey(scope), id]);
+  }
+
+  listJobDefinitions(scope: JobScope): JobDefinition[] {
+    return this.#listPayload<JobDefinition>("job_definitions", "scope_key=?", [jobScopeKey(scope)]);
+  }
+
+  saveGlobalJobRun(run: GlobalJobRun): void {
+    validateDurableJob(run);
+    if ("taskId" in run || run.scope !== "global") throw new StorageRecordError("Global Run cannot have a Task.");
+    const previous = this.getGlobalJobRun(run.id);
+    if (previous !== null && (!validDurableJobTransition(previous, run)
+      || Date.parse(run.updatedAt) < Date.parse(previous.updatedAt))) {
+      throw new StorageRecordError("Invalid global JobRun transition.");
+    }
+    this.#mutate(() => {
+      this.#db.prepare(`INSERT INTO global_job_runs VALUES(?,?,?)
+        ON CONFLICT(run_id) DO UPDATE SET payload=excluded.payload,status=excluded.status`)
+        .run(run.id, this.#recordJson("global_job_runs", run), run.status);
+    });
+  }
+
+  getGlobalJobRun(id: string): GlobalJobRun | null {
+    return this.#getPayload<GlobalJobRun>("global_job_runs", "run_id=?", [id]);
+  }
+
+  listGlobalJobRuns(): GlobalJobRun[] {
+    return this.#listPayload<GlobalJobRun>("global_job_runs", "1=1", []);
+  }
+
+  listActiveGlobalJobRuns(): GlobalJobRun[] {
+    return this.#listPayload<GlobalJobRun>("global_job_runs", "status IN ('queued','running')", []);
+  }
 
   nextDurableJobId(taskId: string): string {
     return this.#nextTaskRecordId(taskId, "durableJob");

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { usePre19Layout } from "../helpers/pre19Storage.mjs";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1528,6 +1529,7 @@ test("pre-1.5 Leader resumes after upgrade and settles only its accepted notific
   assert.equal(sessions.sessions.codex.effective.skillPackages, undefined);
   store.close();
   const historical = new Database(join(home, "yui.db"));
+  usePre19Layout(historical);
   historical.prepare("UPDATE storage_schema SET minor=4 WHERE id=1").run();
   historical.close();
   assert.equal((await runStorageUpgrade({ home, mode: "execute" })).outcome, "upgraded");
@@ -3517,7 +3519,7 @@ test("Controller begin-handover accepts a null fromReleaseId", async (t) => {
 
 test("production storage exposes one current version and one migration floor", () => {
   assert.equal(MIN_SUPPORTED_STORAGE_VERSION, "1.0");
-  assert.equal(CURRENT_STORAGE_VERSION, "1.8");
+  assert.equal(CURRENT_STORAGE_VERSION, "1.9");
   for (const retiredExport of [
     "FileTaskStore",
     "STORAGE_STATE_FILE",
@@ -3540,7 +3542,7 @@ test("a new current Home initializes its SQLite authority exactly once", (t) => 
   try {
     assert.deepEqual(
       database.prepare("SELECT major, minor FROM storage_schema").all(),
-      [{ major: 1, minor: 8 }]
+      [{ major: 1, minor: 9 }]
     );
     // The baseline has one Git-artifact authority, not a second DB artifact store.
     assert.deepEqual(
