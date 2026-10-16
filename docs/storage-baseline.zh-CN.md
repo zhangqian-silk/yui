@@ -2,7 +2,10 @@
 
 # 存储基线 1.0
 
-当前存储为 1.9。1.8 → 1.9 新增稳定 Job 定义和 global Run；每条历史 Task 执行
+当前存储为 1.10。1.9 → 1.10 追加独立 [Schedule](schedules.md) 表和到期索引，
+不改写历史 Job/Run，也不自动启用任何计划。
+
+1.8 → 1.9 新增稳定 Job 定义和 global Run；每条历史 Task 执行
 独立映射为定义，保留原执行 ID、产物与 Integration 精确引用，并归档原始 payload。
 详见 [Job/Run 契约](job-runs.md)。
 

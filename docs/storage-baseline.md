@@ -2,7 +2,10 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.9. The declared 1.8 → 1.9 transition adds stable Job
+Current storage is 1.10. The 1.9 → 1.10 transition appends independent
+[Schedules](schedules.md) and their due index without rewriting Jobs or Runs.
+
+The declared 1.8 → 1.9 transition adds stable Job
 definitions and global Runs, and links each historical Task execution to its
 own definition while preserving exact IDs, artifacts and Integration references.
 Original Job payload bytes are archived. See [Job/Run contracts](job-runs.md).

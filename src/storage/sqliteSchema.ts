@@ -4,6 +4,7 @@ import { BASELINE_SCHEMA_SQL, SQLITE_SCHEMA_TABLES as BASELINE_SCHEMA_TABLES } f
 import { migrateTaskMainWorkspaces } from "./upgrade/taskMainWorkspaceMigration.js";
 import { migrateProjectKnowledge } from "./upgrade/projectKnowledgeMigration.js";
 import { JOB_SCHEMA_SQL } from "./jobSchema.js";
+import { SCHEDULE_SCHEMA_SQL } from "./scheduleSchema.js";
 import { migrateJobDefinitions } from "./upgrade/jobDefinitionMigration.js";
 import {
   CURRENT_STORAGE_VERSION, MIN_SUPPORTED_STORAGE_VERSION, STORAGE_FORMAT,
@@ -11,11 +12,12 @@ import {
 } from "./storageVersions.js";
 
 export { BASELINE_SCHEMA_SQL };
-export const SQLITE_SCHEMA_TABLES = [...BASELINE_SCHEMA_TABLES, "job_definitions", "global_job_runs"] as const;
+export const SQLITE_SCHEMA_TABLES = [...BASELINE_SCHEMA_TABLES, "job_definitions", "global_job_runs", "schedules"] as const;
 export const TELEMETRY_KEEP_PER_RUN = 200;
 export const TELEMETRY_RUN_CAP = 50_000;
 export const BASELINE_SCHEMA_CHECKSUM = createHash("sha256").update(BASELINE_SCHEMA_SQL).digest("hex");
-export const CURRENT_SCHEMA_SQL = BASELINE_SCHEMA_SQL + JOB_SCHEMA_SQL;
+export const JOB_SCHEMA_CHECKSUM = createHash("sha256").update(BASELINE_SCHEMA_SQL + JOB_SCHEMA_SQL).digest("hex");
+export const CURRENT_SCHEMA_SQL = BASELINE_SCHEMA_SQL + JOB_SCHEMA_SQL + SCHEDULE_SCHEMA_SQL;
 export const CURRENT_SCHEMA_CHECKSUM = createHash("sha256").update(CURRENT_SCHEMA_SQL).digest("hex");
 
 export class SqliteSchemaError extends Error {
@@ -122,9 +124,17 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   name: "job-definitions-and-runs",
   introducedIn: "next",
   sourceChecksum: BASELINE_SCHEMA_CHECKSUM,
-  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: JOB_SCHEMA_CHECKSUM,
   sql: JOB_SCHEMA_SQL,
   dataMigration: "job-definitions"
+}, {
+  fromVersion: "1.9",
+  toVersion: "1.10",
+  name: "persistent-schedules",
+  introducedIn: "next",
+  sourceChecksum: JOB_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  sql: SCHEDULE_SCHEMA_SQL
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {
@@ -154,6 +164,7 @@ export function validateSqliteSchemaObjects(db: Database.Database, version: Stor
   const checksum = version === CURRENT_STORAGE_VERSION
     ? CURRENT_SCHEMA_CHECKSUM : storageMinorUpgradePlan(version)?.[0]?.sourceChecksum;
   const sql = checksum === CURRENT_SCHEMA_CHECKSUM ? CURRENT_SCHEMA_SQL
+    : checksum === JOB_SCHEMA_CHECKSUM ? BASELINE_SCHEMA_SQL + JOB_SCHEMA_SQL
     : checksum === BASELINE_SCHEMA_CHECKSUM ? BASELINE_SCHEMA_SQL : undefined;
   if (sql === undefined || checksum === undefined) throw new SqliteSchemaError(`unsupported schema definition for storage ${version}.`);
   let expectedObjects = schemaObjectsByChecksum.get(checksum);

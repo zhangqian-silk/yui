@@ -128,6 +128,7 @@ import {
 import { deliverGlobalInputs } from "./globalInputDelivery.js";
 import { authorizeJobStart } from "./jobControl.js";
 import { authorizeGlobalJobStart, createJobDefinitionControl } from "./jobDefinitionControl.js";
+import { createScheduleControl, reconcileSchedules } from "./scheduleControl.js";
 import {
   createFileArtifactPort,
   createLinuxProcessPort,
@@ -743,6 +744,10 @@ export async function startFileTaskControllerRuntime(
         }, options.onError ?? (() => undefined), deliveryOptions),
         jobControl,
         jobDefinitions: createJobDefinitionControl(store, home),
+        schedules: {
+          control: createScheduleControl(store, home),
+          reconcile: now => reconcileSchedules(store, home, now, options.onError)
+        },
         capabilityDispatcher: createCapabilityDispatcher(kernel.capabilities),
         ...(continuationReconciler === undefined ? {} : { continuationReconciler }),
         ...(resourceReaper === undefined ? {} : { resourceReaper }),

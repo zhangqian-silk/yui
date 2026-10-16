@@ -183,6 +183,10 @@ export type ControllerRuntimeOptions = Readonly<{
   /** Serves the socket `job.*` methods; absent methods report METHOD_NOT_FOUND. */
   jobControl?: DurableJobControlPort;
   jobDefinitions?: (params: JsonValue, now: Date) => unknown;
+  schedules?: Readonly<{
+    control(params: JsonValue, now: Date): unknown;
+    reconcile(now: Date): void;
+  }>;
   capabilityDispatcher?: ControllerDispatcher;
 }>;
 
@@ -1104,6 +1108,7 @@ export class FileTaskController {
     | undefined;
   readonly #leaderWakeFence: (() => boolean) | undefined;
   readonly #jobSupervisor: ControllerRuntimeOptions["jobSupervisor"];
+  readonly #schedules: ControllerRuntimeOptions["schedules"];
   readonly #globalInputDelivery: ControllerRuntimeOptions["globalInputDelivery"];
   readonly #providerRetry: ControllerRuntimeOptions["providerRetry"];
   readonly #continuationReconciler: ControllerRuntimeOptions["continuationReconciler"];
@@ -1201,6 +1206,7 @@ export class FileTaskController {
     this.#onMaintenanceFenceDefer = options.onMaintenanceFenceDefer;
     this.#leaderWakeFence = options.leaderWakeFence;
     this.#jobSupervisor = options.jobSupervisor;
+    this.#schedules = options.schedules;
     this.#continuationReconciler = options.continuationReconciler;
     this.#hostTerminalRecovery = options.hostTerminalRecovery;
     this.#globalInputDelivery = options.globalInputDelivery;
@@ -1484,6 +1490,7 @@ export class FileTaskController {
           // DurableJob reconciliation runs before the scheduler pass so a
           // terminal job's Leader wakeup is enqueued in the same pass that
           // processes Leader wakeups.
+          this.#schedules?.reconcile(this.#now());
           this.#jobSupervisor?.reconcile(this.#now());
           if (scope.kind === "full") {
             result = await runControllerSchedulerPass(
@@ -2236,6 +2243,14 @@ export async function startFileTaskController(
         const request = Promise.resolve(options.capabilityDispatcher(method, params));
         lifecycleRequests.add(request);
         try { return await request; } finally { lifecycleRequests.delete(request); }
+      }
+      if (method === "schedule.control") {
+        if (options.schedules === undefined) throw controllerApplicationError("METHOD_NOT_FOUND", "Schedules unavailable.");
+        try { return jobControlJson(options.schedules.control(params, options.now?.() ?? new Date())); }
+        catch (error) {
+          if (error instanceof Error && error.name === "Error") error.name = "CoreJobError";
+          throw error;
+        }
       }
       if (method === "job.definition") {
         if (options.jobDefinitions === undefined) throw controllerApplicationError("METHOD_NOT_FOUND", "Job definitions unavailable.");

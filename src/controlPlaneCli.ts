@@ -68,6 +68,7 @@ import {
   type ControllerRuntimeSnapshot
 } from "./commands/controllerCommands.js";
 import { runDurableJobCommand } from "./commands/durableJobCommands.js";
+import { runScheduleCommand } from "./commands/scheduleCommands.js";
 import {
   parseExecutionAuditOptions,
   runExecutionAuditCommand
@@ -2380,6 +2381,10 @@ export async function main(): Promise<void> {
     }
     if (resolved[0] === "jobs") {
       emit(runJobCommand(resolved.slice(1), store, { runtime }));
+      return;
+    }
+    if (resolved[0] === "schedule") {
+      emit(await runScheduleCommand(resolved.slice(1), { home, environment: process.env }));
       return;
     }
     if (resolved[0] === "job") {

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
-import { createTask, activateTask } from "../../dist/task/task.js";
+import { createTask, activateTask, completeTask } from "../../dist/task/task.js";
 import { createProject } from "../../dist/repository/project.js";
 import { createWorkItem } from "../../dist/workItem/workItem.js";
 import { createManagedWorkspace } from "../../dist/worktree/managedWorkspace.js";
@@ -20,6 +20,7 @@ import { createBuiltinCapabilities } from "../../dist/kernel/builtinCapabilities
 import { InstanceHost } from "../../dist/kernel/instanceHost.js";
 import { createJobDefinitionControl, admitJobRun } from "../../dist/controller/jobDefinitionControl.js";
 import { cancelQueuedDurableJob } from "../../dist/job/durableJob.js";
+import { createScheduleControl, reconcileSchedules } from "../../dist/controller/scheduleControl.js";
 
 test("Job admission, management and spawn keep a Worker inside its current Assignment", async t => {
   const root = mkdtempSync(join(tmpdir(), "yui-job-assignment-"));
@@ -114,6 +115,30 @@ test("Job admission, management and spawn keep a Worker inside its current Assig
     throw new Error("rollback schedule");
   }), /rollback schedule/);
   assert.equal(store.listDurableJobs(task.id).filter(run => run.definitionId === definition.id).length, 2);
+  const schedules = createScheduleControl(store, join(root, "home"));
+  const scheduleInput = { scope, caller: caller("leader"), jobId: definition.id };
+  schedules({ ...scheduleInput, op: "create", id: "periodic",
+    rule: { kind: "interval", anchor: at.toISOString(), everyMs: 60_000 } }, at);
+  assert.throws(() => schedules({ ...scheduleInput, op: "show", id: "periodic", caller: caller("worker") }, at), /Assignment/);
+  assert.throws(() => schedules({ ...scheduleInput, op: "list", scope: { kind: "task", taskId: "task-2" } }, at));
+  const due = new Date(at.getTime() + 60_000);
+  reconcileSchedules(store, join(root, "home"), due, error => { throw error; });
+  const periodic = store.getSchedule(scope, "periodic");
+  const scheduled = store.getDurableJob(task.id, periodic.lastAttempt.runId);
+  assert.equal(scheduled.definitionId, definition.id);
+  assert.equal(scheduled.trigger.source, "schedule");
+  authorizeJobStart(store, scheduled);
+  store.saveDurableJob(task.id, cancelQueuedDurableJob(scheduled, due));
+  assert.throws(() => store.transaction(tx => {
+    schedules({ ...scheduleInput, op: "create", id: "future",
+      rule: { kind: "once", at: new Date(at.getTime() + 3600_000).toISOString() } }, at);
+    assert.throws(() => tx.saveTask(completeTask(task, at, { by: "leader", summary: "Done" })), /unfulfilled once/);
+    schedules({ ...scheduleInput, op: "disable", id: "future", expectedRevision: 1 }, at);
+    tx.saveTask(completeTask(task, at, { by: "leader", summary: "Done" }));
+    assert.equal(tx.getSchedule(scope, "periodic").state, "retired");
+    assert.equal(tx.getSchedule(scope, "future").state, "disabled");
+    throw new Error("restore active fixture");
+  }), /restore active fixture/);
   assert.throws(() => control.startJob({ ...params, requestId: "leader-private-workspace",
     caller: caller("leader") }, at), /Assignment/);
   assert.throws(() => control.getJob(task.id, leaderJob.id, caller("worker")), /Assignment/i);
@@ -188,6 +213,6 @@ test("Job admission, management and spawn keep a Worker inside its current Assig
   const overlap = admitJobRun(store, root, scope, definition.id, operatorCaller, trigger, at);
   assert.equal(overlap.reason, "overlap");
   assert.equal(overlap.run.id, advanced.run.id);
-  assert.equal(store.listDurableJobs(task.id).filter(run => run.definitionId === definition.id).length, 3);
+  assert.equal(store.listDurableJobs(task.id).filter(run => run.definitionId === definition.id).length, 4);
   assert.deepEqual(store.getDurableJob(task.id, advanced.run.id), advanced.run);
 });

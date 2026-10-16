@@ -46,6 +46,7 @@ import type { IntegrationAttempt } from "../integration/integrationAttempt.js";
 import type { DurableJob } from "../job/durableJob.js";
 import type { GlobalJobRun } from "../job/durableJob.js";
 import type { JobDefinition, JobScope } from "../job/jobDefinition.js";
+import type { Schedule } from "../schedule/schedule.js";
 import type { GlobalRoleMessage, TaskMessage } from "../message/message.js";
 import type { Milestone } from "../milestone/milestone.js";
 import type { PluginIntent, PluginIntentFailure } from "../plugins/pluginIntent.js";
@@ -316,6 +317,10 @@ export type TaskStore = {
   getIntegrationAttempt(taskId: string, integrationId: string): IntegrationAttempt | null;
   nextDurableJobId(taskId: string): string;
   saveJobDefinition(job: JobDefinition): void;
+  saveSchedule(schedule: Schedule): void;
+  getSchedule(scope: JobScope, id: string): Schedule | null;
+  listSchedules(scope: JobScope): Schedule[];
+  listDueSchedules(now: string, limit: number): Schedule[];
   getJobDefinition(scope: JobScope, id: string): JobDefinition | null;
   listJobDefinitions(scope: JobScope): JobDefinition[];
   saveGlobalJobRun(run: GlobalJobRun): void;

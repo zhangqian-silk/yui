@@ -114,9 +114,9 @@ is a separate feature; its consumers must not replace exact refs with latest.
   authenticated Web ingress must resolve its own caller and enforce these
   service boundaries; it must not forward arbitrary browser-supplied identity.
 
-No cron parser, due-time calculation, background queue, independent daemon,
-cross-Task dependency engine or release behavior is introduced here. Subsequent
-persistent changes must append after 1.9, not claim the same migration number.
+The independent [Schedule module](schedules.md) adds time rules and transactional
+due admission after this 1.9 foundation. It does not introduce an independent
+daemon, cross-Task dependency engine or release behavior.
 
 ## Controlled Project refresh
 
@@ -188,5 +188,6 @@ The Run's all-zero `head` is not a Project revision; use the action's observatio
 No persistent envelope/table change is needed: action input and output use the
 existing JobDefinition/JobRun JSON and logs. Schedule should reference this same
 global definition and use its existing admission seam, never a second Project
-automation state. Periodic integration is a separate Task127/series validation;
-the immediate path alone does not prove periodic triggering or disable behavior.
+automation state. The isolated core scenario covers interval-triggered refresh
+Runs, missed-period coalescing and disable behavior against a local Git remote.
+This does not enable a cadence for any real Project.
