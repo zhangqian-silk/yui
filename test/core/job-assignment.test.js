@@ -92,6 +92,9 @@ test("Job admission, management and spawn keep a Worker inside its current Assig
   const definition = definitions({ op: "define", id: "repeatable", title: "Repeated check",
     scope, caller: caller("leader"), configuration }, at);
   assert.throws(() => definitions({ op: "show", id: definition.id, scope, caller: caller("worker") }, at), /Assignment/i);
+  assert.throws(() => definitions({ op: "show", id: definition.id, scope,
+    caller: { ...caller("worker"), scope: "invalid" } }, at),
+    error => error.code === "INVALID_PARAMS");
   const first = admitJobRun(store, root, scope, definition.id, caller("leader"), { source: "manual", key: "one" }, at);
   assert.equal(first.created, true);
   assert.equal(admitJobRun(store, root, scope, definition.id, caller("leader"), { source: "manual", key: "one" }, at).run.id, first.run.id);
@@ -153,13 +156,24 @@ test("Job admission, management and spawn keep a Worker inside its current Assig
 
   // An Operator can retarget a definition, but that does not grant the new
   // Assignment permission to read an already-admitted Run's old snapshot.
-  const operator = createGlobalRole("operator", [createRoleAgentBinding(agent)], agent.id, root, at);
-  store.createGlobalRoleIfAbsent(operator);
-  store.saveGlobalRoleSessionSet(recordRoleAgentSession(createRoleSessionSet(
-    { scope: "global", roleName: "operator" }, agent.id, at
-  ), { agentId: agent.id, adapterId: agent.adapterId, nativeSessionId: "session-operator",
-    status: "active", policy: "fixed", effective: resolveEffectiveLaunch({ role: operator, purpose: "execution" }) }, at));
+  for (const name of ["operator", "assistant"]) {
+    const globalRole = createGlobalRole(name, [createRoleAgentBinding(agent)], agent.id, root, at);
+    store.createGlobalRoleIfAbsent(globalRole);
+    store.saveGlobalRoleSessionSet(recordRoleAgentSession(createRoleSessionSet(
+      { scope: "global", roleName: name }, agent.id, at
+    ), { agentId: agent.id, adapterId: agent.adapterId, nativeSessionId: `session-${name}`,
+      status: "active", policy: "fixed", effective: resolveEffectiveLaunch({ role: globalRole, purpose: "execution" }) }, at));
+  }
   const operatorCaller = { scope: "global", role: "operator", nativeSessionId: "session-operator" };
+  const assistantCaller = { scope: "global", role: "assistant", nativeSessionId: "session-assistant" };
+  assert.throws(() => control.getJob(task.id, advanced.run.id, assistantCaller),
+    error => error.code === "UNAUTHORIZED");
+  for (const op of ["show", "list", "run"]) {
+    assert.throws(() => definitions({ op, id: definition.id, scope, caller: assistantCaller,
+      trigger: { source: "manual", key: "assistant-denied" } }, at),
+    error => error.code === "UNAUTHORIZED");
+  }
+  assert.equal(definitions({ op: "show", id: definition.id, scope, caller: operatorCaller }, at).id, definition.id);
   definitions({ ...update, caller: operatorCaller, expectedRevision: 3, configuration: {
     ...configuration, owner: params.owner, workspace: worker, head: workerHead
   } }, at);

@@ -681,7 +681,7 @@ export function parseDurableJobStartParams(value: JsonValue): DurableJobStartPar
   const retryOf = record.retryOf === undefined
     ? undefined
     : requiredId(record.retryOf, "job.start retryOf");
-  const caller = parseCaller(record.caller);
+  const caller = parseDurableJobCaller(record.caller);
   return {
     taskId,
     owner,
@@ -711,7 +711,7 @@ export function parseDurableJobRefParams(value: JsonValue): Readonly<{
   return {
     taskId: requiredId(record.taskId, "DurableJob taskId"),
     jobId: requiredId(record.jobId, "DurableJob jobId"),
-    caller: parseCaller(record.caller)
+    caller: parseDurableJobCaller(record.caller)
   };
 }
 
@@ -735,7 +735,7 @@ export function parseDurableJobCancelParams(value: JsonValue): Readonly<{
   return {
     taskId: requiredId(record.taskId, "DurableJob taskId"),
     jobId: requiredId(record.jobId, "DurableJob jobId"),
-    caller: parseCaller(record.caller)
+    caller: parseDurableJobCaller(record.caller)
   };
 }
 
@@ -758,7 +758,7 @@ export function parseDurableJobAcknowledgeParams(value: JsonValue): Readonly<{
   return {
     taskId: requiredId(record.taskId, "DurableJob taskId"),
     jobId: requiredId(record.jobId, "DurableJob jobId"),
-    caller: parseCaller(record.caller)
+    caller: parseDurableJobCaller(record.caller)
   };
 }
 
@@ -846,7 +846,7 @@ function parseSteps(value: JsonValue | undefined): readonly DurableJobStep[] {
  * optional managed Session identity fields. The identity is verified against
  * durable state by `assertCallerAuthorized`; parsing only validates the JSON shape.
  */
-function parseCaller(value: JsonValue | undefined): DurableJobCaller {
+export function parseDurableJobCaller(value: JsonValue | undefined): DurableJobCaller {
   if (value === undefined) {
     throw jobControlError("INVALID_PARAMS", "job caller is required.");
   }

@@ -28,6 +28,8 @@ with `job show`, listed with `job list`, and revised with `job update --revision
 creation; replaying an identical creation is idempotent. Scope cannot be updated.
 
 Global Job management requires the current authenticated Operator Session.
+Other GlobalRoles cannot inspect or manage Task Job definitions either, matching
+the existing Task Context authorization boundary.
 Users can request it through Operator. Literal `caller.scope=user` is not a
 credential on the existing Controller socket. Task Sessions cannot inspect,
 create, modify or run global Jobs. The initial global action is `system.noop`,

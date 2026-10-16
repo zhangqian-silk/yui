@@ -15,7 +15,8 @@ import { prepareBuiltinJob } from "../job/builtinJob.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import {
   assertCallerAuthorized, assertNonSecretJobInput, createDurableJobControl,
-  jobAuthorityBinding, validateStartParams, requireJobAssignment, type DurableJobCaller, type DurableJobStartParams
+  jobAuthorityBinding, validateStartParams, requireJobAssignment, parseDurableJobCaller,
+  type DurableJobCaller, type DurableJobStartParams
 } from "./jobControl.js";
 import { createFileArtifactPort } from "./jobSupervisor.js";
 
@@ -26,9 +27,14 @@ export type RunAdmission = Readonly<{
 }>;
 
 function authorizeScope(store: TaskStore, scope: JobScope, caller: DurableJobCaller): void {
+  parseDurableJobCaller(caller as unknown as JsonValue);
   jobScopeKey(scope);
-  if (scope.kind === "global" && (caller.scope !== "global" || caller.role !== "operator")) {
-    throw Object.assign(new Error("Global Jobs require the current Operator Session; Task scope is forbidden."),
+  // Match Task Context's Operator-only boundary for global callers as well
+  // as excluding Task callers from global Jobs. Session identity alone is not
+  // permission for a custom GlobalRole to read or manage Task definitions.
+  if ((scope.kind === "global" && caller.scope !== "global")
+    || (caller.scope === "global" && caller.role !== "operator")) {
+    throw Object.assign(new Error("Only the current Operator Session may access Jobs across global scope."),
       { name: "CoreApplicationError", code: "UNAUTHORIZED" });
   }
   assertCallerAuthorized(store, caller, scope.kind === "task" ? scope.taskId : "");
