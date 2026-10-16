@@ -2384,7 +2384,8 @@ export async function main(): Promise<void> {
       return;
     }
     if (resolved[0] === "schedule") {
-      emit(await runScheduleCommand(resolved.slice(1), { home, environment: process.env }));
+      const result = await runScheduleCommand(resolved.slice(1), { home, environment: process.env });
+      emit(JSON.stringify(result, null, 2), false, result);
       return;
     }
     if (resolved[0] === "job") {

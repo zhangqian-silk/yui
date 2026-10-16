@@ -5,7 +5,7 @@ import { resolveJobCaller } from "../task/taskAuthority.js";
 
 export async function runScheduleCommand(
   args: string[], options: { home: string; environment?: NodeJS.ProcessEnv }
-): Promise<string> {
+): Promise<JsonValue> {
   const [op, ...rest] = args;
   if (op === undefined || !["create", "list", "show", "update", "enable", "disable"].includes(op)) {
     throw usageError("Schedule command must be create, list, show, update, enable, or disable.");
@@ -36,5 +36,5 @@ export async function runScheduleCommand(
     ...(rule === undefined ? {} : { rule }),
     ...(flags.has("--revision") ? { expectedRevision: Number(flags.get("--revision")) } : {})
   } as JsonValue, { environment: options.environment });
-  return `${JSON.stringify(result, null, 2)}\n`;
+  return result;
 }

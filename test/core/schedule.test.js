@@ -3,7 +3,10 @@ import test from "node:test";
 import { nextScheduleDue, validateScheduleRule } from "../../dist/schedule/schedule.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { installDevLauncher } from "../../scripts/manage-dev-launcher.mjs";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { createConfiguredAgent } from "../../dist/agent/agent.js";
 import { createGlobalRole, createRoleAgentBinding } from "../../dist/role/role.js";
@@ -14,7 +17,6 @@ import { createScheduleControl, reconcileSchedules } from "../../dist/controller
 import { cancelQueuedDurableJob } from "../../dist/job/durableJob.js";
 import { startFileTaskController } from "../../dist/controller/controller.js";
 import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
-import { runScheduleCommand } from "../../dist/commands/scheduleCommands.js";
 import Database from "../../dist/sqlite/driver.js";
 import { applySqliteMinorUpgrades, JOB_SCHEMA_CHECKSUM, validateSqliteSchemaObjects } from "../../dist/storage/sqliteSchema.js";
 
@@ -60,12 +62,24 @@ test("persistent Schedule RPC: atomic admission, bounded catch-up, overlap, disa
     schedules: { control, reconcile: now => reconcileSchedules(store, home, now) }, now: () => clock,
     intervalMs: 60_000, signalWindowMs: 60_000
   });
-  const command = async (op, id, ...args) => JSON.parse(await runScheduleCommand([
-    op, "--global", "--schedule", id, ...args
-  ], { home, environment: { YUI_SESSION_SCOPE: "global", YUI_ROLE: "operator", YUI_NATIVE_SESSION_ID: "schedule-test" } }));
+  const { launcherPath } = installDevLauncher({ projectRoot: process.cwd(), outputDir: join(home, "dev") });
+  const command = async (op, id, ...args) => {
+    const { stdout } = await promisify(execFile)(launcherPath, [
+      "schedule", op, "--global", "--schedule", id, ...args, "--json"
+    ], { timeout: 10_000, env: {
+      PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: home, YUI_HOME: home,
+      CODEX_THREAD_ID: "schedule-test", YUI_SESSION_SCOPE: "global", YUI_ROLE: "operator",
+      YUI_NATIVE_SESSION_ID: "schedule-test", YUI_STORE_WORKER: "false"
+    } });
+    const result = JSON.parse(stdout);
+    assert.equal(result.ok, true);
+    assert.ok(Object.hasOwn(result, "data"), "real CLI must return structured data, not JSON in output");
+    return result.data;
+  };
   const once = await command("create", "once", "--job", job.id, "--rule",
     JSON.stringify({ kind: "once", at: atMinute(1).toISOString() }));
   assert.equal((await command("show", "once")).schedule.id, once.id);
+  assert.equal((await command("list", "once"))[0].id, once.id);
   const manual = jobs({ ...job, op: "run", trigger: { source: "manual", key: "manual" } }, at);
   clock = atMinute(1);
   await controller.runtime.pump();
