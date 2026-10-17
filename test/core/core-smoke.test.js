@@ -3563,7 +3563,7 @@ test("a new current Home initializes its SQLite authority exactly once", (t) => 
   try {
     assert.deepEqual(
       database.prepare("SELECT major, minor FROM storage_schema").all(),
-      [{ major: 1, minor: 11 }]
+      [{ major: 1, minor: 12 }]
     );
     // The baseline has one Git-artifact authority, not a second DB artifact store.
     assert.deepEqual(
