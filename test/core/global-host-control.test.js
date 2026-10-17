@@ -18,6 +18,7 @@ import { launchBrokerForHome } from "../../dist/runtime/launchBroker.js";
 import { inspectAgentHost, reconcileAgentHostTurn, sendAgentHostCancelControl, sendAgentHostSteerControl, sendAgentHostNativeControl } from "../../dist/runtime/agentHost.js";
 import { deliverGlobalInputs } from "../../dist/controller/globalInputDelivery.js";
 import { runGlobalRoleCommand } from "../../dist/commands/globalRoleCommands.js";
+import { runInboxCommand } from "../../dist/commands/inboxCommands.js";
 import { FileRuntimeEventInbox } from "../../dist/controller/runtimeEventInbox.js";
 import { publishStructuredProviderTerminal } from "../../dist/controller/structuredProviderObservation.js";
 import { createTask } from "../../dist/task/task.js";
@@ -76,6 +77,16 @@ async function globalHostFixture(t, adapterId = "codex", {
     assert.ok(event.host, "Host must retain its raw source envelope");
     assert.equal(event.scope, "global");
     assert.equal(event.observation.fence.runId, undefined);
+    // These transport/recovery scenarios model successful input handling.
+    // Missing-ACK behavior is exercised separately through the same adapter.
+    const input = store.getGlobalRoleSessionSet(roleName)?.providerBinding?.run?.input;
+    if (event.observation.kind === "turn.completed" && input?.kind === "message") {
+      const env = { CODEX_THREAD_ID: nativeSessionId };
+      runInboxCommand(["show", input.messageId], store, env);
+      runInboxCommand(["claim", input.messageId, "--request-id", `handled:${input.messageId}`], store, env);
+      runInboxCommand(["ack", input.messageId, "--request-id", `ack:${input.messageId}`,
+        "--reason", "Fixture inspected and handled the original input"], store, env);
+    }
     // The Controller clock and native event clock advance together in the
     // recovery fixture; no wall-clock backoff sleep is needed.
     const timed = fakeNow === undefined ? event : { ...event,

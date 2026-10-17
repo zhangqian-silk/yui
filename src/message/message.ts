@@ -101,6 +101,7 @@ export type TaskMessageControlOutcome = Readonly<{
   receiptId: string;
   outcome: TaskMessageInputControlOutcome;
   observedAt: string;
+  target?: Readonly<{ agentId: string; nativeSessionId: string; attemptId: string }>;
 }>;
 
 /**
@@ -349,7 +350,8 @@ export function taskMessageInputControlState(
  */
 export function recordTaskMessageControlOutcome(
   message: TaskMessage,
-  record: Readonly<{ requestId: string; receiptId: string; outcome: TaskMessageInputControlOutcome; observedAt: Date }>
+  record: Readonly<{ requestId: string; receiptId: string; outcome: TaskMessageInputControlOutcome; observedAt: Date;
+    target?: TaskMessageControlOutcome["target"] }>
 ): TaskMessage {
   const inputRequestId = message.inputControl?.requestId ?? message.interruptThen?.reusedInput?.requestId;
   const wasSteer = message.inputControl?.action === "steer"
@@ -379,6 +381,7 @@ export function recordTaskMessageControlOutcome(
       requestId: requireSafeIdentity(record.requestId, "Message control requestId"),
       receiptId: requireText(record.receiptId, "Message control receiptId"),
       outcome: record.outcome,
+      ...(existing?.target ?? record.target ? { target: existing?.target ?? record.target } : {}),
       observedAt: record.observedAt.toISOString()
     }
   };
@@ -523,6 +526,7 @@ export function validateTaskMessage(message: TaskMessage): void {
     }
   }
   if (message.control !== undefined) {
+    validateControlTarget(message.control);
     requireSafeIdentity(message.control.requestId, "Message control requestId");
     requireText(message.control.receiptId, "Message control receiptId");
     if (!TASK_MESSAGE_INPUT_CONTROL_OUTCOMES.includes(message.control.outcome)) {
@@ -748,6 +752,7 @@ export function validateGlobalRoleMessage(message: GlobalRoleMessage): void {
     requireText(message.deliveryTarget.nativeSessionId, "Global input Session");
   }
   if (message.control !== undefined) {
+    validateControlTarget(message.control);
     requireSafeIdentity(message.control.requestId, "Global input requestId");
     requireText(message.control.receiptId, "Global input receiptId");
     if (!TASK_MESSAGE_INPUT_CONTROL_OUTCOMES.includes(message.control.outcome)
@@ -815,6 +820,14 @@ export function validateGlobalRoleMessage(message: GlobalRoleMessage): void {
   if (typeof message.createdAt !== "string" || Number.isNaN(Date.parse(message.createdAt))) {
     throw new Error("Message createdAt is invalid.");
   }
+}
+
+function validateControlTarget(control: TaskMessageControlOutcome): void {
+  if (control.target === undefined) return;
+  requireKnownFields(control.target, ["agentId", "nativeSessionId", "attemptId"], "Control target");
+  requireText(control.target.agentId, "Control target Agent");
+  requireText(control.target.nativeSessionId, "Control target Session");
+  requireText(control.target.attemptId, "Control target attempt");
 }
 
 /** A Global message local id is `global-message-<n>`; it carries no Task id. */

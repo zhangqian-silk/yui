@@ -80,6 +80,8 @@ export function taskNotificationPresentation(
     ...(messages.length > 4 ? [`${messages.length - 4} more messages in the fixed wake.`] : []),
     `Refresh: yui task context ${wake.taskId} --json`,
     `Read inputs/results: yui task wake show ${wake.taskId} ${wake.id} --json`,
+    `Handling: claim exact inbox entry ${wake.id}; after disposition, ack it with a concrete reason before ending this turn.`,
+    "Use yui inbox list --view current --json for current inputs. Historical missing receipts are not new work; never replay effects to repair an ACK.",
     "Check current Skills each turn: yui session skills --json. Apply current yui-leader; read relevant originals in full and advance authorized work."
   ].join("\n");
 }
@@ -92,6 +94,8 @@ export function globalMessagePresentation(roleName: string, messageId: string, m
     ...(summary === undefined ? [] : [`Author summary (message-body): ${JSON.stringify(summary)}`]),
     "Refresh Session Context using the current Manifest's loadCommand.",
     `Read original: yui role message show ${roleName} ${messageId} --json`,
+    `Handling: claim exact inbox entry ${messageId}; after disposition, ack it with a concrete reason before ending this turn.`,
+    "Routing to a Task or asking a necessary user question can settle this input without completing the Task. Missing ACK is not permission to repeat effects.",
     `The Global loadCommand checks current Skill versions each turn. Apply current ${roleName === "operator" ? "yui-operator" : "yui-runtime"} within existing authority.`
   ].join("\n");
 }

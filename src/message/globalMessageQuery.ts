@@ -10,6 +10,8 @@ export type GlobalMessageQuery = Readonly<{
   requestId?: string;
   interruptThen?: boolean;
   operatorNotice?: boolean;
+  /** Delivery admission excludes actively consumed originals, not other input. */
+  unclaimed?: boolean;
 }>;
 
 export type GlobalMessagePage = Readonly<{

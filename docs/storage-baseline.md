@@ -2,7 +2,14 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.12. The 1.11 → 1.12 transition admits append-only
+Current storage is 1.13. The 1.12 → 1.13 transition permits exact native attempt
+identity on new inbox claims, exact target identity on new steer controls,
+explicit Global inbox retirement and terminal handling-check evidence.
+It does not rewrite historical messages, infer old turn ownership or synthesize
+ACKs. SQL layout is unchanged. Current inputs and historical missing handling
+evidence have separate bounded discovery views; neither is a second queue.
+
+The 1.11 → 1.12 transition admits append-only
 `task.project-delivery-decided` events with Project requirement, reason, actor,
 original Message/digest/quote and the previous decision ID. Existing records and
 SQL layout are unchanged. No historical exclusions are inferred; absent decisions

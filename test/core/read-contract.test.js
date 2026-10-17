@@ -101,7 +101,7 @@ test("daily Context, discovery and original reads stay bounded as history grows 
   const pendingIds = [...context.pending.items.map(m => m.id)];
   let cursor = context.pending.nextCursor;
   while (cursor !== null) {
-    const page = global(["message", "list", "operator", "--pending", "--cursor", cursor]);
+    const page = global(["message", "list", "operator", "--current", "--cursor", cursor]);
     pendingIds.push(...page.items.map(m => m.id));
     cursor = page.nextCursor;
   }

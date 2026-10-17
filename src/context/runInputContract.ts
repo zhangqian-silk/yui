@@ -162,6 +162,7 @@ export function serializeRunInputEnvelope(value: AgentRunInputEnvelope): string 
     ]),
     "Use the Session Manifest's CLI entry. Fail closed if the exact Context is unavailable or mismatched.",
     "Then read the relevant referenced requirements and perform the assigned work. Context loading is not the deliverable.",
+    "Current continuation/steer inputs: yui inbox list --view current --json. Read and claim exact originals, then ack their disposition before the final report; this does not accept the assignment.",
     "During planning, fulfill the user's Draft discussion request without starting delivery before it is requested."
   ];
   const serialized = lines.join("\n");

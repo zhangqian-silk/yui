@@ -9,6 +9,7 @@ import { globalInboxDeliveryState, inboxHandlingState, isGlobalInboxMessage, pen
 import { deliveredMessageWake, isLeaderSteer, pinMessageRevisions, taskMessageInboxReceipt, unfinishedLeaderInbox } from "../message/taskInboxOwnership.js";
 import { hasRuntimeCleanupObligation, runtimeLifecycleTarget } from "../runtime/lifecycleReservation.js";
 import { isTaskRecordRetired, retiredTaskRecordIds } from "../task/taskRecordRetirement.js";
+import { blocksInboxOrder, inboxEntryCategory, inboxSettled } from "../message/inboxTurn.js";
 
 type Entry = GlobalRoleMessage | TaskMessage | TaskWake;
 type Address = InboxActor;
@@ -20,17 +21,29 @@ const sameSession = (a: InboxActor, b: InboxActor) => a.scope === b.scope && a.t
 
 function addressOf(store: TaskStore, env: NodeJS.ProcessEnv): Address {
   const caller = requireManagedCaller(store, env);
+  const binding = caller.scope === "global" ? store.getGlobalRoleSessionSet(caller.roleName)?.providerBinding
+    : store.getTaskRoleSessionSet(caller.taskId, caller.roleName)?.providerBinding;
+  const turn = binding?.conversations.find(c => c.epoch === binding.currentConversationEpoch)?.conversationId === caller.nativeSessionId
+    ? binding?.run : undefined;
+  const attempt = turn && ["submitting", "accepted", "delivery-unknown"].includes(turn.status)
+    ? { attemptId: turn.attemptId } : {};
   if (caller.scope === "global") {
-    return { scope: "global", roleName: caller.roleName, agentId: caller.agentId, nativeSessionId: caller.nativeSessionId };
+    return { scope: "global", roleName: caller.roleName, agentId: caller.agentId, nativeSessionId: caller.nativeSessionId, ...attempt };
   }
   if (caller.roleName !== "leader" && caller.currentRunId === undefined) {
     throw new Error("An Assignment inbox requires its current active AgentRun.");
   }
   return { scope: "task", taskId: caller.taskId, roleName: caller.roleName,
     agentId: caller.agentId, nativeSessionId: caller.nativeSessionId,
-    ...(caller.currentRunId === undefined ? {} : { runId: caller.currentRunId }) };
+    ...(caller.currentRunId === undefined ? {} : { runId: caller.currentRunId }), ...attempt };
 }
 
+function currentTurn(store: TaskStore, address: Address) {
+  const binding = address.scope === "global" ? store.getGlobalRoleSessionSet(address.roleName)?.providerBinding
+    : store.getTaskRoleSessionSet(address.taskId!, address.roleName)?.providerBinding;
+  return binding?.conversations.find(c => c.epoch === binding.currentConversationEpoch)?.conversationId === address.nativeSessionId
+    ? binding?.run : undefined;
+}
 function ownsMessage(store: TaskStore, address: Address, message: TaskMessage): boolean {
   if (address.roleName === "leader" && message.taskId === address.taskId && isLeaderSteer(message)) return true;
   if (address.runId === undefined || message.taskId !== address.taskId
@@ -82,7 +95,7 @@ function save(store: TaskStore, address: Address, entry: Entry): void {
 function blocker(store: TaskStore, address: Address, entry: Entry): string | undefined {
   if (!isWake(entry) && address.scope === "task"
     && isTaskRecordRetired(store.listEvents(address.taskId!), "message", entry.id)) return "message-retired";
-  if (entry.inbox?.ack !== undefined) return "acknowledged";
+  if (inboxSettled(entry.inbox)) return entry.inbox?.retirement ? "retired" : "acknowledged";
   if (entry.inbox !== undefined) {
     return sameSession(entry.inbox.claim.actor, address) ? undefined : "claimed-by-previous-session";
   }
@@ -144,6 +157,7 @@ function checkMutation(store: TaskStore, address: Address): void {
 
 function summary(store: TaskStore, address: Address, entry: Entry) {
   return { id: entry.id, kind: isWake(entry) ? "notification-window" : "message",
+    category: inboxEntryCategory(entry, address, currentTurn(store, address)),
     createdAt: entry.createdAt, summary: summaryText(isWake(entry) ? entry.reasons.join(", ") : entry.body),
     blocked: blocker(store, address, entry) ?? null, inbox: summaryMetadata(entry.inbox ?? null),
     handling: inboxHandlingState(entry.inbox),
@@ -171,21 +185,33 @@ export function runInboxCommand(
   const [action, ...tail] = args;
   const address = addressOf(store, env);
   if (action === "list") {
-    const parsed = readOptions(tail);
-    if (parsed.positionals.length) throw new Error("Inbox list accepts only --limit and --cursor.");
+    const parsed = readOptions(tail, ["--limit", "--cursor", "--view"]);
+    const view = parsed.values.get("--view") ?? "all";
+    if (!["all", "current", "history"].includes(view) || parsed.positionals.length) {
+      throw new Error("Inbox list accepts --view current|history|all, --limit and --cursor.");
+    }
     const retired = address.scope === "task" ? retiredTaskRecordIds(store.listEvents(address.taskId!), "message") : new Set();
     const selected = address.scope === "global" ? pendingGlobalInboxMessages(store.listGlobalRoleMessages(address.roleName))
       : entries(store, address).filter(entry => (isWake(entry) || !retired.has(entry.id))
-        && inboxHandlingState(entry.inbox) !== "handled");
-    const items: object[] = selected.map(entry => summary(store, address, entry));
+        && !inboxSettled(entry.inbox));
+    const turn = currentTurn(store, address);
+    const categories = selected.map(entry => ({ entry, category: inboxEntryCategory(entry, address, turn) }));
+    const rank = { current: 0, available: 1, history: 2 };
+    categories.sort((a, b) => rank[a.category] - rank[b.category]);
+    const items: object[] = categories.filter(item => view === "all"
+      || (view === "history") === (item.category === "history")).map(({ entry }) => summary(store, address, entry));
     if (address.scope === "task" && address.roleName === "leader") {
       const mailbox = store.getWorkMailbox(target(address));
-      if (mailbox?.pending != null) items.push({ id: pendingId(mailbox.pending), kind: "notification-window",
+      if (mailbox?.pending != null && view !== "history") items.splice(
+        categories.filter(item => item.category === "current").length, 0, { id: pendingId(mailbox.pending), kind: "notification-window",
+        category: "available",
         summary: summaryText(mailbox.pending.reasons.join(", ")),
         blocked: mailbox.processing === null && !unfinishedLeaderInbox(store, address.taskId!) ? null : "earlier-window-owned",
         read: `yui inbox show ${pendingId(mailbox.pending)}` });
     }
-    return recordPage(items, source(address), parsed, { identity: address });
+    return recordPage(items, `${source(address)}/${view}`, parsed, { identity: address, view,
+      historyCount: categories.filter(item => item.category === "history").length,
+      note: "History lacks handling evidence; it is not unexecuted work. Inspect original effects before disposition." });
   }
   if (action === "show") {
     const parsed = readOptions(tail, ["--cursor"]);
@@ -203,7 +229,7 @@ export function runInboxCommand(
       ? expandTaskMessageResult(entry as TaskMessage, (task, run) => store.getRun(task, run)) : entry;
     return boundedDocument(value, `${source(address)}/${id}`, parsed.cursor);
   }
-  if (action !== "claim" && action !== "ack") throw new Error("Inbox commands: list, show, claim, ack.");
+  if (action !== "claim" && action !== "ack" && action !== "retire") throw new Error("Inbox commands: list, show, claim, ack, retire.");
   const parsed = readOptions(tail, ["--request-id", "--reason"]);
   const ids = parsed.positionals;
   const requestId = parsed.values.get("--request-id");
@@ -214,7 +240,7 @@ export function runInboxCommand(
   if (!ids.length || ids.length > 16 || new Set(ids).size !== ids.length) {
     throw new Error("Select 1..16 distinct exact inbox entries; no wildcard acknowledgement.");
   }
-  if (action === "ack" && (!reason?.trim() || Buffer.byteLength(reason) > 2048)) {
+  if (action !== "claim" && (!reason?.trim() || Buffer.byteLength(reason) > 2048)) {
     throw new Error("Acknowledgement requires --reason describing handling or why no action remains (up to 2048 bytes).");
   }
   if (action === "claim" && reason !== undefined) throw new Error("Claim does not record a disposition; use ack after handling.");
@@ -265,7 +291,35 @@ export function runInboxCommand(
         owner: `agent-inbox:${wake.id}`, startedAt: now.toISOString() }));
     } else {
       entry = getEntry(tx, current, id);
-      if (action === "claim") {
+      if (action === "retire") {
+        if (current.scope !== "global" || isWake(entry)) {
+          throw new Error("Task input retirement uses the Leader's existing task message retire operation.");
+        }
+        const message = entry as GlobalRoleMessage;
+        if (message.inbox?.retirement) {
+          const saved = message.inbox.retirement;
+          if (saved.requestId !== requestId || saved.reason !== reason || !sameSession(saved.actor, current)) {
+            throw new Error("Conflicting retirement; original disposition retained.");
+          }
+          return receipt(entry);
+        }
+        // A retained attempt in an older conversation is still evidence of
+        // submission; changing the active Session cannot erase that boundary.
+        const turn = tx.getGlobalRoleSessionSet(current.roleName)?.providerBinding?.run;
+        const foreignTarget = message.deliveryTarget && (message.deliveryTarget.agentId !== current.agentId
+          || message.deliveryTarget.nativeSessionId !== current.nativeSessionId)
+          || message.inputControl?.expectedSessionId !== undefined
+            && message.inputControl.expectedSessionId !== current.nativeSessionId;
+        if (message.inbox?.ack || message.delivery !== undefined || message.interruptThen !== undefined
+          || message.control !== undefined && message.control.outcome !== "rejected"
+          || turn?.attemptId === `global-input:${current.roleName}/${message.id}`
+          || !foreignTarget && message.notDelivered === undefined) {
+          throw new Error("Retirement requires obsolete, proven-unsubmitted input; unknown/accepted/interrupt-owned input must retain its exact handling path.");
+        }
+        entry = { ...message, inbox: { ...message.inbox,
+          claim: message.inbox?.claim ?? { requestId, actor: current, at: now.toISOString() },
+          retirement: { requestId, actor: current, at: now.toISOString(), reason: reason! } } };
+      } else if (action === "claim") {
         if (entry.inbox !== undefined) {
           if (!sameSession(entry.inbox.claim.actor, current)) throw new Error("Claim belongs to a previous Session; read the original and prior effects, then explicitly acknowledge only after finishing its handling.");
           if (entry.inbox.claim.requestId !== requestId) throw new Error("Entry already claimed; retain the original request id.");
@@ -282,7 +336,7 @@ export function runInboxCommand(
         } else if (!isWake(entry) && !acceptedInput(entry)) assertSelectedTarget(current, entry);
         for (const previous of entries(tx, current)) {
           if (previous.id === entry.id) break;
-          if (isWake(previous) || previous.inbox?.ack !== undefined) continue;
+          if (!blocksInboxOrder(previous, current, currentTurn(tx, current))) continue;
           if (current.scope === "task"
             && isTaskRecordRetired(tx.listEvents(current.taskId!), "message", previous.id)) continue;
           if (current.scope === "global" && (previous as GlobalRoleMessage).notDelivered !== undefined) continue;
@@ -292,6 +346,7 @@ export function runInboxCommand(
         entry = { ...entry, inbox: { claim: { requestId, actor: current, at: now.toISOString() } } };
       } else {
         if (!entry.inbox) throw new Error("Claim the exact entry before handling and acknowledgement.");
+        if (entry.inbox.retirement) throw new Error("Retirement is not acknowledgement; original disposition retained.");
         // Ack settles already-owned handling; it never submits or retargets
         // the original. The current rightful successor may settle a claim
         // acquired by the exact selected Session, retaining both identities.

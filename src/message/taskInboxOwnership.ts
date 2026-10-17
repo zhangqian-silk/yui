@@ -49,7 +49,16 @@ function messageRevisionWakes(store: TaskStore, message: TaskMessage) {
 }
 
 export function unfinishedLeaderInbox(store: TaskStore, taskId: string): boolean {
-  return store.listTaskWakes(taskId).some(wake => wake.inbox !== undefined && wake.inbox.ack === undefined)
+  const sessions = store.getTaskRoleSessionSet(taskId, "leader");
+  const binding = sessions?.providerBinding;
+  const turn = binding?.run;
+  const nativeSessionId = binding?.conversations.find(c => c.epoch === binding.currentConversationEpoch)?.conversationId;
+  const active = (receipt: TaskMessage["inbox"]) => receipt !== undefined && receipt.ack === undefined
+    && (receipt.claim.actor.attemptId === undefined || turn?.attemptId === receipt.claim.actor.attemptId
+      && receipt.claim.actor.agentId === sessions?.activeAgentId
+      && receipt.claim.actor.nativeSessionId === nativeSessionId
+      && ["submitting", "accepted", "delivery-unknown"].includes(turn.status));
+  return store.listTaskWakes(taskId).some(wake => active(wake.inbox))
     || operationalTaskRecords(store.listMessages(taskId), store.listEvents(taskId), "message").some(message => isLeaderSteer(message)
-      && message.inbox !== undefined && message.inbox.ack === undefined);
+      && active(message.inbox));
 }

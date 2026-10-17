@@ -95,6 +95,7 @@ import type { AgentDriverRegistry } from "../runtime/agentDriver.js";
 import { standardAgentError } from "../runtime/agentError.js";
 import { recordTaskAgentError } from "./taskAgentError.js";
 import { recordGlobalRuntimeAttention, recordGlobalRuntimeFailure, recordGlobalRuntimeRecovery } from "./globalRuntimeAttention.js";
+import { checkInboxTurn } from "./inboxTurnCheck.js";
 import { queueOperatorNotification } from "./operatorNotification.js";
 import { claimOperatorAttention } from "../scheduler/operatorEvent.js";
 import {
@@ -645,7 +646,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
           const outcome = input.kind === "input.accepted" ? "accepted"
             : input.kind === "input.rejected" ? "rejected" : "delivery-unknown";
           if (message.control?.outcome !== "accepted" && message.control?.outcome !== "rejected") {
-            const updated = { ...message, control: { requestId: message.inputControl.requestId,
+            const updated = { ...message, control: { ...message.control, requestId: message.inputControl.requestId,
               receiptId: receipt!, outcome, observedAt: at } } as typeof message;
             store.updateGlobalRoleMessage(outcome === "accepted"
               ? markGlobalRoleMessageDelivered(updated, new Date(at)) : updated);
@@ -668,6 +669,10 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       }
       store.saveGlobalRoleSessionSet(updateGlobalRoleProviderRuntime(sessions, binding, now));
       settleGlobalRetryInput(store, fence.roleName, binding, now);
+      if (["turn.completed", "turn.failed", "turn.cancelled"].includes(input.kind)) {
+        checkInboxTurn(store, { scope: "global", roleName: fence.roleName, agentId: fence.agentId,
+          nativeSessionId: fence.nativeSessionId! }, binding.run, now);
+      }
       if (input.kind === "turn.failed" && matches && input.payload.failure !== undefined
         && !providerRetryPending(binding)) {
         recordGlobalRuntimeAttention(store, fence.roleName, input.eventId, {
@@ -1543,8 +1548,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
           throw new AgentHostProviderSessionBusyError("The next Global input belongs to an explicit then handoff.");
         }
         if (message !== undefined) {
-          if (store.queryGlobalRoleMessages(input.roleName, { handling: true, limit: 0 }).count > 0
-            || message.inbox !== undefined || message.delivery !== undefined || message.notDelivered !== undefined
+          if (message.inbox !== undefined || message.delivery !== undefined || message.notDelivered !== undefined
             || message.control !== undefined && message.control.outcome !== "rejected"
             || message.deliveryTarget?.agentId !== input.agentId
             || message.deliveryTarget?.nativeSessionId !== input.nativeSessionId) {
@@ -2858,6 +2862,8 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
           }
           sessions = settleStructuredProviderTurn(sessions, canonicalRunId, input.providerStatus, now, attemptId);
           store.saveTaskRoleSessionSet(sessions);
+          checkInboxTurn(store, { scope: "task", taskId: input.taskId, roleName: input.roleName,
+            agentId: input.agentId, nativeSessionId: input.nativeSessionId }, sessions.providerBinding?.run, now);
         }
         if (input.observation !== undefined) this.persistRuntimeObservation(input.observation, now);
         return {
@@ -2982,6 +2988,9 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         }
       }
       if (input.observation !== undefined) this.persistRuntimeObservation(input.observation, now);
+      checkInboxTurn(store, { scope: "task", taskId: input.taskId, roleName: input.roleName,
+        agentId: input.agentId, nativeSessionId: input.nativeSessionId },
+      sessions.providerBinding?.run, now);
       return {
         session: sessions.sessions[input.agentId]!,
         duplicate: false,
@@ -3626,6 +3635,10 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       // durable native terminal recorded just above remains the proof of record.
       current = settleGlobalRoleRuntimeTurn(current, input.nativeTurnId, input.providerStatus, now);
       store.saveGlobalRoleSessionSet(current);
+      if (current.providerBinding?.run?.nativeTurnId === input.nativeTurnId) {
+        checkInboxTurn(store, { scope: "global", roleName: input.roleName,
+          agentId: input.agentId, nativeSessionId }, current.providerBinding.run, now);
+      }
       if (
         input.roleName === SYSTEM_OPERATOR_ROLE
         && input.adapterId === "codex"

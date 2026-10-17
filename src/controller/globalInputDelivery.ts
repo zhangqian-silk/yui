@@ -19,7 +19,7 @@ export async function deliverGlobalInputs(
 ): Promise<void> {
   for (const role of store.listGlobalRoles()) {
     try {
-      let pending = store.queryGlobalRoleMessages(role.name, { pending: true, limit: 64 }).messages;
+      let pending = store.queryGlobalRoleMessages(role.name, { pending: true, unclaimed: true, limit: 64 }).messages;
       if (hasRuntimeCleanupObligation(store.getWorkMailbox(
         runtimeLifecycleTarget({ scope: "global", roleName: role.name })))) continue;
       let sessions = store.getGlobalRoleSessionSet(role.name);
@@ -29,7 +29,7 @@ export async function deliverGlobalInputs(
       if (sessions?.providerBinding?.retry !== undefined && !providerRetryPending(sessions.providerBinding)) {
         store.transaction(tx => settleGlobalRetryInput(tx, role.name,
           tx.getGlobalRoleSessionSet(role.name)?.providerBinding, new Date()));
-        pending = store.queryGlobalRoleMessages(role.name, { pending: true, limit: 64 }).messages;
+        pending = store.queryGlobalRoleMessages(role.name, { pending: true, unclaimed: true, limit: 64 }).messages;
         if (pending.length === 0) continue;
       }
       if (providerRetryPending(sessions?.providerBinding)) continue;
@@ -94,10 +94,9 @@ export async function deliverGlobalInputs(
           || providerRetryPending(sessions?.providerBinding)
           || hasRuntimeCleanupObligation(store.getWorkMailbox(
             runtimeLifecycleTarget({ scope: "global", roleName: role.name })))) continue;
-        pending = store.queryGlobalRoleMessages(role.name, { pending: true, limit: 64 }).messages;
+        pending = store.queryGlobalRoleMessages(role.name, { pending: true, unclaimed: true, limit: 64 }).messages;
         if (pending.length === 0) continue;
       }
-      if (store.queryGlobalRoleMessages(role.name, { handling: true, limit: 0 }).count > 0) continue;
       // Interrupt-then reserves the next legal slot even behind a large queue.
       const reservedPage = store.queryGlobalRoleMessages(role.name, {
         pending: true, interruptThen: true, limit: 64
