@@ -2,7 +2,12 @@
 
 # 存储基线 1.0
 
-当前存储为 1.11。1.10 → 1.11 为新 activation-request 事件增加来源证据：
+当前存储为 1.12。1.11 → 1.12 允许追加 `task.project-delivery-decided` 事件，
+记录 Project 交付要求、原因、actor、原始 Message/digest/引用及前一决定 ID。
+SQL 布局和历史记录不变，不自动推断历史排除；没有决定时仍按需交付处理。
+详见 [Project 交付范围](project-delivery-scope.md)。
+
+1.10 → 1.11 为新 activation-request 事件增加来源证据：
 已有 Message 及正文 digest，或带调用者归属的原生输入原文，以及当时的 Message 序号边界。
 历史事件保持原样，不推测缺失来源、不重放输入；缺失来源通过读取诊断明确展示。
 SQL 布局及冻结 digest 不变，集中迁移不改写历史正文。

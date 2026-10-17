@@ -53,9 +53,9 @@ function drawResults(body, scope) {
 function drawRemote(body, remote, t) {
   body.append(h("h4.sub-head", null, icon("package", "icon-sm"), h("span", null, t("evidence.remote")),
     badge(t("remoteDelivery." + remote.status, remote.status), DELIVERY_TONES[remote.status] || "idle", { dot: true })));
-  if (remote.codeProjectCount) {
+  if (remote.requiredCodeProjectCount) {
     body.append(h("p.faint.small", null, fill(t("delivery.counts"), {
-      merged: remote.mergedProjectCount, verified: remote.verifiedProjectCount, total: remote.codeProjectCount
+      merged: remote.mergedProjectCount, verified: remote.verifiedProjectCount, total: remote.requiredCodeProjectCount
     })));
   }
   (remote.projects || []).forEach(function (project) { body.append(projectRow(project, t)); });
@@ -85,6 +85,7 @@ function projectRow(project, t) {
   const href = publication && publication.externalUrl && safeUrl(publication.externalUrl);
   const element = h("article.record.delivery-project");
   element.append(h("header.record-head", null, icon("folder", "icon-sm"), h("strong", null, project.directory || project.projectId),
+    project.deliveryRequirement === "excluded" ? chip(t("delivery.excluded")) : null,
     project.coverage ? chip(label(t, "coverage", project.coverage)) : null,
     h("span.spacer"),
     publication ? (href
@@ -97,6 +98,9 @@ function projectRow(project, t) {
     project.state ? chip(label(t, "publicationState", project.state)) : null,
     project.verification ? chip(t("evidence.verification") + " · " + label(t, "verification", project.verification)) : null,
     project.adoption ? h("span", null, t("evidence.adoption") + " ", mono(project.adoption.id)) : null));
+  if (project.scopeDecision) element.append(h("p.faint.small", null,
+    t("delivery.scopeDecision") + " " + project.scopeDecision.id + " · "
+    + project.scopeDecision.payload.sourceMessageId + " · " + project.scopeDecision.payload.reason));
   return element;
 }
 

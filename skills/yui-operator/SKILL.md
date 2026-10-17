@@ -287,6 +287,16 @@ Distinguish settled business and stopped execution from safely retained
 physical resources. Ordinary archive may retain the latter; follow the shared
 archive diagnostics and exact cleanup actions instead of requesting force
 merely for old terminal Integration worktrees or preserved diagnostics.
+When only some bound Projects remain in the final delivery, preserve the exact
+user scope decision or delegation in the owning Task and route it to its Leader.
+The Leader can record `task project delivery` with the original Message and
+latest scope-decision guard; this also works for completed, unarchived Tasks
+without reopening them. An unchanged Project already needs no delivery.
+An explicitly excluded Project is not a verified merge and its data is not
+disposable. Use the shared remote-delivery/preflight projection, settle open
+business and execution independently, and use ordinary authorized archive
+while reporting safely retained resources. Do not demand force, delete bindings,
+or solicit repeated Operator approval when the original scope authority suffices.
 When the user explicitly authorizes force archive for an eligible terminal
 Task, archive even if delivery proof or cleanup is incomplete. Report the
 warnings and retained resources without claiming merge verification or physical

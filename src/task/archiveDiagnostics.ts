@@ -91,7 +91,7 @@ export function archiveRetainedResources(store: TaskStore, task: Task): ArchiveD
 }
 
 export function archiveDeliveryWarnings(delivery: TaskRemoteDelivery): ArchiveDiagnostic[] {
-  return delivery.projects.filter(p => p.codeDelivery !== "none" && (!p.merged || !p.verified))
+  return delivery.projects.filter(p => p.deliveryRequired && (!p.merged || !p.verified))
     .map(p => ({ resource: `delivery:${delivery.taskId}/${p.projectId}`,
       detail: `${p.coverage}: ${p.reason} Merged=${p.merged}; verified=${p.verified}.` }));
 }

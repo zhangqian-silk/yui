@@ -139,6 +139,30 @@ test("Leader grants require original input, exact bounded resources and current 
   }
 });
 
+test("Project delivery scope uses current Leader and original delegated authority without changing execution scope", t => {
+  const f = fixture(t);
+  f.store.saveProject(createProject("project-1", "app", join(f.home, "app"),
+    { stable: "master", development: "master" }, now));
+  f.command(["project", "add", "task-1", "project-1"]);
+  const source = f.message("You may decide whether the temporary app implementation is needed for final delivery.");
+  const args = ["project", "delivery", "task-1", "project-1",
+    "--requirement", "excluded", "--reason", "Temporary app is replaced by the accepted final implementation",
+    "--source-message", source.id, "--purpose", source.body, "--if-current", "none"];
+  const replace = (name, value) => args.map((arg, index) => args[index - 1] === name ? value : arg);
+  assert.throws(() => f.command(args, { ...f.environment, YUI_NATIVE_SESSION_ID: "stale" }), /current native Session/);
+  assert.throws(() => f.command(args, { ...f.environment, YUI_ROLE: "worker" }), /matching Leader/);
+  const report = f.message(source.body, "role-result");
+  assert.throws(() => f.command(replace("--source-message", report.id)), /original user/);
+  assert.throws(() => f.command(replace("--purpose", "Invented authorization")), /verbatim/);
+  const before = f.store.getTaskRoleSessionSet("task-1");
+  const event = f.command(args).data;
+  assert.equal(event.payload.by, "leader");
+  assert.equal(event.payload.nativeSessionId, "leader-current");
+  assert.deepEqual(f.store.getTaskRoleSessionSet("task-1"), before);
+  assert.equal(f.store.getTask("task-1").projectBindings.length, 1);
+  assert.throws(() => f.command(args), /changed/);
+});
+
 test("Leader release grants bind the workflow source rather than a claimed step parameter", async t => {
   const f = fixture(t);
   f.store.saveProject(createProject("project-1", "Fixture", join(f.root, "project"),

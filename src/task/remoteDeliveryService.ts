@@ -9,6 +9,7 @@ import {
 } from "../task/remoteDelivery.js";
 import type { Task } from "../task/task.js";
 import { PUBLICATION_ADOPTED_EVENT } from "./publicationAdoption.js";
+import { PROJECT_DELIVERY_DECIDED_EVENT } from "./projectDeliveryScope.js";
 
 export type TaskRemoteDeliveryStore = Pick<
   TaskStore,
@@ -54,7 +55,7 @@ export function createTaskRemoteDeliveryProof(
   const delivery = projectTaskRemoteDelivery({
     task,
     events: store.listEventsByType(task.id, [
-      "task.completed", "task.archived", PUBLICATION_ADOPTED_EVENT
+      "task.completed", "task.archived", PUBLICATION_ADOPTED_EVENT, PROJECT_DELIVERY_DECIDED_EVENT
     ]),
     publications,
     managedWorkspaces: store.listManagedWorkspaces(task.id),
@@ -107,7 +108,7 @@ export function assertTaskRemoteDeliveryIntegrated(
 ): void {
   if (!delivery.allMerged) {
     const headUnavailable = delivery.projects.filter((project) => (
-      project.codeDelivery !== "none"
+      project.deliveryRequired
       && project.coverage === "head-unavailable"
     ));
     if (headUnavailable.length > 0 && delivery.source === "task-completed") {
@@ -118,7 +119,7 @@ export function assertTaskRemoteDeliveryIntegrated(
       );
     }
     const uncovered = delivery.projects
-      .filter((project) => project.codeDelivery !== "none" && !project.merged)
+      .filter((project) => project.deliveryRequired && !project.merged)
       .map((project) => (
         `${project.projectId}/${project.coverage}`
         + (project.publication === null ? "" : `/${project.publication.id}`)
@@ -134,7 +135,7 @@ export function assertTaskRemoteDeliveryIntegrated(
   if (delivery.allVerified) return;
   const unverified = delivery.projects
     .filter((project) => (
-      project.codeDelivery !== "none"
+      project.deliveryRequired
       && project.merged
       && !project.verified
     ))

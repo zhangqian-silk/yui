@@ -5,6 +5,7 @@ import type { PublicationReference } from "./publicationReference.js";
 import type { Task } from "./task.js";
 import type { IntegrationAttempt } from "../integration/integrationAttempt.js";
 import { publicationAdoption } from "./publicationAdoption.js";
+import { projectDeliveryDecision, projectDeliveryRequirement, type ProjectDeliveryRequirement } from "./projectDeliveryScope.js";
 
 export type RemoteDeliveryStatus =
   | "none"
@@ -48,6 +49,9 @@ export type ProjectRemoteDelivery = Readonly<{
   deliveryLocalCommit: string | null;
   adoption: TaskEvent | null;
   codeDelivery: ProjectCodeDelivery;
+  deliveryRequirement: ProjectDeliveryRequirement;
+  scopeDecision: TaskEvent | null;
+  deliveryRequired: boolean;
   publication: PublicationReference | null;
   state: PublicationReference["state"] | null;
   verification: PublicationReference["verification"] | null;
@@ -64,10 +68,14 @@ export type TaskRemoteDelivery = Readonly<{
   provisional: boolean;
   archiveDisposition: "integrated" | "abandoned" | null;
   status: RemoteDeliveryStatus;
+  /** These aggregates cover required changed/unknown Projects only. */
   allMerged: boolean;
   allVerified: boolean;
   totalProjectCount: number;
   codeProjectCount: number;
+  /** Obligation denominator; exclusions remain in codeProjectCount. */
+  requiredCodeProjectCount: number;
+  excludedProjectCount: number;
   mergedProjectCount: number;
   verifiedProjectCount: number;
   integratedCoverageSatisfied: boolean;
@@ -101,6 +109,8 @@ export function projectTaskRemoteDelivery(
   const currentPublications = currentPublicationReferences(facts.publications);
   const projects = facts.task.projectBindings.map((binding): ProjectRemoteDelivery => {
     const expectedLocalCommit = expected.commits.get(binding.projectId) ?? null;
+    const scopeDecision = projectDeliveryDecision(facts.events, facts.task.id, binding.projectId);
+    const deliveryRequirement = projectDeliveryRequirement(scopeDecision);
     const baseCommit = baseCommits.get(binding.projectId) ?? null;
     const codeDelivery = expectedLocalCommit === null
       ? "unknown"
@@ -141,6 +151,9 @@ export function projectTaskRemoteDelivery(
       deliveryLocalCommit: covers ? publication.localCommit ?? null : null,
       adoption,
       codeDelivery,
+      deliveryRequirement,
+      scopeDecision,
+      deliveryRequired: deliveryRequirement === "required" && codeDelivery !== "none",
       publication,
       state: publication?.state ?? null,
       verification: publication?.verification ?? null,
@@ -148,7 +161,9 @@ export function projectTaskRemoteDelivery(
       coverage,
       merged,
       verified,
-      reason: projectCoverageReason(
+      reason: (deliveryRequirement === "excluded"
+        ? `No delivery obligation: ${scopeDecision!.payload.reason} (${scopeDecision!.id}). Merge and cleanup facts remain separate. `
+        : "") + projectCoverageReason(
         expectedLocalCommit,
         publication,
         coverage,
@@ -158,18 +173,19 @@ export function projectTaskRemoteDelivery(
     };
   });
   const codeProjects = projects.filter((project) => project.codeDelivery !== "none");
-  const mergedProjectCount = codeProjects.filter((project) => project.merged).length;
-  const verifiedProjectCount = codeProjects.filter((project) => project.verified).length;
-  const allMerged = codeProjects.every((project) => project.merged);
-  const allVerified = codeProjects.every((project) => project.verified);
-  const status: RemoteDeliveryStatus = codeProjects.length === 0
+  const requiredProjects = projects.filter(project => project.deliveryRequired);
+  const mergedProjectCount = requiredProjects.filter((project) => project.merged).length;
+  const verifiedProjectCount = requiredProjects.filter((project) => project.verified).length;
+  const allMerged = requiredProjects.every((project) => project.merged);
+  const allVerified = requiredProjects.every((project) => project.verified);
+  const status: RemoteDeliveryStatus = requiredProjects.length === 0
     ? "none"
-    : codeProjects.some((project) => project.coverage === "head-unavailable")
+    : requiredProjects.some((project) => project.coverage === "head-unavailable")
       ? "unavailable"
       : allMerged
         ? allVerified ? "merged" : "unverified"
         : mergedProjectCount > 0 ? "partial"
-          : codeProjects.some(p => p.state === "merged") ? "uncovered" : "pending";
+          : requiredProjects.some(p => p.state === "merged") ? "uncovered" : "pending";
   return {
     taskId: facts.task.id,
     source: expected.source,
@@ -183,6 +199,8 @@ export function projectTaskRemoteDelivery(
     allVerified,
     totalProjectCount: projects.length,
     codeProjectCount: codeProjects.length,
+    requiredCodeProjectCount: requiredProjects.length,
+    excludedProjectCount: projects.filter(project => project.deliveryRequirement === "excluded").length,
     mergedProjectCount,
     verifiedProjectCount,
     integratedCoverageSatisfied: allMerged && allVerified,
