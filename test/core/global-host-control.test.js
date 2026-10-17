@@ -29,7 +29,6 @@ import { FileTaskController } from "../../dist/controller/controller.js";
 import { FileRuntimeEventProcessor } from "../../dist/controller/runtimeEventProcessor.js";
 import { createRuntimeLifecycleDispatcher } from "../../dist/controller/runtime.js";
 import { createProviderRetryHooks } from "../../dist/controller/providerRetryDelivery.js";
-import { runInboxCommand } from "../../dist/commands/inboxCommands.js";
 
 async function globalHostFixture(t, adapterId = "codex", {
   controlled = true, roleName = "assistant", autoDeliver = false, capacityFailure = false,
