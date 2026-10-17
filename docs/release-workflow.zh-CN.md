@@ -36,6 +36,41 @@ Agent 选择一个预先声明的计划，设施从持久状态驱动该计划�
 不能将不兼容冒称为兼容，也不为回避版本选择新增历史兼容机制。包版本与协议、
 持久存储契约仍然独立：兼容性检查和必要迁移要求不变，下文存储规则不授予发版权限。
 
+### 2.10.0 兼容性及迁移说明
+
+本稳定 minor 包含精确 Turn 收件箱处理与继任恢复（Task131 / PR #463、
+Task134 / PR #464），以及受认证保护的可信内网 Web 和当前 Operator 生命周期
+控制（Task135 / PR #465）。同时纳入显式 Task Project 交付范围与安全普通归档
+（PR #462），以及部署特定 GitLab 发布 URL 支持（PR #461）。
+
+Web 默认仍为 loopback。显式私网／通配监听要求
+`--auth-file <absolute-path>` 指向仅本用户可访问的密码文件，浏览器用户名为 `yui`。
+工作台页面、API 和 Terminal 之前必须认证；沙箱预览保留仅授权当前监听内特定
+服务读取的窄票据。HTTP 仍不加密，只应在可信网络使用，不用于公网部署。
+当前 Operator、`--detach` 和 `--json` 启动返回 Controller 持有的回执；
+通过 `yui web --status` 查询、`yui web --stop` 停止。轮换密码需停止后重启，
+Controller 恢复不会自动重新开放 Web。详见[受控 Web 访问](web-access.md)。
+
+收件箱调用者应使用 current/history 视图及返回的精确身份；缺少 ACK 不代表
+工作未执行。继任 Session 先检查原始输入和既有效果，再处理保留的 claim，
+不重放输入，也不借用另一 Session 的权限。精确 terminal 的处理检查保持有界。
+Project 交付排除须有原始范围授权，不删除 binding，也不证明代码已合并。
+详见 [CLI 信息契约](cli-information-contract.zh-CN.md)和
+[Project 交付范围](project-delivery-scope.md)。
+
+存储经集中式连续迁移从 **1.11 升至 1.13**：**1.12** 声明 Project 交付决策；
+**1.13** 声明精确 inbox attempt/target 身份、Global 输入退役及 terminal 处理检查。
+历史消息、claim 和验收证据保留，不猜造旧 Turn 归属或 ACK。受支持的
+**1.0–1.12** Home 沿用同 major 更新路径。另获更新授权后使用
+`yui update --version 2.10.0`，由更新器负责预检、备份、迁移与 Controller 交接；
+不要用旧程序打开升级后的 Home，也不要手工编辑存储。包 minor 编号不代表
+对所有接口作向后兼容承诺。
+
+发布门禁复用精确提交的 Core CI，并在 npm 发布前对同一 runtime tarball 执行
+Linux x64、macOS x64/arm64 与 Node 20/22/24/26 的全新安装验证。
+这是确定性和隔离运行时证据，不是真实模型验证。发布不会更新全局 CLI、
+迁移生产 Home、替换 Agent Session 或启动生产 Web。
+
 ### 2.9.0 兼容性及迁移说明
 
 本稳定 minor 包含分作用域的 Job 定义与精确执行 Run、持久 Schedule、受控 Project
