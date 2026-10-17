@@ -841,7 +841,7 @@ const taskChildren: readonly NodeInput[] = [
           },
           {
             name: "new", discovery: { surface: "managed", audiences: ["operator","leader"] },
-            summary: "Request replacement even for active or ended Sessions; stop exact execution and preserve Task context, results and workspaces.",
+            summary: "Stop exact execution, then initialize a successor without replaying retained inbox obligations; preserve claims, context and workspaces.",
             usage: "yui task role session new <task> <role> --reason <text>",
             options: ["--reason"]
           }
@@ -1267,11 +1267,12 @@ export const ROOT_COMMAND = buildNode({
     {
       name: "inbox",
       summary: "Read and explicitly handle the current managed Agent's own inbox.",
-      sections: [{ id: "commands", title: "Commands", entries: ["list", "show", "claim", "ack"] }],
+      sections: [{ id: "commands", title: "Commands", entries: ["list", "show", "claim", "ack", "retire"] }],
       children: [
         { name: "list", discovery: { surface: "managed", audiences: ["operator","global","leader","assignment"] },
           summary: "Discover unhandled own-address entries, including accepted delivery, with current identity and separate handling receipts.",
-          usage: "yui inbox list [--limit <1..100>] [--cursor <cursor>]", options: ["--limit", "--cursor"] },
+          usage: "yui inbox list [--view current|history|all] [--limit <1..100>] [--cursor <cursor>]",
+          options: ["--view", "--limit", "--cursor"], optionValues: { "--view": ["current", "history", "all"] } },
         { name: "show", discovery: { surface: "managed", audiences: ["operator","global","leader","assignment"] },
           summary: "Read an exact original or fixed notification window without acknowledgement.",
           usage: "yui inbox show <entry> [--cursor <cursor>]", options: ["--cursor"] },
@@ -1279,8 +1280,12 @@ export const ROOT_COMMAND = buildNode({
           summary: "Reserve 1..16 exact entries for handling in this turn; never starts a model turn.",
           usage: "yui inbox claim <entry> [<entry> ...] --request-id <id>", options: ["--request-id"] },
         { name: "ack", discovery: { surface: "managed", audiences: ["operator","global","leader","assignment"] },
-          summary: "Confirm handling of claimed entries with an auditable disposition, not Provider acceptance.",
+          summary: "Record handling, including a rightful successor's disposition of an unchanged prior claim; never proves native acceptance or authorizes replay.",
           usage: "yui inbox ack <entry> [<entry> ...] --request-id <id> --reason <disposition>",
+          options: ["--request-id", "--reason"] },
+        { name: "retire", discovery: { surface: "managed", audiences: ["operator","global"] },
+          summary: "Explicitly retire obsolete proven-unsubmitted Global input, preserving its original target and evidence.",
+          usage: "yui inbox retire <entry> [<entry> ...] --request-id <id> --reason <disposition>",
           options: ["--request-id", "--reason"] }
       ]
     },
@@ -1295,8 +1300,8 @@ export const ROOT_COMMAND = buildNode({
           children: [
             {
               name: "list", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Discover Global Messages without consuming input.",
-              usage: "yui role message list <role> [--pending|--diagnostics|--diagnostic <key>] [--limit <1..100>] [--cursor <cursor>]",
-              options: ["--pending", "--diagnostics", "--diagnostic", "--limit", "--cursor"]
+              usage: "yui role message list <role> [--current|--pending|--diagnostics|--diagnostic <key>] [--limit <1..100>] [--cursor <cursor>]",
+              options: ["--current", "--pending", "--diagnostics", "--diagnostic", "--limit", "--cursor"]
             },
             {
               name: "show", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Read one exact Global Message; follow contentPage.nextCursor for long content.",

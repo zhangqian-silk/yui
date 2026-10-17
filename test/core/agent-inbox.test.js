@@ -12,7 +12,7 @@ import { createGlobalRoleMessage, createTaskMessage } from "../../dist/message/m
 import { runInboxCommand } from "../../dist/commands/inboxCommands.js";
 import { createTask, activateTask } from "../../dist/task/task.js";
 import { createManagedWorkspace } from "../../dist/worktree/managedWorkspace.js";
-import { runTaskCommand } from "../../dist/commands/taskCommands.js";
+import { applyTaskInputControl, runTaskCommand } from "../../dist/commands/taskCommands.js";
 import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
 import { enqueueWork } from "../../dist/coordination/workMailboxQueue.js";
 import { pendingCompletionMessages } from "../../dist/task/completionReadiness.js";
@@ -28,6 +28,8 @@ import { createProject } from "../../dist/repository/project.js";
 import { stopTaskExecutionCommand, startTaskExecutionCommand } from "../../dist/commands/taskExecutionCommands.js";
 import { requireManagedCaller, sessionCallerEnvironment } from "../../dist/runtime/sessionCaller.js";
 import { createTaskEvent } from "../../dist/event/taskEvent.js";
+import { createRuntimeObservation } from "../../dist/runtime/runtimeObservation.js";
+import { globalInboxRecovery } from "../../dist/message/globalInboxRecovery.js";
 
 const now = new Date("2026-10-13T00:00:00Z");
 function fixture(t, name) {
@@ -53,6 +55,122 @@ function fixture(t, name) {
   };
   return { store, command, add, env };
 }
+
+test("automatic Global delivery checks missing handling at exact terminal without acknowledging or replaying effects", t => {
+  const { store, command, add } = fixture(t, "operator");
+  store.saveGlobalRoleSessionSet(bindGlobalRoleProviderRuntime(store.getGlobalRoleSessionSet("operator"),
+    createProviderRuntimeBinding({ providerNamespace: "openai/codex", accountScope: "codex",
+      conversationId: "operator-native", startedAt: now.toISOString() }), now));
+  const adapter = new FileSchedulerStoreAdapter(store);
+  const id = add("Delegate implementation; Task remains running");
+  const original = command("show", id);
+  store.updateGlobalRoleMessage({ ...original,
+    deliveryTarget: { agentId: "codex", nativeSessionId: "operator-native" } });
+  const attemptId = `global-input:operator/${id}`;
+  adapter.beginAgentHostProviderTurn({ roleName: "operator", agentId: "codex", nativeSessionId: "operator-native",
+    attemptId, authorityEpoch: 1, authorityOwner: "controller", holderId: "controller", now });
+  const observe = kind => adapter.observeRuntimeObservation(createRuntimeObservation({
+    schemaVersion: 1, eventId: `original-${kind}`, semanticKey: `original-${kind}`, kind,
+    authority: "provider-structured", receivedAt: now.toISOString(), observedAt: now.toISOString(),
+    payload: kind === "turn.completed" ? { output: "Delegated successfully" } : {},
+    fence: { roleName: "operator", agentId: "codex", driverId: "openai/codex",
+      nativeSessionId: "operator-native", conversationId: "operator-native", receiptId: attemptId,
+      nativeTurnId: "original-turn" }
+  }), now);
+  observe("turn.accepted");
+  assert.equal(command("list").items[0].id, id);
+  observe("turn.completed");
+  assert.equal(command("show", id).inbox, undefined, "successful final is not semantic ACK");
+  const reminders = store.listGlobalRoleMessages("operator").filter(m =>
+    m.inputControl?.requestId.startsWith("inbox-check:"));
+  assert.equal(reminders.length, 1, "terminal records one bounded handling reminder on the normal path");
+  observe("turn.completed");
+  assert.equal(store.listGlobalRoleMessages("operator").filter(m =>
+    m.inputControl?.requestId.startsWith("inbox-check:")).length, 1);
+  command("claim", id, "--request-id", "reconcile");
+  store.saveTask(activateTask(createTask("task-1", "Delegated implementation", now,
+    { cwd: store.rootDirectory() }), now));
+  const ack = command("ack", id, "--request-id", "delegated", "--reason", "Verified existing Task delegation; no effect replay");
+  assert.equal(store.getTask("task-1").status, "active", "routing ACK does not wait for downstream Task completion");
+  assert.deepEqual(command("ack", id, "--request-id", "delegated", "--reason",
+    "Verified existing Task delegation; no effect replay"), ack, "lost ACK response retries only the receipt");
+  assert.deepEqual(command("show", id).delivery, { deliveredAt: now.toISOString(), via: "provider" });
+  const reminder = reminders[0];
+  const reminderAttempt = `global-input:operator/${reminder.id}`;
+  adapter.beginAgentHostProviderTurn({ roleName: "operator", agentId: "codex", nativeSessionId: "operator-native",
+    attemptId: reminderAttempt, authorityEpoch: 1, authorityOwner: "controller", holderId: "controller", now });
+  for (const kind of ["turn.accepted", "turn.completed"]) adapter.observeRuntimeObservation(createRuntimeObservation({
+    schemaVersion: 1, eventId: `reminder-${kind}`, semanticKey: `reminder-${kind}`, kind,
+    authority: "provider-structured", receivedAt: now.toISOString(), observedAt: now.toISOString(),
+    payload: kind === "turn.completed" ? { output: "Forgot reminder ACK too" } : {},
+    fence: { roleName: "operator", agentId: "codex", driverId: "openai/codex",
+      nativeSessionId: "operator-native", conversationId: "operator-native", receiptId: reminderAttempt,
+      nativeTurnId: "reminder-turn" }
+  }), now);
+  assert.equal(store.listGlobalRoleMessages("operator").length, 2, "reminders cannot create an infinite self-wake chain");
+  assert.equal(command("show", reminder.id).inbox, undefined, "bounded fallback never fabricates ACK");
+});
+
+test("historical receipts cannot crowd or fence new input; obsolete targets retire explicitly without retargeting", t => {
+  const { store, command, add } = fixture(t, "operator");
+  store.transaction(() => {
+    for (let i = 0; i < 140; i++) {
+      add(`Historical ${i}`);
+      const message = store.listGlobalRoleMessages("operator").at(-1);
+      store.updateGlobalRoleMessage({ ...message, delivery: { via: "provider", deliveredAt: now.toISOString() },
+        deliveryTarget: { agentId: "codex", nativeSessionId: "old-session" } });
+    }
+  });
+  const old = add("Old selected notification");
+  store.updateGlobalRoleMessage({ ...command("show", old),
+    deliveryTarget: { agentId: "codex", nativeSessionId: "old-session" } });
+  const fresh = add("Independent current input");
+  const page = command("list", "--view", "current", "--limit", "1");
+  assert.deepEqual(page.items.map(entry => entry.id), [fresh]);
+  assert.equal(page.historyCount, 141);
+  assert.ok(Buffer.byteLength(JSON.stringify(page)) < 4096);
+  command("claim", fresh, "--request-id", "new-input");
+  command("ack", fresh, "--request-id", "new-handled", "--reason", "Handled independent request");
+  assert.throws(() => command("claim", old, "--request-id", "no-retarget"), /session/i);
+  const retired = command("retire", old, "--request-id", "obsolete", "--reason", "Read original; superseded notification has no remaining action");
+  assert.equal(retired.inbox.ack, undefined);
+  assert.equal(command("show", old).deliveryTarget.nativeSessionId, "old-session");
+  assert.deepEqual(command("retire", old, "--request-id", "obsolete", "--reason",
+    "Read original; superseded notification has no remaining action"), retired);
+  assert.equal(command("list", "--view", "history").total, 140);
+  assert.throws(() => command("retire", store.listGlobalRoleMessages("operator")[0].id, "--request-id", "cannot-retire-accepted",
+    "--reason", "Must inspect accepted effects"), /proven-unsubmitted/);
+});
+
+test("active Global consumption survives cancellation and checks the exact claim, not unrelated historical debt", t => {
+  const { store, command, add } = fixture(t, "assistant");
+  let binding = createProviderRuntimeBinding({ providerNamespace: "openai/codex", accountScope: "codex",
+    conversationId: "assistant-native", startedAt: now.toISOString() });
+  binding = beginProviderTurn(binding, { attemptId: "direct:consumer", authorityEpoch: 1, submittedAt: now.toISOString() });
+  binding = acceptProviderTurn(binding, { attemptId: "direct:consumer", nativeTurnId: "active", acceptedAt: now.toISOString() });
+  store.saveGlobalRoleSessionSet(bindGlobalRoleProviderRuntime(store.getGlobalRoleSessionSet("assistant"), binding, now));
+  const id = add("Consumed during direct turn");
+  command("claim", id, "--request-id", "claim-active");
+  assert.equal(command("show", id).inbox.claim.actor.attemptId, "direct:consumer");
+  const adapter = new FileSchedulerStoreAdapter(store);
+  adapter.observeRuntimeObservation(createRuntimeObservation({
+    schemaVersion: 1, eventId: "cancelled-consumer", semanticKey: "cancelled-consumer", kind: "turn.cancelled",
+    authority: "provider-structured", receivedAt: now.toISOString(), observedAt: now.toISOString(), payload: {},
+    fence: { roleName: "assistant", agentId: "codex", driverId: "openai/codex",
+      nativeSessionId: "assistant-native", conversationId: "assistant-native", receiptId: "direct:consumer",
+      nativeTurnId: "active" }
+  }), now);
+  assert.equal(command("show", id).inbox.ack, undefined);
+  const reminder = store.listGlobalRoleMessages("assistant").find(m => m.inputControl?.requestId.startsWith("inbox-check:"));
+  assert.ok(reminder.body.includes(id));
+  const next = add("Independent input after cancelled consumer");
+  store.updateGlobalRoleMessage({ ...command("show", next),
+    deliveryTarget: { agentId: "codex", nativeSessionId: "assistant-native" } });
+  assert.doesNotThrow(() => adapter.beginAgentHostProviderTurn({ roleName: "assistant", agentId: "codex",
+    nativeSessionId: "assistant-native", attemptId: `global-input:assistant/${next}`, authorityEpoch: 1,
+    authorityOwner: "controller", holderId: "controller", now }));
+  assert.equal(command("show", id).delivery, undefined);
+});
 
 for (const role of ["operator", "assistant"]) test(`${role} own inbox reads, claims and acknowledges without delivery fabrication`, t => {
   const { store, command, add, env } = fixture(t, role);
@@ -92,7 +210,8 @@ test("partial batches, long originals, restart and unknown delivery preserve eac
   command("claim", first, "--request-id", "c");
   let ensured = false;
   await deliverGlobalInputs(store.rootDirectory(), store, async () => { ensured = true; }, error => { throw error; });
-  assert.equal(ensured, false, "claimed input never auto-submits or starts a turn");
+  assert.equal(ensured, true, "independent later input remains eligible; the claimed original itself never submits");
+  assert.equal(command("show", first).delivery, undefined);
   const partial = command("ack", first, second, "--request-id", "a", "--reason", "Handled only the claimed item");
   assert.deepEqual(partial.results.map(result => result.ok), [true, false]);
   assert.equal(command("show", second).inbox, undefined);
@@ -203,6 +322,39 @@ for (const targeted of [false, true]) test(`a successor can settle retained hand
   runInboxCommand(["claim", next, "--request-id", "next"], store, successor);
 });
 
+test("Global successor initialization uses one pinned notice while original claims and new inputs stay separate", t => {
+  const { store, command, add } = fixture(t, "assistant");
+  const id = add("An already performed effect with no ACK");
+  const original = command("claim", id, "--request-id", "old-claim");
+  assert.equal(globalInboxRecovery(store, "assistant", now), undefined, "never launch a substitute for the current handler");
+  const ended = updateRoleAgentSessionStatus(store.getGlobalRoleSessionSet("assistant"), "codex", "ended", now, "stopped");
+  const successor = recordRoleAgentSession(ended, { ...ended.sessions.codex,
+    status: "active", endReason: undefined, nativeSessionId: "successor" }, now);
+  const binding = createProviderRuntimeBinding({ providerNamespace: "openai/codex", accountScope: "codex",
+    conversationId: "successor", startedAt: now.toISOString() });
+  store.saveGlobalRoleSessionSet(bindGlobalRoleProviderRuntime(successor, binding, now));
+  const next = add("New independent input");
+  const notice = globalInboxRecovery(store, "assistant", now);
+  assert.ok(notice);
+  assert.equal(notice.deliveryTarget.nativeSessionId, "successor");
+  assert.deepEqual(globalInboxRecovery(store, "assistant", now), notice, "restart/reconcile reuse the same Message");
+  const adapter = new FileSchedulerStoreAdapter(store);
+  const input = message => ({ roleName: "assistant", agentId: "codex", nativeSessionId: "successor",
+    attemptId: `global-input:assistant/${message}`, authorityEpoch: 1, authorityOwner: "controller",
+    holderId: "controller", now, boundedText: "Read retained inbox, do not replay" });
+  assert.throws(() => adapter.beginAgentHostProviderTurn(input(id)), /settled|unconfirmed/);
+  adapter.beginAgentHostProviderTurn(input(notice.id));
+  assert.throws(() => adapter.beginAgentHostProviderTurn(input(next)), /unsettled/);
+  assert.equal(store.getGlobalRoleSessionSet("assistant").providerBinding.run.attemptId, input(notice.id).attemptId);
+  assert.deepEqual(commandSafe(store, id).inbox, original.inbox);
+  assert.equal(commandSafe(store, id).delivery, undefined);
+  assert.equal(commandSafe(store, next).control, undefined);
+  assert.equal(globalInboxRecovery(store, "assistant", now), undefined, "an unsettled writer cannot admit another notice");
+  function commandSafe(store, message) {
+    return runInboxCommand(["show", message], store, { CODEX_THREAD_ID: "successor" }, now);
+  }
+});
+
 test("an unsubmitted Global steer can be explicitly handled without replay or blocking later input", t => {
   const { store, command, add } = fixture(t, "operator");
   const result = applyGlobalInputControl("operator", { action: "steer", body: "Old correction",
@@ -249,6 +401,92 @@ function taskFixture(t, draft = false) {
   const task = args => runTaskCommand(args, store, { now: () => now, environment: {} });
   return { ...f, task, inbox, envFor };
 }
+
+for (const mode of ["automatic", "active", "reminder"]) test(`Leader terminal checks ${mode} consumption and preserves later input`, t => {
+  const automatic = mode === "automatic";
+  const reminder = mode === "reminder";
+  const { store, task, inbox } = taskFixture(t);
+  const adapter = new FileSchedulerStoreAdapter(store);
+  store.saveTaskRoleSessionSet(bindTaskRoleProviderRuntime(store.getTaskRoleSessionSet("task-1", "leader"),
+    createProviderRuntimeBinding({ providerNamespace: "openai/codex", accountScope: "codex",
+      conversationId: "leader-native", startedAt: now.toISOString() }), now));
+  if (reminder) enqueueWork(store, { kind: "role", taskId: "task-1", roleName: "leader" }, "inbox-handling-missing", now);
+  else task(["message", "queue", "task-1", "Handle this requirement", "--request-id", "original"]);
+  const notification = automatic ? adapter.claimLeaderNotification("task-1", now) : undefined;
+  const attemptId = notification?.attemptId ?? "direct:active-consumer";
+  adapter.beginAgentHostProviderTurn({ taskId: "task-1", roleName: "leader", agentId: "codex",
+    nativeSessionId: "leader-native", attemptId, authorityEpoch: 1, authorityOwner: "controller",
+    holderId: "controller", now });
+  adapter.observeRuntimeObservation(createRuntimeObservation({
+    schemaVersion: 1, eventId: "accepted", semanticKey: "accepted", kind: "turn.accepted",
+    authority: "provider-structured", receivedAt: now.toISOString(), observedAt: now.toISOString(), payload: {},
+    fence: { taskId: "task-1", roleName: "leader", agentId: "codex", driverId: "openai/codex",
+      nativeSessionId: "leader-native", conversationId: "leader-native", receiptId: attemptId, nativeTurnId: "turn" }
+  }), now);
+  if (automatic) adapter.settleLeaderNotification("task-1", attemptId, "accepted", now);
+  const entry = inbox("leader", "list", "--view", "current").items[0];
+  const wakeId = automatic ? notification.wakeId
+    : inbox("leader", "claim", entry.id, "--request-id", "active").id;
+  if (!automatic) assert.equal(store.getTaskWake("task-1", wakeId).inbox.claim.actor.attemptId, attemptId);
+  task(["message", "queue", "task-1", "Later independent requirement", "--request-id", "later"]);
+  const terminal = { taskId: "task-1", roleName: "leader", agentId: "codex", adapterId: "codex",
+    nativeSessionId: "leader-native", nativeTurnId: "turn", attemptId, providerStatus: "completed",
+    outcome: { status: "completed", output: "Handled but forgot ACK" } };
+  adapter.observeRuntimeRunTerminal(terminal, now);
+  assert.equal(store.getTaskWake("task-1", wakeId).inbox?.ack, undefined);
+  assert.equal(store.listEvents("task-1").filter(event => event.type === "inbox-handling-missing").length, reminder ? 0 : 1);
+  adapter.observeRuntimeRunTerminal(terminal, now);
+  assert.equal(store.listEvents("task-1").filter(event => event.type === "inbox-handling-missing").length, reminder ? 0 : 1);
+  const next = adapter.claimLeaderNotification("task-1", now);
+  assert.ok(next, "missing ACK does not block a later independent notification after exact terminal");
+  assert.equal(store.getTaskWake("task-1", next.wakeId).refs.some(ref => ref.id === (reminder ? "message-1" : "message-2")), true);
+  assert.equal(store.getTask("task-1").status, "active");
+});
+
+test("automatic Assignment continuation missing ACK reaches Leader without replaying the Worker", t => {
+  const { store, task } = taskFixture(t);
+  task(["work", "create", "task-1", "Bounded work", "--role", "worker"]);
+  task(["work", "dispatch", "task-1/work-item-1"]);
+  const initial = store.getActiveRun("task-1", "worker");
+  store.saveTaskRoleSessionSet(recordRoleAgentSession(createRoleSessionSet(
+    { scope: "task", taskId: "task-1", roleName: "worker" }, "codex", now), {
+    agentId: "codex", adapterId: "codex", nativeSessionId: "worker-native",
+    policy: "fixed", status: "active", effective: initial.effective
+  }, now));
+  task(["message", "queue", "task-1", "Original continuation", "--to", "worker",
+    "--work-item", "work-item-1", "--request-id", "continue"]);
+  store.saveRun(failRun(initial, "runtime-failed", "Original exact terminal", now, {
+    providerNamespace: "openai/codex", accountScope: "codex", conversationId: "worker-native",
+    nativeTurnId: "previous", status: "failed"
+  }));
+  store.clearActiveRun("task-1", "worker");
+  prepareMessageContinuations(store, "task-1", now, "worker");
+  const continuation = store.getActiveRun("task-1", "worker");
+  assert.ok(continuation);
+  let sessions = recordRoleAgentSession(createRoleSessionSet(
+    { scope: "task", taskId: "task-1", roleName: "worker" }, "codex", now), {
+    agentId: "codex", adapterId: "codex", nativeSessionId: "worker-native",
+    policy: "fixed", status: "active", effective: continuation.effective
+  }, now);
+  let binding = createProviderRuntimeBinding({ providerNamespace: "openai/codex", accountScope: "codex",
+    conversationId: "worker-native", startedAt: now.toISOString() });
+  binding = beginProviderTurn(binding, { attemptId: "continuation", runId: continuation.id, authorityEpoch: 1,
+    submittedAt: now.toISOString() });
+  binding = acceptProviderTurn(binding, { attemptId: "continuation", nativeTurnId: "continued", acceptedAt: now.toISOString() });
+  store.saveTaskRoleSessionSet(bindTaskRoleProviderRuntime(sessions, binding, now));
+  new FileSchedulerStoreAdapter(store).observeRuntimeRunTerminal({
+    taskId: "task-1", roleName: "worker", agentId: "codex", adapterId: "codex", runId: continuation.id,
+    nativeSessionId: "worker-native", nativeTurnId: "continued", attemptId: "continuation",
+    providerStatus: "completed", outcome: { status: "completed", output: "Implemented clarification; forgot ACK" }
+  }, now);
+  const check = store.listEvents("task-1").find(event => event.type === "inbox-handling-missing");
+  assert.equal(check.payload.roleName, "worker");
+  assert.equal(check.payload.entries, "message-1");
+  assert.equal(store.listMessages("task-1")[0].inbox, undefined);
+  prepareMessageContinuations(store, "task-1", now, "worker");
+  assert.equal(store.getActiveRun("task-1", "worker"), null, "the check notifies Leader, never resubmits original work");
+  assert.equal(store.listRuns("task-1").length, 2);
+});
 
 test("native-only callers resolve their current role without borrowing hints, Home or child identity", t => {
   const { store, envFor, inbox } = taskFixture(t);
@@ -362,6 +600,94 @@ test("a successor Leader settles an exact-Session window without replaying its o
   task(["message", "queue", "task-1", "Next request", "--request-id", "next"]);
   const next = successor("list").items[0].id;
   successor("claim", next, "--request-id", "next-window");
+});
+
+for (const activeClaim of [false, true]) test(`replacement bootstraps before retained handling (active window: ${activeClaim})`, t => {
+  const { store, inbox, task, envFor } = taskFixture(t);
+  const adapter = new FileSchedulerStoreAdapter(store);
+  task(["message", "queue", "task-1", "Already processed effect; ACK was interrupted", "--request-id", "original"]);
+  let id;
+  if (activeClaim) id = inbox("leader", "claim", inbox("leader", "list").items[0].id, "--request-id", "old").id;
+  else {
+    const notification = adapter.claimLeaderNotification("task-1", now);
+    adapter.settleLeaderNotification("task-1", notification.attemptId, "accepted", now);
+    id = inbox("leader", "claim", notification.wakeId, "--request-id", "old").id;
+  }
+  const original = store.getTaskWake("task-1", id);
+  task(["role", "session", "new", "task-1", "leader", "--reason", "Interrupted handler"]);
+  task(["message", "queue", "task-1", "New input during replacement", "--request-id", "new"]);
+  const oldProcessing = store.getWorkMailbox({ kind: "role", taskId: "task-1", roleName: "leader" }).processing;
+  assert.equal(adapter.claimLeaderNotification("task-1", now), null, "cleanup must establish quiescence first");
+  const runtime = { kind: "role-runtime", taskId: "task-1", roleName: "leader" };
+  assert.equal(adapter.completeRuntimeCleanup(runtime, now), true);
+  assert.equal(adapter.completeRuntimeCleanup(runtime, now), false, "reconcile is idempotent");
+  if (activeClaim) {
+    const mailbox = store.getWorkMailbox({ kind: "role", taskId: "task-1", roleName: "leader" });
+    store.saveWorkMailbox({ ...mailbox, processing: oldProcessing,
+      recentDedupeKeys: mailbox.recentDedupeKeys.filter(key => !oldProcessing.batch.dedupeKeys.includes(key)) });
+  }
+  // Reopen the store to exercise persisted state, not cached recovery state.
+  const reopened = new SqliteTaskStore(store.rootDirectory());
+  t.after(() => reopened.close());
+  const scheduler = new FileSchedulerStoreAdapter(reopened);
+  const recovery = scheduler.claimLeaderNotification("task-1", now);
+  assert.equal(recovery?.disposition, "submit", "a retained claim must not prevent successor initialization");
+  const wake = store.getTaskWake("task-1", recovery.wakeId);
+  assert.ok(wake.refs.every(ref => ref.type === "event"), "bootstrap does not resubmit old or new business");
+  assert.match(recovery.presentation, /inbox list/);
+  assert.deepEqual(store.getTaskWake("task-1", id), original);
+  scheduler.settleLeaderNotification("task-1", recovery.attemptId, "accepted", now);
+  assert.equal(scheduler.claimLeaderNotification("task-1", now), null, "no infinite recovery turns");
+  const set = store.getTaskRoleSessionSet("task-1", "leader");
+  store.saveTaskRoleSessionSet(recordRoleAgentSession(set, {
+    agentId: "codex", adapterId: "codex", nativeSessionId: "successor", status: "active", policy: "fixed",
+    effective: resolveEffectiveLaunch({ role: store.getRole("task-1", "leader"), purpose: "execution" })
+  }, now));
+  task(["role", "session", "new", "task-1", "leader", "--reason", "Another deliberate replacement before settlement"]);
+  scheduler.completeRuntimeCleanup(runtime, now);
+  const secondRecovery = scheduler.claimLeaderNotification("task-1", now);
+  assert.equal(secondRecovery.disposition, "submit");
+  scheduler.settleLeaderNotification("task-1", secondRecovery.attemptId, "accepted", now);
+  assert.deepEqual(store.getTaskWake("task-1", id), original, "repeated replacement never rewrites the original claim");
+  const current = store.getTaskRoleSessionSet("task-1", "leader");
+  store.saveTaskRoleSessionSet(recordRoleAgentSession(current, {
+    agentId: "codex", adapterId: "codex", nativeSessionId: "second-successor", status: "active", policy: "fixed",
+    effective: resolveEffectiveLaunch({ role: store.getRole("task-1", "leader"), purpose: "execution" })
+  }, now));
+  const successor = (...args) => runInboxCommand(args, store, { ...envFor("leader"), CODEX_THREAD_ID: "second-successor" }, now);
+  successor("ack", id, "--request-id", "verified", "--reason", "Inspected original and effect receipt; no replay");
+  const next = scheduler.claimLeaderNotification("task-1", now);
+  assert.ok(store.getTaskWake("task-1", next.wakeId).refs.some(ref => ref.id === "message-2"));
+  assert.ok(!store.getTaskWake("task-1", next.wakeId).refs.some(ref => ref.id === "message-1"));
+  assert.equal(successor("show", id).inbox.claim.actor.nativeSessionId, "leader-native");
+});
+
+test("replacement releases uncertain transport for inspection, never for automatic business replay", t => {
+  const { store, task, inbox } = taskFixture(t);
+  const scheduler = new FileSchedulerStoreAdapter(store);
+  applyTaskInputControl("task-1", { action: "queue", body: "Verify the external effect before doing anything",
+    requestId: "uncertain", expectedSessionId: "leader-native" }, store, { now: () => now, environment: {} });
+  const notification = scheduler.claimLeaderNotification("task-1", now);
+  scheduler.settleLeaderNotification("task-1", notification.attemptId, "unknown", now);
+  assert.throws(() => inbox("leader", "claim", notification.wakeId, "--request-id", "too-early"), /automatic/);
+  task(["role", "session", "new", "task-1", "leader", "--reason", "Inspect uncertainty in a successor"]);
+  scheduler.completeRuntimeCleanup({ kind: "role-runtime", taskId: "task-1", roleName: "leader" }, now);
+  const bootstrap = scheduler.claimLeaderNotification("task-1", now);
+  assert.ok(store.getTaskWake("task-1", bootstrap.wakeId).refs.every(ref => ref.type === "event"));
+  scheduler.settleLeaderNotification("task-1", bootstrap.attemptId, "accepted", now);
+  assert.equal(scheduler.claimLeaderNotification("task-1", now), null);
+  const set = store.getTaskRoleSessionSet("task-1", "leader");
+  store.saveTaskRoleSessionSet(recordRoleAgentSession(set, {
+    agentId: "codex", adapterId: "codex", nativeSessionId: "successor", status: "active", policy: "fixed",
+    effective: resolveEffectiveLaunch({ role: store.getRole("task-1", "leader"), purpose: "execution" })
+  }, now));
+  const successor = (...args) => runInboxCommand(args, store, { CODEX_THREAD_ID: "successor" }, now);
+  assert.equal(successor("list").items.find(item => item.id === notification.wakeId).blocked, null);
+  successor("claim", notification.wakeId, "--request-id", "inspect-only");
+  successor("ack", notification.wakeId, "--request-id", "verified-effect", "--reason", "Original external receipt verified; no replay");
+  assert.equal(store.getTaskWake("task-1", notification.wakeId).status, "dispatched", "inspection cannot fabricate acceptance");
+  assert.equal(store.listMessages("task-1")[0].inputControl.expectedSessionId, "leader-native");
+  assert.equal(pendingCompletionMessages(store, "task-1").length, 0);
 });
 
 for (const roleName of ["worker", "leader"]) test(`${roleName} unsubmitted steer is explicitly consumable and arbitrates against live admission`, t => {

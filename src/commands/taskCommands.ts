@@ -2649,7 +2649,9 @@ function steerTaskInput(
     // never re-submit them through a delayed steer.
     if (saved === undefined || requestId === undefined || taskMessageInboxReceipt(tx, saved) !== undefined) return false;
     tx.updateMessage(result.task.id, recordTaskMessageControlOutcome(saved, {
-      requestId, receiptId, outcome: "pending", observedAt: clock(options)
+      requestId, receiptId, outcome: "pending", observedAt: clock(options),
+      target: { agentId: resolution.target.agentId, nativeSessionId: resolution.target.nativeSessionId,
+        attemptId: resolution.target.attemptId }
     }));
     return true;
   });

@@ -26,6 +26,7 @@ import { createSessionOwnerIdentity } from "../../dist/runtime/sessionOwnerIdent
 import { prepareOperatorNewSession } from "../../dist/operator/operatorSessionHistory.js";
 import { prepareNativeHostSteer } from "../../dist/controller/nativeHostInput.js";
 import { resolveAgentHostObservation } from "../../dist/controller/agentHostObservation.js";
+import { runInboxCommand } from "../../dist/commands/inboxCommands.js";
 
 const at = new Date("2026-09-11T00:00:00Z");
 const later = new Date("2026-09-11T00:01:00Z");
@@ -807,6 +808,15 @@ test("Global unknown survives restart, late evidence settles it, and conclusive 
     ...accepted, kind: "turn.completed", eventId: "known-terminal", semanticKey: "known-terminal",
     payload: { output: "done" }
   }), later);
+  // Exact terminal now emits one handling check, not an ACK or replay of the
+  // original. Dispose of that notice before testing the empty delivery queue.
+  const reminder = reopened.listGlobalRoleMessages(role.name).find(m =>
+    m.inputControl?.requestId.startsWith("inbox-check:"));
+  assert.ok(reminder);
+  const env = { CODEX_THREAD_ID: "assistant-native" };
+  runInboxCommand(["claim", reminder.id, "--request-id", "notice"], reopened, env, later);
+  runInboxCommand(["ack", reminder.id, "--request-id", "notice-done", "--reason",
+    "Inspected retained original; no input replay authorized"], reopened, env, later);
   const rejected = command(["message", "queue", role.name, "Explicit rejection", "--request-id", "rejected"]).message;
   const rejectedAttempt = `global-input:${role.name}/${rejected.id}`;
   reloadedScheduler.beginAgentHostProviderTurn({ roleName: role.name, agentId: "codex",

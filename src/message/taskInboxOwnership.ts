@@ -34,10 +34,18 @@ export function taskMessageInboxReceipt(store: TaskStore, message: TaskMessage) 
   return message.inbox ?? messageRevisionWakes(store, message).find(wake => wake.inbox !== undefined)?.inbox;
 }
 
-/** Delivery suppresses repeat notification of that revision, but remains
- * distinct from handling. The original fixed window stays in the own inbox. */
-export function deliveredMessageWake(store: TaskStore, message: TaskMessage) {
-  return messageRevisionWakes(store, message).find(wake => wake.status === "consumed");
+/** Acceptance or explicit no-replay release suppresses repeat notification,
+ * never handling. The original fixed window stays in the own inbox. */
+export function nonReplayableMessageWake(store: TaskStore, message: TaskMessage) {
+  return messageRevisionWakes(store, message).find(wake =>
+    wake.status === "consumed" || releasedNotificationWake(store, message.taskId, wake.id));
+}
+
+/** Operational release is not acceptance. Keep its originals out of automatic
+ * delivery while permitting explicit inspection and settlement in the inbox. */
+export function releasedNotificationWake(store: TaskStore, taskId: string, wakeId: string): boolean {
+  return store.listEventsByType(taskId, ["notification.resolved"]).some(event =>
+    event.payload.wakeId === wakeId && event.payload.outcome === "released-without-replay");
 }
 
 function messageRevisionWakes(store: TaskStore, message: TaskMessage) {
@@ -49,7 +57,16 @@ function messageRevisionWakes(store: TaskStore, message: TaskMessage) {
 }
 
 export function unfinishedLeaderInbox(store: TaskStore, taskId: string): boolean {
-  return store.listTaskWakes(taskId).some(wake => wake.inbox !== undefined && wake.inbox.ack === undefined)
+  const sessions = store.getTaskRoleSessionSet(taskId, "leader");
+  const binding = sessions?.providerBinding;
+  const turn = binding?.run;
+  const nativeSessionId = binding?.conversations.find(c => c.epoch === binding.currentConversationEpoch)?.conversationId;
+  const active = (receipt: TaskMessage["inbox"]) => receipt !== undefined && receipt.ack === undefined
+    && (receipt.claim.actor.attemptId === undefined || turn?.attemptId === receipt.claim.actor.attemptId
+      && receipt.claim.actor.agentId === sessions?.activeAgentId
+      && receipt.claim.actor.nativeSessionId === nativeSessionId
+      && ["submitting", "accepted", "delivery-unknown"].includes(turn.status));
+  return store.listTaskWakes(taskId).some(wake => active(wake.inbox))
     || operationalTaskRecords(store.listMessages(taskId), store.listEvents(taskId), "message").some(message => isLeaderSteer(message)
-      && message.inbox !== undefined && message.inbox.ack === undefined);
+      && active(message.inbox));
 }

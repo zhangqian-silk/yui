@@ -23,12 +23,13 @@ import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
 const assembled = process.argv[2] === "--assembled";
-if (process.argv.length !== (assembled ? 4 : 2)) {
-  throw new Error("Usage: smoke-runtime-package.mjs [--assembled <package-root>]");
+const development = process.argv[2] === "--development";
+if (process.argv.length !== (assembled || development ? 4 : 2)) {
+  throw new Error("Usage: smoke-runtime-package.mjs [--assembled <package-root> | --development <checkout>]");
 }
 // Imports resolve physically, including macOS /var -> /private/var. Compare
 // installed Skill paths against that same package identity.
-const root = realpathSync(resolve(assembled ? process.argv[3] : process.env.YUI_INSTALLED_ROOT ?? process.cwd()));
+const root = realpathSync(resolve(assembled || development ? process.argv[3] : process.env.YUI_INSTALLED_ROOT ?? process.cwd()));
 const sandbox = mkdtempSync(join(tmpdir(), "yui-runtime-package-smoke-"));
 const isolatedHome = join(sandbox, "home");
 const yuiHome = join(isolatedHome, ".yui");
@@ -61,7 +62,7 @@ try {
   mkdirSync(fakeBin, { recursive: true, mode: 0o755 });
   const fakeCodex = new URL("../test/fixtures/fake-codex-cli.mjs", import.meta.url);
   writeFileSync(join(fakeBin, "codex"),
-    `#!${process.execPath}\nimport(${JSON.stringify(fakeCodex.href)}).catch(error => { console.error(error); process.exitCode = 1; });\n`,
+    `#!${process.execPath}\nprocess.env.YUI_FAKE_UNIQUE_THREADS = "1";\nimport(${JSON.stringify(fakeCodex.href)}).catch(error => { console.error(error); process.exitCode = 1; });\n`,
     { mode: 0o755 });
   symlinkSync(process.execPath, join(fakeBin, "node"));
   // Optional real Git for the compatibility matrix; never replace system Git.
@@ -140,13 +141,14 @@ try {
   // invocations below prove it is runnable.
   const installedCli = join(root, "dist", "cli.js");
   const installedMode = statSync(installedCli).mode & 0o777;
-  if ((installedMode & 0o111) === 0) {
+  if (!development && (installedMode & 0o111) === 0) {
     throw new Error(
       `Installed dist/cli.js must be executable, received ${installedMode.toString(8).padStart(4, "0")}.`
     );
   }
 
-  cli = assembled ? installedCli : resolve(root, "..", "..", ".bin", "yui");
+  cli = development ? join(root, "output/dev/bin/yui")
+    : assembled ? installedCli : resolve(root, "..", "..", ".bin", "yui");
   if (!existsSync(cli)) {
     throw new Error("Installed runtime package did not create its yui bin.");
   }
@@ -333,13 +335,51 @@ try {
   const leaderNative = events().find(event => event.type === "runtime.native-connection-bound"
     && event.payload.roleName === "leader").payload.nativeSessionId;
   const desktopLeader = { ...environment, CODEX_THREAD_ID: leaderNative };
+  // A real CLI claim, followed by a legal Session replacement, must not fence
+  // the very successor which needs to inspect and settle that claim.
+  const oldWindow = JSON.parse(runCli(cli, ["--json", "inbox", "list"], desktopLeader)).data.items
+    .find(item => item.kind === "notification-window" && item.blocked === null);
+  assert.ok(oldWindow);
+  runCli(cli, ["inbox", "show", oldWindow.id, "--json"], desktopLeader);
+  const oldClaim = JSON.parse(runCli(cli, ["inbox", "claim", oldWindow.id,
+    "--request-id", "interrupted-handler", "--json"], desktopLeader)).data.inbox.claim;
+  json("controller", "restart");
+  runCli(cli, ["task", "role", "session", "new", task.id, "leader",
+    "--reason", "Fixture handler ended before acknowledgement; preserve its obligation."], desktopLeader);
+  await waitFor(() => events().some(event => event.type === "runtime.native-connection-bound"
+    && event.payload.roleName === "leader" && event.payload.nativeSessionId !== leaderNative),
+  "Retained claim prevented the replacement Leader from cold-starting.",
+  () => JSON.stringify({ events: events().slice(-16), wakes: wakes() }));
+  const successorNative = events().filter(event => event.type === "runtime.native-connection-bound"
+    && event.payload.roleName === "leader").at(-1).payload.nativeSessionId;
+  desktopLeader.CODEX_THREAD_ID = successorNative;
+  const retained = JSON.parse(runCli(cli, ["inbox", "show", oldWindow.id, "--json"], desktopLeader)).data;
+  assert.deepEqual(retained.inbox.claim, oldClaim);
+  assert.equal(retained.inbox.ack, undefined, "replacement is not handling");
+  await waitFor(() => events().some(event => event.type === "runtime.observation"
+    && event.payload.kind === "turn.completed"
+    && JSON.parse(event.payload.observation).fence.nativeSessionId === successorNative),
+  "Successor initialization did not finish.");
+  const successorWakes = wakes();
+  json("task", "reconcile", task.id);
+  json("task", "reconcile", task.id);
+  assert.deepEqual(wakes(), successorWakes, "reconcile must not repeatedly wake for the same retained obligation");
+  const disposition = ["inbox", "ack", oldWindow.id, "--request-id", "successor-settlement",
+    "--reason", "Read original and verified existing deterministic result; no business replay.", "--json"];
+  const settled = JSON.parse(runCli(cli, disposition, desktopLeader)).data;
+  // Lost response recovery repeats only the exact ack, never the business.
+  assert.deepEqual(JSON.parse(runCli(cli, disposition, desktopLeader)).data, settled);
+  assert.equal(settled.inbox.ack.actor.nativeSessionId, successorNative);
+  console.log("Retained-claim Session replacement and idempotent successor settlement passed.");
   const acknowledgeWindows = () => {
     const pending = JSON.parse(runCli(cli, ["--json", "inbox", "list"], desktopLeader)).data;
     assert.equal(pending.identity.roleName, "leader");
     for (const item of pending.items.filter(item => item.kind === "notification-window" && item.blocked === null)) {
       runCli(cli, ["inbox", "show", item.id, "--json"], desktopLeader);
-      runCli(cli, ["inbox", "claim", item.id, "--request-id", `fixture-claim-${item.id}`], desktopLeader);
-      runCli(cli, ["inbox", "ack", item.id, "--request-id", `fixture-ack-${item.id}`,
+      const claimed = JSON.parse(runCli(cli, ["--json", "inbox", "claim", item.id,
+        "--request-id", `fixture-claim-${item.id}`], desktopLeader)).data;
+      runCli(cli, ["task", "wake", "show", task.id, claimed.id, "--json"], desktopLeader);
+      runCli(cli, ["inbox", "ack", claimed.id, "--request-id", `fixture-ack-${item.id}`,
         "--reason", "Fixture inspected original and deterministic result."], desktopLeader);
     }
   };
@@ -410,8 +450,8 @@ try {
     .map(entry => json("task", "message", "show", `${task.id}/${entry.ref.refId}`))
     .find(message => message?.body === original);
   assert.ok(sourceMessage);
-  const connection = events().find(event => event.type === "runtime.native-connection-bound"
-    && event.payload.roleName === "leader");
+  const connection = events().filter(event => event.type === "runtime.native-connection-bound"
+    && event.payload.roleName === "leader").at(-1);
   assert.ok(connection);
   const manifestDirectory = join(yuiHome, "runtime", "session-manifests");
   const manifestPath = readdirSync(manifestDirectory).map(name => join(manifestDirectory, name))
@@ -451,6 +491,7 @@ try {
   const directPort = join(sandbox, "direct.port");
   writeFileSync(join(fakeBin, "codex"),
     `#!${process.execPath}\nprocess.env.YUI_FAKE_DIRECT_PORT_FILE = ${JSON.stringify(directPort)};\n`
+    + `process.env.YUI_FAKE_TURN_HANDLER = ${JSON.stringify(new URL("../test/fixtures/inbox-smoke-handler.mjs", import.meta.url).href)};\n`
     + `import(${JSON.stringify(fakeCodex.href)}).catch(error => { console.error(error); process.exitCode = 1; });\n`,
     { mode: 0o755 });
   const { callFileTaskController } = await import(pathToFileURL(join(root, "dist/controller/clientRuntime.js")).href);
@@ -552,9 +593,27 @@ try {
   for (const original of queuedBefore) {
     const delivered = json("role", "message", "show", "operator", original.id);
     assert.ok(delivered.delivery, `Pending input ${original.id} was not accepted.`);
-    const { delivery, control, ...retained } = delivered;
+    const { delivery, control, inbox, ...retained } = delivered;
     assert.deepEqual(retained, original, "Delivery must retain each original input, target and request identity.");
   }
+  const missingReceipt = json("role", "message", "show", "operator", queued.id);
+  assert.equal(missingReceipt.inbox?.claim.requestId, "fixture-routing-claim");
+  assert.equal(missingReceipt.inbox?.ack, undefined, "successful routing and final must not synthesize ACK");
+  assert.equal(json("task", "list", "--search", "inbox routing effect").total, 1,
+    "the deterministic Provider performed exactly one real isolated routing effect");
+  const checkNotices = listItems("role", "message", "list", "operator")
+    .map(message => json("role", "message", "show", "operator", message.id))
+    .filter(message => message.inputControl?.requestId.startsWith("inbox-check:")
+      && message.body.includes(`"${missingReceipt.inbox.claim.actor.attemptId}"`));
+  assert.equal(checkNotices.length, 1, "the real Controller/Host path must detect the missing receipt exactly once");
+  const ownOperator = { ...environment, CODEX_THREAD_ID: hostBefore.nativeSessionId };
+  const ackCommand = ["inbox", "ack", queued.id, "--request-id", "fixture-routing-ack",
+    "--reason", "Verified the existing routed Task; no business replay"];
+  const ack = runCli(cli, ackCommand, ownOperator);
+  assert.equal(runCli(cli, ackCommand, ownOperator), ack, "lost ACK response retries the same disposition only");
+  assert.equal(json("task", "list", "--search", "inbox routing effect").total, 1);
+  assert.ok(context().pending.historyCount > 0, "unhandled historical notices remain a separate evidence count");
+  process.stdout.write("Inbox handling smoke passed: real routing effect, omitted ACK, bounded reminder, idempotent receipt recovery.\n");
   const completedTurn = context().nativeTurn;
   json("role", "message", "queue", "operator", queuedBody, "--request-id", "update-pending");
   assert.equal(listItems("role", "message", "list", "operator").filter(message => message.id === queued.id).length, 1);

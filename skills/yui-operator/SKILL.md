@@ -254,6 +254,10 @@ Apply **yui-runtime**'s own-inbox flow at useful routing boundaries and before
 handoff. `yui inbox list/show/claim/ack` processes Operator input in this turn;
 do not wait for another wake or copy pending notices into new input. Read every
 relevant original and finish the authorized routing/disposition before ack.
+Routing to an owning Task, recording a necessary user question, or verifying
+that a later request superseded a notice may settle this input immediately;
+cite the durable reference and do not wait for the downstream Task to finish.
+Use the Runtime current/history split and never replay effects to repair ACK.
 
 Use JSON reads and their top-level `data` field.
 Use Global Context's bounded `pending` page to find Messages, then

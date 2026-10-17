@@ -54,10 +54,22 @@ use family discovery when a broader requirement/history audit is needed.
   budget inside a 32 KiB response budget. Single inline values are at most
   2 KiB; large values and Message/Run/WorkItem/Knowledge bodies use references.
   Each collection contributes at most eight sampled records at entry.
-- Global entry samples up to eight unacknowledged inputs, including claimed or
-  uncertain ones. It does not repeat recent history, Profile bodies, frozen Skill
+- Global entry samples up to eight current-turn/available inputs, including
+  uncertain ones. Historical missing receipts are a separate count and explicit
+  `inbox list --view history` read; absence of ACK is not proof of unexecuted work.
+  Continue its pending page with `role message list <role> --current --cursor`.
+  It does not repeat recent history, Profile bodies, frozen Skill
   packages or accumulated retry details. The Manifest is the Profile pointer;
   explicit Message and Session retry reads retain history and original evidence.
+- `inbox list --view current|history|all` uses the current managed identity,
+  prioritizes exact current-turn input and shares originals with automatic
+  delivery. `claim` and `ack` accept 1–16 exact IDs with independent results.
+  ACK records semantic disposition (including legal routing or supersession),
+  not Task completion. Exact terminals emit one bounded handling check without
+  ACK or business replay; reminder-only input cannot self-wake indefinitely.
+  `inbox retire` disposes only obsolete proven-unsubmitted Global input with an
+  explicit reason, preserving its original target. Task retirement remains
+  the Leader's existing `task message retire` operation.
 - Run entry samples up to eight records per live category and 16 frozen refs.
   Pointer continuation uses `--view refs` and `pointerPage.nextCursor`; full pack
   document continuation uses `--view full`. Neither changes the frozen authority.

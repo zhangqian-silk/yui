@@ -115,7 +115,7 @@ export function readTaskContext(
       commandDiscovery: {
         help: "yui help", describe: "yui --json help",
         skillCheck: "yui session skills --json",
-        ownInbox: "yui inbox list --json",
+        ownInbox: "yui inbox list --view current --json",
         note: "Help and completion share the current caller's offline command view. Follow that view for operation-specific discovery; execution always revalidates authority."
       },
       detail: `task context inspect ${taskId} --store <store> --ref <refId> --digest <digest>`,

@@ -18,6 +18,7 @@ import { launchBrokerForHome } from "../../dist/runtime/launchBroker.js";
 import { inspectAgentHost, reconcileAgentHostTurn, sendAgentHostCancelControl, sendAgentHostSteerControl, sendAgentHostNativeControl } from "../../dist/runtime/agentHost.js";
 import { deliverGlobalInputs } from "../../dist/controller/globalInputDelivery.js";
 import { runGlobalRoleCommand } from "../../dist/commands/globalRoleCommands.js";
+import { runInboxCommand } from "../../dist/commands/inboxCommands.js";
 import { FileRuntimeEventInbox } from "../../dist/controller/runtimeEventInbox.js";
 import { publishStructuredProviderTerminal } from "../../dist/controller/structuredProviderObservation.js";
 import { createTask } from "../../dist/task/task.js";
@@ -76,6 +77,16 @@ async function globalHostFixture(t, adapterId = "codex", {
     assert.ok(event.host, "Host must retain its raw source envelope");
     assert.equal(event.scope, "global");
     assert.equal(event.observation.fence.runId, undefined);
+    // These transport/recovery scenarios model successful input handling.
+    // Missing-ACK behavior is exercised separately through the same adapter.
+    const input = store.getGlobalRoleSessionSet(roleName)?.providerBinding?.run?.input;
+    if (event.observation.kind === "turn.completed" && input?.kind === "message") {
+      const env = { CODEX_THREAD_ID: nativeSessionId };
+      runInboxCommand(["show", input.messageId], store, env);
+      runInboxCommand(["claim", input.messageId, "--request-id", `handled:${input.messageId}`], store, env);
+      runInboxCommand(["ack", input.messageId, "--request-id", `ack:${input.messageId}`,
+        "--reason", "Fixture inspected and handled the original input"], store, env);
+    }
     // The Controller clock and native event clock advance together in the
     // recovery fixture; no wall-clock backoff sleep is needed.
     const timed = fakeNow === undefined ? event : { ...event,
@@ -216,6 +227,45 @@ test("a stopped fixture Host resumes the same native Session across a compatible
   assert.deepEqual(f.store.getGlobalRole(f.role.name), role, "No model, account, permissions or workspace change.");
   assert.deepEqual(f.native(), before.providerBinding.run, "Host resume cannot execute the accepted input again.");
   assert.ok(f.store.listGlobalRoleMessages(f.role.name).find(m => m.id === message.id).delivery);
+});
+
+test("Global delivery starts one recovery turn ahead of retained historical claims, without replaying business", async t => {
+  const f = await globalHostFixture(t, "codex", { controlled: false });
+  const originalId = f.command(["message", "queue", f.role.name, "Previously handled business effect",
+    "--request-id", "retained-original"]).message.id;
+  const original = f.store.listGlobalRoleMessages(f.role.name).find(message => message.id === originalId);
+  // Valid persisted pre-replacement input: no synthetic acknowledgement or
+  // delivery. The real Controller/Host below must handle only the new notice.
+  const claimed = { ...original, deliveryTarget: { agentId: "codex", nativeSessionId: "previous-native" },
+    inbox: { claim: { requestId: "previous-handler",
+    actor: { scope: "global", roleName: f.role.name, agentId: "codex", nativeSessionId: "previous-native" },
+    at: original.createdAt } } };
+  f.store.updateGlobalRoleMessage(claimed);
+  await f.submitNext();
+  await f.wait(() => f.native()?.status === "completed");
+  const messages = () => f.store.listGlobalRoleMessages(f.role.name);
+  const recovery = messages().find(message => message.inputControl?.requestId.startsWith("inbox-check:recovery:"));
+  assert.ok(recovery?.delivery);
+  assert.equal(f.native().attemptId, `global-input:${f.role.name}/${recovery.id}`);
+  const turn = structuredClone(f.native());
+  await f.submitNext();
+  await f.submitNext();
+  assert.deepEqual(f.native(), turn, "reconcile cannot loop recovery turns");
+  assert.equal(messages().length, 2, "initialization must not generate a reminder of a reminder");
+  assert.deepEqual(messages().find(message => message.id === original.id), claimed);
+  const laterId = f.command(["message", "queue", f.role.name, "Separate new input", "--request-id", "new-input"]).message.id;
+  await f.submitNext();
+  await f.wait(() => f.native()?.status === "completed"
+    && f.native().attemptId === `global-input:${f.role.name}/${laterId}`);
+  assert.deepEqual(messages().find(message => message.id === original.id), claimed,
+    "historical missing ACK does not block independent new input or settle the original");
+  const env = { CODEX_THREAD_ID: f.nativeSessionId };
+  runInboxCommand(["show", original.id], f.store, env);
+  runInboxCommand(["ack", original.id, "--request-id", "successor-reviewed",
+    "--reason", "Inspected exact prior effect; no execution needed"], f.store, env);
+  assert.equal(messages().filter(message => message.inputControl?.requestId.startsWith("inbox-check:recovery:")).length, 1);
+  assert.equal(messages().find(message => message.id === original.id).delivery, undefined);
+  assert.deepEqual(f.errors, []);
 });
 
 test("Desktop direct terminal recovery uses the original observer, across Roles and Controller restart", async t => {

@@ -38,6 +38,7 @@ import Database from "../../dist/sqlite/driver.js";
 import { runStorageUpgrade } from "../../dist/storage/upgrade/upgradeOrchestrator.js";
 import { FileRoleLaunchPlanner } from "../../dist/executor/fileRoleLaunchPlanner.js";
 import { checkSessionSkills } from "../../dist/context/sessionBootstrapManifest.js";
+import { runInboxCommand } from "../../dist/commands/inboxCommands.js";
 
 const now = new Date("2026-09-18T00:00:00Z");
 
@@ -108,6 +109,21 @@ function fixture(t) {
     observe(kind) {
       const sessions = store.getGlobalRoleSessionSet("operator");
       const run = sessions.providerBinding.run;
+      // These are normal routing fixtures, not missing-ACK scenarios (covered
+      // by agent-inbox and the assembled smoke). Explicitly settle handling
+      // before terminal so delivery ordering assertions exclude repair notices.
+      if (kind === "turn.completed") {
+        const original = store.listGlobalRoleMessages("operator").find(message =>
+          run.attemptId === `global-input:operator/${message.id}`);
+        if (original) {
+          const env = { CODEX_THREAD_ID: sessions.sessions.codex.nativeSessionId };
+          runInboxCommand(["show", original.id], store, env, now);
+          runInboxCommand(["claim", original.id, "--request-id", `fixture-${original.id}`], store, env, now);
+          runInboxCommand(["ack", original.id, "--request-id", `fixture-done-${original.id}`,
+            "--reason", "Inspected original source refs; fixture routing settled without accepting downstream outcomes"],
+          store, env, now);
+        }
+      }
       const eventId = `provider-${++sequence}`;
       assert.equal(new FileSchedulerStoreAdapter(store).observeRuntimeObservation(createRuntimeObservation({
         schemaVersion: 1, eventId, semanticKey: eventId, kind, authority: "provider-structured",
@@ -202,7 +218,7 @@ test("pre-1.5 Operator resumes after upgrade and drains original backlog without
   assert.equal(checks, 3);
   assert.deepEqual(provider.attempts, inputs.map(m => `global-input:operator/${m.id}`));
   for (const before of original) {
-    const { delivery, control, ...after } = f.store.listGlobalRoleMessages("operator").find(m => m.id === before.id);
+    const { delivery, control, inbox, ...after } = f.store.listGlobalRoleMessages("operator").find(m => m.id === before.id);
     assert.equal(delivery.via, "provider");
     assert.deepEqual(after, before);
   }

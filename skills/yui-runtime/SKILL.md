@@ -191,11 +191,13 @@ unmanaged Session is not silently replaced or adopted; use an explicit Session
 lifecycle action before enabling controlled delivery.
 
 Context reads never consume queue entries. Global Context returns a bounded
-`pending` discovery page, not Message bodies, Profile bodies, recent history or
-accumulated retry details. The Manifest retains the exact Role profile.
+`pending` discovery page of current-turn and available input, not Message bodies,
+Profile bodies, historical receipt debt or accumulated retry details. Its
+`historyCount` is a separate absence-of-handling-evidence count, not new work.
+The Manifest retains the exact Role profile.
 Read a referenced
 original with `role message show <role> <message-id> --json`. Follow a pending
-page's `nextCursor` using `role message list <role> --pending --cursor <cursor>`
+page's `nextCursor` using `role message list <role> --current --cursor <cursor>`
 when it is incomplete; accepted delivery does not erase the Message from the
 separate all-message list. Native/transport acceptance is not implementation, and
 `interrupt-requested` is not a stopped Turn or stopped background resources.
@@ -214,12 +216,23 @@ explicit new control attempt; uncertainty does not.
 
 ## Handle your own inbox in the current turn
 
+For an automatic delivery naming an exact Message or wake, use that entry
+directly: read its original, claim it, and record its semantic disposition
+before ending this turn. Do not first enumerate history to rediscover it.
 After loading authorized context, at useful work boundaries and before handing
-off, use `yui inbox list --json` to discover pending input addressed to your
-current managed identity. This applies to Operator, custom GlobalRole, Leader,
+off, use `yui inbox list --view current --json` to discover current-turn and
+available input addressed to your current managed identity. This applies to Operator, custom GlobalRole, Leader,
 Worker and Reviewer. Do not poll an empty inbox or create another model turn.
 No target Role, Task or native Session is supplied: Yui resolves your current
 identity. A native child gains no separate actor or inbox.
+
+`--view history` discovers old missing receipts explicitly; default `--view all`
+prioritizes current inputs and labels each entry's category. Never treat an
+absent historical ACK as proof that its work was not done. Read history when a
+specific reminder, recovery or user request calls for it, not every turn.
+Current correlation reuses exact delivery/continuation/control identities;
+active claims retain their observed native attempt when available. Missing
+historical correlation is not reconstructed from timestamps or final text.
 
 1. Read the selected `yui inbox show <entry> --json`. Reads never consume input.
    Follow `nextCursor` and all `contentPage` pages using the rules below.
@@ -241,6 +254,33 @@ identity. A native child gains no separate actor or inbox.
    Record an obsolete notification as requiring no further action only after
    checking its originals and current facts, never based solely on age.
 
+An input can be settled as executed, legally routed/delegated, a necessary user
+question raised, or superseded/no action after inspecting authoritative
+originals. Put that concrete disposition and useful Task/InputRequest/result/
+Publication references in `--reason`. Routing may be complete while the Task
+is still running; do not hold the input until all downstream work finishes.
+For supersession, identify the later source, not merely its age.
+
+At an exact native terminal, engineering checks for unacknowledged inputs
+correlated to that turn and emits at most one existing notification. This is
+missing-evidence detection, never semantic ACK or proof of absent effects.
+Reminder-only turns do not generate another reminder. The retained originals
+remain inspectable if the bounded reminder is also missed; do not start a
+private polling/retry loop or copy the business input to obtain another turn.
+Task Assignment checks go to Leader for inspection and existing handoff or
+retirement, not automatic Worker/Reviewer replay. Exact terminal can end an
+active-consumption notification reservation without acknowledging its input;
+it does not infer or release an uncertain native writer.
+
+For obsolete Global input that was conclusively not submitted, use
+`yui inbox retire <entry> --request-id <stable-id> --reason "<disposition>"`
+after inspecting the original and current facts. Retirement preserves the
+original target, claim and explicit management evidence; it is not ACK.
+Accepted input uses normal claim/ack reconciliation. Unknown/pending control,
+transport acceptance and interrupt-then ownership cannot be retired through
+this operation. Task Messages retain the existing Leader `task message retire`
+and exact-Assignment handoff paths.
+
 Claiming prevents ordinary automatic delivery; it is not processing completion.
 Acknowledgement records Agent handling, not Host acceptance, result acceptance,
 Task completion, publication or archive. Never acknowledge merely to empty the
@@ -248,6 +288,13 @@ list. On failure or interruption, leave the claim unacknowledged; it remains
 discoverable and does not expire or replay automatically. A current rightful
 successor must inspect original input and prior effects before finishing and
 acknowledging a retained claim. Never replay uncertain external actions.
+After legal Session replacement, initialization can arrive before old handling
+is settled. This recovery notification is not the original business input or
+an acknowledgement. Read the current inbox and prior effects first. For
+`claimed-by-previous-session`, retain the original claim: do not claim again.
+Finish only the still-authorized handling and use a new stable ack request ID
+with a concrete disposition; the receipt retains both the old claimant and
+the current acknowledging actor. New queued input remains separate.
 For an exact-Session input already claimed by its selected Session, a rightful
 successor may explicitly settle that handling after inspecting the original
 and prior effects. This preserves the original target and claim; it grants no
@@ -277,6 +324,12 @@ This claim never sends the input again. A current rightful successor may settle
 an accepted Global input or Leader window while retaining the original delivery
 target; it must inspect prior effects first. Pending/unknown acceptance stays
 blocked and cannot use claim as a replay path.
+An explicitly released Leader notification (`notification.resolved` with
+`released-without-replay`) can be claimed for evidence inspection and settlement
+after verified native stop. Its original delivery status stays unknown or
+unaccepted; handling it cannot retarget Session-specific instructions or
+authorize re-executing unknown effects. If a required fact or user decision is
+unavailable, preserve the claim and report that exact boundary.
 
 An ack belongs to the exact original and revision: fixed windows pin
 `message.updated` event identities, including same-timestamp edits. A later

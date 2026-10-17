@@ -44,8 +44,16 @@ Run 列表接受 Task 或 `task/work` 目标。
 - 当前 Task Context 至多 64 条，记录与 attention 共 24 KiB，响应预算 32 KiB。
   单个内联值至多 2 KiB；大值及 Message/Run/WorkItem/Knowledge 正文用引用。
   入口每个集合最多抽样八条。
-- Global 入口最多八条未确认处理的输入，保留已领取或效果未知项；不重复 recent、
+- Global 入口最多八条本轮/可用输入，保留效果未知项；历史缺回执单独计数，
+  通过 `inbox list --view history` 显式发现，不把缺 ACK 当作未执行。
+  pending 页用 `role message list <role> --current --cursor` 续读；不重复 recent、
   Profile 正文、历史 Skill 包和累计 retry 详情。Profile 由 Manifest 精确指向。
+- `inbox list --view current|history|all` 优先展示精确本轮输入，与自动投递共用原始记录。
+  `claim`、`ack` 接受 1–16 个精确 ID，分别返回结果。ACK 表示语义处置，
+  包括合法转交或被后续要求替代，不等于 Task 完成。
+  精确终态只生成一次有界检查通知，不自动 ACK 或重放业务；纯提醒不会无限自唤醒。
+  `inbox retire` 仅显式退役已过时且可证明未提交的 Global 输入，保留原始目标和理由；
+  Task 输入继续使用 Leader 的 `task message retire`。
 - Run 入口最多 16 个冻结引用和每类八条活跃观察，附总数。`--view refs` 配合
   `pointerPage.nextCursor` 发现更多引用；`--view full` 显式读取完整冻结包。
   若 `input.directiveOmitted` 为 true，行动前用 `--view input` 全文读取分配指令；

@@ -4,12 +4,16 @@ export type GlobalMessageQuery = Readonly<{
   limit: number;
   pending?: boolean;
   handling?: boolean;
+  /** Filter retained claims without loading the full historical message set. */
+  handlingExceptSession?: Readonly<{ agentId: string; nativeSessionId: string }>;
   descending?: boolean;
   afterSequence?: number;
   id?: string;
   requestId?: string;
   interruptThen?: boolean;
   operatorNotice?: boolean;
+  /** Delivery admission excludes actively consumed originals, not other input. */
+  unclaimed?: boolean;
 }>;
 
 export type GlobalMessagePage = Readonly<{

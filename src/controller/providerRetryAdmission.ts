@@ -7,6 +7,7 @@ import {
 import { blockingProviderContinuations } from "../runtime/runtimeContinuationProjection.js";
 import { validateExactRunReviewRound } from "../lifecycle/exactRunTerminalization.js";
 import { isDeepStrictEqual } from "node:util";
+import { isHandlingReminder } from "../message/inboxTurn.js";
 
 export type OwnedProviderAdmission = Readonly<{
   taskId?: string; roleName: string; runId?: string; agentId: string;
@@ -40,6 +41,7 @@ export function retryIntentBlocker(
     if (store.listGlobalRoleMessages(input.roleName).some(message =>
       (message.kind === "user" || message.kind === "operator"
         || message.inputControl !== undefined || message.interruptThen !== undefined)
+      && !isHandlingReminder(message)
       && Date.parse(message.createdAt) > Date.parse(retry.intentAt)
       && message.delivery === undefined && message.notDelivered === undefined)) return "new-user-input";
     return undefined;

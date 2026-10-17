@@ -8,6 +8,7 @@ import { providerRetryPending } from "../runtime/providerRetry.js";
 import { settleGlobalRetryInput } from "../message/globalProviderRetry.js";
 import { globalMessagePresentation } from "../interaction/notificationPresentation.js";
 import { recordGlobalRuntimeAttention, recordGlobalRuntimeRecovery } from "./globalRuntimeAttention.js";
+import { globalInboxRecovery } from "../message/globalInboxRecovery.js";
 
 /** Messages are the only queue. Host's atomic begin arbitrates native writers. */
 export async function deliverGlobalInputs(
@@ -19,7 +20,7 @@ export async function deliverGlobalInputs(
 ): Promise<void> {
   for (const role of store.listGlobalRoles()) {
     try {
-      let pending = store.queryGlobalRoleMessages(role.name, { pending: true, limit: 64 }).messages;
+      let pending = store.queryGlobalRoleMessages(role.name, { pending: true, unclaimed: true, limit: 64 }).messages;
       if (hasRuntimeCleanupObligation(store.getWorkMailbox(
         runtimeLifecycleTarget({ scope: "global", roleName: role.name })))) continue;
       let sessions = store.getGlobalRoleSessionSet(role.name);
@@ -29,7 +30,7 @@ export async function deliverGlobalInputs(
       if (sessions?.providerBinding?.retry !== undefined && !providerRetryPending(sessions.providerBinding)) {
         store.transaction(tx => settleGlobalRetryInput(tx, role.name,
           tx.getGlobalRoleSessionSet(role.name)?.providerBinding, new Date()));
-        pending = store.queryGlobalRoleMessages(role.name, { pending: true, limit: 64 }).messages;
+        pending = store.queryGlobalRoleMessages(role.name, { pending: true, unclaimed: true, limit: 64 }).messages;
         if (pending.length === 0) continue;
       }
       if (providerRetryPending(sessions?.providerBinding)) continue;
@@ -94,10 +95,12 @@ export async function deliverGlobalInputs(
           || providerRetryPending(sessions?.providerBinding)
           || hasRuntimeCleanupObligation(store.getWorkMailbox(
             runtimeLifecycleTarget({ scope: "global", roleName: role.name })))) continue;
-        pending = store.queryGlobalRoleMessages(role.name, { pending: true, limit: 64 }).messages;
+        pending = store.queryGlobalRoleMessages(role.name, { pending: true, unclaimed: true, limit: 64 }).messages;
         if (pending.length === 0) continue;
       }
-      if (store.queryGlobalRoleMessages(role.name, { handling: true, limit: 0 }).count > 0) continue;
+      const recovery = globalInboxRecovery(store, role.name, options.now ?? new Date());
+      const recovering = recovery !== undefined && recovery.inbox === undefined && recovery.delivery === undefined
+        && recovery.notDelivered === undefined && recovery.control === undefined;
       // Interrupt-then reserves the next legal slot even behind a large queue.
       const reservedPage = store.queryGlobalRoleMessages(role.name, {
         pending: true, interruptThen: true, limit: 64
@@ -114,7 +117,7 @@ export async function deliverGlobalInputs(
         markGlobalRoleMessageNotDelivered(message, "native-session-or-authority-changed", new Date()));
       const obsoleteIds = new Set(obsolete.map(message => message.id));
       pending = pending.filter(message => !obsoleteIds.has(message.id));
-      if (pending.length === 0) continue;
+      if (pending.length === 0 && !recovering) continue;
       if (reservedPage.count > reserved.length && obsolete.length === reserved.length) continue;
       if (current != null && ["submitting", "accepted", "delivery-unknown"].includes(current.status)) continue;
       const matchesTarget = (message: GlobalRoleMessage) => message.deliveryTarget === undefined
@@ -122,7 +125,13 @@ export async function deliverGlobalInputs(
           && sessions.sessions[message.deliveryTarget.agentId]?.nativeSessionId === message.deliveryTarget.nativeSessionId;
       const claims = reserved.filter(message => !obsolete.includes(message));
       let next: GlobalRoleMessage | undefined;
-      if (claims.length > 0) {
+      if (recovering) {
+        // The notice carries no original business input. An obsolete then
+        // target is never inherited; a current explicit reservation still
+        // owns its slot. Host admission checks this again atomically.
+        if (claims.length > 0) continue;
+        next = recovery;
+      } else if (claims.length > 0) {
         next = claims.find(message => {
           const claim = message.interruptThen!;
           const binding = sessions?.providerBinding;
