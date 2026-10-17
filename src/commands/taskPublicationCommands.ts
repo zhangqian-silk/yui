@@ -58,7 +58,7 @@ function upsertPublication(
   store: TaskWorkflowStore,
   options: TaskCommandOptions
 ): TaskCommandExecution {
-  const usage = "Task publication upsert usage: yui task publication upsert <task> --project <project> --provider <github|gitlab> --repository <owner/name> --kind <pull-request|merge-request> --id <external-id> [--url <url>] [--title <text>] [--source-branch <branch>] [--target-branch <branch>] [--local-commit <sha>] [--head-commit <sha>] [--remote-commit <sha>] [--state <open|merged|closed>] [--reported|--verified] [--evidence <text>] [--merged-at <iso-timestamp>].";
+  const usage = "Task publication upsert usage: yui task publication upsert <task> --project <project> --provider <github|gitlab> --repository <owner/name> --kind <pull-request|merge-request> --id <external-id> [--url <url>] [--title <text>] [--source-branch <branch>] [--target-branch <branch>] [--local-commit <sha>] [--head-commit <sha>] [--remote-commit <sha>] [--state <open|merged|closed>] [--reported] [--evidence <text>] [--merged-at <iso-timestamp>].";
   const parsed = parseUpsertArgs(args, usage);
   exactPositionals(parsed.positionals, 1, usage);
   const task = requireTask(store, parsed.positionals[0]);
@@ -254,7 +254,9 @@ function parseVerification(
   if (parsed.flags.has("--reported") && parsed.flags.has("--verified")) {
     throw usageError("--reported and --verified are mutually exclusive.", usage);
   }
-  if (parsed.flags.has("--verified")) return "verified";
+  if (parsed.flags.has("--verified")) {
+    throw usageError("Use task publication verify with a provider read or --observation tool evidence; upsert cannot assert --verified.");
+  }
   if (parsed.flags.has("--reported")) return "reported";
   return undefined;
 }
@@ -304,6 +306,8 @@ function inheritPublicationInput(
       && normalizeCommitForComparison(input.headCommit) !== existing.headCommit)
     || input.projectId !== existing.projectId
     || input.externalKind !== existing.externalKind
+    || (input.externalUrl !== undefined && input.externalUrl !== existing.externalUrl)
+    || (input.targetBranch !== undefined && input.targetBranch !== existing.targetBranch)
     || stateChanged
     || remoteCommitChanged
     || evidenceChanged

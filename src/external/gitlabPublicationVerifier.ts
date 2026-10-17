@@ -64,7 +64,7 @@ async function inspectGitLabMergeRequest(
   if (result.code !== 0) {
     if (result.code === 127) {
       throw new Error(
-        "GitLab verification requires a trusted glab executable on PATH."
+        "The built-in GitLab adapter needs glab on PATH; alternatively record authorized tool evidence with task publication verify --observation."
       );
     }
     const detail = boundedFailureDetail(
@@ -128,6 +128,7 @@ export function parseGitLabMergeRequest(
     externalKind: "merge-request",
     externalId,
     ...(externalUrl === undefined ? {} : { externalUrl }),
+    ...(optionalText(record.target_branch) === undefined ? {} : { targetBranch: optionalText(record.target_branch)! }),
     state,
     headCommit,
     ...(remoteCommit === undefined ? {} : { remoteCommit }),

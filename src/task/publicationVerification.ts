@@ -10,6 +10,7 @@ export type PublicationVerificationInput = Readonly<{
   externalKind: PublicationExternalKind;
   externalId: string;
   externalUrl?: string;
+  targetBranch?: string;
   expectedLocalCommit: string;
 }>;
 
@@ -19,6 +20,7 @@ export type PublicationVerificationObservation = Readonly<{
   externalKind: PublicationExternalKind;
   externalId: string;
   externalUrl?: string;
+  targetBranch?: string;
   state: PublicationState;
   headCommit: string;
   remoteCommit?: string;

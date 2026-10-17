@@ -80,7 +80,7 @@ function fixture(t) {
     environment: {}, now: () => now,
     verifiers: { github: { async inspect() {
       return { ...identity, state: "merged", headCommit: candidate,
-        remoteCommit: remote, evidence: "isolated provider fixture", ...patch };
+        remoteCommit: remote, targetBranch: "main", evidence: "isolated provider fixture", ...patch };
     } } }
   });
   const delivery = () => projectTaskRemoteDeliveryFromStore(store, store.getTask(task.id));
