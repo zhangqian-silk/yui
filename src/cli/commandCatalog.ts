@@ -1351,8 +1351,8 @@ export const ROOT_COMMAND = buildNode({
     {
       name: "web", discovery: { surface: "public", audiences: ["public","operator"] },
       summary: "Serve the control room using the running Controller's capability Host.",
-      usage: "yui web [--host <loopback>] [--port <port>] | --status | --stop",
-      options: ["--host", "--port", "--status", "--stop"]
+      usage: "yui web [--host <IP|localhost>] [--port <port>] [--auth-file <absolute-path>] [--detach] | --status | --stop",
+      options: ["--host", "--port", "--auth-file", "--detach", "--status", "--stop"]
     },
     {
       name: "controller", discovery: { surface: "public", audiences: ["public","operator"] },

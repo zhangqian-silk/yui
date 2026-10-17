@@ -30,7 +30,7 @@ not from terminal windows you juggle or details you have to remember.
 - **Bring your own Agent** — Codex CLI, Claude Code CLI and ACP peers run behind
   one boundary and stay replaceable without losing the Task.
 - **Local-first and private** — everything runs on your machine for one trusted
-  user; Web is loopback-only, with read-only views and authenticated user controls.
+  user; Web defaults to loopback, with explicitly enabled authenticated LAN access.
 - **Isolated by default** — repository work happens in managed Git worktrees;
   the stable checkout stays read-only.
 
@@ -181,6 +181,8 @@ For a visual overview, run `yui web` in another terminal. The local Web view
 shows the same tasks and pending questions and lets you send messages, answer
 questions and explicitly queue, steer or interrupt Task input. These authenticated
 Task controls use the same operations as the CLI; Web is not a separate task system.
+For explicit trusted-LAN binding, password protection, access URLs and Operator
+start/status/stop, see [Controlled Web access](docs/web-access.md). HTTP is not encrypted.
 The task list remains at the left, task details occupy the primary reading area,
 and recorded Task messages live in a secondary discussion pane. You can resize,
 swap or hide that pane; on narrow screens it opens over the detail. Native Sessions
@@ -311,7 +313,7 @@ the Controller are what touch the store:
      it moves work and records facts — it never judges an answer
 
   Agents work in Projects: read-only checkout + isolated worktrees.
-  Web (yui web): loopback views + authenticated user controls.
+  Web (yui web): local by default + explicitly authenticated LAN access.
 ```
 
 ### Layered design
@@ -321,7 +323,7 @@ never a fixed workflow:
 
 ```text
   Experience   —  how you interact
-    CLI (Operator) · Web (loopback, authenticated) · native Agent sessions
+    CLI (Operator) · Web (local / authenticated LAN) · native Agent sessions
     collect input · show facts · confirm actions · invoke capabilities
         ▼
   Intelligence —  who decides

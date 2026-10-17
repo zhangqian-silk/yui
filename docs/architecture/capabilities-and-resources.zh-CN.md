@@ -88,12 +88,13 @@ Surface contribution 由 Registry 当前获授权目录派生，没有第二份�
 CLI contribution 使用能力原名称。Web panel 只接受受控 text、HTTP(S) link 或
 JSON query 描述，不接受作者脚本或任意 HTML。
 
-Web listener 由 Controller 启停，仅允许 loopback（`127.0.0.1`、`::1` 或
-`localhost`；默认端口 4173）。`yui web` 打开的是本地 Surface，不是远程多用户
-服务或 OS 沙箱。
+唯一 Web listener 由 Controller 启停，默认 `127.0.0.1:4173`。显式可信内网
+监听要求私有凭证文件，在页面、API、预览和 Terminal 之前认证。
+当前 Operator 的生命周期权限与浏览器访问分开复核。
+详见[受控 Web 访问](../web-access.md)；它仍是单用户 Surface，不是多用户服务或 OS 沙箱。
 
 页面提供 token，通过 `x-yui-web-token` 认证所有 HTTP API 读取与写入；服务端
-也检查 loopback Host。这些控制使用受信任本地用户身份，不由请求正文选择 Role。
+也检查精确允许的 Host/端口和 Origin。这些控制使用受信任本地用户身份，不由请求正文选择 Role。
 它们支持修改 Task 元数据、发送消息、回答 InputRequest，以及对 Task 或 Global
 Role 显式 `queue / steer / interrupt`。受管 Agent 的能力 RPC 仍使用自身 Session
 认证与范围；浏览器 token 不是 Agent 或插件绕过这些边界的途径。

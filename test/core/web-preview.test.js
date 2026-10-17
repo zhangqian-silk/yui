@@ -15,7 +15,7 @@ import { httpPreviewSocket, prepareHttpPreview, validateHttpPreview } from "../.
 import { jobPreviewSocketRoot } from "../../dist/storage/homeLayout.js";
 import { PREVIEW_SCRIPT } from "../../dist/web/assets/client/views/dock/preview.js";
 
-test("registered HTTP preview uses only its exact Job socket and an isolated, revocable ticket", async t => {
+test("LAN preview uses authenticated ticket issuance and only its exact Job socket, including opaque sandbox reads", async t => {
   const home = mkdtempSync(join(tmpdir(), "yp-"));
   let web, app, endpoint;
   t.after(async () => {
@@ -46,12 +46,19 @@ test("registered HTTP preview uses only its exact Job socket and an isolated, re
     transaction: fn => fn(store)
   };
   const dependencies = { previews: () => createTaskPreviews(store, home), token: "control-secret" };
-  web = createYuiWebServer(store, dependencies);
+  const authFile = join(home, "web-password");
+  const password = "preview-fixture-credential-32-characters";
+  writeFileSync(authFile, password, { mode: 0o600 });
+  const options = { host: "0.0.0.0", port: 4173, authFile };
+  web = createYuiWebServer(store, dependencies, options);
   await new Promise(resolve => web.listen(0, "127.0.0.1", resolve));
   let base = `http://127.0.0.1:${web.address().port}`;
-  const headers = { "x-yui-web-token": "control-secret" };
+  const headers = { "x-yui-web-token": "control-secret",
+    authorization: `Basic ${Buffer.from(`yui:${password}`).toString("base64")}` };
   const listPath = "/api/tasks/task-1/previews";
-  assert.equal((await fetch(base + listPath)).status, 403);
+  assert.equal((await fetch(base + listPath)).status, 401);
+  assert.equal((await fetch(base + listPath, { headers: { "x-yui-web-token": "control-secret" } })).status, 401);
+  assert.equal((await fetch(base + listPath, { headers: { authorization: headers.authorization } })).status, 403);
   let listing = await (await fetch(base + listPath, { headers })).json();
   assert.equal(listing.services[0].state, "starting");
   assert.equal(listing.services[0].url, undefined);
@@ -83,24 +90,29 @@ test("registered HTTP preview uses only its exact Job socket and an isolated, re
   assert.equal(received.at(-1).headers.authorization, undefined);
   assert.equal(received.at(-1).headers["x-yui-web-token"], undefined);
   assert.equal((await fetch(base + service.url + "app.js")).status, 200);
+  assert.equal((await fetch(base + service.url + "app.js",
+    { headers: { origin: "null", "sec-fetch-site": "cross-site" } })).status, 200);
+  assert.equal((await fetch(base + listPath,
+    { headers: { origin: "null", "x-yui-web-token": "control-secret" } })).status, 403,
+  "opaque preview cannot borrow the page token to read the user API");
   assert.equal((await fetch(base + service.url + "redirect", { redirect: "manual" })).status, 502);
   assert.equal((await fetch(base + service.url + "compressed")).status, 502);
-  assert.equal((await fetch(base + service.url.replace("task-1", "task-2"))).status, 403);
-  assert.equal((await fetch(base + service.url.replace("job-1", "job-2"))).status, 403);
+  assert.equal((await fetch(base + service.url.replace("task-1", "task-2"), { headers })).status, 403);
+  assert.equal((await fetch(base + service.url.replace("job-1", "job-2"), { headers })).status, 403);
   assert.equal((await fetch(base + service.url + "?url=http://localhost:1")).status, 200);
   assert.equal(received.at(-1).url, "/?url=http://localhost:1", "query remains data for the registered service");
-  assert.equal((await fetch(base + service.url, { method: "POST", body: "not forwarded" })).status, 405);
+  assert.equal((await fetch(base + service.url, { method: "POST", headers: { ...headers, origin: base }, body: "not forwarded" })).status, 405);
   web.closeAllConnections();
   await new Promise(resolve => web.close(resolve));
-  web = createYuiWebServer(store, dependencies);
+  web = createYuiWebServer(store, dependencies, options);
   await new Promise(resolve => web.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${web.address().port}`;
-  assert.equal((await fetch(base + service.url)).status, 403, "a restarted listener revokes old tickets");
+  assert.equal((await fetch(base + service.url)).status, 401, "a restarted listener revokes old tickets");
   service = (await (await fetch(base + listPath, { headers })).json()).services[0];
   // Merely closing a page does not request cancellation.
   assert.equal(job.cancelRequestedAt, undefined);
   const stop = await fetch(base + listPath + "/job-1/stop", {
-    method: "POST", headers: { ...headers, "content-type": "application/json" }, body: "{}"
+    method: "POST", headers: { ...headers, origin: base, "content-type": "application/json" }, body: "{}"
   });
   assert.equal(stop.status, 200);
   assert.ok(job.cancelRequestedAt);

@@ -7,6 +7,7 @@ import {
 } from "node:http";
 import type { Duplex } from "node:stream";
 import WebSocket, { WebSocketServer } from "ws";
+import { createWebAccess, validateWebAccessOptions, type WebAccess, type WebAccessOptions } from "./webAccess.js";
 
 import { CliError, usageError } from "../errors/cliError.js";
 import { parseTaskCatalogOptions } from "../context/taskCatalog.js";
@@ -38,8 +39,8 @@ const MAX_JSON_BODY_BYTES = 16 * 1024;
 const MAX_TERMINAL_MESSAGE_BYTES = 64 * 1024;
 const MAX_TERMINAL_BUFFERED_BYTES = 1024 * 1024;
 
-export type WebServerOptions = Readonly<{ host: string; port: number }>;
-export type YuiWebServer = Server & Readonly<{ closeTerminals(): void }>;
+export type WebServerOptions = WebAccessOptions;
+export type YuiWebServer = Server & Readonly<{ closeTerminals(): void; access: WebAccess }>;
 
 export type WebInputAnswer =
   | Readonly<{ choiceKey: string }>
@@ -99,6 +100,7 @@ export type WebServerDependencies = Readonly<{
 export function parseWebCommandOptions(args: readonly string[]): WebServerOptions {
   let host = "127.0.0.1";
   let port = 4173;
+  let authFile: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
     const option = args[index];
     const value = args[index + 1];
@@ -108,23 +110,25 @@ export function parseWebCommandOptions(args: readonly string[]): WebServerOption
     } else if (option === "--port" && value !== undefined) {
       port = Number(value);
       index += 1;
+    } else if (option === "--auth-file" && value !== undefined) {
+      authFile = value;
+      index += 1;
     } else {
       throw webUsageError();
     }
   }
-  if (!new Set(["127.0.0.1", "::1", "localhost"]).has(host)) {
-    throw usageError("Web host must be a loopback address (127.0.0.1, ::1, or localhost).", webUsage());
-  }
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-    throw usageError("Web port must be an integer between 1 and 65535.", webUsage());
-  }
-  return { host, port };
+  const options = { host, port, ...(authFile === undefined ? {} : { authFile }) };
+  try { validateWebAccessOptions(options); }
+  catch (error) { throw usageError((error as Error).message, webUsage()); }
+  return options;
 }
 
 export function createYuiWebServer(
   store: WebDashboardStore,
-  dependencies: WebServerDependencies = {}
+  dependencies: WebServerDependencies = {},
+  options: WebServerOptions = { host: "127.0.0.1", port: 4173 }
 ): YuiWebServer {
+  const access = createWebAccess(options);
   const now = dependencies.now ?? (() => new Date());
   const token = dependencies.token ?? randomBytes(24).toString("base64url");
   const httpDependencies = { ...dependencies, previews: dependencies.previews?.() };
@@ -140,7 +144,8 @@ export function createYuiWebServer(
       store,
       httpDependencies,
       token,
-      now
+      now,
+      access
     ).catch(() => {
       if (!response.headersSent) setSecurityHeaders(response);
       if (!response.writableEnded) {
@@ -155,7 +160,8 @@ export function createYuiWebServer(
       head,
       webSocketServer,
       dependencies.terminal,
-      token
+      token,
+      access
     );
   });
   let terminalsClosed = false;
@@ -166,7 +172,7 @@ export function createYuiWebServer(
     webSocketServer.close();
   };
   server.on("close", closeTerminals);
-  return Object.assign(server, { closeTerminals });
+  return Object.assign(server, { closeTerminals, access });
 }
 
 export async function startYuiWebServer(
@@ -174,14 +180,14 @@ export async function startYuiWebServer(
   options: WebServerOptions,
   dependencies: WebServerDependencies = {}
 ): Promise<YuiWebServer> {
-  const server = createYuiWebServer(store, dependencies);
-  await new Promise<void>((resolve, reject) => {
+  const server = createYuiWebServer(store, dependencies, options);
+  try { await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(options.port, options.host, () => {
       server.off("error", reject);
       resolve();
     });
-  });
+  }); } catch (error) { server.closeTerminals(); throw error; }
   return server;
 }
 
@@ -193,12 +199,20 @@ async function handleHttpRequest(
     previews?: ReturnType<typeof createTaskPreviews>;
   }>,
   token: string,
-  now: () => Date
+  now: () => Date,
+  access: WebAccess
 ): Promise<void> {
   setSecurityHeaders(response);
   const method = request.method ?? "GET";
-  if (!isLoopbackHost(headerValue(request, "host"))) {
-    sendJson(response, 403, { error: "Invalid Host.", disposition: "not-submitted" }, method === "HEAD");
+  const previewAuthenticated = dependencies.previews?.authenticated(request) === true;
+  if (!access.acceptsHost(request) || !access.acceptsOrigin(request,
+    access.lan && method !== "GET" && method !== "HEAD", previewAuthenticated)) {
+    sendJson(response, 403, { error: "Invalid Host or Origin.", disposition: "not-submitted" }, method === "HEAD");
+    return;
+  }
+  if (!previewAuthenticated && !access.authenticated(request)) {
+    response.setHeader("www-authenticate", 'Basic realm="Yui Web", charset="UTF-8"');
+    sendJson(response, 401, { error: "Web authentication required. Use username yui and the configured password. To revoke access, stop Web; to rotate the password, replace the credential file and restart Web.", disposition: "not-submitted" }, method === "HEAD");
     return;
   }
   let pathname: string;
@@ -209,7 +223,8 @@ async function handleHttpRequest(
     return;
   }
 
-  // The loopback page token is the actual user ingress. A request body cannot
+  // Authentication precedes every document/preview. The page token remains
+  // an independent CSRF boundary. A request body cannot
   // select Operator/Leader authority; all API reads use this boundary too.
   if (pathname.startsWith("/api/") && !tokenMatches(headerValue(request, "x-yui-web-token"), token)) {
     sendJson(response, 403, { error: "Invalid Yui web token.", disposition: "not-submitted" }, method === "HEAD");
@@ -748,11 +763,12 @@ async function handleTerminalUpgrade(
   head: Buffer,
   webSocketServer: WebSocketServer,
   terminalPort: WebServerDependencies["terminal"],
-  token: string
+  token: string,
+  access: WebAccess
 ): Promise<void> {
   try {
     const url = new URL(request.url ?? "/", "http://localhost");
-    if (!isLoopbackHost(headerValue(request, "host"))) {
+    if (!access.acceptsHost(request) || !access.acceptsOrigin(request, true) || !access.authenticated(request)) {
       rejectUpgrade(socket, 403, "Forbidden");
       return;
     }
@@ -1144,27 +1160,6 @@ function headerValue(request: IncomingMessage, name: string): string | undefined
   return Array.isArray(value) ? value[0] : value;
 }
 
-function isLoopbackHost(value: string | undefined): boolean {
-  if (value === undefined) return false;
-  let url: URL;
-  try {
-    url = new URL(`http://${value}`);
-  } catch {
-    return false;
-  }
-  if (
-    url.username.length > 0
-    || url.password.length > 0
-    || url.pathname !== "/"
-    || url.search.length > 0
-    || url.hash.length > 0
-  ) {
-    return false;
-  }
-  const hostname = url.hostname.toLowerCase();
-  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
-}
-
 function safeIdentity(value: string | null, label: string): string {
   if (value === null || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(value)) {
     throw new Error(`${label} is invalid.`);
@@ -1195,9 +1190,9 @@ function escapeHtmlAttribute(value: string): string {
 }
 
 function webUsageError(): Error {
-  return usageError("Web usage: yui web [--host <loopback>] [--port <port>].", webUsage());
+  return usageError("Invalid Web options.", webUsage());
 }
 
 function webUsage(): string {
-  return "Usage: yui web [--host <127.0.0.1|::1|localhost>] [--port <1-65535>]";
+  return "Usage: yui web [--host <IP|localhost>] [--port <1-65535>] [--auth-file <absolute-path>]";
 }
