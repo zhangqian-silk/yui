@@ -100,12 +100,10 @@ export function assertPublicationToolObservation(
     throw usageError("Tool observation externalUrl must match the recorded Publication service and object.");
   }
   const url = new URL(canonicalPublicationUrl(observation.externalUrl, publication.provider));
-  const path = publication.provider === "gitlab"
-    ? `/${publication.repository}/-/merge_requests/${publication.externalId}`
-    : `/${publication.repository.toLowerCase()}/pull/${publication.externalId}`;
-  // The registered URL comparison above pins the host AND any service prefix.
-  // GitLab may be served below a relative root such as /gitlab.
-  if (publication.provider === "gitlab" ? !url.pathname.endsWith(path) : url.pathname !== path) {
+  // GitLab UI routes are deployment-specific. Structured identity above and
+  // the complete registered URL bind the object without inventing a web route.
+  if (publication.provider === "github"
+    && url.pathname !== `/${publication.repository.toLowerCase()}/pull/${publication.externalId}`) {
     throw usageError("Tool observation URL does not match the repository and PR/MR identity.");
   }
   const observed = Date.parse(observation.observedAt);
