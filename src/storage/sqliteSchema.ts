@@ -148,6 +148,16 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   // New Task Job semantic writes also append job.state-changed events; no old
   // Job history is backfilled and the SQL layout remains unchanged.
   sql: ""
+}, {
+  fromVersion: "1.11",
+  toVersion: "1.12",
+  name: "project-delivery-scope",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // New append-only Project scope decisions use Task events. Preserve all old
+  // completion, binding and publication records; absence still means required.
+  sql: ""
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {

@@ -370,7 +370,7 @@ const taskChildren: readonly NodeInput[] = [
   {
     name: "project", discovery: { surface: "managed", audiences: ["operator","leader"] },
     summary: "Manage Projects bound to a Task.",
-    sections: [{ id: "manage", title: "Commands", entries: ["list", "add"] }],
+    sections: [{ id: "manage", title: "Commands", entries: ["list", "add", "delivery"] }],
     children: [
       {
         name: "list", discovery: { surface: "public", audiences: ["public","operator","leader"] },
@@ -382,6 +382,13 @@ const taskChildren: readonly NodeInput[] = [
         summary: "Add a Project to a Task.",
         usage: "yui task project add <task> <project> [--base <ref>] [--directory <name>]",
         options: ["--base", "--directory"]
+      },
+      {
+        name: "delivery", discovery: { surface: "public", audiences: ["public","operator","leader"] },
+        summary: "Record a sourced Task Project delivery requirement; never grants cleanup or execution authority.",
+        usage: "yui task project delivery <task> <project-id> --requirement <required|excluded> --reason <text> --source-message <message-id> --purpose <exact-quote> --if-current <event-id|none>",
+        options: ["--requirement", "--reason", "--source-message", "--purpose", "--if-current"],
+        optionValues: { "--requirement": ["required", "excluded"] }
       }
     ]
   },

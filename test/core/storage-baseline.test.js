@@ -8,7 +8,9 @@ import * as schema from "../../dist/storage/sqliteSchema.js";
 import * as versions from "../../dist/storage/storageVersions.js";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { runStorageUpgrade } from "../../dist/storage/upgrade/upgradeOrchestrator.js";
-import { activateTask, createTask } from "../../dist/task/task.js";
+import { activateTask, createTask, completeTask } from "../../dist/task/task.js";
+import { createTaskEvent } from "../../dist/event/taskEvent.js";
+import { projectTaskRemoteDeliveryFromStore } from "../../dist/task/remoteDeliveryService.js";
 import { createConfiguredAgent } from "../../dist/agent/agent.js";
 import { createRole, createRoleAgentBinding } from "../../dist/role/role.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
@@ -20,12 +22,12 @@ import { createTaskMessage } from "../../dist/message/message.js";
 import { contextContentDigest, createContextSnapshot } from "../../dist/context/contextSnapshot.js";
 import { usePre19Layout } from "../helpers/pre19Storage.mjs";
 
-test("fresh storage creates only the current 1.11 contract", () => {
-  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.11");
+test("fresh storage creates only the current 1.12 contract", () => {
+  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.12");
   const db = new Database(":memory:");
   try {
     schema.initializeSqliteSchema(db);
-    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.11");
+    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.12");
     assert.equal(schema.inspectSqliteSchema(db).targetChecksum, schema.CURRENT_SCHEMA_CHECKSUM);
     assert.equal(db.prepare("SELECT count(*) AS n FROM storage_schema").get().n, 1);
     assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='schema_migrations'").get(), undefined);
@@ -52,6 +54,37 @@ test("foreign non-empty SQLite state cannot be initialized over", () => {
     assert.throws(() => schema.initializeSqliteSchema(db), /empty/i);
     assert.deepEqual(db.serialize(), before);
   } finally { db.close(); }
+});
+
+test("1.11 upgrade preserves completion bytes and never invents a delivery exclusion", async t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-scope-upgrade-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const at = new Date("2026-10-17T00:00:00Z");
+  const store = new SqliteTaskStore(home);
+  store.saveProject(createProject("project-1", "app", join(home, "app"),
+    { stable: "master", development: "master" }, at));
+  const task = completeTask(activateTask(createTask("task-1", "Historical delivery", at, {
+    projectBindings: [{ projectId: "project-1", directory: "app", baseRef: "master",
+      baseCommit: "a".repeat(40), currentCommit: "b".repeat(40) }]
+  }), at), at, { by: "user", summary: "Accepted" });
+  store.saveTask(task);
+  const event = createTaskEvent("event-1", task.id, "task.completed", {
+    projectHeads: `project-1@${"b".repeat(40)}`, projectBases: `project-1@${"a".repeat(40)}`
+  }, at);
+  store.saveEvent(task.id, event);
+  store.close();
+  const old = new Database(join(home, "yui.db"));
+  old.prepare("UPDATE storage_schema SET minor=11 WHERE id=1").run();
+  old.close();
+  assert.equal((await runStorageUpgrade({ home, mode: "execute" })).outcome, "upgraded");
+  const current = new SqliteTaskStore(home);
+  try {
+    assert.deepEqual(current.getTask(task.id), task);
+    assert.deepEqual(current.listEvents(task.id), [event]);
+    const delivery = projectTaskRemoteDeliveryFromStore(current, task);
+    assert.equal(delivery.projects[0].deliveryRequirement, "required");
+    assert.equal(delivery.integratedCoverageSatisfied, false);
+  } finally { current.close(); }
 });
 
 test("1.1 upgrade preserves valid Operator authority without inventing user provenance", async t => {
@@ -84,7 +117,8 @@ test("1.1 upgrade preserves valid Operator authority without inventing user prov
         ["1.7", "1.8", "model-management-connection"],
         ["1.8", "1.9", "job-definitions-and-runs"],
         ["1.9", "1.10", "persistent-schedules"],
-        ["1.10", "1.11", "activation-input-provenance"]]);
+        ["1.10", "1.11", "activation-input-provenance"],
+        ["1.11", "1.12", "project-delivery-scope"]]);
   }
   finally { current.close(); }
 });

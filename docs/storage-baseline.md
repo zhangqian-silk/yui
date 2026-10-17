@@ -2,7 +2,13 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.11. The declared 1.10 → 1.11 transition adds source provenance
+Current storage is 1.12. The 1.11 → 1.12 transition admits append-only
+`task.project-delivery-decided` events with Project requirement, reason, actor,
+original Message/digest/quote and the previous decision ID. Existing records and
+SQL layout are unchanged. No historical exclusions are inferred; absent decisions
+retain the required-delivery default. See [Project delivery scope](project-delivery-scope.md).
+
+The declared 1.10 → 1.11 transition adds source provenance
 to new activation-request event payloads: an existing Message/body digest or
 exact caller-attributed native input, plus the recorded Message boundary.
 Historical events are preserved without guessed sources or replay. Missing

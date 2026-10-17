@@ -89,7 +89,7 @@ export async function inspectTaskArchive(coordinator: TaskWorkspaceCoordinator, 
   if (task === null) throw new Error(`Task not found: ${request.taskId}.`);
   const settlement = archiveSettlementChecks(store, task);
   const delivery = await readArchiveDelivery(store, preparer.git, task, request.force);
-  const deliveryChecks: CleanupCheck[] = delivery.projects.filter(p => p.codeDelivery !== "none" && (!p.merged || !p.verified))
+  const deliveryChecks: CleanupCheck[] = delivery.projects.filter(p => p.deliveryRequired && (!p.merged || !p.verified))
     .map(p => ({ resource: `delivery:${task.id}/${p.projectId}`, reason: "delivery-coverage", status: "blocked",
       detail: p.reason, expected: { merged: true, verified: true, localCommit: p.expectedLocalCommit },
       observed: { coverage: p.coverage, merged: p.merged, verified: p.verified, localCommit: p.publication?.localCommit ?? null },

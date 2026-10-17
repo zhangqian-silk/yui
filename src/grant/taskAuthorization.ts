@@ -29,6 +29,16 @@ export function taskAuthorizationSource(
     || task.executionGate?.state === "stopped") {
     throw usageError("Task authorization is unavailable in this lifecycle or execution gate.");
   }
+  return { ...readTaskAuthorizationMessage(store, taskId, messageId, purpose),
+    nativeSessionId: caller.nativeSessionId };
+}
+
+/** Shared source binding; interpreting the quoted authority remains the caller's
+ * responsibility. A matching quote proves provenance, not semantic permission. */
+export function readTaskAuthorizationMessage(
+  store: Pick<TaskStore, "listMessages">, taskId: string,
+  messageId: string | undefined, purpose: string | undefined
+): Omit<TaskAuthorizationSource, "nativeSessionId"> {
   const message = store.listMessages(taskId).find(entry => entry.id === messageId);
   if (!message || !((message.kind === "user" && message.author.type === "user")
     || (message.kind === "operator" && message.author.type === "operator"))) {
@@ -45,8 +55,7 @@ export function taskAuthorizationSource(
       taskId: message.taskId, id: message.id, kind: message.kind,
       author: message.author, body: message.body, createdAt: message.createdAt
     })).digest("hex"),
-    purpose: purpose.trim(),
-    nativeSessionId: caller.nativeSessionId
+    purpose: purpose.trim()
   };
 }
 

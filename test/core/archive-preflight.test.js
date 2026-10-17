@@ -24,6 +24,8 @@ import { generateTaskWorkspaceIdentity, taskWorkspaceRefSegmentFromIdentity } fr
 import { ResourceRegistrar } from "../../dist/resources/resourceRegistrar.js";
 import { withResourceRegistry } from "../../dist/resources/resourceRegistryStore.js";
 import { SqliteResourceRegistry } from "../../dist/resources/sqliteResourceRegistry.js";
+import { createTaskMessage } from "../../dist/message/message.js";
+import { createTaskRemoteDeliveryProof } from "../../dist/task/remoteDeliveryService.js";
 
 function fixture(t) {
   const home = mkdtempSync(join(tmpdir(), "yui-archive-preflight-"));
@@ -41,6 +43,99 @@ function fixture(t) {
   git(root, "commit", "--allow-empty", "-m", "baseline");
   return { home, root, git };
 }
+
+test("ordinary multi-Project archive excludes authorized temporary delivery but preserves unique commits, dirt and execution gates", async t => {
+  const { home, root, git } = fixture(t);
+  const store = new SqliteTaskStore(home);
+  t.after(() => store.close());
+  const now = new Date("2026-10-17T00:00:00Z");
+  const workspaceIdentity = generateTaskWorkspaceIdentity({
+    home: store.getHomeIdentity(), taskId: "task-1", now, entropy: Buffer.alloc(16, 9)
+  });
+  const branch = `yui/${taskWorkspaceRefSegmentFromIdentity(workspaceIdentity)}/main`;
+  git(root, "branch", "-m", branch);
+  const base = git(root, "rev-parse", "HEAD");
+  const other = join(home, "workspaces/tasks/task-1/main/temporary");
+  mkdirSync(other);
+  git(other, "init", "-b", branch);
+  git(other, "commit", "--allow-empty", "-m", "temporary base");
+  const otherBase = git(other, "rev-parse", "HEAD");
+  git(root, "commit", "--allow-empty", "-m", "delivered result");
+  const head = git(root, "rev-parse", "HEAD");
+  for (const [id, directory] of [["project-1", "app"], ["project-2", "temporary"]]) {
+    store.saveProject(createProject(id, directory, join(home, `reference-${directory}`),
+      { stable: "master", development: "master" }, now));
+  }
+  const task = { ...completeTask(activateTask(createTask("task-1", "Scoped archive", now, {
+    cwd: join(home, "workspaces/tasks/task-1/main"), projectBindings: [
+      { projectId: "project-1", directory: "app", baseRef: "master", baseCommit: base, currentCommit: head },
+      { projectId: "project-2", directory: "temporary", baseRef: "master", baseCommit: otherBase, currentCommit: otherBase }
+    ]
+  }), now), now, { by: "user", summary: "Final implementation accepted" }), workspaceIdentity };
+  store.saveTask(task);
+  store.saveManagedWorkspace(createManagedWorkspace({ owner: { type: "task", taskId: task.id },
+    root: task.cwd, entries: task.projectBindings.map(b => ({
+      ...b, access: "write", path: b.projectId === "project-1" ? root : other, branch
+    })) }, now));
+  // No change in B needs no scope decision.
+  store.saveEvent(task.id, createTaskEvent(store.nextEventId(task.id), task.id, "task.completed", {
+    projectHeads: `project-1@${head},project-2@${otherBase}`,
+    projectBases: `project-1@${base},project-2@${otherBase}`
+  }, now));
+  store.transaction(tx => upsertTaskPublication(tx, task, {
+    projectId: "project-1", provider: "github", repository: "fixture/app", externalKind: "pull-request",
+    externalId: "1", localCommit: head, state: "merged", verification: "verified", remoteCommit: head
+  }, "user", now));
+  const preparer = new FileTaskWorkspacePreparer(home, store);
+  const coordinator = new TaskWorkspaceCoordinator(store, preparer, {
+    async stopTaskRoleSessions() {}, async releaseTaskTerminals() {}, async assertTaskPhysicalResourcesReleased() {}
+  });
+  const request = { taskId: task.id, disposition: "integrated", force: false };
+  assert.equal((await inspectTaskArchive(coordinator, request)).counts.delivery, 0);
+  git(other, "commit", "--allow-empty", "-m", "unique temporary implementation");
+  const temporary = git(other, "rev-parse", "HEAD");
+  // Separate exact acceptance event for a result that also contains temporary B.
+  store.saveEvent(task.id, createTaskEvent(store.nextEventId(task.id), task.id, "task.completed", {
+    projectHeads: `project-1@${head},project-2@${temporary}`,
+    projectBases: `project-1@${base},project-2@${otherBase}`
+  }, now));
+  assert.equal((await inspectTaskArchive(coordinator, request)).counts.delivery, 1);
+  store.saveMessage(task.id, createTaskMessage("message-1", task.id,
+    "Exclude temporary Project from delivery; preserve its data.", "user", { type: "user" }, now));
+  runTaskCommand(["project", "delivery", task.id, "project-2", "--requirement", "excluded",
+    "--reason", "Only the app is the final delivery", "--source-message", "message-1",
+    "--purpose", "Exclude temporary Project from delivery", "--if-current", "none"],
+  store, { environment: {}, now: () => now });
+  const excluded = await inspectTaskArchive(coordinator, request);
+  assert.equal(excluded.counts.delivery, 0);
+  assert.ok(excluded.cleanup.resources[0].checks.some(c => c.reason === "excluded-project-retained"));
+  const round = createTaskReviewRound("review-round-1", task.id, "reviewer", "leader",
+    { schemaVersion: 1, projects: [{ projectId: "project-1", commit: head }] }, now);
+  store.saveReviewRound(task.id, round);
+  await assert.rejects(coordinator.prepareTaskForArchive(task.id), /Review|review/);
+  store.saveReviewRound(task.id, finishReviewRound(round, "failed", now,
+    { kind: "dispatch", message: "Fixture settled" }));
+  // Unknown native execution remains an independent blocker, regardless of scope.
+  const unknown = await inspectTaskArchive(new TaskWorkspaceCoordinator(store, preparer, {
+    async stopTaskRoleSessions() {}
+  }), request);
+  assert.ok(unknown.counts.execution > 0);
+  writeFileSync(join(other, "keep.txt"), "uncommitted evidence");
+  const dirty = await inspectTaskArchive(coordinator, request);
+  assert.ok(dirty.cleanup.resources[0].checks.some(c => c.reason === "dirty-worktree"));
+  await coordinator.prepareTaskForArchive(task.id);
+  const archived = runTaskCommand(["archive", task.id, "--integrated"], store, {
+    environment: {}, now: () => now, archiveRemoteDeliveryProof: createTaskRemoteDeliveryProof(store, task)
+  });
+  assert.equal(archived.data.archived, true);
+  await coordinator.cleanupArchivedTask(task.id, "integrated");
+  assert.equal(git(other, "rev-parse", "HEAD"), temporary);
+  assert.equal(readFileSync(join(other, "keep.txt"), "utf8"), "uncommitted evidence");
+  const diagnostics = taskArchiveDiagnostics(store, store.getTask(task.id));
+  assert.equal(diagnostics.archived, true);
+  assert.equal(diagnostics.allResourcesReleased, false);
+  assert.ok(diagnostics.retainedResources.length > 0);
+});
 
 test("frozen result inspection distinguishes record, commit and HEAD differences without changing evidence", async t => {
   const { home, root, git } = fixture(t);

@@ -365,6 +365,7 @@ import {
 } from "./taskCompletionGate.js";
 import { runTaskContextCommand, taskRecordList } from "./taskContextCommand.js";
 import { taskBriefCommand, taskDecisionCommand, taskEventCommand, taskMilestoneCommand } from "./taskFactCommands.js";
+import { taskProjectDeliveryCommand } from "./taskProjectDeliveryCommand.js";
 import { taskUsageCommand } from "./taskUsageCommand.js";
 import {
   openInputRequestCount,
@@ -894,6 +895,7 @@ function taskProjectCommand(
   options: TaskCommandOptions
 ): TaskCommandExecution {
   const [command, ...rest] = args;
+  if (command === "delivery") return taskProjectDeliveryCommand(rest, store, options);
   if (command === "list") {
     exactPositionals(rest, 1, "Task project list usage: yui task project list <task>.");
     const task = requireTask(store, rest[0]);

@@ -40,9 +40,10 @@ export function renderTaskRemoteDelivery(
   const lines = [
     `${indent}Remote delivery: ${delivery.status}`,
     `${indent}Expected heads: ${source}`,
-    `${indent}All merged: ${delivery.allMerged ? "yes" : "no"}`,
-    `${indent}All verified: ${delivery.allVerified ? "yes" : "no"}`,
-    `${indent}Code Projects: ${delivery.mergedProjectCount}/${delivery.codeProjectCount} merged; ${delivery.verifiedProjectCount}/${delivery.codeProjectCount} verified`,
+    `${indent}Required code Projects all merged: ${delivery.allMerged ? "yes" : "no"}`,
+    `${indent}Required code Projects all verified: ${delivery.allVerified ? "yes" : "no"}`,
+    `${indent}Required code Projects: ${delivery.mergedProjectCount}/${delivery.requiredCodeProjectCount} merged; ${delivery.verifiedProjectCount}/${delivery.requiredCodeProjectCount} verified; excluded=${delivery.excludedProjectCount}`,
+    ...(delivery.requiredCodeProjectCount === 0 ? [`${indent}No delivery obligation.`] : []),
     `${indent}Archive --integrated coverage: ${delivery.integratedCoverageSatisfied ? "satisfied" : "blocked"}`,
     ...(delivery.archiveDisposition === null
       ? []
@@ -50,6 +51,7 @@ export function renderTaskRemoteDelivery(
     `${indent}Projects:${delivery.projects.length === 0 ? " none" : ""}`,
     ...delivery.projects.map((project) => (
       `${indent}- ${project.directory} (${project.projectId}): `
+      + `requirement=${project.deliveryRequirement}; scopeDecision=${project.scopeDecision?.id ?? "none"}; `
       + `expected=${shortCommit(project.expectedLocalCommit)}; `
       + `candidate=${shortCommit(project.deliveryLocalCommit)}; `
       + `adoption=${project.adoption?.id ?? "none"}; `

@@ -173,7 +173,12 @@ export async function inspectWorkspaceCleanup(
           const observed = (await git.inspect(entry.path, "HEAD")).baseCommit;
           const baseline = task.projectBindings.find(binding => binding.projectId === entry.projectId)?.baseCommit;
           const unchangedAbandonment = disposition === "abandoned" && baseline !== undefined && observed === baseline;
-          if (!unchangedAbandonment && disposition === "abandoned" && (!covered?.merged || !covered.verified)) {
+          if (covered?.deliveryRequirement === "excluded"
+            && (baseline === undefined || observed !== baseline)
+            && (!covered.merged || !covered.verified)) {
+            check("excluded-project-retained", "Excluding delivery does not authorize discarding unique or unverified local commits.",
+              { baseline: baseline ?? null, verifiedDelivery: true }, observed);
+          } else if (!unchangedAbandonment && disposition === "abandoned" && (!covered?.merged || !covered.verified)) {
             check("delivery-coverage", "Abandonment does not discard unverified local commits; only the exact unchanged baseline is disposable.",
               { baseline: baseline ?? null, verifiedDelivery: true }, observed);
           } else if (!unchangedAbandonment && expected != null && expected !== observed && covered?.deliveryLocalCommit !== observed) {
