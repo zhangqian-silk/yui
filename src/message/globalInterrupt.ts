@@ -14,7 +14,7 @@ export function recordGlobalSteerResult(
     const now = new Date();
     const outcome = receipt.state === "steered" ? "accepted"
       : receipt.state === "steer-unknown" ? "delivery-unknown" : "rejected";
-    const updated = { ...message, control: {
+    const updated = { ...message, control: { ...message.control,
       requestId: source.requestId, receiptId: `steer:${roleName}/${messageId}`,
       outcome, observedAt: now.toISOString()
     } } as typeof message;

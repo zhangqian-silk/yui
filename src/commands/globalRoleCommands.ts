@@ -6,6 +6,7 @@ import { controlProviderRetry, providerRetryProjection, providerRetrySummary, re
 import { pendingGlobalInboxMessages, inboxHandlingState, globalInboxDeliveryState } from "../message/inboxReceipt.js";
 import { settleGlobalRetryInput } from "../message/globalProviderRetry.js";
 import { globalInputBacklog } from "../message/globalInputBacklog.js";
+import { inboxEntryCategory } from "../message/inboxTurn.js";
 import { checkCurrentSkills, SKILL_REUSE_RULE } from "../context/currentSkills.js";
 import { runtimeDiagnosticGroups, runtimeDiagnosticEvidence } from "../controller/globalRuntimeAttention.js";
 import { roleSkillIds } from "../context/roleSessionContext.js";
@@ -285,11 +286,17 @@ function roleContext(
   // through distinct receipts; a context read does neither.
   const messages = store.listGlobalRoleMessages(name);
   const queued = messages.filter((message) => message.delivery === undefined
-        && message.inbox?.ack === undefined
+        && message.inbox === undefined
         && message.notDelivered === undefined
         && (message.interruptThen !== undefined || message.inputControl?.action === "queue"));
-  const pending = recordPage(pendingGlobalInboxMessages(messages).map(globalMessageSummary),
-    `global:${name}/messages/pending`, { limit: 8 });
+  const unhandled = pendingGlobalInboxMessages(messages);
+  const current = currentGlobalInboxMessages(messages, name, sessions);
+  const pending = recordPage(current.map(globalMessageSummary),
+    `global:${name}/messages/current`, { limit: 8 }, {
+      historyCount: unhandled.length - current.length,
+      historyRead: "yui inbox list --view history --json",
+      note: "Historical absence of handling evidence is not new work or permission to replay effects."
+    });
   const observedAt = new Date();
   const { oldestAgeMs, messages: _backlogMessages, ...backlog } = globalInputBacklog(queued, sessions, observedAt, {
     attention: name === "operator" ? store.getWorkMailbox({ kind: "operator" }) : null,
@@ -330,9 +337,9 @@ function roleContext(
     pending,
     backlog,
     reads: {
-      ownInbox: "yui inbox list --json",
+      ownInbox: "yui inbox list --view current --json",
       messages: `role message list ${name}`,
-      pending: `role message list ${name} --pending`,
+      pending: `role message list ${name} --current`,
       detail: `role message show ${name} <message-id>`,
       diagnostics: `role message list ${name} --diagnostics`,
       retry: `session retry ${name} show`
@@ -367,6 +374,17 @@ function roleContext(
     JSON.stringify(data),
     ""
   ].join("\n") };
+}
+
+function currentGlobalInboxMessages(messages: readonly GlobalRoleMessage[], name: string, sessions: GlobalRoleSessionSet | null) {
+  const actor = { scope: "global" as const, roleName: name, agentId: sessions?.activeAgentId ?? "",
+    nativeSessionId: sessions?.sessions[sessions.activeAgentId]?.nativeSessionId ?? "" };
+  const binding = sessions?.providerBinding;
+  const turn = binding?.conversations.find(c => c.epoch === binding.currentConversationEpoch)?.conversationId === actor.nativeSessionId
+    ? binding?.run : undefined;
+  const category = (message: GlobalRoleMessage) => inboxEntryCategory(message, actor, turn);
+  return pendingGlobalInboxMessages(messages).filter(message => category(message) !== "history")
+    .sort((a, b) => Number(category(b) === "current") - Number(category(a) === "current"));
 }
 
 function globalMessageSummary(message: GlobalRoleMessage) {
@@ -847,16 +865,17 @@ function globalRoleMessage(
     }
     requireRole(name, store);
     const pending = tail.includes("--pending");
+    const current = tail.includes("--current");
     const diagnostics = tail.includes("--diagnostics");
-    const parsed = readOptions(tail.filter(arg => arg !== "--pending" && arg !== "--diagnostics"), action === "list"
+    const parsed = readOptions(tail.filter(arg => arg !== "--pending" && arg !== "--current" && arg !== "--diagnostics"), action === "list"
       ? ["--cursor", "--limit", "--diagnostic"] : ["--cursor"]);
     const diagnostic = parsed.values.get("--diagnostic");
-    if (Number(pending) + Number(diagnostics) + Number(diagnostic !== undefined) > 1
+    if (Number(pending) + Number(current) + Number(diagnostics) + Number(diagnostic !== undefined) > 1
       || action === "show" && diagnostics) throw usageError("Choose one Message discovery view.");
     const messages = store.listGlobalRoleMessages(name);
     let data: unknown;
     if (action === "show") {
-      if (parsed.positionals.length !== 1 || pending) throw usageError("Role message show <role> <message-id> [--cursor <cursor>].");
+      if (parsed.positionals.length !== 1 || pending || current) throw usageError("Role message show <role> <message-id> [--cursor <cursor>].");
       const message = messages.find(m => m.id === parsed.positionals[0]);
       if (message === undefined) throw usageError("Global Message is unavailable in this scope.");
       data = boundedDocument(message, `global:${name}/message/${message.id}`, parsed.cursor);
@@ -871,9 +890,10 @@ function globalRoleMessage(
         return { kind: "output", output: `${JSON.stringify(data)}\n`, data };
       }
       const selected = diagnostic !== undefined ? runtimeDiagnosticEvidence(messages, diagnostic)
-        : pending ? pendingGlobalInboxMessages(messages) : [...messages].reverse();
+        : current ? currentGlobalInboxMessages(messages, name, store.getGlobalRoleSessionSet(name))
+          : pending ? pendingGlobalInboxMessages(messages) : [...messages].reverse();
       data = recordPage(selected.map(globalMessageSummary),
-        `global:${name}/messages/${diagnostic === undefined ? pending ? "pending" : "all" : `diagnostic/${diagnostic}`}`, parsed);
+        `global:${name}/messages/${diagnostic === undefined ? current ? "current" : pending ? "pending" : "all" : `diagnostic/${diagnostic}`}`, parsed);
     }
     return { kind: "output", output: `${JSON.stringify(data, null, 2)}\n`, data };
   }
@@ -938,6 +958,8 @@ function messageGlobalInput(
   }
   store.updateGlobalRoleMessage({ ...persisted.message, control: {
     requestId, receiptId: `steer:${name}/${persisted.message.id}`,
+    target: { agentId: resolution.target.agentId, nativeSessionId: resolution.target.nativeSessionId,
+      attemptId: resolution.target.attemptId },
     outcome: "pending", observedAt: now.toISOString()
   } });
   return {

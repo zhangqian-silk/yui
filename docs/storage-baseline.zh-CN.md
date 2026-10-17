@@ -2,7 +2,12 @@
 
 # 存储基线 1.0
 
-当前存储为 1.12。1.11 → 1.12 允许追加 `task.project-delivery-decided` 事件，
+当前存储为 1.13。1.12 → 1.13 允许新 inbox claim 记录精确 native attempt、
+新 steer control 记录精确目标，以及 Global 输入显式退役和终态缺回执检查证据。
+不改写历史消息、不推断旧轮次归属、不补造 ACK；SQL 布局不变。
+当前输入和历史处理缺证据通过有界视图分别发现，不新增第二队列。
+
+1.11 → 1.12 允许追加 `task.project-delivery-decided` 事件，
 记录 Project 交付要求、原因、actor、原始 Message/digest/引用及前一决定 ID。
 SQL 布局和历史记录不变，不自动推断历史排除；没有决定时仍按需交付处理。
 详见 [Project 交付范围](project-delivery-scope.md)。

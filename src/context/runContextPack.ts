@@ -535,6 +535,7 @@ export function runContextEntry(pack: AgentRunContextPack) {
         activeRuns: liveTaskState.activeRuns.length, activeTaskReviews: liveTaskState.activeTaskReviews.length }
     },
     reads: {
+      inbox: "yui inbox list --view current --json",
       refs: `yui task run context ${pack.identity.taskId}/${pack.identity.runId} --view refs`,
       full: `yui task run context ${pack.identity.taskId}/${pack.identity.runId} --view full`,
       input: `yui task run context ${pack.identity.taskId}/${pack.identity.runId} --view input`,

@@ -448,7 +448,10 @@ test("Global exhausted and unknown recovery hand off exact facts once without re
     assert.match(notices[0].body, /failureRef/);
     assert.equal(f.submissions.length, outcome === "unknown" ? 1 : 0);
     assert.equal(f.read().retry.status, outcome === "unknown" ? "in-flight" : outcome === "new-input" ? "cancelled" : "exhausted");
-    const evidence = f.store.listGlobalRoleMessages(f.roleName).filter(m => m.kind === "system");
+    const systemMessages = f.store.listGlobalRoleMessages(f.roleName).filter(m => m.kind === "system");
+    const handlingChecks = systemMessages.filter(m => m.inputControl?.requestId.startsWith("inbox-check:"));
+    assert.equal(handlingChecks.length, 1, "The exact failed input retains one handling check without cancelling recovery.");
+    const evidence = systemMessages.filter(m => !handlingChecks.includes(m));
     assert.ok(evidence.length > 0);
     assert.ok(evidence.every(m => m.inputControl === undefined), "Failure history must not become queued input.");
     assert.match(f.read().retry.failureRef, /^assistant\/global-message-/);

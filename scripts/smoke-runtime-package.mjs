@@ -338,8 +338,10 @@ try {
     assert.equal(pending.identity.roleName, "leader");
     for (const item of pending.items.filter(item => item.kind === "notification-window" && item.blocked === null)) {
       runCli(cli, ["inbox", "show", item.id, "--json"], desktopLeader);
-      runCli(cli, ["inbox", "claim", item.id, "--request-id", `fixture-claim-${item.id}`], desktopLeader);
-      runCli(cli, ["inbox", "ack", item.id, "--request-id", `fixture-ack-${item.id}`,
+      const claimed = JSON.parse(runCli(cli, ["--json", "inbox", "claim", item.id,
+        "--request-id", `fixture-claim-${item.id}`], desktopLeader)).data;
+      runCli(cli, ["task", "wake", "show", task.id, claimed.id, "--json"], desktopLeader);
+      runCli(cli, ["inbox", "ack", claimed.id, "--request-id", `fixture-ack-${item.id}`,
         "--reason", "Fixture inspected original and deterministic result."], desktopLeader);
     }
   };
@@ -451,6 +453,7 @@ try {
   const directPort = join(sandbox, "direct.port");
   writeFileSync(join(fakeBin, "codex"),
     `#!${process.execPath}\nprocess.env.YUI_FAKE_DIRECT_PORT_FILE = ${JSON.stringify(directPort)};\n`
+    + `process.env.YUI_FAKE_TURN_HANDLER = ${JSON.stringify(new URL("../test/fixtures/inbox-smoke-handler.mjs", import.meta.url).href)};\n`
     + `import(${JSON.stringify(fakeCodex.href)}).catch(error => { console.error(error); process.exitCode = 1; });\n`,
     { mode: 0o755 });
   const { callFileTaskController } = await import(pathToFileURL(join(root, "dist/controller/clientRuntime.js")).href);
@@ -552,9 +555,27 @@ try {
   for (const original of queuedBefore) {
     const delivered = json("role", "message", "show", "operator", original.id);
     assert.ok(delivered.delivery, `Pending input ${original.id} was not accepted.`);
-    const { delivery, control, ...retained } = delivered;
+    const { delivery, control, inbox, ...retained } = delivered;
     assert.deepEqual(retained, original, "Delivery must retain each original input, target and request identity.");
   }
+  const missingReceipt = json("role", "message", "show", "operator", queued.id);
+  assert.equal(missingReceipt.inbox?.claim.requestId, "fixture-routing-claim");
+  assert.equal(missingReceipt.inbox?.ack, undefined, "successful routing and final must not synthesize ACK");
+  assert.equal(json("task", "list", "--search", "inbox routing effect").total, 1,
+    "the deterministic Provider performed exactly one real isolated routing effect");
+  const checkNotices = listItems("role", "message", "list", "operator")
+    .map(message => json("role", "message", "show", "operator", message.id))
+    .filter(message => message.inputControl?.requestId.startsWith("inbox-check:")
+      && message.body.includes(`"${missingReceipt.inbox.claim.actor.attemptId}"`));
+  assert.equal(checkNotices.length, 1, "the real Controller/Host path must detect the missing receipt exactly once");
+  const ownOperator = { ...environment, CODEX_THREAD_ID: hostBefore.nativeSessionId };
+  const ackCommand = ["inbox", "ack", queued.id, "--request-id", "fixture-routing-ack",
+    "--reason", "Verified the existing routed Task; no business replay"];
+  const ack = runCli(cli, ackCommand, ownOperator);
+  assert.equal(runCli(cli, ackCommand, ownOperator), ack, "lost ACK response retries the same disposition only");
+  assert.equal(json("task", "list", "--search", "inbox routing effect").total, 1);
+  assert.ok(context().pending.historyCount > 0, "unhandled historical notices remain a separate evidence count");
+  process.stdout.write("Inbox handling smoke passed: real routing effect, omitted ACK, bounded reminder, idempotent receipt recovery.\n");
   const completedTurn = context().nativeTurn;
   json("role", "message", "queue", "operator", queuedBody, "--request-id", "update-pending");
   assert.equal(listItems("role", "message", "list", "operator").filter(message => message.id === queued.id).length, 1);

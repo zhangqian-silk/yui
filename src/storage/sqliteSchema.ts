@@ -158,6 +158,17 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   // New append-only Project scope decisions use Task events. Preserve all old
   // completion, binding and publication records; absence still means required.
   sql: ""
+}, {
+  fromVersion: "1.12",
+  toVersion: "1.13",
+  name: "inbox-turn-handling",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Claims may name their exact current attempt; explicit Global retirement
+  // and terminal-check notices preserve original records. Never backfill
+  // historical turn ownership, handling evidence or acknowledgements.
+  sql: ""
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {

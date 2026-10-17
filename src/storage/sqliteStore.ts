@@ -1299,9 +1299,12 @@ export class SqliteTaskStore implements TaskStore {
     const where = ["name = @name"];
     const params: Record<string, string | number> = { name: roleName };
     if (query.handling) where.push(`json_extract(payload, '$.inbox.claim') IS NOT NULL
-      AND json_extract(payload, '$.inbox.ack') IS NULL`);
+      AND json_extract(payload, '$.inbox.ack') IS NULL
+      AND json_extract(payload, '$.inbox.retirement') IS NULL`);
+    if (query.unclaimed) where.push("json_extract(payload, '$.inbox') IS NULL");
     if (query.pending) where.push(`json_extract(payload, '$.delivery') IS NULL
       AND json_extract(payload, '$.inbox.ack') IS NULL
+      AND json_extract(payload, '$.inbox.retirement') IS NULL
       AND json_extract(payload, '$.notDelivered') IS NULL
       AND (json_extract(payload, '$.inputControl.action') = 'queue'
         OR json_extract(payload, '$.interruptThen') IS NOT NULL)`);
