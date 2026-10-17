@@ -273,8 +273,14 @@ Once recorded, verification is a fixed observation, not live monitoring or a
 unknown results never assert a fresh success. URL/target/candidate changes reset
 verification, while title-only changes can retain it.
 GitHub repository URL comparison respects case-insensitive owner/name identity.
-GitLab relative deployment paths are allowed, but the complete registered
-service prefix must still match. Adapter observations retain the observed target
+GitLab browser routes are deployment-specific: standard `/-/merge_requests/`,
+legacy `/merge_requests/`, and custom service paths are allowed in both entry
+points. Identity comes from structured repository/MR evidence, not a URL path
+template. The complete registered URL must still match after URL parsing and
+removal of one trailing slash; HTTP(S) is required and credentials, query and
+fragment remain forbidden. The provider URL is retained, not rewritten to a
+guessed route. A successful HTTP response is not merge evidence.
+Adapter observations retain the observed target
 branch even when the earlier Publication did not specify one; missing targets
 cannot establish new verification.
 

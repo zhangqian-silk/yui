@@ -169,6 +169,57 @@ test("tool evidence retains the exact GitLab service prefix and tolerates GitHub
   assert.equal((await f.verify(githubObservation, github.id)).data.publication.verification, "verified");
 });
 
+test("GitLab delivery binds structured identity and safe candidate URLs, not UI routes", async t => {
+  const f = fixture(t);
+  for (const externalUrl of [
+    "https://forge.example/team/app/-/merge_requests/42",
+    "https://forge.example/team/app/merge_requests/42",
+    "https://forge.example/gitlab/review/opaque-link/",
+    "https://FORGE.example:443/gitlab/team/app/merge_requests/42"
+  ]) {
+    for (const adapter of [false, true]) {
+      const publication = f.upsert({ externalUrl });
+      const observedUrl = externalUrl.replace("FORGE", "forge").replace(":443", "").replace(/\/$/, "");
+      const payload = { iid: 42, state: "merged", sha: head, merge_commit_sha: remote,
+        web_url: observedUrl, target_branch: "main", references: { full: "team/app!42" } };
+      const verify = patch => adapter
+        ? runTaskPublicationVerifyCommand([f.task.id, publication.id], f.store, {
+          environment: {}, now: () => now, verifiers: {
+            gitlab: createGitLabCliPublicationVerifier({ runCommand: async () => ({
+              code: 0, stderr: "", stdout: JSON.stringify({ ...payload, ...patch })
+            }) })
+          }
+        })
+        : f.verify({ ...f.evidence, publicationId: publication.id,
+          externalUrl: observedUrl, ...patch }, publication.id);
+      for (const badUrl of [
+        "https://other.example/gitlab/review/opaque-link",
+        "https://forge.example/another-object",
+        "https://user:secret@forge.example/gitlab/review/opaque-link",
+        "javascript:alert(1)", `${observedUrl}?token=secret`, `${observedUrl}#fragment`
+      ]) await assert.rejects(verify(adapter ? { web_url: badUrl } : { externalUrl: badUrl }));
+      if (adapter) {
+        for (const patch of [
+          { iid: 43 }, { references: { full: "other/app!42" } },
+          { target_branch: "wrong" }, { merge_commit_sha: null }, { state: "unknown" }
+        ]) await assert.rejects(verify(patch));
+      }
+      const verified = (await verify({})).data.publication;
+      assert.equal(verified.verification, "verified");
+      assert.equal(verified.externalUrl, observedUrl, "preserve the provider URL, not a synthesized route");
+    }
+  }
+  for (const externalUrl of ["https://user:secret@forge.example/review/42", "file:///review/42"]) {
+    const publication = f.upsert({ externalUrl });
+    await assert.rejects(f.verify({ ...f.evidence, publicationId: publication.id, externalUrl }, publication.id));
+    let called = false;
+    const verifier = createGitLabCliPublicationVerifier({ runCommand: async () => { called = true; } });
+    await assert.rejects(verifier.inspect({ provider: "gitlab", externalKind: "merge-request",
+      repository: "team/app", externalId: "42", externalUrl, expectedLocalCommit: head }));
+    assert.equal(called, false, "reject unsafe recorded URLs before invoking glab");
+  }
+});
+
 test("evidence may precede bookkeeping, but cannot cross candidate or remote-fact changes", async t => {
   const f = fixture(t);
   const observedAt = new Date(now.getTime() - 1000).toISOString();

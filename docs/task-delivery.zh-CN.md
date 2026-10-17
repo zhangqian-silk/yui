@@ -182,6 +182,12 @@ ISO 时间戳。`provider` 表示 GitHub/GitLab 服务，不表示工具品牌�
 完整 JSON 最大 64 KiB。Yui 不执行 `command`，不解析任意自然语言来判定成功。
 Leader 负责实际检查和解释输出，Core 负责身份、服务 URL、目标、候选和时间绑定。
 
+GitLab 浏览路径由服务部署决定：两个验证入口均允许标准 `/-/merge_requests/`、
+legacy `/merge_requests/` 和自定义服务路径，不再用 URL 模板推断仓库/MR 身份。
+结构化身份仍须匹配；完整登记 URL 经 URL 解析及移除一个末尾斜杠后仍须一致。
+仅允许 HTTP(S)，禁止凭据、query 和 fragment；保留 provider 返回的 URL，
+不改写为猜测的路由。HTTP 访问成功不是合并证据。
+
 新证据必须引用当前不可变 Publication，距登记不超过 24 小时且不能在未来。
 观察可以早于首次登记或仅标题更新；只有不可变历史中的候选、对象、目标或远程事实
 发生实质变化，才构成观察时间下界。候选改变后又恢复，也不能复用变化前的证据。

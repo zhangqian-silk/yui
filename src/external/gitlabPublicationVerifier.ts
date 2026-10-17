@@ -4,6 +4,7 @@ import {
   type CommandRunner
 } from "./pinnedCommandRunner.js";
 import { redactLaunchText } from "../runtime/launchDiagnostics.js";
+import { canonicalPublicationUrl } from "../task/publicationToolObservation.js";
 import type {
   PublicationVerificationInput,
   PublicationVerificationObservation,
@@ -118,8 +119,13 @@ export function parseGitLabMergeRequest(
   }
   const externalUrl = optionalText(record.web_url);
   assertGitLabReference(record.references, repository, externalId);
-  if (externalUrl !== undefined && expectedHost !== undefined) {
-    assertGitLabWebUrl(externalUrl, expectedHost, repository, externalId);
+  if (externalUrl !== undefined) {
+    const url = new URL(canonicalPublicationUrl(externalUrl));
+    // references.full and iid establish identity; web_url is a browser link,
+    // not a repository/MR path schema. The command also checks the candidate URL.
+    if (expectedHost !== undefined && url.host.toLowerCase() !== expectedHost.toLowerCase()) {
+      throw new Error(`GitLab MR web URL does not match service ${expectedHost}.`);
+    }
   }
   const mergedAt = optionalText(record.merged_at);
   return {
@@ -165,28 +171,6 @@ function assertGitLabReference(
   }
 }
 
-function assertGitLabWebUrl(
-  value: string,
-  expectedHost: string,
-  repository: string,
-  externalId: string
-): void {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new Error("GitLab MR web URL is invalid.");
-  }
-  const expectedSuffix = `/${repository}/-/merge_requests/${externalId}`;
-  if ((url.protocol !== "https:" && url.protocol !== "http:")
-    || url.host.toLowerCase() !== expectedHost.toLowerCase()
-    || !url.pathname.endsWith(expectedSuffix)) {
-    throw new Error(
-      `GitLab MR web URL does not match ${expectedHost}/${repository}!${externalId}.`
-    );
-  }
-}
-
 function firstCommit(...values: unknown[]): string | undefined {
   for (const value of values) {
     if (value === null || value === undefined || value === "") continue;
@@ -210,16 +194,8 @@ function optionalText(value: unknown): string | undefined {
 
 function gitLabHostname(externalUrl: string | undefined): string | undefined {
   if (externalUrl === undefined) return undefined;
-  let url: URL;
-  try {
-    url = new URL(externalUrl);
-  } catch {
-    throw new Error(`GitLab external URL is invalid: ${externalUrl}.`);
-  }
-  if (url.protocol !== "https:" && url.protocol !== "http:") {
-    throw new Error(`GitLab external URL protocol is invalid: ${url.protocol}.`);
-  }
-  return url.hostname === "gitlab.com" ? undefined : url.host;
+  const url = new URL(canonicalPublicationUrl(externalUrl));
+  return url.host === "gitlab.com" ? undefined : url.host;
 }
 
 function boundedFailureDetail(value: string): string {
