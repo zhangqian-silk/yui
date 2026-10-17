@@ -6,6 +6,8 @@
 已有 Message 及正文 digest，或带调用者归属的原生输入原文，以及当时的 Message 序号边界。
 历史事件保持原样，不推测缺失来源、不重放输入；缺失来源通过读取诊断明确展示。
 SQL 布局及冻结 digest 不变，集中迁移不改写历史正文。
+新的 Task Job 状态、结果、取消请求及确认处置原子追加 `job.state-changed` 事件；
+不回填历史 Job 事件。
 
 1.9 → 1.10 追加独立 [Schedule](schedules.md) 表和到期索引，
 不改写历史 Job/Run，也不自动启用任何计划。

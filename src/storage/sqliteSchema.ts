@@ -145,6 +145,8 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   // Activation event payloads may now name an exact input or contain attributed
   // native input text. Existing events remain immutable; missing old provenance
   // stays explicitly missing. No historical source is guessed from timestamps.
+  // New Task Job semantic writes also append job.state-changed events; no old
+  // Job history is backfilled and the SQL layout remains unchanged.
   sql: ""
 }]);
 

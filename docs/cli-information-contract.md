@@ -113,6 +113,8 @@ diagnostic and original-read route, not a fabricated approval or rejection.
 `--if-current <writeGuard>`. New semantic input/results, phase changes or edits
 invalidate stale writers transactionally, independently of timestamps and
 runtime heartbeats. On rejection, reread and reconcile intended fields.
+Task Job saves append a semantic event for status, result, cancellation or
+acknowledgement changes, not for heartbeat, checkpoint or notification receipts.
 Core indicates `refresh-needed`; Leader maintains the actual summary at
 meaningful boundaries. No completion gate or automatic prose rewrite is added.
 

@@ -10,6 +10,8 @@ import { runTaskCommand, sendTaskMessageCommand } from "../../dist/commands/task
 import { readTaskContext, readTaskContextDelta } from "../../dist/context/taskContext.js";
 import { wakeMessages } from "../../dist/interaction/notificationPresentation.js";
 import { sanitizedTestEnv } from "../helpers/sanitizedEnv.mjs";
+import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
+import { createDurableJob, startDurableJob, completeDurableJob, touchDurableJobHeartbeat } from "../../dist/job/durableJob.js";
 
 const now = new Date("2026-10-15T00:00:00Z");
 const options = { environment: sanitizedTestEnv(), now: () => now };
@@ -105,6 +107,46 @@ test("delta continuations bind the baseline and fixed window, not clock or deliv
   const foreign = fixture(t);
   assert.throws(() => readTaskContextDelta(foreign, "task-1", { after: base.coreCursor }), /history|baseline/i);
   assert.throws(() => readTaskContextDelta(store, "task-1", { after: "expired" }), /reread.*baseline/i);
+});
+
+test("Job results invalidate Brief atomically without heartbeat or receipt noise", t => {
+  const store = fixture(t);
+  const adapter = new FileSchedulerStoreAdapter(store);
+  let job = createDurableJob({
+    id: "job-1", taskId: "task-1", owner: { kind: "task" }, projectId: "project-1",
+    head: "a".repeat(40), workspace: tmpdir(), env: {}, steps: [{ name: "check", command: "true" }],
+    artifactsLocator: "artifacts/jobs/task-1/job-1",
+    operation: { requestId: "job-1", actorId: "global:operator", authorityRef: "fixture", inputDigest: "b".repeat(64) }
+  }, now);
+  job = startDurableJob(job, { pid: 123, startIdentity: "fixture-no-process" }, now);
+  store.saveDurableJob("task-1", job);
+  const show = () => command(store, ["brief", "show", "task-1"]);
+  command(store, ["brief", "update", "task-1", "--if-current", show().writeGuard,
+    "--objective", "Verify result", "--focus", "Waiting for Job", "--leader-summary", "No result yet"]);
+  const before = show();
+  adapter.transitionDurableJob("task-1", job.id, current => touchDurableJobHeartbeat(current, now), now);
+  assert.equal(show().writeGuard, before.writeGuard);
+  const fail = current => completeDurableJob(current,
+    { outcome: "failed", exitCode: 1, signal: null, steps: [] }, now);
+  assert.throws(() => store.transaction(() => {
+    adapter.transitionDurableJob("task-1", job.id, fail, now);
+    throw new Error("rollback fixture");
+  }), /rollback fixture/);
+  assert.equal(show().writeGuard, before.writeGuard, "A rolled-back result cannot invalidate the Brief.");
+  adapter.transitionDurableJob("task-1", job.id, fail, now,
+    { reason: "job-finished", refs: [{ type: "task", id: "task-1" }] });
+  const after = show();
+  assert.notEqual(after.writeGuard, before.writeGuard);
+  assert.equal(after.phase.brief.status, "refresh-needed");
+  assert.throws(() => command(store, ["brief", "update", "task-1", "--if-current", before.writeGuard,
+    "--focus", "Still waiting"]), /changed.*read|read.*changed/i);
+  assert.ok(store.getWorkMailbox({ kind: "role", taskId: "task-1", roleName: "leader" }));
+  const lastSequence = store.latestEventSequence("task-1");
+  store.saveDurableJob("task-1", { ...store.getDurableJob("task-1", job.id), wakeupNotified: true });
+  assert.equal(store.latestEventSequence("task-1"), lastSequence);
+  assert.equal(show().writeGuard, after.writeGuard);
+  command(store, ["brief", "update", "task-1", "--if-current", after.writeGuard, "--focus", "Inspect failed result"]);
+  assert.equal(show().phase.brief.status, "current-at-last-semantic-write");
 });
 
 test("develop submission links its original body and diagnoses source drift without changing authority", t => {

@@ -84,8 +84,10 @@ Message，也不再次入队。相同 request ID 重试不得更换来源。交�
 原始事件/Message；缺失或变更来源有诊断和原文入口，不自动批准或拒绝开发。
 
 `task brief show` 返回 `writeGuard`；更新必须携带 `--if-current <writeGuard>`。
-新语义输入、结果、阶段变化或编辑在事务中使旧写入失效，不依赖墙钟时间，也不因
-普通运行时心跳反复失效。拒绝后重读并协调目标字段。Core 只提示 `refresh-needed`，
+新语义输入、结果、阶段变化或编辑在事务中使旧写入失效，不依赖墙钟时间。
+Task Job 状态、结果、取消请求和确认处置在保存事务中追加语义事件；
+心跳、checkpoint 和通知回执不使 guard 反复失效。
+拒绝后重读并协调目标字段。Core 只提示 `refresh-needed`，
 Leader 在关键节点维护实际摘要，不新增完成门禁或自动改写原文。
 
 Task 事件游标绑定 Home 与 Task。增量返回 `kind: event-history`、`fromCursor`、

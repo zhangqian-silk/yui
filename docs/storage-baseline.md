@@ -8,6 +8,8 @@ exact caller-attributed native input, plus the recorded Message boundary.
 Historical events are preserved without guessed sources or replay. Missing
 provenance is an explicit read diagnostic. SQL layout and frozen digests are
 unchanged; the centralized transition has no data rewrite.
+New Task Job status/result/cancellation/acknowledgement writes also append
+`job.state-changed` events atomically. Existing Job history is not backfilled.
 
 The 1.9 → 1.10 transition appends independent
 [Schedules](schedules.md) and their due index without rewriting Jobs or Runs.
