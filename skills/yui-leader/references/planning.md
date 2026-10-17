@@ -56,7 +56,15 @@ and historical Runs/Sessions count even when no Session is currently busy.
 CLI commands: an authorized Operator can perform the mechanical operation.
 
 With that authorization, inspect any existing activation request before creating
-one with `task activation request <task-id> --request-id <id> --environment <plan>`.
+one with `task activation request <task-id> --request-id <id> --environment <plan>
+--source-message <message-id>`. If the new authorization arrived directly in
+the native conversation and has no saved Message, use `--source-text` with the
+exact user input instead. Core records this as caller-attributed source text in
+the immutable activation event, not a new Message or another delivery. Never
+substitute a Brief paraphrase, fabricate user authorship, or resend the input.
+Keep the same source and request ID on retries. Read the returned source event
+when diagnosing a mismatch. Update Brief with the new intent and source refs
+before ending the planning turn; do not rewrite old user messages.
 Choose the plan from the authorized resources; retain the request id for retries.
 The Controller adopts an eligible request. `task activate <task-id>` is the
 foreground adoption operation for an existing request, not a request-free shortcut.

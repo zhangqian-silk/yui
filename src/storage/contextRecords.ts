@@ -27,6 +27,8 @@ export type ContextRecordQuery = Readonly<{
   statuses?: readonly string[];
   excludeStatuses?: readonly string[];
   eventTypes?: readonly string[];
+  eventRequestId?: string;
+  eventMessageId?: string;
   afterSequence?: number;
   throughSequence?: number;
   descending?: boolean;
@@ -126,6 +128,14 @@ export function queryContextRecords(
   const sequence = `CAST(substr(r.${key}, length(r.${key}) - length(ltrim(r.${key}, 'abcdefghijklmnopqrstuvwxyz-')) + 1) AS INTEGER)`;
   // Task-local numeric IDs are the stable historical order, not lexical 1,10,2.
   if (query.family === "task-event") {
+    if (query.eventRequestId !== undefined) {
+      where.push("json_extract(r.payload, '$.payload.requestId') = @requestId");
+      params.requestId = query.eventRequestId;
+    }
+    if (query.eventMessageId !== undefined) {
+      where.push("json_extract(r.payload, '$.payload.messageId') = @messageId");
+      params.messageId = query.eventMessageId;
+    }
     if (query.eventTypes !== undefined) {
       where.push("r.type IN (SELECT value FROM json_each(@types))");
       params.types = JSON.stringify(query.eventTypes);

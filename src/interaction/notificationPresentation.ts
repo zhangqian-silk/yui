@@ -53,11 +53,11 @@ export function wakeChangeLabels(reasons: readonly string[]): string[] {
   }))];
 }
 
-export function wakeMessages(wake: TaskWake, messages: readonly TaskMessage[]): TaskMessage[] {
+export function wakeMessages(wake: TaskWake, messages: readonly TaskMessage[], history = false): TaskMessage[] {
   const ids = new Set(wake.refs?.filter(ref => ref.type === "message" && ref.taskId === wake.taskId).map(ref => ref.id));
   const from = Date.parse(wake.fromCursor), to = Date.parse(wake.toCursor);
-  return messages.filter(message => ids.has(message.id)
-    || Date.parse(message.createdAt) > from && Date.parse(message.createdAt) <= to);
+  return messages.filter(message => message.taskId === wake.taskId && (ids.has(message.id)
+    || (history || wake.refs === undefined) && Date.parse(message.createdAt) > from && Date.parse(message.createdAt) <= to));
 }
 
 export function taskNotificationPresentation(

@@ -110,7 +110,14 @@ test("wake focus keeps exact older input and full originals while history is opt
     command(["message", "send", "task-1", `Yui-Summary: ${"detail ".repeat(65)}unverified ${i}\nOriginal ${i}`,
       "--intent", "record"]);
   }
-  const aggregate = ["wake", "show", "task-1", "wake-2"];
+  assert.equal(command(["wake", "show", "task-1", "wake-2"]).data.messages.length, 1,
+    "Later records at the same clock cannot enter an already fixed explicit wake.");
+  store.saveTaskWake("task-1", createTaskWake({
+    id: "wake-4", taskId: "task-1", reasons: ["user-message"],
+    refs: store.listMessages("task-1").map(message => ({ type: "message", taskId: "task-1", id: message.id })),
+    fromCursor: at.toISOString(), toCursor: later.toISOString(), now: later
+  }));
+  const aggregate = ["wake", "show", "task-1", "wake-4"];
   result = command(aggregate).data;
   assert.ok(result.contentPage, "A large focused view must use the existing bounded detail transport.");
   text = "";

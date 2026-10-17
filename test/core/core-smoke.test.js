@@ -872,7 +872,7 @@ test("native continuation results wake the supervisor only after the parent Turn
   assert.deepEqual(leaderMailbox.pending.reasons, ["provider-continuation-settled"]);
 });
 
-test("runtime pre-start persists the empty Session binding before Provider discovery", (t) => {
+test("runtime pre-start persists its binding and delivery failure invalidates the Brief", (t) => {
   const home = mkdtempSync(join(tmpdir(), "yui-prestart-session-smoke-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const store = new SqliteTaskStore(home);
@@ -906,6 +906,27 @@ test("runtime pre-start persists the empty Session binding before Provider disco
   assert.notEqual(sessions, null);
   assert.deepEqual(sessions.sessions, {});
   assert.equal(sessions.providerBinding, null);
+  const briefCommand = args => runTaskCommand(args, store, { environment: bareEnv, now: () => now }).data;
+  const showBrief = () => briefCommand(["brief", "show", task.id]);
+  briefCommand(["brief", "update", task.id, "--if-current", showBrief().writeGuard,
+    "--objective", "Complete work", "--focus", "Awaiting Provider", "--leader-summary", "Starting"]);
+  const before = showBrief();
+  const failure = { taskId: task.id, roleName: role.name, runId: run.id,
+    agentId: "codex", adapterId: "codex", failureReason: "startup-failed", now };
+  const adapter = new FileSchedulerStoreAdapter(store);
+  assert.equal(adapter.saveRoleRunDeliveryFailure(failure), "failed");
+  assert.equal(store.getRun(task.id, run.id).status, "failed");
+  const after = showBrief();
+  assert.notEqual(after.writeGuard, before.writeGuard);
+  assert.equal(after.phase.brief.status, "refresh-needed");
+  assert.throws(() => briefCommand(["brief", "update", task.id, "--if-current", before.writeGuard,
+    "--focus", "Still waiting"]), /changed.*read|read.*changed/i);
+  assert.equal(adapter.saveRoleRunDeliveryFailure(failure), "state-changed");
+  assert.equal(showBrief().writeGuard, after.writeGuard, "A duplicate failure is not a new result.");
+  briefCommand(["brief", "update", task.id, "--if-current", after.writeGuard, "--focus", "Inspect failed Run"]);
+  const reconciled = showBrief();
+  briefCommand(["run", "retire", `${task.id}/${run.id}`, "--reason", "Failure inspected"]);
+  assert.notEqual(showBrief().writeGuard, reconciled.writeGuard, "Explicit Run disposition is semantic progress.");
 });
 
 test("Turns record provider-visible input without delivery handshake state", () => {
@@ -3519,7 +3540,7 @@ test("Controller begin-handover accepts a null fromReleaseId", async (t) => {
 
 test("production storage exposes one current version and one migration floor", () => {
   assert.equal(MIN_SUPPORTED_STORAGE_VERSION, "1.0");
-  assert.equal(CURRENT_STORAGE_VERSION, "1.10");
+  assert.equal(CURRENT_STORAGE_VERSION, "1.11");
   for (const retiredExport of [
     "FileTaskStore",
     "STORAGE_STATE_FILE",
@@ -3542,7 +3563,7 @@ test("a new current Home initializes its SQLite authority exactly once", (t) => 
   try {
     assert.deepEqual(
       database.prepare("SELECT major, minor FROM storage_schema").all(),
-      [{ major: 1, minor: 10 }]
+      [{ major: 1, minor: 11 }]
     );
     // The baseline has one Git-artifact authority, not a second DB artifact store.
     assert.deepEqual(

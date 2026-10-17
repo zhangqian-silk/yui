@@ -29,6 +29,47 @@ import { createIntegrationAttempt } from "../../dist/integration/integrationAtte
 import { createTaskBrief } from "../../dist/brief/taskBrief.js";
 import { createDecision, supersedeDecision } from "../../dist/decision/decision.js";
 
+test("Run delta is a complete source-qualified patch, not its clipped launch hint", t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-run-delta-"));
+  const store = new SqliteTaskStore(home);
+  t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
+  const now = new Date("2026-10-15T00:00:00Z");
+  store.saveTask(createTask("task-1", "Delta", now));
+  const binding = createRoleAgentBinding({ id: "codex", adapterId: "codex" });
+  const role = createRole("task-1", "worker", [binding], binding.agentId, home, now);
+  store.saveRole("task-1", role);
+  const entry = (store, refId, value) => ({ ref: {
+    layer: "L3", store, refId, revision: "1", digest: contextContentDigest(value)
+  }, value });
+  const before = [entry("task", "task-1", { title: "Old" }),
+    entry("task-brief", "task-1", { objective: "Old" }),
+    entry("task-message", "message-1", { body: "Removed" })];
+  const parent = createContextSnapshot({ id: "snapshot-1", taskId: "task-1", scope: "task",
+    sequence: 1, refs: before.map(e => e.ref), resources: before, acceptRefs: [],
+    frozenAt: now, frozenBy: "controller" });
+  store.saveContextSnapshot(parent);
+  const after = [before[0], entry("task-brief", "task-1", { objective: "Changed" }),
+    ...Array.from({ length: 35 }, (_, i) => entry("task-message", `message-${i + 2}`, { body: `${i}` }))];
+  const child = createContextSnapshot({ id: "snapshot-2", taskId: "task-1", scope: "task",
+    sequence: 2, parentRef: contextSnapshotRef(parent), refs: after.map(e => e.ref),
+    resources: after, acceptRefs: [], frozenAt: now, frozenBy: "controller" });
+  store.saveContextSnapshot(child);
+  const input = createRunInput({ source: { type: "yui", channel: "workitem-dispatch" },
+    contextSnapshotRef: contextSnapshotRef(child), deltaRefIds: ["task-1"] });
+  const run = createRun("run-1", "task-1", role.name, "new", input, now, {
+    workItemId: "work-item-1", effective: resolveEffectiveLaunch({ role, purpose: "execution" })
+  });
+  store.saveRun(run);
+  const delta = buildRunContextDelta(store, "task-1", run.id, parent.digest);
+  assert.equal(delta.refs.length, 36);
+  assert.equal(delta.refs.some(ref => ref.store === "task"), false, "Equal refIds in distinct stores are not one identity.");
+  assert.deepEqual(delta.removedRefs, [{ store: "task-message", refId: "message-1" }]);
+  assert.equal(delta.complete, true);
+  const empty = buildRunContextDelta(store, "task-1", run.id, delta.cursor);
+  assert.deepEqual(empty.refs, []);
+  assert.deepEqual(empty.removedRefs, []);
+});
+
 test("managed dispatch freezes explicit materials and candidate reports; continuation preserves their exact evidence", t => {
   const home = mkdtempSync(join(tmpdir(), "yui-dispatch-evidence-"));
   const store = new SqliteTaskStore(home);

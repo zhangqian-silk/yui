@@ -282,6 +282,10 @@ test("Leader plugin grants are consumed by real isolated plugin validation, acti
 
 test("only admitted human-writer input becomes a durable user Message, without another delivery", t => {
   const f = fixture(t);
+  const brief = () => f.command(["brief", "show", "task-1"]).data;
+  f.command(["brief", "update", "task-1", "--if-current", brief().writeGuard,
+    "--objective", "Bounded authority", "--focus", "Discussion", "--leader-summary", "Awaiting input"]);
+  const before = brief();
   let binding = createProviderRuntimeBinding({ providerNamespace: "openai/codex", accountScope: "codex",
     conversationId: "leader-current", startedAt: now.toISOString() });
   binding = transferProviderAuthority(binding, { expectedEpoch: binding.authority.epoch,
@@ -292,9 +296,18 @@ test("only admitted human-writer input becomes a durable user Message, without a
     attemptId: "human:one", authorityOwner: "human", authorityEpoch: binding.authority.epoch,
     holderId: "console-user", boundedText: "Publish this Task's exact reviewed version.", now };
   adapter.beginAgentHostProviderTurn(input);
+  const after = brief();
+  assert.notEqual(after.writeGuard, before.writeGuard, "Admitted native input invalidates the prior semantic baseline.");
+  assert.equal(after.phase.brief.status, "refresh-needed");
+  assert.throws(() => f.command(["brief", "update", "task-1", "--if-current", before.writeGuard,
+    "--focus", "Stale discussion"]), /changed.*read|read.*changed/i);
   adapter.beginAgentHostProviderTurn(input);
+  assert.equal(brief().writeGuard, after.writeGuard, "An exact retry does not invent another semantic change.");
   assert.equal(f.store.listMessages("task-1").length, 1);
   assert.equal(f.store.listMessages("task-1")[0].body, input.boundedText);
   assert.equal(f.store.getWorkMailbox({ kind: "role", taskId: "task-1", roleName: "leader" }), null);
   assert.throws(() => adapter.beginAgentHostProviderTurn({ ...input, boundedText: "different" }), /different|identity|input/i);
+  f.command(["brief", "update", "task-1", "--if-current", after.writeGuard,
+    "--focus", "Review the new original input"]);
+  assert.equal(brief().phase.brief.status, "current-at-last-semantic-write");
 });

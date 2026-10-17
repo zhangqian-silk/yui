@@ -50,7 +50,7 @@ import {
   validateWorkMailbox
 } from "../coordination/workMailbox.js";
 import type { Decision } from "../decision/decision.js";
-import type { TaskEvent } from "../event/taskEvent.js";
+import { createTaskEvent, type TaskEvent } from "../event/taskEvent.js";
 import { enqueueDurableOperatorFact } from "../scheduler/operatorEvent.js";
 import type { GlobalRoleSessionSet, RoleAgentSession, TaskRoleSessionSet } from "../executor/agentExecutor.js";
 import type { CapabilityGrant } from "../grant/capabilityGrant.js";
@@ -1732,16 +1732,16 @@ export class SqliteTaskStore implements TaskStore {
     }
     validateDurableJob(job);
     this.#requireTask(taskId);
-    const existing = this.getDurableJob(taskId, job.id);
-    if (existing !== null) {
-      if (Date.parse(job.updatedAt) < Date.parse(existing.updatedAt)) {
-        throw new StorageRecordError(`DurableJob updatedAt cannot move backwards: ${job.id}`);
-      }
-      if (!validDurableJobTransition(existing, job)) {
-        throw new StorageRecordError(`DurableJob transition is invalid: ${job.id}`);
-      }
-    }
     this.#mutate(() => {
+      const existing = this.getDurableJob(taskId, job.id);
+      if (existing !== null) {
+        if (Date.parse(job.updatedAt) < Date.parse(existing.updatedAt)) {
+          throw new StorageRecordError(`DurableJob updatedAt cannot move backwards: ${job.id}`);
+        }
+        if (!validDurableJobTransition(existing, job)) {
+          throw new StorageRecordError(`DurableJob transition is invalid: ${job.id}`);
+        }
+      }
       this.#db.prepare(
         `INSERT INTO durable_jobs (job_id, task_id, idempotency_key, status, payload, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -1757,6 +1757,20 @@ export class SqliteTaskStore implements TaskStore {
         job.createdAt,
         job.updatedAt
       );
+      // All Task Job writers share this boundary (including cancellation and
+      // unknown-result acknowledgement). Publish semantic changes atomically;
+      // heartbeat/checkpoint/notification bookkeeping is deliberately excluded.
+      if (existing === null || existing.status !== job.status
+        || !isDeepStrictEqual(existing.result, job.result)
+        || existing.cancelRequestedAt !== job.cancelRequestedAt
+        || existing.acknowledgedAt !== job.acknowledgedAt) {
+        this.saveEvent(taskId, createTaskEvent(this.nextEventId(taskId), taskId, "job.state-changed", {
+          jobId: job.id, status: job.status,
+          ...(existing === null ? {} : { previousStatus: existing.status }),
+          ...(job.cancelRequestedAt === undefined ? {} : { cancelRequestedAt: job.cancelRequestedAt }),
+          ...(job.acknowledgedAt === undefined ? {} : { acknowledgedAt: job.acknowledgedAt })
+        }, new Date(job.updatedAt)));
+      }
     });
   }
 

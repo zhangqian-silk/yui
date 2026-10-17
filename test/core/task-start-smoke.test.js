@@ -6,13 +6,14 @@ import { join } from "node:path";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { createConfiguredAgent } from "../../dist/agent/agent.js";
 import { createGlobalRole, createRoleAgentBinding } from "../../dist/role/role.js";
-import { submitOperatorMessage } from "../../dist/commands/taskCommands.js";
+import { runTaskCommand, submitOperatorMessage } from "../../dist/commands/taskCommands.js";
 import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
 import { buildRunContextPack } from "../../dist/context/runContextPack.js";
 import { requestTaskActivation } from "../../dist/task/taskActivationService.js";
 import { terminalizeExactTaskRun } from "../../dist/lifecycle/exactRunTerminalization.js";
 import { FileTaskWorkspacePreparer } from "../../dist/repository/taskWorkspacePreparer.js";
 import { completeTask } from "../../dist/task/task.js";
+import { readTaskContext } from "../../dist/context/taskContext.js";
 
 test("a scratch Task preserves Operator intent through planning, activation and workspace release", async t => {
   const root = mkdtempSync(join(tmpdir(), "yui-task-start-smoke-"));
@@ -41,10 +42,16 @@ test("a scratch Task preserves Operator intent through planning, activation and 
   assert.equal(run.purpose, "planning");
   assert.deepEqual(pack.authority.writableProjectIds, []);
   assert.ok(pack.pointers.some(ref => ref.store === "task-message"));
+  runTaskCommand(["message", "send", task.id, "A planning note", "--intent", "record"],
+    store, { environment: {}, now: () => now });
   requestTaskActivation(store, {
     taskId: task.id, requestId: "begin", actorId: `task:${task.id}/role:leader`,
-    authorityRef: "core-smoke", environmentPlan: { kind: "scratch" }, callerRunId: run.id
+    authorityRef: "core-smoke", environmentPlan: { kind: "scratch" }, callerRunId: run.id,
+    sourceText: "Start developing the discussed result; do not publish.",
+    sourceNativeSessionId: "planning-native"
   }, now);
+  runTaskCommand(["message", "update", `${task.id}/message-2`, "Revised after the activation request"],
+    store, { environment: {}, now: () => now });
   store.transaction(tx => terminalizeExactTaskRun(tx, {
     taskId: task.id, roleName: "leader", agentId: "codex", runId: run.id,
     outcome: { status: "completed", output: "Planning captured; delivery requested." }
@@ -53,6 +60,20 @@ test("a scratch Task preserves Operator intent through planning, activation and 
   assert.equal(store.getTask(task.id).status, "active");
   assert.equal(store.getTask(task.id).activationRequest.disposition, "adopted");
   assert.equal(store.getRun(task.id, run.id).effective.executionAuthority, "planning");
+  const current = readTaskContext(store, task.id);
+  assert.equal(current.phase.activation.source.status, "available");
+  assert.equal(current.phase.activation.source.attribution, "leader-attested-native-input");
+  assert.equal(current.records.find(r => r.ref.store === "task-message" && r.ref.refId === "message-1").phaseRelation,
+    "recorded-before-activation-request");
+  const sourceId = current.phase.activation.source.ref.refId;
+  const source = store.listEvents(task.id).find(event => event.id === sourceId);
+  assert.equal(source.payload.sourceText, "Start developing the discussed result; do not publish.");
+  assert.equal(source.payload.sourceNativeSessionId, "planning-native");
+  assert.ok(store.getWorkMailbox({ kind: "role", taskId: task.id, roleName: "leader" }).pending.refs
+    .some(ref => ref.type === "event" && ref.id === sourceId),
+  "The successor wake carries the exact original, not merely the old discussion.");
+  assert.equal(current.records.find(r => r.ref.refId === "message-2").phaseRelation,
+    "revised-after-activation-request", "An old Message ID cannot hide a new revision at the same clock.");
   assert.equal(store.listMessages(task.id)[0].body, "Produce the requested result and preserve its evidence.");
   assert.ok(store.getWorkMailbox({ kind: "role", taskId: task.id, roleName: "leader" })?.pending);
   const active = store.getTask(task.id);

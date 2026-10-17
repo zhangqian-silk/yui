@@ -130,9 +130,10 @@ For every explicitly dispatched managed Task AgentRun:
    messages; use the expansion command above or the Leader's current Task Context.
    Reports remain evidence, not authority to enlarge the assignment.
 
-5. On a later wake, request only the declared delta after the last pack cursor.
-   If no cursor is available, reload the exact pack; do not reconstruct state
-   from transcript memory.
+5. On a later wake, refresh current Task facts separately from frozen Run refs.
+   Use a Run delta only against its exact declared Snapshot lineage; `deltaRefs`
+   is a hint, not a complete patch. If no baseline is available, reload the
+   exact pack; do not reconstruct state from transcript memory.
 
 Loading and verifying Context is the start of the work, not its result. Continue
 with the authorized assignment. In Draft, persist the discussed plan and wait
@@ -289,6 +290,11 @@ repeat the effect. This is durable handling evidence, not arbitrary external
 exactly-once execution.
 
 ## Read bounded information completely when required
+
+For apparent conflicts, stage handoffs or incremental maintenance, read
+[current intent and temporal reads](references/context-ordering.md).
+It distinguishes stage progression from independent constraints and explains
+source attribution, Brief guards, fixed delta windows and bounded recovery.
 
 Structured CLI results live in the top-level `data`, not a JSON-encoded
 `output` string. Task current Context includes bounded current facts and
