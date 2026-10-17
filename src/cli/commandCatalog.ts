@@ -841,7 +841,7 @@ const taskChildren: readonly NodeInput[] = [
           },
           {
             name: "new", discovery: { surface: "managed", audiences: ["operator","leader"] },
-            summary: "Request replacement even for active or ended Sessions; stop exact execution and preserve Task context, results and workspaces.",
+            summary: "Stop exact execution, then initialize a successor without replaying retained inbox obligations; preserve claims, context and workspaces.",
             usage: "yui task role session new <task> <role> --reason <text>",
             options: ["--reason"]
           }
@@ -1280,7 +1280,7 @@ export const ROOT_COMMAND = buildNode({
           summary: "Reserve 1..16 exact entries for handling in this turn; never starts a model turn.",
           usage: "yui inbox claim <entry> [<entry> ...] --request-id <id>", options: ["--request-id"] },
         { name: "ack", discovery: { surface: "managed", audiences: ["operator","global","leader","assignment"] },
-          summary: "Confirm handling of claimed entries with an auditable disposition, not Provider acceptance.",
+          summary: "Record handling, including a rightful successor's disposition of an unchanged prior claim; never proves native acceptance or authorizes replay.",
           usage: "yui inbox ack <entry> [<entry> ...] --request-id <id> --reason <disposition>",
           options: ["--request-id", "--reason"] },
         { name: "retire", discovery: { surface: "managed", audiences: ["operator","global"] },

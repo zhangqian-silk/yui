@@ -34,10 +34,18 @@ export function taskMessageInboxReceipt(store: TaskStore, message: TaskMessage) 
   return message.inbox ?? messageRevisionWakes(store, message).find(wake => wake.inbox !== undefined)?.inbox;
 }
 
-/** Delivery suppresses repeat notification of that revision, but remains
- * distinct from handling. The original fixed window stays in the own inbox. */
-export function deliveredMessageWake(store: TaskStore, message: TaskMessage) {
-  return messageRevisionWakes(store, message).find(wake => wake.status === "consumed");
+/** Acceptance or explicit no-replay release suppresses repeat notification,
+ * never handling. The original fixed window stays in the own inbox. */
+export function nonReplayableMessageWake(store: TaskStore, message: TaskMessage) {
+  return messageRevisionWakes(store, message).find(wake =>
+    wake.status === "consumed" || releasedNotificationWake(store, message.taskId, wake.id));
+}
+
+/** Operational release is not acceptance. Keep its originals out of automatic
+ * delivery while permitting explicit inspection and settlement in the inbox. */
+export function releasedNotificationWake(store: TaskStore, taskId: string, wakeId: string): boolean {
+  return store.listEventsByType(taskId, ["notification.resolved"]).some(event =>
+    event.payload.wakeId === wakeId && event.payload.outcome === "released-without-replay");
 }
 
 function messageRevisionWakes(store: TaskStore, message: TaskMessage) {
