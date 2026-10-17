@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { deliveredMessageWake, pinMessageRevisions, taskMessageInboxReceipt, unfinishedLeaderInbox } from "../message/taskInboxOwnership.js";
+import { nonReplayableMessageWake, pinMessageRevisions, taskMessageInboxReceipt, unfinishedLeaderInbox } from "../message/taskInboxOwnership.js";
 import { contextSnapshotRef } from "../context/contextSnapshot.js";
 import { freezeRunContextSnapshot } from "../context/runContextPack.js";
 import { taskNotificationPresentation } from "../interaction/notificationPresentation.js";
@@ -2201,12 +2201,24 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         const event = createTaskEvent(store.nextEventId(owner.taskId), owner.taskId,
           "runtime.session-replaced", { roleName: owner.roleName }, now);
         store.saveEvent(owner.taskId, event);
-        // Accepted notification batches are already consumed; unresolved old
-        // claims belong to the discarded runtime, not to its successor.
+        // Release only operational occupancy after exact runtime stop. Neither
+        // an uncertain automatic submission nor an Agent's handling claim may
+        // be replayed as input to the replacement.
         const leaderTarget = { kind: "role", taskId: owner.taskId, roleName: "leader" } as const;
         const leaderMailbox = store.getWorkMailbox(leaderTarget);
-        if (owner.roleName === "leader" && leaderMailbox?.processing?.owner.startsWith("leader-notification:")) {
-          store.saveWorkMailbox(releaseProcessing(leaderMailbox, leaderMailbox.processing.batchId));
+        if (owner.roleName === "leader" && leaderMailbox?.processing != null) {
+          const processing = leaderMailbox.processing;
+          if (processing.owner.startsWith("leader-notification:")) {
+            store.saveEvent(owner.taskId, createTaskEvent(store.nextEventId(owner.taskId), owner.taskId,
+              "notification.resolved", {
+                wakeId: processing.owner.slice("leader-notification:".length), attemptId: processing.batchId,
+                reason: "Session replacement after verified native/resource stop; inspect original effects.",
+                outcome: "released-without-replay"
+              }, now));
+            store.saveWorkMailbox(completeProcessing(leaderMailbox, processing.batchId));
+          } else if (processing.owner.startsWith("agent-inbox:")) {
+            store.saveWorkMailbox(completeProcessing(leaderMailbox, processing.batchId));
+          }
         }
         enqueueWork(store, leaderTarget, "session-replaced", now, [{ type: "event", taskId: owner.taskId, id: event.id }]);
       } else if (disposition === "end-session") {
@@ -2390,6 +2402,23 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       let mailbox = store.getWorkMailbox(target);
       if (mailbox === null) return null;
       const provider = store.getTaskRoleSessionSet(taskId, "leader")?.providerBinding?.run;
+      // Only a committed lifecycle event opens this initialization path, not a
+      // caller-supplied reason string. Consume that event once, separately from
+      // business input. It exists only after exact-owner cleanup completed.
+      const recoveryRefs = mailbox.pending?.reasons.includes("session-replaced")
+        ? mailbox.pending.refs.filter(ref => {
+          if (ref.type !== "event" || ref.taskId !== taskId) return false;
+          const event = store.queryContextRecords(taskId, { family: "task-event", ids: [ref.id],
+            eventTypes: ["runtime.session-replaced"], limit: 1 }).records[0]?.value as TaskEvent | undefined;
+          return event?.payload.roleName === "leader";
+        }) : [];
+      // Valid earlier storage may retain an actively claimed mailbox even
+      // after replacement completed. Its durable wake/claim remains untouched.
+      if (recoveryRefs.length > 0 && mailbox.processing?.owner.startsWith("agent-inbox:")
+        && !(provider && ["submitting", "accepted", "delivery-unknown"].includes(provider.status))) {
+        mailbox = completeProcessing(mailbox, mailbox.processing.batchId);
+        store.saveWorkMailbox(mailbox);
+      }
       const processing = mailbox.processing;
       if (processing !== null) {
         if (!processing.owner.startsWith("leader-notification:")) return null;
@@ -2432,7 +2461,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         return { wakeId, attemptId: nextAttempt, disposition: "submit",
           presentation: taskNotificationPresentation(wake, store) };
       }
-      if (unfinishedLeaderInbox(store, taskId)) return null;
+      if (unfinishedLeaderInbox(store, taskId) && recoveryRefs.length === 0) return null;
       if (mailbox.pending === null || (provider !== null && provider !== undefined
         && ["submitting", "accepted", "delivery-unknown"].includes(provider.status))) return null;
       const pending = mailbox.pending;
@@ -2444,7 +2473,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       const obsoleteIds = new Set<string>();
       for (const message of store.listMessages(taskId)) {
         if (pendingMessageIds.has(message.id) && (taskMessageInboxReceipt(store, message) !== undefined
-          || deliveredMessageWake(store, message) !== undefined)) {
+          || nonReplayableMessageWake(store, message) !== undefined)) {
           obsoleteIds.add(message.id);
         }
       }
@@ -2477,20 +2506,22 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       const handoffs = claimedMessages.filter(message => !obsoleteIds.has(message.id));
       // A quiet/new Session is not evidence that the claimed old Turn stopped.
       // Keep the exact pending intent until the original fence is provable.
-      if (handoffs.some((message) => interruptThenTerminalState(store, message) !== "ready")) return null;
+      if (recoveryRefs.length === 0
+        && handoffs.some((message) => interruptThenTerminalState(store, message) !== "ready")) return null;
       const handoffIds = new Set(handoffs.map((message) => message.id));
       if (availableRefs.length === 0 && obsoleteIds.size > 0) {
         store.saveWorkMailbox(consumePendingBatch(mailbox, pending));
         return null;
       }
-      const selectedRefs = handoffs.length === 0 ? availableRefs
+      const selectedRefs = recoveryRefs.length > 0 ? recoveryRefs : handoffs.length === 0 ? availableRefs
         : availableRefs.filter((ref) => ref.type === "message" && handoffIds.has(ref.id));
-      const remainingRefs = handoffs.length === 0 ? []
+      const remainingRefs = recoveryRefs.length > 0 ? availableRefs.filter(ref => !recoveryRefs.includes(ref))
+        : handoffs.length === 0 ? []
         : availableRefs.filter((ref) => !(ref.type === "message" && handoffIds.has(ref.id)));
       const latest = latestTaskWake(store.listTaskWakes(taskId));
       const wakeId = store.nextTaskWakeId(taskId);
       const wake = createTaskWake({
-        id: wakeId, taskId, reasons: mailbox.pending.reasons,
+        id: wakeId, taskId, reasons: recoveryRefs.length > 0 ? ["session-replaced"] : mailbox.pending.reasons,
         refs: pinMessageRevisions(store, taskId, selectedRefs),
         fromCursor: latest?.toCursor ?? task.createdAt,
         toCursor: new Date(Math.max(now.getTime(), Date.parse(mailbox.pending.lastQueuedAt))).toISOString(), now

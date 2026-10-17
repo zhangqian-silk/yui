@@ -82,6 +82,11 @@ export function taskNotificationPresentation(
     `Read inputs/results: yui task wake show ${wake.taskId} ${wake.id} --json`,
     `Handling: claim exact inbox entry ${wake.id}; after disposition, ack it with a concrete reason before ending this turn.`,
     "Use yui inbox list --view current --json for current inputs. Historical missing receipts are not new work; never replay effects to repair an ACK.",
+    ...(wake.reasons.includes("session-replaced") ? [
+      "Session replacement is initialization, not replay or completion of earlier input.",
+      "Read yui inbox list --view history --json; inspect retained originals, prior effects and current authority before explicit settlement.",
+      "Preserve original claims and delivery targets. Unknown external effects require evidence, not another execution."
+    ] : []),
     "Check current Skills each turn: yui session skills --json. Apply current yui-leader; read relevant originals in full and advance authorized work."
   ].join("\n");
 }

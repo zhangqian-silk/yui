@@ -267,9 +267,14 @@ test("Session replacement preserves durable intent and releases only its own eng
   const unaffected = store.getActiveRun("task-1", "worker");
   command(["message", "send", "task-1", "Original user requirement must survive"]);
   const target = { kind: "role", taskId: "task-1", roleName: "leader" };
-  const attemptId = "notification:old-claim";
+  const attemptId = "notification:task-1/wake-1/old";
+  store.saveTaskWake("task-1", createTaskWake({
+    id: "wake-1", taskId: "task-1", reasons: ["user-message"],
+    refs: store.getWorkMailbox(target).pending.refs,
+    fromCursor: at.toISOString(), toCursor: later.toISOString(), now: later
+  }));
   store.saveWorkMailbox(claimPending(store.getWorkMailbox(target), {
-    batchId: attemptId, owner: "leader-notification:old-session", startedAt: later.toISOString()
+    batchId: attemptId, owner: "leader-notification:wake-1", startedAt: later.toISOString()
   }));
   let binding = createProviderRuntimeBinding({
     providerNamespace: "openai/codex", accountScope: "codex", conversationId: "leader-old",
@@ -288,19 +293,15 @@ test("Session replacement preserves durable intent and releases only its own eng
   assert.equal(store.getTask("task-1").status, "active");
   assert.deepEqual(store.getActiveRun("task-1", "worker"), unaffected);
   assert.equal(store.getTaskRoleSessionSet("task-1", "leader").sessions.codex, undefined);
-  assert.ok(store.getWorkMailbox(target).pending.refs.some(r => r.type === "message" && r.id === "message-1"));
+  assert.ok(!store.getWorkMailbox(target).pending.refs.some(r => r.type === "message" && r.id === "message-1"),
+    "uncertain old input must not be automatically replayed by replacement");
   assert.equal(pendingCompletionMessages(store, "task-1")[0].body, "Original user requirement must survive");
   assert.equal(resolveManagedTaskReader(store, leader).nativeSessionId, "leader-old");
   assert.throws(() => resolveManagedTaskCaller(store, leader), /current|runtime|Session/i);
   assert.ok(readTaskContext(store, "task-1", leader).records.some(r => r.ref.store === "task-message"));
   assert.throws(() => command(["complete", "task-1", "--summary", "Premature"]), /pending-user-input/);
 
-  const wake = createTaskWake({
-    id: "wake-1", taskId: "task-1", reasons: ["session-replaced"],
-    refs: [{ type: "message", taskId: "task-1", id: "message-1" }],
-    fromCursor: later.toISOString(), toCursor: later.toISOString(), now: later
-  });
-  store.saveTaskWake("task-1", wake);
+  const wake = store.getTaskWake("task-1", "wake-1");
   const shown = command(["wake", "show", "task-1", wake.id]);
   assert.equal(shown.data.messages[0].read, "task message show task-1/message-1");
   assert.equal(command(["message", "show", "task-1/message-1"]).data.body, "Original user requirement must survive");
@@ -363,6 +364,9 @@ test("Leader queue waits through Session cleanup and only its accepted wake cons
   assert.equal(store.listTaskWakes("task-1").length, 0);
 
   scheduler.completeRuntimeCleanup({ kind: "role-runtime", taskId: "task-1", roleName: "leader" }, later);
+  const bootstrap = scheduler.claimLeaderNotification("task-1", later);
+  assert.ok(store.getTaskWake("task-1", bootstrap.wakeId).refs.every(ref => ref.type === "event"));
+  scheduler.settleLeaderNotification("task-1", bootstrap.attemptId, "accepted", later);
   const first = scheduler.claimLeaderNotification("task-1", later);
   assert.equal(first.disposition, "submit");
   assert.ok(store.getTaskWake("task-1", first.wakeId).refs.some(ref => ref.id === message.id));
@@ -371,7 +375,8 @@ test("Leader queue waits through Session cleanup and only its accepted wake cons
   scheduler.completeRuntimeCleanup({ kind: "role-runtime", taskId: "task-1", roleName: "leader" }, later);
   const successor = scheduler.claimLeaderNotification("task-1", later);
   assert.notEqual(successor.wakeId, first.wakeId);
-  assert.ok(store.getTaskWake("task-1", successor.wakeId).refs.some(ref => ref.id === message.id));
+  assert.ok(!store.getTaskWake("task-1", successor.wakeId).refs.some(ref => ref.id === message.id),
+    "replacement initializes the successor, never replays unknown business input");
   assert.equal(pendingCompletionMessages(store, "task-1")[0].id, message.id);
   scheduler.settleLeaderNotification("task-1", first.attemptId, "accepted", later);
   assert.equal(store.getWorkMailbox(target).processing.batchId, successor.attemptId,

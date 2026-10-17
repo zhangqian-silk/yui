@@ -1302,6 +1302,13 @@ export class SqliteTaskStore implements TaskStore {
       AND json_extract(payload, '$.inbox.ack') IS NULL
       AND json_extract(payload, '$.inbox.retirement') IS NULL`);
     if (query.unclaimed) where.push("json_extract(payload, '$.inbox') IS NULL");
+    if (query.handlingExceptSession !== undefined) {
+      if (!query.handling) throw new Error("A handling Session filter requires a handling query.");
+      where.push(`(json_extract(payload, '$.inbox.claim.actor.agentId') != @handlingAgent
+        OR json_extract(payload, '$.inbox.claim.actor.nativeSessionId') != @handlingSession)`);
+      params.handlingAgent = query.handlingExceptSession.agentId;
+      params.handlingSession = query.handlingExceptSession.nativeSessionId;
+    }
     if (query.pending) where.push(`json_extract(payload, '$.delivery') IS NULL
       AND json_extract(payload, '$.inbox.ack') IS NULL
       AND json_extract(payload, '$.inbox.retirement') IS NULL

@@ -6,7 +6,7 @@ import { createTaskWake, latestTaskWake, type TaskWake } from "../scheduler/task
 import { expandTaskMessageResult, type GlobalRoleMessage, type TaskMessage } from "../message/message.js";
 import { messageAssignmentBlocker } from "../message/messageContinuation.js";
 import { globalInboxDeliveryState, inboxHandlingState, isGlobalInboxMessage, pendingGlobalInboxMessages, type InboxActor, type InboxReceipt } from "../message/inboxReceipt.js";
-import { deliveredMessageWake, isLeaderSteer, pinMessageRevisions, taskMessageInboxReceipt, unfinishedLeaderInbox } from "../message/taskInboxOwnership.js";
+import { nonReplayableMessageWake, isLeaderSteer, pinMessageRevisions, releasedNotificationWake, taskMessageInboxReceipt, unfinishedLeaderInbox } from "../message/taskInboxOwnership.js";
 import { hasRuntimeCleanupObligation, runtimeLifecycleTarget } from "../runtime/lifecycleReservation.js";
 import { isTaskRecordRetired, retiredTaskRecordIds } from "../task/taskRecordRetirement.js";
 import { blocksInboxOrder, inboxEntryCategory, inboxSettled } from "../message/inboxTurn.js";
@@ -102,7 +102,7 @@ function blocker(store: TaskStore, address: Address, entry: Entry): string | und
   if (isWake(entry)) {
     // Native acceptance releases transport ownership, not semantic handling.
     // The current Leader may explicitly claim the fixed delivered window.
-    if (entry.status === "consumed") return undefined;
+    if (entry.status === "consumed" || releasedNotificationWake(store, entry.taskId, entry.id)) return undefined;
     return "automatic-notification-owns-window";
   }
   if (address.scope === "task" && taskMessageInboxReceipt(store, entry as TaskMessage) !== undefined) {
@@ -161,6 +161,8 @@ function summary(store: TaskStore, address: Address, entry: Entry) {
     createdAt: entry.createdAt, summary: summaryText(isWake(entry) ? entry.reasons.join(", ") : entry.body),
     blocked: blocker(store, address, entry) ?? null, inbox: summaryMetadata(entry.inbox ?? null),
     handling: inboxHandlingState(entry.inbox),
+    ...(entry.inbox !== undefined && entry.inbox.ack === undefined && !sameSession(entry.inbox.claim.actor, address)
+      ? { recovery: "Read this original and prior effects under current authority; finish handling, then inbox ack this exact entry. Retain the original claim; do not claim again or replay business." } : {}),
     delivery: isWake(entry) ? entry.status : summaryMetadata({
       control: entry.control ?? null,
       ...(address.scope === "global" ? { receipt: (entry as GlobalRoleMessage).delivery ?? null,
@@ -269,7 +271,7 @@ export function runInboxCommand(
         if (ref.type !== "message") continue;
         const message = tx.listMessages(current.taskId!).find(message => message.id === ref.id);
         if (message !== undefined && (taskMessageInboxReceipt(tx, message) !== undefined
-          || deliveredMessageWake(tx, message) !== undefined)
+          || nonReplayableMessageWake(tx, message) !== undefined)
           || message?.interruptThen !== undefined
           || message?.control !== undefined && message.control.outcome !== "rejected"
           || message?.inputControl?.expectedSessionId !== undefined
@@ -327,7 +329,7 @@ export function runInboxCommand(
         }
         const blocked = blocker(tx, current, entry);
         if (blocked !== undefined) throw new Error(`Inbox entry cannot be claimed: ${blocked}.`);
-        if (isWake(entry) && !acceptedInput(entry)) {
+        if (isWake(entry) && !acceptedInput(entry) && !releasedNotificationWake(tx, entry.taskId, entry.id)) {
           for (const ref of entry.refs ?? []) {
             if (ref.type !== "message") continue;
             const message = tx.listMessages(current.taskId!).find(message => message.id === ref.id);
@@ -351,7 +353,7 @@ export function runInboxCommand(
         // the original. The current rightful successor may settle a claim
         // acquired by the exact selected Session, retaining both identities.
         const claimant = entry.inbox.claim.actor;
-        if (isWake(entry) && !acceptedInput(entry)) {
+        if (isWake(entry) && !acceptedInput(entry) && !releasedNotificationWake(tx, entry.taskId, entry.id)) {
           const messageIds = new Set(entry.refs?.filter(ref => ref.type === "message").map(ref => ref.id));
           for (const message of tx.listMessages(current.taskId!)) {
             if (messageIds.has(message.id)) assertSelectedTarget(claimant, message);

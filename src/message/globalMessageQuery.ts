@@ -4,6 +4,8 @@ export type GlobalMessageQuery = Readonly<{
   limit: number;
   pending?: boolean;
   handling?: boolean;
+  /** Filter retained claims without loading the full historical message set. */
+  handlingExceptSession?: Readonly<{ agentId: string; nativeSessionId: string }>;
   descending?: boolean;
   afterSequence?: number;
   id?: string;

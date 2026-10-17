@@ -288,6 +288,13 @@ list. On failure or interruption, leave the claim unacknowledged; it remains
 discoverable and does not expire or replay automatically. A current rightful
 successor must inspect original input and prior effects before finishing and
 acknowledging a retained claim. Never replay uncertain external actions.
+After legal Session replacement, initialization can arrive before old handling
+is settled. This recovery notification is not the original business input or
+an acknowledgement. Read the current inbox and prior effects first. For
+`claimed-by-previous-session`, retain the original claim: do not claim again.
+Finish only the still-authorized handling and use a new stable ack request ID
+with a concrete disposition; the receipt retains both the old claimant and
+the current acknowledging actor. New queued input remains separate.
 For an exact-Session input already claimed by its selected Session, a rightful
 successor may explicitly settle that handling after inspecting the original
 and prior effects. This preserves the original target and claim; it grants no
@@ -317,6 +324,12 @@ This claim never sends the input again. A current rightful successor may settle
 an accepted Global input or Leader window while retaining the original delivery
 target; it must inspect prior effects first. Pending/unknown acceptance stays
 blocked and cannot use claim as a replay path.
+An explicitly released Leader notification (`notification.resolved` with
+`released-without-replay`) can be claimed for evidence inspection and settlement
+after verified native stop. Its original delivery status stays unknown or
+unaccepted; handling it cannot retarget Session-specific instructions or
+authorize re-executing unknown effects. If a required fact or user decision is
+unavailable, preserve the claim and report that exact boundary.
 
 An ack belongs to the exact original and revision: fixed windows pin
 `message.updated` event identities, including same-timestamp edits. A later
