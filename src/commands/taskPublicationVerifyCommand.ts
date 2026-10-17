@@ -26,6 +26,7 @@ import {
   assertPublicationToolObservation,
   canonicalPublicationUrl,
   parsePublicationToolObservation,
+  publicationObservationNotBefore,
   type PublicationToolObservation
 } from "../task/publicationToolObservation.js";
 
@@ -40,6 +41,7 @@ type PublicationVerificationRequest = Readonly<{
   actor: PublicationRecordedBy;
   publication: PublicationReference;
   expectedLocalCommit: string;
+  observationNotBefore: number | undefined;
 }>;
 
 type TaskVerificationInvariant = Readonly<Pick<
@@ -97,7 +99,7 @@ export async function runTaskPublicationVerifyCommand(
         data: { publication: request.publication, observation: supplied }
       };
     }
-    assertPublicationToolObservation(request.publication, supplied, now);
+    assertPublicationToolObservation(request.publication, supplied, now, request.observationNotBefore);
     observation = supplied;
   } else try {
     const verifier = options.verifiers[request.publication.provider];
@@ -200,7 +202,9 @@ function preparePublicationVerification(
       task: taskVerificationInvariant(task),
       actor,
       publication,
-      expectedLocalCommit: publication.localCommit
+      expectedLocalCommit: publication.localCommit,
+      observationNotBefore: supplied === undefined ? undefined
+        : publicationObservationNotBefore(publication, id => reader.getPublicationReference(task.id, id))
     };
   });
 }
@@ -225,8 +229,12 @@ function assertVerificationObservation(
   }
   if (publication.externalUrl !== undefined
     && (observation.externalUrl === undefined
-      || canonicalPublicationUrl(observation.externalUrl) !== canonicalPublicationUrl(publication.externalUrl))) {
+      || canonicalPublicationUrl(observation.externalUrl, publication.provider)
+        !== canonicalPublicationUrl(publication.externalUrl, publication.provider))) {
     throw usageError("Provider returned mismatched Publication service or URL.");
+  }
+  if (observation.targetBranch === undefined || observation.targetBranch.trim().length === 0) {
+    throw usageError("Provider observation requires an exact target branch.");
   }
   if (publication.targetBranch !== undefined && observation.targetBranch !== publication.targetBranch) {
     throw usageError("Provider returned mismatched Publication target branch.");
@@ -281,6 +289,7 @@ function commitPublicationVerification(
         ...(observation.externalUrl === undefined
           ? {}
           : { externalUrl: observation.externalUrl }),
+        targetBranch: observation.targetBranch!,
         localCommit: request.expectedLocalCommit,
         headCommit: observation.headCommit,
         ...(observation.remoteCommit === undefined ? {} : { remoteCommit: observation.remoteCommit }),

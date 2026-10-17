@@ -110,8 +110,8 @@ export function parseGitHubPullRequest(
   }
   const externalUrl = optionalText(record.url);
   if (externalUrl === undefined
-    || canonicalPublicationUrl(externalUrl)
-      !== canonicalPublicationUrl(`https://${expectedHost}/${repository}/pull/${externalId}`)) {
+    || canonicalPublicationUrl(externalUrl, "github")
+      !== canonicalPublicationUrl(`https://${expectedHost}/${repository}/pull/${externalId}`, "github")) {
     throw new Error("GitHub PR URL does not match the expected service, repository and PR.");
   }
   const mergedAt = optionalText(record.mergedAt);

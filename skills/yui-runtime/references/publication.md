@@ -88,8 +88,14 @@ Read the original output and resolve ambiguous/conflicting results before
 asserting a known state. Do not fabricate evidence or normalize failure into merge.
 
 The observation must name the current immutable Publication, match its candidate,
-URL and target, be no older than that record and be recorded within 24 hours
-without future dating. Identical immediate retries reuse the saved receipt.
+URL and target, and be recorded within 24 hours without future dating. The tool
+read may precede the first upsert or a title-only update: these are bookkeeping,
+not changes to the observed object. Observations must not predate the latest
+material change in the immutable lineage (candidate, object, target or remote
+facts), including a changed-then-restored candidate. When only bookkeeping has
+changed, read the current record and bind the same actual result to its current
+ID; do not repeat the external query just for that update.
+Identical immediate retries reuse the saved receipt.
 Later candidate/URL/target changes invalidate verification; use fresh evidence,
 not an old JSON edited to look current. Inspect `publication show` after an
 uncertain save before retrying. Original records and their full evidence remain.

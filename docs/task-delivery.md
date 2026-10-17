@@ -258,8 +258,12 @@ is limited to 64 KiB. Yui never executes `command` or parses arbitrary output in
 success. It trusts the authorized caller's inspection and checks exact identity,
 URL/service, target, candidate and timestamps.
 
-New evidence must refer to the current Publication and be observed at or after
-its creation, no more than 24 hours before recording, and not in the future.
+New evidence must refer to the current Publication, be no more than 24 hours
+old and not future-dated. Observation may precede initial bookkeeping or a
+title-only update. Immutable history supplies the lower time bound only when
+the candidate, object, target or remote facts materially changed; changing and
+restoring a candidate does not revive earlier evidence. After a title-only
+update, bind the same actual result to the current record ID without re-querying.
 An exact immediate retry returns the existing receipt without duplicating it;
 later changes cannot replay it. The full canonical JSON is kept in the existing
 opaque `evidence` text, with actor and record time on the immutable Publication.
@@ -268,6 +272,11 @@ Once recorded, verification is a fixed observation, not live monitoring or a
 24-hour archive lease. Known later changes require a successor; failures and
 unknown results never assert a fresh success. URL/target/candidate changes reset
 verification, while title-only changes can retain it.
+GitHub repository URL comparison respects case-insensitive owner/name identity.
+GitLab relative deployment paths are allowed, but the complete registered
+service prefix must still match. Adapter observations retain the observed target
+branch even when the earlier Publication did not specify one; missing targets
+cannot establish new verification.
 
 `upsert --verified` is now rejected: use this observation path or the optional
 adapter. No natural-language summary or bare flag verifies a merge. Existing

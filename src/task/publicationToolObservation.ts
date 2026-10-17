@@ -1,5 +1,5 @@
 import { usageError } from "../errors/cliError.js";
-import type { PublicationReference } from "./publicationReference.js";
+import type { PublicationProvider, PublicationReference } from "./publicationReference.js";
 import type { PublicationVerificationObservation } from "./publicationVerification.js";
 
 /**
@@ -82,7 +82,8 @@ export function parsePublicationToolObservation(text: string): PublicationToolOb
 export function assertPublicationToolObservation(
   publication: PublicationReference,
   observation: PublicationToolObservation,
-  now: Date
+  now: Date,
+  observationNotBefore: number | undefined
 ): void {
   for (const field of ["taskId", "projectId", "provider", "repository",
     "externalKind", "externalId", "localCommit", "targetBranch"] as const) {
@@ -94,18 +95,21 @@ export function assertPublicationToolObservation(
     throw usageError("Tool observation publicationId does not match the selected Publication.");
   }
   if (publication.externalUrl === undefined
-    || canonicalPublicationUrl(observation.externalUrl) !== canonicalPublicationUrl(publication.externalUrl)) {
+    || canonicalPublicationUrl(observation.externalUrl, publication.provider)
+      !== canonicalPublicationUrl(publication.externalUrl, publication.provider)) {
     throw usageError("Tool observation externalUrl must match the recorded Publication service and object.");
   }
-  const url = new URL(observation.externalUrl);
+  const url = new URL(canonicalPublicationUrl(observation.externalUrl, publication.provider));
   const path = publication.provider === "gitlab"
     ? `/${publication.repository}/-/merge_requests/${publication.externalId}`
-    : `/${publication.repository}/pull/${publication.externalId}`;
-  if (url.pathname.replace(/\/$/u, "") !== path) {
+    : `/${publication.repository.toLowerCase()}/pull/${publication.externalId}`;
+  // The registered URL comparison above pins the host AND any service prefix.
+  // GitLab may be served below a relative root such as /gitlab.
+  if (publication.provider === "gitlab" ? !url.pathname.endsWith(path) : url.pathname !== path) {
     throw usageError("Tool observation URL does not match the repository and PR/MR identity.");
   }
   const observed = Date.parse(observation.observedAt);
-  if (observed < Date.parse(publication.createdAt)
+  if ((observationNotBefore !== undefined && observed < observationNotBefore)
     || observed > now.getTime() || now.getTime() - observed > MAX_AGE_MS) {
     throw usageError("Tool observation is stale or future-dated; observe the current Publication within 24 hours of recording.");
   }
@@ -114,12 +118,36 @@ export function assertPublicationToolObservation(
   }
 }
 
-export function canonicalPublicationUrl(value: string): string {
+/** Derive the latest material change from immutable history, not title edits or
+ * initial bookkeeping. A tool read may legitimately precede its first upsert.
+ * Changed-then-restored candidates still have a change boundary. */
+export function publicationObservationNotBefore(
+  publication: PublicationReference,
+  previous: (id: string) => PublicationReference | null
+): number | undefined {
+  const fields = [
+    "projectId", "provider", "repository", "externalKind", "externalId",
+    "externalUrl", "localCommit", "targetBranch", "state", "headCommit", "remoteCommit", "mergedAt"
+  ] as const;
+  let current = publication;
+  while (current.supersedes !== undefined) {
+    const prior = previous(current.supersedes);
+    if (prior === null) throw usageError("Publication history is incomplete; cannot validate observation freshness.");
+    if (fields.some(field => current[field] !== prior[field])) {
+      return Date.parse(current.createdAt);
+    }
+    current = prior;
+  }
+  return undefined;
+}
+
+export function canonicalPublicationUrl(value: string, provider?: PublicationProvider): string {
   let url: URL;
   try { url = new URL(value); } catch { throw usageError("Publication URL must be an absolute HTTP(S) URL."); }
   if (!["https:", "http:"].includes(url.protocol) || url.username || url.password
     || url.search || url.hash) {
     throw usageError("Publication URL must be HTTP(S), without credentials, query or fragment.");
   }
-  return `${url.origin}${url.pathname.replace(/\/$/u, "")}`;
+  const path = url.pathname.replace(/\/$/u, "");
+  return `${url.origin}${provider === "github" ? path.toLowerCase() : path}`;
 }
