@@ -22,6 +22,12 @@ import type {
 } from "../task/publicationVerification.js";
 import type { Task } from "../task/task.js";
 import { resolveTaskRecordReference } from "../task/taskRecordReference.js";
+import {
+  assertPublicationToolObservation,
+  canonicalPublicationUrl,
+  parsePublicationToolObservation,
+  type PublicationToolObservation
+} from "../task/publicationToolObservation.js";
 
 export type TaskPublicationVerifyOptions = Readonly<{
   verifiers: Readonly<Partial<Record<PublicationProvider, PublicationVerifier>>>;
@@ -58,7 +64,15 @@ export async function runTaskPublicationVerifyCommand(
     observation: PublicationVerificationObservation;
   }>;
 }> {
-  const reference = parsePublicationVerificationReference(args);
+  const observationIndex = args.indexOf("--observation");
+  if (observationIndex !== -1 && observationIndex !== args.length - 2) {
+    throw usageError("--observation must be followed by one JSON object at the end of the command.");
+  }
+  const supplied = observationIndex === -1 ? undefined
+    : parsePublicationToolObservation(args[observationIndex + 1]!);
+  const reference = parsePublicationVerificationReference(
+    observationIndex === -1 ? args : args.slice(0, observationIndex)
+  );
   const task = store.getTask(reference.taskId);
   if (task === null) throw taskNotFound(reference.taskId);
   if (task.status === "archived") {
@@ -69,17 +83,28 @@ export async function runTaskPublicationVerifyCommand(
     store,
     reference.taskId,
     reference.localId,
-    options.environment
+    options.environment,
+    supplied
   );
-  const verifier = options.verifiers[request.publication.provider];
-  if (verifier === undefined) {
-    throw usageError(
-      `Publication verification is not supported for provider `
-      + `${request.publication.provider}.`
-    );
-  }
+  const now = options.now?.() ?? new Date();
   let observation: PublicationVerificationObservation;
-  try {
+  if (supplied !== undefined) {
+    if (request.publication.evidence === supplied.evidence
+      && request.publication.supersedes === supplied.publicationId) {
+      return {
+        kind: "output",
+        output: `Tool observation already recorded: ${request.publication.id} (${request.publication.verification}).\n`,
+        data: { publication: request.publication, observation: supplied }
+      };
+    }
+    assertPublicationToolObservation(request.publication, supplied, now);
+    observation = supplied;
+  } else try {
+    const verifier = options.verifiers[request.publication.provider];
+    if (verifier === undefined) {
+      throw usageError(`No built-in verifier for ${request.publication.provider}; `
+        + "use --observation with evidence from an authorized tool.");
+    }
     observation = await verifier.inspect({
       provider: request.publication.provider,
       repository: request.publication.repository,
@@ -88,6 +113,9 @@ export async function runTaskPublicationVerifyCommand(
       ...(request.publication.externalUrl === undefined
         ? {}
         : { externalUrl: request.publication.externalUrl }),
+      ...(request.publication.targetBranch === undefined
+        ? {}
+        : { targetBranch: request.publication.targetBranch }),
       expectedLocalCommit: request.expectedLocalCommit
     });
   } catch (error) {
@@ -124,7 +152,8 @@ function preparePublicationVerification(
   store: TaskStore,
   taskId: string,
   publicationId: string,
-  environment: NodeJS.ProcessEnv | undefined
+  environment: NodeJS.ProcessEnv | undefined,
+  supplied?: PublicationToolObservation
 ): PublicationVerificationRequest {
   return store.transaction((reader) => {
     const task = reader.getTask(taskId);
@@ -133,13 +162,20 @@ function preparePublicationVerification(
       throw usageError(`Archived Task Publication cannot be verified: ${task.id}.`);
     }
     const actor = taskActor(environment, task.id);
-    const publication = reader.getPublicationReference(task.id, publicationId);
+    let publication = reader.getPublicationReference(task.id, publicationId);
     if (publication === null) {
       throw dataError(`Publication reference not found: ${task.id}/${publicationId}.`);
     }
     const current = reader.findPublicationReferenceByExternalKey(
       publicationExternalKey(publication)
     );
+    // Only the immediate immutable successor of this exact observation is a
+    // retry. A later observation/candidate must never revive an old receipt.
+    if (current?.taskId === task.id && current.supersedes === publication.id
+      && supplied?.taskId === task.id && supplied.publicationId === publication.id
+      && current.evidence === supplied.evidence) {
+      publication = current;
+    }
     if (current === null || current.taskId !== task.id || current.id !== publication.id) {
       throw usageError(
         `Publication ${publication.id} is not the current unsuperseded record `
@@ -186,6 +222,14 @@ function assertVerificationObservation(
   }
   if (!/^[0-9a-f]{40}$/u.test(observation.headCommit)) {
     throw usageError("Provider observation requires an exact remote head.");
+  }
+  if (publication.externalUrl !== undefined
+    && (observation.externalUrl === undefined
+      || canonicalPublicationUrl(observation.externalUrl) !== canonicalPublicationUrl(publication.externalUrl))) {
+    throw usageError("Provider returned mismatched Publication service or URL.");
+  }
+  if (publication.targetBranch !== undefined && observation.targetBranch !== publication.targetBranch) {
+    throw usageError("Provider returned mismatched Publication target branch.");
   }
   if (observation.state === "merged" && observation.remoteCommit === undefined) {
     throw usageError(
@@ -258,7 +302,7 @@ function parsePublicationVerificationReference(
   args: readonly string[]
 ): Readonly<{ taskId: string; localId: string }> {
   const usage = "Task publication verify usage: "
-    + "yui task publication verify (<task>/<publication-id> | <task> <publication-id>).";
+    + "yui task publication verify (<task>/<publication-id> | <task> <publication-id>) [--observation <json>].";
   if (args.length !== 1 && args.length !== 2) throw usageError(usage);
   return resolveTaskRecordReference(
     args.length === 1 ? args[0]! : `${args[0]}/${args[1]}`,

@@ -738,8 +738,8 @@ const taskChildren: readonly NodeInput[] = [
       {
         name: "upsert", discovery: { surface: "managed", audiences: ["operator","leader"] },
         summary: "Create or immutably update an external PR/MR and its publication state.",
-        usage: "yui task publication upsert <task> --project <project> --provider <github|gitlab> --repository <owner/name> --kind <pull-request|merge-request> --id <external-id> [--url <url>] [--title <text>] [--source-branch <branch>] [--target-branch <branch>] [--local-commit <sha>] [--head-commit <sha>] [--remote-commit <sha>] [--state <open|merged|closed>] [--reported|--verified] [--evidence <text>] [--merged-at <iso-timestamp>]",
-        options: ["--project", "--provider", "--repository", "--kind", "--id", "--url", "--title", "--source-branch", "--target-branch", "--local-commit", "--head-commit", "--remote-commit", "--state", "--reported", "--verified", "--evidence", "--merged-at"]
+        usage: "yui task publication upsert <task> --project <project> --provider <github|gitlab> --repository <owner/name> --kind <pull-request|merge-request> --id <external-id> [--url <url>] [--title <text>] [--source-branch <branch>] [--target-branch <branch>] [--local-commit <sha>] [--head-commit <sha>] [--remote-commit <sha>] [--state <open|merged|closed>] [--reported] [--evidence <text>] [--merged-at <iso-timestamp>]",
+        options: ["--project", "--provider", "--repository", "--kind", "--id", "--url", "--title", "--source-branch", "--target-branch", "--local-commit", "--head-commit", "--remote-commit", "--state", "--reported", "--evidence", "--merged-at"]
       },
       {
         name: "diff", discovery: { surface: "managed", audiences: ["operator","leader"] },
@@ -755,8 +755,9 @@ const taskChildren: readonly NodeInput[] = [
       },
       {
         name: "verify", discovery: { surface: "managed", audiences: ["operator","leader"] },
-        summary: "Observe the current PR/MR head and merge through its provider; record verification separately from Task coverage.",
-        usage: "yui task publication verify (<task>/<publication-id> | <task> <publication-id>)"
+        summary: "Record exact authorized tool evidence, or query the optional gh/glab adapter; verification is separate from Task coverage.",
+        usage: "yui task publication verify (<task>/<publication-id> | <task> <publication-id>) [--observation <json>]",
+        options: ["--observation"]
       },
       {
         name: "list", discovery: { surface: "public", audiences: ["public","operator","leader"] },

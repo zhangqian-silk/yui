@@ -4,6 +4,7 @@ import {
   type CommandRunner
 } from "./pinnedCommandRunner.js";
 import { redactLaunchText } from "../runtime/launchDiagnostics.js";
+import { canonicalPublicationUrl } from "../task/publicationToolObservation.js";
 import type {
   PublicationVerificationInput,
   PublicationVerificationObservation,
@@ -48,15 +49,17 @@ async function inspectGitHubPullRequest(
   if (!PULL_REQUEST_NUMBER.test(input.externalId)) {
     throw new Error(`GitHub pull request id must be numeric: ${input.externalId}.`);
   }
+  const hostname = input.externalUrl === undefined
+    ? "github.com" : new URL(canonicalPublicationUrl(input.externalUrl)).host;
   const result = await run("gh", [
     "pr", "view", input.externalId,
-    "--repo", input.repository,
-    "--json", "number,state,headRefOid,mergeCommit,mergedAt,url"
+    "--repo", `${hostname}/${input.repository}`,
+    "--json", "number,state,headRefOid,mergeCommit,mergedAt,url,baseRefName"
   ]);
   if (result.code !== 0) {
     if (result.code === 127) {
       throw new Error(
-        "GitHub verification requires a trusted gh executable on PATH."
+        "The built-in GitHub adapter needs gh on PATH; alternatively record authorized tool evidence with task publication verify --observation."
       );
     }
     const detail = boundedFailureDetail(
@@ -70,14 +73,16 @@ async function inspectGitHubPullRequest(
   return parseGitHubPullRequest(
     result.stdout,
     input.repository,
-    input.externalId
+    input.externalId,
+    hostname
   );
 }
 
 export function parseGitHubPullRequest(
   stdout: string,
   repository: string,
-  externalId: string
+  externalId: string,
+  expectedHost = "github.com"
 ): PublicationVerificationObservation {
   let parsed: unknown;
   try {
@@ -104,6 +109,11 @@ export function parseGitHubPullRequest(
     throw new Error("Merged GitHub PR did not expose a merge commit.");
   }
   const externalUrl = optionalText(record.url);
+  if (externalUrl === undefined
+    || canonicalPublicationUrl(externalUrl)
+      !== canonicalPublicationUrl(`https://${expectedHost}/${repository}/pull/${externalId}`)) {
+    throw new Error("GitHub PR URL does not match the expected service, repository and PR.");
+  }
   const mergedAt = optionalText(record.mergedAt);
   return {
     provider: "github",
@@ -111,6 +121,7 @@ export function parseGitHubPullRequest(
     externalKind: "pull-request",
     externalId,
     ...(externalUrl === undefined ? {} : { externalUrl }),
+    ...(optionalText(record.baseRefName) === undefined ? {} : { targetBranch: optionalText(record.baseRefName)! }),
     state,
     headCommit,
     ...(remoteCommit === undefined ? {} : { remoteCommit }),

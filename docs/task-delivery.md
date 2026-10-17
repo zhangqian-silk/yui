@@ -208,8 +208,10 @@ Task Integration produced that exact candidate, pass its local ID with
 This records one Task event, not a new delivery status, Candidate lifecycle,
 Git operation, or permission to change completed work.
 
-`task publication verify` remains the explicit, authorized provider read. It
-records the remote source head, PR/MR state and merge commit independently of
+`task publication verify` accepts tool-neutral evidence with `--observation
+<json>`, or performs an explicit authorized provider read with the optional
+gh/glab adapter when that option is absent. Neither tool is mandatory.
+It records the remote source head, PR/MR state and merge commit independently of
 Task acceptance. A mismatched head or non-merged state is saved as **reported**,
 superseding earlier verification; provider errors or mismatched external identity
 write nothing. A merged provider observation verifies only that Publication's
@@ -217,6 +219,61 @@ exact local candidate. A squash merge needs no fabricated commit ancestry.
 Metadata/verification successors preserve adoption only through an uninterrupted
 same-candidate Publication lineage. Candidate or referenced Integration changes
 cannot silently reuse the decision.
+
+### Record a Leader's tool observation
+
+First `publication upsert` the owning Task's exact candidate, PR/MR URL and
+target branch. The Leader can inspect that object with any authorized CLI/API,
+interpret its result, and submit the following JSON using
+`task publication verify task-1/publication-1 --observation '<json>'`:
+
+```json
+{
+  "taskId": "task-1",
+  "publicationId": "publication-1",
+  "projectId": "project-1",
+  "provider": "gitlab",
+  "repository": "team/app",
+  "externalKind": "merge-request",
+  "externalId": "42",
+  "externalUrl": "https://forge.example/team/app/-/merge_requests/42",
+  "targetBranch": "main",
+  "localCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "state": "merged",
+  "headCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "remoteCommit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "observedAt": "2026-10-17T04:00:00.000Z",
+  "tool": "internal-cli",
+  "command": "internal-cli mr inspect team/app!42",
+  "output": "{\"iid\":42,\"state\":\"merged\",\"sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"merge_commit_sha\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}"
+}
+```
+
+Replace every example identity, SHA, timestamp and output with observed facts.
+`provider` describes the forge (GitHub PR or GitLab MR), not the tool brand.
+All fields shown are required for a merged observation; `remoteCommit` is optional
+for open/closed, and `mergedAt` is optional. Output must be a nonempty, sanitized
+relevant response excerpt, not credentials or just a conclusion; the whole JSON
+is limited to 64 KiB. Yui never executes `command` or parses arbitrary output into
+success. It trusts the authorized caller's inspection and checks exact identity,
+URL/service, target, candidate and timestamps.
+
+New evidence must refer to the current Publication and be observed at or after
+its creation, no more than 24 hours before recording, and not in the future.
+An exact immediate retry returns the existing receipt without duplicating it;
+later changes cannot replay it. The full canonical JSON is kept in the existing
+opaque `evidence` text, with actor and record time on the immutable Publication.
+There is no new persistent format or migration; historical records remain valid.
+Once recorded, verification is a fixed observation, not live monitoring or a
+24-hour archive lease. Known later changes require a successor; failures and
+unknown results never assert a fresh success. URL/target/candidate changes reset
+verification, while title-only changes can retain it.
+
+`upsert --verified` is now rejected: use this observation path or the optional
+adapter. No natural-language summary or bare flag verifies a merge. Existing
+verified records are not rewritten. Remote delivery and ordinary archive reuse
+sufficient exact evidence without another gh/glab read; acceptance, business
+settlement, stopped execution and safe resource cleanup remain independent.
 
 CLI, current Leader Context and Web derive coverage from these same facts, with
 no provider reads or evidence writes. They distinguish not delivered, merged

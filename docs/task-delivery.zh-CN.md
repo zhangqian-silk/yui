@@ -161,12 +161,38 @@ Review 时跳过刷新，该新鲜度字段为 null。重复完成不重新观�
 `--integration <id>`，一并绑定其已提交证据。这只新增一个 Task 事件，不新增交付
 状态表、Candidate 生命周期或 Git 操作，也不授权修改已完成成果。
 
-`task publication verify` 仍是显式且须获授权的 provider 读取。它独立于 Task
+`task publication verify --observation '<json>'` 接受 Leader 通过任意获授权
+CLI/API 得到的精确工具证据；省略此选项时才使用可选 gh/glab 适配器执行 provider
+读取。不强制工具品牌，也不要求已充分核验的结果再用 gh/glab 重查。它独立于 Task
 验收，记录远端 source head、PR/MR 状态和 merge commit。head 不匹配或尚未合并时，
 保存为 **reported** 并取代旧验证；provider 错误或外部身份不匹配则不写任何证据。
 已合并的 provider 观察仅验证该 Publication 的精确本地候选；squash 不需要伪造
 提交祖先关系。元数据/验证更新只有沿连续同候选的 Publication 血缘才能继承采用；
 候选或所引用的 Integration 变化，不能悄悄复用旧决定。
+
+先用 `publication upsert` 登记本 Task 的精确候选、PR/MR URL（含服务地址）和
+目标分支，再用工具检查该对象。观察 JSON 的完整示例见
+[工具证据录入](task-delivery.md#record-a-leaders-tool-observation)；
+必需字段为 `taskId`、`publicationId`、`projectId`、`provider`、`repository`、
+`externalKind`、`externalId`、`externalUrl`、`targetBranch`、`localCommit`、
+`state`、`headCommit`、`observedAt`、`tool`、`command`、`output`。
+合并状态还必须有 `remoteCommit`，`mergedAt` 可选。SHA 为完整小写值，时间为
+ISO 时间戳。`provider` 表示 GitHub/GitLab 服务，不表示工具品牌。
+`output` 保留经过脱敏的实际响应关键摘录，不是凭据或一句“已合并”结论；
+完整 JSON 最大 64 KiB。Yui 不执行 `command`，不解析任意自然语言来判定成功。
+Leader 负责实际检查和解释输出，Core 负责身份、服务 URL、目标、候选和时间绑定。
+
+新证据必须引用当前不可变 Publication，观察时间不早于该记录创建时间、
+距登记不超过 24 小时且不能在未来。相同观察的直接重试复用原回执；之后发生变化
+不能重放旧回执。完整规范化 JSON 保存在既有不透明 `evidence` 文本中，操作者和
+登记时间由 Publication 保留；没有新增持久化格式，也不改写历史证据。
+登记后的验证是固定观察，不是实时监控或 24 小时归档租约；已知后续变化须另记
+后继事实。失败或未知结果不能变成新的验证成功。URL、目标分支、候选变化会失效
+旧验证；仅标题变化可保留验证。
+
+`upsert --verified` 现在会被拒绝，请使用上述观察入口或可选适配器。
+现存已验证历史保持可读。普通归档复用精确充分的证据，不重跑指定工具；
+候选验收、业务结清、执行停止和安全清理检查不变。
 
 CLI、当前 Leader Context 和 Web 从同一组事实推导覆盖，不联网、不写证据。展示
 区分尚未交付、PR/MR 已合并但未覆盖、已覆盖合并但未验证、部分交付、已验证合并。

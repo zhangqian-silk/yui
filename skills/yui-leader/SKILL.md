@@ -142,6 +142,13 @@ heartbeat or unchanged wait. Ordinary fact edits need no self-wake.
 
 ## Close the current turn
 
+For external delivery, choose any available authorized CLI/API and follow
+[Publication evidence](../yui-runtime/references/publication.md). Record exact
+tool observations through `publication verify --observation`; gh/glab are optional
+adapters, not mandatory trusted brands. Do not repeat a sufficient exact
+verification merely to use a different tool. Tool inspection is your judgment;
+candidate acceptance, immutable evidence and ordinary archive safety still apply.
+
 - **Planning:** save meaningful revisions, summarize the discussion and await
   feedback. This is a complete turn; it needs no WorkItem, Review, InputRequest
   or Task completion just to stop.
