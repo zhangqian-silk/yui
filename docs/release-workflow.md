@@ -51,6 +51,49 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.10.0 compatibility and migration notes
+
+This stable minor includes exact-turn inbox handling and successor recovery
+(Task131 / PR #463 and Task134 / PR #464), plus authenticated trusted-LAN Web
+access and current Operator lifecycle controls (Task135 / PR #465).
+It also includes explicit Task Project delivery scope and safe ordinary archive
+(PR #462), and deployment-specific GitLab publication URLs (PR #461).
+
+Web still defaults to loopback. Explicit private/wildcard binding requires
+`--auth-file <absolute-path>` with an owner-only password file; the browser
+username is `yui`. Authentication precedes workbench content, APIs and Terminal,
+while sandbox previews retain their narrower, listener-scoped read tickets.
+HTTP remains unencrypted: use a trusted network, not a public deployment.
+Current Operator starts, `--detach`, and `--json` return Controller-owned
+receipts; inspect with `yui web --status` and stop with `yui web --stop`.
+Credential rotation requires stop/start, and Controller recovery does not
+automatically reopen Web. See [controlled Web access](web-access.md).
+
+Inbox consumers should use the current/history views and exact returned
+identities. Missing acknowledgement is not proof that work was never executed.
+A successor inspects original input and prior effects before settling a retained
+claim; it does not replay the input or borrow another Session's authority.
+Exact terminal handling checks remain bounded. Project delivery exclusions
+require original scoped authorization and do not erase bindings or prove a merge.
+See [CLI information contracts](cli-information-contract.md) and
+[Project delivery scope](project-delivery-scope.md).
+
+Storage advances from **1.11 to 1.13** through the centralized transitions:
+**1.12** declares Project delivery decisions; **1.13** declares exact inbox
+attempt/target identities, Global input retirement and terminal handling checks.
+Historical messages, claims and acceptance evidence are preserved without
+inventing old Turn ownership or ACKs. Supported **1.0–1.12** Homes use the
+existing same-major update path. With separate update authorization, use
+`yui update --version 2.10.0`; the updater owns preflight, backup, migration and
+Controller handover. Do not open upgraded Homes with an older binary or edit
+storage manually. Package minor numbering is not a blanket compatibility promise.
+
+Release gates reuse exact-commit Core CI and test one runtime tarball on
+Linux x64 and macOS x64/arm64 with Node 20/22/24/26 before npm publication.
+These are deterministic and isolated runtime checks, not real-model validation.
+Publishing does not update any global CLI, migrate a production Home, replace
+an Agent Session or start a production Web listener.
+
 ### 2.9.0 compatibility and migration notes
 
 This stable minor includes scoped Job definitions and exact execution Runs,
