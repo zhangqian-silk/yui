@@ -57,6 +57,7 @@ const RUNTIME_DOCUMENTS = [
   "docs/sqlite-control-plane-design.md",
   "docs/sqlite-control-plane-design.zh-CN.md",
   "docs/storage-baseline.md",
+  "docs/project-delivery-scope.md",
   "docs/job-runs.md",
   "docs/schedules.md",
   "docs/storage-baseline.zh-CN.md",
