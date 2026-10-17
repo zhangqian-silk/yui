@@ -69,6 +69,7 @@ const BRIEF_RELEVANT_EVENTS = [
   "message.sent", "message.updated", "message.native-user-input", "brief.updated",
   "decision.recorded", "decision.superseded", "input.requested", "input.answered", "input.cancelled", "input.auto-answered",
   "run.completed", "run.failed", "run.cancelled", "job.state-changed", "work.accepted",
+  "runtime.role-delivery-failed", "run.retired",
   "work.updated", "work.edited", "work.scope-updated", "work.rejected", "work.retired",
   "review.completed", "review.failed", "integration.updated", "integration.completed", "integration.failed",
   "milestone.added",
