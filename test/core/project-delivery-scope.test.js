@@ -42,7 +42,7 @@ test("Project scope changes preserve code facts, exact acceptance and current de
     projectId: "project-1", provider: "github", repository: "fixture/app", externalKind: "pull-request",
     externalId: "1", localCommit: head, state: "merged", verification: "verified", remoteCommit: "c".repeat(40)
   }, now));
-  const run = args => runTaskCommand(args, store, { environment: {}, now: () => now });
+  const run = (args, at = now) => runTaskCommand(args, store, { environment: {}, now: () => at });
   const delivery = () => projectTaskRemoteDeliveryFromStore(store, task);
   const change = (requirement, guard) => ["project", "delivery", task.id, "project-2",
     "--requirement", requirement, "--reason", "Final scope follows user's original instruction",
@@ -68,9 +68,13 @@ test("Project scope changes preserve code facts, exact acceptance and current de
   assert.deepEqual(run(["remote-delivery", task.id]).data, scoped);
   const proof = createTaskRemoteDeliveryProof(store, task);
   assert.throws(() => run(change("required", "none")), /changed/);
-  run(change("required", excluded.id));
+  const restored = run(change("required", excluded.id), new Date(now.getTime() - 1000)).data;
+  assert.equal(restored.payload.supersedes, excluded.id);
+  assert.equal(delivery().projects[1].scopeDecision.id, restored.id,
+    "a later durable decision wins even when the wall clock moves backwards");
   assert.equal(delivery().integratedCoverageSatisfied, false);
   assert.throws(() => assertTaskRemoteDeliveryProof(store, task, proof), /evidence changed/);
+  assert.throws(() => run(change("excluded", excluded.id)), /changed/);
   assert.deepEqual(store.getTask(task.id), task);
   assert.deepEqual(store.listEvents(task.id).find(e => e.id === completion.id), completion);
 });

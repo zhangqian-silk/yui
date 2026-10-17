@@ -9,8 +9,8 @@ export function projectDeliveryDecision(
 ): TaskEvent | null {
   return events.filter(event => event.taskId === taskId
     && event.type === PROJECT_DELIVERY_DECIDED_EVENT && event.payload.projectId === projectId)
-    .slice().sort((a, b) => a.createdAt.localeCompare(b.createdAt)
-      || a.id.localeCompare(b.id, undefined, { numeric: true })).at(-1) ?? null;
+    // Task event IDs are monotonic durable sequence numbers; wall clocks can move backwards.
+    .sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true })).at(-1) ?? null;
 }
 
 export function projectDeliveryRequirement(decision: TaskEvent | null): ProjectDeliveryRequirement {
