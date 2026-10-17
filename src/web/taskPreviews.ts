@@ -18,6 +18,15 @@ export function createTaskPreviews(store: PreviewStore, home: string) {
   const key = (taskId: string, jobId: string) =>
     createHmac("sha256", secret).update(JSON.stringify([taskId, jobId])).digest("base64url");
   const prefix = (job: DurableJob) => `/preview/${encodeURIComponent(job.taskId)}/${encodeURIComponent(job.id)}/${key(job.taskId, job.id)}/`;
+  const ticketTarget = (request: IncomingMessage) => {
+    const url = new URL(request.url ?? "/", "http://localhost");
+    const match = /^\/preview\/([A-Za-z0-9_-]+)\/([A-Za-z0-9_-]+)\/([A-Za-z0-9_-]+)\/(.*)$/.exec(url.pathname);
+    if (!match || (request.method !== "GET" && request.method !== "HEAD")) return undefined;
+    const [, taskId, jobId, ticket, path] = match;
+    const expected = key(taskId!, jobId!);
+    return ticket!.length === expected.length && timingSafeEqual(Buffer.from(ticket!), Buffer.from(expected))
+      ? { taskId: taskId!, jobId: jobId!, path: path!, search: url.search } : undefined;
+  };
   const registered = (taskId: string, jobId: string) => {
     const job = store.getDurableJob(taskId, jobId);
     if (!store.getTask(taskId) || !job || job.taskId !== taskId || !isHttpPreview(job.env)) {
@@ -50,6 +59,10 @@ export function createTaskPreviews(store: PreviewStore, home: string) {
     return result;
   };
   return {
+    // Issued only by the authenticated list API. This credential authorizes
+    // one preview's reads, not the main page, APIs, writes or Terminal.
+    // Opaque sandbox fetch/module requests intentionally carry no user auth.
+    authenticated(request: IncomingMessage) { return ticketTarget(request) !== undefined; },
     async list(taskId: string) {
       if (!store.getTask(taskId)) throw new WebRequestRejected("Task not found.");
       const jobs = store.listDurableJobs(taskId).filter(job => isHttpPreview(job.env)).reverse();
@@ -96,29 +109,24 @@ export function createTaskPreviews(store: PreviewStore, home: string) {
       });
     },
     async serve(request: IncomingMessage, response: ServerResponse): Promise<void> {
-      const url = new URL(request.url ?? "/", "http://localhost");
-      const match = /^\/preview\/([A-Za-z0-9_-]+)\/([A-Za-z0-9_-]+)\/([A-Za-z0-9_-]+)\/(.*)$/.exec(url.pathname);
       const fail = (status: number, detail: string) => {
         response.statusCode = status;
         response.setHeader("content-type", "text/plain; charset=utf-8");
         response.end(detail);
       };
-      if (!match) { fail(403, "Invalid preview ticket."); return; }
-      const [, taskId, jobId, ticket, path] = match;
-      const expected = key(taskId!, jobId!);
-      if (ticket!.length !== expected.length || !timingSafeEqual(Buffer.from(ticket!), Buffer.from(expected))) {
-        fail(403, "Invalid preview ticket."); return;
-      }
       if (request.method !== "GET" && request.method !== "HEAD") {
         fail(405, "Preview supports GET and HEAD only."); return;
       }
+      const target = ticketTarget(request);
+      if (!target) { fail(403, "Invalid preview ticket."); return; }
+      const { taskId, jobId, path, search } = target;
       let job: DurableJob;
       try {
         job = registered(taskId!, jobId!);
         if (state(job) !== "running") throw new Error("Service is not running; refresh Task preview status.");
       } catch (error) { fail(409, (error as Error).message); return; }
       try {
-        const result = await read(job, "/" + path + url.search, request.method);
+        const result = await read(job, "/" + path + search, request.method);
         const base = prefix(job);
         // No upstream CSP, cookies, auth, redirects, or CORS escape this boundary.
         const source = `http://${request.headers.host}${base}`;
@@ -138,7 +146,7 @@ export function createTaskPreviews(store: PreviewStore, home: string) {
           if (/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(result.location)) {
             fail(502, "External/absolute redirects are not supported in preview."); return;
           }
-          const target = new URL(result.location, "http://preview.invalid/" + path + url.search);
+          const target = new URL(result.location, "http://preview.invalid/" + path + search);
           response.setHeader("location", base + target.pathname.slice(1) + target.search + target.hash);
         }
         response.statusCode = result.status;

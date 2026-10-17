@@ -53,7 +53,7 @@ test("Web Job ingress fixes scope, rejects caller injection and preserves exact 
   const config = { kind: "builtin", action: "system.noop", input: {} };
   assert.equal((await api(global, { op: "define", id: "noop", title: "Probe", configuration: config })).status, 200);
   assert.equal((await api(global, { op: "define", id: "cross-origin", title: "Probe", configuration: config },
-    { origin: "http://other.invalid" })).status, 409);
+    { origin: "http://other.invalid" })).status, 403);
   assert.deepEqual((await api(task + "?op=list")).body.map(j => j.id), ["owned-task-1"]);
   assert.equal((await api(task + "?op=show&id=owned-task-2")).status, 409);
   assert.equal((await api(task + "?op=list&scope=global")).status, 409);

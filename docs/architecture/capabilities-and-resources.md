@@ -122,12 +122,14 @@ catalog; there is no second catalog or Host. A CLI contribution uses the
 capability's original name. A Web panel accepts only controlled text, an HTTP(S)
 link or a JSON query description — not author scripts or arbitrary HTML.
 
-The Web listener is started and stopped by the Controller and allows loopback
-only (`127.0.0.1`, `::1` or `localhost`; default port 4173). `yui web` opens this
-local surface, not a remote multi-user service or an OS sandbox.
+The Controller owns the single Web listener, defaulting to `127.0.0.1:4173`.
+Explicit trusted-LAN binding requires a private credential file; authentication
+precedes documents, APIs, previews and Terminal. See [controlled Web access](../web-access.md).
+Current Operator lifecycle calls are revalidated separately from browser access.
+This is still a single-user surface, not a multi-user service or an OS sandbox.
 
 The page supplies a token that authenticates all HTTP API reads and writes via
-`x-yui-web-token`; the server also checks the loopback Host. These controls act
+`x-yui-web-token`; the server also checks exact allowed Host/port and Origin. These controls act
 as the trusted local user, not a Role selected by the request body. They support
 Task metadata edits, messages, InputRequest answers, and explicit
 `queue / steer / interrupt` for Task or Global Roles. Managed Agent capability

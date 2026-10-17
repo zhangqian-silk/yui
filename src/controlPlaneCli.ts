@@ -332,8 +332,6 @@ export async function main(): Promise<void> {
   const discovery = discoveryCommandTree(process.env);
   invocationHome = home;
   const routedForFence = args.length === 0 ? undefined : routeInvocation(args);
-  const managedInvocation = process.env.YUI_SESSION_SCOPE === "task"
-    || process.env.YUI_SESSION_SCOPE === "global";
   const homeFreeInvocation = args.length === 0
     || (args[0] === "config" && (args[1] === "describe"
       || (args[1] === "completion" && args[2] === "candidates")))
@@ -888,26 +886,45 @@ export async function main(): Promise<void> {
     const workspaceCoordinator = new TaskWorkspaceCoordinator(store, workspacePreparer, runtime);
 
     if (resolved[0] === "web") {
-      if (managedInvocation || process.env.YUI_ROLE || process.env.YUI_NATIVE_SESSION_ID) {
-        throw usageError("The Web user ingress must be started from a local user terminal, not a managed Session.");
+      if (hasManagedIdentity(process.env)) {
+        const current = requireManagedCaller(store, process.env);
+        if (current.scope !== "global" || current.roleName !== "operator") {
+          throw usageError("Only a local user or the current global Operator may manage Web listeners.");
+        }
       }
+      const caller = resolveJobCaller(process.env, "");
+      type Status = { id?: string; url?: string | null; urls?: string[]; warnings?: string[];
+        state: string; alreadyRunning?: boolean; authentication?: string };
+      const describe = (status: Status | null) => status
+        ? `Web listener: ${status.state}\n`
+          + (status.alreadyRunning ? "Existing listener reused; credentials were not reloaded.\n" : "")
+          + (status.authentication === "basic" ? "Browser authentication: username yui; use the password from your private credential file.\n" : "")
+          + (status.urls ?? []).map(url => `Yui web control room: ${url}\n`).join("")
+          + (status.warnings ?? []).map(warning => `Warning: ${warning}\n`).join("")
+        : "Web is not running. Start it explicitly; Controller recovery does not restore listeners.\n";
       if (resolved.length === 2 && (resolved[1] === "--status" || resolved[1] === "--stop")) {
-        const status = await callController(home, "web.status", {}) as { id: string; url: string } | null;
-        if (resolved[1] === "--status") emit(status ? `Yui web control room: ${status.url}\n` : "Web is not running.\n", false, status);
+        const status = await callController(home, "web.status", { caller }) as Status | null;
+        if (resolved[1] === "--status") emit(describe(status), false, status);
         else {
-          if (status) await callController(home, "web.stop", { id: status.id });
-          emit("Web listener stopped; Controller and Agents are unchanged.\n");
+          if (status && !status.id) throw usageError("Web listener is starting; query status before stopping.");
+          const result = status ? await callController(home, "web.stop", { id: status.id!, caller }) : { stopped: false };
+          emit("Web listener stopped or already absent; Controller and Agents are unchanged.\n", false, result);
         }
         return;
       }
-      if (jsonOutput) throw usageError("Web start does not support --json; use --status.");
-      const options = parseWebCommandOptions(resolved.slice(1));
+      const detached = jsonOutput || caller.scope === "global" || resolved.includes("--detach");
+      const options = parseWebCommandOptions(resolved.slice(1).filter(arg => arg !== "--detach"));
       const id = randomUUID();
-      await callController(home, "web.start", { ...options, id });
-      const displayHost = options.host === "::1" ? "[::1]" : options.host;
-      process.stdout.write(`Yui web control room: http://${displayHost}:${options.port}\n`);
+      const status = await callController(home, "web.start", { ...options, id, caller }) as Status;
+      emit(describe(status), false, status);
+      if (detached || status.alreadyRunning) return;
       await new Promise<void>((resolve) => {
+        // The Controller owns the listening socket, so this CLI otherwise has
+        // no referenced handle: a Promise/signal handler alone does not keep
+        // Node alive for the foreground user's Ctrl-C.
+        const keepAlive = setInterval(() => {}, 60_000);
         const stop = () => {
+          clearInterval(keepAlive);
           process.off("SIGINT", stop);
           process.off("SIGTERM", stop);
           resolve();
@@ -915,7 +932,7 @@ export async function main(): Promise<void> {
         process.once("SIGINT", stop);
         process.once("SIGTERM", stop);
       });
-      await callController(home, "web.stop", { id });
+      await callController(home, "web.stop", { id, caller });
       return;
     }
 
