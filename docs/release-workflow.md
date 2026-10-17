@@ -51,6 +51,49 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.9.0 compatibility and migration notes
+
+This stable minor includes scoped Job definitions and exact execution Runs,
+persistent Schedules, controlled Project refresh, and their Task/settings
+management UI. It also includes Task124's activation-source and bounded
+temporal-context changes (PR #458) and Task130's tool-neutral publication
+verification (PR #459).
+
+There are deliberate interface changes. Job definitions and Runs have distinct
+identities; existing `job start/get/cancel/acknowledge` continue to address
+one-shot Task executions, while `job define/run/runs/run-get` manage the new
+definition/Run model. Schedules reference scoped Jobs and do not replace Run
+results. `task brief update` now requires the `writeGuard` from `task brief show`
+as `--if-current`; reread and reconcile after a stale-guard rejection. Activation
+requests require explicit source provenance for Leaders. Context consumers must
+respect bounded pages, frozen references and Home/Task-bound event continuations.
+See [Jobs](job-runs.md), [Schedules](schedules.md) and
+[CLI information contracts](cli-information-contract.md).
+
+Leaders may verify a PR/MR through any authorized CLI/API and record exact
+structured evidence with `task publication verify --observation`. Built-in
+gh/glab adapters remain optional. `publication upsert --verified` can no longer
+assert verification without evidence; use the verification entry point instead.
+Existing historical evidence is retained. Candidate/object binding, immutable
+history, observation freshness and ordinary archive safety remain enforced;
+tool output interpretation remains the authorized Leader's responsibility.
+
+Storage advances from **1.8 to 1.11** through the centralized contiguous
+migrations: **1.9** adds Job definitions/global Runs and preserves each old
+Task execution's identity and original payload; **1.10** adds Schedules;
+**1.11** declares activation-source event provenance without inventing historical
+sources or rewriting frozen digests. Supported **1.0–1.10** Homes use the
+existing same-major update path. With update authorization, run
+`yui update --version 2.9.0`; the updater owns preflight, backup, migration and
+Controller handover. Do not open an upgraded Home with an older binary or edit
+storage manually. Missing historical provenance remains an explicit diagnostic.
+
+Release validation uses exact-commit Core CI and the existing fresh-install
+matrix for the same runtime tarball on Linux x64, macOS x64/arm64 and Node
+20/22/24/26, with checksums and npm provenance. This is not real-model or company
+API validation. Package publication does not itself update any global CLI,
+Home or Controller; that is a separately authorized Operator operation.
+
 ### 2.8.1 compatibility and migration notes
 
 This patch fixes maintenance startup for an existing Operator conversation

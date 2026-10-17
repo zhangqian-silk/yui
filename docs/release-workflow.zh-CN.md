@@ -36,6 +36,39 @@ Agent 选择一个预先声明的计划，设施从持久状态驱动该计划�
 不能将不兼容冒称为兼容，也不为回避版本选择新增历史兼容机制。包版本与协议、
 持久存储契约仍然独立：兼容性检查和必要迁移要求不变，下文存储规则不授予发版权限。
 
+### 2.9.0 兼容性及迁移说明
+
+本稳定 minor 包含分作用域的 Job 定义与精确执行 Run、持久 Schedule、受控 Project
+刷新，以及 Task／设置页中的管理界面。同时纳入 Task124 的激活来源与有界时序
+上下文改动（PR #458）和 Task130 的工具中立交付验证（PR #459）。
+
+本版包含明确的接口变化：Job 定义与 Run 使用不同身份；原有
+`job start/get/cancel/acknowledge` 仍针对单次 Task 执行，新
+`job define/run/runs/run-get` 管理定义／Run 模型。Schedule 引用同作用域的 Job，
+不替代执行结果。`task brief update` 现在必须把 `task brief show` 返回的
+`writeGuard` 作为 `--if-current` 提交；旧 guard 被拒绝后需重读并协调修改。
+Leader 的激活请求必须提供明确来源。上下文消费者须遵循有界分页、冻结引用、
+Home／Task 绑定的事件续读契约。详见 [Jobs](job-runs.md)、
+[Schedules](schedules.md) 和 [CLI 信息契约](cli-information-contract.zh-CN.md)。
+
+Leader 可通过任意已获授权的 CLI/API 核验 PR/MR，再用
+`task publication verify --observation` 保存精确结构化证据；内置 gh/glab
+适配器仍为可选路径。`publication upsert --verified` 不再允许无证据声明验证，
+应改用正式验证入口。已有历史证据保留；候选／对象绑定、不可变历史、观察时效和
+普通归档安全边界继续执行，工具输出的语义判断仍由获授权 Leader 负责。
+
+存储经集中式连续迁移从 **1.8 升至 1.11**：**1.9** 新增 Job 定义／全局 Run，
+保留每个旧 Task 执行身份及原始 payload；**1.10** 新增 Schedule；**1.11**
+声明激活来源事件属性，不猜造历史来源或改写冻结摘要。受支持的 **1.0–1.10**
+Home 沿用同 major 更新路径。获更新授权后执行 `yui update --version 2.9.0`，
+由更新器负责预检、备份、迁移与 Controller 交接；不要用旧程序打开已升级 Home，
+也不要手工编辑存储。缺失的历史来源仍明确报告为诊断。
+
+发布验证使用精确提交的 Core CI，以及针对同一 runtime tarball 的既有全新安装
+矩阵，覆盖 Linux x64、macOS x64/arm64 和 Node 20/22/24/26，并保留校验和及 npm
+来源证明；不冒称真实模型或公司 API 验证。包发布本身不会更新任何全局 CLI、
+Home 或 Controller，这由另行获授权的 Operator 操作负责。
+
 ### 2.8.1 兼容性及迁移说明
 
 本 patch 修复已有 Operator 会话仅携带 native 身份（包括 Codex Desktop）时的
