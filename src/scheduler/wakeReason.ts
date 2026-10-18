@@ -25,6 +25,7 @@ export const WAKE_REASON_KINDS = Object.freeze([
   "leader-turn-failed",
   "role-turn-failed",
   "job-finished",
+  "job-agent-input",
   "published-tree-authorized",
   "notification-retry",
   "force-wake"
@@ -43,6 +44,9 @@ export type WakeReason = Readonly<{
 const IMMEDIATE_KINDS: ReadonlySet<string> = new Set([
   "operator-input",
   "user-message",
+  // An explicitly admitted Agent Job is new input, not a background result
+  // to debounce. All existing busy/ownership/delivery checks still apply.
+  "job-agent-input",
   "task-created",
   "execution-started",
   "session-replaced",

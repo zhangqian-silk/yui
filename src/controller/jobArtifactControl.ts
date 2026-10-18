@@ -3,7 +3,9 @@ import type { JsonValue } from "../core/protocol.js";
 import { requireKnownFields } from "../domain/validation.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import type { JobScope } from "../job/jobDefinition.js";
-import type { JobRun } from "../job/durableJob.js";
+import type { JobRun as ProcessJobRun } from "../job/durableJob.js";
+import type { AgentJobRun } from "../job/agentJob.js";
+type JobRun = ProcessJobRun | AgentJobRun;
 import { runReference } from "../job/jobBusinessResult.js";
 import { createJobDefinitionControl } from "./jobDefinitionControl.js";
 import { assertCallerAuthorized, type DurableJobCaller } from "./jobControl.js";
@@ -97,7 +99,8 @@ export async function controlJobArtifact(store: TaskStore, home: string, value: 
       if (previous.some(item => isDeepStrictEqual(item, ref))) return { status: "registered", reference: ref };
       const next = { ...fresh, artifacts: [...previous, ref],
         updatedAt: new Date(Math.max(now.getTime(), Date.parse(fresh.updatedAt))).toISOString() };
-      if ("taskId" in next) tx.saveDurableJob(next.taskId, next);
+      if ("executor" in next) tx.saveAgentJobRun(next);
+      else if ("taskId" in next) tx.saveDurableJob(next.taskId, next);
       else tx.saveGlobalJobRun(next);
       return { status: "registered", reference: ref };
     });

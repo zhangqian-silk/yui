@@ -1,3 +1,4 @@
+import { validateAgentJobRun, assertAgentJobRunTransition, type AgentJobRun, type JobAgentRecipient } from "../job/agentJob.js";
 /**
  * SQLite WAL Store (task-21, work-item-3).
  *
@@ -1545,6 +1546,7 @@ export class SqliteTaskStore implements TaskStore {
     return {
       ...base,
       pendingUserMessages: pendingCompletionMessages(this, taskId),
+      agentJobs: this.listAgentJobRuns({ kind: "task", taskId }),
       managedWorkspaces: this.#sortById(
         this.#listPayload<ManagedWorkspace>("managed_workspaces", "task_id = ?", [taskId]),
         (workspace) => managedWorkspaceKey(workspace.owner)
@@ -1742,6 +1744,46 @@ export class SqliteTaskStore implements TaskStore {
         ON CONFLICT(run_id) DO UPDATE SET payload=excluded.payload,status=excluded.status`)
         .run(run.id, this.#recordJson("global_job_runs", run), run.status);
     });
+  }
+
+  saveAgentJobRun(run: AgentJobRun): void {
+    validateAgentJobRun(run);
+    if (run.scope.kind === "task") this.#requireTask(run.scope.taskId);
+    this.#mutate(() => {
+      const previous = this.getAgentJobRun(run.id);
+      if (previous) assertAgentJobRunTransition(previous, run);
+      this.#db.prepare(`INSERT INTO agent_job_runs VALUES(?,?,?,?)
+        ON CONFLICT(run_id) DO UPDATE SET payload=excluded.payload`)
+        .run(run.id, jobScopeKey(run.scope), run.definitionId, this.#recordJson("agent_job_runs", run));
+      if (run.scope.kind === "task" && (!previous || previous.status !== run.status
+        || !isDeepStrictEqual(previous.businessResult, run.businessResult) || previous.cancelRequestedAt !== run.cancelRequestedAt)) {
+        const taskId = run.scope.taskId;
+        this.saveEvent(taskId, createTaskEvent(this.nextEventId(taskId), taskId, "job.state-changed", {
+          jobId: run.id, status: run.status,
+          ...(previous ? { previousStatus: previous.status } : {}),
+          ...(run.cancelRequestedAt ? { cancelRequestedAt: run.cancelRequestedAt } : {})
+        }, new Date(run.updatedAt)));
+      }
+    });
+  }
+
+  getAgentJobRun(id: string): AgentJobRun | null {
+    return this.#getPayload<AgentJobRun>("agent_job_runs", "run_id=?", [id]);
+  }
+
+  listAgentJobRuns(scope: JobScope, definitionId?: string): AgentJobRun[] {
+    return this.#listPayload<AgentJobRun>("agent_job_runs", definitionId === undefined ? "scope_key=?" : "scope_key=? AND definition_id=?",
+      definitionId === undefined ? [jobScopeKey(scope)] : [jobScopeKey(scope), definitionId]);
+  }
+
+  listAgentJobRunsForRole(recipient: JobAgentRecipient): AgentJobRun[] {
+    return this.#listPayload<AgentJobRun>("agent_job_runs",
+      `json_extract(payload,'$.attempts[#-1].recipient.scope')=?
+       AND json_extract(payload,'$.attempts[#-1].recipient.roleName')=?
+       AND COALESCE(json_extract(payload,'$.attempts[#-1].recipient.taskId'),'')=?
+       AND (json_extract(payload,'$.attempts[#-1].terminal') IS NULL
+         OR json_extract(payload,'$.businessResult') IS NULL)`,
+      [recipient.scope, recipient.roleName, recipient.scope === "task" ? recipient.taskId : ""]);
   }
 
   getGlobalJobRun(id: string): GlobalJobRun | null {

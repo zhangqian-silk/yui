@@ -20,6 +20,7 @@ import { DurableJobSupervisor } from "../../dist/controller/jobSupervisor.js";
 import { reconcileTaskDelegation } from "../../dist/controller/jobTaskDelegationControl.js";
 import { validateDurableJob } from "../../dist/job/durableJob.js";
 import { jobCleanupBlocker } from "../../dist/job/jobCleanupInspection.js";
+import { usePre120Layout } from "../helpers/pre19Storage.mjs";
 
 test("Task delegation is atomic per Run, source immutable, and only exact delivery completes it", t => {
   const home = mkdtempSync(join(tmpdir(), "yui-delegate-"));
@@ -119,9 +120,10 @@ test("Task-owned delegation preserves management scope, rolls back partial admis
   const db = new Database(join(home, "yui.db"));
   try {
     const before = db.prepare("SELECT payload FROM task_records WHERE task_id=?").get(owner.id).payload;
+    usePre120Layout(db);
     db.prepare("UPDATE storage_schema SET minor=18").run();
     applySqliteMinorUpgrades(db, home);
-    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 19);
+    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 20);
     assert.equal(db.prepare("SELECT payload FROM task_records WHERE task_id=?").get(owner.id).payload, before);
   } finally { db.close(); }
   store = new SqliteTaskStore(home);

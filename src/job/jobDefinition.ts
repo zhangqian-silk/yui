@@ -2,6 +2,7 @@ import { requireIdentity, requireKnownFields, requirePositiveInteger, requireTex
 import type { DurableJob, DurableJobOwner, DurableJobStep } from "./durableJob.js";
 import { validateJobExecutionConfiguration, validateDurableJobOwner } from "./durableJob.js";
 import type { JsonValue } from "../core/protocol.js";
+import { validateAgentJobConfiguration, type AgentJobConfiguration } from "./agentJob.js";
 import { validateTaskJobConfiguration, type TaskJobConfiguration as DelegatedTaskConfiguration } from "./taskDelegation.js";
 
 export type JobScope = Readonly<{ kind: "task"; taskId: string }> | Readonly<{ kind: "global" }>;
@@ -20,7 +21,7 @@ export type BuiltinJobConfiguration = Readonly<{
   projectId?: string;
   input: JsonValue;
 }>;
-export type JobConfiguration = TaskJobConfiguration | BuiltinJobConfiguration | DelegatedTaskConfiguration;
+export type JobConfiguration = TaskJobConfiguration | BuiltinJobConfiguration | AgentJobConfiguration | DelegatedTaskConfiguration;
 export type JobDefinition = Readonly<{
   schemaVersion: 1;
   id: string;
@@ -70,7 +71,9 @@ export function validateJobDefinition(job: JobDefinition): JobDefinition {
     || job.id !== `project-sync-${config.projectId}` || job.instantiation !== undefined)) {
     throw new Error("Invalid builtin Project sync definition.");
   }
-  if (config.kind === "task") {
+  if (config.kind === "agent") {
+    validateAgentJobConfiguration(config);
+  } else if (config.kind === "task") {
     validateTaskJobConfiguration(config);
   } else if (job.scope.kind === "global") {
     if (config.kind !== "builtin") throw new Error("Global Jobs require a controlled builtin action.");
@@ -100,6 +103,9 @@ export function createJobDefinition(
 export function reviseJobDefinition(
   job: JobDefinition, input: Pick<JobDefinition, "title" | "configuration">, now: Date
 ): JobDefinition {
+  if (job.configuration.kind !== input.configuration.kind) {
+    throw new Error("Changing Job executor kind requires a new Job id; preserve the original execution history.");
+  }
   return validateJobDefinition({
     ...job, title: input.title, configuration: structuredClone(input.configuration),
     revision: job.revision + 1, updatedAt: now.toISOString()

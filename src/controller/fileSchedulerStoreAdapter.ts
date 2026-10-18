@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
+import { assertJobRoleRunnable } from "../job/agentRoleScope.js";
+import { recordJobAgentObservation } from "../job/agentJobObservation.js";
 import { isDeepStrictEqual } from "node:util";
 import { nonReplayableMessageWake, pinMessageRevisions, taskMessageInboxReceipt, unfinishedLeaderInbox } from "../message/taskInboxOwnership.js";
 import { contextSnapshotRef } from "../context/contextSnapshot.js";
@@ -460,6 +462,9 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       && input.kind !== "goal.updated" && input.kind !== "goal.cleared") {
       this.persistRuntimeObservation(input, now);
     }
+    if (outcome === "applied") recordJobAgentObservation(this.store,
+      { scope: "task", taskId, roleName: input.fence.roleName },
+      this.store.getTaskRoleSessionSet(taskId, input.fence.roleName)?.providerBinding, now);
     return outcome;
   }
 
@@ -668,6 +673,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         });
       }
       store.saveGlobalRoleSessionSet(updateGlobalRoleProviderRuntime(sessions, binding, now));
+      recordJobAgentObservation(store, { scope: "global", roleName: fence.roleName }, binding, now);
       settleGlobalRetryInput(store, fence.roleName, binding, now);
       if (["turn.completed", "turn.failed", "turn.cancelled"].includes(input.kind)) {
         checkInboxTurn(store, { scope: "global", roleName: fence.roleName, agentId: fence.agentId,
@@ -1512,6 +1518,8 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
   }>): void {
     if (input.taskId === undefined) {
       this.store.transaction((store) => {
+        const role = store.getGlobalRole(input.roleName);
+        if (role) assertJobRoleRunnable(store, role);
         if (input.runId !== undefined || hasRuntimeCleanupObligation(store.getWorkMailbox(
           runtimeLifecycleTarget({ scope: "global", roleName: input.roleName })))) {
           throw new AgentHostProviderTurnFenceError("Global Session admission is stopped.");
@@ -1738,6 +1746,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
               ? { retry: { ...resolved.retry, failureRef } } : {}) };
         }
         store.saveGlobalRoleSessionSet(updateGlobalRoleProviderRuntime(sessions, resolved, input.now));
+        recordJobAgentObservation(store, { scope: "global", roleName: input.roleName }, resolved, input.now);
         settleGlobalRetryInput(store, input.roleName, resolved, input.now);
         if (input.status !== "deferred" && !providerRetryPending(resolved)) {
           recordGlobalRuntimeAttention(store, input.roleName, `${input.attemptId}:submission`, {

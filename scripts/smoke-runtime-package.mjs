@@ -634,6 +634,7 @@ try {
   writeFileSync(join(fakeBin, "codex"),
     `#!${process.execPath}\nprocess.env.YUI_FAKE_DIRECT_PORT_FILE = ${JSON.stringify(directPort)};\n`
     + `process.env.YUI_FAKE_TURN_HANDLER = ${JSON.stringify(new URL("../test/fixtures/inbox-smoke-handler.mjs", import.meta.url).href)};\n`
+    + `process.env.YUI_FAKE_UNIQUE_THREADS = "1";\n`
     + `import(${JSON.stringify(fakeCodex.href)}).catch(error => { console.error(error); process.exitCode = 1; });\n`,
     { mode: 0o755 });
   const { callFileTaskController } = await import(pathToFileURL(join(root, "dist/controller/clientRuntime.js")).href);
@@ -800,7 +801,65 @@ try {
   await waitFor(() => context().nativeTurn?.status === "completed"
     && json("role", "message", "show", "operator", restoredInput.id).delivery?.via === "provider",
     "The restored historical Session did not process its new input.");
+  // Agent Jobs reuse the same Role/Host/Provider transport, not a fixture-only
+  // executor. The handler reads durable context and explicitly reports each Run.
+  const agentJobTask = json("task", "create", "Agent Job existing Task").task;
+  json("task", "activation", "request", agentJobTask.id, "--request-id", "agent-job-task", "--environment", "scratch");
+  await waitFor(() => json("task", "show", agentJobTask.id).task.status === "active",
+    "Agent Job target Task was not activated.");
+  for (const [id, agentTarget] of [
+    ["agent-own", { kind: "job", agentId: "codex" }],
+    ["agent-operator", { kind: "operator" }],
+    ["agent-task", { kind: "task", taskId: agentJobTask.id, roleName: "leader" }]
+  ]) {
+    json("job", "define", "--global", "--job", id, "--title", id, "--input", JSON.stringify({
+      kind: "agent", target: agentTarget, input: "Deterministic Job Agent smoke."
+    }));
+    let priorNative;
+    for (const key of agentTarget.kind === "job" ? ["first", "second"] : ["first"]) {
+      const run = json("job", "run", "--global", "--job", id, "--request-id", key).run;
+      const selector = ["--global", "--job", id, "--run", run.id];
+      await waitFor(() => json("job", "run-get", ...selector).status === "succeeded",
+        `Agent Job ${id}/${key} did not report its business result.`,
+        () => JSON.stringify({ evidence: json("job", "run-evidence", ...selector),
+          ...(agentTarget.kind === "job" ? { session: json("job", "session-inspect", "--global", "--job", id) } : {}),
+          ...(agentTarget.kind === "task" ? { session: json("task", "role", "session", "inspect", agentTarget.taskId, "leader"),
+            events: listItems("task", "event", "list", agentTarget.taskId).slice(-10) } : {}) }));
+      const settled = json("job", "run-get", ...selector);
+      assert.equal(settled.businessResult.sourceRun.runId, run.id);
+      const execution = settled.attempts.at(-1).execution;
+      assert.ok(execution.nativeTurnId);
+      if (priorNative) assert.equal(execution.nativeSessionId, priorNative);
+      priorNative = execution.nativeSessionId;
+    }
+    if (agentTarget.kind === "job") {
+      const inspect = () => json("job", "session-inspect", "--global", "--job", id);
+      await waitFor(() => inspect().sessions.providerBinding.run.status === "completed",
+        "Job-owned native Turn did not finish before Session replacement.");
+      json("job", "session-stop", "--global", "--job", id, "--expected-session", priorNative);
+      await waitFor(() => {
+        const set = inspect().sessions;
+        return set.sessions[set.activeAgentId]?.status === "ended";
+      }, "Job-owned Session cleanup did not prove it ended.", () => JSON.stringify(inspect()));
+      json("job", "session-new", "--global", "--job", id, "--expected-session", priorNative);
+      const replacement = json("job", "run", "--global", "--job", id, "--request-id", "replacement").run;
+      const selector = ["--global", "--job", id, "--run", replacement.id];
+      await waitFor(() => json("job", "run-get", ...selector).status === "succeeded",
+        "Replacement Job Session did not report.", () => JSON.stringify(json("job", "run-evidence", ...selector)));
+      const replaced = json("job", "run-context", ...selector);
+      assert.notEqual(replaced.attempts[0].execution.nativeSessionId, priorNative);
+      assert.equal(replaced.history.filter(run => run.result?.outcome === "succeeded").length, 3);
+    }
+  }
   // Teardown live work before the Controller, not just a tmux server sweep.
+  await waitFor(() => {
+    const read = new SqliteTaskStore(yuiHome, { readonly: true });
+    try {
+      return [...read.listGlobalRoles().map(role => read.getGlobalRoleSessionSet(role.name)),
+        read.getTaskRoleSessionSet(agentJobTask.id, "leader")].every(set =>
+        !set?.providerBinding?.run || ["completed", "failed", "cancelled", "rejected"].includes(set.providerBinding.run.status));
+    } finally { read.close(); }
+  }, "Agent Job native Turns did not settle before fixture teardown.");
   runCli(cli, ["session", "stop", "--all"], environment);
   await waitFor(() => processExited(operatorHostPid), "The fixture Operator Host did not exit.");
   assert.equal(updatePorts.controllerStatus(yuiHome).running, false,

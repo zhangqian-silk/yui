@@ -2,7 +2,13 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.19. The 1.18 → 1.19 transition adds optional immutable Task
+Current storage is 1.20. The 1.19 → 1.20 transition adds Agent Job configurations,
+optional Job ownership on Global Roles, and the `agent_job_runs` table for
+exact original-message/native-attempt evidence and explicit business results.
+Existing Role, Session, process Run and artifact identities are unchanged;
+no Agent or native Session is invented during migration.
+
+The 1.18 → 1.19 transition adds optional immutable Task
 creation source, exact Run delegation and Task/WorkItem result-reference kinds.
 Existing valid payload bytes, ordinary source-less Tasks, unknown effects and
 fixed references are unchanged; no historical source or authority is inferred.

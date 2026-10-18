@@ -26,6 +26,8 @@ import { ArtifactHeadConflictError, ArtifactManagedConfigViolationError, Artifac
 import { ArtifactCommitLockedError } from "../artifacts/artifactCommitLock.js";
 import { ManagedGitError } from "../artifacts/managedGit.js";
 import { authorizeServiceJob, requireScheduleService, serviceRunBinding, type ScheduleServiceRef } from "../job/scheduleService.js";
+import { authorizeAgentDefinition, controlAgentJob, summarizeAgentRuns } from "./agentJobControl.js";
+import type { JobBusinessResult } from "../job/jobBusinessResult.js";
 import { admitTaskJob, authorizeTaskJob, reconcileTaskDelegation, taskDelegationView } from "./jobTaskDelegationControl.js";
 import { requireProjectSyncTarget } from "../job/projectSync.js";
 
@@ -62,6 +64,7 @@ function taskParams(job: JobDefinition, caller: DurableJobCaller, requestId: str
 }
 
 export function authorizeDefinition(store: TaskStore, job: JobDefinition, caller: DurableJobCaller, write: boolean): void {
+  if (job.configuration.kind === "agent") return authorizeAgentDefinition(store, job, caller, write);
   authorizeScope(store, job.scope, caller, true);
   if (job.configuration.kind === "task") {
     authorizeTaskJob(store, job, caller, write);
@@ -97,6 +100,9 @@ export function listJobRuns(store: TaskStore, job: JobDefinition): JobRun[] {
 
 /** Read-only presentation; attempts/results remain owned by exact JobRuns. */
 function presentDefinition(store: TaskStore, definition: JobDefinition, caller: DurableJobCaller) {
+  if (definition.configuration.kind === "agent") return {
+    ...definition, results: summarizeAgentRuns(store.listAgentJobRuns(definition.scope, definition.id))
+  };
   const history = listJobRuns(store, definition).filter(run => {
     try { authorizeRunRead(store, run, caller); return true; } catch { return false; }
   }).sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
@@ -151,6 +157,7 @@ export function admitJobRun(
   return store.transaction(tx => {
     const job = tx.getJobDefinition(scope, definitionId);
     if (job === null) throw new Error("Job definition not found.");
+    if (job.configuration.kind === "agent") throw new Error("Agent Jobs use their explicit Role message admission; Schedule service does not grant Agent execution.");
     authorizeDefinition(tx, job, caller, false);
     const serviceSchedule = service === undefined ? undefined : authorizeServiceJob(tx, job, service, trigger.key);
     if (service && (scope.kind !== "global" || trigger.source !== "schedule" || retryOf !== undefined)) {
@@ -321,14 +328,18 @@ export function createJobDefinitionControl(store: TaskStore, home: string) {
         throw error;
       });
     }
-    requireKnownFields(value, ["op", "scope", "caller", "id", "title", "configuration", "expectedRevision", "trigger", "retryOf", "runId"], "Job request");
+    requireKnownFields(value, ["op", "scope", "caller", "id", "title", "configuration", "expectedRevision", "trigger", "retryOf", "runId", "result", "expectedSessionId", "expectedAttemptId"], "Job request");
     const input = value as unknown as {
       op: string; scope: JobScope; caller: DurableJobCaller; id?: string; title?: string;
-      configuration?: JobConfiguration; expectedRevision?: number; trigger?: JobTrigger; retryOf?: string; runId?: string;
+      configuration?: JobConfiguration; expectedRevision?: number; trigger?: JobTrigger; retryOf?: string; runId?: string; result?: JobBusinessResult; expectedSessionId?: string; expectedAttemptId?: string;
     };
-    authorizeScope(store, input.scope, input.caller, true);
+    // A Job execution reader is authorized against its exact definition below,
+    // not promoted to Operator or to a Task manager.
+    if (!(input.caller.scope === "global" && input.caller.role !== "operator")
+      && !(input.caller.scope === "task" && input.scope.kind === "global")) authorizeScope(store, input.scope, input.caller, true);
     return store.transaction(tx => {
       if (input.op === "list") {
+        authorizeScope(tx, input.scope, input.caller, true);
         return tx.listJobDefinitions(input.scope).filter(job => {
           try { authorizeDefinition(tx, job, input.caller, false); return true; } catch { return false; }
         }).map(job => presentDefinition(tx, job, input.caller));
@@ -371,6 +382,7 @@ export function createJobDefinitionControl(store: TaskStore, home: string) {
       }
       if (existing === null) throw new Error("Job definition not found.");
       validateJobDefinition(existing);
+      if (existing.configuration.kind === "agent") return controlAgentJob(tx, home, existing, input, now);
       authorizeDefinition(tx, existing, input.caller, false);
       if (input.op === "show") return presentDefinition(tx, existing, input.caller);
       if (input.op === "runs") return listJobRuns(tx, existing).filter(run => {
