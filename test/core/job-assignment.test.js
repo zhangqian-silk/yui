@@ -5,13 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
-import { createTask, activateTask, completeTask } from "../../dist/task/task.js";
+import { createTask, activateTask, completeTask, archiveTask } from "../../dist/task/task.js";
 import { createProject } from "../../dist/repository/project.js";
 import { createWorkItem } from "../../dist/workItem/workItem.js";
 import { createManagedWorkspace } from "../../dist/worktree/managedWorkspace.js";
 import { createConfiguredAgent } from "../../dist/agent/agent.js";
 import { createRole, createGlobalRole, createRoleAgentBinding } from "../../dist/role/role.js";
-import { createRoleSessionSet, recordRoleAgentSession } from "../../dist/executor/agentExecutor.js";
+import { createRoleSessionSet, recordRoleAgentSession, replaceTaskRoleAgentSession } from "../../dist/executor/agentExecutor.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
 import { createFixtureRun } from "../helpers/runFixture.mjs";
 import { createRunInput } from "../../dist/context/runInputContract.js";
@@ -21,6 +21,7 @@ import { InstanceHost } from "../../dist/kernel/instanceHost.js";
 import { createJobDefinitionControl, admitJobRun } from "../../dist/controller/jobDefinitionControl.js";
 import { cancelQueuedDurableJob } from "../../dist/job/durableJob.js";
 import { createScheduleControl, reconcileSchedules } from "../../dist/controller/scheduleControl.js";
+import { saveArtifactCapability } from "../../dist/artifacts/artifactCapability.js";
 
 test("Job admission, management and spawn keep a Worker inside its current Assignment", async t => {
   const root = mkdtempSync(join(tmpdir(), "yui-job-assignment-"));
@@ -88,6 +89,22 @@ test("Job admission, management and spawn keep a Worker inside its current Assig
   const leaderJob = control.startJob({ ...outside, caller: caller("leader") }, at).job;
   const definitions = createJobDefinitionControl(store, join(root, "home"));
   const scope = { kind: "task", taskId: task.id };
+  const material = await saveArtifactCapability(join(root, "home"), task.id, {
+    relativePath: "delegated.md", content: "selected Task evidence"
+  });
+  const artifactRequest = { scope, id: leaderJob.definitionId, runId: leaderJob.id, caller: caller("leader") };
+  const selected = { kind: "artifact", owner: { kind: "task", taskId: task.id },
+    sourceRun: { scope, runId: leaderJob.id }, version: material.commit,
+    relativePath: material.relativePath, digest: material.digest };
+  await definitions({ ...artifactRequest, op: "artifact-register", reference: selected }, at);
+  await saveArtifactCapability(join(root, "home"), task.id, { relativePath: "delegated.md", content: "later bytes" });
+  assert.equal((await definitions({ ...artifactRequest, op: "artifact-read", reference: selected }, at)).content, "selected Task evidence");
+  await assert.rejects(async () => definitions({ ...artifactRequest, op: "artifact-read",
+    caller: caller("worker"), reference: selected }, at), /Assignment/i);
+  await assert.rejects(async () => definitions({ ...artifactRequest, op: "artifact-register",
+    reference: { ...selected, owner: { kind: "task", taskId: "task-2" } } }, at), /different Task/);
+  await assert.rejects(async () => definitions({ ...artifactRequest, op: "artifact-read",
+    reference: { ...selected, relativePath: "unselected.md" } }, at), /registered/);
   const configuration = { kind: "shell", owner: { kind: "task" }, projectId: project.id,
     head, workspace: main, env: {}, steps: [{ name: "first", command: "true" }] };
   const definition = definitions({ op: "define", id: "repeatable", title: "Repeated check",
@@ -215,4 +232,22 @@ test("Job admission, management and spawn keep a Worker inside its current Assig
   assert.equal(overlap.run.id, advanced.run.id);
   assert.equal(store.listDurableJobs(task.id).filter(run => run.definitionId === definition.id).length, 4);
   assert.deepEqual(store.getDurableJob(task.id, advanced.run.id), advanced.run);
+  // Formal selected evidence is independent of a replaced reader Session,
+  // retired schedules and released delivery working directories.
+  const replacement = replaceTaskRoleAgentSession(leaderSet, {
+    ...leaderSet.sessions.codex, nativeSessionId: "replacement-leader", status: "active"
+  }, due);
+  store.saveTaskRoleSessionSet(replacement);
+  await assert.rejects(async () => definitions({ ...artifactRequest, op: "artifact-read", reference: selected }, due), /Session|caller|identity/i);
+  for (const job of store.listDurableJobs(task.id)) {
+    if (job.status === "queued") store.saveDurableJob(task.id, cancelQueuedDurableJob(job, due));
+  }
+  store.saveTask(archiveTask(completeTask(task, due, { by: "leader", summary: "Fixture complete" }), due));
+  assert.equal(store.getSchedule(scope, "periodic").state, "retired");
+  rmSync(main, { recursive: true, force: true });
+  rmSync(worker, { recursive: true, force: true });
+  const retained = await definitions({ ...artifactRequest, caller: { ...caller("leader"), nativeSessionId: "replacement-leader" },
+    op: "artifact-read", reference: selected }, due);
+  assert.equal(retained.content, "selected Task evidence");
+  assert.equal(retained.reference.owner.kind, "task", "selection never copies the Task's artifact");
 });

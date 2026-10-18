@@ -193,6 +193,17 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   targetChecksum: CURRENT_SCHEMA_CHECKSUM,
   sql: "",
   dataMigration: "job-business-results"
+}, {
+  fromVersion: "1.15",
+  toVersion: "1.16",
+  name: "job-owned-artifacts",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // New optional append-only Run artifact references and Home-owned per-Run
+  // repositories. Existing payloads, Task repositories and frozen Git refs are
+  // unchanged. No files are moved and no historical provenance is invented.
+  sql: ""
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {

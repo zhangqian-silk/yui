@@ -2,7 +2,13 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.15. The 1.14 → 1.15 transition adds separate Job business
+Current storage is 1.16. The 1.15 → 1.16 transition adds optional append-only
+JobRun artifact references and scope/Run-isolated local Git repositories.
+Existing payload bytes and Task Git repositories/frozen references remain
+unchanged; no historical artifact, provenance or authorization is inferred.
+No SQL layout change or automatic cleanup is introduced.
+
+The 1.14 → 1.15 transition adds separate Job business
 results derived from saved process results, archiving original Run payload bytes
 under migration 15. It does not infer structured business data from logs, change
 execution identities, replay effects or rewrite frozen Context/Integration evidence.

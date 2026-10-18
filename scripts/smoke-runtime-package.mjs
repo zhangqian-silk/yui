@@ -236,6 +236,17 @@ try {
     assert.equal(json("job", "run-confirm", ...jobRef).id, publicRun.id);
     assert.equal(json("job", "run-result", ...jobRef).result.data.action, "system.noop");
     assert.equal(json("job", "run-evidence", ...jobRef).processResult.exitCode, 0);
+    const publication = json("job", "artifact-save", ...jobRef, "--artifact",
+      JSON.stringify({ relativePath: "report.md", content: "# Public Run\n\nSaved without a Task." }));
+    assert.equal(publication.status, "registered");
+    const artifact = publication.reference;
+    assert.equal(artifact.sourceRun.runId, publicRun.id);
+    assert.equal(artifact.owner.scope.kind, "global");
+    assert.equal(json("job", "artifact-read", ...jobRef, "--reference", JSON.stringify(artifact)).content,
+      "# Public Run\n\nSaved without a Task.");
+    assert.equal(json("job", "artifact-preview", ...jobRef, "--reference", JSON.stringify(artifact)).kind, "markdown");
+    assert.equal(json("job", "artifact-list", ...jobRef).artifacts.length, 1);
+    assert.equal(json("job", "run-result", ...jobRef).artifacts[0].version, artifact.version);
     checkNoJobSession();
   } finally {
     for (const run of json("job", "runs", "--global", "--job", "public-probe")) {

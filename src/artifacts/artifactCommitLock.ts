@@ -1,5 +1,7 @@
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { setTimeout } from "node:timers/promises";
+import { safePathSegment } from "./artifactPaths.js";
 import { currentFileLockOwner, fileLockOwnerIsLive } from "../core/fileLockOwner.js";
 
 /**
@@ -12,8 +14,8 @@ import { currentFileLockOwner, fileLockOwnerIsLive } from "../core/fileLockOwner
  * the commit critical section for one Task.
  *
  * The Project maintenance fence waits asynchronously for longer operations.
- * An artifact save is short, so this synchronous critical section briefly
- * retries a contended fence before giving up. It otherwise shares the same
+ * An artifact save is short, so acquisition asynchronously waits for a contended
+ * fence, allowing the live holder's Git subprocess to finish. It shares the same
  * crash-safe design: an exclusive directory under the Home's `locks/` area
  * (O_EXCL via mkdir), an owner file recording PID + process start time so a
  * recycled PID can never pass for the original holder, and reclaim of a stale
@@ -40,7 +42,7 @@ export class ArtifactCommitLockedError extends Error {
 
 /** Directory of one Task's artifact commit fence, below the Home's locks area. */
 export function artifactCommitLockPath(home: string, taskId: string): string {
-  return join(home, "locks", "task-artifacts", `${taskId}.lock`);
+  return join(home, "locks", "task-artifacts", `${safePathSegment(taskId)}.lock`);
 }
 
 /**
@@ -50,7 +52,7 @@ export function artifactCommitLockPath(home: string, taskId: string): string {
  * a stale (dead) holder is reclaimed. There is no in-process reentrancy: every
  * acquisition contends.
  */
-export function acquireArtifactCommitLock(home: string, taskId: string): () => void {
+export async function acquireArtifactCommitLock(home: string, taskId: string): Promise<() => void> {
   const lock = artifactCommitLockPath(home, taskId);
   const ownerIdentity = currentFileLockOwner();
   mkdirSync(join(home, "locks", "task-artifacts"), { recursive: true, mode: 0o700 });
@@ -69,7 +71,7 @@ export function acquireArtifactCommitLock(home: string, taskId: string): () => v
       if (!isEexist(error)) throw error;
       reclaimStaleArtifactCommitLock(lock);
       if (Date.now() >= deadline) throw new ArtifactCommitLockedError(taskId);
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ARTIFACT_COMMIT_LOCK_RETRY_MS);
+      await setTimeout(ARTIFACT_COMMIT_LOCK_RETRY_MS);
     }
   }
 }
