@@ -214,6 +214,17 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   // repositories. Existing payloads, Task repositories and frozen Git refs are
   // unchanged. No files are moved and no historical provenance is invented.
   sql: ""
+}, {
+  fromVersion: "1.17",
+  toVersion: "1.18",
+  name: "job-task-delegation",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Optional immutable Task creation source and Run delegation. Existing
+  // ordinary Tasks retain absence of source; all historical payload bytes,
+  // references and unknown effects remain unchanged.
+  sql: ""
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {

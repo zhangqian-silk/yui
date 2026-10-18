@@ -2,7 +2,13 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.17. The 1.16 → 1.17 transition adds optional append-only
+Current storage is 1.18. The 1.17 → 1.18 transition adds optional immutable Task
+creation source, exact Run delegation and Task/WorkItem result-reference kinds.
+Existing valid payload bytes, ordinary source-less Tasks, unknown effects and
+fixed references are unchanged; no historical source or authority is inferred.
+SQL layout is unchanged.
+
+The 1.16 → 1.17 transition adds optional append-only
 JobRun artifact references and scope/Run-isolated local Git repositories.
 Existing payload bytes and Task Git repositories/frozen references remain
 unchanged; no historical artifact, provenance or authorization is inferred.

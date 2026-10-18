@@ -22,6 +22,7 @@ import {
   requestDurableJobCancel,
   retryDurableJobIdempotencyKey,
   type DurableJob,
+  type ProcessDurableJob,
   type DurableJobOwner,
   type DurableJobStep
 } from "../job/durableJob.js";
@@ -168,6 +169,7 @@ export function createDurableJobControl(store: TaskStore): DurableJobControlPort
         validateStartParams(tx, params);
         const previous = params.retryOf === undefined ? null : tx.getDurableJob(params.taskId, params.retryOf);
         if (previous !== null) {
+          if (previous.delegation) throw jobDomainError("Use Job run retry for a Task delegation, not a process specification.");
           requireJobAssignment(tx, previous, params.caller);
           if (definition === null && durableJobIdempotencyKey(previous) !== specificationKey) {
             throw jobDomainError("Legacy retry must preserve the original Run specification; update its Job definition for a changed configuration.");
@@ -267,6 +269,7 @@ export function createJobCallAuthority(store: TaskStore): CallAuthority<DurableJ
  * Job even when its management binding is revoked. Only a new spawn checks it.
  */
 export function authorizeJobStart(store: TaskStore, job: DurableJob): void {
+  if (job.delegation) throw jobDomainError("Task delegation cannot start a process.");
   const taskPrefix = `task:${job.taskId}/role:`;
   const actor = job.operation.actorId;
   const scope = actor.startsWith(taskPrefix) ? "task" : actor.startsWith("global:") ? "global" : undefined;
@@ -281,7 +284,7 @@ export function authorizeJobStart(store: TaskStore, job: DurableJob): void {
 }
 
 function assertLeaderJobWriteScope(
-  store: TaskStore, target: Pick<DurableJob, "taskId" | "projectId" | "owner">,
+  store: TaskStore, target: Pick<ProcessDurableJob, "taskId" | "projectId" | "owner">,
   caller: Pick<DurableJobCaller, "scope" | "role" | "nativeSessionId">
 ): void {
   if (caller.scope !== "task" || caller.role !== "leader") return;

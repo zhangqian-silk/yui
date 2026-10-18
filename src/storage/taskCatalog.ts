@@ -13,6 +13,7 @@ export type TaskCatalogQuery = Readonly<{
   status?: TaskStatus;
   project?: string;
   search?: string;
+  source?: "ordinary" | "job";
   attention?: CatalogAttentionKind;
   after?: CatalogPosition;
   through?: CatalogPosition;
@@ -51,6 +52,10 @@ export function queryTaskCatalog(db: Database.Database, query: TaskCatalogQuery)
   if (!query.all) scope.push("c.status <> 'archived'");
   const match: string[] = ["1=1"];
   if (query.status !== undefined) { match.push("status = @status"); params.status = query.status; }
+  if (query.source !== undefined) {
+    match.push(`EXISTS (SELECT 1 FROM task_records r WHERE r.task_id = facts.id AND
+      json_extract(r.payload, '$.source.kind') ${query.source === "job" ? "= 'job-run'" : "IS NULL"})`);
+  }
   if (query.project !== undefined) {
     match.push(`EXISTS (SELECT 1 FROM task_records r, json_each(r.payload, '$.projectBindings') p
       WHERE r.task_id = facts.id AND json_extract(p.value, '$.projectId') = @project)`);
@@ -86,6 +91,10 @@ export function queryTaskCatalog(db: Database.Database, query: TaskCatalogQuery)
   }
   const count = (table: string, condition: string) =>
     `(SELECT count(*) FROM ${table} x WHERE x.task_id = c.task_id AND (${condition}))`;
+  const incoming = (statuses: string) => `(SELECT count(*) FROM global_job_runs x
+    WHERE json_extract(x.payload,'$.delegation.taskId') = c.task_id AND x.status IN (${statuses}))
+    + (SELECT count(*) FROM durable_jobs x WHERE x.task_id <> c.task_id
+      AND json_extract(x.payload,'$.delegation.taskId') = c.task_id AND x.status IN (${statuses}))`;
   const displaySummary = `CASE
     WHEN page.status IN ('completed','archived')
       AND json_extract(r.payload,'$.completionSummary') IS NOT NULL
@@ -105,8 +114,8 @@ export function queryTaskCatalog(db: Database.Database, query: TaskCatalogQuery)
       ${count("work_items", "1=1")} AS workItems,
       ${count("turns", "status = 'active'")} AS activeRuns,
       ${count("input_requests", "status = 'open'")} AS openInputs,
-      ${count("durable_jobs", "status IN ('queued','running')")} AS pendingOperations,
-      ${count("durable_jobs", "status = 'unknown-needs-attention'")} AS unknownOperations,
+      ${count("durable_jobs", "status IN ('queued','running')")} + ${incoming("'queued','running'")} AS pendingOperations,
+      ${count("durable_jobs", "status = 'unknown-needs-attention'")} + ${incoming("'unknown-needs-attention'")} AS unknownOperations,
       CASE WHEN c.status IN ('active','draft') THEN
         ${count("turns", "status = 'active'")} +
         ${count("work_items", "status = 'open' OR (status = 'accepted' AND json_extract(payload, '$.currentExecutionGroupId') IS NOT NULL)")} +

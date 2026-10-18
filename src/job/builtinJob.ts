@@ -1,5 +1,5 @@
 import type { BuiltinJobConfiguration } from "./jobDefinition.js";
-import type { GlobalJobRun } from "./durableJob.js";
+import type { GlobalProcessJobRun } from "./durableJob.js";
 import { fileURLToPath } from "node:url";
 import { requireKnownFields } from "../domain/validation.js";
 
@@ -9,7 +9,7 @@ import { requireKnownFields } from "../domain/validation.js";
  */
 export function prepareBuiltinJob(configuration: BuiltinJobConfiguration, workspace: string,
   execution?: Readonly<{ home: string; runId: string }>):
-  Pick<GlobalJobRun, "workspace" | "env" | "steps" | "head"> {
+  Pick<GlobalProcessJobRun, "workspace" | "env" | "steps" | "head"> {
   if (configuration.action === "project.refresh") {
     projectRefreshDigest(configuration);
     // Runtime-owned Git discovery/authentication context, never caller input

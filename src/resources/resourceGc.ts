@@ -122,7 +122,7 @@ export function readResourceGcState(store: TaskStore) {
         }),
         ...reader.listDurableJobs(task.id).filter(job => job.status === "queued" || job.status === "running"
           || (job.status === "unknown-needs-attention" && job.acknowledgedAt === undefined))
-          .map(job => job.workspace)
+          .flatMap(job => job.delegation ? [] : [job.workspace])
       ])
     };
   });
