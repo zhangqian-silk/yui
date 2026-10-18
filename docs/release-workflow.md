@@ -51,6 +51,43 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.11.0 compatibility and migration notes
+
+This minor lets ordinary, unmanaged native Agent conversations use the same
+public operations as a local terminal, including general information reads and
+Draft Task creation. A native thread ID alone is a lookup hint, not proof of a
+managed Role. Draft creation preserves configured Agent, model, permissions and
+Profile inheritance; it does not start discussion or development.
+
+Current ID-only managed Desktop conversations retain their Role, Task,
+Assignment and Grant checks. Known historical, stopped, conflicting or
+incompletely specified managed identities are refused, never downgraded to
+public authority. Unbinding a Session or deleting a Role retains stopped
+identity history. Help and completion share caller discovery; offline Role
+templates are guidance, not authorization. Exact capability assessment and
+execution continue to use current resource and Grant boundaries.
+See the [authorization responsibility and permission matrices](authorization.md).
+
+Identity lookup is local to the selected Home. A bare ID known only in another
+Home, or whose history was already deleted by an older version, cannot be
+distinguished from an ordinary thread without Yui hints. Managed conversations
+must retain the correct Home/Manifest; this release neither scans other Homes
+nor reconstructs deleted history.
+
+Storage advances from **1.13 to 1.14** through an explicit centralized migration
+that allows global Session history to survive Role deletion while preserving
+existing payloads. Supported **1.0–1.13** Homes use the contiguous same-major
+upgrade path. With separate update authorization, use
+`yui update --version 2.11.0`; the updater owns preflight, backup, migration and
+Controller handover. Do not open upgraded Homes with an older binary or edit
+storage manually. Package minor numbering is not a compatibility promise.
+
+Release gates reuse exact-commit Core CI and exercise one runtime tarball on
+Linux x64 and macOS x64/arm64 with Node 20/22/24/26 before npm publication.
+These are deterministic, isolated checks, not real-model validation. Publication
+does not update a global CLI, migrate a production Home, replace a production
+Session or start a Web listener.
+
 ### 2.10.0 compatibility and migration notes
 
 This stable minor includes exact-turn inbox handling and successor recovery

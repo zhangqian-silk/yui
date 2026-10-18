@@ -2,7 +2,7 @@ import type { TaskStore } from "../storage/taskStore.js";
 import { hasManagedIdentity } from "./managedIdentity.js";
 import { ManagedRuntimeDriftError, requireManagedGlobalCaller, requireManagedTaskCaller } from "./managedCaller.js";
 
-type LookupStore = Pick<TaskStore, "listRuntimeSessionCandidates" | "getGlobalRoleSessionSet" | "getTaskRoleSessionSet">;
+type LookupStore = Pick<TaskStore, "findNativeSessionSets">;
 
 /** Resolve location from this Home's registry, not from a launch environment.
  * The returned hints are not authority: consumers still validate the current
@@ -18,22 +18,22 @@ export function sessionCallerEnvironment(store: LookupStore, env: NodeJS.Process
   if (!native || native.trim() !== native || native.includes("\0")) {
     throw new ManagedRuntimeDriftError("Managed native Session identity is invalid.");
   }
-  // Reuse the existing derived active-Session inventory; no new identity index
-  // or scan of every Task body/history is needed.
-  const matches = store.listRuntimeSessionCandidates().filter(session => session.nativeSessionId === (
+  const identifies = (session: { adapterId: string; nativeSessionId: string }) => session.nativeSessionId === (
     session.adapterId === "codex" ? env.CODEX_THREAD_ID ?? env.YUI_NATIVE_SESSION_ID : env.YUI_NATIVE_SESSION_ID
-  ));
+  );
+  const matches = store.findNativeSessionSets(
+    [env.CODEX_THREAD_ID, env.YUI_NATIVE_SESSION_ID].filter((id): id is string => id !== undefined)
+  ).filter(set => [...Object.values(set.sessions), ...Object.values(set.history ?? {})].some(identifies));
+  if (!matches.length && !hasManagedIdentity(env)) return env;
   if (matches.length !== 1) {
     throw new ManagedRuntimeDriftError(matches.length
       ? "Native Session identity is ambiguous in this YUI_HOME; no caller authority was selected."
-      : "Native Session is not registered in this YUI_HOME; refusing to infer public user authority.");
+      : "Managed native Session is not registered in this YUI_HOME. Use its original Home/current Session; do not clear identity hints.");
   }
-  const match = matches[0]!;
-  const set = match.owner.scope === "global" ? store.getGlobalRoleSessionSet(match.owner.roleName)
-    : store.getTaskRoleSessionSet(match.owner.taskId, match.owner.roleName);
-  const session = set?.sessions[match.agentId];
-  if (set === null || session === undefined || session.nativeSessionId !== match.nativeSessionId) {
-    throw new ManagedRuntimeDriftError("Native Session registration changed during caller resolution; read current state again.");
+  const set = matches[0]!;
+  const session = set.sessions[set.activeAgentId];
+  if (session === undefined || session.status !== "active" || !identifies(session)) {
+    throw new ManagedRuntimeDriftError("Managed native Session is no longer current in this YUI_HOME. Use the current Session; historical identity cannot become public.");
   }
   const hints: NodeJS.ProcessEnv = {
     YUI_SESSION_SCOPE: set.owner.scope, YUI_ROLE: set.owner.roleName,

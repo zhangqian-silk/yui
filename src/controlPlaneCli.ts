@@ -22,6 +22,7 @@ import {
 } from "./cli/agentConfigurationPicker.js";
 import { describeCommandTree, findCommandNode } from "./cli/commandCatalog.js";
 import { discoveryCommandTree } from "./cli/commandDiscovery.js";
+import { callerDiscoveryAudience } from "./cli/callerDiscovery.js";
 import { contextRecordReader } from "./context/taskContext.js";
 import { renderCompletion } from "./cli/completion.js";
 import { runCompletionWizard } from "./cli/completionWizard.js";
@@ -36,7 +37,7 @@ import { routeInvocation } from "./cli/invocationRouter.js";
 import { operatorOfflineCommand, taskDiagnosticTarget } from "./cli/managedDiagnostics.js";
 import { assertConfigurationAuthority, assertTaskInvocationScope } from "./cli/invocationAuthority.js";
 import { requireManagedGlobalCaller, requireManagedGlobalReader, ManagedRuntimeDriftError } from "./runtime/managedCaller.js";
-import { sessionCallerEnvironment, requireManagedCaller } from "./runtime/sessionCaller.js";
+import { requireManagedCaller } from "./runtime/sessionCaller.js";
 import { maintenanceCallerEnvironment } from "./storage/maintenanceCaller.js";
 import { checkCurrentSkills, SKILL_REUSE_RULE } from "./context/currentSkills.js";
 import { roleSkillIds } from "./context/roleSessionContext.js";
@@ -329,7 +330,7 @@ function failureContext() {
 
 export async function main(): Promise<void> {
   const home = resolveYuiHome(process.env);
-  const discovery = discoveryCommandTree(process.env);
+  const discovery = discoveryCommandTree(process.env, callerDiscoveryAudience(home, process.env));
   invocationHome = home;
   const routedForFence = args.length === 0 ? undefined : routeInvocation(args);
   const homeFreeInvocation = args.length === 0
@@ -2485,9 +2486,7 @@ async function preflightManagedTaskControlPlane(): Promise<ManagedTaskControlPla
   // Home only, and never creates a Session or mutates its registration.
   if ((process.env.CODEX_THREAD_ID !== undefined || process.env.YUI_NATIVE_SESSION_ID !== undefined)
     && (process.env.YUI_SESSION_SCOPE === undefined || process.env.YUI_ROLE === undefined)) {
-    const registry = openCurrentTaskStore(resolveYuiHome(process.env));
-    try { Object.assign(process.env, sessionCallerEnvironment(registry, process.env)); }
-    finally { registry.close(); }
+    Object.assign(process.env, maintenanceCallerEnvironment(resolveYuiHome(process.env), process.env, false));
   }
   if (process.env.YUI_SESSION_SCOPE !== "task") {
     if (process.env.YUI_SESSION_SCOPE === "global") {
@@ -3307,7 +3306,7 @@ async function completionCommand(
     const candidates = await resolveCompletionCandidates({
       current: prefix,
       words: args.slice(separator + 1),
-      root: discoveryCommandTree(process.env),
+      root: discoveryCommandTree(process.env, callerDiscoveryAudience(home, process.env)),
       ports: { call: async (method, params) => {
         if (!selection) {
           assertCliHomeReleaseFence({

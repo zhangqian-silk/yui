@@ -14,8 +14,7 @@ export function discoveryAudience(env: NodeJS.ProcessEnv): DiscoveryAudience {
   return "unbound";
 }
 
-export function discoveryCommandTree(env: NodeJS.ProcessEnv): CommandNode {
-  const audience = discoveryAudience(env);
+export function discoveryCommandTree(env: NodeJS.ProcessEnv, audience = discoveryAudience(env)): CommandNode {
   const project = (node: CommandNode): CommandNode | undefined => {
     const children = node.children.map(project).filter((child): child is CommandNode => child !== undefined);
     const eligible = node.discovery?.surface !== "runtime" && node.discovery?.audiences.includes(audience);

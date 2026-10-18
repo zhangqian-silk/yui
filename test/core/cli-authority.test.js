@@ -38,10 +38,13 @@ test("maintenance authenticates native-only Operators before migrating an old Ho
   const agent = createConfiguredAgent("fixture", "codex", "false", [], [], now);
   const role = createGlobalRole("operator", [createRoleAgentBinding(agent)], agent.id, home, now);
   store.saveGlobalRole(role);
-  store.saveGlobalRoleSessionSet(recordRoleAgentSession(
+  const previous = recordRoleAgentSession(
     createRoleSessionSet({ scope: "global", roleName: "operator" }, agent.id, now),
-    { agentId: agent.id, adapterId: agent.adapterId, nativeSessionId: "desktop-current",
-      status: "active", policy: "fixed", effective: resolveEffectiveLaunch({ role, purpose: "execution" }) }, now));
+    { agentId: agent.id, adapterId: agent.adapterId, nativeSessionId: "replaced",
+      status: "active", policy: "fixed", effective: resolveEffectiveLaunch({ role, purpose: "execution" }) }, now);
+  store.saveGlobalRoleSessionSet(recordRoleAgentSession(
+    updateRoleAgentSessionStatus(previous, agent.id, "ended", now, "stopped"),
+    { ...previous.sessions[agent.id], nativeSessionId: "desktop-current" }, now));
   store.close();
   // Historical Role/Session records survive the declared 1.7 -> 1.9 path.
   const db = new Database(join(home, "yui.db"));
@@ -55,6 +58,8 @@ test("maintenance authenticates native-only Operators before migrating an old Ho
     { env, timeout: 10000 });
   const result = JSON.parse((await preflight(base)).stdout);
   assert.equal(result.data.status, "migration-ready");
+  assert.equal(JSON.parse((await preflight({ ...base, CODEX_THREAD_ID: "ordinary" })).stdout).data.status,
+    "migration-ready", "public callers retain the existing user maintenance entry");
   for (const env of [
     { ...base, CODEX_THREAD_ID: "replaced" },
     { ...base, YUI_SESSION_SCOPE: "global", YUI_ROLE: "operator", CODEX_THREAD_ID: "replaced" },
@@ -65,7 +70,7 @@ test("maintenance authenticates native-only Operators before migrating an old Ho
   assert.equal(check.prepare("SELECT minor FROM storage_schema").get().minor, 7);
   check.close();
   await assert.rejects(execute(launcherPath, ["--json", "inbox", "list"], { env: base, timeout: 10000 }),
-    /storage version 1.7/);
+    /STORAGE_SCHEMA_INVALID/);
   const malformed = new Database(join(home, "yui.db"));
   try { malformed.exec("CREATE TABLE unexpected (id TEXT)"); } finally { malformed.close(); }
   await assert.rejects(preflight(base), /unexpected schema objects/);
@@ -135,6 +140,12 @@ test("public CLI fences replaced Operators, Home configuration and cross-Task re
   assert.equal(inboxList.ok, true, inboxList.error);
   assert.equal(inboxList.data.data.items[0].id, inboxId);
   const desktop = { ...base, CODEX_THREAD_ID: "operator-current" };
+  const ordinary = { ...base, CODEX_THREAD_ID: "ordinary-thread" };
+  const taskHelp = async caller => (await cli(["help", "task"], caller)).data.data.children.map(c => c.path);
+  assert.ok((await taskHelp(ordinary)).includes("task create"));
+  assert.ok(!(await taskHelp({ ...base, CODEX_THREAD_ID: "operator-old" })).includes("task create"));
+  assert.equal((await cli(["project", "list"], ordinary)).ok, true);
+  assert.equal((await cli(knowledge, { ...base, CODEX_THREAD_ID: "operator-old" })).ok, false);
   const desktopInbox = await cli(["inbox", "list"], desktop);
   assert.equal(desktopInbox.ok, true, desktopInbox.error);
   assert.equal(desktopInbox.data.data.identity.roleName, "operator");
@@ -151,7 +162,10 @@ test("public CLI fences replaced Operators, Home configuration and cross-Task re
   assert.equal(ack.ok, true, ack.error);
   assert.equal(store.listGlobalRoleMessages("operator")[0].inbox.ack.reason, "Routed and verified");
   assert.equal(store.listGlobalRoleMessages("operator")[0].delivery, undefined);
-  for (const id of ["task-1", "task-2"]) store.saveTask(activateTask(createTask(id, id, now), now));
+  for (const id of ["task-1", "task-2"]) {
+    assert.equal(store.nextTaskId(), id);
+    store.saveTask(activateTask(createTask(id, id, now), now));
+  }
   const worker = createRole("task-1", "worker", [binding], agent.id, workspace, now);
   store.saveRole("task-1", worker);
   store.saveTaskRoleSessionSet(recordRoleAgentSession(createRoleSessionSet({
@@ -170,6 +184,8 @@ test("public CLI fences replaced Operators, Home configuration and cross-Task re
   assert.equal(workerSkills.ok, true, JSON.stringify(workerSkills));
   assert.deepEqual(workerSkills.data.data.skills.map(s => s.id), ["yui-runtime", "yui-worker"]);
   const desktopWorker = { ...base, CODEX_THREAD_ID: "worker-current" };
+  assert.ok(!(await taskHelp(desktopWorker)).includes("task create"));
+  assert.equal((await cli(["task", "create", "Outside Assignment"], desktopWorker)).ok, false);
   assert.equal((await cli(["inbox", "list"], desktopWorker)).ok, true);
   assert.equal((await cli(["task", "context", "task-2"], desktopWorker)).ok, false);
   assert.equal((await cli(["session", "skills"], { ...env, YUI_TASK_ID: "task-2" })).ok, false);
@@ -215,12 +231,32 @@ test("public CLI fences replaced Operators, Home configuration and cross-Task re
   assert.equal((await cli(["task", "search", "Other rationale", "--task", "task-2"], leaderEnv)).ok, false);
   // A transport-only fixture prevents a regression from starting a scheduler.
   let jobReads = 0;
+  let signals = 0;
   server = await startControllerServer(home, method => {
     if (method === "job.get") { jobReads++; return { job: { taskId: "task-2", id: "job-1" } }; }
+    if (method === "scheduler.signal") { signals++; return {}; }
     throw new Error(`Unexpected fixture RPC: ${method}`);
   });
   assert.equal((await cli(["job", "get", "--task", "task-2", "--job", "job-1"], env)).ok, false);
   assert.equal(jobReads, 0, "CLI refuses a different Task before contacting Job control.");
+  const inherited = createGlobalRole("leader", [createRoleAgentBinding(agent, {
+    adapterId: "codex", model: "configured-model", effort: "high",
+    permission: { strategy: "configured", sandbox: "read-only", approval: "never" }
+  })], agent.id, workspace, now, { responsibilities: ["Preserve inherited policy"] }, "read");
+  store.saveGlobalRole(inherited);
+  for (const caller of [base, ordinary]) {
+    const created = await cli(["task", "create", "Public Draft"], caller);
+    assert.equal(created.ok, true, created.error);
+    const { task, leader } = created.data.data;
+    assert.equal(task.status, "draft");
+    assert.deepEqual(leader.agentBindings, inherited.agentBindings);
+    assert.equal(leader.defaultAccess, "read");
+    assert.deepEqual(leader.responsibilities, inherited.responsibilities);
+    assert.deepEqual(store.listRuns(task.id), []);
+    assert.equal(store.getTaskRoleSessionSet(task.id, "leader"), null);
+    assert.equal(store.getTaskWorkspace(task.id), null);
+  }
+  assert.equal(signals, 2, "Draft creation only signals stored facts, not Agent execution");
 });
 
 test("Job read authority is enforced by the control port, not just the CLI", t => {
