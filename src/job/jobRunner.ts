@@ -24,7 +24,7 @@ import { jobStepDirectory } from "./stepDirectory.js";
 import { prepareHttpPreview, isHttpPreview } from "./httpPreview.js";
 
 import { writeTextFileAtomically } from "../storage/durableFile.js";
-import { readLinuxProcessStartIdentity } from "../controller/domainIdentity.js";
+import { currentProcessStartIdentity } from "../core/fileLockOwner.js";
 import type {
   DurableJobExit,
   DurableJobSpec,
@@ -72,14 +72,15 @@ export async function runDurableJobRunner(
   // reads this file to adopt a queued job after a Controller crash.
   //
   // rr4/finding-4: The runner writes its own OS startIdentity so the
-  // supervisor can adopt without re-reading /proc (which could return a
+  // supervisor can adopt without re-reading the OS (which could return a
   // reused PID's identity after the original runner exited).
   const readyPath = join(artifactDir, "ready.json");
+  const startIdentity = currentProcessStartIdentity();
   try {
     const readyFd = openSync(readyPath, "wx", 0o600);
     writeFileSync(readyFd, JSON.stringify({
       pid: process.pid,
-      startIdentity: readLinuxProcessStartIdentity(process.pid) ?? String(process.pid),
+      startIdentity,
       startedAt: new Date().toISOString()
     }, null, 2) + "\n");
     closeSync(readyFd);

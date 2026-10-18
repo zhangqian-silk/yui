@@ -230,7 +230,8 @@ try {
     const publicRun = json("job", "run", "--global", "--job", "public-probe", "--request-id", "once").run;
     const jobRef = ["--global", "--job", "public-probe", "--run", publicRun.id];
     await waitFor(() => json("job", "run-get", ...jobRef).status === "succeeded",
-      "Public Job did not complete without a Session.");
+      "Public Job did not complete without a Session.",
+      () => JSON.stringify(json("job", "run-evidence", ...jobRef)));
     assert.equal(json("job", "run", "--global", "--job", "public-probe", "--request-id", "once").run.id, publicRun.id);
     assert.equal(json("job", "run-confirm", ...jobRef).id, publicRun.id);
     assert.equal(json("job", "run-result", ...jobRef).result.data.action, "system.noop");
