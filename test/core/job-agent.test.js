@@ -382,10 +382,22 @@ test("Task-owned Job business settlement and native quiescence remain independen
   const manager = f.session(leader, "task-manager");
   const scope = { kind: "task", taskId: task.id };
   const call = (op, extra = {}, caller = manager) => f.call("owned", op, extra, caller, scope);
-  call("define", { title: "Owned Job", configuration: {
+  const definition = { title: "Owned Job", configuration: {
     kind: "agent", target: { kind: "job", agentId: f.agent.id }, input: "Only this Job's work."
-  } });
+  } };
+  const set = f.store.getTaskRoleSessionSet(task.id, "leader");
+  const readOnlySet = { ...set, sessions: { ...set.sessions, [f.agent.id]: {
+    ...set.sessions[f.agent.id], effective: { ...set.sessions[f.agent.id].effective, profileAccess: "read" }
+  } } };
+  f.store.saveTaskRoleSessionSet(readOnlySet);
+  assert.throws(() => call("define", definition), /writable delivery/);
+  f.store.saveTaskRoleSessionSet(set);
+  call("define", definition);
   const run = call("run", { trigger: { source: "manual", key: "one" } }).run;
+  f.store.saveTaskRoleSessionSet(readOnlySet);
+  assert.equal(call("run-get", { runId: run.id }).id, run.id);
+  assert.throws(() => call("run-cancel", { runId: run.id }), /writable delivery/);
+  f.store.saveTaskRoleSessionSet(set);
   const resource = `job:${task.id}/${run.id}`;
   assert.ok(projectCompletionReadiness(f.store.readCompletionReadinessFacts(task.id)).blockers.some(blocker => blocker.ref.id === run.id));
   assert.ok(archiveSettlementChecks(f.store, task).some(check => check.resource === resource));

@@ -39,11 +39,7 @@ export function authorizeAgentDefinition(store: TaskStore, job: JobDefinition, c
   }
   authorizeScope(store, job.scope, caller, true);
   if (caller.scope === "task" && caller.role !== "leader") throw new Error("Only the Task Leader manages Agent Jobs.");
-  if (write && caller.scope === "task") {
-    const current = requireManagedTaskCaller(store, { YUI_SESSION_SCOPE: "task", YUI_TASK_ID: caller.taskId,
-      YUI_ROLE: caller.role, YUI_NATIVE_SESSION_ID: caller.nativeSessionId });
-    if (current.executionAuthority !== "delivery") throw new Error("Planning authority cannot dispatch Job Agents.");
-  }
+  if (write) requireWritableTaskManager(store, caller);
   if (write && job.scope.kind === "task") {
     const task = store.getTask(job.scope.taskId);
     if (task?.status !== "active" || task.executionGate.state !== "enabled") throw new Error("Agent Jobs require their owning Task to be active and execution-enabled.");
@@ -85,9 +81,21 @@ function taskRecipient(store: TaskStore, target: { taskId: string; roleName: str
     ...(owner.reviewRoundId ? { reviewRoundId: owner.reviewRoundId } : {}) };
 }
 
-function requireManager(store: TaskStore, job: JobDefinition, caller: DurableJobCaller): void {
+function requireWritableTaskManager(store: TaskStore, caller: DurableJobCaller): void {
+  if (caller.scope !== "task") return;
+  const current = requireManagedTaskCaller(store, { YUI_SESSION_SCOPE: "task", YUI_TASK_ID: caller.taskId,
+    YUI_ROLE: caller.role, YUI_NATIVE_SESSION_ID: caller.nativeSessionId });
+  const set = store.getTaskRoleSessionSet(current.taskId, current.roleName);
+  if (current.executionAuthority !== "delivery"
+    || set?.sessions[current.agentId]?.effective.profileAccess !== "write") {
+    throw new Error("Agent Job management requires a current writable delivery Session.");
+  }
+}
+
+function requireManager(store: TaskStore, job: JobDefinition, caller: DurableJobCaller, write = true): void {
   authorizeScope(store, job.scope, caller, true);
   if (caller.scope === "task" && caller.role !== "leader") throw new Error("Only the Task Leader manages Agent Jobs.");
+  if (write) requireWritableTaskManager(store, caller);
 }
 
 function ownedRole(store: TaskStore, home: string, job: JobDefinition, runId: string, now: Date): JobAgentRecipient {
@@ -204,7 +212,7 @@ export function controlAgentJob(store: TaskStore, home: string, job: JobDefiniti
   if (op === "show") return { ...job, results: summarizeAgentRuns(history()) };
   if (op === "runs") return history();
   if (["session-inspect", "session-create", "session-stop", "session-new"].includes(op)) {
-    requireManager(store, job, caller);
+    requireManager(store, job, caller, op !== "session-inspect");
     if (job.configuration.kind !== "agent" || job.configuration.target.kind !== "job") throw new Error("This Job uses a shared Role; inspect that Role's existing Session.");
     if (job.configuration.concurrency === "isolated" && !history().some(run => run.id === input.runId)) throw new Error("Isolated Session operations require an exact existing Run.");
     const roleName = jobAgentRoleName(job.scope, job.id, job.configuration.concurrency === "isolated" ? input.runId : undefined);
