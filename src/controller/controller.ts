@@ -2260,7 +2260,9 @@ export async function startFileTaskController(
           if (error instanceof Error && error.name === "Error") error.name = "CoreJobError";
           throw error;
         }
-        if ((params as { op?: string }).op === "run-confirm" && (result as { executor?: string }).executor !== "agent") {
+        if ((params as { op?: string }).op === "run-confirm"
+          && (result as { executor?: string }).executor !== "agent"
+          && !(result as { delegation?: unknown })?.delegation) {
           if (!options.jobSupervisor?.confirmResult) {
             throw controllerApplicationError("METHOD_NOT_FOUND", "Job result collection unavailable.");
           }

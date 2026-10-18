@@ -9,8 +9,8 @@ import { WebRequestRejected, webLocalMutation } from "./webMutation.js";
 
 /** Local-user ingress only, behind the Web token/origin boundary. Never use
  * this adapter for managed RPC callers. The route fixes scope; the server
- * resolves the current Operator binding on every request. No invented Session
- * or durable second authority: the public services revalidate the binding.
+ * uses public user authority for global controlled actions. Task shell access
+ * still resolves the current Operator binding; no invented Session.
  */
 export function createWebJobs(store: TaskStore, home: string) {
   function invoke(scope: JobScope, family: "jobs" | "schedules", value: unknown, write: boolean, now: Date) {
@@ -18,16 +18,16 @@ export function createWebJobs(store: TaskStore, home: string) {
       if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Expected an operation.");
       requireKnownFields(value, family === "jobs"
         ? ["op", "id", "title", "configuration", "expectedRevision", "runId", "requestId"]
-        : ["op", "id", "jobId", "rule", "expectedRevision"], "Web Job/Schedule request");
+        : ["op", "id", "jobId", "rule", "expectedRevision", "authorization", "target"], "Web Job/Schedule request");
       const input = value as Record<string, JsonValue>;
-      const reads = family === "jobs" ? ["list", "show", "runs", "run-get", "logs"] : ["list", "show"];
+      const reads = family === "jobs" ? ["list", "show", "runs", "run-get", "run-result", "run-evidence", "run-delegation", "logs"] : ["list", "show"];
       const writes = family === "jobs" ? ["define", "update", "run", "run-cancel"] : ["create", "update", "enable", "disable"];
       if (!(write ? writes : reads).includes(String(input.op))) throw new Error("Operation is not available on this endpoint.");
       if (scope.kind === "task" && !tx.getTask(scope.taskId)) throw new Error("Task not found.");
-      const session = activeLiveRoleAgentSession(tx.getGlobalRoleSessionSet("operator"));
-      if (!session) throw new Error("A current Operator Session is required for Job management.");
-      const caller = { scope: "global", role: "operator", nativeSessionId: session.nativeSessionId,
-        agentId: session.agentId, adapterId: session.adapterId };
+      const session = scope.kind === "task" ? activeLiveRoleAgentSession(tx.getGlobalRoleSessionSet("operator")) : null;
+      if (scope.kind === "task" && !session) throw new Error("A current Operator Session is required for Task Job management.");
+      const caller = session ? { scope: "global", role: "operator", nativeSessionId: session.nativeSessionId,
+        agentId: session.agentId, adapterId: session.adapterId } : { scope: "user" };
       const { requestId, ...fields } = input;
       if (input.op === "run" && (typeof requestId !== "string" || !requestId.trim() || requestId.length > 200)) {
         throw new Error("Immediate execution requires a stable requestId.");

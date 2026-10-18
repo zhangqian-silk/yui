@@ -3,6 +3,7 @@ import type { DurableJob, DurableJobOwner, DurableJobStep } from "./durableJob.j
 import { validateJobExecutionConfiguration, validateDurableJobOwner } from "./durableJob.js";
 import type { JsonValue } from "../core/protocol.js";
 import { validateAgentJobConfiguration, type AgentJobConfiguration } from "./agentJob.js";
+import { validateTaskJobConfiguration, type TaskJobConfiguration as DelegatedTaskConfiguration } from "./taskDelegation.js";
 
 export type JobScope = Readonly<{ kind: "task"; taskId: string }> | Readonly<{ kind: "global" }>;
 export type TaskJobConfiguration = Readonly<{
@@ -20,7 +21,7 @@ export type BuiltinJobConfiguration = Readonly<{
   projectId?: string;
   input: JsonValue;
 }>;
-export type JobConfiguration = TaskJobConfiguration | BuiltinJobConfiguration | AgentJobConfiguration;
+export type JobConfiguration = TaskJobConfiguration | BuiltinJobConfiguration | AgentJobConfiguration | DelegatedTaskConfiguration;
 export type JobDefinition = Readonly<{
   schemaVersion: 1;
   id: string;
@@ -28,6 +29,8 @@ export type JobDefinition = Readonly<{
   title: string;
   revision: number;
   configuration: JobConfiguration;
+  /** Compiled installer provenance, never caller-supplied execution authority. */
+  builtin?: "project-sync";
   instantiation?: Readonly<{ sourceId: string; sourceRevision: number; key: string }>;
   createdAt: string;
   updatedAt: string;
@@ -45,7 +48,7 @@ export function jobScopeKey(scope: JobScope): string {
 }
 
 export function validateJobDefinition(job: JobDefinition): JobDefinition {
-  requireKnownFields(job, ["schemaVersion", "id", "scope", "title", "revision", "configuration", "instantiation", "createdAt", "updatedAt"], "Job");
+  requireKnownFields(job, ["schemaVersion", "id", "scope", "title", "revision", "configuration", "builtin", "instantiation", "createdAt", "updatedAt"], "Job");
   if (job.schemaVersion !== 1) throw new Error("Job schemaVersion must be 1.");
   requireIdentity(job.id, "Job id");
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u.test(job.id)) throw new Error("Invalid Job definition id.");
@@ -63,11 +66,16 @@ export function validateJobDefinition(job: JobDefinition): JobDefinition {
   requireKnownFields(job.scope, job.scope.kind === "task" ? ["kind", "taskId"] : ["kind"], "Job scope");
   jobScopeKey(job.scope);
   const config = job.configuration;
+  if (job.builtin !== undefined && (job.builtin !== "project-sync" || job.scope.kind !== "global"
+    || config.kind !== "builtin" || config.action !== "project.refresh"
+    || job.id !== `project-sync-${config.projectId}` || job.instantiation !== undefined)) {
+    throw new Error("Invalid builtin Project sync definition.");
+  }
   if (config.kind === "agent") {
     validateAgentJobConfiguration(config);
-    return job;
-  }
-  if (job.scope.kind === "global") {
+  } else if (config.kind === "task") {
+    validateTaskJobConfiguration(config);
+  } else if (job.scope.kind === "global") {
     if (config.kind !== "builtin") throw new Error("Global Jobs require a controlled builtin action.");
     requireKnownFields(config, ["kind", "action", "projectId", "input"], "Builtin Job");
     requireText(config.action, "Builtin action");
@@ -106,6 +114,7 @@ export function reviseJobDefinition(
 
 /** Old execution IDs are preserved one-to-one; command equality never merges history. */
 export function definitionFromTaskRun(run: DurableJob): JobDefinition {
+  if (run.delegation) throw new Error("Task delegation already requires a Job definition.");
   return createJobDefinition({
     id: run.definitionId, scope: { kind: "task", taskId: run.taskId }, title: run.steps[0]!.name,
     configuration: {

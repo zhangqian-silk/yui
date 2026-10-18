@@ -220,6 +220,28 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
 }, {
   fromVersion: "1.17",
   toVersion: "1.18",
+  name: "builtin-project-sync",
+  introducedIn: "next",
+  sourceChecksum: SESSION_SCHEMA_CHECKSUM,
+  targetChecksum: SESSION_SCHEMA_CHECKSUM,
+  // Additive installer provenance, explicit compiled service issuer and user
+  // intent on new definitions/plans. Do not adopt or rewrite historical Jobs,
+  // grants, time overrides or Runs. Installation is a separate runtime action.
+  sql: ""
+}, {
+  fromVersion: "1.18",
+  toVersion: "1.19",
+  name: "job-task-delegation",
+  introducedIn: "next",
+  sourceChecksum: SESSION_SCHEMA_CHECKSUM,
+  targetChecksum: SESSION_SCHEMA_CHECKSUM,
+  // Optional immutable Task creation source and Run delegation. Existing
+  // ordinary Tasks retain absence of source; all historical payload bytes,
+  // references and unknown effects remain unchanged.
+  sql: ""
+}, {
+  fromVersion: "1.19",
+  toVersion: "1.20",
   name: "job-agent-execution",
   introducedIn: "next",
   sourceChecksum: SESSION_SCHEMA_CHECKSUM,
@@ -256,6 +278,7 @@ export function validateSqliteSchemaObjects(db: Database.Database, version: Stor
   const checksum = version === CURRENT_STORAGE_VERSION
     ? CURRENT_SCHEMA_CHECKSUM : storageMinorUpgradePlan(version)?.[0]?.sourceChecksum;
   const sql = checksum === CURRENT_SCHEMA_CHECKSUM ? CURRENT_SCHEMA_SQL
+    : checksum === SESSION_SCHEMA_CHECKSUM ? SESSION_SCHEMA_SQL
     : checksum === SCHEDULE_SCHEMA_CHECKSUM ? SCHEDULE_SCHEMA_SQL_COMPLETE
     : checksum === JOB_SCHEMA_CHECKSUM ? BASELINE_SCHEMA_SQL + JOB_SCHEMA_SQL
     : checksum === BASELINE_SCHEMA_CHECKSUM ? BASELINE_SCHEMA_SQL : undefined;

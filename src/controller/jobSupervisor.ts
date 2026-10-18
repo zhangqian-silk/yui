@@ -151,6 +151,7 @@ export type DurableJobSupervisorOptions = Readonly<{
   wake?: (taskId: string) => void;
   onError?: (error: unknown) => void;
   authorizeStart: (job: DurableJob) => void;
+  reconcileDelegation?: (job: DurableJob, now: Date) => void;
 }>;
 
 /**
@@ -177,6 +178,7 @@ export class DurableJobSupervisor {
   readonly #wake: (taskId: string) => void;
   readonly #onError: (error: unknown) => void;
   readonly #authorizeStart: (job: DurableJob) => void;
+  readonly #reconcileDelegation: DurableJobSupervisorOptions["reconcileDelegation"];
   // f5: Composite key (taskId/jobId) because job IDs are Task-local — every
   // Task has a job-1, so a Task-local key would cross-kill healthy runners.
   readonly #sigkillAt = new Map<string, number>();
@@ -189,6 +191,7 @@ export class DurableJobSupervisor {
     this.#wake = options.wake ?? (() => undefined);
     this.#onError = options.onError ?? (() => undefined);
     this.#authorizeStart = options.authorizeStart;
+    this.#reconcileDelegation = options.reconcileDelegation;
   }
 
   reconcile(now: Date): void {
@@ -221,6 +224,10 @@ export class DurableJobSupervisor {
     const run = this.#store.listActiveDurableJobs()
       .find(run => executionNamespace(run) === namespace && run.id === runId);
     if (!run) return;
+    if (run.delegation) {
+      this.#reconcileDelegation?.(run, now);
+      return;
+    }
     if (run.status === "queued") {
       const spawned = this.#spawnedProcessFromEvidence(run, this.#artifacts.readStartMarker(namespace, runId));
       if (spawned) this.#adoptAndContinue(run, spawned, now);
@@ -236,6 +243,10 @@ export class DurableJobSupervisor {
   }
 
   #reconcileJob(job: DurableJob, now: Date): void {
+    if (job.delegation) {
+      this.#reconcileDelegation?.(job, now);
+      return;
+    }
     if (job.status === "queued") {
       this.#reconcileQueued(job, now);
       return;
@@ -357,6 +368,7 @@ export class DurableJobSupervisor {
   }
 
   #startJob(job: DurableJob, now: Date): void {
+    if (job.delegation) throw new Error("Task delegation cannot start a process.");
     try {
       this.#authorizeStart(job);
     } catch (error) {
@@ -665,6 +677,7 @@ function proveOutcomeFromCheckpoint(
   job: DurableJob,
   checkpoint: DurableJobCheckpoint
 ): Omit<DurableJobResult, "evidenceSource"> | null {
+  if (job.delegation) return null;
   const byName = new Map(checkpoint.completedSteps.map((step) => [step.name, step]));
   if (byName.size !== checkpoint.completedSteps.length) return null;
   if (byName.size !== job.steps.length) return null;

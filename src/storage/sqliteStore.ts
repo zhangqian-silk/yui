@@ -117,7 +117,7 @@ import { writeTelemetryBatch } from "../telemetry/sqliteTelemetryBatch.js";
 import { STORED_RECORD_TABLES, validateStoredRecord, type StoredRecordTable } from "./recordValidation.js";
 import { jobScopeKey, validateJobDefinition, type JobDefinition, type JobScope } from "../job/jobDefinition.js";
 import { validateSchedule, type Schedule } from "../schedule/schedule.js";
-import type { GlobalJobRun } from "../job/durableJob.js";
+import type { GlobalJobRun, JobRun } from "../job/durableJob.js";
 import type { TelemetryProgressEntry } from "../telemetry/telemetryStore.js";
 import {
   gateArtifactKey,
@@ -1385,6 +1385,10 @@ export class SqliteTaskStore implements TaskStore {
       throw new StorageRecordError("Task id is required.");
     }
     this.#mutate(() => {
+      const previous = this.getTask(task.id);
+      if (previous !== null && !isDeepStrictEqual(previous.source, task.source)) {
+        throw new StorageRecordError("Task source is immutable after creation.");
+      }
       const schedules = this.listSchedules({ kind: "task", taskId: task.id });
       if (task.status === "completed" && schedules.some(s => s.rule.kind === "once"
         && (s.state === "enabled" || s.state === "needs-attention"))) {
@@ -1425,6 +1429,20 @@ export class SqliteTaskStore implements TaskStore {
   listTasks(): Task[] {
     const tasks = this.#listPayload<Task>("task_records", "1=1", []);
     return this.#sortById(tasks, (task) => task.id);
+  }
+
+  listTaskDelegations(taskId: string) {
+    const rows = this.#db.prepare(`SELECT task_id AS scope, job_id AS id, payload FROM durable_jobs
+      WHERE json_extract(payload,'$.delegation.taskId') = ?
+      UNION ALL SELECT 'global' AS scope, run_id AS id, payload FROM global_job_runs
+      WHERE json_extract(payload,'$.delegation.taskId') = ? LIMIT 101`).all(taskId, taskId) as
+      { scope: string; id: string; payload: string }[];
+    return { complete: rows.length <= 100, items: rows.slice(0, 100).map(row => {
+      const run = JSON.parse(row.payload) as JobRun;
+      return { sourceRun: { scope: row.scope === "global" ? { kind: "global" as const }
+        : { kind: "task" as const, taskId: row.scope }, runId: row.id },
+        jobId: run.definitionId, delegation: run.delegation!, status: run.status };
+    }) };
   }
 
   queryTaskCatalog(query: TaskCatalogQuery) {

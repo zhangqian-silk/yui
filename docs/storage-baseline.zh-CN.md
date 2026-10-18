@@ -2,9 +2,17 @@
 
 # 存储基线 1.0
 
-当前存储为 1.18。1.17 → 1.18 增加 Agent Job 配置、Global Role 的可选 Job
+当前存储为 1.20。1.19 → 1.20 增加 Agent Job 配置、Global Role 的可选 Job
 归属和 `agent_job_runs` 表，保存原始消息、准确原生尝试与显式业务结果。
 保留现有 Role、Session、进程 Run 和固定产物身份；迁移不创建 Agent 或原生会话。
+
+1.18 → 1.19 增加 Task 可选且不可改写的创建来源、准确 Run
+委托及 Task/WorkItem 结果引用，不改变 SQL 布局或旧 payload 字节。
+普通历史 Task 仍无来源，不补造权限、来源或结果；未知效果与固定产物引用保持。
+
+1.17 → 1.18 允许新记录携带内置 Project 同步来源、
+编译期注册服务签发者及独立的用户启停偏好；SQL 布局和已有 payload 原字节不变。
+迁移不接管手建 Job、不补造历史授权或 Run；安装由 Controller 单独核对。
 
 1.16 → 1.17 增加 JobRun 可选的只追加产物引用，
 以及按 scope 和 Run 隔离的本地 Git 正式产物库。原 payload 字节、

@@ -19,6 +19,7 @@ export function assertJobAssignmentScope(
   if (run?.status !== "active" || run.reviewRoundId !== undefined
     || target.owner.kind !== "work-item" || target.owner.workItemId !== run.workItemId
     || item?.status !== "open" || item.assignee !== caller.role
+    || target.projectId === undefined || target.workspace === undefined
     || !item.writeProjectIds.includes(target.projectId)
     || !run.effective.writeProjectIds.includes(target.projectId)
     || workspace === undefined || resolve(workspace.root) !== resolve(target.workspace)

@@ -20,7 +20,7 @@ import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerSt
 import Database from "../../dist/sqlite/driver.js";
 import { usePre114Layout } from "../helpers/pre19Storage.mjs";
 import { applySqliteMinorUpgrades, JOB_SCHEMA_CHECKSUM, validateSqliteSchemaObjects } from "../../dist/storage/sqliteSchema.js";
-import { usePre118Layout } from "../helpers/pre19Storage.mjs";
+import { usePre120Layout } from "../helpers/pre19Storage.mjs";
 
 test("Schedule time rules keep interval anchors and explicit cron DST semantics", () => {
   const rule = { kind: "interval", anchor: "2026-01-01T00:00:00Z", everyMs: 60_000 };
@@ -262,7 +262,7 @@ test("storage 1.9 -> current appends schedules without changing Job history", t 
     db.prepare("UPDATE storage_schema SET minor=9,checksum=?").run(JOB_SCHEMA_CHECKSUM);
     validateSqliteSchemaObjects(db, "1.9");
     applySqliteMinorUpgrades(db, home);
-    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 18);
+    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 20);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM schedules").get().n, 0);
   } finally { db.close(); }
   const migrated = new SqliteTaskStore(home);
@@ -287,7 +287,7 @@ test("storage 1.15 preserves original Schedule bytes, rules and Session authorit
   const db = new Database(join(home, "yui.db"));
   try {
     db.prepare("INSERT INTO schedules VALUES(?,?,?,?,?)").run("global", old.id, raw, old.state, old.nextDue);
-    usePre118Layout(db);
+    usePre120Layout(db);
     db.prepare("UPDATE storage_schema SET minor=15").run();
     applySqliteMinorUpgrades(db, home);
     assert.equal(db.prepare("SELECT payload FROM storage_migration_archive WHERE migration_version=16 AND family='schedules'").get().payload, raw);

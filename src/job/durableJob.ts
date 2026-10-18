@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { artifactsAppendOnly, validateRunArtifacts, type JobArtifactReference } from "../artifacts/jobArtifact.js";
 import { processBusinessResult, runReference, validateBusinessResult, type JobBusinessResult } from "./jobBusinessResult.js";
 import type { JobTrigger } from "./jobDefinition.js";
+import { validateTaskDelegation, type TaskDelegation } from "./taskDelegation.js";
 import {
   requireIdentity,
   requireKnownFields,
@@ -99,8 +100,9 @@ export type DurableJobProcess = Readonly<{
   startIdentity: string;
 }>;
 
-export type DurableJob = Readonly<{
+export type ProcessDurableJob = Readonly<{
   schemaVersion: typeof CURRENT_DURABLE_JOB_SCHEMA_VERSION;
+  delegation?: never;
   id: string;
   /** Stable definition; id remains the exact execution (Run) reference. */
   definitionId: string;
@@ -140,14 +142,28 @@ export type DurableJob = Readonly<{
   updatedAt: string;
 }>;
 
+/** A Task executor carries only delivery identity, never a fake process spec. */
+export type TaskDelegationRun = Omit<ProcessDurableJob,
+  "delegation" | "projectId" | "head" | "workspace" | "env" | "steps" | "process" | "checkpoint" | "result"
+> & Readonly<{
+  delegation: TaskDelegation;
+  projectId?: never; head?: never; workspace?: never; env?: never; steps?: never;
+  process?: never; checkpoint?: never; result?: never;
+}>;
+export type DurableJob = ProcessDurableJob | TaskDelegationRun;
 /** Global executions have no Task identity, Assignment or Task lifecycle gate. */
-export type GlobalJobRun = Omit<DurableJob, "taskId" | "owner" | "projectId"> & Readonly<{
+export type GlobalProcessJobRun = Omit<ProcessDurableJob, "taskId" | "owner" | "projectId"> & Readonly<{
   scope: "global";
   action: string;
   actionInput: import("../core/protocol.js").JsonValue;
   serviceAuthorization?: import("./scheduleService.js").ScheduleServiceRef;
   projectId?: string;
 }>;
+export type GlobalDelegationRun = Omit<TaskDelegationRun, "taskId" | "owner"> & Readonly<{
+  scope: "global"; action?: never; actionInput?: never; serviceAuthorization?: never;
+}>;
+export type GlobalJobRun = GlobalProcessJobRun | GlobalDelegationRun;
+export type ProcessJobRun = ProcessDurableJob | GlobalProcessJobRun;
 export type JobRun = DurableJob | GlobalJobRun;
 export function executionNamespace(run: JobRun): string {
   return "taskId" in run ? run.taskId : "global";
@@ -198,7 +214,7 @@ export function createDurableJob(
     operation: Pick<OperationFacts, "requestId" | "actorId" | "authorityRef" | "inputDigest">;
   }>,
   now: Date
-): DurableJob {
+): ProcessDurableJob {
   const timestamp = now.toISOString();
   const idempotencyKey = createHash("sha256").update(JSON.stringify([
     input.operation.actorId, input.operation.requestId
@@ -466,6 +482,23 @@ export function retryDurableJobIdempotencyKey(
 }
 
 export function validateDurableJob<T extends JobRun>(job: T): T {
+  if (job.delegation !== undefined) {
+    validateTaskDelegation(job.delegation);
+    if (job.process !== undefined || job.result !== undefined || job.status === "queued") {
+      throw new Error("Task delegation cannot carry process execution/result evidence.");
+    }
+    if (job.steps !== undefined || job.env !== undefined || job.workspace !== undefined
+      || job.head !== undefined || job.projectId !== undefined || job.checkpoint !== undefined
+      || ("action" in job && job.action !== undefined)
+      || ("actionInput" in job && job.actionInput !== undefined)
+      || ("serviceAuthorization" in job && job.serviceAuthorization !== undefined)) {
+      throw new Error("Task delegation cannot contain a process specification.");
+    }
+    if (job.businessResult?.outcome === "succeeded" && !job.businessResult.evidence.some(ref =>
+      (ref.kind === "task-result" || ref.kind === "work-item-result") && ref.owner.taskId === job.delegation!.taskId)) {
+      throw new Error("Successful delegation requires exact target delivery evidence.");
+    }
+  }
   validateRunArtifacts(job);
   if (job.schemaVersion !== CURRENT_DURABLE_JOB_SCHEMA_VERSION) {
     throw new Error(
@@ -482,11 +515,11 @@ export function validateDurableJob<T extends JobRun>(job: T): T {
   if ("taskId" in job) {
     validateTaskRecordReference({ taskId: job.taskId, localId: job.id }, "durableJob");
     validateDurableJobOwner(job.owner, job.taskId);
-    requireIdentity(job.projectId, "DurableJob project id");
+    if (!job.delegation) requireIdentity(job.projectId, "DurableJob project id");
   } else {
     if (job.scope !== "global") throw new Error("Invalid global JobRun scope.");
     requireIdentity(job.id, "JobRun id");
-    requireText(job.action, "JobRun builtin action");
+    if (!job.delegation) requireText(job.action, "JobRun builtin action");
     if (job.serviceAuthorization !== undefined) {
       requireKnownFields(job.serviceAuthorization, ["scheduleId", "grantId"], "Job Schedule service reference");
       requireText(job.serviceAuthorization.scheduleId, "Schedule id");
@@ -494,7 +527,7 @@ export function validateDurableJob<T extends JobRun>(job: T): T {
     }
     if (job.projectId !== undefined) requireIdentity(job.projectId, "JobRun Project id");
   }
-  validateJobExecutionConfiguration(job);
+  if (!job.delegation) validateJobExecutionConfiguration(job);
   requireText(job.idempotencyKey, "DurableJob idempotency key");
   if (!/^[a-f0-9]{64}$/u.test(job.idempotencyKey)) {
     throw new Error("DurableJob idempotency key is invalid.");
@@ -572,6 +605,8 @@ export function validDurableJobTransition(
   after: JobRun
 ): boolean {
   if (
+    !isDeepStrictEqual(before.delegation, after.delegation)
+    ||
     !artifactsAppendOnly(before, after)
     || before.id !== after.id
     || before.definitionId !== after.definitionId
@@ -656,7 +691,7 @@ export function validateDurableJobOwner(owner: DurableJobOwner, taskId: string):
   }
 }
 
-export function validateJobExecutionConfiguration(job: Pick<DurableJob, "head" | "workspace" | "env" | "steps">): void {
+export function validateJobExecutionConfiguration(job: Pick<ProcessDurableJob, "head" | "workspace" | "env" | "steps">): void {
   requireCommit(job.head, "DurableJob head");
   requireText(job.workspace, "DurableJob workspace");
   if (!job.workspace.startsWith("/")) throw new Error("DurableJob workspace must be an absolute path.");

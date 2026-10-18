@@ -2,7 +2,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import { assertHttpPreviewSocket, isHttpPreview, validateHttpPreview } from "../job/httpPreview.js";
-import { requestDurableJobCancel, type DurableJob } from "../job/durableJob.js";
+import { requestDurableJobCancel, type ProcessDurableJob as DurableJob } from "../job/durableJob.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import { webLocalMutation, WebRequestRejected } from "./webMutation.js";
 
@@ -29,7 +29,7 @@ export function createTaskPreviews(store: PreviewStore, home: string) {
   };
   const registered = (taskId: string, jobId: string) => {
     const job = store.getDurableJob(taskId, jobId);
-    if (!store.getTask(taskId) || !job || job.taskId !== taskId || !isHttpPreview(job.env)) {
+    if (!store.getTask(taskId) || !job || job.delegation || job.taskId !== taskId || !isHttpPreview(job.env)) {
       throw new WebRequestRejected("Registered Task preview not found.");
     }
     validateHttpPreview(job.env, job.steps);
@@ -65,7 +65,7 @@ export function createTaskPreviews(store: PreviewStore, home: string) {
     authenticated(request: IncomingMessage) { return ticketTarget(request) !== undefined; },
     async list(taskId: string) {
       if (!store.getTask(taskId)) throw new WebRequestRejected("Task not found.");
-      const jobs = store.listDurableJobs(taskId).filter(job => isHttpPreview(job.env)).reverse();
+      const jobs = store.listDurableJobs(taskId).filter((job): job is DurableJob => !job.delegation && isHttpPreview(job.env)).reverse();
       const services = await Promise.all(jobs.slice(0, 16).map(async job => {
         let current = state(job);
         let detail = job.result?.unknownReason ?? `Job: ${job.status}`;

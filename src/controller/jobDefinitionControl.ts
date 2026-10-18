@@ -28,6 +28,8 @@ import { ManagedGitError } from "../artifacts/managedGit.js";
 import { authorizeServiceJob, requireScheduleService, serviceRunBinding, type ScheduleServiceRef } from "../job/scheduleService.js";
 import { authorizeAgentDefinition, controlAgentJob, summarizeAgentRuns } from "./agentJobControl.js";
 import type { JobBusinessResult } from "../job/jobBusinessResult.js";
+import { admitTaskJob, authorizeTaskJob, reconcileTaskDelegation, taskDelegationView } from "./jobTaskDelegationControl.js";
+import { requireProjectSyncTarget } from "../job/projectSync.js";
 
 export type RunAdmission = Readonly<{
   run: JobRun;
@@ -64,6 +66,10 @@ function taskParams(job: JobDefinition, caller: DurableJobCaller, requestId: str
 export function authorizeDefinition(store: TaskStore, job: JobDefinition, caller: DurableJobCaller, write: boolean): void {
   if (job.configuration.kind === "agent") return authorizeAgentDefinition(store, job, caller, write);
   authorizeScope(store, job.scope, caller, true);
+  if (job.configuration.kind === "task") {
+    authorizeTaskJob(store, job, caller, write);
+    return;
+  }
   if (job.scope.kind === "task") {
     const params = taskParams(job, caller, "definition-validation");
     // A definition must not reveal another Assignment's commands/environment.
@@ -74,12 +80,13 @@ export function authorizeDefinition(store: TaskStore, job: JobDefinition, caller
     if (job.configuration.kind !== "builtin") throw new Error("Global Jobs require builtin actions.");
     prepareBuiltinJob(job.configuration, "/");
     if (job.configuration.action === "project.refresh") {
+      if (job.builtin) requireProjectSyncTarget(store, job);
       const project = requireRefreshProject(store, job.configuration.projectId!, true);
       if (projectRefreshDigest(job.configuration) !== projectRefreshTargetDigest(project)) {
         throw new Error("Project refresh target changed; inspect the Project and explicitly update the Job.");
       }
       const duplicate = !job.instantiation && store.listJobDefinitions({ kind: "global" }).find(other =>
-        !other.instantiation && other.id !== job.id && other.configuration.kind === "builtin"
+        !other.instantiation && !other.builtin && other.id !== job.id && other.configuration.kind === "builtin"
         && other.configuration.action === "project.refresh" && other.configuration.projectId === project.id);
       if (duplicate) throw new Error(`Project refresh Job already exists: ${duplicate.id}.`);
     }
@@ -103,7 +110,7 @@ function presentDefinition(store: TaskStore, definition: JobDefinition, caller: 
     runId: run.id, sourceRun: runReference(run), status: run.status,
     outcome: run.businessResult?.outcome ?? null,
     summary: run.businessResult?.summary.slice(0, 512) ?? null,
-    artifactCount: run.artifacts?.length ?? 0
+    artifactCount: run.artifacts?.length ?? 0, delegation: taskDelegationView(store, run)
   } : null;
   const job = { ...definition, results: {
     latest: result(history[0]), latestSuccessful: result(history.find(run => run.businessResult?.outcome === "succeeded"))
@@ -118,7 +125,8 @@ function presentDefinition(store: TaskStore, definition: JobDefinition, caller: 
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const summarize = (run: JobRun | undefined) => run === undefined ? null : {
     runId: run.id, definitionRevision: run.definitionRevision, trigger: run.trigger,
-    status: run.status, attemptedAt: run.createdAt, finishedAt: run.terminalAt ?? null
+    status: run.status, attemptedAt: run.createdAt, finishedAt: run.terminalAt ?? null,
+    summary: run.businessResult?.summary.slice(0, 512) ?? null
   };
   return { ...job, refresh: {
     projectId, lastAttempt: summarize(runs[0]),
@@ -127,6 +135,11 @@ function presentDefinition(store: TaskStore, definition: JobDefinition, caller: 
 }
 
 export function authorizeRunRead(store: TaskStore, run: JobRun, caller: DurableJobCaller): void {
+  if (run.delegation) {
+    authorizeScope(store, runReference(run).scope, caller, true);
+    if (caller.scope === "task" && caller.role !== "leader") throw new Error("Task delegation is not an Assignment grant.");
+    return;
+  }
   // A revised definition's Assignment does not grant access to earlier Runs.
   if ("taskId" in run) createDurableJobControl(store).getJob(run.taskId, run.id, caller);
 }
@@ -177,6 +190,10 @@ export function admitJobRun(
       throw new Error("Retry requires an exact failed/cancelled/timed-out Run of this Job.");
     }
     const requestId = `job:${job.id}:${trigger.source}:${trigger.key}`;
+    if (job.configuration.kind === "task") {
+      if (service) throw new Error("Schedule service does not authorize Task delegation.");
+      return { run: admitTaskJob(tx, { ...job, configuration: job.configuration }, caller, trigger, requestId, now, retryOf), created: true };
+    }
     if (scope.kind === "task") {
       const result = createDurableJobControl(tx).startJob({
         ...taskParams(job, caller, requestId), definitionId, trigger, retryOf
@@ -247,6 +264,7 @@ function publicJobBinding(store: TaskStore, run: GlobalJobRun): string {
 }
 
 export function authorizeGlobalJobStart(store: TaskStore, run: GlobalJobRun): void {
+  if (run.delegation) throw new Error("Task delegation cannot start a builtin process.");
   let serviceAdmission = false;
   if (run.operation.actorId === "service:schedule" && run.serviceAuthorization && run.trigger.source === "schedule") {
     try {
@@ -275,6 +293,8 @@ export function authorizeGlobalJobStart(store: TaskStore, run: GlobalJobRun): vo
       ...(run.projectId === undefined ? {} : { projectId: run.projectId })
     }, run.workspace, { home, runId: run.id });
     if (run.action === "project.refresh") {
+      const definition = store.getJobDefinition({ kind: "global" }, run.definitionId);
+      if (definition?.builtin) requireProjectSyncTarget(store, definition);
       const project = requireRefreshProject({ listProjects: () => projects, rootDirectory: () => home }, run.projectId!, true);
       if (projectRefreshTargetDigest(project) !== projectRefreshDigest({
         kind: "builtin", action: run.action, projectId: run.projectId, input: run.actionInput
@@ -327,6 +347,9 @@ export function createJobDefinitionControl(store: TaskStore, home: string) {
       if (typeof input.id !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u.test(input.id)) throw new Error("An explicit safe Job id is required.");
       const existing = tx.getJobDefinition(input.scope, input.id);
       if (input.op === "define" || input.op === "update") {
+        if (existing?.builtin || (!existing && input.scope.kind === "global" && input.id.startsWith("project-sync-"))) {
+          throw new Error("Builtin Project sync definitions are installer-owned; edit their Schedule.");
+        }
         let configuration = input.configuration!;
         // Empty input is an explicit request to bind the current catalog target.
         // A saved digest is never silently refreshed on run/retry.
@@ -375,7 +398,9 @@ export function createJobDefinitionControl(store: TaskStore, home: string) {
       const run = listJobRuns(tx, existing).find(candidate => candidate.id === input.runId);
       if (run === undefined) throw new Error("Exact JobRun not found.");
       authorizeRunRead(tx, run, input.caller);
-      if (input.op === "run-get" || input.op === "run-confirm") return run;
+      if (input.op === "run-delegation") return taskDelegationView(tx, run);
+      if (input.op === "run-get" || input.op === "run-confirm") return input.op === "run-confirm" && run.delegation
+        ? reconcileTaskDelegation(tx, run, now) : run;
       if (input.op === "run-result") return {
         snapshot: jobRunSnapshot(run),
         acceptedAt: run.createdAt, startedAt: run.startedAt ?? null,
@@ -405,6 +430,11 @@ export function createJobDefinitionControl(store: TaskStore, home: string) {
         });
       }
       if (input.op === "run-cancel" || input.op === "run-acknowledge") {
+        if (run.delegation) {
+          const next = input.op === "run-cancel" ? requestDurableJobCancel(run, now) : acknowledgeUnknownDurableJob(run, now);
+          if ("taskId" in next) tx.saveDurableJob(next.taskId, next); else tx.saveGlobalJobRun(next);
+          return next;
+        }
         if ("taskId" in run) {
           const control = createDurableJobControl(tx);
           return input.op === "run-cancel"

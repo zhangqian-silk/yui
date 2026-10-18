@@ -11,6 +11,7 @@ import { createTaskEvent } from "../event/taskEvent.js";
 import { enqueueSupervisorEvent } from "../scheduler/operatorEvent.js";
 import { redactLaunchText } from "../runtime/launchDiagnostics.js";
 import { requireScheduleService, scheduleServiceBinding } from "../job/scheduleService.js";
+import { updateProjectSync } from "../job/projectSync.js";
 
 function binding(store: TaskStore, caller: DurableJobCaller, scope: JobScope): string {
   return jobAuthorityBinding(store, caller.scope, caller.role!, scope.kind === "task" ? scope.taskId : "");
@@ -71,6 +72,7 @@ export function createScheduleControl(store: TaskStore, _home: string) {
         scheduleId(input.jobId!);
         const job = tx.getJobDefinition(input.scope, input.jobId!);
         if (job === null) throw new Error("Schedule Job definition is missing.");
+        if (job.builtin) throw new Error("Builtin Job has one installed Schedule; manage that Schedule instead.");
         if (previous !== null) {
           authorizeSchedule(tx, previous, input.caller, false);
           if (previous.jobId !== input.jobId || JSON.stringify(previous.rule) !== JSON.stringify(input.rule)
@@ -107,6 +109,12 @@ export function createScheduleControl(store: TaskStore, _home: string) {
         return { schedule: previous, lastSuccess, runs: ownRuns };
       }
       if (previous.revision !== input.expectedRevision) throw new Error("Schedule revision changed; read it before modifying.");
+      if (previous.builtin) {
+        if (input.jobId !== undefined || input.target !== undefined || input.authorization !== undefined) {
+          throw new Error("Builtin Schedule target and service registration cannot be overridden.");
+        }
+        return updateProjectSync(tx, previous, input.op, input.rule, now);
+      }
       let next: Schedule;
       if (input.op === "disable") {
         next = { ...previous, state: "disabled", reason: "Explicitly disabled; no future admission. Existing Runs are unchanged." };
@@ -123,6 +131,7 @@ export function createScheduleControl(store: TaskStore, _home: string) {
         const rule = input.op === "update" ? input.rule! : previous.rule;
         const target = validateScheduleTarget(input.op === "update" ? input.target ?? previous.target : previous.target);
         const job = authorizeSchedule(tx, { ...previous, jobId }, input.caller, true);
+        if (job.builtin) throw new Error("Builtin Job has one installed Schedule.");
         const after = fence(previous, now);
         // Once overlap/disabled intent keeps its original due instant on enable.
         const nextDue = input.op === "enable" && rule.kind === "once"

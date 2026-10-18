@@ -270,6 +270,12 @@ export type TaskStore = {
     import("../message/globalMessageQuery.js").GlobalMessagePage;
   nextTaskId(): string;
   saveTask(task: Task): void;
+  /** Bounded incoming relation projection; does not expose source Run bodies. */
+  listTaskDelegations(taskId: string): { complete: boolean; items: readonly {
+    sourceRun: import("../job/jobBusinessResult.js").JobRunReference;
+    jobId: string; delegation: NonNullable<import("../job/durableJob.js").JobRun["delegation"]>;
+    status: string;
+  }[] };
   listTasks(): Task[];
   /** Complete lightweight choice array for interactive selectors, not Context. */
   listTaskChoices(): Pick<Task, "id" | "title" | "status">[];

@@ -22,6 +22,10 @@ import { failRun } from "../../dist/agentRun/agentRun.js";
 import { prepareMessageContinuations } from "../../dist/message/messageContinuation.js";
 import { projectCompletionReadiness } from "../../dist/task/completionReadiness.js";
 import { archiveSettlementChecks, archiveExecutionChecks } from "../../dist/task/archivePreflight.js";
+import Database from "../../dist/sqlite/driver.js";
+import { applySqliteMinorUpgrades, validateSqliteSchemaObjects } from "../../dist/storage/sqliteSchema.js";
+import { usePre120Layout } from "../helpers/pre19Storage.mjs";
+import { createScheduleControl } from "../../dist/controller/scheduleControl.js";
 
 function fixture(t) {
   const home = mkdtempSync(join(tmpdir(), "yui-job-agent-"));
@@ -97,6 +101,61 @@ test("Agent Jobs select logical targets independently of their ownership", () =>
     assert.throws(() => createJobDefinition({ ...job,
       configuration: { ...job.configuration, target: { ...target, nativeSessionId: "permanent" } } }, now));
   }
+});
+
+test("1.19 history survives Agent migration and process, Task, Agent executors coexist without sharing grants", t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-job-coexist-"));
+  let store = new SqliteTaskStore(home);
+  t.after(() => { store?.close(); rmSync(home, { recursive: true, force: true }); });
+  const now = new Date(), scope = { kind: "global" }, caller = { scope: "user" };
+  const agent = createConfiguredAgent("fixture", "codex", "false", [], [], now);
+  store.saveConfiguredAgent(agent);
+  store.saveConfig({ ...store.getConfig(), defaultAgent: agent.id });
+  let control = createJobDefinitionControl(store, home);
+  const call = (id, op, extra = {}) => control({ scope, caller, id, op, ...extra }, now);
+  const processConfig = { kind: "builtin", action: "system.noop", input: {} };
+  const taskConfig = { kind: "task", goal: "delivery", target: { kind: "new",
+    title: "Independent delivery", description: "Normal authorized activation only.", projectBindings: [] } };
+  call("process", "define", { title: "Process", configuration: processConfig });
+  call("delivery", "define", { title: "Task", configuration: taskConfig });
+  const process = call("process", "run", { trigger: { source: "manual", key: "original" } }).run;
+  const delegated = call("delivery", "run", { trigger: { source: "manual", key: "original" } }).run;
+  store.close(); store = undefined;
+  const db = new Database(join(home, "yui.db"));
+  try {
+    const tables = ["job_definitions", "global_job_runs", "task_records", "global_role_session_sets"];
+    const before = tables.map(table => db.prepare(`SELECT * FROM ${table}`).all());
+    usePre120Layout(db);
+    db.prepare("UPDATE storage_schema SET minor=19").run();
+    validateSqliteSchemaObjects(db, "1.19");
+    applySqliteMinorUpgrades(db, home);
+    validateSqliteSchemaObjects(db);
+    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 20);
+    assert.deepEqual(tables.map(table => db.prepare(`SELECT * FROM ${table}`).all()), before);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM agent_job_runs").get().n, 0);
+  } finally { db.close(); }
+  store = new SqliteTaskStore(home);
+  control = createJobDefinitionControl(store, home);
+  assert.equal(call("process", "run-get", { runId: process.id }).id, process.id);
+  assert.equal(call("delivery", "run-confirm", { runId: delegated.id }).businessResult, undefined);
+  assert.equal(store.getTask(delegated.delegation.taskId).status, "draft");
+  call("agent", "define", { title: "Agent", configuration: {
+    kind: "agent", target: { kind: "job", agentId: agent.id }, input: "Inspect only this Job."
+  } });
+  const run = call("agent", "run", { trigger: { source: "manual", key: "original" } }).run;
+  assert.equal(run.executor, "agent");
+  assert.deepEqual(control({ op: "list", scope, caller }, now).map(job => job.id).sort(), ["agent", "delivery", "process"]);
+  for (const [id, configuration] of [["agent", taskConfig], ["delivery", processConfig]]) {
+    assert.throws(() => call(id, "update", { expectedRevision: 1, title: "Retarget", configuration }), /executor kind/);
+  }
+  const schedules = createScheduleControl(store, home);
+  for (const id of ["agent", "delivery"]) {
+    assert.throws(() => schedules({ op: "create", scope, caller, id: `schedule-${id}`, jobId: id,
+      authorization: "service", rule: { kind: "interval", everyMs: 60000, anchor: now.toISOString() } }, now), /service|builtin/i);
+  }
+  assert.equal(store.listSchedules(scope).length, 0);
+  assert.equal(call("agent", "run-confirm", { runId: run.id }).businessResult, undefined);
+  assert.equal(store.getTask(delegated.delegation.taskId).status, "draft");
 });
 
 test("Job Agent reuses a Role Session, preserves input/artifacts through replacement, fences old results", async t => {
