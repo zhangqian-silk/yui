@@ -28,7 +28,9 @@ test("public controlled Runs need no Session: exact admission, business results 
   assert.throws(() => call("run", { caller: { scope: "user", nativeSessionId: "forged" },
     trigger: { source: "manual", key: "bad" } }), /user|public/i);
   assert.throws(() => call("list", { scope: { kind: "task", taskId: "task-1" } }), /Session|scope|Task/i);
-  assert.throws(() => createScheduleControl(store, home)({ ...base, op: "list" }, new Date()), /Session|scope/i);
+  assert.deepEqual(createScheduleControl(store, home)({ ...base, op: "list" }, new Date()), []);
+  assert.throws(() => createScheduleControl(store, home)({ ...base, op: "create", jobId: base.id,
+    rule: { kind: "once", at: new Date(Date.now() + 60_000).toISOString() } }, new Date()), /explicit authorization/i);
   let starts = 0;
   const adapter = new FileSchedulerStoreAdapter(store);
   let failCollection = false;
@@ -111,7 +113,7 @@ test("1.14 migration adds sourced business results without rewriting original ev
     db.prepare("UPDATE global_job_runs SET payload=?,status=? WHERE run_id=?").run(bytes, old.status, old.id);
     db.prepare("UPDATE storage_schema SET minor=14").run();
     applySqliteMinorUpgrades(db, home);
-    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 15);
+    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 16);
     assert.equal(db.prepare("SELECT payload FROM storage_migration_archive WHERE migration_version=15 AND record_key=?")
       .get(`global/${old.id}`).payload, bytes);
   } finally { db.close(); }

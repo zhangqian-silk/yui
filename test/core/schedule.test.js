@@ -12,14 +12,14 @@ import { createConfiguredAgent } from "../../dist/agent/agent.js";
 import { createGlobalRole, createRoleAgentBinding } from "../../dist/role/role.js";
 import { createRoleSessionSet, recordRoleAgentSession } from "../../dist/executor/agentExecutor.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
-import { createJobDefinitionControl } from "../../dist/controller/jobDefinitionControl.js";
+import { createJobDefinitionControl, authorizeGlobalJobStart, instantiateJobRun } from "../../dist/controller/jobDefinitionControl.js";
 import { createScheduleControl, reconcileSchedules } from "../../dist/controller/scheduleControl.js";
 import { cancelQueuedDurableJob } from "../../dist/job/durableJob.js";
 import { startFileTaskController } from "../../dist/controller/controller.js";
 import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
 import Database from "../../dist/sqlite/driver.js";
 import { usePre114Layout } from "../helpers/pre19Storage.mjs";
-import { applySqliteMinorUpgrades, JOB_SCHEMA_CHECKSUM, validateSqliteSchemaObjects } from "../../dist/storage/sqliteSchema.js";
+import { applySqliteMinorUpgrades, CURRENT_SCHEMA_CHECKSUM, JOB_SCHEMA_CHECKSUM, validateSqliteSchemaObjects } from "../../dist/storage/sqliteSchema.js";
 
 test("Schedule time rules keep interval anchors and explicit cron DST semantics", () => {
   const rule = { kind: "interval", anchor: "2026-01-01T00:00:00Z", everyMs: 60_000 };
@@ -35,6 +35,71 @@ test("Schedule time rules keep interval anchors and explicit cron DST semantics"
   assert.doesNotThrow(() => validateScheduleRule({ ...cron, expression: "0 9 * * THU" }));
   assert.throws(() => validateScheduleRule({ ...rule, everyMs: 0 }));
   assert.throws(() => validateScheduleRule({ kind: "once", at: "2026-10-01T09:00:00" }));
+});
+
+test("explicit service authority survives without Sessions, is scoped and revocable; instantiation is atomic", t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-service-schedule-"));
+  let store = new SqliteTaskStore(home);
+  t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
+  const at = new Date("2026-10-16T00:00:00Z");
+  const due = new Date(at.getTime() + 60_000);
+  const scope = { kind: "global" }, caller = { scope: "user" };
+  const jobs = createJobDefinitionControl(store, home);
+  jobs({ op: "define", id: "source", title: "Source", scope, caller,
+    configuration: { kind: "builtin", action: "system.noop", input: {} } }, at);
+  let control = createScheduleControl(store, home);
+  const request = { id: "service", jobId: "source", scope, caller,
+    rule: { kind: "interval", everyMs: 60_000, anchor: due.toISOString() },
+    authorization: "service", target: { kind: "new-job", definitionRevision: 1 } };
+  assert.throws(() => control({ ...request, op: "create", caller: { scope: "service", role: "schedule" } }, at));
+  assert.throws(() => control({ ...request, op: "create", origin: "builtin" }, at));
+  assert.throws(() => control({ ...request, op: "create", authorization: "session" }, at));
+  let plan = control({ ...request, op: "create" }, at);
+  assert.equal(plan.authorization.kind, "service");
+  const errors = [];
+  const save = store.saveSchedule.bind(store);
+  store.saveSchedule = value => {
+    if (value.lastAttempt?.outcome === "admitted") throw new Error("atomic advance failure");
+    save(value);
+  };
+  reconcileSchedules(store, home, due, e => errors.push(e));
+  assert.match(errors[0].message, /atomic advance failure/);
+  assert.equal(store.listGlobalJobRuns().length, 0);
+  assert.equal(store.listJobDefinitions(scope).length, 1, "instance creation rolls back with Run and progress");
+  store.saveSchedule = save;
+  plan = store.getSchedule(scope, request.id);
+  control({ op: "enable", id: plan.id, scope, caller, expectedRevision: plan.revision }, at);
+  reconcileSchedules(store, home, due, e => { throw e; });
+  plan = store.getSchedule(scope, request.id);
+  const run = store.getGlobalJobRun(plan.lastAttempt.runId);
+  assert.notEqual(run.definitionId, "source");
+  assert.equal(plan.lastAttempt.jobId, run.definitionId);
+  assert.equal(plan.lastAttempt.generation, plan.generation);
+  assert.equal(run.status, "queued", "dispatch is not execution");
+  assert.doesNotThrow(() => authorizeGlobalJobStart(store, run));
+  assert.throws(() => authorizeGlobalJobStart(store, { ...run, actionInput: { forged: true } }));
+  store.close(); store = new SqliteTaskStore(home);
+  control = createScheduleControl(store, home);
+  reconcileSchedules(store, home, due, e => { throw e; });
+  assert.equal(store.listGlobalJobRuns().length, 1, "restart retains occurrence identity");
+  assert.equal(store.listJobDefinitions(scope).length, 2);
+  const replay = instantiateJobRun(store, home, scope, "source", 1,
+    caller, run.trigger, due, run.serviceAuthorization);
+  assert.equal(replay.run.id, run.id);
+  assert.equal(replay.created, false);
+  assert.equal(control({ op: "show", scope, caller, id: plan.id }, due).runs[0].id, run.id);
+  plan = control({ op: "disable", scope, caller, id: plan.id, expectedRevision: plan.revision }, due);
+  assert.doesNotThrow(() => authorizeGlobalJobStart(store, run), "disable only stops future triggers");
+  plan = control({ op: "revoke", scope, caller, id: plan.id, expectedRevision: plan.revision }, due);
+  assert.throws(() => authorizeGlobalJobStart(store, run), /revoked|authority/);
+  assert.equal(store.getGlobalJobRun(run.id).status, "queued", "revocation does not fabricate a terminal result");
+  assert.throws(() => control({ op: "enable", scope, caller, id: plan.id, expectedRevision: plan.revision }, due),
+    /explicit|authorization/i);
+  plan = control({ op: "enable", scope, caller, id: plan.id, expectedRevision: plan.revision, authorization: "service" }, due);
+  assert.throws(() => authorizeGlobalJobStart(store, run), /revoked|authority/, "a fresh grant cannot resurrect an old Run");
+  new FileSchedulerStoreAdapter(store).transitionDurableJob("global", run.id,
+    current => cancelQueuedDurableJob(current, due), due, { reason: "job-finished", refs: [] });
+  assert.equal(store.getWorkMailbox({ kind: "operator" }), null, "service results never request an Agent Session");
 });
 
 test("persistent Schedule RPC: atomic admission, bounded catch-up, overlap, disable and authority revocation", async t => {
@@ -159,9 +224,14 @@ test("persistent Schedule RPC: atomic admission, bounded catch-up, overlap, disa
     rule: { kind: "interval", everyMs: 60_000, anchor: at.toISOString() } }), atMinute(2));
   assert.equal(store.getSchedule(scope, s.id).nextDue, atMinute(34).toISOString(), "edit cannot move behind processed UTC fence");
   assert.throws(() => control(request("disable", s.id, { expectedRevision: s.revision }), at), /revision/);
-  for (const bad of [{ scope: "user" }, { scope: "task", taskId: "task-1", role: "leader" }, { ...caller, nativeSessionId: "wrong" }]) {
+  assert.ok(control({ ...request("list", s.id), caller: { scope: "user" } }, at).length);
+  for (const bad of [{ scope: "user", role: "operator" }, { scope: "task", taskId: "task-1", role: "leader" }, { ...caller, nativeSessionId: "wrong" }]) {
     assert.throws(() => control({ ...request("list", s.id), caller: bad }, at));
   }
+  jobs({ scope, caller, id: "service-source", op: "define", title: "Service source",
+    configuration: { kind: "builtin", action: "system.noop", input: {} } }, atMinute(33));
+  control(request("create", "session-independent", { jobId: "service-source", authorization: "service",
+    rule: { kind: "once", at: atMinute(34).toISOString() } }), atMinute(33));
   const sessions = store.getGlobalRoleSessionSet("operator");
   store.saveGlobalRoleSessionSet({ ...sessions, sessions: {
     ...sessions.sessions, codex: { ...sessions.sessions.codex, nativeSessionId: "replacement" }
@@ -169,7 +239,14 @@ test("persistent Schedule RPC: atomic admission, bounded catch-up, overlap, disa
   const count = store.listGlobalJobRuns().length;
   reconcileSchedules(store, home, atMinute(34), e => errors.push(e.message));
   assert.equal(store.getSchedule(scope, s.id).state, "needs-attention");
-  assert.equal(store.listGlobalJobRuns().length, count, "revoked Session is never reused");
+  assert.equal(store.listGlobalJobRuns().length, count + 1, "only the independent service plan runs after Session replacement");
+  const servicePlan = store.getSchedule(scope, "session-independent");
+  const serviceRun = store.getGlobalJobRun(servicePlan.lastAttempt.runId);
+  assert.equal(serviceRun.definitionId, "service-source");
+  assert.doesNotThrow(() => authorizeGlobalJobStart(store, serviceRun));
+  jobs({ scope, caller: { scope: "user" }, id: "service-source", op: "update", expectedRevision: 1,
+    title: "Changed source", configuration: { kind: "builtin", action: "system.noop", input: {} } }, atMinute(35));
+  assert.throws(() => authorizeGlobalJobStart(store, serviceRun), /target or authority changed/);
 });
 
 test("storage 1.9 -> current appends schedules without changing Job history", t => {
@@ -184,10 +261,38 @@ test("storage 1.9 -> current appends schedules without changing Job history", t 
     db.prepare("UPDATE storage_schema SET minor=9,checksum=?").run(JOB_SCHEMA_CHECKSUM);
     validateSqliteSchemaObjects(db, "1.9");
     applySqliteMinorUpgrades(db, home);
-    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 15);
+    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 16);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM schedules").get().n, 0);
   } finally { db.close(); }
   const migrated = new SqliteTaskStore(home);
   try { assert.deepEqual(migrated.listSchedules({ kind: "global" }), []); }
   finally { migrated.close(); }
+});
+
+test("storage 1.15 preserves original Schedule bytes, rules and Session authority without service escalation", t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-schedule-115-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const store = new SqliteTaskStore(home);
+  store.close();
+  const old = {
+    schemaVersion: 1, id: "historical", scope: { kind: "global" }, jobId: "original",
+    rule: { kind: "once", at: "2026-10-20T00:00:00Z" },
+    revision: 4, generation: 2, state: "disabled", nextDue: "2026-10-20T00:00:00Z",
+    authorization: { caller: { scope: "global", role: "operator", nativeSessionId: "old-session" },
+      binding: "a".repeat(64), jobRevision: 3 },
+    createdAt: "2026-10-18T00:00:00Z", updatedAt: "2026-10-18T00:00:00Z"
+  };
+  const raw = JSON.stringify(old, null, 2);
+  const db = new Database(join(home, "yui.db"));
+  try {
+    db.prepare("INSERT INTO schedules VALUES(?,?,?,?,?)").run("global", old.id, raw, old.state, old.nextDue);
+    db.prepare("UPDATE storage_schema SET minor=15,checksum=?").run(CURRENT_SCHEMA_CHECKSUM);
+    applySqliteMinorUpgrades(db, home);
+    assert.equal(db.prepare("SELECT payload FROM storage_migration_archive WHERE migration_version=16 AND family='schedules'").get().payload, raw);
+  } finally { db.close(); }
+  const current = new SqliteTaskStore(home);
+  try {
+    assert.deepEqual(current.getSchedule(old.scope, old.id), { ...old, target: { kind: "existing-job" },
+      authorization: { ...old.authorization, kind: "session" } });
+  } finally { current.close(); }
 });

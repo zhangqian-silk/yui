@@ -21,6 +21,7 @@ import {
 } from "./jobControl.js";
 import { createFileArtifactPort } from "./jobSupervisor.js";
 import { jobRunSnapshot } from "../job/jobBusinessResult.js";
+import { authorizeServiceJob, requireScheduleService, serviceRunBinding, type ScheduleServiceRef } from "../job/scheduleService.js";
 
 export type RunAdmission = Readonly<{
   run: JobRun;
@@ -32,7 +33,8 @@ export function authorizeScope(store: TaskStore, scope: JobScope, caller: Durabl
   parseDurableJobCaller(caller as unknown as JsonValue);
   jobScopeKey(scope);
   // Public local ingress is not a fabricated Operator. It grants only immediate
-  // controlled global actions; Schedule and Task-shell authority are unchanged.
+  // controlled global management/actions. Schedule grants are explicit and
+  // Task-shell authority is unchanged.
   if (allowPublic && scope.kind === "global" && caller.scope === "user") {
     if (Object.keys(caller).some(key => key !== "scope")) throw new Error("Public user Job caller must not claim a managed identity.");
     return;
@@ -69,8 +71,8 @@ export function authorizeDefinition(store: TaskStore, job: JobDefinition, caller
       if (projectRefreshDigest(job.configuration) !== projectRefreshTargetDigest(project)) {
         throw new Error("Project refresh target changed; inspect the Project and explicitly update the Job.");
       }
-      const duplicate = store.listJobDefinitions({ kind: "global" }).find(other =>
-        other.id !== job.id && other.configuration.kind === "builtin"
+      const duplicate = !job.instantiation && store.listJobDefinitions({ kind: "global" }).find(other =>
+        !other.instantiation && other.id !== job.id && other.configuration.kind === "builtin"
         && other.configuration.action === "project.refresh" && other.configuration.projectId === project.id);
       if (duplicate) throw new Error(`Project refresh Job already exists: ${duplicate.id}.`);
     }
@@ -102,7 +104,7 @@ function presentDefinition(store: TaskStore, job: JobDefinition) {
   } };
 }
 
-function authorizeRunRead(store: TaskStore, run: JobRun, caller: DurableJobCaller): void {
+export function authorizeRunRead(store: TaskStore, run: JobRun, caller: DurableJobCaller): void {
   // A revised definition's Assignment does not grant access to earlier Runs.
   if ("taskId" in run) createDurableJobControl(store).getJob(run.taskId, run.id, caller);
 }
@@ -114,13 +116,18 @@ function authorizeRunRead(store: TaskStore, run: JobRun, caller: DurableJobCalle
  */
 export function admitJobRun(
   store: TaskStore, home: string, scope: JobScope, definitionId: string,
-  caller: DurableJobCaller, trigger: JobTrigger, now: Date, retryOf?: string
+  caller: DurableJobCaller, trigger: JobTrigger, now: Date, retryOf?: string,
+  service?: ScheduleServiceRef
 ): RunAdmission {
   return store.transaction(tx => {
     const job = tx.getJobDefinition(scope, definitionId);
     if (job === null) throw new Error("Job definition not found.");
     authorizeDefinition(tx, job, caller, false);
-    if (caller.scope === "user" && !["manual", "retry"].includes(trigger.source)) {
+    const serviceSchedule = service === undefined ? undefined : authorizeServiceJob(tx, job, service, trigger.key);
+    if (service && (scope.kind !== "global" || trigger.source !== "schedule" || retryOf !== undefined)) {
+      throw new Error("Invalid Schedule service admission.");
+    }
+    if (!service && caller.scope === "user" && !["manual", "retry"].includes(trigger.source)) {
       throw new Error("Public Job admission only authorizes an immediate manual execution or explicit retry.");
     }
     if (!trigger.key.trim() || !["manual", "retry", "schedule", "integration"].includes(trigger.source)) {
@@ -157,16 +164,17 @@ export function admitJobRun(
     const id = `job-${randomUUID()}`;
     const locator = `artifacts/jobs/global/${id}`;
     const spec = prepareBuiltinJob(job.configuration, join(home, locator), { home, runId: id });
-    const actorId = caller.scope === "user" ? "user" : `global:${caller.role}`;
+    const actorId = service ? "service:schedule" : caller.scope === "user" ? "user" : `global:${caller.role}`;
     let run: GlobalJobRun = {
       schemaVersion: 1, scope: "global", id, definitionId: job.id, definitionRevision: job.revision,
       trigger: structuredClone(trigger), action: job.configuration.action,
+      ...(service === undefined ? {} : { serviceAuthorization: structuredClone(service) }),
       actionInput: structuredClone(job.configuration.input),
       ...(job.configuration.projectId === undefined ? {} : { projectId: job.configuration.projectId }),
       ...spec, status: "queued", artifactsLocator: locator,
       idempotencyKey: createHash("sha256").update(JSON.stringify([actorId, requestId])).digest("hex"),
       operation: {
-        requestId, actorId, authorityRef: caller.scope === "user" ? "pending" : jobAuthorityBinding(tx, "global", caller.role!, ""),
+        requestId, actorId, authorityRef: service || caller.scope === "user" ? "pending" : jobAuthorityBinding(tx, "global", caller.role!, ""),
         targetId: job.id, capability: "job.run", implementation: JOB_RUNNER_IMPLEMENTATION,
         inputDigest: createHash("sha256").update(JSON.stringify([job, trigger, retryOf])).digest("hex"),
         effect: "none", receiptRefs: [], partialResultRefs: []
@@ -174,10 +182,37 @@ export function admitJobRun(
       ...(retryOf === undefined ? {} : { retryOf }),
       createdAt: now.toISOString(), updatedAt: now.toISOString()
     };
-    if (caller.scope === "user") run = { ...run, operation: { ...run.operation, authorityRef: publicJobBinding(tx, run) } };
+    if (serviceSchedule) run = { ...run, operation: { ...run.operation, authorityRef: serviceRunBinding(tx, run, serviceSchedule) } };
+    else if (caller.scope === "user") run = { ...run, operation: { ...run.operation, authorityRef: publicJobBinding(tx, run) } };
     validateDurableJob(run);
     tx.saveGlobalJobRun(run);
     return { run, created: true };
+  });
+}
+
+/** Job owns instantiation; Schedule supplies only the exact version and occurrence. */
+export function instantiateJobRun(
+  store: TaskStore, home: string, scope: JobScope, definitionId: string, revision: number,
+  caller: DurableJobCaller, trigger: JobTrigger, now: Date, service?: ScheduleServiceRef
+): RunAdmission {
+  return store.transaction(tx => {
+    const source = tx.getJobDefinition(scope, definitionId);
+    if (!source || source.revision !== revision) throw new Error("Source Job revision changed; explicitly select an available version.");
+    authorizeDefinition(tx, source, caller, true);
+    const id = `instance-${createHash("sha256").update(JSON.stringify([source.scope, source.id, trigger])).digest("hex")}`;
+    const instantiation = { sourceId: source.id, sourceRevision: revision, key: trigger.key };
+    let job = tx.getJobDefinition(source.scope, id);
+    if (job) {
+      if (JSON.stringify(job.instantiation) !== JSON.stringify(instantiation)
+        || JSON.stringify(job.configuration) !== JSON.stringify(source.configuration)) {
+        throw new Error("Job instance identity conflicts with its original source.");
+      }
+    } else {
+      job = validateJobDefinition({ ...createJobDefinition({ id, scope: source.scope,
+        title: source.title, configuration: source.configuration }, now), instantiation });
+      tx.saveJobDefinition(job);
+    }
+    return admitJobRun(tx, home, source.scope, job.id, caller, trigger, now, undefined, service);
   });
 }
 
@@ -189,10 +224,22 @@ function publicJobBinding(store: TaskStore, run: GlobalJobRun): string {
 }
 
 export function authorizeGlobalJobStart(store: TaskStore, run: GlobalJobRun): void {
+  let serviceAdmission = false;
+  if (run.operation.actorId === "service:schedule" && run.serviceAuthorization && run.trigger.source === "schedule") {
+    try {
+      const schedule = requireScheduleService(store, run.serviceAuthorization);
+      const job = store.getJobDefinition({ kind: "global" }, run.definitionId);
+      if (!job || job.revision !== run.definitionRevision) throw new Error("Schedule Run Job revision changed.");
+      authorizeServiceJob(store, job, run.serviceAuthorization, run.trigger.key);
+      serviceAdmission = serviceRunBinding(store, run, schedule) === run.operation.authorityRef;
+    } catch (error) {
+      throw Object.assign(new Error(error instanceof Error ? error.message : String(error), { cause: error }), { name: "CoreJobError" });
+    }
+  }
   const publicAdmission = run.operation.actorId === "user"
     && ["manual", "retry"].includes(run.trigger.source)
     && publicJobBinding(store, run) === run.operation.authorityRef;
-  if (!publicAdmission && (run.operation.actorId !== "global:operator"
+  if (!serviceAdmission && !publicAdmission && (run.operation.actorId !== "global:operator"
     || jobAuthorityBinding(store, "global", "operator", "") !== run.operation.authorityRef)) {
     throw Object.assign(new Error("Global JobRun caller binding was revoked; no execution was started."), { name: "CoreJobError" });
   }

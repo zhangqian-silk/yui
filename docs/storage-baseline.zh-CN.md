@@ -2,7 +2,11 @@
 
 # 存储基线 1.0
 
-当前存储为 1.15。1.14 → 1.15 根据已保存的进程结果增加独立的 Job 业务结果，
+当前存储为 1.16。1.15 → 1.16 增加明确的 Schedule 派发目标及授权类型；
+原计划保留准确 Session 授权、规则、身份与进度，原始字节归档于 migration 16。
+不推导或升级为服务权限。新增服务授权和 Job 实例来源沿用原表，不新增 ScheduleRun 生命周期。
+
+1.14 → 1.15 根据已保存的进程结果增加独立的 Job 业务结果，
 原始 Run payload 字节归档于 migration 15；不从日志猜测结构化业务数据，
 不改执行身份，不重放动作，也不改冻结 Context 或 Integration 证据。SQL 布局不变。
 公共即时 builtin 使用绑定 Home/Run 的 user 授权，不伪造 Session，也不授予 Schedule 持久权限。

@@ -27,6 +27,7 @@ export type JobDefinition = Readonly<{
   title: string;
   revision: number;
   configuration: JobConfiguration;
+  instantiation?: Readonly<{ sourceId: string; sourceRevision: number; key: string }>;
   createdAt: string;
   updatedAt: string;
 }>;
@@ -43,7 +44,7 @@ export function jobScopeKey(scope: JobScope): string {
 }
 
 export function validateJobDefinition(job: JobDefinition): JobDefinition {
-  requireKnownFields(job, ["schemaVersion", "id", "scope", "title", "revision", "configuration", "createdAt", "updatedAt"], "Job");
+  requireKnownFields(job, ["schemaVersion", "id", "scope", "title", "revision", "configuration", "instantiation", "createdAt", "updatedAt"], "Job");
   if (job.schemaVersion !== 1) throw new Error("Job schemaVersion must be 1.");
   requireIdentity(job.id, "Job id");
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u.test(job.id)) throw new Error("Invalid Job definition id.");
@@ -51,6 +52,12 @@ export function validateJobDefinition(job: JobDefinition): JobDefinition {
   requirePositiveInteger(job.revision, "Job revision");
   requireTimestamp(job.createdAt, "Job createdAt");
   requireTimestamp(job.updatedAt, "Job updatedAt");
+  if (job.instantiation !== undefined) {
+    requireKnownFields(job.instantiation, ["sourceId", "sourceRevision", "key"], "Job instantiation");
+    requireIdentity(job.instantiation.sourceId, "Job source id");
+    requirePositiveInteger(job.instantiation.sourceRevision, "Job source revision");
+    requireText(job.instantiation.key, "Job instantiation key");
+  }
   if (job.scope.kind !== "task" && job.scope.kind !== "global") throw new Error("Invalid Job scope.");
   requireKnownFields(job.scope, job.scope.kind === "task" ? ["kind", "taskId"] : ["kind"], "Job scope");
   jobScopeKey(job.scope);

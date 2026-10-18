@@ -2040,9 +2040,9 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         const next = transition(current);
         if ("taskId" in next) throw new Error("A global JobRun cannot change scope.");
         store.saveGlobalJobRun(next);
-        // Public immediate engineering work has no Agent recipient. Its result
-        // remains queryable without implicitly starting an Operator Session.
-        if (wakeup !== undefined && current.operation.actorId !== "user") enqueueWork(store, { kind: "operator" },
+        // Public and explicitly service-owned work have no Agent recipient.
+        // Results stay queryable without implicitly starting an Operator.
+        if (wakeup !== undefined && !["user", "service:schedule"].includes(current.operation.actorId)) enqueueWork(store, { kind: "operator" },
           "global-job-finished", now, [{ type: "global-job-run", id: jobId }],
           { source: "global-job", dedupeKey: `operator-global-job-run:${jobId}` });
         return next;
