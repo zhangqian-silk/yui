@@ -98,6 +98,18 @@ function renderSidebar(deps, progress) {
     reset(deps, progress);
   });
   el.catalogCount.textContent = fill(t("catalog.count"), { shown: state.tasks.length, total: state.catalogTotal });
+  let source = el.filters.querySelector("select");
+  if (!source) {
+    source = h("select", { "aria-label": t("jobs.taskCategory") });
+    source.addEventListener("change", function () {
+      state.source = source.value; state.attentionFilter = null; state.query = ""; el.search.value = "";
+      syncUrl(state, false); reset(deps, progress);
+    });
+    el.filters.append(source);
+  }
+  source.replaceChildren(...["ordinary", "job", "all"].map(value =>
+    h("option", { value }, t("jobs.category." + value))));
+  source.value = state.query.trim() || state.attentionFilter ? "all" : state.source || "ordinary";
   el.catalogReset.hidden = !state.catalogCursor;
   el.catalogNext.hidden = !state.nextCursor && !state.catalogCursor;
   el.catalogAttentionReset.hidden = !state.attentionFilter;
@@ -137,6 +149,9 @@ function catalogQuery(state) {
   if (state.filter !== "all") query.set("status", state.filter);
   if (state.query.trim()) query.set("search", state.query.trim());
   if (state.attentionFilter) query.set("attention", state.attentionFilter);
+  // Search and attention remain cross-category discovery; the server owns filtering.
+  if (!state.query.trim() && !state.attentionFilter && state.source !== "all")
+    query.set("source", state.source || "ordinary");
   if (state.catalogCursor) query.set("cursor", state.catalogCursor);
   return query.toString();
 }
@@ -192,6 +207,7 @@ function applyFilters(deps, params) {
   state.query = params.get("q") || "";
   state.attentionFilter = ATTENTION_KINDS.includes(params.get("attention")) ? params.get("attention") : null;
   state.catalogAll = params.get("all") === "true";
+  state.source = ["ordinary", "job", "all"].includes(params.get("source")) ? params.get("source") : "ordinary";
   deps.el.search.value = state.query;
 }
 

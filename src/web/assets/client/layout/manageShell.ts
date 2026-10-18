@@ -22,9 +22,16 @@ export function readManageRoute(url) {
   const section = (SECTIONS[area].find(item => item.section === requested) ||
     (area === "models" && requested === "connection" ? SECTIONS.settings.at(-1) : SECTIONS[area][0])).section;
   return { page: section === "connection" ? "models" : area, section,
+    ...(section === "jobs" ? { job: url.searchParams.get("job"), jobRun: url.searchParams.get("jobRun"),
+      artifact: url.searchParams.get("artifact") } : {}),
     source: url.searchParams.get("source") === "command-code" ? "command-code" : "factory" };
 }
 export function manageHref(next) {
+  if (next.section === "jobs") {
+    const query = new URLSearchParams();
+    for (const key of ["job", "jobRun", "artifact"]) if (next[key]) query.set(key, next[key]);
+    return "/settings/jobs" + (query.size ? "?" + query : "");
+  }
   return "/" + manageArea(next.page, next.section) + "/" + next.section +
     (next.section === "quota" && next.source === "command-code" ? "?source=command-code" : "");
 }
@@ -82,6 +89,8 @@ export function startManagement() {
     if (!link || link.target || link.hasAttribute("download") || event.defaultPrevented ||
       event.button > 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     const url = new URL(link.href);
+    // Exact Job/Run links initialize a new pinned view, not just a section switch.
+    if (url.searchParams.has("job")) return;
     if (url.origin !== location.origin || !/^\/(models|settings)(\/|$)/.test(url.pathname)) return;
     event.preventDefault();
     navigateManage(readManageRoute(url));

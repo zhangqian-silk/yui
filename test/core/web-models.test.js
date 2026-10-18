@@ -58,7 +58,7 @@ test("management navigation shares history across areas and normalizes direct UR
   const handlers = {};
   const shown = [];
   const window = { scrollY: 120, scrollTo(_, y) { this.scrollY = y; }, addEventListener(name, fn) { handlers[name] = fn; } };
-  const ctx = vm.createContext({ URL, document, location, history, window,
+  const ctx = vm.createContext({ URL, URLSearchParams, document, location, history, window,
     createI18n: () => ({ t: key => key, subscribe() {} }) });
   vm.runInContext(MANAGE_SHELL_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), ctx);
   for (const page of ["models", "settings"]) ctx.registerManagePage(page, { show: route => shown.push({ ...route }) });
@@ -77,6 +77,10 @@ test("management navigation shares history across areas and normalizes direct UR
   assert.equal(shown.at(-1).section, "server");
   assert.equal(elements.get("#settings-root").hidden, false);
   assert.equal(window.scrollY, 70);
+  const ref = JSON.stringify({ version: "a".repeat(40), relativePath: "report.md" });
+  const fixed = new URL("http://localhost/settings/jobs?job=reports&jobRun=run-1&artifact=" + encodeURIComponent(ref));
+  const href = ctx.manageHref(ctx.readManageRoute(fixed));
+  assert.equal(href, fixed.pathname + fixed.search, "management canonicalization must preserve fixed Job evidence");
 });
 
 function connection(extra = {}) {
