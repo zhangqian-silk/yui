@@ -34,7 +34,7 @@ test("native Codex identity discovers the same offline catalog as transport iden
   assert.equal(discoveryAudience({ ...leader, YUI_ADAPTER_ID: "claude-code" }), "unbound");
   assert.equal(discoveryAudience({ ...leader, YUI_ADAPTER_ID: "claude-code",
     YUI_NATIVE_SESSION_ID: "transport" }), "leader");
-  assert.equal(discoveryAudience({ CODEX_THREAD_ID: "unmanaged" }), "unbound");
+  assert.equal(discoveryAudience({ CODEX_THREAD_ID: "unmanaged" }), "public");
   assert.equal(discoveryAudience({ YUI_ROLE: "leader", CODEX_THREAD_ID: "native" }), "unbound");
 });
 

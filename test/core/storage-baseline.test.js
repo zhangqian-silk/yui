@@ -12,7 +12,8 @@ import { activateTask, createTask, completeTask } from "../../dist/task/task.js"
 import { createTaskEvent } from "../../dist/event/taskEvent.js";
 import { projectTaskRemoteDeliveryFromStore } from "../../dist/task/remoteDeliveryService.js";
 import { createConfiguredAgent } from "../../dist/agent/agent.js";
-import { createRole, createRoleAgentBinding } from "../../dist/role/role.js";
+import { createGlobalRole, createRole, createRoleAgentBinding } from "../../dist/role/role.js";
+import { sessionCallerEnvironment } from "../../dist/runtime/sessionCaller.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
 import { createRoleSessionSet, recordRoleAgentSession, updateRoleAgentSessionStatus } from "../../dist/executor/agentExecutor.js";
 import { createCapabilityGrant } from "../../dist/grant/capabilityGrant.js";
@@ -20,14 +21,14 @@ import { readTaskUsage } from "../../dist/runtime/taskUsageQuery.js";
 import { addProjectKnowledge, createProject } from "../../dist/repository/project.js";
 import { createTaskMessage } from "../../dist/message/message.js";
 import { contextContentDigest, createContextSnapshot } from "../../dist/context/contextSnapshot.js";
-import { usePre19Layout } from "../helpers/pre19Storage.mjs";
+import { usePre19Layout, usePre114Layout } from "../helpers/pre19Storage.mjs";
 
-test("fresh storage creates only the current 1.13 contract", () => {
-  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.13");
+test("fresh storage creates only the current 1.14 contract", () => {
+  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.14");
   const db = new Database(":memory:");
   try {
     schema.initializeSqliteSchema(db);
-    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.13");
+    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.14");
     assert.equal(schema.inspectSqliteSchema(db).targetChecksum, schema.CURRENT_SCHEMA_CHECKSUM);
     assert.equal(db.prepare("SELECT count(*) AS n FROM storage_schema").get().n, 1);
     assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='schema_migrations'").get(), undefined);
@@ -42,6 +43,39 @@ test("fresh storage creates only the current 1.13 contract", () => {
     db.exec("DROP INDEX idx_mailboxes_ready");
     assert.throws(() => schema.validateSqliteSchema(db), /idx_mailboxes_ready/);
   } finally { db.close(); }
+});
+
+test("1.13 upgrade preserves exact Session bytes and Role deletion retains identity evidence", async t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-session-history-upgrade-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const at = new Date("2026-10-18T00:00:00Z");
+  const store = new SqliteTaskStore(home);
+  const agent = createConfiguredAgent("fixture", "codex", "false", [], [], at);
+  const role = createGlobalRole("historical", [createRoleAgentBinding(agent)], agent.id, home, at);
+  store.saveGlobalRole(role);
+  store.saveGlobalRoleSessionSet(recordRoleAgentSession(
+    createRoleSessionSet({ scope: "global", roleName: role.name }, agent.id, at), {
+      agentId: agent.id, adapterId: agent.adapterId, nativeSessionId: "retained-native",
+      status: "ended", endReason: "stopped", policy: "fixed",
+      effective: resolveEffectiveLaunch({ role, purpose: "execution" })
+    }, at));
+  store.close();
+  const old = new Database(join(home, "yui.db"));
+  const before = old.prepare("SELECT payload FROM global_role_session_sets").get().payload;
+  usePre114Layout(old);
+  old.prepare("UPDATE storage_schema SET minor=13").run();
+  schema.validateSqliteSchemaObjects(old, "1.13");
+  old.close();
+  assert.throws(() => new SqliteTaskStore(home), /not current/);
+  assert.equal((await runStorageUpgrade({ home, mode: "execute" })).outcome, "upgraded");
+  const current = new SqliteTaskStore(home);
+  try {
+    assert.equal(current.databaseHandle().prepare("SELECT payload FROM global_role_session_sets").get().payload, before);
+    assert.deepEqual(current.getGlobalRole(role.name), role);
+    assert.equal(current.removeGlobalRole(role.name), true);
+    assert.throws(() => sessionCallerEnvironment(current, { CODEX_THREAD_ID: "retained-native" }), /no longer current/);
+    assert.deepEqual(current.listRuntimeSessionCandidates(), []);
+  } finally { current.close(); }
 });
 
 test("foreign non-empty SQLite state cannot be initialized over", () => {
@@ -74,6 +108,7 @@ test("1.11 upgrade preserves completion bytes and never invents a delivery exclu
   store.saveEvent(task.id, event);
   store.close();
   const old = new Database(join(home, "yui.db"));
+  usePre114Layout(old);
   old.prepare("UPDATE storage_schema SET minor=11 WHERE id=1").run();
   old.close();
   assert.equal((await runStorageUpgrade({ home, mode: "execute" })).outcome, "upgraded");
@@ -119,7 +154,8 @@ test("1.1 upgrade preserves valid Operator authority without inventing user prov
         ["1.9", "1.10", "persistent-schedules"],
         ["1.10", "1.11", "activation-input-provenance"],
         ["1.11", "1.12", "project-delivery-scope"],
-        ["1.12", "1.13", "inbox-turn-handling"]]);
+        ["1.12", "1.13", "inbox-turn-handling"],
+        ["1.13", "1.14", "retained-session-identity"]]);
   }
   finally { current.close(); }
 });
@@ -148,6 +184,7 @@ test("1.12 upgrade preserves historical handling without inventing attempt owner
   store.saveMessage("task-1", original);
   store.close();
   const old = new Database(join(home, "yui.db"));
+  usePre114Layout(old);
   old.prepare("UPDATE storage_schema SET minor=12 WHERE id=1").run();
   old.close();
   assert.equal((await runStorageUpgrade({ home, mode: "execute" })).outcome, "upgraded");

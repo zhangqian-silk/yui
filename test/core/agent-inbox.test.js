@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { createConfiguredAgent } from "../../dist/agent/agent.js";
-import { createGlobalRole, createRole, createRoleAgentBinding } from "../../dist/role/role.js";
+import { createGlobalRole, createRole, createRoleAgentBinding, unbindRoleAgent } from "../../dist/role/role.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
 import { bindGlobalRoleProviderRuntime, bindTaskRoleProviderRuntime, createRoleSessionSet, recordRoleAgentSession, updateRoleAgentSessionStatus } from "../../dist/executor/agentExecutor.js";
 import { createGlobalRoleMessage, createTaskMessage } from "../../dist/message/message.js";
@@ -27,6 +27,7 @@ import { failRun } from "../../dist/agentRun/agentRun.js";
 import { createProject } from "../../dist/repository/project.js";
 import { stopTaskExecutionCommand, startTaskExecutionCommand } from "../../dist/commands/taskExecutionCommands.js";
 import { requireManagedCaller, sessionCallerEnvironment } from "../../dist/runtime/sessionCaller.js";
+import { callerDiscoveryAudience } from "../../dist/cli/callerDiscovery.js";
 import { createTaskEvent } from "../../dist/event/taskEvent.js";
 import { createRuntimeObservation } from "../../dist/runtime/runtimeObservation.js";
 import { globalInboxRecovery } from "../../dist/message/globalInboxRecovery.js";
@@ -491,6 +492,19 @@ test("automatic Assignment continuation missing ACK reaches Leader without repla
 test("native-only callers resolve their current role without borrowing hints, Home or child identity", t => {
   const { store, envFor, inbox } = taskFixture(t);
   assert.deepEqual(sessionCallerEnvironment(store, {}), {}, "a plain user remains explicitly unbound");
+  const ordinary = { CODEX_THREAD_ID: "ordinary-thread" };
+  assert.deepEqual(sessionCallerEnvironment(store, ordinary), ordinary,
+    "an unknown provider thread is not itself a managed identity");
+  assert.equal(callerDiscoveryAudience(store.rootDirectory(), ordinary), "public");
+  const uninitialized = join(store.rootDirectory(), "not-initialized");
+  assert.equal(callerDiscoveryAudience(uninitialized, ordinary), "public");
+  assert.equal(existsSync(uninitialized), false, "discovery never initializes a Home");
+  assert.equal(callerDiscoveryAudience(uninitialized, { YUI_ROLE: "leader", ...ordinary }), "unbound");
+  assert.equal(callerDiscoveryAudience(store.rootDirectory(), { CODEX_THREAD_ID: "leader-native" }), "leader");
+  assert.equal(callerDiscoveryAudience(store.rootDirectory(), { CODEX_THREAD_ID: "operator-native" }), "operator");
+  for (const key of ["YUI_ROLE", "YUI_TASK_ID", "YUI_SESSION_MANIFEST", "YUI_ADAPTER_ID", "YUI_WORKSPACE"]) {
+    assert.throws(() => sessionCallerEnvironment(store, { ...ordinary, [key]: "partial" }), /not registered/);
+  }
   assert.equal(requireManagedCaller(store, { CODEX_THREAD_ID: "operator-native" }).scope, "global");
   assert.equal(requireManagedCaller(store, { CODEX_THREAD_ID: "leader-native" }).roleName, "leader");
   assert.equal(requireManagedCaller(store, { YUI_NATIVE_SESSION_ID: "leader-native" }).taskId, "task-1");
@@ -508,11 +522,58 @@ test("native-only callers resolve their current role without borrowing hints, Ho
   assert.throws(() => requireManagedCaller(store, { YUI_ROLE: "operator" }), /no native/);
   assert.throws(() => requireManagedCaller(store, { CODEX_THREAD_ID: "" }), /invalid/);
   const other = fixture(t, "other");
-  assert.throws(() => requireManagedCaller(other.store, { CODEX_THREAD_ID: "leader-native" }), /YUI_HOME/);
+  assert.throws(() => sessionCallerEnvironment(other.store, envFor("leader")), /YUI_HOME/);
   store.saveEvent("task-1", createTaskEvent(store.nextEventId("task-1"), "task-1", "role.agent-bound", {
     role: "leader", revokedNativeSessionId: "leader-native"
   }, now));
   assert.throws(() => inbox("leader", "list"), /revoked/);
+  const leaderSet = store.getTaskRoleSessionSet("task-1", "leader");
+  const ended = updateRoleAgentSessionStatus(leaderSet, leaderSet.activeAgentId, "ended", now, "stopped");
+  store.saveTaskRoleSessionSet(ended);
+  assert.throws(() => sessionCallerEnvironment(store, { CODEX_THREAD_ID: "leader-native" }), /no longer current/);
+  assert.equal(callerDiscoveryAudience(store.rootDirectory(), { CODEX_THREAD_ID: "leader-native" }), "unbound");
+  store.saveTaskRoleSessionSet(recordRoleAgentSession(ended, {
+    ...leaderSet.sessions[leaderSet.activeAgentId], nativeSessionId: "replacement", status: "active"
+  }, now));
+  assert.throws(() => sessionCallerEnvironment(store, { CODEX_THREAD_ID: "leader-native" }), /no longer current/);
+});
+
+test("unbinding an Agent and removing its Role cannot erase managed identity into public authority", t => {
+  const { store } = fixture(t, "custom");
+  const original = store.getGlobalRole("custom");
+  const backup = createConfiguredAgent("backup", "codex", "false", [], [], now);
+  const role = createGlobalRole("custom", [...Object.values(original.agentBindings),
+    createRoleAgentBinding(backup)], backup.id, store.rootDirectory(), now);
+  let set = updateRoleAgentSessionStatus(store.getGlobalRoleSessionSet("custom"), "codex", "ended", now, "stopped");
+  set = recordRoleAgentSession(set, { ...set.sessions.codex, agentId: backup.id,
+    nativeSessionId: "backup-native", status: "active", effective: resolveEffectiveLaunch({ role, purpose: "execution" }) }, now);
+  const unbound = unbindRoleAgent(role, set, "codex", now);
+  store.saveGlobalRoleWithSessionSet(unbound.role, unbound.sessions);
+  assert.throws(() => sessionCallerEnvironment(store, { CODEX_THREAD_ID: "custom-native" }), /no longer current/);
+  assert.throws(() => store.saveGlobalRoleWithSessionSet(unbound.role, null), /discard recorded Session/);
+  assert.throws(() => store.removeGlobalRole("custom"), /Stop the Role/);
+  store.saveGlobalRoleSessionSet(updateRoleAgentSessionStatus(unbound.sessions, backup.id, "ended", now, "stopped"));
+  store.removeGlobalRole("custom");
+  assert.throws(() => sessionCallerEnvironment(store, { CODEX_THREAD_ID: "backup-native" }), /no longer current/);
+  assert.equal(store.getGlobalRole("custom"), null);
+  assert.deepEqual(store.listRuntimeSessionCandidates(), []);
+
+  const f = taskFixture(t);
+  const leader = f.store.getTaskRoleSessionSet("task-1", "leader");
+  const taskRole = createRole("task-1", "leader", [...Object.values(f.store.getRole("task-1", "leader").agentBindings),
+    createRoleAgentBinding(backup)], backup.id, f.store.rootDirectory(), now);
+  const taskSet = recordRoleAgentSession(updateRoleAgentSessionStatus(leader, "codex", "ended", now, "stopped"), {
+    ...leader.sessions.codex, agentId: backup.id, nativeSessionId: "task-backup", status: "active",
+    effective: resolveEffectiveLaunch({ role: taskRole, purpose: "execution" })
+  }, now);
+  const taskUnbound = unbindRoleAgent(taskRole, taskSet, "codex", now);
+  f.store.saveTaskRoleWithSessionSet(taskUnbound.role, taskUnbound.sessions);
+  assert.throws(() => sessionCallerEnvironment(f.store, { CODEX_THREAD_ID: "leader-native" }), /no longer current/);
+  assert.throws(() => f.store.removeTaskRole("task-1", "leader"), /Stop the Role/);
+  f.store.saveTaskRoleSessionSet(updateRoleAgentSessionStatus(taskUnbound.sessions, backup.id, "ended", now, "stopped"));
+  // Exercise storage retention directly; the public command separately forbids removing a Leader.
+  f.store.removeTaskRole("task-1", "leader");
+  assert.throws(() => sessionCallerEnvironment(f.store, { CODEX_THREAD_ID: "task-backup" }), /no longer current/);
 });
 
 test("automatic windows pin same-tick revisions and require explicit acknowledgement independently of native acceptance", t => {

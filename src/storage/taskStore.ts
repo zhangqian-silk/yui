@@ -356,6 +356,8 @@ export type TaskStore = {
   listProviderRetrySessions(): (TaskRoleSessionSet | GlobalRoleSessionSet)[];
   /** Current non-stopped Role Sessions; production SQLite reads a bounded hot projection. */
   listRuntimeSessionCandidates(query?: RuntimeSessionCandidateQuery): RuntimeSessionCandidate[];
+  /** Exact identity lookup including stopped/replaced history; not runtime discovery. */
+  findNativeSessionSets(nativeIds: readonly string[]): (TaskRoleSessionSet | GlobalRoleSessionSet)[];
   /** Pending native Turn completions from the independent bounded hot projection. */
   saveRoleSessionSet(sessions: TaskRoleSessionSet): void;
   saveTaskRoleSessionSet(sessions: TaskRoleSessionSet): void;

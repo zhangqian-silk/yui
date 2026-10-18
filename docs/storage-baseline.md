@@ -2,7 +2,14 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.13. The 1.12 → 1.13 transition permits exact native attempt
+Current storage is 1.14. The 1.13 → 1.14 transition removes the Role foreign key
+from `global_role_session_sets`, preserving every payload byte and rebuilding
+its retry index. Stopped Session identity/history can then outlive Role removal
+without granting authority. No new authorization table or inferred history is
+introduced. Ordinary reads require current storage; only an explicit supported
+upgrade changes an existing Home. See [authorization](authorization.md).
+
+The 1.12 → 1.13 transition permits exact native attempt
 identity on new inbox claims, exact target identity on new steer controls,
 explicit Global inbox retirement and terminal handling-check evidence.
 It does not rewrite historical messages, infer old turn ownership or synthesize

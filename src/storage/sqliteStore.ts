@@ -33,6 +33,7 @@
  * in-process contract or deferred validation phase.
  */
 import Database from "../sqlite/driver.js";
+import { findNativeSessionSets } from "./nativeSessionLookup.js";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -1216,9 +1217,9 @@ export class SqliteTaskStore implements TaskStore {
         ).run(role.name, this.#recordJson("global_role_session_sets", sessions), this.#now());
         this.#saveRuntimeSessionCandidate(sessions);
       } else {
-        this.#db.prepare(
-          "DELETE FROM global_role_session_sets WHERE name = ?"
-        ).run(role.name);
+        if (this.getGlobalRoleSessionSet(role.name) !== null) {
+          throw new Error("Cannot discard recorded Session identity/history while saving a Role.");
+        }
         this.#deleteRuntimeSessionCandidate({ scope: "global", roleName: role.name });
       }
     });
@@ -1243,8 +1244,13 @@ export class SqliteTaskStore implements TaskStore {
 
   removeGlobalRole(name: string): boolean {
     return this.#mutate(() => {
+      const sessions = this.getGlobalRoleSessionSet(name);
+      if (Object.values(sessions?.sessions ?? {}).some(session => session.status === "active")) {
+        throw new Error("Stop the Role's native Sessions before removing it.");
+      }
       this.#deleteRuntimeSessionCandidate({ scope: "global", roleName: name });
-      this.#db.prepare("DELETE FROM global_role_session_sets WHERE name = ?").run(name);
+      // Removal requires stopped Sessions at the domain boundary. Retain their
+      // canonical identity evidence so native-only callers never become public.
       return this.#db.prepare("DELETE FROM global_roles WHERE name = ?").run(name).changes > 0;
     });
   }
@@ -1926,17 +1932,16 @@ export class SqliteTaskStore implements TaskStore {
 
   removeTaskRole(taskId: string, name: string): boolean {
     return this.#mutate(() => {
+      const sessions = this.getTaskRoleSessionSet(taskId, name);
+      if (Object.values(sessions?.sessions ?? {}).some(session => session.status === "active")) {
+        throw new Error("Stop the Role's native Sessions before removing it.");
+      }
       this.#deleteRuntimeSessionCandidate({
         scope: "task",
         taskId,
         roleName: name
       });
-      this.#db.prepare(
-        "DELETE FROM role_session_sets WHERE task_id = ? AND role_name = ?"
-      ).run(taskId, name);
-      this.#db.prepare(
-        "DELETE FROM pending_runtime_turn_completions WHERE task_id = ? AND role_name = ?"
-      ).run(taskId, name);
+      // Role deletion removes authority, not stopped Session identity/history.
       const result = this.#db.prepare("DELETE FROM task_roles WHERE task_id = ? AND role_name = ?").run(taskId, name);
       return result.changes > 0;
     });
@@ -2026,6 +2031,10 @@ export class SqliteTaskStore implements TaskStore {
       ...this.#listPayload<TaskRoleSessionSet>("role_session_sets", pending, []),
       ...this.#listPayload<GlobalRoleSessionSet>("global_role_session_sets", pending, [])
     ];
+  }
+
+  findNativeSessionSets(nativeIds: readonly string[]): (TaskRoleSessionSet | GlobalRoleSessionSet)[] {
+    return findNativeSessionSets(this.#db, nativeIds);
   }
 
   listRuntimeSessionCandidates(query: RuntimeSessionCandidateQuery = {}): RuntimeSessionCandidate[] {

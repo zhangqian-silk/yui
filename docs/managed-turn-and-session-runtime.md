@@ -42,14 +42,19 @@ automatically create Runs. Explicit dispatch loads one exact Run Context Pack.
 ### Current caller and durable handling
 
 Desktop and TUI use the same current-Session authority. A Desktop command carrying
-only `CODEX_THREAD_ID` resolves its owner from the selected Home's existing active
-Session inventory, then verifies the current Role/Agent binding, revocation and
+only `CODEX_THREAD_ID` resolves its owner from the selected Home's current and
+historical Session records, then verifies the current Role/Agent binding, revocation and
 captured workspace. Codex's native ID takes precedence over an inherited transport
-ID, so a native child cannot borrow its parent's identity. Unknown native IDs,
-wrong Homes and conflicting hints fail closed; only a terminal with no managed or
-native identity is a plain user. Environment variables and a Manifest locate
+ID, so a native child carrying inherited Yui hints cannot borrow its parent's identity.
+An unknown provider ID alone is an ordinary public caller; partial Yui identity,
+known historical identities and conflicting hints fail closed. A wrong Home with
+Yui hints is rejected. A thread known only in another Home cannot be distinguished
+from an ordinary thread without those hints; Yui does not scan other Homes.
+Environment variables and a Manifest locate
 context, not continuing authority. A replaced Session retains only its bounded
 self-diagnostic reads, not inbox or mutation permission.
+See [authorization responsibilities and matrix](authorization.md) for the public
+surface, discovery semantics and resource boundaries.
 
 `yui inbox list` exposes the current identity, delivery evidence, handling state
 and blockers separately. Reads never consume input. Automatically accepted

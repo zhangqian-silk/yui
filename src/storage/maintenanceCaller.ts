@@ -1,24 +1,31 @@
 import { join } from "node:path";
 import Database from "../sqlite/driver.js";
 import type { GlobalRole } from "../role/role.js";
-import type { GlobalRoleSessionSet, TaskRoleSessionSet } from "../executor/agentExecutor.js";
+import type { GlobalRoleSessionSet } from "../executor/agentExecutor.js";
 import { hasManagedIdentity } from "../runtime/managedIdentity.js";
 import { ManagedRuntimeDriftError, requireManagedGlobalCaller } from "../runtime/managedCaller.js";
 import { sessionCallerEnvironment } from "../runtime/sessionCaller.js";
 import { validateStoredRecord, type StoredRecordTable } from "./recordValidation.js";
 import { inspectSqliteSchema, storageMinorUpgradePlan, validateSqliteSchemaObjects } from "./sqliteSchema.js";
-import { CURRENT_DATABASE_FILENAME } from "./storageSchema.js";
+import { CURRENT_DATABASE_FILENAME, inspectStorageSchema } from "./storageSchema.js";
+import { findNativeSessionSets } from "./nativeSessionLookup.js";
 
 /**
- * Maintenance must authenticate before migration, without opening a current-only
- * business Store. The declared 1.x migrations preserve these Role/Session
- * envelopes and physical tables. Read only those records in one SQLite snapshot;
- * this grants no old-format business reads, writes or implicit migration.
+ * Read-only caller resolution, also usable before maintenance/migration and by
+ * offline discovery. The declared 1.x migrations preserve these Role/Session
+ * envelopes and physical tables. Read only those records in one SQLite snapshot.
+ * operatorOnly adds the maintenance gate; ordinary execution still applies its
+ * current storage, Session and domain checks. No implicit migration or setup.
  */
 export function maintenanceCallerEnvironment(
   home: string, env: NodeJS.ProcessEnv, operatorOnly = true
 ): NodeJS.ProcessEnv {
-  if (!hasManagedIdentity(env)) return env;
+  if (!hasManagedIdentity(env) && env.CODEX_THREAD_ID === undefined) return env;
+  // A genuinely new Home has no managed registrations. Do not initialize it
+  // here: setup remains the explicit owner. Existing invalid storage fails closed.
+  if (!hasManagedIdentity(env) && inspectStorageSchema(home).status === "uninitialized") {
+    return sessionCallerEnvironment({ findNativeSessionSets: () => [] }, env);
+  }
   const db = new Database(join(home, CURRENT_DATABASE_FILENAME), { readonly: true, fileMustExist: true });
   try {
     return db.transaction(() => {
@@ -39,28 +46,12 @@ export function maintenanceCallerEnvironment(
         getGlobalRole: (name: string) => read<GlobalRole>("global_roles", "name=?", [name]),
         getGlobalRoleSessionSet: (name: string) =>
           read<GlobalRoleSessionSet>("global_role_session_sets", "name=?", [name]),
-        getTaskRoleSessionSet: (task: string, role: string) =>
-          read<TaskRoleSessionSet>("role_session_sets", "task_id=? AND role_name=?", [task, role]),
-        listRuntimeSessionCandidates: () => {
-          // Read canonical sets, not a derived index that could be stale. Only
-          // active bindings participate, exactly as in normal caller discovery.
-          const rows = db.prepare(`
-            SELECT 'global_role_session_sets' AS source, payload FROM global_role_session_sets
-            UNION ALL SELECT 'role_session_sets' AS source, payload FROM role_session_sets
-          `).all() as { source: StoredRecordTable; payload: string }[];
-          return rows.flatMap(row => {
-            const set = JSON.parse(row.payload) as GlobalRoleSessionSet | TaskRoleSessionSet;
-            validateStoredRecord(row.source, set);
-            const session = set.sessions[set.activeAgentId];
-            if (!session || session.status !== "active") return [];
-            return [{ owner: set.owner, agentId: session.agentId, adapterId: session.adapterId,
-              nativeSessionId: session.nativeSessionId, sessionUpdatedAt: set.updatedAt }];
-          });
-        }
+        findNativeSessionSets: (nativeIds: readonly string[]) => findNativeSessionSets(db, nativeIds)
       };
       const current = sessionCallerEnvironment(registry, env);
+      if (!hasManagedIdentity(current)) return current;
       if (current.YUI_SESSION_SCOPE !== "global" || current.YUI_ROLE !== "operator") {
-        if (!operatorOnly) return current; // Doctor keeps normal scoped authorization below.
+        if (!operatorOnly) return current; // Execution retains its normal scoped checks.
         throw new ManagedRuntimeDriftError("Home maintenance requires the user or current Operator, not a Task or custom Role.");
       }
       requireManagedGlobalCaller(registry, current);

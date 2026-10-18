@@ -41,6 +41,7 @@ const RUNTIME_DOCUMENTS = [
   "docs/agent-runtime-drivers.zh-CN.md",
   "docs/cli-information-contract.md",
   "docs/cli-information-contract.zh-CN.md",
+  "docs/authorization.md",
   "docs/managed-turn-and-session-runtime.md",
   "docs/managed-turn-and-session-runtime.zh-CN.md",
   "docs/observability/README.md",

@@ -18,6 +18,7 @@ import {
   resolveAgentAdapter
 } from "../executor/agentAdapter.js";
 import {
+  roleAgentSessionRef,
   validateRoleSessionSet,
   type GlobalRoleSessionSet,
   type RoleSessionSet,
@@ -353,32 +354,22 @@ export function unbindRoleAgent(
     const globalSessions = sessions.owner.scope === "global"
       ? sessions as GlobalRoleSessionSet
       : null;
-    const targetHistory = globalSessions === null
-      ? []
-      : Object.entries(globalSessions.history ?? {}).filter(([, session]) => (
-          session.agentId === normalizedAgentId
-        ));
-    const targetTaskHistory = (taskSessions?.history ?? []).filter((session) => (
-      session.agentId === normalizedAgentId
-    ));
-    if (targetSession !== undefined || targetHistory.length > 0 || targetTaskHistory.length > 0) {
+    if (targetSession !== undefined) {
       const remainingSessions = { ...sessions.sessions };
       delete remainingSessions[normalizedAgentId];
-      const remainingHistory = globalSessions === null
+      // Unbinding removes execution selection, not identity evidence. Otherwise
+      // a stopped native-ID-only caller could later be mistaken for public.
+      const history = globalSessions === null
         ? undefined
-        : Object.fromEntries(Object.entries(globalSessions.history ?? {}).filter(([, session]) => (
-            session.agentId !== normalizedAgentId
-          )));
-      const remainingTaskHistory = taskSessions === null
+        : { ...globalSessions.history, [roleAgentSessionRef(targetSession)]: targetSession };
+      const taskHistory = taskSessions === null
         ? undefined
-        : (taskSessions.history ?? []).filter((session) => (
-            session.agentId !== normalizedAgentId
-          ));
+        : [...(taskSessions.history ?? []), targetSession];
       updatedSessions = validateRoleSessionSet({
         ...sessions,
         sessions: remainingSessions,
-        ...(remainingHistory === undefined ? {} : { history: remainingHistory }),
-        ...(remainingTaskHistory === undefined ? {} : { history: remainingTaskHistory }),
+        ...(history === undefined ? {} : { history }),
+        ...(taskHistory === undefined ? {} : { history: taskHistory }),
         updatedAt: now.toISOString()
       } as RoleSessionSet);
     }

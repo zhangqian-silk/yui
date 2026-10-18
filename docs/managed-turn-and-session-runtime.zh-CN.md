@@ -5,11 +5,18 @@
 ## 当前身份与持久处理回执
 
 桌面与 TUI 使用相同的当前 Session 授权。只有 `CODEX_THREAD_ID` 的桌面命令
-先在所选 Home 的现有活动 Session 索引中定位角色，再校验当前绑定、撤销状态、
-工作域和 Assignment。Codex 原生线程 ID 优先于继承的 transport ID，原生子
-Agent 不能借用父身份。错误 Home、未知线程和冲突提示会明确拒绝，不降为公共
-用户；只有不带受管或原生身份的终端才是普通用户。环境变量和 Manifest 是
-定位提示，不是持续授权。旧 Session 仅保留限定的自身诊断读取。
+先在所选 Home 的当前及历史 Session 记录中定位角色，再校验当前绑定、撤销状态、
+工作域和 Assignment。Codex 原生线程 ID 优先于继承的 transport ID，携带父会话
+Yui 提示的原生子 Agent 不能借用父身份。只有未知原生线程 ID、没有 Yui 专属身份
+提示的普通会话，与用户终端共享现有公共入口，无需 Manifest 即可读取公共信息和
+创建 Draft；不会因此启动讨论／开发，也不会获得内部受管能力。
+部分受管身份、已知历史身份、冲突提示，以及带 Yui 提示的错误 Home 保持拒绝。
+仅在其他 Home 登记、当前 Home 完全未知的裸线程 ID 无法与普通线程区分，必须
+保留受管会话的正确 Home／Manifest 上下文，不能清空身份字段或切换 Home 绕权。
+环境变量和 Manifest 是定位提示，不是持续授权。旧 Session 仅保留限定的自身诊断读取。
+完整角色提示仍可生成离线帮助模板；只有原生 ID 时需只读查询本地登记，失败则显示
+有限的 unbound 模板。帮助均不是精确授权。职责和权限矩阵见
+[authorization.md](authorization.md)。
 
 `yui inbox list` 分别返回当前身份、投递事实、处理状态和阻断原因。自动接受的
 Global 消息、已投递的 Leader 窗口及当前 Assignment 续接消息仍须显式 claim，

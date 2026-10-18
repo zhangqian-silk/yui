@@ -5,6 +5,7 @@ import { migrateTaskMainWorkspaces } from "./upgrade/taskMainWorkspaceMigration.
 import { migrateProjectKnowledge } from "./upgrade/projectKnowledgeMigration.js";
 import { JOB_SCHEMA_SQL } from "./jobSchema.js";
 import { SCHEDULE_SCHEMA_SQL } from "./scheduleSchema.js";
+import { GLOBAL_SESSION_TABLE_SQL, SESSION_HISTORY_UPGRADE_SQL } from "./sessionHistorySchema.js";
 import { migrateJobDefinitions } from "./upgrade/jobDefinitionMigration.js";
 import {
   CURRENT_STORAGE_VERSION, MIN_SUPPORTED_STORAGE_VERSION, STORAGE_FORMAT,
@@ -17,7 +18,11 @@ export const TELEMETRY_KEEP_PER_RUN = 200;
 export const TELEMETRY_RUN_CAP = 50_000;
 export const BASELINE_SCHEMA_CHECKSUM = createHash("sha256").update(BASELINE_SCHEMA_SQL).digest("hex");
 export const JOB_SCHEMA_CHECKSUM = createHash("sha256").update(BASELINE_SCHEMA_SQL + JOB_SCHEMA_SQL).digest("hex");
-export const CURRENT_SCHEMA_SQL = BASELINE_SCHEMA_SQL + JOB_SCHEMA_SQL + SCHEDULE_SCHEMA_SQL;
+export const SCHEDULE_SCHEMA_SQL_COMPLETE = BASELINE_SCHEMA_SQL + JOB_SCHEMA_SQL + SCHEDULE_SCHEMA_SQL;
+export const SCHEDULE_SCHEMA_CHECKSUM = createHash("sha256").update(SCHEDULE_SCHEMA_SQL_COMPLETE).digest("hex");
+// Fresh Homes create the final layout directly; published baseline SQL stays immutable.
+export const CURRENT_SCHEMA_SQL = SCHEDULE_SCHEMA_SQL_COMPLETE.replace(
+  /CREATE TABLE global_role_session_sets \([\s\S]*?\n\);/, GLOBAL_SESSION_TABLE_SQL);
 export const CURRENT_SCHEMA_CHECKSUM = createHash("sha256").update(CURRENT_SCHEMA_SQL).digest("hex");
 
 export class SqliteSchemaError extends Error {
@@ -133,15 +138,15 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   name: "persistent-schedules",
   introducedIn: "next",
   sourceChecksum: JOB_SCHEMA_CHECKSUM,
-  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: SCHEDULE_SCHEMA_CHECKSUM,
   sql: SCHEDULE_SCHEMA_SQL
 }, {
   fromVersion: "1.10",
   toVersion: "1.11",
   name: "activation-input-provenance",
   introducedIn: "next",
-  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
-  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  sourceChecksum: SCHEDULE_SCHEMA_CHECKSUM,
+  targetChecksum: SCHEDULE_SCHEMA_CHECKSUM,
   // Activation event payloads may now name an exact input or contain attributed
   // native input text. Existing events remain immutable; missing old provenance
   // stays explicitly missing. No historical source is guessed from timestamps.
@@ -153,8 +158,8 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   toVersion: "1.12",
   name: "project-delivery-scope",
   introducedIn: "next",
-  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
-  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  sourceChecksum: SCHEDULE_SCHEMA_CHECKSUM,
+  targetChecksum: SCHEDULE_SCHEMA_CHECKSUM,
   // New append-only Project scope decisions use Task events. Preserve all old
   // completion, binding and publication records; absence still means required.
   sql: ""
@@ -163,12 +168,21 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   toVersion: "1.13",
   name: "inbox-turn-handling",
   introducedIn: "next",
-  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
-  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  sourceChecksum: SCHEDULE_SCHEMA_CHECKSUM,
+  targetChecksum: SCHEDULE_SCHEMA_CHECKSUM,
   // Claims may name their exact current attempt; explicit Global retirement
   // and terminal-check notices preserve original records. Never backfill
   // historical turn ownership, handling evidence or acknowledgements.
   sql: ""
+}, {
+  fromVersion: "1.13",
+  toVersion: "1.14",
+  name: "retained-session-identity",
+  introducedIn: "next",
+  sourceChecksum: SCHEDULE_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Preserve every payload byte. No identity or authorization is inferred.
+  sql: SESSION_HISTORY_UPGRADE_SQL
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {
@@ -198,6 +212,7 @@ export function validateSqliteSchemaObjects(db: Database.Database, version: Stor
   const checksum = version === CURRENT_STORAGE_VERSION
     ? CURRENT_SCHEMA_CHECKSUM : storageMinorUpgradePlan(version)?.[0]?.sourceChecksum;
   const sql = checksum === CURRENT_SCHEMA_CHECKSUM ? CURRENT_SCHEMA_SQL
+    : checksum === SCHEDULE_SCHEMA_CHECKSUM ? SCHEDULE_SCHEMA_SQL_COMPLETE
     : checksum === JOB_SCHEMA_CHECKSUM ? BASELINE_SCHEMA_SQL + JOB_SCHEMA_SQL
     : checksum === BASELINE_SCHEMA_CHECKSUM ? BASELINE_SCHEMA_SQL : undefined;
   if (sql === undefined || checksum === undefined) throw new SqliteSchemaError(`unsupported schema definition for storage ${version}.`);
