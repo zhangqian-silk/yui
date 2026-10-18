@@ -1784,16 +1784,18 @@ export const ROOT_COMMAND = buildNode({
       ]
     },
     {
-      name: "schedule", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] },
+      name: "schedule", discovery: { surface: "public", audiences: ["public","operator","leader","assignment"] },
       summary: "Manage persistent time plans referencing scoped Jobs.",
-      sections: [{ id: "manage", title: "Commands", entries: ["create", "list", "show", "update", "enable", "disable"] }],
-      children: ["create", "list", "show", "update", "enable", "disable"].map(name => ({
-        name, discovery: { surface: "managed" as const, audiences: ["operator", "leader", "assignment"] as const },
-        summary: `${name} a Schedule; disabling never cancels an admitted Run.`,
+      sections: [{ id: "manage", title: "Commands", entries: ["create", "list", "show", "update", "enable", "disable", "revoke"] }],
+      children: ["create", "list", "show", "update", "enable", "disable", "revoke"].map(name => ({
+        name, discovery: { surface: "public" as const, audiences: ["public", "operator", "leader", "assignment"] as const },
+        summary: `${name} a Schedule; disable stops future dispatch, revoke also denies queued service starts.`,
         usage: `yui schedule ${name} (--global|--task <id>)${name === "list" ? "" : " --schedule <id>"}`
           + (name === "create" ? " --job <id> --rule <json>" : "")
           + (name === "update" ? " --rule <json> [--job <id>]" : "")
-          + (["update", "enable", "disable"].includes(name) ? " --revision <observed>" : "")
+          + (["create", "update"].includes(name) ? " [--target <json>]" : "")
+          + (["create", "update", "enable"].includes(name) ? " [--authorization session|service]" : "")
+          + (["update", "enable", "disable", "revoke"].includes(name) ? " --revision <observed>" : "")
       }))
     },
     {

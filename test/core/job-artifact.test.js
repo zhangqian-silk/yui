@@ -134,7 +134,7 @@ test("Job artifacts: failed registration retains evidence, explicit registration
   await assert.rejects(save({ relativePath: "escape/report.md", content: "no" }), /symbolic/);
 });
 
-test("scoped repositories serialize initial creation and preserve Task Git references across 1.15 migration", async t => {
+test("scoped repositories serialize initial creation and preserve Task Git references across 1.16 migration", async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-artifact-migration-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const store = new SqliteTaskStore(home);
@@ -147,9 +147,9 @@ test("scoped repositories serialize initial creation and preserve Task Git refer
   const db = new Database(join(home, "yui.db"));
   const before = db.prepare("SELECT payload FROM global_job_runs").get().payload;
   try {
-    db.prepare("UPDATE storage_schema SET minor=15").run();
+    db.prepare("UPDATE storage_schema SET minor=16").run();
     applySqliteMinorUpgrades(db, home);
-    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 16);
+    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 17);
     assert.equal(db.prepare("SELECT payload FROM global_job_runs").get().payload, before);
   } finally { db.close(); }
   await saveArtifactCapability(home, "task-1", { relativePath: "old.md", content: "new Task evidence" });

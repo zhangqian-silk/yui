@@ -248,12 +248,38 @@ try {
     assert.equal(json("job", "artifact-list", ...jobRef).artifacts.length, 1);
     assert.equal(json("job", "run-result", ...jobRef).artifacts[0].version, artifact.version);
     checkNoJobSession();
+    // Exercise the supported maintenance cadence inside the bounded smoke
+    // deadline; the production default is intentionally 120 seconds.
+    runCli(cli, ["config", "runtime", "set", "reconciliation-interval-seconds", "5"], environment);
+    for (const kind of ["existing-job", "new-job"]) {
+      const id = `public-${kind}`;
+      json("schedule", "create", "--global", "--schedule", id, "--job", "public-probe",
+        "--authorization", "service", "--target", JSON.stringify(kind === "existing-job"
+          ? { kind } : { kind, definitionRevision: 1 }),
+        "--rule", JSON.stringify({ kind: "once", at: new Date(Date.now() + 2000).toISOString() }));
+      await waitFor(() => json("schedule", "show", "--global", "--schedule", id).schedule.state === "completed",
+        "Public service Schedule did not dispatch without a Session.",
+        () => JSON.stringify(json("schedule", "show", "--global", "--schedule", id)));
+      const receipt = json("schedule", "show", "--global", "--schedule", id).schedule.lastAttempt;
+      const scheduledRef = ["--global", "--job", receipt.jobId, "--run", receipt.runId];
+      await waitFor(() => json("job", "run-get", ...scheduledRef).status === "succeeded",
+        "Service Job did not complete.", () => JSON.stringify(json("job", "run-evidence", ...scheduledRef)));
+      assert.equal(json("job", "run-result", ...scheduledRef).result.data.action, "system.noop");
+      assert.equal(kind === "existing-job", receipt.jobId === "public-probe");
+      checkNoJobSession();
+    }
+    runCli(cli, ["config", "runtime", "clear", "reconciliation-interval-seconds"], environment);
   } finally {
-    for (const run of json("job", "runs", "--global", "--job", "public-probe")) {
-      const jobRef = ["--global", "--job", "public-probe", "--run", run.id];
-      json("job", "run-cancel", ...jobRef);
-      await waitFor(() => !["queued", "running"].includes(json("job", "run-get", ...jobRef).status),
-        "Public Job cleanup did not settle; retain fixture evidence.");
+    for (const plan of json("schedule", "list", "--global")) {
+      if (plan.state === "enabled") json("schedule", "disable", "--global", "--schedule", plan.id, "--revision", String(plan.revision));
+    }
+    for (const definition of json("job", "list", "--global")) {
+      for (const run of json("job", "runs", "--global", "--job", definition.id)) {
+        const jobRef = ["--global", "--job", definition.id, "--run", run.id];
+        json("job", "run-cancel", ...jobRef);
+        await waitFor(() => !["queued", "running"].includes(json("job", "run-get", ...jobRef).status),
+          "Public Job cleanup did not settle; retain fixture evidence.");
+      }
     }
   }
 

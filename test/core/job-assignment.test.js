@@ -134,6 +134,9 @@ test("Job admission, management and spawn keep a Worker inside its current Assig
   assert.equal(store.listDurableJobs(task.id).filter(run => run.definitionId === definition.id).length, 2);
   const schedules = createScheduleControl(store, join(root, "home"));
   const scheduleInput = { scope, caller: caller("leader"), jobId: definition.id };
+  assert.throws(() => schedules({ ...scheduleInput, op: "create", id: "forbidden-service",
+    authorization: "service", rule: { kind: "once", at: new Date(at.getTime() + 60_000).toISOString() } }, at),
+    /service.*scope|service.*action/i);
   schedules({ ...scheduleInput, op: "create", id: "periodic",
     rule: { kind: "interval", anchor: at.toISOString(), everyMs: 60_000 } }, at);
   assert.throws(() => schedules({ ...scheduleInput, op: "show", id: "periodic", caller: caller("worker") }, at), /Assignment/);

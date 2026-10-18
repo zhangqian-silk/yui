@@ -42,8 +42,10 @@ the existing Task Context authorization boundary.
 Public immediate admissions bind the exact Home, Run, definition revision,
 target/input and trigger; they need no Agent configuration, Operator, Session
 or empty Task. They do not enqueue an Agent wake on completion. This is not a
-persistent Schedule grant: public `source:schedule` admission is rejected and
-Schedule management retains its existing Session authority until its own change.
+persistent Schedule grant: public `source:schedule` admission is rejected.
+The separate [Schedule management API](schedules.md) offers an explicit
+revocable service grant without an Operator Session; existing plans retain
+their Session authority until deliberately rebound.
 Task Sessions cannot inspect,
 create, modify or run global Jobs. The initial global action is `system.noop`,
 a fixed local no-op implemented by the same standalone runner. It accepts only
@@ -241,7 +243,7 @@ transfer occurs. The old same-Task `git:<commit>:<path>` shorthand is not
 accepted as a cross-entity reference. Task delegation admission itself belongs
 to its separate feature; this is the selected-material seam.
 
-Storage **1.15 → 1.16** declares the optional append-only Run references and
+Storage **1.16 → 1.17** declares the optional append-only Run references and
 Job-owned repository layout. It preserves existing payload bytes, process
 history, Task repositories and frozen references, and invents no historical
 artifacts. This is not a package-version release or an automatic Home upgrade.
@@ -261,7 +263,7 @@ heartbeats, checkpoints, Knowledge or Project state into formal artifacts.
   and `JobTrigger`. Definition revision is optimistic concurrency, not a Run
   status. Project targets stay in configuration.
 - `src/controller/jobDefinitionControl.ts`: `admitJobRun(store, home, scope,
-  definitionId, caller, trigger, now, retryOf?)` returns `RunAdmission`.
+  definitionId, caller, trigger, now, retryOf?, service?)` returns `RunAdmission`.
   It authenticates current scope, rechecks domain prerequisites, finds exact
   trigger replay and excludes overlap inside the Store transaction. Schedule
   can call it inside its own `store.transaction` with advancement in that same
@@ -269,7 +271,11 @@ heartbeats, checkpoints, Knowledge or Project state into formal artifacts.
   A rollback discards both. `source:"schedule"` is an internal seam, not an
   accepted manual RPC assertion. Schedule must supply a legitimate current
   authority; it must not invent a Session or reuse a revoked identity. Any
-  additional durable scheduled-intent authorization belongs to that feature.
+  service reference is internal only and must match a current stored Schedule
+  grant; RPC never accepts it. `instantiateJobRun` owns deterministic instance
+  creation from an exact definition revision and composes the same admission
+  inside the caller's transaction. Instance creation, first Run and Schedule
+  advancement either all commit or all roll back.
 - `src/job/builtinJob.ts`: controlled action compilation. Add a narrowly
   validated builtin here; snapshot its target/input and compile runner steps
   from trusted code, never caller-supplied shell. Revalidate before spawn.

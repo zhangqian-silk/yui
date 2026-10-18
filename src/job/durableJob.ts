@@ -4,6 +4,7 @@ import { processBusinessResult, runReference, validateBusinessResult, type JobBu
 import type { JobTrigger } from "./jobDefinition.js";
 import {
   requireIdentity,
+  requireKnownFields,
   requirePositiveInteger,
   requireText,
   requireTimestamp
@@ -144,6 +145,7 @@ export type GlobalJobRun = Omit<DurableJob, "taskId" | "owner" | "projectId"> & 
   scope: "global";
   action: string;
   actionInput: import("../core/protocol.js").JsonValue;
+  serviceAuthorization?: import("./scheduleService.js").ScheduleServiceRef;
   projectId?: string;
 }>;
 export type JobRun = DurableJob | GlobalJobRun;
@@ -485,6 +487,11 @@ export function validateDurableJob<T extends JobRun>(job: T): T {
     if (job.scope !== "global") throw new Error("Invalid global JobRun scope.");
     requireIdentity(job.id, "JobRun id");
     requireText(job.action, "JobRun builtin action");
+    if (job.serviceAuthorization !== undefined) {
+      requireKnownFields(job.serviceAuthorization, ["scheduleId", "grantId"], "Job Schedule service reference");
+      requireText(job.serviceAuthorization.scheduleId, "Schedule id");
+      requireText(job.serviceAuthorization.grantId, "Schedule grant id");
+    }
     if (job.projectId !== undefined) requireIdentity(job.projectId, "JobRun Project id");
   }
   validateJobExecutionConfiguration(job);
@@ -578,8 +585,8 @@ export function validDurableJobTransition(
     || before.idempotencyKey !== after.idempotencyKey
     || before.artifactsLocator !== after.artifactsLocator
     || before.createdAt !== after.createdAt
-    || !isDeepStrictEqual("owner" in before ? before.owner : [before.action, before.actionInput],
-      "owner" in after ? after.owner : [after.action, after.actionInput])
+    || !isDeepStrictEqual("owner" in before ? before.owner : [before.action, before.actionInput, before.serviceAuthorization],
+      "owner" in after ? after.owner : [after.action, after.actionInput, after.serviceAuthorization])
     || !isDeepStrictEqual(before.env, after.env)
     || !isDeepStrictEqual(before.steps, after.steps)
     || before.operation.requestId !== after.operation.requestId
