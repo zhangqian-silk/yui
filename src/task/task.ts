@@ -18,6 +18,11 @@ export type TaskStatus =
   | "archived";
 export type TaskCompletedBy = "user" | "operator" | "leader";
 export type TaskExecutionState = "enabled" | "stopped";
+export type TaskSource = Readonly<{
+  kind: "job-run";
+  jobId: string;
+  run: import("../job/jobBusinessResult.js").JobRunReference;
+}>;
 
 export type TaskProjectBinding = Readonly<{
   projectId: string;
@@ -54,6 +59,8 @@ export type TaskMetadataUpdate = Partial<{
 
 export type Task = {
   schemaVersion: 1;
+  /** Creation provenance only; never a permission or management parent. */
+  source?: TaskSource;
   id: string;
   title: string;
   /** Project-defined intent; it describes the request, never its execution topology. */
@@ -602,7 +609,7 @@ export function startTaskExecution(task: Task, now: Date): Task {
 export function validateTask(task: Task): Task {
   if (task.schemaVersion !== 1) throw new Error("Task must use schemaVersion 1.");
   const fields: readonly (keyof Task)[] = [
-    "schemaVersion","id","title","type","description","priority","tags","dueAt",
+    "schemaVersion","source","id","title","type","description","priority","tags","dueAt",
     "projectBindings","cwd","workspaceIdentity","status","executionGate","activationRequest",
     "settledActivationRequests","completedAt","completedBy","completionSummary","completionArtifactRefs",
     "retiredAt","retiredBy","retirementSummary","retirementIsolation","replacementTaskId",
@@ -612,6 +619,19 @@ export function validateTask(task: Task): Task {
     if (!fields.includes(field as keyof Task)) throw new Error(`Task contains an unsupported field: ${field}.`);
   }
   requireSafeIdentity(task.id, "Task id");
+  if (task.source !== undefined) {
+    const source = task.source;
+    if (source.kind !== "job-run" || Object.keys(source).some(key => !["kind", "jobId", "run"].includes(key))) {
+      throw new Error("Invalid Task source.");
+    }
+    requireSafeIdentity(source.jobId, "Source Job id");
+    requireSafeIdentity(source.run.runId, "Source Run id");
+    if (Object.keys(source.run).some(key => !["scope", "runId"].includes(key))
+      || Object.keys(source.run.scope).some(key => !["kind", "taskId"].includes(key))
+      || !["global", "task"].includes(source.run.scope.kind)) throw new Error("Invalid Task source Run.");
+    if (source.run.scope.kind === "task") requireSafeIdentity(source.run.scope.taskId, "Source Task id");
+    else if ("taskId" in source.run.scope) throw new Error("Global source cannot name a Task.");
+  }
   requireText(task.title, "Task title");
   if (task.type !== undefined) requireSafeIdentity(task.type, "Task type");
   if (!(["draft", "active", "completed", "cancelled", "archived"] as const).includes(task.status)) {

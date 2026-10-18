@@ -12,6 +12,12 @@ export type JobResultReference = Readonly<{
   sourceRun: JobRunReference;
   version: string; // SHA-256 of the referenced record/file bytes.
   locator: string;
+}> | Readonly<{
+  kind: "task-result" | "work-item-result";
+  owner: Readonly<{ kind: "task"; taskId: string }>;
+  sourceRun: JobRunReference;
+  version: string;
+  locator: string;
 }>;
 export type JobBusinessResult = Readonly<{
   schemaVersion: 1;
@@ -47,7 +53,12 @@ export function validateBusinessResult(result: JobBusinessResult, run: JobRunRef
   if (!Array.isArray(result.evidence)) throw new Error("Job result evidence must be an array.");
   for (const ref of result.evidence) {
     requireKnownFields(ref, ["kind", "owner", "sourceRun", "version", "locator"], "Job result reference");
-    if (!["run-record", "execution-evidence"].includes(ref.kind) || !matches(ref.owner) || !matches(ref.sourceRun)
+    const taskEvidence = ref.kind === "task-result" || ref.kind === "work-item-result";
+    const ownerMatches = taskEvidence
+      ? (requireKnownFields(ref.owner, ["kind", "taskId"], "Task result owner"),
+        ref.owner.kind === "task" && /^task-\d+$/u.test(ref.owner.taskId))
+      : matches(ref.owner as JobRunReference);
+    if (!["run-record", "execution-evidence", "task-result", "work-item-result"].includes(ref.kind) || !ownerMatches || !matches(ref.sourceRun)
       || !/^[a-f0-9]{64}$/u.test(ref.version)) throw new Error("Invalid Job result evidence identity/version.");
     requireText(ref.locator, "Job result evidence locator");
     if (ref.locator.startsWith("/") || ref.locator.split("/").includes("..")) throw new Error("Invalid Job evidence locator.");
@@ -76,10 +87,11 @@ export function jobRunSnapshot(run: JobRun) {
     ...runReference(run), definitionId: run.definitionId, definitionRevision: run.definitionRevision,
     owner: "owner" in run ? run.owner : null,
     trigger: run.trigger, retryOf: run.retryOf ?? null,
-    executor: "taskId" in run ? { kind: "shell" as const } : {
+    executor: run.delegation ? { kind: "task" as const, delegation: run.delegation } : "taskId" in run ? { kind: "shell" as const } : {
       kind: "builtin" as const, action: run.action, input: run.actionInput
     },
-    target: { projectId: run.projectId ?? null, workspace: run.workspace, head: run.head },
-    execution: { env: run.env, steps: run.steps, implementation: run.operation.implementation }
+    target: run.delegation ? { taskId: run.delegation.taskId, workItemId: run.delegation.workItemId ?? null }
+      : { projectId: run.projectId ?? null, workspace: run.workspace, head: run.head },
+    execution: run.delegation ? null : { env: run.env, steps: run.steps, implementation: run.operation.implementation }
   };
 }

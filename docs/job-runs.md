@@ -108,9 +108,94 @@ identities. Ordinary readers use only the current contract.
 `confirmedAt`, current `status` and nullable `result`. Acceptance is not start;
 start is not confirmation. The snapshot is derived exclusively from the immutable
 Run fields, never a mutable current Job definition. Scope, executor (`shell` or
-controlled `builtin`), target and trigger are separate concepts. Current permitted
-combinations remain Task shell and global builtin; there is no extensible empty
+controlled `builtin`, or `task`), target and trigger are separate concepts. Task
+delegation is available in either management scope; shell remains Task-only and
+builtin remains global-only. There is no extensible empty
 executor/plugin configuration or arbitrary global shell.
+
+## Delegating delivery to a Task
+
+Job scope answers **who manages the definition**, Run delegation answers **which
+delivery is requested**, and immutable `Task.source` answers **why it was created**.
+Neither relation is an authority parent. A global Job remains global; a Job
+owned by A can create B without appearing in B's managed Jobs list.
+
+An explicit Task executor configuration creates a new Draft per independent Run:
+
+```json
+{"kind":"task","goal":"delivery","target":{"kind":"new","title":"Deliver report","description":"Requirements and acceptance here.","projectBindings":[]}}
+```
+
+`target.type` is optional business metadata, not an automation discriminator.
+Project bindings use the ordinary Draft `{projectId,directory,baseRef}` contract.
+`goal:"task-created"` is the explicit alternative when creation really is the
+entire goal. It must never be used as a shortcut for delivery.
+
+Use ordinary `job define` / `job run`. Task, configured Leader, exact scoped
+Run and its immutable relation are committed in the **same SQLite transaction**.
+Repeating the same admitted trigger returns the original Run/Task, including
+after restart or completion; conflicting definition revisions are refused.
+New independent Runs create new Tasks, never reopen an old cycle.
+Missing Leader configuration or failed persistence rolls back the whole admission.
+Creation does not authorize execution: the target starts Draft; use existing
+Task submit/develop and Activation with the caller's own target authority.
+The Task owns its Leader, optional WorkItems, acceptance, Integration and archive.
+There is no Job Leader, JobWorkItem or second delivery state.
+
+For an existing ordinary Task, first create an explicit open WorkItem through
+its ordinary authorized interface, then bind it precisely:
+
+```json
+{"kind":"task","goal":"work-item","target":{"kind":"work-item","taskId":"task-12","workItemId":"work-item-3","revision":1}}
+```
+
+The Job does not rewrite the Task's source. Admission captures the WorkItem's
+requirements digest and observed revision. Execution/candidate revisions can
+advance; changed requirements yield `unknown-needs-attention`, never guessed
+acceptance. Only its exact accepted Candidate settles the Run, not an Agent
+terminal, an unaccepted Candidate or the entire shared Task.
+Unscoped actions, arbitrary existing-Task completion waits and ambiguous targets
+are rejected. A Task Leader can bind only its own Task's exact WorkItem under
+its current writable delivery Session. Cross-Task creation/selection requires
+the existing Operator authority; public immediate global requests use actual
+user scope, never an invented Operator. Schedule service grants for builtin
+actions do not authorize Task delegation.
+
+The supervisor and `job run-confirm` collect existing delivery facts only.
+Delivery success pins the first exact `task.completed` event of the new target;
+WorkItem success pins its accepted Candidate. `task-result`/`work-item-result`
+evidence retains source Run, Task owner, relative locator and SHA256 of the
+original JSON object. Later reopen cannot rewrite a settled Run. These are result
+references, not copied Task bodies or an authorization to read arbitrary Context.
+Task executors use a distinct Run variant without process configuration,
+workspace or process evidence. They never spawn a runner and expose
+`execution:null` in snapshots.
+
+Select formal materials separately using the existing `artifact-register`
+interface and its source-Task plus Run authorization. Artifacts remain in their
+Task repository and pin owner, commit, path, digest and consuming Run. Only
+selected immutable objects become readable; no HEAD, directory or source-Task
+write access is inherited.
+
+`job run-delegation (--global|--task A) --job ID --run RUN` reports the exact
+target, state, open-input count and result reference. `task show B --json` exposes
+immutable source and a bounded incoming-delegation projection (with `complete`);
+`task list --source ordinary|job` filters creation origin. Incoming Run waits and
+uncertainty join the existing catalog `pendingOperations`/`unknownOperations`
+attention; target InputRequests remain in `openInputs`. These are current
+projections, not independent lifecycle records. Complete UI belongs elsewhere.
+
+`run-cancel` requests cancellation of this Run's delegation. Confirmation
+settles that wait as cancelled and explicitly reports **target resources not
+stopped**. It does not cancel/retire the shared WorkItem, stop the target Leader,
+or prove quiescence. Inspect/stop exact target resources through their normal
+authority if needed. Disabling a Schedule still affects future admissions only.
+Source never grants merge, publishing, cleanup or archive authority.
+
+Storage **1.18 → 1.19** adds optional immutable Task provenance and Run delegation
+and the new result-reference kinds without changing SQL layout or historical
+payload bytes. Ordinary historical Tasks remain source-less; unknown process
+effects, fixed artifacts and existing Schedule authorization stay untouched.
 
 `JobBusinessResult` has `schemaVersion:1`, exact `sourceRun:{scope,runId}`, an
 `outcome`, human-readable `summary`, optional JSON `data`, and `evidence`.

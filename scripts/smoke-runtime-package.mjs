@@ -333,6 +333,27 @@ try {
     }
   }
 
+  // Task delegation uses the existing Draft/Leader aggregate, never a runner
+  // or an implicitly elevated Operator. Its delivery goal is still pending
+  // until normal Task acceptance; cancellation does not stop that Task.
+  json("job", "define", "--global", "--job", "task-delegate", "--title", "Task delegation",
+    "--input", JSON.stringify({ kind: "task", goal: "delivery", target: { kind: "new",
+      title: "Delegated Draft", description: "Isolated package fixture; no delivery requested.",
+      projectBindings: [] } }));
+  const delegated = json("job", "run", "--global", "--job", "task-delegate", "--request-id", "delegate-once").run;
+  const delegatedRef = ["--global", "--job", "task-delegate", "--run", delegated.id];
+  assert.equal(json("job", "run", "--global", "--job", "task-delegate", "--request-id", "delegate-once").run.id, delegated.id);
+  assert.equal(json("job", "run-confirm", ...delegatedRef).status, "running");
+  const delegatedTask = json("task", "show", delegated.delegation.taskId);
+  assert.equal(delegatedTask.task.status, "draft");
+  assert.equal(delegatedTask.task.source.run.runId, delegated.id);
+  assert.equal(delegatedTask.delegations.items[0].jobId, "task-delegate");
+  assert.equal(json("task", "list", "--source", "job").total, 1);
+  assert.equal(json("job", "run-delegation", ...delegatedRef).taskId, delegatedTask.task.id);
+  json("job", "run-cancel", ...delegatedRef);
+  assert.equal(json("job", "run-confirm", ...delegatedRef).status, "cancelled");
+  assert.equal(json("task", "show", delegatedTask.task.id).task.executionGate.state, "enabled");
+
   const doctorStarted = Date.now();
   const doctor = json("doctor");
   assert.equal(doctor.storage.healthy, true);

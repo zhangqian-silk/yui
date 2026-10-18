@@ -20,7 +20,7 @@ export function createWebJobs(store: TaskStore, home: string) {
         ? ["op", "id", "title", "configuration", "expectedRevision", "runId", "requestId"]
         : ["op", "id", "jobId", "rule", "expectedRevision", "authorization", "target"], "Web Job/Schedule request");
       const input = value as Record<string, JsonValue>;
-      const reads = family === "jobs" ? ["list", "show", "runs", "run-get", "logs"] : ["list", "show"];
+      const reads = family === "jobs" ? ["list", "show", "runs", "run-get", "run-result", "run-evidence", "run-delegation", "logs"] : ["list", "show"];
       const writes = family === "jobs" ? ["define", "update", "run", "run-cancel"] : ["create", "update", "enable", "disable"];
       if (!(write ? writes : reads).includes(String(input.op))) throw new Error("Operation is not available on this endpoint.");
       if (scope.kind === "task" && !tx.getTask(scope.taskId)) throw new Error("Task not found.");

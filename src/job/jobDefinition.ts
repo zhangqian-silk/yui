@@ -2,6 +2,7 @@ import { requireIdentity, requireKnownFields, requirePositiveInteger, requireTex
 import type { DurableJob, DurableJobOwner, DurableJobStep } from "./durableJob.js";
 import { validateJobExecutionConfiguration, validateDurableJobOwner } from "./durableJob.js";
 import type { JsonValue } from "../core/protocol.js";
+import { validateTaskJobConfiguration, type TaskJobConfiguration as DelegatedTaskConfiguration } from "./taskDelegation.js";
 
 export type JobScope = Readonly<{ kind: "task"; taskId: string }> | Readonly<{ kind: "global" }>;
 export type TaskJobConfiguration = Readonly<{
@@ -19,7 +20,7 @@ export type BuiltinJobConfiguration = Readonly<{
   projectId?: string;
   input: JsonValue;
 }>;
-export type JobConfiguration = TaskJobConfiguration | BuiltinJobConfiguration;
+export type JobConfiguration = TaskJobConfiguration | BuiltinJobConfiguration | DelegatedTaskConfiguration;
 export type JobDefinition = Readonly<{
   schemaVersion: 1;
   id: string;
@@ -69,7 +70,9 @@ export function validateJobDefinition(job: JobDefinition): JobDefinition {
     || job.id !== `project-sync-${config.projectId}` || job.instantiation !== undefined)) {
     throw new Error("Invalid builtin Project sync definition.");
   }
-  if (job.scope.kind === "global") {
+  if (config.kind === "task") {
+    validateTaskJobConfiguration(config);
+  } else if (job.scope.kind === "global") {
     if (config.kind !== "builtin") throw new Error("Global Jobs require a controlled builtin action.");
     requireKnownFields(config, ["kind", "action", "projectId", "input"], "Builtin Job");
     requireText(config.action, "Builtin action");
@@ -105,6 +108,7 @@ export function reviseJobDefinition(
 
 /** Old execution IDs are preserved one-to-one; command equality never merges history. */
 export function definitionFromTaskRun(run: DurableJob): JobDefinition {
+  if (run.delegation) throw new Error("Task delegation already requires a Job definition.");
   return createJobDefinition({
     id: run.definitionId, scope: { kind: "task", taskId: run.taskId }, title: run.steps[0]!.name,
     configuration: {

@@ -132,6 +132,7 @@ export async function recordGateArtifactFromJob(
   job: DurableJob,
   now: Date
 ): Promise<GateArtifact> {
+  if (job.delegation) throw new Error("Task delegation is not process verification evidence.");
   const steps: GateArtifactStepInput[] = (job.result?.steps ?? []).map((result) => {
     const planned = job.steps.find((step) => step.name === result.name);
     return {
@@ -337,6 +338,7 @@ function sanitizeLogName(name: string): string {
  * failure; the Integration gate has not started when bootstrap fails.
  */
 export function checkResultsFromGateJob(job: DurableJob, _home: string): CheckResult[] {
+  if (job.delegation) throw new Error("Task delegation is not process verification evidence.");
   const results = new Map((job.result?.steps ?? []).map((step) => [step.name, step]));
   const checks: CheckResult[] = [];
   for (const step of job.steps) {

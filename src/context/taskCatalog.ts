@@ -22,7 +22,7 @@ export function parseTaskCatalogOptions(args: readonly string[]): TaskCatalogOpt
   for (let i = 0; i < args.length; i++) {
     const key = args[i]!;
     if (key === "--all" && !all) { all = true; continue; }
-    if (!["--limit", "--cursor", "--status", "--project", "--search", "--attention"].includes(key)
+    if (!["--limit", "--cursor", "--status", "--project", "--search", "--attention", "--source"].includes(key)
       || values.has(key) || args[i + 1] === undefined || args[i + 1]!.startsWith("--")) {
       throw usageError("Task list expects [--all] [--status <status>] [--project <id>] [--search <text>] [--attention <category>] [--limit <1..100>] [--cursor <cursor>].");
     }
@@ -33,6 +33,8 @@ export function parseTaskCatalogOptions(args: readonly string[]): TaskCatalogOpt
     throw usageError("Unknown Task catalog status.");
   }
   const attention = values.get("--attention");
+  const source = values.get("--source");
+  if (source !== undefined && !["ordinary", "job"].includes(source)) throw usageError("Task source must be ordinary or job.");
   if (attention !== undefined && !CATALOG_ATTENTION.includes(attention as CatalogAttentionKind)) {
     throw usageError(`Task catalog attention must be one of: ${CATALOG_ATTENTION.join(", ")}.`);
   }
@@ -48,6 +50,7 @@ export function parseTaskCatalogOptions(args: readonly string[]): TaskCatalogOpt
     ...(status === undefined ? {} : { status: status as typeof TASK_STATUSES[number] }),
     ...(attention === undefined ? {} : { attention: attention as CatalogAttentionKind }),
     ...(search ? { search } : {}),
+    ...(source === undefined ? {} : { source: source as "ordinary" | "job" }),
     ...(project === undefined ? {} : { project }),
     ...(values.has("--cursor") ? { cursor: values.get("--cursor")! } : {})
   };
@@ -118,6 +121,7 @@ export function readTaskCatalog(
       filters, total: facts.total, counts: facts.counts, attention,
       tasks: [] as Array<{
         id: string; title: string; status: typeof TASK_STATUSES[number]; createdAt: string; updatedAt: string;
+        source: import("../task/task.js").TaskSource | null;
         summary: string | null; summaryStatus: string; omitted: { title: boolean; summary: boolean };
         counts: { workItems: number; activeRuns: number };
         attention: Record<CatalogAttentionKind, number>; ref: CatalogRef;
@@ -137,6 +141,7 @@ export function readTaskCatalog(
       // only when necessary; length-at-limit is conservatively marked omitted.
       const item = {
         id: row.id, title, status: row.status, createdAt: row.createdAt, updatedAt: row.updatedAt,
+        source: reader.getTask(row.id)?.source ?? null,
         summary, summaryStatus: row.summaryPresent ? "available" : "missing",
         omitted: { title: row.title.length >= 256 || title !== row.title,
           summary: row.summary !== null && (row.summary.length >= 512 || summary !== row.summary) },

@@ -2,7 +2,13 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.18. The additive 1.17 → 1.18 transition admits builtin
+Current storage is 1.19. The 1.18 → 1.19 transition adds optional immutable Task
+creation source, exact Run delegation and Task/WorkItem result-reference kinds.
+Existing valid payload bytes, ordinary source-less Tasks, unknown effects and
+fixed references are unchanged; no historical source or authority is inferred.
+SQL layout is unchanged.
+
+The additive 1.17 → 1.18 transition admits builtin
 Project-sync provenance, a compiled service issuer and a separate user-enabled
 preference on new Schedules. SQL layout and every existing payload remain unchanged;
 it neither adopts custom Jobs nor fabricates historical grants or Runs.

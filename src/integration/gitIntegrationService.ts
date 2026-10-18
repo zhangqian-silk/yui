@@ -615,6 +615,7 @@ export class GitIntegrationService {
     gate?: ResolvedVerificationGate
   ): Promise<IntegrationResult> {
     const job = await this.jobPort!.getJob(attempt.taskId, attempt.jobId!);
+    if (job.delegation) throw new Error("Task delegation is not an Integration check Job.");
     assertCheckJobIdentity(attempt, job, path);
     await assertIntegrationCandidate(path, job.head, workspace.branch);
     await assertTargetReadyForChecks(repositoryPath, attempt.targetRef, attempt.beforeCommit,

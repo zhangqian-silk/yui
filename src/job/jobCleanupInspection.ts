@@ -18,6 +18,9 @@ export function jobCleanupBlocker(
   if (job.status === "unknown-needs-attention" && job.acknowledgedAt === undefined) {
     return "Unknown Job result requires explicit acknowledgement.";
   }
+  // A settled delegation owns no runner/workspace. Its target Task retains
+  // independent resource ownership and must pass its own cleanup inspection.
+  if (job.delegation) return undefined;
   if (job.status !== "unknown-needs-attention" && job.startedAt === undefined
     && job.process === undefined && job.operation.effect === "none") return undefined;
   if (job.process === undefined || home === undefined) {

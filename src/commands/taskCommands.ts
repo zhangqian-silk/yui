@@ -1513,14 +1513,16 @@ function parseTaskCreation(
   };
 }
 
-function createTaskAggregate(
+export function createTaskAggregate(
   store: TaskWorkflowStore,
   title: string,
   metadata: TaskMetadata,
   now: Date,
-  defaultProjectIds: readonly string[] = []
+  defaultProjectIds: readonly string[] = [],
+  source?: Task["source"]
 ): Readonly<{ task: Task; leader: Role }> {
-  const task = createTask(store.nextTaskId(), title, now, metadata);
+  const task = { ...createTask(store.nextTaskId(), title, now, metadata),
+    ...(source === undefined ? {} : { source: structuredClone(source) }) };
   const leader = createTaskRole(store, task, LEADER_ROLE, undefined, now);
   store.saveTask(task);
   store.saveRole(task.id, leader);
@@ -1589,6 +1591,7 @@ function showTaskCommand(
     `Title: ${task.title}`,
     `Status: ${task.status}`,
     `Type: ${task.type ?? "unspecified"}`,
+    `Source: ${task.source === undefined ? "ordinary" : `Job ${task.source.jobId} / Run ${task.source.run.runId}`}`,
     ...(task.description === undefined ? [] : [`Description: ${task.description}`]),
     ...(task.priority === undefined ? [] : [`Priority: ${task.priority}`]),
     ...(task.tags === undefined ? [] : [`Tags: ${task.tags.join(", ")}`]),
@@ -1632,6 +1635,7 @@ function showTaskCommand(
   ].join("\n").concat("\n");
   return output(rendered, {
     task,
+    delegations: store.listTaskDelegations(task.id),
     counts,
     hasBrief: brief !== null,
     remoteDelivery,

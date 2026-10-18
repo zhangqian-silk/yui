@@ -38,7 +38,7 @@ export async function runDurableJobCommand(
   options: DurableJobCommandOptions
 ): Promise<string> {
   const [command, ...rest] = args;
-  if (command !== undefined && ["define", "update", "list", "show", "run", "runs", "run-get", "run-result", "run-evidence", "run-confirm", "run-cancel", "run-acknowledge", "logs", "artifact-save", "artifact-list", "artifact-read", "artifact-preview", "artifact-register"].includes(command)) {
+  if (command !== undefined && ["define", "update", "list", "show", "run", "runs", "run-get", "run-result", "run-evidence", "run-confirm", "run-delegation", "run-cancel", "run-acknowledge", "logs", "artifact-save", "artifact-list", "artifact-read", "artifact-preview", "artifact-register"].includes(command)) {
     return definitionCommand(command, rest, options);
   }
   if (command === "start") return startJob(rest, options);
@@ -143,8 +143,8 @@ async function getJob(
     `Job ${job.id} (task ${job.taskId})`,
     `  status: ${job.status}`,
     `  owner: ${formatOwner(job.owner)}`,
-    `  head: ${job.head}`,
-    `  workspace: ${job.workspace}`,
+    ...(job.delegation ? [`  delegated task: ${job.delegation.taskId}`, `  goal: ${job.delegation.goal}`]
+      : [`  head: ${job.head}`, `  workspace: ${job.workspace}`]),
     `  created: ${job.createdAt}`
   ];
   if (job.startedAt !== undefined) lines.push(`  started: ${job.startedAt}`);
@@ -154,7 +154,7 @@ async function getJob(
     if (job.result.failedStep !== undefined) lines.push(`  failed step: ${job.result.failedStep}`);
     if (job.result.unknownReason !== undefined) lines.push(`  reason: ${job.result.unknownReason}`);
   }
-  for (const step of job.steps) {
+  for (const step of job.steps ?? []) {
     lines.push(`  step ${step.name}: ${step.command}`);
   }
   return `${lines.join("\n")}\n`;

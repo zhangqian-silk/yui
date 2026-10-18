@@ -298,7 +298,7 @@ export function createProjectResources(store: TaskStore, now: () => Date = () =>
               [...Object.values(set.sessions), ...(set.history ?? [])].some((session) =>
                 session.status === "active" && references(session.effective.executionEnvironment)))
             || tx.listDurableJobs(taskId).some((job) => ["queued", "running", "unknown-needs-attention"].includes(job.status)
-              && overlaps(job.workspace, value.directory!.path))
+              && !job.delegation && overlaps(job.workspace, value.directory!.path))
           )) throw new Error("Environment still has a live or unknown execution reference.");
         }
         if (value.directory?.ownership === "preparation") {
