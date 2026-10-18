@@ -2,7 +2,13 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.16. The 1.15 → 1.16 transition adds explicit Schedule
+Current storage is 1.17. The 1.16 → 1.17 transition adds optional append-only
+JobRun artifact references and scope/Run-isolated local Git repositories.
+Existing payload bytes and Task Git repositories/frozen references remain
+unchanged; no historical artifact, provenance or authorization is inferred.
+No SQL layout change or automatic cleanup is introduced.
+
+The 1.15 → 1.16 transition adds explicit Schedule
 dispatch targets and authorization kinds. Existing plans keep their exact Session
 authority, rules, identity and progress; original bytes are archived under migration
 16. No service permission is inferred. New service grants and Job instance

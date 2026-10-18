@@ -147,6 +147,116 @@ Task completion. Started Runs and retained unknown process evidence keep the
 existing Task lifecycle and physical-cleanup boundaries. The management UI
 retains exact references rather than replacing them with latest.
 
+## Formal file artifacts
+
+Jobs can save formal material without a Task or Session. The existing
+`job.definition` RPC also accepts `artifact-save`, `artifact-list`,
+`artifact-read`, `artifact-preview` and `artifact-register`, with the same
+`scope`, definition `id`, exact `runId` and authenticated `caller` boundaries.
+The CLI resolves that caller; do not supply or fabricate one:
+
+```sh
+yui job artifact-save --global --job probe --run <run-id> \
+  --artifact '{"relativePath":"reports/result.md","content":"# Result\n\nEvidence","message":"Record result"}'
+yui job artifact-list --global --job probe --run <run-id>
+yui job artifact-read --global --job probe --run <run-id> \
+  --reference '<exact reference object returned by save/list>'
+yui job artifact-preview --global --job probe --run <run-id> \
+  --reference '<exact registered reference object>' --offset 0
+yui job artifact-register --global --job probe --run <run-id> \
+  --reference '<exact already-saved reference object>'
+```
+
+Save input also accepts `expectedHead` for optimistic concurrency and
+`encoding:"base64"` for static PNG/JPEG/WebP. The shared repository accepts
+text up to 8 MiB and decoded images up to 4 MiB, with dimension/format
+validation; Job reference paths are limited to 512 characters.
+The **Job CLI/RPC save payload is additionally limited to 256 KiB of encoded
+JSON; read/preview responses allow 512 KiB** to include the added reference and
+presentation metadata. Both count JSON escaping/base64 inside the Controller's
+1 MiB envelope. The CLI checks saves before
+transmission. Larger producer-saved or delegated Task material may still be
+registered by its small exact reference: use paged preview for large text,
+or the owning Task's surface for larger images. No file is truncated.
+Preview otherwise shares the Task preview rules: whole Markdown up to
+256 KiB, paged text (12,000 characters with `nextOffset`), static raster
+metadata/base64, and no SVG or executable HTML. HTML is text data, never
+executed; clients must use the existing safe renderer.
+
+Save/register returns `{status:"registered",reference}` only after the file is
+committed **and** the Run reference is recorded. If the commit exists but
+publication fails, it instead returns
+`{status:"saved-unregistered",reference,error,recovery}`. This is partial
+success, not a published result. Inspect the exact Run and `artifact-list`,
+then explicitly register the retained reference. Never retry the business
+action to repair missing material registration. A lost RPC reply is unknown:
+inspect first. Git save failures preserve written working files and existing
+commits; expected-HEAD conflicts write nothing.
+
+A reference is:
+
+```json
+{
+  "kind": "artifact",
+  "owner": {"kind": "job", "scope": {"kind": "global"}, "jobId": "probe"},
+  "sourceRun": {"scope": {"kind": "global"}, "runId": "<exact-run-id>"},
+  "version": "<full Git commit>",
+  "relativePath": "reports/result.md",
+  "digest": "<SHA-256 of file bytes>"
+}
+```
+
+Unlike process-evidence `version` (SHA-256), an artifact's `version` is a full
+Git commit; its separate `digest` checks content. Reads require a registered
+exact reference, never HEAD, an ambient Task, or a bare filename. A Run's
+`artifacts` is an append-only list: later saves cannot replace earlier entries.
+The original `businessResult`, `result`, outcome and terminal evidence remain
+unchanged when material is collected after execution.
+
+Repositories live under
+`YUI_HOME/job-artifacts/global/<job-id>/<run-id>/` or
+`YUI_HOME/job-artifacts/task/<task-id>/<job-id>/<run-id>/`.
+Each Run has a distinct worktree and scoped commit lock, so even the same
+definition/path in concurrent Runs or different scopes cannot overwrite one
+another. They reuse the Task repository's local-only Git, path/symlink guards,
+size limits and commit protocol. Task repositories stay at their existing
+`task-artifacts/<task-id>` paths; all old commit-pinned Candidate, Review and
+completion references remain valid.
+
+`artifact-list.artifacts` lists **published** references.
+`repository.saved` describes the retained current Git snapshot for diagnosis
+and explicit registration; it is not publication. `repository.workingChanges`
+distinguishes uncommitted files. `job runs` and `run-result.artifacts` retain
+history; `job show`/`list` derive `results.latest` and
+`results.latestSuccessful` independently from readable Runs. A later failure
+does not hide the last success. Same-name versions are the entries with that
+`relativePath` across these Run histories, not a separately writable final file.
+
+For delegated Task material, an authorized Leader or Operator explicitly
+registers `owner:{"kind":"task","taskId":"task-N"}` with the selected original
+commit/path/digest and the consuming Run's `sourceRun`. Registration must pass
+both the Run's existing Assignment checks and the source Task's authorization.
+An Assignment reader cannot mint this selection. Subsequent Run readers may
+read **only that selected immutable object**, not the Task's HEAD, other
+files, or writes. The file stays in the Task repository; no copy or authority
+transfer occurs. The old same-Task `git:<commit>:<path>` shorthand is not
+accepted as a cross-entity reference. Task delegation admission itself belongs
+to its separate feature; this is the selected-material seam.
+
+Storage **1.16 → 1.17** declares the optional append-only Run references and
+Job-owned repository layout. It preserves existing payload bytes, process
+history, Task repositories and frozen references, and invents no historical
+artifacts. This is not a package-version release or an automatic Home upgrade.
+
+Formal repositories and referenced objects are retained by default. Replacing
+a Session, removing execution workspaces/logs, disabling a Schedule or ordinary
+Task archive does not delete them. There is no automated artifact GC or delete
+command. Manual cleanup requires separately authorized inspection of exact
+owners and references; do not remove repositories/commits still referenced by
+Runs, Candidates, Reviews or completion evidence. Retain uncertain ownership
+and unregistered/dirty evidence for diagnosis. This does not turn logs,
+heartbeats, checkpoints, Knowledge or Project state into formal artifacts.
+
 ## Extension seams for Schedule, Project refresh and management UI
 
 - `src/job/jobDefinition.ts`: `JobDefinition`, `JobScope`, `JobConfiguration`

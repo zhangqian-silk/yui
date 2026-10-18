@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { lstat, mkdir, writeFile } from "node:fs/promises";
+import { dirname, join, relative } from "node:path";
 import { supportedGit } from "../repository/gitCompatibility.js";
 
 import { acquireArtifactCommitLock } from "./artifactCommitLock.js";
@@ -169,15 +169,35 @@ export type ArtifactSaveInput = Readonly<{
  */
 export function openTaskArtifactRepository(home: string, taskId: string): TaskArtifactRepository {
   const repoPath = taskArtifactRepoPath(home, taskId);
+  const repo = openVersionedArtifactRepository(home, taskId, repoPath);
+  return { ...repo, taskId, save: async input => ({ ...await repo.save(input), taskId }) };
+}
 
+/** Shared local-only storage. Callers derive paths from validated owning identities,
+ * never from a user-supplied filesystem location. Task layout/commits stay intact. */
+export function openVersionedArtifactRepository(home: string, key: string, repoPath: string) {
+  const taskId = key; // Existing error fields retain their public spelling.
+  const checkBoundary = async () => {
+    await resolveContainedArtifactPath(home, `${relative(home, repoPath).split("\\").join("/")}/boundary-check`);
+    try {
+      const metadata = await lstat(join(repoPath, ".git"));
+      if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+        throw new Error("Artifact Git metadata must be its owned local directory, not a link/worktree.");
+      }
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    }
+  };
   const exists = (): boolean => existsSync(join(repoPath, ".git"));
 
   const head = async (): Promise<string | null> => {
+    await checkBoundary();
     if (!exists()) return null;
     return currentHead(repoPath);
   };
 
-  const ensure = async (): Promise<void> => {
+  const ensureUnlocked = async (): Promise<void> => {
+    await checkBoundary();
     supportedGit();
     if (exists()) {
       await assertNoRemote(taskId, repoPath);
@@ -190,8 +210,12 @@ export function openTaskArtifactRepository(home: string, taskId: string): TaskAr
     await managedGit(repoPath, ["commit", "--allow-empty", "-m", "init artifact repo"]);
     await assertNoRemote(taskId, repoPath);
   };
+  const ensure = async (): Promise<void> => {
+    const release = await acquireArtifactCommitLock(home, key);
+    try { await ensureUnlocked(); } finally { release(); }
+  };
 
-  const save = async (input: ArtifactSaveInput): Promise<ArtifactSaveResult> => {
+  const save = async (input: ArtifactSaveInput) => {
     if (input.files.length === 0) {
       throw new Error("An artifact save must include at least one file.");
     }
@@ -218,9 +242,9 @@ export function openTaskArtifactRepository(home: string, taskId: string): TaskAr
       seen.add(file.relativePath);
     }
 
-    await ensure();
-    const release = acquireArtifactCommitLock(home, taskId);
+    const release = await acquireArtifactCommitLock(home, key);
     try {
+      await ensureUnlocked();
       await assertNoRemote(taskId, repoPath);
       // Expected-HEAD check under the lock: a conflict stops without writing.
       if (input.expectedHead !== undefined) {
@@ -246,22 +270,23 @@ export function openTaskArtifactRepository(home: string, taskId: string): TaskAr
         "diff", "--cached", "--quiet", "--", ...pathspecs
       ]);
       if (noChanges) {
-        return { taskId, commit: await currentHead(repoPath), savedPaths: pathspecs };
+        return { commit: await currentHead(repoPath), savedPaths: pathspecs };
       }
       // `--only <paths>` records exactly these paths; any other WIP stays WIP.
       await managedGit(repoPath, ["commit", "--only", "-m", message, "--", ...pathspecs]);
-      return { taskId, commit: await currentHead(repoPath), savedPaths: pathspecs };
+      return { commit: await currentHead(repoPath), savedPaths: pathspecs };
     } finally {
       release();
     }
   };
 
   const read = async (relativePath: string, commit?: string): Promise<ArtifactContent> => {
+    await checkBoundary();
     const safeRelative = safeRelativeArtifactPath(relativePath);
     // A pinned commit reads frozen evidence; otherwise read the current HEAD.
     // Both resolve `<commit>:<path>`, an OBJECT spec (never the working tree, so
     // a read never follows a symlink or sees unrelated WIP).
-    const pinned = commit === undefined ? await currentHead(repoPath) : requireCommitId(commit);
+    const pinned = await artifactCommit(repoPath, commit);
     const objectSpec = `${pinned}:${safeRelative}`;
     // `<commit>:<path>` for a DIRECTORY resolves to a tree, and `git show` would
     // print a tree listing rather than fail — silently returning directory
@@ -299,8 +324,9 @@ export function openTaskArtifactRepository(home: string, taskId: string): TaskAr
   };
 
   const list = async (commit?: string): Promise<readonly ArtifactEntry[]> => {
+    await checkBoundary();
     if (!exists()) return [];
-    const pinned = commit === undefined ? await currentHead(repoPath) : requireCommitId(commit);
+    const pinned = await artifactCommit(repoPath, commit);
     const output = await managedGit(repoPath, [
       "ls-tree", "-r", "-z", "--long", "--full-tree", pinned
     ]);
@@ -319,6 +345,7 @@ export function openTaskArtifactRepository(home: string, taskId: string): TaskAr
   };
 
   const workingChanges = async (): Promise<readonly string[]> => {
+    await checkBoundary();
     if (!exists()) return [];
     const output = await managedGit(repoPath, [
       "status", "--porcelain=v1", "--untracked-files=all", "-z"
@@ -332,11 +359,24 @@ export function openTaskArtifactRepository(home: string, taskId: string): TaskAr
     return changes;
   };
 
-  return { taskId, repoPath, ensure, exists, head, save, read, list, workingChanges };
+  return { repoPath, ensure, exists, head, save, read, list, workingChanges };
 }
 
 async function currentHead(repoPath: string): Promise<string> {
   return requireCommitId(await managedGit(repoPath, ["rev-parse", "HEAD^{commit}"]));
+}
+
+async function artifactCommit(repoPath: string, value?: string): Promise<string> {
+  if (value === undefined) return currentHead(repoPath);
+  const commit = requireCommitId(value);
+  const type = await managedGit(repoPath, ["cat-file", "-t", commit]).catch(error => {
+    if (error instanceof ManagedGitError) throw new Error(`Artifact commit ${commit} is unavailable.`, { cause: error });
+    throw error;
+  });
+  if (type.trim() !== "commit") {
+    throw new Error("Artifact version must name a commit, not another Git object.");
+  }
+  return commit;
 }
 
 /**

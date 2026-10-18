@@ -1751,8 +1751,20 @@ export const ROOT_COMMAND = buildNode({
     {
       name: "job", discovery: { surface: "public", audiences: ["public","operator","leader","assignment"] },
       summary: "Manage stable Job definitions and exact execution Runs (not scheduler wakes).",
-      sections: [{ id: "manage", title: "Commands", entries: ["define", "update", "list", "show", "run", "runs", "run-get", "run-result", "run-evidence", "run-confirm", "logs", "run-cancel", "run-acknowledge", "start", "get", "cancel", "acknowledge"] }],
+      sections: [{ id: "manage", title: "Commands", entries: ["define", "update", "list", "show", "run", "runs", "run-get", "run-result", "run-evidence", "run-confirm", "logs", "run-cancel", "run-acknowledge", "artifact-save", "artifact-list", "artifact-read", "artifact-preview", "artifact-register", "start", "get", "cancel", "acknowledge"] }],
       children: [
+        ...["artifact-save", "artifact-list", "artifact-read", "artifact-preview", "artifact-register"].map(name => ({
+          name, discovery: { surface: "public" as const, audiences: ["public", "operator", "leader", "assignment"] as const },
+          summary: name === "artifact-save" ? "Save bounded formal material and publish an exact owned Run reference."
+            : name === "artifact-register" ? "Register already-saved evidence without replaying execution."
+            : name === "artifact-read" || name === "artifact-preview" ? "Read/preview one registered immutable artifact (never HEAD)."
+            : "List published Run history and retained repository evidence.",
+          usage: `yui job ${name} (--task <id>|--global) --job <id> --run <run-id>`
+            + (name === "artifact-save" ? " --artifact <save-json>" : "")
+            + (["artifact-read", "artifact-preview", "artifact-register"].includes(name) ? " --reference <reference-json>" : "")
+            + (name === "artifact-preview" ? " [--offset <text-offset>]" : ""),
+          options: ["--task", "--global", "--job", "--run", "--artifact", "--reference", "--offset"]
+        })),
         ...["define", "update", "list", "show", "run", "runs", "run-get", "run-result", "run-evidence", "run-confirm", "logs", "run-cancel", "run-acknowledge"].map(name => ({
           name, discovery: { surface: "public" as const, audiences: ["public", "operator", "leader", "assignment"] as const },
           summary: name === "run-result" ? "Read an exact Run's business outcome and admitted snapshot."
