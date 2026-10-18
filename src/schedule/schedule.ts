@@ -14,7 +14,8 @@ export type ScheduleTarget = Readonly<{ kind: "existing-job" }>
 export type ScheduleAuthorization =
   | Readonly<{ kind: "session"; caller: DurableJobCaller; binding: string; jobRevision: number }>
   | Readonly<{ kind: "service"; service: "schedule"; grantId: string; revoked: boolean;
-      binding: string; jobRevision: number; grantedBy: DurableJobCaller; grantedAt: string }>;
+      binding: string; jobRevision: number;
+      grantedBy: DurableJobCaller | Readonly<{ scope: "service"; service: "project-sync" }>; grantedAt: string }>;
 
 export type Schedule = Readonly<{
   schemaVersion: 1;
@@ -30,6 +31,8 @@ export type Schedule = Readonly<{
   /** Monotonic UTC fence, also retained across edits and wall-clock rollback. */
   processedThrough?: string;
   authorization: ScheduleAuthorization;
+  /** User intent is separate from eligibility/dispatch state; rule owns time. */
+  builtin?: Readonly<{ projectId: string; enabled: boolean }>;
   lastAttempt?: Readonly<{
     at: string;
     dueAt: string;
@@ -88,7 +91,7 @@ export function nextScheduleDue(rule: ScheduleRule, after: Date): string | null 
 
 export function validateSchedule(value: Schedule): Schedule {
   requireKnownFields(value, ["schemaVersion", "id", "scope", "jobId", "target", "rule", "revision", "generation",
-    "state", "nextDue", "processedThrough", "authorization", "lastAttempt", "reason", "createdAt", "updatedAt"], "Schedule");
+    "state", "nextDue", "processedThrough", "authorization", "builtin", "lastAttempt", "reason", "createdAt", "updatedAt"], "Schedule");
   if (value.schemaVersion !== 1) throw new Error("Invalid Schedule schema.");
   scheduleId(value.id);
   scheduleId(value.jobId);
@@ -96,6 +99,13 @@ export function validateSchedule(value: Schedule): Schedule {
   if (!["task", "global"].includes(value.scope.kind)) throw new Error("Invalid Schedule scope.");
   requireKnownFields(value.scope, value.scope.kind === "task" ? ["kind", "taskId"] : ["kind"], "Schedule scope");
   jobScopeKey(value.scope);
+  if (value.builtin !== undefined) {
+    requireKnownFields(value.builtin, ["projectId", "enabled"], "Builtin Schedule");
+    if (!/^project-\d+$/u.test(value.builtin.projectId) || typeof value.builtin.enabled !== "boolean"
+      || value.scope.kind !== "global" || value.id !== `project-sync-${value.builtin.projectId}`
+      || value.jobId !== value.id || value.target.kind !== "existing-job"
+      || value.authorization.kind !== "service") throw new Error("Invalid builtin Schedule.");
+  }
   validateScheduleRule(value.rule);
   requirePositiveInteger(value.revision, "Schedule revision");
   requirePositiveInteger(value.generation, "Schedule generation");
@@ -114,10 +124,17 @@ export function validateSchedule(value: Schedule): Schedule {
       || typeof value.authorization.revoked !== "boolean") throw new Error("Invalid Schedule service scope or registration.");
     scheduleId(value.authorization.grantId);
     instant(value.authorization.grantedAt);
-    const manager = parseDurableJobCaller(value.authorization.grantedBy as unknown as JsonValue);
-    if ((manager.scope === "user" && Object.keys(manager).length !== 1)
-      || (manager.scope !== "user" && (manager.scope !== "global" || manager.role !== "operator" || !manager.nativeSessionId))) {
-      throw new Error("Invalid service grant issuer.");
+    if (value.authorization.grantedBy.scope === "service") {
+      requireKnownFields(value.authorization.grantedBy, ["scope", "service"], "Builtin service issuer");
+      if (value.authorization.grantedBy.service !== "project-sync" || value.builtin === undefined) {
+        throw new Error("Invalid builtin service issuer.");
+      }
+    } else {
+      const manager = parseDurableJobCaller(value.authorization.grantedBy as unknown as JsonValue);
+      if ((manager.scope === "user" && Object.keys(manager).length !== 1)
+        || (manager.scope !== "user" && (manager.scope !== "global" || manager.role !== "operator" || !manager.nativeSessionId))) {
+        throw new Error("Invalid service grant issuer.");
+      }
     }
   } else {
     requireKnownFields(value.authorization, ["kind", "caller", "binding", "jobRevision"], "Schedule authorization");

@@ -98,14 +98,15 @@ export function mountJobs(root, t, taskId) {
   }
   function editSchedule(schedule) {
     const id = input(schedule?.id || "", { required: true, disabled: !!schedule });
-    const jobId = choose(jobs.map(j => j.id), schedule?.jobId || selected);
-    const kind = choose(["once", "interval", "cron"], schedule?.rule.kind || "interval");
+    const jobId = choose(jobs.filter(j => !j.builtin || j.id === schedule?.jobId).map(j => j.id), schedule?.jobId || selected);
+    jobId.disabled = !!schedule?.builtin;
+    const kind = choose(schedule?.builtin ? ["interval", "cron"] : ["once", "interval", "cron"], schedule?.rule.kind || "interval");
     const rule = schedule?.rule;
     const at = input(rule?.at || rule?.anchor || "", { placeholder: "2026-10-17T09:00:00+08:00" });
-    const every = input(String(rule?.everyMs || 3600000), { type: "number", min: 1000, step: 1 });
+    const every = input(String(rule?.everyMs || 3600000), { type: "number", min: schedule?.builtin ? 60000 : 1000, step: 1 });
     const expression = input(rule?.expression || "0 9 * * *");
     const timezone = input(rule?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
-    const when = field(copy("instant"), at), interval = field(copy("every"), every);
+    const when = field(copy("instant"), at), interval = field(copy(schedule?.builtin ? "syncEvery" : "every"), every);
     const cron = field(copy("cron"), expression), zone = field(copy("timezone"), timezone);
     const sync = () => {
       when.hidden = kind.value === "cron"; interval.hidden = kind.value !== "interval";
@@ -118,7 +119,8 @@ export function mountJobs(root, t, taskId) {
       const rule = kind.value === "once" ? { kind: "once", at: at.value }
         : kind.value === "interval" ? { kind: "interval", anchor: at.value, everyMs: Number(every.value) }
         : { kind: "cron", expression: expression.value, timezone: timezone.value };
-      void mutate("schedules", { op: schedule ? "update" : "create", id: id.value.trim(), jobId: jobId.value, rule,
+      void mutate("schedules", { op: schedule ? "update" : "create", id: id.value.trim(), rule,
+        ...(schedule?.builtin ? {} : { jobId: jobId.value, ...(!taskId ? { authorization: "service" } : {}) }),
         ...(schedule ? { expectedRevision: schedule.revision } : {}) }, closeEditor);
     });
   }
@@ -130,6 +132,8 @@ export function mountJobs(root, t, taskId) {
         read("jobs", { op: "logs", id: jobId, runId })]);
       if (selected !== jobId || selectedRun !== runId) return;
       target.replaceChildren(h("h4", null, run.id), fact(copy("state"), run.status),
+        ...(run.businessResult ? [h("div", null, fact(copy("result"), run.businessResult.summary),
+          raw(copy("result"), run.businessResult))] : []),
         fact(copy("trigger"), run.trigger.source + " · " + run.trigger.key),
         fact(copy("created"), run.createdAt), fact(copy("finished"), run.terminalAt),
         raw(copy("snapshot"), run),
@@ -150,10 +154,12 @@ export function mountJobs(root, t, taskId) {
     if (epoch !== generation) return;
     runs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     const summary = run => run ? (run.id || run.runId) + " · " + run.status + " · "
-      + (run.terminalAt || run.finishedAt || run.createdAt || run.attemptedAt) : null;
+      + (run.terminalAt || run.finishedAt || run.createdAt || run.attemptedAt)
+      + (run.summary ? " · " + run.summary : "") : null;
     const runDetail = h("section.job-run");
     detail.replaceChildren(h("div.settings-stack", null, h("h3", null, job.title), fact("ID", job.id),
       fact(copy("scope"), taskId || "global"), fact(copy("project"), job.configuration.projectId),
+      job.builtin ? h("p", null, copy("builtinSync")) : null,
       fact(copy("revision"), job.revision),
       fact(copy("recentRun"), summary(runs[0])),
       job.refresh ? h("div", null,
@@ -163,24 +169,25 @@ export function mountJobs(root, t, taskId) {
         button(copy("runNow"), () => void mutate("jobs", { op: "run", id: job.id, requestId: crypto.randomUUID() }, result => {
           selectedRun = result.run.id;
         }), true),
-        button(copy("editJob"), () => editJob(job)),
-        button(copy("newSchedule"), () => editSchedule())),
+        !job.builtin ? button(copy("editJob"), () => editJob(job)) : null,
+        !job.builtin ? button(copy("newSchedule"), () => editSchedule()) : null),
       raw(copy("configuration"), job.configuration),
       job.refresh ? raw(copy("refreshFacts"), job.refresh) : null,
       h("h3", null, copy("schedules")),
       plans.length ? h("div.settings-stack", null, plans.map(({ schedule: s, lastSuccess }) => h("article.settings-card", null,
         h("h4", null, s.id), fact(copy("state"), s.state),
+        s.builtin ? fact(copy("automatic"), copy(s.builtin.enabled ? "enabled" : "disabled")) : null,
         s.state === "completed" ? h("p", null, copy("onceCompleted")) : null,
         fact(copy("rule"), s.rule.kind === "cron" ? s.rule.expression : s.rule.kind === "once" ? s.rule.at : s.rule.anchor + " + " + s.rule.everyMs + " ms"),
         fact(copy("timezone"), s.rule.timezone || "UTC / offset"),
-        fact(copy("nextDue"), s.nextDue), fact(copy("lastAttempt"), s.lastAttempt
+        fact(copy("nextDue"), s.state === "enabled" ? s.nextDue : null), fact(copy("lastAttempt"), s.lastAttempt
           ? s.lastAttempt.at + " · " + s.lastAttempt.outcome + " · " + (s.lastAttempt.runId || s.lastAttempt.reason || "") : null),
         fact(copy("lastSuccess"), lastSuccess ? lastSuccess.id + " · " + (lastSuccess.terminalAt || lastSuccess.updatedAt) : null),
         s.reason ? h("p.settings-error", null, s.reason) : null,
         h("div.settings-actions", null,
           button(copy("editSchedule"), () => editSchedule(s)),
-          button(copy(s.state === "enabled" ? "disable" : "enable"), () => void mutate("schedules", {
-            op: s.state === "enabled" ? "disable" : "enable", id: s.id, expectedRevision: s.revision
+          button(copy((s.builtin ? s.builtin.enabled : s.state === "enabled") ? "disable" : "enable"), () => void mutate("schedules", {
+            op: (s.builtin ? s.builtin.enabled : s.state === "enabled") ? "disable" : "enable", id: s.id, expectedRevision: s.revision
           })), s.lastAttempt?.runId ? button(copy("inspectRun"), () => void showRun(job.id, s.lastAttempt.runId, runDetail)) : null),
         raw(copy("details"), s)))) : h("p", null, copy("noSchedules")),
       h("h3", null, copy("history")),
@@ -204,7 +211,7 @@ export function mountJobs(root, t, taskId) {
           closeEditor(); selected = job.id; selectedRun = undefined; void refresh();
         }
       }, h("strong", null, job.title), h("code", null, job.id),
-        h("small", null, job.configuration.action || job.configuration.kind),
+        h("small", null, job.builtin ? copy("builtinSync") : job.configuration.action || job.configuration.kind),
         h("small", null, job.configuration.projectId || "—"))) : [h("p", null, copy("empty"))]));
       await showDetail(epoch);
       if (announce && epoch === generation) status(copy("observed") + " · " + new Date().toISOString());

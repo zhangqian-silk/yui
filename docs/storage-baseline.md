@@ -2,7 +2,13 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.17. The 1.16 → 1.17 transition adds optional append-only
+Current storage is 1.18. The additive 1.17 → 1.18 transition admits builtin
+Project-sync provenance, a compiled service issuer and a separate user-enabled
+preference on new Schedules. SQL layout and every existing payload remain unchanged;
+it neither adopts custom Jobs nor fabricates historical grants or Runs.
+Installation is a Controller operation, separate from storage migration.
+
+The 1.16 → 1.17 transition adds optional append-only
 JobRun artifact references and scope/Run-isolated local Git repositories.
 Existing payload bytes and Task Git repositories/frozen references remain
 unchanged; no historical artifact, provenance or authorization is inferred.

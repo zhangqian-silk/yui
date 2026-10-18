@@ -11,41 +11,52 @@ import { projectRefreshDigest } from "./builtinJob.js";
 import { CliError } from "../errors/cliError.js";
 import { writeTextFileAtomically } from "../storage/durableFile.js";
 import { runReference, type JobBusinessResult } from "./jobBusinessResult.js";
+import { requireProjectSyncCheckout } from "./projectSync.js";
 
 export async function runProjectRefresh(home: string, runId: string): Promise<void> {
   const store = new SqliteTaskStore(home, { readonly: true });
   try {
     const run = store.getGlobalJobRun(runId);
-    if (!run || run.action !== "project.refresh" || !["queued", "running"].includes(run.status)
-      || run.operation.effect !== "possible" || run.cancelRequestedAt) {
+    if (!run || run.action !== "project.refresh"
+      || !((run.status === "queued" && run.operation.effect === "possible")
+        || (run.status === "running" && run.operation.effect === "confirmed"))
+      || run.cancelRequestedAt) {
       throw new Error("No active admitted project.refresh Run.");
     }
-    authorizeGlobalJobStart(store, run);
-    const result = await refreshRegisteredProject(store, run.projectId!, {
-      automatic: true,
-      expectedDigest: projectRefreshDigest({
-        kind: "builtin", action: run.action, projectId: run.projectId, input: run.actionInput
-      }),
-      beforeRefresh: () => {
-        const current = store.getGlobalJobRun(runId);
-        if (!current || !["queued", "running"].includes(current.status) || current.cancelRequestedAt) {
-          throw new Error("Project refresh Run stopped while waiting for maintenance.");
+    let result: Awaited<ReturnType<typeof refreshRegisteredProject>>;
+    try {
+      // A revoked/stale grant before Git is a known refusal. Persist its
+      // business receipt just like a refusal after waiting for maintenance.
+      authorizeGlobalJobStart(store, run);
+      result = await refreshRegisteredProject(store, run.projectId!, {
+        automatic: true,
+        expectedDigest: projectRefreshDigest({
+          kind: "builtin", action: run.action, projectId: run.projectId, input: run.actionInput
+        }),
+        beforeRefresh: () => {
+          const current = store.getGlobalJobRun(runId);
+          if (!current || !["queued", "running"].includes(current.status) || current.cancelRequestedAt) {
+            throw new Error("Project refresh Run stopped while waiting for maintenance.");
+          }
+          authorizeGlobalJobStart(store, current);
+          const job = store.getJobDefinition({ kind: "global" }, current.definitionId);
+          if (job?.builtin) requireProjectSyncCheckout(store, job);
         }
-        authorizeGlobalJobStart(store, current);
-      }
-    }).catch(error => {
+      });
+    } catch (error) {
       const details = error instanceof CliError ? error.details : {};
       const partial = details.refresh as { changed?: boolean | null } | undefined;
       const business: JobBusinessResult = {
         schemaVersion: 1, sourceRun: runReference(run),
         outcome: partial?.changed === null ? "unknown-needs-attention" : "failed",
         summary: error instanceof Error ? error.message : String(error),
-        data: JSON.parse(JSON.stringify({ action: run.action, projectId: run.projectId, details })),
+        data: JSON.parse(JSON.stringify({ action: run.action, projectId: run.projectId,
+          target: run.actionInput, observedAt: new Date().toISOString(), details })),
         evidence: []
       };
       writeTextFileAtomically(join(home, run.artifactsLocator, "business-result.json"), JSON.stringify(business) + "\n");
       throw error;
-    });
+    }
     const data = { action: run.action, projectId: run.projectId!,
       trigger: run.trigger, outcome: "succeeded", observedAt: new Date().toISOString(),
       remoteCheck: { status: "verified", commit: result.toCommit }, refresh: result };

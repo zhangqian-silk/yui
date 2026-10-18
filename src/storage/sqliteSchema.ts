@@ -214,6 +214,17 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   // repositories. Existing payloads, Task repositories and frozen Git refs are
   // unchanged. No files are moved and no historical provenance is invented.
   sql: ""
+}, {
+  fromVersion: "1.17",
+  toVersion: "1.18",
+  name: "builtin-project-sync",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Additive installer provenance, explicit compiled service issuer and user
+  // intent on new definitions/plans. Do not adopt or rewrite historical Jobs,
+  // grants, time overrides or Runs. Installation is a separate runtime action.
+  sql: ""
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {
