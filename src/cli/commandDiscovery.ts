@@ -45,7 +45,7 @@ export function discoveryCommandTree(env: NodeJS.ProcessEnv, audience = discover
     const sections = [
       { id: "start", title: "Start work", entries: ["operator", "project"] },
       { id: "progress", title: "Inspect progress", entries: ["task", "jobs", "execution", "telemetry"] },
-      { id: "participate", title: "Participate and control", entries: ["role", "session"] },
+      { id: "participate", title: "Participate and control", entries: ["role", "session", "job"] },
       { id: "maintain", title: "Configure and maintain", entries: ["help", "version", "setup", "start", "doctor", "config", "web", "controller", "resources", "update", "upgrade", "release"] }
     ];
     return { ...tree, sections: sections.map(section => ({ ...section,

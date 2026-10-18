@@ -13,6 +13,7 @@ import { runGateStepsInProcess } from "../../dist/verification/verificationGateS
 import { parseDurableJobStartParams } from "../../dist/controller/jobControl.js";
 import { createDurableJob, durableJobIdempotencyKey } from "../../dist/job/durableJob.js";
 import { runDurableJobRunner } from "../../dist/job/jobRunner.js";
+import { currentProcessStartIdentity } from "../../dist/core/fileLockOwner.js";
 import { routeInvocation } from "../../dist/cli/invocationRouter.js";
 import Database from "../../dist/sqlite/driver.js";
 import { SqliteTelemetryStore } from "../../dist/telemetry/sqliteTelemetryStore.js";
@@ -71,6 +72,10 @@ test("structured verification survives RPC and both executors preserve cwd, argv
     ...input, jobId: job.id, artifactDir, defaultStepTimeoutMs: 1000
   }));
   await runDurableJobRunner(specPath);
+  const ready = JSON.parse(readFileSync(join(artifactDir, "ready.json"), "utf8"));
+  assert.equal(ready.pid, process.pid);
+  assert.equal(ready.startIdentity, currentProcessStartIdentity(),
+    "runner and supervisor must use the same OS process generation on every supported platform");
   const exit = JSON.parse(readFileSync(join(artifactDir, "exit.json"), "utf8"));
   assert.equal(exit.outcome, "failed");
   assert.deepEqual(exit.steps.map(s => s.exitCode), [0, 1]);

@@ -1749,18 +1749,21 @@ export const ROOT_COMMAND = buildNode({
       ]
     },
     {
-      name: "job", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] },
+      name: "job", discovery: { surface: "public", audiences: ["public","operator","leader","assignment"] },
       summary: "Manage stable Job definitions and exact execution Runs (not scheduler wakes).",
-      sections: [{ id: "manage", title: "Commands", entries: ["define", "update", "list", "show", "run", "runs", "run-get", "logs", "run-cancel", "run-acknowledge", "start", "get", "cancel", "acknowledge"] }],
+      sections: [{ id: "manage", title: "Commands", entries: ["define", "update", "list", "show", "run", "runs", "run-get", "run-result", "run-evidence", "run-confirm", "logs", "run-cancel", "run-acknowledge", "start", "get", "cancel", "acknowledge"] }],
       children: [
-        ...["define", "update", "list", "show", "run", "runs", "run-get", "logs", "run-cancel", "run-acknowledge"].map(name => ({
-          name, discovery: { surface: "managed" as const, audiences: ["operator", "leader", "assignment"] as const },
-          summary: `${name} a stable Job or exact Run.`,
+        ...["define", "update", "list", "show", "run", "runs", "run-get", "run-result", "run-evidence", "run-confirm", "logs", "run-cancel", "run-acknowledge"].map(name => ({
+          name, discovery: { surface: "public" as const, audiences: ["public", "operator", "leader", "assignment"] as const },
+          summary: name === "run-result" ? "Read an exact Run's business outcome and admitted snapshot."
+            : name === "run-evidence" ? "Read original process evidence separately from the business outcome."
+            : name === "run-confirm" ? "Collect retained results for an exact Run without starting or replaying work."
+            : `${name} a stable Job or exact Run.`,
           usage: `yui job ${name} (--task <id>|--global)${name === "list" ? "" : " --job <id>"}`
             + (name === "define" || name === "update" ? " --title <text> --input <configuration-json>" : "")
             + (name === "update" ? " --revision <current>" : "")
             + (name === "run" ? " --request-id <key> [--retry-of <run-id>]" : "")
-            + (["run-get", "logs", "run-cancel", "run-acknowledge"].includes(name) ? " --run <run-id>" : "")
+            + (["run-get", "run-result", "run-evidence", "run-confirm", "logs", "run-cancel", "run-acknowledge"].includes(name) ? " --run <run-id>" : "")
         })),
         { name: "start", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] }, summary: "Start a DurableJob under an explicit request identity.", usage: "yui job start --request-id <id> --task <id> --project <project> --head <sha> --workspace <dir> --step <name>=<command> [--step ...] [--owner task|work-item:<id>|integration-attempt:<id>] [--env <k=v>...]" },
         { name: "get", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] }, summary: "Show a DurableJob record and its terminal result.", usage: "yui job get --task <id> --job <job-id>" },

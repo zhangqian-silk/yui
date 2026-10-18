@@ -2,13 +2,15 @@
  * Controlled Project domain action invoked by the artifact-only Job runner.
  * Its catalog connection is read-only; only the shared domain service writes Git.
  */
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SqliteTaskStore } from "../storage/sqliteStore.js";
 import { authorizeGlobalJobStart } from "../controller/jobDefinitionControl.js";
 import { refreshRegisteredProject } from "../repository/projectRefresh.js";
 import { projectRefreshDigest } from "./builtinJob.js";
 import { CliError } from "../errors/cliError.js";
+import { writeTextFileAtomically } from "../storage/durableFile.js";
+import { runReference, type JobBusinessResult } from "./jobBusinessResult.js";
 
 export async function runProjectRefresh(home: string, runId: string): Promise<void> {
   const store = new SqliteTaskStore(home, { readonly: true });
@@ -31,10 +33,31 @@ export async function runProjectRefresh(home: string, runId: string): Promise<vo
         }
         authorizeGlobalJobStart(store, current);
       }
+    }).catch(error => {
+      const details = error instanceof CliError ? error.details : {};
+      const partial = details.refresh as { changed?: boolean | null } | undefined;
+      const business: JobBusinessResult = {
+        schemaVersion: 1, sourceRun: runReference(run),
+        outcome: partial?.changed === null ? "unknown-needs-attention" : "failed",
+        summary: error instanceof Error ? error.message : String(error),
+        data: JSON.parse(JSON.stringify({ action: run.action, projectId: run.projectId, details })),
+        evidence: []
+      };
+      writeTextFileAtomically(join(home, run.artifactsLocator, "business-result.json"), JSON.stringify(business) + "\n");
+      throw error;
     });
-    process.stdout.write(JSON.stringify({ action: run.action, projectId: run.projectId,
+    const data = { action: run.action, projectId: run.projectId!,
       trigger: run.trigger, outcome: "succeeded", observedAt: new Date().toISOString(),
-      remoteCheck: { status: "verified", commit: result.toCommit }, refresh: result }) + "\n");
+      remoteCheck: { status: "verified", commit: result.toCommit }, refresh: result };
+    const business: JobBusinessResult = {
+      schemaVersion: 1, sourceRun: runReference(run), outcome: "succeeded",
+      summary: `Project ${run.projectId} refreshed to ${result.toCommit}.`,
+      data: JSON.parse(JSON.stringify(data)), evidence: []
+    };
+    // Persist separately from stdout. If this write fails after Git effects,
+    // the collector reports unknown, never a safely retryable failed action.
+    writeTextFileAtomically(join(home, run.artifactsLocator, "business-result.json"), JSON.stringify(business) + "\n");
+    process.stdout.write(JSON.stringify(data) + "\n");
   } finally {
     store.close();
   }

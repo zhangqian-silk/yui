@@ -68,7 +68,7 @@ test("global Runs reuse the runner, retain independent results, reject Task call
   assert.equal((await command("define", "--title", "Probe", "--input",
     JSON.stringify({ kind: "builtin", action: "system.noop", input: {} }))).id, base.id);
   assert.equal((await command("show")).revision, 1);
-  for (const bad of [{ scope: "task", taskId: "task-1", role: "leader" }, { scope: "user" },
+  for (const bad of [{ scope: "task", taskId: "task-1", role: "leader" }, { scope: "user", role: "operator" },
     { ...caller, nativeSessionId: "revoked" }]) {
     assert.throws(() => control({ ...base, op: "run", caller: bad, trigger: { source: "manual", key: "deny" } }, at));
   }
@@ -156,7 +156,7 @@ test("1.8 migration preserves exact execution IDs, original bytes and results wi
     run = startDurableJob(run, { pid: 123, startIdentity: "historical" }, at);
     run = completeDurableJob(run, { outcome: "succeeded", exitCode: 0, signal: null, steps: [] }, at);
     store.saveDurableJob("task-1", run);
-    const { definitionId, definitionRevision, trigger, ...original } = run;
+    const { definitionId, definitionRevision, trigger, businessResult, ...original } = run;
     originals.push(original);
   }
   store.close();

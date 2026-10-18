@@ -2,7 +2,12 @@
 
 # 存储基线 1.0
 
-当前存储为 1.14。1.13 → 1.14 只移除 `global_role_session_sets` 对 Role 的外键，
+当前存储为 1.15。1.14 → 1.15 根据已保存的进程结果增加独立的 Job 业务结果，
+原始 Run payload 字节归档于 migration 15；不从日志猜测结构化业务数据，
+不改执行身份，不重放动作，也不改冻结 Context 或 Integration 证据。SQL 布局不变。
+公共即时 builtin 使用绑定 Home/Run 的 user 授权，不伪造 Session，也不授予 Schedule 持久权限。
+
+1.13 → 1.14 只移除 `global_role_session_sets` 对 Role 的外键，
 原样保留 payload 并重建 retry 索引，使已停止会话的身份／历史在角色移除后继续保留，
 但不赋予权限。不新增授权表，不补造已经丢失的历史。普通读取要求当前存储版本，
 已有 Home 只能通过显式受支持升级迁移，不能在读取时自动迁移。

@@ -92,6 +92,7 @@ test("controlled Project Jobs fast-forward through the real runner and isolate r
   assert.equal(define("refresh-one", "project-1").revision, 1);
   assert.throws(() => define("duplicate", "project-1"), /already exists: refresh-one/);
   let starts = 0;
+  let cancelBeforeStep = false;
   const supervisor = new DurableJobSupervisor({
     store: new FileSchedulerStoreAdapter(store), artifacts: createFileArtifactPort(home),
     authorizeStart: run => authorizeGlobalJobStart(store, run),
@@ -99,6 +100,7 @@ test("controlled Project Jobs fast-forward through the real runner and isolate r
     process: {
       spawnJobRunner(specPath) {
         starts++;
+        if (cancelBeforeStep) writeFileSync(join(specPath, "..", "cancel"), "");
         const result = spawnSync(process.execPath,
           [fileURLToPath(new URL("../../dist/job/jobRunner.js", import.meta.url)), specPath],
           { env, timeout: 10000, encoding: "utf8" });
@@ -127,6 +129,10 @@ test("controlled Project Jobs fast-forward through the real runner and isolate r
   assert.equal(evidence.refresh.toCommit, after);
   assert.deepEqual(evidence.remoteCheck, { status: "verified", commit: after });
   assert.equal(evidence.trigger.key, "clean");
+  const business = call("refresh-two", "run-result", { runId: clean.id }).result;
+  assert.equal(business.data.refresh.toCommit, after);
+  assert.equal(business.evidence[0].sourceRun.runId, clean.id);
+  assert.match(business.evidence[0].version, /^[a-f0-9]{64}$/);
   const schedules = createScheduleControl(store, home);
   const schedule = (op, extra = {}) => schedules({ scope: { kind: "global" },
     caller: { scope: "global", role: "operator", nativeSessionId: "refresh-test" },
@@ -190,6 +196,28 @@ test("controlled Project Jobs fast-forward through the real runner and isolate r
   assert.equal(call("refresh-two", "show").refresh.lastSuccessfulRefresh, null,
     "a retargeted definition must not display another Project's success");
   assert.equal(call("refresh-two", "runs").length, 4, "old exact evidence remains readable");
+
+  cancelBeforeStep = true;
+  clock = new Date();
+  const cancelled = run("refresh-two", "cancel-before-step");
+  supervisor.reconcile(new Date()); supervisor.reconcile(new Date());
+  assert.equal(call("refresh-two", "run-result", { runId: cancelled.id }).result.outcome, "cancelled");
+  assert.deepEqual(call("refresh-two", "run-evidence", { runId: cancelled.id }).processResult.steps, []);
+  cancelBeforeStep = false;
+
+  // Losing business-result persistence after the Git effect is not a safely
+  // retryable business failure, even with a successful process checkpoint.
+  rmSync(dirty);
+  clock = new Date();
+  const lost = control({ scope: { kind: "global" }, caller: { scope: "user" },
+    id: "refresh-two", op: "run", trigger: { source: "manual", key: "lost-business-receipt" } }, clock).run;
+  supervisor.reconcile(new Date());
+  rmSync(join(home, lost.artifactsLocator, "business-result.json"));
+  supervisor.reconcile(new Date());
+  assert.equal(git(join(home, "projects/project-1"), "rev-parse", "HEAD"), scheduledHead);
+  assert.equal(call("refresh-two", "run-evidence", { runId: lost.id }).processResult.outcome, "succeeded");
+  assert.equal(call("refresh-two", "run-result", { runId: lost.id }).result.outcome, "unknown-needs-attention");
+  assert.equal(call("refresh-two", "run", { trigger: { source: "manual", key: "must-not-replay" } }).reason, "overlap");
 
   // No processes are created in this concurrency probe. All artifacts/rows
   // belong to the fixture and are removed by the registered teardown.

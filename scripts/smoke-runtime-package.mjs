@@ -212,6 +212,40 @@ try {
     throw new Error("Installed CLI setup did not create the minimum task-ready runtime.");
   }
 
+  // Real public CLI -> Controller -> runner -> separate business/evidence reads,
+  // before any Agent Session or Task exists. Only a fixed local no-op executes.
+  const { SqliteTaskStore: JobFixtureStore } = await import(pathToFileURL(join(root, "dist/storage/sqliteStore.js")).href);
+  const checkNoJobSession = () => {
+    const store = new JobFixtureStore(yuiHome, { readonly: true });
+    try {
+      assert.equal(store.getGlobalRoleSessionSet("operator"), null);
+      assert.equal(store.listTasks().length, 0);
+      assert.equal(store.getWorkMailbox({ kind: "operator" }), null);
+    } finally { store.close(); }
+  };
+  checkNoJobSession();
+  json("job", "define", "--global", "--job", "public-probe", "--title", "Public probe",
+    "--input", JSON.stringify({ kind: "builtin", action: "system.noop", input: {} }));
+  try {
+    const publicRun = json("job", "run", "--global", "--job", "public-probe", "--request-id", "once").run;
+    const jobRef = ["--global", "--job", "public-probe", "--run", publicRun.id];
+    await waitFor(() => json("job", "run-get", ...jobRef).status === "succeeded",
+      "Public Job did not complete without a Session.",
+      () => JSON.stringify(json("job", "run-evidence", ...jobRef)));
+    assert.equal(json("job", "run", "--global", "--job", "public-probe", "--request-id", "once").run.id, publicRun.id);
+    assert.equal(json("job", "run-confirm", ...jobRef).id, publicRun.id);
+    assert.equal(json("job", "run-result", ...jobRef).result.data.action, "system.noop");
+    assert.equal(json("job", "run-evidence", ...jobRef).processResult.exitCode, 0);
+    checkNoJobSession();
+  } finally {
+    for (const run of json("job", "runs", "--global", "--job", "public-probe")) {
+      const jobRef = ["--global", "--job", "public-probe", "--run", run.id];
+      json("job", "run-cancel", ...jobRef);
+      await waitFor(() => !["queued", "running"].includes(json("job", "run-get", ...jobRef).status),
+        "Public Job cleanup did not settle; retain fixture evidence.");
+    }
+  }
+
   const doctorStarted = Date.now();
   const doctor = json("doctor");
   assert.equal(doctor.storage.healthy, true);
