@@ -23,22 +23,27 @@ export async function runProjectRefresh(home: string, runId: string): Promise<vo
       || run.cancelRequestedAt) {
       throw new Error("No active admitted project.refresh Run.");
     }
-    authorizeGlobalJobStart(store, run);
-    const result = await refreshRegisteredProject(store, run.projectId!, {
-      automatic: true,
-      expectedDigest: projectRefreshDigest({
-        kind: "builtin", action: run.action, projectId: run.projectId, input: run.actionInput
-      }),
-      beforeRefresh: () => {
-        const current = store.getGlobalJobRun(runId);
-        if (!current || !["queued", "running"].includes(current.status) || current.cancelRequestedAt) {
-          throw new Error("Project refresh Run stopped while waiting for maintenance.");
+    let result: Awaited<ReturnType<typeof refreshRegisteredProject>>;
+    try {
+      // A revoked/stale grant before Git is a known refusal. Persist its
+      // business receipt just like a refusal after waiting for maintenance.
+      authorizeGlobalJobStart(store, run);
+      result = await refreshRegisteredProject(store, run.projectId!, {
+        automatic: true,
+        expectedDigest: projectRefreshDigest({
+          kind: "builtin", action: run.action, projectId: run.projectId, input: run.actionInput
+        }),
+        beforeRefresh: () => {
+          const current = store.getGlobalJobRun(runId);
+          if (!current || !["queued", "running"].includes(current.status) || current.cancelRequestedAt) {
+            throw new Error("Project refresh Run stopped while waiting for maintenance.");
+          }
+          authorizeGlobalJobStart(store, current);
+          const job = store.getJobDefinition({ kind: "global" }, current.definitionId);
+          if (job?.builtin) requireProjectSyncCheckout(store, job);
         }
-        authorizeGlobalJobStart(store, current);
-        const job = store.getJobDefinition({ kind: "global" }, current.definitionId);
-        if (job?.builtin) requireProjectSyncCheckout(store, job);
-      }
-    }).catch(error => {
+      });
+    } catch (error) {
       const details = error instanceof CliError ? error.details : {};
       const partial = details.refresh as { changed?: boolean | null } | undefined;
       const business: JobBusinessResult = {
@@ -51,7 +56,7 @@ export async function runProjectRefresh(home: string, runId: string): Promise<vo
       };
       writeTextFileAtomically(join(home, run.artifactsLocator, "business-result.json"), JSON.stringify(business) + "\n");
       throw error;
-    });
+    }
     const data = { action: run.action, projectId: run.projectId!,
       trigger: run.trigger, outcome: "succeeded", observedAt: new Date().toISOString(),
       remoteCheck: { status: "verified", commit: result.toCommit }, refresh: result };

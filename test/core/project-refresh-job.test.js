@@ -19,6 +19,7 @@ import { DurableJobSupervisor, createFileArtifactPort } from "../../dist/control
 import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
 import { sanitizedTestEnv } from "../helpers/sanitizedEnv.mjs";
 import { startDurableJob } from "../../dist/job/durableJob.js";
+import { reconcileProjectSync } from "../../dist/job/projectSync.js";
 
 test("automatic refresh shares the manual maintenance fence and rejects changed or external targets", async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-refresh-domain-"));
@@ -94,6 +95,7 @@ test("controlled Project Jobs fast-forward through the real runner and isolate r
   assert.throws(() => define("duplicate", "project-1"), /already exists: refresh-one/);
   let starts = 0;
   let cancelBeforeStep = false;
+  let beforeSpawn = () => {};
   const supervisor = new DurableJobSupervisor({
     store: new FileSchedulerStoreAdapter(store), artifacts: createFileArtifactPort(home),
     authorizeStart: run => authorizeGlobalJobStart(store, run),
@@ -101,6 +103,7 @@ test("controlled Project Jobs fast-forward through the real runner and isolate r
     process: {
       spawnJobRunner(specPath) {
         starts++;
+        beforeSpawn();
         if (starts === 2) {
           // The real Controller can adopt ready.json before the domain child
           // reads the Run. Both queued/possible and running/confirmed are live.
@@ -226,6 +229,40 @@ test("controlled Project Jobs fast-forward through the real runner and isolate r
   assert.equal(call("refresh-two", "run-evidence", { runId: lost.id }).processResult.outcome, "succeeded");
   assert.equal(call("refresh-two", "run-result", { runId: lost.id }).result.outcome, "unknown-needs-attention");
   assert.equal(call("refresh-two", "run", { trigger: { source: "manual", key: "must-not-replay" } }).reason, "overlap");
+
+  // Revocation after supervisor admission but before the domain child starts
+  // is a known no-Git failure, not uncertain effects that fence all later Runs.
+  const syncPath = join(home, "projects/project-8");
+  git(home, "clone", remote, syncPath);
+  store.saveProject(createProject("project-8", "Builtin", syncPath,
+    { stable: "main", development: "main" }, at, { ownership: "managed", remoteUrl: remote }));
+  reconcileProjectSync(store, at);
+  const syncId = "project-sync-project-8";
+  const syncControl = (op, fields = {}) => schedules({
+    scope: { kind: "global" }, caller: { scope: "user" }, id: syncId, op,
+    expectedRevision: store.getSchedule({ kind: "global" }, syncId).revision, ...fields
+  }, at);
+  syncControl("update", { rule: { kind: "interval", everyMs: 60000, anchor: due(1).toISOString() } });
+  reconcileSchedules(store, home, due(1), error => { throw error; });
+  const revoked = store.getSchedule({ kind: "global" }, syncId).lastAttempt.runId;
+  writeFileSync(join(seed, "file"), "four\n");
+  git(seed, "commit", "-am", "four"); git(seed, "push", "origin", "main");
+  const resumedHead = git(seed, "rev-parse", "HEAD");
+  beforeSpawn = () => syncControl("disable");
+  supervisor.reconcile(new Date()); supervisor.reconcile(new Date());
+  beforeSpawn = () => {};
+  assert.equal(store.getGlobalJobRun(revoked).status, "failed");
+  assert.match(call(syncId, "run-result", { runId: revoked }).result.summary, /revoked/);
+  assert.equal(git(syncPath, "rev-parse", "HEAD"), scheduledHead, "revoked child did not run Git");
+  syncControl("enable");
+  reconcileSchedules(store, home, due(2), error => { throw error; });
+  const resumed = store.getSchedule({ kind: "global" }, syncId).lastAttempt.runId;
+  assert.notEqual(resumed, revoked);
+  supervisor.reconcile(new Date()); supervisor.reconcile(new Date());
+  assert.equal(store.getGlobalJobRun(resumed).status, "succeeded");
+  assert.equal(git(syncPath, "rev-parse", "HEAD"), resumedHead);
+  assert.equal(run(syncId, "manual-after-reenable").status, "queued");
+  supervisor.reconcile(new Date()); supervisor.reconcile(new Date());
 
   // No processes are created in this concurrency probe. All artifacts/rows
   // belong to the fixture and are removed by the registered teardown.
