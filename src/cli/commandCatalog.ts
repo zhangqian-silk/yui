@@ -1749,12 +1749,25 @@ export const ROOT_COMMAND = buildNode({
       ]
     },
     {
-      name: "job", discovery: { surface: "public", audiences: ["public","operator","leader","assignment"] },
+      name: "job", discovery: { surface: "public", audiences: ["public","operator","leader","assignment","global"] },
       summary: "Manage stable Job definitions and exact execution Runs (not scheduler wakes).",
-      sections: [{ id: "manage", title: "Commands", entries: ["define", "update", "list", "show", "run", "runs", "run-get", "run-result", "run-evidence", "run-confirm", "logs", "run-cancel", "run-acknowledge", "artifact-save", "artifact-list", "artifact-read", "artifact-preview", "artifact-register", "start", "get", "cancel", "acknowledge"] }],
+      sections: [{ id: "manage", title: "Commands", entries: ["define", "update", "list", "show", "run", "runs", "run-get", "run-result", "run-evidence", "run-confirm", "run-claim", "run-context", "run-report", "run-continue", "session-inspect", "session-create", "session-stop", "session-new", "logs", "run-cancel", "run-acknowledge", "artifact-save", "artifact-list", "artifact-read", "artifact-preview", "artifact-register", "start", "get", "cancel", "acknowledge"] }],
       children: [
+        ...["run-claim", "run-context", "run-report", "run-continue", "session-inspect", "session-create", "session-stop", "session-new"].map(name => ({
+          name, discovery: { surface: "public" as const, audiences: ["public", "operator", "leader", "assignment", "global"] as const },
+          summary: name === "run-report" ? "Record the exact native attempt's explicit Job business result."
+            : name === "run-continue" ? "Continue an unfinished Run only after its exact prior native terminal."
+            : name === "session-new" ? "Replace a proven-ended Job-owned Session, retaining Job input and results."
+            : `${name} for a bounded Agent Job execution.`,
+          usage: `yui job ${name} (--task <id>|--global) --job <id>`
+            + (name.startsWith("run-") ? " --run <run-id>" : " [--run <isolated-run-id>]")
+            + (name === "run-report" ? " --result <business-result-json>" : "")
+            + (name === "run-continue" ? " --expected-attempt <prior-native-attempt-id>" : "")
+            + (name === "session-new" || name === "session-stop" ? " --expected-session <native-id>" : ""),
+          options: ["--task", "--global", "--job", "--run", "--result", "--expected-session", "--expected-attempt"]
+        })),
         ...["artifact-save", "artifact-list", "artifact-read", "artifact-preview", "artifact-register"].map(name => ({
-          name, discovery: { surface: "public" as const, audiences: ["public", "operator", "leader", "assignment"] as const },
+          name, discovery: { surface: "public" as const, audiences: ["public", "operator", "leader", "assignment", "global"] as const },
           summary: name === "artifact-save" ? "Save bounded formal material and publish an exact owned Run reference."
             : name === "artifact-register" ? "Register already-saved evidence without replaying execution."
             : name === "artifact-read" || name === "artifact-preview" ? "Read/preview one registered immutable artifact (never HEAD)."
@@ -1766,7 +1779,7 @@ export const ROOT_COMMAND = buildNode({
           options: ["--task", "--global", "--job", "--run", "--artifact", "--reference", "--offset"]
         })),
         ...["define", "update", "list", "show", "run", "runs", "run-get", "run-result", "run-evidence", "run-confirm", "logs", "run-cancel", "run-acknowledge"].map(name => ({
-          name, discovery: { surface: "public" as const, audiences: ["public", "operator", "leader", "assignment"] as const },
+          name, discovery: { surface: "public" as const, audiences: ["public", "operator", "leader", "assignment", "global"] as const },
           summary: name === "run-result" ? "Read an exact Run's business outcome and admitted snapshot."
             : name === "run-evidence" ? "Read original process evidence separately from the business outcome."
             : name === "run-confirm" ? "Collect retained results for an exact Run without starting or replaying work."

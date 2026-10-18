@@ -3,6 +3,7 @@ import type { JsonValue } from "../core/protocol.js";
 import { requireKnownFields, requireText } from "../domain/validation.js";
 import type { JobScope } from "./jobDefinition.js";
 import type { JobRun, DurableJobOutcome, DurableJobResult } from "./durableJob.js";
+import type { AgentJobRun } from "./agentJob.js";
 
 export type JobRunReference = Readonly<{ scope: JobScope; runId: string }>;
 /** References identify immutable evidence, not an unversioned filesystem asset. */
@@ -22,7 +23,8 @@ export type JobBusinessResult = Readonly<{
   evidence: readonly JobResultReference[];
 }>;
 
-export function runReference(run: JobRun): JobRunReference {
+export function runReference(run: JobRun | AgentJobRun): JobRunReference {
+  if ("executor" in run) return { scope: run.scope, runId: run.id };
   return { scope: "taskId" in run ? { kind: "task", taskId: run.taskId } : { kind: "global" }, runId: run.id };
 }
 

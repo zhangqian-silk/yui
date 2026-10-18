@@ -37,6 +37,7 @@ import { routeInvocation } from "./cli/invocationRouter.js";
 import { operatorOfflineCommand, taskDiagnosticTarget } from "./cli/managedDiagnostics.js";
 import { assertConfigurationAuthority, assertTaskInvocationScope } from "./cli/invocationAuthority.js";
 import { requireManagedGlobalCaller, requireManagedGlobalReader, ManagedRuntimeDriftError } from "./runtime/managedCaller.js";
+import { assertJobAgentCommand } from "./job/agentRoleScope.js";
 import { requireManagedCaller } from "./runtime/sessionCaller.js";
 import { maintenanceCallerEnvironment } from "./storage/maintenanceCaller.js";
 import { checkCurrentSkills, SKILL_REUSE_RULE } from "./context/currentSkills.js";
@@ -2599,6 +2600,8 @@ async function preflightManagedGlobalControlPlane(): Promise<ManagedTaskControlP
     try {
       if (selfRead) requireManagedGlobalReader(verifiedStore, process.env);
       else requireManagedGlobalCaller(verifiedStore, process.env);
+      const role = verifiedStore.getGlobalRole(process.env.YUI_ROLE!);
+      if (role) assertJobAgentCommand(role, args);
     }
     catch (error) { verifiedStore.close(); throw error; }
   }

@@ -349,6 +349,11 @@ function roleContext(
       nativeTurnId: sessions.providerBinding.run.nativeTurnId,
       status: sessions.providerBinding.run.status
     },
+    ...(role.jobOwner === undefined ? {} : { job: {
+      owner: role.jobOwner,
+      read: `yui job show ${role.jobOwner.scope.kind === "global" ? "--global" : `--task ${role.jobOwner.scope.taskId}`} --job ${role.jobOwner.jobId} --json`,
+      boundary: "Job execution only. This Role is not Operator and owns no Task delivery authority. Read the exact Run from its original message."
+    } }),
     retry: providerRetrySummary(sessions?.providerBinding),
     // Historical interrupt receipts are available through Session inspection;
     // only this Turn's exact identity is required at entry.

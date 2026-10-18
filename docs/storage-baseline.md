@@ -2,7 +2,13 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.17. The 1.16 → 1.17 transition adds optional append-only
+Current storage is 1.18. The 1.17 → 1.18 transition adds Agent Job configurations,
+optional Job ownership on Global Roles, and the `agent_job_runs` table for
+exact original-message/native-attempt evidence and explicit business results.
+Existing Role, Session, process Run and artifact identities are unchanged;
+no Agent or native Session is invented during migration.
+
+The 1.16 → 1.17 transition adds optional append-only
 JobRun artifact references and scope/Run-isolated local Git repositories.
 Existing payload bytes and Task Git repositories/frozen references remain
 unchanged; no historical artifact, provenance or authorization is inferred.

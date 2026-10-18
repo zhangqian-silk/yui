@@ -36,8 +36,10 @@ export function resolveMessageRecipient(
 
 /** Current Assignment authority, independent of eligibility to start a new Run.
  * A Reviewer still owns its frozen clarification when Task main advances. */
-export function messageAssignmentBlocker(store: TaskStore, message: TaskMessage): string | undefined {
-  if (isTaskRecordRetired(store.listEvents(message.taskId), "message", message.id)) return "message-retired";
+export function messageAssignmentBlocker(store: TaskStore,
+  message: Pick<TaskMessage, "taskId" | "recipient" | "createdAt" | "handovers"> & Partial<Pick<TaskMessage, "id">>
+): string | undefined {
+  if (message.id !== undefined && isTaskRecordRetired(store.listEvents(message.taskId), "message", message.id)) return "message-retired";
   const target = message.recipient;
   if (target?.ownerRunId === undefined) return "recipient-assignment-missing";
   const task = store.getTask(message.taskId);

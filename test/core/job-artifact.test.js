@@ -12,6 +12,7 @@ import { saveArtifactCapability, readArtifactCapability } from "../../dist/artif
 import { applySqliteMinorUpgrades } from "../../dist/storage/sqliteSchema.js";
 import Database from "../../dist/sqlite/driver.js";
 import { runDurableJobCommand } from "../../dist/commands/durableJobCommands.js";
+import { usePre118Layout } from "../helpers/pre19Storage.mjs";
 
 test("Job artifacts: Task-free saves pin history, isolate Runs, and derive latest/success independently", async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-job-artifact-"));
@@ -147,9 +148,10 @@ test("scoped repositories serialize initial creation and preserve Task Git refer
   const db = new Database(join(home, "yui.db"));
   const before = db.prepare("SELECT payload FROM global_job_runs").get().payload;
   try {
+    usePre118Layout(db);
     db.prepare("UPDATE storage_schema SET minor=16").run();
     applySqliteMinorUpgrades(db, home);
-    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 17);
+    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 18);
     assert.equal(db.prepare("SELECT payload FROM global_job_runs").get().payload, before);
   } finally { db.close(); }
   await saveArtifactCapability(home, "task-1", { relativePath: "old.md", content: "new Task evidence" });

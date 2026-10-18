@@ -9,6 +9,7 @@ import { settleGlobalRetryInput } from "../message/globalProviderRetry.js";
 import { globalMessagePresentation } from "../interaction/notificationPresentation.js";
 import { recordGlobalRuntimeAttention, recordGlobalRuntimeRecovery } from "./globalRuntimeAttention.js";
 import { globalInboxRecovery } from "../message/globalInboxRecovery.js";
+import { assertJobRoleRunnable } from "../job/agentRoleScope.js";
 
 /** Messages are the only queue. Host's atomic begin arbitrates native writers. */
 export async function deliverGlobalInputs(
@@ -26,7 +27,12 @@ export async function deliverGlobalInputs(
       let sessions = store.getGlobalRoleSessionSet(role.name);
       // A detached Host keeps an active Session and may reconnect. An explicit
       // Session stop/switch must not be undone by background notification work.
-      if (sessions !== null && sessions.sessions[sessions.activeAgentId]?.status !== "active") continue;
+      const selected = sessions?.sessions[sessions.activeAgentId];
+      // An explicit Job session-new archives/removes the proven-ended writer.
+      // Its next original input may launch normally; an ended selected Session
+      // still means stopped and is never implicitly restarted.
+      if (sessions !== null && selected?.status !== "active"
+        && !(role.jobOwner && selected === undefined)) continue;
       if (sessions?.providerBinding?.retry !== undefined && !providerRetryPending(sessions.providerBinding)) {
         store.transaction(tx => settleGlobalRetryInput(tx, role.name,
           tx.getGlobalRoleSessionSet(role.name)?.providerBinding, new Date()));
@@ -118,6 +124,7 @@ export async function deliverGlobalInputs(
       const obsoleteIds = new Set(obsolete.map(message => message.id));
       pending = pending.filter(message => !obsoleteIds.has(message.id));
       if (pending.length === 0 && !recovering) continue;
+      assertJobRoleRunnable(store, role);
       if (reservedPage.count > reserved.length && obsolete.length === reserved.length) continue;
       if (current != null && ["submitting", "accepted", "delivery-unknown"].includes(current.status)) continue;
       const matchesTarget = (message: GlobalRoleMessage) => message.deliveryTarget === undefined

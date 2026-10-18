@@ -4,6 +4,7 @@ import { BASELINE_SCHEMA_SQL, SQLITE_SCHEMA_TABLES as BASELINE_SCHEMA_TABLES } f
 import { migrateTaskMainWorkspaces } from "./upgrade/taskMainWorkspaceMigration.js";
 import { migrateProjectKnowledge } from "./upgrade/projectKnowledgeMigration.js";
 import { JOB_SCHEMA_SQL } from "./jobSchema.js";
+import { AGENT_JOB_SCHEMA_SQL } from "./agentJobSchema.js";
 import { SCHEDULE_SCHEMA_SQL } from "./scheduleSchema.js";
 import { GLOBAL_SESSION_TABLE_SQL, SESSION_HISTORY_UPGRADE_SQL } from "./sessionHistorySchema.js";
 import { migrateJobDefinitions } from "./upgrade/jobDefinitionMigration.js";
@@ -15,7 +16,7 @@ import {
 } from "./storageVersions.js";
 
 export { BASELINE_SCHEMA_SQL };
-export const SQLITE_SCHEMA_TABLES = [...BASELINE_SCHEMA_TABLES, "job_definitions", "global_job_runs", "schedules"] as const;
+export const SQLITE_SCHEMA_TABLES = [...BASELINE_SCHEMA_TABLES, "job_definitions", "global_job_runs", "schedules", "agent_job_runs"] as const;
 export const TELEMETRY_KEEP_PER_RUN = 200;
 export const TELEMETRY_RUN_CAP = 50_000;
 export const BASELINE_SCHEMA_CHECKSUM = createHash("sha256").update(BASELINE_SCHEMA_SQL).digest("hex");
@@ -23,8 +24,10 @@ export const JOB_SCHEMA_CHECKSUM = createHash("sha256").update(BASELINE_SCHEMA_S
 export const SCHEDULE_SCHEMA_SQL_COMPLETE = BASELINE_SCHEMA_SQL + JOB_SCHEMA_SQL + SCHEDULE_SCHEMA_SQL;
 export const SCHEDULE_SCHEMA_CHECKSUM = createHash("sha256").update(SCHEDULE_SCHEMA_SQL_COMPLETE).digest("hex");
 // Fresh Homes create the final layout directly; published baseline SQL stays immutable.
-export const CURRENT_SCHEMA_SQL = SCHEDULE_SCHEMA_SQL_COMPLETE.replace(
+const SESSION_SCHEMA_SQL = SCHEDULE_SCHEMA_SQL_COMPLETE.replace(
   /CREATE TABLE global_role_session_sets \([\s\S]*?\n\);/, GLOBAL_SESSION_TABLE_SQL);
+const SESSION_SCHEMA_CHECKSUM = createHash("sha256").update(SESSION_SCHEMA_SQL).digest("hex");
+export const CURRENT_SCHEMA_SQL = SESSION_SCHEMA_SQL + AGENT_JOB_SCHEMA_SQL;
 export const CURRENT_SCHEMA_CHECKSUM = createHash("sha256").update(CURRENT_SCHEMA_SQL).digest("hex");
 
 export class SqliteSchemaError extends Error {
@@ -182,7 +185,7 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   name: "retained-session-identity",
   introducedIn: "next",
   sourceChecksum: SCHEDULE_SCHEMA_CHECKSUM,
-  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: SESSION_SCHEMA_CHECKSUM,
   // Preserve every payload byte. No identity or authorization is inferred.
   sql: SESSION_HISTORY_UPGRADE_SQL
 }, {
@@ -190,8 +193,8 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   toVersion: "1.15",
   name: "job-business-results",
   introducedIn: "next",
-  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
-  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  sourceChecksum: SESSION_SCHEMA_CHECKSUM,
+  targetChecksum: SESSION_SCHEMA_CHECKSUM,
   sql: "",
   dataMigration: "job-business-results"
 }, {
@@ -199,8 +202,8 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   toVersion: "1.16",
   name: "schedule-dispatch",
   introducedIn: "next",
-  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
-  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  sourceChecksum: SESSION_SCHEMA_CHECKSUM,
+  targetChecksum: SESSION_SCHEMA_CHECKSUM,
   sql: "",
   dataMigration: "schedule-dispatch"
 }, {
@@ -208,12 +211,22 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   toVersion: "1.17",
   name: "job-owned-artifacts",
   introducedIn: "next",
-  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
-  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  sourceChecksum: SESSION_SCHEMA_CHECKSUM,
+  targetChecksum: SESSION_SCHEMA_CHECKSUM,
   // New optional append-only Run artifact references and Home-owned per-Run
   // repositories. Existing payloads, Task repositories and frozen Git refs are
   // unchanged. No files are moved and no historical provenance is invented.
   sql: ""
+}, {
+  fromVersion: "1.17",
+  toVersion: "1.18",
+  name: "job-agent-execution",
+  introducedIn: "next",
+  sourceChecksum: SESSION_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Existing records and immutable artifacts remain byte-for-byte unchanged.
+  // Declares Agent definitions/Runs and optional Job ownership of a non-Task Role.
+  sql: AGENT_JOB_SCHEMA_SQL
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {

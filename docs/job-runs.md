@@ -2,10 +2,77 @@
 
 A Job is a stable, scoped definition. A JobRun is one execution, with its own
 ID, configuration revision, trigger, immutable execution specification,
-process identity, artifacts and terminal result. Changing a definition never
+process or exact Agent execution identity, artifacts and terminal result. Changing a definition never
 changes an admitted Run. No Schedule is needed for immediate execution.
 
 ## CLI and ownership
+
+### Optional Agent execution
+
+An Agent configuration selects a logical target, never a permanent native
+Session: `{kind:"operator"}`, `{kind:"task",taskId,roleName,ownerRunId?}`, or
+`{kind:"job",agentId}`. Non-Leader Task targets require the current Assignment's
+exact `ownerRunId`; this does not create or delegate a Task. Task-owned Jobs
+cannot target Operator or another Task. Job-owned Agents reuse ordinary Global
+Role transport but have only their own Job's read/report authority, not
+Operator or Project authority.
+
+```sh
+yui job define --global --job analyze --title "Saved analysis" \
+  --input '{"kind":"agent","target":{"kind":"job","agentId":"codex"},"input":"Analyze the saved evidence."}'
+yui job session-create --global --job analyze
+yui job run --global --job analyze --request-id first
+yui job run-context --global --job analyze --run <run-id>
+yui job run-evidence --global --job analyze --run <run-id>
+yui job session-inspect --global --job analyze
+```
+
+`session-create` prepares the logical Role; the normal Host creates its Session
+on delivery. Launch messages contain exact context pointers. The executing Agent
+uses `run-claim`, reads `run-context`, then `run-report --result <JSON>` with the
+normal `JobBusinessResult` envelope (`schemaVersion`, exact `sourceRun`,
+`outcome`, `summary`, `evidence`). Reports require that caller's current accepted
+native Turn to own the original message. The Provider observation path retains
+actual attempts and terminals even when no report is returned. Delivery, native
+terminal and explicit business result remain separate facts. `run-confirm`
+only collects existing evidence; it never replays work.
+
+Default execution is serial per Job, reusing its Role Session across Runs.
+Explicit `concurrency:"isolated"` is supported only for Job-owned Agents and
+creates a distinct Role/workspace for each Run; sibling Run contexts remain
+inaccessible to that executor. Existing Provider single-writer and bounded
+classified retry rules still apply. Agent Jobs currently use explicit
+manual/retry admission; a Schedule service grant for engineering actions is
+not authority to execute an Agent.
+
+`run-cancel` records a cooperative request on that exact Run. It does not
+interrupt a shared Operator/Task Role or imply that work stopped. Check
+`cancelRequestedAt` before effects and report the actual outcome. An unfinished
+business Run can use `run-continue --expected-attempt <prior-attempt-id>` only
+after its exact native terminal; this
+adds an original continuation message to the same Run, not a new failed-Run
+retry. Repeating the same expected attempt returns the existing successor
+without submitting another message. Inspect prior effects first: terminal does not undo them.
+
+For a Job-owned Session, `session-stop --expected-session <native-id>` requests
+existing lifecycle cleanup only after the current native Turn is terminal.
+It returns acceptance, not proof of stop. Inspect until the original Session
+is ended, then `session-new --expected-session <native-id>` preserves its
+history and clears the current Session for the next normal launch.
+Isolated Jobs also require `--run <run-id>` on Session operations.
+Unknown delivery and unproven old writers block replacement/continuation;
+replacement never resubmits input. Definition snapshots, Run requirements,
+explicit results and fixed artifact references survive independently of the
+transcript. Shared targets use their existing Role lifecycle, not Job-owned
+Session operations. CLI and `job.definition` RPC expose the same operations.
+Changing the executor kind requires a new Job ID; revisions can change its
+configuration without hiding another executor's original history.
+Task-owned Agent Jobs participate in Task completion/ordinary archive settlement.
+Archive also requires exact native-terminal evidence; an explicit business
+report alone never proves quiescence. Idle Job-owned Role Sessions and their
+separate scratch workspaces are retained, not silently deleted by Task archive.
+
+### Engineering execution
 
 Commands operate through the Controller's `job.definition` RPC:
 

@@ -9,6 +9,7 @@ import { validateChangeSet, type ChangeSet } from "../integration/changeSet.js";
 import { validateIntegrationAttempt } from "../integration/integrationAttempt.js";
 import { validateDurableJob } from "../job/durableJob.js";
 import { validateJobDefinition } from "../job/jobDefinition.js";
+import { validateAgentJobRun } from "../job/agentJob.js";
 import { validateSchedule } from "../schedule/schedule.js";
 import { validateGlobalRoleMessage, validateTaskMessage } from "../message/message.js";
 import { validateMilestone } from "../milestone/milestone.js";
@@ -58,6 +59,7 @@ const validators = {
   integration_attempts: check(validateIntegrationAttempt),
   durable_jobs: check(validateDurableJob),
   job_definitions: check(validateJobDefinition),
+  agent_job_runs: check(validateAgentJobRun),
   schedules: check(validateSchedule),
   global_job_runs: check(validateDurableJob),
   context_snapshots: check(validateContextSnapshot),

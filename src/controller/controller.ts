@@ -2260,7 +2260,7 @@ export async function startFileTaskController(
           if (error instanceof Error && error.name === "Error") error.name = "CoreJobError";
           throw error;
         }
-        if ((params as { op?: string }).op === "run-confirm") {
+        if ((params as { op?: string }).op === "run-confirm" && (result as { executor?: string }).executor !== "agent") {
           if (!options.jobSupervisor?.confirmResult) {
             throw controllerApplicationError("METHOD_NOT_FOUND", "Job result collection unavailable.");
           }
@@ -2272,8 +2272,17 @@ export async function startFileTaskController(
         // The service has validated this scope. Only execution mutations need
         // reconciliation; definition reads/edits do not start background work.
         const input = params as { op: string; scope: JobScope };
-        if (["run", "run-cancel", "run-acknowledge"].includes(input.op)) {
-          runtime.signal(input.scope.kind === "task" ? `task:${input.scope.taskId}` : "operator");
+        if (input.op === "session-stop" && typeof (result as { roleName?: string }).roleName === "string") {
+          runtime.signal(`global-role:${encodeURIComponent((result as { roleName: string }).roleName)}`);
+        } else if (["run", "run-cancel", "run-acknowledge", "run-continue"].includes(input.op)) {
+          const agentRun = (result as { run?: import("../job/agentJob.js").AgentJobRun }).run
+            ?? result as import("../job/agentJob.js").AgentJobRun;
+          const recipient = agentRun.executor === "agent" ? agentRun.attempts.at(-1)?.recipient : undefined;
+          runtime.signal(recipient?.scope === "task"
+            ? recipient.ownerRunId ? `task:${recipient.taskId}`
+              : `role:${encodeURIComponent(recipient.taskId)}/${encodeURIComponent(recipient.roleName)}`
+            : recipient?.scope === "global" ? "operator"
+              : input.scope.kind === "task" ? `task:${input.scope.taskId}` : "operator");
         }
         return jobControlJson(result);
       }

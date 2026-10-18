@@ -38,7 +38,7 @@ export async function runDurableJobCommand(
   options: DurableJobCommandOptions
 ): Promise<string> {
   const [command, ...rest] = args;
-  if (command !== undefined && ["define", "update", "list", "show", "run", "runs", "run-get", "run-result", "run-evidence", "run-confirm", "run-cancel", "run-acknowledge", "logs", "artifact-save", "artifact-list", "artifact-read", "artifact-preview", "artifact-register"].includes(command)) {
+  if (command !== undefined && ["define", "update", "list", "show", "run", "runs", "run-get", "run-result", "run-evidence", "run-confirm", "run-cancel", "run-acknowledge", "logs", "artifact-save", "artifact-list", "artifact-read", "artifact-preview", "artifact-register", "run-claim", "run-context", "run-report", "run-continue", "session-inspect", "session-create", "session-stop", "session-new"].includes(command)) {
     return definitionCommand(command, rest, options);
   }
   if (command === "start") return startJob(rest, options);
@@ -62,7 +62,7 @@ async function definitionCommand(command: string, args: string[], options: Durab
   const flags = new Map<string, string>();
   for (let i = 0; i < args.length; i++) {
     const flag = args[i]!;
-    if (!["--global", "--task", "--job", "--title", "--input", "--revision", "--request-id", "--retry-of", "--run", "--artifact", "--reference", "--offset"].includes(flag)
+    if (!["--global", "--task", "--job", "--title", "--input", "--revision", "--request-id", "--retry-of", "--run", "--artifact", "--reference", "--offset", "--result", "--expected-session", "--expected-attempt"].includes(flag)
       || flags.has(flag)) throw usageError(`Unknown or repeated Job flag: ${flag}.`);
     if (flag === "--global") { flags.set(flag, "true"); continue; }
     const value = args[++i];
@@ -71,7 +71,10 @@ async function definitionCommand(command: string, args: string[], options: Durab
   }
   if (flags.has("--global") === flags.has("--task")) throw usageError("Choose exactly one of --task <id> or --global.");
   const taskId = flags.get("--task");
-  const caller = resolveJobCaller(options.environment, taskId ?? "");
+  const executionRead = ["show", "runs", "run-get", "run-result", "run-context", "run-claim", "run-report",
+    "run-evidence", "run-confirm", "artifact-save", "artifact-list", "artifact-read", "artifact-preview", "artifact-register"].includes(command);
+  const caller = resolveJobCaller(options.environment, taskId
+    ?? (executionRead ? options.environment?.YUI_TASK_ID : undefined) ?? "");
   const scope = taskId === undefined ? { kind: "global" } : { kind: "task", taskId };
   let configuration: JsonValue | undefined;
   if (flags.has("--input")) {
@@ -87,11 +90,15 @@ async function definitionCommand(command: string, args: string[], options: Durab
   const artifact = parseObject("--artifact");
   if (artifact !== undefined) boundedJobArtifactPayload(artifact, "Artifact save");
   const reference = parseObject("--reference");
+  const resultInput = parseObject("--result");
   if (command === "run" && !requestId) throw usageError("job run requires --request-id.");
   const params = {
     op: command, scope, caller,
     ...(artifact === undefined ? {} : { artifact }),
     ...(reference === undefined ? {} : { reference }),
+    ...(resultInput === undefined ? {} : { result: resultInput }),
+    ...(flags.has("--expected-session") ? { expectedSessionId: flags.get("--expected-session") } : {}),
+    ...(flags.has("--expected-attempt") ? { expectedAttemptId: flags.get("--expected-attempt") } : {}),
     ...(flags.has("--offset") ? { offset: Number(flags.get("--offset")) } : {}),
     ...(flags.has("--job") ? { id: flags.get("--job") } : {}),
     ...(flags.has("--title") ? { title: flags.get("--title") } : {}),

@@ -80,6 +80,7 @@ export type CompletionReadinessFacts = NextActionFacts & Readonly<{
   pendingUserMessages?: readonly Pick<TaskMessage, "id">[];
   managedWorkspaces: readonly ManagedWorkspace[];
   durableJobs: readonly DurableJob[];
+  agentJobs?: readonly import("../job/agentJob.js").AgentJobRun[];
 }>;
 
 /** Mailbox refs locate original durable user intent. Active inbox handling
@@ -167,6 +168,12 @@ export function projectCompletionReadiness(
   }
 
   // Active DurableJobs (integration checks, etc.) must settle.
+  for (const job of facts.agentJobs ?? []) {
+    if (job.businessResult) continue;
+    blockers.push({ code: "active-durable-job", ref: ref("durable-job", job.id),
+      reason: `Agent JobRun ${job.id} has no explicit business result.`,
+      fix: `inspect yui job run-context --task ${facts.task.id} --job ${job.definitionId} --run ${job.id}; settle its original input without replay` });
+  }
   for (const job of facts.durableJobs) {
     if (!ACTIVE_JOB_STATUSES.has(job.status)) continue;
     if (job.status === "unknown-needs-attention" && job.acknowledgedAt !== undefined) continue;

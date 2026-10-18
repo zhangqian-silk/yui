@@ -39,6 +39,10 @@ export function archiveSettlementChecks(store: TaskStore, task: Task): CleanupCh
     add(`job:${task.id}/${job.id}`, "active-durable-job", "Task has an active or unacknowledged DurableJob.",
       "settled job", job.status, `yui job get --task ${task.id} --job ${job.id}`);
   }
+  for (const job of store.listAgentJobRuns({ kind: "task", taskId: task.id }).filter(run => !run.businessResult)) {
+    add(`job:${task.id}/${job.id}`, "active-durable-job", "Agent JobRun has no explicit business result.",
+      "settled job", job.status, `yui job run-context --task ${task.id} --job ${job.definitionId} --run ${job.id}`);
+  }
   return checks;
 }
 
@@ -61,6 +65,21 @@ export function archiveExecutionChecks(
     const blocker = jobCleanupBlocker(job, home, phase);
     if (blocker !== undefined) add(`job:${taskId}/${job.id}`, "unresolved-execution", blocker,
       job.status, `yui job get --task ${taskId} --job ${job.id}`);
+  }
+  for (const job of store.listAgentJobRuns({ kind: "task", taskId })) {
+    const last = job.attempts.at(-1)!;
+    if (!last.terminal) add(`job:${taskId}/${job.id}`, "unresolved-execution",
+      "Agent Job input has no exact native terminal; business reporting alone is not quiescence.",
+      job.status, `yui job run-evidence --task ${taskId} --job ${job.definitionId} --run ${job.id}`);
+  }
+  for (const role of store.listGlobalRoles().filter(role =>
+    role.jobOwner?.scope.kind === "task" && role.jobOwner.scope.taskId === taskId)) {
+    const binding = store.getGlobalRoleSessionSet(role.name)?.providerBinding;
+    if (binding?.run && !["completed", "failed", "cancelled", "rejected"].includes(binding.run.status)
+      || hasRuntimeLifecycleWork(store.getWorkMailbox(runtimeLifecycleTarget({ scope: "global", roleName: role.name })))) {
+      add(`global-role:${role.name}`, "unresolved-provider-input", "Task-owned Job Role retains an unresolved input or lifecycle operation.",
+        binding?.run?.status ?? "lifecycle pending", `yui job session-inspect --task ${taskId} --job ${role.jobOwner!.jobId}`);
+    }
   }
   for (const role of store.listRoles(taskId)) {
     const resource = `role:${taskId}/${role.name}`;

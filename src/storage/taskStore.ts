@@ -74,6 +74,7 @@ import {
 import type { SessionOwnerIdentity } from "../runtime/sessionOwnerIdentity.js";
 import type { LeaderFailure } from "../scheduler/leaderFailure.js";
 import type { PendingWakeup } from "../scheduler/pendingWakeup.js";
+import type { AgentJobRun, JobAgentRecipient } from "../job/agentJob.js";
 import type { TaskWake } from "../scheduler/taskWake.js";
 import type { CompletionReadinessFacts } from "../task/completionReadiness.js";
 import type { NextActionFacts } from "../task/nextAction.js";
@@ -324,6 +325,10 @@ export type TaskStore = {
   getJobDefinition(scope: JobScope, id: string): JobDefinition | null;
   listJobDefinitions(scope: JobScope): JobDefinition[];
   saveGlobalJobRun(run: GlobalJobRun): void;
+  saveAgentJobRun(run: AgentJobRun): void;
+  getAgentJobRun(id: string): AgentJobRun | null;
+  listAgentJobRuns(scope: JobScope, definitionId?: string): AgentJobRun[];
+  listAgentJobRunsForRole(recipient: JobAgentRecipient): AgentJobRun[];
   getGlobalJobRun(id: string): GlobalJobRun | null;
   listGlobalJobRuns(): GlobalJobRun[];
   listActiveGlobalJobRuns(): GlobalJobRun[];

@@ -2,6 +2,7 @@ import { requireIdentity, requireKnownFields, requirePositiveInteger, requireTex
 import type { DurableJob, DurableJobOwner, DurableJobStep } from "./durableJob.js";
 import { validateJobExecutionConfiguration, validateDurableJobOwner } from "./durableJob.js";
 import type { JsonValue } from "../core/protocol.js";
+import { validateAgentJobConfiguration, type AgentJobConfiguration } from "./agentJob.js";
 
 export type JobScope = Readonly<{ kind: "task"; taskId: string }> | Readonly<{ kind: "global" }>;
 export type TaskJobConfiguration = Readonly<{
@@ -19,7 +20,7 @@ export type BuiltinJobConfiguration = Readonly<{
   projectId?: string;
   input: JsonValue;
 }>;
-export type JobConfiguration = TaskJobConfiguration | BuiltinJobConfiguration;
+export type JobConfiguration = TaskJobConfiguration | BuiltinJobConfiguration | AgentJobConfiguration;
 export type JobDefinition = Readonly<{
   schemaVersion: 1;
   id: string;
@@ -62,6 +63,10 @@ export function validateJobDefinition(job: JobDefinition): JobDefinition {
   requireKnownFields(job.scope, job.scope.kind === "task" ? ["kind", "taskId"] : ["kind"], "Job scope");
   jobScopeKey(job.scope);
   const config = job.configuration;
+  if (config.kind === "agent") {
+    validateAgentJobConfiguration(config);
+    return job;
+  }
   if (job.scope.kind === "global") {
     if (config.kind !== "builtin") throw new Error("Global Jobs require a controlled builtin action.");
     requireKnownFields(config, ["kind", "action", "projectId", "input"], "Builtin Job");
@@ -90,6 +95,9 @@ export function createJobDefinition(
 export function reviseJobDefinition(
   job: JobDefinition, input: Pick<JobDefinition, "title" | "configuration">, now: Date
 ): JobDefinition {
+  if (job.configuration.kind !== input.configuration.kind) {
+    throw new Error("Changing Job executor kind requires a new Job id; preserve the original execution history.");
+  }
   return validateJobDefinition({
     ...job, title: input.title, configuration: structuredClone(input.configuration),
     revision: job.revision + 1, updatedAt: now.toISOString()

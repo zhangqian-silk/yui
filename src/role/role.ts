@@ -1,4 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
+import { requireKnownFields } from "../domain/validation.js";
+import { jobScopeKey } from "../job/jobDefinition.js";
 import {
   validateExecutionEnvironmentSnapshot,
   type ExecutionEnvironmentSnapshot
@@ -68,6 +70,8 @@ type RoleAgentOwner = RoleProfile & {
 
 export type GlobalRole = RoleAgentOwner & {
   schemaVersion: 1;
+  /** Job owns this logical execution role; generic Global runtime owns its replaceable Session. */
+  jobOwner?: Readonly<{ scope: import("../job/jobDefinition.js").JobScope; jobId: string; runId?: string }>;
 };
 export type TaskRole = RoleAgentOwner & {
   schemaVersion: 1;
@@ -385,6 +389,14 @@ export function unbindRoleAgent(
 
 export function validateGlobalRole(role: GlobalRole): GlobalRole {
   if (Object.hasOwn(role, "taskId")) throw new Error("Global Role cannot carry a Task identity.");
+  if (role.jobOwner !== undefined) {
+    requireKnownFields(role.jobOwner, ["scope", "jobId", "runId"], "Job Role owner");
+    requireKnownFields(role.jobOwner.scope, role.jobOwner.scope.kind === "task" ? ["kind", "taskId"] : ["kind"], "Job Role scope");
+    if (!["task", "global"].includes(role.jobOwner.scope.kind) || role.name === "operator") throw new Error("Invalid Job Role owner.");
+    jobScopeKey(role.jobOwner.scope);
+    requireSafeIdentity(role.jobOwner.jobId, "Job Role owner id");
+    if (role.jobOwner.runId !== undefined) requireSafeIdentity(role.jobOwner.runId, "Job Role Run id");
+  }
   return validateRoleOwner(role);
 }
 

@@ -2,8 +2,11 @@
 // replacement, not model validation or production routing.
 import { execFileSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
+import { handleJobTurn } from "./job-agent-smoke-handler.mjs";
 
 export async function handleTurn({ input, environment }) {
+  const jobResult = await handleJobTurn({ input, environment });
+  if (jobResult !== undefined) return jobResult;
   const text = input.input?.map(item => item.text ?? "").join("\n") ?? "";
   const match = /Yui Global Message: role=operator message=([A-Za-z0-9-]+)\./u.exec(text);
   if (!match) return "Native Codex result.";
