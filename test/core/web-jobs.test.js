@@ -42,6 +42,7 @@ test("Web Job ingress fixes scope, rejects caller injection and preserves exact 
   server = createYuiWebServer(store, { token: "test-token", jobs: createWebJobs(store, home) });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const base = "http://127.0.0.1:" + server.address().port;
+  assert.equal((await fetch(base + "/settings/jobs")).status, 200, "Jobs settings is directly navigable/reloadable");
   const api = async (path, body, headers = {}) => {
     const response = await fetch(base + "/api/" + path, {
       headers: { "x-yui-web-token": "test-token", "content-type": "application/json", origin: base, ...headers },
@@ -62,6 +63,7 @@ test("Web Job ingress fixes scope, rejects caller injection and preserves exact 
   assert.equal((await api(task, { op: "run", id: "owned-task-1", requestId: "terminal" })).status, 409);
   assert.equal((await api(global + "?op=list", null, { "x-yui-web-token": "wrong" })).status, 403);
   const plan = (await api("settings/schedules", { op: "create", id: "cadence", jobId: "noop",
+    authorization: "service",
     rule: { kind: "interval", anchor: now.toISOString(), everyMs: 60000 } })).body;
   const first = (await api(global, { op: "run", id: "noop", requestId: "first" })).body;
   assert.equal(first.run.status, "queued");
@@ -73,4 +75,17 @@ test("Web Job ingress fixes scope, rejects caller injection and preserves exact 
   assert.equal((await api(global + "?op=run-get&id=noop&runId=" + first.run.id)).body.id, first.run.id);
   assert.equal((await api(global + "?op=runs&id=noop")).body.length, 1);
   assert.equal((await api("settings/schedules", { op: "enable", id: "cadence", expectedRevision: plan.revision })).status, 409);
+});
+
+test("global Web management uses local user authority without an Operator Session", t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-web-sessionless-"));
+  const store = new SqliteTaskStore(home);
+  t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
+  const web = createWebJobs(store, home), scope = { kind: "global" }, now = new Date();
+  web.mutate(scope, "jobs", { op: "define", id: "local", title: "Local",
+    configuration: { kind: "builtin", action: "system.noop", input: {} } }, now);
+  assert.equal(web.read(scope, "jobs", { op: "list" }, now).length, 1);
+  assert.equal(web.mutate(scope, "jobs", { op: "run", id: "local", requestId: "once" }, now).run.operation.actorId, "user");
+  assert.equal(store.getGlobalRoleSessionSet("operator"), null);
+  assert.equal(store.listTasks().length, 0);
 });

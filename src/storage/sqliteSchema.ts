@@ -217,6 +217,17 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
 }, {
   fromVersion: "1.17",
   toVersion: "1.18",
+  name: "builtin-project-sync",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Additive installer provenance, explicit compiled service issuer and user
+  // intent on new definitions/plans. Do not adopt or rewrite historical Jobs,
+  // grants, time overrides or Runs. Installation is a separate runtime action.
+  sql: ""
+}, {
+  fromVersion: "1.18",
+  toVersion: "1.19",
   name: "job-task-delegation",
   introducedIn: "next",
   sourceChecksum: CURRENT_SCHEMA_CHECKSUM,

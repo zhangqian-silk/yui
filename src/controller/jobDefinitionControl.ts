@@ -27,6 +27,7 @@ import { ArtifactCommitLockedError } from "../artifacts/artifactCommitLock.js";
 import { ManagedGitError } from "../artifacts/managedGit.js";
 import { authorizeServiceJob, requireScheduleService, serviceRunBinding, type ScheduleServiceRef } from "../job/scheduleService.js";
 import { admitTaskJob, authorizeTaskJob, reconcileTaskDelegation, taskDelegationView } from "./jobTaskDelegationControl.js";
+import { requireProjectSyncTarget } from "../job/projectSync.js";
 
 export type RunAdmission = Readonly<{
   run: JobRun;
@@ -76,12 +77,13 @@ export function authorizeDefinition(store: TaskStore, job: JobDefinition, caller
     if (job.configuration.kind !== "builtin") throw new Error("Global Jobs require builtin actions.");
     prepareBuiltinJob(job.configuration, "/");
     if (job.configuration.action === "project.refresh") {
+      if (job.builtin) requireProjectSyncTarget(store, job);
       const project = requireRefreshProject(store, job.configuration.projectId!, true);
       if (projectRefreshDigest(job.configuration) !== projectRefreshTargetDigest(project)) {
         throw new Error("Project refresh target changed; inspect the Project and explicitly update the Job.");
       }
       const duplicate = !job.instantiation && store.listJobDefinitions({ kind: "global" }).find(other =>
-        !other.instantiation && other.id !== job.id && other.configuration.kind === "builtin"
+        !other.instantiation && !other.builtin && other.id !== job.id && other.configuration.kind === "builtin"
         && other.configuration.action === "project.refresh" && other.configuration.projectId === project.id);
       if (duplicate) throw new Error(`Project refresh Job already exists: ${duplicate.id}.`);
     }
@@ -117,7 +119,8 @@ function presentDefinition(store: TaskStore, definition: JobDefinition, caller: 
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const summarize = (run: JobRun | undefined) => run === undefined ? null : {
     runId: run.id, definitionRevision: run.definitionRevision, trigger: run.trigger,
-    status: run.status, attemptedAt: run.createdAt, finishedAt: run.terminalAt ?? null
+    status: run.status, attemptedAt: run.createdAt, finishedAt: run.terminalAt ?? null,
+    summary: run.businessResult?.summary.slice(0, 512) ?? null
   };
   return { ...job, refresh: {
     projectId, lastAttempt: summarize(runs[0]),
@@ -283,6 +286,8 @@ export function authorizeGlobalJobStart(store: TaskStore, run: GlobalJobRun): vo
       ...(run.projectId === undefined ? {} : { projectId: run.projectId })
     }, run.workspace, { home, runId: run.id });
     if (run.action === "project.refresh") {
+      const definition = store.getJobDefinition({ kind: "global" }, run.definitionId);
+      if (definition?.builtin) requireProjectSyncTarget(store, definition);
       const project = requireRefreshProject({ listProjects: () => projects, rootDirectory: () => home }, run.projectId!, true);
       if (projectRefreshTargetDigest(project) !== projectRefreshDigest({
         kind: "builtin", action: run.action, projectId: run.projectId, input: run.actionInput
@@ -331,6 +336,9 @@ export function createJobDefinitionControl(store: TaskStore, home: string) {
       if (typeof input.id !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u.test(input.id)) throw new Error("An explicit safe Job id is required.");
       const existing = tx.getJobDefinition(input.scope, input.id);
       if (input.op === "define" || input.op === "update") {
+        if (existing?.builtin || (!existing && input.scope.kind === "global" && input.id.startsWith("project-sync-"))) {
+          throw new Error("Builtin Project sync definitions are installer-owned; edit their Schedule.");
+        }
         let configuration = input.configuration!;
         // Empty input is an explicit request to bind the current catalog target.
         // A saved digest is never silently refreshed on run/retry.

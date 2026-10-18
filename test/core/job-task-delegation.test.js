@@ -119,9 +119,9 @@ test("Task-owned delegation preserves management scope, rolls back partial admis
   const db = new Database(join(home, "yui.db"));
   try {
     const before = db.prepare("SELECT payload FROM task_records WHERE task_id=?").get(owner.id).payload;
-    db.prepare("UPDATE storage_schema SET minor=17").run();
+    db.prepare("UPDATE storage_schema SET minor=18").run();
     applySqliteMinorUpgrades(db, home);
-    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 18);
+    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 19);
     assert.equal(db.prepare("SELECT payload FROM task_records WHERE task_id=?").get(owner.id).payload, before);
   } finally { db.close(); }
   store = new SqliteTaskStore(home);

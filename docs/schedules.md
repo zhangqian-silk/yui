@@ -1,5 +1,8 @@
 # Persistent time plans
 
+For the installed Project maintenance plan and its user overrides, see
+[Built-in Project sync](project-sync.md) ([简体中文](project-sync.zh-CN.md)).
+
 A Schedule answers **when** to dispatch a scoped Job. It either admits a Run
 of an existing Job (default), or asks the Job layer to instantiate an exact
 definition revision as a new Job and admit its first Run. It owns

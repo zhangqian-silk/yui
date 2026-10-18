@@ -192,7 +192,7 @@ or prove quiescence. Inspect/stop exact target resources through their normal
 authority if needed. Disabling a Schedule still affects future admissions only.
 Source never grants merge, publishing, cleanup or archive authority.
 
-Storage **1.17 → 1.18** adds optional immutable Task provenance and Run delegation
+Storage **1.18 → 1.19** adds optional immutable Task provenance and Run delegation
 and the new result-reference kinds without changing SQL layout or historical
 payload bytes. Ordinary historical Tasks remain source-less; unknown process
 effects, fixed artifacts and existing Schedule authorization stay untouched.

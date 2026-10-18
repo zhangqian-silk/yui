@@ -649,7 +649,7 @@ async function handleHttpRequest(
     try {
       const assetVersion = new URL(request.url!, "http://localhost").searchParams.get("v");
       const asset = findWebAsset(pathname, assetVersion);
-      const managementPage = /^\/(?:models(?:\/(?:providers|catalog|quota))?|settings(?:\/(?:preferences|skills|server|connection))?)\/?$/.test(pathname);
+      const managementPage = /^\/(?:models(?:\/(?:providers|catalog|quota))?|settings(?:\/(?:preferences|skills|jobs|server|connection))?)\/?$/.test(pathname);
       if (pathname === "/" || pathname === "/index.html" || managementPage) {
         sendText(
           response,

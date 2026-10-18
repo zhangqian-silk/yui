@@ -131,6 +131,7 @@ import { authorizeJobStart } from "./jobControl.js";
 import { authorizeGlobalJobStart, createJobDefinitionControl } from "./jobDefinitionControl.js";
 import { reconcileTaskDelegation } from "./jobTaskDelegationControl.js";
 import { createScheduleControl, reconcileSchedules } from "./scheduleControl.js";
+import { reconcileProjectSync } from "../job/projectSync.js";
 import {
   createFileArtifactPort,
   createLinuxProcessPort,
@@ -750,7 +751,10 @@ export async function startFileTaskControllerRuntime(
         jobDefinitions: createJobDefinitionControl(store, home),
         schedules: {
           control: createScheduleControl(store, home),
-          reconcile: now => reconcileSchedules(store, home, now, options.onError)
+          reconcile: now => {
+            reconcileProjectSync(store, now, options.onError);
+            reconcileSchedules(store, home, now, options.onError);
+          }
         },
         capabilityDispatcher: createCapabilityDispatcher(kernel.capabilities),
         ...(continuationReconciler === undefined ? {} : { continuationReconciler }),
