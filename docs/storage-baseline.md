@@ -2,7 +2,13 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.15. The 1.14 → 1.15 transition adds separate Job business
+Current storage is 1.16. The 1.15 → 1.16 transition adds explicit Schedule
+dispatch targets and authorization kinds. Existing plans keep their exact Session
+authority, rules, identity and progress; original bytes are archived under migration
+16. No service permission is inferred. New service grants and Job instance
+provenance use the same tables; no ScheduleRun lifecycle is introduced.
+
+The 1.14 → 1.15 transition adds separate Job business
 results derived from saved process results, archiving original Run payload bytes
 under migration 15. It does not infer structured business data from logs, change
 execution identities, replay effects or rewrite frozen Context/Integration evidence.

@@ -1,6 +1,8 @@
 # Persistent time plans
 
-A Schedule answers **when** to admit a Run of an existing scoped Job. It owns
+A Schedule answers **when** to dispatch a scoped Job. It either admits a Run
+of an existing Job (default), or asks the Job layer to instantiate an exact
+definition revision as a new Job and admit its first Run. It owns
 the time rule and trigger progress, not the command, execution status or result.
 Immediate execution remains `job run`; manual Runs do not move a Schedule.
 All processing uses the existing Controller and the Job supervisor.
@@ -9,6 +11,7 @@ All processing uses the existing Controller and the Job supervisor.
 
 ```sh
 yui schedule create --global --schedule daily-probe --job probe \
+  --authorization service \
   --rule '{"kind":"cron","expression":"30 9 * * 1-5","timezone":"Asia/Shanghai"}'
 yui schedule list --global
 yui schedule show --global --schedule daily-probe
@@ -16,17 +19,26 @@ yui schedule disable --global --schedule daily-probe --revision 1
 yui schedule enable --global --schedule daily-probe --revision 2
 yui schedule update --global --schedule daily-probe --revision 3 \
   --rule '{"kind":"interval","anchor":"2026-10-17T00:00:00Z","everyMs":3600000}'
+# New Job per occurrence, pinned to the currently available source revision:
+yui schedule create --global --schedule isolated-probe --job probe \
+  --authorization service --target '{"kind":"new-job","definitionRevision":1}' \
+  --rule '{"kind":"interval","anchor":"2026-10-17T00:00:00Z","everyMs":3600000}'
+# Unlike disable, revoke also denies not-yet-started service Runs:
+yui schedule revoke --global --schedule isolated-probe --revision 1
 ```
 
 Create the referenced Job first using [the Job CLI](job-runs.md). Replace
-`--global` with `--task task-N` for a Task-owned Schedule. Global management
-requires a current authenticated Operator Session; Task callers cannot access
+`--global` with `--task task-N` for a Task-owned Schedule. Public local users can
+manage global plans without an Operator Session. Creating or rebinding a public
+plan requires the explicit `--authorization service` choice. Current Operator
+callers can also choose service authorization; omitting it on creation preserves
+the Session-bound behavior. Task callers cannot access
 global or other Tasks' plans. Assignment limits are checked against the Job
 on the server. A Project is a Job target, never an ownership scope.
 
 The Controller RPC is `schedule.control`. Its input is
-`{op,scope,caller,id?,jobId?,rule?,expectedRevision?}`. Supported `op` values
-are `create`, `list`, `show`, `update`, `enable`, `disable`. `scope` uses the
+`{op,scope,caller,id?,jobId?,target?,authorization?,rule?,expectedRevision?}`. Supported `op` values
+are `create`, `list`, `show`, `update`, `enable`, `disable`, `revoke`. `scope` uses the
 Job `JobScope` contract. Trusted ingress must resolve/authenticate `caller`;
 client-supplied scope/identity is not authorization. `create` requires `id`,
 `jobId`, `rule`; all edits require the observed `expectedRevision`. `update`
@@ -35,9 +47,17 @@ revalidating both old visibility and new execution authority. Scope is immutable
 Rule updates retain enabled status only for an already enabled plan; all other
 states become disabled with the new future rule and require explicit enable.
 
+`target` defaults to `{"kind":"existing-job"}`. `{"kind":"new-job",
+"definitionRevision":N}` requires the exact currently available source version.
+A source edit never silently changes that pinned selection; explicitly update
+the target and, for service plans, reauthorize. Job owns deterministic instance
+identity and `instantiation` provenance (`sourceId`, `sourceRevision`, occurrence
+`key`). It does not create a Task. Each new instance has its own overlap scope;
+existing-job mode retains one Job's overlap behavior.
+
 Create/edits return the Schedule; list returns visible Schedule records.
-Show returns `{schedule,lastSuccess}`. `lastSuccess` is the latest readable
-**succeeded JobRun** triggered by this Schedule under its current Job, or null.
+Show returns `{schedule,lastSuccess,runs}`. `lastSuccess` is the latest readable
+**succeeded JobRun** triggered by this Schedule across its historical Jobs, or null.
 It is derived from Run history, never a separately writable Schedule field.
 Retargeting does not move or erase the old Job's Run history.
 
@@ -71,7 +91,7 @@ prevents clock rollback or rule edits from replaying old progress.
 Rule updates increase `generation`; enable retains it. The internal trigger
 key is `<schedule-id>:<generation>:<UTC-due>`, scoped to the Job.
 
-Admission and advancement commit in the same Store transaction. Repeated scans
+Instance creation, first Run admission and advancement commit in the same Store transaction. Repeated scans
 and Controller replacement retain the same Run and occurrence identity.
 The transaction never spawns. The supervisor starts committed Runs and
 preserves its existing unknown-effect and exact-process safeguards.
@@ -86,13 +106,15 @@ Task terminal shutdown. Disabling does not cancel an already admitted Run,
 and cancelling a Run does not disable its Schedule.
 
 `lastAttempt` records `at`, `dueAt`, `outcome` (`admitted`, `overlap`, `blocked`),
-optional exact `runId`, and reason. An overlap Run is the occupying execution,
+optional exact `jobId`/`runId`, `generation`, and reason. Old receipts retain
+only what was originally known; migration does not invent those references.
+An overlap Run is the occupying execution,
 not a successful execution of this occurrence. Recurring overlap skips that
 coalesced tick and advances; once overlap retains its original due instant and
 retries admission on a later pass without adding a queued Run.
 Failed Runs stay in Job history; the next recurring tick follows the same plan.
 
-Creation, update and enable capture the authenticated Session binding and Job
+Session-authorized creation, update and enable capture the authenticated Session binding and Job
 revision. They do not grant execution to a replacement Session or a changed
 Job definition. Before each admission both are checked again, along with current
 Job/Task/workspace prerequisites. Revocation or a changed definition stops the
@@ -100,8 +122,31 @@ plan as `needs-attention`; an authorized current manager must inspect and
 explicitly enable it. Controller restart alone does not revoke the binding.
 Worker-owned plans also retain the current Assignment boundary.
 
+Service authority is a separate explicit grant stored on the Schedule. The
+compiled internal `schedule` registration permits only global `system.noop`
+and `project.refresh`; it does not permit Task shell execution, arbitrary code,
+or additional scopes. `origin=builtin`, `caller.scope=service` and client-supplied
+grant fields cannot create a service identity. Management first authenticates
+the ordinary public/managed caller and checks the actual Job target.
+The grant binds Home, Schedule, dispatch mode, exact definition, action, Project
+and input. Admission and runner start recheck current validity; Project refresh
+also rechecks after waiting for its maintenance lock. Replacing Operator Sessions
+does not revoke a service grant. Source/configuration changes block the plan
+with retained reasons; no silent rebind occurs.
+Service Run results remain in Job history and do not enqueue an Operator wake.
+Dispatch errors still use the existing attention notification when a recipient exists.
+
+`disable` only stops future dispatch; it does not invalidate the grant of an
+already admitted Run. `revoke` disables the plan and invalidates the grant,
+preventing queued service Runs from starting (not cancelling effects already
+in flight). An explicit `enable --authorization service` grants a fresh identity;
+it never resurrects old revoked Runs. Ordinary enable/rule edits retain an
+unchanged active grant. Reauthorization and source/target changes are deliberate
+management operations, not automatic repairs.
+
 Unclassified admission failures roll back, stop that plan, persist the reason
-and notify its Task Leader or global Operator via existing durable inboxes.
+and notify its Task Leader or configured global Operator via existing durable inboxes.
+If no Operator role exists, the plan/reason remains inspectable without creating one.
 No new recovery queue, lease or automatic retry protocol is introduced.
 
 Task stop marks enabled plans as needing attention; restarting execution alone
@@ -114,14 +159,20 @@ settlement guards. A reopened Task does not implicitly resume retired plans.
 
 ## Storage and downstream integration
 
-Storage **1.9 → 1.10** appends `schedules`, keyed by `(scope_key,schedule_id)`,
-and its due index. Old Job/Run bytes and published baseline checksums remain
-unchanged. New Homes initialize 1.10; existing Homes require the centralized
+Storage **1.15 → 1.16** adds explicit target and authorization kinds to existing
+plans, preserving Session bindings, identities, rules, progress and old receipts.
+Original Schedule bytes are archived under migration 16. It never turns historical
+Session authority into a service grant. New optional Job instance provenance and
+Run service-grant references use the existing tables. The published **1.9 → 1.10**
+DDL and all older transitions remain unchanged. New Homes initialize 1.16;
+existing Homes require the centralized
 explicit upgrade path. No real Home migration or package release is implied.
 
 `src/schedule/schedule.ts` exports `Schedule`, `ScheduleRule`, time calculation
 and validation. `src/controller/scheduleControl.ts` owns management and bounded
-reconciliation; `admitJobRun` remains the only execution admission seam.
+reconciliation; Job's `instantiateJobRun` composes instance creation with
+`admitJobRun`, the execution admission seam. No ScheduleRun state or second
+writable execution result is introduced.
 Consumers should use RPC/service responses rather than write storage directly.
 
 Project refresh is a separate controlled Job action supplied by Task128.
