@@ -206,6 +206,17 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
 }, {
   fromVersion: "1.16",
   toVersion: "1.17",
+  name: "job-owned-artifacts",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // New optional append-only Run artifact references and Home-owned per-Run
+  // repositories. Existing payloads, Task repositories and frozen Git refs are
+  // unchanged. No files are moved and no historical provenance is invented.
+  sql: ""
+}, {
+  fromVersion: "1.17",
+  toVersion: "1.18",
   name: "builtin-project-sync",
   introducedIn: "next",
   sourceChecksum: CURRENT_SCHEMA_CHECKSUM,

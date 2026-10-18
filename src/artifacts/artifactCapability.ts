@@ -1,4 +1,4 @@
-import { openTaskArtifactRepository, type ArtifactEntry } from "./taskArtifactRepository.js";
+import { openTaskArtifactRepository, type ArtifactEntry, type ArtifactContent } from "./taskArtifactRepository.js";
 import { saveArtifactFile, type GitArtifactRef } from "./gitArtifactRef.js";
 import { requireCommitId } from "./managedGit.js";
 import { safeRelativeArtifactPath } from "./artifactPaths.js";
@@ -63,6 +63,16 @@ export async function saveArtifactCapability(
   taskId: string,
   input: ArtifactSaveCapabilityInput
 ): Promise<GitArtifactRef> {
+  const bytes = artifactInputBytes(input);
+  return saveArtifactFile(home, taskId, {
+    relativePath: input.relativePath, bytes,
+    ...(input.message === undefined ? {} : { message: input.message }),
+    ...(input.expectedHead === undefined ? {} : { expectedHead: input.expectedHead })
+  });
+}
+
+/** Shared bounded text/static-image input; never executes HTML or scripts. */
+export function artifactInputBytes(input: ArtifactSaveCapabilityInput): Buffer {
   if (input.encoding !== undefined && input.encoding !== "utf8" && input.encoding !== "base64") {
     throw new Error("Artifact encoding must be utf8 or base64.");
   }
@@ -78,12 +88,7 @@ export async function saveArtifactCapability(
   } else {
     bytes = requireTextContent(input.content);
   }
-  return saveArtifactFile(home, taskId, {
-    relativePath: input.relativePath,
-    bytes,
-    ...(input.message === undefined ? {} : { message: input.message }),
-    ...(input.expectedHead === undefined ? {} : { expectedHead: input.expectedHead })
-  });
+  return bytes;
 }
 
 /**
@@ -103,7 +108,11 @@ export async function readArtifactCapability(
     safeRelative,
     input.commit === undefined ? undefined : requireCommitId(input.commit)
   );
-  const image = isRasterArtifact(safeRelative) ? rasterMetadata(content.bytes) : null;
+  return { taskId, ...presentArtifactContent(content) };
+}
+
+export function presentArtifactContent(content: ArtifactContent): Omit<ArtifactReadCapabilityResult, "taskId"> {
+  const image = isRasterArtifact(content.relativePath) ? rasterMetadata(content.bytes) : null;
   let text: string;
   if (image) text = content.bytes.toString("base64");
   else {
@@ -112,7 +121,6 @@ export async function readArtifactCapability(
     if (text.includes("\0")) throw new Error("Binary artifact is not supported as text.");
   }
   return {
-    taskId,
     relativePath: content.relativePath,
     commit: content.commit,
     content: text,

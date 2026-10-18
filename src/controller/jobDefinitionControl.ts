@@ -20,7 +20,11 @@ import {
   type DurableJobCaller, type DurableJobStartParams
 } from "./jobControl.js";
 import { createFileArtifactPort } from "./jobSupervisor.js";
-import { jobRunSnapshot } from "../job/jobBusinessResult.js";
+import { jobRunSnapshot, runReference } from "../job/jobBusinessResult.js";
+import { controlJobArtifact } from "./jobArtifactControl.js";
+import { ArtifactHeadConflictError, ArtifactManagedConfigViolationError, ArtifactRemoteViolationError } from "../artifacts/taskArtifactRepository.js";
+import { ArtifactCommitLockedError } from "../artifacts/artifactCommitLock.js";
+import { ManagedGitError } from "../artifacts/managedGit.js";
 import { authorizeServiceJob, requireScheduleService, serviceRunBinding, type ScheduleServiceRef } from "../job/scheduleService.js";
 import { requireProjectSyncTarget } from "../job/projectSync.js";
 
@@ -87,7 +91,19 @@ export function listJobRuns(store: TaskStore, job: JobDefinition): JobRun[] {
 }
 
 /** Read-only presentation; attempts/results remain owned by exact JobRuns. */
-function presentDefinition(store: TaskStore, job: JobDefinition) {
+function presentDefinition(store: TaskStore, definition: JobDefinition, caller: DurableJobCaller) {
+  const history = listJobRuns(store, definition).filter(run => {
+    try { authorizeRunRead(store, run, caller); return true; } catch { return false; }
+  }).sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+  const result = (run: JobRun | undefined) => run ? {
+    runId: run.id, sourceRun: runReference(run), status: run.status,
+    outcome: run.businessResult?.outcome ?? null,
+    summary: run.businessResult?.summary.slice(0, 512) ?? null,
+    artifactCount: run.artifacts?.length ?? 0
+  } : null;
+  const job = { ...definition, results: {
+    latest: result(history[0]), latestSuccessful: result(history.find(run => run.businessResult?.outcome === "succeeded"))
+  } };
   if (job.configuration.kind !== "builtin" || job.configuration.action !== "project.refresh") return job;
   const projectId = job.configuration.projectId;
   const targetDigest = projectRefreshDigest(job.configuration);
@@ -99,7 +115,7 @@ function presentDefinition(store: TaskStore, job: JobDefinition) {
   const summarize = (run: JobRun | undefined) => run === undefined ? null : {
     runId: run.id, definitionRevision: run.definitionRevision, trigger: run.trigger,
     status: run.status, attemptedAt: run.createdAt, finishedAt: run.terminalAt ?? null,
-    result: run.businessResult ?? null
+    summary: run.businessResult?.summary.slice(0, 512) ?? null
   };
   return { ...job, refresh: {
     projectId, lastAttempt: summarize(runs[0]),
@@ -279,6 +295,17 @@ export function authorizeGlobalJobStart(store: TaskStore, run: GlobalJobRun): vo
 export function createJobDefinitionControl(store: TaskStore, home: string) {
   return (value: JsonValue, now: Date): unknown => {
     if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Job request.");
+    const op = (value as { op?: unknown }).op;
+    if (typeof op === "string" && op.startsWith("artifact-")) {
+      return controlJobArtifact(store, home, value, now).catch(error => {
+        // Preserve bounded domain diagnostics through RPC; authentication errors
+        // retain their existing CoreApplicationError identity and code.
+        if (error instanceof ArtifactHeadConflictError || error instanceof ArtifactManagedConfigViolationError
+          || error instanceof ArtifactRemoteViolationError || error instanceof ArtifactCommitLockedError
+          || error instanceof ManagedGitError) error.name = "CoreJobError";
+        throw error;
+      });
+    }
     requireKnownFields(value, ["op", "scope", "caller", "id", "title", "configuration", "expectedRevision", "trigger", "retryOf", "runId"], "Job request");
     const input = value as unknown as {
       op: string; scope: JobScope; caller: DurableJobCaller; id?: string; title?: string;
@@ -289,7 +316,7 @@ export function createJobDefinitionControl(store: TaskStore, home: string) {
       if (input.op === "list") {
         return tx.listJobDefinitions(input.scope).filter(job => {
           try { authorizeDefinition(tx, job, input.caller, false); return true; } catch { return false; }
-        }).map(job => presentDefinition(tx, job));
+        }).map(job => presentDefinition(tx, job, input.caller));
       }
       if (typeof input.id !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u.test(input.id)) throw new Error("An explicit safe Job id is required.");
       const existing = tx.getJobDefinition(input.scope, input.id);
@@ -330,7 +357,7 @@ export function createJobDefinitionControl(store: TaskStore, home: string) {
       if (existing === null) throw new Error("Job definition not found.");
       validateJobDefinition(existing);
       authorizeDefinition(tx, existing, input.caller, false);
-      if (input.op === "show") return presentDefinition(tx, existing);
+      if (input.op === "show") return presentDefinition(tx, existing, input.caller);
       if (input.op === "runs") return listJobRuns(tx, existing).filter(run => {
         try { authorizeRunRead(tx, run, input.caller); return true; }
         catch { return false; }
@@ -349,7 +376,7 @@ export function createJobDefinitionControl(store: TaskStore, home: string) {
         snapshot: jobRunSnapshot(run),
         acceptedAt: run.createdAt, startedAt: run.startedAt ?? null,
         confirmedAt: run.businessResult === undefined ? null : run.terminalAt ?? null,
-        status: run.status, result: run.businessResult ?? null
+        status: run.status, result: run.businessResult ?? null, artifacts: run.artifacts ?? []
       };
       if (input.op === "run-evidence") return {
         sourceRun: jobRunSnapshot(run), operation: run.operation,

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { artifactsAppendOnly, validateRunArtifacts, type JobArtifactReference } from "../artifacts/jobArtifact.js";
 import { processBusinessResult, runReference, validateBusinessResult, type JobBusinessResult } from "./jobBusinessResult.js";
 import type { JobTrigger } from "./jobDefinition.js";
 import {
@@ -125,6 +126,8 @@ export type DurableJob = Readonly<{
   result?: DurableJobResult;
   /** Business outcome is separate from the original process evidence in result. */
   businessResult?: JobBusinessResult;
+  /** Append-only published material; never a mutable latest/final result copy. */
+  artifacts?: readonly JobArtifactReference[];
   retryOf?: string;
   cancelRequestedAt?: string;
   wakeupNotified?: boolean;
@@ -463,6 +466,7 @@ export function retryDurableJobIdempotencyKey(
 }
 
 export function validateDurableJob<T extends JobRun>(job: T): T {
+  validateRunArtifacts(job);
   if (job.schemaVersion !== CURRENT_DURABLE_JOB_SCHEMA_VERSION) {
     throw new Error(
       `DurableJob must use schemaVersion ${CURRENT_DURABLE_JOB_SCHEMA_VERSION}.`
@@ -568,7 +572,8 @@ export function validDurableJobTransition(
   after: JobRun
 ): boolean {
   if (
-    before.id !== after.id
+    !artifactsAppendOnly(before, after)
+    || before.id !== after.id
     || before.definitionId !== after.definitionId
     || before.definitionRevision !== after.definitionRevision
     || !isDeepStrictEqual(before.trigger, after.trigger)
@@ -596,7 +601,9 @@ export function validDurableJobTransition(
     )
   ) return false;
   if (isDurableJobTerminal(before.status)) {
-    // A terminal job is immutable except for two one-way flags:
+    // A terminal job's outcome is immutable. Artifact references can only append,
+    // permitting exact post-execution collection without rerunning business work.
+    // The two existing one-way flags remain:
     // wakeupNotified (set by the supervisor after enqueuing the Leader
     // wakeup) and acknowledgedAt (set by the Leader on an unknown job so
     // Task lifecycle gates can proceed). Without these exceptions the
@@ -605,8 +612,8 @@ export function validDurableJobTransition(
     const wakeupFlip = before.wakeupNotified !== true && after.wakeupNotified === true;
     const acknowledgeFlip = before.acknowledgedAt === undefined
       && after.acknowledgedAt !== undefined;
-    const { wakeupNotified: _beforeWake, acknowledgedAt: _beforeAck, updatedAt: _beforeTime, ...beforeFacts } = before;
-    const { wakeupNotified: _afterWake, acknowledgedAt: _afterAck, updatedAt: _afterTime, ...afterFacts } = after;
+    const { artifacts: _beforeArtifacts, wakeupNotified: _beforeWake, acknowledgedAt: _beforeAck, updatedAt: _beforeTime, ...beforeFacts } = before;
+    const { artifacts: _afterArtifacts, wakeupNotified: _afterWake, acknowledgedAt: _afterAck, updatedAt: _afterTime, ...afterFacts } = after;
     return isDeepStrictEqual(beforeFacts, afterFacts)
       && before.status === after.status
       && isDeepStrictEqual(before.result, after.result)

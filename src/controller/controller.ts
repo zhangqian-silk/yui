@@ -2255,7 +2255,7 @@ export async function startFileTaskController(
       if (method === "job.definition") {
         if (options.jobDefinitions === undefined) throw controllerApplicationError("METHOD_NOT_FOUND", "Job definitions unavailable.");
         let result: unknown;
-        try { result = options.jobDefinitions(params, new Date()); }
+        try { result = await options.jobDefinitions(params, new Date()); }
         catch (error) {
           if (error instanceof Error && error.name === "Error") error.name = "CoreJobError";
           throw error;

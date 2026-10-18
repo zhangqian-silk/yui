@@ -82,7 +82,7 @@ test("custom maintenance is never adopted or duplicated; builtin identity cannot
   assert.equal(store.listGlobalJobRuns().length, 0);
 });
 
-test("1.16 upgrade preserves custom definitions, service grants, overrides and Run bytes", t => {
+test("1.17 upgrade preserves custom definitions, service grants, overrides and Run bytes", t => {
   const home = mkdtempSync(join(tmpdir(), "yui-project-sync-migration-"));
   let store = new SqliteTaskStore(home);
   t.after(() => { store?.close(); rmSync(home, { recursive: true, force: true }); });
@@ -99,9 +99,9 @@ test("1.16 upgrade preserves custom definitions, service grants, overrides and R
   try {
     const tables = ["job_definitions", "schedules", "global_job_runs"];
     const before = tables.map(table => db.prepare(`SELECT payload FROM ${table}`).all());
-    db.prepare("UPDATE storage_schema SET minor=16").run();
+    db.prepare("UPDATE storage_schema SET minor=17").run();
     applySqliteMinorUpgrades(db, home);
-    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 17);
+    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 18);
     assert.deepEqual(tables.map(table => db.prepare(`SELECT payload FROM ${table}`).all()), before);
   } finally { db.close(); }
   store = new SqliteTaskStore(home);

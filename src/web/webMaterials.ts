@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { safeRelativeArtifactPath } from "../artifacts/artifactPaths.js";
 import { resolveGitArtifact, saveArtifactFile, validateGitArtifactRef, type GitArtifactRef } from "../artifacts/gitArtifactRef.js";
 import { managedGit } from "../artifacts/managedGit.js";
-import { openTaskArtifactRepository } from "../artifacts/taskArtifactRepository.js";
+import { openTaskArtifactRepository, type ArtifactContent } from "../artifacts/taskArtifactRepository.js";
 import { WebRequestRejected } from "./webMutation.js";
 import { isRasterArtifact, rasterMetadata } from "../artifacts/imageMetadata.js";
 
@@ -31,21 +31,32 @@ async function fixedImage(home: string, taskId: string, input: GitArtifactRef) {
 /** One selected immutable file, never a workspace path or a remote URL.
  * Markdown is bounded and whole so fences/tables are not split by pagination. */
 export async function readArtifactPreview(home: string, taskId: string, ref: GitArtifactRef, offset = 0) {
-  if (/\.(svg|gif|avif|bmp|ico|tiff?)$/iu.test(ref.relativePath)) {
+  if (ref.taskId !== taskId) throw new WebRequestRejected("Materials must belong to the same Task.");
+  const valid = validateGitArtifactRef(ref);
+  const file = await resolveGitArtifact(home, valid);
+  return { ...valid, ...previewArtifactContent(file, offset) };
+}
+
+/** Shared data-only preview for Task and Job evidence; no path lookup or authority. */
+export function previewArtifactContent(file: ArtifactContent, offset = 0) {
+  if (/\.(svg|gif|avif|bmp|ico|tiff?)$/iu.test(file.relativePath)) {
     throw new WebRequestRejected("Unsupported image format. Save a static PNG, JPEG or WebP instead.");
   }
-  if (isRasterArtifact(ref.relativePath)) {
+  if (file.relativePath.length > 512) throw new WebRequestRejected("Artifact path is too long.");
+  if (isRasterArtifact(file.relativePath)) {
     if (offset !== 0) throw new WebRequestRejected("Images do not have text offsets.");
-    return fixedImage(home, taskId, ref);
+    return { digest: file.digest, kind: "image" as const, byteSize: file.bytes.length,
+      ...rasterMetadata(file.bytes), base64: file.bytes.toString("base64") };
   }
-  if (/\.md$|\.markdown$/iu.test(ref.relativePath)) {
+  textPath(file.relativePath);
+  const text = decodeText(file.bytes);
+  if (/\.md$|\.markdown$/iu.test(file.relativePath)) {
     if (offset !== 0) throw new WebRequestRejected("Markdown previews start at offset zero.");
-    const file = await fixedText(home, taskId, ref);
-    if (file.bytes > MAX_MATERIAL_BYTES) throw new WebRequestRejected("Markdown preview exceeds 256 KiB; split the document.");
-    return { ...file.ref, kind: "markdown" as const, byteSize: file.bytes, content: file.text,
-      offset: 0, totalCharacters: file.text.length, nextOffset: null };
+    if (file.bytes.length > MAX_MATERIAL_BYTES) throw new WebRequestRejected("Markdown preview exceeds 256 KiB; split the document.");
+    return { digest: file.digest, kind: "markdown" as const, byteSize: file.bytes.length, content: text,
+      offset: 0, totalCharacters: text.length, nextOffset: null };
   }
-  return readTextArtifactPage(home, taskId, ref, offset);
+  return { digest: file.digest, byteSize: file.bytes.length, ...page(text, offset) };
 }
 
 function textPath(path: string) {

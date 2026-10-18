@@ -104,7 +104,7 @@ test("unverifiable lock owners never authorize reclaim or a protected operation"
   await assert.rejects(acquireProjectMaintenanceLock(home, "project-1", {
     wait: async () => assert.fail("Unknown ownership should diagnose, not wait or steal.")
   }), /unverified.*lock|lock.*identity/i);
-  assert.throws(() => acquireArtifactCommitLock(home, "task-1"), /unverified.*lock|lock.*identity/i);
+  await assert.rejects(acquireArtifactCommitLock(home, "task-1"), /unverified.*lock|lock.*identity/i);
   for (const path of [project, artifact]) {
     assert.equal(readFileSync(join(path, "owner"), "utf8"), `${process.pid}\n`);
   }

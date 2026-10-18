@@ -73,7 +73,7 @@ preference and rule. Ordinary dispatch failures stay visible for explicit
 inspection/enable, not automatic speculative retries. Business failures keep
 their Run evidence; a later normal Schedule occurrence is a new check.
 
-Storage 1.16 → 1.17 is additive, preserving existing custom records and history
+Storage 1.17 → 1.18 is additive, preserving existing custom records and history
 byte-for-byte. It does not start Git work during migration. Upgrading or enabling
 this behavior on a production Home is a deployment decision, not implied by
 development tests. Validation uses disposable local repositories and isolated Homes.

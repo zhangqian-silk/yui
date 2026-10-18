@@ -154,7 +154,8 @@ export function mountJobs(root, t, taskId) {
     if (epoch !== generation) return;
     runs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     const summary = run => run ? (run.id || run.runId) + " · " + run.status + " · "
-      + (run.terminalAt || run.finishedAt || run.createdAt || run.attemptedAt) : null;
+      + (run.terminalAt || run.finishedAt || run.createdAt || run.attemptedAt)
+      + (run.summary ? " · " + run.summary : "") : null;
     const runDetail = h("section.job-run");
     detail.replaceChildren(h("div.settings-stack", null, h("h3", null, job.title), fact("ID", job.id),
       fact(copy("scope"), taskId || "global"), fact(copy("project"), job.configuration.projectId),
