@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { processBusinessResult, runReference, validateBusinessResult, type JobBusinessResult } from "./jobBusinessResult.js";
 import type { JobTrigger } from "./jobDefinition.js";
 import {
   requireIdentity,
@@ -121,6 +122,8 @@ export type DurableJob = Readonly<{
   process?: DurableJobProcess;
   checkpoint?: DurableJobCheckpoint;
   result?: DurableJobResult;
+  /** Business outcome is separate from the original process evidence in result. */
+  businessResult?: JobBusinessResult;
   retryOf?: string;
   cancelRequestedAt?: string;
   wakeupNotified?: boolean;
@@ -268,7 +271,8 @@ export function touchDurableJobHeartbeat<T extends JobRun>(
 export function completeDurableJob<T extends JobRun>(
   job: T,
   result: DurableJobResult,
-  now: Date
+  now: Date,
+  businessResult: JobBusinessResult = processBusinessResult(job, result)
 ): T {
   validateDurableJob(job);
   if (job.status !== "running") {
@@ -280,13 +284,14 @@ export function completeDurableJob<T extends JobRun>(
   const timestamp = now.toISOString();
   return validateDurableJob({
     ...job,
-    status: result.outcome,
+    status: businessResult.outcome,
     operation: recordOperationEvidence(job.operation, {
       partialResultRefs: result.steps.map((step) => step.logPath),
       receiptRefs: result.evidenceSource === undefined ? []
         : [`${job.artifactsLocator}/${result.evidenceSource === "checkpoint" ? "checkpoint.json" : "exit.json"}`]
     }),
     result: normalizeDurableJobResult(result),
+    businessResult: validateBusinessResult(businessResult, runReference(job)),
     terminalAt: timestamp,
     updatedAt: timestamp
   });
@@ -303,13 +308,14 @@ export function rejectQueuedDurableJob<T extends JobRun>(
     throw new Error("Only an unattempted queued Job can be rejected.");
   }
   const timestamp = now.toISOString();
+  const result: DurableJobResult = {
+    outcome: "failed", exitCode: null, signal: null,
+    unknownReason: requireText(reason, "DurableJob rejection reason"), steps: []
+  };
   return validateDurableJob({
     ...job,
     status: "failed",
-    result: {
-      outcome: "failed", exitCode: null, signal: null,
-      unknownReason: requireText(reason, "DurableJob rejection reason"), steps: []
-    },
+    result, businessResult: processBusinessResult(job, result),
     terminalAt: timestamp,
     updatedAt: timestamp
   });
@@ -326,19 +332,18 @@ export function markDurableJobUnknown<T extends JobRun>(
     throw new Error(`DurableJob can only be marked unknown after an attempted effect: ${job.status}.`);
   }
   const timestamp = now.toISOString();
+  const result: DurableJobResult = {
+    outcome: "unknown-needs-attention", exitCode: null, signal: null,
+    unknownReason: requireText(unknownReason, "DurableJob unknown reason"),
+    steps: completedSteps.map(step => ({ ...step }))
+  };
   return validateDurableJob({
     ...job,
     status: "unknown-needs-attention",
     operation: recordOperationEvidence(job.operation, {
       partialResultRefs: completedSteps.map((step) => step.logPath)
     }),
-    result: {
-      outcome: "unknown-needs-attention",
-      exitCode: null,
-      signal: null,
-      unknownReason: requireText(unknownReason, "DurableJob unknown reason"),
-      steps: completedSteps.map((step) => ({ ...step }))
-    },
+    result, businessResult: processBusinessResult(job, result),
     terminalAt: timestamp,
     updatedAt: timestamp
   });
@@ -377,15 +382,11 @@ export function cancelQueuedDurableJob<T extends JobRun>(
     throw new Error(`DurableJob can only cancel-queued from queued: ${job.status}.`);
   }
   const timestamp = now.toISOString();
+  const result: DurableJobResult = { outcome: "cancelled", exitCode: null, signal: null, steps: [] };
   return validateDurableJob({
     ...job,
     status: "cancelled",
-    result: {
-      outcome: "cancelled",
-      exitCode: null,
-      signal: null,
-      steps: []
-    },
+    result, businessResult: processBusinessResult(job, result),
     terminalAt: timestamp,
     updatedAt: timestamp
   });
@@ -525,6 +526,10 @@ export function validateDurableJob<T extends JobRun>(job: T): T {
   }
   if (job.result !== undefined) {
     normalizeDurableJobResult(job.result);
+  }
+  if (job.businessResult !== undefined) {
+    validateBusinessResult(job.businessResult, runReference(job));
+    if (job.status !== job.businessResult.outcome) throw new Error("Job status must match its business outcome.");
   }
   if (job.retryOf !== undefined) {
     if ("taskId" in job) validateTaskRecordReference({ taskId: job.taskId, localId: job.retryOf }, "durableJob");

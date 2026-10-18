@@ -46,6 +46,9 @@ import { recordOperationEvidence } from "../kernel/operationFacts.js";
 import { wakeReason } from "../scheduler/wakeReason.js";
 import { writeTextFileAtomically } from "../storage/durableFile.js";
 import { readProcessStartIdentity } from "../core/fileLockOwner.js";
+import {
+  processBusinessResult, resultDigest, runReference, validateBusinessResult, type JobBusinessResult
+} from "../job/jobBusinessResult.js";
 
 const DEFAULT_STEP_TIMEOUT_MS = 30 * 60_000;
 const HEARTBEAT_STALE_MS = 2 * 60_000;
@@ -80,6 +83,8 @@ export type JobSupervisorArtifactPort = Readonly<{
   writeStartMarker(taskId: string, jobId: string, marker: DurableJobStartMarker): void;
   readStartMarker(taskId: string, jobId: string): DurableJobStartMarker | null;
   readReadyFile(taskId: string, jobId: string): DurableJobReadyMarker | null;
+  /** Raw bytes are hashed before collection; malformed evidence is not absence. */
+  readBusinessResult?(taskId: string, jobId: string): string | null;
 }>;
 
 /**
@@ -207,6 +212,25 @@ export class DurableJobSupervisor {
           + `${error instanceof Error ? error.message : String(error)}. `
           + "Inspect retained process/artifact evidence before retry or cancellation; effects remain unconfirmed.",
         { cause: error }));
+      }
+    }
+  }
+
+  /** Explicit collection only. Never admits, spawns, cancels or retries work. */
+  confirmResult(namespace: string, runId: string, now: Date): void {
+    const run = this.#store.listActiveDurableJobs()
+      .find(run => executionNamespace(run) === namespace && run.id === runId);
+    if (!run) return;
+    if (run.status === "queued") {
+      const spawned = this.#spawnedProcessFromEvidence(run, this.#artifacts.readStartMarker(namespace, runId));
+      if (spawned) this.#adoptAndContinue(run, spawned, now);
+    } else {
+      const exit = this.#artifacts.readExitJson(namespace, runId);
+      if (exit) this.#harvestExit(run, exit, now);
+      else if (run.process) {
+        const identity = this.#process.processStartIdentity(run.process.pid);
+        if (identity === undefined || identity !== run.process.startIdentity
+          || !this.#process.isProcessAlive(run.process.pid)) this.#handleDeadProcess(run, now);
       }
     }
   }
@@ -505,6 +529,7 @@ export class DurableJobSupervisor {
       evidenceSource: "exit-artifact",
       steps: exit.steps
     };
+    const business = this.#businessResult(job, result);
     // rr4/finding-7: The terminal transition and the Leader wakeup must be
     // atomic. Compose complete + wakeupNotified and pass the wakeup param so
     // the adapter enqueues the Leader mailbox entry in the same transaction.
@@ -516,10 +541,10 @@ export class DurableJobSupervisor {
       (current) => {
         let completed: DurableJob;
         try {
-          completed = completeDurableJob(current, result, now);
+          completed = completeDurableJob(current, result, now, business);
         } catch {
           completed = completeDurableJob(current, {
-            outcome: "failed", exitCode: null, signal: null,
+            outcome: "unknown-needs-attention", exitCode: null, signal: null,
             unknownReason: "runner output is invalid; original receipt is retained",
             steps: []
           }, now);
@@ -546,7 +571,8 @@ export class DurableJobSupervisor {
         executionNamespace(job),
         job.id,
         (current) => markDurableJobWakeupNotified(
-          completeDurableJob(current, { ...proven, evidenceSource: "checkpoint" }, now),
+          completeDurableJob(current, { ...proven, evidenceSource: "checkpoint" }, now,
+            this.#businessResult(current, { ...proven, evidenceSource: "checkpoint" })),
           now
         ),
         now,
@@ -573,6 +599,31 @@ export class DurableJobSupervisor {
       this.#deliverTerminalEvent(terminal);
     }
     this.#sigkillAt.delete(this.#sigkillKey(job));
+  }
+
+  #businessResult(job: DurableJob, result: DurableJobResult): JobBusinessResult {
+    const fallback = processBusinessResult(job, result);
+    if ("taskId" in job) return fallback;
+    // The runner records this only when its cancel fence is seen before the
+    // first step. No domain action ran, so no business receipt is expected.
+    if (result.outcome === "cancelled" && result.steps.length === 0) return fallback;
+    if (job.action === "system.noop") return { ...fallback, data: { action: "system.noop" } };
+    const raw = this.#artifacts.readBusinessResult?.(executionNamespace(job), job.id);
+    if (raw !== null && raw !== undefined) {
+      try {
+        const business = validateBusinessResult(JSON.parse(raw), runReference(job));
+        const sourceRun = runReference(job);
+        return { ...business, evidence: [...business.evidence, {
+          kind: "execution-evidence", owner: sourceRun, sourceRun,
+          version: resultDigest(raw), locator: `${job.artifactsLocator}/business-result.json`
+        }, ...fallback.evidence] };
+      } catch {
+        return { ...fallback, outcome: "unknown-needs-attention",
+          summary: "Invalid business result receipt; inspect retained execution evidence. Do not replay the action." };
+      }
+    }
+    return { ...fallback, outcome: "unknown-needs-attention",
+      summary: "Business result receipt is missing; process completion does not prove the business outcome. Do not replay the action." };
   }
 
   /**
@@ -752,6 +803,16 @@ export function createFileArtifactPort(home: string): JobSupervisorArtifactPort 
       return readJsonFile<DurableJobReadyMarker>(
         join(home, "artifacts", "jobs", taskId, jobId, "ready.json")
       );
+    },
+    readBusinessResult(taskId: string, jobId: string) {
+      const path = join(home, "artifacts", "jobs", taskId, jobId, "business-result.json");
+      try {
+        if (statSync(path).size > 256 * 1024) return "oversized business result";
+        return readFileSync(path, "utf8");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw error; // A transient collection failure is not absence or permission to rerun.
+      }
     }
   };
 }

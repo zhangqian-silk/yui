@@ -2,7 +2,14 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.14. The 1.13 → 1.14 transition removes the Role foreign key
+Current storage is 1.15. The 1.14 → 1.15 transition adds separate Job business
+results derived from saved process results, archiving original Run payload bytes
+under migration 15. It does not infer structured business data from logs, change
+execution identities, replay effects or rewrite frozen Context/Integration evidence.
+SQL layout is unchanged. Public immediate builtin admissions use an explicit
+Home/Run-bound user authority, not an invented Session or Schedule authorization.
+
+The 1.13 → 1.14 transition removes the Role foreign key
 from `global_role_session_sets`, preserving every payload byte and rebuilding
 its retry index. Stopped Session identity/history can then outlive Role removal
 without granting authority. No new authorization table or inferred history is

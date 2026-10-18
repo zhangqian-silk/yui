@@ -20,6 +20,7 @@ import {
   type DurableJobCaller, type DurableJobStartParams
 } from "./jobControl.js";
 import { createFileArtifactPort } from "./jobSupervisor.js";
+import { jobRunSnapshot } from "../job/jobBusinessResult.js";
 
 export type RunAdmission = Readonly<{
   run: JobRun;
@@ -27,9 +28,15 @@ export type RunAdmission = Readonly<{
   reason?: "overlap";
 }>;
 
-export function authorizeScope(store: TaskStore, scope: JobScope, caller: DurableJobCaller): void {
+export function authorizeScope(store: TaskStore, scope: JobScope, caller: DurableJobCaller, allowPublic = false): void {
   parseDurableJobCaller(caller as unknown as JsonValue);
   jobScopeKey(scope);
+  // Public local ingress is not a fabricated Operator. It grants only immediate
+  // controlled global actions; Schedule and Task-shell authority are unchanged.
+  if (allowPublic && scope.kind === "global" && caller.scope === "user") {
+    if (Object.keys(caller).some(key => key !== "scope")) throw new Error("Public user Job caller must not claim a managed identity.");
+    return;
+  }
   // Match Task Context's Operator-only boundary for global callers as well
   // as excluding Task callers from global Jobs. Session identity alone is not
   // permission for a custom GlobalRole to read or manage Task definitions.
@@ -47,7 +54,7 @@ function taskParams(job: JobDefinition, caller: DurableJobCaller, requestId: str
 }
 
 export function authorizeDefinition(store: TaskStore, job: JobDefinition, caller: DurableJobCaller, write: boolean): void {
-  authorizeScope(store, job.scope, caller);
+  authorizeScope(store, job.scope, caller, true);
   if (job.scope.kind === "task") {
     const params = taskParams(job, caller, "definition-validation");
     // A definition must not reveal another Assignment's commands/environment.
@@ -113,6 +120,9 @@ export function admitJobRun(
     const job = tx.getJobDefinition(scope, definitionId);
     if (job === null) throw new Error("Job definition not found.");
     authorizeDefinition(tx, job, caller, false);
+    if (caller.scope === "user" && !["manual", "retry"].includes(trigger.source)) {
+      throw new Error("Public Job admission only authorizes an immediate manual execution or explicit retry.");
+    }
     if (!trigger.key.trim() || !["manual", "retry", "schedule", "integration"].includes(trigger.source)) {
       throw new Error("Invalid JobRun trigger.");
     }
@@ -147,8 +157,8 @@ export function admitJobRun(
     const id = `job-${randomUUID()}`;
     const locator = `artifacts/jobs/global/${id}`;
     const spec = prepareBuiltinJob(job.configuration, join(home, locator), { home, runId: id });
-    const actorId = `global:${caller.role}`;
-    const run: GlobalJobRun = validateDurableJob({
+    const actorId = caller.scope === "user" ? "user" : `global:${caller.role}`;
+    let run: GlobalJobRun = {
       schemaVersion: 1, scope: "global", id, definitionId: job.id, definitionRevision: job.revision,
       trigger: structuredClone(trigger), action: job.configuration.action,
       actionInput: structuredClone(job.configuration.input),
@@ -156,22 +166,34 @@ export function admitJobRun(
       ...spec, status: "queued", artifactsLocator: locator,
       idempotencyKey: createHash("sha256").update(JSON.stringify([actorId, requestId])).digest("hex"),
       operation: {
-        requestId, actorId, authorityRef: jobAuthorityBinding(tx, "global", caller.role!, ""),
+        requestId, actorId, authorityRef: caller.scope === "user" ? "pending" : jobAuthorityBinding(tx, "global", caller.role!, ""),
         targetId: job.id, capability: "job.run", implementation: JOB_RUNNER_IMPLEMENTATION,
         inputDigest: createHash("sha256").update(JSON.stringify([job, trigger, retryOf])).digest("hex"),
         effect: "none", receiptRefs: [], partialResultRefs: []
       },
       ...(retryOf === undefined ? {} : { retryOf }),
       createdAt: now.toISOString(), updatedAt: now.toISOString()
-    });
+    };
+    if (caller.scope === "user") run = { ...run, operation: { ...run.operation, authorityRef: publicJobBinding(tx, run) } };
+    validateDurableJob(run);
     tx.saveGlobalJobRun(run);
     return { run, created: true };
   });
 }
 
+function publicJobBinding(store: TaskStore, run: GlobalJobRun): string {
+  return createHash("sha256").update(JSON.stringify([
+    "public-immediate-job/v1", store.getHomeIdentity().homeId, run.id, run.definitionId, run.definitionRevision,
+    run.action, run.projectId, run.actionInput, run.trigger, run.operation.requestId
+  ])).digest("hex");
+}
+
 export function authorizeGlobalJobStart(store: TaskStore, run: GlobalJobRun): void {
-  if (run.operation.actorId !== "global:operator"
-    || jobAuthorityBinding(store, "global", "operator", "") !== run.operation.authorityRef) {
+  const publicAdmission = run.operation.actorId === "user"
+    && ["manual", "retry"].includes(run.trigger.source)
+    && publicJobBinding(store, run) === run.operation.authorityRef;
+  if (!publicAdmission && (run.operation.actorId !== "global:operator"
+    || jobAuthorityBinding(store, "global", "operator", "") !== run.operation.authorityRef)) {
     throw Object.assign(new Error("Global JobRun caller binding was revoked; no execution was started."), { name: "CoreJobError" });
   }
   // Storage failures are not domain refusals or proof of no execution.
@@ -210,7 +232,7 @@ export function createJobDefinitionControl(store: TaskStore, home: string) {
       op: string; scope: JobScope; caller: DurableJobCaller; id?: string; title?: string;
       configuration?: JobConfiguration; expectedRevision?: number; trigger?: JobTrigger; retryOf?: string; runId?: string;
     };
-    authorizeScope(store, input.scope, input.caller);
+    authorizeScope(store, input.scope, input.caller, true);
     return store.transaction(tx => {
       if (input.op === "list") {
         return tx.listJobDefinitions(input.scope).filter(job => {
@@ -267,7 +289,18 @@ export function createJobDefinitionControl(store: TaskStore, home: string) {
       const run = listJobRuns(tx, existing).find(candidate => candidate.id === input.runId);
       if (run === undefined) throw new Error("Exact JobRun not found.");
       authorizeRunRead(tx, run, input.caller);
-      if (input.op === "run-get") return run;
+      if (input.op === "run-get" || input.op === "run-confirm") return run;
+      if (input.op === "run-result") return {
+        snapshot: jobRunSnapshot(run),
+        acceptedAt: run.createdAt, startedAt: run.startedAt ?? null,
+        confirmedAt: run.businessResult === undefined ? null : run.terminalAt ?? null,
+        status: run.status, result: run.businessResult ?? null
+      };
+      if (input.op === "run-evidence") return {
+        sourceRun: jobRunSnapshot(run), operation: run.operation,
+        process: run.process ?? null, checkpoint: run.checkpoint ?? null,
+        processResult: run.result ?? null, artifactsLocator: run.artifactsLocator
+      };
       if (input.op === "logs") {
         const steps = run.result?.steps ?? createFileArtifactPort(home)
           .readCheckpoint(executionNamespace(run), run.id)?.completedSteps ?? run.checkpoint?.completedSteps ?? [];

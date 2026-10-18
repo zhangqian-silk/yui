@@ -2407,12 +2407,13 @@ export async function main(): Promise<void> {
       return;
     }
     if (resolved[0] === "job") {
-      emit(await runDurableJobCommand(resolved.slice(1), {
+      const result = await runDurableJobCommand(resolved.slice(1), {
         home,
         json: jsonOutput,
         environment: process.env,
         store
-      }));
+      });
+      emit(result, false, jsonOutput ? JSON.parse(result) : undefined);
       return;
     }
     if (resolved[0] === "telemetry") {

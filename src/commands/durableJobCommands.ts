@@ -37,7 +37,7 @@ export async function runDurableJobCommand(
   options: DurableJobCommandOptions
 ): Promise<string> {
   const [command, ...rest] = args;
-  if (command !== undefined && ["define", "update", "list", "show", "run", "runs", "run-get", "run-cancel", "run-acknowledge", "logs"].includes(command)) {
+  if (command !== undefined && ["define", "update", "list", "show", "run", "runs", "run-get", "run-result", "run-evidence", "run-confirm", "run-cancel", "run-acknowledge", "logs"].includes(command)) {
     return definitionCommand(command, rest, options);
   }
   if (command === "start") return startJob(rest, options);

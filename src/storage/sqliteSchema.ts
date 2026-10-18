@@ -7,6 +7,7 @@ import { JOB_SCHEMA_SQL } from "./jobSchema.js";
 import { SCHEDULE_SCHEMA_SQL } from "./scheduleSchema.js";
 import { GLOBAL_SESSION_TABLE_SQL, SESSION_HISTORY_UPGRADE_SQL } from "./sessionHistorySchema.js";
 import { migrateJobDefinitions } from "./upgrade/jobDefinitionMigration.js";
+import { migrateJobBusinessResults } from "./upgrade/jobBusinessResultMigration.js";
 import {
   CURRENT_STORAGE_VERSION, MIN_SUPPORTED_STORAGE_VERSION, STORAGE_FORMAT,
   isMinorStorageUpgrade, isStorageVersion, storageVersionParts, type StorageVersion
@@ -39,7 +40,7 @@ export type StorageMinorUpgrade = Readonly<{
   sourceChecksum: string;
   targetChecksum: string;
   sql: string;
-  dataMigration?: "task-main-workspace" | "project-knowledge" | "job-definitions";
+  dataMigration?: "task-main-workspace" | "project-knowledge" | "job-definitions" | "job-business-results";
 }>;
 
 // Only explicit, contiguous minor changes in this baseline may be added here.
@@ -183,6 +184,15 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   targetChecksum: CURRENT_SCHEMA_CHECKSUM,
   // Preserve every payload byte. No identity or authorization is inferred.
   sql: SESSION_HISTORY_UPGRADE_SQL
+}, {
+  fromVersion: "1.14",
+  toVersion: "1.15",
+  name: "job-business-results",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  sql: "",
+  dataMigration: "job-business-results"
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {
@@ -318,6 +328,7 @@ export function applySqliteMinorUpgrades(
       }
       if (step.dataMigration === "project-knowledge") migrateProjectKnowledge(db);
       if (step.dataMigration === "job-definitions") migrateJobDefinitions(db);
+      if (step.dataMigration === "job-business-results") migrateJobBusinessResults(db);
       const { major, minor } = storageVersionParts(step.toVersion);
       db.prepare("UPDATE storage_schema SET major=?,minor=?,checksum=? WHERE id=1")
         .run(major, minor, step.targetChecksum);

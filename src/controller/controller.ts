@@ -169,7 +169,7 @@ export type ControllerRuntimeOptions = Readonly<{
    * Reconciles DurableJobs once per scheduler pass: spawns queued detached
    * runners, harvests terminal evidence, and enqueues Leader wakeups.
    */
-  jobSupervisor?: Readonly<{ reconcile(now: Date): void }>;
+  jobSupervisor?: Readonly<{ reconcile(now: Date): void; confirmResult?(namespace: string, runId: string, now: Date): void }>;
   globalInputDelivery?: (options: { reconcile: boolean; now: Date }) => Promise<void>;
   hostTerminalRecovery?: () => Promise<void>;
   providerRetry?: Readonly<{
@@ -2259,6 +2259,15 @@ export async function startFileTaskController(
         catch (error) {
           if (error instanceof Error && error.name === "Error") error.name = "CoreJobError";
           throw error;
+        }
+        if ((params as { op?: string }).op === "run-confirm") {
+          if (!options.jobSupervisor?.confirmResult) {
+            throw controllerApplicationError("METHOD_NOT_FOUND", "Job result collection unavailable.");
+          }
+          // The service above first authenticates scope and this exact Run.
+          const run = result as { taskId?: string; id: string };
+          options.jobSupervisor.confirmResult(run.taskId ?? "global", run.id, new Date());
+          result = options.jobDefinitions({ ...(params as Record<string, JsonValue>), op: "run-get" }, new Date());
         }
         // The service has validated this scope. Only execution mutations need
         // reconciliation; definition reads/edits do not start background work.

@@ -15,6 +15,9 @@ yui job define --global --job probe --title "Local probe" \
 yui job run --global --job probe --request-id first
 yui job runs --global --job probe
 yui job run-get --global --job probe --run <exact-run-id>
+yui job run-result --global --job probe --run <exact-run-id>
+yui job run-evidence --global --job probe --run <exact-run-id>
+yui job run-confirm --global --job probe --run <exact-run-id>
 yui job logs --global --job probe --run <exact-run-id>
 yui job run-cancel --global --job probe --run <exact-run-id>
 ```
@@ -27,11 +30,21 @@ with `job show`, listed with `job list`, and revised with `job update --revision
 <observed-revision> --title ... --input ...`. A definition ID is required on
 creation; replaying an identical creation is idempotent. Scope cannot be updated.
 
-Global Job management requires the current authenticated Operator Session.
+Global Job management accepts public local callers or the current authenticated
+Operator Session. A public caller uses `scope:user` with no managed identity
+fields. The normal CLI first resolves native conversation identity against the
+selected Home: unknown provider conversations remain public, while known
+managed, historical, partial or revoked identities never fall back to user.
+The local Controller socket is a single-user Home boundary, not a remote
+authentication endpoint; `scope:user` is not a token granting Task or shell access.
 Other GlobalRoles cannot inspect or manage Task Job definitions either, matching
 the existing Task Context authorization boundary.
-Users can request it through Operator. Literal `caller.scope=user` is not a
-credential on the existing Controller socket. Task Sessions cannot inspect,
+Public immediate admissions bind the exact Home, Run, definition revision,
+target/input and trigger; they need no Agent configuration, Operator, Session
+or empty Task. They do not enqueue an Agent wake on completion. This is not a
+persistent Schedule grant: public `source:schedule` admission is rejected and
+Schedule management retains its existing Session authority until its own change.
+Task Sessions cannot inspect,
 create, modify or run global Jobs. The initial global action is `system.noop`,
 a fixed local no-op implemented by the same standalone runner. It accepts only
 empty input and no Project; it does not call a model or external service.
@@ -67,7 +80,8 @@ authoritative Task Run table, with `definitionId`, `definitionRevision` and
 `trigger` added to each payload. This retains every Task-local Run ID and
 artifact location. Global Runs have `scope:"global"` and no `taskId`, Task or
 Assignment. They use the same execution state machine and supervisor; their
-terminal notices enter the Operator mailbox, never a Task Leader mailbox.
+Operator-admitted terminal notices enter the Operator mailbox, never a Task
+Leader mailbox. Public immediate Runs are read directly without Agent delivery.
 
 The centralized transactional migration maps each old DurableJob to one
 definition with the same local ID and one preserved Run. Equal commands are
@@ -78,6 +92,50 @@ not rewritten. Ordinary readers accept only current storage; there is no
 dual-format reader. A failed migration rolls back without advancing storage.
 Actual Home upgrades require their own authorization and backup; this change
 does not authorize or perform one.
+
+Storage **1.14 → 1.15** adds `businessResult` to terminal Run payloads and public
+immediate authority bindings to new Runs. Original terminal payload bytes are
+archived under migration 15; the migration derives only the recorded outcome
+and a versioned reference to the unchanged process result. It never parses logs,
+invents domain data, rewrites Integration references or changes active Run
+identities. Ordinary readers use only the current contract.
+
+## Business outcome and evidence
+
+`run-result` returns the admitted snapshot, `acceptedAt`, `startedAt`,
+`confirmedAt`, current `status` and nullable `result`. Acceptance is not start;
+start is not confirmation. The snapshot is derived exclusively from the immutable
+Run fields, never a mutable current Job definition. Scope, executor (`shell` or
+controlled `builtin`), target and trigger are separate concepts. Current permitted
+combinations remain Task shell and global builtin; there is no extensible empty
+executor/plugin configuration or arbitrary global shell.
+
+`JobBusinessResult` has `schemaVersion:1`, exact `sourceRun:{scope,runId}`, an
+`outcome`, human-readable `summary`, optional JSON `data`, and `evidence`.
+Each evidence reference carries `kind`, `owner`, `sourceRun`, a SHA-256 `version`
+of the referenced bytes, and `locator`. These are evidence references, not a file
+artifact library; future file artifacts must preserve their own owner/version
+and source Run rather than treating a path as identity. Results are bounded to
+256 KiB. Shell results describe the process contract only; they cannot infer
+domain success from arbitrary log text. `system.noop` reports its controlled
+action. Project refresh reports observed commits/tracking and domain failures.
+
+`run-evidence` returns the exact operation receipts, PID/start identity,
+checkpoint, `processResult` and artifact location. The existing Run `result`
+field remains the original process evidence for Integration and existing readers;
+`businessResult` and `status` represent business outcome. A successful process
+does not prove a builtin business effect: missing/invalid business receipts yield
+`unknown-needs-attention` and block overlap/retry. Historical results contain
+only what their saved evidence proved, without invented structured data.
+
+The Project action writes `business-result.json` separately from stdout.
+Failure to save it after an effect is unknown, not an automatically retryable
+failure. A database collection failure leaves the original receipt and active Run
+available for later collection. `run-confirm` authenticates the exact Run and
+collects only retained ready/exit/checkpoint/business evidence; it never admits,
+spawns, retries or cancels an action. Repeated confirmation is idempotent.
+Terminal outcomes remain immutable; acknowledging an unknown is not success
+and does not authorize replay. There is no caller-supplied outcome override.
 
 IntegrationAttempt and verification consumers still use
 `getDurableJob(taskId, exactRunId)`. Existing Task Context `job` entries,
@@ -120,7 +178,7 @@ daemon, cross-Task dependency engine or release behavior.
 
 ## Controlled Project refresh
 
-An authenticated Operator can explicitly install one maintenance definition
+A public local caller or authenticated Operator can explicitly install one maintenance definition
 per registered managed Project, inspect it, and request independent Runs:
 
 ```sh
@@ -185,8 +243,9 @@ remote observation. Missing exit evidence, timeout or cancellation must not be
 presented as successful synchronization; inspect retained evidence before retry.
 The Run's all-zero `head` is not a Project revision; use the action's observations.
 
-No persistent envelope/table change is needed: action input and output use the
-existing JobDefinition/JobRun JSON and logs. Schedule should reference this same
+Action input uses the existing JobDefinition configuration; structured output
+uses the 1.15 business result alongside unchanged process evidence/logs.
+Schedule should reference this same
 global definition and use its existing admission seam, never a second Project
 automation state. The isolated core scenario covers interval-triggered refresh
 Runs, missed-period coalescing and disable behavior against a local Git remote.
