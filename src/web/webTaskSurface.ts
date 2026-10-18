@@ -102,6 +102,7 @@ export function createWebTaskSurface(
         core: readTaskContext(tx, taskId, environment),
         task: {
           id: task.id, title: clip(task.title), status: task.status, updatedAt: task.updatedAt,
+          source: task.source,
           executionGate: task.executionGate, priority: task.priority, tags: task.tags?.slice(0, 16).map(value => clip(value)),
           projectBindings: task.projectBindings.slice(0, 32),
           description: clip(task.description), completionSummary: clip(task.completionSummary),

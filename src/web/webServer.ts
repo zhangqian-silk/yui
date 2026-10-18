@@ -356,13 +356,14 @@ async function handleHttpRequest(
       let value: unknown;
       if (method === "GET") {
         const query = new URL(request.url!, "http://localhost").searchParams;
-        if ([...query.keys()].some(key => !["op", "id", "runId"].includes(key))) throw new WebRequestRejected("Unknown Job query.");
-        value = dependencies.jobs.read(scope, family, Object.fromEntries(query), now());
+        if ([...query.keys()].some(key => !["op", "id", "runId", "reference", "offset"].includes(key)
+          || query.getAll(key).length !== 1)) throw new WebRequestRejected("Unknown or repeated Job query.");
+        value = await dependencies.jobs.read(scope, family, Object.fromEntries(query), now());
       } else if (method === "POST") {
         if (headerValue(request, "origin") !== `http://${headerValue(request, "host")}`) {
           throw new WebRequestRejected("Job changes require a same-origin request.");
         }
-        value = dependencies.jobs.mutate(scope, family, await readMutationBody(request), now());
+        value = await dependencies.jobs.mutate(scope, family, await readMutationBody(request), now());
       } else throw new WebRequestRejected("Method not allowed.");
       sendJson(response, 200, value, false);
     } catch (error) {

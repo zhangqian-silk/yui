@@ -17,11 +17,14 @@ export function createWebJobs(store: TaskStore, home: string) {
     const apply = (tx: TaskStore) => {
       if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Expected an operation.");
       requireKnownFields(value, family === "jobs"
-        ? ["op", "id", "title", "configuration", "expectedRevision", "runId", "requestId"]
+        ? ["op", "id", "title", "configuration", "expectedRevision", "runId", "requestId",
+          "reference", "offset", "expectedSessionId"]
         : ["op", "id", "jobId", "rule", "expectedRevision", "authorization", "target"], "Web Job/Schedule request");
       const input = value as Record<string, JsonValue>;
-      const reads = family === "jobs" ? ["list", "show", "runs", "run-get", "run-result", "run-evidence", "run-delegation", "logs"] : ["list", "show"];
-      const writes = family === "jobs" ? ["define", "update", "run", "run-cancel"] : ["create", "update", "enable", "disable"];
+      const reads = family === "jobs" ? ["list", "show", "runs", "run-get", "run-result", "run-evidence",
+        "run-delegation", "logs", "artifact-list", "artifact-preview", "session-inspect"] : ["list", "show"];
+      const writes = family === "jobs" ? ["define", "update", "run", "run-cancel", "artifact-register",
+        "session-stop", "session-new"] : ["create", "update", "enable", "disable"];
       if (!(write ? writes : reads).includes(String(input.op))) throw new Error("Operation is not available on this endpoint.");
       if (scope.kind === "task" && !tx.getTask(scope.taskId)) throw new Error("Task not found.");
       const session = scope.kind === "task" ? activeLiveRoleAgentSession(tx.getGlobalRoleSessionSet("operator")) : null;
@@ -29,6 +32,11 @@ export function createWebJobs(store: TaskStore, home: string) {
       const caller = session ? { scope: "global", role: "operator", nativeSessionId: session.nativeSessionId,
         agentId: session.agentId, adapterId: session.adapterId } : { scope: "user" };
       const { requestId, ...fields } = input;
+      if (typeof fields.reference === "string") fields.reference = JSON.parse(fields.reference) as JsonValue;
+      if (fields.offset !== undefined) {
+        if (!/^\d{1,9}$/u.test(String(fields.offset))) throw new Error("Invalid artifact offset.");
+        fields.offset = Number(fields.offset);
+      }
       if (input.op === "run" && (typeof requestId !== "string" || !requestId.trim() || requestId.length > 200)) {
         throw new Error("Immediate execution requires a stable requestId.");
       }
@@ -36,6 +44,17 @@ export function createWebJobs(store: TaskStore, home: string) {
         ...(input.op === "run" ? { trigger: { source: "manual", key: requestId } } : {}) } as JsonValue;
       return (family === "jobs" ? createJobDefinitionControl(tx, home) : createScheduleControl(tx, home))(params, now);
     };
+    // Artifact Git I/O is asynchronous, with its own authorization recheck and
+    // short publication transaction. Never keep a SQLite transaction across it.
+    if (family === "jobs" && value && typeof value === "object"
+      && "op" in value && String(value.op).startsWith("artifact-")) {
+      try {
+        return Promise.resolve(apply(store)).catch(error => {
+          if (!write) throw new WebRequestRejected(error instanceof Error ? error.message : String(error));
+          throw error; // A Git/publication failure is not proof of non-submission.
+        });
+      } catch (error) { throw new WebRequestRejected(error instanceof Error ? error.message : String(error)); }
+    }
     if (write) return webLocalMutation(store, apply);
     try { return store.transaction(apply); }
     catch (error) { throw new WebRequestRejected(error instanceof Error ? error.message : String(error)); }

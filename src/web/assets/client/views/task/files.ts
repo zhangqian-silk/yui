@@ -74,7 +74,7 @@ function artifactViewer(viewer, data, t, actions) {
   return { element: viewer, read: read, draw: draw };
 }
 
-function drawArtifact(viewer, value, taskId, t, actions, read, state = {}) {
+export function drawArtifact(viewer, value, taskId, t, actions, read, state = {}) {
   clear(viewer);
   if (!value) return;
   const selected = value.after || value;
@@ -121,12 +121,13 @@ function drawArtifact(viewer, value, taskId, t, actions, read, state = {}) {
   viewer.append(h("p.viewer-ref", null, mono("sha256:" + selected.digest)));
   if (value.before) viewer.append(h("p.viewer-ref", null, mono("← git:" + value.before.commit + ":" + value.before.relativePath + " · sha256:" + value.before.digest)));
   viewer.append(h("p.faint.small", null, t("evidence.fixedNote")));
-  viewer.append(h("div.record-actions", null, value.kind === "image" ? null : copyText, download, feedback));
+  viewer.append(h("div.record-actions", null, value.kind === "image" ? null : copyText, download,
+    actions.openConversation ? feedback : null));
   if (value.kind === "image") { viewer.append(imagePreview(value, t, undefined, preview)); return; }
   const before = h("input", { placeholder: t("materials.before"), "aria-label": t("materials.before"), maxLength: 64 });
   const compare = button(t("materials.compare"), { variant: "ghost" });
   compare.addEventListener("click", function () { read(selected.relativePath, selected.commit, 0, before.value); });
-  viewer.append(h("div.record-actions", null, before, compare));
+  if (actions.compare !== false) viewer.append(h("div.record-actions", null, before, compare));
   const source = h("pre.code-block.artifact-text", { tabIndex: 0, "aria-label": t("evidence.fixedText") }, value.content);
   if (!value.before && /\.md$|\.markdown$/i.test(selected.relativePath)) {
     viewer.append(markdownPreview(value, taskId, t, actions, preview));
@@ -207,7 +208,7 @@ function markdownPreview(value, taskId, t, actions, preview) {
       feedback.addEventListener("click", function () { actions.openConversation([artifactRef(value), artifactRef(image)]); });
       slot.append(imagePreview(image, t, entry.alt, saved), h("span.viewer-ref", null,
         path + " · git:" + image.commit + " · sha256:" + image.digest),
-        h("span.record-actions", null, download, feedback));
+        h("span.record-actions", null, download, actions.openConversation ? feedback : null));
     }
     async function observeRead() {
       load.disabled = true; body.dataset.reading = "true"; status.textContent = t("evidence.reading");

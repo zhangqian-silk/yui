@@ -524,9 +524,12 @@ This does not enable a cadence for any real Project.
 The Task's **Jobs** tab manages only that Task. **Settings → Jobs & schedules**
 manages global definitions. Both use the same component and public services.
 Create/edit a definition, run it immediately, select an exact historical Run
-and read its snapshot/results/logs, or request cancellation of that Run.
+and read its snapshot/results/diagnostics, or request cancellation of that Run.
 Task shell configuration uses the same explicit managed-workspace specification
-as the CLI; global creation offers only `system.noop` and `project.refresh`.
+as the CLI. Global controlled actions remain `system.noop` and `project.refresh`;
+Task-delegation and Agent definitions use their documented configuration, without
+inventing process fields. Executor kind cannot be changed on an existing definition.
+Builtin definitions have no arbitrary configuration editor.
 Creating or reading a Job never executes it.
 
 The HTTP routes are `/api/tasks/:taskId/jobs|schedules` and
@@ -534,11 +537,10 @@ The HTTP routes are `/api/tasks/:taskId/jobs|schedules` and
 takes the corresponding public operation fields, with `requestId` for manual
 Run admission. Routes fix scope. Browser-supplied `caller`, `scope` or trigger
 authority is rejected. The loopback token authenticates the local-user ingress,
-and writes additionally require an exact same Origin. The adapter resolves the
-current Operator Session from the server store on every call; if none is
-available, management reports that prerequisite rather than fabricating one.
-Its accepted Jobs/Schedules retain the normal Operator binding/revocation
-semantics. Managed RPC callers retain their existing authentication and cannot
+and writes additionally require an exact same Origin. Global management uses the
+authenticated local user, without requiring an Operator Session. Task-scoped
+management resolves the current Operator binding, preserving existing Task and
+Assignment checks. Managed RPC callers retain their authentication and cannot
 borrow this local-user adapter.
 
 Schedule forms support once, anchored interval and five-field cron with an
@@ -549,3 +551,49 @@ successful. Errors retain the draft; an unknown write is not automatically
 resent. Refresh only reads facts and keeps the selected Run exact. No new
 tables, scheduling loop, Project switch, implicit refresh or deletion semantics
 are introduced.
+
+### Product navigation and fixed evidence
+
+The daily Task list defaults to ordinary Tasks. Its ordinary / Job execution /
+all selector uses the existing server-side `source` catalog filter. Searching
+or opening an attention category searches across both categories; source is
+creation provenance, not Task business type. The CLI and Operator catalog
+defaults are unchanged.
+
+An execution Task links back to its immutable `Task.source` Job/Run. A delegated
+Run links to its actual target Task, whose Jobs tab still lists only definitions
+owned by that target. Links use `/?task=A&section=jobs&job=J&jobRun=R` or
+`/settings/jobs?job=J&jobRun=R`. A Schedule's last admission links to the recorded
+instance Job, which can differ from its template.
+
+Run details separate business results, structured evidence, registered artifacts
+and process logs. Agent diagnostics use Agent-aware evidence, not process logs;
+a diagnostic failure does not hide the Run's business result. Most recent Run,
+most recent successful Run, Project refresh observations and Schedule admission
+checks remain distinct. Refresh errors label retained facts as stale.
+
+Read-only `artifact-list` and `artifact-preview` are exposed on the same
+scope-fixed GET route. Preview requires `runId`, a JSON `reference`, and optional
+nonnegative `offset`; duplicate/unknown query fields are rejected. The existing
+artifact controller rechecks authorization after Git I/O and reads only a
+registered exact owner/Run/commit/path/digest. Text pagination, raster validation,
+Markdown limits and transport bounds are unchanged. The shared Task viewer
+renders Job evidence, but linked images must also be individually registered;
+there is no directory or HEAD fallback. Selected artifact references survive
+refresh/reload in the `artifact` view parameter and are matched against the
+selected Run's registered references before reading.
+
+`artifact-register` POST publishes one explicit saved reference. Inspecting
+unregistered saved files does not make them formal results. A partial
+`saved-unregistered` receipt is shown as such; it never starts business work.
+Artifact I/O runs outside synchronous SQLite transactions, retaining the
+controller's short publication transaction and original partial-result contract.
+
+`session-inspect` GET and `session-stop`/`session-new` POST are only offered for
+Job-owned Agent targets. Mutations include the observed `expectedSessionId`
+(and exact Run for isolated execution); the domain rejects unknown writers,
+unsettled input or stale identities. Stop requests cleanup, replacement requires
+confirmed termination, and neither replays input. Run cancellation is cooperative
+and does not stop a delegated Task or interrupt a shared Operator/Leader.
+Task stopping remains an explicit action on the target Task. Archive/cleanup
+are separate operations, not consequences of disabling, cancelling or replacing.

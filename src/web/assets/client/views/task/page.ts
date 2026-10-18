@@ -13,7 +13,7 @@ import { updateObservation } from "/assets/js/views/task/observation.js";
 import { renderDelivery } from "/assets/js/views/task/delivery.js";
 import { renderRuntime } from "/assets/js/views/task/runtime.js";
 import { renderRecords } from "/assets/js/views/task/records.js";
-import { mountJobs } from "/assets/js/views/jobs.js";
+import { mountJobs, jobLink } from "/assets/js/views/jobs.js";
 
 // Overview: where it stands. Delivery: what it produced. Runtime: what is
 // live now. Records: what happened. Retired section names stay addressable.
@@ -95,6 +95,10 @@ function dockToggle(mode, iconName, title, t, ctx) {
 
 function taskMeta(task, t, locale) {
   return h("div.task-meta", null,
+    task.source?.kind === "job-run" ? h("a.btn", {
+      href: jobLink(task.source.run.scope.kind === "task" ? task.source.run.scope.taskId : undefined,
+        task.source.jobId, task.source.run.runId)
+    }, t("jobs.sourceJob") + " · " + task.source.jobId + " / " + task.source.run.runId) : null,
     statusBadge(t, "task", "status", task.status),
     h("span", { dataset: { slot: "exec-badge" } }),
     task.priority ? badge(label(t, "priority", task.priority), task.priority === "urgent" || task.priority === "high" ? "accent" : "idle") : null,
