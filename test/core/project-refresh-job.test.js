@@ -18,6 +18,7 @@ import { createScheduleControl, reconcileSchedules } from "../../dist/controller
 import { DurableJobSupervisor, createFileArtifactPort } from "../../dist/controller/jobSupervisor.js";
 import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
 import { sanitizedTestEnv } from "../helpers/sanitizedEnv.mjs";
+import { startDurableJob } from "../../dist/job/durableJob.js";
 
 test("automatic refresh shares the manual maintenance fence and rejects changed or external targets", async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-refresh-domain-"));
@@ -100,6 +101,13 @@ test("controlled Project Jobs fast-forward through the real runner and isolate r
     process: {
       spawnJobRunner(specPath) {
         starts++;
+        if (starts === 2) {
+          // The real Controller can adopt ready.json before the domain child
+          // reads the Run. Both queued/possible and running/confirmed are live.
+          const spec = JSON.parse(readFileSync(specPath, "utf8"));
+          store.saveGlobalJobRun(startDurableJob(store.getGlobalJobRun(spec.jobId),
+            { pid: 123, startIdentity: "adopted-fixture" }, new Date()));
+        }
         if (cancelBeforeStep) writeFileSync(join(specPath, "..", "cancel"), "");
         const result = spawnSync(process.execPath,
           [fileURLToPath(new URL("../../dist/job/jobRunner.js", import.meta.url)), specPath],

@@ -4,6 +4,7 @@ import type { Schedule } from "../schedule/schedule.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import type { JobDefinition } from "./jobDefinition.js";
 import type { GlobalJobRun } from "./durableJob.js";
+import { requireProjectSyncTarget } from "./projectSync.js";
 
 /** Internal compiled registration, not a caller identity accepted by RPC. */
 const actions = new Set(["system.noop", "project.refresh"]);
@@ -33,6 +34,10 @@ export function requireScheduleService(store: TaskStore, ref: ScheduleServiceRef
   if (!source || source.revision !== auth.jobRevision
     || scheduleServiceBinding(store, schedule, source, auth.grantId) !== auth.binding) {
     throw new Error("Schedule service target or authority changed; explicitly reauthorize.");
+  }
+  if (schedule.builtin) {
+    if (!schedule.builtin.enabled) throw new Error("Builtin Project sync was disabled.");
+    requireProjectSyncTarget(store, source);
   }
   return schedule;
 }

@@ -203,6 +203,17 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   targetChecksum: CURRENT_SCHEMA_CHECKSUM,
   sql: "",
   dataMigration: "schedule-dispatch"
+}, {
+  fromVersion: "1.16",
+  toVersion: "1.17",
+  name: "builtin-project-sync",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Additive installer provenance, explicit compiled service issuer and user
+  // intent on new definitions/plans. Do not adopt or rewrite historical Jobs,
+  // grants, time overrides or Runs. Installation is a separate runtime action.
+  sql: ""
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {

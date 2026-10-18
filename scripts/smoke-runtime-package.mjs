@@ -213,7 +213,7 @@ try {
   }
 
   // Real public CLI -> Controller -> runner -> separate business/evidence reads,
-  // before any Agent Session or Task exists. Only a fixed local no-op executes.
+  // before any Agent Session or Task exists. Only disposable local actions execute.
   const { SqliteTaskStore: JobFixtureStore } = await import(pathToFileURL(join(root, "dist/storage/sqliteStore.js")).href);
   const checkNoJobSession = () => {
     const store = new JobFixtureStore(yuiHome, { readonly: true });
@@ -257,6 +257,56 @@ try {
       assert.equal(kind === "existing-job", receipt.jobId === "public-probe");
       checkNoJobSession();
     }
+    // Builtin installation -> due service dispatch -> real local fast-forward.
+    // Reuse this owned Home/Controller and its teardown, never a production remote.
+    const syncRemote = join(sandbox, "sync-remote.git"), syncSeed = join(sandbox, "sync-seed");
+    const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], {
+      env: { ...environment, GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+        GIT_COMMITTER_NAME: "Fixture", GIT_COMMITTER_EMAIL: "fixture@example.invalid" },
+      encoding: "utf8", stdio: ["pipe", "pipe", "pipe"]
+    }).trim();
+    git(sandbox, "init", "--bare", "--initial-branch=main", syncRemote);
+    git(sandbox, "clone", syncRemote, syncSeed);
+    writeFileSync(join(syncSeed, "value"), "before\n");
+    git(syncSeed, "add", "value"); git(syncSeed, "commit", "-m", "before"); git(syncSeed, "push", "origin", "main");
+    const before = git(syncSeed, "rev-parse", "HEAD");
+    const project = json("project", "clone", "Sync fixture", syncRemote, "--stable", "main", "--development", "main").project;
+    const syncId = `project-sync-${project.id}`;
+    await waitFor(() => json("schedule", "list", "--global").some(s => s.id === syncId),
+      "Builtin sync was not installed by Controller reconciliation.");
+    let plan = json("schedule", "show", "--global", "--schedule", syncId).schedule;
+    assert.equal(plan.authorization.grantedBy.scope, "service");
+    assert.equal(plan.rule.everyMs, 6 * 60 * 60_000);
+    writeFileSync(join(syncSeed, "value"), "after\n");
+    git(syncSeed, "commit", "-am", "after"); git(syncSeed, "push", "origin", "main");
+    const after = git(syncSeed, "rev-parse", "HEAD");
+    json("schedule", "update", "--global", "--schedule", syncId, "--revision", String(plan.revision),
+      "--rule", JSON.stringify({ kind: "interval", everyMs: 60000, anchor: new Date(Date.now() + 2000).toISOString() }));
+    await waitFor(() => json("schedule", "show", "--global", "--schedule", syncId).schedule.lastAttempt?.runId,
+      "Builtin sync did not dispatch.");
+    plan = json("schedule", "show", "--global", "--schedule", syncId).schedule;
+    const syncRef = ["--global", "--job", syncId, "--run", plan.lastAttempt.runId];
+    await waitFor(() => json("job", "run-get", ...syncRef).status === "succeeded",
+      "Builtin sync did not fast-forward.", () => JSON.stringify({
+        evidence: json("job", "run-evidence", ...syncRef),
+        result: json("job", "run-result", ...syncRef),
+        logs: json("job", "logs", ...syncRef)
+      }));
+    const refresh = json("job", "run-result", ...syncRef).result.data.refresh;
+    assert.equal(refresh.fromCommit, before);
+    assert.equal(refresh.toCommit, after);
+    assert.equal(refresh.changed, true);
+    assert.equal(git(project.path, "rev-parse", "HEAD"), after);
+    plan = json("schedule", "show", "--global", "--schedule", syncId).schedule;
+    json("schedule", "disable", "--global", "--schedule", syncId, "--revision", String(plan.revision));
+    json("controller", "restart");
+    plan = json("schedule", "show", "--global", "--schedule", syncId).schedule;
+    assert.equal(plan.builtin.enabled, false);
+    assert.equal(plan.state, "disabled");
+    assert.equal(plan.rule.everyMs, 60000);
+    assert.equal(json("job", "runs", "--global", "--job", syncId).length, 1);
+    checkNoJobSession();
+    process.stdout.write("Builtin Project sync sessionless fast-forward/restart smoke passed.\n");
     runCli(cli, ["config", "runtime", "clear", "reconciliation-interval-seconds"], environment);
   } finally {
     for (const plan of json("schedule", "list", "--global")) {

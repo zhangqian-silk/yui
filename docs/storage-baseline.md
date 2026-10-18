@@ -2,7 +2,13 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.16. The 1.15 → 1.16 transition adds explicit Schedule
+Current storage is 1.17. The additive 1.16 → 1.17 transition admits builtin
+Project-sync provenance, a compiled service issuer and a separate user-enabled
+preference on new Schedules. SQL layout and every existing payload remain unchanged;
+it neither adopts custom Jobs nor fabricates historical grants or Runs.
+Installation is a Controller operation, separate from storage migration.
+
+The 1.15 → 1.16 transition adds explicit Schedule
 dispatch targets and authorization kinds. Existing plans keep their exact Session
 authority, rules, identity and progress; original bytes are archived under migration
 16. No service permission is inferred. New service grants and Job instance
