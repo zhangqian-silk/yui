@@ -148,6 +148,24 @@ separate work, not a reason to add a background protocol to the normal path.
 
 ## Hand off evidence
 
+For authorized PR delivery, keep related code, tests, Skill/documentation changes
+and CI repairs on the same open PR. Prepare them together before pushing instead
+of creating avoidable CI rounds. A new commit still needs its relevant checks;
+an unchanged successful result is not a reason to rerun. Once merged, a code
+correction needs a follow-up PR rather than rewriting the accepted candidate.
+
+When optimizing CI, record the exact candidate/run/attempt and separate queue,
+installation, build, tests and smoke timings. Observe the existing change before
+stacking another optimization; compare coverage and cache conditions as well as
+elapsed time. Follow demonstrated bottlenecks, not a target test count.
+
+Only when version release is explicitly authorized, prepare its version and
+release notes in the same open PR when practical, then follow the exact merged
+commit through CI and the existing publication checks. PR success does not prove
+a different merge SHA, and merge authority does not authorize npm publication.
+Report local validation, open PR, merge and verified package publication as
+separate outcomes; recover uncertain effects from existing evidence, not replay.
+
 Inspect the complete final change and affected contracts. Report the observable
 result, validation actually performed, material gaps and remaining decisions.
 Distinguish self-review, deterministic tests and real-Agent evidence; passing

@@ -105,6 +105,11 @@ setup、输入跨重启持久化及幂等、scratch 激活、原生结果入库�
 Task 委派和 Agent Job 路由。两种独立 Schedule 目标先创建再等待，避免串行维护等待，但仍逐个
 验证真实结果与隔离；这些是业务组装证据，不是 ABI 矩阵。
 
+冒烟日志分别报告每阶段实际耗时，以及父测试脚本 `runCli` 的调用次数和累计耗时。
+CLI 耗时包含命令执行与 Controller 等待，已计入阶段总时间；不含假 Provider 或
+其他 helper 发起的 CLI 调用，不能解释为纯启动耗时，也不能再次加到总时间上。
+通知轮询找到新通知后保留其准确 wake ID，并持续刷新终态事件，不反复展开历史通知详情。
+
 `publish.yml` 通过 `YUI_INSTALLED_ROOT` 对刚安装的包执行上表 profile，增加真实
 npm bin、依赖、受支持 Node 版本、产物和 provenance 边界。这证明运行时集成，不证明
 真实模型行为。纯契约与安全检查保留在 `test/core`，生产组件组装在这里验证，

@@ -25,9 +25,16 @@ import { parseArgs } from "node:util";
 
 const started = performance.now();
 let phaseStarted = started;
+let cliCalls = 0;
+let cliElapsed = 0;
 function phase(name) {
   const now = performance.now();
   console.log(`TIMING ${name}: ${Math.round(now - phaseStarted)} ms`);
+  // Includes command execution and Controller waits, not just Node startup.
+  // This is a subset of phase wall time; never add it to the phase total.
+  console.log(`TIMING cli/${name}: ${cliCalls} calls, ${Math.round(cliElapsed)} ms`);
+  cliCalls = 0;
+  cliElapsed = 0;
   phaseStarted = now;
 }
 const { values } = parseArgs({ options: {
@@ -487,7 +494,8 @@ try {
       } while (continuation !== undefined);
       return observedEvents;
     };
-    const wakes = () => listItems("task", "wake", "list", task.id)
+    const wakes = (excludedIds = new Set()) => listItems("task", "wake", "list", task.id)
+      .filter(entry => !excludedIds.has(entry.id))
       .map(entry => json("task", "wake", "show", task.id, entry.id).wake);
     json("task", "activation", "request", task.id, "--request-id", "execute", "--environment", "scratch");
     await waitFor(() => JSON.stringify(events()).includes("Native Codex result."),
@@ -579,6 +587,10 @@ try {
       assert.match(String(error.stderr), /completed/);
       return true;
     });
+    // Locate a new notification through the real CLI, then keep its exact
+    // identity while polling fresh terminal events. Historical wake details
+    // cannot establish completion of this new action and need not be reread.
+    const beforeReopenWakes = new Set(listItems("task", "wake", "list", task.id).map(wake => wake.id));
     json("task", "reopen", task.id);
     json("task", "reopen", task.id);
     assert.equal(json("task", "show", task.id).task.completedAt, undefined);
@@ -587,12 +599,14 @@ try {
       const observation = JSON.parse(event.payload.observation);
       return observation.fence.receiptId?.startsWith(`notification:${task.id}/${wake.id}/`) === true;
     });
+    let reopenedWake;
     await waitFor(() => {
-      const wake = wakes().find(w => w.reasons.includes("task-reopened"));
-      return wake !== undefined && terminalForWake(wake);
+      reopenedWake ??= wakes(beforeReopenWakes).find(w => w.reasons.includes("task-reopened"));
+      return reopenedWake !== undefined && terminalForWake(reopenedWake);
     }, "Reopen notification did not finish through the existing Host.");
     const request = ["operator", "submit", "Continue this same accepted result; local fixture only.",
       "--task", task.id, "--intent", "develop", "--request-id", "authorized-followup"];
+    const beforeFollowupWakes = new Set(listItems("task", "wake", "list", task.id).map(wake => wake.id));
     runCli(cli, request, environment);
     runCli(cli, request, environment);
     const inputs = listItems("task", "message", "list", task.id)
@@ -602,10 +616,11 @@ try {
     const followup = followups[0];
     assert.equal(followup.submissionReceipt.routing.kind, "active-context");
     assert.equal(followup.submissionReceipt.feedback.delivery, "queued");
+    let followupWake;
     await waitFor(() => {
-      const wake = wakes().find(w =>
+      followupWake ??= wakes(beforeFollowupWakes).find(w =>
         w.refs?.some(ref => ref.type === "message" && ref.id === followup.id));
-      return wake !== undefined && terminalForWake(wake);
+      return followupWake !== undefined && terminalForWake(followupWake);
     }, "The exact follow-up Message did not traverse CLI/Controller/Host/native terminal.");
     assert.equal(events().filter(event => event.type === "task.reopened").length, 1);
     assert.deepEqual(events().find(event => event.id === originalCompletion.id), originalCompletion);
@@ -967,7 +982,13 @@ console.log(`TIMING total: ${Math.round(performance.now() - started)} ms`);
 process.stdout.write(`Runtime package smoke passed (${profile}).\n`);
 
 function runCli(cli, args, env, input) {
-  return execFileSync(cli, args, { encoding: "utf8", env, input, timeout: 30_000, stdio: ["pipe", "pipe", "pipe"] });
+  const started = performance.now();
+  cliCalls++;
+  try {
+    return execFileSync(cli, args, { encoding: "utf8", env, input, timeout: 30_000, stdio: ["pipe", "pipe", "pipe"] });
+  } finally {
+    cliElapsed += performance.now() - started;
+  }
 }
 
 function json(...args) {

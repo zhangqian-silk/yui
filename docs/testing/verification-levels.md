@@ -144,6 +144,13 @@ real local Project fast-forward, Task delegation and Agent Job routing. Independ
 service targets are created before awaiting either result, retaining each target's result
 and isolation assertions. These are business wiring, not an ABI matrix.
 
+Smoke logs report each phase's wall time and the parent harness's `runCli`
+call count/time. CLI time includes command execution and Controller waits,
+is already inside phase time, and excludes CLI calls launched by fake Providers
+or other helpers. It is not a pure startup benchmark or an additional duration.
+Notification polling retains a newly observed exact wake ID while refreshing
+terminal events; historical wake details are not repeatedly expanded.
+
 `publish.yml` builds one archive containing all three native targets and runs
 the profiles above against that exact freshly installed package through
 `YUI_INSTALLED_ROOT`, adding actual npm-bin, dependency, supported Node version,
