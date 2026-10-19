@@ -51,6 +51,34 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.13.0 compatibility and migration notes
+
+This minor adds Settings → Permissions: a read-only command-by-role discovery
+matrix and built-in capability contracts, with bounded search, filters and
+details. The view derives from the existing command catalog, discovery projection
+and capability registry; it is not a second ACL or an authorization engine.
+
+Role-template visibility is not an exact invocation's authorization result.
+Task, Project, Assignment, lifecycle, resource and Grant boundaries still apply
+at execution time. Viewing a role does not impersonate it, execute a command,
+issue or revoke authorization, or consume the viewed operation's Grant.
+The new GET endpoints retain the existing Web access and request protections.
+Existing CLI authorization, discovery and default permissions are unchanged.
+See [authorization](authorization.md).
+
+Storage remains **1.20**; this feature adds no storage migration or protocol
+change. Earlier supported Homes still use the existing contiguous same-major
+migration chain. With separate update authorization, use
+`yui update --version 2.13.0`; the updater owns preflight, backup, migration when
+needed, and Controller handover. Do not open upgraded Homes with an older binary
+or edit storage manually. Minor numbering is not a general compatibility promise.
+
+Release gates require exact-commit Core CI and fresh installation of the same
+runtime tarball on Linux x64 and macOS x64/arm64 with Node 20/22/24/26.
+These are deterministic isolated checks, not real-model validation. Publication
+does not update a global CLI, migrate a production Home, replace its Controller,
+or deploy or start a production Web listener.
+
 ### 2.12.0 compatibility and migration notes
 
 This minor completes the scoped Job platform: explicit business results and fixed
