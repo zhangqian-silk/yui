@@ -51,7 +51,14 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
-### 2.13.0 compatibility and migration notes
+### 2.14.0 compatibility and migration notes
+
+The `v2.13.0` tag is retained as failed release evidence: its publication gates
+failed before npm publication. This replacement minor retains the feature below
+and fixes the package-smoke handover observation: one Controller snapshot and a
+bounded 60-second multi-turn wait, preserving the input, Host identity, terminal
+and no-replay assertions. Production runtime timeouts and release gates are
+unchanged; the full fresh-install matrix must pass before publication.
 
 This minor adds Settings → Permissions: a read-only command-by-role discovery
 matrix and built-in capability contracts, with bounded search, filters and
@@ -69,7 +76,7 @@ See [authorization](authorization.md).
 Storage remains **1.20**; this feature adds no storage migration or protocol
 change. Earlier supported Homes still use the existing contiguous same-major
 migration chain. With separate update authorization, use
-`yui update --version 2.13.0`; the updater owns preflight, backup, migration when
+`yui update --version 2.14.0`; the updater owns preflight, backup, migration when
 needed, and Controller handover. Do not open upgraded Homes with an older binary
 or edit storage manually. Minor numbering is not a general compatibility promise.
 
