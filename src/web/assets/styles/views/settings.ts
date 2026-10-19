@@ -34,6 +34,19 @@ export const SETTINGS_STYLES = `
 .settings-search input{width:100%;max-width:520px}
 #settings-status:empty,#browser-receipt:empty{display:none}
 .mono-line{overflow-wrap:anywhere}
+.permissions-results{display:grid;gap:12px;min-width:0}
+.permissions-scroll{overflow:auto;border:1px solid var(--line);border-radius:var(--r-lg);background:var(--surface)}
+.permissions-table{border-collapse:collapse;width:100%;font-size:var(--fs-xs)}
+.permissions-table caption{text-align:left;padding:14px;color:var(--ink-2)}
+.permissions-table th,.permissions-table td{text-align:left;vertical-align:top;padding:12px;border-bottom:1px solid var(--line)}
+.permissions-table thead th{background:var(--surface-2);min-width:100px;font-weight:600}
+.permissions-table th[scope=row]{min-width:240px;max-width:360px;font-weight:400}
+.permissions-table small{display:block;color:var(--ink-3);margin-top:6px;overflow-wrap:anywhere}
+.permissions-command{font-family:var(--font-mono);color:var(--accent);background:none;border:0;padding:4px 0;cursor:pointer;text-align:left;overflow-wrap:anywhere}
+.permissions-command:hover{text-decoration:underline}
+.permissions-table pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:var(--fs-xs);max-width:700px}
+.permissions-visible{color:var(--ink);white-space:nowrap}
+.permissions-hidden{color:var(--ink-3);white-space:nowrap}
 @media(max-width:${BREAKPOINTS.small}px){
   .settings-grid{grid-template-columns:minmax(0,1fr)}
   .settings-card{padding:14px}

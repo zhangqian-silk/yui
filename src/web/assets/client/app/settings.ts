@@ -9,6 +9,7 @@ import { clearPreference, readSessionAccessMode, writeSessionAccessMode } from "
 import { i18n, createManageShell, pageSections, registerManagePage, navigateManage } from "/assets/js/layout/manageShell.js";
 import { mountSkills } from "/assets/js/views/skills.js";
 import { mountJobs } from "/assets/js/views/jobs.js";
+import { mountPermissions } from "/assets/js/views/permissions.js";
 
 const $ = selector => document.querySelector(selector);
 const t = i18n.t;
@@ -20,12 +21,14 @@ function readSection() {
 }
 let section = readSection();
 let jobs;
+let permissions;
 const shell = createManageShell({ page: "settings", t, onNavigate: navigate });
 function showSection(next) {
   section = next;
   document.querySelectorAll("#settings-root > .manage-section[data-section]").forEach(panel => { panel.hidden = panel.dataset.section !== next; });
   shell.set(next);
   if (next === "jobs" && !jobs) jobs = mountJobs($("#global-jobs"), t);
+  if (next === "permissions" && !permissions) permissions = mountPermissions($("#permission-browser"), t);
 }
 function navigate(next) {
   navigateManage({ page: "settings", section: next });
@@ -39,6 +42,7 @@ registerManagePage("settings", { show: next => showSection(next.section) });
 i18n.subscribe(() => shell.render());
 i18n.subscribe(() => {
   if (jobs && !jobs.isDirty() && !jobs.isBusy()) jobs = mountJobs($("#global-jobs"), t);
+  permissions?.translate();
 });
 showSection(section);
 const skills = mountSkills($("#skill-browser"), t, { heading: false, onDirty: value => markDirty("skills", value) });

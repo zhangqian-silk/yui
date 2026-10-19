@@ -17,6 +17,7 @@ export const MANAGE_SECTIONS: Readonly<Record<ManageArea, readonly ManageSection
     { page: "settings", section: "preferences", key: "settings.section.preferences", label: "Preferences" },
     { page: "settings", section: "skills", key: "settings.section.skills", label: "Skills" },
     { page: "settings", section: "jobs", key: "settings.section.jobs", label: "Jobs & schedules" },
+    { page: "settings", section: "permissions", key: "settings.section.permissions", label: "Command permissions" },
     { page: "settings", section: "server", key: "settings.section.server", label: "Agents & server" },
     { page: "models", section: "connection", key: "models.section.connection", label: "Model connection" }
   ]

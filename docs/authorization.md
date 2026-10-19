@@ -111,6 +111,41 @@ remains a limited template, while execution reports the original storage/identit
 failure. Complete launch hints can still show a role's static help on a broken
 Home; they cannot authorize reads or effects.
 
+## Read-only Web templates
+
+Open **Settings → Command permissions** (`/settings/permissions`) to compare
+CLI discovery for ordinary terminals/unmanaged sessions, Operator, GlobalRole,
+Task Leader, Worker and Reviewer. Configured GlobalRole names are selectable;
+they use the existing global discovery audience, not a new role impersonation
+path. Search, category/role filters and 30-row pages keep the view bounded.
+Expand a command for its audience-filtered usage and scope explanation.
+
+“Visible” means the existing `discoveryCommandTree` retains the executable
+command; “Hidden” means it does not. Neither is an exact authorization
+assessment. Worker and Reviewer can share a template while having different
+Assignment/Review and workspace constraints. Planning/delivery, lifecycle,
+revocation and resource/Grant checks remain in their existing execution owners.
+The directory cannot express every domain condition and this page does not
+attempt to infer them from command names.
+
+The adjacent **Built-in capability contracts** view projects
+`BUILTIN_CAPABILITIES`, the same descriptors registered in `CapabilityRegistry`,
+including required permission categories, input names, declared effect and
+semantic source. It does not invent a CLI-to-capability mapping or interpret
+those categories as role grants. Task-local plugin descriptors are excluded.
+Exact `hidden` / `requestable` / `authorized` observations still require the
+existing authenticated discovery path and target input; this page performs no
+such assessment and emits no `access` field.
+
+The `/api/permissions` metadata, `/commands`, `/command` and `/capabilities`
+routes are GET-only, use the existing Web authentication, Host/Origin and page
+token protection, and reject target/identity arguments. The only Store read is
+the configured global role list, projected to names. No Session, Task contents,
+Grant, plugin instance or Provider is read/acquired, and no operation is invoked.
+New catalog commands enter automatically; do not maintain a Web ACL.
+`web-permissions.test.js` checks full projection coverage, option filtering,
+private-read/write exclusion and the HTTP read-only boundary.
+
 ## Verification and maintenance
 
 `cli-authority.test.js` exercises isolated launcher-backed public reads, Draft
