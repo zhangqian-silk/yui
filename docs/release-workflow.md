@@ -51,6 +51,48 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.12.0 compatibility and migration notes
+
+This minor completes the scoped Job platform: explicit business results and fixed
+artifacts, Schedule targets and service authorization, controlled Project refresh,
+Task delegation, optional Agent execution, and shared Task/global Web management.
+The Task Jobs tab and Settings → Jobs & schedules expose exact historical Runs,
+their immutable configuration, execution evidence and authorized artifact previews.
+
+Consumers must distinguish definition ownership, execution target, process/native
+terminal evidence and the explicit `businessResult`; delivery or exit alone is
+not business success. Branch on the executor kind instead of assuming every Run
+is a shell process. Fixed artifact references retain their exact source identity
+and scope; a readable preview is not execution authority. Task delegation preserves
+immutable provenance and does not implicitly activate a Draft Task. Agent Session
+replacement preserves Run requirements/results without replaying input; unknown
+delivery or unproven old writers still block replacement.
+See [Jobs and Runs](job-runs.md).
+
+Schedules retain their existing admission path, not a second execution state.
+Service authorization is explicit and does not inherit an old Session's authority
+or authorize Agent execution. Controlled `project.refresh` binds the current
+managed Project target and uses the existing clean, verified fast-forward path;
+publication does not enable synchronization for any registered Project.
+See [Schedules](schedules.md).
+
+Storage advances from **1.14 to 1.20** through the centralized contiguous chain:
+**1.15** business results; **1.16** Schedule targets/service authorization;
+**1.17** fixed Run artifacts; **1.18** controlled Project refresh;
+**1.19** Task delegation/provenance; **1.20** Agent Run/Session evidence.
+Supported **1.0–1.19** Homes use the declared same-major migrations, preserving
+historical evidence rather than inventing results or grants. With separate update
+authorization, use `yui update --version 2.12.0`; the updater owns preflight,
+backup, migration and Controller handover. Do not open upgraded Homes with an
+older binary or edit storage manually. Minor numbering is not a SemVer
+backward-compatibility promise.
+
+Release gates require exact-commit Core CI and fresh installation of the same
+runtime tarball on Linux x64 and macOS x64/arm64 with Node 20/22/24/26 before
+publication. These are deterministic isolated checks, not real-model validation.
+Publishing does not update the global CLI, migrate a production Home, replace
+its Controller or run a real Project synchronization.
+
 ### 2.11.0 compatibility and migration notes
 
 This minor lets ordinary, unmanaged native Agent conversations use the same
