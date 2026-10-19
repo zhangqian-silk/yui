@@ -72,7 +72,11 @@ async function globalHostFixture(t, adapterId = "codex", {
   const errors = [];
   const observations = [];
   const inbox = new FileRuntimeEventInbox(home);
-  const applyHost = event => {
+  const observeHost = scheduler.observeAgentHostObservation.bind(scheduler);
+  // Both eager RPC and background Inbox draining must model the same fake
+  // Agent handling. Otherwise a background fold can skip the fixture ACK and
+  // correctly produce an unrelated missing-receipt reminder during this test.
+  scheduler.observeAgentHostObservation = (event, observedAt = new Date()) => {
     observations.push(event.observation);
     assert.ok(event.host, "Host must retain its raw source envelope");
     assert.equal(event.scope, "global");
@@ -93,7 +97,10 @@ async function globalHostFixture(t, adapterId = "codex", {
       receivedAt: fakeNow.toISOString(),
       observation: { ...event.observation, observedAt: fakeNow.toISOString(), receivedAt: fakeNow.toISOString() }
     };
-    const outcome = scheduler.observeAgentHostObservation(timed, fakeNow ?? new Date());
+    return observeHost(timed, fakeNow ?? observedAt);
+  };
+  const applyHost = event => {
+    const outcome = scheduler.observeAgentHostObservation(event);
     if (outcome !== "deferred") inbox.acknowledge(event.id);
     return outcome;
   };
@@ -111,6 +118,12 @@ async function globalHostFixture(t, adapterId = "codex", {
     }
     if (method === "runtime.host-observation-apply") {
       const event = inbox.read(params.eventId);
+      // Exercise the legitimate background-first order deterministically in
+      // the automatic-delivery scenario, without changing its wait budget.
+      if (autoDeliver && event?.observation.kind === "turn.completed") {
+        new FileRuntimeEventProcessor(inbox, scheduler).drain(new Date());
+        return { outcome: "applied" };
+      }
       if (omitTerminalOnce && event?.observation.kind === "turn.completed") {
         omitTerminalOnce = false;
         inbox.acknowledge(event.id);
@@ -495,6 +508,10 @@ test("Operator natural terminals settle through Host and Inbox and automatically
   // Host's post-terminal signal can admit the queued successor here.
   await f.wait(() => f.native()?.attemptId === `global-input:operator/${next.id}`
     && f.native().status === "completed");
+  for (const id of [notice.messageId, next.id]) {
+    assert.ok(f.store.listGlobalRoleMessages("operator").find(message => message.id === id)?.inbox?.ack,
+      "Both consumption paths must retain the fake Agent's actual handling receipt.");
+  }
   assert.equal(f.store.listGlobalRoleMessages("operator")[0].delivery.via, "provider");
   await f.wait(async () => (await inspectAgentHost({
     home: f.home, scope: "global", roleName: "operator"
