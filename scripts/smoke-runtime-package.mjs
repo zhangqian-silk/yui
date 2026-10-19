@@ -724,9 +724,20 @@ try {
     releaseHandover();
   }
   assert.deepEqual(json("task", "message", "list", task.id), beforeUpdateMessages);
-  await waitFor(() => pending().length === 0 && context().nativeTurn?.status === "completed",
+  // Handover drains several serial turns (user input, engineering notices and
+  // the deliberately missing-ACK reminder). Observe backlog and terminal from
+  // one Controller snapshot, not separate CLI startups on each poll. Slow
+  // supported runners need a bounded multi-turn budget, not the single-event
+  // default. Keep the exact input/Host/effect assertions below.
+  let handoverContext;
+  await waitFor(() => {
+    handoverContext = context();
+    return handoverContext.backlog.reason === "empty"
+      && handoverContext.nativeTurn?.status === "completed";
+  },
     "Replacement Controller did not consume the retained terminal and drain pending inputs.",
-    () => JSON.stringify(context()));
+    () => JSON.stringify(handoverContext), 60_000);
+  assert.equal(pending().length, 0, "Handover must drain the original delivery queue.");
   const hostAfter = await inspectAgentHost(target);
   for (const key of ["nativeSessionId", "processInstanceId", "endpointImplementation",
     "authorityEpoch", "authorityOwner", "authorityHolderId"]) {
@@ -961,8 +972,8 @@ function processExited(pid) {
   catch (error) { if (error.code === "ENOENT") return true; throw error; }
 }
 
-async function waitFor(check, message, diagnostics = () => "") {
-  const deadline = Date.now() + 15_000;
+async function waitFor(check, message, diagnostics = () => "", timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await check()) return;
     await delay(50);
