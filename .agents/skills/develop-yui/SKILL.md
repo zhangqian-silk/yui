@@ -78,6 +78,23 @@ package-start check for runtime packaging changes. Keep its test phase
 seconds-scale and measure incremental cost when adding coverage.
 Broaden checks for a new change, failure or unresolved risk, not unchanged success.
 
+The complete gate builds and includes both `test/core` (business contracts)
+and `test/platform` (actual OS/Node/native boundaries). After an explicit build,
+`npm run test:business` and `npm run test:platform` do not build again. Keep
+cheap branch-value checks; consolidate duplicate process setup only with a
+named surviving behavioral assertion. Do not move authority/state-machine
+cases into the compatibility matrix just because they use SQLite.
+
+Package smoke defaults to `--profile full`: one representative business wiring
+run plus lifecycle and installation coverage. `--profile lifecycle` retains
+real process/Host/Controller handover and cleanup on each OS/architecture;
+`--profile compatibility` retains fresh setup, executable helpers, CLI/bin,
+Doctor/PTY and selected-driver checks on every supported Node combination.
+Release runs real SQL/GC tests separately against that same installed consumer.
+Choose the layer from the behavior's actual dependency, not its incident origin.
+Measure build, test, native installation, each smoke phase, and runner queue
+separately; a successful local profile does not prove remote matrix timing.
+
 Real-model, paid, shared or production validation needs explicit authorization
 for that resource and effect boundary; do not solicit it through an InputRequest.
 Use isolated deterministic evidence otherwise. Remove temporary harnesses

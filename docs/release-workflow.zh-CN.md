@@ -627,6 +627,13 @@ yui task grant revoke task-15 capability-grant-1
 由 tag 触发的 `publish.yml` 工作流是唯一维护的发布冒烟。它复用那个通过了 core CI 的
 确切 commit，只增加发布所需的产物装配、全新安装和 provenance 检查。
 
+业务契约与完整 Jobs/Schedules 链路仅在 Core CI 的 Linux Node 24 执行一次。
+发布仍在三平台 × Node 20/22/24/26 全部安装同一个已校验 tarball：每组都验证
+CLI/setup/原生 helper、Doctor/PTY 和真实 SQLite SQL/GC；各平台 Node 24 额外验证
+真实进程生命周期。参见[分层覆盖表](testing/verification-levels.zh-CN.md#ci-与发布)。
+依赖安装不再隐含构建，每个源码作业只构建一次，再验证原生依赖；smoke 输出分段耗时。
+发布后的 registry 检查和 GitHub 资产逐字节核验是独立证据，不被发布前 smoke 替代。
+
 该工作流通过 npm Trusted Publishing（OIDC）认证，因此发布身份存在于 tag 之外的两处：
 `repository`、`bugs` 和 `homepage` 由 `assemble-runtime-package.mjs` 从源 `package.json`
 逐字复制进已发布 manifest，而该包的 npm Trusted Publisher 条目点明 GitHub owner、

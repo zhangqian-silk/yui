@@ -44,8 +44,5 @@ runs:
         npm rebuild sqlite-modern --prefer-offline --no-audit --no-fund || true
         npm rebuild sqlite-compat --prefer-offline --no-audit --no-fund || true
 
-    - name: Verify native dependencies
-      shell: bash
-      run: |
-        npm run build
-        node scripts/ci-native-dependencies.mjs verify
+    # The caller builds once, then verifies through the built SQLite selector.
+    # Do not hide a project build in dependency installation.

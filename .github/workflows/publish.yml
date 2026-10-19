@@ -6,7 +6,8 @@ name: Publish npm package
 # release-specific evidence: tag/version identity, the artifact's structure and
 # executable bit, a fresh install across the supported Node matrix, and npm
 # provenance. The build job assembles one tarball from the exact tagged commit;
-# smoke and publish consume that same artifact, verified by SHA-256.
+# smoke and publish consume that same artifact, verified by SHA-256. All 12
+# installs check ABI/PTY/SQL/CLI; only Node 24 runs process lifecycle on each OS.
 
 on:
   push:
@@ -101,6 +102,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Verify native dependencies
+        run: node scripts/ci-native-dependencies.mjs verify
+
       - name: Download native executables from this exact source run
         uses: actions/download-artifact@v8
         with:
@@ -180,6 +184,9 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
+          # Reuse the existing npm download cache, not another consumer's
+          # node_modules/native outputs: every row still performs a real install.
+          cache: npm
 
       - name: Install tmux
         run: |
@@ -205,10 +212,14 @@ jobs:
         run: |
           YUI_TGZ="$PWD/release-artifact/yui-runtime.tgz"
           consumer="$(mktemp -d)"
-          npm install --engine-strict --prefix "$consumer" "$YUI_TGZ"
-          YUI_INSTALLED_ROOT="$consumer/node_modules/@zq-silk/yui" node scripts/ci-native-dependencies.mjs verify
-          YUI_INSTALLED_ROOT="$consumer/node_modules/@zq-silk/yui" node --test test/core/sqlite-driver.test.js
-          YUI_INSTALLED_ROOT="$consumer/node_modules/@zq-silk/yui" node scripts/smoke-runtime-package.mjs
+          time npm install --engine-strict --no-audit --no-fund --prefix "$consumer" "$YUI_TGZ"
+          # Do not share node_modules between ABI/platform consumers. Doctor
+          # in every profile already proves PTY output/exit and driver identity.
+          export YUI_INSTALLED_ROOT="$consumer/node_modules/@zq-silk/yui"
+          time node --import ./test/helpers/physical-tmpdir.mjs --test test/platform/sqlite-native.test.js
+          profile=compatibility
+          if [ "${{ matrix.node }}" = 24 ]; then profile=lifecycle; fi
+          time node scripts/smoke-runtime-package.mjs --profile "$profile"
 
   publish:
     needs: [build, smoke]

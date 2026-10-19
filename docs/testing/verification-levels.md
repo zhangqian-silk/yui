@@ -50,6 +50,9 @@ is required.
 ## Permanent core smoke
 
 `npm test` and `npm run test:core` build the checkout and run the maintained suite.
+Both include `test/core` and `test/platform`. For an already built checkout,
+`npm run test:business` runs only `test/core` and `npm run test:platform` runs
+only `test/platform`; neither rebuilds. CI owns one explicit build per job.
 The stable suite owns current storage 1.20 and its declared 1.0 through 1.19 minor
 transition. It contains no undeclared historical format compatibility path.
 
@@ -112,11 +115,20 @@ adjudication aggregation are deterministic; they do not run or measure a model.
 
 ## CI and release
 
-`ci.yml` runs core plus one assembled-package normal-path smoke per supported
-platform (Linux x64, Mac Intel and Apple Silicon) on every PR, without another
-lint or broad regression suite.
-Linux runs on Node 24 and 26; release fresh-install smoke covers Node 20, 22,
-24 and 26 on all three platforms.
+`ci.yml` runs on PRs and master. Business contracts and full package business
+wiring run once on Linux x64/Node 24. Platform tests run on Linux Node 24/26
+and Mac Intel/Apple Silicon Node 24. Every job builds exactly once, without
+another lint or implicit pretest build. Keep the existing job names for branch
+checks; the complete workflow must pass for the exact master commit.
+
+| Evidence | PR/master | Exact release tarball |
+| --- | --- | --- |
+| Business/state/authority contracts (`test/core`) | Linux 24 once | Reuse exact-SHA successful Core CI |
+| OS/helper/PTY/Git/SQLite boundaries (`test/platform`) | Linux 24/26, both Macs 24 | Real SQLite SQL/GC on all 12 installs; other installed boundaries below |
+| `full` smoke: business Jobs/Schedules + lifecycle + compatibility | Linux 24 once | Reuse exact-SHA business evidence |
+| `lifecycle` smoke: restart, Session/Host handoff, archive + compatibility | Both Macs 24 (Linux included in full) | Node 24 on each of the 3 platforms |
+| `compatibility` smoke: setup, CLI/bin, helpers, Doctor/PTY/SQLite | Linux 26 (included in other profiles) | All 3 platforms × Node 20/22/24/26 (included in lifecycle on 24) |
+
 `node scripts/smoke-runtime-package.mjs --assembled .release-stage` exercises
 the actual CLI/Controller/Host/SQLite and isolated tmux, replacing only the
 external Provider with a deterministic fixture. It covers setup, durable input
@@ -127,20 +139,28 @@ and grouped viewers without affecting a similarly named neighboring session.
 The fixture owns a fresh Home and its PATH, installs cleanup before setup,
 and never calls an installed model Agent.
 
+The default `full` profile also checks public Jobs, both service Schedule targets,
+real local Project fast-forward, Task delegation and Agent Job routing. Independent
+service targets are created before awaiting either result, retaining each target's result
+and isolation assertions. These are business wiring, not an ABI matrix.
+
 `publish.yml` builds one archive containing all three native targets and runs
-the same smoke on each platform and supported Node version against that exact
-freshly installed package through
+the profiles above against that exact freshly installed package through
 `YUI_INSTALLED_ROOT`, adding actual npm-bin, dependency, supported Node version,
 artifact and provenance boundaries. This validates runtime integration, not
 real-model behavior. Pure contract and safety tests remain in `test/core`;
 production wiring is exercised here rather than only through mocked ports.
-The same release matrix runs `test/core/sqlite-driver.test.js` against the
-installed consumer: native selection boundaries plus real SQL, transactions,
+The same release matrix runs `test/platform/sqlite-native.test.js` against the
+installed consumer: selected-driver allocation/GC plus real SQL, transactions,
 JSON/RETURNING, WAL and backup for each usable optional SQLite candidate.
 An unavailable optional candidate is explicitly skipped, not reported as
 compatible; the normal selected-driver path must still pass. Doctor smoke
 reports the selected driver, engine and fallback reason. This matrix does not
 prove old-glibc compatibility.
+Pure selector/classification branches remain in `test/core/sqlite-driver.test.js`
+and run once. Do not duplicate native PTY/SQL probes immediately before the same
+installed Doctor/native-SQL checks; the repository dependency cache is still
+verified after building. Never reuse a consumer's native binaries across ABIs.
 The native dependency check launches a fixed local program through PTY and
 requires its output and normal exit. Installed-package smoke explicitly checks
 default Doctor's PTY results using dependencies resolved from the consumer.
@@ -160,6 +180,15 @@ without changing their original identities or replacing the Host. This is a
 current-contract process-handover regression, not proof of compatibility with
 every historical Host build. These checks have no installation or publication
 effect.
+
+Smoke logs report `TIMING` phases and total, including cleanup. Measure source
+build, dependency installation/cache restore, pure test time and npm install
+separately. Actions elapsed time includes queue and re-runs; report those
+separately instead of treating workflow wall time as test execution time.
+Existing npm/native caches and the exact-tarball checksum/provenance gates remain
+unchanged. Registry installation, release-asset byte comparison and updater
+verification attest different boundaries; do not remove them as “duplicate”
+without equivalent identity-bound evidence.
 
 Configured Agents acting as developers or reviewers are ordinary execution
 resources. Using a live provider or model as the subject of validation is

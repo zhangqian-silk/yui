@@ -36,6 +36,9 @@ Yui 是一个单用户本地产品。永久验证保护关键的 happy path 和�
 ## 永久 core smoke
 
 `npm test` 和 `npm run test:core` 构建当前 checkout 并运行维护中的套件。
+两者均包含 `test/core` 和 `test/platform`。已构建的 checkout 可分别运行
+`npm run test:business` 与 `npm run test:platform`，它们不会再次构建。
+CI 每个作业只显式构建一次。
 稳定套件维护当前存储 1.20 和明确声明的 1.0 至 1.19 连续小版本迁移，
 不包含未声明的历史格式兼容路径。
 
@@ -78,10 +81,19 @@ package-start 检查跟随已安装树中的本地 Skill 引用，包括跨 Role
 
 ## CI 与发布
 
-`ci.yml` 在每个 PR 上构建一次，运行 core 及一个组装包正常链路检查，不重复 lint，
-也不增加宽泛回归套件。
-Linux CI 在 Node 24 和 26 上运行；发布时的全新安装 smoke 覆盖三个平台上的
-Node 20、22、24 和 26。
+`ci.yml` 在 PR 和 master 上执行。业务契约与完整业务链路仅在 Linux x64/Node 24
+运行一次；平台测试在 Linux Node 24/26、Intel/Apple Silicon Mac Node 24 上运行。
+每个作业只构建一次，不重复 lint 或隐含 pretest 构建。保留现有作业名称；发布仍要求
+精确 master SHA 的整个 Core CI 成功，不复用另一源码的结果。
+
+| 证据 | PR/master | 精确发布 tarball |
+| --- | --- | --- |
+| 业务、状态、授权契约（`test/core`） | Linux 24 一次 | 复用精确 SHA 的成功 Core CI |
+| OS/helper/PTY/Git/SQLite（`test/platform`） | Linux 24/26、双 Mac 24 | 12 组真实 SQL/GC；其余安装边界见下 |
+| `full`：Jobs/Schedules 业务链路 + lifecycle + compatibility | Linux 24 一次 | 复用精确 SHA 业务证据 |
+| `lifecycle`：重启、Session/Host 交接、归档 + compatibility | 双 Mac 24，Linux 已在 full 内 | 三平台 Node 24 |
+| `compatibility`：setup、CLI/bin、helper、Doctor/PTY/SQLite | Linux 26，其余已包含 | 三平台 × Node 20/22/24/26，24 已包含在 lifecycle 内 |
+
 `node scripts/smoke-runtime-package.mjs --assembled .release-stage` 经过真实
 CLI/Controller/Host/SQLite 与隔离 tmux，仅用确定性夹具替换外部 Provider。它验证
 setup、输入跨重启持久化及幂等、scratch 激活、原生结果入库、完成后保留会话、
@@ -89,14 +101,21 @@ setup、输入跨重启持久化及幂等、scratch 激活、原生结果入库�
 归档释放活/死 pane 和附属查看 session，且不影响相似名称的相邻 session。
 夹具拥有新建 Home 和独立 PATH，在 setup 前建立清理责任，不调用安装的真实模型 Agent。
 
-`publish.yml` 通过 `YUI_INSTALLED_ROOT` 对刚安装的包执行同一个 smoke，增加真实
+默认 `full` 还覆盖公共 Job、两种 service Schedule 目标、本地 Project 快进、
+Task 委派和 Agent Job 路由。两种独立 Schedule 目标先创建再等待，避免串行维护等待，但仍逐个
+验证真实结果与隔离；这些是业务组装证据，不是 ABI 矩阵。
+
+`publish.yml` 通过 `YUI_INSTALLED_ROOT` 对刚安装的包执行上表 profile，增加真实
 npm bin、依赖、受支持 Node 版本、产物和 provenance 边界。这证明运行时集成，不证明
 真实模型行为。纯契约与安全检查保留在 `test/core`，生产组件组装在这里验证，
 不只依赖模拟端口。
-同一发布矩阵还针对消费者安装包运行 `test/core/sqlite-driver.test.js`，验证原生
-选择边界，并对每个可用的可选 SQLite 候选执行真实 SQL、事务、JSON/RETURNING、
+同一发布矩阵还针对消费者安装包运行 `test/platform/sqlite-native.test.js`，验证所选
+驱动的分配/GC，并对每个可用的可选 SQLite 候选执行真实 SQL、事务、JSON/RETURNING、
 WAL 和备份检查。不可用候选会明确标记跳过，不视为兼容；正常选择路径仍必须通过。
 Doctor 冒烟报告选中的驱动、引擎和回退原因。该矩阵不能证明旧 glibc 环境兼容。
+纯选择/错误分类分支留在 `test/core/sqlite-driver.test.js`，执行一次。安装包 Doctor
+和原生 SQL 已证明的探针不在它们前面重复执行；仓库原生缓存仍在构建后验证，
+不跨 ABI 复用消费者的二进制。
 原生依赖检查必须通过 PTY 启动固定本地程序，确认输出和正常退出。安装包 smoke
 明确断言默认 Doctor 的 PTY 检查成功，并从消费者安装目录解析依赖。macOS 还会
 在可丢弃的依赖副本中移除 spawn-helper 执行权限，验证 Doctor 报出实际 helper
@@ -110,6 +129,11 @@ Doctor 冒烟报告选中的驱动、引擎和回退原因。该矩阵不能证�
 直接回合的终态，随后由新 Controller 推进排队的用户输入和工程通知，保留原始输入身份，
 不替换 Host。这是当前契约下的进程交接回归，不证明所有历史 Host 实现都兼容；
 这些检查不执行安装或发布效果。
+
+smoke 输出各阶段和总计（含清理）的 `TIMING`。分别测量构建、依赖安装/缓存恢复、
+纯测试与 npm install；Actions 总历时中的排队与重跑单列，不算作测试执行时间。
+保留现有 npm/原生缓存及精确 tarball 的校验和、provenance 门禁。registry 安装、
+Release 资产逐字节比较和 updater 验证证明不同边界，不能无等价身份绑定证据就删除。
 
 作为开发者或审查者的已配置 Agent 是普通执行资源。把一个真实 provider 或模型作为验证
 对象则不同：付费 API、共享 Home、生产系统、真实账号额度以及其他不可丢弃的外部效果，

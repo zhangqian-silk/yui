@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import Database from "../../dist/sqlite/driver.js";
-import { nativeExecutable } from "../../dist/runtime/nativeExecutable.js";
 
 import {
   claimPending,
@@ -166,23 +165,9 @@ function runInput(runId, taskId, roleName, directive, options = {}) {
   });
 }
 
-test("the packaged CLI starts and exposes the core workflow", () => {
-  const help = execFileSync(process.execPath, [join(root, "dist", "cli.js"), "help"], {
-    cwd: root,
-    encoding: "utf8",
-    env: bareEnv
-  });
-  assert.match(help, /Yui/u);
-  const version = JSON.parse(execFileSync(
-    process.execPath,
-    [join(root, "dist", "cli.js"), "--json", "version"],
-    { cwd: root, encoding: "utf8", env: bareEnv }
-  ));
-  assert.equal(version.ok, true);
-  assert.equal(version.data.storageVersion, CURRENT_STORAGE_VERSION);
-  assert.equal(version.data.minimumStorageVersion, MIN_SUPPORTED_STORAGE_VERSION);
-  assert.equal(Object.hasOwn(version.data, "storageLayoutVersion"), false);
-  assert.equal(Object.hasOwn(version.data, "aggregateSchemaVersion"), false);
+// Actual help/version/bin startup is owned by the package compatibility smoke,
+// against the assembled/installed artifact rather than another checkout CLI.
+test("the current command catalog exposes the core workflow", () => {
   const commands = listPublicCommandPaths();
   for (const command of [
     "setup",
@@ -3951,8 +3936,7 @@ test("fresh SQLite telemetry persists and aggregates by Turn", async (t) => {
 });
 
 test("the built-in Agent Drivers are available through the shared registry", () => {
-  assert.equal(execFileSync(nativeExecutable("claude-process-owner"),
-    [process.execPath, "-e", "process.stdout.write('owner-ready')"], { encoding: "utf8" }), "owner-ready");
+  // Executable selection/output is covered by test/platform/native-executable.
   const drivers = builtinAgentDriverRegistry();
   assert.equal(drivers.requireByAdapterId("codex").id, "openai/codex");
   assert.equal(drivers.requireByAdapterId("claude").id, "anthropic/claude-code");

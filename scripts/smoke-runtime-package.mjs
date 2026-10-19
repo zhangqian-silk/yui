@@ -21,15 +21,29 @@ import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:pa
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
+import { parseArgs } from "node:util";
 
-const assembled = process.argv[2] === "--assembled";
-const development = process.argv[2] === "--development";
-if (process.argv.length !== (assembled || development ? 4 : 2)) {
-  throw new Error("Usage: smoke-runtime-package.mjs [--assembled <package-root> | --development <checkout>]");
+const started = performance.now();
+let phaseStarted = started;
+function phase(name) {
+  const now = performance.now();
+  console.log(`TIMING ${name}: ${Math.round(now - phaseStarted)} ms`);
+  phaseStarted = now;
+}
+const { values } = parseArgs({ options: {
+  assembled: { type: "string" },
+  development: { type: "string" },
+  profile: { type: "string", default: "full" }
+} });
+const assembled = values.assembled !== undefined;
+const development = values.development !== undefined;
+const profile = values.profile;
+if ((assembled && development) || !["full", "lifecycle", "compatibility"].includes(profile)) {
+  throw new Error("Usage: smoke-runtime-package.mjs [--assembled <root> | --development <root>] [--profile full|lifecycle|compatibility]");
 }
 // Imports resolve physically, including macOS /var -> /private/var. Compare
 // installed Skill paths against that same package identity.
-const root = realpathSync(resolve(assembled || development ? process.argv[3] : process.env.YUI_INSTALLED_ROOT ?? process.cwd()));
+const root = realpathSync(resolve(values.assembled ?? values.development ?? process.env.YUI_INSTALLED_ROOT ?? process.cwd()));
 const sandbox = mkdtempSync(join(tmpdir(), "yui-runtime-package-smoke-"));
 const isolatedHome = join(sandbox, "home");
 const yuiHome = join(isolatedHome, ".yui");
@@ -58,6 +72,7 @@ const skills = [
 ];
 
 try {
+  console.log(`Runtime package profile: ${profile}; ${process.platform}/${process.arch}; Node ${process.version}`);
   mkdirSync(isolatedHome, { recursive: true, mode: 0o700 });
   mkdirSync(fakeBin, { recursive: true, mode: 0o755 });
   const fakeCodex = new URL("../test/fixtures/fake-codex-cli.mjs", import.meta.url);
@@ -176,6 +191,12 @@ try {
   if (version !== packageJson.version) {
     throw new Error(`Installed CLI reported ${version}; expected ${packageJson.version}.`);
   }
+  const versionReply = JSON.parse(runCli(cli, ["--json", "version"], environment));
+  const { yuiVersionIdentity } = await import(pathToFileURL(join(root, "dist/version.js")).href);
+  assert.equal(versionReply.ok, true);
+  assert.deepEqual(versionReply.data, yuiVersionIdentity());
+  assert.equal(Object.hasOwn(versionReply.data, "storageLayoutVersion"), false);
+  assert.equal(Object.hasOwn(versionReply.data, "aggregateSchemaVersion"), false);
   if (!runCli(cli, ["help"], environment).includes("Yui")) {
     throw new Error("Installed CLI help did not render.");
   }
@@ -211,148 +232,162 @@ try {
   ) {
     throw new Error("Installed CLI setup did not create the minimum task-ready runtime.");
   }
+  phase("package/start/setup");
 
   // Real public CLI -> Controller -> runner -> separate business/evidence reads,
   // before any Agent Session or Task exists. Only disposable local actions execute.
-  const { SqliteTaskStore: JobFixtureStore } = await import(pathToFileURL(join(root, "dist/storage/sqliteStore.js")).href);
-  const checkNoJobSession = () => {
-    const store = new JobFixtureStore(yuiHome, { readonly: true });
+  // Business wiring runs once on the representative CI environment. Native
+  // compatibility and OS process lifecycle coverage below do not depend on it.
+  if (profile === "full") {
+    const { SqliteTaskStore: JobFixtureStore } = await import(pathToFileURL(join(root, "dist/storage/sqliteStore.js")).href);
+    const checkNoJobSession = () => {
+      const store = new JobFixtureStore(yuiHome, { readonly: true });
+      try {
+        assert.equal(store.getGlobalRoleSessionSet("operator"), null);
+        assert.equal(store.listTasks().length, 0);
+        assert.equal(store.getWorkMailbox({ kind: "operator" }), null);
+      } finally { store.close(); }
+    };
+    checkNoJobSession();
+    json("job", "define", "--global", "--job", "public-probe", "--title", "Public probe",
+      "--input", JSON.stringify({ kind: "builtin", action: "system.noop", input: {} }));
     try {
-      assert.equal(store.getGlobalRoleSessionSet("operator"), null);
-      assert.equal(store.listTasks().length, 0);
-      assert.equal(store.getWorkMailbox({ kind: "operator" }), null);
-    } finally { store.close(); }
-  };
-  checkNoJobSession();
-  json("job", "define", "--global", "--job", "public-probe", "--title", "Public probe",
-    "--input", JSON.stringify({ kind: "builtin", action: "system.noop", input: {} }));
-  try {
-    const publicRun = json("job", "run", "--global", "--job", "public-probe", "--request-id", "once").run;
-    const jobRef = ["--global", "--job", "public-probe", "--run", publicRun.id];
-    await waitFor(() => json("job", "run-get", ...jobRef).status === "succeeded",
-      "Public Job did not complete without a Session.",
-      () => JSON.stringify(json("job", "run-evidence", ...jobRef)));
-    assert.equal(json("job", "run", "--global", "--job", "public-probe", "--request-id", "once").run.id, publicRun.id);
-    assert.equal(json("job", "run-confirm", ...jobRef).id, publicRun.id);
-    assert.equal(json("job", "run-result", ...jobRef).result.data.action, "system.noop");
-    assert.equal(json("job", "run-evidence", ...jobRef).processResult.exitCode, 0);
-    const publication = json("job", "artifact-save", ...jobRef, "--artifact",
-      JSON.stringify({ relativePath: "report.md", content: "# Public Run\n\nSaved without a Task." }));
-    assert.equal(publication.status, "registered");
-    const artifact = publication.reference;
-    assert.equal(artifact.sourceRun.runId, publicRun.id);
-    assert.equal(artifact.owner.scope.kind, "global");
-    assert.equal(json("job", "artifact-read", ...jobRef, "--reference", JSON.stringify(artifact)).content,
-      "# Public Run\n\nSaved without a Task.");
-    assert.equal(json("job", "artifact-preview", ...jobRef, "--reference", JSON.stringify(artifact)).kind, "markdown");
-    assert.equal(json("job", "artifact-list", ...jobRef).artifacts.length, 1);
-    assert.equal(json("job", "run-result", ...jobRef).artifacts[0].version, artifact.version);
-    checkNoJobSession();
-    // Exercise the supported maintenance cadence inside the bounded smoke
-    // deadline; the production default is intentionally 120 seconds.
-    runCli(cli, ["config", "runtime", "set", "reconciliation-interval-seconds", "5"], environment);
-    for (const kind of ["existing-job", "new-job"]) {
-      const id = `public-${kind}`;
-      json("schedule", "create", "--global", "--schedule", id, "--job", "public-probe",
-        "--authorization", "service", "--target", JSON.stringify(kind === "existing-job"
-          ? { kind } : { kind, definitionRevision: 1 }),
-        "--rule", JSON.stringify({ kind: "once", at: new Date(Date.now() + 2000).toISOString() }));
-      await waitFor(() => json("schedule", "show", "--global", "--schedule", id).schedule.state === "completed",
-        "Public service Schedule did not dispatch without a Session.",
-        () => JSON.stringify(json("schedule", "show", "--global", "--schedule", id)));
-      const receipt = json("schedule", "show", "--global", "--schedule", id).schedule.lastAttempt;
-      const scheduledRef = ["--global", "--job", receipt.jobId, "--run", receipt.runId];
-      await waitFor(() => json("job", "run-get", ...scheduledRef).status === "succeeded",
-        "Service Job did not complete.", () => JSON.stringify(json("job", "run-evidence", ...scheduledRef)));
-      assert.equal(json("job", "run-result", ...scheduledRef).result.data.action, "system.noop");
-      assert.equal(kind === "existing-job", receipt.jobId === "public-probe");
+      const publicRun = json("job", "run", "--global", "--job", "public-probe", "--request-id", "once").run;
+      const jobRef = ["--global", "--job", "public-probe", "--run", publicRun.id];
+      await waitFor(() => json("job", "run-get", ...jobRef).status === "succeeded",
+        "Public Job did not complete without a Session.",
+        () => JSON.stringify(json("job", "run-evidence", ...jobRef)));
+      assert.equal(json("job", "run", "--global", "--job", "public-probe", "--request-id", "once").run.id, publicRun.id);
+      assert.equal(json("job", "run-confirm", ...jobRef).id, publicRun.id);
+      assert.equal(json("job", "run-result", ...jobRef).result.data.action, "system.noop");
+      assert.equal(json("job", "run-evidence", ...jobRef).processResult.exitCode, 0);
+      const publication = json("job", "artifact-save", ...jobRef, "--artifact",
+        JSON.stringify({ relativePath: "report.md", content: "# Public Run\n\nSaved without a Task." }));
+      assert.equal(publication.status, "registered");
+      const artifact = publication.reference;
+      assert.equal(artifact.sourceRun.runId, publicRun.id);
+      assert.equal(artifact.owner.scope.kind, "global");
+      assert.equal(json("job", "artifact-read", ...jobRef, "--reference", JSON.stringify(artifact)).content,
+        "# Public Run\n\nSaved without a Task.");
+      assert.equal(json("job", "artifact-preview", ...jobRef, "--reference", JSON.stringify(artifact)).kind, "markdown");
+      assert.equal(json("job", "artifact-list", ...jobRef).artifacts.length, 1);
+      assert.equal(json("job", "run-result", ...jobRef).artifacts[0].version, artifact.version);
       checkNoJobSession();
-    }
-    // Builtin installation -> due service dispatch -> real local fast-forward.
-    // Reuse this owned Home/Controller and its teardown, never a production remote.
-    const syncRemote = join(sandbox, "sync-remote.git"), syncSeed = join(sandbox, "sync-seed");
-    const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], {
-      env: { ...environment, GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@example.invalid",
-        GIT_COMMITTER_NAME: "Fixture", GIT_COMMITTER_EMAIL: "fixture@example.invalid" },
-      encoding: "utf8", stdio: ["pipe", "pipe", "pipe"]
-    }).trim();
-    git(sandbox, "init", "--bare", "--initial-branch=main", syncRemote);
-    git(sandbox, "clone", syncRemote, syncSeed);
-    writeFileSync(join(syncSeed, "value"), "before\n");
-    git(syncSeed, "add", "value"); git(syncSeed, "commit", "-m", "before"); git(syncSeed, "push", "origin", "main");
-    const before = git(syncSeed, "rev-parse", "HEAD");
-    const project = json("project", "clone", "Sync fixture", syncRemote, "--stable", "main", "--development", "main").project;
-    const syncId = `project-sync-${project.id}`;
-    await waitFor(() => json("schedule", "list", "--global").some(s => s.id === syncId),
-      "Builtin sync was not installed by Controller reconciliation.");
-    let plan = json("schedule", "show", "--global", "--schedule", syncId).schedule;
-    assert.equal(plan.authorization.grantedBy.scope, "service");
-    assert.equal(plan.rule.everyMs, 6 * 60 * 60_000);
-    writeFileSync(join(syncSeed, "value"), "after\n");
-    git(syncSeed, "commit", "-am", "after"); git(syncSeed, "push", "origin", "main");
-    const after = git(syncSeed, "rev-parse", "HEAD");
-    json("schedule", "update", "--global", "--schedule", syncId, "--revision", String(plan.revision),
-      "--rule", JSON.stringify({ kind: "interval", everyMs: 60000, anchor: new Date(Date.now() + 2000).toISOString() }));
-    await waitFor(() => json("schedule", "show", "--global", "--schedule", syncId).schedule.lastAttempt?.runId,
-      "Builtin sync did not dispatch.");
-    plan = json("schedule", "show", "--global", "--schedule", syncId).schedule;
-    const syncRef = ["--global", "--job", syncId, "--run", plan.lastAttempt.runId];
-    await waitFor(() => json("job", "run-get", ...syncRef).status === "succeeded",
-      "Builtin sync did not fast-forward.", () => JSON.stringify({
-        evidence: json("job", "run-evidence", ...syncRef),
-        result: json("job", "run-result", ...syncRef),
-        logs: json("job", "logs", ...syncRef)
-      }));
-    const refresh = json("job", "run-result", ...syncRef).result.data.refresh;
-    assert.equal(refresh.fromCommit, before);
-    assert.equal(refresh.toCommit, after);
-    assert.equal(refresh.changed, true);
-    assert.equal(git(project.path, "rev-parse", "HEAD"), after);
-    plan = json("schedule", "show", "--global", "--schedule", syncId).schedule;
-    json("schedule", "disable", "--global", "--schedule", syncId, "--revision", String(plan.revision));
-    json("controller", "restart");
-    plan = json("schedule", "show", "--global", "--schedule", syncId).schedule;
-    assert.equal(plan.builtin.enabled, false);
-    assert.equal(plan.state, "disabled");
-    assert.equal(plan.rule.everyMs, 60000);
-    assert.equal(json("job", "runs", "--global", "--job", syncId).length, 1);
-    checkNoJobSession();
-    process.stdout.write("Builtin Project sync sessionless fast-forward/restart smoke passed.\n");
-    runCli(cli, ["config", "runtime", "clear", "reconciliation-interval-seconds"], environment);
-  } finally {
-    for (const plan of json("schedule", "list", "--global")) {
-      if (plan.state === "enabled") json("schedule", "disable", "--global", "--schedule", plan.id, "--revision", String(plan.revision));
-    }
-    for (const definition of json("job", "list", "--global")) {
-      for (const run of json("job", "runs", "--global", "--job", definition.id)) {
-        const jobRef = ["--global", "--job", definition.id, "--run", run.id];
-        json("job", "run-cancel", ...jobRef);
-        await waitFor(() => !["queued", "running"].includes(json("job", "run-get", ...jobRef).status),
-          "Public Job cleanup did not settle; retain fixture evidence.");
+      // Exercise the supported maintenance cadence inside the bounded smoke
+      // deadline; the production default is intentionally 120 seconds.
+      runCli(cli, ["config", "runtime", "set", "reconciliation-interval-seconds", "5"], environment);
+      for (const kind of ["existing-job", "new-job"]) {
+        const id = `public-${kind}`;
+        json("schedule", "create", "--global", "--schedule", id, "--job", "public-probe",
+          "--authorization", "service", "--target", JSON.stringify(kind === "existing-job"
+            ? { kind } : { kind, definitionRevision: 1 }),
+          "--rule", JSON.stringify({ kind: "once", at: new Date(Date.now() + 2000).toISOString() }));
+      }
+      // Create both independent targets before waiting, avoiding serial
+      // maintenance waits. Still inspect each actual durable outcome.
+      for (const kind of ["existing-job", "new-job"]) {
+        const id = `public-${kind}`;
+        const completed = await waitFor(() => {
+          const plan = json("schedule", "show", "--global", "--schedule", id).schedule;
+          return plan.state === "completed" && plan;
+        },
+          "Public service Schedule did not dispatch without a Session.",
+          () => JSON.stringify(json("schedule", "show", "--global", "--schedule", id)));
+        const receipt = completed.lastAttempt;
+        const scheduledRef = ["--global", "--job", receipt.jobId, "--run", receipt.runId];
+        await waitFor(() => json("job", "run-get", ...scheduledRef).status === "succeeded",
+          "Service Job did not complete.", () => JSON.stringify(json("job", "run-evidence", ...scheduledRef)));
+        assert.equal(json("job", "run-result", ...scheduledRef).result.data.action, "system.noop");
+        assert.equal(kind === "existing-job", receipt.jobId === "public-probe");
+        checkNoJobSession();
+      }
+      // Builtin installation -> due service dispatch -> real local fast-forward.
+      // Reuse this owned Home/Controller and its teardown, never a production remote.
+      const syncRemote = join(sandbox, "sync-remote.git"), syncSeed = join(sandbox, "sync-seed");
+      const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], {
+        env: { ...environment, GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+          GIT_COMMITTER_NAME: "Fixture", GIT_COMMITTER_EMAIL: "fixture@example.invalid" },
+        encoding: "utf8", stdio: ["pipe", "pipe", "pipe"]
+      }).trim();
+      git(sandbox, "init", "--bare", "--initial-branch=main", syncRemote);
+      git(sandbox, "clone", syncRemote, syncSeed);
+      writeFileSync(join(syncSeed, "value"), "before\n");
+      git(syncSeed, "add", "value"); git(syncSeed, "commit", "-m", "before"); git(syncSeed, "push", "origin", "main");
+      const before = git(syncSeed, "rev-parse", "HEAD");
+      const project = json("project", "clone", "Sync fixture", syncRemote, "--stable", "main", "--development", "main").project;
+      const syncId = `project-sync-${project.id}`;
+      await waitFor(() => json("schedule", "list", "--global").some(s => s.id === syncId),
+        "Builtin sync was not installed by Controller reconciliation.");
+      let plan = json("schedule", "show", "--global", "--schedule", syncId).schedule;
+      assert.equal(plan.authorization.grantedBy.scope, "service");
+      assert.equal(plan.rule.everyMs, 6 * 60 * 60_000);
+      writeFileSync(join(syncSeed, "value"), "after\n");
+      git(syncSeed, "commit", "-am", "after"); git(syncSeed, "push", "origin", "main");
+      const after = git(syncSeed, "rev-parse", "HEAD");
+      json("schedule", "update", "--global", "--schedule", syncId, "--revision", String(plan.revision),
+        "--rule", JSON.stringify({ kind: "interval", everyMs: 60000, anchor: new Date(Date.now() + 2000).toISOString() }));
+      await waitFor(() => json("schedule", "show", "--global", "--schedule", syncId).schedule.lastAttempt?.runId,
+        "Builtin sync did not dispatch.");
+      plan = json("schedule", "show", "--global", "--schedule", syncId).schedule;
+      const syncRef = ["--global", "--job", syncId, "--run", plan.lastAttempt.runId];
+      await waitFor(() => json("job", "run-get", ...syncRef).status === "succeeded",
+        "Builtin sync did not fast-forward.", () => JSON.stringify({
+          evidence: json("job", "run-evidence", ...syncRef),
+          result: json("job", "run-result", ...syncRef),
+          logs: json("job", "logs", ...syncRef)
+        }));
+      const refresh = json("job", "run-result", ...syncRef).result.data.refresh;
+      assert.equal(refresh.fromCommit, before);
+      assert.equal(refresh.toCommit, after);
+      assert.equal(refresh.changed, true);
+      assert.equal(git(project.path, "rev-parse", "HEAD"), after);
+      plan = json("schedule", "show", "--global", "--schedule", syncId).schedule;
+      json("schedule", "disable", "--global", "--schedule", syncId, "--revision", String(plan.revision));
+      json("controller", "restart");
+      plan = json("schedule", "show", "--global", "--schedule", syncId).schedule;
+      assert.equal(plan.builtin.enabled, false);
+      assert.equal(plan.state, "disabled");
+      assert.equal(plan.rule.everyMs, 60000);
+      assert.equal(json("job", "runs", "--global", "--job", syncId).length, 1);
+      checkNoJobSession();
+      process.stdout.write("Builtin Project sync sessionless fast-forward/restart smoke passed.\n");
+      runCli(cli, ["config", "runtime", "clear", "reconciliation-interval-seconds"], environment);
+    } finally {
+      for (const plan of json("schedule", "list", "--global")) {
+        if (plan.state === "enabled") json("schedule", "disable", "--global", "--schedule", plan.id, "--revision", String(plan.revision));
+      }
+      for (const definition of json("job", "list", "--global")) {
+        for (const run of json("job", "runs", "--global", "--job", definition.id)) {
+          const jobRef = ["--global", "--job", definition.id, "--run", run.id];
+          json("job", "run-cancel", ...jobRef);
+          await waitFor(() => !["queued", "running"].includes(json("job", "run-get", ...jobRef).status),
+            "Public Job cleanup did not settle; retain fixture evidence.");
+        }
       }
     }
-  }
 
-  // Task delegation uses the existing Draft/Leader aggregate, never a runner
-  // or an implicitly elevated Operator. Its delivery goal is still pending
-  // until normal Task acceptance; cancellation does not stop that Task.
-  json("job", "define", "--global", "--job", "task-delegate", "--title", "Task delegation",
-    "--input", JSON.stringify({ kind: "task", goal: "delivery", target: { kind: "new",
-      title: "Delegated Draft", description: "Isolated package fixture; no delivery requested.",
-      projectBindings: [] } }));
-  const delegated = json("job", "run", "--global", "--job", "task-delegate", "--request-id", "delegate-once").run;
-  const delegatedRef = ["--global", "--job", "task-delegate", "--run", delegated.id];
-  assert.equal(json("job", "run", "--global", "--job", "task-delegate", "--request-id", "delegate-once").run.id, delegated.id);
-  assert.equal(json("job", "run-confirm", ...delegatedRef).status, "running");
-  const delegatedTask = json("task", "show", delegated.delegation.taskId);
-  assert.equal(delegatedTask.task.status, "draft");
-  assert.equal(delegatedTask.task.source.run.runId, delegated.id);
-  assert.equal(delegatedTask.delegations.items[0].jobId, "task-delegate");
-  assert.equal(json("task", "list", "--source", "job").total, 1);
-  assert.equal(json("job", "run-delegation", ...delegatedRef).taskId, delegatedTask.task.id);
-  json("job", "run-cancel", ...delegatedRef);
-  assert.equal(json("job", "run-confirm", ...delegatedRef).status, "cancelled");
-  assert.equal(json("task", "show", delegatedTask.task.id).task.executionGate.state, "enabled");
+    // Task delegation uses the existing Draft/Leader aggregate, never a runner
+    // or an implicitly elevated Operator. Its delivery goal is still pending
+    // until normal Task acceptance; cancellation does not stop that Task.
+    json("job", "define", "--global", "--job", "task-delegate", "--title", "Task delegation",
+      "--input", JSON.stringify({ kind: "task", goal: "delivery", target: { kind: "new",
+        title: "Delegated Draft", description: "Isolated package fixture; no delivery requested.",
+        projectBindings: [] } }));
+    const delegated = json("job", "run", "--global", "--job", "task-delegate", "--request-id", "delegate-once").run;
+    const delegatedRef = ["--global", "--job", "task-delegate", "--run", delegated.id];
+    assert.equal(json("job", "run", "--global", "--job", "task-delegate", "--request-id", "delegate-once").run.id, delegated.id);
+    assert.equal(json("job", "run-confirm", ...delegatedRef).status, "running");
+    const delegatedTask = json("task", "show", delegated.delegation.taskId);
+    assert.equal(delegatedTask.task.status, "draft");
+    assert.equal(delegatedTask.task.source.run.runId, delegated.id);
+    assert.equal(delegatedTask.delegations.items[0].jobId, "task-delegate");
+    assert.equal(json("task", "list", "--source", "job").total, 1);
+    assert.equal(json("job", "run-delegation", ...delegatedRef).taskId, delegatedTask.task.id);
+    json("job", "run-cancel", ...delegatedRef);
+    assert.equal(json("job", "run-confirm", ...delegatedRef).status, "cancelled");
+    assert.equal(json("task", "show", delegatedTask.task.id).task.executionGate.state, "enabled");
+    phase("jobs/schedules/delegation");
+  }
 
   const doctorStarted = Date.now();
   const doctor = json("doctor");
@@ -402,480 +437,490 @@ try {
   const status = JSON.parse(runCli(cli, ["--json", "controller", "status"],
     { ...environment, YUI_STATUS_IDENTITY: "0" })).data;
   assert.ok(status.identity, "Status identity is unconditional, not a rollout flag.");
-  const { createUpdatePorts } = await import(pathToFileURL(join(root, "dist", "cli", "updatePorts.js")).href);
-  // Real update lifecycle children, bounded so a self-wait regression does not
-  // spend the production 90-second handover deadline in CI. No npm operation.
-  const updatePorts = createUpdatePorts(environment, (command, args, options) =>
-    spawnSync(command, args, { ...options, timeout: 15_000 }));
-  const lifecycle = updatePorts.controllerStatus(yuiHome);
-  const controller = status.resources.find(resource => resource.kind === "controller" && resource.state === "current");
-  assert.equal(lifecycle.running, true);
-  assert.equal(lifecycle.pid, controller.processes[0].pid);
-  assert.equal(lifecycle.identity.version, packageJson.version);
-  assert.equal(lifecycle.identity.controllerProtocolVersion, status.identity.runtime.protocolVersion);
-  assert.equal(lifecycle.identity.storageVersion, status.identity.storage.storageVersion);
-  assert.equal(lifecycle.identity.minimumStorageVersion, status.identity.storage.minimumStorageVersion);
-  const { task } = json("task", "create", "runtime smoke");
-  assert.equal(task.status, "draft");
-  assert.throws(() => runCli(cli, ["task", "activate", task.id], environment), error => {
-    assert.match(String(error.stderr), /activation request.*required/i);
-    return true;
-  }, "Activation must not invent request-free intent.");
-  assert.equal(json("task", "show", task.id).task.status, "draft");
-  const original = "Keep the original requirement across restart. Archive this fixture Task after completion.";
-  json("task", "message", "send", task.id, original, "--intent", "record", "--request-id", "original");
-  const beforeRestart = json("task", "message", "list", task.id);
-  const previousPid = JSON.parse(readFileSync(join(yuiHome, "runtime/controller.json"), "utf8")).pid;
-  const restarted = json("controller", "restart");
-  assert.equal(restarted.previousPid, previousPid);
-  assert.notEqual(restarted.pid, previousPid);
-  assert.equal(processExited(previousPid), true, "The old Controller must actually exit.");
-  assert.deepEqual(json("task", "message", "list", task.id), beforeRestart);
-  json("task", "message", "send", task.id, original, "--intent", "record", "--request-id", "original");
-  assert.deepEqual(json("task", "message", "list", task.id), beforeRestart, "A replay must not duplicate input.");
+  phase("doctor/status");
+  if (profile !== "compatibility") {
+    const { createUpdatePorts } = await import(pathToFileURL(join(root, "dist", "cli", "updatePorts.js")).href);
+    // Real update lifecycle children, bounded so a self-wait regression does not
+    // spend the production 90-second handover deadline in CI. No npm operation.
+    const updatePorts = createUpdatePorts(environment, (command, args, options) =>
+      spawnSync(command, args, { ...options, timeout: 15_000 }));
+    const lifecycle = updatePorts.controllerStatus(yuiHome);
+    const controller = status.resources.find(resource => resource.kind === "controller" && resource.state === "current");
+    assert.equal(lifecycle.running, true);
+    assert.equal(lifecycle.pid, controller.processes[0].pid);
+    assert.equal(lifecycle.identity.version, packageJson.version);
+    assert.equal(lifecycle.identity.controllerProtocolVersion, status.identity.runtime.protocolVersion);
+    assert.equal(lifecycle.identity.storageVersion, status.identity.storage.storageVersion);
+    assert.equal(lifecycle.identity.minimumStorageVersion, status.identity.storage.minimumStorageVersion);
+    phase("doctor/identity");
+    const { task } = json("task", "create", "runtime smoke");
+    assert.equal(task.status, "draft");
+    assert.throws(() => runCli(cli, ["task", "activate", task.id], environment), error => {
+      assert.match(String(error.stderr), /activation request.*required/i);
+      return true;
+    }, "Activation must not invent request-free intent.");
+    assert.equal(json("task", "show", task.id).task.status, "draft");
+    const original = "Keep the original requirement across restart. Archive this fixture Task after completion.";
+    json("task", "message", "send", task.id, original, "--intent", "record", "--request-id", "original");
+    const beforeRestart = json("task", "message", "list", task.id);
+    const previousPid = JSON.parse(readFileSync(join(yuiHome, "runtime/controller.json"), "utf8")).pid;
+    const restarted = json("controller", "restart");
+    assert.equal(restarted.previousPid, previousPid);
+    assert.notEqual(restarted.pid, previousPid);
+    assert.equal(processExited(previousPid), true, "The old Controller must actually exit.");
+    assert.deepEqual(json("task", "message", "list", task.id), beforeRestart);
+    json("task", "message", "send", task.id, original, "--intent", "record", "--request-id", "original");
+    assert.deepEqual(json("task", "message", "list", task.id), beforeRestart, "A replay must not duplicate input.");
 
-  let eventCursor = json("task", "context", task.id).coreCursor;
-  const observedEvents = [];
-  const events = () => {
-    let continuation;
-    do {
-      const page = json("task", "context", "delta", task.id, "--after", eventCursor,
-        ...(continuation === undefined ? [] : ["--continuation", continuation]));
-      for (const entry of page.events) observedEvents.push(entry.value ??
-        json("task", "context", "inspect", task.id, "--store", entry.ref.store,
-          "--ref", entry.ref.refId, "--digest", entry.ref.digest).value);
-      continuation = page.continuation;
-      if (continuation === undefined) eventCursor = page.throughCursor;
-    } while (continuation !== undefined);
-    return observedEvents;
-  };
-  const wakes = () => listItems("task", "wake", "list", task.id)
-    .map(entry => json("task", "wake", "show", task.id, entry.id).wake);
-  json("task", "activation", "request", task.id, "--request-id", "execute", "--environment", "scratch");
-  await waitFor(() => JSON.stringify(events()).includes("Native Codex result."),
-    "CLI input did not traverse Controller, Host and fake Provider back to durable results.",
-    () => JSON.stringify({ task: json("task", "show", task.id), events: json("task", "event", "list", task.id) }));
-  assert.equal(json("task", "show", task.id).task.status, "active");
-  assert.equal(existsSync(join(yuiHome, "runtime", "session-cli")), false,
-    "Launching and waking a Leader must not generate a Session CLI script.");
-  const { checkSessionSkills, readSessionBootstrapManifest } =
-    await import(pathToFileURL(join(root, "dist/context/sessionBootstrapManifest.js")).href);
-  const manifests = () => readdirSync(join(yuiHome, "runtime/session-manifests")).map(file =>
-    join(yuiHome, "runtime/session-manifests", file));
-  const leaderManifestPath = manifests().find(path => {
-    const manifest = readSessionBootstrapManifest(path);
-    return manifest.owner.scope === "task" && manifest.owner.taskId === task.id;
-  });
-  assert.ok(leaderManifestPath);
-  const leaderSkills = checkSessionSkills(yuiHome, leaderManifestPath);
-  assert.deepEqual(leaderSkills.skills.map(skill => skill.id), ["yui-runtime", "yui-leader"]);
-  assert.equal(readSessionBootstrapManifest(leaderManifestPath).contextProtocol.skillCheckCommand,
-    "yui session skills --json");
-  for (const skill of leaderSkills.skills) assert.equal(skill.path, join(skillRoot, skill.id));
-  // Desktop entry has only the native identity. The fixture explicitly
-  // acknowledges its handled originals; a fake terminal is not that receipt.
-  const leaderNative = events().find(event => event.type === "runtime.native-connection-bound"
-    && event.payload.roleName === "leader").payload.nativeSessionId;
-  const desktopLeader = { ...environment, CODEX_THREAD_ID: leaderNative };
-  // A real CLI claim, followed by a legal Session replacement, must not fence
-  // the very successor which needs to inspect and settle that claim.
-  const oldWindow = JSON.parse(runCli(cli, ["--json", "inbox", "list"], desktopLeader)).data.items
-    .find(item => item.kind === "notification-window" && item.blocked === null);
-  assert.ok(oldWindow);
-  runCli(cli, ["inbox", "show", oldWindow.id, "--json"], desktopLeader);
-  const oldClaim = JSON.parse(runCli(cli, ["inbox", "claim", oldWindow.id,
-    "--request-id", "interrupted-handler", "--json"], desktopLeader)).data.inbox.claim;
-  json("controller", "restart");
-  runCli(cli, ["task", "role", "session", "new", task.id, "leader",
-    "--reason", "Fixture handler ended before acknowledgement; preserve its obligation."], desktopLeader);
-  await waitFor(() => events().some(event => event.type === "runtime.native-connection-bound"
-    && event.payload.roleName === "leader" && event.payload.nativeSessionId !== leaderNative),
-  "Retained claim prevented the replacement Leader from cold-starting.",
-  () => JSON.stringify({ events: events().slice(-16), wakes: wakes() }));
-  const successorNative = events().filter(event => event.type === "runtime.native-connection-bound"
-    && event.payload.roleName === "leader").at(-1).payload.nativeSessionId;
-  desktopLeader.CODEX_THREAD_ID = successorNative;
-  const retained = JSON.parse(runCli(cli, ["inbox", "show", oldWindow.id, "--json"], desktopLeader)).data;
-  assert.deepEqual(retained.inbox.claim, oldClaim);
-  assert.equal(retained.inbox.ack, undefined, "replacement is not handling");
-  await waitFor(() => events().some(event => event.type === "runtime.observation"
-    && event.payload.kind === "turn.completed"
-    && JSON.parse(event.payload.observation).fence.nativeSessionId === successorNative),
-  "Successor initialization did not finish.");
-  const successorWakes = wakes();
-  json("task", "reconcile", task.id);
-  json("task", "reconcile", task.id);
-  assert.deepEqual(wakes(), successorWakes, "reconcile must not repeatedly wake for the same retained obligation");
-  const disposition = ["inbox", "ack", oldWindow.id, "--request-id", "successor-settlement",
-    "--reason", "Read original and verified existing deterministic result; no business replay.", "--json"];
-  const settled = JSON.parse(runCli(cli, disposition, desktopLeader)).data;
-  // Lost response recovery repeats only the exact ack, never the business.
-  assert.deepEqual(JSON.parse(runCli(cli, disposition, desktopLeader)).data, settled);
-  assert.equal(settled.inbox.ack.actor.nativeSessionId, successorNative);
-  console.log("Retained-claim Session replacement and idempotent successor settlement passed.");
-  const acknowledgeWindows = () => {
-    const pending = JSON.parse(runCli(cli, ["--json", "inbox", "list"], desktopLeader)).data;
-    assert.equal(pending.identity.roleName, "leader");
-    for (const item of pending.items.filter(item => item.kind === "notification-window" && item.blocked === null)) {
-      runCli(cli, ["inbox", "show", item.id, "--json"], desktopLeader);
-      const claimed = JSON.parse(runCli(cli, ["--json", "inbox", "claim", item.id,
-        "--request-id", `fixture-claim-${item.id}`], desktopLeader)).data;
-      runCli(cli, ["task", "wake", "show", task.id, claimed.id, "--json"], desktopLeader);
-      runCli(cli, ["inbox", "ack", claimed.id, "--request-id", `fixture-ack-${item.id}`,
-        "--reason", "Fixture inspected original and deterministic result."], desktopLeader);
-    }
-  };
-  const desktopSkills = JSON.parse(runCli(cli, ["session", "skills", "--json"], desktopLeader)).data;
-  assert.deepEqual(desktopSkills.skills.map(skill => skill.id), ["yui-runtime", "yui-leader"]);
-  acknowledgeWindows();
-  json("task", "complete", task.id, "--summary", "The deterministic Provider result is accepted.");
-  assert.equal(json("task", "show", task.id).task.status, "completed");
-
-  // Exercise the public reopen -> Operator submission path in the same Home
-  // and conversation. Deliberately let the lifecycle-only notification finish
-  // first, so a second, exact Message must reach the Host on its own wake.
-  const followupStarted = performance.now();
-  const originalCompletion = events().find(event => event.type === "task.completed");
-  assert.throws(() => runCli(cli, ["operator", "submit", "Not an automatic reopen",
-    "--task", task.id, "--intent", "discuss"], environment), error => {
-    assert.match(String(error.stderr), /completed/);
-    return true;
-  });
-  json("task", "reopen", task.id);
-  json("task", "reopen", task.id);
-  assert.equal(json("task", "show", task.id).task.completedAt, undefined);
-  const terminalForWake = wake => events().some(event => {
-    if (event.type !== "runtime.observation" || event.payload.kind !== "turn.completed") return false;
-    const observation = JSON.parse(event.payload.observation);
-    return observation.fence.receiptId?.startsWith(`notification:${task.id}/${wake.id}/`) === true;
-  });
-  await waitFor(() => {
-    const wake = wakes().find(w => w.reasons.includes("task-reopened"));
-    return wake !== undefined && terminalForWake(wake);
-  }, "Reopen notification did not finish through the existing Host.");
-  const request = ["operator", "submit", "Continue this same accepted result; local fixture only.",
-    "--task", task.id, "--intent", "develop", "--request-id", "authorized-followup"];
-  runCli(cli, request, environment);
-  runCli(cli, request, environment);
-  const inputs = listItems("task", "message", "list", task.id)
-    .map(entry => json("task", "message", "show", `${task.id}/${entry.ref.refId}`));
-  const followups = inputs.filter(message => message?.submissionKey === "authorized-followup");
-  assert.equal(followups.length, 1, "Matching Operator retries must retain one original Message.");
-  const followup = followups[0];
-  assert.equal(followup.submissionReceipt.routing.kind, "active-context");
-  assert.equal(followup.submissionReceipt.feedback.delivery, "queued");
-  await waitFor(() => {
-    const wake = wakes().find(w =>
-      w.refs?.some(ref => ref.type === "message" && ref.id === followup.id));
-    return wake !== undefined && terminalForWake(wake);
-  }, "The exact follow-up Message did not traverse CLI/Controller/Host/native terminal.");
-  assert.equal(events().filter(event => event.type === "task.reopened").length, 1);
-  assert.deepEqual(events().find(event => event.id === originalCompletion.id), originalCompletion);
-  acknowledgeWindows();
-  json("task", "complete", task.id, "--summary", "The authorized follow-up is separately accepted.");
-  assert.equal(json("task", "show", task.id).task.status, "completed");
-  assert.equal(events().filter(event => event.type === "task.completed").length, 2);
-  assert.deepEqual(events().find(event => event.id === originalCompletion.id), originalCompletion);
-  process.stdout.write(`Reopen and follow-up delivery smoke passed (${Math.round(performance.now() - followupStarted)} ms).\n`);
-
-  const session = `yui-${tmuxServer.slice(4, 16)}-${task.id}`;
-  const neighbor = `yui-${tmuxServer.slice(4, 16)}-${task.id}0`;
-  // These are this fixture's terminal resources, not additional Agent work.
-  const panePid = Number(tmux("display-message", "-p", "-t", `=${session}:=leader`, "#{pane_pid}").trim());
-  assert.equal(processExited(panePid), false, "Completion must preserve the reusable conversation.");
-  tmux("new-window", "-t", `=${session}`, "-n", "exited-fixture", "/bin/true");
-  tmux("new-session", "-d", "-t", session, "-s", "fixture-viewer");
-  tmux("new-session", "-d", "-s", neighbor, "/bin/sleep", "60");
-  await waitFor(() => tmux("display-message", "-p", "-t", `=${session}:=exited-fixture`, "#{pane_dead}").trim() === "1",
-    "The fixture pane did not exit.");
-  const sourceMessage = json("task", "context", "list", task.id, "--store", "task-message").items
-    .map(entry => json("task", "message", "show", `${task.id}/${entry.ref.refId}`))
-    .find(message => message?.body === original);
-  assert.ok(sourceMessage);
-  const connection = events().filter(event => event.type === "runtime.native-connection-bound"
-    && event.payload.roleName === "leader").at(-1);
-  assert.ok(connection);
-  const manifestDirectory = join(yuiHome, "runtime", "session-manifests");
-  const manifestPath = readdirSync(manifestDirectory).map(name => join(manifestDirectory, name))
-    .find(path => {
-      const manifest = JSON.parse(readFileSync(path, "utf8"));
-      return manifest.owner.scope === "task" && manifest.owner.taskId === task.id
-        && manifest.roleKind === "leader";
+    let eventCursor = json("task", "context", task.id).coreCursor;
+    const observedEvents = [];
+    const events = () => {
+      let continuation;
+      do {
+        const page = json("task", "context", "delta", task.id, "--after", eventCursor,
+          ...(continuation === undefined ? [] : ["--continuation", continuation]));
+        for (const entry of page.events) observedEvents.push(entry.value ??
+          json("task", "context", "inspect", task.id, "--store", entry.ref.store,
+            "--ref", entry.ref.refId, "--digest", entry.ref.digest).value);
+        continuation = page.continuation;
+        if (continuation === undefined) eventCursor = page.throughCursor;
+      } while (continuation !== undefined);
+      return observedEvents;
+    };
+    const wakes = () => listItems("task", "wake", "list", task.id)
+      .map(entry => json("task", "wake", "show", task.id, entry.id).wake);
+    json("task", "activation", "request", task.id, "--request-id", "execute", "--environment", "scratch");
+    await waitFor(() => JSON.stringify(events()).includes("Native Codex result."),
+      "CLI input did not traverse Controller, Host and fake Provider back to durable results.",
+      () => JSON.stringify({ task: json("task", "show", task.id), events: json("task", "event", "list", task.id) }));
+    assert.equal(json("task", "show", task.id).task.status, "active");
+    assert.equal(existsSync(join(yuiHome, "runtime", "session-cli")), false,
+      "Launching and waking a Leader must not generate a Session CLI script.");
+    const { checkSessionSkills, readSessionBootstrapManifest } =
+      await import(pathToFileURL(join(root, "dist/context/sessionBootstrapManifest.js")).href);
+    const manifests = () => readdirSync(join(yuiHome, "runtime/session-manifests")).map(file =>
+      join(yuiHome, "runtime/session-manifests", file));
+    const leaderManifestPath = manifests().find(path => {
+      const manifest = readSessionBootstrapManifest(path);
+      return manifest.owner.scope === "task" && manifest.owner.taskId === task.id;
     });
-  assert.ok(manifestPath);
-  const archiveReply = JSON.parse(runCli(cli, ["--json", "task", "archive", task.id, "--integrated",
-    "--source-message", sourceMessage.id, "--purpose", "Archive this fixture Task after completion.",
-    "--request-id", "leader-fixture-archive"], {
-    ...environment, YUI_SESSION_SCOPE: "task", YUI_TASK_ID: task.id, YUI_ROLE: "leader",
-    YUI_NATIVE_SESSION_ID: connection.payload.nativeSessionId, YUI_SESSION_MANIFEST: manifestPath
-  }));
-  assert.equal(archiveReply.ok, true, JSON.stringify(archiveReply));
-  assert.equal(archiveReply.data.kind, "value", JSON.stringify({
-    archiveReply, events: archiveReply.data.kind === "value" ? [] : events().slice(-20)
-  }));
-  assert.equal(archiveReply.data.value.status, "archived", JSON.stringify(archiveReply));
-  assert.equal(json("task", "show", task.id).task.status, "archived");
-  assert.ok(events().some(event => event.type === "task.leader-archive-result"
-    && event.payload.status === "archived"), "Self-stop must leave a readable Controller-owned receipt.");
-  assert.equal(processExited(panePid), true, "Archive must release the Host, not just its durable Session.");
-  const sessions = tmux("list-sessions", "-F", "#{session_name}").trim().split("\n");
-  assert.deepEqual(sessions, [neighbor], "Archive must remove its live/dead panes and viewer, but not task-10.");
-  json("task", "archive", task.id, "--integrated");
-  assert.deepEqual(tmux("list-sessions", "-F", "#{session_name}").trim().split("\n"), [neighbor]);
-  const serverPid = Number(tmux("display-message", "-p", "-t", `=${neighbor}:`, "#{pid}").trim());
-  tmux("kill-session", "-t", `=${neighbor}`);
-  await waitFor(() => processExited(serverPid), "The empty fixture tmux server did not exit.");
-
-  const updateStarted = performance.now();
-  // Keep a real Host alive across the updater's Controller replacement. Only
-  // the external Provider is fake; its direct notifications represent Desktop
-  // input, not another managed turn/start or a fabricated durable terminal.
-  const directPort = join(sandbox, "direct.port");
-  writeFileSync(join(fakeBin, "codex"),
-    `#!${process.execPath}\nprocess.env.YUI_FAKE_DIRECT_PORT_FILE = ${JSON.stringify(directPort)};\n`
-    + `process.env.YUI_FAKE_TURN_HANDLER = ${JSON.stringify(new URL("../test/fixtures/inbox-smoke-handler.mjs", import.meta.url).href)};\n`
-    + `process.env.YUI_FAKE_UNIQUE_THREADS = "1";\n`
-    + `import(${JSON.stringify(fakeCodex.href)}).catch(error => { console.error(error); process.exitCode = 1; });\n`,
-    { mode: 0o755 });
-  const { callFileTaskController } = await import(pathToFileURL(join(root, "dist/controller/clientRuntime.js")).href);
-  const { inspectAgentHost } = await import(pathToFileURL(join(root, "dist/runtime/agentHost.js")).href);
-  const { FileRuntimeEventInbox } = await import(pathToFileURL(join(root, "dist/controller/runtimeEventInbox.js")).href);
-  const target = { home: yuiHome, scope: "global", roleName: "operator" };
-  await callFileTaskController(yuiHome, "runtime.ensure-role-session",
-    { scope: "global", roleName: "operator" }, { environment, requestTimeoutMs: 15_000 });
-  // --pending is an Agent handling view, not a delivery queue. This smoke uses
-  // a fake Provider without semantic inbox acknowledgements; only test its
-  // original delivery receipts here, never infer that it handled the inputs.
-  const pending = () => listItems("role", "message", "list", "operator", "--pending")
-    .filter(message => message.delivery === undefined && message.notDelivered === undefined
-      && (message.inputAction === "queue" || message.interruptThen));
-  const context = () => json("session", "context", "operator");
-  await waitFor(async () => (await inspectAgentHost(target)).state === "idle" && pending().length === 0,
-    "Operator startup did not settle.");
-  const hostBefore = await inspectAgentHost(target);
-  const hostPid = Number(tmux("list-panes", "-a", "-F", "#{pane_pid}").trim());
-  assert.ok(Number.isInteger(hostPid) && hostPid > 0);
-  operatorHostPid = hostPid;
-  const directEvent = (method, status) => ({ method, params: {
-    threadId: hostBefore.nativeSessionId,
-    turn: { id: "desktop-update", status,
-      items: [{ id: "update-output", type: "agentMessage", text: "Original update-window result." }] }
-  } });
-  await sendDirect(directPort, directEvent("turn/started", "inProgress"));
-  await waitFor(() => context().nativeTurn?.attemptId === "direct:desktop-update",
-    "Desktop input was not observed before handover.");
-  const queuedBody = "Preserve this input across update.";
-  const queued = json("role", "message", "queue", "operator", queuedBody,
-    "--request-id", "update-pending").message;
-  const notificationTask = json("task", "create", "update notification fixture").task;
-  json("task", "cancel", notificationTask.id, "--summary", "Notify the busy Operator.");
-  await waitFor(() => pending().some(message => message.id !== queued.id),
-    "The Task fact did not produce a pending engineering notice.");
-  const queuedBefore = pending().map(message => json("role", "message", "show", "operator", message.id));
-  assert.ok(queuedBefore.some(message => message.id !== queued.id && message.body.includes(notificationTask.id)),
-    "The pending engineering notice must reference this exact Task fact.");
-  assert.equal(context().nativeTurn.status, "accepted", "Busy Desktop input must fence queued delivery.");
-  const beforeUpdate = updatePorts.controllerStatus(yuiHome);
-  assert.equal(beforeUpdate.running, true);
-  const beforeUpdateMessages = json("task", "message", "list", task.id);
-  const releaseHandover = updatePorts.beginControllerHandover(yuiHome);
-  try {
-    const lockPath = join(yuiHome, "runtime", "handover.lock");
-    const lock = readFileSync(lockPath, "utf8");
-    const runtimeModule = pathToFileURL(join(root, "dist", "controller", "clientRuntime.js")).href;
-    // A lifecycle caller without the updater's owner identity must still wait,
-    // even when the real OS parent happens to hold the lock.
-    const blocked = JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", `
-      import { stopFileTaskController } from ${JSON.stringify(runtimeModule)};
-      try {
-        await stopFileTaskController(process.env.YUI_HOME, {
-          expectedPid: ${beforeUpdate.pid}, handoverWaitTimeoutMs: 50, pollIntervalMs: 5
-        });
-        process.stdout.write(JSON.stringify({ stopped: true }));
-      } catch (error) {
-        process.stdout.write(JSON.stringify({ code: error.code }));
+    assert.ok(leaderManifestPath);
+    const leaderSkills = checkSessionSkills(yuiHome, leaderManifestPath);
+    assert.deepEqual(leaderSkills.skills.map(skill => skill.id), ["yui-runtime", "yui-leader"]);
+    assert.equal(readSessionBootstrapManifest(leaderManifestPath).contextProtocol.skillCheckCommand,
+      "yui session skills --json");
+    for (const skill of leaderSkills.skills) assert.equal(skill.path, join(skillRoot, skill.id));
+    // Desktop entry has only the native identity. The fixture explicitly
+    // acknowledges its handled originals; a fake terminal is not that receipt.
+    const leaderNative = events().find(event => event.type === "runtime.native-connection-bound"
+      && event.payload.roleName === "leader").payload.nativeSessionId;
+    const desktopLeader = { ...environment, CODEX_THREAD_ID: leaderNative };
+    // A real CLI claim, followed by a legal Session replacement, must not fence
+    // the very successor which needs to inspect and settle that claim.
+    const oldWindow = JSON.parse(runCli(cli, ["--json", "inbox", "list"], desktopLeader)).data.items
+      .find(item => item.kind === "notification-window" && item.blocked === null);
+    assert.ok(oldWindow);
+    runCli(cli, ["inbox", "show", oldWindow.id, "--json"], desktopLeader);
+    const oldClaim = JSON.parse(runCli(cli, ["inbox", "claim", oldWindow.id,
+      "--request-id", "interrupted-handler", "--json"], desktopLeader)).data.inbox.claim;
+    json("controller", "restart");
+    runCli(cli, ["task", "role", "session", "new", task.id, "leader",
+      "--reason", "Fixture handler ended before acknowledgement; preserve its obligation."], desktopLeader);
+    await waitFor(() => events().some(event => event.type === "runtime.native-connection-bound"
+      && event.payload.roleName === "leader" && event.payload.nativeSessionId !== leaderNative),
+    "Retained claim prevented the replacement Leader from cold-starting.",
+    () => JSON.stringify({ events: events().slice(-16), wakes: wakes() }));
+    const successorNative = events().filter(event => event.type === "runtime.native-connection-bound"
+      && event.payload.roleName === "leader").at(-1).payload.nativeSessionId;
+    desktopLeader.CODEX_THREAD_ID = successorNative;
+    const retained = JSON.parse(runCli(cli, ["inbox", "show", oldWindow.id, "--json"], desktopLeader)).data;
+    assert.deepEqual(retained.inbox.claim, oldClaim);
+    assert.equal(retained.inbox.ack, undefined, "replacement is not handling");
+    await waitFor(() => events().some(event => event.type === "runtime.observation"
+      && event.payload.kind === "turn.completed"
+      && JSON.parse(event.payload.observation).fence.nativeSessionId === successorNative),
+    "Successor initialization did not finish.");
+    const successorWakes = wakes();
+    json("task", "reconcile", task.id);
+    json("task", "reconcile", task.id);
+    assert.deepEqual(wakes(), successorWakes, "reconcile must not repeatedly wake for the same retained obligation");
+    const disposition = ["inbox", "ack", oldWindow.id, "--request-id", "successor-settlement",
+      "--reason", "Read original and verified existing deterministic result; no business replay.", "--json"];
+    const settled = JSON.parse(runCli(cli, disposition, desktopLeader)).data;
+    // Lost response recovery repeats only the exact ack, never the business.
+    assert.deepEqual(JSON.parse(runCli(cli, disposition, desktopLeader)).data, settled);
+    assert.equal(settled.inbox.ack.actor.nativeSessionId, successorNative);
+    console.log("Retained-claim Session replacement and idempotent successor settlement passed.");
+    const acknowledgeWindows = () => {
+      const pending = JSON.parse(runCli(cli, ["--json", "inbox", "list"], desktopLeader)).data;
+      assert.equal(pending.identity.roleName, "leader");
+      for (const item of pending.items.filter(item => item.kind === "notification-window" && item.blocked === null)) {
+        runCli(cli, ["inbox", "show", item.id, "--json"], desktopLeader);
+        const claimed = JSON.parse(runCli(cli, ["--json", "inbox", "claim", item.id,
+          "--request-id", `fixture-claim-${item.id}`], desktopLeader)).data;
+        runCli(cli, ["task", "wake", "show", task.id, claimed.id, "--json"], desktopLeader);
+        runCli(cli, ["inbox", "ack", claimed.id, "--request-id", `fixture-ack-${item.id}`,
+          "--reason", "Fixture inspected original and deterministic result."], desktopLeader);
       }
-    `], { env: environment, encoding: "utf8", timeout: 5000 }));
-    assert.equal(blocked.code, "CONTROLLER_HANDOVER_TIMEOUT");
-    assert.equal(processExited(beforeUpdate.pid), false);
+    };
+    const desktopSkills = JSON.parse(runCli(cli, ["session", "skills", "--json"], desktopLeader)).data;
+    assert.deepEqual(desktopSkills.skills.map(skill => skill.id), ["yui-runtime", "yui-leader"]);
+    acknowledgeWindows();
+    json("task", "complete", task.id, "--summary", "The deterministic Provider result is accepted.");
+    assert.equal(json("task", "show", task.id).task.status, "completed");
 
-    const stopped = updatePorts.stopController(yuiHome, beforeUpdate.pid);
-    assert.equal(stopped.stopped, true);
-    assert.equal(stopped.pid, beforeUpdate.pid);
-    assert.equal(processExited(beforeUpdate.pid), true, "Update must drain its exact Controller.");
-    assert.equal(processExited(hostPid), false, "Controller replacement must preserve the original Host.");
-    await sendDirect(directPort, directEvent("turn/completed", "completed"));
-    const inbox = new FileRuntimeEventInbox(yuiHome);
-    const terminal = () => inbox.list().find(event => event.type === "runtime-observation"
-      && event.observation.kind === "turn.completed"
-      && event.observation.fence.nativeSessionId === hostBefore.nativeSessionId
-      && event.observation.fence.nativeTurnId === "desktop-update");
-    await waitFor(() => terminal() !== undefined,
-    "The surviving Host did not persist its terminal while the Controller was offline.");
-    const retainedTerminal = terminal();
-    assert.match(JSON.stringify(retainedTerminal.observation.payload), /Original update-window result\./);
-    updatePorts.restoreController(yuiHome, beforeUpdate.identity);
-    const restored = updatePorts.controllerStatus(yuiHome);
-    assert.equal(restored.running, true);
-    assert.notEqual(restored.pid, beforeUpdate.pid);
-    assert.deepEqual(restored.identity, beforeUpdate.identity, "Rollback must restore the captured launch identity.");
-    assert.equal(readFileSync(lockPath, "utf8"), lock, "Lifecycle children cannot release the parent's lock.");
-  } finally {
-    releaseHandover();
-  }
-  assert.deepEqual(json("task", "message", "list", task.id), beforeUpdateMessages);
-  // Handover drains several serial turns (user input, engineering notices and
-  // the deliberately missing-ACK reminder). Observe backlog and terminal from
-  // one Controller snapshot, not separate CLI startups on each poll. Slow
-  // supported runners need a bounded multi-turn budget, not the single-event
-  // default. Keep the exact input/Host/effect assertions below.
-  let handoverContext;
-  await waitFor(() => {
-    handoverContext = context();
-    return handoverContext.backlog.reason === "empty"
-      && handoverContext.nativeTurn?.status === "completed";
-  },
-    "Replacement Controller did not consume the retained terminal and drain pending inputs.",
-    () => JSON.stringify(handoverContext), 60_000);
-  assert.equal(pending().length, 0, "Handover must drain the original delivery queue.");
-  const hostAfter = await inspectAgentHost(target);
-  for (const key of ["nativeSessionId", "processInstanceId", "endpointImplementation",
-    "authorityEpoch", "authorityOwner", "authorityHolderId"]) {
-    assert.deepEqual(hostAfter[key], hostBefore[key], `Handover must preserve the original Host's ${key}.`);
-  }
-  assert.equal(processExited(hostPid), false);
-  for (const original of queuedBefore) {
-    const delivered = json("role", "message", "show", "operator", original.id);
-    assert.ok(delivered.delivery, `Pending input ${original.id} was not accepted.`);
-    const { delivery, control, inbox, ...retained } = delivered;
-    assert.deepEqual(retained, original, "Delivery must retain each original input, target and request identity.");
-  }
-  const missingReceipt = json("role", "message", "show", "operator", queued.id);
-  assert.equal(missingReceipt.inbox?.claim.requestId, "fixture-routing-claim");
-  assert.equal(missingReceipt.inbox?.ack, undefined, "successful routing and final must not synthesize ACK");
-  assert.equal(json("task", "list", "--search", "inbox routing effect").total, 1,
-    "the deterministic Provider performed exactly one real isolated routing effect");
-  const checkNotices = listItems("role", "message", "list", "operator")
-    .map(message => json("role", "message", "show", "operator", message.id))
-    .filter(message => message.inputControl?.requestId.startsWith("inbox-check:")
-      && message.body.includes(`"${missingReceipt.inbox.claim.actor.attemptId}"`));
-  assert.equal(checkNotices.length, 1, "the real Controller/Host path must detect the missing receipt exactly once");
-  const ownOperator = { ...environment, CODEX_THREAD_ID: hostBefore.nativeSessionId };
-  const ackCommand = ["inbox", "ack", queued.id, "--request-id", "fixture-routing-ack",
-    "--reason", "Verified the existing routed Task; no business replay"];
-  const ack = runCli(cli, ackCommand, ownOperator);
-  assert.equal(runCli(cli, ackCommand, ownOperator), ack, "lost ACK response retries the same disposition only");
-  assert.equal(json("task", "list", "--search", "inbox routing effect").total, 1);
-  assert.ok(context().pending.historyCount > 0, "unhandled historical notices remain a separate evidence count");
-  process.stdout.write("Inbox handling smoke passed: real routing effect, omitted ACK, bounded reminder, idempotent receipt recovery.\n");
-  const completedTurn = context().nativeTurn;
-  json("role", "message", "queue", "operator", queuedBody, "--request-id", "update-pending");
-  assert.equal(listItems("role", "message", "list", "operator").filter(message => message.id === queued.id).length, 1);
-  assert.deepEqual(context().nativeTurn, completedTurn, "Retrying the same saved request must not start another Turn.");
-  // Restore an idle, valid historical Session shape through the real package/
-  // Controller/Host chain. Removing optional audit metadata in this disposable
-  // fixture does not forge any native acceptance or change the original queue.
-  const { SqliteTaskStore } = await import(pathToFileURL(join(root, "dist/storage/sqliteStore.js")).href);
-  const fixtureStore = new SqliteTaskStore(yuiHome);
-  try {
-    fixtureStore.transaction(store => {
-      const sessions = store.getGlobalRoleSessionSet("operator");
-      const active = sessions.sessions[sessions.activeAgentId];
-      const { skillPackages, ...historicalEffective } = active.effective;
-      store.saveGlobalRoleSessionSet({ ...sessions, sessions: { ...sessions.sessions,
-        [sessions.activeAgentId]: { ...active, effective: historicalEffective } } });
+    // Exercise the public reopen -> Operator submission path in the same Home
+    // and conversation. Deliberately let the lifecycle-only notification finish
+    // first, so a second, exact Message must reach the Host on its own wake.
+    const followupStarted = performance.now();
+    const originalCompletion = events().find(event => event.type === "task.completed");
+    assert.throws(() => runCli(cli, ["operator", "submit", "Not an automatic reopen",
+      "--task", task.id, "--intent", "discuss"], environment), error => {
+      assert.match(String(error.stderr), /completed/);
+      return true;
     });
-  } finally { fixtureStore.close(); }
-  const beforeHostRestart = listItems("role", "message", "list", "operator");
-  await waitFor(async () => (await inspectAgentHost(target)).state === "idle",
-    "Only an idle fixture Host may be restarted.");
-  process.kill(hostPid, "SIGTERM");
-  await waitFor(() => processExited(hostPid), "Original fixture Host did not exit.");
-  await callFileTaskController(yuiHome, "runtime.ensure-role-session",
-    { scope: "global", roleName: "operator" }, { environment, requestTimeoutMs: 15_000 });
-  await waitFor(async () => (await inspectAgentHost(target)).state === "idle",
-    "Historical Session did not restore after Host restart.");
-  operatorHostPid = Number(tmux("list-panes", "-a", "-F", "#{pane_pid}").trim());
-  assert.ok(Number.isInteger(operatorHostPid) && operatorHostPid > 0 && operatorHostPid !== hostPid);
-  assert.equal((await inspectAgentHost(target)).nativeSessionId, hostBefore.nativeSessionId);
-  assert.equal(Object.hasOwn(context(), "skillPackages"), false,
-    "Default Context must not carry historical Skill packages.");
-  const restoredStore = new SqliteTaskStore(yuiHome);
-  try {
-    const sessions = restoredStore.getGlobalRoleSessionSet("operator");
-    assert.equal(sessions.sessions[sessions.activeAgentId].effective.skillPackages, undefined,
-      "Restore must not invent historical Skill provenance.");
-  } finally { restoredStore.close(); }
-  assert.deepEqual(listItems("role", "message", "list", "operator"), beforeHostRestart);
-  const restoredInput = json("role", "message", "queue", "operator", "Continue the same restored Session.",
-    "--request-id", "restored-session-input").message;
-  await waitFor(() => context().nativeTurn?.status === "completed"
-    && json("role", "message", "show", "operator", restoredInput.id).delivery?.via === "provider",
-    "The restored historical Session did not process its new input.");
-  // Agent Jobs reuse the same Role/Host/Provider transport, not a fixture-only
-  // executor. The handler reads durable context and explicitly reports each Run.
-  const agentJobTask = json("task", "create", "Agent Job existing Task").task;
-  json("task", "activation", "request", agentJobTask.id, "--request-id", "agent-job-task", "--environment", "scratch");
-  await waitFor(() => json("task", "show", agentJobTask.id).task.status === "active",
-    "Agent Job target Task was not activated.");
-  for (const [id, agentTarget] of [
-    ["agent-own", { kind: "job", agentId: "codex" }],
-    ["agent-operator", { kind: "operator" }],
-    ["agent-task", { kind: "task", taskId: agentJobTask.id, roleName: "leader" }]
-  ]) {
-    json("job", "define", "--global", "--job", id, "--title", id, "--input", JSON.stringify({
-      kind: "agent", target: agentTarget, input: "Deterministic Job Agent smoke."
+    json("task", "reopen", task.id);
+    json("task", "reopen", task.id);
+    assert.equal(json("task", "show", task.id).task.completedAt, undefined);
+    const terminalForWake = wake => events().some(event => {
+      if (event.type !== "runtime.observation" || event.payload.kind !== "turn.completed") return false;
+      const observation = JSON.parse(event.payload.observation);
+      return observation.fence.receiptId?.startsWith(`notification:${task.id}/${wake.id}/`) === true;
+    });
+    await waitFor(() => {
+      const wake = wakes().find(w => w.reasons.includes("task-reopened"));
+      return wake !== undefined && terminalForWake(wake);
+    }, "Reopen notification did not finish through the existing Host.");
+    const request = ["operator", "submit", "Continue this same accepted result; local fixture only.",
+      "--task", task.id, "--intent", "develop", "--request-id", "authorized-followup"];
+    runCli(cli, request, environment);
+    runCli(cli, request, environment);
+    const inputs = listItems("task", "message", "list", task.id)
+      .map(entry => json("task", "message", "show", `${task.id}/${entry.ref.refId}`));
+    const followups = inputs.filter(message => message?.submissionKey === "authorized-followup");
+    assert.equal(followups.length, 1, "Matching Operator retries must retain one original Message.");
+    const followup = followups[0];
+    assert.equal(followup.submissionReceipt.routing.kind, "active-context");
+    assert.equal(followup.submissionReceipt.feedback.delivery, "queued");
+    await waitFor(() => {
+      const wake = wakes().find(w =>
+        w.refs?.some(ref => ref.type === "message" && ref.id === followup.id));
+      return wake !== undefined && terminalForWake(wake);
+    }, "The exact follow-up Message did not traverse CLI/Controller/Host/native terminal.");
+    assert.equal(events().filter(event => event.type === "task.reopened").length, 1);
+    assert.deepEqual(events().find(event => event.id === originalCompletion.id), originalCompletion);
+    acknowledgeWindows();
+    json("task", "complete", task.id, "--summary", "The authorized follow-up is separately accepted.");
+    assert.equal(json("task", "show", task.id).task.status, "completed");
+    assert.equal(events().filter(event => event.type === "task.completed").length, 2);
+    assert.deepEqual(events().find(event => event.id === originalCompletion.id), originalCompletion);
+    process.stdout.write(`Reopen and follow-up delivery smoke passed (${Math.round(performance.now() - followupStarted)} ms).\n`);
+
+    const session = `yui-${tmuxServer.slice(4, 16)}-${task.id}`;
+    const neighbor = `yui-${tmuxServer.slice(4, 16)}-${task.id}0`;
+    // These are this fixture's terminal resources, not additional Agent work.
+    const panePid = Number(tmux("display-message", "-p", "-t", `=${session}:=leader`, "#{pane_pid}").trim());
+    assert.equal(processExited(panePid), false, "Completion must preserve the reusable conversation.");
+    tmux("new-window", "-t", `=${session}`, "-n", "exited-fixture", "/bin/true");
+    tmux("new-session", "-d", "-t", session, "-s", "fixture-viewer");
+    tmux("new-session", "-d", "-s", neighbor, "/bin/sleep", "60");
+    await waitFor(() => tmux("display-message", "-p", "-t", `=${session}:=exited-fixture`, "#{pane_dead}").trim() === "1",
+      "The fixture pane did not exit.");
+    const sourceMessage = json("task", "context", "list", task.id, "--store", "task-message").items
+      .map(entry => json("task", "message", "show", `${task.id}/${entry.ref.refId}`))
+      .find(message => message?.body === original);
+    assert.ok(sourceMessage);
+    const connection = events().filter(event => event.type === "runtime.native-connection-bound"
+      && event.payload.roleName === "leader").at(-1);
+    assert.ok(connection);
+    const manifestDirectory = join(yuiHome, "runtime", "session-manifests");
+    const manifestPath = readdirSync(manifestDirectory).map(name => join(manifestDirectory, name))
+      .find(path => {
+        const manifest = JSON.parse(readFileSync(path, "utf8"));
+        return manifest.owner.scope === "task" && manifest.owner.taskId === task.id
+          && manifest.roleKind === "leader";
+      });
+    assert.ok(manifestPath);
+    const archiveReply = JSON.parse(runCli(cli, ["--json", "task", "archive", task.id, "--integrated",
+      "--source-message", sourceMessage.id, "--purpose", "Archive this fixture Task after completion.",
+      "--request-id", "leader-fixture-archive"], {
+      ...environment, YUI_SESSION_SCOPE: "task", YUI_TASK_ID: task.id, YUI_ROLE: "leader",
+      YUI_NATIVE_SESSION_ID: connection.payload.nativeSessionId, YUI_SESSION_MANIFEST: manifestPath
     }));
-    let priorNative;
-    for (const key of agentTarget.kind === "job" ? ["first", "second"] : ["first"]) {
-      const run = json("job", "run", "--global", "--job", id, "--request-id", key).run;
-      const selector = ["--global", "--job", id, "--run", run.id];
-      await waitFor(() => json("job", "run-get", ...selector).status === "succeeded",
-        `Agent Job ${id}/${key} did not report its business result.`,
-        () => JSON.stringify({ evidence: json("job", "run-evidence", ...selector),
-          ...(agentTarget.kind === "job" ? { session: json("job", "session-inspect", "--global", "--job", id) } : {}),
-          ...(agentTarget.kind === "task" ? { session: json("task", "role", "session", "inspect", agentTarget.taskId, "leader"),
-            events: listItems("task", "event", "list", agentTarget.taskId).slice(-10) } : {}) }));
-      const settled = json("job", "run-get", ...selector);
-      assert.equal(settled.businessResult.sourceRun.runId, run.id);
-      const execution = settled.attempts.at(-1).execution;
-      assert.ok(execution.nativeTurnId);
-      if (priorNative) assert.equal(execution.nativeSessionId, priorNative);
-      priorNative = execution.nativeSessionId;
-    }
-    if (agentTarget.kind === "job") {
-      const inspect = () => json("job", "session-inspect", "--global", "--job", id);
-      await waitFor(() => inspect().sessions.providerBinding.run.status === "completed",
-        "Job-owned native Turn did not finish before Session replacement.");
-      json("job", "session-stop", "--global", "--job", id, "--expected-session", priorNative);
-      await waitFor(() => {
-        const set = inspect().sessions;
-        return set.sessions[set.activeAgentId]?.status === "ended";
-      }, "Job-owned Session cleanup did not prove it ended.", () => JSON.stringify(inspect()));
-      json("job", "session-new", "--global", "--job", id, "--expected-session", priorNative);
-      const replacement = json("job", "run", "--global", "--job", id, "--request-id", "replacement").run;
-      const selector = ["--global", "--job", id, "--run", replacement.id];
-      await waitFor(() => json("job", "run-get", ...selector).status === "succeeded",
-        "Replacement Job Session did not report.", () => JSON.stringify(json("job", "run-evidence", ...selector)));
-      const replaced = json("job", "run-context", ...selector);
-      assert.notEqual(replaced.attempts[0].execution.nativeSessionId, priorNative);
-      assert.equal(replaced.history.filter(run => run.result?.outcome === "succeeded").length, 3);
-    }
-  }
-  // Teardown live work before the Controller, not just a tmux server sweep.
-  await waitFor(() => {
-    const read = new SqliteTaskStore(yuiHome, { readonly: true });
+    assert.equal(archiveReply.ok, true, JSON.stringify(archiveReply));
+    assert.equal(archiveReply.data.kind, "value", JSON.stringify({
+      archiveReply, events: archiveReply.data.kind === "value" ? [] : events().slice(-20)
+    }));
+    assert.equal(archiveReply.data.value.status, "archived", JSON.stringify(archiveReply));
+    assert.equal(json("task", "show", task.id).task.status, "archived");
+    assert.ok(events().some(event => event.type === "task.leader-archive-result"
+      && event.payload.status === "archived"), "Self-stop must leave a readable Controller-owned receipt.");
+    assert.equal(processExited(panePid), true, "Archive must release the Host, not just its durable Session.");
+    const sessions = tmux("list-sessions", "-F", "#{session_name}").trim().split("\n");
+    assert.deepEqual(sessions, [neighbor], "Archive must remove its live/dead panes and viewer, but not task-10.");
+    json("task", "archive", task.id, "--integrated");
+    assert.deepEqual(tmux("list-sessions", "-F", "#{session_name}").trim().split("\n"), [neighbor]);
+    const serverPid = Number(tmux("display-message", "-p", "-t", `=${neighbor}:`, "#{pid}").trim());
+    tmux("kill-session", "-t", `=${neighbor}`);
+    await waitFor(() => processExited(serverPid), "The empty fixture tmux server did not exit.");
+    phase("task/session/archive");
+
+    const updateStarted = performance.now();
+    // Keep a real Host alive across the updater's Controller replacement. Only
+    // the external Provider is fake; its direct notifications represent Desktop
+    // input, not another managed turn/start or a fabricated durable terminal.
+    const directPort = join(sandbox, "direct.port");
+    writeFileSync(join(fakeBin, "codex"),
+      `#!${process.execPath}\nprocess.env.YUI_FAKE_DIRECT_PORT_FILE = ${JSON.stringify(directPort)};\n`
+      + `process.env.YUI_FAKE_TURN_HANDLER = ${JSON.stringify(new URL("../test/fixtures/inbox-smoke-handler.mjs", import.meta.url).href)};\n`
+      + `process.env.YUI_FAKE_UNIQUE_THREADS = "1";\n`
+      + `import(${JSON.stringify(fakeCodex.href)}).catch(error => { console.error(error); process.exitCode = 1; });\n`,
+      { mode: 0o755 });
+    const { callFileTaskController } = await import(pathToFileURL(join(root, "dist/controller/clientRuntime.js")).href);
+    const { inspectAgentHost } = await import(pathToFileURL(join(root, "dist/runtime/agentHost.js")).href);
+    const { FileRuntimeEventInbox } = await import(pathToFileURL(join(root, "dist/controller/runtimeEventInbox.js")).href);
+    const target = { home: yuiHome, scope: "global", roleName: "operator" };
+    await callFileTaskController(yuiHome, "runtime.ensure-role-session",
+      { scope: "global", roleName: "operator" }, { environment, requestTimeoutMs: 15_000 });
+    // --pending is an Agent handling view, not a delivery queue. This smoke uses
+    // a fake Provider without semantic inbox acknowledgements; only test its
+    // original delivery receipts here, never infer that it handled the inputs.
+    const pending = () => listItems("role", "message", "list", "operator", "--pending")
+      .filter(message => message.delivery === undefined && message.notDelivered === undefined
+        && (message.inputAction === "queue" || message.interruptThen));
+    const context = () => json("session", "context", "operator");
+    await waitFor(async () => (await inspectAgentHost(target)).state === "idle" && pending().length === 0,
+      "Operator startup did not settle.");
+    const hostBefore = await inspectAgentHost(target);
+    const hostPid = Number(tmux("list-panes", "-a", "-F", "#{pane_pid}").trim());
+    assert.ok(Number.isInteger(hostPid) && hostPid > 0);
+    operatorHostPid = hostPid;
+    const directEvent = (method, status) => ({ method, params: {
+      threadId: hostBefore.nativeSessionId,
+      turn: { id: "desktop-update", status,
+        items: [{ id: "update-output", type: "agentMessage", text: "Original update-window result." }] }
+    } });
+    await sendDirect(directPort, directEvent("turn/started", "inProgress"));
+    await waitFor(() => context().nativeTurn?.attemptId === "direct:desktop-update",
+      "Desktop input was not observed before handover.");
+    const queuedBody = "Preserve this input across update.";
+    const queued = json("role", "message", "queue", "operator", queuedBody,
+      "--request-id", "update-pending").message;
+    const notificationTask = json("task", "create", "update notification fixture").task;
+    json("task", "cancel", notificationTask.id, "--summary", "Notify the busy Operator.");
+    await waitFor(() => pending().some(message => message.id !== queued.id),
+      "The Task fact did not produce a pending engineering notice.");
+    const queuedBefore = pending().map(message => json("role", "message", "show", "operator", message.id));
+    assert.ok(queuedBefore.some(message => message.id !== queued.id && message.body.includes(notificationTask.id)),
+      "The pending engineering notice must reference this exact Task fact.");
+    assert.equal(context().nativeTurn.status, "accepted", "Busy Desktop input must fence queued delivery.");
+    const beforeUpdate = updatePorts.controllerStatus(yuiHome);
+    assert.equal(beforeUpdate.running, true);
+    const beforeUpdateMessages = json("task", "message", "list", task.id);
+    const releaseHandover = updatePorts.beginControllerHandover(yuiHome);
     try {
-      return [...read.listGlobalRoles().map(role => read.getGlobalRoleSessionSet(role.name)),
-        read.getTaskRoleSessionSet(agentJobTask.id, "leader")].every(set =>
-        !set?.providerBinding?.run || ["completed", "failed", "cancelled", "rejected"].includes(set.providerBinding.run.status));
-    } finally { read.close(); }
-  }, "Agent Job native Turns did not settle before fixture teardown.");
-  runCli(cli, ["session", "stop", "--all"], environment);
-  await waitFor(() => processExited(operatorHostPid), "The fixture Operator Host did not exit.");
-  assert.equal(updatePorts.controllerStatus(yuiHome).running, false,
-    "Session maintenance must stop its Controller after releasing the Host.");
-  process.stdout.write(`Update handover lifecycle smoke passed (${Math.round(performance.now() - updateStarted)} ms).\n`);
+      const lockPath = join(yuiHome, "runtime", "handover.lock");
+      const lock = readFileSync(lockPath, "utf8");
+      const runtimeModule = pathToFileURL(join(root, "dist", "controller", "clientRuntime.js")).href;
+      // A lifecycle caller without the updater's owner identity must still wait,
+      // even when the real OS parent happens to hold the lock.
+      const blocked = JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", `
+        import { stopFileTaskController } from ${JSON.stringify(runtimeModule)};
+        try {
+          await stopFileTaskController(process.env.YUI_HOME, {
+            expectedPid: ${beforeUpdate.pid}, handoverWaitTimeoutMs: 50, pollIntervalMs: 5
+          });
+          process.stdout.write(JSON.stringify({ stopped: true }));
+        } catch (error) {
+          process.stdout.write(JSON.stringify({ code: error.code }));
+        }
+      `], { env: environment, encoding: "utf8", timeout: 5000 }));
+      assert.equal(blocked.code, "CONTROLLER_HANDOVER_TIMEOUT");
+      assert.equal(processExited(beforeUpdate.pid), false);
+
+      const stopped = updatePorts.stopController(yuiHome, beforeUpdate.pid);
+      assert.equal(stopped.stopped, true);
+      assert.equal(stopped.pid, beforeUpdate.pid);
+      assert.equal(processExited(beforeUpdate.pid), true, "Update must drain its exact Controller.");
+      assert.equal(processExited(hostPid), false, "Controller replacement must preserve the original Host.");
+      await sendDirect(directPort, directEvent("turn/completed", "completed"));
+      const inbox = new FileRuntimeEventInbox(yuiHome);
+      const terminal = () => inbox.list().find(event => event.type === "runtime-observation"
+        && event.observation.kind === "turn.completed"
+        && event.observation.fence.nativeSessionId === hostBefore.nativeSessionId
+        && event.observation.fence.nativeTurnId === "desktop-update");
+      await waitFor(() => terminal() !== undefined,
+      "The surviving Host did not persist its terminal while the Controller was offline.");
+      const retainedTerminal = terminal();
+      assert.match(JSON.stringify(retainedTerminal.observation.payload), /Original update-window result\./);
+      updatePorts.restoreController(yuiHome, beforeUpdate.identity);
+      const restored = updatePorts.controllerStatus(yuiHome);
+      assert.equal(restored.running, true);
+      assert.notEqual(restored.pid, beforeUpdate.pid);
+      assert.deepEqual(restored.identity, beforeUpdate.identity, "Rollback must restore the captured launch identity.");
+      assert.equal(readFileSync(lockPath, "utf8"), lock, "Lifecycle children cannot release the parent's lock.");
+    } finally {
+      releaseHandover();
+    }
+    assert.deepEqual(json("task", "message", "list", task.id), beforeUpdateMessages);
+    // Handover drains several serial turns (user input, engineering notices and
+    // the deliberately missing-ACK reminder). Observe backlog and terminal from
+    // one Controller snapshot, not separate CLI startups on each poll. Slow
+    // supported runners need a bounded multi-turn budget, not the single-event
+    // default. Keep the exact input/Host/effect assertions below.
+    let handoverContext;
+    await waitFor(() => {
+      handoverContext = context();
+      return handoverContext.backlog.reason === "empty"
+        && handoverContext.nativeTurn?.status === "completed";
+    },
+      "Replacement Controller did not consume the retained terminal and drain pending inputs.",
+      () => JSON.stringify(handoverContext), 60_000);
+    assert.equal(pending().length, 0, "Handover must drain the original delivery queue.");
+    const hostAfter = await inspectAgentHost(target);
+    for (const key of ["nativeSessionId", "processInstanceId", "endpointImplementation",
+      "authorityEpoch", "authorityOwner", "authorityHolderId"]) {
+      assert.deepEqual(hostAfter[key], hostBefore[key], `Handover must preserve the original Host's ${key}.`);
+    }
+    assert.equal(processExited(hostPid), false);
+    for (const original of queuedBefore) {
+      const delivered = json("role", "message", "show", "operator", original.id);
+      assert.ok(delivered.delivery, `Pending input ${original.id} was not accepted.`);
+      const { delivery, control, inbox, ...retained } = delivered;
+      assert.deepEqual(retained, original, "Delivery must retain each original input, target and request identity.");
+    }
+    const missingReceipt = json("role", "message", "show", "operator", queued.id);
+    assert.equal(missingReceipt.inbox?.claim.requestId, "fixture-routing-claim");
+    assert.equal(missingReceipt.inbox?.ack, undefined, "successful routing and final must not synthesize ACK");
+    assert.equal(json("task", "list", "--search", "inbox routing effect").total, 1,
+      "the deterministic Provider performed exactly one real isolated routing effect");
+    const checkNotices = listItems("role", "message", "list", "operator")
+      .map(message => json("role", "message", "show", "operator", message.id))
+      .filter(message => message.inputControl?.requestId.startsWith("inbox-check:")
+        && message.body.includes(`"${missingReceipt.inbox.claim.actor.attemptId}"`));
+    assert.equal(checkNotices.length, 1, "the real Controller/Host path must detect the missing receipt exactly once");
+    const ownOperator = { ...environment, CODEX_THREAD_ID: hostBefore.nativeSessionId };
+    const ackCommand = ["inbox", "ack", queued.id, "--request-id", "fixture-routing-ack",
+      "--reason", "Verified the existing routed Task; no business replay"];
+    const ack = runCli(cli, ackCommand, ownOperator);
+    assert.equal(runCli(cli, ackCommand, ownOperator), ack, "lost ACK response retries the same disposition only");
+    assert.equal(json("task", "list", "--search", "inbox routing effect").total, 1);
+    assert.ok(context().pending.historyCount > 0, "unhandled historical notices remain a separate evidence count");
+    process.stdout.write("Inbox handling smoke passed: real routing effect, omitted ACK, bounded reminder, idempotent receipt recovery.\n");
+    const completedTurn = context().nativeTurn;
+    json("role", "message", "queue", "operator", queuedBody, "--request-id", "update-pending");
+    assert.equal(listItems("role", "message", "list", "operator").filter(message => message.id === queued.id).length, 1);
+    assert.deepEqual(context().nativeTurn, completedTurn, "Retrying the same saved request must not start another Turn.");
+    // Restore an idle, valid historical Session shape through the real package/
+    // Controller/Host chain. Removing optional audit metadata in this disposable
+    // fixture does not forge any native acceptance or change the original queue.
+    const { SqliteTaskStore } = await import(pathToFileURL(join(root, "dist/storage/sqliteStore.js")).href);
+    const fixtureStore = new SqliteTaskStore(yuiHome);
+    try {
+      fixtureStore.transaction(store => {
+        const sessions = store.getGlobalRoleSessionSet("operator");
+        const active = sessions.sessions[sessions.activeAgentId];
+        const { skillPackages, ...historicalEffective } = active.effective;
+        store.saveGlobalRoleSessionSet({ ...sessions, sessions: { ...sessions.sessions,
+          [sessions.activeAgentId]: { ...active, effective: historicalEffective } } });
+      });
+    } finally { fixtureStore.close(); }
+    const beforeHostRestart = listItems("role", "message", "list", "operator");
+    await waitFor(async () => (await inspectAgentHost(target)).state === "idle",
+      "Only an idle fixture Host may be restarted.");
+    process.kill(hostPid, "SIGTERM");
+    await waitFor(() => processExited(hostPid), "Original fixture Host did not exit.");
+    await callFileTaskController(yuiHome, "runtime.ensure-role-session",
+      { scope: "global", roleName: "operator" }, { environment, requestTimeoutMs: 15_000 });
+    await waitFor(async () => (await inspectAgentHost(target)).state === "idle",
+      "Historical Session did not restore after Host restart.");
+    operatorHostPid = Number(tmux("list-panes", "-a", "-F", "#{pane_pid}").trim());
+    assert.ok(Number.isInteger(operatorHostPid) && operatorHostPid > 0 && operatorHostPid !== hostPid);
+    assert.equal((await inspectAgentHost(target)).nativeSessionId, hostBefore.nativeSessionId);
+    assert.equal(Object.hasOwn(context(), "skillPackages"), false,
+      "Default Context must not carry historical Skill packages.");
+    const restoredStore = new SqliteTaskStore(yuiHome);
+    try {
+      const sessions = restoredStore.getGlobalRoleSessionSet("operator");
+      assert.equal(sessions.sessions[sessions.activeAgentId].effective.skillPackages, undefined,
+        "Restore must not invent historical Skill provenance.");
+    } finally { restoredStore.close(); }
+    assert.deepEqual(listItems("role", "message", "list", "operator"), beforeHostRestart);
+    const restoredInput = json("role", "message", "queue", "operator", "Continue the same restored Session.",
+      "--request-id", "restored-session-input").message;
+    await waitFor(() => context().nativeTurn?.status === "completed"
+      && json("role", "message", "show", "operator", restoredInput.id).delivery?.via === "provider",
+      "The restored historical Session did not process its new input.");
+    phase("update/host/inbox");
+    // Agent Jobs reuse the same Role/Host/Provider transport, not a fixture-only
+    // executor. The handler reads durable context and explicitly reports each Run.
+    if (profile === "full") {
+      const agentJobTask = json("task", "create", "Agent Job existing Task").task;
+      json("task", "activation", "request", agentJobTask.id, "--request-id", "agent-job-task", "--environment", "scratch");
+      await waitFor(() => json("task", "show", agentJobTask.id).task.status === "active",
+        "Agent Job target Task was not activated.");
+      for (const [id, agentTarget] of [
+        ["agent-own", { kind: "job", agentId: "codex" }],
+        ["agent-operator", { kind: "operator" }],
+        ["agent-task", { kind: "task", taskId: agentJobTask.id, roleName: "leader" }]
+      ]) {
+        json("job", "define", "--global", "--job", id, "--title", id, "--input", JSON.stringify({
+          kind: "agent", target: agentTarget, input: "Deterministic Job Agent smoke."
+        }));
+        let priorNative;
+        for (const key of agentTarget.kind === "job" ? ["first", "second"] : ["first"]) {
+          const run = json("job", "run", "--global", "--job", id, "--request-id", key).run;
+          const selector = ["--global", "--job", id, "--run", run.id];
+          await waitFor(() => json("job", "run-get", ...selector).status === "succeeded",
+            `Agent Job ${id}/${key} did not report its business result.`,
+            () => JSON.stringify({ evidence: json("job", "run-evidence", ...selector),
+              ...(agentTarget.kind === "job" ? { session: json("job", "session-inspect", "--global", "--job", id) } : {}),
+              ...(agentTarget.kind === "task" ? { session: json("task", "role", "session", "inspect", agentTarget.taskId, "leader"),
+                events: listItems("task", "event", "list", agentTarget.taskId).slice(-10) } : {}) }));
+          const settled = json("job", "run-get", ...selector);
+          assert.equal(settled.businessResult.sourceRun.runId, run.id);
+          const execution = settled.attempts.at(-1).execution;
+          assert.ok(execution.nativeTurnId);
+          if (priorNative) assert.equal(execution.nativeSessionId, priorNative);
+          priorNative = execution.nativeSessionId;
+        }
+        if (agentTarget.kind === "job") {
+          const inspect = () => json("job", "session-inspect", "--global", "--job", id);
+          await waitFor(() => inspect().sessions.providerBinding.run.status === "completed",
+            "Job-owned native Turn did not finish before Session replacement.");
+          json("job", "session-stop", "--global", "--job", id, "--expected-session", priorNative);
+          await waitFor(() => {
+            const set = inspect().sessions;
+            return set.sessions[set.activeAgentId]?.status === "ended";
+          }, "Job-owned Session cleanup did not prove it ended.", () => JSON.stringify(inspect()));
+          json("job", "session-new", "--global", "--job", id, "--expected-session", priorNative);
+          const replacement = json("job", "run", "--global", "--job", id, "--request-id", "replacement").run;
+          const selector = ["--global", "--job", id, "--run", replacement.id];
+          await waitFor(() => json("job", "run-get", ...selector).status === "succeeded",
+            "Replacement Job Session did not report.", () => JSON.stringify(json("job", "run-evidence", ...selector)));
+          const replaced = json("job", "run-context", ...selector);
+          assert.notEqual(replaced.attempts[0].execution.nativeSessionId, priorNative);
+          assert.equal(replaced.history.filter(run => run.result?.outcome === "succeeded").length, 3);
+        }
+      }
+      // Teardown live work before the Controller, not just a tmux server sweep.
+      await waitFor(() => {
+        const read = new SqliteTaskStore(yuiHome, { readonly: true });
+        try {
+          return [...read.listGlobalRoles().map(role => read.getGlobalRoleSessionSet(role.name)),
+            read.getTaskRoleSessionSet(agentJobTask.id, "leader")].every(set =>
+            !set?.providerBinding?.run || ["completed", "failed", "cancelled", "rejected"].includes(set.providerBinding.run.status));
+        } finally { read.close(); }
+      }, "Agent Job native Turns did not settle before fixture teardown.");
+      phase("agent-jobs");
+    }
+    runCli(cli, ["session", "stop", "--all"], environment);
+    await waitFor(() => processExited(operatorHostPid), "The fixture Operator Host did not exit.");
+    assert.equal(updatePorts.controllerStatus(yuiHome).running, false,
+      "Session maintenance must stop its Controller after releasing the Host.");
+    process.stdout.write(`Update handover lifecycle smoke passed (${Math.round(performance.now() - updateStarted)} ms).\n`);
+    phase("session-stop");
+  }
 } finally {
   // Even a failed handover check must stop its live fixture Host before
   // stopping the Controller or deleting the Home it could still write.
@@ -917,7 +962,9 @@ try {
     }
   }
 }
-process.stdout.write("Runtime package smoke passed.\n");
+phase("cleanup");
+console.log(`TIMING total: ${Math.round(performance.now() - started)} ms`);
+process.stdout.write(`Runtime package smoke passed (${profile}).\n`);
 
 function runCli(cli, args, env, input) {
   return execFileSync(cli, args, { encoding: "utf8", env, input, timeout: 30_000, stdio: ["pipe", "pipe", "pipe"] });
@@ -975,7 +1022,8 @@ function processExited(pid) {
 async function waitFor(check, message, diagnostics = () => "", timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (await check()) return;
+    const result = await check();
+    if (result) return result;
     await delay(50);
   }
   throw new Error(`${message} Fixture: ${sandbox}\n${diagnostics()}`);
