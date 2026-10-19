@@ -36,6 +36,37 @@ Agent 选择一个预先声明的计划，设施从持久状态驱动该计划�
 不能将不兼容冒称为兼容，也不为回避版本选择新增历史兼容机制。包版本与协议、
 持久存储契约仍然独立：兼容性检查和必要迁移要求不变，下文存储规则不授予发版权限。
 
+### 2.12.0 兼容性及迁移说明
+
+本 minor 完成作用域明确的 Job 平台：显式业务结果及固定产物、Schedule 目标与服务
+授权、受控 Project 刷新、Task 委派、可选 Agent 执行，以及共用的 Task／全局 Web
+管理。Task 的 Jobs 页签和 Settings → Jobs & schedules 展示准确的历史 Run、
+不可变配置、执行证据及获授权的产物预览。
+
+调用方须区分定义归属、执行目标、进程／原生终态证据和显式 `businessResult`；
+投递或进程退出本身不代表业务成功。按执行器种类处理 Run，不再假设每个 Run 都是
+shell 进程。固定产物引用保留准确来源身份和作用域；可以预览不等于允许执行。
+Task 委派保留不可变来源，不隐式激活 Draft Task。Agent Session 替换保留 Run
+要求及结果，不重放输入；投递未知或旧写入者尚未证明停止时仍拒绝替换。
+详见 [Jobs 与 Runs](job-runs.md)。
+
+Schedule 继续复用已有准入路径，不引入第二套执行状态。服务授权必须明确授予，
+不继承旧 Session 权限，也不授权 Agent 执行。受控 `project.refresh` 绑定当前
+受管 Project 目标，复用工作区干净、准确核验后的 fast-forward 路径；发布不会为
+任何已注册 Project 启用同步。详见 [Schedules](schedules.md)。
+
+存储通过集中连续迁移链从 **1.14 升至 1.20**：**1.15** 业务结果；
+**1.16** Schedule 目标／服务授权；**1.17** 固定 Run 产物；
+**1.18** 受控 Project 刷新；**1.19** Task 委派／来源；**1.20** Agent Run／Session
+证据。支持的 **1.0–1.19** Home 使用已声明的同 major 迁移，保留历史证据，
+不编造结果或授权。另获更新授权后可使用 `yui update --version 2.12.0`；
+updater 负责预检、备份、迁移和 Controller 交接。不要用旧二进制打开升级后的 Home，
+也不要手改存储。minor 编号不是 SemVer 向后兼容承诺。
+
+发布门禁要求准确提交的 Core CI，以及同一运行包在 Linux x64、macOS x64/arm64
+和 Node 20/22/24/26 上的全新安装验证。这些是确定性的隔离检查，不是真实模型验证。
+发布不会更新全局 CLI、迁移生产 Home、替换其 Controller 或运行真实 Project 同步。
+
 ### 2.11.0 兼容性及迁移说明
 
 本 minor 允许普通非受管原生 Agent 会话使用与本地终端相同的公共操作，包括一般
