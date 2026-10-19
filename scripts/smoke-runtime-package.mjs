@@ -241,6 +241,13 @@ try {
   }
   phase("package/start/setup");
 
+  // Keep installation/startup cold. Repeated real CLI calls may reuse Node's
+  // compiled JS only inside this disposable fixture; never cache native binaries,
+  // command results or state across installations. Compatibility stays cold.
+  if (profile !== "compatibility") {
+    environment.NODE_COMPILE_CACHE = join(sandbox, "node-compile-cache");
+  }
+
   // Real public CLI -> Controller -> runner -> separate business/evidence reads,
   // before any Agent Session or Task exists. Only disposable local actions execute.
   // Business wiring runs once on the representative CI environment. Native

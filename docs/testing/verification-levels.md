@@ -151,6 +151,14 @@ or other helpers. It is not a pure startup benchmark or an additional duration.
 Notification polling retains a newly observed exact wake ID while refreshing
 terminal events; historical wake details are not repeatedly expanded.
 
+Installation, version/help and first setup run without a compile cache. After
+setup, `full` and `lifecycle` give repeated real CLI processes a fixture-local
+`NODE_COMPILE_CACHE`; `compatibility` stays uncached throughout. This is Node's
+compiled-JavaScript cache, not cached results, native binaries or Home state.
+It starts empty on each smoke invocation and is removed with the fixture.
+No cache is restored across jobs, packages or Node versions, and no production
+default changes. Keep it out of V8 coverage runs, where it can reduce precision.
+
 `publish.yml` builds one archive containing all three native targets and runs
 the profiles above against that exact freshly installed package through
 `YUI_INSTALLED_ROOT`, adding actual npm-bin, dependency, supported Node version,

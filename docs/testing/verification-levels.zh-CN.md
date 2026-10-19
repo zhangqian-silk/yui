@@ -110,6 +110,12 @@ CLI 耗时包含命令执行与 Controller 等待，已计入阶段总时间；�
 其他 helper 发起的 CLI 调用，不能解释为纯启动耗时，也不能再次加到总时间上。
 通知轮询找到新通知后保留其准确 wake ID，并持续刷新终态事件，不反复展开历史通知详情。
 
+安装、version/help 和首次 setup 不使用编译缓存。setup 后，`full` 和 `lifecycle`
+为重复的真实 CLI 进程设置夹具内的 `NODE_COMPILE_CACHE`；`compatibility` 全程不启用。
+它只复用 Node 编译的 JavaScript，不缓存命令结果、原生二进制或 Home 状态。
+每次 smoke 都从空缓存开始，随夹具一起删除；不跨作业、安装包或 Node 版本恢复，
+也不改变产品默认行为。V8 覆盖率采集不要启用该缓存，以免降低统计精度。
+
 `publish.yml` 通过 `YUI_INSTALLED_ROOT` 对刚安装的包执行上表 profile，增加真实
 npm bin、依赖、受支持 Node 版本、产物和 provenance 边界。这证明运行时集成，不证明
 真实模型行为。纯契约与安全检查保留在 `test/core`，生产组件组装在这里验证，
