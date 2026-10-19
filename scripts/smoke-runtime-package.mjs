@@ -69,6 +69,7 @@ const canonicalYuiHome = (() => {
 const tmuxServer = `yui-${createHash("sha256").update(canonicalYuiHome).digest("hex").slice(0, 24)}`;
 let cli;
 let environment;
+let FixtureStore;
 let operatorHostPid;
 const skills = [
   "yui-leader",
@@ -246,6 +247,7 @@ try {
   // command results or state across installations. Compatibility stays cold.
   if (profile !== "compatibility") {
     environment.NODE_COMPILE_CACHE = join(sandbox, "node-compile-cache");
+    ({ SqliteTaskStore: FixtureStore } = await import(pathToFileURL(join(root, "dist/storage/sqliteStore.js")).href));
   }
 
   // Real public CLI -> Controller -> runner -> separate business/evidence reads,
@@ -253,26 +255,24 @@ try {
   // Business wiring runs once on the representative CI environment. Native
   // compatibility and OS process lifecycle coverage below do not depend on it.
   if (profile === "full") {
-    const { SqliteTaskStore: JobFixtureStore } = await import(pathToFileURL(join(root, "dist/storage/sqliteStore.js")).href);
-    const checkNoJobSession = () => {
-      const store = new JobFixtureStore(yuiHome, { readonly: true });
-      try {
-        assert.equal(store.getGlobalRoleSessionSet("operator"), null);
-        assert.equal(store.listTasks().length, 0);
-        assert.equal(store.getWorkMailbox({ kind: "operator" }), null);
-      } finally { store.close(); }
-    };
+    const checkNoJobSession = () => observeFixture(store => {
+      assert.equal(store.getGlobalRoleSessionSet("operator"), null);
+      assert.equal(store.listTasks().length, 0);
+      assert.equal(store.getWorkMailbox({ kind: "operator" }), null);
+    });
     checkNoJobSession();
     json("job", "define", "--global", "--job", "public-probe", "--title", "Public probe",
       "--input", JSON.stringify({ kind: "builtin", action: "system.noop", input: {} }));
     try {
       const publicRun = json("job", "run", "--global", "--job", "public-probe", "--request-id", "once").run;
       const jobRef = ["--global", "--job", "public-probe", "--run", publicRun.id];
-      await waitFor(() => json("job", "run-get", ...jobRef).status === "succeeded",
+      await waitFor(() => observeFixture(store => store.getGlobalJobRun(publicRun.id)?.status === "succeeded"),
         "Public Job did not complete without a Session.",
         () => JSON.stringify(json("job", "run-evidence", ...jobRef)));
       assert.equal(json("job", "run", "--global", "--job", "public-probe", "--request-id", "once").run.id, publicRun.id);
-      assert.equal(json("job", "run-confirm", ...jobRef).id, publicRun.id);
+      const confirmed = json("job", "run-confirm", ...jobRef);
+      assert.equal(confirmed.id, publicRun.id);
+      assert.equal(confirmed.status, "succeeded");
       assert.equal(json("job", "run-result", ...jobRef).result.data.action, "system.noop");
       assert.equal(json("job", "run-evidence", ...jobRef).processResult.exitCode, 0);
       const publication = json("job", "artifact-save", ...jobRef, "--artifact",
@@ -283,38 +283,34 @@ try {
       assert.equal(artifact.owner.scope.kind, "global");
       assert.equal(json("job", "artifact-read", ...jobRef, "--reference", JSON.stringify(artifact)).content,
         "# Public Run\n\nSaved without a Task.");
-      assert.equal(json("job", "artifact-preview", ...jobRef, "--reference", JSON.stringify(artifact)).kind, "markdown");
-      assert.equal(json("job", "artifact-list", ...jobRef).artifacts.length, 1);
-      assert.equal(json("job", "run-result", ...jobRef).artifacts[0].version, artifact.version);
+      // Save -> pinned read is the package boundary. Preview/list/result
+      // projections remain covered by job-artifact.test.js, not repeated here.
       checkNoJobSession();
       // Exercise the supported maintenance cadence inside the bounded smoke
       // deadline; the production default is intentionally 120 seconds.
       runCli(cli, ["config", "runtime", "set", "reconciliation-interval-seconds", "5"], environment);
-      for (const kind of ["existing-job", "new-job"]) {
-        const id = `public-${kind}`;
-        json("schedule", "create", "--global", "--schedule", id, "--job", "public-probe",
-          "--authorization", "service", "--target", JSON.stringify(kind === "existing-job"
-            ? { kind } : { kind, definitionRevision: 1 }),
-          "--rule", JSON.stringify({ kind: "once", at: new Date(Date.now() + 2000).toISOString() }));
-      }
-      // Create both independent targets before waiting, avoiding serial
-      // maintenance waits. Still inspect each actual durable outcome.
-      for (const kind of ["existing-job", "new-job"]) {
-        const id = `public-${kind}`;
-        const completed = await waitFor(() => {
-          const plan = json("schedule", "show", "--global", "--schedule", id).schedule;
-          return plan.state === "completed" && plan;
-        },
-          "Public service Schedule did not dispatch without a Session.",
-          () => JSON.stringify(json("schedule", "show", "--global", "--schedule", id)));
-        const receipt = completed.lastAttempt;
-        const scheduledRef = ["--global", "--job", receipt.jobId, "--run", receipt.runId];
-        await waitFor(() => json("job", "run-get", ...scheduledRef).status === "succeeded",
-          "Service Job did not complete.", () => JSON.stringify(json("job", "run-evidence", ...scheduledRef)));
-        assert.equal(json("job", "run-result", ...scheduledRef).result.data.action, "system.noop");
-        assert.equal(kind === "existing-job", receipt.jobId === "public-probe");
-        checkNoJobSession();
-      }
+      // The Project sync below already exercises existing-job dispatch through
+      // the real Controller/runner. Add only the distinct new-job wiring here.
+      const scheduleId = "public-new-job";
+      json("schedule", "create", "--global", "--schedule", scheduleId, "--job", "public-probe",
+        "--authorization", "service", "--target", JSON.stringify({ kind: "new-job", definitionRevision: 1 }),
+        "--rule", JSON.stringify({ kind: "once", at: new Date(Date.now() + 2000).toISOString() }));
+      await waitFor(() => observeFixture(store =>
+        store.getSchedule({ kind: "global" }, scheduleId)?.state === "completed"),
+        "Public service Schedule did not dispatch without a Session.",
+        () => JSON.stringify(json("schedule", "show", "--global", "--schedule", scheduleId)));
+      const completed = json("schedule", "show", "--global", "--schedule", scheduleId).schedule;
+      assert.equal(completed.state, "completed");
+      const receipt = completed.lastAttempt;
+      const scheduledRef = ["--global", "--job", receipt.jobId, "--run", receipt.runId];
+      await waitFor(() => observeFixture(store => store.getGlobalJobRun(receipt.runId)?.status === "succeeded"),
+        "Service Job did not complete.", () => JSON.stringify(json("job", "run-evidence", ...scheduledRef)));
+      const result = json("job", "run-result", ...scheduledRef);
+      assert.equal(result.status, "succeeded");
+      assert.equal(result.result.sourceRun.runId, receipt.runId);
+      assert.equal(result.result.data.action, "system.noop");
+      assert.notEqual(receipt.jobId, "public-probe");
+      checkNoJobSession();
       // Builtin installation -> due service dispatch -> real local fast-forward.
       // Reuse this owned Home/Controller and its teardown, never a production remote.
       const syncRemote = join(sandbox, "sync-remote.git"), syncSeed = join(sandbox, "sync-seed");
@@ -330,9 +326,10 @@ try {
       const before = git(syncSeed, "rev-parse", "HEAD");
       const project = json("project", "clone", "Sync fixture", syncRemote, "--stable", "main", "--development", "main").project;
       const syncId = `project-sync-${project.id}`;
-      await waitFor(() => json("schedule", "list", "--global").some(s => s.id === syncId),
+      await waitFor(() => observeFixture(store => store.getSchedule({ kind: "global" }, syncId) !== null),
         "Builtin sync was not installed by Controller reconciliation.");
       let plan = json("schedule", "show", "--global", "--schedule", syncId).schedule;
+      assert.equal(plan.target.kind, "existing-job");
       assert.equal(plan.authorization.grantedBy.scope, "service");
       assert.equal(plan.rule.everyMs, 6 * 60 * 60_000);
       writeFileSync(join(syncSeed, "value"), "after\n");
@@ -340,17 +337,21 @@ try {
       const after = git(syncSeed, "rev-parse", "HEAD");
       json("schedule", "update", "--global", "--schedule", syncId, "--revision", String(plan.revision),
         "--rule", JSON.stringify({ kind: "interval", everyMs: 60000, anchor: new Date(Date.now() + 2000).toISOString() }));
-      await waitFor(() => json("schedule", "show", "--global", "--schedule", syncId).schedule.lastAttempt?.runId,
+      await waitFor(() => observeFixture(store =>
+        store.getSchedule({ kind: "global" }, syncId)?.lastAttempt?.runId),
         "Builtin sync did not dispatch.");
       plan = json("schedule", "show", "--global", "--schedule", syncId).schedule;
       const syncRef = ["--global", "--job", syncId, "--run", plan.lastAttempt.runId];
-      await waitFor(() => json("job", "run-get", ...syncRef).status === "succeeded",
+      await waitFor(() => observeFixture(store => store.getGlobalJobRun(plan.lastAttempt.runId)?.status === "succeeded"),
         "Builtin sync did not fast-forward.", () => JSON.stringify({
           evidence: json("job", "run-evidence", ...syncRef),
           result: json("job", "run-result", ...syncRef),
           logs: json("job", "logs", ...syncRef)
         }));
-      const refresh = json("job", "run-result", ...syncRef).result.data.refresh;
+      const syncResult = json("job", "run-result", ...syncRef);
+      assert.equal(syncResult.status, "succeeded");
+      assert.equal(syncResult.result.sourceRun.runId, plan.lastAttempt.runId);
+      const refresh = syncResult.result.data.refresh;
       assert.equal(refresh.fromCommit, before);
       assert.equal(refresh.toCommit, after);
       assert.equal(refresh.changed, true);
@@ -372,9 +373,14 @@ try {
       }
       for (const definition of json("job", "list", "--global")) {
         for (const run of json("job", "runs", "--global", "--job", definition.id)) {
+          // Terminal Runs need no cancellation or another readiness query.
+          if (!["queued", "running"].includes(run.status)) continue;
           const jobRef = ["--global", "--job", definition.id, "--run", run.id];
           json("job", "run-cancel", ...jobRef);
-          await waitFor(() => !["queued", "running"].includes(json("job", "run-get", ...jobRef).status),
+          await waitFor(() => observeFixture(store => {
+            const current = store.getGlobalJobRun(run.id);
+            return current !== null && !["queued", "running"].includes(current.status);
+          }),
             "Public Job cleanup did not settle; retain fixture evidence.");
         }
       }
@@ -488,6 +494,7 @@ try {
 
     let eventCursor = json("task", "context", task.id).coreCursor;
     const observedEvents = [];
+    const observeEvents = () => observeFixture(store => store.listEvents(task.id));
     const events = () => {
       let continuation;
       do {
@@ -505,9 +512,10 @@ try {
       .filter(entry => !excludedIds.has(entry.id))
       .map(entry => json("task", "wake", "show", task.id, entry.id).wake);
     json("task", "activation", "request", task.id, "--request-id", "execute", "--environment", "scratch");
-    await waitFor(() => JSON.stringify(events()).includes("Native Codex result."),
+    await waitFor(() => JSON.stringify(observeEvents()).includes("Native Codex result."),
       "CLI input did not traverse Controller, Host and fake Provider back to durable results.",
       () => JSON.stringify({ task: json("task", "show", task.id), events: json("task", "event", "list", task.id) }));
+    assert.match(JSON.stringify(events()), /Native Codex result\./);
     assert.equal(json("task", "show", task.id).task.status, "active");
     assert.equal(existsSync(join(yuiHome, "runtime", "session-cli")), false,
       "Launching and waking a Leader must not generate a Session CLI script.");
@@ -541,7 +549,7 @@ try {
     json("controller", "restart");
     runCli(cli, ["task", "role", "session", "new", task.id, "leader",
       "--reason", "Fixture handler ended before acknowledgement; preserve its obligation."], desktopLeader);
-    await waitFor(() => events().some(event => event.type === "runtime.native-connection-bound"
+    await waitFor(() => observeEvents().some(event => event.type === "runtime.native-connection-bound"
       && event.payload.roleName === "leader" && event.payload.nativeSessionId !== leaderNative),
     "Retained claim prevented the replacement Leader from cold-starting.",
     () => JSON.stringify({ events: events().slice(-16), wakes: wakes() }));
@@ -551,10 +559,12 @@ try {
     const retained = JSON.parse(runCli(cli, ["inbox", "show", oldWindow.id, "--json"], desktopLeader)).data;
     assert.deepEqual(retained.inbox.claim, oldClaim);
     assert.equal(retained.inbox.ack, undefined, "replacement is not handling");
-    await waitFor(() => events().some(event => event.type === "runtime.observation"
+    const successorCompleted = source => source.some(event => event.type === "runtime.observation"
       && event.payload.kind === "turn.completed"
-      && JSON.parse(event.payload.observation).fence.nativeSessionId === successorNative),
+      && JSON.parse(event.payload.observation).fence.nativeSessionId === successorNative);
+    await waitFor(() => successorCompleted(observeEvents()),
     "Successor initialization did not finish.");
+    assert.ok(successorCompleted(events()));
     const successorWakes = wakes();
     json("task", "reconcile", task.id);
     json("task", "reconcile", task.id);
@@ -601,7 +611,7 @@ try {
     json("task", "reopen", task.id);
     json("task", "reopen", task.id);
     assert.equal(json("task", "show", task.id).task.completedAt, undefined);
-    const terminalForWake = wake => events().some(event => {
+    const terminalForWake = (wake, source) => source.some(event => {
       if (event.type !== "runtime.observation" || event.payload.kind !== "turn.completed") return false;
       const observation = JSON.parse(event.payload.observation);
       return observation.fence.receiptId?.startsWith(`notification:${task.id}/${wake.id}/`) === true;
@@ -609,8 +619,9 @@ try {
     let reopenedWake;
     await waitFor(() => {
       reopenedWake ??= wakes(beforeReopenWakes).find(w => w.reasons.includes("task-reopened"));
-      return reopenedWake !== undefined && terminalForWake(reopenedWake);
+      return reopenedWake !== undefined && terminalForWake(reopenedWake, observeEvents());
     }, "Reopen notification did not finish through the existing Host.");
+    assert.ok(terminalForWake(reopenedWake, events()));
     const request = ["operator", "submit", "Continue this same accepted result; local fixture only.",
       "--task", task.id, "--intent", "develop", "--request-id", "authorized-followup"];
     const beforeFollowupWakes = new Set(listItems("task", "wake", "list", task.id).map(wake => wake.id));
@@ -627,15 +638,18 @@ try {
     await waitFor(() => {
       followupWake ??= wakes(beforeFollowupWakes).find(w =>
         w.refs?.some(ref => ref.type === "message" && ref.id === followup.id));
-      return followupWake !== undefined && terminalForWake(followupWake);
+      return followupWake !== undefined && terminalForWake(followupWake, observeEvents());
     }, "The exact follow-up Message did not traverse CLI/Controller/Host/native terminal.");
-    assert.equal(events().filter(event => event.type === "task.reopened").length, 1);
-    assert.deepEqual(events().find(event => event.id === originalCompletion.id), originalCompletion);
+    assert.ok(terminalForWake(followupWake, events()));
+    const afterFollowup = events();
+    assert.equal(afterFollowup.filter(event => event.type === "task.reopened").length, 1);
+    assert.deepEqual(afterFollowup.find(event => event.id === originalCompletion.id), originalCompletion);
     acknowledgeWindows();
     json("task", "complete", task.id, "--summary", "The authorized follow-up is separately accepted.");
     assert.equal(json("task", "show", task.id).task.status, "completed");
-    assert.equal(events().filter(event => event.type === "task.completed").length, 2);
-    assert.deepEqual(events().find(event => event.id === originalCompletion.id), originalCompletion);
+    const afterCompletion = events();
+    assert.equal(afterCompletion.filter(event => event.type === "task.completed").length, 2);
+    assert.deepEqual(afterCompletion.find(event => event.id === originalCompletion.id), originalCompletion);
     process.stdout.write(`Reopen and follow-up delivery smoke passed (${Math.round(performance.now() - followupStarted)} ms).\n`);
 
     const session = `yui-${tmuxServer.slice(4, 16)}-${task.id}`;
@@ -879,8 +893,9 @@ try {
     if (profile === "full") {
       const agentJobTask = json("task", "create", "Agent Job existing Task").task;
       json("task", "activation", "request", agentJobTask.id, "--request-id", "agent-job-task", "--environment", "scratch");
-      await waitFor(() => json("task", "show", agentJobTask.id).task.status === "active",
+      await waitFor(() => observeFixture(store => store.getTask(agentJobTask.id)?.status === "active"),
         "Agent Job target Task was not activated.");
+      assert.equal(json("task", "show", agentJobTask.id).task.status, "active");
       for (const [id, agentTarget] of [
         ["agent-own", { kind: "job", agentId: "codex" }],
         ["agent-operator", { kind: "operator" }],
@@ -893,13 +908,14 @@ try {
         for (const key of agentTarget.kind === "job" ? ["first", "second"] : ["first"]) {
           const run = json("job", "run", "--global", "--job", id, "--request-id", key).run;
           const selector = ["--global", "--job", id, "--run", run.id];
-          await waitFor(() => json("job", "run-get", ...selector).status === "succeeded",
+          await waitFor(() => observeFixture(store => store.getAgentJobRun(run.id)?.status === "succeeded"),
             `Agent Job ${id}/${key} did not report its business result.`,
             () => JSON.stringify({ evidence: json("job", "run-evidence", ...selector),
               ...(agentTarget.kind === "job" ? { session: json("job", "session-inspect", "--global", "--job", id) } : {}),
               ...(agentTarget.kind === "task" ? { session: json("task", "role", "session", "inspect", agentTarget.taskId, "leader"),
                 events: listItems("task", "event", "list", agentTarget.taskId).slice(-10) } : {}) }));
           const settled = json("job", "run-get", ...selector);
+          assert.equal(settled.status, "succeeded");
           assert.equal(settled.businessResult.sourceRun.runId, run.id);
           const execution = settled.attempts.at(-1).execution;
           assert.ok(execution.nativeTurnId);
@@ -918,9 +934,10 @@ try {
           json("job", "session-new", "--global", "--job", id, "--expected-session", priorNative);
           const replacement = json("job", "run", "--global", "--job", id, "--request-id", "replacement").run;
           const selector = ["--global", "--job", id, "--run", replacement.id];
-          await waitFor(() => json("job", "run-get", ...selector).status === "succeeded",
+          await waitFor(() => observeFixture(store => store.getAgentJobRun(replacement.id)?.status === "succeeded"),
             "Replacement Job Session did not report.", () => JSON.stringify(json("job", "run-evidence", ...selector)));
           const replaced = json("job", "run-context", ...selector);
+          assert.equal(replaced.status, "succeeded");
           assert.notEqual(replaced.attempts[0].execution.nativeSessionId, priorNative);
           assert.equal(replaced.history.filter(run => run.result?.outcome === "succeeded").length, 3);
         }
@@ -996,6 +1013,16 @@ function runCli(cli, args, env, input) {
   } finally {
     cliElapsed += performance.now() - started;
   }
+}
+
+// Poll only this fixture's committed state, never simulate a transition or
+// trigger Controller work. Each read opens/closes the package's read-only Store
+// so restarts cannot leave a cached snapshot. Real CLI assertions follow waits;
+// CLI authority, pagination and output-contract checks still use json()/runCli().
+function observeFixture(read) {
+  const store = new FixtureStore(yuiHome, { readonly: true });
+  try { return read(store); }
+  finally { store.close(); }
 }
 
 function json(...args) {

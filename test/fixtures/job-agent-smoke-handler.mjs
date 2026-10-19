@@ -1,25 +1,8 @@
 // Deterministic Agent behavior through the installed CLI, real Host and Provider
 // transport. This never contacts a model or reads the fixture database directly.
-import { execFileSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 
-export async function handleJobTurn({ input, environment }) {
-  const text = input.input?.map(item => item.text ?? "").join("\n") ?? "";
-  const cli = (...args) => JSON.parse(execFileSync("yui", ["--json", ...args], {
-    env: environment, encoding: "utf8", timeout: 10000
-  })).data;
-  const global = /Yui Global Message: role=([\w-]+) message=([\w-]+)\./u.exec(text);
-  const wake = /Yui Task notification: task=(task-\d+) wake=(wake-\d+)/u.exec(text);
-  let originals;
-  let inboxId;
-  if (global) {
-    originals = [cli("role", "message", "show", global[1], global[2])];
-    inboxId = global[2];
-  } else if (wake) {
-    const value = cli("task", "wake", "show", wake[1], wake[2]);
-    originals = value.messages.map(message => cli("task", "message", "show", `${wake[1]}/${message.id}`));
-    inboxId = wake[2];
-  } else return undefined;
+export async function handleJobTurn({ cli, global, wake, originals, inboxId }) {
   const message = originals.find(message => message.body.startsWith("JobRun "));
   if (!message) return undefined;
   const selector = /yui job run-claim (.+) --json/u.exec(message.body)?.[1].split(" ");
@@ -27,9 +10,10 @@ export async function handleJobTurn({ input, environment }) {
   // Wait only for acceptance of this exact native input; never resubmit it.
   const deadline = Date.now() + 5000;
   for (;;) {
-    const evidence = cli("job", "run-evidence", ...selector);
-    const delivered = global ? evidence.delivery.at(-1)?.control?.outcome === "accepted"
-      || evidence.delivery.at(-1)?.delivery?.via === "provider"
+    // Task acceptance is established by its exact wake, not the unused Job
+    // evidence projection. Global delivery still needs that evidence.
+    const delivery = global ? cli("job", "run-evidence", ...selector).delivery.at(-1) : undefined;
+    const delivered = global ? delivery?.control?.outcome === "accepted" || delivery?.delivery?.via === "provider"
       : cli("task", "wake", "show", wake[1], wake[2]).wake.status === "consumed";
     if (delivered) break;
     if (Date.now() > deadline) throw new Error("Exact Job input acceptance was not observed.");

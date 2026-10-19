@@ -140,9 +140,31 @@ The fixture owns a fresh Home and its PATH, installs cleanup before setup,
 and never calls an installed model Agent.
 
 The default `full` profile also checks public Jobs, both service Schedule targets,
-real local Project fast-forward, Task delegation and Agent Job routing. Independent
-service targets are created before awaiting either result, retaining each target's result
-and isolation assertions. These are business wiring, not an ABI matrix.
+real local Project fast-forward, Task delegation and Agent Job routing. Project
+sync supplies the real `existing-job` dispatch; one explicit `new-job` Schedule
+supplies the other path, without another existing-job no-op scenario. These are
+business wiring, not an ABI matrix.
+
+Keep mutations and final externally observable assertions on the real CLI.
+Readiness polls may read exact fixture-owned Run/Task IDs and events through the
+installed package's read-only Store, then confirm success through the CLI. Such
+observers cannot mutate state, drive reconciliation, replace authority/CLI-output
+checks, or turn missing records into success. Connections close after each read.
+Controller handover keeps its coherent session-context/backlog snapshot.
+
+Avoid paying for the same assertion at several layers:
+
+| Redundant work | Surviving coverage |
+| --- | --- |
+| Extra existing-job no-op Schedule | Real Project-sync Schedule → runner → Git fast-forward; Schedule rules/authority in `test/core/schedule.test.js` |
+| Artifact preview/list and repeated Run-result projection | Package artifact save → pinned read; projection/version/isolation assertions in `test/core/job-artifact.test.js` |
+| Cancel and re-query already-terminal Jobs during cleanup | Actual active Runs still cancelled and awaited; Task-delegation cancellation remains exercised |
+| Re-reading an original in both fake Provider handlers; unused Task Job evidence read | One original read feeds both handlers; exact Global delivery or Task wake acceptance, claim/report/ACK still use CLI |
+
+All Agent Job target routes, reuse/replacement, exact inbox identities, negative
+authority checks and native process custody remain real package smoke scenarios.
+Do not delete a distinct wiring path merely because a component test has a
+similar name, or add a second permanent suite for observer helpers.
 
 Smoke logs report each phase's wall time and the parent harness's `runCli`
 call count/time. CLI time includes command execution and Controller waits,

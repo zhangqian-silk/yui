@@ -102,8 +102,27 @@ setup、输入跨重启持久化及幂等、scratch 激活、原生结果入库�
 夹具拥有新建 Home 和独立 PATH，在 setup 前建立清理责任，不调用安装的真实模型 Agent。
 
 默认 `full` 还覆盖公共 Job、两种 service Schedule 目标、本地 Project 快进、
-Task 委派和 Agent Job 路由。两种独立 Schedule 目标先创建再等待，避免串行维护等待，但仍逐个
-验证真实结果与隔离；这些是业务组装证据，不是 ABI 矩阵。
+Task 委派和 Agent Job 路由。Project sync 已验证真实 `existing-job` 调度，
+另外保留一条显式 `new-job` Schedule，不再额外跑一条 existing-job 空操作。
+这些是业务组装证据，不是 ABI 矩阵。
+
+操作和最终外部可见结果仍通过真实 CLI 验证。就绪轮询可以用安装包的只读 Store
+观察夹具自己的准确 Run／Task ID 和事件，再通过 CLI 确认成功。观察器不能写状态、
+驱动 reconcile、替代权限或 CLI 输出契约检查，也不能把记录缺失当作成功；
+每次读取后关闭连接。Controller 接管仍使用一致的 Session Context／backlog 快照。
+
+避免同一断言在多个层次重复付费：
+
+| 删除的重复工作 | 保留的覆盖 |
+| --- | --- |
+| 额外 existing-job 空操作 Schedule | 真实 Project-sync 调度→runner→Git 快进；`test/core/schedule.test.js` 的规则和权限断言 |
+| Artifact 预览／列表及重复 Run-result 投影 | 安装包保存→固定版本读取；`test/core/job-artifact.test.js` 的投影、版本和隔离断言 |
+| 清理时对已终结 Job 再取消并查询 | 仍取消并等待真正活动的 Run；保留 Task 委派取消验证 |
+| 假 Provider 两个处理器重复读取原文；Task Job 未使用的 evidence 查询 | 一次原文读取供两个处理器使用；Global delivery 或 Task wake 的准确接收证据以及 claim/report/ACK 仍走 CLI |
+
+Agent Job 各目标接线、复用／替换、准确 inbox 身份、权限拒绝和原生进程归属继续通过
+真实安装包验证。不能因为组件测试名称相似就删除不同接线路径，也不为观察器辅助函数
+另建一套长期测试矩阵。
 
 冒烟日志分别报告每阶段实际耗时，以及父测试脚本 `runCli` 的调用次数和累计耗时。
 CLI 耗时包含命令执行与 Controller 等待，已计入阶段总时间；不含假 Provider 或
