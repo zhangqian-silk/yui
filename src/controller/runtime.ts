@@ -103,6 +103,7 @@ import { archiveOrdinaryTask } from "../task/ordinaryArchive.js";
 import { createWebSettings } from "../web/webSettings.js";
 import { createModelManagement } from "../models/modelManagement.js";
 import { createWebSkills } from "../web/webSkills.js";
+import { createWebPermissions } from "../web/webPermissions.js";
 import { createWebJobs } from "../web/webJobs.js";
 import {
   isTaskOwnedWorkspace,
@@ -585,6 +586,7 @@ export async function startFileTaskControllerRuntime(
     const web = createControllerWeb(store, {
       previews: () => createTaskPreviews(store, home),
       skills: createWebSkills(store),
+      permissions: createWebPermissions(store),
       jobs: createWebJobs(store, home),
       models: createModelManagement(store),
       settings: createWebSettings(store, {

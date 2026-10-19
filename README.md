@@ -199,6 +199,11 @@ Settings; saving it does not switch the current view or Session.
 MCP forms and URL confirmations can be completed in Terminal or declined in
 Conversation. Native additional input is saved as a user Message with its exact
 steer receipt before submission.
+
+**Settings → Command permissions** provides a searchable, read-only command ×
+role discovery matrix and built-in capability contracts. Visibility is not
+authorization for a specific call; this view never changes rules or Grants.
+See [discovery and authorization](docs/authorization.md#read-only-web-templates).
 Attachments and native configuration changes
 are not supported by this managed text-input surface.
 The detail has four tabs: Overview (user input, progress and key Decisions),

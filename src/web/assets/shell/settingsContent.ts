@@ -31,4 +31,8 @@ export const SETTINGS_MAIN = `
         <label class="field settings-search"><span data-i18n="settings.search">Find a setting</span><input id="settings-search" type="search" autocomplete="off"></label>
         <p id="settings-status" role="status"></p>
         <div id="settings-groups" class="settings-stack"></div>
+      </section>
+      <section class="manage-section" data-section="permissions" aria-labelledby="settings-permissions-title" hidden>
+        ${manageHead("settings-permissions-title", "settings.section.permissions", "Command permissions", "permissions.intro", "Read-only discovery templates, not authorization for a specific call. No rules or Grants are changed.")}
+        <section id="permission-browser" class="settings-stack"></section>
       </section>`;

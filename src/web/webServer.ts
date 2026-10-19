@@ -22,6 +22,7 @@ import type { RoleSessionOwner } from "../executor/agentExecutor.js";
 import type { WebSettings } from "./webSettings.js";
 import type { createModelManagement } from "../models/modelManagement.js";
 import type { WebSkills } from "./webSkills.js";
+import type { WebPermissions } from "./webPermissions.js";
 import type { createWebJobs } from "./webJobs.js";
 import { MODELS_HTML } from "./assets/shell/models.js";
 import { TASK_SUBMISSION_INTENTS, type TaskSubmissionIntent } from "../message/message.js";
@@ -79,6 +80,7 @@ export type WebServerDependencies = Readonly<{
   settings?: WebSettings;
   models?: ReturnType<typeof createModelManagement>;
   skills?: WebSkills;
+  permissions?: WebPermissions;
   jobs?: ReturnType<typeof createWebJobs>;
   panels?: Readonly<{
     list(taskId: string): readonly SurfacePanelContribution[];
@@ -228,6 +230,43 @@ async function handleHttpRequest(
   // select Operator/Leader authority; all API reads use this boundary too.
   if (pathname.startsWith("/api/") && !tokenMatches(headerValue(request, "x-yui-web-token"), token)) {
     sendJson(response, 403, { error: "Invalid Yui web token.", disposition: "not-submitted" }, method === "HEAD");
+    return;
+  }
+  if (pathname === "/api/permissions" || pathname.startsWith("/api/permissions/")) {
+    if (method !== "GET") {
+      sendJson(response, 405, { error: "Permission templates are read-only.", disposition: "not-submitted" }, method === "HEAD");
+      return;
+    }
+    const allowed: Record<string, readonly string[]> = {
+      "/api/permissions": [],
+      "/api/permissions/commands": ["q", "role", "category", "cursor"],
+      "/api/permissions/command": ["id", "role"],
+      "/api/permissions/capabilities": ["q", "cursor"]
+    };
+    if (!Object.hasOwn(allowed, pathname)) {
+      sendJson(response, 404, { error: "Unknown permission template route." }, false);
+      return;
+    }
+    if (!dependencies.permissions) {
+      sendJson(response, 503, { error: "Permission templates unavailable." }, false);
+      return;
+    }
+    try {
+      const query = new URL(request.url!, "http://localhost").searchParams;
+      if ([...query.keys()].some(key => !allowed[pathname]!.includes(key) || query.getAll(key).length !== 1)) {
+        throw new Error("Unknown or repeated template query.");
+      }
+      const params = Object.fromEntries(query);
+      const service = dependencies.permissions;
+      const value = pathname === "/api/permissions" ? service.index()
+        : pathname.endsWith("/commands") ? service.commands(params)
+        : pathname.endsWith("/command") ? service.command(params.id ?? "", params.role)
+        : service.capabilities(params);
+      sendJson(response, 200, value, false);
+    } catch (error) {
+      sendJson(response, 400, { error: error instanceof Error ? error.message : "Invalid template query.",
+        disposition: "not-submitted" }, false);
+    }
     return;
   }
   if (pathname.startsWith("/preview/") && dependencies.previews) {
@@ -650,7 +689,7 @@ async function handleHttpRequest(
     try {
       const assetVersion = new URL(request.url!, "http://localhost").searchParams.get("v");
       const asset = findWebAsset(pathname, assetVersion);
-      const managementPage = /^\/(?:models(?:\/(?:providers|catalog|quota))?|settings(?:\/(?:preferences|skills|jobs|server|connection))?)\/?$/.test(pathname);
+      const managementPage = /^\/(?:models(?:\/(?:providers|catalog|quota))?|settings(?:\/(?:preferences|skills|jobs|permissions|server|connection))?)\/?$/.test(pathname);
       if (pathname === "/" || pathname === "/index.html" || managementPage) {
         sendText(
           response,
