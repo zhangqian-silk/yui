@@ -1,8 +1,7 @@
 name: Core CI
 
-# A seconds-scale product smoke for a single-user local tool. It builds once,
-# checks core contracts, then exercises the assembled package's normal path
-# with an isolated real Controller/tmux and a deterministic fake Provider.
+# Build once per job. Business contracts/wiring run once; native and
+# OS process boundaries run on their relevant platforms. No real Provider.
 
 on:
   pull_request:
@@ -20,6 +19,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Independent of package smoke: both must pass in the same Core CI run.
+  verify-business:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-repository-dependencies
+        with:
+          node-version: "24"
+
+      - name: Build
+        run: npm run build
+
+      - name: Business contracts
+        run: npm run test:business
+
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -35,8 +53,14 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
-      - name: Core path smoke
-        run: npm run test:core
+      - name: Build
+        run: npm run build
+
+      - name: Verify native dependencies
+        run: node scripts/ci-native-dependencies.mjs verify
+
+      - name: Platform contracts
+        run: npm run test:platform
 
       - name: Install tmux for isolated runtime smoke
         run: |
@@ -48,7 +72,9 @@ jobs:
           node scripts/assemble-runtime-package.mjs --output .release-stage
           npm pack ./.release-stage --dry-run --ignore-scripts --json > package-smoke.json
           node scripts/check-runtime-package-structure.mjs package-smoke.json
-          node scripts/smoke-runtime-package.mjs --assembled .release-stage
+          profile=compatibility
+          if [ "${{ matrix.node }}" = 24 ]; then profile=full; fi
+          node scripts/smoke-runtime-package.mjs --assembled .release-stage --profile "$profile"
 
   verify-macos:
     strategy:
@@ -71,12 +97,15 @@ jobs:
       - name: Build native owner and core runtime
         run: npm run build
 
-      - name: Core path smoke
-        run: npm run test:core
+      - name: Verify native dependencies
+        run: node scripts/ci-native-dependencies.mjs verify
+
+      - name: Platform contracts
+        run: npm run test:platform
 
       - name: Package structure and normal runtime path
         run: |
           node scripts/assemble-runtime-package.mjs --output .release-stage
           npm pack ./.release-stage --dry-run --ignore-scripts --json > package-smoke.json
           node scripts/check-runtime-package-structure.mjs package-smoke.json
-          node scripts/smoke-runtime-package.mjs --assembled .release-stage
+          node scripts/smoke-runtime-package.mjs --assembled .release-stage --profile lifecycle

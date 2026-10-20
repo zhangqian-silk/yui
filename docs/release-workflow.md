@@ -827,6 +827,16 @@ The tag-triggered `publish.yml` workflow is the only maintained release smoke.
 It reuses the exact commit that passed core CI and adds only artifact assembly,
 fresh installation, and provenance checks required to publish.
 
+Business contracts and full Jobs/Schedules wiring run once in Core CI on Linux
+Node 24. Release still installs the same checksummed archive on all three
+platforms × Node 20/22/24/26: every install checks CLI/setup/native helpers,
+Doctor/PTY and real SQLite SQL/GC. Node 24 additionally checks real process
+lifecycle on each platform. See the [coverage table](testing/verification-levels.md#ci-and-release).
+Dependency installation does not build the project; each source job builds once
+and verifies native dependencies afterwards. Smoke logs separate phase timings.
+Post-publication registry checks and byte-identical GitHub assets are distinct
+evidence and are not replaced by pre-publication smoke.
+
 That workflow authenticates through npm Trusted Publishing (OIDC), so the
 release identity lives in two places outside the tag: `repository`, `bugs`, and
 `homepage` are copied verbatim from the source `package.json` into the published

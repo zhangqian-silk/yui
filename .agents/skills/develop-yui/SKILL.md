@@ -78,6 +78,23 @@ package-start check for runtime packaging changes. Keep its test phase
 seconds-scale and measure incremental cost when adding coverage.
 Broaden checks for a new change, failure or unresolved risk, not unchanged success.
 
+The complete gate builds and includes both `test/core` (business contracts)
+and `test/platform` (actual OS/Node/native boundaries). After an explicit build,
+`npm run test:business` and `npm run test:platform` do not build again. Keep
+cheap branch-value checks; consolidate duplicate process setup only with a
+named surviving behavioral assertion. Do not move authority/state-machine
+cases into the compatibility matrix just because they use SQLite.
+
+Package smoke defaults to `--profile full`: one representative business wiring
+run plus lifecycle and installation coverage. `--profile lifecycle` retains
+real process/Host/Controller handover and cleanup on each OS/architecture;
+`--profile compatibility` retains fresh setup, executable helpers, CLI/bin,
+Doctor/PTY and selected-driver checks on every supported Node combination.
+Release runs real SQL/GC tests separately against that same installed consumer.
+Choose the layer from the behavior's actual dependency, not its incident origin.
+Measure build, test, native installation, each smoke phase, and runner queue
+separately; a successful local profile does not prove remote matrix timing.
+
 Real-model, paid, shared or production validation needs explicit authorization
 for that resource and effect boundary; do not solicit it through an InputRequest.
 Use isolated deterministic evidence otherwise. Remove temporary harnesses
@@ -130,6 +147,24 @@ separate work, not a reason to add a background protocol to the normal path.
   generic Role Skills to encode this Project policy.
 
 ## Hand off evidence
+
+For authorized PR delivery, keep related code, tests, Skill/documentation changes
+and CI repairs on the same open PR. Prepare them together before pushing instead
+of creating avoidable CI rounds. A new commit still needs its relevant checks;
+an unchanged successful result is not a reason to rerun. Once merged, a code
+correction needs a follow-up PR rather than rewriting the accepted candidate.
+
+When optimizing CI, record the exact candidate/run/attempt and separate queue,
+installation, build, tests and smoke timings. Observe the existing change before
+stacking another optimization; compare coverage and cache conditions as well as
+elapsed time. Follow demonstrated bottlenecks, not a target test count.
+
+Only when version release is explicitly authorized, prepare its version and
+release notes in the same open PR when practical, then follow the exact merged
+commit through CI and the existing publication checks. PR success does not prove
+a different merge SHA, and merge authority does not authorize npm publication.
+Report local validation, open PR, merge and verified package publication as
+separate outcomes; recover uncertain effects from existing evidence, not replay.
 
 Inspect the complete final change and affected contracts. Report the observable
 result, validation actually performed, material gaps and remaining decisions.
