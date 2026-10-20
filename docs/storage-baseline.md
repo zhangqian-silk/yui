@@ -2,7 +2,13 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.20. The 1.19 → 1.20 transition adds Agent Job configurations,
+Current storage is 1.21. The 1.20 → 1.21 transition converts provably unedited
+built-in Project sync defaults to timezone-explicit clock schedules, archiving
+their original bytes under migration 21. Ambiguous higher revisions and custom
+plans remain unchanged; no Git work or reauthorization occurs. See
+[Project sync](project-sync.md) for the conservative upgrade boundary.
+
+The 1.19 → 1.20 transition adds Agent Job configurations,
 optional Job ownership on Global Roles, and the `agent_job_runs` table for
 exact original-message/native-attempt evidence and explicit business results.
 Existing Role, Session, process Run and artifact identities are unchanged;

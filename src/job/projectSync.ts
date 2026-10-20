@@ -8,10 +8,10 @@ import { requireRefreshProject, projectRefreshTargetDigest } from "../repository
 import { createJobDefinition, reviseJobDefinition, validateJobDefinition, type JobDefinition } from "./jobDefinition.js";
 import { nextScheduleDue, validateScheduleRule, type Schedule, type ScheduleRule } from "../schedule/schedule.js";
 import { scheduleServiceBinding } from "./scheduleService.js";
+import { resolveTimeZone } from "../config/timeZone.js";
 
 const scope = { kind: "global" } as const;
 const unavailable = "Project sync unavailable: ";
-export const PROJECT_SYNC_INTERVAL_MS = 6 * 60 * 60_000;
 
 /** Called under the maintenance lock immediately before Git, not a timer probe. */
 export function requireProjectSyncCheckout(store: TaskStore, job: JobDefinition): void {
@@ -83,8 +83,8 @@ export function reconcileProjectSync(store: TaskStore, now: Date, onError: (erro
         try { requireProjectSyncTarget(tx, job); }
         catch (error) { reason = unavailable + (error instanceof Error ? error.message : String(error)); }
         if (!plan) {
-          const rule = { kind: "interval" as const, anchor: new Date(now.getTime() + PROJECT_SYNC_INTERVAL_MS).toISOString(),
-            everyMs: PROJECT_SYNC_INTERVAL_MS };
+          const rule = { kind: "cron" as const, expression: "0 */6 * * *",
+            timezone: resolveTimeZone(tx.getConfig().timeZone) };
           const grantId = randomUUID();
           plan = { schemaVersion: 1, id, scope, jobId: id, target: { kind: "existing-job" }, rule,
             builtin: { projectId, enabled: true }, revision: 1, generation: 1,

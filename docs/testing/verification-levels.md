@@ -53,12 +53,12 @@ is required.
 Both include `test/core` and `test/platform`. For an already built checkout,
 `npm run test:business` runs only `test/core` and `npm run test:platform` runs
 only `test/platform`; neither rebuilds. CI owns one explicit build per job.
-The stable suite owns current storage 1.20 and its declared 1.0 through 1.19 minor
+The stable suite owns current storage 1.21 and its declared 1.0 through 1.20 minor
 transition. It contains no undeclared historical format compatibility path.
 
 Current coverage includes:
 
-1. Fresh storage 1.20, exact schema/record validation, no initialization over
+1. Fresh storage 1.21, exact schema/record validation, no initialization over
    unknown data, and rejection of old integer formats without mutation.
 2. Exact-version staging, mismatched-target refusal, same-major contiguous
    minor preflight, explicit maintenance-owner identity across handover, and
