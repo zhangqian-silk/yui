@@ -1,6 +1,6 @@
 name: Core CI
 
-# Build once per environment. Business contracts/wiring run once; native and
+# Build once per job. Business contracts/wiring run once; native and
 # OS process boundaries run on their relevant platforms. No real Provider.
 
 on:
@@ -19,6 +19,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Independent of package smoke: both must pass in the same Core CI run.
+  verify-business:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-repository-dependencies
+        with:
+          node-version: "24"
+
+      - name: Build
+        run: npm run build
+
+      - name: Business contracts
+        run: npm run test:business
+
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -39,10 +58,6 @@ jobs:
 
       - name: Verify native dependencies
         run: node scripts/ci-native-dependencies.mjs verify
-
-      - name: Business contracts
-        if: matrix.node == 24
-        run: npm run test:business
 
       - name: Platform contracts
         run: npm run test:platform
