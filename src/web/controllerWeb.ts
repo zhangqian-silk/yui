@@ -6,7 +6,7 @@ import { requireManagedGlobalCaller } from "../runtime/managedCaller.js";
 
 export type WebListenerStatus = Readonly<{
   id: string; host: string; port: number; url: string | null;
-  urls: string[]; authentication: "local" | "basic"; warnings: string[];
+  urls: string[]; authentication: "local" | "password"; warnings: string[];
 }>;
 
 /** HTTP listener ownership only, alongside the Controller's one Kernel Host.

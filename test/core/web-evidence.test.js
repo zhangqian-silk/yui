@@ -284,9 +284,10 @@ test("authenticated Web evidence reads keep a fixed Task file and cannot mutate 
   const ref = snapshot.records.find(entry => entry.ref.store === "task").ref;
   const client = vm.createContext({
     document: { querySelector: () => ({ content: "fixture-token" }) }, URLSearchParams,
-    fetch: (path, options) => fetch(base + path, options)
+    fetch: (path, options) => fetch(base + path, options),
+    sessionExpired: () => { throw new Error("unexpected sign-in redirect"); }
   });
-  vm.runInContext(API_SCRIPT.replace(/^export /gm, "") + "\nglobalThis.clientApi = api;", client);
+  vm.runInContext(API_SCRIPT.replace(/^import .*$/gm, "").replace(/^export /gm, "") + "\nglobalThis.clientApi = api;", client);
   const original = await client.clientApi.inspect("task-3", ref);
   assert.equal(original.value?.description, description, "Web must collect all exact original pages before parsing");
   // The shipped UI is JavaScript carried by TypeScript strings; tsc alone

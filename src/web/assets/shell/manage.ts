@@ -25,6 +25,7 @@ const RAIL = `<aside class="manage-rail">
           <span class="brand-mark" aria-hidden="true">結</span><span class="brand-name">Yui</span>
         </a>
         <label class="manage-locale"><span class="sr-only" data-i18n="settings.language">Language</span><select id="locale-select"><option value="en">English</option><option value="zh-CN">简体中文</option></select></label>
+        <button id="sign-out" class="icon-btn" type="button" aria-label="Sign out" data-i18n-aria-label="actions.signOut" title="Sign out" data-i18n-title="actions.signOut" hidden>${iconSvg("logout")}</button>
       </header>
       <nav class="manage-nav" aria-label="Main navigation" data-i18n-aria-label="manage.nav">
         <div class="manage-area" data-area-group="workbench">
@@ -42,6 +43,7 @@ export function manageDocument(options: Readonly<{
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="yui-web-token" content="__YUI_WEB_TOKEN__">
+  <meta name="yui-web-auth" content="__YUI_WEB_AUTH__">
   <script src="/assets/theme.js"></script>
   <link rel="icon" href="data:,"><title>Yui · ${options.title}</title>
   ${STYLESHEETS.map(s => `<link rel="stylesheet" href="/assets/css/${s.name}.css">`).join("\n  ")}
@@ -53,6 +55,7 @@ export function manageDocument(options: Readonly<{
 ${options.main}
     </main>
   </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script type="module" src="/assets/js/app/manage.js"></script>
 </body></html>`;
 }

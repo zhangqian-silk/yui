@@ -21,9 +21,10 @@ yui web --status --json
 yui web --stop --json
 ```
 
-The browser's native HTTP authentication prompt uses username `yui` and the
-password from that file. Obtain it privately on the machine; never put it in
-a URL, command argument, Task message, screenshot, or shared log. There is no
+Opening any workbench or settings URL shows Yui's sign-in page; enter the
+password from that file there. After sign-in the browser returns to the page
+it originally requested. Obtain the password privately on the machine; never
+put it in a URL, command argument, Task message, screenshot, or shared log. There is no
 default password. The file must be a regular non-symlink file owned by the
 Controller's OS user, with no group/other permissions, and contain 32–128
 printable non-space ASCII characters plus an optional final newline.
@@ -46,10 +47,26 @@ stop/start to refresh the allowed addresses and links.
 
 ## Security and revocation
 
-LAN HTTP Basic authentication runs before workbench HTML (including its CSRF
-token), static assets, sensitive APIs and Terminal WebSocket upgrades.
-Authentication is checked on every request/handshake; it does not issue a
-separate persisted browser session. Host must match the startup address set
+With a credential file, a browser session is required before workbench HTML
+(including its CSRF token), workbench assets, sensitive APIs and Terminal
+WebSocket upgrades. Only the sign-in page, its own static assets and the
+sign-in/sign-out endpoints are reachable without one; they expose no Task data
+or page token. Unauthenticated page navigations are redirected to `/login`
+with a same-origin return path (absolute, protocol-relative, API, asset and
+auth destinations fall back to `/`); other requests receive a plain 401. No
+`WWW-Authenticate` challenge is sent, so browsers never show their native
+credential prompt, and an HTTP Basic `Authorization` header is not accepted.
+
+Sign-in posts the password as same-origin JSON (Origin and
+`application/json` are required, so a cross-site form cannot sign a browser
+in or out). Success sets an `HttpOnly`, `SameSite=Strict`, port-specific
+session cookie holding only a random identifier; the password is never
+stored in the browser, a URL or logs. Sessions live only in the listener's
+memory: they end after 8 hours without activity, 24 hours after sign-in, on
+sign-out, or when Web stops. Sign-out also closes that session's Terminal
+connections, and the server closes Terminals whose session has expired.
+Five failed attempts from one address within a minute pause sign-in for that
+address until the window passes. Host must match the startup address set
 and actual listener port. Supplied Origin must match the request's exact
 HTTP origin; LAN writes and all Terminal handshakes require it. API tokens
 remain mandatory, and cross-site user API fetches are refused. No general CORS
@@ -60,22 +77,25 @@ listener-scoped, unguessable ticket issued only through the authenticated,
 page-token-protected preview-list API. It authorizes GET/HEAD of one registered
 live Job only, never the workbench, user API, writes or Terminal, and expires
 on listener restart or when the service stops. The opaque preview sandbox's
-module/fetch requests may present this ticket without the user's Basic
-credential and with `Origin: null`; its existing restricted CORS remains.
+module/fetch requests may present this ticket without the user's session
+and with `Origin: null`; its existing restricted CORS remains.
 The main password is never embedded in a preview URL or forwarded upstream.
 Treat preview links as private read capabilities, not public sharing links.
 Ordinary Task artifact/file APIs continue to require full authentication.
 
-**HTTP is not TLS.** Basic credentials and private data are recoverable by
-network observers. Only use this on a trusted network. Public exposure, TLS
+**HTTP is not TLS.** The password, session cookie and private data are
+recoverable by network observers. Only use this on a trusted network. Public exposure, TLS
 termination, reverse-proxy trust and enterprise SSO are outside this feature.
 
-Browsers may cache Basic credentials. Closing a tab is not logout.
-`yui web --stop` closes HTTP connections and all Web terminals, without stopping
-Agents. To revoke a password permanently, stop Web, replace the password file
-privately, and start again. Each new listener also creates a fresh page token.
-Changing the file alone does not alter a running listener. Wrong credentials
-produce a 401 challenge; stale page tokens require reloading after authentication.
+Closing a tab is not sign-out; use the sign-out button in the workbench
+sidebar or management rail. `yui web --stop` closes HTTP connections and all
+Web terminals and ends every session, without stopping Agents. To revoke a
+password permanently, stop Web, replace the password file privately, and start
+again. Each new listener also creates a fresh page token. Changing the file
+alone does not alter a running listener. A wrong password is reported on the
+sign-in page; an expired session returns the open page to sign-in and back.
+Scripts that previously sent HTTP Basic credentials must use the sign-in
+endpoint instead; the credential file format and `--auth-file` are unchanged.
 There is no automatic password recovery or anonymous fallback.
 
 ## Lifecycle and Operator authority

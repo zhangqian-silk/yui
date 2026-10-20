@@ -7,7 +7,7 @@ import {
 } from "node:http";
 import type { Duplex } from "node:stream";
 import WebSocket, { WebSocketServer } from "ws";
-import { createWebAccess, validateWebAccessOptions, type WebAccess, type WebAccessOptions } from "./webAccess.js";
+import { createWebAccess, safeReturnPath, validateWebAccessOptions, type WebAccess, type WebAccessOptions } from "./webAccess.js";
 
 import { CliError, usageError } from "../errors/cliError.js";
 import { parseTaskCatalogOptions } from "../context/taskCatalog.js";
@@ -28,7 +28,7 @@ import { MODELS_HTML } from "./assets/shell/models.js";
 import { TASK_SUBMISSION_INTENTS, type TaskSubmissionIntent } from "../message/message.js";
 import type { SurfaceContributionRef, SurfacePanelContribution } from "../surface/surfaceContributions.js";
 import type { CapabilityResult } from "../kernel/capabilityRegistry.js";
-import { DASHBOARD_HTML, findWebAsset, prepareWebDocument, WEB_ASSET_VERSION, type WebAsset } from "./assets/assetManifest.js";
+import { DASHBOARD_HTML, findWebAsset, isLoginAsset, LOGIN_HTML, prepareWebDocument, WEB_ASSET_VERSION, type WebAsset } from "./assets/assetManifest.js";
 import {
   buildWebTaskCatalog,
   buildWebPageSessions,
@@ -37,6 +37,8 @@ import {
 } from "./webSnapshot.js";
 
 const MAX_JSON_BODY_BYTES = 16 * 1024;
+const MAX_LOGIN_BODY_BYTES = 4 * 1024;
+const TERMINAL_SESSION_SWEEP_MS = 30 * 1000;
 const MAX_TERMINAL_MESSAGE_BYTES = 64 * 1024;
 const MAX_TERMINAL_BUFFERED_BYTES = 1024 * 1024;
 
@@ -139,6 +141,16 @@ export function createYuiWebServer(
     perMessageDeflate: false,
     maxPayload: MAX_TERMINAL_MESSAGE_BYTES
   });
+  // Terminal sockets outlive their handshake: bind each to its browser session
+  // and close it when that session is signed out or expires.
+  const terminalSessions = new WeakMap<WebSocket, string | undefined>();
+  const sweepTerminals = () => {
+    for (const socket of webSocketServer.clients) {
+      if (!access.sessionActive(terminalSessions.get(socket))) socket.terminate();
+    }
+  };
+  const sweep = access.passwordRequired ? setInterval(sweepTerminals, TERMINAL_SESSION_SWEEP_MS) : undefined;
+  sweep?.unref();
   const server = createServer((request, response) => {
     void handleHttpRequest(
       request,
@@ -147,7 +159,8 @@ export function createYuiWebServer(
       httpDependencies,
       token,
       now,
-      access
+      access,
+      sweepTerminals
     ).catch(() => {
       if (!response.headersSent) setSecurityHeaders(response);
       if (!response.writableEnded) {
@@ -163,13 +176,15 @@ export function createYuiWebServer(
       webSocketServer,
       dependencies.terminal,
       token,
-      access
+      access,
+      terminalSessions
     );
   });
   let terminalsClosed = false;
   const closeTerminals = () => {
     if (terminalsClosed) return;
     terminalsClosed = true;
+    if (sweep) clearInterval(sweep);
     for (const socket of webSocketServer.clients) socket.terminate();
     webSocketServer.close();
   };
@@ -202,7 +217,8 @@ async function handleHttpRequest(
   }>,
   token: string,
   now: () => Date,
-  access: WebAccess
+  access: WebAccess,
+  sweepTerminals: () => void
 ): Promise<void> {
   setSecurityHeaders(response);
   const method = request.method ?? "GET";
@@ -212,16 +228,47 @@ async function handleHttpRequest(
     sendJson(response, 403, { error: "Invalid Host or Origin.", disposition: "not-submitted" }, method === "HEAD");
     return;
   }
-  if (!previewAuthenticated && !access.authenticated(request)) {
-    response.setHeader("www-authenticate", 'Basic realm="Yui Web", charset="UTF-8"');
-    sendJson(response, 401, { error: "Web authentication required. Use username yui and the configured password. To revoke access, stop Web; to rotate the password, replace the credential file and restart Web.", disposition: "not-submitted" }, method === "HEAD");
-    return;
-  }
   let pathname: string;
+  let search: string;
   try {
-    pathname = new URL(request.url ?? "/", "http://localhost").pathname;
+    const url = new URL(request.url ?? "/", "http://localhost");
+    pathname = url.pathname;
+    search = url.search;
   } catch {
     sendJson(response, 400, { error: "Invalid URL.", disposition: "not-submitted" }, method === "HEAD");
+    return;
+  }
+  // The sign-in page, its static assets and the session endpoints are the only
+  // routes reachable without a session. They expose no Task data or page token.
+  if (pathname === "/login" || pathname === "/auth/login" || pathname === "/auth/logout") {
+    await handleAuthRoute(request, response, pathname, search, access, sweepTerminals);
+    return;
+  }
+  if ((method === "GET" || method === "HEAD") && isLoginAsset(pathname)) {
+    const assetVersion = new URL(request.url!, "http://localhost").searchParams.get("v");
+    const asset = findWebAsset(pathname, assetVersion);
+    if (asset) { sendAsset(response, asset, method === "HEAD", assetVersion === WEB_ASSET_VERSION); return; }
+  }
+  if (!previewAuthenticated && !access.authenticated(request)) {
+    const expired = access.presentedSession(request);
+    if (expired) response.setHeader("set-cookie", access.clearCookie());
+    // Browser navigations go to the sign-in page; data, asset, preview and
+    // write requests get a plain 401. No WWW-Authenticate challenge is sent,
+    // so browsers never show their native credential prompt.
+    if ((method === "GET" || method === "HEAD") && !/^\/(?:api|assets|preview)\//u.test(pathname)) {
+      const next = safeReturnPath(pathname + search);
+      const query = new URLSearchParams({ ...(next === "/" ? {} : { next }), ...(expired ? { reason: "expired" } : {}) }).toString();
+      response.statusCode = 303;
+      response.setHeader("location", `/login${query ? `?${query}` : ""}`);
+      response.setHeader("content-length", 0);
+      response.end();
+      return;
+    }
+    sendJson(response, 401, {
+      error: expired ? "Your Yui Web session has expired. Sign in again." : "Sign in to Yui Web first.",
+      code: "authentication-required",
+      disposition: "not-submitted"
+    }, method === "HEAD");
     return;
   }
 
@@ -695,8 +742,9 @@ async function handleHttpRequest(
           response,
           200,
           "text/html; charset=utf-8",
-          prepareWebDocument(managementPage ? MODELS_HTML.replace("__YUI_WEB_TOKEN__", token) : dashboardHtml(token),
-            managementPage ? "/assets/js/app/manage.js" : "/assets/app.js"),
+          prepareWebDocument((managementPage ? MODELS_HTML.replace("__YUI_WEB_TOKEN__", token) : dashboardHtml(token))
+            .replace("__YUI_WEB_AUTH__", access.authentication),
+          managementPage ? "/assets/js/app/manage.js" : "/assets/app.js"),
           method === "HEAD"
         );
       } else if (asset !== null) {
@@ -804,7 +852,8 @@ async function handleTerminalUpgrade(
   webSocketServer: WebSocketServer,
   terminalPort: WebServerDependencies["terminal"],
   token: string,
-  access: WebAccess
+  access: WebAccess,
+  terminalSessions: WeakMap<WebSocket, string | undefined>
 ): Promise<void> {
   try {
     const url = new URL(request.url ?? "/", "http://localhost");
@@ -827,7 +876,9 @@ async function handleTerminalUpgrade(
       return;
     }
     const terminalRequest = parseTerminalRequest(url.searchParams);
+    const session = access.sessionOf(request);
     webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
+      terminalSessions.set(webSocket, session);
       void connectTerminal(webSocket, terminalPort, terminalRequest);
     });
   } catch {
@@ -1122,6 +1173,82 @@ async function readJsonBody(request: IncomingMessage, limit = MAX_JSON_BODY_BYTE
     return JSON.parse(Buffer.concat(chunks).toString("utf8"));
   } catch {
     throw new Error("Request body must be valid JSON.");
+  }
+}
+
+/** Sign-in page and session endpoints. The page carries no page token; login
+ * and logout require a same-origin JSON POST, so a cross-site form cannot
+ * sign the browser in or out. */
+async function handleAuthRoute(
+  request: IncomingMessage,
+  response: ServerResponse,
+  pathname: string,
+  search: string,
+  access: WebAccess,
+  sweepTerminals: () => void
+): Promise<void> {
+  const method = request.method ?? "GET";
+  if (pathname === "/login") {
+    if (method !== "GET" && method !== "HEAD") {
+      response.setHeader("allow", "GET, HEAD");
+      sendJson(response, 405, { error: "Method not allowed.", disposition: "not-submitted" }, method === "HEAD");
+      return;
+    }
+    if (!access.passwordRequired || access.authenticated(request)) {
+      response.statusCode = 303;
+      response.setHeader("location", safeReturnPath(new URLSearchParams(search).get("next")));
+      response.setHeader("content-length", 0);
+      response.end();
+      return;
+    }
+    if (access.presentedSession(request)) response.setHeader("set-cookie", access.clearCookie());
+    sendText(response, 200, "text/html; charset=utf-8",
+      prepareWebDocument(LOGIN_HTML, "/assets/js/app/login.js"), method === "HEAD");
+    return;
+  }
+  if (method !== "POST") {
+    response.setHeader("allow", "POST");
+    sendJson(response, 405, { error: "Method not allowed.", disposition: "not-submitted" }, method === "HEAD");
+    return;
+  }
+  if (!access.acceptsOrigin(request, true)
+    || !/^application\/json(?:;|$)/iu.test(headerValue(request, "content-type") ?? "")) {
+    sendJson(response, 403, { error: "Sign-in requests must be same-origin JSON.", disposition: "not-submitted" }, false);
+    return;
+  }
+  if (pathname === "/auth/logout") {
+    response.setHeader("set-cookie", access.logout(request));
+    sweepTerminals();
+    sendJson(response, 200, { location: access.passwordRequired ? "/login?reason=signed-out" : "/" }, false);
+    return;
+  }
+  let body: unknown;
+  try { body = await readJsonBody(request, MAX_LOGIN_BODY_BYTES); }
+  catch {
+    sendJson(response, 400, { error: "Invalid sign-in request.", code: "invalid-request", disposition: "not-submitted" }, false);
+    return;
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)
+    || Object.keys(body).some(key => key !== "password" && key !== "next")
+    || typeof (body as { password?: unknown }).password !== "string") {
+    sendJson(response, 400, { error: "Invalid sign-in request.", code: "invalid-request", disposition: "not-submitted" }, false);
+    return;
+  }
+  const { password, next } = body as { password: string; next?: unknown };
+  const result = access.login(request, password);
+  if (result.ok) {
+    response.setHeader("set-cookie", result.cookie);
+    sendJson(response, 200, { location: safeReturnPath(next) }, false);
+  } else if (result.reason === "throttled") {
+    response.setHeader("retry-after", String(result.retryAfterSeconds));
+    sendJson(response, 429, { error: "Too many failed sign-in attempts. Wait and try again.",
+      code: "throttled", retryAfterSeconds: result.retryAfterSeconds, disposition: "not-submitted" }, false);
+  } else if (result.reason === "unconfigured") {
+    sendJson(response, 404, { error: "Password sign-in is not configured for this listener.",
+      code: "password-not-configured", disposition: "not-submitted" }, false);
+  } else {
+    // Never echo the submitted value.
+    sendJson(response, 401, { error: "Incorrect password.", code: "invalid-credential", disposition: "not-submitted" }, false);
   }
 }
 

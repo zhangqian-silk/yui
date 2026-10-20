@@ -900,7 +900,7 @@ export async function main(): Promise<void> {
       const describe = (status: Status | null) => status
         ? `Web listener: ${status.state}\n`
           + (status.alreadyRunning ? "Existing listener reused; credentials were not reloaded.\n" : "")
-          + (status.authentication === "basic" ? "Browser authentication: username yui; use the password from your private credential file.\n" : "")
+          + (status.authentication === "password" ? "Browser sign-in: open the URL and enter the password from your private credential file on the Yui sign-in page.\n" : "")
           + (status.urls ?? []).map(url => `Yui web control room: ${url}\n`).join("")
           + (status.warnings ?? []).map(warning => `Warning: ${warning}\n`).join("")
         : "Web is not running. Start it explicitly; Controller recovery does not restore listeners.\n";

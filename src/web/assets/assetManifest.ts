@@ -9,6 +9,7 @@ import { APP_SCRIPT, CLIENT_MODULES } from "./client/index.js";
 import { THEME_BOOTSTRAP_SCRIPT } from "./client/lib/theme.js";
 import { FONT_WOFF2_BASE64 } from "./fontData.js";
 import { DASHBOARD_HTML } from "./shell/index.js";
+import { LOGIN_HTML } from "./shell/login.js";
 import { STYLESHEETS } from "./styles/index.js";
 
 export type WebAsset = Readonly<{
@@ -32,7 +33,28 @@ export const WEB_ASSETS: Readonly<Record<string, WebAsset>> = Object.freeze({
   "/assets/vendor/xterm.css": vendorAsset("@xterm/xterm/css/xterm.css", CSS)
 });
 
-export { DASHBOARD_HTML };
+export { DASHBOARD_HTML, LOGIN_HTML };
+
+// The sign-in document's static closure (its stylesheets, fonts, theme script
+// and module import graph). Only these assets are served without a session;
+// every other asset, like every document and API, requires sign-in.
+const LOGIN_ASSETS: ReadonlySet<string> = (() => {
+  const found = new Set<string>();
+  const visit = (body: string) => {
+    for (const [path] of body.matchAll(/\/assets\/[\w./-]+/g)) {
+      const asset = WEB_ASSETS[path];
+      if (!asset || found.has(path)) continue;
+      found.add(path);
+      if (asset.encoding !== "base64") visit(asset.body);
+    }
+  };
+  visit(LOGIN_HTML);
+  return found;
+})();
+
+export function isLoginAsset(pathname: string): boolean {
+  return LOGIN_ASSETS.has(pathname);
+}
 
 // One content revision covers the complete import graph: changing a dependency
 // invalidates its importers too. Only these static assets may be cached.

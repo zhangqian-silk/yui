@@ -24,6 +24,7 @@ import { createI18n } from "/assets/js/lib/i18n.js";
 import { createThemeController } from "/assets/js/lib/theme.js";
 import { api } from "/assets/js/lib/api.js";
 import { createToast } from "/assets/js/ui/toast.js";
+import { bindSignOut } from "/assets/js/lib/session.js";
 import { createTerminalController } from "/assets/js/views/dock/terminal.js";
 import { createConversationController } from "/assets/js/views/dock/conversation.js";
 import { createPreviewController } from "/assets/js/views/dock/preview.js";
@@ -73,6 +74,7 @@ const t = i18n.t;
 const locale = i18n.getLocale;
 const theme = createThemeController(el.themeOptions, t);
 const toast = createToast(el.toast);
+bindSignOut($("#sign-out"), t, toast);
 const conversation = createConversationController(el.conversation, t, locale);
 const preview = createPreviewController(el.preview, t);
 const terminal = createTerminalController({

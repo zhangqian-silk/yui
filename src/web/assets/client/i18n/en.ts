@@ -1237,7 +1237,26 @@ export const EN = {
   "discussion.older": "Show {count} earlier messages",
   "discussion.olderLoading": "Reading earlier messages…",
   "record.raw": "Raw record",
-  "record.reading": "Reading the exact record…"
+  "record.reading": "Reading the exact record…",
+  "login.title": "Sign in · Yui",
+  "login.heading": "Sign in to Yui",
+  "login.subtitle": "Enter the Web access password from this listener's private credential file.",
+  "login.password": "Password",
+  "login.show": "Show password",
+  "login.hide": "Hide password",
+  "login.submit": "Sign in",
+  "login.submitting": "Signing in…",
+  "login.error.empty": "Enter the password.",
+  "login.error.invalid": "Incorrect password. Check the credential file and try again.",
+  "login.error.throttled": "Too many failed attempts. Try again in {seconds} s.",
+  "login.error.origin": "This address is not accepted by the Web listener. Open one of the URLs printed by yui web.",
+  "login.error.network": "Cannot reach Yui Web. Check that the listener is running, then try again.",
+  "login.notice.expired": "Your session has expired. Sign in again to continue.",
+  "login.notice.signedOut": "You have signed out.",
+  "login.httpWarning": "This connection uses plain HTTP and is not encrypted. Sign in only on a trusted network.",
+  "login.noscript": "JavaScript is required to sign in.",
+  "actions.signOut": "Sign out",
+  "signOut.failed": "Sign-out failed. Check the connection and try again."
 };
 
 export type MessageKey = keyof typeof EN;

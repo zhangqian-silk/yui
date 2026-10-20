@@ -3,6 +3,7 @@
 // Each entry is a list of SVG path "d" strings.
 export const ICON_PATHS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   refresh: ["M20 11a8 8 0 0 0-14.3-4.9L4 8", "M4 4v4h4", "M4 13a8 8 0 0 0 14.3 4.9L20 16", "M20 20v-4h-4"],
+  logout: ["M15 4h3a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-3", "M10 17l5-5-5-5", "M15 12H4"],
   search: ["M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14z", "M20 20l-4-4"],
   terminal: ["M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z", "M7 10l3 2-3 2", "M12 15h5"],
   send: ["M4 12l16-8-6 16-2.5-6.5z", "M11.5 13.5L20 4"],
@@ -32,6 +33,7 @@ export const ICON_PATHS: Readonly<Record<string, readonly string[]>> = Object.fr
   dots: ["M5 12h.01", "M12 12h.01", "M19 12h.01"],
   inbox: ["M4 13l2.5-8h11L20 13", "M4 13v6h16v-6", "M4 13h5l1 2h4l1-2h5"],
   user: ["M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z", "M4 20a8 8 0 0 1 16 0"],
+  eyeOff: ["M3 3l18 18", "M10.6 5.1A10 10 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3 3.9", "M6.6 6.6C3.9 8.3 2 12 2 12s3.6 7 10 7a9.6 9.6 0 0 0 5.4-1.6", "M9.9 9.9a3 3 0 0 0 4.2 4.2"],
   eye: ["M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z", "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"],
   plus: ["M12 5v14", "M5 12h14"],
   play: ["M8 5v14l11-7z"],

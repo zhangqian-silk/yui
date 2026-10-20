@@ -8,9 +8,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createYuiWebServer, parseWebCommandOptions } from "../../dist/web/webServer.js";
 import { createControllerWeb } from "../../dist/web/controllerWeb.js";
-import { createWebAccess } from "../../dist/web/webAccess.js";
+import { createWebAccess, safeReturnPath } from "../../dist/web/webAccess.js";
 
-test("LAN access authenticates before documents, APIs, previews and upgrades; Host/Origin remain bounded", async t => {
+async function signIn(base, password, extra = {}) {
+  return fetch(base + "/auth/login", {
+    method: "POST", redirect: "manual",
+    headers: { origin: base, "content-type": "application/json", ...(extra.headers ?? {}) },
+    body: JSON.stringify({ password, ...(extra.next === undefined ? {} : { next: extra.next }) })
+  });
+}
+
+test("LAN access signs in through a page session before documents, APIs, previews and upgrades; Host/Origin remain bounded", async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-web-access-"));
   const authFile = join(home, "password");
   const password = "isolated-fixture-password-32-characters";
@@ -39,48 +47,119 @@ test("LAN access authenticates before documents, APIs, previews and upgrades; Ho
         write() {}, resize() {}, close() {} };
     } }
   }, options);
+  assert.equal(server.access.authentication, "password");
   await new Promise(resolve => server.listen(0, "0.0.0.0", resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
-  const auth = { authorization: `Basic ${Buffer.from(`yui:${password}`).toString("base64")}` };
-  for (const path of ["/", "/api/projects", "/preview/task-1/example/", "/assets/app.js"]) {
-    const result = await fetch(base + path);
-    assert.equal(result.status, 401);
-    assert.match(result.headers.get("www-authenticate"), /Basic/);
-    assert.doesNotMatch(await result.text(), /page-token/);
+  const basic = { authorization: `Basic ${Buffer.from(`yui:${password}`).toString("base64")}` };
+
+  // Navigations go to the sign-in page with a safe return path; nothing sends
+  // a Basic challenge, and a Basic header is no longer a credential.
+  for (const [path, location] of [["/", "/login"], ["/settings/server?q=1", "/login?next=%2Fsettings%2Fserver%3Fq%3D1"]]) {
+    const result = await fetch(base + path, { redirect: "manual", headers: basic });
+    assert.equal(result.status, 303);
+    assert.equal(result.headers.get("location"), location);
+    assert.equal(result.headers.get("www-authenticate"), null);
   }
+  for (const path of ["/api/projects", "/preview/task-1/example/", "/assets/app.js"]) {
+    const result = await fetch(base + path, { headers: basic });
+    assert.equal(result.status, 401);
+    assert.equal(result.headers.get("www-authenticate"), null);
+    assert.equal((await result.json()).code, "authentication-required");
+  }
+  const loginPage = await fetch(base + "/login?next=%2Fsettings");
+  assert.equal(loginPage.status, 200);
+  const loginHtml = await loginPage.text();
+  assert.match(loginHtml, /id="login-password"/);
+  assert.doesNotMatch(loginHtml, /page-token|yui-web-token/);
+  assert.equal((await fetch(base + "/assets/js/app/login.js")).status, 200, "the sign-in module is public");
+  assert.equal((await fetch(base + "/assets/js/lib/api.js")).status, 401, "workbench modules are not");
   assert.equal(reads, 0);
-  assert.equal((await fetch(base + "/", { headers: auth })).status, 200);
-  assert.equal((await fetch(base + "/api/projects", { headers: auth })).status, 403);
+
+  // Sign-in is same-origin JSON only; failures never set a cookie.
+  assert.equal((await fetch(base + "/auth/login", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ password }) })).status, 403, "Origin is required");
+  assert.equal((await fetch(base + "/auth/login", { method: "POST", headers: { origin: base, "content-type": "text/plain" },
+    body: JSON.stringify({ password }) })).status, 403, "a simple cross-site form body is refused");
+  assert.equal((await signIn(base, password, { headers: { origin: "http://attacker.example" } })).status, 403);
+  const wrong = await signIn(base, "wrong-password");
+  assert.equal(wrong.status, 401);
+  assert.equal(wrong.headers.get("set-cookie"), null);
+  assert.equal(wrong.headers.get("www-authenticate"), null);
+  assert.doesNotMatch(await wrong.text(), /wrong-password/);
+  assert.equal((await (await signIn(base, password, { next: "//attacker.example/x" })).json()).location, "/");
+  assert.equal((await (await signIn(base, password, { next: "/api/projects" })).json()).location, "/");
+  const ok = await signIn(base, password, { next: "/settings/server?q=1" });
+  assert.equal(ok.status, 200);
+  assert.equal((await ok.json()).location, "/settings/server?q=1");
+  const setCookie = ok.headers.get("set-cookie");
+  assert.match(setCookie, /HttpOnly/);
+  assert.match(setCookie, /SameSite=Strict/);
+  assert.match(setCookie, /Path=\//);
+  assert.doesNotMatch(setCookie, new RegExp(password));
+  const session = { cookie: setCookie.split(";")[0] };
+  assert.match(session.cookie, new RegExp(`^yui_session_${options.port}=`));
+
+  const page = await fetch(base + "/", { headers: session });
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /name="yui-web-auth" content="password"/);
+  const back = await fetch(base + "/login?next=%2Fsettings", { headers: session, redirect: "manual" });
+  assert.equal(back.status, 303);
+  assert.equal(back.headers.get("location"), "/settings");
+  assert.equal((await fetch(base + "/api/projects", { headers: session })).status, 403);
   assert.equal((await fetch(base + "/api/projects", {
-    headers: { ...auth, "x-yui-web-token": "page-token" }
+    headers: { ...session, "x-yui-web-token": "page-token" }
   })).status, 200);
   const rawStatus = headers => new Promise((resolve, reject) => {
     const req = httpRequest(base, { headers }, res => { res.resume(); resolve(res.statusCode); });
     req.on("error", reject); req.end();
   });
-  assert.equal(await rawStatus({ ...auth, host: "attacker.example" }), 403);
-  assert.equal(await rawStatus({ ...auth, host: "127.0.0.1:1" }), 403);
-  assert.equal((await fetch(base + "/", { headers: { ...auth, origin: "http://attacker.example" } })).status, 403);
-  assert.equal((await fetch(base + "/", { headers: { ...auth, "sec-fetch-site": "cross-site" } })).status, 403);
+  assert.equal(await rawStatus({ ...session, host: "attacker.example" }), 403);
+  assert.equal(await rawStatus({ ...session, host: "127.0.0.1:1" }), 403);
+  assert.equal((await fetch(base + "/", { headers: { ...session, origin: "http://attacker.example" } })).status, 403);
+  assert.equal((await fetch(base + "/", { headers: { ...session, "sec-fetch-site": "cross-site" } })).status, 403);
   assert.equal((await fetch(base + "/api/projects", {
-    method: "POST", headers: { ...auth, "x-yui-web-token": "page-token" }, body: "{}"
+    method: "POST", headers: { ...session, "x-yui-web-token": "page-token" }, body: "{}"
   })).status, 403, "LAN mutation requires same-origin evidence as well as the token");
-  const upgrade = (headers, token = "page-token") => new Promise((resolve, reject) => {
+  const connect = (headers, token = "page-token") => new Promise((resolve, reject) => {
     const socket = new WebSocket(base.replace("http:", "ws:")
       + `/api/terminal?scope=global&role=operator&cols=80&rows=24&token=${token}`, { headers });
     socket.on("error", reject);
     socket.once("unexpected-response", (_req, response) => {
-      response.resume(); socket.terminate(); resolve(response.statusCode);
+      response.resume(); socket.terminate(); resolve({ status: response.statusCode });
     });
-    socket.once("message", () => { socket.terminate(); resolve(101); });
+    socket.once("message", () => resolve({ status: 101, socket }));
   });
-  assert.equal(await upgrade({ origin: base }), 403);
-  assert.equal(await upgrade({ ...auth, origin: "http://attacker.example" }), 403);
-  assert.equal(await upgrade({ ...auth, origin: base }, "wrong"), 403);
+  const upgrade = async (headers, token) => {
+    const result = await connect(headers, token);
+    result.socket?.terminate();
+    return result.status;
+  };
+  assert.equal(await upgrade({ ...basic, origin: base }), 403);
+  assert.equal(await upgrade({ ...session, origin: "http://attacker.example" }), 403);
+  assert.equal(await upgrade({ ...session, origin: base }, "wrong"), 403);
   assert.equal(terminals, 0);
-  assert.equal(await upgrade({ ...auth, origin: base }), 101);
+  assert.equal(await upgrade({ ...session, origin: base }), 101);
   assert.equal(terminals, 1);
-  assert.equal((await fetch(base + "/preview/task-1/example/", { headers: auth })).status, 200);
+  assert.equal((await fetch(base + "/preview/task-1/example/", { headers: session })).status, 200);
+
+  // Sign-out revokes the server session and closes its live terminal.
+  const live = await connect({ ...session, origin: base });
+  assert.equal(live.status, 101);
+  const closed = new Promise(resolve => live.socket.once("close", resolve));
+  assert.equal((await fetch(base + "/auth/logout", { method: "POST", headers: { ...session } })).status, 403);
+  const out = await fetch(base + "/auth/logout", { method: "POST",
+    headers: { ...session, origin: base, "content-type": "application/json" }, body: "{}" });
+  assert.equal(out.status, 200);
+  assert.equal((await out.json()).location, "/login?reason=signed-out");
+  assert.match(out.headers.get("set-cookie"), /Max-Age=0/);
+  await closed;
+  const stale = await fetch(base + "/settings", { headers: session, redirect: "manual" });
+  assert.equal(stale.status, 303);
+  assert.equal(stale.headers.get("location"), "/login?next=%2Fsettings&reason=expired");
+  assert.match(stale.headers.get("set-cookie"), /Max-Age=0/);
+  assert.equal((await fetch(base + "/api/projects", { headers: { ...session, "x-yui-web-token": "page-token" } })).status, 401);
+  assert.equal(await upgrade({ ...session, origin: base }), 403);
+
   chmodSync(authFile, 0o644);
   assert.throws(() => createWebAccess(options), /owner-only/);
   chmodSync(authFile, 0o600);
@@ -97,7 +176,70 @@ test("LAN access authenticates before documents, APIs, previews and upgrades; Ho
     ["http://10.1.2.3:4173", "http://192.168.4.5:4173", "http://[fd00::1]:4173"]);
   writeFileSync(authFile, "new-isolated-fixture-password-32-characters");
   const replaced = createWebAccess(options);
-  assert.equal(replaced.authenticated({ headers: auth }), false, "new listener rejects the previous credential");
+  const request = { headers: {}, socket: { remoteAddress: "10.0.0.9" } };
+  assert.equal(replaced.login(request, password).ok, false, "new listener rejects the previous credential");
+  assert.equal(replaced.authenticated({ headers: session }), false, "and every earlier session");
+});
+
+test("Web sessions expire on idle and absolute limits, and failed sign-ins are throttled per address", () => {
+  const home = mkdtempSync(join(tmpdir(), "yui-web-session-"));
+  try {
+    const authFile = join(home, "password");
+    const password = "session-fixture-password-32-characters";
+    writeFileSync(authFile, password, { mode: 0o600 });
+    let now = 1_000_000;
+    const access = createWebAccess({ host: "127.0.0.1", port: 4173, authFile }, {}, {
+      idleMs: 1000, absoluteMs: 5000, maxSessions: 2, failureWindowMs: 10_000, maxFailures: 3, now: () => now
+    });
+    const from = (remoteAddress, cookie) => ({ headers: cookie ? { cookie } : {}, socket: { remoteAddress } });
+    const cookieOf = result => result.cookie.split(";")[0];
+    const first = cookieOf(access.login(from("a"), password));
+    assert.equal(access.authenticated(from("a", first)), true);
+    now += 900;
+    assert.equal(access.authenticated(from("a", first)), true, "activity refreshes the idle window");
+    now += 900;
+    assert.equal(access.authenticated(from("a", first)), true);
+    now += 1000;
+    assert.equal(access.authenticated(from("a", first)), false, "idle session expires");
+    assert.equal(access.presentedSession(from("a", first)), true);
+    const second = cookieOf(access.login(from("a"), password));
+    for (let i = 0; i < 8; i++) { now += 700; access.authenticated(from("a", second)); }
+    assert.equal(access.authenticated(from("a", second)), false, "absolute lifetime ends an active session");
+    const a = cookieOf(access.login(from("a"), password));
+    const b = cookieOf(access.login(from("a"), password));
+    now += 1;
+    access.authenticated(from("a", b));
+    cookieOf(access.login(from("a"), password));
+    assert.equal(access.authenticated(from("a", a)), false, "the least recently used session is evicted at capacity");
+    assert.equal(access.authenticated(from("a", b)), true);
+
+    for (let i = 0; i < 3; i++) assert.equal(access.login(from("x"), "wrong").reason, "invalid");
+    const throttled = access.login(from("x"), password);
+    assert.equal(throttled.reason, "throttled", "even the correct password waits out the window");
+    assert.equal(throttled.retryAfterSeconds, 10);
+    assert.equal(access.login(from("y"), password).ok, true, "other addresses are unaffected");
+    now += 10_000;
+    assert.equal(access.login(from("x"), password).ok, true);
+    assert.equal(access.login(from("x"), "wrong").reason, "invalid", "success resets the failure count");
+
+    assert.equal(safeReturnPath("/settings/server?q=1#x"), "/settings/server?q=1");
+    for (const unsafe of ["//evil.example", "/\\evil.example", "https://evil.example/", "/login?next=/", "/auth/logout",
+      "/api/projects", "/assets/app.js", "relative", "/\u0000x", 42]) assert.equal(safeReturnPath(unsafe), "/");
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("loopback without a credential file needs no sign-in and redirects the sign-in page home", async t => {
+  const server = createYuiWebServer({}, { token: "page-token" }, { host: "127.0.0.1", port: 4173 });
+  t.after(async () => { server.closeTerminals(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const page = await fetch(base + "/");
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /name="yui-web-auth" content="local"/);
+  const login = await fetch(base + "/login?next=%2Fsettings", { redirect: "manual" });
+  assert.equal(login.status, 303);
+  assert.equal(login.headers.get("location"), "/settings");
+  assert.equal((await signIn(base, "anything")).status, 404);
 });
 
 test("Web lifecycle rejects absent and Task callers before reading or opening the user ingress", async () => {

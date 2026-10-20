@@ -19,6 +19,7 @@ export const DASHBOARD_HTML = `<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark light">
   <meta name="yui-web-token" content="__YUI_WEB_TOKEN__">
+  <meta name="yui-web-auth" content="__YUI_WEB_AUTH__">
   <script src="/assets/theme.js"></script>
   <link rel="icon" href="data:,">
   <title>Yui</title>
