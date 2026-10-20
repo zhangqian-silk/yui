@@ -228,6 +228,131 @@ test("Web sessions expire on idle and absolute limits, and failed sign-ins are t
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
+test("terminal sockets recheck the browser session before relaying output, input, resize or ready, without waiting for the sweep", async t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-web-terminal-session-"));
+  const authFile = join(home, "password");
+  const password = "terminal-session-fixture-password-32-chars";
+  writeFileSync(authFile, password + "\n", { mode: 0o600 });
+  const realNow = Date.now;
+  let skew = 0;
+  Date.now = () => realNow() + skew;
+  const opened = [];
+  let gate;
+  let server;
+  t.after(async () => {
+    Date.now = realNow;
+    if (server) {
+      server.closeTerminals();
+      server.closeAllConnections();
+      await new Promise(resolve => server.close(resolve));
+    }
+    rmSync(home, { recursive: true, force: true });
+  });
+  // A disposable terminal port: nothing runs; each connection records what
+  // the server relays to it and lets the test emit output on demand.
+  const terminal = { async open() {
+    const record = { writes: [], resizes: [], closed: 0, listeners: [] };
+    opened.push(record);
+    if (gate) await gate.promise;
+    return {
+      readOnly: false,
+      history: { limit: 10, target: 10 },
+      onData(listener) { record.listeners.push(listener); return () => { record.listeners = record.listeners.filter(l => l !== listener); }; },
+      onExit: () => () => {},
+      write(data) { record.writes.push(data); },
+      resize(columns, rows) { record.resizes.push([columns, rows]); },
+      close() { record.closed++; }
+    };
+  } };
+  server = createYuiWebServer({}, { token: "page-token", terminal },
+    parseWebCommandOptions(["--host", "127.0.0.1", "--auth-file", authFile]));
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const signInCookie = async () => {
+    const response = await signIn(base, password);
+    assert.equal(response.status, 200);
+    return response.headers.get("set-cookie").split(";")[0];
+  };
+  // Opens a terminal and resolves once the socket is open; frames and the
+  // close code are collected for later assertions.
+  const open = cookie => new Promise((resolve, reject) => {
+    const socket = new WebSocket(base.replace("http:", "ws:")
+      + "/api/terminal?scope=global&role=operator&cols=80&rows=24&token=page-token",
+      { headers: { cookie, origin: base } });
+    const frames = [];
+    const closed = new Promise(done => socket.once("close", code => done(code)));
+    socket.on("message", data => frames.push(JSON.parse(String(data))));
+    socket.once("error", reject);
+    socket.once("open", () => resolve({ socket, frames, closed, record: () => opened.at(-1) }));
+  });
+  const ready = async connection => {
+    while (!connection.frames.some(frame => frame.type === "ready")) await new Promise(r => setTimeout(r, 5));
+    return connection;
+  };
+  const expire = () => { skew += 25 * 60 * 60 * 1000; };
+
+  // While the session is valid, output, input and resize are relayed.
+  const valid = await ready(await open(await signInCookie()));
+  const validRecord = valid.record();
+  validRecord.listeners.forEach(listener => listener("output-before-expiration"));
+  valid.socket.send(JSON.stringify({ type: "input", data: "input-before-expiration" }));
+  valid.socket.send(JSON.stringify({ type: "resize", columns: 100, rows: 30 }));
+  while (validRecord.resizes.length === 0) await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(validRecord.writes, ["input-before-expiration"]);
+  assert.ok(valid.frames.some(frame => frame.type === "data" && frame.data === "output-before-expiration"));
+  valid.socket.terminate();
+
+  // Output produced after expiry, before any sweep tick, is never sent.
+  const outputCookie = await signInCookie();
+  const output = await ready(await open(outputCookie));
+  const outputRecord = output.record();
+  expire();
+  assert.equal((await fetch(base + "/api/projects", { headers: { cookie: outputCookie, "x-yui-web-token": "page-token" } })).status, 401);
+  outputRecord.listeners.forEach(listener => listener("output-after-expiration"));
+  assert.equal(await output.closed, 1008);
+  assert.equal(output.frames.some(frame => frame.type === "data"), false);
+  assert.equal(outputRecord.closed, 1);
+  skew = 0;
+
+  // Input and resize sent after expiry reach neither write nor resize.
+  for (const message of [{ type: "input", data: "input-after-expiration" }, { type: "resize", columns: 120, rows: 40 }]) {
+    const connection = await ready(await open(await signInCookie()));
+    const record = connection.record();
+    expire();
+    connection.socket.send(JSON.stringify(message));
+    assert.equal(await connection.closed, 1008);
+    assert.deepEqual(record.writes, []);
+    assert.deepEqual(record.resizes, []);
+    assert.equal(record.closed, 1);
+    skew = 0;
+  }
+
+  // A terminal whose asynchronous open resolves after expiry sends neither
+  // ready nor history, and its connection is released.
+  let release;
+  gate = { promise: new Promise(resolve => { release = resolve; }) };
+  const before = opened.length;
+  const pending = await open(await signInCookie());
+  while (opened.length === before) await new Promise(r => setTimeout(r, 5));
+  const pendingRecord = opened[before];
+  expire();
+  release();
+  assert.equal(await pending.closed, 1008);
+  assert.deepEqual(pending.frames, []);
+  assert.equal(pendingRecord.closed, 1);
+  assert.equal(pendingRecord.listeners.length, 0, "no output listener is attached to an expired terminal");
+  gate = undefined;
+  skew = 0;
+
+  // An evicted session (beyond the session cap) is treated the same way.
+  const evicted = await ready(await open(await signInCookie()));
+  const evictedRecord = evicted.record();
+  for (let index = 0; index < 32; index++) await signInCookie();
+  evicted.socket.send(JSON.stringify({ type: "input", data: "input-after-eviction" }));
+  assert.equal(await evicted.closed, 1008);
+  assert.deepEqual(evictedRecord.writes, []);
+});
+
 test("loopback without a credential file needs no sign-in and redirects the sign-in page home", async t => {
   const server = createYuiWebServer({}, { token: "page-token" }, { host: "127.0.0.1", port: 4173 });
   t.after(async () => { server.closeTerminals(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });

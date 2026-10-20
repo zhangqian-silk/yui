@@ -8,6 +8,7 @@ import { h, icon, clear } from "/assets/js/lib/dom.js";
 import { fill } from "/assets/js/lib/format.js";
 import { pageToken, requestJson } from "/assets/js/lib/api.js";
 import { dot } from "/assets/js/ui/primitives.js";
+import { sessionExpired } from "/assets/js/lib/session.js";
 
 function cssVar(name, fallback) {
   const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -172,9 +173,11 @@ function bindSocket(ctl, socket, terminal, link, generation) {
       terminal.writeln("\r\n" + message.message);
     }
   });
-  socket.addEventListener("close", function () {
+  socket.addEventListener("close", function (event) {
     if (generation !== ctl.generation) return;
     link.writable = false;
+    // 1008: the server closed this terminal because its browser session ended.
+    if (event && event.code === 1008) { sessionExpired(); return; }
     if (ctl.stateKey !== "terminal.error") setState(ctl, "terminal.closed", "closed");
   });
   socket.addEventListener("error", function () {

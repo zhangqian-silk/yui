@@ -64,7 +64,11 @@ session cookie holding only a random identifier; the password is never
 stored in the browser, a URL or logs. Sessions live only in the listener's
 memory: they end after 8 hours without activity, 24 hours after sign-in, on
 sign-out, or when Web stops. Sign-out also closes that session's Terminal
-connections, and the server closes Terminals whose session has expired.
+connections. Every Terminal connection rechecks its session before relaying
+output, input, resize, exit or the initial ready/history frame, so an expired,
+evicted or revoked session cannot keep using an open Terminal; the server
+closes it with WebSocket code 1008 and the page returns to sign-in. A periodic
+sweep additionally reclaims idle Terminal sockets of ended sessions.
 Five failed attempts from one address within a minute pause sign-in for that
 address until the window passes. Host must match the startup address set
 and actual listener port. Supplied Origin must match the request's exact

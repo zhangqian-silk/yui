@@ -879,7 +879,7 @@ async function handleTerminalUpgrade(
     const session = access.sessionOf(request);
     webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
       terminalSessions.set(webSocket, session);
-      void connectTerminal(webSocket, terminalPort, terminalRequest);
+      void connectTerminal(webSocket, terminalPort, terminalRequest, () => access.sessionActive(session));
     });
   } catch {
     rejectUpgrade(socket, 400, "Bad Request");
@@ -889,8 +889,17 @@ async function handleTerminalUpgrade(
 async function connectTerminal(
   webSocket: WebSocket,
   terminalPort: NonNullable<WebServerDependencies["terminal"]>,
-  request: WebTerminalRequest
+  request: WebTerminalRequest,
+  // The socket's browser session is rechecked at every boundary that would
+  // relay data: the periodic sweep only reclaims idle sockets, it is not the
+  // authorization for input or output.
+  authorized: () => boolean
 ): Promise<void> {
+  const expire = () => {
+    if (webSocket.readyState === WebSocket.OPEN || webSocket.readyState === WebSocket.CONNECTING) {
+      webSocket.close(1008, "Session expired");
+    }
+  };
   let disconnected = false;
   const markDisconnected = () => {
     disconnected = true;
@@ -917,6 +926,11 @@ async function connectTerminal(
     connection.close();
     return;
   }
+  if (!authorized()) {
+    connection.close();
+    expire();
+    return;
+  }
 
   let closed = false;
   let stopData = () => {};
@@ -928,9 +942,17 @@ async function connectTerminal(
     stopExit();
     connection.close();
   };
+  const permitted = () => {
+    if (closed) return false;
+    if (authorized()) return true;
+    close();
+    expire();
+    return false;
+  };
   webSocket.once("close", close);
   webSocket.once("error", close);
   stopData = connection.onData((data) => {
+    if (!permitted()) return;
     if (webSocket.bufferedAmount > MAX_TERMINAL_BUFFERED_BYTES) {
       webSocket.close(1013, "Terminal client is too slow");
       return;
@@ -942,6 +964,7 @@ async function connectTerminal(
     return;
   }
   stopExit = connection.onExit((exit) => {
+    if (!permitted()) return;
     sendWebSocket(webSocket, { type: "exit", ...exit });
     webSocket.close(1000, "Terminal detached");
     close();
@@ -951,6 +974,7 @@ async function connectTerminal(
     return;
   }
   webSocket.on("message", (payload, binary) => {
+    if (!permitted()) return;
     if (binary) {
       webSocket.close(1003, "Invalid terminal message");
       return;
@@ -966,6 +990,7 @@ async function connectTerminal(
       webSocket.close(1003, "Invalid terminal message");
     }
   });
+  if (!permitted()) return;
   sendWebSocket(webSocket, {
     type: "ready",
     readOnly: connection.readOnly,
