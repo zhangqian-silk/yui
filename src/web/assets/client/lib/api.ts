@@ -1,6 +1,8 @@
 export const API_SCRIPT = String.raw`
 // Loopback API client. Every request carries the page token; a write is keyed
 // so an unresolved submission can never be silently replayed from this page.
+import { sessionExpired } from "/assets/js/lib/session.js";
+
 const token = document.querySelector('meta[name="yui-web-token"]').content;
 const unresolved = new Set();
 
@@ -22,6 +24,9 @@ export async function requestJson(path, options) {
       const body = await response.json();
       if (body && body.error) message = body.error;
       if (body && body.disposition === "not-submitted") disposition = "not-submitted";
+      // The server rejected the request before reading it: the browser session
+      // is missing or expired. Return to the sign-in page for this view.
+      if (response.status === 401 && body && body.code === "authentication-required") sessionExpired();
     } catch {}
     throw Object.assign(new Error(message), { disposition, status: response.status });
   }

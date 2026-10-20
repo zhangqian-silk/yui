@@ -53,12 +53,14 @@ test("LAN preview uses authenticated ticket issuance and only its exact Job sock
   web = createYuiWebServer(store, dependencies, options);
   await new Promise(resolve => web.listen(0, "127.0.0.1", resolve));
   let base = `http://127.0.0.1:${web.address().port}`;
-  const headers = { "x-yui-web-token": "control-secret",
-    authorization: `Basic ${Buffer.from(`yui:${password}`).toString("base64")}` };
+  const signIn = async () => (await fetch(base + "/auth/login", { method: "POST",
+    headers: { origin: base, "content-type": "application/json" }, body: JSON.stringify({ password }) }))
+    .headers.get("set-cookie").split(";")[0];
+  let headers = { "x-yui-web-token": "control-secret", cookie: await signIn() };
   const listPath = "/api/tasks/task-1/previews";
   assert.equal((await fetch(base + listPath)).status, 401);
   assert.equal((await fetch(base + listPath, { headers: { "x-yui-web-token": "control-secret" } })).status, 401);
-  assert.equal((await fetch(base + listPath, { headers: { authorization: headers.authorization } })).status, 403);
+  assert.equal((await fetch(base + listPath, { headers: { cookie: headers.cookie } })).status, 403);
   let listing = await (await fetch(base + listPath, { headers })).json();
   assert.equal(listing.services[0].state, "starting");
   assert.equal(listing.services[0].url, undefined);
@@ -80,7 +82,7 @@ test("LAN preview uses authenticated ticket issuance and only its exact Job sock
   let service = listing.services[0];
   assert.equal(service.state, "ready");
   assert.ok(service.url.startsWith("/preview/task-1/job-1/"));
-  const page = await fetch(base + service.url, { headers: { cookie: "secret=yes", authorization: "Bearer secret", "x-yui-web-token": "control-secret" } });
+  const page = await fetch(base + service.url, { headers: { cookie: `${headers.cookie}; secret=yes`, authorization: "Bearer secret", "x-yui-web-token": "control-secret" } });
   assert.match(await page.text(), /Live fixture/);
   assert.match(page.headers.get("content-security-policy"), /sandbox allow-scripts/);
   assert.doesNotMatch(page.headers.get("content-security-policy"), /allow-same-origin/);
@@ -108,6 +110,8 @@ test("LAN preview uses authenticated ticket issuance and only its exact Job sock
   await new Promise(resolve => web.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${web.address().port}`;
   assert.equal((await fetch(base + service.url)).status, 401, "a restarted listener revokes old tickets");
+  assert.equal((await fetch(base + listPath, { headers })).status, 401, "and old sessions");
+  headers = { ...headers, cookie: await signIn() };
   service = (await (await fetch(base + listPath, { headers })).json()).services[0];
   // Merely closing a page does not request cancellation.
   assert.equal(job.cancelRequestedAt, undefined);

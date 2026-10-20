@@ -17,6 +17,7 @@ import { FORMAT_SCRIPT } from "./lib/format.js";
 import { I18N_SCRIPT } from "./lib/i18n.js";
 import { MARKDOWN_SCRIPT } from "./lib/markdown.js";
 import { PREFS_SCRIPT } from "./lib/prefs.js";
+import { SESSION_SCRIPT } from "./lib/session.js";
 import { THEME_SCRIPT } from "./lib/theme.js";
 import { CONTAINERS_SCRIPT } from "./ui/containers.js";
 import { CONTROLS_SCRIPT } from "./ui/controls.js";
@@ -66,6 +67,7 @@ import { MODELS_VIEW_SCRIPT } from "./views/models.js";
 import { MODELS_SCRIPT } from "./app/models.js";
 import { MANAGE_SHELL_SCRIPT } from "./layout/manageShell.js";
 import { MANAGE_SCRIPT } from "./app/manage.js";
+import { LOGIN_SCRIPT } from "./app/login.js";
 
 export { APP_SCRIPT } from "./app/main.js";
 
@@ -80,6 +82,7 @@ export const CLIENT_MODULES: Readonly<Record<string, string>> = Object.freeze({
   "lib/i18n": I18N_SCRIPT,
   "lib/theme": THEME_SCRIPT,
   "lib/api": API_SCRIPT,
+  "lib/session": SESSION_SCRIPT,
   "lib/markdown": MARKDOWN_SCRIPT,
   "ui/primitives": PRIMITIVES_SCRIPT,
   "ui/containers": CONTAINERS_SCRIPT,
@@ -123,6 +126,7 @@ export const CLIENT_MODULES: Readonly<Record<string, string>> = Object.freeze({
   "app/taskView": TASK_VIEW_SCRIPT,
   "app/settings": SETTINGS_SCRIPT,
   "app/manage": MANAGE_SCRIPT,
+  "app/login": LOGIN_SCRIPT,
   "app/models": MODELS_SCRIPT,
   "app/selection": SELECTION_SCRIPT
 });

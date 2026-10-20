@@ -552,3 +552,23 @@ test("a turn folds its process into one collapsed row and older pages accumulate
   assert.equal(f.feed.children.length, 5, "older turn is prepended without dropping the latest page");
   f.controller.close();
 });
+
+test("a terminal closed by the server for an ended browser session returns the page to sign-in", () => {
+  const listeners = {};
+  let expired = 0;
+  const states = [];
+  const context = vm.createContext({ sessionExpired() { expired++; } });
+  vm.runInContext(TERMINAL_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
+  vm.runInContext("setState = function(ctl, key) { ctl.stateKey = key; ctl.states.push(key); }", context);
+  const socket = { addEventListener(type, listener) { listeners[type] = listener; } };
+  const ctl = { generation: 1, stateKey: "terminal.writable", states };
+  const link = { writable: true };
+  context.bindSocket(ctl, socket, { write() {}, writeln() {} }, link, 1);
+  listeners.close({ code: 1000 });
+  assert.equal(expired, 0, "an ordinary detach stays on the page");
+  assert.deepEqual(states, ["terminal.closed"]);
+  listeners.close({ code: 1008 });
+  assert.equal(expired, 1);
+  assert.equal(link.writable, false);
+  assert.deepEqual(states, ["terminal.closed"], "no misleading closed state before sign-in");
+});
