@@ -331,7 +331,7 @@ try {
       let plan = json("schedule", "show", "--global", "--schedule", syncId).schedule;
       assert.equal(plan.target.kind, "existing-job");
       assert.equal(plan.authorization.grantedBy.scope, "service");
-      assert.equal(plan.rule.everyMs, 6 * 60 * 60_000);
+      assert.deepEqual(plan.rule, { kind: "cron", expression: "0 */6 * * *", timezone: "Asia/Shanghai" });
       writeFileSync(join(syncSeed, "value"), "after\n");
       git(syncSeed, "commit", "-am", "after"); git(syncSeed, "push", "origin", "main");
       const after = git(syncSeed, "rev-parse", "HEAD");
