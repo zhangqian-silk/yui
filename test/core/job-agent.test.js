@@ -130,7 +130,7 @@ test("1.19 history survives Agent migration and process, Task, Agent executors c
     validateSqliteSchemaObjects(db, "1.19");
     applySqliteMinorUpgrades(db, home);
     validateSqliteSchemaObjects(db);
-    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 20);
+    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 21);
     assert.deepEqual(tables.map(table => db.prepare(`SELECT * FROM ${table}`).all()), before);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM agent_job_runs").get().n, 0);
   } finally { db.close(); }

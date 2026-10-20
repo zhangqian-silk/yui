@@ -2,7 +2,12 @@
 
 # 存储基线 1.0
 
-当前存储为 1.20。1.19 → 1.20 增加 Agent Job 配置、Global Role 的可选 Job
+当前存储为 1.21。1.20 → 1.21 将可证明未经修改的旧内置 Project 同步默认计划
+转换为显式时区的整点计划，在 migration 21 下归档原始字节。更高 revision 的
+来源不明确计划及自定义计划保留，不执行 Git 或重新授权。保守转换边界见
+[Project 同步](project-sync.zh-CN.md)。
+
+1.19 → 1.20 增加 Agent Job 配置、Global Role 的可选 Job
 归属和 `agent_job_runs` 表，保存原始消息、准确原生尝试与显式业务结果。
 保留现有 Role、Session、进程 Run 和固定产物身份；迁移不创建 Agent 或原生会话。
 

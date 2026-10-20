@@ -15,9 +15,13 @@ are not reset or rebased.
 
 ## Timing and controls
 
-The default is every six hours, first due six hours after installation. This also
-applies to eligible existing Projects when the new Controller first runs.
-Missed intervals coalesce into at most one admission, followed by the next
+The default is `0 */6 * * *`: 00:00, 06:00, 12:00 and 18:00 in an explicit
+IANA timezone, first due at the next boundary strictly after installation.
+Installation captures the existing `config set time-zone` setting (default
+`Asia/Shanghai`) into the Schedule rule; the host timezone is not consulted.
+Restart and later display-timezone changes do not rewrite installed rules.
+Use Schedule update to change an existing plan's time or timezone.
+Missed occurrences coalesce into at most one admission, followed by the next
 occurrence strictly after the Schedule fence. Existing overlap/unknown-effect
 protection remains in force; no missed-period batch is replayed.
 
@@ -73,7 +77,22 @@ preference and rule. Ordinary dispatch failures stay visible for explicit
 inspection/enable, not automatic speculative retries. Business failures keep
 their Run evidence; a later normal Schedule occurrence is a new check.
 
-Storage 1.17 → 1.18 is additive, preserving existing custom records and history
+Storage 1.20 → 1.21 converts only old built-in interval plans whose revision is
+still 1 and whose rule matches the original installation contract. Revision 1
+proves that no user mutation has occurred; matching a six-hour interval alone
+does not. Converted plans capture the configured timezone at upgrade, advance
+their generation and fence, and schedule the next future boundary without
+catch-up. Original bytes are archived; grants, Jobs, Runs and execution state
+are unchanged. Ordinary startup does not perform this migration.
+
+Older storage did not record rule-edit provenance. Any higher revision is
+therefore preserved, including plans only dispatched or automatically recovered:
+it cannot reliably be distinguished from a user edit, even one setting the same
+value. Disabled plans, explicit time/timezone overrides and manual plans remain
+unchanged. To switch a retained plan, read its current revision and use the
+explicit cron update above; updating a disabled plan does not enable it.
+
+Storage 1.17 → 1.18 was additive, preserving existing custom records and history
 byte-for-byte. It does not start Git work during migration. Upgrading or enabling
 this behavior on a production Home is a deployment decision, not implied by
 development tests. Validation uses disposable local repositories and isolated Homes.
