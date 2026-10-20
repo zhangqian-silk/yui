@@ -1252,7 +1252,5 @@ export const ZH_CN: Readonly<Partial<Record<MessageKey, string>>> = {
   "login.notice.expired": "会话已过期，请重新登录以继续。",
   "login.notice.signedOut": "你已退出登录。",
   "login.httpWarning": "当前连接为未加密的 HTTP。请仅在可信网络中登录。",
-  "login.noscript": "需要启用 JavaScript 才能登录。",
-  "actions.signOut": "退出登录",
-  "signOut.failed": "退出登录失败。请检查连接后重试。"
+  "login.noscript": "需要启用 JavaScript 才能登录。"
 };

@@ -1254,9 +1254,7 @@ export const EN = {
   "login.notice.expired": "Your session has expired. Sign in again to continue.",
   "login.notice.signedOut": "You have signed out.",
   "login.httpWarning": "This connection uses plain HTTP and is not encrypted. Sign in only on a trusted network.",
-  "login.noscript": "JavaScript is required to sign in.",
-  "actions.signOut": "Sign out",
-  "signOut.failed": "Sign-out failed. Check the connection and try again."
+  "login.noscript": "JavaScript is required to sign in."
 };
 
 export type MessageKey = keyof typeof EN;

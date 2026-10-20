@@ -742,8 +742,7 @@ async function handleHttpRequest(
           response,
           200,
           "text/html; charset=utf-8",
-          prepareWebDocument((managementPage ? MODELS_HTML.replace("__YUI_WEB_TOKEN__", token) : dashboardHtml(token))
-            .replace("__YUI_WEB_AUTH__", access.authentication),
+          prepareWebDocument(managementPage ? MODELS_HTML.replace("__YUI_WEB_TOKEN__", token) : dashboardHtml(token),
           managementPage ? "/assets/js/app/manage.js" : "/assets/app.js"),
           method === "HEAD"
         );

@@ -3,7 +3,6 @@
 // Each entry is a list of SVG path "d" strings.
 export const ICON_PATHS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   refresh: ["M20 11a8 8 0 0 0-14.3-4.9L4 8", "M4 4v4h4", "M4 13a8 8 0 0 0 14.3 4.9L20 16", "M20 20v-4h-4"],
-  logout: ["M15 4h3a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-3", "M10 17l5-5-5-5", "M15 12H4"],
   search: ["M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14z", "M20 20l-4-4"],
   terminal: ["M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z", "M7 10l3 2-3 2", "M12 15h5"],
   send: ["M4 12l16-8-6 16-2.5-6.5z", "M11.5 13.5L20 4"],

@@ -42,7 +42,6 @@ export const SIDEBAR_HTML = `    <aside class="sidebar" aria-label="Tasks" data-
         </button>
         <a id="models-open" class="icon-btn" href="/models" aria-label="Models" data-i18n-aria-label="models.title" title="Models" data-i18n-title="models.title">${iconSvg("layers")}</a>
         <button id="settings-open" class="icon-btn" type="button" aria-label="Settings" data-i18n-aria-label="settings.title" title="Settings">${iconSvg("settings")}</button>
-        <button id="sign-out" class="icon-btn" type="button" aria-label="Sign out" data-i18n-aria-label="actions.signOut" title="Sign out" data-i18n-title="actions.signOut" hidden>${iconSvg("logout")}</button>
       </footer>
     </aside>
     <div id="sidebar-divider" class="sidebar-divider" role="separator" tabindex="0" aria-orientation="vertical" aria-valuemin="${SIDEBAR.min}" aria-valuemax="${SIDEBAR.max}" aria-valuenow="${SIDEBAR.compact}" aria-label="Resize task list" data-i18n-aria-label="sidebar.resize" title="Drag to resize · double-click to reset" data-i18n-title="sidebar.resizeHint"><span aria-hidden="true"></span></div>`;

@@ -99,9 +99,12 @@ test("LAN access signs in through a page session before documents, APIs, preview
   const session = { cookie: setCookie.split(";")[0] };
   assert.match(session.cookie, new RegExp(`^yui_session_${options.port}=`));
 
-  const page = await fetch(base + "/", { headers: session });
-  assert.equal(page.status, 200);
-  assert.match(await page.text(), /name="yui-web-auth" content="password"/);
+  // Neither the workbench nor management pages offer a sign-out control.
+  for (const path of ["/", "/settings", "/models"]) {
+    const page = await fetch(base + path, { headers: session });
+    assert.equal(page.status, 200);
+    assert.doesNotMatch(await page.text(), /sign-out|signOut|yui-web-auth/);
+  }
   const back = await fetch(base + "/login?next=%2Fsettings", { headers: session, redirect: "manual" });
   assert.equal(back.status, 303);
   assert.equal(back.headers.get("location"), "/settings");
@@ -360,7 +363,7 @@ test("loopback without a credential file needs no sign-in and redirects the sign
   const base = `http://127.0.0.1:${server.address().port}`;
   const page = await fetch(base + "/");
   assert.equal(page.status, 200);
-  assert.match(await page.text(), /name="yui-web-auth" content="local"/);
+  assert.doesNotMatch(await page.text(), /sign-out|signOut|yui-web-auth/);
   const login = await fetch(base + "/login?next=%2Fsettings", { redirect: "manual" });
   assert.equal(login.status, 303);
   assert.equal(login.headers.get("location"), "/settings");

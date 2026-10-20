@@ -91,11 +91,12 @@ Ordinary Task artifact/file APIs continue to require full authentication.
 recoverable by network observers. Only use this on a trusted network. Public exposure, TLS
 termination, reverse-proxy trust and enterprise SSO are outside this feature.
 
-Closing a tab is not sign-out; use the sign-out button in the workbench
-sidebar or management rail. `yui web --stop` closes HTTP connections and all
-Web terminals and ends every session, without stopping Agents. To revoke a
-password permanently, stop Web, replace the password file privately, and start
-again. Each new listener also creates a fresh page token. Changing the file
+The workbench and management pages have no sign-out button; closing a tab
+does not end the session. A session ends on its own after the inactivity or
+absolute limit above. `yui web --stop` closes HTTP connections and all Web
+terminals and ends every session immediately, without stopping Agents. To
+revoke a password permanently, stop Web, replace the password file privately,
+and start again. Each new listener also creates a fresh page token. Changing the file
 alone does not alter a running listener. A wrong password is reported on the
 sign-in page; an expired session returns the open page to sign-in and back.
 Scripts that previously sent HTTP Basic credentials must use the sign-in
