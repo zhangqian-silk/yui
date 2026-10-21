@@ -42,8 +42,21 @@ export function button(text, options) {
   return element;
 }
 
-// The page header's Operator switch: the same place on the overview and on
-// every Task page; layout/workspace marks it pressed while the dock shows it.
+// The page header's session-panel switch: the same place on the overview and
+// on every Task page. It shows or hides the dock with its last target and view
+// (Operator, discussion, terminal and preview are chosen inside the panel);
+// layout/workspace keeps aria-expanded and the accessible name current.
+export function panelToggle(t, onClick) {
+  const element = h("button.btn.btn-ghost.dock-toggle.panel-toggle", {
+    type: "button", "aria-label": t("dock.show"), title: t("dock.label") + " · D",
+    "aria-expanded": "false", "aria-controls": "dock", onclick: onClick
+  }, icon("dock"), h("span", null, t("dock.label")));
+  element.dataset.panelToggle = "true";
+  return element;
+}
+
+// The former Operator-only header switch, kept unchanged for pages that still
+// import it; layout/workspace marks it pressed while the dock shows Operator.
 export function operatorToggle(t, onClick) {
   const element = h("button.btn.btn-ghost.dock-toggle.operator-toggle", {
     type: "button", title: t("actions.operator") + " · O", "aria-pressed": "false", onclick: onClick

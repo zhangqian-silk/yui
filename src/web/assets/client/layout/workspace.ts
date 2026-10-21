@@ -15,7 +15,7 @@ const DOCK_INITIAL = ${DOCK.initial};
 
 // deps: { el, state, t, terminal, conversation, preview, sessionOpened }
 //   el        the shell elements (dock, dividers, sidebar, the dock's target
-//             menu, and the page's [data-dock-toggle] / [data-operator-toggle]
+//             menu, and the page's [data-panel-toggle] / legacy [data-operator-toggle]
 //             buttons inside el.detail)
 //   state     read-only here: state.selected
 //   terminal  the dock's native Session (views/dock/terminal)
@@ -150,8 +150,9 @@ function revealDock(ws, visible) {
 function syncDockButtons(ws) {
   const el = ws.deps.el;
   const visible = dockVisible(ws);
-  markSelected(el.detail.querySelectorAll("[data-dock-toggle]"), "aria-pressed", function (button) {
-    return visible && ws.dock.mode === button.dataset.dockToggle;
+  el.detail.querySelectorAll("[data-panel-toggle]").forEach(function (button) {
+    button.setAttribute("aria-expanded", String(visible));
+    button.setAttribute("aria-label", ws.deps.t(visible ? "dock.hide" : "dock.show"));
   });
   markSelected(el.detail.querySelectorAll("[data-operator-toggle]"), "aria-pressed", function () { return operatorShown(ws); });
   drawTarget(ws);
@@ -227,6 +228,10 @@ function showDock(ws, open) {
 }
 
 function setDockOpen(ws, open) {
+  // Closing with focus inside the panel returns it to the page's panel switch
+  // rather than leaving it on a hidden element.
+  const active = document.activeElement;
+  const focusInside = !open && !!active && ws.deps.el.dock.contains(active);
   showDock(ws, open);
   if (!open) {
     ws.terminalTarget = ws.deps.terminal.current() || ws.terminalTarget;
@@ -241,6 +246,10 @@ function setDockOpen(ws, open) {
       ...(target.scope === "task" ? { taskId: target.taskId } : {}) });
   }
   updateLayout(ws);
+  if (focusInside) {
+    const toggle = ws.deps.el.detail.querySelector("[data-panel-toggle]");
+    if (toggle) toggle.focus();
+  }
 }
 
 function setDockMode(ws, mode) {

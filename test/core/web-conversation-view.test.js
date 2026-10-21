@@ -18,8 +18,16 @@ function fixture(submitResult = { state: "submitted" }, extra = {}) {
       append(...items) { this.children.push(...items); },
       replaceChildren(...items) { this.children = items; },
       addEventListener(event, handler) { this.handlers[event] = handler; },
+      setAttribute(name, value) { this[name] = String(value); },
       closest() { return null; }, querySelectorAll() { return []; },
+      // Enough selector support for the controller: tag prefixes and [aria-selected=true].
+      querySelector(selector) {
+        const match = n => selector === "[aria-selected=true]" ? n["aria-selected"] === "true" : n.spec.startsWith(selector);
+        const walk = n => { for (const c of n.children || []) { if (typeof c !== "object") continue; if (match(c)) return c; const f = walk(c); if (f) return f; } return null; };
+        return walk(this);
+      },
       get options() { return this.children; } };
+    node.dataset = { ...attrs?.dataset };
     if (attrs?.value) node.value = attrs.value;
     elements.push(node); return node;
   };
@@ -31,7 +39,9 @@ function fixture(submitResult = { state: "submitted" }, extra = {}) {
       removeItem: k => preferences.delete(k) },
     api: { answerInput: async (...args) => taskAnswers.push(args) }, releaseMutation() {},
     inputCard: (input, _t, _locale, answer) => h("input-card", { answer: value => answer(input, value, {}) }),
-    URLSearchParams, crypto: { randomUUID: () => "request-id" }, document: { hidden: false },
+    URLSearchParams, crypto: { randomUUID: () => "request-id" }, document: { hidden: false, activeElement: null },
+    formatClock: iso => "clock:" + iso, formatDateTime: iso => "date:" + iso, formatShort: iso => iso ? "short:" + iso : "",
+    fill: (template, values) => template + JSON.stringify(values),
     sessionStorage: { getItem: k => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, v), removeItem: k => storage.delete(k) },
     window: { setInterval: fn => { interval = fn; return 1; }, clearInterval: () => { interval = null; } },
     requestJson: async url => {
@@ -46,13 +56,17 @@ function fixture(submitResult = { state: "submitted" }, extra = {}) {
       if (query.has("session")) {
         const tool = [{ id: "tool", turnId: "turn", kind: "activity", text: "npm test" }];
         const older = query.has("cursor");
-        return { status: "active", observedAt: "now", nextCursor: older && extra.olderItems ? null : "older",
-          runConfiguration: extra.runConfiguration,
+        const page = { status: "active", observedAt: "now", nextCursor: older && extra.olderItems ? null : "older",
+          runConfiguration: typeof extra.runConfiguration === "function" ? extra.runConfiguration(query.get("session")) : extra.runConfiguration,
           nativeRequests: extra.nativeRequests || [],
           items: older ? extra.olderItems ?? tool : extra.items ?? tool };
+        // A held page answers only when the test releases it (a late response).
+        if (extra.hold?.(query.get("session"))) return new Promise(resolve => { extra.held = () => resolve(page); });
+        return page;
       }
-      return { currentSessionId, sessions: [{ nativeSessionId: currentSessionId, current: true,
-        status: "active", adapterId: "codex" }], authority: { owner: "controller" },
+      return { currentSessionId, sessions: extra.sessions?.(currentSessionId) ?? [{ nativeSessionId: currentSessionId, current: true,
+        status: "active", adapterId: "codex" }, ...(extra.history ?? []).map(id => ({ nativeSessionId: id, current: false,
+        status: "ended", adapterId: "codex", createdAt: "2026-01-01T00:00:00.000Z" }))], authority: { owner: "controller" },
         terminalWriter: extra.terminalWriter, leaderQuestions: extra.leaderQuestions,
         turn: extra.idle ? null : { status: extra.turnStatus || "accepted", nativeTurnId: "turn" }, total: 1, nextOffset: null };
     },
@@ -67,8 +81,12 @@ function fixture(submitResult = { state: "submitted" }, extra = {}) {
     get input() { return elements.find(n => n.spec.startsWith("textarea")); },
     get materialList() { return elements.find(n => n.spec === "div.row-stack"); },
     get materialAlert() { return elements.find(n => n.role === "alert"); },
-    get selector() { return elements.find(n => n["aria-label"] === "conversation.sessions"); },
-    get defaultMode() { return elements.find(n => n["aria-label"] === "conversation.defaultMode"); },
+    // Choose a Session the way a user does: through the picker's option.
+    pick: async id => {
+      elements.findLast(n => n.spec === "button.cv-session-opt" && n.dataset.session === id).handlers.click();
+      await flush();
+    },
+    text: spec => elements.findLast(n => n.spec === spec)?.textContent,
     replaceCurrent: id => { currentSessionId = id; },
     get feed() { return elements.find(n => n.spec === "div.feed"); },
     tick: async () => { interval?.(); await flush(); },
@@ -188,6 +206,11 @@ test("model adoption preserves drafts and an unknown effect blocks replay across
     assert.equal(!!f.button("send").disabled, disposition === "unknown");
     assert.equal([...f.storage.keys()].some(k => k.endsWith(".modelPending")), disposition === "unknown");
     assert.equal(f.mutations.length, 1, "reopening never replays model adoption");
+    const pill = f.elements.findLast(n => n.spec === "details.cv-pop.cv-model");
+    const state = f.elements.findLast(n => n.spec === "span.cv-model-state");
+    assert.equal(pill.dataset.state, disposition === "unknown" ? "pending" : "unknown");
+    assert.equal(state.hidden ? "" : state.textContent, disposition === "unknown" ? "conversation.modelStatePending" : "",
+      "an unsettled switch reads as applying in visible text");
     if (disposition === "unknown") {
       assert.equal(f.controller.captureDraftTarget(), null);
       assert.throws(() => f.controller.insertReference(target, "history"), /targetChanged/);
@@ -198,7 +221,7 @@ test("model adoption preserves drafts and an unknown effect blocks replay across
 });
 
 test("history references append to the captured writable draft, never send or cross Sessions", async () => {
-  const f = fixture();
+  const f = fixture({}, { history: ["historical"] });
   const owner = { scope: "task", taskId: "task-1", roleName: "leader" };
   assert.equal(f.controller.captureDraftTarget(), null);
   f.controller.open(owner);
@@ -223,9 +246,7 @@ test("history references append to the captured writable draft, never send or cr
   f.controller.open(owner, { current: true });
   await flush();
   assert.throws(() => f.controller.insertReference(target, "wrong Session"), /targetChanged/);
-  f.selector.value = "historical";
-  f.selector.handlers.change();
-  await flush();
+  await f.pick("historical");
   assert.equal(f.controller.captureDraftTarget(), null);
   assert.equal(f.mutations.length, 0);
   f.controller.close();
@@ -300,41 +321,31 @@ test("version feedback fills a draft without sending, persists exact refs, and n
   f.controller.close();
 });
 
-test("conversation and workspace share Settings access preference without changing the current Session", async () => {
+test("the dock leaves the access preference to Settings and keeps the current Session", async () => {
   const f = fixture();
   vm.runInContext(WORKSPACE_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), f.context);
   f.controller.open({ scope: "global", roleName: "operator" });
   await flush();
-  assert.equal(f.defaultMode.value, "structured", "conversation is the default");
+  assert.equal(f.elements.some(n => n.spec === "select" && n["aria-label"] !== "conversation.model"), false,
+    "no second preference control inside the dock");
   assert.equal(f.context.preferredMode(), "conversation");
-  f.defaultMode.value = "native";
-  f.defaultMode.handlers.change();
-  assert.equal(f.preferences.get("yui.session.accessMode"), "native");
-  assert.equal(f.preferences.has("yui.session.mode"), false);
-  assert.equal(f.context.preferredMode(), "session");
-  assert.equal(f.selector.value, "thread");
-  assert.equal(f.mutations.length, 0, "saving a browser preference is not runtime adoption");
-  // The Settings page uses this same helper; refresh sees the new preference.
-  f.context.writeSessionAccessMode("structured");
+  // The Settings page writes through this helper; the open view is unaffected.
+  f.context.writeSessionAccessMode("native");
   await f.tick();
-  assert.equal(f.defaultMode.value, "structured");
+  assert.equal(f.preferences.get("yui.session.accessMode"), "native");
+  assert.equal(f.context.preferredMode(), "session");
+  assert.equal(f.controller.selection().nativeSessionId, "thread");
+  assert.equal(f.mutations.length, 0, "saving a browser preference is not runtime adoption");
   f.controller.close();
-  const unavailable = fixture({}, { storageUnavailable: true });
-  unavailable.defaultMode.value = "native";
-  unavailable.defaultMode.handlers.change();
-  assert.equal(unavailable.defaultMode.value, "structured");
-  assert.ok(unavailable.elements.some(n => n.textContent === "settings.storageFailed"));
 });
 
 test("workbench continuation resolves the current Leader afresh without replaying historical input", async () => {
-  const f = fixture();
+  const f = fixture({}, { history: ["old-thread"] });
   const owner = { scope: "task", taskId: "task-1", roleName: "leader" };
   f.controller.open(owner);
   await flush();
   f.input.value = "Current draft";
-  f.selector.value = "old-thread";
-  f.selector.handlers.change();
-  await flush();
+  await f.pick("old-thread");
   f.input.value = "Historical draft";
   f.replaceCurrent("replacement-thread");
   f.controller.open(owner, { current: true });
@@ -351,7 +362,7 @@ test("workbench continuation resolves the current Leader afresh without replayin
 });
 
 test("terminal hide cancels pending attachment and reopens the actual selected owner", () => {
-  const context = vm.createContext({ writePreference() {} });
+  const context = vm.createContext({ writePreference() {}, document: { activeElement: null } });
   vm.runInContext(WORKSPACE_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
   const target = { scope: "task", taskId: "task-1", roleName: "leader", nativeSessionId: "leader-thread" };
   const switched = { scope: "global", roleName: "operator", nativeSessionId: "operator-thread" };
@@ -379,11 +390,49 @@ test("terminal hide cancels pending attachment and reopens the actual selected o
   assert.equal(layoutVisible, true, "layout is rendered after restoring the selected target");
 });
 
+test("the page's one panel switch mirrors the dock, keeps its view and takes focus back on close", () => {
+  const document = { activeElement: null };
+  const context = vm.createContext({ writePreference() {}, markSelected() {}, document });
+  vm.runInContext(WORKSPACE_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
+  vm.runInContext("drawTarget = function () {}; updateLayout = function (ws) { syncDockButtons(ws); }", context);
+  const attrs = {};
+  const toggle = { setAttribute(k, v) { attrs[k] = v; }, focus() { document.activeElement = toggle; } };
+  const inside = {};
+  let reconnects = 0;
+  const ws = {
+    dock: { mode: "conversation", open: false }, narrow: { matches: false },
+    deps: { t: key => key, state: { selected: "task-1" },
+      el: { dock: { contains: node => node === inside },
+        detail: { querySelectorAll: () => [toggle], querySelector: () => toggle } },
+      terminal: { current: () => null, close() {} },
+      conversation: { close() {}, reconnect() { reconnects++; }, current: () => null } }
+  };
+  context.toggleDock(ws);
+  assert.equal(context.dockVisible(ws), true);
+  assert.equal(ws.dock.mode, "conversation", "the first open uses the default view");
+  assert.equal(attrs["aria-expanded"], "true");
+  assert.equal(attrs["aria-label"], "dock.hide");
+  assert.equal(reconnects, 1);
+  ws.dock.mode = "preview";
+  document.activeElement = inside;
+  context.toggleDock(ws);
+  assert.equal(context.dockVisible(ws), false);
+  assert.equal(attrs["aria-expanded"], "false");
+  assert.equal(attrs["aria-label"], "dock.show");
+  assert.equal(document.activeElement, toggle, "focus leaves the hidden panel for its switch");
+  context.toggleDock(ws);
+  assert.equal(ws.dock.mode, "preview", "reopening keeps the last view");
+  assert.equal(attrs["aria-expanded"], "true");
+  document.activeElement = null;
+  context.setDockOpen(ws, false);
+  assert.equal(document.activeElement, null, "focus outside the panel is left where it is");
+});
+
 test("terminal hide/reopen resolves a replacement Session without replaying input", async () => {
   let currentSessionId = "thread-a", reads = 0, pending;
   const connections = [], writes = [];
   const context = vm.createContext({
-    URLSearchParams, writePreference() {}, clear() {},
+    URLSearchParams, writePreference() {}, clear() {}, document: { activeElement: null },
     ResizeObserver: class { observe() {} disconnect() {} },
     async requestJson() { reads++; return { currentSessionId }; },
     fakeMount() { return { terminal: { onData() { return { dispose() {} }; }, dispose() {} }, fit: { fit() {} } }; },
@@ -571,4 +620,126 @@ test("a terminal closed by the server for an ended browser session returns the p
   assert.equal(expired, 1);
   assert.equal(link.writable, false);
   assert.deepEqual(states, ["terminal.closed"], "no misleading closed state before sign-in");
+});
+
+test("the current-model label never presents a launch snapshot as the Session's live model", async () => {
+  const observed = (model, observedAt = "2026-10-21T12:00:00.000Z") => ({ status: "observed", observedAt, requested: [],
+    handshake: { status: "unsupported", reason: "fixture" },
+    axes: [{ key: "model", category: "model", current: { status: "observed", value: model }, offered: [] },
+      // Effort is identified by category; its native key is reasoningEffort.
+      { key: "reasoningEffort", category: "effort", current: { status: "observed", value: "medium" }, offered: [] }] });
+  const unknown = { status: "unknown", reason: "No confirmed native model response." };
+  let config = () => unknown;
+  const extra = { idle: true, runConfiguration: session => config(session),
+    sessions: id => [{ nativeSessionId: id, current: true, status: "active", adapterId: "codex", launchModel: "launch-model", launchEffort: "high" },
+      { nativeSessionId: "old", current: false, status: "ended", adapterId: "codex", createdAt: "2026-01-01T00:00:00.000Z", launchModel: "old-launch" }] };
+  const f = fixture({}, extra);
+  f.controller.open({ scope: "global", roleName: "operator" });
+  await flush();
+  const menu = () => f.elements.findLast(n => n.spec === "details.cv-pop.cv-model");
+  const label = () => f.text("span.cv-model-label");
+  // Model facts as [label, value, note] rows from the model menu.
+  const facts = () => {
+    const rows = f.elements.findLast(n => n.spec === "dl.cv-facts.cv-model-facts").children;
+    const out = [];
+    for (let i = 0; i < rows.length; i += 2) out.push([rows[i].children[0], rows[i + 1].children[0].children[0], rows[i + 1].children[1]?.children[0]]);
+    return out;
+  };
+  // What a reader sees without hovering: the state word plus the model.
+  const visible = () => [f.elements.findLast(n => n.spec === "span.cv-model-state"), f.elements.findLast(n => n.spec === "span.cv-model-label")]
+    .filter(n => !n.hidden).map(n => n.textContent).join(" ");
+  const summary = () => f.elements.findLast(n => n.spec === "summary.cv-pill" && n.children.some(c => c.spec === "span.cv-model-label"));
+  assert.equal(label(), "conversation.modelUnconfirmed", "a launch request is not the current model");
+  assert.equal(menu().dataset.state, "unknown");
+  assert.equal(visible(), "conversation.modelUnconfirmed", "unknown reads as text, not only a colour");
+  assert.deepEqual(facts().find(r => r[0] === "conversation.launchModel"), ["conversation.launchModel", "launch-model · high", "conversation.launchNote"]);
+  assert.equal(facts().find(r => r[0] === "conversation.confirmedModel")[1], "conversation.modelUnconfirmed");
+
+  config = session => session === "thread" ? observed("live-model") : unknown;
+  await f.tick();
+  assert.equal(label(), "live-model · medium", "only the Session's own native confirmation is shown");
+  assert.equal(menu().dataset.state, "confirmed");
+  assert.equal(visible(), "conversation.modelStateConfirmed live-model · medium", "last confirmation is named in visible text");
+  assert.equal(summary()["aria-label"], "conversation.model · conversation.modelStateConfirmed live-model · medium");
+  assert.match(summary().title, /modelConfirmedShort.*date:2026-10-21T12:00:00.000Z/, "the tooltip time carries the date");
+  const confirmed = facts().find(r => r[0] === "conversation.confirmedModel");
+  assert.equal(confirmed[1], "live-model · medium");
+  assert.match(confirmed[2], /modelConfirmedNote.*date:2026-10-21T12:00:00.000Z/, "labelled as a dated confirmation, not live");
+
+  config = () => unknown;
+  await f.tick();
+  assert.equal(label(), "conversation.modelUnconfirmed", "a confirmation the Host withdrew is not carried over");
+  assert.equal(menu().dataset.state, "unknown");
+  assert.equal(visible(), "conversation.modelUnconfirmed", "no stale state word is left behind");
+
+  config = session => session === "thread" ? observed("live-model") : unknown;
+  await f.tick();
+  await f.pick("old");
+  assert.equal(label(), "conversation.modelUnconfirmed", "a previous Session never borrows the current report");
+  assert.equal(facts().find(r => r[0] === "conversation.launchModel")[1], "old-launch");
+  assert.ok(!facts().some(r => r[1] === "live-model"));
+
+  // A current-Session read that answers after the user switched never lands on the other Session.
+  await f.pick("thread");
+  assert.equal(label(), "live-model · medium");
+  extra.hold = session => session === "thread";
+  f.controller.reconnect();
+  await flush();
+  extra.hold = null;
+  await f.pick("old");
+  config = session => session === "thread" ? observed("late-model") : unknown;
+  extra.held();
+  await flush();
+  assert.equal(label(), "conversation.modelUnconfirmed", "late responses never cross Sessions");
+  assert.equal(f.mutations.length, 0, "presentation never applies a model");
+  f.controller.close();
+});
+
+test("the picker and the read-only notice keep the dock to one layer; user text is never split", async () => {
+  // Ordinary tags and surrounding whitespace are the user's words: nothing is
+  // guessed to be attached context, folded away, trimmed or re-indented.
+  const userTexts = ["<b>关键要求</b>\n  后续正文保持缩进\n\n第二段", "<config>\n  mode: strict\n</config>\n请按此配置",
+    "  \n<ambient-context>url: http://x</ambient-context>\n\tPlease review  \n"];
+  const items = [...userTexts.map((text, i) => ({ id: "u" + i, turnId: "turn", kind: "user", text })),
+    { id: "a", turnId: "turn", kind: "assistant", text: "<b>not context</b> reply" }];
+  const long = "会话标题".repeat(30);
+  const f = fixture({}, { idle: true, items, sessions: id => [{ nativeSessionId: id, current: true, status: "active", adapterId: "codex", title: long },
+    { nativeSessionId: "old", current: false, status: "ended", endReason: "failed", adapterId: "codex", createdAt: "2026-01-01T00:00:00.000Z" }] });
+  const copies = [];
+  f.context.navigator = { clipboard: { writeText: async value => { copies.push(value); } } };
+  f.controller.open({ scope: "global", roleName: "operator" });
+  await flush();
+  const options = () => f.elements.filter(n => n.spec === "button.cv-session-opt").slice(-2);
+  assert.deepEqual(options().map(o => [o.dataset.session, o["aria-selected"]]), [["thread", "true"], ["old", "false"]]);
+  assert.equal(f.text("span.cv-picker-name"), "conversation.current · " + long, "full name stays available; CSS ellipsizes");
+  const notice = f.elements.findLast(n => n.spec === "p.cv-notice");
+  assert.equal(notice.hidden, true, "a writable Session shows no notice");
+  assert.equal(f.elements.some(n => n.spec === "details.cv-context"), false, "no guessed context fold");
+  const bubbles = f.elements.filter(n => n.spec === "div.cv-bubble").map(n => n.children[0].children[0]);
+  for (const text of userTexts) assert.ok(bubbles.includes(text), "shown verbatim: " + JSON.stringify(text));
+
+  f.elements.find(n => n.spec === "button.cv-link" && n.children.some(c => c.children?.includes("conversation.copyIdentity"))).handlers.click();
+  await flush();
+  assert.deepEqual(copies, ["Global / operator / thread"]);
+
+  await f.pick("old");
+  assert.equal(notice.hidden, false);
+  assert.equal(notice.children[1].textContent, "conversation.readOnlyHistory");
+  assert.equal(f.button("send").disabled, true);
+  assert.equal(f.input.placeholder, "conversation.placeholderHistory");
+  assert.equal(f.elements.find(n => n.spec === "button.cv-link.cv-back").hidden, false);
+  notice.children[2].handlers.click();
+  await flush();
+  assert.equal(f.controller.selection().nativeSessionId, "thread", "back to current from the notice");
+  assert.equal(notice.hidden, true);
+  const picker = f.elements.find(n => n.spec === "details.cv-pop.cv-picker");
+  let stopped = 0;
+  const escape = { key: "Escape", stopPropagation() { stopped++; } };
+  picker.open = true;
+  f.host.handlers.keydown(escape);
+  assert.equal(picker.open, false);
+  assert.equal(stopped, 1, "closing a popover must not also hide the dock");
+  f.host.handlers.keydown(escape);
+  assert.equal(stopped, 1, "with nothing open, Escape still reaches the dock");
+  f.controller.close();
 });
