@@ -1,3 +1,4 @@
+import { BRAND_ICONS } from "../../shared/brand.js";
 import { DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, THEME_OPTIONS } from "../../shared/themes.js";
 
 // Shared by the parser-blocking head script and the later settings controller.
@@ -17,6 +18,14 @@ function storedPreference() {
 function resolveTheme(preference, media) {
   return preference === "system" ? (media.matches ? DEFAULT_LIGHT : DEFAULT_DARK) : preference;
 }
+
+// Stamp the resolved theme on <html> and swap in its pre-coloured favicon.
+const BRAND_ICONS = ${JSON.stringify(BRAND_ICONS)};
+function stampTheme(id) {
+  document.documentElement.dataset.theme = id;
+  const icon = document.querySelector('link[rel="icon"]');
+  if (icon && BRAND_ICONS[id] && icon.getAttribute("href") !== BRAND_ICONS[id]) icon.setAttribute("href", BRAND_ICONS[id]);
+}
 `;
 
 // A same-origin classic script runs before styles/body, unlike the deferred
@@ -24,9 +33,7 @@ function resolveTheme(preference, media) {
 export const THEME_BOOTSTRAP_SCRIPT = String.raw`
 (function () {
 ${THEME_PREFERENCE_SCRIPT}
-  document.documentElement.dataset.theme = resolveTheme(
-    storedPreference(), window.matchMedia("(prefers-color-scheme: light)")
-  );
+  stampTheme(resolveTheme(storedPreference(), window.matchMedia("(prefers-color-scheme: light)")));
 })();
 `;
 
@@ -63,7 +70,7 @@ export function createThemeController(container, t) {
     return resolveTheme(preference, media);
   }
   function apply() {
-    document.documentElement.dataset.theme = resolved();
+    stampTheme(resolved());
     if (container) markSelected(container.querySelectorAll("[data-theme-option]"), "aria-pressed", function (button) {
       return button.dataset.themeOption === preference;
     });

@@ -28,6 +28,7 @@ export const DIALOGS_HTML = `  <dialog id="settings-dialog" class="dialog settin
           <dt><kbd>R</kbd></dt><dd data-i18n="shortcut.refresh">Refresh</dd>
           <dt><kbd>D</kbd></dt><dd data-i18n="shortcut.dock">Show or hide the session panel</dd>
           <dt><kbd>O</kbd></dt><dd data-i18n="shortcut.operator">Operator session</dd>
+          <dt><kbd>[</kbd></dt><dd data-i18n="shortcut.sidebar">Show or hide the task list</dd>
           <dt><kbd>1</kbd>–<kbd>${TASK_TABS.length}</kbd></dt><dd data-i18n="shortcut.tabs">Switch task sections</dd>
           <dt><kbd>Esc</kbd></dt><dd data-i18n="shortcut.escape">Close panel / leave task</dd>
         </dl>

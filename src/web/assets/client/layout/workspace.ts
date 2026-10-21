@@ -6,15 +6,17 @@ export const WORKSPACE_SCRIPT = String.raw`
 // in the center), below the narrow breakpoint a full-screen sheet opened
 // explicitly per Task. Everything here is view state and browser preference.
 import { readPreference, writePreference, readSessionAccessMode } from "/assets/js/lib/prefs.js";
-import { markSelected } from "/assets/js/lib/dom.js";
+import { markSelected, h, icon, clear } from "/assets/js/lib/dom.js";
 import { createSizing } from "/assets/js/layout/sizing.js";
+import { layoutTransition, leave } from "/assets/js/lib/motion.js";
 
 const NARROW_QUERY = "(max-width: ${BREAKPOINTS.narrow}px)";
 const DOCK_INITIAL = ${DOCK.initial};
 
-// deps: { el, state, terminal, sessionOpened }
-//   el        the shell elements (dock, dividers, sidebar, operator button,
-//             and the Task page's [data-dock-toggle] buttons inside el.detail)
+// deps: { el, state, t, terminal, conversation, preview, sessionOpened }
+//   el        the shell elements (dock, dividers, sidebar, the dock's target
+//             menu, and the page's [data-dock-toggle] / [data-operator-toggle]
+//             buttons inside el.detail)
 //   state     read-only here: state.selected
 //   terminal  the dock's native Session (views/dock/terminal)
 //   sessionOpened()  a Session was just opened in the dock; the caller
@@ -37,8 +39,8 @@ export function createWorkspace(deps) {
     dockVisible: function () { return dockVisible(ws); },
     updateLayout: function () { updateLayout(ws); },
     syncDockButtons: function () { syncDockButtons(ws); },
-    setDockOpen: function (open) { setDockOpen(ws, open); },
-    toggleDock: function (mode) { toggleDock(ws, mode); },
+    setDockOpen: function (open) { glide(function () { setDockOpen(ws, open); }); },
+    toggleDock: function (mode) { glide(function () { toggleDock(ws, mode); }); },
     openSession: function (target) { openSession(ws, target); },
     openConversation: function (target, materials) {
       ws.deps.terminal.close();
@@ -48,12 +50,8 @@ export function createWorkspace(deps) {
       ws.deps.conversation.open(target, { current: true, materials: materials });
       syncDockButtons(ws);
     },
-    openOperator: function () { openOperator(ws); },
-    restoreDefaultMode: function () {
-      if (!ws.deps.state.selected && ws.dock.open && !ws.narrow.matches && preferredMode() === "session") {
-        openSession(ws, { scope: "global", roleName: "operator" });
-      }
-    },
+    openOperator: function () { glide(function () { openOperator(ws); }); },
+    toggleOperator: function () { glide(function () { toggleOperator(ws); }); },
     // A newly selected Task starts with the narrow-screen sheet closed.
     enterTask: function () {
       ws.deps.terminal.close();
@@ -61,17 +59,27 @@ export function createWorkspace(deps) {
       ws.dock.sheet = false;
       ws.dock.mode = preferredMode();
       ws.deps.conversation.open({ scope: "task", taskId: ws.deps.state.selected, roleName: "leader" });
+      pauseHiddenConversation(ws);
       if (ws.dock.mode === "session" && !ws.narrow.matches && ws.dock.open) {
         ws.deps.terminal.open({ scope: "task", taskId: ws.deps.state.selected, roleName: "leader" });
       }
+      syncDockButtons(ws);
     },
     leaveTask: function () { leaveTask(ws); }
   };
 }
 
+// User-initiated dock changes (open, close, swap sides) glide the columns to
+// their new widths; internal re-layouts stay immediate.
+function glide(update) {
+  if (typeof layoutTransition === "function") layoutTransition(update);
+  else update();
+}
+
 function readDockState() {
   return {
-    open: readPreference("yui.dock.open", "true") !== "false",
+    // The panel starts closed on every load and opens only on request.
+    open: false,
     mode: "conversation",
     center: readPreference("yui.dock.side", "end") === "center",
     width: Number(readPreference("yui.dock.width", String(DOCK_INITIAL))) || DOCK_INITIAL,
@@ -101,7 +109,7 @@ function updateLayout(ws) {
   document.body.classList.toggle("task-open", selected);
   document.body.classList.toggle("dock-open", visible);
   document.body.classList.toggle("dock-center", dock.center);
-  el.dock.hidden = !visible;
+  revealDock(ws, visible);
   el.divider.hidden = !visible;
   el.discussion.hidden = dock.mode !== "discussion";
   el.session.hidden = dock.mode !== "session";
@@ -120,13 +128,88 @@ function updateLayout(ws) {
   syncDockButtons(ws);
 }
 
+// On narrow screens the dock is a full-screen sheet: CSS slides it up on
+// open, and closing slides it back down before it hides (an immediate close
+// would cut the motion off). Wider screens change the grid; user-initiated
+// changes there glide through glide().
+function revealDock(ws, visible) {
+  const dockEl = ws.deps.el.dock;
+  if (ws.closingDock) { ws.closingDock.cancel(); ws.closingDock = null; }
+  if (visible || dockEl.hidden || !ws.narrow.matches || typeof leave !== "function") { dockEl.hidden = !visible; return; }
+  const closing = leave(dockEl, "sheetDown");
+  if (!closing.animation) { dockEl.hidden = true; return; }
+  ws.closingDock = closing;
+  closing.finished.then(function () {
+    if (ws.closingDock !== closing) return;
+    ws.closingDock = null;
+    dockEl.hidden = true;
+    closing.cancel();
+  });
+}
+
 function syncDockButtons(ws) {
   const el = ws.deps.el;
   const visible = dockVisible(ws);
   markSelected(el.detail.querySelectorAll("[data-dock-toggle]"), "aria-pressed", function (button) {
     return visible && ws.dock.mode === button.dataset.dockToggle;
   });
-  el.operator.setAttribute("aria-pressed", String(operatorShown(ws)));
+  markSelected(el.detail.querySelectorAll("[data-operator-toggle]"), "aria-pressed", function () { return operatorShown(ws); });
+  drawTarget(ws);
+}
+
+// --- Conversation target -----------------------------------------------------
+// The dock header names who the panel talks to. Operator is always offered;
+// a selected Task adds its Leader. Other Roles use the global message dialog.
+function currentTarget(ws) {
+  const mode = ws.dock.mode;
+  const selected = ws.deps.state.selected;
+  if (mode === "session") return ws.deps.terminal.current() || ws.terminalTarget || null;
+  if (mode === "conversation") return ws.deps.conversation.current();
+  return selected ? { scope: "task", taskId: selected, roleName: "leader" } : null;
+}
+
+function targetLabel(ws, target) {
+  if (!target) return ws.deps.t("actions.operator");
+  if (target.scope === "global") return target.roleName === "operator" ? ws.deps.t("actions.operator") : target.roleName;
+  return target.roleName + " · " + target.taskId;
+}
+
+function sameTarget(a, b) {
+  return !!a && !!b && a.scope === b.scope && a.roleName === b.roleName && (a.scope !== "task" || a.taskId === b.taskId);
+}
+
+function drawTarget(ws) {
+  const el = ws.deps.el;
+  const current = currentTarget(ws);
+  el.dockTargetLabel.textContent = targetLabel(ws, current);
+  el.dockTargetIcon.replaceChildren(icon(current && current.scope === "task" ? "target" : "broadcast"));
+  const options = [{ scope: "global", roleName: "operator" }];
+  if (ws.deps.state.selected) options.push({ scope: "task", taskId: ws.deps.state.selected, roleName: "leader" });
+  if (current && !options.some(function (option) { return sameTarget(option, current); })) options.push(current);
+  const signature = JSON.stringify([options, current, ws.deps.t("actions.operator")]);
+  if (el.dockTargetOptions.dataset.signature === signature) return;
+  el.dockTargetOptions.dataset.signature = signature;
+  clear(el.dockTargetOptions);
+  options.forEach(function (target) {
+    el.dockTargetOptions.append(h("button.dock-target-item", {
+      type: "button", "aria-pressed": String(sameTarget(target, current)),
+      onclick: function () { chooseTarget(ws, target); }
+    }, icon(target.scope === "task" ? "target" : "broadcast"), h("span", null, targetLabel(ws, target)),
+      sameTarget(target, current) ? icon("check", "icon-sm dock-target-check") : null));
+  });
+}
+
+// Keep the current view (live terminal or structured conversation) and switch
+// only its owner; Task-only views fall back to the conversation.
+function chooseTarget(ws, target) {
+  ws.deps.el.dockTarget.open = false;
+  if (ws.dock.mode === "session") { openSession(ws, target); return; }
+  ws.deps.terminal.close();
+  showDock(ws, true);
+  ws.dock.mode = "conversation";
+  updateLayout(ws);
+  ws.deps.conversation.open(target);
+  syncDockButtons(ws);
 }
 
 // The dock currently shows the global operator Session.
@@ -140,7 +223,6 @@ function showDock(ws, open) {
   if (ws.narrow.matches) ws.dock.sheet = open;
   else {
     ws.dock.open = open;
-    writePreference("yui.dock.open", String(open));
   }
 }
 
@@ -177,6 +259,7 @@ function setDockMode(ws, mode) {
     ws.deps.conversation.open(target ? { scope: target.scope, ...(target.scope === "task" ? { taskId: target.taskId } : {}), roleName: target.roleName } : ws.deps.state.selected
       ? { scope: "task", taskId: ws.deps.state.selected, roleName: "leader" }
       : { scope: "global", roleName: "operator" });
+    syncDockButtons(ws);
     return;
   }
   if (mode === "session") {
@@ -210,6 +293,11 @@ function openSession(ws, target) {
   ws.deps.sessionOpened();
 }
 
+function toggleOperator(ws) {
+  if (operatorShown(ws)) setDockOpen(ws, false);
+  else openOperator(ws);
+}
+
 function openOperator(ws) {
   ws.deps.terminal.close();
   showDock(ws, true);
@@ -225,6 +313,14 @@ function leaveTask(ws) {
   ws.deps.terminal.close();
   ws.dock.mode = "conversation";
   ws.deps.conversation.open({ scope: "global", roleName: "operator" });
+  pauseHiddenConversation(ws);
+  syncDockButtons(ws);
+}
+
+// The conversation keeps its owner while the panel is hidden but stops
+// polling; opening the panel reconnects it.
+function pauseHiddenConversation(ws) {
+  if (!dockVisible(ws) || ws.dock.mode !== "conversation") ws.deps.conversation.close();
 }
 
 function bindDockControls(ws) {
@@ -234,15 +330,18 @@ function bindDockControls(ws) {
   el.dockTabConversation.addEventListener("click", function () { setDockMode(ws, "conversation"); });
   el.dockTabSession.addEventListener("click", function () { setDockMode(ws, "session"); });
   el.dockTabPreview.addEventListener("click", function () { setDockMode(ws, "preview"); });
-  el.dockClose.addEventListener("click", function () { setDockOpen(ws, false); });
+  el.dockClose.addEventListener("click", function () { glide(function () { setDockOpen(ws, false); }); });
   el.dockSwap.addEventListener("click", function () {
     dock.center = !dock.center;
     writePreference("yui.dock.side", dock.center ? "center" : "end");
-    updateLayout(ws);
+    glide(function () { updateLayout(ws); });
   });
-  el.operator.addEventListener("click", function () {
-    if (operatorShown(ws)) setDockOpen(ws, false);
-    else openOperator(ws);
+  el.globalInputOpen.addEventListener("click", function () { el.dockTarget.open = false; });
+  document.addEventListener("click", function (event) {
+    if (el.dockTarget.open && !el.dockTarget.contains(event.target)) el.dockTarget.open = false;
+  });
+  el.dockTarget.addEventListener("keydown", function (event) {
+    if (event.key === "Escape" && el.dockTarget.open) { event.stopPropagation(); el.dockTarget.open = false; el.dockTarget.querySelector("summary").focus(); }
   });
 }
 `;

@@ -42,6 +42,33 @@ export function button(text, options) {
   return element;
 }
 
+// The page header's Operator switch: the same place on the overview and on
+// every Task page; layout/workspace marks it pressed while the dock shows it.
+export function operatorToggle(t, onClick) {
+  const element = h("button.btn.btn-ghost.dock-toggle.operator-toggle", {
+    type: "button", title: t("actions.operator") + " · O", "aria-pressed": "false", onclick: onClick
+  }, icon("broadcast"), h("span", null, t("actions.operator")));
+  element.dataset.operatorToggle = "true";
+  return element;
+}
+
+// The task-list switch at the start of the page header. It shows only while
+// the list is out of view (collapsed, or a drawer on smaller screens);
+// layout/sidebarNav keeps aria-expanded current.
+export function sidebarToggle(t, onClick) {
+  const element = h("button.icon-btn.side-expand", {
+    type: "button", "aria-label": t("sidebar.show"), title: t("sidebar.show") + " · [", "aria-expanded": "false", onclick: onClick
+  }, h("span.i-sidebar", null, icon("sidebar")), h("span.i-menu", null, icon("menu")));
+  element.dataset.sidebarToggle = "true";
+  return element;
+}
+
+// The top bar every page starts with (the management shell renders the same
+// markup statically): the list switch, the location, then page actions.
+export function topBar(t, revealSidebar, location, actions) {
+  return h("header.top-bar", null, sidebarToggle(t, revealSidebar), location, h("span.spacer"), actions || []);
+}
+
 export function note(text, toneName) {
   return h("p.note" + (toneName ? ".tone-" + toneName : ""), null, text);
 }

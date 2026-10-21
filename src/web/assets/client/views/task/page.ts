@@ -5,7 +5,7 @@ export const TASK_PAGE_SCRIPT = String.raw`
 // observation arrives separately from the Context snapshot, so every fact it
 // feeds lives in a [data-slot] that updateObservation() redraws in place.
 import { h, icon, clear } from "/assets/js/lib/dom.js";
-import { badge, chip, timeTag } from "/assets/js/ui/primitives.js";
+import { badge, chip, operatorToggle, timeTag, topBar } from "/assets/js/ui/primitives.js";
 import { label, statusBadge } from "/assets/js/domain/vocab.js";
 import { totalOf } from "/assets/js/domain/context.js";
 import { renderOverviewPanel } from "/assets/js/views/task/overview.js";
@@ -30,8 +30,8 @@ export function renderTaskDetail(container, data, t, locale, ctx) {
   container.dataset.jobsLocale = locale;
   data.viewState.coreKey = data.core.coreCursor;
   const page = h("div.page.task-page");
-  page.append(h("header.task-header", null, taskBar(task, t, ctx)),
-    h("div.task-hero", null, h("h1.task-title", null, task.title), taskMeta(task, t, locale)),
+  container.append(taskBar(task, t, ctx));
+  page.append(h("div.task-hero", null, h("h1.task-title", null, task.title), taskMeta(task, t, locale)),
     h("div.tabs-wrap", null, taskTabs(data.core, t, ctx)));
   const panels = {};
   TABS.forEach(function (tab) {
@@ -75,15 +75,15 @@ export function selectTab(container, tab) {
 }
 
 function taskBar(task, t, ctx) {
-  return h("div.task-bar", null,
-    h("button.icon-btn.back-btn", { type: "button", "aria-label": t("actions.back"), title: t("actions.back"), onclick: ctx.onBack }, icon("back")),
+  return topBar(t, ctx.revealSidebar,
     h("nav.crumbs", { "aria-label": t("crumbs.label") },
-      h("button.crumb", { type: "button", onclick: ctx.onBack }, t("crumbs.tasks")),
+      h("button.crumb", { type: "button", title: t("overview.title"), onclick: ctx.onBack }, t("manage.workbench")),
       h("span.crumb-sep", { "aria-hidden": "true" }, "/"),
-      h("code.crumb-current", null, task.id)),
-    h("span.spacer"),
-    dockToggle("discussion", "chat", t("dock.discussion") + " · D", t, ctx),
-    dockToggle("session", "terminal", t("dock.session"), t, ctx));
+      h("code.crumb-current", { title: task.title }, task.id)),
+    [dockToggle("discussion", "chat", t("dock.discussion") + " · D", t, ctx),
+      dockToggle("session", "terminal", t("dock.session"), t, ctx),
+      h("span.task-bar-sep", { "aria-hidden": "true" }),
+      operatorToggle(t, ctx.toggleOperator)]);
 }
 
 function dockToggle(mode, iconName, title, t, ctx) {

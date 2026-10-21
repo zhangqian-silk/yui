@@ -20,7 +20,7 @@ export const TERMINAL_STYLES = `
 .target-chip .dot{width:7px;height:7px;box-shadow:none}
 .conn{display:inline-flex;align-items:center;gap:6px;flex:none;color:rgba(255,255,255,.6);font-size:var(--fs-xs);font-weight:500}
 .conn i{width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,.3)}
-.conn[data-state="connecting"] i{background:var(--warn);animation:blink 1s infinite}
+.conn[data-state="connecting"] i{background:var(--warn);animation:m-blink 1s infinite}
 .conn[data-state="writable"] i{background:var(--chrome-ok);box-shadow:0 0 0 3px rgba(79,209,139,.2)}
 .conn[data-state="readonly"] i{background:var(--chrome-info)}
 .conn[data-state="error"] i{background:var(--chrome-bad)}

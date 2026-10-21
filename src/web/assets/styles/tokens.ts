@@ -1,4 +1,5 @@
 import { DIVIDER_WIDTH, DOCK } from "../shared/geometry.js";
+import { motionTokenStyles } from "../shared/motion.js";
 import { themeTokenStyles } from "../shared/themes.js";
 
 /*
@@ -7,8 +8,9 @@ import { themeTokenStyles } from "../shared/themes.js";
  * Geometry, type, radii, motion and the focus ring are theme-independent and
  * live once on :root. Colour and effect tokens come from the theme registry
  * (shared/themes.ts), one block per theme, so switching a theme can never move
- * or resize anything. Layout widths come from shared/geometry.ts, the same
- * source the client layout controller clamps against.
+ * or resize anything. Layout widths come from shared/geometry.ts and motion
+ * (durations, easings, stacking layers) from shared/motion.ts, the same
+ * sources the client scripts read.
  */
 export const TOKEN_STYLES = `
 :root{
@@ -18,7 +20,7 @@ export const TOKEN_STYLES = `
   --r-xs:5px;--r-sm:7px;--r-md:10px;--r-lg:14px;--r-pill:999px;
   --sidebar-w:clamp(260px,21vw,312px);--dock-w:${DOCK.initial}px;--divider-w:${DIVIDER_WIDTH}px;
   --center-max:880px;--header-h:56px;--gutter:clamp(16px,3vw,40px);
-  --t-fast:120ms;--t-med:220ms;--ease:cubic-bezier(.2,.8,.2,1);
+  ${motionTokenStyles()}
   --focus:0 0 0 2px var(--canvas),0 0 0 4px var(--accent-line);
 }
 ${themeTokenStyles()}

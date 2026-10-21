@@ -3,6 +3,7 @@ import { BASE_STYLES } from "./base.js";
 import { RESPONSIVE_STYLES } from "./layout/responsive.js";
 import { WORKSPACE_STYLES } from "./layout/workspace.js";
 import { MARKDOWN_STYLES } from "./markdown.js";
+import { MOTION_STYLES } from "./motion.js";
 import { TOKEN_STYLES } from "./tokens.js";
 import { CONTROL_STYLES } from "./ui/controls.js";
 import { FORM_STYLES } from "./ui/forms.js";
@@ -30,6 +31,7 @@ export const STYLESHEETS: readonly { name: string; body: string }[] = Object.fre
   { name: "fonts", body: FONT_FACE_STYLES },
   { name: "tokens", body: TOKEN_STYLES },
   { name: "base", body: BASE_STYLES },
+  { name: "motion", body: MOTION_STYLES },
   { name: "layout/workspace", body: WORKSPACE_STYLES },
   { name: "ui/controls", body: CONTROL_STYLES },
   { name: "ui/surfaces", body: SURFACE_STYLES },

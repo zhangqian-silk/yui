@@ -51,8 +51,21 @@ async function refresh(deps, progress, options) {
     const query = catalogQuery(state);
     const dashboard = await deps.api.dashboard(query);
     if (request !== progress.request) return;
-    applyDashboard(state, dashboard, query);
-    showDashboard(deps, progress, previousInputs);
+    // An unchanged quiet poll leaves the list and overview alone: rebuilding
+    // them every few seconds would interrupt scrolling and animations. They
+    // still redraw once a minute so relative times stay true.
+    const signature = query + "|" + JSON.stringify(dashboard);
+    const now = Date.now();
+    if (quiet && signature === progress.signature && now - progress.drawnAt < 60000) {
+      state.generatedAt = new Date().toISOString();
+      el.sync.dataset.state = "ok";
+      el.lastSync.textContent = formatClock(state.generatedAt, deps.locale());
+    } else {
+      progress.signature = signature;
+      progress.drawnAt = now;
+      applyDashboard(state, dashboard, query);
+      showDashboard(deps, progress, previousInputs);
+    }
     // A selected Task may live on another page or outside current filters;
     // only its own read can establish that it no longer exists.
     if (state.selected) {
@@ -98,23 +111,36 @@ function renderSidebar(deps, progress) {
     reset(deps, progress);
   });
   el.catalogCount.textContent = fill(t("catalog.count"), { shown: state.tasks.length, total: state.catalogTotal });
-  let source = el.filters.querySelector("select");
-  if (!source) {
-    source = h("select", { "aria-label": t("jobs.taskCategory") });
-    source.addEventListener("change", function () {
-      state.source = source.value; state.attentionFilter = null; state.query = ""; el.search.value = "";
-      syncUrl(state, false); reset(deps, progress);
-    });
-    el.filters.append(source);
-  }
-  source.replaceChildren(...["ordinary", "job", "all"].map(value =>
-    h("option", { value }, t("jobs.category." + value))));
-  source.value = state.query.trim() || state.attentionFilter ? "all" : state.source || "ordinary";
+  renderSource(el.source, state, t, function (value) {
+    state.source = value; state.attentionFilter = null; state.query = ""; el.search.value = "";
+    syncUrl(state, false); reset(deps, progress);
+  });
   el.catalogReset.hidden = !state.catalogCursor;
   el.catalogNext.hidden = !state.nextCursor && !state.catalogCursor;
   el.catalogAttentionReset.hidden = !state.attentionFilter;
   renderTaskList(deps);
   el.lastSync.textContent = state.generatedAt ? formatClock(state.generatedAt, deps.locale()) : "—";
+}
+
+// Task category: search and attention are cross-category, so they show "all";
+// picking a category clears them, as the server filter then applies again.
+function renderSource(container, state, t, onPick) {
+  const current = state.query.trim() || state.attentionFilter ? "all" : state.source || "ordinary";
+  // Bound once; the handler reads the live state, not this render's snapshot.
+  if (!container.childElementCount) {
+    ["ordinary", "job", "all"].forEach(function (value) {
+      container.append(h("button.seg-btn", { type: "button", role: "radio", dataset: { source: value },
+        onclick: function () {
+          if (value !== (state.source || "ordinary") || state.query.trim() || state.attentionFilter) onPick(value);
+        } }));
+    });
+  }
+  container.querySelectorAll("[data-source]").forEach(function (button) {
+    const value = button.dataset.source;
+    button.textContent = t("jobs.categoryShort." + value);
+    button.title = t("jobs.category." + value);
+    button.setAttribute("aria-checked", String(value === current));
+  });
 }
 
 // Redraw the list in place, keeping its scroll position.

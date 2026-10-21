@@ -19,7 +19,10 @@ export function createSizing(el, dock, sidebar, dockVisible) {
   const root = document.documentElement.style;
 
   function maxDockWidth() {
-    const aside = window.innerWidth > G.narrow ? el.sidebar.offsetWidth : 0;
+    // The global rail and an inline task list both take room from the
+    // workspace; a drawer floats over it and takes none.
+    const inline = !document.body.classList.contains("sidebar-drawer");
+    const aside = window.innerWidth > G.narrow ? G.rail + (inline ? el.sidebar.offsetWidth : 0) : 0;
     return Math.max(G.dock.min, Math.min(G.dock.max, window.innerWidth - aside - G.centerMin));
   }
   function setDockWidth(width, persist) {
@@ -31,7 +34,7 @@ export function createSizing(el, dock, sidebar, dockVisible) {
   }
   function maxSidebarWidth() {
     // An open dock can shrink to its minimum, so it reserves only that much.
-    const reserve = dockVisible() ? G.dock.min + G.divider : 0;
+    const reserve = G.rail + (dockVisible() ? G.dock.min + G.divider : 0);
     return Math.max(G.sidebar.min, Math.min(G.sidebar.max, window.innerWidth - reserve - G.centerMin));
   }
   function applySidebarWidth() {

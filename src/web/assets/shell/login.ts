@@ -1,11 +1,12 @@
 import { DEFAULT_DARK_THEME } from "../shared/themes.js";
+import { BRAND_ICONS, brandGlyphSvg } from "../shared/brand.js";
 import { iconSvg } from "../shared/icons.js";
 
 // The only document served without a session. It carries no page token and
 // no Task data; the client module posts the password as same-origin JSON and
 // the server answers with a session cookie. CSP form-action 'none' means the
 // form can never submit natively (so a password cannot end up in a URL).
-const SHEETS = ["fonts", "tokens", "base", "ui/controls", "ui/forms", "views/login"];
+const SHEETS = ["fonts", "tokens", "base", "motion", "ui/controls", "ui/forms", "views/login"];
 
 export const LOGIN_HTML = `<!doctype html>
 <html lang="en" data-theme="${DEFAULT_DARK_THEME.id}">
@@ -13,8 +14,8 @@ export const LOGIN_HTML = `<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark light">
+  <link rel="icon" type="image/svg+xml" href="${BRAND_ICONS[DEFAULT_DARK_THEME.id]}">
   <script src="/assets/theme.js"></script>
-  <link rel="icon" href="data:,">
   <title>Sign in · Yui</title>
   <link rel="preload" href="/assets/fonts/inter-500.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/assets/fonts/inter-600.woff2" as="font" type="font/woff2" crossorigin>
@@ -22,13 +23,13 @@ ${SHEETS.map(name => `  <link rel="stylesheet" href="/assets/css/${name}.css">`)
 </head>
 <body class="login-body">
   <main class="login-shell">
-    <div class="login-top">
-      <label class="login-locale"><span class="sr-only" data-i18n="settings.language">Language</span><select id="locale-select"><option value="en">English</option><option value="zh-CN">简体中文</option></select></label>
-    </div>
     <section class="login-card" aria-labelledby="login-title">
-      <div class="login-brand">
-        <span class="brand-mark" aria-hidden="true">結</span>
-        <span class="brand-name">Yui</span>
+      <div class="login-top">
+        <div class="login-brand">
+          <span class="brand-mark" aria-hidden="true">${brandGlyphSvg()}</span>
+          <span class="brand-name">Yui</span>
+        </div>
+        <label class="login-locale"><span class="sr-only" data-i18n="settings.language">Language</span><select id="locale-select"><option value="en">English</option><option value="zh-CN">简体中文</option></select></label>
       </div>
       <header class="login-heading">
         <h1 id="login-title" data-i18n="login.heading">Sign in to Yui</h1>

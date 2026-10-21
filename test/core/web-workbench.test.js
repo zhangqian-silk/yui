@@ -20,6 +20,7 @@ import { TASK_PAGE_SCRIPT } from "../../dist/web/assets/client/views/task/page.j
 import { CREATE_TASK_SCRIPT } from "../../dist/web/assets/client/views/createTask.js";
 import { buildWebTaskDetail } from "../../dist/web/webSnapshot.js";
 import { WORKSPACE_SCRIPT } from "../../dist/web/assets/client/layout/workspace.js";
+import { SIDEBAR_NAV_SCRIPT } from "../../dist/web/assets/client/layout/sidebarNav.js";
 import { TASK_VIEW_SCRIPT } from "../../dist/web/assets/client/app/taskView.js";
 import { TASK_ACTIONS_SCRIPT } from "../../dist/web/assets/client/views/task/actions.js";
 
@@ -196,7 +197,7 @@ test("selecting a Task uses its bounded workbench without automatically expandin
       inspect: () => assert.fail("no eager exact read"),
       observation: async () => { calls.push("observation"); return {}; }
     },
-    taskView: { render() {}, observationArrived() {} }
+    taskView: { render() {}, observationArrived() {}, revealPage() {} }
   };
   await runtime.load(deps, "task-1", false);
   assert.deepEqual(calls, ["workbench", "observation"]);
@@ -205,15 +206,16 @@ test("selecting a Task uses its bounded workbench without automatically expandin
 
 test("the workbench primary action opens the current Leader conversation, not a native terminal", () => {
   const node = (_tag, _attrs, ...kids) => ({ hidden: true, children: kids.flat().filter(Boolean), dataset: {},
-    append(...items) { this.children.push(...items); }, setAttribute() {}, addEventListener() {},
-    querySelectorAll: () => [] });
+    append(...items) { this.children.push(...items); }, replaceChildren(...items) { this.children = items; },
+    setAttribute() {}, addEventListener() {}, contains: () => false, querySelectorAll: () => [] });
   const opened = [];
   let terminalOpen = true;
   const runtime = vm.createContext({
     h: node, button: (text, options) => ({ text, ...options }), card: () => ({ body: node() }),
-    document: { body: { classList: { toggle() {} } } },
+    document: { body: { classList: { toggle() {} } }, addEventListener() {} },
     window: { matchMedia: () => ({ matches: true, addEventListener() {} }) },
     readPreference: (_key, fallback) => fallback, writePreference() {}, markSelected() {},
+    icon: name => node("svg." + name), clear: target => { target.children = []; },
     createSizing: () => ({ applySidebarWidth() {} })
   });
   for (const script of [WORKSPACE_SCRIPT, TASK_VIEW_SCRIPT, TASK_ACTIONS_SCRIPT]) {
@@ -221,10 +223,10 @@ test("the workbench primary action opens the current Leader conversation, not a 
   }
   const el = Object.fromEntries(["dock", "divider", "discussion", "session", "conversation", "preview",
     "dockTabConversation", "dockTabDiscussion", "dockTabSession", "dockTabPreview", "dockSwap", "detail",
-    "operator", "dockClose"].map(key => [key, node()]));
+    "dockTarget", "dockTargetLabel", "dockTargetIcon", "dockTargetOptions", "globalInputOpen", "dockClose"].map(key => [key, node()]));
   const state = { selected: "task-current", activeTab: "overview" };
   const workspace = runtime.createWorkspace({
-    el, state,
+    el, state, t: key => key,
     preview: { open() {}, close() {} },
     terminal: { connected: () => terminalOpen, close: () => { terminalOpen = false; },
       open: () => assert.fail("primary action must not open a terminal") },
@@ -242,6 +244,7 @@ test("the workbench primary action opens the current Leader conversation, not a 
   assert.deepEqual(JSON.parse(JSON.stringify(opened)), [[
     { scope: "task", taskId: "task-current", roleName: "leader" }, { current: true }
   ]]);
+  assert.equal(el.dockTargetLabel.textContent, "leader · task-current", "the dock header names the conversation owner");
   const materials = [{ taskId: "task-current", relativePath: "report.md",
     commit: "a".repeat(40), digest: "b".repeat(64) }];
   terminalOpen = true;
@@ -357,4 +360,39 @@ test("creation dialog resets saved work on close but preserves unsent and unknow
   await new Promise(resolve => setImmediate(resolve));
   secondForm.handlers.submit({ preventDefault() {} });
   assert.equal(creates, 2, "reopening or loading more projects cannot replay an unknown creation");
+});
+
+test("the task list collapses on wide screens and becomes a closable drawer on narrow ones", () => {
+  const stored = new Map();
+  const classes = new Set();
+  const listeners = {};
+  const target = () => ({ handlers: {}, addEventListener(type, handler) { this.handlers[type] = handler; }, focus() {} });
+  const el = { sidebar: target(), scrim: target(), collapse: target() };
+  const runtime = vm.createContext({
+    window: { innerWidth: 1440, addEventListener(type, handler) { listeners[type] = handler; } },
+    document: {
+      body: { classList: { contains: name => classes.has(name), toggle: (name, on) => { if (on) classes.add(name); else classes.delete(name); } } },
+      querySelectorAll: () => []
+    },
+    MutationObserver: class { observe() {} },
+    readPreference: (key, fallback) => stored.get(key) ?? fallback,
+    writePreference: (key, value) => stored.set(key, value)
+  });
+  vm.runInContext(SIDEBAR_NAV_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), runtime);
+  let relayouts = 0;
+  const nav = runtime.createSidebarNav({ el, relayout: () => relayouts++ });
+  nav.toggle();
+  assert.ok(classes.has("sidebar-collapsed") && stored.get("yui.sidebar.collapsed") === "1" && relayouts === 1);
+  nav.reveal();
+  assert.ok(!classes.has("sidebar-collapsed") && stored.get("yui.sidebar.collapsed") === "0");
+
+  runtime.window.innerWidth = 820;
+  nav.reveal();
+  assert.ok(nav.drawerOpen(), "narrow screens open the list over the workspace");
+  assert.equal(stored.get("yui.sidebar.collapsed"), "0", "a drawer does not change the wide-screen preference");
+  el.sidebar.handlers.click({ target: { closest: selector => selector.includes(".task-row") ? {} : null } });
+  assert.ok(!nav.drawerOpen(), "choosing a Task hands the screen back");
+  nav.reveal();
+  el.scrim.handlers.click();
+  assert.ok(!nav.drawerOpen());
 });

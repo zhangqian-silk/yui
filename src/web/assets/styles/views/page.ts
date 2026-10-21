@@ -8,9 +8,8 @@ export const PAGE_STYLES = `
 .page{max-width:var(--center-max);margin:0 auto;padding:0 var(--gutter) 64px}
 
 /* Page scaffolding */
-.page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;padding:36px 0 24px}
-.kicker{color:var(--accent);font-size:var(--fs-2xs);font-weight:600;text-transform:uppercase;letter-spacing:.1em}
-.page-title{margin-top:6px;font-size:var(--fs-2xl);font-weight:650;letter-spacing:-.025em}
+.page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;padding:28px 0 20px}
+.page-title{font-size:var(--fs-2xl);font-weight:650;letter-spacing:-.025em}
 .page-sub{margin-top:4px;color:var(--ink-3)}
 .page-foot{margin-top:20px;color:var(--ink-4);font-size:var(--fs-xs);text-align:center}
 .sub-head{display:flex;align-items:center;gap:8px;margin-top:6px;font-size:var(--fs-sm);font-weight:600}

@@ -3,7 +3,7 @@ import test from "node:test";
 import vm from "node:vm";
 import { MODELS_VIEW_SCRIPT } from "../../dist/web/assets/client/views/models.js";
 import { MODELS_HTML } from "../../dist/web/assets/shell/models.js";
-import { SIDEBAR_HTML } from "../../dist/web/assets/shell/sidebar.js";
+import { appRail } from "../../dist/web/assets/shell/appRail.js";
 import { SETTINGS_HTML } from "../../dist/web/assets/shell/settings.js";
 import { WEB_ASSETS } from "../../dist/web/assets/assetManifest.js";
 import { MANAGE_SHELL_SCRIPT } from "../../dist/web/assets/client/layout/manageShell.js";
@@ -57,9 +57,12 @@ test("management navigation shares history across areas and normalizes direct UR
     pushState(state, _, url) { this.pushes++; this.replaceState(state, _, url); } };
   const handlers = {};
   const shown = [];
-  const window = { scrollY: 120, scrollTo(_, y) { this.scrollY = y; }, addEventListener(name, fn) { handlers[name] = fn; } };
+  const places = {};
+  const window = { addEventListener(name, fn) { handlers[name] = fn; } };
+  document.querySelector("#manage-scroll").scrollTop = 120;
   const ctx = vm.createContext({ URL, URLSearchParams, document, location, history, window,
-    createI18n: () => ({ t: key => key, subscribe() {} }) });
+    createI18n: () => ({ t: key => key, subscribe() {} }),
+    rememberPlace: (area, href) => { places[area] = href; }, linkPlaces() {} });
   vm.runInContext(MANAGE_SHELL_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), ctx);
   for (const page of ["models", "settings"]) ctx.registerManagePage(page, { show: route => shown.push({ ...route }) });
   ctx.startManagement();
@@ -76,12 +79,15 @@ test("management navigation shares history across areas and normalizes direct UR
   handlers.popstate();
   assert.equal(shown.at(-1).section, "server");
   assert.equal(elements.get("#settings-root").hidden, false);
-  assert.equal(window.scrollY, 70);
+  assert.equal(elements.get("#manage-scroll").scrollTop, 70, "the center column restores its own scroll");
+  assert.deepEqual({ ...places }, { models: "/models/quota?source=command-code", settings: "/settings/server", manage: "/settings/server" },
+    "each area remembers its last section for the return trip from the workbench");
   const ref = JSON.stringify({ version: "a".repeat(40), relativePath: "report.md" });
   const fixed = new URL("http://localhost/settings/jobs?job=reports&jobRun=run-1&artifact=" + encodeURIComponent(ref));
   const href = ctx.manageHref(ctx.readManageRoute(fixed));
   assert.equal(href, fixed.pathname + fixed.search, "management canonicalization must preserve fixed Job evidence");
 });
+
 
 function connection(extra = {}) {
   return { bridgeUrl: "http://127.0.0.1:9", bridgeConfigFile: "/fixture/bridge.yaml", cpaUrl: "", managementKeyFile: "", catalogKeyFile: "", ...extra };
@@ -178,7 +184,10 @@ test("models shell is served and linked from the dashboard navigation", () => {
   assert.ok(WEB_ASSETS["/assets/css/views/models.css"]);
   assert.match(MODELS_HTML, /__YUI_WEB_TOKEN__/);
   assert.match(MODELS_HTML, /src="\/assets\/js\/app\/manage\.js"/);
-  assert.match(SIDEBAR_HTML, /href="\/models"/);
+  // One global rail on every page: each area returns to where the user last was.
+  assert.equal(appRail("models").replace(/ aria-current="page"/g, ""), appRail("settings").replace(/ aria-current="page"/g, ""));
+  for (const area of ["workbench", "models", "settings"]) assert.match(appRail("models"), new RegExp(`data-area="${area}" (aria-current="page" )?data-nav-area="${area}"`));
+  assert.match(appRail("workbench"), /href="\/models" data-area="models" data-nav-area="models"/);
   // The shared rail links back to Yui and Settings and gives every section a real URL.
   assert.match(MODELS_HTML, /href="\/"/);
   assert.match(MODELS_HTML, /href="\/settings"/);
@@ -188,10 +197,13 @@ test("models shell is served and linked from the dashboard navigation", () => {
 });
 
 test("models and settings share one management rail with the same navigation", () => {
-  const rail = html => html.match(/<aside class="manage-rail">[\s\S]*?<\/aside>/)[0];
-  assert.equal(rail(MODELS_HTML), rail(SETTINGS_HTML), "both pages render the identical shared rail");
+  const rail = html => html.match(/<aside class="manage-rail sidebar"[\s\S]*?<\/aside>/)[0];
+  assert.equal(rail(MODELS_HTML), rail(SETTINGS_HTML), "both pages render the identical shared section list");
   const nav = rail(MODELS_HTML);
-  for (const area of ["workbench", "models", "settings"]) assert.match(nav, new RegExp(`data-area="${area}"`));
+  // The workbench frame: global rail, collapsible list, top bar with the list switch.
+  for (const area of ["workbench", "models", "settings"]) assert.match(MODELS_HTML, new RegExp(`class="rail-item"[^>]*data-area="${area}"`));
+  assert.match(MODELS_HTML, /class="app manage-app"/);
+  assert.match(MODELS_HTML, /<header class="top-bar">[\s\S]*data-sidebar-toggle="true"/);
   // Daily model work stays under Models; the connection is a Settings section still served by /models.
   const models = nav.match(/data-area-group="models">[\s\S]*?<\/div>\s*<\/div>/)[0];
   const settings = nav.match(/data-area-group="settings">[\s\S]*?<\/div>\s*<\/div>/)[0];

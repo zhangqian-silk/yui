@@ -108,8 +108,7 @@ details[open]>summary .disclosure-chevron{transform:rotate(90deg)}
 .show-more:hover,.pager-clear:hover{color:var(--accent);border-color:var(--accent-line)}
 .show-more{justify-self:start;display:inline-flex;align-items:center;height:30px;padding:0 12px;font-weight:500}
 .loading-block{display:flex;align-items:center;gap:10px;padding:32px 8px;color:var(--ink-3)}
-.spinner{width:14px;height:14px;border-radius:50%;border:2px solid var(--line-3);border-top-color:var(--accent);animation:spin .8s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
+.spinner{width:14px;height:14px;border-radius:50%;border:2px solid var(--line-3);border-top-color:var(--accent);animation:m-spin .8s linear infinite}
 
 /* Metrics */
 .metric{display:grid;gap:4px;align-content:start;min-width:0;padding:12px 14px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface)}

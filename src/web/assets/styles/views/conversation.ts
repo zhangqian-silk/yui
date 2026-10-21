@@ -98,7 +98,7 @@ export const CONVERSATION_STYLES = `
 .cv-pop{position:relative;flex:none}
 .cv-pop>summary{list-style:none}
 .cv-pop>summary::-webkit-details-marker{display:none}
-.cv-popbody{position:absolute;z-index:20;display:grid;gap:8px;width:min(300px,calc(100vw - 32px));max-height:min(420px,60vh);overflow:auto;padding:10px;border:1px solid var(--line-2);border-radius:var(--r-lg);background:var(--surface-2);box-shadow:var(--shadow-2);box-sizing:border-box}
+.cv-popbody{position:absolute;z-index:var(--z-popover);display:grid;gap:8px;width:min(300px,calc(100vw - 32px));max-height:min(420px,60vh);overflow:auto;padding:10px;border:1px solid var(--line-2);border-radius:var(--r-lg);background:var(--surface-2);box-shadow:var(--shadow-2);box-sizing:border-box}
 .cv-attach>.cv-popbody{left:0;bottom:calc(100% + 8px)}
 .cv-model>.cv-popbody{right:0;bottom:calc(100% + 8px)}
 .cv-menu>.cv-popbody{right:0;top:calc(100% + 6px)}

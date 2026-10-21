@@ -305,24 +305,24 @@ test("conversation and workspace share Settings access preference without changi
   vm.runInContext(WORKSPACE_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), f.context);
   f.controller.open({ scope: "global", roleName: "operator" });
   await flush();
-  assert.equal(f.defaultMode.value, "native");
-  assert.equal(f.context.preferredMode(), "session");
-  f.defaultMode.value = "structured";
-  f.defaultMode.handlers.change();
-  assert.equal(f.preferences.get("yui.session.accessMode"), "structured");
-  assert.equal(f.preferences.has("yui.session.mode"), false);
+  assert.equal(f.defaultMode.value, "structured", "conversation is the default");
   assert.equal(f.context.preferredMode(), "conversation");
+  f.defaultMode.value = "native";
+  f.defaultMode.handlers.change();
+  assert.equal(f.preferences.get("yui.session.accessMode"), "native");
+  assert.equal(f.preferences.has("yui.session.mode"), false);
+  assert.equal(f.context.preferredMode(), "session");
   assert.equal(f.selector.value, "thread");
   assert.equal(f.mutations.length, 0, "saving a browser preference is not runtime adoption");
   // The Settings page uses this same helper; refresh sees the new preference.
-  f.context.writeSessionAccessMode("native");
+  f.context.writeSessionAccessMode("structured");
   await f.tick();
-  assert.equal(f.defaultMode.value, "native");
+  assert.equal(f.defaultMode.value, "structured");
   f.controller.close();
   const unavailable = fixture({}, { storageUnavailable: true });
-  unavailable.defaultMode.value = "structured";
+  unavailable.defaultMode.value = "native";
   unavailable.defaultMode.handlers.change();
-  assert.equal(unavailable.defaultMode.value, "native");
+  assert.equal(unavailable.defaultMode.value, "structured");
   assert.ok(unavailable.elements.some(n => n.textContent === "settings.storageFailed"));
 });
 
@@ -506,7 +506,7 @@ test("URL back navigation leaves the Task through the same owner transition as t
   vm.runInContext(SELECTION_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
   const selection = context.createSelection({ state,
     workspace: { updateLayout() {}, leaveTask() { left++; owner = { scope: "global", roleName: "operator" }; } },
-    taskView: { hasUnsent: () => false, leaveTask() {}, showOverview() {}, updateSessionTargets() {} },
+    taskView: { hasUnsent: () => false, leaveTask() {}, showOverview() {}, revealPage() {}, updateSessionTargets() {} },
     renderTaskList() {}
   });
   selection.followUrl(new URLSearchParams());
