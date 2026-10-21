@@ -5,6 +5,35 @@ import { openControlledCodexTui } from "../../dist/runtime/controlledCodexTui.js
 import { resolve } from "node:path";
 import { nativeConfiguration, nativeTurnStart } from "../fixtures/managed-codex-native-shape.mjs";
 
+test("native configuration preserves confirmed effort and invalidates a failed or mismatched refresh", async () => {
+  let result = { thread: { id: "thread" }, model: "new-model", reasoningEffort: "xhigh" };
+  let failure = false;
+  const access = createCodexNativeAccess("thread", {}, {
+    onMessage() {}, async send() {},
+    async request() {
+      if (failure) throw new Error("connection lost");
+      return result;
+    }
+  }, [], { model: "launch-model", reasoningEffort: "medium" });
+  const effort = () => access.runConfiguration.axes.find(axis => axis.category === "effort").current;
+  assert.deepEqual(effort(), { status: "observed", value: "medium" });
+  const first = access.runConfiguration.observedAt;
+  assert.equal(access.runConfiguration.observedAt, first, "reading does not invent a new confirmation");
+  await access.read("thread/resume", { threadId: "thread" });
+  assert.equal(access.runConfiguration.axes[0].current.value, "new-model");
+  assert.deepEqual(effort(), { status: "observed", value: "xhigh" });
+  result = { thread: { id: "thread" }, model: "no-effort" };
+  await access.read("thread/resume", { threadId: "thread" });
+  assert.equal(effort().status, "unobserved", "missing effort never inherits an old or launch value");
+  failure = true;
+  await assert.rejects(access.read("thread/resume", { threadId: "thread" }), /connection lost/);
+  assert.equal(access.runConfiguration.status, "unknown", "failed refresh cannot retain confirmed configuration");
+  failure = false;
+  result = { thread: { id: "other" }, model: "wrong-thread", reasoningEffort: "high" };
+  await assert.rejects(access.read("thread/resume", { threadId: "thread" }), /Thread/);
+  assert.equal(access.runConfiguration.status, "unknown");
+});
+
 test("model adoption changes only the same idle Thread, confirms native response, and invalidates unknown results", async () => {
   const calls = [];
   let state = "idle", fail = false;
