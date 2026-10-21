@@ -51,6 +51,28 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.16.0 compatibility and migration notes
+
+This minor refreshes the Web workbench (PR #484). One global navigation rail
+(Workbench / Models / Settings) is shared by the workbench and management pages,
+and the task sidebar can be collapsed. Dialogs, menus, presses and column layout
+changes use one motion source; reduced-motion preferences, narrow layouts and
+hidden documents get instant updates. The 「結」 brand glyph is replaced by a
+vector capital-Y mark drawn from the active theme's tokens, and each theme has a
+matching SVG favicon that follows theme switches.
+
+These are presentation changes only. Web APIs, sign-in sessions, `--auth-file`,
+CLI commands and Controller/Host protocols are unchanged. Scripts or browser
+automation that matched the old brand glyph or previous navigation markup must
+use the current page structure. Storage remains **1.21**; there is no migration.
+
+With separate upgrade authorization, use `yui update --version 2.16.0`; the
+updater owns preflight, backup and Controller handover. A running Web listener
+serves the new assets after it is restarted. Release gates reuse exact-commit
+Core CI and the existing fresh-install matrix (Linux x64, macOS x64/arm64,
+Node 20/22/24/26). Publishing does not update the global CLI, migrate a
+production Home, restart its Controller or deploy a production Web listener.
+
 ### 2.15.0 compatibility and migration notes
 
 This minor replaces the browser's HTTP Basic prompt with a standalone English/
