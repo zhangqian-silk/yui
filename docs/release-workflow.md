@@ -51,6 +51,41 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.15.0 compatibility and migration notes
+
+This minor replaces the browser's HTTP Basic prompt with a standalone English/
+Chinese sign-in page, inline errors and safe return to the requested page.
+The credential file format and `--auth-file` stay unchanged, but HTTP Basic
+`Authorization` headers are no longer accepted. Scripts must obtain a session
+through same-origin JSON `POST /auth/login` and retain its cookie; status now
+reports `local`/`password`, not `local`/`basic`. See [Web access](web-access.md).
+
+Sessions are listener-local and in memory, with an 8-hour inactivity limit and
+24-hour absolute limit. There is no sign-out button; the backend logout endpoint
+and session revocation remain. Every terminal relay boundary checks the session.
+Stopping or restarting Web ends all sessions. HTTP remains unencrypted and is
+for trusted networks only; this is not multi-user authentication or public TLS
+hosting.
+
+This release also includes timezone-aligned default Project sync (PR #481):
+new defaults use `0 */6 * * *` with a captured explicit timezone. Storage moves
+from **1.20 to 1.21** through the centralized migration. Only provably unedited
+revision-1 built-in defaults are converted, with original bytes retained;
+higher revisions and customized/disabled plans are preserved. See
+[Project sync](project-sync.md) for explicit schedule updates. Earlier supported
+Homes use the existing contiguous same-major migration chain.
+
+With separate upgrade authorization, use `yui update --version 2.15.0`; the
+updater owns backup, migration and Controller handover. Do not edit storage
+manually or open upgraded Homes with an older binary. Minor numbering is not
+a blanket compatibility promise.
+
+Release gates reuse exact-commit Core CI and install the same checksummed
+runtime archive on Linux x64 and macOS x64/arm64 with Node 20/22/24/26 before
+npm publication. These are isolated deterministic checks, not real-model
+validation. Publishing does not update the global CLI, migrate a production
+Home, restart its Controller or deploy a production Web listener.
+
 ### 2.14.0 compatibility and migration notes
 
 The `v2.13.0` tag is retained as failed release evidence: its publication gates
