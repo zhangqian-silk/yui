@@ -2,7 +2,7 @@ export const CONVERSATION_SCRIPT = String.raw`
 import { h, clear, icon } from "/assets/js/lib/dom.js";
 import { api, releaseMutation, requestJson, submitMutation } from "/assets/js/lib/api.js";
 import { richText } from "/assets/js/ui/text.js";
-import { formatClock, formatShort, fill } from "/assets/js/lib/format.js";
+import { formatDateTime, formatShort, fill } from "/assets/js/lib/format.js";
 import { inputCard } from "/assets/js/domain/work.js";
 
 export function createConversationController(host, t, locale = function () { return "en"; }) {
@@ -45,9 +45,12 @@ export function createConversationController(host, t, locale = function () { ret
   const modelResult = h("p.cv-note", { role: "status" });
   const modelSelect = h("select", { "aria-label": t("conversation.model"), hidden: true });
   const modelRows = h("div.cv-options", { role: "listbox", "aria-label": t("conversation.selectModel") });
+  // The pill names its state in words (not only the dot's colour) so the
+  // source reads without hovering: last confirmed, applying, or unconfirmed.
+  const modelState = h("span.cv-model-state");
   const modelLabel = h("span.cv-model-label", null, t("conversation.modelUnconfirmed"));
   const modelSummary = h("summary.cv-pill", { "aria-label": t("conversation.model"), title: t("conversation.model") },
-    h("i.cv-model-dot", { "aria-hidden": "true" }), modelLabel, icon("down"));
+    h("i.cv-model-dot", { "aria-hidden": "true" }), modelState, modelLabel, icon("down"));
   const modelLoad = h("button.cv-link", { type: "button" }, t("conversation.modelsLoad"));
   const modelApply = h("button.btn.btn-primary", { type: "button" }, t("conversation.modelApply"));
   const modelMenu = h("details.cv-pop.cv-model", null, modelSummary,
@@ -269,19 +272,23 @@ export function createConversationController(host, t, locale = function () { ret
     const observation = modelObservation;
     const value = confirmedModel;
     const effort = value ? observedAxis(observation, "effort") : null;
-    const at = value ? formatClock(observation.observedAt, locale()) : "";
-    let state, label, title;
+    // Dated, so a confirmation from yesterday is not read as today's.
+    const at = value ? formatDateTime(observation.observedAt, locale()) : "";
+    let state, tag, label, title;
     if (modelPending) {
-      state = "pending"; label = modelPending.model; title = t("conversation.modelApplying");
+      state = "pending"; tag = t("conversation.modelStatePending"); label = modelPending.model; title = t("conversation.modelApplying");
     } else if (value) {
-      state = "confirmed"; label = modelText(value, effort);
+      state = "confirmed"; tag = t("conversation.modelStateConfirmed"); label = modelText(value, effort);
       title = fill(t("conversation.modelConfirmedShort"), { time: at });
     } else {
-      state = "unknown"; label = t("conversation.modelUnconfirmed"); title = t("conversation.modelUnconfirmedHint");
+      state = "unknown"; tag = ""; label = t("conversation.modelUnconfirmed"); title = t("conversation.modelUnconfirmedHint");
     }
     modelMenu.dataset.state = state;
+    modelState.textContent = tag;
+    modelState.hidden = !tag;
     modelLabel.textContent = label;
     modelSummary.title = t("conversation.model") + " · " + title;
+    modelSummary.setAttribute("aria-label", t("conversation.model") + " · " + (tag ? tag + " " : "") + label);
     clear(modelFacts);
     const reason = observation && observation.reason ? observation.reason
       : session && !session.current ? t("conversation.modelHistorical") : t("conversation.modelNoRead");
@@ -546,23 +553,14 @@ export function createConversationController(host, t, locale = function () { ret
         return item.kind === "activity" ? activityRow(item) : h("div.cv-step", null, richText(null, item.text, t, { threshold: 1800 }));
       })));
   }
-  // A client may prepend one tagged context block (for example ambient
-  // browser state) before the user's words. Only that exact leading block
-  // folds; its raw text stays one click away and the rest is never trimmed.
-  function splitContext(value) {
-    const match = /^\s*<([A-Za-z][\w-]*)\b[^>]*>[\s\S]*?<\/\1>\s*/.exec(value);
-    if (!match || !value.slice(match[0].length).trim()) return null;
-    return { tag: match[1], raw: match[0].trim(), rest: value.slice(match[0].length) };
-  }
   function messageNode(item) {
     const meta = itemMeta(item);
     if (item.kind === "user") {
-      const context = splitContext(item.text);
+      // User text is shown exactly as sent: tags in it are the user's words,
+      // never guessed to be attached context.
       return h("article.cv-msg.cv-user", { title: meta },
         item.source === "yui-input" ? h("span.cv-tag", null, t("conversation.linkedInput") + " " + item.messageId) : null,
-        context ? h("details.cv-context", null, h("summary", null, icon("info"),
-          h("span", null, t("conversation.attachedContext") + " · " + context.tag)), h("pre.cv-code", null, context.raw)) : null,
-        h("div.cv-bubble", null, richText(null, context ? context.rest : item.text, t, { threshold: 1800 })),
+        h("div.cv-bubble", null, richText(null, item.text, t, { threshold: 1800 })),
         item.truncated ? h("p.cv-note", null, t("conversation.truncated")) : null);
     }
     const copy = h("button.cv-iconbtn", { type: "button", "aria-label": t("conversation.copy"), title: t("conversation.copy") }, icon("copy"));

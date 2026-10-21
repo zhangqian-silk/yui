@@ -66,11 +66,6 @@ export const CONVERSATION_STYLES = `
 .cv-bubble{padding:9px 14px;border-radius:18px;background:var(--info-soft);color:var(--ink);font-size:var(--fs-md);line-height:1.5}
 .cv-tag{color:var(--ink-4);font-size:var(--fs-2xs)}
 /* A leading tagged context block folds to one line; the raw text stays one click away */
-.cv-context{max-width:100%;min-width:0;color:var(--ink-3);font-size:var(--fs-xs)}
-.cv-context>summary{display:inline-flex;align-items:center;gap:4px;padding:1px 6px;border-radius:var(--r-pill);cursor:pointer;list-style:none}
-.cv-context>summary::-webkit-details-marker{display:none}
-.cv-context>summary:hover{background:var(--surface-3);color:var(--ink)}
-.cv-context .icon{width:12px;height:12px}
 .cv-assistant{position:relative;font-size:var(--fs-md);line-height:1.6}
 /* Copy: always visible under the newest message, a hover badge on older ones */
 .cv-actions{display:flex;gap:2px;position:absolute;top:-6px;right:0;opacity:0;transition:opacity var(--t-fast)}
@@ -115,10 +110,16 @@ export const CONVERSATION_STYLES = `
 .cv-notice .icon{width:13px;height:13px;flex:none}
 .cv-notice>span{min-width:0;overflow-wrap:anywhere}
 .cv-notice .cv-link{flex:none;margin-left:auto}
-.cv-pill{display:inline-flex;align-items:center;gap:4px;max-width:180px;height:28px;padding:0 8px;border-radius:var(--r-pill);color:var(--ink-3);font-size:var(--fs-sm);list-style:none;cursor:pointer}
+.cv-pill{display:inline-flex;align-items:center;gap:4px;max-width:220px;height:28px;padding:0 8px;border-radius:var(--r-pill);color:var(--ink-3);font-size:var(--fs-sm);list-style:none;cursor:pointer}
 .cv-pill::-webkit-details-marker{display:none}
 .cv-pill:hover,.cv-pop[open]>.cv-pill{background:var(--surface-3);color:var(--ink)}
 .cv-pill .icon{width:13px;height:13px;flex:none}
+.cv-model-state{flex:none;font-size:var(--fs-xs);font-weight:600;color:var(--ink-2)}
+.cv-model-state[hidden]{display:none}
+.cv-model[data-state=pending] .cv-model-state{color:var(--accent,var(--info))}
+/* The model menu shrinks before the send button is pushed out; the state word stays whole and the model name ellipsizes */
+.cv-pop.cv-model{flex:0 1 auto;min-width:0}
+.cv-model>.cv-pill{max-width:min(220px,100%);box-sizing:border-box}
 .cv-model-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cv-model-dot{width:6px;height:6px;border-radius:50%;flex:none;background:var(--ok)}
 .cv-model[data-state=unknown] .cv-model-dot{background:var(--warn)}
@@ -164,7 +165,7 @@ export const CONVERSATION_STYLES = `
 .cv-card label{display:grid;gap:4px}
 .cv-card input,.cv-card select,.cv-card textarea{min-width:0;max-width:100%;box-sizing:border-box}
 /* Keyboard focus */
-.cv-iconbtn:focus-visible,.cv-send:focus-visible,.cv-stop:focus-visible,.cv-jump:focus-visible,.cv-pill:focus-visible,.cv-option:focus-visible,.cv-link:focus-visible,.cv-cmd:focus-visible,.cv-x:focus-visible,.cv-activity>summary:focus-visible,.cv-sub>summary:focus-visible,.cv-picker-btn:focus-visible,.cv-session-opt:focus-visible,.cv-context>summary:focus-visible{outline:none;box-shadow:var(--focus)}
+.cv-iconbtn:focus-visible,.cv-send:focus-visible,.cv-stop:focus-visible,.cv-jump:focus-visible,.cv-pill:focus-visible,.cv-option:focus-visible,.cv-link:focus-visible,.cv-cmd:focus-visible,.cv-x:focus-visible,.cv-activity>summary:focus-visible,.cv-sub>summary:focus-visible,.cv-picker-btn:focus-visible,.cv-session-opt:focus-visible{outline:none;box-shadow:var(--focus)}
 .cv-input:focus-visible{outline:none;box-shadow:none}
 @media(max-width:760px){
   .cv-user{max-width:94%}

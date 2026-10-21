@@ -18,6 +18,7 @@ function fixture(submitResult = { state: "submitted" }, extra = {}) {
       append(...items) { this.children.push(...items); },
       replaceChildren(...items) { this.children = items; },
       addEventListener(event, handler) { this.handlers[event] = handler; },
+      setAttribute(name, value) { this[name] = String(value); },
       closest() { return null; }, querySelectorAll() { return []; },
       // Enough selector support for the controller: tag prefixes and [aria-selected=true].
       querySelector(selector) {
@@ -39,7 +40,7 @@ function fixture(submitResult = { state: "submitted" }, extra = {}) {
     api: { answerInput: async (...args) => taskAnswers.push(args) }, releaseMutation() {},
     inputCard: (input, _t, _locale, answer) => h("input-card", { answer: value => answer(input, value, {}) }),
     URLSearchParams, crypto: { randomUUID: () => "request-id" }, document: { hidden: false, activeElement: null },
-    formatClock: iso => "clock:" + iso, formatShort: iso => iso ? "short:" + iso : "",
+    formatClock: iso => "clock:" + iso, formatDateTime: iso => "date:" + iso, formatShort: iso => iso ? "short:" + iso : "",
     fill: (template, values) => template + JSON.stringify(values),
     sessionStorage: { getItem: k => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, v), removeItem: k => storage.delete(k) },
     window: { setInterval: fn => { interval = fn; return 1; }, clearInterval: () => { interval = null; } },
@@ -205,6 +206,11 @@ test("model adoption preserves drafts and an unknown effect blocks replay across
     assert.equal(!!f.button("send").disabled, disposition === "unknown");
     assert.equal([...f.storage.keys()].some(k => k.endsWith(".modelPending")), disposition === "unknown");
     assert.equal(f.mutations.length, 1, "reopening never replays model adoption");
+    const pill = f.elements.findLast(n => n.spec === "details.cv-pop.cv-model");
+    const state = f.elements.findLast(n => n.spec === "span.cv-model-state");
+    assert.equal(pill.dataset.state, disposition === "unknown" ? "pending" : "unknown");
+    assert.equal(state.hidden ? "" : state.textContent, disposition === "unknown" ? "conversation.modelStatePending" : "",
+      "an unsettled switch reads as applying in visible text");
     if (disposition === "unknown") {
       assert.equal(f.controller.captureDraftTarget(), null);
       assert.throws(() => f.controller.insertReference(target, "history"), /targetChanged/);
@@ -639,8 +645,13 @@ test("the current-model label never presents a launch snapshot as the Session's 
     for (let i = 0; i < rows.length; i += 2) out.push([rows[i].children[0], rows[i + 1].children[0].children[0], rows[i + 1].children[1]?.children[0]]);
     return out;
   };
+  // What a reader sees without hovering: the state word plus the model.
+  const visible = () => [f.elements.findLast(n => n.spec === "span.cv-model-state"), f.elements.findLast(n => n.spec === "span.cv-model-label")]
+    .filter(n => !n.hidden).map(n => n.textContent).join(" ");
+  const summary = () => f.elements.findLast(n => n.spec === "summary.cv-pill" && n.children.some(c => c.spec === "span.cv-model-label"));
   assert.equal(label(), "conversation.modelUnconfirmed", "a launch request is not the current model");
   assert.equal(menu().dataset.state, "unknown");
+  assert.equal(visible(), "conversation.modelUnconfirmed", "unknown reads as text, not only a colour");
   assert.deepEqual(facts().find(r => r[0] === "conversation.launchModel"), ["conversation.launchModel", "launch-model · high", "conversation.launchNote"]);
   assert.equal(facts().find(r => r[0] === "conversation.confirmedModel")[1], "conversation.modelUnconfirmed");
 
@@ -648,14 +659,18 @@ test("the current-model label never presents a launch snapshot as the Session's 
   await f.tick();
   assert.equal(label(), "live-model · medium", "only the Session's own native confirmation is shown");
   assert.equal(menu().dataset.state, "confirmed");
+  assert.equal(visible(), "conversation.modelStateConfirmed live-model · medium", "last confirmation is named in visible text");
+  assert.equal(summary()["aria-label"], "conversation.model · conversation.modelStateConfirmed live-model · medium");
+  assert.match(summary().title, /modelConfirmedShort.*date:2026-10-21T12:00:00.000Z/, "the tooltip time carries the date");
   const confirmed = facts().find(r => r[0] === "conversation.confirmedModel");
   assert.equal(confirmed[1], "live-model · medium");
-  assert.match(confirmed[2], /modelConfirmedNote.*clock:2026-10-21T12:00:00.000Z/, "labelled as a dated confirmation, not live");
+  assert.match(confirmed[2], /modelConfirmedNote.*date:2026-10-21T12:00:00.000Z/, "labelled as a dated confirmation, not live");
 
   config = () => unknown;
   await f.tick();
   assert.equal(label(), "conversation.modelUnconfirmed", "a confirmation the Host withdrew is not carried over");
   assert.equal(menu().dataset.state, "unknown");
+  assert.equal(visible(), "conversation.modelUnconfirmed", "no stale state word is left behind");
 
   config = session => session === "thread" ? observed("live-model") : unknown;
   await f.tick();
@@ -680,8 +695,12 @@ test("the current-model label never presents a launch snapshot as the Session's 
   f.controller.close();
 });
 
-test("the picker, the read-only notice and folded context keep the dock to one layer", async () => {
-  const items = [{ id: "u", turnId: "turn", kind: "user", text: "<ambient-context>\nurl: http://x\n</ambient-context>\nPlease review" },
+test("the picker and the read-only notice keep the dock to one layer; user text is never split", async () => {
+  // Ordinary tags and surrounding whitespace are the user's words: nothing is
+  // guessed to be attached context, folded away, trimmed or re-indented.
+  const userTexts = ["<b>关键要求</b>\n  后续正文保持缩进\n\n第二段", "<config>\n  mode: strict\n</config>\n请按此配置",
+    "  \n<ambient-context>url: http://x</ambient-context>\n\tPlease review  \n"];
+  const items = [...userTexts.map((text, i) => ({ id: "u" + i, turnId: "turn", kind: "user", text })),
     { id: "a", turnId: "turn", kind: "assistant", text: "<b>not context</b> reply" }];
   const long = "会话标题".repeat(30);
   const f = fixture({}, { idle: true, items, sessions: id => [{ nativeSessionId: id, current: true, status: "active", adapterId: "codex", title: long },
@@ -695,11 +714,9 @@ test("the picker, the read-only notice and folded context keep the dock to one l
   assert.equal(f.text("span.cv-picker-name"), "conversation.current · " + long, "full name stays available; CSS ellipsizes");
   const notice = f.elements.findLast(n => n.spec === "p.cv-notice");
   assert.equal(notice.hidden, true, "a writable Session shows no notice");
-  const context = f.elements.findLast(n => n.spec === "details.cv-context");
-  assert.ok(context, "the leading tagged block folds");
-  assert.equal(context.children[1].children[0], "<ambient-context>\nurl: http://x\n</ambient-context>", "raw text stays viewable");
-  assert.equal(f.elements.findLast(n => n.spec === "div.cv-bubble").children[0].children[0], "Please review");
-  assert.equal(f.elements.filter(n => n.spec === "details.cv-context").length, 1, "assistant text is never folded");
+  assert.equal(f.elements.some(n => n.spec === "details.cv-context"), false, "no guessed context fold");
+  const bubbles = f.elements.filter(n => n.spec === "div.cv-bubble").map(n => n.children[0].children[0]);
+  for (const text of userTexts) assert.ok(bubbles.includes(text), "shown verbatim: " + JSON.stringify(text));
 
   f.elements.find(n => n.spec === "button.cv-link" && n.children.some(c => c.children?.includes("conversation.copyIdentity"))).handlers.click();
   await flush();
