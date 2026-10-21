@@ -7,20 +7,47 @@
 export const CONVERSATION_STYLES = `
 #dock-conversation{min-width:0}
 .cv-head{flex:none;display:flex;align-items:center;gap:6px;padding:8px 10px 4px 8px}
-.cv-picker{flex:1;min-width:0;display:flex;align-items:center;gap:6px}
-/* background-color only: the shorthand would drop the global select arrow */
-.cv-session{flex:1;min-width:0;max-width:100%;height:30px;padding:0 28px 0 8px;border:0;background-color:transparent;color:var(--ink);font-weight:600;font-size:var(--fs-md);text-overflow:ellipsis;cursor:pointer;border-radius:var(--r-sm)}
-.cv-session:hover,.cv-session:focus{background-color:var(--surface-3);border:0;box-shadow:none}
-/* The global select:focus rule resets the whole background, so the arrow is restated for every state */
-.cv-session,.cv-session:hover,.cv-session:focus{background-image:linear-gradient(45deg,transparent 50%,var(--ink-3) 50%),linear-gradient(135deg,var(--ink-3) 50%,transparent 50%);background-position:calc(100% - 15px) 50%,calc(100% - 11px) 50%;background-size:4px 4px;background-repeat:no-repeat}
-.cv-status{flex:none;display:flex;align-items:center;gap:6px;margin:0;padding:0 16px 6px;color:var(--ink-3);font-size:var(--fs-xs)}
+.cv-head .spacer{flex:1 1 0;min-width:0}
+/* Session picker: one readable name; current and previous Sessions on demand */
+.cv-pop.cv-picker{flex:0 1 auto;min-width:0;max-width:100%}
+.cv-picker-btn{display:flex;align-items:center;gap:4px;min-width:0;height:30px;padding:0 6px 0 8px;border-radius:var(--r-sm);color:var(--ink);font-weight:600;font-size:var(--fs-md);cursor:pointer}
+.cv-picker-btn:hover,.cv-picker[open]>.cv-picker-btn{background:var(--surface-3)}
+.cv-picker-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cv-picker-chevron{width:13px;height:13px;flex:none;color:var(--ink-3)}
+.cv-picker>.cv-popbody{left:0;top:calc(100% + 6px);width:min(320px,calc(100vw - 32px))}
+.cv-session-list{display:grid;gap:1px}
+.cv-session-opt{display:flex;align-items:center;gap:8px;width:100%;min-width:0;padding:6px 8px;border:0;border-radius:var(--r-sm);background:transparent;color:var(--ink);text-align:left;cursor:pointer}
+.cv-session-opt:hover,.cv-session-opt[aria-selected=true]{background:var(--surface-3)}
+.cv-so-dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--idle)}
+.cv-so-dot.is-active{background:var(--ok)}
+.cv-so-dot.is-failed{background:var(--bad)}
+.cv-so-text{flex:1;min-width:0;display:grid}
+.cv-so-main,.cv-so-meta{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cv-so-main{font-size:var(--fs-sm)}
+.cv-so-meta{color:var(--ink-3);font-size:var(--fs-2xs)}
+.cv-so-check{width:14px;height:14px;flex:none}
+.cv-more-sessions{justify-self:start}
+.cv-back{display:inline-flex;align-items:center;gap:3px;flex:none;white-space:nowrap}
+.cv-back .icon{width:13px;height:13px}
+.cv-back[hidden]{display:none}
+/* Status: a dot plus one word; the reason and observation time live in the tooltip */
+.cv-status{flex:0 1 auto;min-width:0;max-width:40%;display:inline-flex;align-items:center;gap:6px;color:var(--ink-3);font-size:var(--fs-xs);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cv-status::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--idle);flex:none}
 .cv-status.is-active::before{background:var(--ok)}
 .cv-status.is-waiting::before{background:var(--warn)}
 .cv-status.is-failed::before,.cv-status.is-unknown::before{background:var(--bad)}
 .cv-status:empty{display:none}
-.cv-older{flex:none;display:flex;justify-content:center}
-.cv-older:empty{display:none}
+/* Details menu: labelled facts, then the exact identity for copying */
+.cv-facts{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 10px;margin:0;padding:0 4px;font-size:var(--fs-xs)}
+.cv-facts dt{color:var(--ink-3)}
+.cv-facts dd{margin:0;min-width:0;display:grid;color:var(--ink);overflow-wrap:anywhere}
+.cv-facts small{color:var(--ink-4);font-size:var(--fs-2xs)}
+.cv-identity-row{display:flex;align-items:flex-start;gap:6px;padding:0 4px;min-width:0}
+.cv-identity-row .cv-identity{flex:1;min-width:0;font-family:var(--font-mono)}
+.cv-identity-row .cv-link{display:inline-flex;align-items:center;gap:3px;flex:none}
+.cv-identity-row .icon{width:12px;height:12px}
+.cv-older{position:absolute;z-index:1;top:6px;left:50%;transform:translateX(-50%);padding:3px 10px;border:1px solid var(--line-2);border-radius:var(--r-pill);background:var(--surface-2);box-shadow:var(--shadow-1)}
+.cv-older[hidden]{display:none}
 .cv-stage{position:relative;flex:1;min-height:0;display:flex;flex-direction:column}
 .cv-stage .feed{gap:18px;padding:12px 16px 20px}
 .cv-jump{position:absolute;left:50%;bottom:10px;transform:translateX(-50%);width:32px;height:32px;display:grid;place-items:center;padding:0;border:1px solid var(--line-2);border-radius:50%;background:var(--surface-2);color:var(--ink);box-shadow:var(--shadow-1);cursor:pointer}
@@ -29,14 +56,21 @@ export const CONVERSATION_STYLES = `
 .cv-note{margin:0;color:var(--ink-3);font-size:var(--fs-xs);overflow-wrap:anywhere}
 .cv-link{padding:2px 4px;border:0;background:none;color:var(--ink-3);font-size:var(--fs-xs);cursor:pointer;border-radius:var(--r-xs)}
 .cv-link:hover{color:var(--ink);background:var(--surface-3)}
-.cv-link[hidden],.cv-stop[hidden],.cv-chip[hidden]{display:none}
+.cv-link[hidden],.cv-stop[hidden],.cv-sub[hidden],.cv-pop[hidden]{display:none}
 .cv-code{margin:6px 0 0;padding:8px 10px;max-height:200px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;border-radius:var(--r-sm);background:var(--sunken);font:var(--fs-xs)/1.5 var(--font-mono)}
+.cv-note:empty{display:none}
 .cv-identity{margin:0;color:var(--ink-4);font-size:var(--fs-2xs);overflow-wrap:anywhere}
 /* Messages */
 .cv-msg{min-width:0;overflow-wrap:anywhere}
 .cv-user{align-self:flex-end;max-width:88%;display:flex;flex-direction:column;align-items:flex-end;gap:4px}
 .cv-bubble{padding:9px 14px;border-radius:18px;background:var(--info-soft);color:var(--ink);font-size:var(--fs-md);line-height:1.5}
 .cv-tag{color:var(--ink-4);font-size:var(--fs-2xs)}
+/* A leading tagged context block folds to one line; the raw text stays one click away */
+.cv-context{max-width:100%;min-width:0;color:var(--ink-3);font-size:var(--fs-xs)}
+.cv-context>summary{display:inline-flex;align-items:center;gap:4px;padding:1px 6px;border-radius:var(--r-pill);cursor:pointer;list-style:none}
+.cv-context>summary::-webkit-details-marker{display:none}
+.cv-context>summary:hover{background:var(--surface-3);color:var(--ink)}
+.cv-context .icon{width:12px;height:12px}
 .cv-assistant{position:relative;font-size:var(--fs-md);line-height:1.6}
 /* Copy: always visible under the newest message, a hover badge on older ones */
 .cv-actions{display:flex;gap:2px;position:absolute;top:-6px;right:0;opacity:0;transition:opacity var(--t-fast)}
@@ -75,14 +109,21 @@ export const CONVERSATION_STYLES = `
 /* An empty draft reads as inactive, like the reference composers */
 .cv-box:has(.cv-input:placeholder-shown) .cv-send{background:var(--surface-3);color:var(--ink-4)}
 .cv-send:disabled{background:var(--surface-3);color:var(--ink-4);cursor:default;opacity:1}
-.cv-chip{display:inline-flex;align-items:center;gap:5px;min-width:0;padding:3px 8px;border-radius:var(--r-pill);background:var(--tone-soft,var(--warn-soft));color:var(--tone,var(--warn));font-size:var(--fs-xs)}
-.cv-chip .icon{width:13px;height:13px;flex:none}
-.cv-chip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cv-notice{display:flex;align-items:center;gap:6px;min-width:0;margin:0;padding:0 6px;color:var(--ink-3);font-size:var(--fs-xs)}
+.cv-notice.is-warn{color:var(--warn)}
+.cv-notice[hidden]{display:none}
+.cv-notice .icon{width:13px;height:13px;flex:none}
+.cv-notice>span{min-width:0;overflow-wrap:anywhere}
+.cv-notice .cv-link{flex:none;margin-left:auto}
 .cv-pill{display:inline-flex;align-items:center;gap:4px;max-width:180px;height:28px;padding:0 8px;border-radius:var(--r-pill);color:var(--ink-3);font-size:var(--fs-sm);list-style:none;cursor:pointer}
 .cv-pill::-webkit-details-marker{display:none}
 .cv-pill:hover,.cv-pop[open]>.cv-pill{background:var(--surface-3);color:var(--ink)}
 .cv-pill .icon{width:13px;height:13px;flex:none}
 .cv-model-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cv-model-dot{width:6px;height:6px;border-radius:50%;flex:none;background:var(--ok)}
+.cv-model[data-state=stale] .cv-model-dot,.cv-model[data-state=unknown] .cv-model-dot{background:var(--warn)}
+.cv-model[data-state=pending] .cv-model-dot{background:var(--accent,var(--info))}
+.cv-model[data-state=unknown] .cv-model-label,.cv-model[data-state=stale] .cv-model-label{font-style:italic}
 .cv-hint{display:flex;flex-wrap:wrap;align-items:center;gap:2px 8px;padding:0 6px;min-width:0}
 .cv-hint:empty{display:none}
 .cv-hint .cv-note:empty{display:none}
@@ -123,11 +164,11 @@ export const CONVERSATION_STYLES = `
 .cv-card label{display:grid;gap:4px}
 .cv-card input,.cv-card select,.cv-card textarea{min-width:0;max-width:100%;box-sizing:border-box}
 /* Keyboard focus */
-.cv-iconbtn:focus-visible,.cv-send:focus-visible,.cv-stop:focus-visible,.cv-jump:focus-visible,.cv-pill:focus-visible,.cv-option:focus-visible,.cv-link:focus-visible,.cv-cmd:focus-visible,.cv-x:focus-visible,.cv-activity>summary:focus-visible,.cv-sub>summary:focus-visible{outline:none;box-shadow:var(--focus)}
-.cv-session:focus-visible{box-shadow:var(--focus)}
+.cv-iconbtn:focus-visible,.cv-send:focus-visible,.cv-stop:focus-visible,.cv-jump:focus-visible,.cv-pill:focus-visible,.cv-option:focus-visible,.cv-link:focus-visible,.cv-cmd:focus-visible,.cv-x:focus-visible,.cv-activity>summary:focus-visible,.cv-sub>summary:focus-visible,.cv-picker-btn:focus-visible,.cv-session-opt:focus-visible,.cv-context>summary:focus-visible{outline:none;box-shadow:var(--focus)}
 .cv-input:focus-visible{outline:none;box-shadow:none}
 @media(max-width:760px){
   .cv-user{max-width:94%}
+  .cv-status{max-width:30%}
   .cv-composer{padding-bottom:max(12px,env(safe-area-inset-bottom,0px))}
 }
 `;

@@ -97,6 +97,7 @@ export function conversationSessions(set: RoleSessionSet | null) {
       endReason: session.endReason, createdAt: session.createdAt,
       executionAuthority: session.effective.executionAuthority,
       launchModel: session.effective.model ?? null,
+      launchEffort: session.effective.effort ?? null,
       current: set.sessions[set.activeAgentId] === session,
       conversationEpoch: set.providerBinding?.conversations.find(c => c.conversationId === session.nativeSessionId)?.epoch ?? null }));
 }
