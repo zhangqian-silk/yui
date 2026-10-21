@@ -132,6 +132,7 @@ export const EN = {
   "jobs.save": "Save",
   "jobs.close": "Close editor",
   "jobs.discard": "Discard this unsaved draft?",
+  "jobs.leaveBusy": "A submission is still in progress; this view stays open until its receipt arrives.",
   "jobs.loading": "Reading authoritative state…",
   "jobs.submitting": "Submitting…",
   "jobs.saved": "Saved. This is not proof of execution or success.",

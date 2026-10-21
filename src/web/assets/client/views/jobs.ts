@@ -31,6 +31,11 @@ export function scheduleState(schedule) {
 //   options.heading   page heading and hint replacing the generic heading
 //   options.notice    one-time explanatory notice (for example a moved link)
 //   options.locale    () => locale for absolute times
+//   options.pin       ({ job, jobRun, artifact }) the view settled on an exact
+//                     selection; the caller records it in its own route.
+//                     Without it the selection replaces the current URL
+// The returned dispose() retires the view: no later read, write receipt or
+// timer of a retired view touches the URL or the page that replaced it.
 export function mountJobs(root, t, taskId, options = {}) {
   const base = taskId ? "/api/tasks/" + encodeURIComponent(taskId) : "/api/settings";
   const copy = key => t("jobs." + key);
@@ -47,13 +52,19 @@ export function mountJobs(root, t, taskId, options = {}) {
   const editor = h("section");
   const params = new URLSearchParams(location.search);
   let jobs = [], schedules = [], selected = params.get("job") || undefined,
-    selectedRun = params.get("jobRun") || undefined, generation = 0, runGeneration = 0, pending = false, dirty = false;
-  const artifactState = {};
-  try { artifactState.reference = JSON.parse(params.get("artifact") || "null"); } catch {}
+    selectedRun = params.get("jobRun") || undefined, generation = 0, runGeneration = 0, pending = false, dirty = false,
+    disposed = false;
+  const artifactState = { reference: parseArtifact(params.get("artifact")) };
+  // The exact selection is written only by a live view, and in the Jobs entry
+  // only through its owner (which also knows whether Jobs is still shown).
   function pinSelection() {
+    if (disposed || (!options.pin && root.isConnected === false)) return;
+    const artifact = artifactState.reference ? JSON.stringify(artifactState.reference) : null;
+    if (options.pin) { options.pin({ job: selected || null, jobRun: selectedRun || null, artifact }); return; }
     const url = new URL(location.href);
     if (selected) url.searchParams.set("job", selected); else url.searchParams.delete("job");
     if (selectedRun) url.searchParams.set("jobRun", selectedRun); else url.searchParams.delete("jobRun");
+    if (artifact) url.searchParams.set("artifact", artifact); else url.searchParams.delete("artifact");
     history.replaceState(history.state, "", url);
   }
   const blocked = new Set();
@@ -86,6 +97,9 @@ export function mountJobs(root, t, taskId, options = {}) {
     status(copy("submitting"));
     try {
       const result = await submitMutation(key, base + "/" + family, payload);
+      // A retired view's receipt has no page left to update; the shared
+      // submission layer still remembers an unresolved write by its key.
+      if (disposed) return;
       if (result.status === "saved-unregistered") {
         status(copy("registerHelp") + "\n" + result.error, true);
         await refresh(false);
@@ -190,6 +204,8 @@ export function mountJobs(root, t, taskId, options = {}) {
   }
   async function showRun(jobId, runId, target) {
     const epoch = ++runGeneration;
+    // An artifact belongs to one Run; picking another Run drops it.
+    if (selectedRun !== runId) artifactState.reference = null;
     selectedRun = runId;
     pinSelection();
     detail.querySelectorAll(".job-run-row").forEach(row => row.setAttribute("aria-current", String(row.dataset.run === runId)));
@@ -239,9 +255,7 @@ export function mountJobs(root, t, taskId, options = {}) {
     };
     const select = async (ref, offset = 0) => {
       artifactState.reference = ref;
-      const url = new URL(location.href);
-      url.searchParams.set("artifact", JSON.stringify(ref));
-      history.replaceState(history.state, "", url);
+      pinSelection();
       const key = JSON.stringify(ref);
       viewer.replaceChildren(h("p", null, copy("loading")));
       try {
@@ -470,13 +484,34 @@ export function mountJobs(root, t, taskId, options = {}) {
     options.index ? detail : h("div.jobs-layout", null, h("div.jobs-index", null, indexTools, list), detail)].filter(Boolean));
   drawIndex();
   void refresh();
-  // Route-driven selection (history navigation in the Jobs entry).
-  function select(jobId, runId) {
-    if (selected === (jobId || undefined) && selectedRun === (runId || undefined)) return;
-    selected = jobId || undefined; selectedRun = runId || undefined;
+  // Route-driven selection (history navigation in the Jobs entry). The
+  // owner has already resolved a draft through leave(); an editor never
+  // outlives the Job it was opened on.
+  function select(jobId, runId, artifact) {
+    const reference = parseArtifact(artifact);
+    if (selected === (jobId || undefined) && selectedRun === (runId || undefined)
+      && JSON.stringify(artifactState.reference) === JSON.stringify(reference)) return;
+    if (selected !== (jobId || undefined)) closeEditor();
+    selected = jobId || undefined; selectedRun = runId || undefined; artifactState.reference = reference;
     void refresh(false);
   }
-  return { isDirty: () => dirty, isBusy: () => pending, refresh, select };
+  // May the owner move this view to another selection (replace: another Job
+  // or scope, which closes any editor)? A write in flight keeps its view so
+  // its receipt stays observable; a draft is discarded only on confirmation.
+  function leave(replace) {
+    if (pending) { status(copy("leaveBusy"), true); return false; }
+    if (!replace) return true;
+    if (!guardDraft()) return false;
+    closeEditor();
+    return true;
+  }
+  function dispose() { disposed = true; generation++; runGeneration++; }
+  return { isDirty: () => dirty, isBusy: () => pending, refresh, select, leave, dispose };
+}
+
+function parseArtifact(value) {
+  if (!value) return null;
+  try { return JSON.parse(value); } catch { return null; }
 }
 
 // The one address of a Job and optionally an exact Run: the Jobs entry,

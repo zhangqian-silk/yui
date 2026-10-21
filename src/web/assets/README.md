@@ -102,7 +102,7 @@ shortcuts。主要流程：
 | dock 行为（开关、模式、居中、窄屏 sheet） | `client/layout/workspace.ts`；外观在 `styles/views/dock.ts` |
 | 讨论区 / 原生 Session 终端 | `client/views/dock/discussion.ts` / `terminal.ts` |
 | 侧栏列表、筛选 | 渲染 `client/views/sidebar.ts`；数据与分页 `client/app/catalog.ts`。Task 列表不分类：显示全部真实 Task，Job 创建的 Task 带来源标记；旧 `?source=` 链接被去掉并提示一次 |
-| Job 入口 | 独立的 `/jobs`（`?task=` 选择归属范围，`job`/`jobRun` 为当前选择）。控制器 `client/app/jobs.ts` 只负责范围选择与路由，Job 列表与详情复用唯一的共享模块 `client/views/jobs.ts`（Task 页的 Job 分区用同一模块）；范围发现 `GET /api/jobs/scopes` 只返回归属与计数。旧 `/settings/jobs` 链接在原地规范化到 `/jobs` 并提示 |
+| Job 入口 | 独立的 `/jobs`（`?task=` 选择归属范围，`job`/`jobRun` 为当前选择）。控制器 `client/app/jobs.ts` 只负责范围选择与路由，Job 列表与详情复用唯一的共享模块 `client/views/jobs.ts`（Task 页的 Job 分区用同一模块）；范围发现 `GET /api/jobs/scopes` 只返回归属与计数。旧 `/settings/jobs` 链接在原地规范化到 `/jobs` 并提示。所有路由来源（链接、范围选择、Back/Forward）先经页面 `canNavigate`：换范围或换 Job 时草稿需确认、写入进行中时保持当前选择；同一时刻只有一个存活视图，被替换的视图 `dispose()` 后其迟到读取不写 URL，隐藏时也不改写其它页面地址；`artifact` 变化随路由恢复 |
 | 键盘快捷键 | `client/layout/shortcuts.ts` + 设置对话框列表 `shell/dialogs.ts` |
 | 文案 | `client/i18n/en.ts` 与 `zh-CN.ts` 同时改 |
 | 样式 | 对应 `styles/<层>/<名>.ts`；顺序在 `styles/index.ts` |

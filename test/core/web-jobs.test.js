@@ -17,6 +17,8 @@ import { createJobDefinitionControl } from "../../dist/controller/jobDefinitionC
 import { createWebTaskSurface } from "../../dist/web/webTaskSurface.js";
 import vm from "node:vm";
 import { JOBS_SCRIPT } from "../../dist/web/assets/client/views/jobs.js";
+import { JOBS_APP_SCRIPT } from "../../dist/web/assets/client/app/jobs.js";
+import { MANAGE_SHELL_SCRIPT } from "../../dist/web/assets/client/layout/manageShell.js";
 
 test("Web Job ingress fixes scope, rejects caller injection and preserves exact Run / schedule semantics", async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-web-jobs-"));
@@ -267,4 +269,131 @@ test("Job index counts, searches and empties exactly one scope and routes a pick
   jobs = []; await view.refresh(false); await flush();
   assert.match(text(index), /0 Jobs/);
   assert.match(text(index), /jobs.empty/);
+});
+
+test("Jobs entry keeps one live view across every route source: drafts, writes in flight, late reads and artifacts", async () => {
+  const h = (spec, attrs, ...children) => ({ spec, ...attrs, children: children.flat().filter(v => v != null),
+    dataset: { ...(attrs?.dataset || {}) }, hidden: false, disabled: false, classList: { add() {}, toggle() {} },
+    append(...items) { this.children.push(...items.flat().filter(v => v != null)); },
+    prepend(...items) { this.children.unshift(...items); },
+    replaceChildren(...items) { this.children = items.flat().filter(v => v != null); },
+    querySelectorAll() { return []; }, querySelector() { return null; },
+    addEventListener(name, fn) { this["on" + name] = fn; } });
+  const walk = node => node && typeof node === "object" ? [node, ...(node.children || []).flatMap(walk)] : [];
+  const text = node => walk(node).map(n => typeof n === "string" ? n : n.textContent || "").join(" ")
+    + " " + walk(node).flatMap(n => n.children || []).filter(c => typeof c === "string").join(" ");
+  const flush = async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); };
+  const nodes = new Map();
+  const document = { querySelector(key) { if (!nodes.has(key)) nodes.set(key, h("div")); return nodes.get(key); },
+    addEventListener(name, fn) { this["on" + name] = fn; } };
+  const location = new URL("http://fixture/jobs?job=old&jobRun=old-run");
+  const history = { state: null, pushes: 0,
+    replaceState(state, _, url) { this.state = state; if (url) location.href = new URL(url, location).href; },
+    pushState(state, _, url) { this.pushes++; this.replaceState(state, _, url); } };
+  const handlers = {};
+  let confirmAnswer = true, confirms = 0, alerts = 0;
+  const window = { addEventListener(name, fn) { handlers[name] = fn; }, confirm: () => { confirms++; return confirmAnswer; },
+    alert: () => { alerts++; } };
+  // Reads answer at once unless a test holds them; held reads resolve later.
+  const held = [], reads = [];
+  let holdGlobalList = true, pendingWrite = null;
+  const ref = version => ({ version: version.repeat(40), relativePath: version + ".md", owner: { kind: "job" } });
+  const records = {
+    global: { jobs: [{ id: "old", title: "Old", revision: 1, configuration: { kind: "shell" } }],
+      runs: [{ id: "old-run", status: "succeeded", createdAt: "2026-10-20T00:00:00Z", trigger: { source: "manual", key: "k" },
+        configuration: { kind: "shell" }, artifacts: [ref("a"), ref("b")] }] },
+    task: { jobs: [{ id: "new", title: "New", revision: 1, configuration: { kind: "shell" } },
+      { id: "other", title: "Other", revision: 1, configuration: { kind: "shell" } }], runs: [] }
+  };
+  const requestJson = url => {
+    reads.push(url);
+    if (url === "/api/jobs/scopes") return Promise.resolve({ tasks: [{ taskId: "task-2", title: "Two" }] });
+    const q = new URL(url, location).searchParams;
+    const scope = url.startsWith("/api/tasks/task-2/") ? records.task : records.global;
+    const value = url.includes("/schedules") ? [] : q.get("op") === "list" ? scope.jobs : q.get("op") === "runs" ? scope.runs
+      : q.get("op") === "run-get" ? scope.runs.find(r => r.id === q.get("runId"))
+      : q.get("op") === "artifact-preview" ? { text: "preview" } : [];
+    if (holdGlobalList && scope === records.global && q.get("op") === "list") {
+      holdGlobalList = false;
+      return new Promise(resolve => held.push(() => resolve(value)));
+    }
+    return Promise.resolve(value);
+  };
+  const ctx = vm.createContext({ h, icon: () => h("svg"), URL, URLSearchParams, location, history, window, document,
+    formatDateTime: iso => iso, badge: label => h("span.badge", null, label), dot: () => h("span.dot"),
+    drawArtifact: viewer => viewer.replaceChildren("artifact-drawn"), crypto: { randomUUID: () => "r" }, CSS: { escape: v => v },
+    createI18n: () => ({ t: key => key, subscribe() {}, getLocale: () => "en" }), requestJson,
+    submitMutation: () => new Promise(resolve => { pendingWrite = resolve; }),
+    rememberPlace() {}, linkPlaces() {} });
+  const body = script => script.replace(/^import .*;\n/gm, "").replace(/^export /gm, "");
+  const shell = vm.runInContext("(() => {" + body(MANAGE_SHELL_SCRIPT)
+    + "\nreturn { i18n, registerManagePage, navigateManage, replaceManageRoute, startManagement };})()", ctx);
+  const views = vm.runInContext("(() => {" + body(JOBS_SCRIPT) + "\nreturn { mountJobs };})()", ctx);
+  const mounts = [];
+  Object.assign(ctx, shell, { mountJobs: (...args) => { mounts.push(args[2] || "global"); return views.mountJobs(...args); } });
+  for (const page of ["models", "settings"]) shell.registerManagePage(page, { show() {} });
+  vm.runInContext("(() => {" + body(JOBS_APP_SCRIPT) + "})()", ctx);
+  shell.startManagement();
+  const here = () => location.pathname + location.search;
+  const root = nodes.get("#jobs-root");
+  const editorOpen = () => walk(root).some(n => typeof n.spec === "string" && n.spec.startsWith("form."));
+  const openDraft = () => {
+    walk(root).find(n => n.spec === "button.btn.btn-primary" && n.children.includes("jobs.newJob")).onclick();
+    walk(root).find(n => typeof n.spec === "string" && n.spec.startsWith("form.")).oninput();
+  };
+
+  // 1. A late read of a replaced view never writes the new view's address.
+  assert.deepEqual(mounts, ["global"]);
+  shell.navigateManage({ page: "jobs", section: "jobs", task: "task-2", job: "new" });
+  await flush();
+  assert.deepEqual(mounts, ["global", "task-2"]);
+  held.forEach(release => release()); await flush();
+  assert.equal(here(), "/jobs?task=task-2&job=new", "the retired global view must not pin old/old-run");
+
+  // 2. A draft is discarded only on confirmation, for links, controls and Back/Forward alike.
+  openDraft();
+  confirmAnswer = false;
+  assert.equal(shell.navigateManage({ page: "jobs", section: "jobs", task: null }), false);
+  assert.equal(here(), "/jobs?task=task-2&job=new");
+  assert.deepEqual(mounts, ["global", "task-2"], "a cancelled scope change keeps the view");
+  const pushes = history.pushes;
+  location.href = "http://fixture/jobs?job=old";
+  handlers.popstate(); await flush();
+  assert.equal(here(), "/jobs?task=task-2&job=new", "a cancelled Back restores the kept view's address");
+  assert.equal(history.pushes, pushes + 1);
+  location.href = "http://fixture/jobs?task=task-2&job=other";
+  handlers.popstate(); await flush();
+  assert.equal(here(), "/jobs?task=task-2&job=new", "a cancelled same-scope Job change keeps the editor's Job");
+  assert.equal(editorOpen(), true);
+  assert.equal(confirms, 3);
+  confirmAnswer = true;
+  location.href = "http://fixture/jobs?task=task-2&job=other";
+  handlers.popstate(); await flush();
+  assert.equal(editorOpen(), false, "an editor never outlives the Job it was opened on");
+  assert.equal(here(), "/jobs?task=task-2&job=other");
+  assert.deepEqual(mounts, ["global", "task-2"]);
+
+  // 3. A write in flight keeps its selection; leaving Jobs keeps the view and its receipt
+  //    lands without rewriting the page that is now shown.
+  walk(root).find(n => n.spec === "button.btn.btn-primary" && n.children.includes("jobs.runNow")).onclick();
+  assert.equal(shell.navigateManage({ page: "jobs", section: "jobs", task: null }), false);
+  assert.match(text(root), /jobs.leaveBusy/);
+  assert.equal(shell.navigateManage({ page: "settings", section: "preferences" }), true);
+  assert.equal(here(), "/settings/preferences");
+  pendingWrite({ run: { id: "run-9", status: "queued" } }); await flush();
+  assert.equal(here(), "/settings/preferences", "a hidden Jobs view must not write the Settings address");
+  assert.match(text(root), /run-9/, "the receipt stays observable in the kept view");
+  assert.deepEqual(mounts, ["global", "task-2"]);
+
+  // 4. An artifact-only route change opens exactly that artifact.
+  holdGlobalList = false;
+  const a = JSON.stringify(ref("a")), b = JSON.stringify(ref("b"));
+  shell.navigateManage({ page: "jobs", section: "jobs", task: null, job: "old", jobRun: "old-run", artifact: a });
+  await flush();
+  location.href = "http://fixture/jobs?" + new URLSearchParams({ job: "old", jobRun: "old-run", artifact: b });
+  handlers.popstate(); await flush();
+  const previews = reads.filter(url => url.includes("artifact-preview")).map(url => new URL(url, location).searchParams.get("reference"));
+  assert.equal(previews.at(-1), b);
+  assert.equal(new URL(location.href).searchParams.get("artifact"), b);
+  assert.equal(alerts, 0);
 });

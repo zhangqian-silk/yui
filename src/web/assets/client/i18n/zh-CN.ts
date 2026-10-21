@@ -132,6 +132,7 @@ export const ZH_CN: Readonly<Partial<Record<MessageKey, string>>> = {
   "jobs.save": "保存",
   "jobs.close": "关闭编辑",
   "jobs.discard": "放弃当前未保存的草稿？",
+  "jobs.leaveBusy": "仍有提交在进行中；收到回执前保留当前视图。",
   "jobs.loading": "正在读取权威状态…",
   "jobs.submitting": "提交中…",
   "jobs.saved": "已保存；不代表已执行或执行成功。",

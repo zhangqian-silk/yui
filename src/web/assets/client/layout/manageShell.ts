@@ -88,14 +88,35 @@ function revealSection() {
   if (typeof enter !== "function") return;
   enter(document.querySelector("#models-root:not([hidden]), #settings-root:not([hidden]), #jobs-root:not([hidden])"), "rise");
 }
+// Every route change (link, control, Back/Forward) first asks the page it
+// leaves and the page it enters; either may keep the current view.
+function mayNavigate(next) {
+  for (const name of new Set([route.page, next.page])) {
+    const page = pages.get(name);
+    if (page && page.canNavigate && !page.canNavigate(next)) return false;
+  }
+  return true;
+}
+// Returns false when a page kept the current view (nothing changed).
 export function navigateManage(next) {
   const normalized = readManageRoute(new URL(manageHref(next), location.origin));
-  if (manageHref(normalized) === location.pathname + location.search) return;
+  if (manageHref(normalized) === location.pathname + location.search) return true;
+  if (!mayNavigate(normalized)) return false;
   history.replaceState({ ...history.state, scroll: scroller().scrollTop }, "");
   history.pushState({ scroll: 0 }, "", manageHref(normalized));
   apply(normalized);
   scroller().scrollTop = 0;
   revealSection();
+  return true;
+}
+// A page settled on a more exact address for the current view (for example
+// the Job it opened): record it in place, without a history step.
+export function replaceManageRoute(next) {
+  route = next;
+  rememberPlace(manageArea(next.page, next.section), manageHref(next));
+  rememberPlace("manage", manageHref(next));
+  history.replaceState(history.state, "", manageHref(next));
+  render();
 }
 export function createManageShell(options) {
   return {
@@ -123,7 +144,10 @@ export function startManagement() {
     navigateManage(readManageRoute(url));
   });
   window.addEventListener("popstate", () => {
-    apply(readManageRoute(new URL(location.href)));
+    const next = readManageRoute(new URL(location.href));
+    // A kept view restores its own address as the newest entry.
+    if (!mayNavigate(next)) { history.pushState({ scroll: scroller().scrollTop }, "", manageHref(route)); return; }
+    apply(next);
     scroller().scrollTop = history.state?.scroll || 0;
     revealSection();
   });
