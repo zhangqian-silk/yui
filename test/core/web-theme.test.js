@@ -6,6 +6,7 @@ import { SETTINGS_HTML } from "../../dist/web/assets/shell/settings.js";
 import { MODELS_HTML } from "../../dist/web/assets/shell/models.js";
 import { PREFS_SCRIPT } from "../../dist/web/assets/client/lib/prefs.js";
 import { THEME_SCRIPT } from "../../dist/web/assets/client/lib/theme.js";
+import { BRAND_ICONS } from "../../dist/web/assets/shared/brand.js";
 
 function fixture(html, saved, light, storageDenied = false) {
   const values = new Map(saved == null ? [] : [["yui.theme", saved]]);
@@ -13,6 +14,8 @@ function fixture(html, saved, light, storageDenied = false) {
   const dataset = new Proxy({ theme: html.match(/<html[^>]*data-theme="([^"]+)"/)?.[1] }, {
     set(target, key, value) { target[key] = value; if (key === "theme") applied.push(value); return true; }
   });
+  const icon = { href: html.match(/<link rel="icon"[^>]*href="([^"]+)"/)?.[1],
+    getAttribute() { return this.href; }, setAttribute(name, value) { this.href = value; } };
   let mediaListener;
   const media = { matches: light, addEventListener(name, listener) {
     assert.equal(name, "change"); mediaListener = listener;
@@ -23,7 +26,7 @@ function fixture(html, saved, light, storageDenied = false) {
     querySelectorAll() { return this.children; }
   };
   const context = vm.createContext({
-    document: { documentElement: { dataset } },
+    document: { documentElement: { dataset }, querySelector: selector => selector === 'link[rel="icon"]' ? icon : null },
     window: { matchMedia(query) { assert.equal(query, "(prefers-color-scheme: light)"); return media; } },
     localStorage: {
       getItem(key) { if (storageDenied) throw Error("denied"); return values.get(key) ?? null; },
@@ -35,7 +38,7 @@ function fixture(html, saved, light, storageDenied = false) {
     }
   });
   return {
-    context, dataset, applied, values, container,
+    context, dataset, applied, values, container, icon,
     start() {
       vm.runInContext(PREFS_SCRIPT.replace(/^export /gm, ""), context);
       vm.runInContext(THEME_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
@@ -76,6 +79,7 @@ test("every Web entry page resolves persisted/system themes before styles and ke
     const f = fixture(html, scenario.saved, scenario.light, scenario.denied);
     initializeBeforeStyles(html, f.context);
     assert.equal(f.dataset.theme, scenario.expected, "theme is correct while application modules are still unloaded");
+    assert.equal(f.icon.href, BRAND_ICONS[scenario.expected], "favicon follows the resolved theme");
     const controller = f.start();
     assert.equal(controller.resolved(), scenario.expected);
     assert.equal(f.selected(), scenario.preference);
@@ -97,6 +101,7 @@ test("theme choices persist across navigation/reload and system changes only aff
   assert.equal(f.selected(), "ai");
   f.system(true);
   assert.equal(f.dataset.theme, "ai");
+  assert.equal(f.icon.href, BRAND_ICONS.ai);
   assert.deepEqual(notifications, ["sumi", "ai"]);
   controller.render();
   assert.equal(f.dataset.theme, "ai", "settings re-render preserves explicit choice");

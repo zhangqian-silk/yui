@@ -1,8 +1,10 @@
+import { BRAND_ICONS } from "../shared/brand.js";
 import { DEFAULT_DARK_THEME } from "../shared/themes.js";
 import { STYLESHEETS } from "../styles/index.js";
 import { DIALOGS_HTML } from "./dialogs.js";
 import { DOCK_HTML } from "./dock.js";
 import { SIDEBAR_HTML } from "./sidebar.js";
+import { appRail } from "./appRail.js";
 
 // Static application frame. Everything inside #detail, #task-list and the dock
 // panes is rendered by the client modules; the shell only fixes the regions
@@ -19,8 +21,8 @@ export const DASHBOARD_HTML = `<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark light">
   <meta name="yui-web-token" content="__YUI_WEB_TOKEN__">
+  <link rel="icon" type="image/svg+xml" href="${BRAND_ICONS[DEFAULT_DARK_THEME.id]}">
   <script src="/assets/theme.js"></script>
-  <link rel="icon" href="data:,">
   <title>Yui</title>
   <link rel="preload" href="/assets/fonts/inter-500.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/assets/fonts/inter-600.woff2" as="font" type="font/woff2" crossorigin>
@@ -30,7 +32,9 @@ ${STYLESHEET_LINKS}
 <body>
   <a class="skip-link" href="#center" data-i18n="a11y.skip">Skip to task details</a>
   <div class="app">
+    ${appRail("workbench")}
 ${SIDEBAR_HTML}
+    <div id="sidebar-scrim" class="sidebar-scrim"></div>
     <main id="center" class="center" tabindex="-1">
       <div id="detail" class="detail"></div>
     </main>
@@ -38,6 +42,6 @@ ${DOCK_HTML}
   </div>
 ${DIALOGS_HTML}
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script type="module" src="/assets/app.js"></script>
+  <script type="module" src="/assets/app.js" blocking="render"></script>
 </body>
 </html>`;

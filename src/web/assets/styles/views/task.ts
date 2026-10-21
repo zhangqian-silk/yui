@@ -1,29 +1,23 @@
 /*
- * TASK VIEW — the task page frame and its Overview tab: the sticky header and
- * section tabs, the hero, the "now" banner, input requests that need the
+ * TASK VIEW — the task page frame and its Overview tab: the sticky section
+ * tabs, the hero, the "now" banner, input requests that need the
  * user, decisions and planning. Rows inside the other tabs live in
  * views/records and views/delivery.
  */
 export const TASK_STYLES = `
-/* Sticky header and tab strip: both bleed through the page gutter and frost
-   the content scrolling beneath them. */
-.task-header,.tabs-wrap{position:sticky;margin:0 calc(-1 * var(--gutter));padding:0 var(--gutter);background:color-mix(in srgb,var(--canvas) 88%,transparent);backdrop-filter:saturate(1.4) blur(10px);-webkit-backdrop-filter:saturate(1.4) blur(10px)}
-.task-header{top:0;z-index:10}
-.task-bar{display:flex;align-items:center;gap:6px;height:var(--header-h)}
-.back-btn{display:none}
-.crumbs{display:flex;align-items:center;gap:6px;min-width:0;font-size:var(--fs-sm)}
-.crumb{padding:3px 6px;border:0;border-radius:var(--r-xs);background:transparent;color:var(--ink-3)}
-.crumb:hover{color:var(--ink);background:var(--surface-3)}
-.crumb-sep{color:var(--ink-4)}
-.crumb-current{color:var(--ink-2);font-size:var(--fs-xs)}
+/* Section tabs: sticky under the top bar, bleeding through the page gutter
+   and frosting the content scrolling beneath them. */
+.tabs-wrap{position:sticky;margin:0 calc(-1 * var(--gutter));padding:0 var(--gutter);background:var(--canvas)}
 .dock-toggle{height:30px}
-.task-hero{padding:14px 0 18px}
+.task-bar-sep{width:1px;height:18px;margin:0 2px;background:var(--line-2)}
+.operator-toggle[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent)}
+.task-hero{padding:28px 0 18px}
 .task-title{font-size:var(--fs-2xl);font-weight:650;letter-spacing:-.025em;line-height:1.25;overflow-wrap:anywhere}
 .task-meta{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:12px;color:var(--ink-3);font-size:var(--fs-xs)}
 .task-meta:empty{display:none}
 .meta-item{display:inline-flex;align-items:center;gap:5px}
 .meta-item .when{font-size:inherit}
-.tabs-wrap{top:var(--header-h);z-index:9;border-bottom:1px solid var(--line)}
+.tabs-wrap{top:var(--header-h);z-index:calc(var(--z-sticky) - 1);border-bottom:1px solid var(--line)}
 .tabs{gap:4px}
 .tab{position:relative;display:inline-flex;align-items:center;gap:7px;flex:none;height:42px;padding:0 10px;border:0;background:transparent;color:var(--ink-3);font-size:var(--fs-sm);font-weight:500}
 .tab:hover{color:var(--ink)}

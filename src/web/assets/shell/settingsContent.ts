@@ -11,7 +11,7 @@ export const SETTINGS_MAIN = `
             <fieldset class="field"><legend data-i18n="settings.theme">Theme</legend><div id="theme-options" class="theme-options"></div></fieldset>
             <div class="settings-stack">
               <label class="field"><span data-i18n="settings.language">Language</span><select id="settings-locale"><option value="en">English</option><option value="zh-CN">简体中文</option></select></label>
-              <label class="field"><span data-i18n="settings.accessMode">Default session access</span><select id="access-mode"><option value="native" data-i18n="settings.native">Native terminal</option><option value="structured" data-i18n="settings.structured">Structured view</option></select></label>
+              <label class="field"><span data-i18n="settings.accessMode">Default session access</span><select id="access-mode"><option value="structured" data-i18n="settings.structured">Structured view</option><option value="native" data-i18n="settings.native">Native terminal</option></select></label>
               <p data-i18n="settings.accessHelp">Preference for subsequent session selection where supported. It does not switch a live Session.</p>
               <button id="reset-layout" type="button" class="btn" data-i18n="settings.resetLayout">Reset saved workspace layout</button>
               <p id="browser-receipt" role="status"></p>

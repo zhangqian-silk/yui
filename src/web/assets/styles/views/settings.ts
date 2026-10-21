@@ -30,7 +30,7 @@ export const SETTINGS_STYLES = `
 .settings-receipt{white-space:pre-wrap;overflow-wrap:anywhere}
 .settings-error{color:var(--bad)!important}
 .settings-observation{max-height:260px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:var(--fs-xs)}
-.settings-search{position:sticky;top:0;z-index:1;padding:10px 0;background:var(--canvas)}
+.settings-search{position:sticky;top:var(--header-h);z-index:var(--z-raised);padding:10px 0;background:var(--canvas)}
 .settings-search input{width:100%;max-width:520px}
 #settings-status:empty,#browser-receipt:empty{display:none}
 .mono-line{overflow-wrap:anywhere}

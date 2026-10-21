@@ -16,6 +16,7 @@ import { DOM_SCRIPT } from "./lib/dom.js";
 import { FORMAT_SCRIPT } from "./lib/format.js";
 import { I18N_SCRIPT } from "./lib/i18n.js";
 import { MARKDOWN_SCRIPT } from "./lib/markdown.js";
+import { MOTION_SCRIPT } from "./lib/motion.js";
 import { PREFS_SCRIPT } from "./lib/prefs.js";
 import { SESSION_SCRIPT } from "./lib/session.js";
 import { THEME_SCRIPT } from "./lib/theme.js";
@@ -55,6 +56,7 @@ import { RESIZER_SCRIPT } from "./layout/resizer.js";
 import { ROUTER_SCRIPT } from "./layout/router.js";
 import { SHORTCUTS_SCRIPT } from "./layout/shortcuts.js";
 import { SIZING_SCRIPT } from "./layout/sizing.js";
+import { SIDEBAR_NAV_SCRIPT } from "./layout/sidebarNav.js";
 import { WORKSPACE_SCRIPT } from "./layout/workspace.js";
 import { CATALOG_SCRIPT } from "./app/catalog.js";
 import { SELECTION_SCRIPT } from "./app/selection.js";
@@ -79,6 +81,7 @@ export const CLIENT_MODULES: Readonly<Record<string, string>> = Object.freeze({
   "lib/dom": DOM_SCRIPT,
   "lib/format": FORMAT_SCRIPT,
   "lib/prefs": PREFS_SCRIPT,
+  "lib/motion": MOTION_SCRIPT,
   "lib/i18n": I18N_SCRIPT,
   "lib/theme": THEME_SCRIPT,
   "lib/api": API_SCRIPT,
@@ -118,6 +121,7 @@ export const CLIENT_MODULES: Readonly<Record<string, string>> = Object.freeze({
   "views/task/files": TASK_FILES_SCRIPT,
   "layout/resizer": RESIZER_SCRIPT,
   "layout/sizing": SIZING_SCRIPT,
+  "layout/sidebarNav": SIDEBAR_NAV_SCRIPT,
   "layout/workspace": WORKSPACE_SCRIPT,
   "layout/router": ROUTER_SCRIPT,
   "layout/shortcuts": SHORTCUTS_SCRIPT,

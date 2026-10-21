@@ -27,7 +27,7 @@ export const CONTROL_STYLES = `
 .btn-link:hover:not(:disabled){background:transparent;text-decoration:underline;text-underline-offset:3px}
 .link-btn{justify-self:start;padding:0;border:0;background:none;color:var(--accent);font-size:var(--fs-xs);font-weight:500}
 .link-btn:hover{text-decoration:underline;text-underline-offset:3px}
-.icon-btn{display:inline-grid;place-items:center;width:32px;height:32px;flex:none;padding:0;border:0;border-radius:var(--r-sm);background:transparent;color:var(--ink-3);transition:background var(--t-fast),color var(--t-fast)}
+.icon-btn{display:inline-grid;place-items:center;width:32px;height:32px;flex:none;padding:0;border:0;border-radius:var(--r-sm);background:transparent;color:var(--ink-3);transition:background var(--t-fast),color var(--t-fast),transform var(--t-fast) var(--ease)}
 .icon-btn:hover:not(:disabled){background:var(--surface-3);color:var(--ink)}
 .icon-btn[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent)}
 .icon-btn:disabled{opacity:.4}

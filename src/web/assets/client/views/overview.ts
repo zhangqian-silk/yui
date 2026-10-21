@@ -4,7 +4,7 @@ export const OVERVIEW_SCRIPT = String.raw`
 // then catalog-wide signals and the explicit Session read.
 import { h, icon, clear } from "/assets/js/lib/dom.js";
 import { byNewest, fill, formatDateTime, relativeTime } from "/assets/js/lib/format.js";
-import { badge, button, dot, emptyState, note } from "/assets/js/ui/primitives.js";
+import { badge, button, dot, emptyState, note, operatorToggle, topBar } from "/assets/js/ui/primitives.js";
 import { card } from "/assets/js/ui/containers.js";
 import { metricTile } from "/assets/js/ui/metrics.js";
 import { label, sessionBadges, tone } from "/assets/js/domain/vocab.js";
@@ -16,6 +16,12 @@ export function renderOverview(container, state, t, locale, actions) {
   const active = tasks.filter(function (task) { return task.status === "active"; });
   const recent = tasks.filter(function (task) { return task.status !== "archived"; }).slice().sort(byNewest).slice(0, 8);
   const page = h("div.page.overview");
+  container.append(topBar(t, actions.revealSidebar,
+    h("nav.crumbs", { "aria-label": t("crumbs.label") },
+      h("span.crumb", null, t("manage.workbench")),
+      h("span.crumb-sep", { "aria-hidden": "true" }, "/"),
+      h("span.crumb-current", null, t("overview.title"))),
+    [operatorToggle(t, actions.toggleOperator)]));
   page.append(overviewHead(state.counts, t, actions), metricStrip(state.counts, t));
   page.append(h("div.card-stack", null,
     inboxCard(state, t, actions),
@@ -30,13 +36,10 @@ export function renderOverview(container, state, t, locale, actions) {
 function overviewHead(counts, t, actions) {
   return h("header.page-head", null,
     h("div.page-head-main", null,
-      h("p.kicker", null, t("overview.kicker")),
       h("h1.page-title", null, t("overview.title")),
       h("p.page-sub", null, counts
         ? fill(t("overview.sub"), { total: counts.total, active: counts.active || 0 })
-        : t("loading.dashboard"))),
-    h("div.page-head-actions", null,
-      button(t("actions.operator"), { icon: "terminal", variant: "ghost", onClick: actions.openOperator })));
+        : t("loading.dashboard"))));
 }
 
 function metricStrip(counts, t) {

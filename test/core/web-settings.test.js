@@ -174,16 +174,16 @@ test("browser session access preference is isolated, validated and truthful when
     getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key)
   } });
   vm.runInContext(PREFS_SCRIPT.replace(/^export /gm, ""), context);
+  assert.equal(context.readSessionAccessMode(), "structured", "conversation is the default");
+  assert.equal(context.writeSessionAccessMode("native"), true);
   assert.equal(context.readSessionAccessMode(), "native");
-  assert.equal(context.writeSessionAccessMode("structured"), true);
-  assert.equal(context.readSessionAccessMode(), "structured");
   assert.throws(() => context.writeSessionAccessMode("invented"));
   context.localStorage.setItem = () => { throw Error("denied"); };
-  assert.equal(context.writeSessionAccessMode("native"), false);
+  assert.equal(context.writeSessionAccessMode("structured"), false);
   context.localStorage.getItem = context.localStorage.removeItem = () => { throw Error("denied"); };
-  assert.equal(context.writeSessionAccessMode("native"), false, "read fallback is not a successful write");
+  assert.equal(context.writeSessionAccessMode("structured"), false, "read fallback is not a successful write");
   assert.equal(context.clearPreference("yui.dock.width"), false);
-  assert.equal(values.get("yui.session.accessMode"), "structured");
+  assert.equal(values.get("yui.session.accessMode"), "native");
 });
 
 test("settings editor preserves drafts and unknown receipts, with model-dependent capability choices", async () => {

@@ -41,6 +41,6 @@ export const FORM_STYLES = `
 .shortcut-list dd{margin:0}
 
 /* Toast */
-.toast{position:fixed;left:50%;bottom:24px;z-index:90;max-width:min(520px,calc(100vw - 32px));padding:10px 16px;border:1px solid var(--line-2);border-radius:var(--r-md);background:var(--surface-2);color:var(--ink);box-shadow:var(--shadow-2);font-size:var(--fs-sm);opacity:0;transform:translate(-50%,8px);pointer-events:none;transition:opacity var(--t-med),transform var(--t-med) var(--ease)}
+.toast{position:fixed;left:50%;bottom:24px;z-index:var(--z-toast);max-width:min(520px,calc(100vw - 32px));padding:10px 16px;border:1px solid var(--line-2);border-radius:var(--r-md);background:var(--surface-2);color:var(--ink);box-shadow:var(--shadow-2);font-size:var(--fs-sm);opacity:0;transform:translate(-50%,8px);pointer-events:none;transition:opacity var(--t-base) var(--ease),transform var(--t-base) var(--ease)}
 .toast.show{opacity:1;transform:translate(-50%,0)}
 `;

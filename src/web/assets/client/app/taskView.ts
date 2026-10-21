@@ -14,6 +14,7 @@ import { updateObservation } from "/assets/js/views/task/observation.js";
 import { renderDiscussion, discussionHasUnsent } from "/assets/js/views/dock/discussion.js";
 import { sameTarget } from "/assets/js/views/dock/terminal.js";
 import { setSectionParam } from "/assets/js/layout/router.js";
+import { enter } from "/assets/js/lib/motion.js";
 
 // Only the observed identity participates: observation timestamps advance on
 // every poll and would otherwise re-render continuously.
@@ -29,7 +30,7 @@ function runtimeSignature(detail) {
 }
 
 // deps: { el, state, t, locale, api, toast, terminal, workspace,
-//         selectTask, clearSelection, pickAttention, readPageSessions, refreshCatalog }
+//         selectTask, clearSelection, revealSidebar, pickAttention, readPageSessions, refreshCatalog }
 //   el         #detail, #center and the dock discussion
 //   state      reads selected, detail, detailKey and the catalog fields the
 //              overview shows; writes activeTab
@@ -37,7 +38,8 @@ function runtimeSignature(detail) {
 //   terminal   the dock's native Session (views/dock/terminal)
 //   workspace  layout/workspace: dock toggles and opening Sessions
 //   selectTask(taskId)  an overview row was chosen (app/selection)
-//   clearSelection()    the Task page's back button (app/selection)
+//   clearSelection()    the Task page's "Tasks" crumb (app/selection)
+//   revealSidebar()     the page header's task-list switch (layout/sidebarNav)
 //   pickAttention(kind), readPageSessions()  overview actions (app/catalog)
 //   refreshCatalog()    quiet catalog refresh after a write; resolves when done
 export function createTaskView(deps) {
@@ -59,7 +61,10 @@ export function createTaskView(deps) {
     showOverview: function () { showOverview(deps); },
     updateSessionTargets: function () { updateSessionTargets(deps); },
     switchTab: function (tab, options) { switchTab(deps, tab, options); },
-    applySection: function (section) { applySection(deps, section); }
+    applySection: function (section) { applySection(deps, section); },
+    // The page content after an explicit navigation (a Task opened, back to
+    // the overview) rises in; polling redraws never call this.
+    revealPage: function () { reveal(deps.el.detail.querySelector(":scope > .page")); }
   };
   return view.controller;
 }
@@ -143,9 +148,15 @@ function detailContext(view) {
   const api = deps.api;
   return {
     activeTab: deps.state.activeTab,
-    onTab: view.controller.switchTab,
+    onTab: function (tab, options) {
+      const changed = tab !== deps.state.activeTab;
+      switchTab(deps, tab, options);
+      if (changed) reveal(deps.el.detail.querySelector(".tab-panel:not([hidden])"));
+    },
     onBack: deps.clearSelection,
+    revealSidebar: deps.revealSidebar,
     showDock: deps.workspace.toggleDock,
+    toggleOperator: deps.workspace.toggleOperator,
     openConversation: function (materials) {
       deps.workspace.openConversation({ scope: "task", taskId: deps.state.selected, roleName: "leader" }, materials);
     },
@@ -253,8 +264,14 @@ function showOverview(deps) {
     select: deps.selectTask,
     filterAttention: deps.pickAttention,
     readSessions: deps.readPageSessions,
-    openOperator: deps.workspace.openOperator
+    toggleOperator: deps.workspace.toggleOperator,
+    revealSidebar: deps.revealSidebar
   });
+  deps.workspace.syncDockButtons();
+}
+
+function reveal(element) {
+  if (element && typeof enter === "function") enter(element, "rise");
 }
 
 function switchTab(deps, tab, options) {

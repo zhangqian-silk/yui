@@ -4,9 +4,29 @@
  * The Live session pane is views/terminal; the dock frame is layout/workspace.
  */
 export const DOCK_STYLES = `
-.dock-head{height:auto;min-height:var(--header-h);padding-top:6px;padding-bottom:6px}
-.dock-head .seg{min-width:0;flex-wrap:wrap}
+.dock-head{height:auto;min-height:var(--header-h);padding-top:6px;padding-bottom:6px;border-bottom:0}
 .dock-actions{flex-shrink:0}
+/* Who the panel talks to: a title-like menu button with its target list */
+.dock-target{position:relative;min-width:0}
+.dock-target-btn{display:flex;align-items:center;gap:8px;min-width:0;height:34px;padding:0 10px 0 6px;border-radius:var(--r-md);color:var(--ink);font-size:var(--fs-md);font-weight:600;cursor:pointer;list-style:none;transition:background var(--t-fast)}
+.dock-target-btn::-webkit-details-marker{display:none}
+.dock-target-btn:hover,.dock-target[open] .dock-target-btn{background:var(--surface-3)}
+.dock-target-btn>.icon{width:14px;height:14px;flex:none;color:var(--ink-4)}
+.dock-target-icon{display:inline-grid;place-items:center;width:24px;height:24px;flex:none;border-radius:var(--r-sm);background:var(--accent-soft);color:var(--accent)}
+.dock-target-icon .icon{width:14px;height:14px}
+.dock-target-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dock-target-menu{position:absolute;left:0;top:calc(100% + 4px);z-index:var(--z-popover);display:grid;gap:2px;min-width:220px;max-width:min(320px,80vw);padding:6px;border:1px solid var(--line-2);border-radius:var(--r-md);background:var(--surface-2);box-shadow:var(--shadow-2)}
+.dock-target-menu hr{margin:4px 2px;border:0;border-top:1px solid var(--line)}
+.dock-target-options{display:grid;gap:2px}
+.dock-target-item{display:flex;align-items:center;gap:8px;width:100%;min-width:0;height:32px;padding:0 8px;border:0;border-radius:var(--r-sm);background:transparent;color:var(--ink-2);font-size:var(--fs-sm);text-align:left}
+.dock-target-item span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dock-target-item .icon{width:15px;height:15px;flex:none;color:var(--ink-4)}
+.dock-target-item:hover{background:var(--surface-3);color:var(--ink)}
+.dock-target-item[aria-pressed="true"]{color:var(--ink);font-weight:550}
+.dock-target-item .dock-target-check{color:var(--accent)}
+.dock-tabs{flex:none;padding:0 12px 10px;border-bottom:1px solid var(--line)}
+.dock-tabs .seg{display:flex;flex-wrap:wrap;width:100%;min-width:0}
+.dock-tabs .seg-btn{flex:1 1 auto;justify-content:center}
 .dock-preview{display:flex;flex-direction:column;min-height:0;overflow:auto}
 .dock-preview>.feed-note{text-align:left;padding:0 12px;color:var(--ink-3)}
 .preview-services{flex:none;max-height:40%;overflow:auto}

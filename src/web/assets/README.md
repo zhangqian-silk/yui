@@ -32,15 +32,16 @@ import 图生成 `modulepreload`，避免跨工作台/管理页重复下载与�
 
 ```
 shared/   TS 端单一事实源：themes（主题令牌）、geometry（断点/列宽）、
+          motion（时长、曲线、关键帧预设、层级 z-index）、
           taskTabs（Task 页四个分区与别名）、manageNav（管理页导航分区）、icons。外壳、样式、客户端
           都在构建期插值引用，三方不会漂移。
-styles/   CSS 字符串。tokens/base → layout/workspace → ui/* → views/* →
+styles/   CSS 字符串。tokens/base/motion → layout/workspace → ui/* → views/* →
           markdown → layout/responsive（断点最后，覆盖前面所有）。
 shell/    静态 HTML：sidebar、dock、dialogs 三个区域 + index 组装。只固定
           区域和需要跨重绘保持身份的控件；其余由客户端渲染。manage 是
           /models 与 /settings 共用的管理页框架（同一条导航栏与分区标题）。
 client/   浏览器 ES 模块，只向下依赖：
-  lib/      DOM、格式化、偏好存储、i18n、主题、API、Markdown（无业务）
+  lib/      DOM、格式化、偏好存储、i18n、主题、API、Markdown、motion（无业务）
   ui/       与领域无关的组件：primitives、containers、controls、
             forms（写入通道 submitWrite）、metrics、text、toast
   domain/   Yui 词汇与记录渲染：vocab、context、records、work、runs、
@@ -92,7 +93,9 @@ shortcuts。主要流程：
 | 想改 | 位置 |
 | --- | --- |
 | 主题颜色 / 新增主题 | `shared/themes.ts`（tokens.css、设置色块、客户端主题列表都由它生成） |
+| 品牌标志 / favicon | `shared/brand.ts`（页内标志用主题令牌着色；favicon 按主题预生成，由主题脚本切换） |
 | 断点、列宽、分隔条范围 | `shared/geometry.ts` |
+| 动画时长、曲线、关键帧、层级 | `shared/motion.ts`（生成 `--t-*`/`--ease-*`/`--z-*` 变量、`m-*` 关键帧和客户端 JSON）；组件动效在 `styles/motion.ts`；脚本侧 `client/lib/motion.ts`（`enter`/`leave`/`layoutTransition`） |
 | Task 分区与快捷键 1–4、旧分区别名 | `shared/taskTabs.ts` |
 | 某个 Task 分区的内容 | `client/views/task/<overview\|delivery\|runtime\|records>.ts`；运行时观测槽位在 `views/task/observation.ts` |
 | Task 页头、分区标签 | `client/views/task/page.ts` |
@@ -118,6 +121,8 @@ shortcuts。主要流程：
 - en 是参考目录，zh-CN 只能翻译 en 中存在的键（类型检查），缺键回退 en。
   两边保持同键。
 - 几何数值只在 `shared/geometry.ts` 定义，不要在 CSS 或客户端里写死。
+- 动画时长、曲线、z-index 只用 `shared/motion.ts` 生成的变量或 JSON。
+  入场动画只在明确导航（点开 Task、返回总览、切分区/标签）时调用，轮询重绘绝不触发。
 - Agent 文本只能经 `lib/markdown.ts`（先转义再加标签）或 `textContent`
   进入页面，禁止拼接 `innerHTML`。
 

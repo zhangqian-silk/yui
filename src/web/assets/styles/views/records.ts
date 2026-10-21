@@ -50,7 +50,7 @@ summary.work-head:focus-visible{box-shadow:inset 0 0 0 2px var(--accent-line)}
 .timeline{list-style:none;margin:0;padding:0;position:relative;display:grid;gap:0}
 .timeline::before{content:"";position:absolute;left:13px;top:6px;bottom:6px;width:1px;background:var(--line-2)}
 .timeline-item{position:relative;display:grid;grid-template-columns:28px minmax(0,1fr);gap:12px;padding:0 0 18px}
-.timeline-mark{position:relative;z-index:1;display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:var(--surface-2);border:1px solid var(--line-2);color:var(--ink-3)}
+.timeline-mark{position:relative;z-index:var(--z-raised);display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:var(--surface-2);border:1px solid var(--line-2);color:var(--ink-3)}
 .kind-decision .timeline-mark{color:var(--ok);border-color:var(--ok-soft);background:var(--ok-soft)}
 .kind-milestone .timeline-mark{color:var(--accent);border-color:var(--accent-soft);background:var(--accent-soft)}
 .kind-run .timeline-mark{color:var(--info);border-color:var(--info-soft);background:var(--info-soft)}

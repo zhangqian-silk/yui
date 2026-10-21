@@ -28,7 +28,7 @@ input:disabled,select:disabled,textarea:disabled{opacity:.55}
 ::-webkit-scrollbar-track{background:transparent}
 [hidden]{display:none!important}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
-.skip-link{position:fixed;left:12px;top:-60px;z-index:100;padding:9px 14px;border-radius:var(--r-sm);background:var(--accent);color:var(--accent-ink);text-decoration:none;font-weight:600;transition:top var(--t-fast)}
+.skip-link{position:fixed;left:12px;top:-60px;z-index:var(--z-skip);padding:9px 14px;border-radius:var(--r-sm);background:var(--accent);color:var(--accent-ink);text-decoration:none;font-weight:600;transition:top var(--t-fast)}
 .skip-link:focus{top:12px}
 .icon{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
 .icon-sm{width:14px;height:14px}

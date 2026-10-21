@@ -74,6 +74,7 @@ function clearSelection(deps) {
   syncUrl(deps.state, !urlTaskId());
   deps.workspace.updateLayout();
   deps.taskView.showOverview();
+  deps.taskView.revealPage();
   deps.renderTaskList();
   deps.taskView.updateSessionTargets();
 }
@@ -96,9 +97,11 @@ function followUrl(deps, params) {
     return;
   }
   if (state.selected && !canLeave(deps)) { syncUrl(state, true); return; }
+  const leaving = !!state.selected;
   dropSelection(deps);
   deps.workspace.updateLayout();
   deps.taskView.showOverview();
+  if (leaving) deps.taskView.revealPage();
 }
 
 async function load(deps, taskId, navigate) {
@@ -120,7 +123,7 @@ async function load(deps, taskId, navigate) {
   state.detail = detail;
   state.detailKey = fingerprint(core);
   deps.taskView.render(navigate);
-  if (navigate) deps.taskView.applySection(readQuery().get("section"));
+  if (navigate) { deps.taskView.applySection(readQuery().get("section")); deps.taskView.revealPage(); }
   observe(deps, taskId, detail);
 }
 

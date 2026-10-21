@@ -7,11 +7,12 @@ import { isEditing } from "/assets/js/lib/dom.js";
 
 const TABS = ${JSON.stringify(TASK_TABS)};
 
-// deps: { el, state, globalInput, workspace, selection, catalog, taskView }
+// deps: { el, state, globalInput, workspace, sidebarNav, selection, catalog, taskView }
 //   el           #search, #settings-dialog and #terminal-host
 //   state        read-only here: state.selected, state.detail
 //   globalInput  views/globalInput (its dialog blocks shortcuts while open)
 //   workspace    layout/workspace: the dock and the operator Session
+//   sidebarNav   layout/sidebarNav: "[" shows or hides the task list
 //   selection    app/selection: Escape leaves the Task
 //   catalog      app/catalog: "r" refreshes
 //   taskView     app/taskView: 1–4 switch tabs
@@ -27,10 +28,12 @@ export function bindShortcuts(deps) {
   });
 }
 
-// Escape unwinds one level: leave a field, close the dock, leave the Task.
+// Escape unwinds one level: leave a field, close the task-list drawer, close
+// the dock, leave the Task.
 function escape(deps, active, typing, inTerminal) {
   if (inTerminal) return;
   if (typing) { active.blur(); return; }
+  if (deps.sidebarNav.drawerOpen()) { deps.sidebarNav.closeDrawer(); return; }
   if (deps.workspace.dockVisible()) { deps.workspace.setDockOpen(false); return; }
   if (deps.state.selected) deps.selection.clearSelection();
 }
@@ -38,8 +41,9 @@ function escape(deps, active, typing, inTerminal) {
 function shortcut(deps, event) {
   const key = event.key.toLowerCase();
   if (key === "/") { event.preventDefault(); deps.el.search.focus(); deps.el.search.select(); }
+  else if (key === "[") deps.sidebarNav.toggle();
   else if (key === "r") deps.catalog.refresh();
-  else if (key === "o") deps.workspace.openOperator();
+  else if (key === "o") deps.workspace.toggleOperator();
   else if (key === "d") deps.workspace.toggleDock();
   else if (/^[1-9]$/.test(key) && Number(key) <= TABS.length && deps.state.detail) deps.taskView.switchTab(TABS[Number(key) - 1]);
 }
