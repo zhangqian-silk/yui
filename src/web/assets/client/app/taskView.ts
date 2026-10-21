@@ -155,7 +155,7 @@ function detailContext(view) {
     },
     onBack: deps.clearSelection,
     revealSidebar: deps.revealSidebar,
-    showDock: deps.workspace.toggleDock,
+    togglePanel: function () { deps.workspace.toggleDock(); },
     toggleOperator: deps.workspace.toggleOperator,
     openConversation: function (materials) {
       deps.workspace.openConversation({ scope: "task", taskId: deps.state.selected, roleName: "leader" }, materials);
@@ -264,6 +264,7 @@ function showOverview(deps) {
     select: deps.selectTask,
     filterAttention: deps.pickAttention,
     readSessions: deps.readPageSessions,
+    togglePanel: function () { deps.workspace.toggleDock(); },
     toggleOperator: deps.workspace.toggleOperator,
     revealSidebar: deps.revealSidebar
   });

@@ -356,7 +356,7 @@ test("workbench continuation resolves the current Leader afresh without replayin
 });
 
 test("terminal hide cancels pending attachment and reopens the actual selected owner", () => {
-  const context = vm.createContext({ writePreference() {} });
+  const context = vm.createContext({ writePreference() {}, document: { activeElement: null } });
   vm.runInContext(WORKSPACE_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
   const target = { scope: "task", taskId: "task-1", roleName: "leader", nativeSessionId: "leader-thread" };
   const switched = { scope: "global", roleName: "operator", nativeSessionId: "operator-thread" };
@@ -384,11 +384,49 @@ test("terminal hide cancels pending attachment and reopens the actual selected o
   assert.equal(layoutVisible, true, "layout is rendered after restoring the selected target");
 });
 
+test("the page's one panel switch mirrors the dock, keeps its view and takes focus back on close", () => {
+  const document = { activeElement: null };
+  const context = vm.createContext({ writePreference() {}, markSelected() {}, document });
+  vm.runInContext(WORKSPACE_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
+  vm.runInContext("drawTarget = function () {}; updateLayout = function (ws) { syncDockButtons(ws); }", context);
+  const attrs = {};
+  const toggle = { setAttribute(k, v) { attrs[k] = v; }, focus() { document.activeElement = toggle; } };
+  const inside = {};
+  let reconnects = 0;
+  const ws = {
+    dock: { mode: "conversation", open: false }, narrow: { matches: false },
+    deps: { t: key => key, state: { selected: "task-1" },
+      el: { dock: { contains: node => node === inside },
+        detail: { querySelectorAll: () => [toggle], querySelector: () => toggle } },
+      terminal: { current: () => null, close() {} },
+      conversation: { close() {}, reconnect() { reconnects++; }, current: () => null } }
+  };
+  context.toggleDock(ws);
+  assert.equal(context.dockVisible(ws), true);
+  assert.equal(ws.dock.mode, "conversation", "the first open uses the default view");
+  assert.equal(attrs["aria-expanded"], "true");
+  assert.equal(attrs["aria-label"], "dock.hide");
+  assert.equal(reconnects, 1);
+  ws.dock.mode = "preview";
+  document.activeElement = inside;
+  context.toggleDock(ws);
+  assert.equal(context.dockVisible(ws), false);
+  assert.equal(attrs["aria-expanded"], "false");
+  assert.equal(attrs["aria-label"], "dock.show");
+  assert.equal(document.activeElement, toggle, "focus leaves the hidden panel for its switch");
+  context.toggleDock(ws);
+  assert.equal(ws.dock.mode, "preview", "reopening keeps the last view");
+  assert.equal(attrs["aria-expanded"], "true");
+  document.activeElement = null;
+  context.setDockOpen(ws, false);
+  assert.equal(document.activeElement, null, "focus outside the panel is left where it is");
+});
+
 test("terminal hide/reopen resolves a replacement Session without replaying input", async () => {
   let currentSessionId = "thread-a", reads = 0, pending;
   const connections = [], writes = [];
   const context = vm.createContext({
-    URLSearchParams, writePreference() {}, clear() {},
+    URLSearchParams, writePreference() {}, clear() {}, document: { activeElement: null },
     ResizeObserver: class { observe() {} disconnect() {} },
     async requestJson() { reads++; return { currentSessionId }; },
     fakeMount() { return { terminal: { onData() { return { dispose() {} }; }, dispose() {} }, fit: { fit() {} } }; },
@@ -581,7 +619,9 @@ test("a terminal closed by the server for an ended browser session returns the p
 test("the current-model label never presents a launch snapshot as the Session's live model", async () => {
   const observed = (model, observedAt = "2026-10-21T12:00:00.000Z") => ({ status: "observed", observedAt, requested: [],
     handshake: { status: "unsupported", reason: "fixture" },
-    axes: [{ key: "model", category: "model", current: { status: "observed", value: model }, offered: [] }] });
+    axes: [{ key: "model", category: "model", current: { status: "observed", value: model }, offered: [] },
+      // Effort is identified by category; its native key is reasoningEffort.
+      { key: "reasoningEffort", category: "effort", current: { status: "observed", value: "medium" }, offered: [] }] });
   const unknown = { status: "unknown", reason: "No confirmed native model response." };
   let config = () => unknown;
   const extra = { idle: true, runConfiguration: session => config(session),
@@ -602,18 +642,20 @@ test("the current-model label never presents a launch snapshot as the Session's 
   assert.equal(label(), "conversation.modelUnconfirmed", "a launch request is not the current model");
   assert.equal(menu().dataset.state, "unknown");
   assert.deepEqual(facts().find(r => r[0] === "conversation.launchModel"), ["conversation.launchModel", "launch-model · high", "conversation.launchNote"]);
-  assert.equal(facts().find(r => r[0] === "conversation.modelCurrent")[1], "conversation.modelUnconfirmed");
+  assert.equal(facts().find(r => r[0] === "conversation.confirmedModel")[1], "conversation.modelUnconfirmed");
 
   config = session => session === "thread" ? observed("live-model") : unknown;
   await f.tick();
-  assert.equal(label(), "live-model", "only the Session's native report reads as current");
-  assert.equal(menu().dataset.state, "observed");
+  assert.equal(label(), "live-model · medium", "only the Session's own native confirmation is shown");
+  assert.equal(menu().dataset.state, "confirmed");
+  const confirmed = facts().find(r => r[0] === "conversation.confirmedModel");
+  assert.equal(confirmed[1], "live-model · medium");
+  assert.match(confirmed[2], /modelConfirmedNote.*clock:2026-10-21T12:00:00.000Z/, "labelled as a dated confirmation, not live");
 
   config = () => unknown;
   await f.tick();
-  assert.equal(label(), "live-model", "the last report stays visible…");
-  assert.equal(menu().dataset.state, "stale", "…but marked as no longer current");
-  assert.ok(facts().some(r => r[0] === "conversation.confirmedModel" && r[1] === "live-model"));
+  assert.equal(label(), "conversation.modelUnconfirmed", "a confirmation the Host withdrew is not carried over");
+  assert.equal(menu().dataset.state, "unknown");
 
   config = session => session === "thread" ? observed("live-model") : unknown;
   await f.tick();
@@ -624,7 +666,7 @@ test("the current-model label never presents a launch snapshot as the Session's 
 
   // A current-Session read that answers after the user switched never lands on the other Session.
   await f.pick("thread");
-  assert.equal(label(), "live-model");
+  assert.equal(label(), "live-model · medium");
   extra.hold = session => session === "thread";
   f.controller.reconnect();
   await flush();

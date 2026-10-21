@@ -9,8 +9,7 @@ export const TASK_STYLES = `
    and frosting the content scrolling beneath them. */
 .tabs-wrap{position:sticky;margin:0 calc(-1 * var(--gutter));padding:0 var(--gutter);background:var(--canvas)}
 .dock-toggle{height:30px}
-.task-bar-sep{width:1px;height:18px;margin:0 2px;background:var(--line-2)}
-.operator-toggle[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent)}
+.operator-toggle[aria-pressed="true"],.panel-toggle[aria-expanded="true"]{background:var(--accent-soft);color:var(--accent)}
 .task-hero{padding:28px 0 18px}
 .task-title{font-size:var(--fs-2xl);font-weight:650;letter-spacing:-.025em;line-height:1.25;overflow-wrap:anywhere}
 .task-meta{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:12px;color:var(--ink-3);font-size:var(--fs-xs)}

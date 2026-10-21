@@ -4,7 +4,7 @@ export const OVERVIEW_SCRIPT = String.raw`
 // then catalog-wide signals and the explicit Session read.
 import { h, icon, clear } from "/assets/js/lib/dom.js";
 import { byNewest, fill, formatDateTime, relativeTime } from "/assets/js/lib/format.js";
-import { badge, button, dot, emptyState, note, operatorToggle, topBar } from "/assets/js/ui/primitives.js";
+import { badge, button, dot, emptyState, note, panelToggle, topBar } from "/assets/js/ui/primitives.js";
 import { card } from "/assets/js/ui/containers.js";
 import { metricTile } from "/assets/js/ui/metrics.js";
 import { label, sessionBadges, tone } from "/assets/js/domain/vocab.js";
@@ -21,7 +21,7 @@ export function renderOverview(container, state, t, locale, actions) {
       h("span.crumb", null, t("manage.workbench")),
       h("span.crumb-sep", { "aria-hidden": "true" }, "/"),
       h("span.crumb-current", null, t("overview.title"))),
-    [operatorToggle(t, actions.toggleOperator)]));
+    [panelToggle(t, actions.togglePanel)]));
   page.append(overviewHead(state.counts, t, actions), metricStrip(state.counts, t));
   page.append(h("div.card-stack", null,
     inboxCard(state, t, actions),

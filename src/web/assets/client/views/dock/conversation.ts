@@ -13,9 +13,8 @@ export function createConversationController(host, t, locale = function () { ret
   let materials = [], incomingMaterials = null;
   let requestSignature = "", sessionSignature = "", detailSignature = "";
   let modelPending = null, modelCatalog = null, lastModelObservation = null;
-  // The newest native model report for the selected Session only. A failed
-  // later read keeps it visible but explicitly marked as no longer current.
-  let lastConfirmed = null, modelObservation = null;
+  // The selected Session's own native confirmation (or its stated absence).
+  let modelObservation = null;
   let pageFacts = null;
   const requests = h("div.cv-requests");
   const questions = h("div.cv-requests");
@@ -235,25 +234,22 @@ export function createConversationController(host, t, locale = function () { ret
     receiptDetail.textContent = JSON.stringify(result, null, 2);
     receiptBlock.hidden = false;
   }
-  // Model presentation keeps four sources apart: the Session's current native
-  // report, the last report this view received for the same Session, the
-  // launch request, and a selection not yet confirmed. Only the first may read
-  // as the current model; launch and Role settings never stand in for it.
-  function observedAxis(observation, field) {
+  // Model presentation keeps three sources apart. A Codex observation is the
+  // most recent native confirmation (start, resume or an adopted switch) with
+  // its time, not a live reading of the current Turn or of Desktop changes, so
+  // it is labelled that way. A pending switch is shown as pending. The launch
+  // request is reference only. An absent, unknown or unreadable confirmation
+  // is shown as unconfirmed: never filled from launch, Role or poll time.
+  function observedAxis(observation, category) {
     if (!observation || observation.status !== "observed" || !Array.isArray(observation.axes)) return null;
-    const axis = observation.axes.find(function (a) {
-      return field === "model" ? a.key === "model" || a.category === "model"
-        : a.key === "effort" || a.category === "effort" || a.category === "thought_level";
-    });
+    const axis = observation.axes.find(function (a) { return a.category === category; });
     return axis && axis.current && axis.current.status === "observed" ? axis.current.value : null;
   }
   function modelText(model, effort) { return model + (effort ? " · " + effort : ""); }
   function showModel(observation) {
     const value = observedAxis(observation, "model");
-    const effort = value ? observedAxis(observation, "effort") : null;
     confirmedModel = value;
     modelObservation = observation || null;
-    if (value) lastConfirmed = { session: selected, model: value, effort: effort, observedAt: observation.observedAt };
     let unresolved = false;
     if (modelPending) {
       if (value === modelPending.model && observation.observedAt !== modelPending.previousObservation) {
@@ -273,20 +269,15 @@ export function createConversationController(host, t, locale = function () { ret
     const observation = modelObservation;
     const value = confirmedModel;
     const effort = value ? observedAxis(observation, "effort") : null;
-    const stale = !value && lastConfirmed && lastConfirmed.session === selected ? lastConfirmed : null;
+    const at = value ? formatClock(observation.observedAt, locale()) : "";
     let state, label, title;
     if (modelPending) {
-      state = "pending"; label = modelPending.model;
-      title = t("conversation.modelApplying");
+      state = "pending"; label = modelPending.model; title = t("conversation.modelApplying");
     } else if (value) {
-      state = "observed"; label = modelText(value, effort);
-      title = t("conversation.modelObserved") + " · " + formatClock(observation.observedAt, locale());
-    } else if (stale) {
-      state = "stale"; label = modelText(stale.model, stale.effort);
-      title = fill(t("conversation.modelStale"), { time: formatClock(stale.observedAt, locale()) });
+      state = "confirmed"; label = modelText(value, effort);
+      title = fill(t("conversation.modelConfirmedShort"), { time: at });
     } else {
-      state = "unknown"; label = t("conversation.modelUnconfirmed");
-      title = t("conversation.modelUnconfirmedHint");
+      state = "unknown"; label = t("conversation.modelUnconfirmed"); title = t("conversation.modelUnconfirmedHint");
     }
     modelMenu.dataset.state = state;
     modelLabel.textContent = label;
@@ -294,11 +285,9 @@ export function createConversationController(host, t, locale = function () { ret
     clear(modelFacts);
     const reason = observation && observation.reason ? observation.reason
       : session && !session.current ? t("conversation.modelHistorical") : t("conversation.modelNoRead");
-    fact(modelFacts, t("conversation.modelCurrent"), value ? modelText(value, effort) : t("conversation.modelUnconfirmed"),
-      value ? t("conversation.modelObserved") + " · " + formatClock(observation.observedAt, locale())
-        + (effort ? "" : " · " + t("conversation.effortUnobserved")) : reason);
-    if (stale) fact(modelFacts, t("conversation.confirmedModel"), modelText(stale.model, stale.effort),
-      fill(t("conversation.modelStale"), { time: formatClock(stale.observedAt, locale()) }));
+    fact(modelFacts, t("conversation.confirmedModel"), value ? modelText(value, effort) : t("conversation.modelUnconfirmed"),
+      value ? fill(t("conversation.modelConfirmedNote"), { time: at }) + (effort ? "" : " · " + t("conversation.effortUnobserved"))
+        : reason);
     if (modelPending) fact(modelFacts, t("conversation.modelPendingLabel"), modelPending.model, t("conversation.modelApplying"));
     fact(modelFacts, t("conversation.launchModel"),
       session && session.launchModel ? modelText(session.launchModel, session.launchEffort) : t("conversation.agentDefault"),
@@ -339,8 +328,8 @@ export function createConversationController(host, t, locale = function () { ret
     const endpoint = url({ session: selected }).replace("/api/conversation?", "/api/conversation/model?");
     modelPending = { model: modelSelect.value, previousObservation: lastModelObservation };
     saved(".modelPending", JSON.stringify(modelPending));
-    // The Host drops its own report before adopting; so does this view.
-    lastConfirmed = null; drawModel();
+    // The Host drops its own confirmation before adopting; so does this view.
+    confirmedModel = null; drawModel();
     busy = true; controls();
     modelResult.textContent = t("conversation.modelApplying");
     try {
@@ -498,8 +487,8 @@ export function createConversationController(host, t, locale = function () { ret
     try { materials = JSON.parse(saved(".materials") || "[]"); } catch { materials = []; }
     try { modelPending = JSON.parse(saved(".modelPending") || "null"); } catch { modelPending = null; }
     modelCatalog = null; lastModelObservation = null; clear(modelSelect); clear(modelRows); modelRowMap = new Map(); confirmedModel = null;
-    // A historical Session never borrows another Session's model report.
-    lastConfirmed = null; modelObservation = null; pageFacts = null;
+    // A historical Session never borrows another Session's model confirmation.
+    modelObservation = null; pageFacts = null;
     modelStatus.textContent = ""; modelResult.textContent = ""; receiptDetail.textContent = ""; receiptBlock.hidden = true;
     status.textContent = ""; detailSignature = ""; sessionSignature = "";
     drawModel();
@@ -768,8 +757,8 @@ export function createConversationController(host, t, locale = function () { ret
       if (own === generation) {
         historyOk = false; status.textContent = t("conversation.disconnectedShort");
         status.title = t("conversation.disconnected") + " · " + error.message; status.className = "cv-status is-failed";
-        // A failed read never keeps presenting the earlier report as current.
-        if (confirmedModel) { confirmedModel = null; drawModel(); }
+        // An unreadable confirmation is unconfirmed, not the earlier value.
+        if (confirmedModel) { confirmedModel = null; modelObservation = null; drawModel(); }
       }
     } finally { finish(own); }
     if (own === generation && pending && historyOk) await inspectReceipt();
@@ -943,7 +932,7 @@ export function createConversationController(host, t, locale = function () { ret
         text.value = ""; receipt.textContent = ""; identity.textContent = ""; liveNote.textContent = "";
         receiptBlock.hidden = true; controls();
         modelPending = null; modelCatalog = null; clear(modelSelect); clear(modelRows); modelRowMap = new Map(); confirmedModel = null;
-        lastConfirmed = null; modelObservation = null; drawModel(); modelStatus.textContent = "";
+        modelObservation = null; drawModel(); modelStatus.textContent = "";
         modelResult.textContent = "";
         receiptDetail.textContent = ""; draftStatus.textContent = ""; drawCommands();
         materials = []; incomingMaterials = null; clear(materialList); materialAlert.textContent = "";

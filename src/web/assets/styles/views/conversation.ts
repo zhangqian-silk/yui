@@ -121,9 +121,9 @@ export const CONVERSATION_STYLES = `
 .cv-pill .icon{width:13px;height:13px;flex:none}
 .cv-model-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cv-model-dot{width:6px;height:6px;border-radius:50%;flex:none;background:var(--ok)}
-.cv-model[data-state=stale] .cv-model-dot,.cv-model[data-state=unknown] .cv-model-dot{background:var(--warn)}
+.cv-model[data-state=unknown] .cv-model-dot{background:var(--warn)}
 .cv-model[data-state=pending] .cv-model-dot{background:var(--accent,var(--info))}
-.cv-model[data-state=unknown] .cv-model-label,.cv-model[data-state=stale] .cv-model-label{font-style:italic}
+.cv-model[data-state=unknown] .cv-model-label{font-style:italic}
 .cv-hint{display:flex;flex-wrap:wrap;align-items:center;gap:2px 8px;padding:0 6px;min-width:0}
 .cv-hint:empty{display:none}
 .cv-hint .cv-note:empty{display:none}
