@@ -24,6 +24,7 @@ import type { createModelManagement } from "../models/modelManagement.js";
 import type { WebSkills } from "./webSkills.js";
 import type { WebPermissions } from "./webPermissions.js";
 import type { createWebJobs } from "./webJobs.js";
+import type { TaskStore } from "../storage/taskStore.js";
 import { MODELS_HTML } from "./assets/shell/models.js";
 import { TASK_SUBMISSION_INTENTS, type TaskSubmissionIntent } from "../message/message.js";
 import type { SurfaceContributionRef, SurfacePanelContribution } from "../surface/surfaceContributions.js";
@@ -736,7 +737,7 @@ async function handleHttpRequest(
     try {
       const assetVersion = new URL(request.url!, "http://localhost").searchParams.get("v");
       const asset = findWebAsset(pathname, assetVersion);
-      const managementPage = /^\/(?:models(?:\/(?:providers|catalog|quota))?|settings(?:\/(?:preferences|skills|jobs|permissions|server|connection))?)\/?$/.test(pathname);
+      const managementPage = /^\/(?:models(?:\/(?:providers|catalog|quota))?|settings(?:\/(?:preferences|skills|jobs|permissions|server|connection))?|jobs)\/?$/.test(pathname);
       if (pathname === "/" || pathname === "/index.html" || managementPage) {
         sendText(
           response,
@@ -754,6 +755,9 @@ async function handleHttpRequest(
         const options = parseTaskSearchOptions([query.get("query")!,
           ...[...query].filter(([key]) => key !== "query").flatMap(([key, value]) => [`--${key}`, value])]);
         sendJson(response, 200, store.transaction(reader => searchTaskBodies(reader, options)), method === "HEAD");
+      } else if (pathname === "/api/jobs/scopes") {
+        if (new URL(request.url!, "http://localhost").search !== "") throw usageError("Job scope discovery takes no options.");
+        sendJson(response, 200, store.readTransaction(reader => readWebJobScopes(reader)), method === "HEAD");
       } else if (pathname === "/api/dashboard" || pathname === "/api/dashboard/sessions") {
         const query = new URL(request.url!, "http://localhost").searchParams;
         const options = parseTaskCatalogOptions(
@@ -1330,6 +1334,25 @@ function rejectUpgrade(socket: Duplex, status: number, message: string): void {
     + "Connection: close\r\n"
     + "Content-Length: 0\r\n\r\n"
   );
+}
+
+/** Bounded owner discovery for the Jobs entry: counts per owning scope only.
+ * Records are still listed through the scope's own Job/Schedule reads, with
+ * their existing authority checks; this never lists a definition itself. */
+const JOB_SCOPE_TASK_LIMIT = 200;
+export function readWebJobScopes(reader: Pick<TaskStore, "listJobScopeSummaries" | "getTask">) {
+  const empty = { definitions: 0, schedules: 0, enabledSchedules: 0 };
+  let global = empty;
+  const tasks: Array<{ taskId: string; title: string; status: string; definitions: number; schedules: number; enabledSchedules: number }> = [];
+  for (const summary of reader.listJobScopeSummaries()) {
+    const counts = { definitions: summary.definitions, schedules: summary.schedules, enabledSchedules: summary.enabledSchedules };
+    if (summary.scope.kind === "global") { global = counts; continue; }
+    const task = reader.getTask(summary.scope.taskId);
+    if (task !== null) tasks.push({ taskId: task.id, title: task.title, status: task.status, ...counts });
+  }
+  tasks.sort((a, b) => Number(b.taskId.slice(5)) - Number(a.taskId.slice(5)));
+  return { global, tasks: tasks.slice(0, JOB_SCOPE_TASK_LIMIT), total: tasks.length,
+    omitted: Math.max(0, tasks.length - JOB_SCOPE_TASK_LIMIT), scope: "owner-counts-only; records use each scope's authorized reads" };
 }
 
 function dashboardHtml(token: string): string {

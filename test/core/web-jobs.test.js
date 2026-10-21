@@ -50,7 +50,9 @@ test("Web Job ingress fixes scope, rejects caller injection and preserves exact 
     surface: createWebTaskSurface(store, home) });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const base = "http://127.0.0.1:" + server.address().port;
-  assert.equal((await fetch(base + "/settings/jobs")).status, 200, "Jobs settings is directly navigable/reloadable");
+  assert.equal((await fetch(base + "/jobs")).status, 200, "the Jobs entry is directly navigable/reloadable");
+  assert.equal((await fetch(base + "/jobs?task=task-1&job=owned-task-1")).status, 200);
+  assert.equal((await fetch(base + "/settings/jobs")).status, 200, "the retired Settings address still opens (client redirects)");
   const api = async (path, body, headers = {}) => {
     const response = await fetch(base + "/api/" + path, {
       headers: { "x-yui-web-token": "test-token", "content-type": "application/json", origin: base, ...headers },
@@ -58,6 +60,11 @@ test("Web Job ingress fixes scope, rejects caller injection and preserves exact 
     });
     return { status: response.status, body: await response.json() };
   };
+  // Scope discovery: the global scope plus every Task that owns Jobs/plans, counts per scope.
+  const scopes = (await api("jobs/scopes")).body;
+  assert.deepEqual(scopes.global, { definitions: 0, schedules: 0, enabledSchedules: 0 });
+  assert.deepEqual(scopes.tasks.map(item => [item.taskId, item.definitions]), [["task-2", 1], ["task-1", 1]]);
+  assert.equal((await api("jobs/scopes?task=task-1")).status, 400, "scope discovery takes no caller options");
   const global = "settings/jobs", task = "tasks/task-1/jobs";
   const config = { kind: "builtin", action: "system.noop", input: {} };
   assert.equal((await api(global, { op: "define", id: "noop", title: "Probe", configuration: config })).status, 200);
@@ -115,6 +122,15 @@ test("Web Job ingress fixes scope, rejects caller injection and preserves exact 
   const instances = (await api("dashboard?source=job")).body.tasks;
   assert.ok(ordinary.every(t => t.id !== targetId));
   assert.ok(instances.some(t => t.id === targetId));
+  // The Web Task list reads without a category: every real Task, the Job-created one marked by its source.
+  const everyTask = (await api("dashboard")).body;
+  assert.equal(everyTask.total, store.listTasks().length);
+  assert.equal(everyTask.tasks.find(t => t.id === targetId).source.kind, "job-run");
+  assert.ok(everyTask.tasks.some(t => t.id === "task-1"));
+  const scopedAfter = (await api("jobs/scopes")).body;
+  assert.equal(scopedAfter.global.definitions, 1);
+  assert.equal(scopedAfter.global.schedules, 1);
+  assert.equal(scopedAfter.tasks.find(item => item.taskId === "task-1").definitions, 2);
   assert.ok((await api("dashboard?search=Task%20B")).body.tasks.some(t => t.id === targetId));
   await api(task, { op: "run-cancel", id: "delegate", runId: delegated.id });
   assert.equal(store.getTask(targetId).status, "draft", "cancel only requests delegation cancellation, never stops target");
@@ -157,7 +173,9 @@ test("Job view keeps historical Agent results when diagnostics fail and never re
   const job = { id: "analysis", title: "Analysis", revision: 1, configuration: old.configuration };
   const location = new URL("http://fixture/settings/jobs?job=analysis&jobRun=old-success");
   const ctx = vm.createContext({
-    h, URL, URLSearchParams, location, history: { state: {}, replaceState(_state, _title, url) { location.href = String(url); } },
+    h, URL, URLSearchParams, location, formatDateTime: iso => iso, icon: () => h("svg"),
+    badge: (label, tone) => h("span.badge", { dataset: { tone } }, label), dot: (tone, label) => h("span.dot", { title: label }),
+    history: { state: {}, replaceState(_state, _title, url) { location.href = String(url); } },
     window: { confirm: () => true }, crypto: { randomUUID: () => "one-request" },
     requestJson: async url => {
       reads.push(url); const q = new URL(url, location).searchParams;
@@ -186,4 +204,67 @@ test("Job view keeps historical Agent results when diagnostics fail and never re
   assert.match(text(root), /jobs.unknown/);
   runNow.onclick(); await flush();
   assert.equal(writes.length, 1, "unknown submission is not retried with a fresh request id");
+});
+
+test("Job index counts, searches and empties exactly one scope and routes a pick through history", async () => {
+  const h = (spec, attrs, ...children) => ({ spec, ...attrs, children: children.flat().filter(v => v != null), dataset: { ...(attrs?.dataset || {}) },
+    disabled: false, classList: { add() {}, toggle() {} }, append(...items) { this.children.push(...items.flat()); },
+    replaceChildren(...items) { this.children = items.flat().filter(v => v != null); }, querySelectorAll() { return []; },
+    addEventListener(name, fn) { this["on" + name] = fn; } });
+  const sync = { id: "project-sync-project-1", title: "Project sync · Yui", revision: 1, builtin: "project-sync",
+    configuration: { kind: "builtin", action: "project.refresh", projectId: "project-1" },
+    results: { latest: { status: "failed" } } };
+  const report = { id: "weekly-report", title: "Weekly report", revision: 2,
+    configuration: { kind: "shell", projectId: "project-2" } };
+  const plan = { id: "project-sync-project-1", jobId: sync.id, state: "eligible", builtin: { enabled: false, projectId: "project-1" },
+    nextDue: "2026-10-22T00:00:00Z", rule: { kind: "interval", anchor: "2026-10-01T00:00:00Z", everyMs: 3600000 } };
+  let jobs = [sync, report];
+  const location = new URL("http://fixture/jobs");
+  const picks = [];
+  const ctx = vm.createContext({ h, URL, URLSearchParams, location, formatDateTime: iso => iso, icon: () => h("svg"),
+    badge: (label, tone) => h("span.badge", { dataset: { tone } }, label), dot: (tone, label) => h("span.dot", { title: label, dataset: { tone } }),
+    history: { state: {}, replaceState() { throw new Error("index picks are history steps, not replacements"); } },
+    window: { confirm: () => true }, crypto: { randomUUID: () => "x" },
+    requestJson: async url => {
+      const q = new URL(url, location).searchParams;
+      assert.ok(url.startsWith("/api/settings/"), "the global scope reads only global records");
+      if (url.includes("/schedules")) return q.get("op") === "list" ? [plan] : { schedule: plan };
+      if (q.get("op") === "list") return jobs;
+      if (q.get("op") === "runs") return [];
+      return {};
+    },
+    submitMutation: async () => { throw new Error("no writes"); } });
+  vm.runInContext(JOBS_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), ctx);
+  const text = node => typeof node === "string" ? node : [node?.textContent, ...(node?.children || []).map(text)].join(" ");
+  const walk = node => node && typeof node === "object" ? [node, ...(node.children || []).flatMap(walk)] : [];
+  const flush = () => new Promise(resolve => setImmediate(resolve));
+  const t = (key, fallback) => ({ "jobs.count": "{total} Jobs", "jobs.countFiltered": "{shown} of {total} Jobs" })[key] ?? fallback ?? key;
+  const index = h("div"), root = h("div");
+  const view = ctx.mountJobs(root, t, undefined, { index, navigate: selection => picks.push(selection),
+    heading: { title: "Jobs", hint: "hint" }, notice: "moved" });
+  await flush();
+  const rows = () => walk(index).filter(n => n.spec === "button.job-row");
+  assert.equal(rows().length, 2);
+  assert.match(text(index), /2 Jobs/);
+  const syncRow = rows().find(n => n.dataset.job === sync.id);
+  assert.match(text(syncRow), /jobs.type.projectSync/, "the builtin Project sync reads as its own Job type");
+  assert.equal(walk(syncRow).find(n => n.spec === "span.dot").dataset.tone, "idle", "an off plan shows the on/off preference");
+  assert.equal(walk(syncRow).find(n => n.spec === "span.badge").dataset.status, "failed", "Run status is a separate badge");
+  assert.match(text(rows().find(n => n.dataset.job === report.id)), /jobs.noSchedule.*/);
+  assert.match(text(root), /moved/);
+  const search = walk(index).find(n => n.spec === "input");
+  search.value = "weekly"; search.oninput();
+  assert.deepEqual(rows().map(n => n.dataset.job), [report.id]);
+  assert.match(text(index), /1 of 2 Jobs/);
+  search.value = "nothing"; search.oninput();
+  assert.equal(rows().length, 0);
+  assert.match(text(index), /jobs.noMatch/);
+  search.value = ""; search.oninput();
+  rows().find(n => n.dataset.job === sync.id).onclick();
+  assert.deepEqual(picks.map(p => ({ ...p })), [{ job: sync.id }]);
+  view.select(sync.id); await flush();
+  assert.equal(rows().find(n => n.dataset.job === sync.id)["aria-current"], "true");
+  jobs = []; await view.refresh(false); await flush();
+  assert.match(text(index), /0 Jobs/);
+  assert.match(text(index), /jobs.empty/);
 });

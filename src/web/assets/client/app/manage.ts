@@ -1,6 +1,7 @@
 export const MANAGE_SCRIPT = String.raw`
 import "/assets/js/app/settings.js";
 import "/assets/js/app/models.js";
+import "/assets/js/app/jobs.js";
 import { startManagement } from "/assets/js/layout/manageShell.js";
 import { createSidebarNav } from "/assets/js/layout/sidebarNav.js";
 import { isEditing } from "/assets/js/lib/dom.js";

@@ -5,7 +5,7 @@ import { iconSvg } from "../shared/icons.js";
 import { appRail } from "./appRail.js";
 import { MANAGE_SECTIONS, type ManageArea, type ManagePage, type ManageSection } from "../shared/manageNav.js";
 
-// One frame and entry point for /models/* and /settings/*. The frame is the
+// One frame and entry point for /jobs, /models/* and /settings/*. The frame is the
 // workbench's own: the global rail, a collapsible list (here the current
 // area's sections), and the center column under the shared top bar. Narrow
 // screens open the rail and the list together as a drawer, exactly as on the
@@ -30,6 +30,9 @@ const RAIL = `<aside class="manage-rail sidebar" aria-label="Sections" data-i18n
         <button id="sidebar-collapse" class="icon-btn side-collapse" type="button" aria-label="Collapse sections" data-i18n-aria-label="manage.collapseSections" title="Collapse sections · [" data-i18n-title="manage.collapseSections">${iconSvg("sidebar")}</button>
       </header>
       <nav class="manage-nav" aria-label="Sections" data-i18n-aria-label="manage.sections">${area("models", "models.title", "Models")}${area("settings", "settings.title", "Settings")}
+        <div class="manage-area jobs-area" data-area-group="jobs">
+          <div id="jobs-index" class="jobs-index" role="region" aria-label="Jobs" data-i18n-aria-label="nav.jobs"></div>
+        </div>
       </nav>
     </aside>`;
 
@@ -56,7 +59,7 @@ export function manageDocument(options: Readonly<{
 </head>
 <body class="manage-body ${options.page}-body">
   <div class="app manage-app" data-page="${options.page}" hidden>
-    ${appRail(options.page === "models" ? "models" : "settings")}
+    ${appRail(options.page)}
     ${RAIL}
     <div id="sidebar-scrim" class="sidebar-scrim"></div>
     <main id="manage-scroll" class="center manage-center" tabindex="-1">

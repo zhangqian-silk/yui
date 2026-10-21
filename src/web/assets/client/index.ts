@@ -68,6 +68,7 @@ import { JOBS_SCRIPT } from "./views/jobs.js";
 import { PERMISSIONS_SCRIPT } from "./views/permissions.js";
 import { MODELS_VIEW_SCRIPT } from "./views/models.js";
 import { MODELS_SCRIPT } from "./app/models.js";
+import { JOBS_APP_SCRIPT } from "./app/jobs.js";
 import { MANAGE_SHELL_SCRIPT } from "./layout/manageShell.js";
 import { MANAGE_SCRIPT } from "./app/manage.js";
 import { LOGIN_SCRIPT } from "./app/login.js";
@@ -77,6 +78,7 @@ export { APP_SCRIPT } from "./app/main.js";
 export const CLIENT_MODULES: Readonly<Record<string, string>> = Object.freeze({
   "views/skills": SKILLS_SCRIPT,
   "views/jobs": JOBS_SCRIPT,
+  "app/jobs": JOBS_APP_SCRIPT,
   "views/permissions": PERMISSIONS_SCRIPT,
   "views/models": MODELS_VIEW_SCRIPT,
   "lib/dom": DOM_SCRIPT,

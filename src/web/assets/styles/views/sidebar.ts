@@ -30,8 +30,6 @@ export const SIDEBAR_STYLES = `
 .search-field:focus-within kbd{opacity:0}
 .side-search-body{width:34px;height:34px;border:1px solid var(--line-2);border-radius:var(--r-md);background:var(--surface-2)}
 .side-search-body:hover:not(:disabled){border-color:var(--line-3)}
-.source-seg{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));width:100%}
-.source-seg .seg-btn{justify-content:center;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .attention-bar:empty{display:none}
 .attention-list{display:flex;flex-wrap:wrap;gap:6px}
 .attention-pill{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 9px;border:1px solid transparent;border-radius:var(--r-pill);background:var(--tone-soft);color:var(--tone);font-size:var(--fs-xs);font-weight:500}
@@ -63,6 +61,7 @@ export const SIDEBAR_STYLES = `
 .task-time{flex:none;color:var(--ink-4);font-size:var(--fs-2xs);font-variant-numeric:tabular-nums}
 .task-sub{gap:8px;height:18px;color:var(--ink-4);font-size:var(--fs-2xs)}
 .task-id{font-size:var(--fs-2xs);line-height:1;color:var(--ink-3)}
+.task-source{flex:none;padding:0 5px;border:1px solid var(--line-2);border-radius:var(--r-pill);color:var(--ink-3);font-size:10px;line-height:15px}
 .task-count{display:inline-flex;align-items:center;gap:3px;line-height:1;white-space:nowrap}
 .task-count .icon{width:11px;height:11px}
 .task-signals{display:inline-flex;gap:4px;margin-left:auto}

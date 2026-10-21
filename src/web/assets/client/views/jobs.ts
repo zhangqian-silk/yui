@@ -1,15 +1,48 @@
 export const JOBS_SCRIPT = String.raw`
-import { h } from "/assets/js/lib/dom.js";
+import { h, icon } from "/assets/js/lib/dom.js";
+import { formatDateTime } from "/assets/js/lib/format.js";
 import { requestJson, submitMutation } from "/assets/js/lib/api.js";
+import { badge, dot } from "/assets/js/ui/primitives.js";
 import { drawArtifact } from "/assets/js/views/task/files.js";
 
-// One view for two server-fixed scopes. Refresh only reads facts; it never
-// admits due work, derives nextDue or replaces a selected exact Run with latest.
-export function mountJobs(root, t, taskId) {
+// Job definition, Schedule and JobRun are three separate facts and are shown
+// as such: a Schedule's on/off state is planning intent, a Run's status is one
+// execution, and neither borrows Task lifecycle words.
+const SCHEDULE_TONE = { enabled: "ok", disabled: "idle", completed: "idle", "needs-attention": "warn", retired: "idle" };
+const RUN_TONE = { queued: "idle", running: "info", succeeded: "ok", failed: "bad", "timed-out": "bad",
+  cancelled: "idle", "unknown-needs-attention": "warn" };
+
+// The plan state a reader acts on. A builtin Project sync keeps the user's
+// on/off preference separate from its eligibility state; show the preference.
+export function scheduleState(schedule) {
+  if (schedule.builtin && schedule.state !== "needs-attention" && schedule.state !== "retired")
+    return schedule.builtin.enabled ? "enabled" : "disabled";
+  return schedule.state;
+}
+
+// One server-fixed scope (global, or one owning Task). Refresh only reads
+// facts; it never admits due work, derives nextDue or replaces a selected
+// exact Run with latest.
+//   options.index     separate element for the Job index (the Jobs entry);
+//                     without it, the index sits beside the detail (Task tab)
+//   options.navigate  ({ job }) a reader picked a Job: the caller records it
+//                     in history and calls select(); without it the choice
+//                     replaces the current URL
+//   options.heading   page heading and hint replacing the generic heading
+//   options.notice    one-time explanatory notice (for example a moved link)
+//   options.locale    () => locale for absolute times
+export function mountJobs(root, t, taskId, options = {}) {
   const base = taskId ? "/api/tasks/" + encodeURIComponent(taskId) : "/api/settings";
   const copy = key => t("jobs." + key);
   const receipt = h("p.settings-receipt", { role: "status", "aria-live": "polite" });
   const list = h("div.jobs-list");
+  const locale = () => (options.locale ? options.locale() : undefined);
+  const when = iso => iso ? formatDateTime(iso, locale()) : null;
+  const indexSearch = h("input", { type: "search", autocomplete: "off", spellcheck: "false",
+    placeholder: copy("search"), "aria-label": copy("search") });
+  const indexCount = h("p.jobs-index-count", { "aria-live": "polite" });
+  let filterText = "";
+  indexSearch.addEventListener("input", () => { filterText = indexSearch.value.trim().toLowerCase(); drawIndex(); });
   const detail = h("section.jobs-detail", { "aria-label": copy("details") });
   const editor = h("section");
   const params = new URLSearchParams(location.search);
@@ -29,7 +62,9 @@ export function mountJobs(root, t, taskId) {
     type: "button", onclick: action
   }, text);
   const json = value => h("pre.settings-observation", null, JSON.stringify(value, null, 2));
-  const fact = (name, value) => h("p.job-fact", null, h("strong", null, name + ": "), String(value ?? "—"));
+  const fact = (name, value) => h("div.job-fact", null, h("span.job-fact-label", null, name), h("span.job-fact-value", null,
+    value !== null && typeof value === "object" ? value : String(value ?? "—")));
+  const facts = (...items) => h("div.job-facts", null, items.filter(Boolean));
   const raw = (name, value) => h("details", null, h("summary", null, name), json(value));
   function field(name, control) { return h("label.field", null, h("span", null, name), control); }
   function input(value = "", attrs = {}) { return h("input", { value, ...attrs }); }
@@ -157,6 +192,7 @@ export function mountJobs(root, t, taskId) {
     const epoch = ++runGeneration;
     selectedRun = runId;
     pinSelection();
+    detail.querySelectorAll(".job-run-row").forEach(row => row.setAttribute("aria-current", String(row.dataset.run === runId)));
     target.replaceChildren(h("p", null, copy("loading")));
     try {
       const run = await read("jobs", { op: "run-get", id: jobId, runId });
@@ -271,16 +307,21 @@ export function mountJobs(root, t, taskId) {
       + (run.terminalAt || run.finishedAt || run.createdAt || run.attemptedAt)
       + (run.summary || run.businessResult?.summary ? " · " + (run.summary || run.businessResult.summary) : "") : null;
     const runDetail = h("section.job-run");
-    detail.replaceChildren(h("div.settings-stack", null, h("h3", null, job.title), fact("ID", job.id),
-      fact(copy("scope"), taskId || "global"), fact(copy("project"), job.configuration.projectId),
-      job.builtin ? h("p", null, copy("builtinSync")) : null,
-      fact(copy("revision"), job.revision),
-      fact(copy("executor"), job.configuration.kind),
-      fact(copy("recentRun"), summary(runs[0])),
-      fact(copy("recentSuccess"), summary(runs.find(run => run.businessResult?.outcome === "succeeded"))),
-      job.refresh ? h("div", null,
-        fact(copy("refreshAttempt"), summary(job.refresh.lastAttempt)),
-        fact(copy("refreshSuccess"), summary(job.refresh.lastSuccessfulRefresh))) : null,
+    const own = schedules.filter(s => s.jobId === job.id);
+    detail.replaceChildren(h("div.settings-stack", null,
+      h("header.job-head", null, h("h3", null, job.title), h("div.job-badges", null,
+        own.length ? own.map(s => scheduleBadge(s)) : badge(copy("noSchedule"), "idle"),
+        runs[0] ? runBadge(runs[0].status) : badge(copy("noRunsShort"), "idle"))),
+      h("section.job-block", { "aria-label": copy("definition") }, h("h4", null, copy("definition")), facts(fact("ID", job.id),
+        fact(copy("scope"), ownerValue()), fact(copy("type"), typeLabel(job)), fact(copy("project"), job.configuration.projectId),
+        fact(copy("revision"), job.revision)),
+        job.builtin ? h("p.job-note", null, copy("builtinSync")) : null),
+      h("section.job-block", { "aria-label": copy("execution") }, h("h4", null, copy("execution")), facts(
+        fact(copy("recentRun"), summary(runs[0])),
+        fact(copy("recentSuccess"), summary(runs.find(run => run.businessResult?.outcome === "succeeded"))),
+        job.refresh ? fact(copy("refreshAttempt"), summary(job.refresh.lastAttempt)) : null,
+        job.refresh ? fact(copy("refreshSuccess"), summary(job.refresh.lastSuccessfulRefresh)) : null),
+        h("p.job-note", null, copy("runVsPlan"))),
       h("div.settings-actions", null,
         button(copy("runNow"), () => void mutate("jobs", { op: "run", id: job.id, requestId: crypto.randomUUID() }, result => {
           selectedRun = result.run.id; pinSelection();
@@ -291,14 +332,14 @@ export function mountJobs(root, t, taskId) {
       job.refresh ? raw(copy("refreshFacts"), job.refresh) : null,
       h("h3", null, copy("schedules")),
       plans.length ? h("div.settings-stack", null, plans.map(({ schedule: s, lastSuccess }) => h("article.settings-card", null,
-        h("h4", null, s.id), fact(copy("state"), s.state),
+        h("header.job-head", null, h("h4", null, s.id), scheduleBadge(s)), fact(copy("state"), label("schedule", s.state)),
         s.builtin ? fact(copy("automatic"), copy(s.builtin.enabled ? "enabled" : "disabled")) : null,
         s.state === "completed" ? h("p", null, copy("onceCompleted")) : null,
         fact(copy("rule"), s.rule.kind === "cron" ? s.rule.expression : s.rule.kind === "once" ? s.rule.at : s.rule.anchor + " + " + s.rule.everyMs + " ms"),
         fact(copy("timezone"), s.rule.timezone || "UTC / offset"),
-        fact(copy("nextDue"), s.state === "enabled" ? s.nextDue : null), fact(copy("lastAttempt"), s.lastAttempt
-          ? s.lastAttempt.at + " · " + s.lastAttempt.outcome + " · " + (s.lastAttempt.runId || s.lastAttempt.reason || "") : null),
-        fact(copy("lastSuccess"), lastSuccess ? lastSuccess.id + " · " + (lastSuccess.terminalAt || lastSuccess.updatedAt) : null),
+        fact(copy("nextDue"), s.state === "enabled" ? when(s.nextDue) : null), fact(copy("lastAttempt"), s.lastAttempt
+          ? when(s.lastAttempt.at) + " · " + label("admission", s.lastAttempt.outcome) + " · " + (s.lastAttempt.runId || s.lastAttempt.reason || "") : null),
+        fact(copy("lastSuccess"), lastSuccess ? lastSuccess.id + " · " + when(lastSuccess.terminalAt || lastSuccess.updatedAt) : null),
         s.reason ? h("p.settings-error", null, s.reason) : null,
         h("div.settings-actions", null,
           button(copy("editSchedule"), () => editSchedule(s)),
@@ -307,9 +348,12 @@ export function mountJobs(root, t, taskId) {
           })), s.lastAttempt?.runId ? h("a.btn", { href: jobLink(taskId, s.lastAttempt.jobId || job.id, s.lastAttempt.runId) }, copy("inspectRun")) : null),
         raw(copy("details"), s)))) : h("p", null, copy("noSchedules")),
       h("h3", null, copy("history")),
-      runs.length ? h("div.jobs-runs", null, runs.map(run =>
-        button(run.id + " · " + run.status + " · " + run.trigger.source + " · " + run.createdAt,
-          () => void showRun(job.id, run.id, runDetail)))) : h("p", null, copy("noRuns")),
+      runs.length ? h("div.jobs-runs", null, runs.map(run => h("button.job-run-row", {
+        type: "button", "aria-current": String(selectedRun === run.id), dataset: { run: run.id },
+        onclick: () => void showRun(job.id, run.id, runDetail)
+      }, runBadge(run.status), h("code", null, run.id), h("span.job-run-meta", null,
+        label("trigger", run.trigger && run.trigger.source) + " · " + when(run.createdAt)))))
+        : h("p", null, copy("noRuns")),
       runDetail));
     if (selectedRun) await showRun(job.id, selectedRun, runDetail);
   }
@@ -321,31 +365,125 @@ export function mountJobs(root, t, taskId) {
       if (epoch !== generation) return;
       [jobs, schedules] = result;
       if (!selected && jobs.length) selected = jobs[0].id;
-      list.replaceChildren(...(jobs.length ? jobs.map(job => h("button.job-choice", {
-        type: "button", "aria-pressed": String(selected === job.id), onclick: () => {
-          if (pending || !guardDraft()) return;
-          closeEditor(); selected = job.id; selectedRun = undefined; pinSelection(); void refresh();
-        }
-      }, h("strong", null, job.title), h("code", null, job.id),
-        h("small", null, job.builtin ? copy("builtinSync") : job.configuration.action || job.configuration.kind),
-        h("small", null, job.configuration.projectId || "—"))) : [h("p", null, copy("empty"))]));
+      loaded = true; loadError = null;
+      drawIndex();
       await showDetail(epoch);
-      if (announce && epoch === generation) status(copy("observed") + " · " + new Date().toISOString());
-    } catch (error) { if (epoch === generation) status(copy("stale") + " " + error.message, true); }
+      if (announce && epoch === generation) status(copy("observed") + " · " + when(new Date().toISOString()));
+    } catch (error) {
+      if (epoch !== generation) return;
+      loadError = error.message;
+      drawIndex();
+      status(copy("stale") + " " + error.message, true);
+    }
+  }
+  // The Job index. Its count, search and empty state describe exactly the
+  // Jobs of this one scope as returned by its list read; nothing else.
+  let loaded = false, loadError = null;
+  function pick(job) {
+    if (pending || !guardDraft()) return;
+    closeEditor();
+    if (options.navigate) { options.navigate({ job: job.id }); return; }
+    selected = job.id; selectedRun = undefined; pinSelection(); void refresh();
+  }
+  function matches(job) {
+    if (!filterText) return true;
+    return [job.title, job.id, job.configuration.action, job.configuration.kind, job.configuration.projectId]
+      .some(value => typeof value === "string" && value.toLowerCase().includes(filterText));
+  }
+  function jobRow(job) {
+    const own = schedules.filter(s => s.jobId === job.id);
+    const states = own.map(scheduleState);
+    const state = states.includes("needs-attention") ? "needs-attention" : states.includes("enabled") ? "enabled"
+      : states[0] || null;
+    const latest = job.results && job.results.latest;
+    const next = own.filter(s => s.state === "enabled" && s.nextDue).map(s => s.nextDue).sort()[0];
+    const planText = state ? label("schedule", state) + (next ? " · " + copy("nextShort") + " " + when(next) : "") : copy("noSchedule");
+    return h("button.job-row", {
+      type: "button", dataset: { job: job.id }, "aria-current": String(selected === job.id),
+      title: job.title, onclick: () => pick(job)
+    }, dot(state ? SCHEDULE_TONE[state] || "idle" : "idle", planText),
+    h("span.job-row-body", null,
+      h("span.job-row-line", null, h("span.job-row-name", null, job.title)),
+      h("span.job-row-line.job-row-sub", null, h("code", null, job.id), h("span", null, typeLabel(job)),
+        job.configuration.projectId ? h("span", null, job.configuration.projectId) : null),
+      // Plan (on/off) and the latest Run's status are separate facts, side by side.
+      h("span.job-row-line.job-row-sub", null, h("span.job-row-plan", null, planText),
+        latest ? runBadge(latest.status) : h("span.job-row-none", null, copy("noRunsShort")))));
+  }
+  function drawIndex() {
+    if (!loaded && !loadError) { list.replaceChildren(h("p.jobs-index-empty", null, copy("loading"))); indexCount.textContent = ""; return; }
+    if (loadError && !loaded) {
+      list.replaceChildren(h("p.jobs-index-empty.is-error", null, copy("stale") + " " + loadError));
+      indexCount.textContent = "";
+      return;
+    }
+    const shown = jobs.filter(matches);
+    indexCount.textContent = filterText ? fill(copy("countFiltered"), { shown: shown.length, total: jobs.length })
+      : fill(copy("count"), { total: jobs.length });
+    // Redrawing must not drop a keyboard reader's place in the list.
+    const active = typeof document === "undefined" ? null : document.activeElement;
+    const focused = active && list.contains && list.contains(active) ? active.dataset.job : null;
+    list.replaceChildren(...(shown.length ? shown.map(jobRow)
+      : [h("p.jobs-index-empty", null, copy(jobs.length ? "noMatch" : "empty"))]));
+    if (focused) list.querySelector('.job-row[data-job="' + CSS.escape(focused) + '"]')?.focus();
+  }
+  function fill(template, values) {
+    return template.replace(/\{(\w+)\}/g, (match, key) => values[key] === undefined ? match : String(values[key]));
+  }
+  function label(kind, value) {
+    if (value === undefined || value === null || value === "") return "—";
+    return t(kind + "." + value, String(value).replace(/[-_]/g, " "));
+  }
+  function runBadge(value) {
+    const node = badge(label("job", value), RUN_TONE[value] || "idle", { dot: true });
+    node.dataset.status = value;
+    return node;
+  }
+  function scheduleBadge(schedule) {
+    const state = scheduleState(schedule);
+    const node = badge(copy("plan") + " · " + label("schedule", state), SCHEDULE_TONE[state] || "idle", { dot: true });
+    node.dataset.schedule = state;
+    return node;
+  }
+  function typeLabel(job) {
+    const config = job.configuration;
+    if (job.builtin || (config.kind === "builtin" && config.action === "project.refresh")) return copy("type.projectSync");
+    return config.kind === "builtin" ? label("jobs.action", config.action) : label("jobs.kind", config.kind);
+  }
+  function ownerValue() {
+    return taskId ? h("a", { href: "/?task=" + encodeURIComponent(taskId) }, copy("ownerTask") + " · " + taskId)
+      : copy("ownerGlobal");
   }
   root.classList.add("jobs-manager");
-  root.replaceChildren(h("h2", null, copy("heading")),
-    h("p", null, copy("help")), fact(copy("scope"), taskId || "global"),
-    h("div.settings-actions", null, button(copy("newJob"), () => editJob(), true),
-      button(copy("refresh"), () => { if (!pending) void refresh(); })),
-    receipt, editor, h("div.jobs-layout", null, list, detail));
+  const actions = h("div.settings-actions", null, button(copy("newJob"), () => editJob(), true),
+    button(copy("refresh"), () => { if (!pending) void refresh(); }),
+    !options.index && taskId ? h("a.btn", { href: jobLink(taskId) }, copy("openInJobs")) : null);
+  const head = options.heading
+    ? h("header.manage-head", null, h("div.manage-heading", null, h("h1", null, options.heading.title),
+      h("p", null, options.heading.hint)))
+    : h("div", null, h("h2", null, copy("heading")), h("p", null, copy("help")), fact(copy("scope"), ownerValue()));
+  const indexTools = h("div.jobs-index-tools", null,
+    h("label.search-field", null, icon("search"), h("span.sr-only", null, copy("search")), indexSearch), indexCount);
+  if (options.index) options.index.replaceChildren(indexTools, list);
+  root.replaceChildren(...[head, options.notice ? h("p.job-notice", { role: "status" }, options.notice) : null,
+    actions, receipt, editor,
+    options.index ? detail : h("div.jobs-layout", null, h("div.jobs-index", null, indexTools, list), detail)].filter(Boolean));
+  drawIndex();
   void refresh();
-  return { isDirty: () => dirty, isBusy: () => pending, refresh };
+  // Route-driven selection (history navigation in the Jobs entry).
+  function select(jobId, runId) {
+    if (selected === (jobId || undefined) && selectedRun === (runId || undefined)) return;
+    selected = jobId || undefined; selectedRun = runId || undefined;
+    void refresh(false);
+  }
+  return { isDirty: () => dirty, isBusy: () => pending, refresh, select };
 }
 
+// The one address of a Job and optionally an exact Run: the Jobs entry,
+// scoped to its owning Task when it has one.
 export function jobLink(taskId, jobId, runId) {
-  const query = new URLSearchParams({ job: jobId, ...(runId ? { jobRun: runId } : {}),
-    ...(taskId ? { task: taskId, section: "jobs" } : {}) });
-  return (taskId ? "/" : "/settings/jobs") + "?" + query;
+  const query = new URLSearchParams({ ...(taskId ? { task: taskId } : {}), ...(jobId ? { job: jobId } : {}),
+    ...(runId ? { jobRun: runId } : {}) });
+  return "/jobs" + (query.size ? "?" + query : "");
 }
 `;

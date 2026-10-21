@@ -18,7 +18,7 @@ export function clearPreference(key) {
 // switching back restores the filters, Task or section the user left. Only
 // same-origin paths of the expected area are accepted; anything else falls back.
 const PLACES = { workbench: /^\/(?:\?|$)/, models: /^\/models(?:[/?]|$)/, settings: /^\/settings(?:[/?]|$)/,
-  manage: /^\/(?:models|settings)(?:[/?]|$)/ };
+  jobs: /^\/jobs(?:[/?]|$)/, manage: /^\/(?:jobs|models|settings)(?:[/?]|$)/ };
 
 export function rememberPlace(area, href) {
   if (!PLACES[area] || !PLACES[area].test(href)) return;

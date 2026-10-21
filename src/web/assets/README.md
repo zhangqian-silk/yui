@@ -17,7 +17,7 @@ TypeScript 字符串里的 JavaScript，由 `tsc` 编译进 `dist/`，再由
 | `styles/index.ts` 的 `STYLESHEETS`（有序） | `/assets/css/<name>.css` | 同上；外壳按此顺序 `<link>` |
 | `client/index.ts` 的 `CLIENT_MODULES` | `/assets/js/<path>.js` | 同上 |
 | `client/app/main.ts` 的 `APP_SCRIPT` | `/assets/app.js`（入口） | 同上 |
-| `shell/models.ts` 的共享管理文档（`SETTINGS_HTML` 为同一文档） | `/settings/*`、`/models/*`（注入页面 token） | `webServer.ts`；统一入口 `app/manage`，组合 settings/models 控制器 |
+| `shell/models.ts` 的共享管理文档（`SETTINGS_HTML` 为同一文档） | `/jobs`、`/settings/*`、`/models/*`（注入页面 token） | `webServer.ts`；统一入口 `app/manage`，组合 settings/models/jobs 控制器 |
 | `fonts.ts` / `fontData.ts`、xterm 包 | `/assets/fonts/*`、`/assets/vendor/*` | 同上 |
 
 新增客户端模块 = 新文件导出 `XXX_SCRIPT` + 在 `client/index.ts` 注册
@@ -101,14 +101,15 @@ shortcuts。主要流程：
 | Task 页头、分区标签 | `client/views/task/page.ts` |
 | dock 行为（开关、模式、居中、窄屏 sheet） | `client/layout/workspace.ts`；外观在 `styles/views/dock.ts` |
 | 讨论区 / 原生 Session 终端 | `client/views/dock/discussion.ts` / `terminal.ts` |
-| 侧栏列表、筛选 | 渲染 `client/views/sidebar.ts`；数据与分页 `client/app/catalog.ts` |
+| 侧栏列表、筛选 | 渲染 `client/views/sidebar.ts`；数据与分页 `client/app/catalog.ts`。Task 列表不分类：显示全部真实 Task，Job 创建的 Task 带来源标记；旧 `?source=` 链接被去掉并提示一次 |
+| Job 入口 | 独立的 `/jobs`（`?task=` 选择归属范围，`job`/`jobRun` 为当前选择）。控制器 `client/app/jobs.ts` 只负责范围选择与路由，Job 列表与详情复用唯一的共享模块 `client/views/jobs.ts`（Task 页的 Job 分区用同一模块）；范围发现 `GET /api/jobs/scopes` 只返回归属与计数。旧 `/settings/jobs` 链接在原地规范化到 `/jobs` 并提示 |
 | 键盘快捷键 | `client/layout/shortcuts.ts` + 设置对话框列表 `shell/dialogs.ts` |
 | 文案 | `client/i18n/en.ts` 与 `zh-CN.ts` 同时改 |
 | 样式 | 对应 `styles/<层>/<名>.ts`；顺序在 `styles/index.ts` |
 | 写入表单 | 表单本身 `client/domain/taskForms.ts`；提交通道 `client/ui/forms.ts` |
 | 新的 API 读写 | `client/lib/api.ts`，经控制器 `deps.api` 或 Task 页上下文传入 |
 | 选中 / URL / 加载顺序 | `client/app/selection.ts`、`client/layout/router.ts` |
-| 模型 / 设置页的导航与分区归属 | 分区表 `shared/manageNav.ts`；导航栏 `shell/manage.ts`；统一路由 `client/layout/manageShell.ts`；外观 `styles/views/manage.ts`。标准 URL 为 `/models/providers\|catalog\|quota` 与 `/settings/preferences\|skills\|server\|connection`。旧 query 链接以 replaceState 规范化；管理分区不卸载控制器，离开管理文档才触发未保存提示；语言切换保留观测与草稿，不重新请求数据 |
+| 模型 / 设置页的导航与分区归属 | 分区表 `shared/manageNav.ts`；导航栏 `shell/manage.ts`；统一路由 `client/layout/manageShell.ts`；外观 `styles/views/manage.ts`。标准 URL 为 `/jobs`、`/models/providers\|catalog\|quota` 与 `/settings/preferences\|skills\|server\|connection`。旧 query 链接以 replaceState 规范化；管理分区不卸载控制器，离开管理文档才触发未保存提示；语言切换保留观测与草稿，不重新请求数据 |
 
 ## 陷阱
 

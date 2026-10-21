@@ -120,6 +120,9 @@ function taskRow(task, state, t, locale, onSelect) {
   h("span.task-body", null,
     h("span.task-line", null, h("span.task-name", null, task.title), h("time.task-time", { dateTime: task.updatedAt }, relativeTime(task.updatedAt, locale, t))),
     h("span.task-line.task-sub", null, h("code.task-id", null, task.id),
+      // A Task a Job Run created is still an ordinary real Task; mark where it came from.
+      task.source && task.source.kind === "job-run"
+        ? h("span.task-source", { title: t("jobs.sourceJob") + " · " + task.source.jobId }, t("catalog.sourceJob")) : null,
       counts.workItems > 0 ? h("span.task-count", { title: t("sidebar.workItems") }, icon("layers", "icon-sm"), String(counts.workItems)) : null,
       taskSignals(task, t))));
 }

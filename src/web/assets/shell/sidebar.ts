@@ -25,7 +25,6 @@ export const SIDEBAR_HTML = `    <aside class="sidebar" aria-label="Tasks" data-
           </label>
           <button id="body-search-open" class="icon-btn side-search-body" type="button" aria-label="Search task contents" data-i18n-aria-label="bodySearch.title" title="Search task contents" data-i18n-title="bodySearch.title">${iconSvg("textSearch")}</button>
         </div>
-        <div id="catalog-source" class="seg seg-sm source-seg" role="radiogroup" aria-label="Task category" data-i18n-aria-label="jobs.taskCategory"></div>
         <div id="attention-bar" class="attention-bar" aria-live="polite"></div>
       </div>
       <div id="status-filters" class="status-tabs" role="group" aria-label="Filter by status" data-i18n-aria-label="filters.label"></div>

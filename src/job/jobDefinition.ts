@@ -40,6 +40,9 @@ export type JobTrigger = Readonly<{
   key: string;
 }>;
 
+/** Discovery counts for one owning scope; reads still authorize each record. */
+export type JobScopeSummary = Readonly<{ scope: JobScope; definitions: number; schedules: number; enabledSchedules: number }>;
+
 export function jobScopeKey(scope: JobScope): string {
   if (scope.kind === "global") return "global";
   requireIdentity(scope.taskId, "Job Task id");
