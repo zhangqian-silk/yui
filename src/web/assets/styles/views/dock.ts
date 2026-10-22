@@ -1,7 +1,7 @@
 /*
  * DOCK VIEW — the Discussion pane: its sub-header, the message feed with day
  * separators and bubbles, the composer, submission facets and next steps.
- * The Live session pane is views/terminal; the dock frame is layout/workspace.
+ * The session page is views/conversation and views/terminal; the dock frame is layout/workspace.
  */
 export const DOCK_STYLES = `
 .dock-head{height:auto;min-height:var(--header-h);padding-top:6px;padding-bottom:6px}
@@ -24,6 +24,8 @@ export const DOCK_STYLES = `
 .dock-target-item:hover{background:var(--surface-3);color:var(--ink)}
 .dock-target-item[aria-pressed="true"]{color:var(--ink);font-weight:550}
 .dock-target-item .dock-target-check{color:var(--accent)}
+.dock-target-dot{width:7px;height:7px;margin:0 4px;flex:none;border-radius:50%;background:var(--idle)}
+.dock-target-dot.is-live{background:var(--ok)}
 /* One header row: target, view tabs, actions. The target's name wins space
    first: icon-only tabs up to 480px, the selected label up to 560px, then
    every label. Tabs keep aria-label and title at every width. */

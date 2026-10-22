@@ -6,6 +6,13 @@
  */
 export const CONVERSATION_STYLES = `
 #dock-conversation{min-width:0}
+/* Session page: one view at a time (chat or terminal), rebuilt on a mode switch */
+.session-view{flex:1;min-height:0;min-width:0;display:flex;flex-direction:column}
+.sp-modes{flex:none}
+.sp-modes .seg-btn{gap:5px}
+.sp-modes .seg-btn .icon{width:14px;height:14px;flex:none}
+.sp-modes .seg-btn[aria-disabled="true"]{opacity:.45}
+@container dock (max-width:440px){.sp-modes .seg-btn>span{display:none}.sp-modes .seg-btn{padding:0 7px}}
 .cv-head{flex:none;display:flex;align-items:center;gap:6px;padding:8px 10px 4px 8px}
 .cv-head .spacer{flex:1 1 0;min-width:0}
 /* Session picker: one readable name; current and previous Sessions on demand */

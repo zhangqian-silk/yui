@@ -6,6 +6,7 @@ import { SELECTION_SCRIPT } from "../../dist/web/assets/client/app/selection.js"
 import { WORKSPACE_SCRIPT } from "../../dist/web/assets/client/layout/workspace.js";
 import { PREFS_SCRIPT } from "../../dist/web/assets/client/lib/prefs.js";
 import { TERMINAL_SCRIPT } from "../../dist/web/assets/client/views/dock/terminal.js";
+import { SESSION_PAGE_SCRIPT } from "../../dist/web/assets/client/views/dock/session.js";
 
 // Exercise the shipped controller with disposable DOM/network boundaries.
 function fixture(submitResult = { state: "submitted" }, extra = {}) {
@@ -20,6 +21,10 @@ function fixture(submitResult = { state: "submitted" }, extra = {}) {
       addEventListener(event, handler) { this.handlers[event] = handler; },
       setAttribute(name, value) { this[name] = String(value); },
       closest() { return null; }, querySelectorAll() { return []; },
+      classList: { add() {}, remove() {}, toggle() {} },
+      get lastChild() { return this.children.at(-1); },
+      focus() { context.document.activeElement = this; },
+      contains(node) { const walk = n => n === node || (n.children || []).some(c => typeof c === "object" && walk(c)); return walk(this); },
       // Enough selector support for the controller: tag prefixes and [aria-selected=true].
       querySelector(selector) {
         const match = n => selector === "[aria-selected=true]" ? n["aria-selected"] === "true" : n.spec.startsWith(selector);
@@ -328,12 +333,12 @@ test("the dock leaves the access preference to Settings and keeps the current Se
   await flush();
   assert.equal(f.elements.some(n => n.spec === "select" && n["aria-label"] !== "conversation.model"), false,
     "no second preference control inside the dock");
-  assert.equal(f.context.preferredMode(), "conversation");
+  assert.equal(f.context.preferredMode(), "chat");
   // The Settings page writes through this helper; the open view is unaffected.
   f.context.writeSessionAccessMode("native");
   await f.tick();
   assert.equal(f.preferences.get("yui.session.accessMode"), "native");
-  assert.equal(f.context.preferredMode(), "session");
+  assert.equal(f.context.preferredMode(), "terminal");
   assert.equal(f.controller.selection().nativeSessionId, "thread");
   assert.equal(f.mutations.length, 0, "saving a browser preference is not runtime adoption");
   f.controller.close();
@@ -361,33 +366,30 @@ test("workbench continuation resolves the current Leader afresh without replayin
   f.controller.close();
 });
 
-test("terminal hide cancels pending attachment and reopens the actual selected owner", () => {
+test("hiding the dock pauses the session page and showing it resumes the same owner and Session", () => {
   const context = vm.createContext({ writePreference() {}, document: { activeElement: null } });
   vm.runInContext(WORKSPACE_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
-  const target = { scope: "task", taskId: "task-1", roleName: "leader", nativeSessionId: "leader-thread" };
-  const switched = { scope: "global", roleName: "operator", nativeSessionId: "operator-thread" };
-  let current = target, closed = 0, reopened, layoutVisible;
+  const owner = { scope: "task", taskId: "task-1", roleName: "reviewer" };
+  const calls = [];
+  let layoutVisible;
   const ws = {
-    dock: { mode: "session", open: true }, narrow: { matches: false },
-    terminalTarget: target,
-    deps: { state: {}, terminal: {
-      connected: () => false, current: () => current,
-      close: () => { closed++; current = null; }, open: t => { reopened = t; current = t; }
-    }, conversation: { close() {} } }
+    dock: { mode: "conversation", open: true }, narrow: { matches: false },
+    deps: { state: { selected: "task-1" }, el: { dock: { contains: () => false } }, session: {
+      current: () => owner, close: () => calls.push("close"), reconnect: () => calls.push("reconnect"),
+      open: (...args) => calls.push(["open", ...args]), setMode: mode => calls.push(["mode", mode])
+    } }
   };
-  assert.equal(context.dockVisible(ws), true);
-  // The terminal target chips change the terminal controller directly.
-  current = switched;
   context.observeLayout = value => { layoutVisible = context.dockVisible(value); };
   vm.runInContext("updateLayout = observeLayout", context);
   context.setDockOpen(ws, false);
-  assert.equal(closed, 1);
   assert.equal(context.dockVisible(ws), false);
   context.setDockOpen(ws, true);
-  assert.deepEqual(JSON.parse(JSON.stringify(reopened)), { scope: "global", roleName: "operator" },
-    "preserve the chip-selected owner, but resolve its current Session again");
-  assert.equal(context.dockVisible(ws), true);
-  assert.equal(layoutVisible, true, "layout is rendered after restoring the selected target");
+  assert.deepEqual(calls, ["close", "reconnect"], "no new Session is opened, created or resolved by the dock");
+  assert.equal(layoutVisible, true);
+  // The legacy native shortcut opens the same page in its terminal mode.
+  context.setDockOpen(ws, false);
+  context.toggleDock(ws, "session");
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.slice(2))), ["close", "reconnect", ["mode", "terminal"]]);
 });
 
 test("the page's one panel switch mirrors the dock, keeps its view and takes focus back on close", () => {
@@ -404,8 +406,7 @@ test("the page's one panel switch mirrors the dock, keeps its view and takes foc
     deps: { t: key => key, state: { selected: "task-1" },
       el: { dock: { contains: node => node === inside },
         detail: { querySelectorAll: () => [toggle], querySelector: () => toggle } },
-      terminal: { current: () => null, close() {} },
-      conversation: { close() {}, reconnect() { reconnects++; }, current: () => null } }
+      session: { close() {}, reconnect() { reconnects++; }, current: () => ({ scope: "global", roleName: "operator" }) } }
   };
   context.toggleDock(ws);
   assert.equal(context.dockVisible(ws), true);
@@ -428,35 +429,183 @@ test("the page's one panel switch mirrors the dock, keeps its view and takes foc
   assert.equal(document.activeElement, null, "focus outside the panel is left where it is");
 });
 
-test("terminal hide/reopen resolves a replacement Session without replaying input", async () => {
-  let currentSessionId = "thread-a", reads = 0, pending;
-  const connections = [], writes = [];
-  const context = vm.createContext({
-    URLSearchParams, writePreference() {}, clear() {}, document: { activeElement: null },
-    ResizeObserver: class { observe() {} disconnect() {} },
-    async requestJson() { reads++; return { currentSessionId }; },
-    fakeMount() { return { terminal: { onData() { return { dispose() {} }; }, dispose() {} }, fit: { fit() {} } }; },
-    fakeConnect(target) { connections.push(target.nativeSessionId); return { close() {}, addEventListener() {}, send(data) { writes.push(data); } }; }
+// The session page with the shipped chat and terminal controllers; only the
+// network, xterm and WebSocket edges are fakes. Each script keeps its own
+// context because the controllers share private helper names.
+function sessionFixture(extra = {}) {
+  const f = fixture(extra.submitResult ?? {}, extra);
+  const connections = [], sockets = [], notes = [], held = [];
+  const term = vm.createContext({
+    URLSearchParams, clear() {}, sessionExpired() {}, fill: template => template,
+    ResizeObserver: class { observe() {} disconnect() {} }, WebSocket: { OPEN: 1 },
+    requestJson: url => {
+      if (!f.holdTerminal) return f.context.requestJson(url);
+      return new Promise(resolve => held.push(() => resolve(f.context.requestJson(url))));
+    },
+    fakeMount: () => ({ terminal: { onData() { return { dispose() {} }; }, dispose() {}, focus() {}, options: {} }, fit: { fit() {} } }),
+    fakeConnect: target => {
+      connections.push(target.nativeSessionId);
+      const socket = { readyState: 1, closed: false, sent: [], listeners: {},
+        addEventListener(type, listener) { this.listeners[type] = listener; },
+        send(data) { this.sent.push(data); }, close() { this.closed = true; } };
+      sockets.push(socket);
+      return socket;
+    }
   });
-  for (const script of [TERMINAL_SCRIPT, WORKSPACE_SCRIPT]) {
-    vm.runInContext(script.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
-  }
-  vm.runInContext("mountTerminal = fakeMount; connect = fakeConnect; drawTargets = function() {}; setState = function() {}; updateLayout = function() {}", context);
-  const ctl = { generation: 0, session: null, elements: { host: {}, empty: {}, cli: {} }, notify: assert.fail };
+  vm.runInContext(TERMINAL_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), term);
+  vm.runInContext("mountTerminal = function () { return fakeMount(); }; connect = function (target) { return fakeConnect(target); }", term);
+  const pageContext = vm.createContext({ h: f.context.h, icon: f.context.icon, formatShort: iso => iso, document: f.context.document,
+    createConversationController: f.context.createConversationController, createTerminalController: term.createTerminalController });
+  vm.runInContext(SESSION_PAGE_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), pageContext);
+  const pane = f.context.h("dock-pane");
+  let changes = 0;
+  const page = pageContext.createSessionPage(pane, k => k, () => "en", message => notes.push(message), () => { changes++; });
+  return Object.defineProperties(f, Object.getOwnPropertyDescriptors({ page, pane, connections, sockets, notes, held, get changes() { return changes; },
+    modeButton: mode => f.elements.findLast(n => n.spec === "button.seg-btn" && n.dataset.mode === mode),
+    get draft() { return f.elements.findLast(n => n.spec.startsWith("textarea")); },
+    get view() { return pane.children[0]; },
+    lastSession: () => new URL(f.calls.filter(url => url.includes("session=")).at(-1), "http://fixture").searchParams.get("session"),
+    switchTo: async mode => { f.modeButton(mode).handlers.click(); await flush(); },
+    release: async () => { held.splice(0).forEach(go => go()); await flush(); await flush(); }
+  }));
+}
+
+test("chat and terminal are one page: a mode switch keeps the owner and Session and rebuilds the view", async () => {
+  const f = sessionFixture();
   const owner = { scope: "task", taskId: "task-1", roleName: "leader" };
-  const ws = { dock: { mode: "session", open: true }, narrow: { matches: false }, terminalTarget: owner, deps: {
-    terminal: { current: () => ctl.current, close: () => context.close(ctl), open: target => { pending = context.open(ctl, target); } },
-    conversation: { close() {} }
-  } };
-  await context.open(ctl, owner);
-  context.setDockOpen(ws, false);
-  currentSessionId = "thread-b";
-  context.setDockOpen(ws, true);
-  await pending;
-  assert.equal(reads, 2);
-  assert.deepEqual(connections, ["thread-a", "thread-b"]);
-  assert.deepEqual(writes, []);
-  context.close(ctl);
+  f.page.open(owner, { mode: "chat", current: true });
+  await flush();
+  assert.equal(f.lastSession(), "thread");
+  assert.equal(f.modeButton("chat")["aria-checked"], "true");
+  assert.equal(f.modeButton("terminal")["aria-disabled"], "false");
+  f.draft.value = "unsent words";
+  f.draft.handlers.input();
+  assert.ok([...f.storage.values()].includes("unsent words"));
+  await f.switchTo("terminal");
+  assert.equal(f.page.mode(), "terminal");
+  assert.ok(f.view.spec.endsWith("is-terminal"), "the old chat view is gone from the pane");
+  assert.deepEqual(f.connections, ["thread"], "the terminal attaches to the Session the chat had selected");
+  assert.equal([...f.storage.values()].includes("unsent words"), false, "unsent drafts do not survive a mode switch");
+  const reads = f.calls.length;
+  await f.tick();
+  assert.equal(f.calls.length, reads, "the destroyed chat no longer polls");
+  await f.switchTo("chat");
+  assert.equal(f.sockets[0].closed, true, "leaving the terminal releases its socket");
+  assert.equal(f.lastSession(), "thread");
+  assert.equal(f.draft.value, "");
+  assert.equal(f.changes, 3, "the dock header redraws after each build");
+  assert.deepEqual(JSON.parse(JSON.stringify(f.page.current())), owner);
+  assert.equal(f.mutations.length, 0, "switching never sends or adopts anything");
+  assert.deepEqual(f.sockets[0].sent, []);
+  f.page.close();
+});
+
+test("a pending submission receipt survives a mode switch and is never replayed", async () => {
+  const f = sessionFixture({ idle: true, receiptState: "unknown", submit() { throw Error("lost acknowledgement"); } });
+  f.page.open({ scope: "task", taskId: "task-1", roleName: "leader" }, { mode: "chat", current: true });
+  await flush();
+  f.draft.value = "One intended input";
+  await f.elements.findLast(n => n.spec.startsWith("button") && (n.children.includes("conversation.send") || n["aria-label"] === "conversation.send")).handlers.click();
+  assert.equal(f.mutations.length, 1);
+  await f.switchTo("terminal");
+  await f.switchTo("chat");
+  assert.equal(f.elements.findLast(n => n.spec.startsWith("button") && (n.children.includes("conversation.send") || n["aria-label"] === "conversation.send")).disabled, true,
+    "an unknown effect still blocks input in the rebuilt view");
+  assert.ok([...f.preferences.keys()].some(k => k.endsWith(".pending")), "the receipt is a fact, not view state");
+  assert.ok([...f.storage.values()].includes("One intended input"), "the receipt keeps its body");
+  assert.equal(f.mutations.length, 1, "no replay");
+  f.page.close();
+});
+
+test("the terminal never attaches to a historical or replaced Session in place of the current one", async () => {
+  const f = sessionFixture({ history: ["old-thread"] });
+  f.page.open({ scope: "task", taskId: "task-1", roleName: "leader" }, { mode: "chat", current: true });
+  await flush();
+  await f.pick("old-thread");
+  assert.equal(f.modeButton("terminal")["aria-disabled"], "true");
+  assert.equal(f.modeButton("terminal").title, "terminal.notCurrentText");
+  await f.switchTo("terminal");
+  assert.equal(f.page.mode(), "chat", "a blocked switch keeps the chat");
+  assert.deepEqual(f.notes, ["terminal.notCurrentText"], "and says why");
+  assert.equal(f.lastSession(), "old-thread", "the historical selection is kept");
+  await f.pick("thread");
+  await f.switchTo("terminal");
+  assert.deepEqual(f.connections, ["thread"]);
+  // Hidden while the owner moved to a replacement Session: report, never exchange.
+  f.page.close();
+  assert.equal(f.sockets[0].closed, true);
+  f.replaceCurrent("thread-b");
+  f.page.reconnect();
+  await flush();
+  assert.deepEqual(f.connections, ["thread"], "no attachment to the replacement Session");
+  assert.equal(f.text("p.terminal-empty-title"), "terminal.notCurrentTitle");
+  assert.equal(f.page.selection(), null);
+  assert.equal(f.page.mode(), "terminal");
+  // Returning to the chat keeps the selected (now previous) Session.
+  await f.switchTo("chat");
+  assert.equal(f.lastSession(), "thread");
+  f.page.close();
+});
+
+test("a Role without a Session shows why the terminal is unavailable and starts nothing", async () => {
+  const f = sessionFixture({ sessions: () => [] });
+  f.replaceCurrent(null);
+  f.page.open({ scope: "task", taskId: "task-1", roleName: "reviewer" }, { mode: "terminal", current: true });
+  await flush();
+  assert.deepEqual(f.connections, []);
+  assert.equal(f.text("p.terminal-empty-title"), "terminal.noSessionTitle");
+  assert.equal(f.mutations.length, 0);
+  f.page.close();
+});
+
+test("late answers from a destroyed view or an earlier owner never reach the page", async () => {
+  const f = sessionFixture();
+  const leader = { scope: "task", taskId: "task-1", roleName: "leader" };
+  const reviewer = { scope: "task", taskId: "task-1", roleName: "reviewer" };
+  f.page.open(leader, { mode: "chat", current: true });
+  await flush();
+  f.holdTerminal = true;
+  await f.switchTo("terminal");
+  await f.switchTo("chat");
+  await f.release();
+  assert.deepEqual(f.connections, [], "the abandoned terminal never attaches");
+  assert.equal(f.page.mode(), "chat");
+  assert.equal(f.modeButton("terminal")["aria-disabled"], "false");
+  await f.switchTo("terminal");
+  f.page.open(reviewer, {});
+  f.holdTerminal = false;
+  await f.release();
+  await flush();
+  assert.equal(f.page.mode(), "terminal", "choosing another owner keeps the mode");
+  assert.deepEqual(JSON.parse(JSON.stringify(f.page.current())), reviewer);
+  assert.deepEqual(f.connections, ["thread"]);
+  assert.equal(f.sockets.length, 1);
+  f.page.close();
+});
+
+test("the dock's single target menu offers the selected Task's Roles and marks live ones", () => {
+  const made = [];
+  const h = (spec, attrs, ...children) => { const node = { spec, ...attrs, children: children.filter(Boolean) }; made.push(node); return node; };
+  const context = vm.createContext({ writePreference() {}, markSelected() {}, document: { activeElement: null }, h,
+    icon: name => h("icon", { name }), clear: node => { node.children = []; } });
+  vm.runInContext(WORKSPACE_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
+  const options = { dataset: {}, children: [], append(node) { this.children.push(node); } };
+  let opened;
+  const ws = { dock: { mode: "conversation", open: true }, narrow: { matches: false },
+    targets: [{ scope: "task", taskId: "task-1", roleName: "reviewer", live: true }, { scope: "task", taskId: "task-9", roleName: "other" }],
+    deps: { t: k => k, state: { selected: "task-1" },
+      el: { dockTargetLabel: {}, dockTargetIcon: { replaceChildren() {} }, dockTargetOptions: options, dockTarget: { open: true },
+        detail: { querySelectorAll: () => [] }, dock: {}, divider: {}, discussion: {}, conversation: {}, preview: {} },
+      session: { current: () => ({ scope: "task", taskId: "task-1", roleName: "leader" }), open: (...args) => { opened = args; } } } };
+  vm.runInContext("updateLayout = function () {}", context);
+  context.drawTarget(ws);
+  const labels = options.children.map(item => item.children.find(c => c.spec === "span").children[0]);
+  assert.deepEqual(labels, ["actions.operator", "leader · task-1", "reviewer · task-1"]);
+  assert.equal(options.children.filter(item => item.children.some(c => c.spec === "i.dock-target-dot.is-live")).length, 1);
+  options.children[2].onclick();
+  assert.deepEqual(JSON.parse(JSON.stringify(opened)), [{ scope: "task", roleName: "reviewer", taskId: "task-1" }, {}],
+    "choosing a Role keeps the page's mode and resolves no Session itself");
+  assert.equal(ws.deps.el.dockTarget.open, false);
 });
 
 test("conversation preserves unsent drafts and reading state while receipts and refreshes arrive", async () => {

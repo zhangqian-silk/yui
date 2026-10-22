@@ -332,7 +332,7 @@ def terminal_writers():
     second = None
     native_log = Path(json.loads((evidence / "report.json").read_text())["home"]) / "native-tui.jsonl"
     try:
-        click_named("Terminal", "tab")
+        click_named("Terminal", "radio")
         wait("document.body.innerText.includes('Interactive')")
         click_named("Terminal input", "textbox")
         cdp("Input.insertText", text="WRITER-ALLOWED")
@@ -344,7 +344,7 @@ def terminal_writers():
         second = current_tab()["targetId"]
         wait_for_load()
         print(page_info())
-        click_named("Terminal", "tab")
+        click_named("Terminal", "radio")
         wait("document.body.innerText.includes('Read only')")
         click_named("Terminal input", "textbox")
         cdp("Input.insertText", text="WRITER-DENIED")
@@ -373,9 +373,10 @@ def terminal_writers():
         if second:
             cdp("Target.closeTarget", targetId=second)
         switch_tab(first)
-        click_named("Conversation", "tab")
+        click_named("Chat", "radio")
     wait("document.querySelector('textarea[aria-label=\"Message to the selected Session\"]') !== null")
-    assert js("document.querySelector('textarea[aria-label=\"Message to the selected Session\"]').value") == "Task one private draft"
+    # The session page rebuilt its chat view: unsent text does not survive a mode switch.
+    assert js("document.querySelector('textarea[aria-label=\"Message to the selected Session\"]').value") == ""
     end = time.monotonic() + 5
     while read_api("/api/conversation?scope=task&task=task-1&role=leader")["body"]["terminalWriter"] and time.monotonic() < end:
         time.sleep(.1)

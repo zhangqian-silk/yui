@@ -5,7 +5,10 @@ import { richText } from "/assets/js/ui/text.js";
 import { formatDateTime, formatShort, fill } from "/assets/js/lib/format.js";
 import { inputCard } from "/assets/js/domain/work.js";
 
-export function createConversationController(host, t, locale = function () { return "en"; }) {
+// options.tools: a node placed in the header row (the session page's mode
+// switch). options.onSelection(sessionId, currentSessionId) reports the chosen
+// Session; currentSessionId is undefined until the owner's facts are read.
+export function createConversationController(host, t, locale = function () { return "en"; }, options = {}) {
   let owner = null, selected = null, facts = null, next = null, latestItems = [], olderItems = [];
   let generation = 0, busy = false, timer = null, pending = null, historyOk = false;
   let recoveryUnavailable = false;
@@ -19,6 +22,8 @@ export function createConversationController(host, t, locale = function () { ret
   const requests = h("div.cv-requests");
   const questions = h("div.cv-requests");
   let questionSignature = "";
+  // Native answer drafts typed in this view (discarded with it on a mode switch).
+  const nativeDraftKeys = new Set();
   let confirmedModel = null, modelRowMap = new Map();
   // Who/which Session: one row. The picker lists current and previous Sessions
   // by readable name and time; exact identities live in the details menu.
@@ -123,7 +128,7 @@ export function createConversationController(host, t, locale = function () { ret
     if (feed.scrollTop < 120 && next && historyOk && !busy) refresh(true);
   });
   host.append(
-    h("div.cv-head", null, picker, current, h("span.spacer"), status, menu),
+    h("div.cv-head", null, picker, current, h("span.spacer"), status, options.tools || null, menu),
     h("div.cv-stage", null, older, feed, latest),
     questions, requests,
     h("div.cv-composer", null, slash, notice,
@@ -132,6 +137,9 @@ export function createConversationController(host, t, locale = function () { ret
       h("div.cv-hint", null, draftStatus, literal, check, receipt)));
 
   function focusOption(option) { if (option && typeof option.focus === "function") option.focus(); }
+  function report() {
+    if (options.onSelection) options.onSelection(selected, facts ? facts.currentSessionId || null : undefined);
+  }
   function selectedSession() {
     return facts && facts.sessions.find(function (s) { return s.nativeSessionId === selected; }) || null;
   }
@@ -192,8 +200,10 @@ export function createConversationController(host, t, locale = function () { ret
       catch { recoveryUnavailable = true; }
     }
     const active = selectedSession();
+    // Task Roles other than the Leader keep their assignment controls; here they are read only.
+    const roleReadOnly = !!owner && owner.scope === "task" && owner.roleName !== "leader";
     const writable = historyOk && active && active.current && active.status === "active" && active.adapterId === "codex"
-      && facts.authority && facts.authority.owner === "controller" && !facts.terminalWriter;
+      && facts.authority && facts.authority.owner === "controller" && !facts.terminalWriter && !roleReadOnly;
     const turn = facts && facts.turn;
     const unsettled = turn && ["submitting", "delivery-unknown"].includes(turn.status);
     send.disabled = busy || recoveryUnavailable || !!pending || !!modelPending || !writable || unsettled;
@@ -216,13 +226,14 @@ export function createConversationController(host, t, locale = function () { ret
     const reason = !facts || !selected || !historyOk || !active ? ""
       : !active.current ? "conversation.readOnlyHistory"
         : facts.terminalWriter ? "conversation.terminalWriter"
+          : roleReadOnly ? "conversation.roleReadOnly"
           : recoveryUnavailable ? "conversation.storageFailed"
             : pending ? "conversation.pendingInput"
               : unsettled ? "conversation.turnUnsettled"
                 : modelPending ? "conversation.modelApplying"
                   : !writable ? "conversation.inputUnavailable" : "";
     notice.hidden = !reason;
-    notice.className = "cv-notice" + (reason === "conversation.terminalWriter" || reason === "conversation.readOnlyHistory" ? "" : " is-warn");
+    notice.className = "cv-notice" + (["conversation.terminalWriter", "conversation.readOnlyHistory", "conversation.roleReadOnly"].includes(reason) ? "" : " is-warn");
     noticeText.textContent = reason ? t(reason) : "";
     noticeCurrent.hidden = reason !== "conversation.readOnlyHistory";
     text.placeholder = t(reason === "conversation.readOnlyHistory" ? "conversation.placeholderHistory" : "conversation.placeholder");
@@ -405,6 +416,7 @@ export function createConversationController(host, t, locale = function () { ret
         (params.questions || []).forEach(function (question) {
           const field = h("input", { type: question.isSecret ? "password" : "text", "aria-label": question.question });
           const draftKey = ".nativeDraft." + request.turnId + "." + request.id + "." + question.id;
+          nativeDraftKeys.add(draftKey);
           if (!question.isSecret) {
             field.value = saved(draftKey) || "";
             field.addEventListener("input", function () { saved(draftKey, field.value); });
@@ -515,6 +527,7 @@ export function createConversationController(host, t, locale = function () { ret
     clear(requests); requestSignature = "";
     clear(questions); questionSignature = "";
     controls();
+    report();
   }
   function finish(own) {
     busy = false; controls();
@@ -724,6 +737,7 @@ export function createConversationController(host, t, locale = function () { ret
         choose(facts.currentSessionId);
         own = generation;
       }
+      report();
       if (!selected) {
         status.textContent = t("conversation.noSession"); status.className = "cv-status is-unknown";
         pickerName.textContent = t("conversation.noSessionShort"); return;
@@ -938,10 +952,22 @@ export function createConversationController(host, t, locale = function () { ret
         clear(questions); questionSignature = "";
       }
       if (options && options.materials) incomingMaterials = options.materials;
+      // A named Session (carried from another mode) is kept even when it is no
+      // longer current: never silently exchanged for today's current Session.
+      if (options && options.session && options.session !== selected) choose(options.session);
       if (!timer) timer = window.setInterval(function () { refresh(); }, 2000);
       refresh();
     },
-    close: function () { if (timer) window.clearInterval(timer); timer = null; generation++; }
+    close: function () { if (timer) window.clearInterval(timer); timer = null; generation++; },
+    // The session page left this view: forget its unsent text. A draft that
+    // is the body of an unresolved submission stays with that receipt.
+    discardDraft: function () {
+      if (!owner || !selected) return;
+      let held = null;
+      try { held = JSON.parse(saved(".pending") || "null"); } catch { held = null; }
+      if (!held) saved(".draft", null);
+      nativeDraftKeys.forEach(function (draftKey) { saved(draftKey, null); });
+    }
   };
 }
 `;

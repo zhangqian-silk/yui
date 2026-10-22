@@ -1,13 +1,13 @@
 export const TERMINAL_SCRIPT = String.raw`
-// The live native Session terminal in the dock: target chips, the xterm view
-// and its WebSocket. One session is open at a time; opening another target
-// disposes the previous one first.
+// The live native terminal of the session page (views/dock/session): the xterm
+// view and its WebSocket for one owner's current Session. The session page
+// builds the surrounding chrome and destroys this controller with its view;
+// opening another target disposes the previous connection first.
 import { Terminal } from "/assets/vendor/xterm.mjs";
 import { FitAddon } from "/assets/vendor/addon-fit.mjs";
-import { h, icon, clear } from "/assets/js/lib/dom.js";
+import { clear } from "/assets/js/lib/dom.js";
 import { fill } from "/assets/js/lib/format.js";
 import { pageToken, requestJson } from "/assets/js/lib/api.js";
-import { dot } from "/assets/js/ui/primitives.js";
 import { sessionExpired } from "/assets/js/lib/session.js";
 
 function cssVar(name, fallback) {
@@ -34,18 +34,19 @@ export function sameTarget(left, right) {
     && (left.scope !== "task" || left.taskId === right.taskId);
 }
 
-// elements: { host, empty, state, cli, targets }; locale() reads the current
-// locale; notify(message) shows a toast.
-export function createTerminalController(elements, t, locale, notify) {
-  const ctl = { elements: elements, t: t, locale: locale, notify: notify, session: null, current: null, generation: 0, stateKey: "terminal.idle", targets: [] };
-  drawTargets(ctl);
+// elements: { host, empty, emptyTitle, emptyText, state, cli }; locale() reads
+// the current locale; notify(message) shows a toast.
+// hooks.onSession({ id, currentSessionId, session }) reports which Session the
+// open target resolved to (or that it has none), before any connection.
+export function createTerminalController(elements, t, locale, notify, hooks) {
+  const ctl = { elements: elements, t: t, locale: locale, notify: notify, hooks: hooks || {}, session: null, current: null,
+    generation: 0, stateKey: "terminal.idle", emptyKey: null };
   return {
-    open: function (target) { open(ctl, target); },
+    open: function (target) { return open(ctl, target); },
     close: function () { close(ctl); },
     current: function () { return ctl.current; },
     connected: function () { return !!ctl.session; },
-    setTargets: function (next) { ctl.targets = next; drawTargets(ctl); },
-    relabel: function () { setState(ctl, ctl.stateKey, elements.state.dataset.state); drawTargets(ctl); },
+    relabel: function () { setState(ctl, ctl.stateKey, elements.state.dataset.state); showEmpty(ctl, ctl.emptyKey); },
     retheme: function () { if (ctl.session) ctl.session.terminal.options.theme = terminalTheme(); }
   };
 }
@@ -56,19 +57,16 @@ function setState(ctl, key, state) {
   ctl.elements.state.lastChild.textContent = ctl.t(key);
 }
 
-function drawTargets(ctl) {
-  const t = ctl.t;
-  const list = ctl.elements.targets;
-  clear(list);
-  ctl.targets.forEach(function (target) {
-    list.append(h("button.target-chip", {
-      type: "button",
-      "aria-pressed": String(sameTarget(target, ctl.current)),
-      title: target.scope === "task" ? target.taskId + " / " + target.roleName : t("terminal.global") + " / " + target.roleName,
-      onclick: function () { open(ctl, target); }
-    }, target.scope === "task" ? dot(target.live ? "ok" : "idle") : icon("broadcast", "icon-sm"), h("span", null, target.roleName)));
-  });
-  if (!ctl.targets.length) list.append(h("span.faint.small", null, t("terminal.noTargets")));
+// Why nothing is attached, in place of the terminal: no Session yet, or the
+// selected Session is no longer the current one. Null hides the message.
+function showEmpty(ctl, key) {
+  ctl.emptyKey = key;
+  const elements = ctl.elements;
+  if (!elements.empty) return;
+  elements.empty.hidden = !key;
+  if (!key) return;
+  if (elements.emptyTitle) elements.emptyTitle.textContent = ctl.t(key + "Title");
+  if (elements.emptyText) elements.emptyText.textContent = ctl.t(key + "Text");
 }
 
 function dispose(ctl) {
@@ -86,30 +84,38 @@ function dispose(ctl) {
 function close(ctl) {
   dispose(ctl);
   ctl.current = null;
-  ctl.elements.empty.hidden = false;
+  showEmpty(ctl, null);
   ctl.elements.cli.textContent = "yui operator enter";
   setState(ctl, "terminal.idle", "idle");
-  drawTargets(ctl);
 }
 
+// A target without nativeSessionId attaches to the owner's current Session; a
+// target naming one attaches only while it is still current. A replaced
+// Session is reported, never silently exchanged for the new current one.
 async function open(ctl, target) {
   dispose(ctl);
   const generation = ctl.generation;
   ctl.current = target;
-  ctl.elements.empty.hidden = true;
+  showEmpty(ctl, null);
   ctl.elements.cli.textContent = cliFor(target);
   setState(ctl, "terminal.connecting", "connecting");
-  drawTargets(ctl);
   try {
-    if (!target.nativeSessionId) {
-      const query = new URLSearchParams({ scope: target.scope, role: target.roleName });
-      if (target.scope === "task") query.set("task", target.taskId);
-      const facts = await requestJson("/api/conversation?" + query);
-      if (generation !== ctl.generation) return;
-      if (!facts.currentSessionId) throw new Error(ctl.t("conversation.noSession"));
-      target = { ...target, nativeSessionId: facts.currentSessionId };
-      ctl.current = target;
+    const query = new URLSearchParams({ scope: target.scope, role: target.roleName });
+    if (target.scope === "task") query.set("task", target.taskId);
+    const facts = await requestJson("/api/conversation?" + query);
+    if (generation !== ctl.generation) return;
+    const currentId = facts.currentSessionId || null;
+    const id = target.nativeSessionId || currentId;
+    const session = (facts.sessions || []).find(function (s) { return s.nativeSessionId === id; }) || null;
+    if (ctl.hooks.onSession) ctl.hooks.onSession({ id: id, currentSessionId: currentId, session: session });
+    if (generation !== ctl.generation) return;
+    if (!id || id !== currentId) {
+      setState(ctl, "terminal.unavailable", "idle");
+      showEmpty(ctl, id ? "terminal.notCurrent" : "terminal.noSession");
+      return;
     }
+    target = { ...target, nativeSessionId: id };
+    ctl.current = target;
   } catch (error) {
     if (generation === ctl.generation) { setState(ctl, "terminal.error", "error"); ctl.notify(error.message); }
     return;
@@ -197,6 +203,9 @@ function ready(ctl, message, terminal, link) {
       current: number.format(message.history.limit), target: number.format(message.history.target)
     }));
   }
-  terminal.focus();
+  // A keyboard user moving through the session page's Chat | Terminal switch
+  // keeps focus there (arrow keys must not become terminal input).
+  const active = document.activeElement;
+  if (!(active && active.closest && active.closest(".sp-modes"))) terminal.focus();
 }
 `;
