@@ -1333,6 +1333,7 @@ function assertRuntimeLaunchRequestCurrent(
   if (role === null) {
     throw new Error(`Role no longer exists: ${request.owner.roleName}.`);
   }
+  assertRoleEnabled(role);
   const sessions = request.owner.scope === "task"
     ? store.getTaskRoleSessionSet(request.owner.taskId, request.owner.roleName)
     : store.getGlobalRoleSessionSet(request.owner.roleName);

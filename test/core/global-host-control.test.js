@@ -423,11 +423,17 @@ test("periodic Global recovery republishes only the original Host's exact missin
   });
   assert.equal(wrongAuthority.outcome, "rejected");
   assert.deepEqual(f.native(), original);
+  f.command(["disable", "operator"]);
   await deliverGlobalInputs(f.home, f.store, async () => assert.fail("Recovery must not launch"),
     error => f.errors.push(error), { reconcile: true });
   assert.equal(f.native().status, "completed", "The final Turn recovers even without queued successor input.");
   assert.equal(f.native().nativeTurnId, original.nativeTurnId);
   const next = f.command(["message", "queue", "operator", "next", "--request-id", "next"]).message;
+  await deliverGlobalInputs(f.home, f.store, async () => assert.fail("Disabled Role must not launch"),
+    error => f.errors.push(error), { reconcile: true });
+  assert.equal(f.native().nativeTurnId, original.nativeTurnId);
+  assert.equal(f.store.listGlobalRoleMessages("operator").find(m => m.id === next.id).delivery, undefined);
+  f.command(["enable", "operator"]);
   const controller = new FileTaskController(f.scheduler, {}, {
     globalInputDelivery: options => deliverGlobalInputs(f.home, f.store, async () => {},
       error => f.errors.push(error), options)

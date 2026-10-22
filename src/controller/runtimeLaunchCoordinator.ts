@@ -122,7 +122,9 @@ export class RuntimeLaunchCoordinator implements RuntimeLaunchPreparationPort {
       ...(request.runId === undefined ? {} : { runId: request.runId }),
       ...(request.environment === undefined ? {} : { environment: request.environment })
     };
-    const callback = beforeHostStart === undefined ? undefined : observePreflight;
+    // Even without a startup-facts consumer, recheck after asynchronous Host
+    // validation and immediately before creating the process.
+    const callback = beforeHostStart === undefined ? () => assertLaunchCurrent() : observePreflight;
     if (request.mode === "resume" && !request.nativeSessionId) {
       throw new Error("Restoring a Session requires its native session id.");
     }

@@ -78,6 +78,45 @@ function executionFixture(t) {
   return { home, store, scheduler, environment, identity, run, command };
 }
 
+test("Role disable during async launch validation fences Task and Global Host creation", async t => {
+  for (const scope of ["task", "global"]) {
+    const { home, store, scheduler } = executionFixture(t);
+    const owner = scope === "task"
+      ? { scope, taskId: "task-1", roleName: "worker" }
+      : { scope, roleName: "worker" };
+    if (scope === "task") {
+      store.saveTaskRoleSessionSet(createRoleSessionSet(owner, "codex", new Date()));
+    } else {
+      store.saveGlobalRole(createGlobalRole("worker",
+        [createRoleAgentBinding(store.getConfiguredAgent("codex"))], "codex", home, new Date()));
+    }
+    const planner = new FileRoleLaunchPlanner(home, store, { environment: { HOME: home, PATH: process.env.PATH } });
+    const deferred = planned => ({ ...planned, launch: { ...planned.launch, deferProviderStart: true } });
+    let launches = 0;
+    let disable = true;
+    const host = new TmuxSessionHost({
+      plan: input => deferred(planner.plan(input)),
+      planGlobalRole: input => deferred(planner.planGlobalRole(input))
+    }, { ensureRoleWindow: () => { launches++; return true; } }, {
+      validateLaunch: async () => {
+        // Capability validation yields to configuration writes before Host creation.
+        await Promise.resolve();
+        if (!disable) return;
+        if (scope === "task") store.saveRole("task-1", { ...store.getRole("task-1", "worker"), enabled: false });
+        else store.saveGlobalRole({ ...store.getGlobalRole("worker"), enabled: false });
+      }
+    });
+    const dispatch = createRuntimeLifecycleDispatcher(store, scheduler, host);
+    await assert.rejects(dispatch("runtime.ensure-role-session", owner), /disabled/);
+    assert.equal(launches, 0);
+    if (scope === "task") store.saveRole("task-1", { ...store.getRole("task-1", "worker"), enabled: true });
+    else store.saveGlobalRole({ ...store.getGlobalRole("worker"), enabled: true });
+    disable = false;
+    assert.equal((await dispatch("runtime.ensure-role-session", owner)).sessionStarted, true);
+    assert.equal(launches, 1, "normal enabled launch remains available");
+  }
+});
+
 test("production launch preserves scoped startup facts before native Session adoption", async t => {
   const { home, store, scheduler, run: createdRun } = executionFixture(t);
   const run = { ...createdRun, workspace: store.getManagedWorkspace({ type: "task", taskId: "task-1" }) };
