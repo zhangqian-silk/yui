@@ -4,6 +4,7 @@ import { taskMessageInboxReceipt } from "../message/taskInboxOwnership.js";
 import type { ConfiguredAgent } from "../agent/agent.js";
 import { agentExecutionComponentLabel } from "../agent/executionComponents.js";
 import { assertLeaderArchiveAdmission } from "../task/leaderArchiveAuthority.js";
+import { assertRoleEnabled, isEnabled } from "../role/availability.js";
 import {
   createRun,
   runExecutionObservation,
@@ -3057,6 +3058,10 @@ function taskRoleCommand(
   if (command === "status") return taskRoleStatus(rest, store, options);
   if (command === "show") return showTaskRole(rest, store);
   if (command === "update") return updateTaskRole(rest, store, options);
+  if (command === "enable" || command === "disable") {
+    if (rest.length !== 2) throw usageError(`Usage: yui task role ${command} <task> <role>`);
+    return updateTaskRole([...rest, "--enabled", String(command === "enable")], store, options);
+  }
   if (command === "remove") return output(removeTaskRole(rest, store, options));
   if (command === "bind") return output(bindTaskRole(rest, store, options));
   if (command === "unbind") return output(unbindTaskRole(rest, store, options));
@@ -3587,6 +3592,7 @@ function listTaskRoles(
   );
   const data = recordPage(statuses.map(status => ({
     roleName: status.roleName, agentId: status.agentId, recordedHealth: status.health,
+    enabled: isEnabled(status.role),
     hostObservation: "not-requested",
     openInput: taskRoleOpenInputLabel(status), activeWork: taskRoleActiveWorkLabel(status),
     lastRun: taskRoleLastRunLabel(status), nativeSession: taskRoleNativeSessionLabel(status),
@@ -3662,6 +3668,8 @@ function updateTaskRole(
     taskActor(tx, options, task.id);
     const role = requireRole(tx, task.id, roleName);
     const changesEnvironment = parsed.has("--environment") || parsed.has("--managed-environment");
+    if (parsed.seen.size === 1 && parsed.has("--enabled")
+      && isEnabled(role) === roleProfilePatch(parsed).enabled) return role;
     const changesLaunchContext = hasRoleLaunchContextOptions(parsed) || parsed.has("--profile")
       || changesEnvironment;
     const changesAgentConfig = hasAgentConfigOptions(parsed);
@@ -4536,6 +4544,7 @@ function dispatchWork(
     }
     const roles = lanePlan.roles.map((name) => requireRole(tx, task.id, name));
     for (const role of roles) {
+      assertRoleEnabled(role);
       if (tx.getActiveRun(task.id, role.name) !== null) {
         throw usageError(`${task.id}/${role.name} already has an active run.`);
       }
@@ -4544,6 +4553,7 @@ function dispatchWork(
     let workItemForDispatch = prepareWorkItemDispatch(item, now);
     if (lanePlan.roles.length === 0) {
       const role = requireRole(tx, task.id, assignee);
+      assertRoleEnabled(role);
       if (tx.getActiveRun(task.id, role.name) !== null) {
         throw usageError(`${task.id}/${role.name} already has an active run.`);
       }
@@ -5610,6 +5620,8 @@ function assertReviewerAvailable(
   reviewerRoleName: string,
   reusableRound?: ReviewRound
 ): void {
+  const role = store.getRole(taskId, reviewerRoleName);
+  if (role !== null) assertRoleEnabled(role);
   const availability = projectReviewerAvailability(store, taskId, reviewerRoleName);
   if (availability.kind === "available") return;
   if (reusableRound !== undefined && reviewerBusyBelongsToRound(availability, reusableRound)) {
@@ -6356,6 +6368,7 @@ function retryRunOperation(
       throw usageError(`Task does not admit ${previous.purpose} retry: ${task.id}/${task.status}.`);
     }
     const role = requireRole(tx, task.id, previous.roleName);
+    assertRoleEnabled(role);
     if (tx.getActiveRun(task.id, role.name) !== null) {
       throw usageError(`${task.id}/${role.name} already has an active run.`);
     }

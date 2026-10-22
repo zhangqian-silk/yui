@@ -267,13 +267,15 @@ const roleChildren: readonly NodeInput[] = [
   },
   { name: "list", discovery: { surface: "public", audiences: ["public","operator","leader","assignment","global"] }, summary: "List global Roles." },
   { name: "show", discovery: { surface: "public", audiences: ["public","operator","leader","assignment","global"] }, summary: "Show one global Role.", usage: "yui config role show <name>" },
+  { name: "enable", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Enable new execution and template selection; does not start a Session.", usage: "yui config role enable <name>" },
+  { name: "disable", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Disable new execution and template selection; keeps running Sessions and input.", usage: "yui config role disable <name>" },
   {
     name: "update", discovery: { surface: "public", audiences: ["public","operator"] },
     summary: "Update a global Role.",
     usage: "yui config role update <name> [profile options] [clear options]",
-    options: ["--agent", "--workspace", ...roleProfileOptions, ...roleAgentOptions,
+    options: ["--enabled", "--agent", "--workspace", ...roleProfileOptions, ...roleAgentOptions,
       ...roleProfileClearOptions, ...roleAgentClearOptions, "--yes"],
-    optionValues: roleAgentOptionValues,
+    optionValues: { ...roleAgentOptionValues, "--enabled": ["true", "false"] },
     fileOptions: ["--workspace"]
   },
   { name: "remove", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Remove a global Role.", usage: "yui config role remove <name>" },
@@ -331,17 +333,19 @@ const profileChildren: readonly NodeInput[] = [
     name: "add", discovery: { surface: "public", audiences: ["public","operator"] },
     summary: "Add a reusable Agent Profile that inherits Worker runtime or selects one explicit Agent.",
     usage: "yui config profile add <id> [--access <read|write>] [--inherit-worker | --agent <id> [--model <model>] [--effort <effort>]] [Profile settings]",
-    options: ["--access", ...agentProfileOptions],
-    optionValues: { "--access": ["read", "write"] }
+    options: ["--enabled", "--access", ...agentProfileOptions],
+    optionValues: { "--enabled": ["true", "false"], "--access": ["read", "write"] }
   },
   { name: "list", discovery: { surface: "public", audiences: ["public","operator","leader","assignment","global"] }, summary: "List Agent Profiles." },
   { name: "show", discovery: { surface: "public", audiences: ["public","operator","leader","assignment","global"] }, summary: "Show one Agent Profile.", usage: "yui config profile show <id>" },
+  { name: "enable", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Enable new Profile applications; existing Task bindings are unchanged.", usage: "yui config profile enable <id>" },
+  { name: "disable", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Disable new Profile applications without deleting configuration.", usage: "yui config profile disable <id>" },
   {
     name: "update", discovery: { surface: "public", audiences: ["public","operator"] },
     summary: "Update an Agent Profile's behavior or runtime source.",
     usage: "yui config profile update <id> [--access <read|write>] [--inherit-worker | [--agent <id>] [--model <model>|--clear-model] [--effort <effort>|--clear-effort]] [Profile settings]",
-    options: ["--access", ...agentProfileOptions, ...agentProfileClearOptions],
-    optionValues: { "--access": ["read", "write"] }
+    options: ["--enabled", "--access", ...agentProfileOptions, ...agentProfileClearOptions],
+    optionValues: { "--enabled": ["true", "false"], "--access": ["read", "write"] }
   },
   { name: "remove", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Remove a custom Agent Profile.", usage: "yui config profile remove <id>" },
   { name: "reset", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Reset all built-in Agent Profiles." }
@@ -783,7 +787,7 @@ const taskChildren: readonly NodeInput[] = [
     name: "role", discovery: { surface: "managed", audiences: ["operator","leader"] },
     summary: "Manage Roles within a Task.",
     sections: [{ id: "manage", title: "Commands", entries: [
-      "add", "list", "status", "show", "update", "remove", "bind", "unbind",
+      "add", "list", "status", "show", "update", "enable", "disable", "remove", "bind", "unbind",
       "capabilities", "session", "interrupt", "view", "takeover", "release"
     ] }],
     children: [
@@ -802,6 +806,8 @@ const taskChildren: readonly NodeInput[] = [
         options: ["--cursor"]
       },
       { name: "show", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Show one Task Role.", usage: "yui task role show <task> <role> [--cursor <cursor>]", options: ["--cursor"] },
+      { name: "enable", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Enable this Task Role; does not change Task execution authority.", usage: "yui task role enable <task> <role>" },
+      { name: "disable", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Block new execution of this Task Role without stopping its current Run.", usage: "yui task role disable <task> <role>" },
       { name: "capabilities", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Read native options using this Role's desired or exact failed launch configuration.",
         usage: "yui task role capabilities <task> <role> [--error <event-id>] [--refresh]",
         options: ["--error", "--refresh"] },
@@ -809,9 +815,9 @@ const taskChildren: readonly NodeInput[] = [
         name: "update", discovery: { surface: "managed", audiences: ["operator","leader"] },
         summary: "Update a Task Role; Agent settings target the named or active binding without switching it.",
         usage: "yui task role update <task> <role> [--profile <id>] [--agent <id>] [--environment <preparation-id> | --managed-environment] [Role and Agent settings]",
-        options: ["--profile", "--agent", "--environment", "--managed-environment", ...roleProfileOptions, ...roleAgentOptions,
+        options: ["--enabled", "--profile", "--agent", "--environment", "--managed-environment", ...roleProfileOptions, ...roleAgentOptions,
           ...roleProfileClearOptions, ...roleAgentClearOptions, "--yes"],
-        optionValues: roleAgentOptionValues
+        optionValues: { ...roleAgentOptionValues, "--enabled": ["true", "false"] }
       },
       { name: "remove", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Remove a Task Role.", usage: "yui task role remove <task> <role>" },
       { name: "bind", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Bind and activate an Agent for a Task Role.", usage: "yui task role bind <task> <role> <agent-id>" },
@@ -1490,7 +1496,7 @@ export const ROOT_COMMAND = buildNode({
           examples: ["yui config profile list", "yui config profile show implementer"],
           sections: [
             { id: "inspect", title: "Inspect", entries: ["list", "show"] },
-            { id: "manage", title: "Manage", entries: ["add", "update", "remove", "reset"] }
+            { id: "manage", title: "Manage", entries: ["add", "update", "enable", "disable", "remove", "reset"] }
           ],
           children: profileChildren
         },
@@ -1500,7 +1506,7 @@ export const ROOT_COMMAND = buildNode({
           examples: ["yui config role list", "yui config role show operator"],
           sections: [
             { id: "inspect", title: "Inspect", entries: ["list", "show"] },
-            { id: "manage", title: "Manage", entries: ["add", "update", "remove", "bind", "unbind"] }
+            { id: "manage", title: "Manage", entries: ["add", "update", "enable", "disable", "remove", "bind", "unbind"] }
           ],
           children: roleChildren
         },

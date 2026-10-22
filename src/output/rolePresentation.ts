@@ -1,3 +1,4 @@
+import { isEnabled, roleDisabledReason } from "../role/availability.js";
 import {
   activeRoleAgentSession,
   type RoleSessionSet
@@ -76,6 +77,8 @@ export function renderRoleDetails(
   ];
   const overview = [
     `  Kind             ${input.kind}`,
+    `  Enabled          ${isEnabled(role)}`,
+    ...(!isEnabled(role) ? [`  Availability     ${roleDisabledReason(role)}`] : []),
     `  Active Agent     ${role.activeAgentId}`,
     `  Workspace        ${role.workspace}`,
     ...("taskId" in role ? [

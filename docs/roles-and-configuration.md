@@ -18,7 +18,51 @@ requiring a same-named global Role. A global Role is a creation template only
 when the requested Task Role does not exist. Availability, producer separation
 and the frozen review candidate still apply.
 
-## Profiles
+## Enable and disable
+
+Availability is configuration, separate from active Agent selection, Session
+activity and the Task execution gate:
+
+```sh
+yui config role disable worker
+yui config role enable worker
+yui config profile disable implementer
+yui config profile enable implementer
+yui task role disable task-1 reviewer
+yui task role enable task-1 reviewer
+```
+
+`update --enabled true|false` uses the same rules. Repeating an enable/disable
+is a no-op. Settings → Role/Profile exposes the same boolean with its scope.
+List/show keeps disabled entries visible; application selectors exclude them.
+
+A disabled Global Role cannot start/resume execution, receive a new automatic
+Turn, or create a new Task binding from that template. This includes Operator,
+Leader, Worker and Job-owned Roles. An existing Task Role instead uses its own
+flag, even when its original template is disabled. A disabled Profile cannot be
+applied; inherited runtime also requires an enabled Global Worker. Explicit
+Agent Profiles also require an enabled Worker when copying a matching Worker
+binding's options; an explicit Agent without such a binding uses its own defaults.
+No fallback Agent, account or reviewer is chosen.
+
+Disabling never kills a Session, cancels a Run, settles a claim, acknowledges
+input or discards unknown delivery evidence. Current execution can finish and
+report. New delivery and automatic recovery wait; retry budgets are not reset
+or extended. Use the existing stop/interrupt operations when stopping is intended.
+Enabling does not start an empty Session, activate a Draft, reopen a completed
+Task, override a Task stop, or replay accepted/unknown effects. Normal scheduling
+continues only where existing lifecycle, authority and exact-input fences allow.
+
+All settings remain editable while disabled. Profile reset restores builtin
+content but preserves enabled state; initialization and upgrades do not revive
+disabled entries. Deletion retains its existing reference checks. Missing
+`enabled` in older records means enabled; storage 1.21 → 1.22 adds this optional
+field without rewriting old records or frozen Session/context evidence.
+If Operator or a Task Leader is disabled, use the authorized local CLI/Web
+configuration entry to re-enable it; a disabled critical responsibility is not
+silently replaced or considered completed.
+
+## Profile behavior
 
 An Agent Profile combines portable behavior—instructions, Skills and access
 intent—with runtime intent. Runtime either follows the current Global Worker

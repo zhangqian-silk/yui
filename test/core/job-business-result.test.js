@@ -115,7 +115,7 @@ test("1.14 migration adds sourced business results without rewriting original ev
     usePre120Layout(db);
     db.prepare("UPDATE storage_schema SET minor=14").run();
     applySqliteMinorUpgrades(db, home);
-    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 21);
+    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 22);
     assert.equal(db.prepare("SELECT payload FROM storage_migration_archive WHERE migration_version=15 AND record_key=?")
       .get(`global/${old.id}`).payload, bytes);
   } finally { db.close(); }

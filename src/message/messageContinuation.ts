@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { isEnabled } from "../role/availability.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import type { TaskMessage, TaskMessageRecipient } from "./message.js";
 import { createRun, type AgentRun } from "../agentRun/agentRun.js";
@@ -89,6 +90,8 @@ export function messageAssignmentBlocker(store: TaskStore,
 
 /** Starting another Run additionally requires the reviewed candidate to remain current. */
 export function messageContinuationBlocker(store: TaskStore, message: TaskMessage): string | undefined {
+  const role = message.recipient === undefined ? null : store.getRole(message.taskId, message.recipient.roleName);
+  if (role !== null && !isEnabled(role)) return "role-disabled";
   const invalid = messageAssignmentBlocker(store, message);
   if (invalid !== undefined) return invalid;
   const reviewRoundId = message.recipient?.reviewRoundId;

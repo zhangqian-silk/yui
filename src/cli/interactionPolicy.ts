@@ -158,7 +158,7 @@ export const INTERACTION_POLICIES: readonly InteractionPolicy[] = Object.freeze(
       "--search": "value"
     }
   },
-  ...["show", "update", "remove", "enter", "context"].map((command): InteractionPolicy => ({
+  ...["show", "update", "remove", "enable", "disable", "enter", "context"].map((command): InteractionPolicy => ({
     commandPath: command === "enter" || command === "context"
       ? ["session", command]
       : ["config", "role", command],
@@ -195,12 +195,13 @@ export const INTERACTION_POLICIES: readonly InteractionPolicy[] = Object.freeze(
     commandPath: ["config", "profile", "add"],
     selectors: [],
     trailingOptions: {
+      "--enabled": "value",
       "--description": "value", "--instructions": "value",
       "--skill": "value", "--agent": "value", "--model": "value",
       "--effort": "value", "--access": "value", "--inherit-worker": "flag"
     }
   },
-  ...["show", "update", "remove"].map((command): InteractionPolicy => ({
+  ...["show", "update", "remove", "enable", "disable"].map((command): InteractionPolicy => ({
     commandPath: ["config", "profile", command],
     selectors: [{
       argumentIndex: 3,
@@ -211,7 +212,7 @@ export const INTERACTION_POLICIES: readonly InteractionPolicy[] = Object.freeze(
     ...(command === "update"
       ? {
           trailingOptions: {
-            "--description": "option-like-value",
+            "--enabled": "value", "--description": "option-like-value",
             "--instructions": "option-like-value", "--skill": "value",
             "--agent": "value", "--inherit-worker": "flag",
             "--model": "option-like-value", "--effort": "option-like-value",
@@ -446,7 +447,7 @@ export const INTERACTION_POLICIES: readonly InteractionPolicy[] = Object.freeze(
     commandPath: ["task", "role", "list"],
     selectors: [{ argumentIndex: 3, entity: "task", provider: "tasks", actionTarget: true }]
   },
-  ...["show", "status", "update", "remove"].map((command): InteractionPolicy => ({
+  ...["show", "status", "update", "remove", "enable", "disable"].map((command): InteractionPolicy => ({
     commandPath: ["task", "role", command],
     selectors: [
       { argumentIndex: 3, entity: "task", provider: "tasks", actionTarget: true },

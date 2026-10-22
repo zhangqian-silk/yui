@@ -140,6 +140,21 @@ test("settings HTTP ingress requires page token and reports rejected writes with
     body: JSON.stringify({ id: "system", revision: read.revision, changes: [{ key: "default-agent", value: "missing" }] }) });
   assert.equal(response.status, 409);
   assert.equal((await response.json()).disposition, "not-submitted");
+  const role = f.service.read("role/worker");
+  const request = { id: "role/worker", revision: role.revision, changes: [{ key: "enabled", value: false }] };
+  assert.equal((await fetch(base + "/api/settings/group", { method: "POST",
+    headers: { "content-type": "application/json" }, body: JSON.stringify(request) })).status, 403);
+  assert.notEqual(f.store.getGlobalRole("worker").enabled, false);
+  const disabled = await fetch(base + "/api/settings/group", { method: "POST", headers, body: JSON.stringify(request) });
+  assert.equal(disabled.status, 200);
+  assert.equal((await disabled.json()).group.fields.find(f => f.key === "enabled").value, false);
+  assert.equal(f.store.getGlobalRoleSessionSet("worker"), null);
+  await f.save("role/worker", [{ key: "enabled", value: true }]);
+  await f.save("profile/reader", [{ key: "enabled", value: false }]);
+  assert.match(f.service.read("profile/reader").observation.reason, /disabled/);
+  await f.save("profile/reader", [{ key: "enabled", value: true }]);
+  assert.equal(f.service.read("profile/reader").observation.status, "resolved");
+  await assert.rejects(f.save("profile/reader", [{ key: "enabled", value: "false" }]), /boolean/);
 });
 
 test("Role default model/effort saves validate the selected model without changing a live Session", async t => {
@@ -339,4 +354,21 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   assert.equal(model.control.disabled, true);
   assert.equal(model.control.value, "private-model");
   assert.equal(model.blocked, true, "unavailable capability cannot submit a changed draft");
+  const availability = { id: "profile/reader", revision: "enabled", notice: "Template only",
+    fields: [{ key: "enabled", label: "Enabled", kind: "boolean", value: true }] };
+  context.renderGroup(state, availability);
+  const toggle = state.editors[0].control;
+  assert.equal(toggle.tagName, "SELECT");
+  assert.equal(toggle.value, "true");
+  toggle.value = "false"; toggle.handlers.change();
+  let submitted;
+  context.submitMutation = async (_key, _url, body) => {
+    submitted = body;
+    return { group: { ...availability, revision: "disabled",
+      fields: [{ ...availability.fields[0], value: false }] }, output: "disabled", adoption: "No Session stopped" };
+  };
+  await state.content.children[0].handlers.submit({ preventDefault() {} });
+  assert.deepEqual(JSON.parse(JSON.stringify(submitted.changes)), [{ key: "enabled", value: false }]);
+  assert.equal(state.editors[0].control.value, "false");
+  assert.equal(state.dirty, false);
 });

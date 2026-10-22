@@ -54,6 +54,7 @@ export type SchedulerTask = Readonly<Pick<
 }>;
 
 export type SchedulerRole = Readonly<{
+  enabled?: boolean;
   taskId: string;
   name: string;
   activeAgentId: string;

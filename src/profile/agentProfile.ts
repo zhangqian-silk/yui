@@ -1,3 +1,4 @@
+import { validateEnabled } from "../role/availability.js";
 import {
   cloneJson,
   normalizedUniqueText,
@@ -27,6 +28,7 @@ export type AgentProfileRuntime =
     }>;
 
 export type AgentProfile = Readonly<{
+  enabled?: boolean;
   schemaVersion: 1;
   id: string;
   revision: number;
@@ -40,6 +42,7 @@ export type AgentProfile = Readonly<{
 }>;
 
 export type AgentProfileInput = Readonly<{
+  enabled?: boolean;
   id: string;
   defaultAccess?: WorkerAccess;
   description?: string;
@@ -79,6 +82,7 @@ export function updateAgentProfile(
 }
 
 export function validateAgentProfile(profile: AgentProfile): AgentProfile {
+  validateEnabled(profile.enabled);
   if (profile.schemaVersion !== 1) {
     throw new Error("AgentProfile must use schemaVersion 1.");
   }
@@ -132,7 +136,9 @@ function normalizeInput(input: AgentProfileInput): Omit<
 AgentProfile,
 "schemaVersion" | "id" | "revision" | "createdAt" | "updatedAt"
 > {
+  validateEnabled(input.enabled);
   return {
+    enabled: input.enabled ?? true,
     defaultAccess: validatedAccess(input.defaultAccess ?? "read"),
     ...(input.description === undefined
       ? {}
@@ -151,6 +157,10 @@ function normalizePatch(
   patch: Readonly<Partial<Omit<AgentProfileInput, "id">>>
 ): Partial<AgentProfile> {
   const result: Record<string, unknown> = {};
+  if (patch.enabled !== undefined) {
+    validateEnabled(patch.enabled);
+    result.enabled = patch.enabled;
+  }
   if (Object.hasOwn(patch, "defaultAccess")) {
     result.defaultAccess = validatedAccess(patch.defaultAccess);
   }

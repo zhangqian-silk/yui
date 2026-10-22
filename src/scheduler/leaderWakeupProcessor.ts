@@ -1,4 +1,5 @@
 import { roleSessionMayContinue } from "../executor/effectiveLaunch.js";
+import { isEnabled, roleDisabledReason } from "../role/availability.js";
 import { roleAgentSessionResumeMode } from "../executor/agentExecutor.js";
 import type { SchedulerReconcileSelection, SchedulerStorePort, TmuxDeliveryPort } from "./ports.js";
 import { isSchedulerTaskWorkspaceReady } from "./ports.js";
@@ -36,6 +37,9 @@ export async function processLeaderWakeups(
     const base = { taskId: wakeup.taskId };
     if (task == null || !["active", "draft"].includes(task.status) || task.executionGate.state !== "enabled" || role === null) {
       results.push({ ...base, status: "skipped", reason: "unavailable" }); continue;
+    }
+    if (!isEnabled(role)) {
+      results.push({ ...base, status: "skipped", reason: "unavailable", error: roleDisabledReason(role) }); continue;
     }
     if (!isSchedulerTaskWorkspaceReady(task, store.getTaskWorkspace(task.id), task.status === "draft" ? "planning" : "execution")) {
       results.push({ ...base, status: "skipped", reason: "workspace-not-ready" }); continue;

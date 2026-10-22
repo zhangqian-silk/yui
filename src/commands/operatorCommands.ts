@@ -1,4 +1,5 @@
 import { agentAdapterLabel as adapterLabel } from "../agent/adapterCatalog.js";
+import { assertRoleEnabled } from "../role/availability.js";
 import { usageError } from "../errors/cliError.js";
 import {
   createRoleSessionSet,
@@ -285,6 +286,7 @@ export function applyOperatorSessionControl(
 ): Readonly<{ role: GlobalRole; sessions: GlobalRoleSessionSet }> {
   return store.transaction((tx) => {
     const role = requireOperator(tx);
+    assertRoleEnabled(role);
     const binding = role.agentBindings[control.targetAgentId];
     if (binding === undefined) {
       throw usageError(`Operator Agent is not bound: ${control.targetAgentId}.`);

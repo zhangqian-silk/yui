@@ -4,6 +4,7 @@ import type { RoleAgentSession } from "../executor/agentExecutor.js";
 import type { EffectiveLaunchSnapshot } from "../executor/effectiveLaunch.js";
 import { runExecutionObservation, type AgentRun } from "../agentRun/agentRun.js";
 import type { TaskRole } from "../role/role.js";
+import { isEnabled, roleDisabledReason } from "../role/availability.js";
 import {
   hasRuntimeCleanupObligation,
   runtimeLifecycleTarget
@@ -259,6 +260,8 @@ export function renderTaskRoleRuntimeStatus(status: TaskRoleRuntimeStatus): stri
     `Task Role status: ${status.taskId}/${status.roleName}`,
     "",
     `  Health           ${status.health}`,
+    `  Enabled          ${isEnabled(status.role)}`,
+    ...(!isEnabled(status.role) ? [`  Availability     ${roleDisabledReason(status.role)}`] : []),
     `  Reason           ${status.healthReason}`,
     `  Open inputs      ${status.openInputRequestCount}`,
     `  Agent            ${status.agentId}`,

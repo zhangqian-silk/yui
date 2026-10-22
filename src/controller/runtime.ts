@@ -3,6 +3,7 @@ import { prepareNativeHostSteer } from "./nativeHostInput.js";
 import { archiveLeaderTask } from "../task/leaderArchive.js";
 import { TaskWorkspaceCoordinator } from "../repository/taskWorkspaceCoordinator.js";
 import type { ConfiguredAgent } from "../agent/agent.js";
+import { assertRoleEnabled } from "../role/availability.js";
 import {
   AGENT_OPERATIONAL_ENVIRONMENT_NAMES,
   NATIVE_AGENT_ENVIRONMENT_NAMES,
@@ -1182,6 +1183,7 @@ export function createRuntimeLifecycleDispatcher(
       ? activeRun?.workspace
         ?? currentDesiredManagedWorkspace(store, request.taskId, request.roleName)
       : undefined;
+    assertRoleEnabled(role);
     // Only Draft planning may launch without an adopted delivery workspace.
     const workspaceFree = request.scope === "task"
       && managedWorkspace === undefined

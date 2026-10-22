@@ -1,4 +1,5 @@
 import type { TaskStore } from "../storage/taskStore.js";
+import { assertRoleEnabled, isEnabled } from "../role/availability.js";
 import type { ProviderRuntimeBinding } from "../runtime/providerRuntimeIdentity.js";
 import {
   admitProviderRetry, cancelProviderRetry, providerRetryAttemptId, providerRetryPending,
@@ -35,6 +36,7 @@ export function retryIntentBlocker(
 ): string | undefined {
   if (input.taskId === undefined) {
     const role = store.getGlobalRole(input.roleName);
+    if (role !== null && !isEnabled(role)) return "role-disabled";
     const sessions = store.getGlobalRoleSessionSet(input.roleName);
     if (role === null || sessions?.activeAgentId !== role.activeAgentId) return "role-changed";
     if (sessions.sessions[sessions.activeAgentId]?.effective.sourceDesiredRevision !== role.launchRevision) return "role-configuration-changed";
@@ -50,6 +52,7 @@ export function retryIntentBlocker(
   if (task === null || !["active", "draft"].includes(task.status)
     || task.executionGate.state !== "enabled") return "task-execution-stopped";
   const role = store.getRole(input.taskId, input.roleName);
+  if (role !== null && !isEnabled(role)) return "role-disabled";
   const sessions = store.getTaskRoleSessionSet(input.taskId, input.roleName);
   if (role === null || sessions?.activeAgentId !== role.activeAgentId) return "role-changed";
   if (sessions.sessions[sessions.activeAgentId]?.effective.sourceDesiredRevision !== role.launchRevision) return "role-configuration-changed";
@@ -68,6 +71,9 @@ export function retryIntentBlocker(
 export function admitOwnedProviderInput(
   store: TaskStore, binding: ProviderRuntimeBinding, input: OwnedProviderAdmission
 ): ProviderRuntimeBinding {
+  const role = input.taskId === undefined ? store.getGlobalRole(input.roleName)
+    : store.getRole(input.taskId, input.roleName);
+  if (role !== null) assertRoleEnabled(role);
   const retry = binding.retry;
   const sameReviewSuccessor = retry?.successorReviewRoundId !== undefined && input.taskId !== undefined && input.runId !== undefined
     && store.getRun(input.taskId, input.runId)?.reviewRoundId === retry.successorReviewRoundId;

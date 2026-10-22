@@ -70,16 +70,29 @@ export async function getSelectionCandidates(
       return entities(
         "Agent Profile",
         "Select Agent Profile",
-        await list(ports, "profile.list", {}),
-        ["id", "revision", "defaultAccess", "agentId"]
+        (await list(ports, "profile.list", {}))
+          .filter(p => selector.actionTarget || p.enabled !== false
+            && (p.effectiveRuntime as { status?: string } | undefined)?.status !== "unavailable")
+          .map(p => ({ ...p, availability: p.enabled === false ? "disabled" : "enabled" })),
+        ["id", "availability", "revision", "defaultAccess", "agentId"]
       );
-    case "global-roles":
+    case "global-roles": {
+      let roles = await list(ports, "role.list", {});
+      // Review uses a Task-local binding first; a disabled same-named template
+      // must not hide an independently enabled existing Reviewer (or vice versa).
+      if (args[0] === "task" && args[1] === "review" && args[2] === "request" && args[3] !== undefined) {
+        const local = await list(ports, "task.role.list", { taskId: args[3] });
+        roles = [...roles.filter(r => !local.some(t => t.name === r.name)), ...local];
+      }
       return entities(
         "global role",
         "Select global Role",
-        await list(ports, "role.list", {}),
-        ["name", "activeAgentId", "workspace"]
+        roles
+          .filter(r => selector.actionTarget && !(args[0] === "session" && args[1] === "enter") || r.enabled !== false)
+          .map(r => ({ ...r, availability: r.enabled === false ? "disabled" : "enabled" })),
+        ["name", "availability", "activeAgentId", "workspace"]
       );
+    }
     case "jobs":
       return entities(
         "job",
@@ -106,9 +119,11 @@ export async function getSelectionCandidates(
     case "task-roles": {
       const taskId = dependencyValue(selector, args);
       if (taskId === undefined) return null;
-      const roles = orderRoleOptions(await list(ports, "task.role.list", { taskId }));
+      const roles = orderRoleOptions((await list(ports, "task.role.list", { taskId }))
+        .filter(r => selector.actionTarget || r.enabled !== false))
+        .map(r => ({ ...r, availability: r.enabled === false ? "disabled" : "enabled" }));
       return entities("task role", `Select Task role: ${taskId}`, roles, [
-        "name", "kind", "activeAgentId"
+        "name", "availability", "kind", "activeAgentId"
       ]);
     }
     case "task-decisions": {

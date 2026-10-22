@@ -259,6 +259,16 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   targetChecksum: CURRENT_SCHEMA_CHECKSUM,
   sql: "",
   dataMigration: "project-sync-clock"
+}, {
+  fromVersion: "1.21",
+  toVersion: "1.22",
+  name: "role-profile-availability",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Optional enabled flag; absence means enabled. Preserve all historical
+  // Role/Profile bytes, frozen contexts and Session snapshots.
+  sql: ""
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {

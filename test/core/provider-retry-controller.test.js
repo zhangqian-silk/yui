@@ -248,6 +248,29 @@ function reviewFixture(t) {
   return { ...f, candidate, workspace, round, dispatch };
 }
 
+test("Role disable pauses bounded retry without settling or replacing input; enable retains the retry budget", async t => {
+  const f = fixture(t, "global");
+  f.fail();
+  f.due();
+  const before = f.loadSessions();
+  const messages = f.store.listGlobalRoleMessages(f.roleName);
+  runGlobalRoleCommand(["disable", f.roleName], f.store, { env: {} });
+  const hooks = f.hooks();
+  assert.deepEqual(hooks.deadlines(), []);
+  await hooks.reconcile();
+  assert.deepEqual(f.loadSessions(), before);
+  assert.deepEqual(f.store.listGlobalRoleMessages(f.roleName), messages);
+  assert.equal(f.submissions.length, 0);
+  assert.throws(() => f.begin("new-disabled-input"), /disabled/);
+  runGlobalRoleCommand(["enable", f.roleName], f.store, { env: {} });
+  await hooks.reconcile();
+  assert.equal(f.submissions.length, 1);
+  assert.equal(f.read().retry.chainId, before.providerBinding.retry.chainId);
+  assert.equal(f.read().retry.deadline, before.providerBinding.retry.deadline);
+  await hooks.reconcile();
+  assert.equal(f.submissions.length, 1, "an admitted retry must not be replayed");
+});
+
 test("Task no-Run retry preserves its wake and original Message, and duplicate passes admit one successor", async t => {
   const f = fixture(t);
   f.fail();

@@ -1,4 +1,5 @@
 import type { TaskStore } from "../storage/taskStore.js";
+import { isEnabled } from "../role/availability.js";
 import { sendAgentHostRunControl, reconcileAgentHostTurn, AGENT_HOST_CONTROL_PROTOCOL,
   type AgentHostControlResult } from "../runtime/agentHost.js";
 import { currentProviderConversation } from "../runtime/providerRuntimeIdentity.js";
@@ -20,6 +21,7 @@ export async function deliverGlobalInputs(
   options: { reconcile?: boolean; now?: Date } = {}
 ): Promise<void> {
   for (const role of store.listGlobalRoles()) {
+    if (!isEnabled(role)) continue;
     try {
       let pending = store.queryGlobalRoleMessages(role.name, { pending: true, unclaimed: true, limit: 64 }).messages;
       if (hasRuntimeCleanupObligation(store.getWorkMailbox(

@@ -2,7 +2,12 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.21. The 1.20 → 1.21 transition converts provably unedited
+Current storage is 1.22. The 1.21 → 1.22 transition admits an optional boolean
+`enabled` on Roles and Profiles. Absence means enabled. SQL layout, historical
+payloads, existing Task bindings, Session snapshots and input receipts are
+unchanged; upgrade does not launch or stop execution.
+
+The 1.20 → 1.21 transition converts provably unedited
 built-in Project sync defaults to timezone-explicit clock schedules, archiving
 their original bytes under migration 21. Ambiguous higher revisions and custom
 plans remain unchanged; no Git work or reauthorization occurs. See
