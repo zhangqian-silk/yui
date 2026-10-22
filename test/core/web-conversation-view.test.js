@@ -52,7 +52,7 @@ function fixture(submitResult = { state: "submitted" }, extra = {}) {
     requestJson: async url => {
       calls.push(url);
       const query = new URL(url, "http://fixture").searchParams;
-      if (url.startsWith("/api/conversation/model?")) return { source: "live", catalog: { models: [{ value: "model-new", label: "New" }] } };
+      if (url.startsWith("/api/conversation/model?")) return extra.catalog ?? { source: "live", catalog: { models: [{ value: "model-new", label: "New" }] } };
       if (query.has("requestId")) {
         if (delayedReceipt) return new Promise(resolve => { delayedReceipt.resolve = resolve; });
         return { state: extra.receiptState ?? "accepted" };
@@ -188,6 +188,27 @@ test("Slash completion is local and unknown commands require explicit literal su
   f.controller.close();
 });
 
+test("model selection is explicit, survives catalog refresh, and never re-applies the confirmed model", async () => {
+  const f = fixture({}, { idle: true, runConfiguration: { status: "observed", observedAt: "2026-10-22",
+    axes: [{ category: "model", current: { status: "observed", value: "model-current" } }] },
+    catalog: { source: "live", catalog: { models: [{ value: "model-current", label: "Current" }, { value: "model-new", label: "New" }] } } });
+  f.controller.open({ scope: "global", roleName: "operator" });
+  await flush();
+  await f.button("modelsLoad").handlers.click();
+  assert.equal(f.button("modelApply").disabled, true);
+  const rows = () => f.elements.findLast(n => n.spec === "div.cv-options").children;
+  rows()[1].handlers.click();
+  assert.equal(f.button("modelApply").disabled, false);
+  assert.equal(f.mutations.length, 0, "picking is not an implicit write");
+  assert.equal(rows()[1]["aria-selected"], "true");
+  await f.button("modelsLoad").handlers.click();
+  assert.equal(rows()[1]["aria-selected"], "true", "refresh preserves the user's selection");
+  assert.equal(f.text("span.cv-model-label"), "model-current", "selection is not confirmation");
+  rows()[0].handlers.click();
+  assert.equal(f.button("modelApply").disabled, true);
+  f.controller.close();
+});
+
 test("model adoption preserves drafts and an unknown effect blocks replay across reopen", async () => {
   for (const disposition of ["not-submitted", "unknown"]) {
     const f = fixture({}, { idle: true, submit() {
@@ -221,6 +242,29 @@ test("model adoption preserves drafts and an unknown effect blocks replay across
       assert.throws(() => f.controller.insertReference(target, "history"), /targetChanged/);
       assert.equal(f.input.value, "Keep my draft");
     }
+    f.controller.close();
+  }
+});
+
+test("only a matching native confirmation closes the model picker; keyboard focus does not select", async () => {
+  for (const confirmed of [true, false]) {
+    const f = fixture({ runConfiguration: { status: "observed", observedAt: "2026-10-22T09:00:00Z",
+      axes: [{ category: "model", current: { status: "observed", value: confirmed ? "model-new" : "other" } }] } }, { idle: true });
+    f.controller.open({ scope: "global", roleName: "operator" });
+    await flush();
+    await f.button("modelsLoad").handlers.click();
+    const rows = f.elements.find(n => n.spec === "div.cv-options");
+    rows.handlers.keydown({ key: "Home", preventDefault() {} });
+    assert.equal(f.context.document.activeElement, rows.children[0]);
+    assert.equal(f.button("modelApply").disabled, true, "focus alone is not selection");
+    rows.children[0].handlers.click();
+    const menu = f.elements.find(n => n.spec === "details.cv-pop.cv-model");
+    menu.open = true;
+    await f.button("modelApply").handlers.click();
+    assert.equal(menu.open, !confirmed);
+    assert.equal(f.button("modelApply").disabled, true);
+    assert.equal([...f.storage.keys()].some(k => k.endsWith(".modelPending")), !confirmed);
+    assert.equal(f.mutations.length, 1);
     f.controller.close();
   }
 });
@@ -801,7 +845,8 @@ test("the current-model label never presents a launch snapshot as the Session's 
   assert.equal(label(), "conversation.modelUnconfirmed", "a launch request is not the current model");
   assert.equal(menu().dataset.state, "unknown");
   assert.equal(visible(), "conversation.modelUnconfirmed", "unknown reads as text, not only a colour");
-  assert.deepEqual(facts().find(r => r[0] === "conversation.launchModel"), ["conversation.launchModel", "launch-model · high", "conversation.launchNote"]);
+  assert.equal(facts().length, 2, "only execution and selection are shown");
+  assert.equal(facts().some(r => r[0] === "conversation.launchModel"), false);
   assert.equal(facts().find(r => r[0] === "conversation.confirmedModel")[1], "conversation.modelUnconfirmed");
 
   config = session => session === "thread" ? observed("live-model") : unknown;
@@ -813,7 +858,7 @@ test("the current-model label never presents a launch snapshot as the Session's 
   assert.match(summary().title, /modelConfirmedShort.*date:2026-10-21T12:00:00.000Z/, "the tooltip time carries the date");
   const confirmed = facts().find(r => r[0] === "conversation.confirmedModel");
   assert.equal(confirmed[1], "live-model · medium");
-  assert.match(confirmed[2], /modelConfirmedNote.*date:2026-10-21T12:00:00.000Z/, "labelled as a dated confirmation, not live");
+  assert.equal(confirmed[2], "conversation.modelStateConfirmed", "brief provenance stays visible; the dated detail is in the tooltip");
 
   config = () => unknown;
   await f.tick();
@@ -825,7 +870,7 @@ test("the current-model label never presents a launch snapshot as the Session's 
   await f.tick();
   await f.pick("old");
   assert.equal(label(), "conversation.modelUnconfirmed", "a previous Session never borrows the current report");
-  assert.equal(facts().find(r => r[0] === "conversation.launchModel")[1], "old-launch");
+  assert.equal(facts().some(r => r[1] === "old-launch"), false, "launch defaults do not clutter the picker");
   assert.ok(!facts().some(r => r[1] === "live-model"));
 
   // A current-Session read that answers after the user switched never lands on the other Session.

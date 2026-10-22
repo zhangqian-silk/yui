@@ -149,7 +149,16 @@ export const CONVERSATION_STYLES = `
 .cv-pop>summary::-webkit-details-marker{display:none}
 .cv-popbody{position:absolute;z-index:var(--z-popover);display:grid;gap:8px;width:min(300px,calc(100vw - 32px));max-height:min(420px,60vh);overflow:auto;padding:10px;border:1px solid var(--line-2);border-radius:var(--r-lg);background:var(--surface-2);box-shadow:var(--shadow-2);box-sizing:border-box}
 .cv-attach>.cv-popbody{left:0;bottom:calc(100% + 8px)}
-.cv-model>.cv-popbody{right:0;bottom:calc(100% + 8px)}
+.cv-model>.cv-popbody{right:0;bottom:calc(100% + 8px);width:min(320px,calc(100vw - 112px));gap:10px;padding:12px}
+.cv-model .cv-model-facts{margin:0;padding:0 4px 10px;border-bottom:1px solid var(--line-2)}
+.cv-model .cv-model-facts small{display:inline;margin-left:6px;font-size:var(--fs-xs)}
+.cv-model .cv-options{max-height:220px;overflow:auto;min-height:0}
+.cv-model .cv-pop-actions{justify-content:flex-end}
+.cv-model .cv-pop-actions .cv-link{margin-right:auto}
+.cv-model .cv-note:empty{display:none}
+.cv-model .cv-option{min-height:40px;padding:9px 10px}
+.cv-model .cv-option.is-selected{background:var(--surface-3)}
+.cv-model .cv-option:disabled{cursor:default;opacity:.6}
 .cv-menu>.cv-popbody{right:0;top:calc(100% + 6px)}
 .cv-pop-title{margin:0;padding:0 4px;color:var(--ink-3);font-size:var(--fs-xs)}
 .cv-pop-actions{display:flex;align-items:center;justify-content:space-between;gap:8px}

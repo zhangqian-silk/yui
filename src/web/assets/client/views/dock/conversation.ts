@@ -56,14 +56,13 @@ export function createConversationController(host, t, locale = function () { ret
   const modelLabel = h("span.cv-model-label", null, t("conversation.modelUnconfirmed"));
   const modelSummary = h("summary.cv-pill", { "aria-label": t("conversation.model"), title: t("conversation.model") },
     h("i.cv-model-dot", { "aria-hidden": "true" }), modelState, modelLabel, icon("down"));
-  const modelLoad = h("button.cv-link", { type: "button" }, t("conversation.modelsLoad"));
+  const modelLoad = h("button.cv-link", { type: "button", hidden: true }, t("conversation.modelsLoad"));
   const modelApply = h("button.btn.btn-primary", { type: "button" }, t("conversation.modelApply"));
   const modelMenu = h("details.cv-pop.cv-model", null, modelSummary,
-    h("div.cv-popbody", null, h("p.cv-pop-title", null, t("conversation.model")), modelFacts,
+    h("div.cv-popbody", null, modelFacts,
       h("p.cv-pop-title", null, t("conversation.selectModel")),
       modelRows, modelSelect, modelStatus, modelResult,
-      h("div.cv-pop-actions", null, modelLoad, modelApply),
-      h("p.cv-note", null, t("conversation.modelBoundary"))));
+      h("div.cv-pop-actions", null, modelLoad, modelApply)));
   const slash = h("div.conversation-slash", { "aria-label": t("conversation.commands") });
   const literal = h("button.cv-link", { type: "button", hidden: true }, t("conversation.literal"));
   const send = h("button.cv-send", { type: "button", "aria-label": t("conversation.send"), title: t("conversation.sendHint") }, icon("up"));
@@ -96,6 +95,7 @@ export function createConversationController(host, t, locale = function () { ret
       if (!pop.open) return;
       pops.forEach(function (other) { if (other !== pop) other.open = false; });
       if (pop === modelMenu && !modelCatalog && !modelLoad.disabled) loadModels();
+      else if (pop === modelMenu) focusOption(modelRowMap.get(modelSelect.value) || modelRows.querySelector("button"));
       if (pop === picker) focusOption(sessionList.querySelector("[aria-selected=true]") || sessionList.querySelector("button"));
     });
   });
@@ -121,6 +121,14 @@ export function createConversationController(host, t, locale = function () { ret
         : event.key === "Home" ? options[0] : event.key === "End" ? options[options.length - 1] : null;
     if (!target) return;
     event.preventDefault(); focusOption(target);
+  });
+  modelRows.addEventListener("keydown", function (event) {
+    const rows = [...modelRowMap.values()];
+    const index = rows.indexOf(document.activeElement);
+    const target = event.key === "ArrowDown" ? rows[Math.min(rows.length - 1, index + 1)]
+      : event.key === "ArrowUp" ? rows[Math.max(0, index - 1)]
+        : event.key === "Home" ? rows[0] : event.key === "End" ? rows[rows.length - 1] : null;
+    if (target) { event.preventDefault(); focusOption(target); }
   });
   feed.addEventListener("scroll", function () {
     syncJump();
@@ -216,9 +224,17 @@ export function createConversationController(host, t, locale = function () { ret
     literal.disabled = send.disabled;
     syncJump();
     modelLoad.disabled = busy || !active || active.adapterId !== "codex";
-    modelApply.disabled = busy || !!pending || !!modelPending || !writable || !modelSelect.value
+    modelApply.disabled = !!(busy || !!pending || !!modelPending || !writable || !modelSelect.value
+      || modelSelect.value === confirmedModel
       || !modelCatalog || modelCatalog.source === "fallback" || !!modelCatalog.failure
-      || turn && ["submitting", "accepted", "delivery-unknown"].includes(turn.status);
+      || turn && ["submitting", "accepted", "delivery-unknown"].includes(turn.status));
+    modelRowMap.forEach(function (row) { row.disabled = busy || !!modelPending; });
+    const modelReason = modelPending ? (busy ? "" : "conversation.modelUnknown")
+      : active && !active.current ? "conversation.readOnlyHistory"
+        : facts && facts.terminalWriter ? "conversation.modelTerminalBusy"
+          : turn && ["submitting", "accepted", "delivery-unknown"].includes(turn.status) ? "conversation.modelBusy"
+            : active && (!writable || roleReadOnly) ? "conversation.inputUnavailable" : "";
+    modelStatus.textContent = modelReason ? t(modelReason) : "";
     attachMenu.hidden = !owner || owner.scope !== "task";
     file.disabled = busy || !!pending || !writable || materials.length >= 8;
     materialList.querySelectorAll("button").forEach(function (control) { control.disabled = busy || !!pending; });
@@ -248,11 +264,10 @@ export function createConversationController(host, t, locale = function () { ret
     receiptDetail.textContent = JSON.stringify(result, null, 2);
     receiptBlock.hidden = false;
   }
-  // Model presentation keeps three sources apart. A Codex observation is the
+  // Keep execution evidence and the user's selected target apart. A Codex observation is the
   // most recent native confirmation (start, resume or an adopted switch) with
   // its time, not a live reading of the current Turn or of Desktop changes, so
-  // it is labelled that way. A pending switch is shown as pending. The launch
-  // request is reference only. An absent, unknown or unreadable confirmation
+  // it is labelled that way. A pending switch is shown as pending. An absent, unknown or unreadable confirmation
   // is shown as unconfirmed: never filled from launch, Role or poll time.
   function observedAxis(observation, category) {
     if (!observation || observation.status !== "observed" || !Array.isArray(observation.axes)) return null;
@@ -279,7 +294,6 @@ export function createConversationController(host, t, locale = function () { ret
     list.append(h("dt", null, label), h("dd", null, h("span", null, value), note ? h("small", null, note) : null));
   }
   function drawModel() {
-    const session = selectedSession();
     const observation = modelObservation;
     const value = confirmedModel;
     const effort = value ? observedAxis(observation, "effort") : null;
@@ -301,44 +315,55 @@ export function createConversationController(host, t, locale = function () { ret
     modelSummary.title = t("conversation.model") + " · " + title;
     modelSummary.setAttribute("aria-label", t("conversation.model") + " · " + (tag ? tag + " " : "") + label);
     clear(modelFacts);
-    const reason = observation && observation.reason ? observation.reason
-      : session && !session.current ? t("conversation.modelHistorical") : t("conversation.modelNoRead");
     fact(modelFacts, t("conversation.confirmedModel"), value ? modelText(value, effort) : t("conversation.modelUnconfirmed"),
-      value ? fill(t("conversation.modelConfirmedNote"), { time: at }) + (effort ? "" : " · " + t("conversation.effortUnobserved"))
-        : reason);
-    if (modelPending) fact(modelFacts, t("conversation.modelPendingLabel"), modelPending.model, t("conversation.modelApplying"));
-    fact(modelFacts, t("conversation.launchModel"),
-      session && session.launchModel ? modelText(session.launchModel, session.launchEffort) : t("conversation.agentDefault"),
-      t("conversation.launchNote"));
+      value ? t("conversation.modelStateConfirmed") : null);
+    modelFacts.title = value ? fill(t("conversation.modelConfirmedShort"), { time: at }) : t("conversation.modelUnconfirmedHint");
+    fact(modelFacts, t("conversation.selectedModel"), modelPending ? modelPending.model
+      : modelSelect.value || t("conversation.modelNotSelected"),
+      modelPending ? t("conversation.modelStatePending") : null);
   }
   function pickModel(value) {
     modelSelect.value = value;
     modelRowMap.forEach(function (row, key) {
       row.className = "cv-option" + (key === value ? " is-selected" : "");
-      row.ariaSelected = key === value ? "true" : "false";
+      row.setAttribute("aria-selected", key === value ? "true" : "false");
     });
+    modelResult.textContent = "";
+    modelResult.title = "";
+    drawModel();
     controls();
   }
   async function loadModels() {
     if (modelLoad.disabled) return;
     const own = generation;
-    busy = true; controls();
+    busy = true; modelResult.textContent = t("conversation.modelsLoading"); controls();
     try {
       const result = await requestJson(url({ session: selected }).replace("/api/conversation?", "/api/conversation/model?"));
       if (own !== generation) return;
+      const previousChoice = modelSelect.value;
       modelCatalog = result; clear(modelSelect); clear(modelRows); modelRowMap = new Map();
       (result.catalog.models || []).forEach(function (m) {
         modelSelect.append(h("option", { value: m.value }, m.label + " · " + m.value));
-        const row = h("button.cv-option", { type: "button", role: "option" },
-          h("span.cv-option-name", null, m.label), h("span.cv-option-id", null, m.value), icon("check"));
+        const row = h("button.cv-option", { type: "button", role: "option", title: m.value },
+          h("span.cv-option-name", null, m.label), icon("check"));
         row.addEventListener("click", function () { pickModel(m.value); });
         modelRowMap.set(m.value, row); modelRows.append(row);
       });
-      pickModel(modelRowMap.has(confirmedModel) ? confirmedModel : "");
-      modelResult.textContent = result.source + " · " + (result.fetchedAt || result.attemptedAt)
-        + (result.failure ? " · " + result.failure.message : "");
-    } catch (error) { if (own === generation) modelResult.textContent = error.message; }
-    finally { finish(own); }
+      pickModel(modelRowMap.has(previousChoice) ? previousChoice : modelRowMap.has(confirmedModel) ? confirmedModel : "");
+      modelLoad.hidden = !result.failure && result.source !== "fallback" && modelRowMap.size > 0;
+      modelResult.textContent = result.failure || result.source === "fallback" ? t("conversation.modelsFailed")
+        : !modelRowMap.size ? t("conversation.modelsEmpty") : "";
+      modelResult.title = result.failure?.message || "";
+    } catch (error) {
+      if (own === generation) {
+        modelCatalog = null; modelLoad.hidden = false;
+        modelResult.textContent = t("conversation.modelsFailed"); modelResult.title = error.message;
+      }
+    }
+    finally {
+      finish(own);
+      if (own === generation && modelMenu.open) focusOption(modelRowMap.get(modelSelect.value) || modelRows.querySelector("button"));
+    }
   }
   async function applyModel() {
     if (modelApply.disabled) return;
@@ -353,12 +378,16 @@ export function createConversationController(host, t, locale = function () { ret
     try {
       const result = await submitMutation(endpoint, endpoint, { model: modelPending.model });
       if (own !== generation) return;
-      modelPending = null; saved(".modelPending", null);
       showModel(result.runConfiguration);
-      modelResult.textContent = t("conversation.modelConfirmed");
+      modelResult.textContent = modelPending ? "" : t("conversation.modelConfirmed");
+      if (!modelPending && confirmedModel === modelSelect.value) {
+        modelResult.textContent = ""; modelMenu.open = false; modelSummary.focus?.();
+      }
     } catch (error) {
       if (own !== generation) return;
-      modelResult.textContent = error.message + " · " + t(error.disposition === "not-submitted" ? "conversation.modelFailed" : "conversation.modelUnknown");
+      modelResult.textContent = error.disposition !== "not-submitted" ? ""
+        : t(error.message.includes("Exit the native TUI") ? "conversation.modelTerminalBusy" : "conversation.modelFailed");
+      modelResult.title = error.message;
       if (error.disposition === "not-submitted") { modelPending = null; saved(".modelPending", null); }
       drawModel();
     } finally { finish(own); }
@@ -853,7 +882,7 @@ export function createConversationController(host, t, locale = function () { ret
     }
   });
   modelLoad.addEventListener("click", loadModels);
-  modelSelect.addEventListener("change", controls);
+  modelSelect.addEventListener("change", function () { pickModel(modelSelect.value); });
   modelApply.addEventListener("click", applyModel);
   literal.addEventListener("click", function () { submit(false, true); });
   file.addEventListener("change", async function () {
