@@ -526,6 +526,16 @@ conversation unrecoverable. The request is legal while an AgentRun is active,
 the Session is ended, or previous cleanup is pending. A Leader may also request
 its own replacement and end its current turn.
 
+For a Draft Leader whose planning Run has already ended, the replacement
+initialization notification admits the selected fresh Session after confirmed
+cleanup. It does not create another business Run, activate the Task, or adopt a
+delivery workspace: the successor retains planning-only authority and reads
+current Task context and retained inbox originals before handling them. Ordinary
+Draft notifications and unscoped native hooks cannot use this admission.
+A rejected startup retains the notification for explicit `task wake retry`
+after correction, or another legal Session replacement; unknown input acceptance
+never becomes permission to replay.
+
 `task role session stop` can also stop a running Role without first changing
 its Run status. It retains the native conversation for possible reuse. Pending
 Messages remain intent and may start a continuation after the stop; use Task

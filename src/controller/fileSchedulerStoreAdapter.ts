@@ -4071,9 +4071,9 @@ function recordTaskRuntimeNativeSession(
   if (task.status === "archived") {
     throw new Error(`Cannot register a native session for archived Task: ${input.taskId}.`);
   }
-  // A Draft registers a Session only for its planning Turn. Admission is decided
-  // by the active Turn's purpose through the one shared invariant, so a Draft
-  // still cannot open an execution Session before activation.
+  // A Draft admits its first planning Run, restoration of that exact Session,
+  // or the selected successor's initialization after verified replacement.
+  // Ordinary Draft notifications and native hooks cannot create a Session.
   const admittingRun = store.getActiveRun(input.taskId, input.roleName);
   const existingPlanning = activeLiveRoleAgentSession(store.getTaskRoleSessionSet(input.taskId, input.roleName));
   if (!(admittingRun !== null
@@ -4082,6 +4082,9 @@ function recordTaskRuntimeNativeSession(
     && !(task.status === "draft" && task.executionGate.state === "enabled" && input.roleName === "leader"
       && existingPlanning?.effective.executionAuthority === "planning"
       && existingPlanning.nativeSessionId === input.nativeSessionId)
+    && !(task.status === "draft" && task.executionGate.state === "enabled" && input.roleName === "leader"
+      && input.effective?.executionAuthority === "planning"
+      && draftReplacementInitializationIsCurrent(store, input.taskId, input.agentId))
     && (task.status !== "active" || task.executionGate.state !== "enabled")) {
     throw new Error(
       `Cannot register a native session for a Task that is not active: ${input.taskId}.`
@@ -4136,6 +4139,32 @@ function recordTaskRuntimeNativeSession(
   }, now);
   store.saveRoleSessionSet(updated);
   return updated.sessions[input.agentId]!;
+}
+
+/** The existing initialization wake is the launch authority, not historical
+ * planning success or an arbitrary "session-replaced" reason. It is retained
+ * on startup rejection for the normal explicit wake retry/replacement path. */
+function draftReplacementInitializationIsCurrent(
+  store: TaskStore, taskId: string, agentId: string
+): boolean {
+  const sessions = store.getTaskRoleSessionSet(taskId, "leader");
+  if (sessions === null || sessions.activeAgentId !== agentId
+    || sessions.sessions[agentId] !== undefined || sessions.providerBinding !== null
+    || hasRuntimeCleanupObligation(store.getWorkMailbox(runtimeLifecycleTarget({
+      scope: "task", taskId, roleName: "leader"
+    })))) return false;
+  const processing = store.getWorkMailbox({ kind: "role", taskId, roleName: "leader" })?.processing;
+  if (!processing?.owner.startsWith("leader-notification:")) return false;
+  const wake = store.getTaskWake(taskId, processing.owner.slice("leader-notification:".length));
+  if (wake === null || !wake.reasons.includes("session-replaced")) return false;
+  const events = store.listEventsByType(taskId, ["runtime.session-replaced", "notification.delivery"]);
+  const replacement = events.filter(event => event.type === "runtime.session-replaced"
+    && event.payload.roleName === "leader").at(-1);
+  return replacement !== undefined
+    && (wake.refs ?? []).some(ref => ref.type === "event" && ref.taskId === taskId && ref.id === replacement.id)
+    && !events.some(event => event.type === "notification.delivery"
+      && event.payload.attemptId === processing.batchId
+      && event.payload.outcome !== "deferred");
 }
 
 function recordGlobalRuntimeNativeSession(
@@ -4303,8 +4332,9 @@ function taskSessionEffective(
     ?? store.getTaskWorkspace(taskId)
     ?? undefined;
   const effective = resolveEffectiveLaunch({
+    store,
     role,
-    purpose: "execution",
+    purpose: store.getTask(taskId)?.status === "draft" && roleName === "leader" ? "planning" : "execution",
     ...(workspace === undefined ? {} : { workspace }),
     ...(item === null ? {} : { workItemWriteProjectIds: item.writeProjectIds })
   });
