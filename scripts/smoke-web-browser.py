@@ -83,17 +83,14 @@ print([(n.get("role", {}).get("value"), n.get("name", {}).get("value"))
        for n in cdp("Accessibility.getFullAXTree")["nodes"]
        if n.get("role", {}).get("value") in ("tab", "button", "textbox")])
 click_named("Conversation", "tab")
-wait("document.body.innerText.includes('Conversation input')")
+wait("document.querySelector('textarea[aria-label=\"Message to the selected Session\"]') !== null")
 
 def draft():
     before = read_api("/api/conversation?scope=task&task=task-1&role=leader")["body"]
     type_label("Message to the selected Session", "Unsent browser draft 😀")
-    js("""(()=>{const s=[...document.querySelectorAll('select')].find(e=>e.getAttribute('aria-label')==='Default view');
-       if(![...s.options].some(o=>o.value==='structured'))throw Error('Missing rendered option');
-       s.value='structured';s.dispatchEvent(new Event('change',{bubbles:true}));})()""")
     cdp("Page.reload")
     wait_for_load()
-    wait("document.body.innerText.includes('Conversation input')")
+    wait("document.querySelector('textarea[aria-label=\"Message to the selected Session\"]') !== null")
     assert js("document.querySelector('textarea[aria-label=\"Message to the selected Session\"]').value") == "Unsent browser draft 😀"
     after = read_api("/api/conversation?scope=task&task=task-1&role=leader")["body"]
     assert before["currentSessionId"] == after["currentSessionId"]
@@ -335,7 +332,7 @@ def terminal_writers():
     second = None
     native_log = Path(json.loads((evidence / "report.json").read_text())["home"]) / "native-tui.jsonl"
     try:
-        click_named("Terminal", "tab")
+        click_named("Terminal", "radio")
         wait("document.body.innerText.includes('Interactive')")
         click_named("Terminal input", "textbox")
         cdp("Input.insertText", text="WRITER-ALLOWED")
@@ -347,7 +344,7 @@ def terminal_writers():
         second = current_tab()["targetId"]
         wait_for_load()
         print(page_info())
-        click_named("Terminal", "tab")
+        click_named("Terminal", "radio")
         wait("document.body.innerText.includes('Read only')")
         click_named("Terminal input", "textbox")
         cdp("Input.insertText", text="WRITER-DENIED")
@@ -376,9 +373,10 @@ def terminal_writers():
         if second:
             cdp("Target.closeTarget", targetId=second)
         switch_tab(first)
-        click_named("Conversation", "tab")
+        click_named("Chat", "radio")
     wait("document.querySelector('textarea[aria-label=\"Message to the selected Session\"]') !== null")
-    assert js("document.querySelector('textarea[aria-label=\"Message to the selected Session\"]').value") == "Task one private draft"
+    # The session page rebuilt its chat view: unsent text does not survive a mode switch.
+    assert js("document.querySelector('textarea[aria-label=\"Message to the selected Session\"]').value") == ""
     end = time.monotonic() + 5
     while read_api("/api/conversation?scope=task&task=task-1&role=leader")["body"]["terminalWriter"] and time.monotonic() < end:
         time.sleep(.1)

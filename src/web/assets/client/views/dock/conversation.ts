@@ -2,61 +2,90 @@ export const CONVERSATION_SCRIPT = String.raw`
 import { h, clear, icon } from "/assets/js/lib/dom.js";
 import { api, releaseMutation, requestJson, submitMutation } from "/assets/js/lib/api.js";
 import { richText } from "/assets/js/ui/text.js";
-import { readSessionAccessMode, writeSessionAccessMode } from "/assets/js/lib/prefs.js";
+import { formatDateTime, formatShort, fill } from "/assets/js/lib/format.js";
 import { inputCard } from "/assets/js/domain/work.js";
 
-export function createConversationController(host, t, locale = function () { return "en"; }) {
+// options.tools: a node placed in the header row (the session page's mode
+// switch). options.onSelection(sessionId, currentSessionId) reports the chosen
+// Session; currentSessionId is undefined until the owner's facts are read.
+export function createConversationController(host, t, locale = function () { return "en"; }, options = {}) {
   let owner = null, selected = null, facts = null, next = null, latestItems = [], olderItems = [];
   let generation = 0, busy = false, timer = null, pending = null, historyOk = false;
   let recoveryUnavailable = false;
+  // A background read (the poll) holds busy only to serialize requests. It
+  // never disables controls, so an open picker or a typed draft does not grey
+  // out every cycle; an action started meanwhile waits for the read to finish
+  // and then revalidates instead of being dropped or racing it.
+  let reading = false, readWaiters = [];
   let rendered = new Map();
   let materials = [], incomingMaterials = null;
-  let requestSignature = "";
+  let requestSignature = "", sessionSignature = "", detailSignature = "";
   let modelPending = null, modelCatalog = null, lastModelObservation = null;
+  // The selected Session's own native confirmation (or its stated absence).
+  let modelObservation = null;
+  let pageFacts = null;
   const requests = h("div.cv-requests");
   const questions = h("div.cv-requests");
   let questionSignature = "";
+  // Native answer drafts typed in this view (discarded with it on a mode switch).
+  const nativeDraftKeys = new Set();
   let confirmedModel = null, modelRowMap = new Map();
-  const defaultMode = h("select", { "aria-label": t("conversation.defaultMode") },
-    h("option", { value: "structured" }, t("conversation.title")),
-    h("option", { value: "native" }, t("dock.session")));
-  defaultMode.value = readSessionAccessMode();
-  defaultMode.addEventListener("change", function () {
-    const saved = writeSessionAccessMode(defaultMode.value);
-    receipt.textContent = t(saved ? "conversation.defaultSaved" : "settings.storageFailed");
-    defaultMode.value = readSessionAccessMode();
-  });
-  const select = h("select.cv-session", { "aria-label": t("conversation.sessions") });
-  const status = h("p.cv-status", { role: "status" });
+  // Who/which Session: one row. The picker lists current and previous Sessions
+  // by readable name and time; exact identities live in the details menu.
+  const pickerName = h("span.cv-picker-name", null, t("conversation.sessions"));
+  const sessionList = h("div.cv-session-list", { role: "listbox", "aria-label": t("conversation.sessions") });
+  const moreSessions = h("button.cv-link.cv-more-sessions", { type: "button", hidden: true }, t("conversation.moreSessions"));
+  const picker = h("details.cv-pop.cv-picker", null,
+    h("summary.cv-picker-btn", { "aria-label": t("conversation.sessions"), title: t("conversation.sessions") },
+      pickerName, icon("down", "cv-picker-chevron")),
+    h("div.cv-popbody", null, sessionList, moreSessions));
+  const status = h("span.cv-status", { role: "status" });
+  const detailFacts = h("dl.cv-facts");
   const identity = h("p.cv-identity");
+  const copyIdentity = h("button.cv-link", { type: "button" }, icon("copy"), h("span", null, t("conversation.copyIdentity")));
+  const liveNote = h("p.cv-note");
   const feed = h("div.feed", { tabIndex: 0, "aria-label": t("conversation.history") });
   const text = h("textarea.cv-input", { rows: 2, placeholder: t("conversation.placeholder"), "aria-label": t("conversation.input"), maxLength: 12000 });
   const receipt = h("p.cv-note", { role: "status" });
   const draftStatus = h("p.cv-note", { role: "status" });
   const receiptDetail = h("pre.cv-code");
+  const receiptBlock = h("details.cv-sub", { hidden: true }, h("summary", null, t("conversation.receiptDetails")), receiptDetail);
+  // Two facts only: what the Session last confirmed, and what is selected.
+  // Their nodes are built once and updated in place on each poll.
+  const modelFactNodes = [0, 1].map(function () {
+    const value = h("span.cv-mf-value"), note = h("small.cv-mf-note");
+    return { term: h("dt"), value: value, note: note, detail: h("dd", null, value, note) };
+  });
+  const modelFacts = h("dl.cv-facts.cv-model-facts", null,
+    modelFactNodes[0].term, modelFactNodes[0].detail, modelFactNodes[1].term, modelFactNodes[1].detail);
   const modelStatus = h("p.cv-note", { role: "status" });
   const modelResult = h("p.cv-note", { role: "status" });
   const modelSelect = h("select", { "aria-label": t("conversation.model"), hidden: true });
   const modelRows = h("div.cv-options", { role: "listbox", "aria-label": t("conversation.selectModel") });
-  const modelLabel = h("span.cv-model-label", null, t("conversation.model"));
-  const modelLoad = h("button.cv-link", { type: "button" }, t("conversation.modelsLoad"));
-  const modelApply = h("button.btn.btn-primary", { type: "button" }, t("conversation.modelApply"));
-  const modelMenu = h("details.cv-pop.cv-model", null,
-    h("summary.cv-pill", null, modelLabel, icon("down")),
-    h("div.cv-popbody", null, h("p.cv-pop-title", null, t("conversation.selectModel")),
-      modelRows, modelSelect, modelStatus, modelResult,
-      h("div.cv-pop-actions", null, modelLoad, modelApply),
-      h("p.cv-note", null, t("conversation.modelBoundary"))));
+  // The pill names its state in words (not only the dot's colour) so the
+  // source reads without hovering: last confirmed, applying, or unconfirmed.
+  const modelState = h("span.cv-model-state");
+  const modelLabel = h("span.cv-model-label", null, t("conversation.modelUnconfirmed"));
+  const modelSummary = h("summary.cv-pill", { "aria-label": t("conversation.model"), title: t("conversation.model") },
+    h("i.cv-model-dot", { "aria-hidden": "true" }), modelState, modelLabel, icon("down"));
+  const modelLoad = h("button.cv-link", { type: "button", hidden: true }, t("conversation.modelsLoad"));
+  const modelApply = h("button.btn.btn-primary.cv-apply", { type: "button" }, t("conversation.modelApply"));
+  const modelMenu = h("details.cv-pop.cv-model", null, modelSummary,
+    h("div.cv-popbody", null, modelFacts, modelRows, modelSelect,
+      h("div.cv-pop-actions", null, h("div.cv-model-notes", null, modelStatus, modelResult), modelLoad, modelApply)));
   const slash = h("div.conversation-slash", { "aria-label": t("conversation.commands") });
   const literal = h("button.cv-link", { type: "button", hidden: true }, t("conversation.literal"));
-  const send = h("button.cv-send", { type: "button", "aria-label": t("conversation.send"), title: t("conversation.send") }, icon("up"));
+  const send = h("button.cv-send", { type: "button", "aria-label": t("conversation.send"), title: t("conversation.sendHint") }, icon("up"));
   const stop = h("button.cv-stop", { type: "button", hidden: true, "aria-label": t("conversation.stop"), title: t("conversation.stop") }, icon("stop"));
   const check = h("button.cv-link", { type: "button", hidden: true }, t("conversation.receipt"));
-  const older = h("button.cv-link", { type: "button", hidden: true }, t("conversation.older"));
+  const older = h("button.cv-link.cv-older", { type: "button", hidden: true }, t("conversation.older"));
   const latest = h("button.cv-jump", { type: "button", hidden: true, "aria-label": t("conversation.jump"), title: t("conversation.latest") }, icon("down"));
-  const current = h("button.cv-link", { type: "button", hidden: true }, t("conversation.current"));
-  const moreSessions = h("button.cv-link", { type: "button", hidden: true }, t("conversation.moreSessions"));
-  const writerChip = h("span.cv-chip.tone-warn", { hidden: true }, icon("alert"), h("span", null, t("conversation.terminalWriter")));
+  const current = h("button.cv-link.cv-back", { type: "button", hidden: true, title: t("conversation.backCurrent") }, icon("back"), h("span", null, t("conversation.backCurrentShort")));
+  // Why input is unavailable, in one line above the composer, instead of a
+  // silently disabled send button and stacked engineering notes.
+  const noticeText = h("span");
+  const noticeCurrent = h("button.cv-link", { type: "button", hidden: true }, t("conversation.backCurrent"));
+  const notice = h("p.cv-notice", { role: "status", hidden: true }, icon("info"), noticeText, noticeCurrent);
   const file = h("input", { type: "file", "aria-label": t("materials.attach") });
   const materialList = h("div.row-stack");
   const materialAlert = h("p.cv-note", { role: "alert" });
@@ -65,25 +94,51 @@ export function createConversationController(host, t, locale = function () { ret
     h("div.cv-popbody", null, h("p.cv-pop-title", null, t("materials.attach")), file,
       h("p.cv-note", null, t("materials.boundary"))));
   const menu = h("details.cv-pop.cv-menu", null,
-    h("summary.cv-iconbtn", { "aria-label": t("conversation.more"), title: t("conversation.more") }, icon("dots")),
+    h("summary.cv-iconbtn", { "aria-label": t("conversation.details"), title: t("conversation.details") }, icon("dots")),
     h("div.cv-popbody", null,
-      h("label.cv-field", null, h("span", null, t("conversation.defaultMode")), defaultMode),
-      moreSessions, identity,
-      h("details.cv-sub", null, h("summary", null, t("conversation.receiptDetails")), receiptDetail),
+      h("p.cv-pop-title", null, t("conversation.details")), detailFacts,
+      h("div.cv-identity-row", null, identity, copyIdentity), liveNote, receiptBlock,
       h("p.cv-note", null, t("conversation.boundary"))));
-  const pops = [menu, attachMenu, modelMenu];
+  const pops = [menu, attachMenu, modelMenu, picker];
   pops.forEach(function (pop) {
     pop.addEventListener("toggle", function () {
       if (!pop.open) return;
       pops.forEach(function (other) { if (other !== pop) other.open = false; });
       if (pop === modelMenu && !modelCatalog && !modelLoad.disabled) loadModels();
+      else if (pop === modelMenu) focusOption(modelRowMap.get(modelSelect.value) || modelRows.querySelector("button"));
+      if (pop === picker) focusOption(sessionList.querySelector("[aria-selected=true]") || sessionList.querySelector("button"));
     });
   });
   host.addEventListener("click", function (event) {
     pops.forEach(function (pop) { if (pop.open && !pop.contains(event.target)) pop.open = false; });
   });
+  // Escape closes only the open popover; the dock-level Escape (hide the
+  // dock) must not also fire for the same key press.
   host.addEventListener("keydown", function (event) {
-    if (event.key === "Escape") pops.forEach(function (pop) { pop.open = false; });
+    if (event.key !== "Escape") return;
+    pops.forEach(function (pop) {
+      if (!pop.open) return;
+      event.stopPropagation();
+      pop.open = false;
+      pop.querySelector("summary")?.focus?.();
+    });
+  });
+  sessionList.addEventListener("keydown", function (event) {
+    const options = [...sessionList.querySelectorAll("button")];
+    const index = options.indexOf(document.activeElement);
+    const target = event.key === "ArrowDown" ? options[Math.min(options.length - 1, index + 1)]
+      : event.key === "ArrowUp" ? options[Math.max(0, index - 1)]
+        : event.key === "Home" ? options[0] : event.key === "End" ? options[options.length - 1] : null;
+    if (!target) return;
+    event.preventDefault(); focusOption(target);
+  });
+  modelRows.addEventListener("keydown", function (event) {
+    const rows = [...modelRowMap.values()];
+    const index = rows.indexOf(document.activeElement);
+    const target = event.key === "ArrowDown" ? rows[Math.min(rows.length - 1, index + 1)]
+      : event.key === "ArrowUp" ? rows[Math.max(0, index - 1)]
+        : event.key === "Home" ? rows[0] : event.key === "End" ? rows[rows.length - 1] : null;
+    if (target) { event.preventDefault(); focusOption(target); }
   });
   feed.addEventListener("scroll", function () {
     syncJump();
@@ -91,15 +146,51 @@ export function createConversationController(host, t, locale = function () { ret
     if (feed.scrollTop < 120 && next && historyOk && !busy) refresh(true);
   });
   host.append(
-    h("div.cv-head", null, h("div.cv-picker", null, select, current), menu), status,
-    h("div.cv-older", null, older),
-    h("div.cv-stage", null, feed, latest),
+    h("div.cv-head", null, picker, current, h("span.spacer"), status, options.tools || null, menu),
+    h("div.cv-stage", null, older, feed, latest),
     questions, requests,
-    h("div.cv-composer", null, slash,
+    h("div.cv-composer", null, slash, notice,
       h("div.cv-box", null, materialList, materialAlert, text,
-        h("div.cv-tools", null, attachMenu, writerChip, h("span.spacer"), modelMenu, stop, send)),
+        h("div.cv-tools", null, attachMenu, h("span.spacer"), modelMenu, stop, send)),
       h("div.cv-hint", null, draftStatus, literal, check, receipt)));
 
+  function focusOption(option) { if (option && typeof option.focus === "function") option.focus(); }
+  // Write only real changes so an unchanged poll leaves the DOM untouched.
+  function setText(node, value) { if (node.textContent !== value) node.textContent = value; }
+  function setChildren(node, value) { if (node.textContent !== value) node.replaceChildren(value); }
+  function setProp(node, name, value) { if (node[name] !== value) node[name] = value; }
+  function setAttr(node, name, value) {
+    if ((node.getAttribute ? node.getAttribute(name) : node[name]) !== value) node.setAttribute(name, value);
+  }
+  async function afterRead() {
+    const own = generation;
+    while (reading) await new Promise(function (resolve) { readWaiters.push(resolve); });
+    return own === generation;
+  }
+  function endRead() {
+    reading = false;
+    const waiting = readWaiters; readWaiters = [];
+    waiting.forEach(function (resolve) { resolve(); });
+  }
+  function report() {
+    if (options.onSelection) options.onSelection(selected, facts ? facts.currentSessionId || null : undefined);
+  }
+  function selectedSession() {
+    return facts && facts.sessions.find(function (s) { return s.nativeSessionId === selected; }) || null;
+  }
+  function ownerLabel() {
+    if (!owner) return "";
+    return owner.scope === "global" ? owner.roleName === "operator" ? t("actions.operator") : owner.roleName
+      : owner.roleName + " · " + owner.taskId;
+  }
+  function sessionWhen(s) { return formatShort(s.createdAt, locale()) || "—"; }
+  function sessionLifecycle(s) {
+    return t(s.status === "active" ? "conversation.sessionActive"
+      : s.endReason === "failed" ? "conversation.sessionFailed" : "conversation.sessionEnded");
+  }
+  function sessionName(s) {
+    return (s.current ? t("conversation.current") : t("conversation.previous")) + " · " + (s.title || sessionWhen(s));
+  }
   function key() { return "yui.conversation." + JSON.stringify(owner) + "." + selected; }
   function saved(suffix, value, expectedRequestId) {
     try {
@@ -135,36 +226,61 @@ export function createConversationController(host, t, locale = function () { ret
     return "/api/conversation?" + q;
   }
   function syncJump() {
-    latest.hidden = !((selected && !historyOk) || feed.scrollHeight - feed.clientHeight - feed.scrollTop > 80);
+    setProp(latest, "hidden", !((selected && !historyOk) || feed.scrollHeight - feed.clientHeight - feed.scrollTop > 80));
+    setProp(older, "hidden", !next || !historyOk || feed.scrollTop > 160);
   }
   function controls() {
     if (owner && selected) {
       try { pending = JSON.parse(saved(".pending") || "null"); }
       catch { recoveryUnavailable = true; }
     }
-    defaultMode.value = readSessionAccessMode();
-    const active = facts && facts.sessions.find(function (s) { return s.nativeSessionId === selected; });
+    const active = selectedSession();
+    // Task Roles other than the Leader keep their assignment controls; here they are read only.
+    const roleReadOnly = !!owner && owner.scope === "task" && owner.roleName !== "leader";
     const writable = historyOk && active && active.current && active.status === "active" && active.adapterId === "codex"
-      && facts.authority && facts.authority.owner === "controller" && !facts.terminalWriter;
+      && facts.authority && facts.authority.owner === "controller" && !facts.terminalWriter && !roleReadOnly;
     const turn = facts && facts.turn;
-    send.disabled = busy || recoveryUnavailable || !!pending || !!modelPending || !writable || (turn && ["submitting", "delivery-unknown"].includes(turn.status));
-    stop.disabled = busy || recoveryUnavailable || !!pending || !writable || !turn || turn.status !== "accepted" || !turn.nativeTurnId;
-    check.disabled = busy || !pending;
-    older.disabled = busy || !next;
-    older.hidden = !next;
-    check.hidden = !pending;
-    stop.hidden = !turn || turn.status !== "accepted";
-    current.hidden = !facts || !selected || selected === facts.currentSessionId;
-    writerChip.hidden = !(facts && facts.terminalWriter);
-    literal.disabled = send.disabled;
+    const unsettled = turn && ["submitting", "delivery-unknown"].includes(turn.status);
+    const locked = busy && !reading;
+    setProp(send, "disabled", !!(locked || recoveryUnavailable || !!pending || !!modelPending || !writable || unsettled));
+    setProp(stop, "disabled", !!(locked || recoveryUnavailable || !!pending || !writable || !turn || turn.status !== "accepted" || !turn.nativeTurnId));
+    setProp(check, "disabled", !!(locked || !pending));
+    setProp(older, "disabled", !!(locked || !next));
+    setProp(check, "hidden", !pending);
+    setProp(stop, "hidden", !turn || turn.status !== "accepted");
+    setProp(current, "hidden", !facts || !selected || selected === facts.currentSessionId);
+    setProp(literal, "disabled", !!send.disabled);
     syncJump();
-    modelLoad.disabled = busy || !active || active.adapterId !== "codex";
-    modelApply.disabled = busy || !!pending || !!modelPending || !writable || !modelSelect.value
+    setProp(modelLoad, "disabled", !!(locked || !active || active.adapterId !== "codex"));
+    setProp(modelApply, "disabled", !!(locked || !!pending || !!modelPending || !writable || !modelSelect.value
+      || modelSelect.value === confirmedModel
       || !modelCatalog || modelCatalog.source === "fallback" || !!modelCatalog.failure
-      || turn && ["submitting", "accepted", "delivery-unknown"].includes(turn.status);
-    attachMenu.hidden = !owner || owner.scope !== "task";
-    file.disabled = busy || !!pending || !writable || materials.length >= 8;
-    materialList.querySelectorAll("button").forEach(function (control) { control.disabled = busy || !!pending; });
+      || turn && ["submitting", "accepted", "delivery-unknown"].includes(turn.status)));
+    modelRowMap.forEach(function (row) { setProp(row, "disabled", locked || !!modelPending); });
+    const modelReason = modelPending ? (locked ? "" : "conversation.modelUnknown")
+      : active && !active.current ? "conversation.readOnlyHistory"
+        : facts && facts.terminalWriter ? "conversation.modelTerminalBusy"
+          : turn && ["submitting", "accepted", "delivery-unknown"].includes(turn.status) ? "conversation.modelBusy"
+            : active && (!writable || roleReadOnly) ? "conversation.inputUnavailable" : "";
+    setText(modelStatus, modelReason ? t(modelReason) : "");
+    setProp(attachMenu, "hidden", !owner || owner.scope !== "task");
+    setProp(file, "disabled", !!(locked || !!pending || !writable || materials.length >= 8));
+    materialList.querySelectorAll("button").forEach(function (control) { setProp(control, "disabled", locked || !!pending); });
+    // One plain reason for unavailable input; ordered by what the user can act on.
+    const reason = !facts || !selected || !historyOk || !active ? ""
+      : !active.current ? "conversation.readOnlyHistory"
+        : facts.terminalWriter ? "conversation.terminalWriter"
+          : roleReadOnly ? "conversation.roleReadOnly"
+          : recoveryUnavailable ? "conversation.storageFailed"
+            : pending ? "conversation.pendingInput"
+              : unsettled ? "conversation.turnUnsettled"
+                : modelPending ? "conversation.modelApplying"
+                  : !writable ? "conversation.inputUnavailable" : "";
+    setProp(notice, "hidden", !reason);
+    setProp(notice, "className", "cv-notice" + (["conversation.terminalWriter", "conversation.readOnlyHistory", "conversation.roleReadOnly"].includes(reason) ? "" : " is-warn"));
+    setText(noticeText, reason ? t(reason) : "");
+    setProp(noticeCurrent, "hidden", reason !== "conversation.readOnlyHistory");
+    setProp(text, "placeholder", t(reason === "conversation.readOnlyHistory" ? "conversation.placeholderHistory" : "conversation.placeholder"));
   }
   function showReceipt(result) {
     const refused = result.interrupt && result.interrupt.state === "not-interrupted";
@@ -174,72 +290,156 @@ export function createConversationController(host, t, locale = function () { ret
       + (result.messageId ? " · " + result.messageId : "")
       + (result.notDelivered ? " · " + (typeof result.notDelivered === "string" ? result.notDelivered : JSON.stringify(result.notDelivered)) : "");
     receiptDetail.textContent = JSON.stringify(result, null, 2);
+    receiptBlock.hidden = false;
   }
+  // Keep execution evidence and the user's selected target apart. A Codex observation is the
+  // most recent native confirmation (start, resume or an adopted switch) with
+  // its time, not a live reading of the current Turn or of Desktop changes, so
+  // it is labelled that way. A pending switch is shown as pending. An absent, unknown or unreadable confirmation
+  // is shown as unconfirmed: never filled from launch, Role or poll time.
+  function observedAxis(observation, category) {
+    if (!observation || observation.status !== "observed" || !Array.isArray(observation.axes)) return null;
+    const axis = observation.axes.find(function (a) { return a.category === category; });
+    return axis && axis.current && axis.current.status === "observed" ? axis.current.value : null;
+  }
+  function modelText(model, effort) { return model + (effort ? " · " + effort : ""); }
   function showModel(observation) {
-    const axis = observation && observation.status === "observed"
-      && observation.axes.find(function (a) { return a.key === "model"; });
-    const value = axis && axis.current.status === "observed" ? axis.current.value : null;
-    const session = facts && facts.sessions.find(function (s) { return s.nativeSessionId === selected; });
+    const value = observedAxis(observation, "model");
     confirmedModel = value;
-    modelLabel.textContent = value || (session && session.launchModel) || t("conversation.model");
-    modelStatus.textContent = t("conversation.launchModel") + ": " + (session && session.launchModel || "—")
-      + " · " + t("conversation.confirmedModel") + ": " + (value || t("conversation.unknown"))
-      + (value ? " · " + observation.observedAt : "");
-    if (modelPending) {
-      if (value === modelPending.model && observation.observedAt !== modelPending.previousObservation) {
-        modelPending = null; saved(".modelPending", null);
-        releaseMutation(url({ session: selected }).replace("/api/conversation?", "/api/conversation/model?"));
-      } else modelStatus.textContent += " · " + t("conversation.modelUnknown");
+    modelObservation = observation || null;
+    // An unresolved switch keeps its pending record; controls() owns the note.
+    if (modelPending && value === modelPending.model && observation.observedAt !== modelPending.previousObservation) {
+      modelPending = null; saved(".modelPending", null);
+      releaseMutation(url({ session: selected }).replace("/api/conversation?", "/api/conversation/model?"));
     }
     lastModelObservation = value ? observation.observedAt : null;
+    // A catalog read before the first confirmation leaves nothing chosen;
+    // default that untouched choice to the confirmed model, as a load does.
+    if (value && !modelPending && !modelSelect.value && modelRowMap.has(value)) { pickModel(value); return; }
+    drawModel();
+  }
+  function fact(list, label, value, note) {
+    list.append(h("dt", null, label), h("dd", null, h("span", null, value), note ? h("small", null, note) : null));
+  }
+  function modelName(value) {
+    const known = modelCatalog && (modelCatalog.catalog.models || []).find(function (m) { return m.value === value; });
+    return known && known.label && known.label !== value ? known.label : value;
+  }
+  function drawModel() {
+    const observation = modelObservation;
+    const value = confirmedModel;
+    const effort = value ? observedAxis(observation, "effort") : null;
+    // Dated, so a confirmation from yesterday is not read as today's.
+    const at = value ? formatDateTime(observation.observedAt, locale()) : "";
+    let state, tag, label, title;
+    if (modelPending) {
+      state = "pending"; tag = t("conversation.modelStatePending"); label = modelPending.model; title = t("conversation.modelApplying");
+    } else if (value) {
+      state = "confirmed"; tag = t("conversation.modelStateConfirmed"); label = modelText(value, effort);
+      title = fill(t("conversation.modelConfirmedShort"), { time: at });
+    } else {
+      state = "unknown"; tag = ""; label = t("conversation.modelUnconfirmed"); title = t("conversation.modelUnconfirmedHint");
+    }
+    if (modelMenu.dataset.state !== state) modelMenu.dataset.state = state;
+    setText(modelState, tag);
+    setProp(modelState, "hidden", !tag);
+    setText(modelLabel, label);
+    setAttr(modelSummary, "title", t("conversation.model") + " · " + title);
+    setAttr(modelSummary, "aria-label", t("conversation.model") + " · " + (tag ? tag + " " : "") + label);
+    const selection = modelPending ? modelPending.model : modelSelect.value;
+    const rows = [
+      [t("conversation.confirmedModel"), value ? modelText(modelName(value), effort) : t("conversation.modelUnconfirmed"),
+        value ? t("conversation.modelStateConfirmed") : "", value ? title : t("conversation.modelUnconfirmedHint"), !value],
+      [t("conversation.selectedModel"), selection ? modelName(selection) : t("conversation.modelNotSelected"),
+        modelPending ? t("conversation.modelStatePending") : "", selection || "", !selection]];
+    rows.forEach(function (row, index) {
+      const node = modelFactNodes[index];
+      setChildren(node.term, row[0]);
+      setChildren(node.value, row[1]);
+      setChildren(node.note, row[2]);
+      setProp(node.note, "hidden", !row[2]);
+      setAttr(node.detail, "title", row[3]);
+      const kind = "cv-mf-value" + (row[4] ? " is-empty" : "");
+      if (node.value.className !== kind) node.value.className = kind;
+    });
+    modelRowMap.forEach(function (row, key) {
+      const kind = "cv-option" + (key === modelSelect.value ? " is-selected" : "") + (key === value ? " is-current" : "");
+      if (row.className !== kind) row.className = kind;
+    });
   }
   function pickModel(value) {
     modelSelect.value = value;
-    modelRowMap.forEach(function (row, key) {
-      row.className = "cv-option" + (key === value ? " is-selected" : "");
-      row.ariaSelected = key === value ? "true" : "false";
-    });
+    modelRowMap.forEach(function (row, key) { setAttr(row, "aria-selected", key === value ? "true" : "false"); });
+    modelResult.textContent = "";
+    modelResult.title = "";
+    drawModel();
     controls();
   }
   async function loadModels() {
-    if (modelLoad.disabled) return;
+    if (!await afterRead()) return;
+    controls();
+    if (modelLoad.disabled || busy) return;
     const own = generation;
-    busy = true; controls();
+    busy = true; modelResult.textContent = t("conversation.modelsLoading"); controls();
     try {
       const result = await requestJson(url({ session: selected }).replace("/api/conversation?", "/api/conversation/model?"));
       if (own !== generation) return;
+      const previousChoice = modelSelect.value;
       modelCatalog = result; clear(modelSelect); clear(modelRows); modelRowMap = new Map();
       (result.catalog.models || []).forEach(function (m) {
         modelSelect.append(h("option", { value: m.value }, m.label + " · " + m.value));
-        const row = h("button.cv-option", { type: "button", role: "option" },
-          h("span.cv-option-name", null, m.label), h("span.cv-option-id", null, m.value), icon("check"));
+        // The native id is shown beside a differing label (it is what the
+        // pill and facts name), not in a hover tooltip.
+        const row = h("button.cv-option", { type: "button", role: "option", "aria-selected": "false" },
+          h("i.cv-option-mark", { "aria-hidden": "true" }), h("span.cv-option-name", null, m.label || m.value),
+          m.label && m.label !== m.value ? h("span.cv-option-id", null, m.value) : null, icon("check"));
         row.addEventListener("click", function () { pickModel(m.value); });
         modelRowMap.set(m.value, row); modelRows.append(row);
       });
-      pickModel(modelRowMap.has(confirmedModel) ? confirmedModel : "");
-      modelResult.textContent = result.source + " · " + (result.fetchedAt || result.attemptedAt)
-        + (result.failure ? " · " + result.failure.message : "");
-    } catch (error) { if (own === generation) modelResult.textContent = error.message; }
-    finally { finish(own); }
+      pickModel(modelRowMap.has(previousChoice) ? previousChoice : modelRowMap.has(confirmedModel) ? confirmedModel : "");
+      modelLoad.hidden = !result.failure && result.source !== "fallback" && modelRowMap.size > 0;
+      modelResult.textContent = result.failure || result.source === "fallback" ? t("conversation.modelsFailed")
+        : !modelRowMap.size ? t("conversation.modelsEmpty") : "";
+      modelResult.title = result.failure?.message || "";
+    } catch (error) {
+      if (own === generation) {
+        modelCatalog = null; modelLoad.hidden = false;
+        modelResult.textContent = t("conversation.modelsFailed"); modelResult.title = error.message;
+      }
+    }
+    finally {
+      finish(own);
+      if (own === generation && modelMenu.open) focusOption(modelRowMap.get(modelSelect.value) || modelRows.querySelector("button"));
+    }
   }
   async function applyModel() {
-    if (modelApply.disabled) return;
+    const choice = modelSelect.value;
+    if (!await afterRead() || choice !== modelSelect.value) return;
+    controls();
+    if (modelApply.disabled || busy) return;
     const own = generation;
     const endpoint = url({ session: selected }).replace("/api/conversation?", "/api/conversation/model?");
     modelPending = { model: modelSelect.value, previousObservation: lastModelObservation };
     saved(".modelPending", JSON.stringify(modelPending));
+    // The Host drops its own confirmation before adopting; so does this view.
+    confirmedModel = null; drawModel();
     busy = true; controls();
     modelResult.textContent = t("conversation.modelApplying");
     try {
       const result = await submitMutation(endpoint, endpoint, { model: modelPending.model });
       if (own !== generation) return;
-      modelPending = null; saved(".modelPending", null);
       showModel(result.runConfiguration);
-      modelResult.textContent = t("conversation.modelConfirmed");
+      modelResult.textContent = modelPending ? "" : t("conversation.modelConfirmed");
+      if (!modelPending && confirmedModel === modelSelect.value) {
+        modelResult.textContent = ""; modelMenu.open = false; modelSummary.focus?.();
+      }
     } catch (error) {
       if (own !== generation) return;
-      modelResult.textContent = error.message + " · " + t(error.disposition === "not-submitted" ? "conversation.modelFailed" : "conversation.modelUnknown");
+      modelResult.textContent = error.disposition !== "not-submitted" ? ""
+        : t(error.message.includes("Exit the native TUI") ? "conversation.modelTerminalBusy" : "conversation.modelFailed");
+      modelResult.title = error.message;
       if (error.disposition === "not-submitted") { modelPending = null; saved(".modelPending", null); }
+      drawModel();
     } finally { finish(own); }
   }
   const commands = ["help", "status", "model", "stop", "latest"];
@@ -281,10 +481,11 @@ export function createConversationController(host, t, locale = function () { ret
         ref.relativePath + " · " + ref.commit + " · sha256:" + ref.digest), remove));
     });
   }
-  function renderRequests(rows) {
-    const signature = JSON.stringify([selected, rows, !!facts.terminalWriter]);
+  function renderRequests(rows, omitted) {
+    const signature = JSON.stringify([selected, rows, !!facts.terminalWriter, !!omitted]);
     if (signature === requestSignature) return;
     requestSignature = signature; clear(requests);
+    if (omitted) requests.append(h("p.cv-note", null, t("conversation.nativeOmitted")));
     rows.forEach(function (request) {
       const card = h("section.cv-card", null, h("h3.cv-card-title", null, t("conversation.nativeRequest")),
         h("p.cv-note", null, request.method + " · " + request.turnId));
@@ -294,6 +495,7 @@ export function createConversationController(host, t, locale = function () { ret
         (params.questions || []).forEach(function (question) {
           const field = h("input", { type: question.isSecret ? "password" : "text", "aria-label": question.question });
           const draftKey = ".nativeDraft." + request.turnId + "." + request.id + "." + question.id;
+          nativeDraftKeys.add(draftKey);
           if (!question.isSecret) {
             field.value = saved(draftKey) || "";
             field.addEventListener("input", function () { saved(draftKey, field.value); });
@@ -383,7 +585,11 @@ export function createConversationController(host, t, locale = function () { ret
     try { materials = JSON.parse(saved(".materials") || "[]"); } catch { materials = []; }
     try { modelPending = JSON.parse(saved(".modelPending") || "null"); } catch { modelPending = null; }
     modelCatalog = null; lastModelObservation = null; clear(modelSelect); clear(modelRows); modelRowMap = new Map(); confirmedModel = null;
-    modelLabel.textContent = t("conversation.model"); modelStatus.textContent = ""; modelResult.textContent = ""; receiptDetail.textContent = "";
+    // A historical Session never borrows another Session's model confirmation.
+    modelObservation = null; pageFacts = null;
+    modelStatus.textContent = ""; modelResult.textContent = ""; receiptDetail.textContent = ""; receiptBlock.hidden = true;
+    status.textContent = ""; detailSignature = ""; sessionSignature = "";
+    drawModel();
     drawCommands();
     materialAlert.textContent = "";
     if (incomingMaterials) {
@@ -400,6 +606,7 @@ export function createConversationController(host, t, locale = function () { ret
     clear(requests); requestSignature = "";
     clear(questions); questionSignature = "";
     controls();
+    report();
   }
   function finish(own) {
     busy = false; controls();
@@ -441,6 +648,8 @@ export function createConversationController(host, t, locale = function () { ret
   function messageNode(item) {
     const meta = itemMeta(item);
     if (item.kind === "user") {
+      // User text is shown exactly as sent: tags in it are the user's words,
+      // never guessed to be attached context.
       return h("article.cv-msg.cv-user", { title: meta },
         item.source === "yui-input" ? h("span.cv-tag", null, t("conversation.linkedInput") + " " + item.messageId) : null,
         h("div.cv-bubble", null, richText(null, item.text, t, { threshold: 1800 })),
@@ -511,20 +720,74 @@ export function createConversationController(host, t, locale = function () { ret
       feed.replaceChildren(...nodes);
     }
   }
-  function drawSessions(rows, append) {
-    if (!append) clear(select);
-    rows.forEach(function (s) {
-      if ([...select.options].some(function (o) { return o.value === s.nativeSessionId; })) return;
-      select.append(h("option", { value: s.nativeSessionId },
-        (s.current ? t("conversation.current") : t("conversation.previous")) + " · " + s.executionAuthority + " · " + s.nativeSessionId));
+  function chooseSession(id) {
+    picker.open = false;
+    picker.querySelector("summary")?.focus?.();
+    if (id === selected) return;
+    choose(id); refresh();
+  }
+  function drawSessions() {
+    const session = selectedSession();
+    pickerName.textContent = session ? sessionName(session)
+      : selected ? t(selected === (facts && facts.currentSessionId) ? "conversation.current" : "conversation.previous") : t("conversation.noSessionShort");
+    picker.querySelector("summary").title = pickerName.textContent;
+    const rows = facts.sessions.slice().sort(function (a, b) {
+      return Number(b.current) - Number(a.current) || String(b.createdAt).localeCompare(String(a.createdAt));
     });
-    select.value = selected || "";
+    const signature = JSON.stringify([selected, facts.nextOffset, locale(), rows.map(function (s) {
+      return [s.nativeSessionId, s.current, s.status, s.endReason, s.title, s.createdAt];
+    })]);
     moreSessions.hidden = !facts.nextOffset;
+    if (signature === sessionSignature) return;
+    sessionSignature = signature;
+    clear(sessionList);
+    let historyHeading = false;
+    rows.forEach(function (s) {
+      if (!s.current && !historyHeading) {
+        historyHeading = true;
+        sessionList.append(h("p.cv-pop-title", { role: "presentation" }, t("conversation.previousSessions")));
+      }
+      const chosen = s.nativeSessionId === selected;
+      const option = h("button.cv-session-opt", { type: "button", role: "option", "aria-selected": String(chosen),
+        title: s.title || sessionWhen(s), dataset: { session: s.nativeSessionId } },
+        h("span.cv-so-dot.is-" + (s.status === "active" ? "active" : s.endReason === "failed" ? "failed" : "ended"), { "aria-hidden": "true" }),
+        h("span.cv-so-text", null,
+          h("span.cv-so-main", null, s.title || (s.current ? t("conversation.current") : sessionWhen(s))),
+          h("span.cv-so-meta", null, (s.title || s.current ? sessionWhen(s) + " · " : "") + sessionLifecycle(s))),
+        chosen ? icon("check", "cv-so-check") : null);
+      option.addEventListener("click", function () { chooseSession(s.nativeSessionId); });
+      sessionList.append(option);
+    });
+  }
+  // Low-frequency identity and diagnostics: readable first, exact values copyable.
+  function drawDetails() {
+    const session = selectedSession();
+    const turn = facts && selected === facts.currentSessionId ? facts.turn : null;
+    const exact = (owner.taskId || "Global") + " / " + owner.roleName + " / " + selected
+      + (turn ? " / " + (turn.nativeTurnId || turn.attemptId) + (turn.runId ? " / " + turn.runId : "") : "");
+    const live = pageFacts && pageFacts.live === "unavailable";
+    const signature = JSON.stringify([exact, session, pageFacts && [pageFacts.live, pageFacts.linkedInputsOmitted],
+      !!(facts && facts.terminalWriter), locale()]);
+    if (signature === detailSignature) return;
+    detailSignature = signature;
+    clear(detailFacts);
+    fact(detailFacts, t("dock.target"), ownerLabel());
+    if (session) {
+      fact(detailFacts, t("conversation.sessionLabel"), sessionName(session), sessionLifecycle(session));
+      fact(detailFacts, t("conversation.sessionId"), session.nativeSessionId);
+      if (session.executionAuthority) fact(detailFacts, t("conversation.authority"), session.executionAuthority);
+      if (session.agentId) fact(detailFacts, t("conversation.agent"), session.agentId + (session.adapterId ? " · " + session.adapterId : ""));
+    }
+    if (turn) fact(detailFacts, t("conversation.turn"), String(turn.nativeTurnId || turn.attemptId), turn.status);
+    fact(detailFacts, t("conversation.writer"), t(facts && facts.terminalWriter ? "conversation.terminalWriter" : "conversation.structuredWriter"));
+    identity.textContent = exact;
+    liveNote.textContent = [live ? t("conversation.liveUnavailable") : "",
+      pageFacts && pageFacts.linkedInputsOmitted ? t("conversation.linkedOmitted") : ""].filter(Boolean).join(" · ");
   }
   async function refresh(older) {
     if (!owner || busy || host.hidden || host.closest("[hidden]") || document.hidden) return;
     if (older && (!next || !selected || !facts || !historyOk)) return;
-    busy = true; controls();
+    busy = true; reading = true; controls();
     let own = generation;
     try {
       if (older) {
@@ -553,13 +816,17 @@ export function createConversationController(host, t, locale = function () { ret
         choose(facts.currentSessionId);
         own = generation;
       }
-      if (!selected) { status.textContent = t("conversation.noSession"); return; }
+      report();
+      if (!selected) {
+        status.textContent = t("conversation.noSession"); status.className = "cv-status is-unknown";
+        pickerName.textContent = t("conversation.noSessionShort"); return;
+      }
       // Preserve a historical choice even if it is outside the newest page.
-      drawSessions(facts.sessions, false);
+      drawSessions(); drawDetails();
       renderQuestions();
       const page = await requestJson(url({ session: selected }));
       if (own !== generation) return;
-      historyOk = true; latestItems = page.items;
+      historyOk = true; latestItems = page.items; pageFacts = page;
       if (!olderItems.length) next = page.nextCursor;
       const turn = selected === facts.currentSessionId ? facts.turn : null;
       let state = page.status === "waiting-user" ? "waiting" : page.status === "active" ? "active"
@@ -567,26 +834,28 @@ export function createConversationController(host, t, locale = function () { ret
       const session = facts.sessions.find(function (s) { return s.nativeSessionId === selected; });
       if (session && session.status === "ended") state = session.endReason === "failed" ? "failed" : "ended";
       if (turn && turn.status === "delivery-unknown") state = "unknown";
-      status.textContent = t("conversation." + state);
+      status.textContent = t(state === "unknown" ? "conversation.stateUnknown" : "conversation." + state);
       status.title = page.observedAt + " · " + t(facts.terminalWriter ? "conversation.terminalWriter" : "conversation.structuredWriter");
       status.className = "cv-status is-" + state;
-      if (page.live === "unavailable") status.textContent += " · " + t("conversation.liveUnavailable");
-      if (page.linkedInputsOmitted) status.textContent += " · " + t("conversation.linkedOmitted");
-      if (page.nativeRequestsOmitted) status.textContent += " · " + t("conversation.nativeOmitted");
-      renderRequests(page.nativeRequests || []);
+      renderRequests(page.nativeRequests || [], !!page.nativeRequestsOmitted);
       showModel(page.runConfiguration);
-      identity.textContent = (owner.taskId || "Global") + " / " + owner.roleName + " / " + selected
-        + (turn ? " / " + (turn.nativeTurnId || turn.attemptId) + (turn.runId ? " / " + turn.runId : "") : "");
+      drawDetails();
       const scroll = feed.scrollTop, atEnd = feed.scrollHeight - feed.clientHeight - scroll < 40;
       renderItems(allItems());
       feed.scrollTop = atEnd ? feed.scrollHeight : scroll;
       syncJump();
     } catch (error) {
-      if (own === generation) { historyOk = false; status.textContent = t("conversation.disconnected") + " · " + error.message; }
-    } finally { finish(own); }
+      if (own === generation) {
+        historyOk = false; status.textContent = t("conversation.disconnectedShort");
+        status.title = t("conversation.disconnected") + " · " + error.message; status.className = "cv-status is-failed";
+        // An unreadable confirmation is unconfirmed, not the earlier value.
+        if (confirmedModel) { confirmedModel = null; modelObservation = null; drawModel(); }
+      }
+    } finally { endRead(); finish(own); }
     if (own === generation && pending && historyOk) await inspectReceipt();
   }
   async function inspectReceipt() {
+    if (!await afterRead()) return;
     if (!pending || busy) return;
     const own = generation;
     const inspected = pending;
@@ -613,6 +882,10 @@ export function createConversationController(host, t, locale = function () { ret
     finally { finish(own); }
   }
   async function submit(interrupt, asLiteral) {
+    const body = text.value;
+    const target = facts && facts.turn && (facts.turn.nativeTurnId || facts.turn.attemptId);
+    if (!await afterRead() || body !== text.value
+      || target !== (facts && facts.turn && (facts.turn.nativeTurnId || facts.turn.attemptId))) return;
     controls(); // Another tab may have acquired an unresolved input since refresh.
     if (busy || pending || (interrupt ? stop.disabled : send.disabled)) return;
     if (!interrupt && !text.value.trim()) return;
@@ -650,7 +923,7 @@ export function createConversationController(host, t, locale = function () { ret
     if (own === generation) await inspectReceipt();
   }
   text.addEventListener("input", function () {
-    if (selected) { draftStatus.textContent = t("conversation.draftSaved"); saved(".draft", text.value); }
+    if (selected) saved(".draft", text.value);
     drawCommands();
   });
   text.addEventListener("keydown", function (event) {
@@ -664,12 +937,14 @@ export function createConversationController(host, t, locale = function () { ret
     }
   });
   modelLoad.addEventListener("click", loadModels);
-  modelSelect.addEventListener("change", controls);
+  modelSelect.addEventListener("change", function () { pickModel(modelSelect.value); });
   modelApply.addEventListener("click", applyModel);
   literal.addEventListener("click", function () { submit(false, true); });
   file.addEventListener("change", async function () {
+    if (!await afterRead()) return;
+    controls();
     const chosen = file.files[0];
-    if (!chosen || file.disabled) return;
+    if (!chosen || file.disabled || busy) return;
     const own = generation;
     const endpoint = url({ session: selected }).replace("/api/conversation?", "/api/conversation/material?");
     const requestId = crypto.randomUUID();
@@ -688,9 +963,17 @@ export function createConversationController(host, t, locale = function () { ret
         + " materials/" + requestId + "/" + chosen.name;
     } finally { file.value = ""; finish(own); drawMaterials(); }
   });
-  select.addEventListener("change", function () { choose(select.value); refresh(); });
-  current.addEventListener("click", function () { if (facts) { choose(facts.currentSessionId); refresh(); } });
-  older.addEventListener("click", function () { refresh(true); });
+  function backToCurrent() { if (facts && facts.currentSessionId) chooseSession(facts.currentSessionId); }
+  current.addEventListener("click", backToCurrent);
+  noticeCurrent.addEventListener("click", backToCurrent);
+  copyIdentity.addEventListener("click", function () {
+    navigator.clipboard.writeText(identity.textContent).then(function () {
+      copyIdentity.title = t("conversation.copied");
+    }, function () { copyIdentity.title = t("conversation.copyFailed"); });
+  });
+  older.addEventListener("click", function () {
+    if (reading) afterRead().then(function (same) { if (same) refresh(true); }); else refresh(true);
+  });
   latest.addEventListener("click", function () {
     refresh().then(function () { feed.scrollTop = feed.scrollHeight; syncJump(); });
   });
@@ -705,7 +988,7 @@ export function createConversationController(host, t, locale = function () { ret
       const page = await requestJson(url({ offset: facts.nextOffset }));
       if (own !== generation) return;
       facts.sessions = facts.sessions.concat(page.sessions); facts.nextOffset = page.nextOffset;
-      drawSessions(page.sessions, true);
+      drawSessions();
     } catch (error) { status.textContent = error.message; }
     finally { finish(own); }
   });
@@ -742,11 +1025,14 @@ export function createConversationController(host, t, locale = function () { ret
       // from the shared endpoint, not retain a historical selection or stale ID.
       if (JSON.stringify(target) !== JSON.stringify(owner) || options && options.current) {
         if (selected) saved(".draft", text.value);
-        generation++; owner = target; selected = null; facts = null; pending = null; clear(select); clear(feed);
+        generation++; owner = target; selected = null; facts = null; pending = null; clear(feed);
+        clear(sessionList); sessionSignature = ""; detailSignature = ""; clear(detailFacts); pageFacts = null;
+        pickerName.textContent = t("conversation.sessions"); status.textContent = ""; status.className = "cv-status";
         next = null; latestItems = []; olderItems = []; historyOk = false; rendered.clear();
-        text.value = ""; receipt.textContent = ""; identity.textContent = ""; controls();
+        text.value = ""; receipt.textContent = ""; identity.textContent = ""; liveNote.textContent = "";
+        receiptBlock.hidden = true; controls();
         modelPending = null; modelCatalog = null; clear(modelSelect); clear(modelRows); modelRowMap = new Map(); confirmedModel = null;
-        modelLabel.textContent = t("conversation.model"); modelStatus.textContent = "";
+        modelObservation = null; drawModel(); modelStatus.textContent = "";
         modelResult.textContent = "";
         receiptDetail.textContent = ""; draftStatus.textContent = ""; drawCommands();
         materials = []; incomingMaterials = null; clear(materialList); materialAlert.textContent = "";
@@ -754,10 +1040,22 @@ export function createConversationController(host, t, locale = function () { ret
         clear(questions); questionSignature = "";
       }
       if (options && options.materials) incomingMaterials = options.materials;
+      // A named Session (carried from another mode) is kept even when it is no
+      // longer current: never silently exchanged for today's current Session.
+      if (options && options.session && options.session !== selected) choose(options.session);
       if (!timer) timer = window.setInterval(function () { refresh(); }, 2000);
       refresh();
     },
-    close: function () { if (timer) window.clearInterval(timer); timer = null; generation++; }
+    close: function () { if (timer) window.clearInterval(timer); timer = null; generation++; },
+    // The session page left this view: forget its unsent text. A draft that
+    // is the body of an unresolved submission stays with that receipt.
+    discardDraft: function () {
+      if (!owner || !selected) return;
+      let held = null;
+      try { held = JSON.parse(saved(".pending") || "null"); } catch { held = null; }
+      if (!held) saved(".draft", null);
+      nativeDraftKeys.forEach(function (draftKey) { saved(draftKey, null); });
+    }
   };
 }
 `;

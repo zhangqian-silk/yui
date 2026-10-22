@@ -1,10 +1,10 @@
 /*
  * DOCK VIEW — the Discussion pane: its sub-header, the message feed with day
  * separators and bubbles, the composer, submission facets and next steps.
- * The Live session pane is views/terminal; the dock frame is layout/workspace.
+ * The session page is views/conversation and views/terminal; the dock frame is layout/workspace.
  */
 export const DOCK_STYLES = `
-.dock-head{height:auto;min-height:var(--header-h);padding-top:6px;padding-bottom:6px;border-bottom:0}
+.dock-head{height:auto;min-height:var(--header-h);padding-top:6px;padding-bottom:6px}
 .dock-actions{flex-shrink:0}
 /* Who the panel talks to: a title-like menu button with its target list */
 .dock-target{position:relative;min-width:0}
@@ -24,9 +24,21 @@ export const DOCK_STYLES = `
 .dock-target-item:hover{background:var(--surface-3);color:var(--ink)}
 .dock-target-item[aria-pressed="true"]{color:var(--ink);font-weight:550}
 .dock-target-item .dock-target-check{color:var(--accent)}
-.dock-tabs{flex:none;padding:0 12px 10px;border-bottom:1px solid var(--line)}
-.dock-tabs .seg{display:flex;flex-wrap:wrap;width:100%;min-width:0}
-.dock-tabs .seg-btn{flex:1 1 auto;justify-content:center}
+.dock-target-dot{width:7px;height:7px;margin:0 4px;flex:none;border-radius:50%;background:var(--idle)}
+.dock-target-dot.is-live{background:var(--ok)}
+/* One header row: target, view tabs, actions. The target's name wins space
+   first: icon-only tabs up to 480px, the selected label up to 560px, then
+   every label. Tabs keep aria-label and title at every width. */
+.dock{container-type:inline-size;container-name:dock}
+.dock-target{flex:0 1 auto}
+.dock-tabs{flex:0 0 auto;display:flex;min-width:0;margin-left:auto}
+.dock-tabs .seg-btn{justify-content:center;gap:5px;min-width:0}
+.dock-tabs .seg-btn .icon{width:14px;height:14px;flex:none}
+.dock-tabs .seg-btn[aria-selected="false"]>span{display:none}
+.dock-tabs .seg-btn>span{white-space:nowrap}
+@container dock (min-width:560px){.dock-tabs .seg-btn[aria-selected="false"]>span{display:inline}}
+@container dock (max-width:480px){.dock-tabs .seg-btn>span{display:none}}
+@container dock (max-width:340px){.dock-target-icon{display:none}}
 .dock-preview{display:flex;flex-direction:column;min-height:0;overflow:auto}
 .dock-preview>.feed-note{text-align:left;padding:0 12px;color:var(--ink-3)}
 .preview-services{flex:none;max-height:40%;overflow:auto}

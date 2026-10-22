@@ -5,7 +5,7 @@ export const TASK_PAGE_SCRIPT = String.raw`
 // observation arrives separately from the Context snapshot, so every fact it
 // feeds lives in a [data-slot] that updateObservation() redraws in place.
 import { h, icon, clear } from "/assets/js/lib/dom.js";
-import { badge, chip, operatorToggle, timeTag, topBar } from "/assets/js/ui/primitives.js";
+import { badge, chip, panelToggle, timeTag, topBar } from "/assets/js/ui/primitives.js";
 import { label, statusBadge } from "/assets/js/domain/vocab.js";
 import { totalOf } from "/assets/js/domain/context.js";
 import { renderOverviewPanel } from "/assets/js/views/task/overview.js";
@@ -80,17 +80,7 @@ function taskBar(task, t, ctx) {
       h("button.crumb", { type: "button", title: t("overview.title"), onclick: ctx.onBack }, t("manage.workbench")),
       h("span.crumb-sep", { "aria-hidden": "true" }, "/"),
       h("code.crumb-current", { title: task.title }, task.id)),
-    [dockToggle("discussion", "chat", t("dock.discussion") + " · D", t, ctx),
-      dockToggle("session", "terminal", t("dock.session"), t, ctx),
-      h("span.task-bar-sep", { "aria-hidden": "true" }),
-      operatorToggle(t, ctx.toggleOperator)]);
-}
-
-function dockToggle(mode, iconName, title, t, ctx) {
-  return h("button.btn.btn-ghost.dock-toggle", {
-    type: "button", dataset: { dockToggle: mode }, title: title,
-    onclick: function () { ctx.showDock(mode); }
-  }, icon(iconName), h("span", null, t("dock." + mode)));
+    [panelToggle(t, ctx.togglePanel)]);
 }
 
 function taskMeta(task, t, locale) {

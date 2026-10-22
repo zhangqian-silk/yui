@@ -12,7 +12,6 @@ import { renderOverview } from "/assets/js/views/overview.js";
 import { renderTaskDetail, selectTab, TABS, TAB_ALIASES } from "/assets/js/views/task/page.js";
 import { updateObservation } from "/assets/js/views/task/observation.js";
 import { renderDiscussion, discussionHasUnsent } from "/assets/js/views/dock/discussion.js";
-import { sameTarget } from "/assets/js/views/dock/terminal.js";
 import { setSectionParam } from "/assets/js/layout/router.js";
 import { enter } from "/assets/js/lib/motion.js";
 
@@ -29,14 +28,13 @@ function runtimeSignature(detail) {
   }).join(",");
 }
 
-// deps: { el, state, t, locale, api, toast, terminal, workspace,
+// deps: { el, state, t, locale, api, toast, workspace,
 //         selectTask, clearSelection, revealSidebar, pickAttention, readPageSessions, refreshCatalog }
 //   el         #detail, #center and the dock discussion
 //   state      reads selected, detail, detailKey and the catalog fields the
 //              overview shows; writes activeTab
 //   api        Task reads for lazy blocks and the Task page's writes
-//   terminal   the dock's native Session (views/dock/terminal)
-//   workspace  layout/workspace: dock toggles and opening Sessions
+//   workspace  layout/workspace: dock toggles, the session page and its Role list
 //   selectTask(taskId)  an overview row was chosen (app/selection)
 //   clearSelection()    the Task page's "Tasks" crumb (app/selection)
 //   revealSidebar()     the page header's task-list switch (layout/sidebarNav)
@@ -155,7 +153,7 @@ function detailContext(view) {
     },
     onBack: deps.clearSelection,
     revealSidebar: deps.revealSidebar,
-    showDock: deps.workspace.toggleDock,
+    togglePanel: function () { deps.workspace.toggleDock(); },
     toggleOperator: deps.workspace.toggleOperator,
     openConversation: function (materials) {
       deps.workspace.openConversation({ scope: "task", taskId: deps.state.selected, roleName: "leader" }, materials);
@@ -239,8 +237,8 @@ function drawDetail(deps, ctx) {
   el.center.scrollTop = scroll;
 }
 
-// The dock's Session chips: every role of the selected Task plus the global
-// operator, keeping the Session currently open even when it left the list.
+// The Roles the dock's target menu offers: every Role of the selected Task,
+// with whether it has a live native Session (Operator is always offered).
 function updateSessionTargets(deps) {
   const detail = deps.state.detail;
   const targets = [];
@@ -252,10 +250,7 @@ function updateSessionTargets(deps) {
         live: !!(runtimeRole && runtimeRole.runtimeSession && runtimeRole.runtimeSession.nativeSessionId) });
     });
   }
-  targets.push({ scope: "global", roleName: "operator" });
-  const current = deps.terminal.current();
-  if (current && !targets.some(function (target) { return sameTarget(target, current); })) targets.unshift(current);
-  deps.terminal.setTargets(targets);
+  deps.workspace.setTargets(targets);
 }
 
 function showOverview(deps) {
@@ -264,6 +259,7 @@ function showOverview(deps) {
     select: deps.selectTask,
     filterAttention: deps.pickAttention,
     readSessions: deps.readPageSessions,
+    togglePanel: function () { deps.workspace.toggleDock(); },
     toggleOperator: deps.workspace.toggleOperator,
     revealSidebar: deps.revealSidebar
   });

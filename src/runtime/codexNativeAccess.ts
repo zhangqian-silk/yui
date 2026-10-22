@@ -51,13 +51,23 @@ export function createCodexNativeAccess(
   const listeners = new Set<(message: JsonObject) => void>();
   let configuration = initialConfiguration;
   let observedAt = new Date().toISOString();
-  const observed = (): AgentRunConfigurationObservation => typeof configuration?.model !== "string"
-    ? unknownAgentRunConfiguration("No confirmed native model response. Reconnect to restore the fixed launch configuration.")
+  // A start/resume response confirms configuration at that instant, not the
+  // current Turn or later changes made by another client. Keep its timestamp;
+  // consumers must not describe repeated reads as fresh native observations.
+  const observed = (): AgentRunConfigurationObservation => typeof configuration?.model !== "string" || !configuration.model.trim()
+    ? unknownAgentRunConfiguration("No confirmed native configuration response. Current model and reasoning effort are unknown.")
     : {
       status: "observed", observedAt,
       handshake: { status: "unsupported", reason: "Model reported by Codex thread/start or thread/resume; not a capability handshake." },
       requested: [],
-      axes: [{ key: "model", category: "model", current: { status: "observed", value: configuration.model }, offered: [] }]
+      axes: [
+        { key: "model", category: "model", current: { status: "observed", value: configuration.model }, offered: [] },
+        { key: "reasoningEffort", category: "effort",
+          current: typeof configuration.reasoningEffort === "string" && configuration.reasoningEffort.trim()
+            ? { status: "observed", value: configuration.reasoningEffort }
+            : { status: "unobserved", reason: "The native response did not confirm reasoning effort." },
+          offered: [] }
+      ]
     };
   const observe = (message: JsonObject): void => {
     const params = message.params as JsonObject | undefined;
@@ -110,9 +120,16 @@ export function createCodexNativeAccess(
       if (method === "thread/resume") {
         if (params.threadId !== threadId) throw new Error("Select the existing Session; new/forked Threads are not supported here.");
         const page = params.initialTurnsPage as JsonObject | undefined;
-        configuration = await channel.request("thread/resume", { threadId,
+        // A failed/uncertain resume cannot leave the earlier confirmation
+        // looking valid. Do not retry this potentially applied operation.
+        configuration = undefined;
+        const result = await channel.request("thread/resume", { threadId,
           ...(typeof params.excludeTurns === "boolean" ? { excludeTurns: params.excludeTurns } : {}),
           ...(page ? { initialTurnsPage: { ...page, limit: Math.min(40, typeof page.limit === "number" && page.limit > 0 ? page.limit : 40) } } : {}) });
+        if ((result.thread as JsonObject | undefined)?.id !== threadId) {
+          throw new Error("Native resume did not confirm the selected Thread.");
+        }
+        configuration = result;
         observedAt = new Date().toISOString();
         return configuration;
       }

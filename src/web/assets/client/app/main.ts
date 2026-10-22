@@ -7,7 +7,8 @@ export const APP_SCRIPT = String.raw`
 // Everything kept in the browser is view state; Task facts always come from
 // the loopback API.
 //
-//   layout/workspace  sidebar | center | dock columns, dock modes, sizing
+//   layout/workspace  sidebar | center | dock columns, dock views, sizing
+//   views/dock/session  the dock's session page: one Role and Session, chat or terminal
 //   app/taskView      draws the selected Task, the dock discussion, the overview
 //   app/selection     selected Task, its detail reads, URL-driven navigation
 //   app/catalog       refresh loop, sidebar, catalog paging and filters
@@ -24,14 +25,13 @@ import { createI18n } from "/assets/js/lib/i18n.js";
 import { createThemeController } from "/assets/js/lib/theme.js";
 import { api } from "/assets/js/lib/api.js";
 import { createToast } from "/assets/js/ui/toast.js";
-import { createTerminalController } from "/assets/js/views/dock/terminal.js";
-import { createConversationController } from "/assets/js/views/dock/conversation.js";
+import { createSessionPage } from "/assets/js/views/dock/session.js";
 import { createPreviewController } from "/assets/js/views/dock/preview.js";
 import { bindGlobalInput } from "/assets/js/views/globalInput.js";
 import { bindCreateTask } from "/assets/js/views/createTask.js";
 import { bindBodySearch } from "/assets/js/views/bodySearch.js";
 import { readQuery } from "/assets/js/layout/router.js";
-import { rememberPlace, linkPlaces } from "/assets/js/lib/prefs.js";
+import { rememberPlace, linkPlaces, readSessionAccessMode } from "/assets/js/lib/prefs.js";
 import { createWorkspace } from "/assets/js/layout/workspace.js";
 import { createSidebarNav } from "/assets/js/layout/sidebarNav.js";
 import { bindShortcuts } from "/assets/js/layout/shortcuts.js";
@@ -51,12 +51,10 @@ const el = {
   dockTargetOptions: $("#dock-target-options"), globalInputOpen: $("#global-input-open"), settings: $("#settings-dialog"),
   locale: $("#locale-select"), themeOptions: $("#theme-options"),
   dock: $("#dock"), divider: $("#dock-divider"), dockSwap: $("#dock-swap"), dockClose: $("#dock-close"),
-  dockTabDiscussion: $("#dock-tab-discussion"), dockTabSession: $("#dock-tab-session"),
+  dockTabDiscussion: $("#dock-tab-discussion"),
   dockTabConversation: $("#dock-tab-conversation"), conversation: $("#dock-conversation"),
   dockTabPreview: $("#dock-tab-preview"), preview: $("#dock-preview"),
-  discussion: $("#dock-discussion"), session: $("#dock-session"),
-  terminalHost: $("#terminal-host"), terminalEmpty: $("#terminal-empty"), terminalState: $("#terminal-state"),
-  sessionTargets: $("#session-targets"), settingsOpen: $("#settings-open"), terminalCli: $("#terminal-cli")
+  discussion: $("#dock-discussion"), settingsOpen: $("#settings-open")
 };
 
 // View state. Each group has exactly one writer.
@@ -77,28 +75,23 @@ const t = i18n.t;
 const locale = i18n.getLocale;
 const theme = createThemeController(el.themeOptions, t);
 const toast = createToast(el.toast);
-const conversation = createConversationController(el.conversation, t, locale);
 const preview = createPreviewController(el.preview, t);
-const terminal = createTerminalController({
-  host: el.terminalHost, empty: el.terminalEmpty, state: el.terminalState, targets: el.sessionTargets, cli: el.terminalCli
-}, t, locale, toast);
-theme.subscribe(function () { terminal.retheme(); });
+// The mode changed inside the session page: the dock header follows it.
+const session = createSessionPage(el.conversation, t, locale, toast, function () { workspace.syncDockButtons(); });
+theme.subscribe(function () { session.retheme(); });
 
 // Controllers are created in dependency order; the arrow callbacks below are
 // the only edges pointing at controllers created later.
 let taskView = null;
 let selection = null;
 let catalog = null;
-const workspace = createWorkspace({
-  el: el, state: state, t: t, terminal: terminal, conversation: conversation, preview: preview,
-  sessionOpened: function () { taskView.updateSessionTargets(); }
-});
+const workspace = createWorkspace({ el: el, state: state, t: t, session: session, preview: preview });
 const sidebarNav = createSidebarNav({
   el: { sidebar: el.sidebar, rail: el.rail, scrim: el.sidebarScrim, collapse: el.sidebarCollapse },
   relayout: function () { workspace.updateLayout(); }
 });
 taskView = createTaskView({
-  el: el, state: state, t: t, locale: locale, api: api, toast: toast, terminal: terminal, workspace: workspace,
+  el: el, state: state, t: t, locale: locale, api: api, toast: toast, workspace: workspace,
   selectTask: function (taskId) { return selection.selectTask(taskId); },
   clearSelection: function () { selection.clearSelection(); },
   revealSidebar: function () { sidebarNav.reveal(); },
@@ -121,7 +114,7 @@ bindCreateTask({ t: t, api: api, selectTask: selection.selectTask,
   afterWrite: function () { catalog.refresh({ quiet: true }); } });
 bindBodySearch({ t: t, api: api, selectTask: selection.selectTask,
   currentTask: function () { return state.selected; },
-  captureDraftTarget: conversation.captureDraftTarget, insertReference: conversation.insertReference });
+  captureDraftTarget: session.captureDraftTarget, insertReference: session.insertReference });
 bindShortcuts({
   el: el, state: state, globalInput: globalInput, workspace: workspace, sidebarNav: sidebarNav,
   selection: selection, catalog: catalog, taskView: taskView
@@ -155,7 +148,7 @@ window.addEventListener("popstate", function () {
 
 i18n.subscribe(function () {
   theme.render();
-  terminal.relabel();
+  session.relabel();
   catalog.renderSidebar();
   taskView.relabel();
   workspace.updateLayout();
@@ -164,8 +157,8 @@ i18n.subscribe(function () {
 workspace.updateLayout();
 taskView.showOverview();
 // The panel starts closed: name its owner without polling until it opens.
-conversation.open({ scope: "global", roleName: "operator" });
-conversation.close();
+session.open({ scope: "global", roleName: "operator" }, { mode: readSessionAccessMode() === "native" ? "terminal" : "chat" });
+session.close();
 applyStateFromUrl();
 catalog.refresh();
 window.setInterval(function () { catalog.refresh({ quiet: true }); }, 5000);

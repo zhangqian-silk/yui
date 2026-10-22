@@ -209,7 +209,8 @@ test("the workbench primary action opens the current Leader conversation, not a 
     append(...items) { this.children.push(...items); }, replaceChildren(...items) { this.children = items; },
     setAttribute() {}, addEventListener() {}, contains: () => false, querySelectorAll: () => [] });
   const opened = [];
-  let terminalOpen = true;
+  // The session page shows one view; opening its chat mode destroys a terminal view.
+  let mode = "terminal";
   const runtime = vm.createContext({
     h: node, button: (text, options) => ({ text, ...options }), card: () => ({ body: node() }),
     document: { body: { classList: { toggle() {} } }, addEventListener() {} },
@@ -221,37 +222,33 @@ test("the workbench primary action opens the current Leader conversation, not a 
   for (const script of [WORKSPACE_SCRIPT, TASK_VIEW_SCRIPT, TASK_ACTIONS_SCRIPT]) {
     vm.runInContext(script.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), runtime);
   }
-  const el = Object.fromEntries(["dock", "divider", "discussion", "session", "conversation", "preview",
-    "dockTabConversation", "dockTabDiscussion", "dockTabSession", "dockTabPreview", "dockSwap", "detail",
+  const el = Object.fromEntries(["dock", "divider", "discussion", "conversation", "preview",
+    "dockTabConversation", "dockTabDiscussion", "dockTabPreview", "dockSwap", "detail",
     "dockTarget", "dockTargetLabel", "dockTargetIcon", "dockTargetOptions", "globalInputOpen", "dockClose"].map(key => [key, node()]));
   const state = { selected: "task-current", activeTab: "overview" };
   const workspace = runtime.createWorkspace({
     el, state, t: key => key,
     preview: { open() {}, close() {} },
-    terminal: { connected: () => terminalOpen, close: () => { terminalOpen = false; },
-      open: () => assert.fail("primary action must not open a terminal") },
-    conversation: { current: () => opened.at(-1)?.[0], close() {}, open: (...args) => {
-      assert.equal(terminalOpen, false, "conversation must not retain a hidden terminal writer");
-      opened.push(args);
-    } }
+    session: { current: () => opened.at(-1)?.[0], close() {}, reconnect() {}, setMode: () => assert.fail("no implicit mode change"),
+      open: (...args) => { assert.equal(args[1].mode, "chat", "primary action must not open a terminal"); mode = args[1].mode; opened.push(args); } }
   });
   const ctx = runtime.detailContext({ controller: {}, deps: { state, api: {}, workspace } });
   const find = (item, text) => item?.text === text ? item
     : (item?.children || []).map(child => find(child, text)).find(Boolean);
   find(runtime.taskActions({ id: "task-current", status: "active" }, key => key, ctx).body, "workbench.continue").onClick();
   assert.equal(el.conversation.hidden, false, "explicit continuation also opens the narrow-screen sheet");
-  assert.equal(el.session.hidden, true);
+  assert.equal(mode, "chat", "the terminal view and its native writer are released");
   assert.deepEqual(JSON.parse(JSON.stringify(opened)), [[
-    { scope: "task", taskId: "task-current", roleName: "leader" }, { current: true }
+    { scope: "task", taskId: "task-current", roleName: "leader" }, { mode: "chat", current: true }
   ]]);
   assert.equal(el.dockTargetLabel.textContent, "leader · task-current", "the dock header names the conversation owner");
   const materials = [{ taskId: "task-current", relativePath: "report.md",
     commit: "a".repeat(40), digest: "b".repeat(64) }];
-  terminalOpen = true;
+  mode = "terminal";
   ctx.openConversation(materials);
-  assert.equal(terminalOpen, false, "fixed-version feedback releases the native writer too");
+  assert.equal(mode, "chat", "fixed-version feedback releases the native writer too");
   assert.deepEqual(JSON.parse(JSON.stringify(opened.at(-1))), [
-    { scope: "task", taskId: "task-current", roleName: "leader" }, { current: true, materials }
+    { scope: "task", taskId: "task-current", roleName: "leader" }, { mode: "chat", current: true, materials }
   ]);
 });
 

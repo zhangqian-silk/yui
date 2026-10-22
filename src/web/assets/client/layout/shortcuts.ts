@@ -8,7 +8,7 @@ import { isEditing } from "/assets/js/lib/dom.js";
 const TABS = ${JSON.stringify(TASK_TABS)};
 
 // deps: { el, state, globalInput, workspace, sidebarNav, selection, catalog, taskView }
-//   el           #search, #settings-dialog and #terminal-host
+//   el           #search, #settings-dialog and the dock (its terminal host)
 //   state        read-only here: state.selected, state.detail
 //   globalInput  views/globalInput (its dialog blocks shortcuts while open)
 //   workspace    layout/workspace: the dock and the operator Session
@@ -21,7 +21,7 @@ export function bindShortcuts(deps) {
     if (document.querySelector("dialog[open]")) return;
     const active = document.activeElement;
     const typing = isEditing(active);
-    const inTerminal = deps.el.terminalHost.contains(active);
+    const inTerminal = !!active && !!active.closest && !!active.closest(".terminal-host");
     if (event.key === "Escape") { escape(deps, active, typing, inTerminal); return; }
     if (typing || inTerminal || event.metaKey || event.ctrlKey || event.altKey) return;
     shortcut(deps, event);
