@@ -149,16 +149,37 @@ export const CONVERSATION_STYLES = `
 .cv-pop>summary::-webkit-details-marker{display:none}
 .cv-popbody{position:absolute;z-index:var(--z-popover);display:grid;gap:8px;width:min(300px,calc(100vw - 32px));max-height:min(420px,60vh);overflow:auto;padding:10px;border:1px solid var(--line-2);border-radius:var(--r-lg);background:var(--surface-2);box-shadow:var(--shadow-2);box-sizing:border-box}
 .cv-attach>.cv-popbody{left:0;bottom:calc(100% + 8px)}
-.cv-model>.cv-popbody{right:0;bottom:calc(100% + 8px);width:min(320px,calc(100vw - 112px));gap:10px;padding:12px}
-.cv-model .cv-model-facts{margin:0;padding:0 4px 10px;border-bottom:1px solid var(--line-2)}
-.cv-model .cv-model-facts small{display:inline;margin-left:6px;font-size:var(--fs-xs)}
-.cv-model .cv-options{max-height:220px;overflow:auto;min-height:0}
-.cv-model .cv-pop-actions{justify-content:flex-end}
-.cv-model .cv-pop-actions .cv-link{margin-right:auto}
+.cv-model>.cv-popbody{right:0;bottom:calc(100% + 8px);width:min(300px,calc(100vw - 24px));gap:0;padding:6px}
+/* Model picker: two quiet facts, a short list, one action row. Background
+   polls update text in place and never toggle these controls. */
+.cv-model .cv-model-facts{grid-template-columns:auto minmax(0,1fr);gap:5px 14px;align-items:baseline;margin:0;padding:8px 10px 10px;font-size:var(--fs-xs)}
+.cv-model .cv-model-facts dt{color:var(--ink-3);white-space:nowrap}
+.cv-model .cv-model-facts dd{display:flex;align-items:baseline;gap:8px;min-width:0}
+.cv-mf-value{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink);font-size:var(--fs-sm);font-weight:600}
+.cv-mf-value.is-empty{color:var(--ink-3);font-weight:400}
+.cv-model .cv-model-facts .cv-mf-note{flex:none;margin-left:auto;color:var(--ink-4);font-size:var(--fs-2xs);white-space:nowrap}
+.cv-mf-note[hidden]{display:none}
+.cv-model[data-state=pending] .cv-mf-note{color:var(--accent)}
+.cv-model .cv-options{gap:2px;max-height:216px;overflow:auto;min-height:0;padding:6px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.cv-model .cv-options:empty{display:none}
+.cv-model .cv-option{gap:10px;min-height:36px;padding:6px 10px;font-size:var(--fs-sm);transition:background var(--t-fast),color var(--t-fast)}
+.cv-model .cv-option:hover:not(:disabled){background:var(--surface-3)}
+.cv-model .cv-option.is-selected{background:var(--accent-soft)}
+.cv-model .cv-option.is-selected .cv-option-name{font-weight:600}
+.cv-model .cv-option.is-selected .icon{color:var(--accent)}
+.cv-model .cv-option:disabled{cursor:default;color:var(--ink-3)}
+.cv-model .cv-option.is-selected:hover:not(:disabled){background:var(--accent-soft)}
+.cv-model .cv-option:disabled:not(.is-selected){background:transparent}
+.cv-option-mark{width:6px;height:6px;flex:none;border-radius:50%;background:transparent}
+.cv-option.is-current .cv-option-mark{background:var(--ok)}
+.cv-model .cv-option-id{display:block;flex:0 1 auto;min-width:0;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-4);font:var(--fs-2xs)/1.4 var(--font-mono)}
+.cv-model .cv-pop-actions{flex-wrap:wrap;justify-content:flex-end;gap:6px 8px;padding:8px 4px 2px 10px}
+.cv-model-notes{flex:1 1 140px;min-width:0;display:grid;gap:2px}
+.cv-model-notes:not(:has(.cv-note:not(:empty))){display:none}
+.cv-model .cv-pop-actions .cv-link{flex:none}
 .cv-model .cv-note:empty{display:none}
-.cv-model .cv-option{min-height:40px;padding:9px 10px}
-.cv-model .cv-option.is-selected{background:var(--surface-3)}
-.cv-model .cv-option:disabled{cursor:default;opacity:.6}
+.cv-apply{height:28px;padding:0 12px;flex:none}
+.cv-apply:disabled{background:var(--surface-3);color:var(--ink-4);opacity:1}
 .cv-menu>.cv-popbody{right:0;top:calc(100% + 6px)}
 .cv-pop-title{margin:0;padding:0 4px;color:var(--ink-3);font-size:var(--fs-xs)}
 .cv-pop-actions{display:flex;align-items:center;justify-content:space-between;gap:8px}

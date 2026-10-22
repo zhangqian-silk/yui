@@ -246,6 +246,78 @@ test("model adoption preserves drafts and an unknown effect blocks replay across
   }
 });
 
+test("background polls keep the open model picker stable; an action during a read waits instead of racing", async () => {
+  const observed = { status: "observed", observedAt: "2026-10-22T09:00:00Z",
+    axes: [{ category: "model", current: { status: "observed", value: "model-current" } }] };
+  const extra = { idle: true, runConfiguration: observed,
+    catalog: { source: "live", catalog: { models: [{ value: "model-current", label: "Current" }, { value: "model-new", label: "New" }] } } };
+  const f = fixture({ runConfiguration: observed }, extra);
+  f.controller.open({ scope: "global", roleName: "operator" });
+  await flush();
+  await f.button("modelsLoad").handlers.click();
+  const rows = f.elements.findLast(n => n.spec === "div.cv-options");
+  rows.children[1].handlers.click();
+  rows.children[1].focus();
+  const facts = f.elements.findLast(n => n.spec === "dl.cv-facts.cv-model-facts");
+  const before = [...facts.children];
+  const surface = () => [...rows.children.map(r => !!r.disabled), !!f.button("modelApply").disabled, !!f.button("send").disabled];
+  const stable = surface();
+  // Three ordinary poll cycles with unchanged facts, each observed mid-read.
+  for (let cycle = 0; cycle < 3; cycle++) {
+    extra.hold = () => true;
+    await f.tick();
+    assert.deepEqual(surface(), stable, "a background read never greys the picker or composer");
+    extra.hold = null;
+    extra.held();
+    await flush();
+    assert.deepEqual(surface(), stable);
+  }
+  assert.deepEqual(facts.children, before, "unchanged facts are not cleared and rebuilt");
+  assert.equal(f.context.document.activeElement, rows.children[1], "keyboard focus stays on the option");
+  assert.equal(rows.children[1]["aria-selected"], "true", "the selection survives polling");
+  // Apply pressed while a read is in flight waits for it, then submits once.
+  extra.hold = () => true;
+  await f.tick();
+  const applied = f.button("modelApply").handlers.click();
+  await flush();
+  assert.equal(f.mutations.length, 0, "no write overlaps the in-flight read");
+  extra.hold = null;
+  extra.held();
+  await applied;
+  assert.equal(f.mutations.length, 1, "the click is not silently dropped");
+  assert.equal(f.mutations[0][2].model, "model-new");
+  f.controller.close();
+});
+
+test("actions waiting for a poll never transfer to a reopened Session or a changed selection", async () => {
+  for (const change of ["reopen", "selection", "draft"]) {
+    const extra = { idle: true, catalog: { source: "live", catalog: { models: [
+      { value: "model-new", label: "New" }, { value: "model-other", label: "Other" }
+    ] } } };
+    const f = fixture({}, extra);
+    const owner = { scope: "global", roleName: "operator" };
+    f.controller.open(owner);
+    await flush();
+    await f.button("modelsLoad").handlers.click();
+    const rows = f.elements.findLast(n => n.spec === "div.cv-options");
+    rows.children[0].handlers.click();
+    f.input.value = "Original draft";
+    extra.hold = () => true;
+    await f.tick();
+    const action = f.button(change === "draft" ? "send" : "modelApply").handlers.click();
+    await flush();
+    if (change === "reopen") { f.controller.close(); f.controller.open(owner); }
+    if (change === "selection") rows.children[1].handlers.click();
+    if (change === "draft") f.input.value = "Not submitted";
+    extra.hold = null;
+    extra.held();
+    await action;
+    await flush();
+    assert.equal(f.mutations.length, 0, change + ": an old click must not submit the new intent");
+    f.controller.close();
+  }
+});
+
 test("only a matching native confirmation closes the model picker; keyboard focus does not select", async () => {
   for (const confirmed of [true, false]) {
     const f = fixture({ runConfiguration: { status: "observed", observedAt: "2026-10-22T09:00:00Z",
