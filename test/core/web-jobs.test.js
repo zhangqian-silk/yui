@@ -282,6 +282,7 @@ test("Jobs entry keeps one live view across every route source: drafts, writes i
   const h = (spec, attrs, ...children) => ({ spec, ...attrs, children: children.flat().filter(v => v != null),
     dataset: { ...(attrs?.dataset || {}) }, hidden: false, disabled: false, classList: { add() {}, toggle() {} },
     append(...items) { this.children.push(...items.flat().filter(v => v != null)); },
+    setAttribute(name, value) { this[name] = String(value); },
     prepend(...items) { this.children.unshift(...items); },
     replaceChildren(...items) { this.children = items.flat().filter(v => v != null); },
     querySelectorAll() { return []; }, querySelector() { return null; },
@@ -425,4 +426,26 @@ test("Jobs entry keeps one live view across every route source: drafts, writes i
   handlers.popstate(); await flush();
   assert.equal(runRow()["aria-expanded"], "true");
   assert.match(text(underRow()), /old-run/);
+
+  // 6. A Run chosen by the route wins over a filter that would hide it: open a
+  //    succeeded Run, then a failed one, filter to failed, go Back.
+  records.global.runs.unshift({ id: "old-fail", status: "failed", createdAt: "2026-10-21T00:00:00Z",
+    trigger: { source: "manual", key: "f" }, configuration: { kind: "shell" } });
+  shell.navigateManage({ page: "jobs", section: "jobs", task: null, job: "old" }); await flush();
+  const rowOf = id => walk(root).find(n => n.spec === "button.job-run-row" && n.dataset.run === id);
+  const after = id => { const list = walk(root).find(n => (n.children || []).includes(rowOf(id)));
+    return list.children[list.children.indexOf(rowOf(id)) + 1]; };
+  rowOf("old-run").onclick(); await flush();
+  rowOf("old-fail").onclick(); await flush();
+  const tab = key => walk(root).find(n => n.spec === "button.chip-tab" && n.dataset.filter === key);
+  tab("failed").onclick({ currentTarget: tab("failed") }); await flush();
+  assert.equal(rowOf("old-run"), undefined, "the failed filter shows only failed Runs");
+  location.href = "http://fixture/jobs?job=old&jobRun=old-run";
+  handlers.popstate(); await flush();
+  assert.equal(rowOf("old-run")?.["aria-expanded"], "true", "Back reopens the routed Run despite the earlier filter");
+  assert.match(text(after("old-run")), /old-run/);
+  assert.equal(tab("all")["aria-pressed"], "true");
+  // A filter the reader picks afterwards still closes the Run it hides.
+  tab("failed").onclick({ currentTarget: tab("failed") }); await flush();
+  assert.equal(new URL(location.href).searchParams.get("jobRun"), null);
 });

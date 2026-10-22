@@ -648,6 +648,13 @@ export function mountJobs(root, t, taskId, options = {}) {
   function historyView(job, runs, panel) {
     const counts = Object.fromEntries(RUN_FILTERS.map(([key, set]) => [key, set ? runs.filter(r => set.includes(r.status)).length : runs.length]));
     if (!counts[runFilter]) runFilter = "all";
+    // A Run chosen by the route (deep link, Back/Forward, a plan's link, Run
+    // now) wins over an earlier filter that would hide it: the filter returns
+    // to all so the Run opens in place. A filter the reader picks afterwards
+    // still closes a Run it hides (see the filter buttons below).
+    const routed = selectedRun && runs.find(run => run.id === selectedRun);
+    const filterSet = RUN_FILTERS.find(([key]) => key === runFilter)[1];
+    if (routed && filterSet && !filterSet.includes(routed.status)) runFilter = "all";
     const body = h("div.job-history-body");
     const visible = () => {
       const set = RUN_FILTERS.find(([key]) => key === runFilter)[1];
