@@ -172,7 +172,8 @@ test("Job view keeps historical Agent results when diagnostics fail and never re
     trigger: { source: "manual", key: id }, configuration: { kind: "agent", target: { kind: "operator" } },
     businessResult: { outcome, summary: id + " business result" } });
   const old = run("old-success", "succeeded", "17"), latest = run("new-failure", "failed", "18");
-  const job = { id: "analysis", title: "Analysis", revision: 1, configuration: old.configuration };
+  const job = { id: "analysis", title: "Analysis", revision: 1,
+    configuration: { ...old.configuration, input: "Summarize the week", futureField: { nested: "kept" } } };
   const location = new URL("http://fixture/settings/jobs?job=analysis&jobRun=old-success");
   const ctx = vm.createContext({
     h, URL, URLSearchParams, location, formatDateTime: iso => iso, icon: () => h("svg"),
@@ -198,6 +199,12 @@ test("Job view keeps historical Agent results when diagnostics fail and never re
   assert.match(text(root), /jobs.recentSuccess.*old-success.*succeeded/);
   assert.match(text(root), /old-success business result/);
   assert.match(text(root), /diagnostic unavailable/);
+  // Configuration reads as named fields; unknown fields stay visible and the
+  // exact JSON is only inside a closed disclosure.
+  assert.match(text(root), /jobs.cfg.agentInput.*Summarize the week/);
+  assert.match(text(root), /jobs.cfg.other.*futureField.*kept/);
+  const rawViews = elements.filter(n => n.spec === "details.job-raw");
+  assert.ok(rawViews.some(n => text(n).includes('"futureField"')) && rawViews.every(n => !n.open));
   assert.equal(reads.some(url => url.includes("op=logs")), false, "Agent history must not require process logs");
   await view.refresh(); await flush();
   assert.equal(new URL(reads.filter(url => url.includes("op=run-get")).at(-1), location).searchParams.get("runId"), old.id);

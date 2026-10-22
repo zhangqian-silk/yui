@@ -73,14 +73,220 @@ export function mountJobs(root, t, taskId, options = {}) {
     type: "button", onclick: action
   }, text);
   const json = value => h("pre.settings-observation", null, JSON.stringify(value, null, 2));
-  const fact = (name, value) => h("div.job-fact", null, h("span.job-fact-label", null, name), h("span.job-fact-value", null,
-    value !== null && typeof value === "object" ? value : String(value ?? "—")));
-  const facts = (...items) => h("div.job-facts", null, items.filter(Boolean));
-  const raw = (name, value) => h("details", null, h("summary", null, name), json(value));
+  // The exact record stays one disclosure away: an advanced, copyable view,
+  // never the default body of a section.
+  const raw = (name, value) => h("details.job-raw", null, h("summary", null, h("span", null, name),
+    h("span.job-raw-hint", null, "JSON")), h("div.job-raw-body", null,
+      h("div.job-raw-tools", null, copyButton(JSON.stringify(value, null, 2), copy("copyJson"), true)), json(value)));
+  const ago = iso => relative(iso, locale());
+  // ---- Small readers shared by the detail, the Run panel and the editor ----
+  const isEmpty = value => value === undefined || value === null || value === ""
+    || (Array.isArray(value) && !value.length) || (isPlain(value) && !Object.keys(value).length);
+  // A JSON object, as opposed to a rendered node (DOM, or a test double).
+  const isPlain = value => !!value && typeof value === "object" && !Array.isArray(value) && value.nodeType === undefined && !value.spec;
+  function relative(iso, loc) {
+    const at = iso ? Date.parse(iso) : NaN;
+    if (!Number.isFinite(at)) return "";
+    const seconds = (at - Date.now()) / 1000, size = Math.abs(seconds);
+    const units = [["year", 31536000], ["month", 2592000], ["week", 604800], ["day", 86400], ["hour", 3600], ["minute", 60]];
+    try {
+      const format = new Intl.RelativeTimeFormat(loc || undefined, { numeric: "auto", style: "short" });
+      const unit = units.find(entry => size >= entry[1]);
+      return unit ? format.format(Math.round(seconds / unit[1]), unit[0]) : format.format(Math.round(seconds), "second");
+    } catch { return ""; }
+  }
+  // A copy control never moves focus or selection; a refused clipboard falls
+  // back to a prompt the reader can copy from by hand.
+  function copyButton(text, name, withText = false) {
+    const node = h("button.job-copy" + (withText ? ".job-copy-text" : ""), { type: "button", title: name,
+      "aria-label": withText ? null : name, onclick: async event => {
+        event.stopPropagation();
+        try { await navigator.clipboard.writeText(text); node.classList.add("is-copied"); node.title = copy("copied");
+          setTimeout(() => { node.classList.remove("is-copied"); node.title = name; }, 1400); }
+        catch { window.prompt(copy("copyManual"), text); }
+      } }, icon("copy"), withText ? h("span", null, name) : null);
+    return node;
+  }
+  function shortId(id) {
+    const value = String(id ?? "");
+    return value.length > 22 ? value.slice(0, 12) + "…" + value.slice(-6) : value;
+  }
+  function idChip(id, copyable = true) {
+    if (!id) return "—";
+    return h("span.job-id", null, h("code.id", { title: String(id) }, shortId(id)),
+      copyable ? copyButton(String(id), copy("copy") + " · " + id) : null);
+  }
+  function stamp(iso) {
+    if (!iso) return "—";
+    return h("time.job-time", { dateTime: iso, title: iso }, when(iso), h("span.job-time-ago", null, ago(iso)));
+  }
+  function duration(ms) {
+    if (!Number.isFinite(ms) || ms < 0) return null;
+    if (ms < 1000) return Math.round(ms) + " ms";
+    if (ms < 60000) return (ms / 1000).toFixed(ms < 10000 ? 1 : 0) + " s";
+    const minutes = Math.floor(ms / 60000);
+    if (minutes < 60) return minutes + "m " + Math.round((ms % 60000) / 1000) + "s";
+    const hours = Math.floor(minutes / 60);
+    return hours < 48 ? hours + "h " + (minutes % 60) + "m" : Math.floor(hours / 24) + "d " + (hours % 24) + "h";
+  }
+  function runSpan(run) {
+    const start = Date.parse(run.startedAt || run.attempts?.[0]?.createdAt || run.createdAt);
+    const end = Date.parse(run.terminalAt || run.finishedAt || "");
+    return Number.isFinite(start) && Number.isFinite(end) ? end - start : null;
+  }
+  // A plain period in the reader's language ("6 小时", "6 hours").
+  function period(ms) {
+    const units = [["day", 86400000], ["hour", 3600000], ["minute", 60000], ["second", 1000]];
+    const unit = units.find(([, size]) => ms >= size && ms % size === 0) || ["millisecond", 1];
+    try { return new Intl.NumberFormat(locale() || undefined, { style: "unit", unit: unit[0], unitDisplay: "long" }).format(ms / unit[1]); }
+    catch { return ms + " ms"; }
+  }
+  function kvList(rows, className = "") {
+    const items = rows.filter(Boolean);
+    return h("dl.job-kv" + className, null, items.map(([name, value]) => h("div.job-kv-row", null,
+      h("dt", null, name), h("dd", null, isEmpty(value) || value === "—" ? h("span.job-empty", null, "—") : isPlain(value) ? valueView(value) : value))));
+  }
+  function section(title, body, extra) {
+    return h("section.job-section", null, h("header.job-section-head", null, h("h4", null, title), extra || null), body);
+  }
+  // Any JSON value, readable: scalars inline, arrays as lists, objects as
+  // nested label/value rows. Nothing is dropped; deep nesting folds.
+  function valueView(value, depth = 0) {
+    if (value === null || value === undefined) return h("span.job-empty", null, "null");
+    if (typeof value === "boolean") return h("code.job-bool", null, String(value));
+    if (typeof value === "number") return h("code", null, String(value));
+    if (typeof value === "string") return value === "" ? h("span.job-empty", null, copy("cfg.emptyText"))
+      : value.length > 80 || value.includes("\n") ? h("pre.job-prose", null, value) : h("span.job-text", null, value);
+    if (Array.isArray(value)) {
+      if (!value.length) return h("span.job-empty", null, copy("cfg.emptyList"));
+      if (value.every(item => item === null || typeof item !== "object"))
+        return h("span.job-chips", null, value.map(item => h("code.job-chip", null, String(item))));
+      return h("ol.job-list", null, value.map(item => h("li", null, valueView(item, depth + 1))));
+    }
+    const keys = Object.keys(value);
+    if (!keys.length) return h("span.job-empty", null, copy("cfg.noParams"));
+    const rows = keys.map(key => [h("code.job-key", null, key), valueView(value[key], depth + 1)]);
+    if (depth < 2) return kvList(rows, ".is-nested");
+    return h("details.job-fold", null, h("summary", null, fill(copy("cfg.fields"), { count: keys.length })), kvList(rows, ".is-nested"));
+  }
+  function envView(env) {
+    const keys = env && typeof env === "object" ? Object.keys(env) : [];
+    if (!keys.length) return h("span.job-empty", null, copy("cfg.noEnv"));
+    return h("span.job-chips", null, keys.map(key => h("code.job-chip", { title: key + "=" + env[key] },
+      h("span.job-chip-key", null, key), "=", String(env[key]))));
+  }
+  // Friendly names for the documented nested fields; anything else keeps its key.
+  const FIELD = { title: "name", description: "cfg.description", projectBindings: "cfg.bindings", taskId: "cfg.task",
+    workItemId: "cfg.workItem", roleName: "cfg.role", agentId: "cfg.agent", ownerRunId: "cfg.ownerRun",
+    revision: "revision", type: "type", integrationAttemptId: "cfg.attempt" };
+  function fieldRows(object, skip = []) {
+    if (!object || typeof object !== "object" || Array.isArray(object)) return [[copy("cfg.value"), valueView(object)]];
+    return Object.keys(object).filter(key => !skip.includes(key)).map(key => [FIELD[key] ? copy(FIELD[key]) : h("code.job-key", null, key),
+      key === "taskId" && typeof object[key] === "string" ? h("a", { href: "/?task=" + encodeURIComponent(object[key]) }, object[key])
+        : valueView(object[key], 1)]);
+  }
+  function stepsView(steps) {
+    if (!Array.isArray(steps)) return section(copy("steps"), valueView(steps));
+    return section(copy("steps") + " · " + steps.length, h("ol.job-steps", null, steps.map((step, index) => {
+      const s = step && typeof step === "object" ? step : { command: String(step) };
+      const known = ["name", "command", "timeoutMs", "cwd", "env", "argv"];
+      const extra = Object.keys(s).filter(key => !known.includes(key));
+      const chips = [
+        s.timeoutMs !== undefined ? h("span.job-tag", null, copy("cfg.timeout") + " " + (Number.isFinite(s.timeoutMs) ? period(s.timeoutMs) : String(s.timeoutMs))) : null,
+        s.cwd ? h("span.job-tag", { title: s.cwd }, copy("cfg.cwd") + " " + s.cwd) : null,
+        s.argv ? h("span.job-tag", null, "argv · " + (Array.isArray(s.argv) ? s.argv.length : "?")) : null
+      ].filter(Boolean);
+      return h("li.job-step", null,
+        h("div.job-step-head", null, h("span.job-step-index", null, String(index + 1)),
+          h("code.job-step-name", null, s.name || copy("cfg.unnamed")), chips),
+        s.command !== undefined ? h("div.job-command", null, h("pre", null, String(s.command)), copyButton(String(s.command), copy("copyCommand"))) : null,
+        s.env && !isEmpty(s.env) ? h("div.job-step-env", null, h("span.job-step-label", null, copy("cfg.env")), envView(s.env)) : null,
+        s.argv && !isEmpty(s.argv) ? h("div.job-step-env", null, h("span.job-step-label", null, "argv"), valueView(s.argv)) : null,
+        extra.length ? kvList(extra.map(key => [h("code.job-key", null, key), valueView(s[key], 1)]), ".is-nested") : null);
+    })));
+  }
+  // The configuration as a reader needs it: per-type names and key fields
+  // first, steps and parameters grouped, unknown fields kept, raw JSON last.
+  function configView(config, withRaw) {
+    const c = config && typeof config === "object" && !Array.isArray(config) ? config : {};
+    const used = new Set(["kind"]);
+    const has = key => Object.prototype.hasOwnProperty.call(c, key);
+    const take = key => { used.add(key); return c[key]; };
+    const rows = [[copy("executor"), h("span.job-kind", null, label("jobs.kind", c.kind))]];
+    const blocks = [];
+    if (c.kind === "builtin") {
+      rows.push([copy("action"), h("span", null, label("jobs.action", take("action")), " ", h("code.job-muted", null, String(c.action ?? "")))]);
+      if (has("projectId")) rows.push([copy("project"), take("projectId")]);
+      if (has("input")) rows.push([copy("cfg.input"), valueView(take("input"))]);
+    } else if (c.kind === "shell") {
+      if (has("projectId")) rows.push([copy("project"), take("projectId")]);
+      if (has("owner")) rows.push([copy("cfg.owner"), ownerText(take("owner"))]);
+      if (has("workspace")) rows.push([copy("cfg.workspace"), c.workspace ? h("span.job-path", null, h("code", { title: c.workspace }, take("workspace")),
+        copyButton(String(c.workspace), copy("copy"))) : take("workspace")]);
+      if (has("head")) rows.push([copy("cfg.head"), c.head ? idChip(take("head")) : take("head")]);
+      if (has("env")) rows.push([copy("cfg.env"), envView(take("env"))]);
+      if (has("steps")) blocks.push(stepsView(take("steps")));
+    } else if (c.kind === "task") {
+      if (has("goal")) rows.push([copy("cfg.goal"), label("jobs.goal", take("goal"))]);
+      if (has("target")) {
+        const target = take("target");
+        rows.push([copy("cfg.target"), label("jobs.target", target?.kind)], ...fieldRows(target, ["kind"]));
+      }
+    } else if (c.kind === "agent") {
+      if (has("target")) {
+        const target = take("target");
+        rows.push([copy("cfg.target"), label("jobs.target", target?.kind)], ...fieldRows(target, ["kind"]));
+      }
+      if (has("concurrency")) rows.push([copy("cfg.concurrency"), label("jobs.concurrency", take("concurrency"))]);
+      if (has("input")) blocks.push(section(copy("cfg.agentInput"), typeof c.input === "string"
+        ? h("div.job-command.is-prose", null, h("pre", null, take("input") || "—"), copyButton(String(c.input), copy("copy")))
+        : valueView(take("input"))));
+    }
+    const rest = Object.keys(c).filter(key => !used.has(key));
+    if (rest.length) blocks.push(section(copy("cfg.other"), kvList(rest.map(key => [h("code.job-key", null, key), valueView(c[key], 1)]))));
+    return h("div.job-config", null, kvList(rows), blocks, withRaw ? raw(copy("cfg.raw"), config) : null);
+  }
+  function ownerText(owner) {
+    if (!owner || typeof owner !== "object") return valueView(owner);
+    if (owner.kind === "task") return copy("cfg.ownerTask");
+    if (owner.kind === "work-item") return h("span", null, "WorkItem ", h("code", null, String(owner.workItemId ?? "—")));
+    return valueView(owner);
+  }
+  function stepBadge(step) {
+    const tone = step.timedOut ? "bad" : step.exitCode === 0 ? "ok" : step.signal ? "warn" : step.exitCode === null || step.exitCode === undefined ? "idle" : "bad";
+    const name = step.timedOut ? label("job", "timed-out") : step.exitCode === 0 ? label("job", "succeeded")
+      : step.signal ? String(step.signal) : step.exitCode === null || step.exitCode === undefined ? "—" : label("job", "failed");
+    return badge(name, tone, { dot: true });
+  }
+  // Schedule rules in words when they are simple; the exact rule stays visible.
+  function ruleText(rule) {
+    if (!rule) return "—";
+    if (rule.kind === "interval") return fill(copy("ruleEvery"), { period: period(Number(rule.everyMs)) });
+    if (rule.kind === "once") return fill(copy("ruleOnce"), { at: when(rule.at) || "—" });
+    const parts = String(rule.expression || "").trim().split(/\s+/);
+    if (parts.length === 5 && /^\d+$/.test(parts[0]) && /^\d+$/.test(parts[1]) && parts[2] === "*" && parts[3] === "*") {
+      const time = parts[1].padStart(2, "0") + ":" + parts[0].padStart(2, "0");
+      if (parts[4] === "*") return fill(copy("ruleDaily"), { time });
+      if (/^[0-7](,[0-7])*$/.test(parts[4])) {
+        const days = parts[4].split(",").map(day => {
+          try { return new Intl.DateTimeFormat(locale() || undefined, { weekday: "short", timeZone: "UTC" })
+            .format(new Date(Date.UTC(2026, 9, 18 + (Number(day) % 7)))); } catch { return day; }
+        });
+        return fill(copy("ruleWeekly"), { days: days.join(" "), time });
+      }
+    }
+    return rule.expression || "—";
+  }
+  function ruleExact(rule) {
+    if (!rule) return "";
+    if (rule.kind === "cron") return rule.expression + " · " + (rule.timezone || "UTC");
+    if (rule.kind === "interval") return copy("ruleAnchor") + " " + (when(rule.anchor) || "—");
+    return rule.at || "";
+  }
   function field(name, control) { return h("label.field", null, h("span", null, name), control); }
   function input(value = "", attrs = {}) { return h("input", { value, ...attrs }); }
-  function choose(values, value) {
-    const node = h("select", null, values.map(v => h("option", { value: v }, v)));
+  function choose(values, value, name = v => v) {
+    const node = h("select", null, values.map(v => h("option", { value: v }, name(v))));
     node.value = value || values[0]; return node;
   }
   function guardDraft() { return !dirty || window.confirm(copy("discard")); }
@@ -138,16 +344,33 @@ export function mountJobs(root, t, taskId, options = {}) {
   function editJob(job) {
     const id = input(job?.id || "", { required: true, pattern: "[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}", disabled: !!job });
     const title = input(job?.title || "", { required: true });
-    const kind = choose(taskId ? ["shell", "task", "agent"] : ["builtin", "task", "agent"], job?.configuration.kind);
+    const kind = choose(taskId ? ["shell", "task", "agent"] : ["builtin", "task", "agent"], job?.configuration.kind, v => label("jobs.kind", v));
     kind.disabled = !!job;
-    const action = choose(["system.noop", "project.refresh"], job?.configuration.action);
+    const action = choose(["system.noop", "project.refresh"], job?.configuration.action, v => label("jobs.action", v) + " · " + v);
     const project = input(job?.configuration.projectId || "");
     const configuration = h("textarea", { rows: 12, required: true });
     configuration.value = JSON.stringify(job?.configuration || { kind: "shell", owner: { kind: "task" },
       projectId: "", head: "", workspace: "", env: {}, steps: [{ name: "check", command: "true" }] }, null, 2);
-    const controlled = h("div", null, field(copy("action"), action), field(copy("project"), project), h("p", null, copy("rebind")));
-    const configured = h("div", null, h("p", null, copy("taskConfig")), field(copy("configuration"), configuration));
-    const fields = [field("ID", id), field(copy("name"), title), field(copy("executor"), kind), controlled, configured];
+    const controlled = h("div.job-field-stack", null, h("div.job-field-grid", null, field(copy("action"), action), field(copy("project"), project)),
+      h("p.job-note", null, copy("rebind")));
+    const configured = h("div.job-field-stack", null, h("p.job-note", null, copy("taskConfig")), field(copy("configuration"), configuration));
+    // The draft reads back exactly as the saved Job will: the same structured
+    // view, or the parse error, updated while typing.
+    const preview = h("div.job-config-preview", { "aria-live": "polite" });
+    const build = () => kind.value !== "builtin" ? JSON.parse(configuration.value) : {
+      kind: "builtin", action: action.value, input: {},
+      ...(action.value === "project.refresh" ? { projectId: project.value.trim() } : {})
+    };
+    const drawPreview = () => {
+      let value;
+      try { value = build(); }
+      catch (error) { preview.replaceChildren(h("p.settings-error", null, copy("jsonInvalid") + " " + error.message)); return; }
+      preview.replaceChildren(h("p.job-preview-label", null, copy("preview")),
+        value && typeof value === "object" && !Array.isArray(value) ? configView(value, false)
+          : h("p.settings-error", null, copy("jsonInvalid")));
+    };
+    const fields = [h("fieldset.job-fieldset", null, h("legend", null, copy("basics")), h("div.job-field-grid", null, field("ID", id),
+      field(copy("name"), title), field(copy("executor"), kind))), h("fieldset.job-fieldset", null, h("legend", null, copy("configuration")), controlled, configured, preview)];
     const sync = () => {
       controlled.hidden = kind.value !== "builtin"; configured.hidden = !controlled.hidden;
       project.disabled = controlled.hidden || action.value !== "project.refresh"; project.required = !project.disabled;
@@ -160,14 +383,13 @@ export function mountJobs(root, t, taskId, options = {}) {
           kind: "new", title: "", description: "", projectBindings: [] } }
         : { kind: "shell", owner: { kind: "task" }, projectId: "", head: "", workspace: "", env: {},
           steps: [{ name: "check", command: "true" }] }, null, 2);
-      sync();
+      sync(); drawPreview();
     });
-    action.addEventListener("change", sync); sync();
+    action.addEventListener("change", () => { sync(); drawPreview(); }); sync();
+    for (const control of [configuration, project]) control.addEventListener("input", drawPreview);
+    drawPreview();
     form(job ? copy("editJob") : copy("newJob"), fields, () => {
-      const config = kind.value !== "builtin" ? JSON.parse(configuration.value) : {
-        kind: "builtin", action: action.value, input: {},
-        ...(action.value === "project.refresh" ? { projectId: project.value.trim() } : {})
-      };
+      const config = build();
       void mutate("jobs", { op: job ? "update" : "define", id: id.value.trim(), title: title.value.trim(),
         configuration: config, ...(job ? { expectedRevision: job.revision } : {}) }, result => {
           selected = result.id; selectedRun = undefined; pinSelection(); closeEditor();
@@ -192,8 +414,8 @@ export function mountJobs(root, t, taskId, options = {}) {
     };
     kind.addEventListener("change", sync); sync();
     form(schedule ? copy("editSchedule") : copy("newSchedule"),
-      [field("ID", id), field("Job", jobId), field(copy("rule"), kind), when, interval, cron, zone,
-        h("p", null, copy("scheduleHelp"))], () => {
+      [h("div.job-field-grid", null, field("ID", id), field("Job", jobId), field(copy("rule"), kind)),
+        h("div.job-field-grid", null, when, interval, cron, zone), h("p.job-note", null, copy("scheduleHelp"))], () => {
       const rule = kind.value === "once" ? { kind: "once", at: at.value }
         : kind.value === "interval" ? { kind: "interval", anchor: at.value, everyMs: Number(every.value) }
         : { kind: "cron", expression: expression.value, timezone: timezone.value };
@@ -209,41 +431,72 @@ export function mountJobs(root, t, taskId, options = {}) {
     selectedRun = runId;
     pinSelection();
     detail.querySelectorAll(".job-run-row").forEach(row => row.setAttribute("aria-current", String(row.dataset.run === runId)));
-    target.replaceChildren(h("p", null, copy("loading")));
+    target.replaceChildren(h("p.job-loading", null, copy("loading")));
     try {
       const run = await read("jobs", { op: "run-get", id: jobId, runId });
       if (epoch !== runGeneration || selected !== jobId || selectedRun !== runId) return;
-      const evidence = h("section"), artifacts = h("section"), session = h("section");
-      target.replaceChildren(h("div.settings-stack", null, h("h4", null, run.id), fact(copy("state"), run.status),
-        fact(copy("executor"), run.executor || (run.delegation ? "task" : "process")),
+      const evidence = h("section.job-run-evidence"), artifacts = h("section.job-run-artifacts"), session = h("section");
+      const steps = run.result?.steps || [];
+      const exit = run.result ? [run.result.exitCode === null || run.result.exitCode === undefined ? null : String(run.result.exitCode),
+        run.result.signal].filter(Boolean).join(" · ") : null;
+      const cancel = ["queued", "running", "unknown-needs-attention"].includes(run.status) ? button(copy("cancelRun"), () => {
+        if (window.confirm(copy("cancelBoundary") + "\n" + runId))
+          void mutate("jobs", { op: "run-cancel", id: jobId, runId });
+      }) : null;
+      const reason = run.result?.unknownReason;
+      target.replaceChildren(h("div.job-run-panel", null,
+        h("header.job-run-head", null, h("div.job-run-title", null, h("h4", null, copy("runDetail")), idChip(run.id), runBadge(run.status)),
+          h("div.job-badges", null, cancel, h("button.icon-btn.job-run-close", { type: "button", title: copy("closeRun"),
+            "aria-label": copy("closeRun"), onclick: () => closeRun(target) }, icon("close")))),
+        run.businessResult ? h("p.job-result.tone-" + (RUN_TONE[run.status] || "idle"), null,
+          h("span.job-result-label", null, copy("result")), run.businessResult.summary) : null,
+        reason && reason !== run.businessResult?.summary ? h("p.job-result.tone-warn", null, reason) : null,
         run.delegation ? h("a.btn", { href: "/?task=" + encodeURIComponent(run.delegation.taskId) },
           copy("executionTask") + " · " + run.delegation.taskId) : null,
-        ...(run.businessResult ? [h("div", null, fact(copy("result"), run.businessResult.summary),
-          raw(copy("result"), run.businessResult))] : []),
-        run.cancelRequestedAt ? fact(copy("cancelRequested"), run.cancelRequestedAt) : null,
-        fact(copy("trigger"), run.trigger.source + " · " + run.trigger.key),
-        fact(copy("created"), run.createdAt), fact(copy("finished"), run.terminalAt),
-        raw(copy("snapshot"), run), artifacts, evidence, session));
-      if (["queued", "running", "unknown-needs-attention"].includes(run.status)) target.prepend(
-        button(copy("cancelRun"), () => {
-          if (window.confirm(copy("cancelBoundary") + "\n" + runId))
-            void mutate("jobs", { op: "run-cancel", id: jobId, runId });
-        }));
+        kvList([
+          [copy("trigger"), h("span", null, label("trigger", run.trigger.source), " ", h("code.id", { title: run.trigger.key }, shortId(run.trigger.key)))],
+          [copy("executor"), label("jobs.kind", run.executor || (run.delegation ? "task" : "process"))],
+          [copy("created"), stamp(run.createdAt)],
+          run.startedAt ? [copy("started"), stamp(run.startedAt)] : null,
+          [copy("finished"), stamp(run.terminalAt)],
+          [copy("duration"), duration(runSpan(run))],
+          exit ? [copy("exit"), h("code", null, exit)] : null,
+          run.result?.failedStep ? [copy("failedStep"), h("code", null, run.result.failedStep)] : null,
+          run.cancelRequestedAt ? [copy("cancelRequested"), stamp(run.cancelRequestedAt)] : null,
+          run.retryOf ? [copy("retryOf"), h("code.id", { title: run.retryOf }, shortId(run.retryOf))] : null,
+          run.definitionRevision ? [copy("revision"), String(run.definitionRevision)] : null
+        ]),
+        steps.length ? h("section.job-section", null, h("h5.job-section-title", null, copy("steps") + " · " + steps.length),
+          h("ol.job-run-steps", null, steps.map(step => h("li.job-run-step", null,
+            stepBadge(step), h("code.job-run-step-name", null, step.name), h("span.job-run-step-meta", null,
+              [duration(step.durationMs), step.exitCode !== null && step.exitCode !== undefined ? "exit " + step.exitCode : step.signal]
+                .filter(Boolean).join(" · ")))))) : null,
+        evidence, artifacts, session,
+        h("div.job-advanced", null, run.businessResult ? raw(copy("result"), run.businessResult) : null, raw(copy("snapshot"), run))));
       drawArtifacts(artifacts, jobId, run, epoch);
       if (run.executor === "agent" && run.configuration.target.kind === "job") drawSession(session, jobId, runId);
       try {
         const value = await read("jobs", { op: "run-evidence", id: jobId, runId });
         if (epoch !== runGeneration) return;
-        evidence.append(raw(copy("diagnostics"), value));
         if (run.executor !== "agent" && !run.delegation) {
           const logs = await read("jobs", { op: "logs", id: jobId, runId });
           if (epoch !== runGeneration) return;
-          evidence.append(h("h4", null, copy("logs")), logs.length ? h("div", null, logs.map(log => h("section", null,
-            h("h5", null, log.step + (log.truncated ? " · " + copy("truncated") : "")),
-            h("pre.settings-observation", null, log.text)))) : h("p", null, copy("noLogs")));
+          const failed = run.result?.failedStep;
+          evidence.append(h("h5.job-section-title", null, copy("logs")), logs.length ? h("div.job-logs", null, logs.map((log, i) => h("details.job-log", {
+            open: log.step === failed || (!failed && i === logs.length - 1 && run.status !== "succeeded") }, h("summary", null,
+              h("code", null, log.step), log.truncated ? h("span.job-raw-hint", null, copy("truncated")) : null),
+            h("pre.job-log-text", null, log.text)))) : h("p.job-note", null, copy("noLogs")));
         }
+        evidence.append(raw(copy("diagnostics"), value));
       } catch (error) { if (epoch === runGeneration) evidence.append(h("p.settings-error", null, copy("diagnostics") + ": " + error.message)); }
     } catch (error) { if (epoch === runGeneration) target.replaceChildren(h("p.settings-error", null, error.message)); }
+  }
+  function closeRun(target) {
+    runGeneration++;
+    selectedRun = undefined; artifactState.reference = null;
+    pinSelection();
+    target.replaceChildren();
+    detail.querySelectorAll(".job-run-row").forEach(row => row.setAttribute("aria-current", "false"));
   }
   function drawArtifacts(target, jobId, run, epoch) {
     const refs = run.artifacts || [];
@@ -273,12 +526,14 @@ export function mountJobs(root, t, taskId, options = {}) {
       } catch (error) { if (epoch === runGeneration && JSON.stringify(artifactState.reference) === key)
         viewer.replaceChildren(h("p.settings-error", null, error.message)); }
     };
-    target.append(h("h4", null, copy("artifacts")), h("p", null, copy("registeredOnly")),
-      ...refs.map(ref => button(ref.relativePath + " · " + ref.version.slice(0, 12), () => void select(ref))), viewer);
+    target.append(...[h("h5.job-section-title", null, copy("artifacts") + " · " + refs.length),
+      refs.length ? h("p.job-note", null, copy("registeredOnly")) : null,
+      refs.length ? h("div.job-artifact-list", null, refs.map(ref => button(ref.relativePath + " · " + ref.version.slice(0, 12), () => void select(ref)))) : null,
+      viewer].filter(Boolean));
     if (artifactState.reference && refs.some(ref => JSON.stringify(ref) === JSON.stringify(artifactState.reference)))
       void select(artifactState.reference);
     const recovery = h("div");
-    target.append(button(copy("inspectSaved"), async () => {
+    target.append(h("button.btn.btn-ghost.job-inline-action", { type: "button", onclick: async () => {
       recovery.replaceChildren();
       try {
         const result = await read("jobs", { op: "artifact-list", id: jobId, runId: run.id });
@@ -289,7 +544,7 @@ export function mountJobs(root, t, taskId, options = {}) {
               void mutate("jobs", { op: "artifact-register", id: jobId, runId: run.id, reference: ref });
           })));
       } catch (error) { recovery.append(h("p.settings-error", null, error.message)); }
-    }), recovery);
+    } }, copy("inspectSaved")), recovery);
   }
   function drawSession(target, jobId, runId) {
     target.append(button(copy("inspectSession"), async () => {
@@ -305,10 +560,104 @@ export function mountJobs(root, t, taskId, options = {}) {
       } catch (error) { target.append(h("p.settings-error", null, error.message)); }
     }));
   }
+  // Run history filters, in the order a reader scans for trouble.
+  const RUN_FILTERS = [["all", null], ["succeeded", ["succeeded"]], ["failed", ["failed"]], ["timed-out", ["timed-out"]],
+    ["cancelled", ["cancelled"]], ["active", ["queued", "running"]], ["unknown-needs-attention", ["unknown-needs-attention"]]];
+  let runFilter = "all", runLimit = 15, shownJob = null;
+  function runSummary(run) { return run.businessResult?.summary || run.summary || run.result?.unknownReason || ""; }
+  function runRow(job, run, target) {
+    const started = run.startedAt || run.createdAt;
+    const span = duration(runSpan(run));
+    return h("button.job-run-row", {
+      type: "button", "aria-current": String(selectedRun === run.id), dataset: { run: run.id }, title: run.id,
+      onclick: () => void showRun(job.id, run.id, target).then(() => target.scrollIntoView?.({ block: "nearest", behavior: "smooth" }))
+    }, h("span.job-run-status", null, runBadge(run.status)),
+    h("span.job-run-main", null, h("span.job-run-summary", null, runSummary(run) || label("job", run.status)),
+      h("span.job-run-sub", null, h("code", null, shortId(run.id)), h("span", null, label("trigger", run.trigger && run.trigger.source)))),
+    h("span.job-run-when", { title: when(started) || "" }, ago(started) || when(started) || "—"),
+    h("span.job-run-span", null, span || (["queued", "running"].includes(run.status) ? "…" : "—")));
+  }
+  function historyView(job, runs, target) {
+    const counts = Object.fromEntries(RUN_FILTERS.map(([key, set]) => [key, set ? runs.filter(r => set.includes(r.status)).length : runs.length]));
+    if (!counts[runFilter]) runFilter = "all";
+    const body = h("div.job-history-body");
+    const draw = () => {
+      const set = RUN_FILTERS.find(([key]) => key === runFilter)[1];
+      const shown = set ? runs.filter(run => set.includes(run.status)) : runs;
+      // The selected Run stays visible even past the page limit.
+      const index = shown.findIndex(run => run.id === selectedRun);
+      const limit = Math.max(runLimit, index + 1);
+      body.replaceChildren(h("div.job-runs-head", { "aria-hidden": "true" }, h("span", null, copy("col.status")),
+        h("span", null, copy("col.run")), h("span", null, copy("col.started")), h("span", null, copy("duration"))),
+      h("div.jobs-runs", null, shown.slice(0, limit).map(run => runRow(job, run, target))),
+      ...(shown.length > limit ? [h("button.job-more", { type: "button", onclick: () => { runLimit += 30; draw(); } },
+        fill(copy("showMore"), { count: shown.length - limit }))] : []));
+    };
+    const tabs = h("div.chip-tabs.job-filters", { role: "group", "aria-label": copy("filterRuns") },
+      RUN_FILTERS.filter(([key]) => key === "all" || counts[key]).map(([key]) => h("button.chip-tab", {
+        type: "button", "aria-pressed": String(runFilter === key), dataset: { filter: key },
+        onclick: event => { runFilter = key; runLimit = 15;
+          for (const tab of tabs.children) tab.setAttribute("aria-pressed", String(tab === event.currentTarget)); draw(); }
+      }, key === "all" ? copy("filter.all") : key === "active" ? copy("filter.active") : label("job", key), h("span.count", null, String(counts[key])))));
+    draw();
+    return section(copy("history"), runs.length ? h("div.job-history", null, tabs, body)
+      : h("p.job-empty-block", null, copy("noRuns")), h("span.job-section-count", null, fill(copy("runCount"), { count: runs.length })));
+  }
+  function overviewView(job, runs) {
+    const terminal = runs.filter(run => !["queued", "running"].includes(run.status));
+    const ok = terminal.filter(run => run.status === "succeeded");
+    const spans = ok.map(runSpan).filter(Number.isFinite);
+    const recent = runs.slice(0, 30).reverse();
+    const latest = runs[0], success = runs.find(run => run.businessResult?.outcome === "succeeded");
+    const stat = (name, value, sub) => h("div.job-stat", null, h("span.job-stat-label", null, name),
+      h("span.job-stat-value", null, value), sub ? h("span.job-stat-sub", null, sub) : null);
+    const runRef = run => run ? h("span.job-stat-run", null, h("code", { title: run.id || run.runId }, shortId(run.id || run.runId)),
+      runBadge(run.status), h("span.job-stat-sub", null, ago(run.terminalAt || run.createdAt))) : h("span.job-empty", null, "—");
+    const refreshRef = item => item ? h("span.job-stat-run", null, h("code", { title: item.runId || item.id || "" }, shortId(item.runId || item.id || "—")),
+      item.status ? runBadge(item.status) : null, h("span.job-stat-sub", null, ago(item.finishedAt || item.terminalAt || item.attemptedAt || item.at || item.createdAt))) : h("span.job-empty", null, "—");
+    return h("section.job-overview", { "aria-label": copy("overview") },
+      h("div.job-stats", null,
+        stat(copy("successRate"), terminal.length ? Math.round(ok.length * 100 / terminal.length) + "%" : "—",
+          terminal.length ? ok.length + " / " + terminal.length : null),
+        stat(copy("avgDuration"), spans.length ? duration(spans.reduce((a, b) => a + b, 0) / spans.length) : "—"),
+        h("div.job-stat", null, h("span.job-stat-label", null, copy("recentRun")), runRef(latest)),
+        h("div.job-stat", null, h("span.job-stat-label", null, copy("recentSuccess")), runRef(success)),
+        job.refresh ? h("div.job-stat", null, h("span.job-stat-label", null, copy("refreshAttempt")), refreshRef(job.refresh.lastAttempt)) : null,
+        job.refresh ? h("div.job-stat", null, h("span.job-stat-label", null, copy("refreshSuccess")), refreshRef(job.refresh.lastSuccessfulRefresh)) : null),
+      recent.length ? h("div.job-spark", { role: "img", "aria-label": fill(copy("sparkLabel"), { count: recent.length,
+        ok: recent.filter(run => run.status === "succeeded").length }) },
+        recent.map(run => h("span.job-spark-bar.tone-" + (RUN_TONE[run.status] || "idle"), { title: label("job", run.status) + " · " + when(run.createdAt) })))
+        : null);
+  }
+  function plansView(job, plans) {
+    const items = plans.map(({ schedule: s, lastSuccess }) => {
+      const on = s.builtin ? s.builtin.enabled : s.state === "enabled";
+      const attempt = s.lastAttempt;
+      return h("li.job-plan", null,
+        h("div.job-plan-main", null,
+          h("div.job-plan-line", null, scheduleBadge(s), h("strong.job-plan-rule", null, ruleText(s.rule)),
+            h("span.job-plan-exact", null, ruleExact(s.rule))),
+          h("div.job-plan-line.job-plan-sub", null, h("code", null, s.id),
+            s.state === "enabled" && s.nextDue ? h("span", { title: when(s.nextDue) }, copy("nextShort") + " " + when(s.nextDue) + " · " + ago(s.nextDue)) : null,
+            attempt ? h("span", { title: attempt.reason || "" }, copy("lastAttemptShort") + " " + ago(attempt.at) + " · " + label("admission", attempt.outcome)) : null,
+            lastSuccess ? h("span", null, copy("lastSuccessShort") + " " + ago(lastSuccess.terminalAt || lastSuccess.updatedAt)) : null),
+          s.state === "completed" ? h("p.job-note", null, copy("onceCompleted")) : null,
+          s.reason ? h("p.job-note.is-error", null, s.reason) : null),
+        h("div.job-plan-actions", null,
+          button(copy(on ? "disable" : "enable"), () => void mutate("schedules", { op: on ? "disable" : "enable", id: s.id, expectedRevision: s.revision })),
+          button(copy("editSchedule"), () => editSchedule(s)),
+          attempt?.runId ? h("a.btn", { href: jobLink(taskId, attempt.jobId || job.id, attempt.runId) }, copy("inspectRun")) : null),
+        raw(copy("details"), s));
+    });
+    const add = !job.builtin && !["agent", "task"].includes(job.configuration.kind)
+      ? h("button.job-section-action", { type: "button", onclick: () => editSchedule() }, icon("plus"), copy("newSchedule")) : null;
+    return section(copy("schedules"), items.length ? h("ul.job-plans", null, items) : h("p.job-empty-block", null, copy("noSchedules")), add);
+  }
   async function showDetail(epoch) {
     const job = jobs.find(j => j.id === selected);
     if (!job) {
-      detail.replaceChildren(...(selected ? [h("p.settings-error", null, copy("unavailable") + " · " + selected)] : []));
+      detail.replaceChildren(...(selected ? [h("p.settings-error", null, copy("unavailable") + " · " + selected)]
+        : jobs.length ? [] : [h("div.job-blank", null, icon("clock", "icon-xl"), h("p", null, copy("empty")))]));
       return;
     }
     const [runs, plans] = await Promise.all([
@@ -316,59 +665,45 @@ export function mountJobs(root, t, taskId, options = {}) {
       Promise.all(schedules.filter(s => s.jobId === job.id).map(s => read("schedules", { op: "show", id: s.id })))
     ]);
     if (epoch !== generation) return;
+    if (shownJob !== job.id) { shownJob = job.id; runFilter = "all"; runLimit = 15; }
     runs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    const summary = run => run ? (run.id || run.runId) + " · " + run.status + " · "
-      + (run.terminalAt || run.finishedAt || run.createdAt || run.attemptedAt)
-      + (run.summary || run.businessResult?.summary ? " · " + (run.summary || run.businessResult.summary) : "") : null;
     const runDetail = h("section.job-run");
     const own = schedules.filter(s => s.jobId === job.id);
-    detail.replaceChildren(h("div.settings-stack", null,
-      h("header.job-head", null, h("h3", null, job.title), h("div.job-badges", null,
-        own.length ? own.map(s => scheduleBadge(s)) : badge(copy("noSchedule"), "idle"),
-        runs[0] ? runBadge(runs[0].status) : badge(copy("noRunsShort"), "idle"))),
-      h("section.job-block", { "aria-label": copy("definition") }, h("h4", null, copy("definition")), facts(fact("ID", job.id),
-        fact(copy("scope"), ownerValue()), fact(copy("type"), typeLabel(job)), fact(copy("project"), job.configuration.projectId),
-        fact(copy("revision"), job.revision)),
-        job.builtin ? h("p.job-note", null, copy("builtinSync")) : null),
-      h("section.job-block", { "aria-label": copy("execution") }, h("h4", null, copy("execution")), facts(
-        fact(copy("recentRun"), summary(runs[0])),
-        fact(copy("recentSuccess"), summary(runs.find(run => run.businessResult?.outcome === "succeeded"))),
-        job.refresh ? fact(copy("refreshAttempt"), summary(job.refresh.lastAttempt)) : null,
-        job.refresh ? fact(copy("refreshSuccess"), summary(job.refresh.lastSuccessfulRefresh)) : null),
-        h("p.job-note", null, copy("runVsPlan"))),
-      h("div.settings-actions", null,
-        button(copy("runNow"), () => void mutate("jobs", { op: "run", id: job.id, requestId: crypto.randomUUID() }, result => {
-          selectedRun = result.run.id; pinSelection();
-        }), true),
-        !job.builtin ? button(copy("editJob"), () => editJob(job)) : null,
-        !job.builtin && !["agent", "task"].includes(job.configuration.kind) ? button(copy("newSchedule"), () => editSchedule()) : null),
-      raw(copy("configuration"), job.configuration),
-      job.refresh ? raw(copy("refreshFacts"), job.refresh) : null,
-      h("h3", null, copy("schedules")),
-      plans.length ? h("div.settings-stack", null, plans.map(({ schedule: s, lastSuccess }) => h("article.settings-card", null,
-        h("header.job-head", null, h("h4", null, s.id), scheduleBadge(s)), fact(copy("state"), label("schedule", s.state)),
-        s.builtin ? fact(copy("automatic"), copy(s.builtin.enabled ? "enabled" : "disabled")) : null,
-        s.state === "completed" ? h("p", null, copy("onceCompleted")) : null,
-        fact(copy("rule"), s.rule.kind === "cron" ? s.rule.expression : s.rule.kind === "once" ? s.rule.at : s.rule.anchor + " + " + s.rule.everyMs + " ms"),
-        fact(copy("timezone"), s.rule.timezone || "UTC / offset"),
-        fact(copy("nextDue"), s.state === "enabled" ? when(s.nextDue) : null), fact(copy("lastAttempt"), s.lastAttempt
-          ? when(s.lastAttempt.at) + " · " + label("admission", s.lastAttempt.outcome) + " · " + (s.lastAttempt.runId || s.lastAttempt.reason || "") : null),
-        fact(copy("lastSuccess"), lastSuccess ? lastSuccess.id + " · " + when(lastSuccess.terminalAt || lastSuccess.updatedAt) : null),
-        s.reason ? h("p.settings-error", null, s.reason) : null,
-        h("div.settings-actions", null,
-          button(copy("editSchedule"), () => editSchedule(s)),
-          button(copy((s.builtin ? s.builtin.enabled : s.state === "enabled") ? "disable" : "enable"), () => void mutate("schedules", {
-            op: (s.builtin ? s.builtin.enabled : s.state === "enabled") ? "disable" : "enable", id: s.id, expectedRevision: s.revision
-          })), s.lastAttempt?.runId ? h("a.btn", { href: jobLink(taskId, s.lastAttempt.jobId || job.id, s.lastAttempt.runId) }, copy("inspectRun")) : null),
-        raw(copy("details"), s)))) : h("p", null, copy("noSchedules")),
-      h("h3", null, copy("history")),
-      runs.length ? h("div.jobs-runs", null, runs.map(run => h("button.job-run-row", {
-        type: "button", "aria-current": String(selectedRun === run.id), dataset: { run: run.id },
-        onclick: () => void showRun(job.id, run.id, runDetail)
-      }, runBadge(run.status), h("code", null, run.id), h("span.job-run-meta", null,
-        label("trigger", run.trigger && run.trigger.source) + " · " + when(run.createdAt)))))
-        : h("p", null, copy("noRuns")),
-      runDetail));
+    const config = job.configuration || {};
+    const meta = [
+      h("span.job-meta-item", null, h("code.id", { title: job.id }, job.id), copyButton(job.id, copy("copy") + " · " + job.id)),
+      h("span.job-meta-item", null, ownerValue()),
+      h("span.job-meta-item", null, typeLabel(job)),
+      config.projectId ? h("span.job-meta-item", null, config.projectId) : null,
+      h("span.job-meta-item", null, copy("revision") + " " + job.revision)
+    ];
+    detail.replaceChildren(h("article.job-page", null,
+      h("header.job-header", null,
+        h("div.job-title", null,
+          h("h2", null, job.title),
+          h("div.job-badges", null, own.length ? own.map(s => scheduleBadge(s)) : badge(copy("noSchedule"), "idle"),
+            runs[0] ? runBadge(runs[0].status) : badge(copy("noRunsShort"), "idle")),
+          h("div.job-meta", null, meta)),
+        h("div.job-actions", null,
+          !job.builtin ? button(copy("editJob"), () => editJob(job)) : null,
+          button(copy("runNow"), () => void mutate("jobs", { op: "run", id: job.id, requestId: crypto.randomUUID() }, result => {
+            selectedRun = result.run.id; pinSelection();
+          }), true))),
+      job.builtin ? h("p.job-note", null, copy("builtinSync")) : null,
+      overviewView(job, runs),
+      h("div.job-columns", null,
+        h("div.job-primary", null, historyView(job, runs, runDetail), runDetail,
+          section(copy("configuration"), configView(config, true))),
+        h("aside.job-aside", null,
+          plansView(job, plans),
+          section(copy("definition"), kvList([
+            ["ID", idChip(job.id)], [copy("scope"), ownerValue()], [copy("type"), typeLabel(job)],
+            [copy("project"), config.projectId || null], [copy("revision"), String(job.revision)],
+            job.createdAt ? [copy("created"), stamp(job.createdAt)] : null,
+            job.updatedAt ? [copy("updated"), stamp(job.updatedAt)] : null
+          ], ".is-compact")),
+          h("p.job-note", null, copy("runVsPlan")),
+          job.refresh ? raw(copy("refreshFacts"), job.refresh) : null))));
     if (selectedRun) await showRun(job.id, selectedRun, runDetail);
   }
   async function refresh(announce = true) {
@@ -411,18 +746,17 @@ export function mountJobs(root, t, taskId, options = {}) {
       : states[0] || null;
     const latest = job.results && job.results.latest;
     const next = own.filter(s => s.state === "enabled" && s.nextDue).map(s => s.nextDue).sort()[0];
-    const planText = state ? label("schedule", state) + (next ? " · " + copy("nextShort") + " " + when(next) : "") : copy("noSchedule");
+    const planText = state ? label("schedule", state) + (next ? " · " + copy("nextShort") + " " + (ago(next) || when(next)) : "") : copy("noSchedule");
     return h("button.job-row", {
       type: "button", dataset: { job: job.id }, "aria-current": String(selected === job.id),
-      title: job.title, onclick: () => pick(job)
+      title: job.title + " · " + job.id, onclick: () => pick(job)
     }, dot(state ? SCHEDULE_TONE[state] || "idle" : "idle", planText),
     h("span.job-row-body", null,
-      h("span.job-row-line", null, h("span.job-row-name", null, job.title)),
-      h("span.job-row-line.job-row-sub", null, h("code", null, job.id), h("span", null, typeLabel(job)),
-        job.configuration.projectId ? h("span", null, job.configuration.projectId) : null),
-      // Plan (on/off) and the latest Run's status are separate facts, side by side.
-      h("span.job-row-line.job-row-sub", null, h("span.job-row-plan", null, planText),
-        latest ? runBadge(latest.status) : h("span.job-row-none", null, copy("noRunsShort")))));
+      h("span.job-row-line", null, h("span.job-row-name", null, job.title),
+        // Plan (on/off) and the latest Run's status are separate facts, side by side.
+        latest ? runBadge(latest.status) : h("span.job-row-none", null, copy("noRunsShort"))),
+      h("span.job-row-line.job-row-sub", null, h("span.job-row-type", null, typeLabel(job)),
+        h("span.job-row-plan", null, planText))));
   }
   function drawIndex() {
     if (!loaded && !loadError) { list.replaceChildren(h("p.jobs-index-empty", null, copy("loading"))); indexCount.textContent = ""; return; }
@@ -469,18 +803,21 @@ export function mountJobs(root, t, taskId, options = {}) {
       : copy("ownerGlobal");
   }
   root.classList.add("jobs-manager");
-  const actions = h("div.settings-actions", null, button(copy("newJob"), () => editJob(), true),
-    button(copy("refresh"), () => { if (!pending) void refresh(); }),
-    !options.index && taskId ? h("a.btn", { href: jobLink(taskId) }, copy("openInJobs")) : null);
-  const head = options.heading
-    ? h("header.manage-head", null, h("div.manage-heading", null, h("h1", null, options.heading.title),
-      h("p", null, options.heading.hint)))
-    : h("div", null, h("h2", null, copy("heading")), h("p", null, copy("help")), fact(copy("scope"), ownerValue()));
+  // One quiet bar: what this is, where it belongs, the latest receipt and
+  // the two page actions. Explanations live in tooltips and in context.
+  const heading = options.heading || { title: copy("heading"), hint: copy("help") };
+  const head = h("header.jobs-bar", null,
+    h("div.jobs-bar-title", null, h(options.heading ? "h1" : "h2", { title: heading.hint }, heading.title),
+      h("span.jobs-bar-scope", null, ownerValue()), h("p.sr-only", null, heading.hint)),
+    h("div.jobs-bar-actions", null, receipt,
+      h("button.btn.btn-ghost.jobs-bar-refresh", { type: "button", title: copy("refresh"), onclick: () => { if (!pending) void refresh(); } },
+        icon("refresh"), h("span", null, copy("refresh"))),
+      !options.index && taskId ? h("a.btn.btn-ghost", { href: jobLink(taskId) }, copy("openInJobs")) : null,
+      h("button.btn.btn-primary", { type: "button", onclick: () => editJob() }, icon("plus"), copy("newJob"))));
   const indexTools = h("div.jobs-index-tools", null,
     h("label.search-field", null, icon("search"), h("span.sr-only", null, copy("search")), indexSearch), indexCount);
   if (options.index) options.index.replaceChildren(indexTools, list);
-  root.replaceChildren(...[head, options.notice ? h("p.job-notice", { role: "status" }, options.notice) : null,
-    actions, receipt, editor,
+  root.replaceChildren(...[head, options.notice ? h("p.job-notice", { role: "status" }, options.notice) : null, editor,
     options.index ? detail : h("div.jobs-layout", null, h("div.jobs-index", null, indexTools, list), detail)].filter(Boolean));
   drawIndex();
   void refresh();
