@@ -665,13 +665,21 @@ test("manual and automatic managed Run retries share exact failed proof, includi
     assert.equal(f.read().retry.successorRunId, successor.id);
     assert.equal(f.read().retry.successorAutomatic, !manual);
     const dispatch = createRuntimeLifecycleDispatcher(f.store, new FileSchedulerStoreAdapter(f.store), {});
-    const admission = await dispatch("runtime.provider-turn-begin", {
+    const admissionInput = {
       taskId: "task-1", roleName: f.roleName, agentId: "codex", nativeSessionId: f.nativeSessionId,
       runId: successor.id, attemptId: `task-1/turn/${successor.id}`,
       authorityEpoch: 1, authorityOwner: "controller", holderId: "controller",
       observedAt: f.now().toISOString(), boundedText: "Read the exact successor Run.",
       retrySupport: "codex-failed-turn-v1"
-    });
+    };
+    runTaskCommand(["role", "disable", "task-1", f.roleName], f.store, { now: f.now, environment: {} });
+    const beforePause = structuredClone(f.read());
+    await assert.rejects(dispatch("runtime.provider-turn-begin", admissionInput),
+      error => error.code === "SESSION_BUSY" && /disabled/.test(error.message));
+    assert.deepEqual(f.read(), beforePause, "Paused admission cannot commit registration or spend retry budget.");
+    assert.equal(f.store.getActiveRun("task-1", f.roleName).id, successor.id);
+    runTaskCommand(["role", "enable", "task-1", f.roleName], f.store, { now: f.now, environment: {} });
+    const admission = await dispatch("runtime.provider-turn-begin", admissionInput);
     assert.equal(admission.retryInput?.expectedFailedNativeTurnId, "native-original");
     assert.match(admission.retryInput.text, /Preserve local changes/);
     const calls = [];
@@ -766,6 +774,12 @@ test("registration ACK replay and a cancellation racing its reply never strip th
     }
     assert.deepEqual(await dispatch("runtime.provider-turn-begin", params), original);
     assert.equal(f.read().retry.attempts, 1);
+    runGlobalRoleCommand(["disable", f.roleName], f.store, { env: {} });
+    const registered = structuredClone(f.read());
+    await assert.rejects(dispatch("runtime.provider-turn-begin", params),
+      error => error.code !== "SESSION_BUSY" && /disabled/.test(error.message));
+    assert.deepEqual(f.read(), registered, "An existing registration must not become an unregistered retry.");
+    runGlobalRoleCommand(["enable", f.roleName], f.store, { env: {} });
     cancel();
     let replay;
     try {

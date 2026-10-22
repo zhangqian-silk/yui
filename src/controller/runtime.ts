@@ -3,7 +3,7 @@ import { prepareNativeHostSteer } from "./nativeHostInput.js";
 import { archiveLeaderTask } from "../task/leaderArchive.js";
 import { TaskWorkspaceCoordinator } from "../repository/taskWorkspaceCoordinator.js";
 import type { ConfiguredAgent } from "../agent/agent.js";
-import { assertRoleEnabled } from "../role/availability.js";
+import { assertRoleEnabled, RoleDisabledError } from "../role/availability.js";
 import {
   AGENT_OPERATIONAL_ENVIRONMENT_NAMES,
   NATIVE_AGENT_ENVIRONMENT_NAMES,
@@ -932,6 +932,17 @@ export function createRuntimeLifecycleDispatcher(
           now: value.now
         });
       } catch (error) {
+        if (error instanceof RoleDisabledError) {
+          const turn = (value.taskId === undefined
+            ? store.getGlobalRoleSessionSet(value.roleName)
+            : store.getTaskRoleSessionSet(value.taskId, value.roleName))?.providerBinding?.run;
+          // The admission transaction rolled back. Only a new, unregistered
+          // input may use the existing temporary-backpressure wire contract.
+          // A matching prior registration remains fenced, never a fresh retry.
+          if (turn?.attemptId !== value.attemptId) {
+            throw applicationError("SESSION_BUSY", error.message);
+          }
+        }
         if (error instanceof AgentHostProviderSessionBusyError) throw error;
         if (error instanceof AgentHostProviderTurnFenceError) {
           throw applicationError("INVALID_PARAMS", error.message);
@@ -1738,7 +1749,7 @@ function abortableDelay(milliseconds: number, signal: AbortSignal): Promise<void
 }
 
 function applicationError(
-  code: "INVALID_PARAMS" | "METHOD_NOT_FOUND",
+  code: "INVALID_PARAMS" | "METHOD_NOT_FOUND" | "SESSION_BUSY",
   message: string
 ): Error {
   const error = Object.assign(new Error(message), { code });
