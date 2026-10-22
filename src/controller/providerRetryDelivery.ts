@@ -188,6 +188,9 @@ export function createProviderRetryHooks(home: string, store: TaskStore, ports: 
                 if (latest?.chainId !== retry.chainId || latest.failedAttemptId !== retry.failedAttemptId
                   || latest.status !== "waiting") return;
                 const reason = retryIntentBlocker(store, scoped, latest);
+                // Snapshotting yields to configuration changes. Apply the same
+                // pause semantics as the pre-await check, without settling intent.
+                if (reason === "role-disabled") return;
                 if (reason !== undefined) throw new Error(reason);
                 runTaskCommand(["run", "retry", `${owner.taskId}/${previous.id}`], store, {
                   now: () => new Date(at), environment: {}, providerRetryChainId: retry.chainId,

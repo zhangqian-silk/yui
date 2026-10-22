@@ -848,7 +848,7 @@ test("manual recovery after exhaustion retains the original automatic count and 
 });
 
 test("same-Round review recovery preserves its candidate and workspace, and cancellation fences a later-created Run", async t => {
-  for (const mode of ["automatic", "cancel", "manual-without-chain"]) {
+  for (const mode of ["automatic", "pause", "cancel", "manual-without-chain"]) {
     const cancel = mode === "cancel";
     const f = reviewFixture(t);
     const initial = f.dispatch();
@@ -861,11 +861,27 @@ test("same-Round review recovery preserves its candidate and workspace, and canc
     }), "applied");
     assert.equal(f.store.getReviewRound("task-1", f.round.id).status, "failed");
     if (mode !== "manual-without-chain") f.due();
+    let pause = mode === "pause";
     const hooks = createProviderRetryHooks(f.home, f.store, {
-      now: f.now, snapshotTaskCandidate: async () => f.candidate,
+      now: f.now, snapshotTaskCandidate: async () => {
+        if (pause) runTaskCommand(["role", "disable", "task-1", f.roleName],
+          f.store, { now: f.now, environment: {} });
+        return f.candidate;
+      },
       onError: error => { throw error; },
       submit: async () => { assert.fail("Review uses its ordinary Run dispatch path."); }
     });
+    if (pause) {
+      const original = structuredClone(f.read());
+      await hooks.reconcile();
+      assert.deepEqual(f.read(), original, "Snapshot-time pause retains the exact chain and budget.");
+      assert.equal(f.store.getReviewRound("task-1", f.round.id).status, "failed");
+      assert.equal(f.store.listRuns("task-1").length, 1);
+      assert.deepEqual(hooks.deadlines(), [], "Paused retry cannot spin a deadline timer.");
+      pause = false;
+      runTaskCommand(["role", "enable", "task-1", f.roleName],
+        f.store, { now: f.now, environment: {} });
+    }
     if (mode === "manual-without-chain") runTaskCommand(["run", "retry", `task-1/${initial.id}`], f.store, {
       now: f.now, environment: {}, actualTaskReviewCandidate: f.candidate
     });
