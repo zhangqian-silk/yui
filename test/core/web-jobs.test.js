@@ -20,6 +20,81 @@ import { JOBS_SCRIPT } from "../../dist/web/assets/client/views/jobs.js";
 import { JOBS_APP_SCRIPT } from "../../dist/web/assets/client/app/jobs.js";
 import { MANAGE_SHELL_SCRIPT } from "../../dist/web/assets/client/layout/manageShell.js";
 
+test("visual Cron edits roundtrip simple rules and leave complex expressions untouched", () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(JOBS_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), ctx);
+  const parse = value => ctx.cronFields(value);
+  const encode = value => ctx.cronExpression(value);
+  for (const expression of ["0 9 * * *", "30 10 * * 6,0", "5 8 31 * *"]) {
+    assert.equal(encode(parse(expression)), expression);
+  }
+  assert.equal(parse("*/15 9-17 * * MON-FRI"), null);
+  assert.equal(parse("0 9 1 * 1"), null, "day-of-month OR weekday must not become a monthly-only rule");
+  assert.equal(parse("0 9 * 1 *"), null);
+  assert.throws(() => encode({ frequency: "weekly", time: "09:00", days: [] }));
+  assert.throws(() => encode({ frequency: "monthly", time: "25:00", day: 1 }));
+  assert.throws(() => encode({ frequency: "monthly", time: "09:00", day: 32 }));
+});
+
+test("Job and plan forms preserve unedited fields, exact association/timezone and invalid drafts", async () => {
+  const h = (spec, attrs, ...children) => ({ spec, ...attrs, children: children.flat().filter(v => v != null), dataset: {},
+    classList: { add() {}, toggle() {} }, append(...nodes) { this.children.push(...nodes.flat()); },
+    replaceChildren(...nodes) { this.children = nodes.flat().filter(v => v != null); },
+    setAttribute(key, value) { this[key] = value; }, querySelector() { return null; }, querySelectorAll() { return []; },
+    addEventListener(name, fn) { this["on" + name] = fn; } });
+  const walk = n => n && typeof n === "object" ? [n, ...(n.children || []).flatMap(walk)] : [];
+  const text = n => typeof n === "string" ? n : [n?.textContent, ...(n?.children || []).map(text)].join(" ");
+  const flush = () => new Promise(resolve => setImmediate(resolve));
+  const configs = [
+    { kind: "builtin", action: "system.noop", input: { retained: [1, true] } },
+    { kind: "shell", owner: { kind: "work-item", workItemId: "work-item-3" }, projectId: "project-1", head: "a".repeat(40),
+      workspace: "/fixture", env: { CI: "1" }, steps: [{ name: "one", command: "true", argv: ["true"],
+        cwd: "/fixture", timeoutMs: 1000, env: { STEP: "yes" } }] },
+    { kind: "task", goal: "delivery", target: { kind: "new", title: "Task", description: "Intent",
+      type: "feature", projectBindings: [{ projectId: "project-1", directory: "repo", baseRef: "main" }] } },
+    { kind: "agent", target: { kind: "task", taskId: "task-1", roleName: "worker", ownerRunId: "run-2" }, input: "Intent" }
+  ];
+  for (const configuration of configs) {
+    const job = { id: "fixture", title: "Fixture", revision: 3, configuration: { ...configuration, extra: { keep: true } } };
+    const writes = [], root = h("div");
+    const schedule = { id: "existing", jobId: job.id, revision: 4, state: "disabled",
+      rule: { kind: "cron", expression: "30 10 * * 6,0", timezone: "America/New_York" } };
+    const ctx = vm.createContext({ h, URL, URLSearchParams, location: new URL("http://fixture/jobs?job=fixture"),
+      crypto: { randomUUID: () => "generated" }, history: { replaceState() {} }, window: { confirm: () => true },
+      icon: () => h("svg"), dot: () => h("span"), badge: label => h("span", null, label), formatDateTime: value => value,
+      requestJson: async url => url.includes("/schedules")
+        ? url.includes("op=show") ? { schedule } : [schedule]
+        : url.includes("op=list") ? [job] : [],
+      submitMutation: async (_key, _url, payload) => { writes.push(JSON.parse(JSON.stringify(payload))); return { id: job.id }; }
+    });
+    vm.runInContext(JOBS_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), ctx);
+    ctx.mountJobs(root, key => key, configuration.kind === "shell" ? "task-1" : undefined);
+    await flush();
+    walk(root).find(n => n.spec?.startsWith("button") && n.children.includes("jobs.editJob")).onclick();
+    let form = walk(root).find(n => n.spec === "form.dialog-body.job-form");
+    form.onsubmit({ preventDefault() {} }); await flush();
+    assert.deepEqual(writes.at(-1).configuration, job.configuration, configuration.kind + " roundtrip");
+    walk(root).find(n => n.spec?.startsWith("button") && n.children.includes("jobs.editSchedule")).onclick();
+    form = walk(root).find(n => n.spec === "form.dialog-body.job-form");
+    form.onsubmit({ preventDefault() {} }); await flush();
+    assert.deepEqual(writes.at(-1).rule, schedule.rule);
+    assert.equal(writes.at(-1).jobId, "fixture");
+    assert.equal(writes.at(-1).id, "existing");
+    walk(root).find(n => n.spec?.startsWith("button") && n.children.includes("jobs.editSchedule")).onclick();
+    form = walk(root).find(n => n.spec === "form.dialog-body.job-form");
+    const days = walk(form).find(n => n.spec === "div.job-weekdays");
+    days.children.filter(n => n["aria-pressed"] === "true").forEach(n => n.onclick());
+    const before = writes.length;
+    form.onsubmit({ preventDefault() {} }); await flush();
+    assert.equal(writes.length, before, "empty weekdays never submit");
+    assert.match(text(root), /jobs.form.cronDays/);
+    assert.ok(walk(root).includes(form), "invalid draft remains open");
+    const mode = walk(form).find(n => n.spec === "select" && n.value === "weekly");
+    mode.value = "advanced"; mode.onchange();
+    assert.equal(mode.value, "weekly", "switching modes cannot silently discard an invalid visual draft");
+  }
+});
+
 test("Web Job ingress fixes scope, rejects caller injection and preserves exact Run / schedule semantics", async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-web-jobs-"));
   let server, store;
