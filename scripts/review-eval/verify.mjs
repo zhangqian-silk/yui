@@ -39,7 +39,29 @@ const probes = {
     }],
     [null, async m => assert.deepEqual(await m.collect(async cursor => {
       assert.equal(cursor, null); return { items: [], nextCursor: null };
-    }), [])]
+    }), [])],
+    [null, async m => {
+      let release;
+      let requests = 0;
+      const waiting = new Promise(resolve => { release = resolve; });
+      const failure = new Error("page unavailable");
+      const result = m.collect(async () => {
+        if (++requests === 1) {
+          await waiting;
+          return { items: ["a"], nextCursor: "1" };
+        }
+        throw failure;
+      });
+      let settled = false;
+      const observed = result.finally(() => { settled = true; });
+      const rejection = assert.rejects(observed, error => error === failure);
+      await Promise.resolve();
+      assert.equal(settled, false);
+      assert.equal(requests, 1);
+      release();
+      await rejection;
+      assert.equal(requests, 2);
+    }]
   ],
   E04: [
     ["double-release", m => {

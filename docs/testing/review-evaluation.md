@@ -14,7 +14,9 @@ may benefit from a short Task artifact index:
 
 - Goal/non-goals and effective decision references.
 - Observable scenarios, expected behavior and independent contract sources.
-- Contract entry points, callers and key risks.
+- For cross-layer/async risks, a short actual path: entry, consumers, relevant
+  waits/atomic commits, result and failure/recovery consequences, linked to
+  candidate code or existing documentation.
 - Candidate identity and actual check results (commit, environment, command,
   result), distinguishing unexecuted scenarios and uncovered boundaries.
 - For full re-review: repair delta, previous findings' dispositions and still
@@ -28,6 +30,38 @@ read at its pinned commit with `task artifact read <task> <path> <commit>`.
 Later Brief/decision edits do not change an existing Review snapshot. This is
 not a document-completeness gate, prose parser or Skill-version freeze.
 Ordinary full review and the existing equivalence Delta Recheck remain distinct.
+
+### Keep the material small and actionable
+
+These are examples, not mandatory sections or a scenario quota. A simple E01
+handoff can cite its half-open interval contract and `main.mjs/select` directly:
+the caller supplies bounds and receives rows; timezone conversion is a non-goal.
+No separate path document is needed.
+
+For E03, the contract requires unchanged opaque cursors and ordered items.
+The actual path is caller -> `main.mjs/collect` -> await
+`page.mjs/fetchPage(cursor)` -> consume items/cursor -> next request or return.
+There is no persistent commit. Check the cursor at the downstream consumer,
+not merely the first successful page; a rejected request rejects collection,
+so accumulated rows are not returned as success. Retry/concurrent mutation is
+outside this example's contract. The index is a navigation hint, not a finding
+or a claim that all paths were inspected.
+
+Keep evidence roles separate: that contract is the expectation;
+`scripts/review-eval/verify.mjs`'s E03 probes are executable references;
+only an actual `node scripts/review-eval/evaluate.mjs verify` invocation plus its
+candidate commit, environment and output establishes a result. The probes use
+the two supplied modules for the counterexample, a one-page normal control,
+and a controlled wait followed by rejection to check pending/failure behavior.
+They do not exercise a live server, crash recovery or Reviewer behavior.
+
+In a pause/resume task, constraints might instead distinguish unsubmitted
+intent, registered/unknown effects, terminal settlement and legal resumption.
+Those are domain-specific examples, not universal state-machine requirements.
+Use the task's own contract and reachable paths. After a shared-root finding,
+check the other affected consumers in the same scope and refresh the small
+index and repair evidence; do not append the entire review history. Reviewer
+inspection still covers the complete frozen candidate, not just these hints.
 
 ## Small development corpus
 

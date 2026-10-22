@@ -52,7 +52,8 @@ export const cases = [
   entry("E03", "opaque-pagination", ["contract", "verification"],
     "collect(fetchPage) returns all page items in order. The first request passes null. "
     + "fetchPage returns {items, nextCursor}; nextCursor is an opaque string or null. "
-    + "Pass strings unchanged and stop only at null. Pages are finite; retries and concurrent mutations are out of scope. "
+    + "Pass strings unchanged and stop only at null. A rejected request rejects collect without partial success. "
+    + "Pages are finite; retries and concurrent mutations are out of scope. "
     + "page.mjs demonstrates the server contract; numeric cursors are not promised.",
     { "main.mjs": `export async function collect(fetchPage) {
   const result = [];
@@ -69,8 +70,11 @@ export const cases = [
   if (cursor === "part/+b") return { items: ["b"], nextCursor: null };
   throw new Error("Unknown cursor");
 }\n` },
-    "Consumer: main.mjs/collect. Producer: page.mjs/fetchPage. Inspect their shared protocol; "
-    + "a substitute provider must preserve its accepted input domain.",
+    "Path: caller -> main.mjs/collect -> await page.mjs/fetchPage(cursor) -> consume items/cursor "
+    + "-> next request or return. No persistent commit. Inspect the consumer's next request after the wait "
+    + "against the producer's input contract; a substitute must preserve that domain. "
+    + "A request error rejects collection instead of returning accumulated items. "
+    + "Retries/concurrent mutations are non-goals. No execution results are supplied.",
     [root("cursor-coercion", "A nonnumeric string cursor", "Pass opaque cursors unchanged", "Collection fails after the first page")]),
   entry("E04", "reservation-lifecycle", ["state", "user-path"],
     "create(capacity) exposes reserve(id), cancel(id), available(). IDs are unique for new reservations; "
