@@ -73,12 +73,13 @@ for (const interrupted of [false, true]) {
     const adapter = new FileSchedulerStoreAdapter(reopened);
     const starts = [];
     const prompts = [];
+    let launchEnvironment;
     const planner = new FileRoleLaunchPlanner(store.rootDirectory(), reopened, {
       environment: { HOME: store.rootDirectory(), PATH: process.env.PATH }
     });
     const host = {
       start: async request => {
-        planner.plan({ ...request, taskId: "task-1", roleName: "leader" });
+        launchEnvironment = planner.plan({ ...request, taskId: "task-1", roleName: "leader" }).launch.env;
         starts.push(request);
         return { id: "fresh-binding", owner, agentId: "codex", adapterId: "codex",
           hostRef: "isolated-host", nativeSessionId: "fresh-planning", hostCreated: true };
@@ -93,7 +94,9 @@ for (const interrupted of [false, true]) {
         const context = readTaskContext(reopened, "task-1");
         assert.equal(context.phase.status, "draft");
         assert.ok(context.records.some(record => record.ref.store === "task-message"));
-        assert.equal(resolveManagedTaskCaller(reopened, { CODEX_THREAD_ID: "fresh-planning" }).executionAuthority, "planning");
+        assert.equal(resolveManagedTaskCaller(reopened, {
+          ...launchEnvironment, CODEX_THREAD_ID: "fresh-planning"
+        }).executionAuthority, "planning");
         return { result: "delivered" };
       } }
     });
@@ -108,7 +111,11 @@ for (const interrupted of [false, true]) {
     await pass(false);
     assert.equal(cleanup.at(-1).status, "failed");
     assert.equal(starts.length, 0);
-    await pass(true);
+    const result = await pass(true);
+    assert.equal(result.wakeups[0]?.status, "dispatched", JSON.stringify(result.wakeups));
+    const initialization = reopened.listTaskWakes("task-1").at(-1);
+    assert.equal(initialization.status, "consumed", "Initialization must be accepted, not merely attempted.");
+    assert.equal(reopened.listEventsByType("task-1", ["notification.delivery"]).at(-1).payload.outcome, "accepted");
     assert.equal(cleanup.at(-1).status, "completed");
     assert.equal(adapter.completeRuntimeCleanup(runtime, later), false);
     assert.equal(reopened.getActiveRun("task-1", "leader"), null);
