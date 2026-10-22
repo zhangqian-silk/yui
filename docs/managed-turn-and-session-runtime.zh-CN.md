@@ -400,6 +400,12 @@ Run 的普通 Leader 通知。未知的原生状态阻塞清理；仅停止一�
 一种偏好，而不是要求证明旧对话不可恢复。该请求在 AgentRun 活动、Session 已结束或
 上一次清理待处理时都是合法的。Leader 也可以请求替换自己并结束当前轮次。
 
+对于 planning Run 已结束的 Draft Leader，替换初始化通知在确认清理后允许所选的新
+Session 登记。它不会新增业务 Run、激活 Task 或接纳 delivery 工作区；后继仍只有
+planning 权限，先读取当前 Task 上下文和保留的信箱原文，再处理输入。普通 Draft 通知
+和无启动范围的原生 hook 不能借用此准入。启动被拒绝时保留通知，修正原因后可显式
+`task wake retry`，或再次合法替换 Session；接受状态未知的输入始终不能据此重放。
+
 `task role session stop` 也可以在不先更改 Run 状态的情况下停止一个运行中的 Role。它
 保留原生对话以备复用。待处理的 Message 仍是意图，可以在停止后启动一次 continuation；
 当整个 Task 都必须保持暂停时，使用 Task execution stop。对于自我替换，使用异步的
