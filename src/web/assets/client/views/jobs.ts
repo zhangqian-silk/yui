@@ -244,9 +244,9 @@ export function mountJobs(root, t, taskId, options = {}) {
     })));
   }
   // The configuration as a reader needs it: per-type names and key fields
-  // first, steps and parameters grouped, unknown fields kept, raw JSON last.
+  // first, steps and parameters grouped, unknown fields kept.
   // lifted: the description is already shown above it (see purpose()).
-  function configView(config, withRaw, lifted = false) {
+  function configView(config, lifted = false) {
     const c = config && typeof config === "object" && !Array.isArray(config) ? config : {};
     const used = new Set(["kind"]);
     const has = key => Object.prototype.hasOwnProperty.call(c, key);
@@ -254,9 +254,9 @@ export function mountJobs(root, t, taskId, options = {}) {
     const rows = [[copy("executor"), h("span.job-kind", null, label("jobs.kind", c.kind))]];
     const blocks = [];
     if (c.kind === "builtin") {
-      rows.push([copy("action"), h("span", null, label("jobs.action", take("action")), " ", h("code.job-muted", null, String(c.action ?? "")))]);
+      rows.push([copy("action"), label("jobs.action", take("action"))]);
       if (has("projectId")) rows.push([copy("project"), take("projectId")]);
-      if (has("input")) rows.push([copy("cfg.input"), valueView(take("input"))]);
+      if (has("input")) { const value = take("input"); if (!isEmpty(value)) rows.push([copy("cfg.input"), valueView(value)]); }
     } else if (c.kind === "shell") {
       if (has("projectId")) rows.push([copy("project"), take("projectId")]);
       if (has("owner")) rows.push([copy("cfg.owner"), ownerText(take("owner"))]);
@@ -284,7 +284,7 @@ export function mountJobs(root, t, taskId, options = {}) {
     }
     const rest = Object.keys(c).filter(key => !used.has(key));
     if (rest.length) blocks.push(section(copy("cfg.other"), kvList(rest.map(key => [h("code.job-key", null, key), valueView(c[key], 1)]))));
-    return h("div.job-config", null, kvList(rows), blocks, withRaw ? raw(copy("cfg.raw"), config) : null);
+    return h("div.job-config", null, kvList(rows), blocks);
   }
   function ownerText(owner) {
     if (!owner || typeof owner !== "object") return valueView(owner);
@@ -309,8 +309,13 @@ export function mountJobs(root, t, taskId, options = {}) {
     if (parts.length === 5 && /^\d+$/.test(parts[0]) && /^\d+$/.test(parts[1]) && parts[2] === "*" && parts[3] === "*") {
       const time = parts[1].padStart(2, "0") + ":" + parts[0].padStart(2, "0");
       if (parts[4] === "*") return fill(copy("ruleDaily"), { time });
-      if (/^[0-7](,[0-7])*$/.test(parts[4])) {
-        const days = parts[4].split(",").map(day => {
+      if (/^[0-7](?:-[0-7])?(?:,[0-7](?:-[0-7])?)*$/.test(parts[4])) {
+        const values = parts[4].split(",").flatMap(part => {
+          const [first, last = first] = part.split("-").map(Number);
+          return last >= first ? Array.from({ length: last - first + 1 }, (_, i) => first + i) : [];
+        });
+        if (!values.length) return copy("form.customCron");
+        const days = [...new Set(values.map(day => day % 7))].map(day => {
           try { return new Intl.DateTimeFormat(locale() || undefined, { weekday: "short", timeZone: "UTC" })
             .format(new Date(Date.UTC(2026, 9, 18 + (Number(day) % 7)))); } catch { return day; }
         });
@@ -318,12 +323,6 @@ export function mountJobs(root, t, taskId, options = {}) {
       }
     }
     return copy("form.customCron");
-  }
-  function ruleExact(rule) {
-    if (!rule) return "";
-    if (rule.kind === "cron") return rule.expression + " · " + (rule.timezone || "UTC");
-    if (rule.kind === "interval") return copy("ruleAnchor") + " " + (when(rule.anchor) || "—");
-    return rule.at || "";
   }
   function field(name, control) { return h("label.field", null, h("span", null, name), control); }
   function input(value = "", attrs = {}) { return h("input", { value, ...attrs }); }
@@ -337,7 +336,8 @@ export function mountJobs(root, t, taskId, options = {}) {
     editor.replaceChildren(); dirty = false; root.dataset.unsent = "false";
   }
   function status(text, error = false) {
-    for (const node of [receipt, editorReceipt]) { node.textContent = text; node.classList.toggle("settings-error", error); }
+    const node = editorOpen() ? editorReceipt : receipt;
+    node.textContent = text; node.classList.toggle("settings-error", error);
   }
   // The routine read state (loading, last read, stale) belongs to the caller's
   // sync indicator when it has one; a failure also stays on the page.
@@ -383,6 +383,7 @@ export function mountJobs(root, t, taskId, options = {}) {
   function form(title, contents, submit) {
     if (!guardDraft()) return;
     closeEditor();
+    receipt.textContent = ""; receipt.classList.toggle("settings-error", false);
     editorReceipt.textContent = ""; editorReceipt.classList.toggle("settings-error", false);
     const node = h("form.dialog-body.job-form", null,
       h("header.dialog-head", null, h("div", null, h("h2", null, title),
@@ -392,7 +393,7 @@ export function mountJobs(root, t, taskId, options = {}) {
       contents, editorReceipt,
       h("div.dialog-actions", null, button(copy("close"), () => { if (!pending && guardDraft()) closeEditor(); }),
         h("button.btn.btn-primary", { type: "submit" }, copy("save"))));
-    const markDirty = () => { dirty = true; root.dataset.unsent = "true"; };
+    const markDirty = () => { dirty = true; root.dataset.unsent = "true"; clearEditorError(); };
     node.addEventListener("input", markDirty);
     node.addEventListener("change", markDirty);
     node.addEventListener("submit", event => {
@@ -403,6 +404,9 @@ export function mountJobs(root, t, taskId, options = {}) {
     editor.append(node);
     showEditor();
     node.querySelector("input:not([disabled]),select:not([disabled]),textarea")?.focus();
+  }
+  function clearEditorError() {
+    editorReceipt.textContent = ""; editorReceipt.classList.toggle("settings-error", false);
   }
   function editJob(job) {
     const id = input(job?.id || newId("job"), { required: true, pattern: "[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}", disabled: !!job });
@@ -433,9 +437,6 @@ export function mountJobs(root, t, taskId, options = {}) {
     form(job ? copy("editJob") : copy("newJob"), [
       h("div.job-field-grid", null, field(copy("name"), title), field(copy("executor"), kind)),
       configured,
-      h("details.job-form-advanced", null, h("summary", null, copy("form.advanced")),
-        field(copy("form.internalId"), id), h("p.job-note", null, copy("form.idHelp")),
-        job ? raw(copy("snapshot"), job.configuration) : null),
       h("p.job-note", null, copy("taskConfig"))
     ], () => {
       void mutate("jobs", { op: job ? "update" : "define", id: id.value.trim(), title: title.value.trim(),
@@ -511,7 +512,7 @@ export function mountJobs(root, t, taskId, options = {}) {
         section(copy("cfg.env"), environment(c)),
         section(copy("steps"), collection(c.steps || [], () => ({ name: "", command: "" }), stepForm, copy("form.addStep"), steps => {
           if (!steps.length) throw new Error(copy("form.needStep")); c.steps = steps;
-        })), raw(copy("cfg.owner"), c.owner));
+        })));
     } else if (c.kind === "_step") {
       node.append(text(c, "name", copy("name"), { required: true }),
         text(c, "command", copy("form.command"), { required: true, multiline: true }),
@@ -580,11 +581,12 @@ export function mountJobs(root, t, taskId, options = {}) {
     const rule = schedule?.rule;
     const at = input(rule?.at || rule?.anchor || new Date().toISOString());
     const every = input(String(rule?.everyMs || 3600000), { type: "number", min: schedule?.builtin ? 60000 : 1000, step: 1 });
-    const expression = input(rule?.expression || "0 9 * * *");
+    const expression = input(rule?.expression || "0 9 * * *", { placeholder: "0 9 * * *", spellcheck: "false", autocomplete: "off" });
     const timezone = rule?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
     const parsed = cronFields(expression.value);
     const mode = choose(["daily", "weekly", "monthly", "advanced"], parsed?.frequency || "advanced", value => copy("form." + (value === "advanced" ? "customCron" : value)));
-    const time = input(parsed?.time || "09:00", { type: "time", step: 60 });
+    const time = input(parsed?.time || "09:00", { type: "text", placeholder: "HH:mm",
+      pattern: "([01][0-9]|2[0-3]):[0-5][0-9]", maxlength: 5, inputmode: "text", autocomplete: "off" });
     const day = input(String(parsed?.day || 1), { type: "number", min: 1, max: 31, step: 1 });
     // Retain original weekday order (and the complete expression until edited).
     let days = parsed?.days?.slice() || ["1"], visualChanged = false;
@@ -595,23 +597,45 @@ export function mountJobs(root, t, taskId, options = {}) {
       const b = button(name, () => {
         const value = String(n); days = days.includes(value) ? days.filter(d => d !== value) : [...days, value];
         b.setAttribute("aria-pressed", String(days.includes(value)));
-        visualChanged = true; dirty = true; root.dataset.unsent = "true"; updateSummary();
+        visualChanged = true; dirty = true; root.dataset.unsent = "true"; clearEditorError(); updateSummary();
       });
       b.setAttribute("aria-pressed", String(days.includes(String(n)))); weekdays.append(b); return b;
     });
     const when = field(copy("instant"), at), interval = field(copy(schedule?.builtin ? "syncEvery" : "every"), every);
-    const clock = field(copy("form.time"), time);
+    const quickTimes = h("div.job-time-shortcuts", { role: "group", "aria-label": copy("form.quickTime") },
+      ["09:00", "12:00", "18:00"].map(value => button(value, () => {
+        time.value = value; visualChanged = true; dirty = true; root.dataset.unsent = "true";
+        clearEditorError(); updateSummary(); time.focus?.();
+      })));
+    const clock = h("div.job-field-stack.job-clock", null, field(copy("form.time24"), time), quickTimes);
     const month = h("div.job-field-stack", null, field(copy("form.day"), day), h("p.job-note", null, copy("form.monthHelp")));
-    const exact = h("div.job-field-stack", null, field(copy("cron"), expression), h("p.job-note", null, copy("form.complexHelp")));
-    const summary = h("p.job-rule-preview", { "aria-live": "polite" });
+    const guide = h("dl.job-cron-guide");
+    const exact = h("div.job-field-stack", null, field(copy("cron"), expression), guide,
+      h("p.job-note", null, copy("form.cronSymbols")));
+    const summary = h("div.job-rule-preview", { "aria-live": "polite" });
     function expressionValue() {
-      if (mode.value === "advanced" || !visualChanged) return expression.value;
+      if (mode.value === "advanced") {
+        if (!expression.value.trim()) throw new Error(copy("form.cronRequired"));
+        return expression.value;
+      }
+      if (!visualChanged) return expression.value;
       try { return cronExpression({ frequency: mode.value, time: time.value, day: +day.value, days }); }
       catch (error) { throw new Error(copy("form." + error.message)); }
     }
     function updateSummary() {
-      try { summary.textContent = mode.value === "advanced" ? expression.value : ruleText({ kind: "cron", expression: expressionValue(), timezone }); }
-      catch (error) { summary.textContent = error.message; }
+      const parts = expression.value.trim().split(/\s+/);
+      guide.replaceChildren(...["minute", "hour", "date", "month", "weekday"].map((name, i) =>
+        h("div", null, h("dt", null, copy("form.cron." + name)), h("dd", null,
+          h("code", null, parts[i] || "—"), h("span", null, copy("form.cron." + name + "Range"))))));
+      try {
+        const value = expressionValue(), description = ruleText({ kind: "cron", expression: value, timezone });
+        summary.hidden = mode.value === "advanced" && description === copy("form.customCron");
+        summary.replaceChildren(...(mode.value === "advanced" ? [] : [h("code", null, value)]), h("span", null, description));
+        summary.classList.toggle("is-error", false);
+      } catch (error) {
+        summary.hidden = false;
+        summary.replaceChildren(error.message); summary.classList.toggle("is-error", true);
+      }
     }
     const cron = h("div.job-field-stack", null, h("div.job-field-grid", null, field(copy("form.frequency"), mode), clock),
       weekdays, month, exact, summary);
@@ -632,11 +656,13 @@ export function mountJobs(root, t, taskId, options = {}) {
       if (mode.value === "advanced") {
         const chosen = mode.value; mode.value = previousMode;
         try { expression.value = expressionValue(); }
-        catch (error) { status(error.message, true); return; }
+        // The incomplete visual draft remains in its controls. Let the user
+        // write a rule instead; never invent weekdays or reuse a stale rule.
+        catch { expression.value = ""; }
         mode.value = chosen;
       } else {
         const value = cronFields(expression.value);
-        if (previousMode === "advanced" && !value && !window.confirm(copy("form.replaceComplex"))) {
+        if (previousMode === "advanced" && expression.value.trim() && !value && !window.confirm(copy("form.replaceComplex"))) {
           mode.value = previousMode; return;
         }
         if (previousMode === "advanced" && value) {
@@ -645,7 +671,7 @@ export function mountJobs(root, t, taskId, options = {}) {
         }
         visualChanged = true;
       }
-      previousMode = mode.value; sync();
+      previousMode = mode.value; clearEditorError(); sync();
     });
     [time, day].forEach(control => control.addEventListener("input", () => { visualChanged = true; updateSummary(); }));
     expression.addEventListener("input", updateSummary);
@@ -653,9 +679,6 @@ export function mountJobs(root, t, taskId, options = {}) {
     form(schedule ? copy("editSchedule") : copy("newSchedule"),
       [h("p.job-bound-target", null, copy("form.forJob"), h("strong", null, boundJob?.title || schedule?.jobId || selected)),
         field(copy("rule"), kind), h("div.job-field-grid", null, when, interval), cron,
-        h("details.job-form-advanced", null, h("summary", null, copy("form.advanced")),
-          field(copy("form.internalId"), id), h("p.job-note", null, copy("form.idHelp")),
-          kvList([[copy("timezone"), timezone]]), h("p.job-note", null, copy("form.zonePreserved"))),
         h("p.job-note", null, copy("scheduleHelp"))], () => {
       const rule = kind.value === "once" ? { kind: "once", at: at.value }
         : kind.value === "interval" ? { kind: "interval", anchor: at.value, everyMs: Number(every.value) }
@@ -944,7 +967,8 @@ export function mountJobs(root, t, taskId, options = {}) {
         || s.reason === "Project sync disabled by user.");
       return h("li.job-plan", null,
         h("div.job-plan-main", null,
-          h("div.job-plan-line", null, scheduleBadge(s), h("strong.job-plan-rule", { title: copy("form.zonePreserved") }, ruleText(s.rule))),
+          h("div.job-plan-line", null, scheduleBadge(s), h("strong.job-plan-rule", null, ruleText(s.rule)),
+            s.rule?.kind === "cron" ? h("code.job-plan-expression", null, s.rule.expression) : null),
           h("div.job-plan-line.job-plan-sub", null,
             s.state === "enabled" && s.nextDue ? h("span", { title: when(s.nextDue) }, copy("nextShort") + " " + when(s.nextDue) + " · " + ago(s.nextDue)) : null,
             attempt ? h("span", { title: attempt.reason || "" }, copy("lastAttemptShort") + " " + ago(attempt.at) + " · " + label("admission", attempt.outcome)) : null,
@@ -954,11 +978,7 @@ export function mountJobs(root, t, taskId, options = {}) {
             : s.reason ? h("p.job-note.is-error", null, s.reason) : null),
         h("div.job-plan-actions", null,
           button(copy(on ? "disable" : "enable"), () => void mutate("schedules", { op: on ? "disable" : "enable", id: s.id, expectedRevision: s.revision })),
-          button(copy("editSchedule"), () => editSchedule(s)),
-          attempt?.runId ? h("a.btn", { href: jobLink(taskId, attempt.jobId || job.id, attempt.runId) }, copy("inspectRun")) : null),
-        h("details.job-form-advanced", null, h("summary", null, copy("form.advanced")),
-          kvList([[copy("form.internalId"), idChip(s.id)], [copy("rule"), ruleExact(s.rule)]]),
-          h("p.job-note", null, copy("form.idHelp")), raw(copy("snapshot"), s)));
+          button(copy("editSchedule"), () => editSchedule(s))));
     });
     const add = !job.builtin && !["agent", "task"].includes(job.configuration.kind)
       ? h("button.job-section-action", { type: "button", onclick: () => editSchedule() }, icon("plus"), copy("newSchedule")) : null;
@@ -997,12 +1017,6 @@ export function mountJobs(root, t, taskId, options = {}) {
     const about = purpose(config);
     // Scope is named once, by the shell (list head and crumb); the header
     // keeps what identifies this Job.
-    const meta = [
-      h("span.job-meta-item", null, h("code.id", { title: job.id }, job.id), copyButton(job.id, copy("copy") + " · " + job.id)),
-      h("span.job-meta-item", null, typeLabel(job)),
-      config.projectId ? h("span.job-meta-item", null, config.projectId) : null,
-      h("span.job-meta-item", null, copy("revision") + " " + job.revision)
-    ];
     // Reading order: what the Job is and does (description, configuration,
     // plans, definition), then how it has run (overview and history).
     detail.replaceChildren(h("article.job-page", null,
@@ -1010,8 +1024,7 @@ export function mountJobs(root, t, taskId, options = {}) {
         h("div.job-title", null,
           h("h2", null, job.title),
           h("div.job-badges", null, own.length ? own.map(s => scheduleBadge(s)) : badge(copy("noSchedule"), "idle"),
-            runs[0] ? runBadge(runs[0].status) : badge(copy("noRunsShort"), "idle")),
-          h("div.job-meta", null, meta)),
+            runs[0] ? runBadge(runs[0].status) : badge(copy("noRunsShort"), "idle"))),
         h("div.job-actions", null,
           !job.builtin ? button(copy("editJob"), () => editJob(job)) : null,
           button(copy("runNow"), () => void mutate("jobs", { op: "run", id: job.id, requestId: crypto.randomUUID() }, result => {
@@ -1022,15 +1035,9 @@ export function mountJobs(root, t, taskId, options = {}) {
           job.builtin ? h("p.job-purpose.is-note", null, copy("builtinSync")) : null,
           about ? section(about.name, h("div.job-purpose", null, h("pre.job-prose", null, about.text),
             copyButton(about.text, copy("copy")))) : null,
-          section(copy("configuration"), configView(config, true, !!about))),
+          section(copy("configuration"), configView(config, !!about))),
         h("aside.job-aside", null,
           plansView(job, plans),
-          section(copy("definition"), kvList([
-            [copy("scope"), ownerValue()],
-            job.createdAt ? [copy("created"), stamp(job.createdAt)] : null,
-            job.updatedAt ? [copy("updated"), stamp(job.updatedAt)] : null
-          ], ".is-compact")),
-          h("p.job-note", null, copy("runVsPlan")),
           job.refresh ? raw(copy("refreshFacts"), job.refresh) : null)),
       historyView(job, runs, runDetail)));
     if (selectedRun) {

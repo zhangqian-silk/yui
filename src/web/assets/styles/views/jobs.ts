@@ -255,6 +255,19 @@ export const JOBS_STYLES = `
 .job-weekdays .btn { min-width: 38px; height: 34px; padding: 0 10px; }
 .job-weekdays .btn[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: var(--surface); }
 .job-rule-preview { padding: 10px 12px; margin: 0; border-left: 2px solid var(--accent); background: var(--sunken); color: var(--ink-2); font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.job-rule-preview { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; border-radius: var(--r-sm); }
+.job-rule-preview.is-error { border-color: var(--bad); color: var(--bad); background: var(--bad-soft); }
+.job-plan-expression { color: var(--ink-3); font-size: var(--fs-xs); overflow-wrap: anywhere; }
+.job-clock input { font-variant-numeric: tabular-nums; }
+.job-time-shortcuts { display: flex; flex-wrap: wrap; gap: 6px; }
+.job-time-shortcuts .btn { height: 28px; padding: 0 10px; color: var(--ink-3); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+.job-cron-guide { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0; padding: 12px; gap: 8px; border: 1px solid var(--line); border-radius: var(--r-sm); }
+.job-cron-guide dt { color: var(--ink-3); font-size: var(--fs-xs); }
+.job-cron-guide dd { display: grid; gap: 6px; margin: 6px 0 0; overflow-wrap: anywhere; }
+.job-cron-guide dd span { color: var(--ink-4); font-size: var(--fs-2xs); }
+@media (max-width: 480px) {
+  .job-cron-guide { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
 .job-edit-row { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-sm); min-width: 0; }
 .job-edit-row > .btn, .job-field-stack > .btn { justify-self: start; }
 .job-form textarea { width: 100%; resize: vertical; min-height: 88px; font-size: var(--fs-sm); }

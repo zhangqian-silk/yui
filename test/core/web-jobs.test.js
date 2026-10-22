@@ -91,7 +91,15 @@ test("Job and plan forms preserve unedited fields, exact association/timezone an
     assert.ok(walk(root).includes(form), "invalid draft remains open");
     const mode = walk(form).find(n => n.spec === "select" && n.value === "weekly");
     mode.value = "advanced"; mode.onchange();
-    assert.equal(mode.value, "weekly", "switching modes cannot silently discard an invalid visual draft");
+    assert.equal(mode.value, "advanced", "an incomplete visual draft must not block custom Cron");
+    assert.doesNotMatch(text(walk(root).find(n => n.spec === "p.settings-receipt")), /cronDays/,
+      "modal validation must not leak to the page");
+    const expression = walk(form).find(n => n.spec === "input" && n.placeholder === "0 9 * * *");
+    assert.equal(expression.value, "", "do not invent an expression from an empty week");
+    expression.value = "15 8 * * 1-5"; expression.oninput();
+    form.onsubmit({ preventDefault() {} }); await flush();
+    assert.equal(writes.at(-1).rule.expression, "15 8 * * 1-5");
+    assert.equal(writes.at(-1).rule.timezone, "America/New_York");
   }
 });
 
@@ -274,12 +282,12 @@ test("Job view keeps historical Agent results when diagnostics fail and never re
   assert.match(text(root), /jobs.recentSuccess.*old-success.*succeeded/);
   assert.match(text(root), /old-success business result/);
   assert.match(text(root), /diagnostic unavailable/);
-  // Configuration reads as named fields; unknown fields stay visible and the
-  // exact JSON is only inside a closed disclosure.
+  // Configuration reads once as named fields, including unknown fields,
+  // without a duplicate JSON disclosure.
   assert.match(text(root), /jobs.cfg.agentInput.*Summarize the week/);
   assert.match(text(root), /jobs.cfg.other.*futureField.*kept/);
   const rawViews = elements.filter(n => n.spec === "details.job-raw");
-  assert.ok(rawViews.some(n => text(n).includes('"futureField"')) && rawViews.every(n => !n.open));
+  assert.ok(!rawViews.some(n => text(n).includes('"futureField"')));
   assert.equal(reads.some(url => url.includes("op=logs")), false, "Agent history must not require process logs");
   await view.refresh(); await flush();
   assert.equal(new URL(reads.filter(url => url.includes("op=run-get")).at(-1), location).searchParams.get("runId"), old.id);
