@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { RoleDisabledError } from "../role/availability.js";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -433,6 +434,7 @@ export class TmuxSessionHost implements SessionHostPort {
         ? this.planner.plan({ taskId: request.owner.taskId, ...input })
         : this.planner.planGlobalRole(input);
     } catch (error) {
+      if (error instanceof RoleDisabledError) throw error;
       throw toRuntimeLaunchFailure(error, "validation", {
         cwd: request.workspace,
         agentId: request.agentId
@@ -449,6 +451,7 @@ export class TmuxSessionHost implements SessionHostPort {
       try {
         await this.#validateLaunch(request);
       } catch (error) {
+        if (error instanceof RoleDisabledError) throw error;
         throw toRuntimeLaunchFailure(error, "validation", launchContext);
       }
     }

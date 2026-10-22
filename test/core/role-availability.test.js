@@ -19,6 +19,96 @@ import { processLeaderWakeups } from "../../dist/scheduler/leaderWakeupProcessor
 import { FileRoleLaunchPlanner } from "../../dist/executor/fileRoleLaunchPlanner.js";
 import { getSelectionCandidates } from "../../dist/cli/interactionCandidates.js";
 import { runStorageUpgrade } from "../../dist/storage/upgrade/upgradeOrchestrator.js";
+import { processActiveRoleRunDeliveries } from "../../dist/scheduler/activeRoleRunDelivery.js";
+import { RuntimeLaunchCoordinator } from "../../dist/controller/runtimeLaunchCoordinator.js";
+import { TmuxSessionHost } from "../../dist/runtime/tmuxAdapters.js";
+import { assertRoleEnabled } from "../../dist/role/availability.js";
+import { createRoleSessionSet, bindTaskRoleProviderRuntime } from "../../dist/executor/agentExecutor.js";
+import { createProviderRuntimeBinding, beginProviderTurn, acceptProviderTurn } from "../../dist/runtime/providerRuntimeIdentity.js";
+
+test("pre-start disable preserves Worker input and Leader notification for one delivery after enable", async t => {
+  for (const roleName of ["worker", "leader"]) {
+    const home = mkdtempSync(join(tmpdir(), "yui-availability-race-"));
+    const store = new SqliteTaskStore(home);
+    t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
+    const now = new Date();
+    const agent = createConfiguredAgent("fixture", "codex", "unused", [], [], now);
+    store.saveConfiguredAgent(agent);
+    store.saveTask(activateTask(createTask("task-1", "Availability", now, { cwd: home }), now));
+    store.saveManagedWorkspace(createManagedWorkspace({
+      owner: { type: "task", taskId: "task-1" }, root: home, entries: []
+    }, now));
+    store.saveRole("task-1", copyGlobalRoleToTaskRole(
+      createGlobalRole(roleName, [createRoleAgentBinding(agent)], agent.id, home, now), "task-1", now));
+    const command = args => runTaskCommand(args, store, { environment: {}, now: () => now });
+    if (roleName === "worker") {
+      command(["work", "create", "task-1", "Original result", "--role", "worker"]);
+      store.saveManagedWorkspace(createManagedWorkspace({
+        owner: { type: "work-item", taskId: "task-1", workItemId: "work-item-1" }, root: home, entries: []
+      }, now));
+      command(["work", "dispatch", "task-1/work-item-1"]);
+    } else {
+      command(["message", "queue", "task-1", "Original requirement", "--request-id", "original"]);
+    }
+    const originalRun = store.getActiveRun("task-1", roleName);
+    const originalMessages = store.listMessages("task-1");
+    let pause = true, launches = 0, sends = 0;
+    const planner = new FileRoleLaunchPlanner(home, store);
+    const host = new TmuxSessionHost({
+      plan: input => {
+        const planned = planner.plan(input);
+        return { ...planned, launch: { ...planned.launch, deferProviderStart: true } };
+      }
+    }, { ensureRoleWindow: () => { launches++; return true; } }, {
+      validateLaunch: async () => {
+        await Promise.resolve();
+        if (pause) command(["role", "disable", "task-1", roleName]);
+      }
+    });
+    const coordinator = new RuntimeLaunchCoordinator({
+      recordLaunchedRuntimeNativeSession: () => {}
+    }, host, { assertCurrent: () => assertRoleEnabled(store.getRole("task-1", roleName)) });
+    const delivery = {
+      prepareRoleSession: async input => {
+        await coordinator.prepare({ ...input, owner: { scope: "task", taskId: input.taskId, roleName } },
+          undefined, input.beforeHostStart);
+        return { ...input, session: null };
+      },
+      waitUntilReady: async value => value,
+      sendOnce: async ({ receiptId }) => {
+        sends++;
+        if (originalRun !== null) {
+          // Model the Host's durable acceptance, not just its transport response.
+          const binding = acceptProviderTurn(beginProviderTurn(createProviderRuntimeBinding({
+            providerNamespace: "openai/codex", accountScope: "fixture", conversationId: "session",
+            startedAt: now.toISOString()
+          }), { runId: originalRun.id, attemptId: receiptId, authorityEpoch: 1, submittedAt: now.toISOString() }),
+          { attemptId: receiptId, acceptedAt: now.toISOString() });
+          store.saveTaskRoleSessionSet(bindTaskRoleProviderRuntime(createRoleSessionSet({
+            scope: "task", taskId: "task-1", roleName
+          }, agent.id, now), binding, now));
+        }
+        return { status: "sent" };
+      }
+    };
+    const scheduler = new FileSchedulerStoreAdapter(store);
+    const process = () => roleName === "worker"
+      ? processActiveRoleRunDeliveries(scheduler, delivery, now)
+      : processLeaderWakeups(scheduler, delivery, now);
+    const paused = await process();
+    assert.equal(paused[0].status, "skipped", roleName);
+    assert.equal(launches, 0);
+    assert.equal(sends, 0);
+    assert.equal(store.getActiveRun("task-1", roleName)?.id, originalRun?.id);
+    assert.deepEqual(store.listMessages("task-1"), originalMessages);
+    pause = false;
+    command(["role", "enable", "task-1", roleName]);
+    await process();
+    await process();
+    assert.equal(launches, 1, roleName);
+    assert.equal(sends, 1, roleName);
+  }
+});
 
 test("availability persists without changing launch identity, copied bindings or configuration", async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-availability-"));

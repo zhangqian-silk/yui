@@ -22,6 +22,10 @@ export function roleDisabledReason(role: Readonly<{ name: string; taskId?: strin
     + `Use yui ${target} to allow new execution; existing execution is not stopped.`;
 }
 
+export class RoleDisabledError extends Error {
+  override readonly name = "RoleDisabledError";
+}
+
 export function assertRoleEnabled(role: Readonly<{ name: string; taskId?: string; enabled?: boolean }>): void {
-  if (!isEnabled(role)) throw new Error(roleDisabledReason(role));
+  if (!isEnabled(role)) throw new RoleDisabledError(roleDisabledReason(role));
 }

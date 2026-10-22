@@ -1,5 +1,5 @@
 import { roleSessionMayContinue } from "../executor/effectiveLaunch.js";
-import { isEnabled, roleDisabledReason } from "../role/availability.js";
+import { isEnabled, roleDisabledReason, RoleDisabledError } from "../role/availability.js";
 import { roleAgentSessionResumeMode } from "../executor/agentExecutor.js";
 import type { SchedulerReconcileSelection, SchedulerStorePort, TmuxDeliveryPort } from "./ports.js";
 import { isSchedulerTaskWorkspaceReady } from "./ports.js";
@@ -116,11 +116,13 @@ export async function processLeaderWakeups(
       // permits another automatic launch. A config/auth/executable failure
       // needs correction; an exception after submit cannot authorize replay.
       const retryable = error instanceof RuntimeLifecycleBusyError
+        || error instanceof RoleDisabledError
         || (error instanceof RuntimeLaunchError && error.retryable);
       store.settleLeaderNotification(task.id, notification.attemptId,
         attempted ? "unknown" : retryable ? "deferred" : "rejected", now, detail,
         { effective, raw: detail, phase: attempted ? "turn-submit" : "session-start" });
-      results.push({ ...base, status: "failed", reason: "not-ready", error: detail });
+      results.push({ ...base, status: !attempted && error instanceof RoleDisabledError ? "skipped" : "failed",
+        reason: "not-ready", error: detail });
     } finally {
       delivery.forgetPrepared?.({ taskId: task.id, roleName: role.name });
     }
