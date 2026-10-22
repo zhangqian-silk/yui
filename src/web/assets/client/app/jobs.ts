@@ -1,7 +1,8 @@
 export const JOBS_APP_SCRIPT = String.raw`
-import { h } from "/assets/js/lib/dom.js";
+import { h, icon } from "/assets/js/lib/dom.js";
+import { formatClock } from "/assets/js/lib/format.js";
 import { requestJson } from "/assets/js/lib/api.js";
-import { i18n, registerManagePage, navigateManage, replaceManageRoute } from "/assets/js/layout/manageShell.js";
+import { i18n, registerManagePage, navigateManage, replaceManageRoute, pushManageRoute } from "/assets/js/layout/manageShell.js";
 import { mountJobs } from "/assets/js/views/jobs.js";
 
 // The Jobs entry: one shared Job module (the same one the Task page uses)
@@ -16,7 +17,17 @@ const scopeSelect = h("select", { id: "jobs-scope", "aria-describedby": "jobs-sc
 const scopeLabel = h("label", { for: "jobs-scope" });
 const scopeHelp = h("p.jobs-scope-help", { id: "jobs-scope-help" });
 const listMount = h("div.jobs-index-body");
-index.replaceChildren(h("div.jobs-scope", null, scopeLabel, scopeSelect, scopeHelp), listMount);
+// The list head works as on the workbench: one primary "new" action at the
+// top of the list (creating in the selected scope), the last read time and
+// a refresh control in the head. The page itself carries no second title.
+const createLabel = h("span");
+const create = h("button.btn.btn-primary.side-create", { id: "jobs-create", type: "button",
+  onclick: () => { if (view) view.create(); } }, icon("plus"), createLabel);
+const sync = document.querySelector("#jobs-sync");
+const lastSync = document.querySelector("#jobs-last-sync");
+const refreshButton = document.querySelector("#jobs-refresh");
+if (refreshButton) refreshButton.addEventListener("click", () => { if (view && !view.isBusy()) void view.refresh(); });
+index.replaceChildren(create, h("div.jobs-scope", null, scopeLabel, scopeSelect, scopeHelp), listMount);
 let route = null, view = null, mountedScope, scopes = null, scopesError = null;
 
 scopeSelect.addEventListener("change", () => {
@@ -26,6 +37,8 @@ scopeSelect.addEventListener("change", () => {
 });
 
 function drawScopes() {
+  createLabel.textContent = t("jobs.newJob");
+  create.title = t("jobs.newJobIn") + " · " + (route && route.task ? route.task : t("jobs.ownerGlobal"));
   scopeLabel.textContent = t("jobs.scopeLabel");
   scopeHelp.textContent = scopesError ? t("jobs.scopesError") + " " + scopesError : t("jobs.scopeHelp");
   scopeHelp.classList.toggle("is-error", !!scopesError);
@@ -42,9 +55,6 @@ async function loadScopes() {
   catch (error) { scopesError = error.message; }
   drawScopes();
 }
-function heading() {
-  return { title: t("nav.jobs"), hint: t(route && route.task ? "jobs.pageHintTask" : "jobs.pageHint") };
-}
 function mount(next) {
   if (view) view.dispose();
   mountedScope = next.task || null;
@@ -52,24 +62,35 @@ function mount(next) {
   self = view = mountJobs(root, t, mountedScope || undefined, {
     index: listMount,
     navigate: selection => navigateManage({ ...route, job: selection.job, jobRun: null, artifact: null, moved: undefined }),
-    pin: selection => pin(self, selection),
-    heading: heading(),
+    pin: (selection, step) => pin(self, selection, step),
+    sync: observation => observe(self, observation),
     notice: next.moved ? t("jobs.moved") : "",
     locale: i18n.getLocale
   });
 }
+// The last read of the live view, in the list head (as the workbench's sync).
+function observe(owner, observation) {
+  if (owner !== view || !sync) return;
+  sync.dataset.state = observation.state;
+  if (observation.at) lastSync.textContent = formatClock(observation.at, i18n.getLocale());
+  sync.title = observation.text;
+}
 // Only the live view, while Jobs is the shown page, records its selection.
-function pin(owner, selection) {
+// A Run the reader opened or closed in place is a history step; anything else
+// the view settles on refines the current entry.
+function pin(owner, selection, step) {
   if (owner !== view || root.hidden || !route || route.page !== "jobs") return;
   route = { ...route, ...selection, moved: undefined };
-  replaceManageRoute(route);
+  if (step) pushManageRoute(route); else replaceManageRoute(route);
 }
 function show(next) {
   route = next;
   drawScopes();
   if (!view || mountedScope !== (next.task || null)) mount(next);
-  else view.select(next.job, next.jobRun, next.artifact);
+  else { view.resume(); view.select(next.job, next.jobRun, next.artifact); }
 }
+// Leaving Jobs sets a modal editor aside (its draft is kept for the return).
+function hide() { if (view) view.suspend(); }
 // Asked before any route change that leaves or enters Jobs, whatever its
 // source. Leaving Jobs keeps its view (hidden) as it is; a change of scope or
 // Job replaces the editor, so a draft needs confirmation; while a write is in
@@ -81,7 +102,7 @@ function canNavigate(next) {
   if (view.isBusy() && root.hidden) { window.alert(t("jobs.leaveBusy")); return false; }
   return view.leave((next.task || null) !== mountedScope || !same("job"));
 }
-registerManagePage("jobs", { show, canNavigate, crumb: () => route && route.task ? route.task : t("jobs.ownerGlobal") });
+registerManagePage("jobs", { show, hide, canNavigate, crumb: () => route && route.task ? route.task : t("jobs.ownerGlobal") });
 void loadScopes();
 i18n.subscribe(() => {
   drawScopes();

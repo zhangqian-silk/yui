@@ -28,10 +28,11 @@ export function scheduleState(schedule) {
 //   options.navigate  ({ job }) a reader picked a Job: the caller records it
 //                     in history and calls select(); without it the choice
 //                     replaces the current URL
-//   options.heading   page heading and hint replacing the generic heading
+//   options.sync      ({ state, text, at }) the last read, shown by the caller
+//                     (the Jobs list head); without it the receipt line says it
 //   options.notice    one-time explanatory notice (for example a moved link)
 //   options.locale    () => locale for absolute times
-//   options.pin       ({ job, jobRun, artifact }) the view settled on an exact
+//   options.pin       ({ job, jobRun, artifact }, step) the view settled on an exact
 //                     selection; the caller records it in its own route.
 //                     Without it the selection replaces the current URL
 // The returned dispose() retires the view: no later read, write receipt or
@@ -49,7 +50,17 @@ export function mountJobs(root, t, taskId, options = {}) {
   let filterText = "";
   indexSearch.addEventListener("input", () => { filterText = indexSearch.value.trim().toLowerCase(); drawIndex(); });
   const detail = h("section.jobs-detail", { "aria-label": copy("details") });
-  const editor = h("section");
+  // Job and plan editors open as a modal dialog, like the workbench's new
+  // Task: the page under it keeps its place. Escape asks before discarding.
+  const editor = h("dialog.dialog.job-dialog", { "aria-label": copy("newJob") });
+  const editorReceipt = h("p.settings-receipt.job-dialog-receipt", { role: "status", "aria-live": "polite" });
+  editor.addEventListener("cancel", event => {
+    event.preventDefault();
+    if (!pending && guardDraft()) closeEditor();
+  });
+  let readFailed = false;
+  const editorOpen = () => !!editor.children?.length;
+  const showEditor = () => { if (editorOpen() && !editor.open && typeof editor.showModal === "function" && root.isConnected !== false) editor.showModal(); };
   const params = new URLSearchParams(location.search);
   let jobs = [], schedules = [], selected = params.get("job") || undefined,
     selectedRun = params.get("jobRun") || undefined, generation = 0, runGeneration = 0, pending = false, dirty = false,
@@ -57,10 +68,12 @@ export function mountJobs(root, t, taskId, options = {}) {
   const artifactState = { reference: parseArtifact(params.get("artifact")) };
   // The exact selection is written only by a live view, and in the Jobs entry
   // only through its owner (which also knows whether Jobs is still shown).
-  function pinSelection() {
+  // step: the reader opened or closed a Run in place; the Jobs entry records
+  // it as a history step so Back and Forward walk the Runs read.
+  function pinSelection(step = false) {
     if (disposed || (!options.pin && root.isConnected === false)) return;
     const artifact = artifactState.reference ? JSON.stringify(artifactState.reference) : null;
-    if (options.pin) { options.pin({ job: selected || null, jobRun: selectedRun || null, artifact }); return; }
+    if (options.pin) { options.pin({ job: selected || null, jobRun: selectedRun || null, artifact }, step); return; }
     const url = new URL(location.href);
     if (selected) url.searchParams.set("job", selected); else url.searchParams.delete("job");
     if (selectedRun) url.searchParams.set("jobRun", selectedRun); else url.searchParams.delete("jobRun");
@@ -207,7 +220,8 @@ export function mountJobs(root, t, taskId, options = {}) {
   }
   // The configuration as a reader needs it: per-type names and key fields
   // first, steps and parameters grouped, unknown fields kept, raw JSON last.
-  function configView(config, withRaw) {
+  // lifted: the description is already shown above it (see purpose()).
+  function configView(config, withRaw, lifted = false) {
     const c = config && typeof config === "object" && !Array.isArray(config) ? config : {};
     const used = new Set(["kind"]);
     const has = key => Object.prototype.hasOwnProperty.call(c, key);
@@ -230,7 +244,7 @@ export function mountJobs(root, t, taskId, options = {}) {
       if (has("goal")) rows.push([copy("cfg.goal"), label("jobs.goal", take("goal"))]);
       if (has("target")) {
         const target = take("target");
-        rows.push([copy("cfg.target"), label("jobs.target", target?.kind)], ...fieldRows(target, ["kind"]));
+        rows.push([copy("cfg.target"), label("jobs.target", target?.kind)], ...fieldRows(target, lifted ? ["kind", "description"] : ["kind"]));
       }
     } else if (c.kind === "agent") {
       if (has("target")) {
@@ -238,7 +252,8 @@ export function mountJobs(root, t, taskId, options = {}) {
         rows.push([copy("cfg.target"), label("jobs.target", target?.kind)], ...fieldRows(target, ["kind"]));
       }
       if (has("concurrency")) rows.push([copy("cfg.concurrency"), label("jobs.concurrency", take("concurrency"))]);
-      if (has("input")) blocks.push(section(copy("cfg.agentInput"), typeof c.input === "string"
+      if (has("input") && lifted && typeof c.input === "string") take("input");
+      else if (has("input")) blocks.push(section(copy("cfg.agentInput"), typeof c.input === "string"
         ? h("div.job-command.is-prose", null, h("pre", null, take("input") || "—"), copyButton(String(c.input), copy("copy")))
         : valueView(take("input"))));
     }
@@ -290,8 +305,20 @@ export function mountJobs(root, t, taskId, options = {}) {
     node.value = value || values[0]; return node;
   }
   function guardDraft() { return !dirty || window.confirm(copy("discard")); }
-  function closeEditor() { editor.replaceChildren(); dirty = false; root.dataset.unsent = "false"; }
-  function status(text, error = false) { receipt.textContent = text; receipt.classList.toggle("settings-error", error); }
+  function closeEditor() {
+    if (editor.open && typeof editor.close === "function") editor.close();
+    editor.replaceChildren(); dirty = false; root.dataset.unsent = "false";
+  }
+  function status(text, error = false) {
+    for (const node of [receipt, editorReceipt]) { node.textContent = text; node.classList.toggle("settings-error", error); }
+  }
+  // The routine read state (loading, last read, stale) belongs to the caller's
+  // sync indicator when it has one; a failure also stays on the page.
+  function observe(state, text) {
+    if (!options.sync) { status(text, state === "error"); return; }
+    options.sync({ state, text, at: state === "ok" ? new Date().toISOString() : null });
+    if (state === "error") { readFailed = true; status(text, true); }
+  }
   async function mutate(family, payload, after) {
     const key = base + "/" + family + "/" + payload.id;
     if (pending || blocked.has(key)) { status(copy("unknown"), true); return; }
@@ -318,6 +345,7 @@ export function mountJobs(root, t, taskId, options = {}) {
       await refresh(false);
     } catch (error) {
       if (error.disposition !== "not-submitted") blocked.add(key);
+      readFailed = false;
       status(error.message + (blocked.has(key) ? "\n" + copy("unknown") : ""), true);
     } finally {
       pending = false;
@@ -328,9 +356,15 @@ export function mountJobs(root, t, taskId, options = {}) {
   function form(title, contents, submit) {
     if (!guardDraft()) return;
     closeEditor();
-    const node = h("form.settings-card.settings-stack", null, h("h3", null, title), contents,
-      h("div.settings-actions", null, h("button.btn.btn-primary", { type: "submit" }, copy("save")),
-        button(copy("close"), () => { if (guardDraft()) closeEditor(); })));
+    editorReceipt.textContent = ""; editorReceipt.classList.toggle("settings-error", false);
+    const node = h("form.dialog-body.job-form", null,
+      h("header.dialog-head", null, h("div", null, h("h2", null, title),
+        h("p.dialog-sub", null, copy("ownerShort") + " · " + (taskId ? copy("ownerTask") + " " + taskId : copy("ownerGlobal")))),
+        h("button.icon-btn", { type: "button", title: copy("close"), "aria-label": copy("close"),
+          onclick: () => { if (!pending && guardDraft()) closeEditor(); } }, icon("close"))),
+      contents, editorReceipt,
+      h("div.dialog-actions", null, button(copy("close"), () => { if (!pending && guardDraft()) closeEditor(); }),
+        h("button.btn.btn-primary", { type: "submit" }, copy("save"))));
     const markDirty = () => { dirty = true; root.dataset.unsent = "true"; };
     node.addEventListener("input", markDirty);
     node.addEventListener("change", markDirty);
@@ -338,8 +372,10 @@ export function mountJobs(root, t, taskId, options = {}) {
       event.preventDefault();
       try { submit(); } catch (error) { status(error.message, true); }
     });
+    editor.setAttribute?.("aria-label", title);
     editor.append(node);
-    node.querySelector("input,select,textarea")?.focus();
+    showEditor();
+    node.querySelector("input:not([disabled]),select:not([disabled]),textarea")?.focus();
   }
   function editJob(job) {
     const id = input(job?.id || "", { required: true, pattern: "[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}", disabled: !!job });
@@ -447,7 +483,7 @@ export function mountJobs(root, t, taskId, options = {}) {
       target.replaceChildren(h("div.job-run-panel", null,
         h("header.job-run-head", null, h("div.job-run-title", null, h("h4", null, copy("runDetail")), idChip(run.id), runBadge(run.status)),
           h("div.job-badges", null, cancel, h("button.icon-btn.job-run-close", { type: "button", title: copy("closeRun"),
-            "aria-label": copy("closeRun"), onclick: () => closeRun(target) }, icon("close")))),
+            "aria-label": copy("closeRun"), onclick: () => closeRun(target, true) }, icon("close")))),
         run.businessResult ? h("p.job-result.tone-" + (RUN_TONE[run.status] || "idle"), null,
           h("span.job-result-label", null, copy("result")), run.businessResult.summary) : null,
         reason && reason !== run.businessResult?.summary ? h("p.job-result.tone-warn", null, reason) : null,
@@ -491,12 +527,13 @@ export function mountJobs(root, t, taskId, options = {}) {
       } catch (error) { if (epoch === runGeneration) evidence.append(h("p.settings-error", null, copy("diagnostics") + ": " + error.message)); }
     } catch (error) { if (epoch === runGeneration) target.replaceChildren(h("p.settings-error", null, error.message)); }
   }
-  function closeRun(target) {
+  function closeRun(target, focusRow = false) {
+    const closed = selectedRun;
     runGeneration++;
     selectedRun = undefined; artifactState.reference = null;
-    pinSelection();
+    pinSelection(focusRow);
     target.replaceChildren();
-    detail.querySelectorAll(".job-run-row").forEach(row => row.setAttribute("aria-current", "false"));
+    placeRun(focusRow ? closed : null);
   }
   function drawArtifacts(target, jobId, run, epoch) {
     const refs = run.artifacts || [];
@@ -563,45 +600,96 @@ export function mountJobs(root, t, taskId, options = {}) {
   // Run history filters, in the order a reader scans for trouble.
   const RUN_FILTERS = [["all", null], ["succeeded", ["succeeded"]], ["failed", ["failed"]], ["timed-out", ["timed-out"]],
     ["cancelled", ["cancelled"]], ["active", ["queued", "running"]], ["unknown-needs-attention", ["unknown-needs-attention"]]];
-  let runFilter = "all", runLimit = 15, shownJob = null;
+  let runFilter = "all", runLimit = 15, shownJob = null, rowNodes = new Map(), placeRun = () => {};
+  // A route-driven Run (deep link, refresh, Back/Forward, run now, a plan's
+  // link) is brought into view with its detail once it has loaded.
+  let revealRun = !!selectedRun;
+  const runPanelId = "job-run-" + Math.random().toString(36).slice(2, 10);
   function runSummary(run) { return run.businessResult?.summary || run.summary || run.result?.unknownReason || ""; }
-  function runRow(job, run, target) {
+  function runRow(job, run, panel) {
     const started = run.startedAt || run.createdAt;
     const span = duration(runSpan(run));
+    const open = selectedRun === run.id;
+    // One control per Run: it opens the detail right under itself, and
+    // closes it again. Its expanded state is the single selection.
     return h("button.job-run-row", {
-      type: "button", "aria-current": String(selectedRun === run.id), dataset: { run: run.id }, title: run.id,
-      onclick: () => void showRun(job.id, run.id, target).then(() => target.scrollIntoView?.({ block: "nearest", behavior: "smooth" }))
+      type: "button", "aria-current": String(open), "aria-expanded": String(open),
+      "aria-controls": open ? runPanelId : null, dataset: { run: run.id }, title: run.id,
+      onclick: () => { if (selectedRun === run.id) closeRun(panel, true); else void openRun(job.id, run.id, panel); }
     }, h("span.job-run-status", null, runBadge(run.status)),
     h("span.job-run-main", null, h("span.job-run-summary", null, runSummary(run) || label("job", run.status)),
       h("span.job-run-sub", null, h("code", null, shortId(run.id)), h("span", null, label("trigger", run.trigger && run.trigger.source)))),
     h("span.job-run-when", { title: when(started) || "" }, ago(started) || when(started) || "—"),
-    h("span.job-run-span", null, span || (["queued", "running"].includes(run.status) ? "…" : "—")));
+    h("span.job-run-span", null, span || (["queued", "running"].includes(run.status) ? "…" : "—")),
+    h("span.job-run-caret", { "aria-hidden": "true" }, icon("chevron")));
   }
-  function historyView(job, runs, target) {
+  async function openRun(jobId, runId, panel) {
+    const keep = focusedRun();
+    selectedRun = runId; artifactState.reference = null;
+    pinSelection(true);
+    placeRun(keep ? runId : null);
+    await showRun(jobId, runId, panel);
+    if (selected === jobId && selectedRun === runId) revealSelectedRun(panel, true);
+  }
+  function focusedRun() {
+    const active = typeof document === "undefined" ? null : document.activeElement;
+    return active && active.dataset && active.dataset.run && rowNodes.get(active.dataset.run) === active ? active.dataset.run : null;
+  }
+  // Bring the selected row and as much of its detail as fits into view; the
+  // row stays on screen so the list context is never lost.
+  function revealSelectedRun(panel, smooth) {
+    const row = rowNodes.get(selectedRun);
+    if (!row || typeof row.getBoundingClientRect !== "function" || row.isConnected === false) return;
+    const top = row.getBoundingClientRect().top, bottom = panel.getBoundingClientRect?.().bottom ?? top;
+    const height = typeof window !== "undefined" && window.innerHeight ? window.innerHeight : 0;
+    if (top < 64 || (height && (bottom > height || top > height - 80)))
+      row.scrollIntoView?.({ block: "start", behavior: smooth ? "smooth" : "auto" });
+  }
+  function historyView(job, runs, panel) {
     const counts = Object.fromEntries(RUN_FILTERS.map(([key, set]) => [key, set ? runs.filter(r => set.includes(r.status)).length : runs.length]));
     if (!counts[runFilter]) runFilter = "all";
     const body = h("div.job-history-body");
-    const draw = () => {
+    const visible = () => {
       const set = RUN_FILTERS.find(([key]) => key === runFilter)[1];
-      const shown = set ? runs.filter(run => set.includes(run.status)) : runs;
-      // The selected Run stays visible even past the page limit.
+      return set ? runs.filter(run => set.includes(run.status)) : runs;
+    };
+    const draw = focusRun => {
+      const shown = visible();
+      // The selected Run stays visible even past the page limit, with its
+      // detail directly under its row. A selected Run missing from the
+      // history read (just admitted, or older than it) opens above the list.
       const index = shown.findIndex(run => run.id === selectedRun);
       const limit = Math.max(runLimit, index + 1);
+      rowNodes = new Map();
+      const items = [];
+      for (const run of shown.slice(0, limit)) {
+        const row = runRow(job, run, panel);
+        rowNodes.set(run.id, row); items.push(row);
+        if (run.id === selectedRun) items.push(panel);
+      }
+      const orphan = selectedRun && !runs.some(run => run.id === selectedRun);
       body.replaceChildren(h("div.job-runs-head", { "aria-hidden": "true" }, h("span", null, copy("col.status")),
-        h("span", null, copy("col.run")), h("span", null, copy("col.started")), h("span", null, copy("duration"))),
-      h("div.jobs-runs", null, shown.slice(0, limit).map(run => runRow(job, run, target))),
+        h("span", null, copy("col.run")), h("span", null, copy("col.started")), h("span", null, copy("duration")), h("span")),
+      h("div.jobs-runs", null, orphan ? panel : null, items),
       ...(shown.length > limit ? [h("button.job-more", { type: "button", onclick: () => { runLimit += 30; draw(); } },
         fill(copy("showMore"), { count: shown.length - limit }))] : []));
+      if (focusRun) rowNodes.get(focusRun)?.focus?.();
     };
+    placeRun = draw;
     const tabs = h("div.chip-tabs.job-filters", { role: "group", "aria-label": copy("filterRuns") },
       RUN_FILTERS.filter(([key]) => key === "all" || counts[key]).map(([key]) => h("button.chip-tab", {
         type: "button", "aria-pressed": String(runFilter === key), dataset: { filter: key },
         onclick: event => { runFilter = key; runLimit = 15;
-          for (const tab of tabs.children) tab.setAttribute("aria-pressed", String(tab === event.currentTarget)); draw(); }
+          for (const tab of tabs.children) tab.setAttribute("aria-pressed", String(tab === event.currentTarget));
+          // A filter that hides the open Run closes its detail rather than
+          // leaving it detached from any row.
+          if (selectedRun && runs.some(run => run.id === selectedRun) && !visible().some(run => run.id === selectedRun)) closeRun(panel);
+          else draw(); }
       }, key === "all" ? copy("filter.all") : key === "active" ? copy("filter.active") : label("job", key), h("span.count", null, String(counts[key])))));
     draw();
-    return section(copy("history"), runs.length ? h("div.job-history", null, tabs, body)
-      : h("p.job-empty-block", null, copy("noRuns")), h("span.job-section-count", null, fill(copy("runCount"), { count: runs.length })));
+    return section(copy("history"), runs.length ? h("div.job-history", null, overviewView(job, runs), tabs, body)
+      : h("div.job-history", null, selectedRun ? h("div.jobs-runs", null, panel) : null, h("p.job-empty-block", null, copy("noRuns"))),
+      h("span.job-section-count", null, fill(copy("runCount"), { count: runs.length })));
   }
   function overviewView(job, runs) {
     const terminal = runs.filter(run => !["queued", "running"].includes(run.status));
@@ -653,6 +741,15 @@ export function mountJobs(root, t, taskId, options = {}) {
       ? h("button.job-section-action", { type: "button", onclick: () => editSchedule() }, icon("plus"), copy("newSchedule")) : null;
     return section(copy("schedules"), items.length ? h("ul.job-plans", null, items) : h("p.job-empty-block", null, copy("noSchedules")), add);
   }
+  // The Job's own description, when its configuration really has one: a
+  // delegated Task's description or an Agent's instruction. Never invented.
+  function purpose(config) {
+    if (config.kind === "task" && typeof config.target?.description === "string" && config.target.description.trim())
+      return { name: copy("cfg.description"), text: config.target.description };
+    if (config.kind === "agent" && typeof config.input === "string" && config.input.trim())
+      return { name: copy("cfg.agentInput"), text: config.input };
+    return null;
+  }
   async function showDetail(epoch) {
     const job = jobs.find(j => j.id === selected);
     if (!job) {
@@ -667,16 +764,24 @@ export function mountJobs(root, t, taskId, options = {}) {
     if (epoch !== generation) return;
     if (shownJob !== job.id) { shownJob = job.id; runFilter = "all"; runLimit = 15; }
     runs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    const runDetail = h("section.job-run");
+    const runDetail = h("div.job-run-inline", { id: runPanelId, role: "region", "aria-label": copy("runDetail") });
+    runDetail.addEventListener("keydown", event => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      event.preventDefault(); closeRun(runDetail, true);
+    });
     const own = schedules.filter(s => s.jobId === job.id);
     const config = job.configuration || {};
+    const about = purpose(config);
+    // Scope is named once, by the shell (list head and crumb); the header
+    // keeps what identifies this Job.
     const meta = [
       h("span.job-meta-item", null, h("code.id", { title: job.id }, job.id), copyButton(job.id, copy("copy") + " · " + job.id)),
-      h("span.job-meta-item", null, ownerValue()),
       h("span.job-meta-item", null, typeLabel(job)),
       config.projectId ? h("span.job-meta-item", null, config.projectId) : null,
       h("span.job-meta-item", null, copy("revision") + " " + job.revision)
     ];
+    // Reading order: what the Job is and does (description, configuration,
+    // plans, definition), then how it has run (overview and history).
     detail.replaceChildren(h("article.job-page", null,
       h("header.job-header", null,
         h("div.job-title", null,
@@ -687,28 +792,34 @@ export function mountJobs(root, t, taskId, options = {}) {
         h("div.job-actions", null,
           !job.builtin ? button(copy("editJob"), () => editJob(job)) : null,
           button(copy("runNow"), () => void mutate("jobs", { op: "run", id: job.id, requestId: crypto.randomUUID() }, result => {
-            selectedRun = result.run.id; pinSelection();
+            selectedRun = result.run.id; revealRun = true; pinSelection();
           }), true))),
-      job.builtin ? h("p.job-note", null, copy("builtinSync")) : null,
-      overviewView(job, runs),
-      h("div.job-columns", null,
-        h("div.job-primary", null, historyView(job, runs, runDetail), runDetail,
-          section(copy("configuration"), configView(config, true))),
+      h("div.job-about", null,
+        h("div.job-primary", null,
+          job.builtin ? h("p.job-purpose.is-note", null, copy("builtinSync")) : null,
+          about ? section(about.name, h("div.job-purpose", null, h("pre.job-prose", null, about.text),
+            copyButton(about.text, copy("copy")))) : null,
+          section(copy("configuration"), configView(config, true, !!about))),
         h("aside.job-aside", null,
           plansView(job, plans),
           section(copy("definition"), kvList([
-            ["ID", idChip(job.id)], [copy("scope"), ownerValue()], [copy("type"), typeLabel(job)],
-            [copy("project"), config.projectId || null], [copy("revision"), String(job.revision)],
+            [copy("scope"), ownerValue()],
             job.createdAt ? [copy("created"), stamp(job.createdAt)] : null,
             job.updatedAt ? [copy("updated"), stamp(job.updatedAt)] : null
           ], ".is-compact")),
           h("p.job-note", null, copy("runVsPlan")),
-          job.refresh ? raw(copy("refreshFacts"), job.refresh) : null))));
-    if (selectedRun) await showRun(job.id, selectedRun, runDetail);
+          job.refresh ? raw(copy("refreshFacts"), job.refresh) : null)),
+      historyView(job, runs, runDetail)));
+    if (selectedRun) {
+      const reveal = revealRun;
+      revealRun = false;
+      await showRun(job.id, selectedRun, runDetail);
+      if (reveal && epoch === generation && selected === job.id) revealSelectedRun(runDetail, false);
+    }
   }
   async function refresh(announce = true) {
     const epoch = ++generation;
-    if (announce) status(copy("loading"));
+    if (announce) observe("syncing", copy("loading"));
     try {
       const result = await Promise.all([read("jobs", { op: "list" }), read("schedules", { op: "list" })]);
       if (epoch !== generation) return;
@@ -717,12 +828,18 @@ export function mountJobs(root, t, taskId, options = {}) {
       loaded = true; loadError = null;
       drawIndex();
       await showDetail(epoch);
-      if (announce && epoch === generation) status(copy("observed") + " · " + when(new Date().toISOString()));
+      if (announce && epoch === generation) {
+        // A manual or first read settles the page: an old write receipt
+        // (never an unresolved one, which stays blocked) gives way to it.
+        if (options.sync && (readFailed || !receipt.classList.contains?.("settings-error"))) status("");
+        readFailed = false;
+        observe("ok", copy("observed") + " · " + when(new Date().toISOString()));
+      }
     } catch (error) {
       if (epoch !== generation) return;
       loadError = error.message;
       drawIndex();
-      status(copy("stale") + " " + error.message, true);
+      observe("error", copy("stale") + " " + error.message);
     }
   }
   // The Job index. Its count, search and empty state describe exactly the
@@ -803,22 +920,22 @@ export function mountJobs(root, t, taskId, options = {}) {
       : copy("ownerGlobal");
   }
   root.classList.add("jobs-manager");
-  // One quiet bar: what this is, where it belongs, the latest receipt and
-  // the two page actions. Explanations live in tooltips and in context.
-  const heading = options.heading || { title: copy("heading"), hint: copy("help") };
-  const head = h("header.jobs-bar", null,
-    h("div.jobs-bar-title", null, h(options.heading ? "h1" : "h2", { title: heading.hint }, heading.title),
-      h("span.jobs-bar-scope", null, ownerValue()), h("p.sr-only", null, heading.hint)),
+  // In the Jobs entry the shell already names the area and scope (list head,
+  // crumb) and owns "new" and refresh, as on the workbench; the page starts
+  // with the Job itself. Embedded in a Task page, one quiet bar carries them.
+  const head = options.index ? null : h("header.jobs-bar", null,
+    h("div.jobs-bar-title", null, h("h2", { title: copy("help") }, copy("heading")), h("p.sr-only", null, copy("help"))),
     h("div.jobs-bar-actions", null, receipt,
       h("button.btn.btn-ghost.jobs-bar-refresh", { type: "button", title: copy("refresh"), onclick: () => { if (!pending) void refresh(); } },
         icon("refresh"), h("span", null, copy("refresh"))),
-      !options.index && taskId ? h("a.btn.btn-ghost", { href: jobLink(taskId) }, copy("openInJobs")) : null,
+      taskId ? h("a.btn.btn-ghost", { href: jobLink(taskId) }, copy("openInJobs")) : null,
       h("button.btn.btn-primary", { type: "button", onclick: () => editJob() }, icon("plus"), copy("newJob"))));
   const indexTools = h("div.jobs-index-tools", null,
     h("label.search-field", null, icon("search"), h("span.sr-only", null, copy("search")), indexSearch), indexCount);
   if (options.index) options.index.replaceChildren(indexTools, list);
-  root.replaceChildren(...[head, options.notice ? h("p.job-notice", { role: "status" }, options.notice) : null, editor,
-    options.index ? detail : h("div.jobs-layout", null, h("div.jobs-index", null, indexTools, list), detail)].filter(Boolean));
+  root.replaceChildren(...[head, options.notice ? h("p.job-notice", { role: "status" }, options.notice) : null,
+    options.index ? h("div.jobs-receipt", null, receipt) : null,
+    options.index ? detail : h("div.jobs-layout", null, h("div.jobs-index", null, indexTools, list), detail), editor].filter(Boolean));
   drawIndex();
   void refresh();
   // Route-driven selection (history navigation in the Jobs entry). The
@@ -829,6 +946,7 @@ export function mountJobs(root, t, taskId, options = {}) {
     if (selected === (jobId || undefined) && selectedRun === (runId || undefined)
       && JSON.stringify(artifactState.reference) === JSON.stringify(reference)) return;
     if (selected !== (jobId || undefined)) closeEditor();
+    if (runId && (selectedRun !== runId || selected !== (jobId || undefined))) revealRun = true;
     selected = jobId || undefined; selectedRun = runId || undefined; artifactState.reference = reference;
     void refresh(false);
   }
@@ -842,8 +960,11 @@ export function mountJobs(root, t, taskId, options = {}) {
     closeEditor();
     return true;
   }
-  function dispose() { disposed = true; generation++; runGeneration++; }
-  return { isDirty: () => dirty, isBusy: () => pending, refresh, select, leave, dispose };
+  function dispose() { disposed = true; generation++; runGeneration++; closeEditor(); }
+  // A hidden page must not hold a modal open; its draft waits for the return.
+  function suspend() { if (editor.open && typeof editor.close === "function") editor.close(); }
+  return { isDirty: () => dirty, isBusy: () => pending, refresh, select, leave, dispose,
+    create: () => editJob(), suspend, resume: showEditor };
 }
 
 function parseArtifact(value) {

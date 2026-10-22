@@ -69,6 +69,8 @@ function render() {
   document.querySelector("#manage-area-title").textContent = areaTitle;
   document.querySelector("#manage-crumb-area").textContent = areaTitle;
   document.querySelector("#manage-crumb-section").textContent = sectionTitle;
+  // Area-only controls in the shared list head (the Jobs sync and refresh).
+  rail.querySelectorAll("[data-area-only]").forEach(node => { node.hidden = node.dataset.areaOnly !== area; });
   rail.querySelectorAll("[data-area-group]").forEach(group => {
     if (group.dataset.areaGroup === area) group.dataset.active = "true"; else delete group.dataset.active;
   });
@@ -76,6 +78,10 @@ function render() {
   document.title = sectionTitle + " · " + areaTitle + " · Yui";
 }
 function apply(next) {
+  // The page being left is told first, so it can set aside what must not
+  // outlive its visibility (a modal editor) without discarding it.
+  const previous = route && route.page !== next.page ? pages.get(route.page) : null;
+  if (previous && previous.hide) previous.hide();
   route = next;
   rememberPlace(manageArea(next.page, next.section), manageHref(next));
   rememberPlace("manage", manageHref(next));
@@ -117,6 +123,15 @@ export function replaceManageRoute(next) {
   rememberPlace("manage", manageHref(next));
   history.replaceState(history.state, "", manageHref(next));
   render();
+}
+// A page already shows a selection the reader chose in place (for example a
+// Run opened under its row): record it as a history step without applying it
+// again, keeping the reading position for Back.
+export function pushManageRoute(next) {
+  if (manageHref(next) === location.pathname + location.search) return;
+  history.replaceState({ ...history.state, scroll: scroller().scrollTop }, "");
+  history.pushState({ scroll: scroller().scrollTop }, "", manageHref(next));
+  replaceManageRoute(next);
 }
 export function createManageShell(options) {
   return {

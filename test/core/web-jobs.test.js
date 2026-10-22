@@ -334,7 +334,7 @@ test("Jobs entry keeps one live view across every route source: drafts, writes i
     rememberPlace() {}, linkPlaces() {} });
   const body = script => script.replace(/^import .*;\n/gm, "").replace(/^export /gm, "");
   const shell = vm.runInContext("(() => {" + body(MANAGE_SHELL_SCRIPT)
-    + "\nreturn { i18n, registerManagePage, navigateManage, replaceManageRoute, startManagement };})()", ctx);
+    + "\nreturn { i18n, registerManagePage, navigateManage, replaceManageRoute, pushManageRoute, startManagement };})()", ctx);
   const views = vm.runInContext("(() => {" + body(JOBS_SCRIPT) + "\nreturn { mountJobs };})()", ctx);
   const mounts = [];
   Object.assign(ctx, shell, { mountJobs: (...args) => { mounts.push(args[2] || "global"); return views.mountJobs(...args); } });
@@ -345,7 +345,7 @@ test("Jobs entry keeps one live view across every route source: drafts, writes i
   const root = nodes.get("#jobs-root");
   const editorOpen = () => walk(root).some(n => typeof n.spec === "string" && n.spec.startsWith("form."));
   const openDraft = () => {
-    walk(root).find(n => n.spec === "button.btn.btn-primary" && n.children.includes("jobs.newJob")).onclick();
+    walk(nodes.get("#jobs-index")).find(n => n.id === "jobs-create").onclick();
     walk(root).find(n => typeof n.spec === "string" && n.spec.startsWith("form.")).oninput();
   };
 
@@ -403,4 +403,26 @@ test("Jobs entry keeps one live view across every route source: drafts, writes i
   assert.equal(previews.at(-1), b);
   assert.equal(new URL(location.href).searchParams.get("artifact"), b);
   assert.equal(alerts, 0);
+
+  // 5. A Run opened from its row shows directly under that row and is one
+  //    history step: Back closes it again, Forward reopens it in place.
+  shell.navigateManage({ page: "jobs", section: "jobs", task: null, job: "old" }); await flush();
+  const runRow = () => walk(root).find(n => n.spec === "button.job-run-row");
+  const underRow = () => { const list = walk(root).find(n => (n.children || []).includes(runRow()));
+    const next = list.children[list.children.indexOf(runRow()) + 1];
+    return typeof next?.spec === "string" && next.spec.startsWith("div.job-run-inline") ? next : null; };
+  assert.equal(runRow()["aria-expanded"], "false");
+  const before = history.pushes;
+  runRow().onclick(); await flush();
+  assert.equal(here(), "/jobs?job=old&jobRun=old-run");
+  assert.equal(history.pushes, before + 1, "opening a Run is a history step");
+  assert.equal(runRow()["aria-expanded"], "true");
+  assert.match(text(underRow()), /old-run/, "the Run detail is the row's next sibling, not appended below the list");
+  location.href = "http://fixture/jobs?job=old";
+  handlers.popstate(); await flush();
+  assert.equal(runRow()["aria-expanded"], "false", "Back closes the Run opened in place");
+  location.href = "http://fixture/jobs?job=old&jobRun=old-run";
+  handlers.popstate(); await flush();
+  assert.equal(runRow()["aria-expanded"], "true");
+  assert.match(text(underRow()), /old-run/);
 });

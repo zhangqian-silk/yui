@@ -27,6 +27,8 @@ const area = (name: ManageArea, key: string, label: string) => `
 const RAIL = `<aside class="manage-rail sidebar" aria-label="Sections" data-i18n-aria-label="manage.sections">
       <header class="side-head">
         <h2 id="manage-area-title" class="side-title"></h2>
+        <span id="jobs-sync" class="sync" data-area-only="jobs" hidden title="Last sync" data-i18n-title="sync.label"><i aria-hidden="true"></i><time id="jobs-last-sync">—</time></span>
+        <button id="jobs-refresh" class="icon-btn" type="button" data-area-only="jobs" hidden aria-label="Refresh" data-i18n-aria-label="actions.refresh" title="Refresh" data-i18n-title="actions.refresh">${iconSvg("refresh")}</button>
         <button id="sidebar-collapse" class="icon-btn side-collapse" type="button" aria-label="Collapse sections" data-i18n-aria-label="manage.collapseSections" title="Collapse sections · [" data-i18n-title="manage.collapseSections">${iconSvg("sidebar")}</button>
       </header>
       <nav class="manage-nav" aria-label="Sections" data-i18n-aria-label="manage.sections">${area("models", "models.title", "Models")}${area("settings", "settings.title", "Settings")}
