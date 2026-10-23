@@ -303,12 +303,20 @@ authority. Never invent authorization, impersonate Operator, or modify the core 
 
 ## Validate and make the review judgment
 
-Prepare useful evidence, not a documentation gate. Supply or reference the
-effective goals/non-goals and decisions, independently grounded expected
-behavior, key user paths/constraints, contract entry points and relevant callers.
-Keep three things distinct: a behavioral scenario and its expectation, an
-executable test reference, and an actual result with candidate/environment/
-command. Disclose real gaps rather than deriving acceptance from current code.
+Prepare useful evidence, not a documentation gate. From effective requirements,
+non-goals and decisions, distill the few observable behavioral constraints that
+matter to this change, with independently grounded expectations. Do not infer
+correctness from the candidate or its mocks.
+
+For material cross-layer or asynchronous risks, trace a short real path in the
+exact candidate: entry -> actual consumers -> relevant waits/atomic commit
+boundaries -> observable result and failure/recovery consequences. Point to
+candidate code or existing documents, not just module names or a coverage claim.
+Use it to expose where the same constraint must hold across boundaries; do not
+enumerate every entry or generate a combination matrix. Keep three things
+distinct: constraints/scenarios and expectations, executable test references,
+and actual results with candidate/environment/command. Name material unverified
+boundaries; a test reference alone is not a passing result.
 
 Small tasks can reference existing materials directly. For complex tasks, put a
 short review index in Task artifacts and its commit-pinned reference in Brief.
@@ -380,8 +388,11 @@ main synthesis through its exact AgentRun, preserving its selected source snapsh
 A Worker or Reviewer AgentRun result is evidence, not acceptance. Inspect the
 result, diff, checks, and current Candidate before deciding.
 
-Group confirmed findings by root cause and repair other reachable instances
-within scope together. For ordinary full re-review, preserve the current complete
+Group confirmed findings by root cause. Use the traced paths to check other
+reachable consumers/boundaries within scope and repair affected instances
+together, not just the reported checkpoint. Refresh the short material index
+and repair evidence where they changed, without accumulating round-by-round
+history. For ordinary full re-review, preserve the current complete
 candidate and requirements; add repair delta, prior finding dispositions and
 still-valid evidence. Delta is an attention aid, not the full-review boundary.
 Do not conflate this with an explicitly authorized equivalence Delta Recheck.

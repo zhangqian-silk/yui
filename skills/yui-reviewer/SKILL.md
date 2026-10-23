@@ -111,9 +111,20 @@ contracts, state/data invariants, failure and partial recovery, authorization,
 and whether verification tests the actual contract. Multiple perspectives do
 not require multiple Agents or every perspective on every task.
 
+Use the Leader's real-path material as navigation and risk hints, not a scope
+ceiling or proof of completeness. Check its links against the frozen candidate
+and independently derive scenarios. For relevant cross-layer/asynchronous paths,
+follow actual consumers and compare the same constraint before/after key waits
+and atomic commits, through downstream error classification and recovery.
+Inspect other reachable consumers when a shared assumption may fail elsewhere;
+neither a module list nor a passing mock establishes end-to-end behavior.
+
 Turn applicable perspectives into concrete scenarios, expected behavior and
-evidence. Challenge important assumptions with the smallest reachable
-counterexample; check normal controls and non-goals too. A shared assumption
+evidence. Distinguish independently grounded expectations, executable test
+references, and actual results for the stated candidate/environment; retain
+material unverified boundaries as gaps. Challenge important assumptions with
+the smallest reachable counterexample; check normal controls and non-goals too.
+A shared assumption
 between a mock and implementation is not independent confirmation. Reuse valid
 checks; do not run external-resource validation without its exact authorization.
 Stop neither at the changed lines nor after finding a few defects.
