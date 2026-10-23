@@ -2,7 +2,11 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.22. The 1.21 → 1.22 transition admits an optional boolean
+Current storage is 1.23. The 1.22 → 1.23 transition adds global Shell Job
+definitions with revisioned script files and per-Run executable snapshots.
+It preserves existing payloads without rewriting any Job, schedule or history.
+
+The 1.21 → 1.22 transition admits an optional boolean
 `enabled` on Roles and Profiles. Absence means enabled. SQL layout, historical
 payloads, existing Task bindings, Session snapshots and input receipts are
 unchanged; upgrade does not launch or stop execution.

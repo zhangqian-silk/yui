@@ -46,6 +46,8 @@ test("Job and plan forms preserve unedited fields, exact association/timezone an
   const text = n => typeof n === "string" ? n : [n?.textContent, ...(n?.children || []).map(text)].join(" ");
   const flush = () => new Promise(resolve => setImmediate(resolve));
   const configs = [
+    { kind: "shell", env: {}, steps: [{ name: "run", command: "sh scripts/check.sh" }],
+      files: [{ path: "scripts/check.sh", content: "printf 'ok\\n'\n" }] },
     { kind: "builtin", action: "system.noop", input: { retained: [1, true] } },
     { kind: "shell", owner: { kind: "work-item", workItemId: "work-item-3" }, projectId: "project-1", head: "a".repeat(40),
       workspace: "/fixture", env: { CI: "1" }, steps: [{ name: "one", command: "true", argv: ["true"],
@@ -68,7 +70,7 @@ test("Job and plan forms preserve unedited fields, exact association/timezone an
       submitMutation: async (_key, _url, payload) => { writes.push(JSON.parse(JSON.stringify(payload))); return { id: job.id }; }
     });
     vm.runInContext(JOBS_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), ctx);
-    ctx.mountJobs(root, key => key, configuration.kind === "shell" ? "task-1" : undefined);
+    ctx.mountJobs(root, key => key, configuration.owner ? "task-1" : undefined);
     await flush();
     walk(root).find(n => n.spec?.startsWith("button") && n.children.includes("jobs.editJob")).onclick();
     let form = walk(root).find(n => n.spec === "form.dialog-body.job-form");

@@ -376,6 +376,8 @@ export class DurableJobSupervisor {
       return;
     }
     const spec: DurableJobSpec = {
+      ...(!("taskId" in job) && "action" in job && job.action === "shell.exec"
+        ? { files: (job.actionInput as unknown as import("../job/globalShell.js").GlobalShellConfiguration).files } : {}),
       jobId: job.id,
       ...("taskId" in job ? { taskId: job.taskId } : { scope: "global" as const }),
       workspace: job.workspace,
@@ -620,6 +622,7 @@ export class DurableJobSupervisor {
     // first step. No domain action ran, so no business receipt is expected.
     if (result.outcome === "cancelled" && result.steps.length === 0) return fallback;
     if (job.action === "system.noop") return { ...fallback, data: { action: "system.noop" } };
+    if (job.action === "shell.exec") return fallback;
     const raw = this.#artifacts.readBusinessResult?.(executionNamespace(job), job.id);
     if (raw !== null && raw !== undefined) {
       try {

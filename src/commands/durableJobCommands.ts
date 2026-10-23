@@ -13,6 +13,8 @@ import type { DurableJobOwner, DurableJobStep } from "../job/durableJob.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import { resolveJobCaller, taskLocalActor } from "../task/taskAuthority.js";
 import { boundedJobArtifactPayload } from "../artifacts/jobArtifactTransport.js";
+import { readFileSync, statSync } from "node:fs";
+import type { GlobalShellConfiguration } from "../job/globalShell.js";
 
 /**
  * The textual `--owner` forms accepted by `job start`. The public help text in
@@ -60,9 +62,22 @@ export async function runDurableJobCommand(
 
 async function definitionCommand(command: string, args: string[], options: DurableJobCommandOptions): Promise<string> {
   const flags = new Map<string, string>();
+  const scripts: { path: string; content: string }[] = [];
+  const readText = (path: string) => {
+    if (!statSync(path).isFile() || statSync(path).size > 512 * 1024) throw usageError("Job input files must be text files up to 512 KiB.");
+    return readFileSync(path, "utf8");
+  };
   for (let i = 0; i < args.length; i++) {
     const flag = args[i]!;
-    if (!["--global", "--task", "--job", "--title", "--input", "--revision", "--request-id", "--retry-of", "--run", "--artifact", "--reference", "--offset", "--result", "--expected-session", "--expected-attempt"].includes(flag)
+    if (flag === "--script") {
+      const value = args[++i] ?? "", separator = value.indexOf("=");
+      if (separator < 1 || separator === value.length - 1) throw usageError("--script requires relative-path=local-file.");
+      const path = value.slice(0, separator);
+      if (scripts.some(file => file.path === path)) throw usageError("Repeated script path.");
+      scripts.push({ path, content: readText(value.slice(separator + 1)) });
+      continue;
+    }
+    if (!["--global", "--task", "--job", "--title", "--input", "--input-file", "--command", "--revision", "--request-id", "--retry-of", "--run", "--artifact", "--reference", "--offset", "--result", "--expected-session", "--expected-attempt"].includes(flag)
       || flags.has(flag)) throw usageError(`Unknown or repeated Job flag: ${flag}.`);
     if (flag === "--global") { flags.set(flag, "true"); continue; }
     const value = args[++i];
@@ -77,9 +92,33 @@ async function definitionCommand(command: string, args: string[], options: Durab
     ?? (executionRead ? options.environment?.YUI_TASK_ID : undefined) ?? "");
   const scope = taskId === undefined ? { kind: "global" } : { kind: "task", taskId };
   let configuration: JsonValue | undefined;
-  if (flags.has("--input")) {
-    try { configuration = JSON.parse(flags.get("--input")!); }
+  if (flags.has("--input") && flags.has("--input-file")) throw usageError("Choose --input or --input-file.");
+  if (flags.has("--input") || flags.has("--input-file")) {
+    try { configuration = JSON.parse(flags.has("--input-file") ? readText(flags.get("--input-file")!) : flags.get("--input")!); }
     catch { throw usageError("--input must be a JSON Job configuration."); }
+  }
+  if ((flags.has("--command") || scripts.length || flags.has("--input-file")) && !["define", "update"].includes(command)) {
+    throw usageError("Command and script edits require job define or update.");
+  }
+  if (flags.has("--command") || scripts.length) {
+    if (taskId !== undefined || configuration !== undefined) throw usageError("--command/--script are global Shell shortcuts; use --input for a complete configuration.");
+    let shell: GlobalShellConfiguration = { kind: "shell", env: {}, steps: [], files: [] };
+    if (command === "update") {
+      const existing = await callFileTaskController(options.home, "job.definition", {
+        op: "show", scope, caller, id: flags.get("--job")
+      } as JsonValue, { environment: options.environment }) as unknown as { title: string; revision: number; configuration: GlobalShellConfiguration };
+      if (existing.revision !== Number(flags.get("--revision"))) throw usageError("Job revision changed; inspect before editing.");
+      if (existing.configuration.kind !== "shell") throw usageError("Changing executor requires a new Job.");
+      shell = existing.configuration;
+      if (!flags.has("--title")) flags.set("--title", existing.title);
+    }
+    if (flags.has("--command")) {
+      if (shell.steps.length > 1) throw usageError("Use --input-file to edit a multi-step Job without discarding steps.");
+      shell = { ...shell, steps: [{ ...shell.steps[0], name: shell.steps[0]?.name ?? "run", command: flags.get("--command")! }] };
+      // The command shortcut intentionally selects shell execution, not stale argv.
+      delete (shell.steps[0] as { argv?: readonly string[] }).argv;
+    }
+    configuration = { ...shell, files: [...shell.files.filter(file => !scripts.some(next => next.path === file.path)), ...scripts] } as unknown as JsonValue;
   }
   const requestId = flags.get("--request-id");
   const parseObject = (flag: string): JsonValue | undefined => {

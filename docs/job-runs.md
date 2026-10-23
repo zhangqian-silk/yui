@@ -176,9 +176,12 @@ identities. Ordinary readers use only the current contract.
 start is not confirmation. The snapshot is derived exclusively from the immutable
 Run fields, never a mutable current Job definition. Scope, executor (`shell` or
 controlled `builtin`, or `task`), target and trigger are separate concepts. Task
-delegation is available in either management scope; shell remains Task-only and
-builtin remains global-only. There is no extensible empty
-executor/plugin configuration or arbitrary global shell.
+delegation is available in either management scope; builtin remains global-only.
+Global Shell Jobs own revisioned command steps and script files, without a Task
+or Project. Task Shell Jobs retain managed-workspace authority.
+See [Global Shell Jobs](global-shell-jobs.md) for Web/CLI editing, per-Run file
+snapshots and schedule reauthorization. There is no extensible empty executor
+or plugin configuration.
 
 ## Delegating delivery to a Task
 

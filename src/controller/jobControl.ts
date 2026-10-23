@@ -345,7 +345,8 @@ export function jobAuthorityBinding(store: TaskStore, scope: string, roleName: s
   ])).digest("hex");
 }
 
-export function assertNonSecretJobInput(params: DurableJobStartParams): void {
+export function assertNonSecretJobInput(params: Pick<DurableJobStartParams, "env" | "steps" | "requestId">
+  & { files?: readonly import("../job/globalShell.js").JobScriptFile[] }): void {
   // Existing Jobs persist commands and environments. This boundary accepts
   // non-secret executable specifications only; credential resolution is not a
   // Job feature. Never hash a known secret then call the digest sanitized.
@@ -356,7 +357,7 @@ export function assertNonSecretJobInput(params: DurableJobStartParams): void {
     }
   }
   const input = JSON.stringify({
-    env: params.env, steps: params.steps, requestId: params.requestId
+    env: params.env, steps: params.steps, requestId: params.requestId, files: params.files
   });
   // Reject recognizable key material regardless of the parameter name, and
   // URL userinfo before either hashing or persisting the specification.

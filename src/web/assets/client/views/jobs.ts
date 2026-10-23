@@ -265,6 +265,8 @@ export function mountJobs(root, t, taskId, options = {}) {
       if (has("head")) rows.push([copy("cfg.head"), c.head ? idChip(take("head")) : take("head")]);
       if (has("env")) rows.push([copy("cfg.env"), envView(take("env"))]);
       if (has("steps")) blocks.push(stepsView(take("steps")));
+      if (has("files")) blocks.push(section(copy("form.scripts"), take("files").map(file =>
+        h("details.job-raw", null, h("summary", null, file.path), h("div.job-command", null, h("pre", null, file.content))))));
     } else if (c.kind === "task") {
       if (has("goal")) rows.push([copy("cfg.goal"), label("jobs.goal", take("goal"))]);
       if (has("target")) {
@@ -411,15 +413,15 @@ export function mountJobs(root, t, taskId, options = {}) {
   function editJob(job) {
     const id = input(job?.id || newId("job"), { required: true, pattern: "[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}", disabled: !!job });
     const title = input(job?.title || "", { required: true });
-    const kind = choose(taskId ? ["shell", "task", "agent"] : ["builtin", "task", "agent"], job?.configuration.kind, v => label("jobs.kind", v));
+    const kind = choose(taskId ? ["shell", "task", "agent"] : ["shell", "builtin", "task", "agent"], job?.configuration.kind, v => label("jobs.kind", v));
     const newDefinitionId = newId("job");
     const kindNotice = h("p.job-note", { role: "status", "aria-live": "polite" });
     const saveButton = h("button.btn.btn-primary", { type: "submit" });
     const changesKind = () => !!job && kind.value !== job.configuration.kind;
     const seeds = {
       builtin: { kind: "builtin", action: "system.noop", input: {} },
-      shell: { kind: "shell", owner: { kind: "task" }, projectId: "", head: "", workspace: "", env: {},
-        steps: [{ name: "check", command: "" }] },
+      shell: taskId ? { kind: "shell", owner: { kind: "task" }, projectId: "", head: "", workspace: "", env: {},
+        steps: [{ name: "check", command: "" }] } : { kind: "shell", env: {}, files: [], steps: [{ name: "run", command: "" }] },
       task: { kind: "task", goal: "delivery", target: { kind: "new", title: "", description: "", projectBindings: [] } },
       agent: { kind: "agent", target: { kind: "job", agentId: "" }, input: "", concurrency: "serial" }
     };
@@ -515,17 +517,28 @@ export function mountJobs(root, t, taskId, options = {}) {
       node.append(field(copy("action"), action), project, h("p.job-note", null, copy("rebind")));
       if (!isEmpty(c.input)) node.append(section(copy("cfg.input"), valueView(c.input)), h("p.job-note", null, copy("form.unchanged")));
     } else if (c.kind === "shell") {
-      node.append(h("div.job-field-grid", null, text(c, "projectId", copy("project"), { required: true }),
-        text(c, "workspace", copy("cfg.workspace"), { required: true }), text(c, "head", "HEAD", { required: true })),
-        section(copy("cfg.env"), environment(c)),
-        section(copy("steps"), collection(c.steps || [], () => ({ name: "", command: "" }), stepForm, copy("form.addStep"), steps => {
+      if (taskId) node.append(h("div.job-field-grid", null, text(c, "projectId", copy("project"), { required: true }),
+        text(c, "workspace", copy("cfg.workspace"), { required: true }), text(c, "head", "HEAD", { required: true })));
+      else node.append(h("p.job-note", null, copy("form.shellHome")));
+      if (taskId) node.append(section(copy("cfg.env"), environment(c)));
+      node.append(section(copy("steps"), collection(c.steps || [], () => ({ name: "", command: "" }), stepForm, copy("form.addStep"), steps => {
           if (!steps.length) throw new Error(copy("form.needStep")); c.steps = steps;
         })));
+      if (!taskId) node.append(section(copy("form.scripts"), collection(c.files || [], () => ({ path: "scripts/run.sh", content: "" }), file => {
+        const path = input(file.path, { required: true, placeholder: "scripts/run.sh" });
+        const content = h("textarea", { rows: 8, spellcheck: "false" }); content.value = file.content;
+        return { node: h("div.job-field-stack", null, field(copy("form.scriptPath"), path), field(copy("form.scriptContent"), content)),
+          read: () => ({ path: path.value.trim(), content: content.value }) };
+      }, copy("form.addScript"), files => { c.files = files; })));
+      if (!taskId) node.append(h("details.job-raw", null, h("summary", null, copy("cfg.env")), environment(c)));
     } else if (c.kind === "_step") {
       node.append(text(c, "name", copy("name"), { required: true }),
-        text(c, "command", copy("form.command"), { required: true, multiline: true }),
+        text(c, "command", copy("form.command"), { required: true, multiline: true }));
+      if (taskId) node.append(
         h("div.job-field-grid", null, text(c, "timeoutMs", copy("form.timeout"), { number: true }), text(c, "cwd", copy("cfg.cwd"))),
         environment(c));
+      else node.append(h("details.job-raw", null, h("summary", null, copy("form.stepOptions")),
+        text(c, "timeoutMs", copy("form.timeout"), { number: true }), environment(c)));
       if (c.argv) node.append(h("p.job-note", null, copy("form.argvHelp")),
         collection(c.argv, () => "", value => {
           const control = input(value);

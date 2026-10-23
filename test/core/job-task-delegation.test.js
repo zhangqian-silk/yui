@@ -123,7 +123,7 @@ test("Task-owned delegation preserves management scope, rolls back partial admis
     usePre120Layout(db);
     db.prepare("UPDATE storage_schema SET minor=18").run();
     applySqliteMinorUpgrades(db, home);
-    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 22);
+    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 23);
     assert.equal(db.prepare("SELECT payload FROM task_records WHERE task_id=?").get(owner.id).payload, before);
   } finally { db.close(); }
   store = new SqliteTaskStore(home);

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createJobDefinition, reviseJobDefinition } from "../../dist/job/jobDefinition.js";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,6 +22,8 @@ import { usePre19Layout } from "../helpers/pre19Storage.mjs";
 import { processOperatorInputNotifications } from "../../dist/scheduler/operatorInputNotificationProcessor.js";
 import { startFileTaskController } from "../../dist/controller/controller.js";
 import { runDurableJobCommand } from "../../dist/commands/durableJobCommands.js";
+import { createScheduleControl } from "../../dist/controller/scheduleControl.js";
+import { requireScheduleService } from "../../dist/job/scheduleService.js";
 
 test("Job configuration revisions preserve ownership and previous snapshots", () => {
   const at = new Date("2026-10-16T00:00:00Z");
@@ -38,7 +40,7 @@ test("Job configuration revisions preserve ownership and previous snapshots", ()
   assert.deepEqual(next.scope, { kind: "global" });
   assert.throws(() => createJobDefinition({ ...job,
     configuration: { kind: "shell", steps: [{ name: "unsafe", command: "true" }] }
-  }, at), /global.*builtin/i);
+  }, at), /script files/i);
 });
 
 test("global Runs reuse the runner, retain independent results, reject Task callers and never replay uncertainty", async t => {
@@ -137,6 +139,49 @@ test("global Runs reuse the runner, retain independent results, reject Task call
   supervisor().reconcile(new Date());
   assert.equal(store.getGlobalJobRun(revoked.id).status, "failed");
   assert.equal(starts, 2);
+
+  // The same public CLI/control/supervisor path now owns global shell files,
+  // without a Task or an Operator Session. Editing must not alter admitted work.
+  controller = await startFileTaskController(home, new FileSchedulerStoreAdapter(store), {}, undefined, {
+    jobDefinitions: control, signalWindowMs: 60_000, intervalMs: 60_000
+  });
+  const script = join(home, "fixture.sh");
+  writeFileSync(script, "printf 'original-script\\n'\n");
+  const shellCommand = async (op, ...args) => JSON.parse(await runDurableJobCommand(
+    [op, "--global", "--job", "shell-demo", ...args], { home, environment: {} }));
+  const shell = await shellCommand("define", "--title", "Shell", "--command", "sh scripts/check.sh",
+    "--script", "scripts/check.sh=" + script);
+  assert.equal(shell.configuration.kind, "shell");
+  const admitted = await shellCommand("run", "--request-id", "shell-v1");
+  const oldSnapshot = structuredClone(admitted.run);
+  const plans = createScheduleControl(store, home);
+  const plan = plans({ op: "create", scope: { kind: "global" }, caller: { scope: "user" },
+    id: "shell-clock", jobId: shell.id, authorization: "service",
+    rule: { kind: "interval", anchor: at.toISOString(), everyMs: 60000 } }, at);
+  assert.equal(requireScheduleService(store, { scheduleId: plan.id, grantId: plan.authorization.grantId }).id, plan.id);
+  writeFileSync(script, "printf 'revised-script\\n'\n");
+  const updated = await shellCommand("update", "--revision", "1", "--script", "scripts/check.sh=" + script);
+  assert.equal(updated.revision, 2);
+  assert.equal(updated.configuration.steps[0].command, "sh scripts/check.sh");
+  assert.deepEqual(store.getGlobalJobRun(admitted.run.id), oldSnapshot);
+  assert.throws(() => requireScheduleService(store, { scheduleId: plan.id, grantId: plan.authorization.grantId }), /changed/);
+  const shellBase = { scope: { kind: "global" }, caller: { scope: "user" }, id: shell.id };
+  for (const path of ["../escape.sh", "/escape.sh", "scripts/../escape.sh"]) {
+    assert.throws(() => control({ ...shellBase, op: "update", expectedRevision: 2, title: "Shell",
+      configuration: { ...updated.configuration, files: [{ path, content: "true" }] } }, at), /relative paths/);
+  }
+  assert.throws(() => control({ ...shellBase, caller: { scope: "task", taskId: "task-1", role: "leader" },
+    op: "run", trigger: { source: "manual", key: "deny-shell" } }, at));
+  await controller.close(); controller = undefined;
+  supervisor().reconcile(new Date()); supervisor().reconcile(new Date());
+  assert.equal(store.getGlobalJobRun(admitted.run.id).status, "succeeded", JSON.stringify(store.getGlobalJobRun(admitted.run.id).result));
+  assert.match(control({ ...shellBase, op: "logs", runId: admitted.run.id }, at)[0].text, /original-script/);
+  const revisedRun = control({ ...shellBase, op: "run", trigger: { source: "manual", key: "shell-v2" } }, at).run;
+  supervisor().reconcile(new Date()); supervisor().reconcile(new Date());
+  assert.equal(store.getGlobalJobRun(revisedRun.id).status, "succeeded");
+  assert.match(control({ ...shellBase, op: "logs", runId: revisedRun.id }, at)[0].text, /revised-script/);
+  assert.notEqual(revisedRun.workspace, admitted.run.workspace);
+  assert.equal(store.listTasks().length, 0);
 });
 
 test("1.8 migration preserves exact execution IDs, original bytes and results without grouping identical commands", t => {

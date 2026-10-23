@@ -22,6 +22,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { jobStepDirectory } from "./stepDirectory.js";
 import { prepareHttpPreview, isHttpPreview } from "./httpPreview.js";
+import { materializeJobScripts, validateJobScriptFiles } from "./globalShell.js";
 
 import { writeTextFileAtomically } from "../storage/durableFile.js";
 import { currentProcessStartIdentity } from "../core/fileLockOwner.js";
@@ -135,6 +136,7 @@ export async function runDurableJobRunner(
   let preview: ReturnType<typeof prepareHttpPreview> | undefined;
 
   try {
+    if (spec.files !== undefined) materializeJobScripts(spec.workspace, spec.files);
     for (let index = 0; index < spec.steps.length; index += 1) {
       if (cancelled || existsSync(cancelPath)) {
         cancelled = true;
@@ -304,6 +306,12 @@ function readSpec(specPath: string): DurableJobSpec {
   }
   if (typeof spec.artifactDir !== "string" || !spec.artifactDir.startsWith("/")) {
     throw new Error("DurableJob spec artifactDir must be an absolute path.");
+  }
+  if (spec.files !== undefined) {
+    if (spec.scope !== "global" || spec.workspace !== join(spec.artifactDir, "workspace")) {
+      throw new Error("Job script snapshots require their own global Run workspace.");
+    }
+    validateJobScriptFiles(spec.files);
   }
   if (typeof spec.head !== "string" || spec.head.length === 0) {
     throw new Error("DurableJob spec is missing head.");

@@ -11,6 +11,7 @@ const actions = new Set(["system.noop", "project.refresh"]);
 export type ScheduleServiceRef = Readonly<{ scheduleId: string; grantId: string }>;
 
 export function requireServiceTarget(job: JobDefinition): void {
+  if (job.scope.kind === "global" && job.configuration.kind === "shell") return;
   if (job.scope.kind !== "global" || job.configuration.kind !== "builtin"
     || !actions.has(job.configuration.action)) throw new Error("Schedule service is not registered for this scope/action.");
 }

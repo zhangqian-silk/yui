@@ -89,7 +89,8 @@ export function jobRunSnapshot(run: JobRun) {
     ...runReference(run), definitionId: run.definitionId, definitionRevision: run.definitionRevision,
     owner: "owner" in run ? run.owner : null,
     trigger: run.trigger, retryOf: run.retryOf ?? null,
-    executor: run.delegation ? { kind: "task" as const, delegation: run.delegation } : "taskId" in run ? { kind: "shell" as const } : {
+    executor: run.delegation ? { kind: "task" as const, delegation: run.delegation } : "taskId" in run ? { kind: "shell" as const }
+      : run.action === "shell.exec" ? { kind: "shell" as const, configuration: run.actionInput } : {
       kind: "builtin" as const, action: run.action, input: run.actionInput
     },
     target: run.delegation ? { taskId: run.delegation.taskId, workItemId: run.delegation.workItemId ?? null }
