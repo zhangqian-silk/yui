@@ -111,36 +111,11 @@ function renderSidebar(deps, progress) {
     reset(deps, progress);
   });
   el.catalogCount.textContent = fill(t("catalog.count"), { shown: state.tasks.length, total: state.catalogTotal });
-  renderSource(el.source, state, t, function (value) {
-    state.source = value; state.attentionFilter = null; state.query = ""; el.search.value = "";
-    syncUrl(state, false); reset(deps, progress);
-  });
   el.catalogReset.hidden = !state.catalogCursor;
   el.catalogNext.hidden = !state.nextCursor && !state.catalogCursor;
   el.catalogAttentionReset.hidden = !state.attentionFilter;
   renderTaskList(deps);
   el.lastSync.textContent = state.generatedAt ? formatClock(state.generatedAt, deps.locale()) : "—";
-}
-
-// Task category: search and attention are cross-category, so they show "all";
-// picking a category clears them, as the server filter then applies again.
-function renderSource(container, state, t, onPick) {
-  const current = state.query.trim() || state.attentionFilter ? "all" : state.source || "ordinary";
-  // Bound once; the handler reads the live state, not this render's snapshot.
-  if (!container.childElementCount) {
-    ["ordinary", "job", "all"].forEach(function (value) {
-      container.append(h("button.seg-btn", { type: "button", role: "radio", dataset: { source: value },
-        onclick: function () {
-          if (value !== (state.source || "ordinary") || state.query.trim() || state.attentionFilter) onPick(value);
-        } }));
-    });
-  }
-  container.querySelectorAll("[data-source]").forEach(function (button) {
-    const value = button.dataset.source;
-    button.textContent = t("jobs.categoryShort." + value);
-    button.title = t("jobs.category." + value);
-    button.setAttribute("aria-checked", String(value === current));
-  });
 }
 
 // Redraw the list in place, keeping its scroll position.
@@ -175,9 +150,6 @@ function catalogQuery(state) {
   if (state.filter !== "all") query.set("status", state.filter);
   if (state.query.trim()) query.set("search", state.query.trim());
   if (state.attentionFilter) query.set("attention", state.attentionFilter);
-  // Search and attention remain cross-category discovery; the server owns filtering.
-  if (!state.query.trim() && !state.attentionFilter && state.source !== "all")
-    query.set("source", state.source || "ordinary");
   if (state.catalogCursor) query.set("cursor", state.catalogCursor);
   return query.toString();
 }
@@ -233,7 +205,6 @@ function applyFilters(deps, params) {
   state.query = params.get("q") || "";
   state.attentionFilter = ATTENTION_KINDS.includes(params.get("attention")) ? params.get("attention") : null;
   state.catalogAll = params.get("all") === "true";
-  state.source = ["ordinary", "job", "all"].includes(params.get("source")) ? params.get("source") : "ordinary";
   deps.el.search.value = state.query;
 }
 

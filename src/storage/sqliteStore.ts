@@ -115,7 +115,7 @@ import {
 } from "../task/taskRecordRetirement.js";
 import { writeTelemetryBatch } from "../telemetry/sqliteTelemetryBatch.js";
 import { STORED_RECORD_TABLES, validateStoredRecord, type StoredRecordTable } from "./recordValidation.js";
-import { jobScopeKey, validateJobDefinition, type JobDefinition, type JobScope } from "../job/jobDefinition.js";
+import { jobScopeKey, validateJobDefinition, type JobDefinition, type JobScope, type JobScopeSummary } from "../job/jobDefinition.js";
 import { validateSchedule, type Schedule } from "../schedule/schedule.js";
 import type { GlobalJobRun, JobRun } from "../job/durableJob.js";
 import type { TelemetryProgressEntry } from "../telemetry/telemetryStore.js";
@@ -1729,6 +1729,18 @@ export class SqliteTaskStore implements TaskStore {
 
   listJobDefinitions(scope: JobScope): JobDefinition[] {
     return this.#listPayload<JobDefinition>("job_definitions", "scope_key=?", [jobScopeKey(scope)]);
+  }
+
+  listJobScopeSummaries(): JobScopeSummary[] {
+    const rows = this.#db.prepare(`SELECT scope_key, SUM(definitions) AS definitions, SUM(schedules) AS schedules,
+        SUM(enabled) AS enabled FROM (
+          SELECT scope_key, 1 AS definitions, 0 AS schedules, 0 AS enabled FROM job_definitions
+          UNION ALL SELECT scope_key, 0, 1, CASE WHEN state='enabled' THEN 1 ELSE 0 END FROM schedules)
+      GROUP BY scope_key`).all() as { scope_key: string; definitions: number; schedules: number; enabled: number }[];
+    return rows.map(row => ({
+      scope: row.scope_key === "global" ? { kind: "global" as const } : { kind: "task" as const, taskId: row.scope_key },
+      definitions: Number(row.definitions), schedules: Number(row.schedules), enabledSchedules: Number(row.enabled)
+    }));
   }
 
   saveGlobalJobRun(run: GlobalJobRun): void {

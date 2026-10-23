@@ -60,6 +60,7 @@ const RUNTIME_DOCUMENTS = [
   "docs/storage-baseline.md",
   "docs/project-delivery-scope.md",
   "docs/job-runs.md",
+  "docs/global-shell-jobs.md",
   "docs/schedules.md",
   "docs/storage-baseline.zh-CN.md",
   "docs/task-dag-semantics.md",

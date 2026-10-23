@@ -18,7 +18,7 @@ export const APP_SCRIPT = String.raw`
 //   refresh  catalog.refresh → sidebar, then the overview (nothing selected)
 //            or selection.reload → taskView.render
 //   select   sidebar row / overview row / URL → selection.selectTask
-//   leave    rail Workbench or Escape → selection.clearSelection
+//   leave    rail Tasks or Escape → selection.clearSelection
 //   write    Task page or discussion afterWrite → quiet catalog refresh
 //   URL      load and back/forward → catalog.applyFilters + selection.followUrl
 import { createI18n } from "/assets/js/lib/i18n.js";
@@ -30,7 +30,7 @@ import { createPreviewController } from "/assets/js/views/dock/preview.js";
 import { bindGlobalInput } from "/assets/js/views/globalInput.js";
 import { bindCreateTask } from "/assets/js/views/createTask.js";
 import { bindBodySearch } from "/assets/js/views/bodySearch.js";
-import { readQuery } from "/assets/js/layout/router.js";
+import { readQuery, applyUrl } from "/assets/js/layout/router.js";
 import { rememberPlace, linkPlaces, readSessionAccessMode } from "/assets/js/lib/prefs.js";
 import { createWorkspace } from "/assets/js/layout/workspace.js";
 import { createSidebarNav } from "/assets/js/layout/sidebarNav.js";
@@ -43,7 +43,7 @@ const $ = function (selector) { return document.querySelector(selector); };
 const el = {
   sidebar: $(".sidebar"), rail: $(".app-rail"), railWorkbench: $("#rail-workbench"),
   sidebarScrim: $("#sidebar-scrim"), sidebarCollapse: $("#sidebar-collapse"), sidebarDivider: $("#sidebar-divider"), center: $("#center"), detail: $("#detail"),
-  search: $("#search"), source: $("#catalog-source"), filters: $("#status-filters"), attention: $("#attention-bar"), tasks: $("#task-list"),
+  search: $("#search"), filters: $("#status-filters"), attention: $("#attention-bar"), tasks: $("#task-list"),
   catalogNext: $("#catalog-next"), catalogReset: $("#catalog-reset"), catalogCount: $("#catalog-count"),
   catalogAttentionReset: $("#catalog-attention-reset"),
   refresh: $("#refresh"), sync: $("#sync-state"), lastSync: $("#last-sync"), toast: $("#toast"),
@@ -119,11 +119,11 @@ bindShortcuts({
   el: el, state: state, globalInput: globalInput, workspace: workspace, sidebarNav: sidebarNav,
   selection: selection, catalog: catalog, taskView: taskView
 });
-// Workbench <-> Models/Settings: each side remembers where the user was, so a
+// Tasks <-> Jobs/Models/Settings: each side remembers where the user was, so a
 // round trip returns to the same filters, Task and management section.
 function rememberWorkbench() { rememberPlace("workbench", window.location.pathname + window.location.search); }
 el.rail.querySelectorAll("a[data-nav-area]").forEach(function (link) { link.addEventListener("click", rememberWorkbench); });
-// The rail's Workbench entry on the workbench itself returns to the overview.
+// The rail's Tasks entry on the Task workbench itself returns to the overview.
 el.railWorkbench.addEventListener("click", function (event) {
   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
   event.preventDefault();
@@ -135,9 +135,20 @@ function linkAll() { linkPlaces(el.rail); linkPlaces(el.sidebar); }
 window.addEventListener("pageshow", linkAll);
 linkAll();
 
+// The retired Task category filter (?source=ordinary|job|all): the Task
+// list now always shows every real Task, so drop the parameter in place
+// (no extra history step) and say why once; Jobs have their own entry.
+let sourceHinted = false;
+function stripRetiredSource(params) {
+  if (!params.has("source")) return params;
+  params.delete("source");
+  applyUrl(params, true);
+  if (!sourceHinted) { sourceHinted = true; toast(t("catalog.sourceRemoved")); }
+  return params;
+}
 // The URL names the catalog filters and the selected Task (with its section).
 function applyStateFromUrl() {
-  const params = readQuery();
+  const params = stripRetiredSource(readQuery());
   catalog.applyFilters(params);
   selection.followUrl(params);
 }

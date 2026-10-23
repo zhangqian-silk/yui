@@ -269,6 +269,16 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   // Optional enabled flag; absence means enabled. Preserve all historical
   // Role/Profile bytes, frozen contexts and Session snapshots.
   sql: ""
+}, {
+  fromVersion: "1.22",
+  toVersion: "1.23",
+  name: "global-shell-scripts",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Additive global Shell definitions with revisioned script text and exact
+  // Run snapshots. Historical definitions/Runs stay byte-for-byte unchanged.
+  sql: ""
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {

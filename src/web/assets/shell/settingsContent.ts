@@ -23,9 +23,6 @@ export const SETTINGS_MAIN = `
         ${manageHead("settings-skills-title", "settings.section.skills", "Skills", "skills.browser.intro", "Read existing packages and choose additional bindings for one explicit Role. Scripts are displayed as data, never run.")}
         <section id="skill-browser" class="card settings-card settings-stack"></section>
       </section>
-      <section class="manage-section" data-section="jobs" hidden>
-        <section id="global-jobs"></section>
-      </section>
       <section class="manage-section" data-section="server" aria-labelledby="settings-server-title" hidden>
         ${manageHead("settings-server-title", "settings.section.server", "Agents & server", "settings.hint.server", "Desired configuration for Yui, Roles, Agents and Profiles. Saving targets later launches; it is not proof that existing Sessions adopted it.")}
         <label class="field settings-search"><span data-i18n="settings.search">Find a setting</span><input id="settings-search" type="search" autocomplete="off"></label>

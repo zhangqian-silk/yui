@@ -64,7 +64,7 @@ test("management navigation shares history across areas and normalizes direct UR
     createI18n: () => ({ t: key => key, subscribe() {} }),
     rememberPlace: (area, href) => { places[area] = href; }, linkPlaces() {} });
   vm.runInContext(MANAGE_SHELL_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), ctx);
-  for (const page of ["models", "settings"]) ctx.registerManagePage(page, { show: route => shown.push({ ...route }) });
+  for (const page of ["models", "settings", "jobs"]) ctx.registerManagePage(page, { show: route => shown.push({ ...route }) });
   ctx.startManagement();
   assert.equal(location.pathname + location.search, "/models/quota?source=command-code");
   assert.equal(history.pushes, 0, "normalizing a direct URL must not add a Back step");
@@ -84,8 +84,27 @@ test("management navigation shares history across areas and normalizes direct UR
     "each area remembers its last section for the return trip from the workbench");
   const ref = JSON.stringify({ version: "a".repeat(40), relativePath: "report.md" });
   const fixed = new URL("http://localhost/settings/jobs?job=reports&jobRun=run-1&artifact=" + encodeURIComponent(ref));
-  const href = ctx.manageHref(ctx.readManageRoute(fixed));
-  assert.equal(href, fixed.pathname + fixed.search, "management canonicalization must preserve fixed Job evidence");
+  const legacy = ctx.readManageRoute(fixed);
+  assert.equal(legacy.page, "jobs");
+  assert.equal(legacy.moved, true, "a retired Settings link says it moved");
+  assert.equal(ctx.manageHref(legacy), "/jobs" + fixed.search,
+    "the retired Settings address opens the Jobs entry and preserves fixed Job evidence");
+  for (const old of ["http://localhost/settings?section=jobs&task=task-7", "http://localhost/settings/jobs?task=task-7"])
+    assert.equal(ctx.manageHref(ctx.readManageRoute(new URL(old))), "/jobs?task=task-7");
+  const scoped = ctx.readManageRoute(new URL("http://localhost/jobs?task=task-12&job=sync&jobRun=run-2"));
+  assert.deepEqual([scoped.page, scoped.task, scoped.job, scoped.jobRun, scoped.moved], ["jobs", "task-12", "sync", "run-2", undefined]);
+  assert.equal(ctx.readManageRoute(new URL("http://localhost/jobs?task=../x")).task, null, "only an exact Task id scopes Jobs");
+  // A Job choice is a history step; Back returns to the previous Job.
+  const pushes = history.pushes;
+  ctx.navigateManage({ page: "jobs", section: "jobs", task: null, job: "project-sync-project-1" });
+  assert.equal(location.pathname + location.search, "/jobs?job=project-sync-project-1");
+  assert.equal(history.pushes, pushes + 1);
+  assert.equal(elements.get("#jobs-root").hidden, false);
+  assert.equal(elements.get("#settings-root").hidden, true);
+  assert.equal(places.jobs, "/jobs?job=project-sync-project-1");
+  location.href = "http://localhost/settings/server";
+  handlers.popstate();
+  assert.equal(elements.get("#jobs-root").hidden, true);
 });
 
 
@@ -186,7 +205,7 @@ test("models shell is served and linked from the dashboard navigation", () => {
   assert.match(MODELS_HTML, /src="\/assets\/js\/app\/manage\.js"/);
   // One global rail on every page: each area returns to where the user last was.
   assert.equal(appRail("models").replace(/ aria-current="page"/g, ""), appRail("settings").replace(/ aria-current="page"/g, ""));
-  for (const area of ["workbench", "models", "settings"]) assert.match(appRail("models"), new RegExp(`data-area="${area}" (aria-current="page" )?data-nav-area="${area}"`));
+  for (const area of ["workbench", "jobs", "models", "settings"]) assert.match(appRail("models"), new RegExp(`data-area="${area}" (aria-current="page" )?data-nav-area="${area}"`));
   assert.match(appRail("workbench"), /href="\/models" data-area="models" data-nav-area="models"/);
   // The shared rail links back to Yui and Settings and gives every section a real URL.
   assert.match(MODELS_HTML, /href="\/"/);
@@ -201,7 +220,7 @@ test("models and settings share one management rail with the same navigation", (
   assert.equal(rail(MODELS_HTML), rail(SETTINGS_HTML), "both pages render the identical shared section list");
   const nav = rail(MODELS_HTML);
   // The workbench frame: global rail, collapsible list, top bar with the list switch.
-  for (const area of ["workbench", "models", "settings"]) assert.match(MODELS_HTML, new RegExp(`class="rail-item"[^>]*data-area="${area}"`));
+  for (const area of ["workbench", "jobs", "models", "settings"]) assert.match(MODELS_HTML, new RegExp(`class="rail-item"[^>]*data-area="${area}"`));
   assert.match(MODELS_HTML, /class="app manage-app"/);
   assert.match(MODELS_HTML, /<header class="top-bar">[\s\S]*data-sidebar-toggle="true"/);
   // Daily model work stays under Models; the connection is a Settings section still served by /models.
@@ -213,6 +232,11 @@ test("models and settings share one management rail with the same navigation", (
     assert.match(settings, new RegExp(`href="/settings/${section}" data-page="settings" data-section="${section}"`));
   }
   assert.match(settings, /href="\/settings\/connection" data-page="models" data-section="connection"/);
+  // Jobs are their own entry, not a Settings section; its list mounts in the same rail.
+  assert.doesNotMatch(settings, /data-section="jobs"/);
+  assert.match(nav, /data-area-group="jobs">\s*<div id="jobs-index"/);
+  assert.match(MODELS_HTML, /<div id="jobs-root" class="jobs-root" hidden><\/div>/);
+  assert.match(appRail("jobs"), /href="\/jobs" data-area="jobs" aria-current="page" data-nav-area="jobs"/);
   assert.match(nav, /Agents &amp; server/, "labels are HTML-escaped");
   for (const section of ["preferences", "skills", "server"]) assert.match(SETTINGS_HTML, new RegExp(`data-section="${section}"`));
   assert.match(SETTINGS_HTML, /id="settings-search"/);

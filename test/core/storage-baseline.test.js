@@ -23,12 +23,12 @@ import { createTaskMessage } from "../../dist/message/message.js";
 import { contextContentDigest, createContextSnapshot } from "../../dist/context/contextSnapshot.js";
 import { usePre19Layout, usePre114Layout } from "../helpers/pre19Storage.mjs";
 
-test("fresh storage creates only the current 1.22 contract", () => {
-  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.22");
+test("fresh storage creates only the current 1.23 contract", () => {
+  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.23");
   const db = new Database(":memory:");
   try {
     schema.initializeSqliteSchema(db);
-    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.22");
+    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.23");
     assert.equal(schema.inspectSqliteSchema(db).targetChecksum, schema.CURRENT_SCHEMA_CHECKSUM);
     assert.equal(db.prepare("SELECT count(*) AS n FROM storage_schema").get().n, 1);
     assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='schema_migrations'").get(), undefined);
@@ -163,7 +163,8 @@ test("1.1 upgrade preserves valid Operator authority without inventing user prov
         ["1.18", "1.19", "job-task-delegation"],
         ["1.19", "1.20", "job-agent-execution"],
         ["1.20", "1.21", "project-sync-clock"],
-        ["1.21", "1.22", "role-profile-availability"]]);
+        ["1.21", "1.22", "role-profile-availability"],
+        ["1.22", "1.23", "global-shell-scripts"]]);
   }
   finally { current.close(); }
 });

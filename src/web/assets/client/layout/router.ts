@@ -23,7 +23,8 @@ export function syncUrl(state, replace) {
   if (state.query) params.set("q", state.query); else params.delete("q");
   if (state.attentionFilter) params.set("attention", state.attentionFilter); else params.delete("attention");
   if (state.catalogAll) params.set("all", "true"); else params.delete("all");
-  if (state.source && state.source !== "ordinary") params.set("source", state.source); else params.delete("source");
+  // Tasks have no category filter: every real Task, Job-created ones marked.
+  params.delete("source");
   applyUrl(params, replace);
 }
 

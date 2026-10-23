@@ -4,6 +4,7 @@ import { validateJobExecutionConfiguration, validateDurableJobOwner } from "./du
 import type { JsonValue } from "../core/protocol.js";
 import { validateAgentJobConfiguration, type AgentJobConfiguration } from "./agentJob.js";
 import { validateTaskJobConfiguration, type TaskJobConfiguration as DelegatedTaskConfiguration } from "./taskDelegation.js";
+import { prepareGlobalShell, type GlobalShellConfiguration } from "./globalShell.js";
 
 export type JobScope = Readonly<{ kind: "task"; taskId: string }> | Readonly<{ kind: "global" }>;
 export type TaskJobConfiguration = Readonly<{
@@ -21,7 +22,7 @@ export type BuiltinJobConfiguration = Readonly<{
   projectId?: string;
   input: JsonValue;
 }>;
-export type JobConfiguration = TaskJobConfiguration | BuiltinJobConfiguration | AgentJobConfiguration | DelegatedTaskConfiguration;
+export type JobConfiguration = TaskJobConfiguration | GlobalShellConfiguration | BuiltinJobConfiguration | AgentJobConfiguration | DelegatedTaskConfiguration;
 export type JobDefinition = Readonly<{
   schemaVersion: 1;
   id: string;
@@ -39,6 +40,9 @@ export type JobTrigger = Readonly<{
   source: "manual" | "retry" | "schedule" | "integration" | "migration";
   key: string;
 }>;
+
+/** Discovery counts for one owning scope; reads still authorize each record. */
+export type JobScopeSummary = Readonly<{ scope: JobScope; definitions: number; schedules: number; enabledSchedules: number }>;
 
 export function jobScopeKey(scope: JobScope): string {
   if (scope.kind === "global") return "global";
@@ -76,13 +80,17 @@ export function validateJobDefinition(job: JobDefinition): JobDefinition {
   } else if (config.kind === "task") {
     validateTaskJobConfiguration(config);
   } else if (job.scope.kind === "global") {
+    if (config.kind === "shell") {
+      prepareGlobalShell(config as GlobalShellConfiguration, "/job-validation");
+      return job;
+    }
     if (config.kind !== "builtin") throw new Error("Global Jobs require a controlled builtin action.");
     requireKnownFields(config, ["kind", "action", "projectId", "input"], "Builtin Job");
     requireText(config.action, "Builtin action");
     if (config.projectId !== undefined) requireIdentity(config.projectId, "Job Project id");
     if (config.input === undefined) throw new Error("Builtin Job input is required.");
   } else {
-    if (config.kind !== "shell") throw new Error("Task Jobs require a managed shell configuration.");
+    if (config.kind !== "shell" || !("owner" in config)) throw new Error("Task Jobs require a managed shell configuration.");
     requireKnownFields(config, ["kind", "owner", "projectId", "head", "workspace", "env", "steps"], "Task Job");
     requireIdentity(config.projectId, "Job Project id");
     validateDurableJobOwner(config.owner, job.scope.taskId);

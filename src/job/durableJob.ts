@@ -171,6 +171,7 @@ export function executionNamespace(run: JobRun): string {
 
 /** The spec the Controller writes for the runner to consume. */
 export type DurableJobSpec = Readonly<{
+  files?: readonly import("./globalShell.js").JobScriptFile[];
   jobId: string;
   taskId?: string;
   scope?: "global";

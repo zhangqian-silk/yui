@@ -17,6 +17,120 @@ import { createJobDefinitionControl } from "../../dist/controller/jobDefinitionC
 import { createWebTaskSurface } from "../../dist/web/webTaskSurface.js";
 import vm from "node:vm";
 import { JOBS_SCRIPT } from "../../dist/web/assets/client/views/jobs.js";
+import { JOBS_APP_SCRIPT } from "../../dist/web/assets/client/app/jobs.js";
+import { MANAGE_SHELL_SCRIPT } from "../../dist/web/assets/client/layout/manageShell.js";
+
+test("visual Cron edits roundtrip simple rules and leave complex expressions untouched", () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(JOBS_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), ctx);
+  const parse = value => ctx.cronFields(value);
+  const encode = value => ctx.cronExpression(value);
+  for (const expression of ["0 9 * * *", "30 10 * * 6,0", "5 8 31 * *"]) {
+    assert.equal(encode(parse(expression)), expression);
+  }
+  assert.equal(parse("*/15 9-17 * * MON-FRI"), null);
+  assert.equal(parse("0 9 1 * 1"), null, "day-of-month OR weekday must not become a monthly-only rule");
+  assert.equal(parse("0 9 * 1 *"), null);
+  assert.throws(() => encode({ frequency: "weekly", time: "09:00", days: [] }));
+  assert.throws(() => encode({ frequency: "monthly", time: "25:00", day: 1 }));
+  assert.throws(() => encode({ frequency: "monthly", time: "09:00", day: 32 }));
+});
+
+test("Job and plan forms preserve unedited fields, exact association/timezone and invalid drafts", async () => {
+  const h = (spec, attrs, ...children) => ({ spec, ...attrs, children: children.flat().filter(v => v != null), dataset: {},
+    classList: { add() {}, toggle() {} }, append(...nodes) { this.children.push(...nodes.flat()); },
+    replaceChildren(...nodes) { this.children = nodes.flat().filter(v => v != null); },
+    setAttribute(key, value) { this[key] = value; }, querySelector() { return null; }, querySelectorAll() { return []; },
+    addEventListener(name, fn) { this["on" + name] = fn; } });
+  const walk = n => n && typeof n === "object" ? [n, ...(n.children || []).flatMap(walk)] : [];
+  const text = n => typeof n === "string" ? n : [n?.textContent, ...(n?.children || []).map(text)].join(" ");
+  const flush = () => new Promise(resolve => setImmediate(resolve));
+  const configs = [
+    { kind: "shell", env: {}, steps: [{ name: "run", command: "sh scripts/check.sh" }],
+      files: [{ path: "scripts/check.sh", content: "printf 'ok\\n'\n" }] },
+    { kind: "builtin", action: "system.noop", input: { retained: [1, true] } },
+    { kind: "shell", owner: { kind: "work-item", workItemId: "work-item-3" }, projectId: "project-1", head: "a".repeat(40),
+      workspace: "/fixture", env: { CI: "1" }, steps: [{ name: "one", command: "true", argv: ["true"],
+        cwd: "/fixture", timeoutMs: 1000, env: { STEP: "yes" } }] },
+    { kind: "task", goal: "delivery", target: { kind: "new", title: "Task", description: "Intent",
+      type: "feature", projectBindings: [{ projectId: "project-1", directory: "repo", baseRef: "main" }] } },
+    { kind: "agent", target: { kind: "task", taskId: "task-1", roleName: "worker", ownerRunId: "run-2" }, input: "Intent" }
+  ];
+  for (const configuration of configs) {
+    const job = { id: "fixture", title: "Fixture", revision: 3, configuration: { ...configuration, extra: { keep: true } } };
+    const writes = [], root = h("div");
+    const schedule = { id: "existing", jobId: job.id, revision: 4, state: "disabled",
+      rule: { kind: "cron", expression: "30 10 * * 6,0", timezone: "America/New_York" } };
+    const ctx = vm.createContext({ h, URL, URLSearchParams, location: new URL("http://fixture/jobs?job=fixture"),
+      crypto: { randomUUID: () => "generated" }, history: { replaceState() {} }, window: { confirm: () => true },
+      icon: () => h("svg"), dot: () => h("span"), badge: label => h("span", null, label), formatDateTime: value => value,
+      requestJson: async url => url.includes("/schedules")
+        ? url.includes("op=show") ? { schedule } : [schedule]
+        : url.includes("op=list") ? [job] : [],
+      submitMutation: async (_key, _url, payload) => { writes.push(JSON.parse(JSON.stringify(payload))); return { id: job.id }; }
+    });
+    vm.runInContext(JOBS_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), ctx);
+    ctx.mountJobs(root, key => key, configuration.owner ? "task-1" : undefined);
+    await flush();
+    walk(root).find(n => n.spec?.startsWith("button") && n.children.includes("jobs.editJob")).onclick();
+    let form = walk(root).find(n => n.spec === "form.dialog-body.job-form");
+    if (configuration.kind === "builtin") {
+      const kind = walk(form).find(n => n.spec === "select" && n.value === "builtin");
+      assert.notEqual(kind.disabled, true, "editing allows choosing another executor");
+      kind.value = "agent"; kind.onchange();
+      const agentInput = walk(form).find(n => n.spec === "textarea");
+      agentInput.value = "New agent intent";
+      kind.value = "task"; kind.onchange();
+      kind.value = "agent"; kind.onchange();
+      assert.equal(walk(form).find(n => n.spec === "textarea").value, "New agent intent", "each executor keeps its draft");
+      kind.value = "builtin"; kind.onchange();
+    }
+    form.onsubmit({ preventDefault() {} }); await flush();
+    assert.deepEqual(writes.at(-1).configuration, job.configuration, configuration.kind + " roundtrip");
+    assert.equal(writes.at(-1).op, "update");
+    if (configuration.kind === "builtin") {
+      walk(root).find(n => n.spec?.startsWith("button") && n.children.includes("jobs.editJob")).onclick();
+      form = walk(root).find(n => n.spec === "form.dialog-body.job-form");
+      const kind = walk(form).find(n => n.spec === "select" && n.value === "builtin");
+      kind.value = "agent"; kind.onchange();
+      const target = walk(form).find(n => n.spec === "select" && n.value === "job");
+      target.value = "operator"; target.onchange();
+      walk(form).find(n => n.spec === "textarea").value = "Summarize";
+      form.onsubmit({ preventDefault() {} }); await flush();
+      assert.equal(writes.at(-1).op, "define", "different executor creates a new definition, never rewrites history");
+      assert.notEqual(writes.at(-1).id, job.id);
+      assert.equal(writes.at(-1).expectedRevision, undefined);
+      assert.equal(writes.at(-1).configuration.kind, "agent");
+      assert.equal(job.configuration.kind, "builtin");
+    }
+    walk(root).find(n => n.spec?.startsWith("button") && n.children.includes("jobs.editSchedule")).onclick();
+    form = walk(root).find(n => n.spec === "form.dialog-body.job-form");
+    form.onsubmit({ preventDefault() {} }); await flush();
+    assert.deepEqual(writes.at(-1).rule, schedule.rule);
+    assert.equal(writes.at(-1).jobId, "fixture");
+    assert.equal(writes.at(-1).id, "existing");
+    walk(root).find(n => n.spec?.startsWith("button") && n.children.includes("jobs.editSchedule")).onclick();
+    form = walk(root).find(n => n.spec === "form.dialog-body.job-form");
+    const days = walk(form).find(n => n.spec === "div.job-weekdays");
+    days.children.filter(n => n["aria-pressed"] === "true").forEach(n => n.onclick());
+    const before = writes.length;
+    form.onsubmit({ preventDefault() {} }); await flush();
+    assert.equal(writes.length, before, "empty weekdays never submit");
+    assert.match(text(root), /jobs.form.cronDays/);
+    assert.ok(walk(root).includes(form), "invalid draft remains open");
+    const mode = walk(form).find(n => n.spec === "select" && n.value === "weekly");
+    mode.value = "advanced"; mode.onchange();
+    assert.equal(mode.value, "advanced", "an incomplete visual draft must not block custom Cron");
+    assert.doesNotMatch(text(walk(root).find(n => n.spec === "p.settings-receipt")), /cronDays/,
+      "modal validation must not leak to the page");
+    const expression = walk(form).find(n => n.spec === "input" && n.placeholder === "0 9 * * *");
+    assert.equal(expression.value, "", "do not invent an expression from an empty week");
+    expression.value = "15 8 * * 1-5"; expression.oninput();
+    form.onsubmit({ preventDefault() {} }); await flush();
+    assert.equal(writes.at(-1).rule.expression, "15 8 * * 1-5");
+    assert.equal(writes.at(-1).rule.timezone, "America/New_York");
+  }
+});
 
 test("Web Job ingress fixes scope, rejects caller injection and preserves exact Run / schedule semantics", async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-web-jobs-"));
@@ -50,7 +164,9 @@ test("Web Job ingress fixes scope, rejects caller injection and preserves exact 
     surface: createWebTaskSurface(store, home) });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const base = "http://127.0.0.1:" + server.address().port;
-  assert.equal((await fetch(base + "/settings/jobs")).status, 200, "Jobs settings is directly navigable/reloadable");
+  assert.equal((await fetch(base + "/jobs")).status, 200, "the Jobs entry is directly navigable/reloadable");
+  assert.equal((await fetch(base + "/jobs?task=task-1&job=owned-task-1")).status, 200);
+  assert.equal((await fetch(base + "/settings/jobs")).status, 200, "the retired Settings address still opens (client redirects)");
   const api = async (path, body, headers = {}) => {
     const response = await fetch(base + "/api/" + path, {
       headers: { "x-yui-web-token": "test-token", "content-type": "application/json", origin: base, ...headers },
@@ -58,6 +174,11 @@ test("Web Job ingress fixes scope, rejects caller injection and preserves exact 
     });
     return { status: response.status, body: await response.json() };
   };
+  // Scope discovery: the global scope plus every Task that owns Jobs/plans, counts per scope.
+  const scopes = (await api("jobs/scopes")).body;
+  assert.deepEqual(scopes.global, { definitions: 0, schedules: 0, enabledSchedules: 0 });
+  assert.deepEqual(scopes.tasks.map(item => [item.taskId, item.definitions]), [["task-2", 1], ["task-1", 1]]);
+  assert.equal((await api("jobs/scopes?task=task-1")).status, 400, "scope discovery takes no caller options");
   const global = "settings/jobs", task = "tasks/task-1/jobs";
   const config = { kind: "builtin", action: "system.noop", input: {} };
   assert.equal((await api(global, { op: "define", id: "noop", title: "Probe", configuration: config })).status, 200);
@@ -115,6 +236,15 @@ test("Web Job ingress fixes scope, rejects caller injection and preserves exact 
   const instances = (await api("dashboard?source=job")).body.tasks;
   assert.ok(ordinary.every(t => t.id !== targetId));
   assert.ok(instances.some(t => t.id === targetId));
+  // The Web Task list reads without a category: every real Task, the Job-created one marked by its source.
+  const everyTask = (await api("dashboard")).body;
+  assert.equal(everyTask.total, store.listTasks().length);
+  assert.equal(everyTask.tasks.find(t => t.id === targetId).source.kind, "job-run");
+  assert.ok(everyTask.tasks.some(t => t.id === "task-1"));
+  const scopedAfter = (await api("jobs/scopes")).body;
+  assert.equal(scopedAfter.global.definitions, 1);
+  assert.equal(scopedAfter.global.schedules, 1);
+  assert.equal(scopedAfter.tasks.find(item => item.taskId === "task-1").definitions, 2);
   assert.ok((await api("dashboard?search=Task%20B")).body.tasks.some(t => t.id === targetId));
   await api(task, { op: "run-cancel", id: "delegate", runId: delegated.id });
   assert.equal(store.getTask(targetId).status, "draft", "cancel only requests delegation cancellation, never stops target");
@@ -154,10 +284,13 @@ test("Job view keeps historical Agent results when diagnostics fail and never re
     trigger: { source: "manual", key: id }, configuration: { kind: "agent", target: { kind: "operator" } },
     businessResult: { outcome, summary: id + " business result" } });
   const old = run("old-success", "succeeded", "17"), latest = run("new-failure", "failed", "18");
-  const job = { id: "analysis", title: "Analysis", revision: 1, configuration: old.configuration };
+  const job = { id: "analysis", title: "Analysis", revision: 1,
+    configuration: { ...old.configuration, input: "Summarize the week", futureField: { nested: "kept" } } };
   const location = new URL("http://fixture/settings/jobs?job=analysis&jobRun=old-success");
   const ctx = vm.createContext({
-    h, URL, URLSearchParams, location, history: { state: {}, replaceState(_state, _title, url) { location.href = String(url); } },
+    h, URL, URLSearchParams, location, formatDateTime: iso => iso, icon: () => h("svg"),
+    badge: (label, tone) => h("span.badge", { dataset: { tone } }, label), dot: (tone, label) => h("span.dot", { title: label }),
+    history: { state: {}, replaceState(_state, _title, url) { location.href = String(url); } },
     window: { confirm: () => true }, crypto: { randomUUID: () => "one-request" },
     requestJson: async url => {
       reads.push(url); const q = new URL(url, location).searchParams;
@@ -178,6 +311,12 @@ test("Job view keeps historical Agent results when diagnostics fail and never re
   assert.match(text(root), /jobs.recentSuccess.*old-success.*succeeded/);
   assert.match(text(root), /old-success business result/);
   assert.match(text(root), /diagnostic unavailable/);
+  // Configuration reads once as named fields, including unknown fields,
+  // without a duplicate JSON disclosure.
+  assert.match(text(root), /jobs.cfg.agentInput.*Summarize the week/);
+  assert.match(text(root), /jobs.cfg.other.*futureField.*kept/);
+  const rawViews = elements.filter(n => n.spec === "details.job-raw");
+  assert.ok(!rawViews.some(n => text(n).includes('"futureField"')));
   assert.equal(reads.some(url => url.includes("op=logs")), false, "Agent history must not require process logs");
   await view.refresh(); await flush();
   assert.equal(new URL(reads.filter(url => url.includes("op=run-get")).at(-1), location).searchParams.get("runId"), old.id);
@@ -186,4 +325,239 @@ test("Job view keeps historical Agent results when diagnostics fail and never re
   assert.match(text(root), /jobs.unknown/);
   runNow.onclick(); await flush();
   assert.equal(writes.length, 1, "unknown submission is not retried with a fresh request id");
+});
+
+test("Job index counts, searches and empties exactly one scope and routes a pick through history", async () => {
+  const h = (spec, attrs, ...children) => ({ spec, ...attrs, children: children.flat().filter(v => v != null), dataset: { ...(attrs?.dataset || {}) },
+    disabled: false, classList: { add() {}, toggle() {} }, append(...items) { this.children.push(...items.flat()); },
+    replaceChildren(...items) { this.children = items.flat().filter(v => v != null); }, querySelectorAll() { return []; },
+    addEventListener(name, fn) { this["on" + name] = fn; } });
+  const sync = { id: "project-sync-project-1", title: "Project sync · Yui", revision: 1, builtin: "project-sync",
+    configuration: { kind: "builtin", action: "project.refresh", projectId: "project-1" },
+    results: { latest: { status: "failed" } } };
+  const report = { id: "weekly-report", title: "Weekly report", revision: 2,
+    configuration: { kind: "shell", projectId: "project-2" } };
+  const plan = { id: "project-sync-project-1", jobId: sync.id, state: "eligible", builtin: { enabled: false, projectId: "project-1" },
+    nextDue: "2026-10-22T00:00:00Z", rule: { kind: "interval", anchor: "2026-10-01T00:00:00Z", everyMs: 3600000 } };
+  let jobs = [sync, report];
+  const location = new URL("http://fixture/jobs");
+  const picks = [];
+  const ctx = vm.createContext({ h, URL, URLSearchParams, location, formatDateTime: iso => iso, icon: () => h("svg"),
+    badge: (label, tone) => h("span.badge", { dataset: { tone } }, label), dot: (tone, label) => h("span.dot", { title: label, dataset: { tone } }),
+    history: { state: {}, replaceState() { throw new Error("index picks are history steps, not replacements"); } },
+    window: { confirm: () => true }, crypto: { randomUUID: () => "x" },
+    requestJson: async url => {
+      const q = new URL(url, location).searchParams;
+      assert.ok(url.startsWith("/api/settings/"), "the global scope reads only global records");
+      if (url.includes("/schedules")) return q.get("op") === "list" ? [plan] : { schedule: plan };
+      if (q.get("op") === "list") return jobs;
+      if (q.get("op") === "runs") return [];
+      return {};
+    },
+    submitMutation: async () => { throw new Error("no writes"); } });
+  vm.runInContext(JOBS_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), ctx);
+  const text = node => typeof node === "string" ? node : [node?.textContent, ...(node?.children || []).map(text)].join(" ");
+  const walk = node => node && typeof node === "object" ? [node, ...(node.children || []).flatMap(walk)] : [];
+  const flush = () => new Promise(resolve => setImmediate(resolve));
+  const t = (key, fallback) => ({ "jobs.count": "{total} Jobs", "jobs.countFiltered": "{shown} of {total} Jobs" })[key] ?? fallback ?? key;
+  const index = h("div"), root = h("div");
+  const view = ctx.mountJobs(root, t, undefined, { index, navigate: selection => picks.push(selection),
+    heading: { title: "Jobs", hint: "hint" }, notice: "moved" });
+  await flush();
+  const rows = () => walk(index).filter(n => n.spec === "button.job-row");
+  assert.equal(rows().length, 2);
+  assert.match(text(index), /2 Jobs/);
+  const syncRow = rows().find(n => n.dataset.job === sync.id);
+  assert.match(text(syncRow), /jobs.type.projectSync/, "the builtin Project sync reads as its own Job type");
+  assert.equal(walk(syncRow).find(n => n.spec === "span.dot").dataset.tone, "idle", "an off plan shows the on/off preference");
+  assert.equal(walk(syncRow).find(n => n.spec === "span.badge").dataset.status, "failed", "Run status is a separate badge");
+  assert.match(text(rows().find(n => n.dataset.job === report.id)), /jobs.noSchedule.*/);
+  assert.match(text(root), /moved/);
+  const search = walk(index).find(n => n.spec === "input");
+  search.value = "weekly"; search.oninput();
+  assert.deepEqual(rows().map(n => n.dataset.job), [report.id]);
+  assert.match(text(index), /1 of 2 Jobs/);
+  search.value = "nothing"; search.oninput();
+  assert.equal(rows().length, 0);
+  assert.match(text(index), /jobs.noMatch/);
+  search.value = ""; search.oninput();
+  rows().find(n => n.dataset.job === sync.id).onclick();
+  assert.deepEqual(picks.map(p => ({ ...p })), [{ job: sync.id }]);
+  view.select(sync.id); await flush();
+  assert.equal(rows().find(n => n.dataset.job === sync.id)["aria-current"], "true");
+  jobs = []; await view.refresh(false); await flush();
+  assert.match(text(index), /0 Jobs/);
+  assert.match(text(index), /jobs.empty/);
+});
+
+test("Jobs entry keeps one live view across every route source: drafts, writes in flight, late reads and artifacts", async () => {
+  const h = (spec, attrs, ...children) => ({ spec, ...attrs, children: children.flat().filter(v => v != null),
+    dataset: { ...(attrs?.dataset || {}) }, hidden: false, disabled: false, classList: { add() {}, toggle() {} },
+    append(...items) { this.children.push(...items.flat().filter(v => v != null)); },
+    setAttribute(name, value) { this[name] = String(value); },
+    prepend(...items) { this.children.unshift(...items); },
+    replaceChildren(...items) { this.children = items.flat().filter(v => v != null); },
+    querySelectorAll() { return []; }, querySelector() { return null; },
+    addEventListener(name, fn) { this["on" + name] = fn; } });
+  const walk = node => node && typeof node === "object" ? [node, ...(node.children || []).flatMap(walk)] : [];
+  const text = node => walk(node).map(n => typeof n === "string" ? n : n.textContent || "").join(" ")
+    + " " + walk(node).flatMap(n => n.children || []).filter(c => typeof c === "string").join(" ");
+  const flush = async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); };
+  const nodes = new Map();
+  const document = { querySelector(key) { if (!nodes.has(key)) nodes.set(key, h("div")); return nodes.get(key); },
+    addEventListener(name, fn) { this["on" + name] = fn; } };
+  const location = new URL("http://fixture/jobs?job=old&jobRun=old-run");
+  const history = { state: null, pushes: 0,
+    replaceState(state, _, url) { this.state = state; if (url) location.href = new URL(url, location).href; },
+    pushState(state, _, url) { this.pushes++; this.replaceState(state, _, url); } };
+  const handlers = {};
+  let confirmAnswer = true, confirms = 0, alerts = 0;
+  const window = { addEventListener(name, fn) { handlers[name] = fn; }, confirm: () => { confirms++; return confirmAnswer; },
+    alert: () => { alerts++; } };
+  // Reads answer at once unless a test holds them; held reads resolve later.
+  const held = [], reads = [];
+  let holdGlobalList = true, pendingWrite = null;
+  const ref = version => ({ version: version.repeat(40), relativePath: version + ".md", owner: { kind: "job" } });
+  const records = {
+    global: { jobs: [{ id: "old", title: "Old", revision: 1, configuration: { kind: "shell" } }],
+      runs: [{ id: "old-run", status: "succeeded", createdAt: "2026-10-20T00:00:00Z", trigger: { source: "manual", key: "k" },
+        configuration: { kind: "shell" }, artifacts: [ref("a"), ref("b")] }] },
+    task: { jobs: [{ id: "new", title: "New", revision: 1, configuration: { kind: "shell" } },
+      { id: "other", title: "Other", revision: 1, configuration: { kind: "shell" } }], runs: [] }
+  };
+  const requestJson = url => {
+    reads.push(url);
+    if (url === "/api/jobs/scopes") return Promise.resolve({ tasks: [{ taskId: "task-2", title: "Two" }] });
+    const q = new URL(url, location).searchParams;
+    const scope = url.startsWith("/api/tasks/task-2/") ? records.task : records.global;
+    const value = url.includes("/schedules") ? [] : q.get("op") === "list" ? scope.jobs : q.get("op") === "runs" ? scope.runs
+      : q.get("op") === "run-get" ? scope.runs.find(r => r.id === q.get("runId"))
+      : q.get("op") === "artifact-preview" ? { text: "preview" } : [];
+    if (holdGlobalList && scope === records.global && q.get("op") === "list") {
+      holdGlobalList = false;
+      return new Promise(resolve => held.push(() => resolve(value)));
+    }
+    return Promise.resolve(value);
+  };
+  const ctx = vm.createContext({ h, icon: () => h("svg"), URL, URLSearchParams, location, history, window, document,
+    formatDateTime: iso => iso, badge: label => h("span.badge", null, label), dot: () => h("span.dot"),
+    drawArtifact: viewer => viewer.replaceChildren("artifact-drawn"), crypto: { randomUUID: () => "r" }, CSS: { escape: v => v },
+    createI18n: () => ({ t: key => key, subscribe() {}, getLocale: () => "en" }), requestJson,
+    submitMutation: () => new Promise(resolve => { pendingWrite = resolve; }),
+    rememberPlace() {}, linkPlaces() {} });
+  const body = script => script.replace(/^import .*;\n/gm, "").replace(/^export /gm, "");
+  const shell = vm.runInContext("(() => {" + body(MANAGE_SHELL_SCRIPT)
+    + "\nreturn { i18n, registerManagePage, navigateManage, replaceManageRoute, pushManageRoute, startManagement };})()", ctx);
+  const views = vm.runInContext("(() => {" + body(JOBS_SCRIPT) + "\nreturn { mountJobs };})()", ctx);
+  const mounts = [];
+  Object.assign(ctx, shell, { mountJobs: (...args) => { mounts.push(args[2] || "global"); return views.mountJobs(...args); } });
+  for (const page of ["models", "settings"]) shell.registerManagePage(page, { show() {} });
+  vm.runInContext("(() => {" + body(JOBS_APP_SCRIPT) + "})()", ctx);
+  shell.startManagement();
+  const here = () => location.pathname + location.search;
+  const root = nodes.get("#jobs-root");
+  const editorOpen = () => walk(root).some(n => typeof n.spec === "string" && n.spec.startsWith("form."));
+  const openDraft = () => {
+    walk(nodes.get("#jobs-index")).find(n => n.id === "jobs-create").onclick();
+    walk(root).find(n => typeof n.spec === "string" && n.spec.startsWith("form.")).oninput();
+  };
+
+  // 1. A late read of a replaced view never writes the new view's address.
+  assert.deepEqual(mounts, ["global"]);
+  shell.navigateManage({ page: "jobs", section: "jobs", task: "task-2", job: "new" });
+  await flush();
+  assert.deepEqual(mounts, ["global", "task-2"]);
+  held.forEach(release => release()); await flush();
+  assert.equal(here(), "/jobs?task=task-2&job=new", "the retired global view must not pin old/old-run");
+
+  // 2. A draft is discarded only on confirmation, for links, controls and Back/Forward alike.
+  openDraft();
+  confirmAnswer = false;
+  assert.equal(shell.navigateManage({ page: "jobs", section: "jobs", task: null }), false);
+  assert.equal(here(), "/jobs?task=task-2&job=new");
+  assert.deepEqual(mounts, ["global", "task-2"], "a cancelled scope change keeps the view");
+  const pushes = history.pushes;
+  location.href = "http://fixture/jobs?job=old";
+  handlers.popstate(); await flush();
+  assert.equal(here(), "/jobs?task=task-2&job=new", "a cancelled Back restores the kept view's address");
+  assert.equal(history.pushes, pushes + 1);
+  location.href = "http://fixture/jobs?task=task-2&job=other";
+  handlers.popstate(); await flush();
+  assert.equal(here(), "/jobs?task=task-2&job=new", "a cancelled same-scope Job change keeps the editor's Job");
+  assert.equal(editorOpen(), true);
+  assert.equal(confirms, 3);
+  confirmAnswer = true;
+  location.href = "http://fixture/jobs?task=task-2&job=other";
+  handlers.popstate(); await flush();
+  assert.equal(editorOpen(), false, "an editor never outlives the Job it was opened on");
+  assert.equal(here(), "/jobs?task=task-2&job=other");
+  assert.deepEqual(mounts, ["global", "task-2"]);
+
+  // 3. A write in flight keeps its selection; leaving Jobs keeps the view and its receipt
+  //    lands without rewriting the page that is now shown.
+  walk(root).find(n => n.spec === "button.btn.btn-primary" && n.children.includes("jobs.runNow")).onclick();
+  assert.equal(shell.navigateManage({ page: "jobs", section: "jobs", task: null }), false);
+  assert.match(text(root), /jobs.leaveBusy/);
+  assert.equal(shell.navigateManage({ page: "settings", section: "preferences" }), true);
+  assert.equal(here(), "/settings/preferences");
+  pendingWrite({ run: { id: "run-9", status: "queued" } }); await flush();
+  assert.equal(here(), "/settings/preferences", "a hidden Jobs view must not write the Settings address");
+  assert.match(text(root), /run-9/, "the receipt stays observable in the kept view");
+  assert.deepEqual(mounts, ["global", "task-2"]);
+
+  // 4. An artifact-only route change opens exactly that artifact.
+  holdGlobalList = false;
+  const a = JSON.stringify(ref("a")), b = JSON.stringify(ref("b"));
+  shell.navigateManage({ page: "jobs", section: "jobs", task: null, job: "old", jobRun: "old-run", artifact: a });
+  await flush();
+  location.href = "http://fixture/jobs?" + new URLSearchParams({ job: "old", jobRun: "old-run", artifact: b });
+  handlers.popstate(); await flush();
+  const previews = reads.filter(url => url.includes("artifact-preview")).map(url => new URL(url, location).searchParams.get("reference"));
+  assert.equal(previews.at(-1), b);
+  assert.equal(new URL(location.href).searchParams.get("artifact"), b);
+  assert.equal(alerts, 0);
+
+  // 5. A Run opened from its row shows directly under that row and is one
+  //    history step: Back closes it again, Forward reopens it in place.
+  shell.navigateManage({ page: "jobs", section: "jobs", task: null, job: "old" }); await flush();
+  const runRow = () => walk(root).find(n => n.spec === "button.job-run-row");
+  const underRow = () => { const list = walk(root).find(n => (n.children || []).includes(runRow()));
+    const next = list.children[list.children.indexOf(runRow()) + 1];
+    return typeof next?.spec === "string" && next.spec.startsWith("div.job-run-inline") ? next : null; };
+  assert.equal(runRow()["aria-expanded"], "false");
+  const before = history.pushes;
+  runRow().onclick(); await flush();
+  assert.equal(here(), "/jobs?job=old&jobRun=old-run");
+  assert.equal(history.pushes, before + 1, "opening a Run is a history step");
+  assert.equal(runRow()["aria-expanded"], "true");
+  assert.match(text(underRow()), /old-run/, "the Run detail is the row's next sibling, not appended below the list");
+  location.href = "http://fixture/jobs?job=old";
+  handlers.popstate(); await flush();
+  assert.equal(runRow()["aria-expanded"], "false", "Back closes the Run opened in place");
+  location.href = "http://fixture/jobs?job=old&jobRun=old-run";
+  handlers.popstate(); await flush();
+  assert.equal(runRow()["aria-expanded"], "true");
+  assert.match(text(underRow()), /old-run/);
+
+  // 6. A Run chosen by the route wins over a filter that would hide it: open a
+  //    succeeded Run, then a failed one, filter to failed, go Back.
+  records.global.runs.unshift({ id: "old-fail", status: "failed", createdAt: "2026-10-21T00:00:00Z",
+    trigger: { source: "manual", key: "f" }, configuration: { kind: "shell" } });
+  shell.navigateManage({ page: "jobs", section: "jobs", task: null, job: "old" }); await flush();
+  const rowOf = id => walk(root).find(n => n.spec === "button.job-run-row" && n.dataset.run === id);
+  const after = id => { const list = walk(root).find(n => (n.children || []).includes(rowOf(id)));
+    return list.children[list.children.indexOf(rowOf(id)) + 1]; };
+  rowOf("old-run").onclick(); await flush();
+  rowOf("old-fail").onclick(); await flush();
+  const tab = key => walk(root).find(n => n.spec === "button.chip-tab" && n.dataset.filter === key);
+  tab("failed").onclick({ currentTarget: tab("failed") }); await flush();
+  assert.equal(rowOf("old-run"), undefined, "the failed filter shows only failed Runs");
+  location.href = "http://fixture/jobs?job=old&jobRun=old-run";
+  handlers.popstate(); await flush();
+  assert.equal(rowOf("old-run")?.["aria-expanded"], "true", "Back reopens the routed Run despite the earlier filter");
+  assert.match(text(after("old-run")), /old-run/);
+  assert.equal(tab("all")["aria-pressed"], "true");
+  // A filter the reader picks afterwards still closes the Run it hides.
+  tab("failed").onclick({ currentTarget: tab("failed") }); await flush();
+  assert.equal(new URL(location.href).searchParams.get("jobRun"), null);
 });

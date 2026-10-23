@@ -179,6 +179,7 @@ const READ_ONLY_STORE_METHODS: ReadonlySet<string> = new Set([
   "listActiveDurableJobs",
   "getJobDefinition",
   "listJobDefinitions",
+  "listJobScopeSummaries",
   "getGlobalJobRun",
   "getAgentJobRun",
   "listAgentJobRuns",

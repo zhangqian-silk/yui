@@ -12,6 +12,7 @@ import {
   JOB_RUNNER_IMPLEMENTATION, executionNamespace, type GlobalJobRun, type JobRun
 } from "../job/durableJob.js";
 import { prepareBuiltinJob, projectRefreshDigest } from "../job/builtinJob.js";
+import { prepareGlobalShell, type GlobalShellConfiguration } from "../job/globalShell.js";
 import { projectRefreshTargetDigest, requireRefreshProject } from "../repository/projectRefresh.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import {
@@ -59,7 +60,7 @@ export function authorizeScope(store: TaskStore, scope: JobScope, caller: Durabl
 }
 
 function taskParams(job: JobDefinition, caller: DurableJobCaller, requestId: string): DurableJobStartParams {
-  if (job.scope.kind !== "task" || job.configuration.kind !== "shell") throw new Error("Not a Task Job.");
+  if (job.scope.kind !== "task" || job.configuration.kind !== "shell" || !("owner" in job.configuration)) throw new Error("Not a Task Job.");
   return { ...job.configuration, taskId: job.scope.taskId, caller, requestId };
 }
 
@@ -77,7 +78,12 @@ export function authorizeDefinition(store: TaskStore, job: JobDefinition, caller
     if (write) validateStartParams(store, params);
     if (write) assertNonSecretJobInput(params);
   } else if (write) {
-    if (job.configuration.kind !== "builtin") throw new Error("Global Jobs require builtin actions.");
+    if (job.configuration.kind === "shell") {
+      prepareGlobalShell(job.configuration as GlobalShellConfiguration, "/job-validation");
+      assertNonSecretJobInput({ ...job.configuration, requestId: "global-shell-definition" });
+      return;
+    }
+    if (job.configuration.kind !== "builtin") throw new Error("Not a global process Job.");
     prepareBuiltinJob(job.configuration, "/");
     if (job.configuration.action === "project.refresh") {
       if (job.builtin) requireProjectSyncTarget(store, job);
@@ -200,17 +206,20 @@ export function admitJobRun(
       }, now);
       return { run: result.job, created: result.created };
     }
-    if (job.configuration.kind !== "builtin") throw new Error("Global Jobs require builtin actions.");
+    if (job.configuration.kind !== "builtin" && job.configuration.kind !== "shell") throw new Error("Not a global process Job.");
     const id = `job-${randomUUID()}`;
     const locator = `artifacts/jobs/global/${id}`;
-    const spec = prepareBuiltinJob(job.configuration, join(home, locator), { home, runId: id });
+    const config = job.configuration;
+    const shell = config.kind === "shell";
+    const spec = shell ? prepareGlobalShell(config as GlobalShellConfiguration, join(home, locator, "workspace"))
+      : prepareBuiltinJob(config, join(home, locator), { home, runId: id });
     const actorId = service ? "service:schedule" : caller.scope === "user" ? "user" : `global:${caller.role}`;
     let run: GlobalJobRun = {
       schemaVersion: 1, scope: "global", id, definitionId: job.id, definitionRevision: job.revision,
-      trigger: structuredClone(trigger), action: job.configuration.action,
+      trigger: structuredClone(trigger), action: shell ? "shell.exec" : config.action,
       ...(service === undefined ? {} : { serviceAuthorization: structuredClone(service) }),
-      actionInput: structuredClone(job.configuration.input),
-      ...(job.configuration.projectId === undefined ? {} : { projectId: job.configuration.projectId }),
+      actionInput: structuredClone(shell ? config as unknown as JsonValue : config.input),
+      ...(!shell && config.projectId !== undefined ? { projectId: config.projectId } : {}),
       ...spec, status: "queued", artifactsLocator: locator,
       idempotencyKey: createHash("sha256").update(JSON.stringify([actorId, requestId])).digest("hex"),
       operation: {
@@ -288,7 +297,9 @@ export function authorizeGlobalJobStart(store: TaskStore, run: GlobalJobRun): vo
   const projects = run.action === "project.refresh" ? store.listProjects() : [];
   const home = store.rootDirectory();
   try {
-    const compiled = prepareBuiltinJob({
+    const compiled = run.action === "shell.exec"
+      ? prepareGlobalShell(run.actionInput as unknown as GlobalShellConfiguration, join(home, "artifacts/jobs/global", run.id, "workspace"))
+      : prepareBuiltinJob({
       kind: "builtin", action: run.action, input: run.actionInput,
       ...(run.projectId === undefined ? {} : { projectId: run.projectId })
     }, run.workspace, { home, runId: run.id });
@@ -303,7 +314,7 @@ export function authorizeGlobalJobStart(store: TaskStore, run: GlobalJobRun): vo
         throw new Error("Project refresh Run workspace does not match its artifact directory.");
       }
     }
-    if (JSON.stringify(compiled.steps) !== JSON.stringify(run.steps)
+    if (compiled.workspace !== run.workspace || JSON.stringify(compiled.steps) !== JSON.stringify(run.steps)
       || JSON.stringify(compiled.env) !== JSON.stringify(run.env) || compiled.head !== run.head) {
       throw new Error("Global JobRun does not match its controlled action.");
     }

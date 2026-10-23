@@ -330,6 +330,8 @@ export type TaskStore = {
   listDueSchedules(now: string, limit: number): Schedule[];
   getJobDefinition(scope: JobScope, id: string): JobDefinition | null;
   listJobDefinitions(scope: JobScope): JobDefinition[];
+  /** Counts per owning scope, for bounded discovery only; not an authorization decision. */
+  listJobScopeSummaries(): import("../job/jobDefinition.js").JobScopeSummary[];
   saveGlobalJobRun(run: GlobalJobRun): void;
   saveAgentJobRun(run: AgentJobRun): void;
   getAgentJobRun(id: string): AgentJobRun | null;

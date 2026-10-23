@@ -1792,7 +1792,8 @@ export const ROOT_COMMAND = buildNode({
             : name === "run-delegation" ? "Read the exact execution Task/WorkItem and attention projection; never a grant."
             : `${name} a stable Job or exact Run.`,
           usage: `yui job ${name} (--task <id>|--global)${name === "list" ? "" : " --job <id>"}`
-            + (name === "define" || name === "update" ? " --title <text> --input <configuration-json>" : "")
+            + (name === "define" ? " --title <text> (--input <json>|--input-file <file>|--command <shell>) [--script <path=local-file> ...]" : "")
+            + (name === "update" ? " [--title <text>] [--input <json>|--input-file <file>|--command <shell>] [--script <path=local-file> ...]" : "")
             + (name === "update" ? " --revision <current>" : "")
             + (name === "run" ? " --request-id <key> [--retry-of <run-id>]" : "")
             + (["run-get", "run-result", "run-evidence", "run-confirm", "run-delegation", "logs", "run-cancel", "run-acknowledge"].includes(name) ? " --run <run-id>" : "")
