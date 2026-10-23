@@ -130,7 +130,7 @@ test("1.19 history survives Agent migration and process, Task, Agent executors c
     validateSqliteSchemaObjects(db, "1.19");
     applySqliteMinorUpgrades(db, home);
     validateSqliteSchemaObjects(db);
-    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 21);
+    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 22);
     assert.deepEqual(tables.map(table => db.prepare(`SELECT * FROM ${table}`).all()), before);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM agent_job_runs").get().n, 0);
   } finally { db.close(); }
@@ -175,6 +175,7 @@ test("Job Agent reuses a Role Session, preserves input/artifacts through replace
   const caller = session(role, "session-one");
   assert.throws(() => call("analysis", "run-claim", { runId: run.id }, caller), /accepted native Turn/);
   deliver(run);
+  store.saveGlobalRole({ ...role, enabled: false });
   assert.equal(call("analysis", "run-get", { runId: run.id }, caller).businessResult, undefined);
   call("analysis", "run-claim", { runId: run.id }, caller);
   assert.throws(() => call("analysis", "update", { title: "hijack", expectedRevision: 1,
@@ -185,6 +186,8 @@ test("Job Agent reuses a Role Session, preserves input/artifacts through replace
   assert.equal(artifact.status, "registered");
   call("analysis", "run-report", { runId: run.id, result: report(run) }, caller);
   terminal(run);
+  assert.throws(() => call("analysis", "run", { trigger: { source: "manual", key: "disabled" } }), /disabled/);
+  store.saveGlobalRole({ ...role, enabled: true });
   const second = call("analysis", "run", { trigger: { source: "manual", key: "two" } }).run;
   assert.equal(second.attempts[0].recipient.roleName, role.name);
   assert.equal(store.getGlobalRoleSessionSet(role.name).sessions[f.agent.id].nativeSessionId, "session-one");
@@ -250,8 +253,10 @@ test("shared Operator/Task targets keep their authority, exact native input and 
   const taskRun = call("task-call", "run", { trigger: { source: "manual", key: "task" } }).run;
   assert.throws(() => call("task-call", "run-claim", { runId: taskRun.id }, operatorCaller), /execution target/);
   deliver(taskRun);
+  store.saveRole(task.id, { ...leader, enabled: false });
   call("task-call", "run-claim", { runId: taskRun.id }, taskCaller);
   call("task-call", "run-report", { runId: taskRun.id, result: report(taskRun) }, taskCaller);
+  assert.throws(() => call("task-call", "run", { trigger: { source: "manual", key: "disabled" } }), /disabled/);
   store.saveTask(stopTaskExecution(task, new Date()));
   assert.throws(() => call("task-call", "run", { trigger: { source: "manual", key: "stopped" } }), /execution-enabled/);
   assert.throws(() => call("task-call", "run-claim", { runId: taskRun.id }, taskCaller), /execution-enabled/);

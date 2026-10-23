@@ -7,6 +7,7 @@ import { isDeepStrictEqual } from "node:util";
 import { runPurposeAdmitsTaskState } from "../agentRun/agentRun.js";
 import { assertExecutionEnvironmentCurrent } from "../runtime/executionEnvironment.js";
 
+import { assertRoleEnabled } from "../role/availability.js";
 import {
   configuredAgentToDefinition,
   resolveAgentEnvironment
@@ -206,6 +207,7 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
     if (task === null) throw new Error(`Task not found: ${input.taskId}.`);
     const role = this.store.getRole(input.taskId, input.roleName);
     if (role === null) throw new Error(`Role not found: ${input.taskId}/${input.roleName}.`);
+    assertRoleEnabled(role);
     const activeRun = this.store.getActiveRun(task.id, role.name);
     if (input.runId !== undefined && activeRun?.id !== input.runId) {
       throw new Error(`Role AgentRun is no longer current: ${input.runId}.`);
@@ -351,6 +353,7 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
   planGlobalRole(input: GlobalRoleLaunchPlanInput): PlannedRoleSession {
     const role = this.store.getGlobalRole(input.roleName);
     if (role === null) throw new Error(`Global Role not found: ${input.roleName}.`);
+    assertRoleEnabled(role);
     const sessionSet = this.store.getGlobalRoleSessionSet(role.name);
     if (activeLiveRoleAgentSession(sessionSet) !== null && sessionSet?.providerBinding == null) {
       throw new Error("Global Role has an unmanaged live Session. Stop that exact Session before opening controlled input; it will not be silently replaced.");

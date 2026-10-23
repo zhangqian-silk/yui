@@ -1,4 +1,5 @@
 import { performance } from "node:perf_hooks";
+import { isEnabled } from "../role/availability.js";
 import type { AgentRun } from "../agentRun/agentRun.js";
 import { runTaskCommand } from "../commands/taskCommands.js";
 import { routeRoleEvent } from "../scheduler/operatorEvent.js";
@@ -86,12 +87,18 @@ export function createProviderRetryHooks(home: string, store: TaskStore, ports: 
   const key = (set: RoleSessionSet): MailboxKey => set.owner.scope === "task"
     ? `role:${encodeURIComponent(set.owner.taskId)}/${encodeURIComponent(set.owner.roleName)}`
     : `global-role:${encodeURIComponent(set.owner.roleName)}`;
+  const disabled = (set: RoleSessionSet): boolean => {
+    const role = set.owner.scope === "task"
+      ? store.getRole(set.owner.taskId, set.owner.roleName) : store.getGlobalRole(set.owner.roleName);
+    return role !== null && !isEnabled(role);
+  };
 
   return {
     deadlines(): readonly { key: MailboxKey; at: number }[] {
       return store.listProviderRetrySessions().flatMap(set => {
         const retry = set.providerBinding!.retry!;
         if (retry.status !== "waiting") return [];
+        if (disabled(set)) return [];
         // Busy or already-queued work awaits the next ordinary pass without a
         // zero-delay timer loop. Waiting never consumes an execution attempt.
         const wall = (ports.now ?? (() => new Date()))().getTime();
@@ -116,6 +123,9 @@ export function createProviderRetryHooks(home: string, store: TaskStore, ports: 
           const scoped = { ...(owner.scope === "task" ? { taskId: owner.taskId } : {}), roleName: owner.roleName };
           const session = set.sessions[set.activeAgentId];
           const blocker = retryIntentBlocker(store, scoped, retry);
+          // Configuration pause neither settles input nor cancels an already
+          // admitted attempt. Normal ingress still records its exact terminal.
+          if (blocker === "role-disabled") continue;
           if (blocker !== undefined && blocker !== "background-work-unsettled") {
             stop(set, blocker, at); continue;
           }
@@ -178,6 +188,9 @@ export function createProviderRetryHooks(home: string, store: TaskStore, ports: 
                 if (latest?.chainId !== retry.chainId || latest.failedAttemptId !== retry.failedAttemptId
                   || latest.status !== "waiting") return;
                 const reason = retryIntentBlocker(store, scoped, latest);
+                // Snapshotting yields to configuration changes. Apply the same
+                // pause semantics as the pre-await check, without settling intent.
+                if (reason === "role-disabled") return;
                 if (reason !== undefined) throw new Error(reason);
                 runTaskCommand(["run", "retry", `${owner.taskId}/${previous.id}`], store, {
                   now: () => new Date(at), environment: {}, providerRetryChainId: retry.chainId,

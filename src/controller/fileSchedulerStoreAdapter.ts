@@ -4282,6 +4282,7 @@ function mapRole(
   return {
     taskId: role.taskId,
     name: role.name,
+    enabled: role.enabled !== false,
     activeAgentId: role.activeAgentId,
     adapterId: binding.adapterId,
     ...(binding.config.model === undefined ? {} : { model: binding.config.model }),

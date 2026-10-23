@@ -51,6 +51,30 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.17.0 compatibility and migration notes
+
+This minor adds persistent Role/Profile enable and disable controls in CLI and
+Web settings. Use `yui config role enable|disable`, `yui config profile
+enable|disable`, and `yui task role enable|disable` with the relevant identity.
+Disabled templates cannot be selected for new bindings; existing Task Role
+copies remain independent. Disabling a Role prevents new execution and pauses
+eligible pending work; it does not kill a running Turn, discard pending input,
+block exact terminal recording or erase inspection/claim/acknowledgement access.
+Re-enabling resumes eligible work under its existing authority and retry budgets,
+without replaying accepted or unknown input.
+
+Storage advances from **1.21 to 1.22** through the centralized additive migration
+for optional `enabled` fields. Existing records without the field remain enabled;
+their historical payloads are preserved. With separate upgrade authorization,
+use `yui update --version 2.17.0`; the updater owns preflight, backup, migration
+and Controller handover. Do not open the upgraded Home with an older binary.
+
+The release also includes the merged Draft planning Session replacement repair
+and stronger behavioral-constraint/real-path review handoffs. Validation uses
+deterministic tests and the exact-tarball fresh-install matrix, not real-model
+behavior. Publishing does not update the global CLI, migrate a production Home,
+restart its Controller or deploy a production Web listener.
+
 ### 2.16.0 compatibility and migration notes
 
 This minor refreshes the Web workbench (PR #484). One global navigation rail

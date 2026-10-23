@@ -1,4 +1,5 @@
 import type { TaskStore } from "../storage/taskStore.js";
+import { isEnabled } from "../role/availability.js";
 import { sendAgentHostRunControl, reconcileAgentHostTurn, AGENT_HOST_CONTROL_PROTOCOL,
   type AgentHostControlResult } from "../runtime/agentHost.js";
 import { currentProviderConversation } from "../runtime/providerRuntimeIdentity.js";
@@ -33,13 +34,6 @@ export async function deliverGlobalInputs(
       // still means stopped and is never implicitly restarted.
       if (sessions !== null && selected?.status !== "active"
         && !(role.jobOwner && selected === undefined)) continue;
-      if (sessions?.providerBinding?.retry !== undefined && !providerRetryPending(sessions.providerBinding)) {
-        store.transaction(tx => settleGlobalRetryInput(tx, role.name,
-          tx.getGlobalRoleSessionSet(role.name)?.providerBinding, new Date()));
-        pending = store.queryGlobalRoleMessages(role.name, { pending: true, unclaimed: true, limit: 64 }).messages;
-        if (pending.length === 0) continue;
-      }
-      if (providerRetryPending(sessions?.providerBinding)) continue;
       let current = sessions?.providerBinding?.run;
       const bindingBefore = sessions?.providerBinding;
       if (options.reconcile && current != null
@@ -104,6 +98,17 @@ export async function deliverGlobalInputs(
         pending = store.queryGlobalRoleMessages(role.name, { pending: true, unclaimed: true, limit: 64 }).messages;
         if (pending.length === 0) continue;
       }
+      // Availability blocks new work, not observation of the original writer's
+      // exact terminal. Re-read after the asynchronous reconciliation above.
+      const currentRole = store.getGlobalRole(role.name);
+      if (currentRole === null || !isEnabled(currentRole)) continue;
+      if (sessions?.providerBinding?.retry !== undefined && !providerRetryPending(sessions.providerBinding)) {
+        store.transaction(tx => settleGlobalRetryInput(tx, role.name,
+          tx.getGlobalRoleSessionSet(role.name)?.providerBinding, new Date()));
+        pending = store.queryGlobalRoleMessages(role.name, { pending: true, unclaimed: true, limit: 64 }).messages;
+        if (pending.length === 0) continue;
+      }
+      if (providerRetryPending(sessions?.providerBinding)) continue;
       const recovery = globalInboxRecovery(store, role.name, options.now ?? new Date());
       const recovering = recovery !== undefined && recovery.inbox === undefined && recovery.delivery === undefined
         && recovery.notDelivered === undefined && recovery.control === undefined;

@@ -1,4 +1,5 @@
 import type { ConfiguredAgent } from "../agent/agent.js";
+import { isEnabled, roleDisabledReason } from "../role/availability.js";
 import {
   createRoleAgentBinding,
   type GlobalRole,
@@ -56,8 +57,13 @@ export function resolveAgentProfileView(
  */
 export function resolveAgentProfileRuntime(
   profile: AgentProfile,
-  store: AgentProfileRuntimeStore
+  store: AgentProfileRuntimeStore,
+  options: Readonly<{ configurationOnly?: boolean }> = {}
 ): ResolvedAgentProfileRuntime {
+  if (!options.configurationOnly && !isEnabled(profile)) return {
+    status: "unavailable", source: profile.runtime.source,
+    reason: `Agent Profile ${profile.id} is disabled. Use yui config profile enable ${profile.id}. Existing Task bindings are unchanged.`
+  };
   if (profile.runtime.source === "global-worker") {
     const worker = store.getGlobalRole("worker");
     if (worker === null) {
@@ -67,6 +73,10 @@ export function resolveAgentProfileRuntime(
         reason: "Global Role worker is not configured."
       };
     }
+    if (!options.configurationOnly && !isEnabled(worker)) return {
+      status: "unavailable", source: "global-worker", workerRevision: worker.launchRevision,
+      reason: roleDisabledReason(worker)
+    };
     const binding = worker.agentBindings[worker.activeAgentId];
     if (binding === undefined) {
       return {
@@ -111,6 +121,10 @@ export function resolveAgentProfileRuntime(
   }
   const worker = store.getGlobalRole("worker");
   const workerBinding = worker?.agentBindings[agent.id];
+  if (!options.configurationOnly && worker !== null && workerBinding !== undefined && !isEnabled(worker)) {
+    return { status: "unavailable", source: "explicit",
+      reason: `Profile copies the matching Worker binding. ${roleDisabledReason(worker)}` };
+  }
   if (workerBinding !== undefined && workerBinding.adapterId !== agent.adapterId) {
     return {
       status: "unavailable",

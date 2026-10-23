@@ -248,6 +248,29 @@ function reviewFixture(t) {
   return { ...f, candidate, workspace, round, dispatch };
 }
 
+test("Role disable pauses bounded retry without settling or replacing input; enable retains the retry budget", async t => {
+  const f = fixture(t, "global");
+  f.fail();
+  f.due();
+  const before = f.loadSessions();
+  const messages = f.store.listGlobalRoleMessages(f.roleName);
+  runGlobalRoleCommand(["disable", f.roleName], f.store, { env: {} });
+  const hooks = f.hooks();
+  assert.deepEqual(hooks.deadlines(), []);
+  await hooks.reconcile();
+  assert.deepEqual(f.loadSessions(), before);
+  assert.deepEqual(f.store.listGlobalRoleMessages(f.roleName), messages);
+  assert.equal(f.submissions.length, 0);
+  assert.throws(() => f.begin("new-disabled-input"), /disabled/);
+  runGlobalRoleCommand(["enable", f.roleName], f.store, { env: {} });
+  await hooks.reconcile();
+  assert.equal(f.submissions.length, 1);
+  assert.equal(f.read().retry.chainId, before.providerBinding.retry.chainId);
+  assert.equal(f.read().retry.deadline, before.providerBinding.retry.deadline);
+  await hooks.reconcile();
+  assert.equal(f.submissions.length, 1, "an admitted retry must not be replayed");
+});
+
 test("Task no-Run retry preserves its wake and original Message, and duplicate passes admit one successor", async t => {
   const f = fixture(t);
   f.fail();
@@ -642,13 +665,21 @@ test("manual and automatic managed Run retries share exact failed proof, includi
     assert.equal(f.read().retry.successorRunId, successor.id);
     assert.equal(f.read().retry.successorAutomatic, !manual);
     const dispatch = createRuntimeLifecycleDispatcher(f.store, new FileSchedulerStoreAdapter(f.store), {});
-    const admission = await dispatch("runtime.provider-turn-begin", {
+    const admissionInput = {
       taskId: "task-1", roleName: f.roleName, agentId: "codex", nativeSessionId: f.nativeSessionId,
       runId: successor.id, attemptId: `task-1/turn/${successor.id}`,
       authorityEpoch: 1, authorityOwner: "controller", holderId: "controller",
       observedAt: f.now().toISOString(), boundedText: "Read the exact successor Run.",
       retrySupport: "codex-failed-turn-v1"
-    });
+    };
+    runTaskCommand(["role", "disable", "task-1", f.roleName], f.store, { now: f.now, environment: {} });
+    const beforePause = structuredClone(f.read());
+    await assert.rejects(dispatch("runtime.provider-turn-begin", admissionInput),
+      error => error.code === "SESSION_BUSY" && /disabled/.test(error.message));
+    assert.deepEqual(f.read(), beforePause, "Paused admission cannot commit registration or spend retry budget.");
+    assert.equal(f.store.getActiveRun("task-1", f.roleName).id, successor.id);
+    runTaskCommand(["role", "enable", "task-1", f.roleName], f.store, { now: f.now, environment: {} });
+    const admission = await dispatch("runtime.provider-turn-begin", admissionInput);
     assert.equal(admission.retryInput?.expectedFailedNativeTurnId, "native-original");
     assert.match(admission.retryInput.text, /Preserve local changes/);
     const calls = [];
@@ -743,6 +774,12 @@ test("registration ACK replay and a cancellation racing its reply never strip th
     }
     assert.deepEqual(await dispatch("runtime.provider-turn-begin", params), original);
     assert.equal(f.read().retry.attempts, 1);
+    runGlobalRoleCommand(["disable", f.roleName], f.store, { env: {} });
+    const registered = structuredClone(f.read());
+    await assert.rejects(dispatch("runtime.provider-turn-begin", params),
+      error => error.code !== "SESSION_BUSY" && /disabled/.test(error.message));
+    assert.deepEqual(f.read(), registered, "An existing registration must not become an unregistered retry.");
+    runGlobalRoleCommand(["enable", f.roleName], f.store, { env: {} });
     cancel();
     let replay;
     try {
@@ -811,7 +848,7 @@ test("manual recovery after exhaustion retains the original automatic count and 
 });
 
 test("same-Round review recovery preserves its candidate and workspace, and cancellation fences a later-created Run", async t => {
-  for (const mode of ["automatic", "cancel", "manual-without-chain"]) {
+  for (const mode of ["automatic", "pause", "cancel", "manual-without-chain"]) {
     const cancel = mode === "cancel";
     const f = reviewFixture(t);
     const initial = f.dispatch();
@@ -824,11 +861,27 @@ test("same-Round review recovery preserves its candidate and workspace, and canc
     }), "applied");
     assert.equal(f.store.getReviewRound("task-1", f.round.id).status, "failed");
     if (mode !== "manual-without-chain") f.due();
+    let pause = mode === "pause";
     const hooks = createProviderRetryHooks(f.home, f.store, {
-      now: f.now, snapshotTaskCandidate: async () => f.candidate,
+      now: f.now, snapshotTaskCandidate: async () => {
+        if (pause) runTaskCommand(["role", "disable", "task-1", f.roleName],
+          f.store, { now: f.now, environment: {} });
+        return f.candidate;
+      },
       onError: error => { throw error; },
       submit: async () => { assert.fail("Review uses its ordinary Run dispatch path."); }
     });
+    if (pause) {
+      const original = structuredClone(f.read());
+      await hooks.reconcile();
+      assert.deepEqual(f.read(), original, "Snapshot-time pause retains the exact chain and budget.");
+      assert.equal(f.store.getReviewRound("task-1", f.round.id).status, "failed");
+      assert.equal(f.store.listRuns("task-1").length, 1);
+      assert.deepEqual(hooks.deadlines(), [], "Paused retry cannot spin a deadline timer.");
+      pause = false;
+      runTaskCommand(["role", "enable", "task-1", f.roleName],
+        f.store, { now: f.now, environment: {} });
+    }
     if (mode === "manual-without-chain") runTaskCommand(["run", "retry", `task-1/${initial.id}`], f.store, {
       now: f.now, environment: {}, actualTaskReviewCandidate: f.candidate
     });

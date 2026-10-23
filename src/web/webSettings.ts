@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isEnabled } from "../role/availability.js";
 import { CONFIG_DOMAINS, configDefinitionsForDomain, type ConfigDomain } from "../config/configCatalog.js";
 import { effectiveConfigData, runConfigCommand } from "../commands/configCommands.js";
 import { runAgentCommand, type AgentCommandStore } from "../commands/agentCommands.js";
@@ -20,8 +21,8 @@ type Group = {
   id: string; title: string; section: string; advanced: boolean; revision: string;
   fields: Field[]; notice: string; agentId?: string; observation?: unknown;
 };
-const ROLE_NOTICE = "Saved desired configuration applies to a subsequent Role launch, not the current Session. Existing Task bindings are unchanged. No Session is restarted here.";
-const PROFILE_NOTICE = "Profile behavior is copied into newly created Task Roles. Inherited runtime resolves from the global Worker when applied. Existing Task Roles are not rebound.";
+const ROLE_NOTICE = "Disabling blocks new execution and template selection, without stopping running Sessions or discarding input. Enable allows normal scheduling, not an immediate Session start. Existing Task bindings are unchanged. Launch settings apply to a subsequent launch; no Session is restarted here.";
+const PROFILE_NOTICE = "Disabling prevents new Profile application. A Profile is a template, not a process. Existing Task Roles are not rebound or stopped. Inherited runtime requires an enabled global Worker when applied. Reset preserves enabled state.";
 const AGENT_NOTICE = "Command, arguments and environment references apply to subsequent Host processes. Authentication remains with the native Agent. Only reference names and presence in the Controller environment are shown; no environment values are returned.";
 
 /** A view adapter over existing commands, not another writable configuration store. */
@@ -91,6 +92,7 @@ export function createWebSettings(store: TaskStore, options: {
       agentId = role.activeAgentId; version = role; notice = ROLE_NOTICE;
       const specs = roleOptionSpecs({ update: true, includeWorkspace: true });
       fields = [
+        { ...field("enabled", isEnabled(role), "boolean"), summary: ROLE_NOTICE },
         { ...field("activeAgentId", role.activeAgentId), choices: store.listConfiguredAgents().map(a => a.id),
           summary: "Explicit global Role Agent selection. Save this field alone, then edit the selected Agent's settings. Existing live-session and lifecycle guards apply; no Task is rebound." },
         field("workspace", role.workspace),
@@ -114,6 +116,7 @@ export function createWebSettings(store: TaskStore, options: {
       version = profile; notice = PROFILE_NOTICE;
       agentId = view.runtime.status === "resolved" ? view.runtime.binding.agentId : undefined;
       fields = [
+        { ...field("enabled", isEnabled(profile), "boolean"), summary: PROFILE_NOTICE },
         { ...field("access", profile.defaultAccess), choices: ["read", "write"] },
         { ...field("description", profile.description ?? "", "multiline"), reset: true },
         { ...field("instructions", profile.instructions ?? "", "multiline"), reset: true },
@@ -276,6 +279,10 @@ const ROLE_FIELDS: Record<string, { set: string; clear?: string; many?: boolean 
 function objectArguments(id: string, changes: { key: string; value: unknown; reset: boolean }[]): string[] {
   if ((CONFIG_DOMAINS as readonly string[]).includes(id)) return [];
   return changes.flatMap(c => {
+    if ((id.startsWith("role/") || id.startsWith("profile/")) && c.key === "enabled") {
+      if (typeof c.value !== "boolean") throw new WebRequestRejected("Enabled must be a boolean.");
+      return ["--enabled", String(c.value)];
+    }
     if (id.startsWith("role/") && c.key === "activeAgentId") return [];
     if (id.startsWith("agent/")) {
       if (c.key === "command") return ["--command", text(c.value)];

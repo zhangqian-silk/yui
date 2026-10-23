@@ -658,6 +658,7 @@ test("the Global runtime terminal settles a bound controller-owned Turn to termi
   const { store, role } = globalFixture(t);
   recordGlobalSession(store, role);
   withGlobalControllerTurn(store, "assistant", { attemptId: "a-1", nativeTurnId: "t-1" });
+  runGlobalRoleCommand(["disable", role.name], store, { env: {} });
   const adapter = new FileSchedulerStoreAdapter(store);
   adapter.observeGlobalRuntimeRunTerminal({
     roleName: "assistant", agentId: role.activeAgentId, adapterId: "codex",
@@ -672,6 +673,33 @@ test("the Global runtime terminal settles a bound controller-owned Turn to termi
   assert.equal(sessions.providerBinding.run.nativeTurnId, "t-1");
   // The durable native terminal is recorded on the Role's own Session as well.
   assert.equal(sessions.sessions[role.activeAgentId].recentCompletedTurnIds.includes("t-1"), true);
+});
+
+test("disabled Global Role preserves queued input and Session; enable resumes only ordinary delivery", async t => {
+  const { home, store, role, command } = globalFixture(t);
+  recordGlobalSession(store, role);
+  const message = command(["message", "queue", role.name, "Keep original", "--request-id", "disabled-queue"]).message;
+  const original = store.listGlobalRoleMessages(role.name);
+  const sessions = store.getGlobalRoleSessionSet(role.name);
+  command(["disable", role.name]);
+  let calls = 0;
+  await deliverGlobalInputs(home, store, async () => { calls++; }, error => { throw error; });
+  assert.equal(calls, 0);
+  assert.deepEqual(store.listGlobalRoleMessages(role.name), original);
+  assert.deepEqual(store.getGlobalRoleSessionSet(role.name), sessions);
+  const planner = new FileRoleLaunchPlanner(home, store);
+  assert.throws(() => planner.planGlobalRole({
+    roleName: role.name, agentId: "codex", adapterId: "codex", mode: "new"
+  }), /disabled/);
+  command(["enable", role.name]);
+  assert.deepEqual(store.getGlobalRoleSessionSet(role.name), sessions, "enable does not create or replace a Session");
+  await deliverGlobalInputs(home, store, async () => {
+    calls++;
+    // Deterministic existing stop boundary keeps this fixture off the Host socket.
+    store.saveGlobalRoleSessionSet(updateRoleAgentSessionStatus(sessions, "codex", "ended", later, "stopped"));
+  }, error => { throw error; });
+  assert.equal(calls, 1);
+  assert.equal(store.listGlobalRoleMessages(role.name).find(m => m.id === message.id).delivery, undefined);
 });
 
 test("the Global runtime terminal is a strict no-op when no controller-owned Turn is bound", t => {

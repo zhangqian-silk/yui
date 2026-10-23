@@ -1,4 +1,5 @@
 import { usageError } from "../errors/cliError.js";
+import { parseEnabled } from "../role/availability.js";
 import {
   defaultRoleAgentConfig,
   resolveAgentAdapter,
@@ -95,6 +96,7 @@ export function roleOptionSpecs(input: Readonly<{
     ...(input.includeAgent === true ? [["--agent", "value"] as const] : []),
     ...(input.includeWorkspace === true ? [["--workspace", "value"] as const] : []),
     ...(input.update ? [["--yes", "flag"] as const] : []),
+    ...(input.update ? [["--enabled", "value"] as const] : []),
     ...PROFILE_OPTIONS,
     ...agentValueOptions,
     ...agentRepeatableOptions,
@@ -150,7 +152,7 @@ export function roleProfileFrom(parsed: ParsedRoleOptions): RoleProfile {
   };
 }
 
-export function roleProfilePatch(parsed: ParsedRoleOptions): RoleProfile {
+export function roleProfilePatch(parsed: ParsedRoleOptions): RoleProfile & { enabled?: boolean } {
   assertPairs(parsed, [
     ["--description", "--clear-description"],
     ["--responsibility", "--clear-responsibilities"],
@@ -160,6 +162,7 @@ export function roleProfilePatch(parsed: ParsedRoleOptions): RoleProfile {
     ["--skill", "--clear-skills"]
   ]);
   return {
+    ...(parsed.has("--enabled") ? { enabled: parseEnabled(parsed.one("--enabled")) } : {}),
     ...(parsed.has("--description") ? { description: requiredText(parsed.one("--description")) } : {}),
     ...(parsed.has("--clear-description") ? { description: undefined } : {}),
     ...(parsed.has("--responsibility")

@@ -15,6 +15,41 @@ Task Role 是 Task 局部的；global Role 提供已配置的默认值和全局�
 的 global Role。只有当请求的 Task Role 不存在时，global Role 才作为创建模板。
 可用性、producer 分离和冻结的审查候选仍然适用。
 
+## 启用与停用
+
+启停是配置状态，与 Active Agent、Session 是否运行和 Task executionGate 分开：
+
+```sh
+yui config role disable worker
+yui config role enable worker
+yui config profile disable implementer
+yui config profile enable implementer
+yui task role disable task-1 reviewer
+yui task role enable task-1 reviewer
+```
+
+`update --enabled true|false` 使用相同规则；重复启停不产生变化。
+Web 设置页的 Role/Profile 提供同一开关和作用域提示。
+list/show 保留停用项供查看和恢复，应用选择器不提供不可用项。
+
+Global Role 停用阻止它自身的新启动、恢复、自动 Turn，以及从该模板新建 Task
+绑定；Operator、Leader、Worker 和 Job-owned Role 同样适用。已复制的 Task Role
+以自身开关为准，不随模板停用。Profile 停用后不能新应用；动态继承还要求 Global
+Worker 可用。显式 Agent Profile 若复制匹配 Worker 绑定的配置选项，也要求
+Worker 启用；没有匹配绑定的显式 Agent 使用其默认配置。不偷偷切换 Agent、账号或审查角色。
+
+停用不强停 Session、不取消 Run、不消费 claim/ACK，也不丢弃未知投递证据。
+运行中的执行可以正常收尾和报告；新投递及自动恢复等待，原重试预算不重置或延长。
+需要停止时使用既有 stop/interrupt。启用不是立即启动空 Session，不激活 Draft、
+重开已完成 Task、解除 Task 停止或重放已接受/未知效果；仅允许原调度在原生命周期、
+权限及准确输入约束内继续。
+
+停用期间仍可编辑配置。Profile reset 恢复内置内容但保留启停状态；初始化、升级
+不会复活停用项。删除沿用已有引用检查。旧记录缺少 `enabled` 默认启用，
+存储 1.21 → 1.22 只声明新增可选字段，不改写历史记录、冻结 Session 或上下文。
+若 Operator/Task Leader 被停用，可由有权限的本地 CLI/Web 配置入口恢复；
+系统不会跳过关键职责、换人或假定完成。
+
 ## Profile
 
 Agent Profile 把可移植行为（指令、Skill 和访问意图）与运行时意图组合在一起。

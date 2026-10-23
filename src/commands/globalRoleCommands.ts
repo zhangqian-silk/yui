@@ -10,6 +10,7 @@ import { inboxEntryCategory } from "../message/inboxTurn.js";
 import { checkCurrentSkills, SKILL_REUSE_RULE } from "../context/currentSkills.js";
 import { runtimeDiagnosticGroups, runtimeDiagnosticEvidence } from "../controller/globalRuntimeAttention.js";
 import { roleSkillIds } from "../context/roleSessionContext.js";
+import { isEnabled } from "../role/availability.js";
 import {
   createRoleSessionSet,
   recordRoleAgentSession,
@@ -244,6 +245,11 @@ export function runGlobalRoleCommand(
     case "show": return showRole(rest, store);
     case "context": return roleContext(rest, store, options);
     case "update": return updateRole(rest, store, options);
+    case "enable":
+    case "disable": {
+      if (rest.length !== 1) throw usageError(`Usage: yui config role ${command} <role>`);
+      return updateRole([rest[0]!, "--enabled", String(command === "enable")], store, options);
+    }
     case "remove": return removeRole(rest, store);
     case "bind": return bindRole(rest, store);
     case "unbind": return unbindRole(rest, store);
@@ -452,11 +458,11 @@ function addRole(
 
 function listRoles(args: string[], store: GlobalRoleStore): string {
   assertNoArguments(args, "Role list usage: yui config role list");
-  const rows = new Map<string, [string, string, string, string, string, string]>();
+  const rows = new Map<string, string[]>();
   for (const name of SYSTEM_ROLE_NAMES) {
     const role = store.getGlobalRole(name);
     rows.set(name, role === null
-      ? [name, "system", "?", "?", "?", "?"]
+      ? [name, "system", "?", "?", "?", "?", "?"]
       : roleListRow(role, "system"));
   }
   for (const role of store.listGlobalRoles()) {
@@ -470,6 +476,7 @@ function listRoles(args: string[], store: GlobalRoleStore): string {
     [
       { header: "Role", minWidth: 4, maxWidth: 24 },
       { header: "Kind", minWidth: 6, maxWidth: 8 },
+      { header: "Enabled", minWidth: 7, maxWidth: 8 },
       { header: "Active Agent", minWidth: 8, maxWidth: 20 },
       { header: "Model", minWidth: 8, maxWidth: 22 },
       { header: "Effort", minWidth: 8, maxWidth: 14 },
@@ -517,6 +524,8 @@ function updateRole(
   const workspace = trimmed(parsed.one("--workspace"));
   const next = store.transaction((tx) => {
     const role = requireRole(name, tx);
+    if (parsed.seen.size === 1 && parsed.has("--enabled")
+      && isEnabled(role) === roleProfilePatch(parsed).enabled) return role;
     const changesLaunchContext = hasRoleLaunchContextOptions(parsed);
     const changesAgentConfig = hasAgentConfigOptions(parsed);
     if (changesLaunchContext || changesAgentConfig) {
@@ -1233,9 +1242,9 @@ function presentRole(title: string, role: GlobalRole, store: GlobalRoleStore): s
 function roleListRow(
   role: GlobalRole,
   kind: "system" | "global"
-): [string, string, string, string, string, string] {
+): string[] {
   const summary = activeRoleSummary(role);
-  return [role.name, kind, summary.agent, summary.model, summary.effort, role.workspace];
+  return [role.name, kind, String(isEnabled(role)), summary.agent, summary.model, summary.effort, role.workspace];
 }
 
 function renderMissingSystemRole(name: string): string {

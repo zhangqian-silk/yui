@@ -33,6 +33,7 @@ type RoleBinding = Readonly<{
   config: Entity;
 }>;
 type RoleView = Readonly<{
+  enabled?: boolean;
   name: string;
   activeAgentId: string;
   agentBindings: Readonly<Record<string, RoleBinding>>;
@@ -434,6 +435,7 @@ async function updateRoleSettings(
   taskRole: boolean
 ): Promise<RoleWizardResolution> {
   const fields: Choice[] = [
+    { value: "enabled", cells: ["Enabled (not Session state)", role.enabled === false ? "false" : "true"] },
     profileChoice("description", "Description", role.description),
     profileChoice("responsibilities", "Responsibilities", role.responsibilities),
     profileChoice("constraints", "Constraints", role.constraints),
@@ -452,6 +454,13 @@ async function updateRoleSettings(
   );
   if (field === undefined) return { kind: "cancelled", args };
 
+  if (field === "enabled") {
+    const value = await choose("Allow new execution; running Sessions are not stopped",
+      [{ value: "true", cells: ["Enabled"] }, { value: "false", cells: ["Disabled"] }],
+      [TEXT_COLUMN], io, role.enabled === false ? "false" : "true", "enabled");
+    return value === undefined ? { kind: "cancelled", args }
+      : { kind: "resolved", args: [...args, "--enabled", value] };
+  }
   if (field === "active-agent") {
     const target = await selectActiveAgent(role, ports, io);
     if (target === undefined) return { kind: "cancelled", args };
@@ -1015,6 +1024,7 @@ function asRole(value: unknown): RoleView | undefined {
   }));
   return {
     name,
+    enabled: input.enabled !== false,
     activeAgentId,
     agentBindings,
     ...(stringField(input, "workspace") === undefined ? {} : { workspace: stringField(input, "workspace") }),

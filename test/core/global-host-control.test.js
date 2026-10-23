@@ -15,7 +15,7 @@ import { FileRoleLaunchPlanner } from "../../dist/executor/fileRoleLaunchPlanner
 import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
 import { startControllerServer } from "../../dist/core/controllerServer.js";
 import { launchBrokerForHome } from "../../dist/runtime/launchBroker.js";
-import { inspectAgentHost, reconcileAgentHostTurn, sendAgentHostCancelControl, sendAgentHostSteerControl, sendAgentHostNativeControl } from "../../dist/runtime/agentHost.js";
+import { inspectAgentHost, reconcileAgentHostTurn, sendAgentHostCancelControl, sendAgentHostSteerControl, sendAgentHostNativeControl, sendAgentHostRunControl } from "../../dist/runtime/agentHost.js";
 import { deliverGlobalInputs } from "../../dist/controller/globalInputDelivery.js";
 import { runGlobalRoleCommand } from "../../dist/commands/globalRoleCommands.js";
 import { runInboxCommand } from "../../dist/commands/inboxCommands.js";
@@ -222,6 +222,29 @@ async function globalHostFixture(t, adapterId = "codex", {
     nativeSessionId, output: () => output };
 }
 
+test("disable at atomic Host admission preserves the original Global input until enabled", async t => {
+  const f = await globalHostFixture(t, "codex", { controlled: false });
+  const original = f.command(["message", "queue", f.role.name, "Keep original input",
+    "--request-id", "admission-pause"]).message;
+  await deliverGlobalInputs(f.home, f.store, async () => {
+    f.command(["disable", f.role.name]);
+  }, error => f.errors.push(error));
+  const message = () => f.store.listGlobalRoleMessages(f.role.name).find(m => m.id === original.id);
+  assert.equal(f.native(), null, "The rejected admission must not register or submit a Turn.");
+  assert.equal(message().notDelivered, undefined);
+  assert.equal(message().delivery, undefined);
+  assert.equal(message().inbox, undefined);
+  f.command(["enable", f.role.name]);
+  await f.submitNext();
+  await f.wait(() => f.native()?.status === "completed");
+  assert.equal(f.native().attemptId, `global-input:${f.role.name}/${original.id}`);
+  assert.equal(f.native().nativeTurnId, "fake-turn-1");
+  await f.submitNext();
+  assert.equal(f.native().nativeTurnId, "fake-turn-1");
+  assert.ok(message().inbox.ack);
+  assert.deepEqual(f.errors, []);
+});
+
 test("a stopped fixture Host resumes the same native Session across a compatible build without replay", async t => {
   const f = await globalHostFixture(t, "codex", { controlled: false });
   const message = f.command(["message", "queue", f.role.name, "Original input", "--request-id", "before-refresh"]).message;
@@ -381,7 +404,19 @@ test("capacity recovery traverses Controller, real Host and Codex adapter on the
   assert.equal(JSON.parse(failed.error.raw).codexErrorInfo, "serverOverloaded");
   const now = new Date(failed.nextEligibleAt);
   f.advanceTo(now);
-  const hooks = createProviderRetryHooks(f.home, f.store, { now: () => now, monotonicNow: () => 0 });
+  let pauseAdmission = true;
+  const hooks = createProviderRetryHooks(f.home, f.store, {
+    now: () => now, monotonicNow: () => 0,
+    submit: async input => {
+      if (pauseAdmission) f.command(["disable", f.role.name]);
+      return sendAgentHostRunControl(input);
+    }
+  });
+  await hooks.reconcile();
+  assert.deepEqual(binding().retry, failed, "An unregistered paused retry retains its identity and budgets.");
+  assert.equal(f.native().nativeTurnId, "fake-turn-1");
+  pauseAdmission = false;
+  f.command(["enable", f.role.name]);
   await hooks.reconcile();
   await f.wait(() => binding().retry?.status === "recovered").catch(error => {
     throw new Error(JSON.stringify(binding()), { cause: error });
@@ -423,11 +458,17 @@ test("periodic Global recovery republishes only the original Host's exact missin
   });
   assert.equal(wrongAuthority.outcome, "rejected");
   assert.deepEqual(f.native(), original);
+  f.command(["disable", "operator"]);
   await deliverGlobalInputs(f.home, f.store, async () => assert.fail("Recovery must not launch"),
     error => f.errors.push(error), { reconcile: true });
   assert.equal(f.native().status, "completed", "The final Turn recovers even without queued successor input.");
   assert.equal(f.native().nativeTurnId, original.nativeTurnId);
   const next = f.command(["message", "queue", "operator", "next", "--request-id", "next"]).message;
+  await deliverGlobalInputs(f.home, f.store, async () => assert.fail("Disabled Role must not launch"),
+    error => f.errors.push(error), { reconcile: true });
+  assert.equal(f.native().nativeTurnId, original.nativeTurnId);
+  assert.equal(f.store.listGlobalRoleMessages("operator").find(m => m.id === next.id).delivery, undefined);
+  f.command(["enable", "operator"]);
   const controller = new FileTaskController(f.scheduler, {}, {
     globalInputDelivery: options => deliverGlobalInputs(f.home, f.store, async () => {},
       error => f.errors.push(error), options)

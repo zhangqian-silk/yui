@@ -1,3 +1,4 @@
+import { isEnabled } from "../role/availability.js";
 import {
   runPurposeAdmitsTaskState,
   type AgentRunPurpose
@@ -149,6 +150,7 @@ export async function reconcileExitedRoleRuns(
         });
       }
 
+      if (!isEnabled(role)) continue;
       if (session?.nativeSessionId === undefined) {
         store.queueTaskProgress(task.id, "host-missing-native-resume-unproven", now);
         continue;

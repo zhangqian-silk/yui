@@ -185,7 +185,7 @@ test("1.17 upgrade preserves custom definitions, service grants, overrides and R
     usePre120Layout(db);
     db.prepare("UPDATE storage_schema SET minor=17").run();
     applySqliteMinorUpgrades(db, home);
-    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 21);
+    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 22);
     assert.deepEqual(tables.map(table => db.prepare(`SELECT payload FROM ${table}`).all()), before);
   } finally { db.close(); }
   store = new SqliteTaskStore(home);

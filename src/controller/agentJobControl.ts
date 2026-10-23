@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { assertRoleEnabled } from "../role/availability.js";
 import { mkdirSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import { join } from "node:path";
@@ -56,7 +57,8 @@ export function authorizeAgentDefinition(store: TaskStore, job: JobDefinition, c
 function requireTaskTarget(store: TaskStore, target: { taskId: string; roleName: string; ownerRunId?: string }, runnable = true): void {
   const task = store.getTask(target.taskId);
   if (!task || runnable && (task.status !== "active" || task.executionGate.state !== "enabled")) throw new Error("Task Agent requires an active, execution-enabled Task.");
-  if (!store.getRole(target.taskId, target.roleName)) throw new Error("Task Agent Role is unavailable.");
+  const role = store.getRole(target.taskId, target.roleName);
+  if (!role) throw new Error("Task Agent Role is unavailable.");
   const recipient = taskRecipient(store, target);
   if (recipient.ownerRunId) {
     const owner = store.getRun(target.taskId, recipient.ownerRunId)!;
@@ -106,6 +108,7 @@ function ownedRole(store: TaskStore, home: string, job: JobDefinition, runId: st
   const jobOwner = { scope: job.scope, jobId: job.id, ...(isolated ? { runId } : {}) };
   const existing = store.getGlobalRole(name);
   if (existing) {
+    assertRoleEnabled(existing);
     if (!isDeepStrictEqual(existing.jobOwner, jobOwner) || existing.activeAgentId !== job.configuration.target.agentId) {
       throw new Error("Job Role binding changed; inspect its Session/configuration before dispatch.");
     }
@@ -143,6 +146,8 @@ function queueAttempt(store: TaskStore, home: string, job: JobDefinition, runId:
   const inputControl = { action: "queue" as const, requestId: `job-agent:${runId}:${index}` };
   let messageId: string;
   if (recipient.scope === "global") {
+    const role = store.getGlobalRole(recipient.roleName);
+    if (role !== null) assertRoleEnabled(role);
     messageId = store.nextGlobalRoleMessageId();
     let message = createGlobalRoleMessage(messageId, recipient.roleName, body, "system", { type: "system" }, now, { inputControl });
     const set = store.getGlobalRoleSessionSet(recipient.roleName);
@@ -151,6 +156,7 @@ function queueAttempt(store: TaskStore, home: string, job: JobDefinition, runId:
     store.saveGlobalRoleMessage(message);
   } else {
     requireTaskTarget(store, { ...recipient });
+    assertRoleEnabled(store.getRole(recipient.taskId, recipient.roleName)!);
     const resolved = taskRecipient(store, recipient);
     messageId = store.nextMessageId(recipient.taskId);
     store.saveMessage(recipient.taskId, createTaskMessage(messageId, recipient.taskId, body, "system", { type: "system" }, now,
@@ -235,6 +241,7 @@ export function controlAgentJob(store: TaskStore, home: string, job: JobDefiniti
     }
     if (op === "session-new") {
       if (!role) throw new Error("Create the Job Role first.");
+      assertRoleEnabled(role);
       assertRoleRuntimeMutationAllowed(store, { scope: "global", roleName }, "Job Session replacement");
       const set = store.getGlobalRoleSessionSet(roleName);
       const old = set?.sessions[set.activeAgentId];

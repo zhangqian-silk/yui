@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isEnabled, roleDisabledReason, RoleDisabledError } from "../role/availability.js";
 import { serializeRunInputEnvelope } from "../context/runInputContract.js";
 import { readRunContextSnapshot } from "../context/runContextPack.js";
 import {
@@ -89,6 +90,7 @@ async function deliverActiveRun(
   now: Date
 ): Promise<ActiveRoleRunDeliveryResult> {
   const base = { taskId: task.id, roleName: role.name, runId: run.id };
+  if (!isEnabled(role)) return { ...base, status: "skipped", reason: "not-ready", error: roleDisabledReason(role) };
   if (!isSchedulerTaskWorkspaceReady(
     task,
     store.getTaskWorkspace(task.id),
@@ -309,6 +311,12 @@ async function deliverActiveRun(
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    // A configuration pause before submission preserves the original intent.
+    // After submission, the existing unknown-effect fence still owns recovery.
+    if (!submitted && error instanceof RoleDisabledError) {
+      forget(delivery, task.id, role.name, run.id);
+      return { ...base, status: "skipped", reason: "not-ready", error: message };
+    }
     // Preserve the structured cause alongside the readable diagnosis.
     const causeName = innermostCauseName(error);
     store.recordAgentError({

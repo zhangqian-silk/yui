@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { isEnabled, roleDisabledReason } from "../role/availability.js";
 
 import type { GlobalRole, TaskRole } from "../role/role.js";
 import type { AgentRun } from "../agentRun/agentRun.js";
@@ -35,6 +36,7 @@ export type ReviewDecisionProjection = Readonly<{
     activeReviewRoundId?: string;
     startedAt?: string;
     retryable: boolean;
+    reason?: string;
     retryAfterSeconds?: number;
   }>[];
   latestAcceptedBaseline: Readonly<{
@@ -108,6 +110,10 @@ export function projectReviewDecision(input: Readonly<{
   ])].sort();
   const reviewers = reviewerNames.map((reviewerRoleName) => {
     const role = roles.find(({ name }) => name === reviewerRoleName);
+    const applicable = role ?? store.getGlobalRole(reviewerRoleName);
+    if (applicable !== null && !isEnabled(applicable)) return {
+      reviewerRoleName, status: "unavailable" as const, retryable: false, reason: roleDisabledReason(applicable)
+    };
     if (role === undefined && store.getGlobalRole(reviewerRoleName) === null) {
       return {
         reviewerRoleName,

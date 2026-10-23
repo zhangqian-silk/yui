@@ -1,4 +1,5 @@
 import { usageError } from "../errors/cliError.js";
+import { isEnabled, parseEnabled } from "../role/availability.js";
 import { defaultTableWidth, renderTable } from "../output/table.js";
 import {
   BUILTIN_PROFILE_IDS,
@@ -78,7 +79,7 @@ export function previewProfileAgentConfigurationMutation(
   } else {
     return undefined;
   }
-  const runtime = resolveAgentProfileRuntime(profile, store);
+  const runtime = resolveAgentProfileRuntime(profile, store, { configurationOnly: true });
   if (runtime.status === "unavailable") throw usageError(runtime.reason);
   return {
     agentId: runtime.binding.agentId,
@@ -99,6 +100,11 @@ export function runProfileCommand(
     case "list": return listProfiles(rest, store);
     case "show": return showProfile(rest, store);
     case "update": return updateProfile(rest, store, now(), options);
+    case "enable":
+    case "disable": {
+      const id = oneArg(rest, `Usage: yui config profile ${command} <id>`);
+      return updateProfile([id, "--enabled", String(command === "enable")], store, now(), options);
+    }
     case "remove": return removeProfile(rest, store);
     case "reset": return resetProfiles(rest, store, now());
     default:
@@ -121,6 +127,7 @@ function addProfile(
   assertOptionPairs(parsed);
   const profile = createAgentProfile({
     id,
+    ...(parsed.has("--enabled") ? { enabled: parseEnabled(parsed.one("--enabled")) } : {}),
     defaultAccess: parseAccess(parsed.one("--access") ?? "read"),
     ...profileValues(parsed),
     runtime: addedRuntime(parsed, usage)
@@ -151,6 +158,7 @@ function listProfiles(
         "Agent Profiles",
         [
           { header: "Profile", minWidth: 7, maxWidth: 24 },
+          { header: "Enabled", minWidth: 7, maxWidth: 8 },
           { header: "Revision", minWidth: 8, maxWidth: 10 },
           { header: "Access", minWidth: 6, maxWidth: 8 },
           { header: "Runtime", minWidth: 9, maxWidth: 14 },
@@ -176,6 +184,7 @@ function showProfile(
   return {
     output: `${[
       `Agent Profile: ${profile.id}`,
+      `Enabled: ${isEnabled(profile)}`,
       `Revision: ${profile.revision}`,
       `Default access: ${profile.defaultAccess}`,
       `Description: ${profile.description ?? "-"}`,
@@ -211,8 +220,14 @@ function updateProfile(
   if (parsed.seen.size === 0) throw usageError("At least one Profile option is required.", usage);
   assertOptionPairs(parsed);
   const current = requireProfile(store, id);
+  if (parsed.seen.size === 1 && parsed.has("--enabled")
+    && isEnabled(current) === parseEnabled(parsed.one("--enabled"))) {
+    return { output: `Agent Profile ${id} is already ${isEnabled(current) ? "enabled" : "disabled"}\n`,
+      data: resolveAgentProfileView(current, store) };
+  }
   const runtime = updatedRuntime(current, parsed, usage);
   const updated = updateAgentProfile(current, {
+    ...(parsed.has("--enabled") ? { enabled: parseEnabled(parsed.one("--enabled")) } : {}),
     ...(parsed.has("--access") ? { defaultAccess: parseAccess(parsed.one("--access")) } : {}),
     ...profilePatch(parsed),
     ...(runtime === undefined ? {} : { runtime })
@@ -268,6 +283,7 @@ function resetProfiles(
 }
 
 const BASE_OPTIONS: readonly [string, RoleOptionKind][] = [
+  ["--enabled", "value"],
   ["--access", "value"],
   ["--description", "value"],
   ["--instructions", "value"],
@@ -416,7 +432,7 @@ function validateExplicitRuntime(
   options: ProfileCommandOptions
 ): void {
   if (profile.runtime.source !== "explicit") return;
-  const runtime = resolveAgentProfileRuntime(profile, store);
+  const runtime = resolveAgentProfileRuntime(profile, store, { configurationOnly: true });
   if (runtime.status === "unavailable") throw usageError(runtime.reason);
   options.validateAgentConfiguration?.({
     agentId: runtime.binding.agentId,
@@ -429,6 +445,7 @@ function profileListRow(view: AgentProfileView): string[] {
   const { profile, runtime } = view;
   return [
     profile.id,
+    String(isEnabled(profile)),
     String(profile.revision),
     profile.defaultAccess,
     runtime.source,
