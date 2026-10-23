@@ -380,7 +380,7 @@ export function mountJobs(root, t, taskId, options = {}) {
       controls.forEach((node, index) => { node.disabled = disabled[index]; });
     }
   }
-  function form(title, contents, submit) {
+  function form(title, contents, submit, saveButton = h("button.btn.btn-primary", { type: "submit" }, copy("save"))) {
     if (!guardDraft()) return;
     closeEditor();
     receipt.textContent = ""; receipt.classList.toggle("settings-error", false);
@@ -392,7 +392,7 @@ export function mountJobs(root, t, taskId, options = {}) {
           onclick: () => { if (!pending && guardDraft()) closeEditor(); } }, icon("close"))),
       contents, editorReceipt,
       h("div.dialog-actions", null, button(copy("close"), () => { if (!pending && guardDraft()) closeEditor(); }),
-        h("button.btn.btn-primary", { type: "submit" }, copy("save"))));
+        saveButton));
     const markDirty = () => { dirty = true; root.dataset.unsent = "true"; clearEditorError(); };
     node.addEventListener("input", markDirty);
     node.addEventListener("change", markDirty);
@@ -412,7 +412,10 @@ export function mountJobs(root, t, taskId, options = {}) {
     const id = input(job?.id || newId("job"), { required: true, pattern: "[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}", disabled: !!job });
     const title = input(job?.title || "", { required: true });
     const kind = choose(taskId ? ["shell", "task", "agent"] : ["builtin", "task", "agent"], job?.configuration.kind, v => label("jobs.kind", v));
-    kind.disabled = !!job;
+    const newDefinitionId = newId("job");
+    const kindNotice = h("p.job-note", { role: "status", "aria-live": "polite" });
+    const saveButton = h("button.btn.btn-primary", { type: "submit" });
+    const changesKind = () => !!job && kind.value !== job.configuration.kind;
     const seeds = {
       builtin: { kind: "builtin", action: "system.noop", input: {} },
       shell: { kind: "shell", owner: { kind: "task" }, projectId: "", head: "", workspace: "", env: {},
@@ -432,18 +435,23 @@ export function mountJobs(root, t, taskId, options = {}) {
       }
       // Keep each type's actual controls, including invalid drafts, when switching.
       configured.replaceChildren(active.node);
+      kindNotice.textContent = changesKind() ? copy("kindCopyHelp") : "";
+      kindNotice.hidden = !changesKind();
+      saveButton.textContent = changesKind() ? copy("saveAsNew") : copy("save");
     }
     kind.addEventListener("change", selectKind); selectKind();
     form(job ? copy("editJob") : copy("newJob"), [
       h("div.job-field-grid", null, field(copy("name"), title), field(copy("executor"), kind)),
+      kindNotice,
       configured,
       h("p.job-note", null, copy("taskConfig"))
     ], () => {
-      void mutate("jobs", { op: job ? "update" : "define", id: id.value.trim(), title: title.value.trim(),
-        configuration: active.read(), ...(job ? { expectedRevision: job.revision } : {}) }, result => {
+      const update = !!job && !changesKind();
+      void mutate("jobs", { op: update ? "update" : "define", id: changesKind() ? newDefinitionId : id.value.trim(), title: title.value.trim(),
+        configuration: active.read(), ...(update ? { expectedRevision: job.revision } : {}) }, result => {
         selected = result.id; selectedRun = undefined; pinSelection(); closeEditor();
       });
-    });
+    }, saveButton);
   }
   // Explicit field editors patch a clone of the original, never reconstruct a
   // saved configuration from only the visible keys. Optional untouched fields

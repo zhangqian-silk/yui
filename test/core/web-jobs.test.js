@@ -72,8 +72,35 @@ test("Job and plan forms preserve unedited fields, exact association/timezone an
     await flush();
     walk(root).find(n => n.spec?.startsWith("button") && n.children.includes("jobs.editJob")).onclick();
     let form = walk(root).find(n => n.spec === "form.dialog-body.job-form");
+    if (configuration.kind === "builtin") {
+      const kind = walk(form).find(n => n.spec === "select" && n.value === "builtin");
+      assert.notEqual(kind.disabled, true, "editing allows choosing another executor");
+      kind.value = "agent"; kind.onchange();
+      const agentInput = walk(form).find(n => n.spec === "textarea");
+      agentInput.value = "New agent intent";
+      kind.value = "task"; kind.onchange();
+      kind.value = "agent"; kind.onchange();
+      assert.equal(walk(form).find(n => n.spec === "textarea").value, "New agent intent", "each executor keeps its draft");
+      kind.value = "builtin"; kind.onchange();
+    }
     form.onsubmit({ preventDefault() {} }); await flush();
     assert.deepEqual(writes.at(-1).configuration, job.configuration, configuration.kind + " roundtrip");
+    assert.equal(writes.at(-1).op, "update");
+    if (configuration.kind === "builtin") {
+      walk(root).find(n => n.spec?.startsWith("button") && n.children.includes("jobs.editJob")).onclick();
+      form = walk(root).find(n => n.spec === "form.dialog-body.job-form");
+      const kind = walk(form).find(n => n.spec === "select" && n.value === "builtin");
+      kind.value = "agent"; kind.onchange();
+      const target = walk(form).find(n => n.spec === "select" && n.value === "job");
+      target.value = "operator"; target.onchange();
+      walk(form).find(n => n.spec === "textarea").value = "Summarize";
+      form.onsubmit({ preventDefault() {} }); await flush();
+      assert.equal(writes.at(-1).op, "define", "different executor creates a new definition, never rewrites history");
+      assert.notEqual(writes.at(-1).id, job.id);
+      assert.equal(writes.at(-1).expectedRevision, undefined);
+      assert.equal(writes.at(-1).configuration.kind, "agent");
+      assert.equal(job.configuration.kind, "builtin");
+    }
     walk(root).find(n => n.spec?.startsWith("button") && n.children.includes("jobs.editSchedule")).onclick();
     form = walk(root).find(n => n.spec === "form.dialog-body.job-form");
     form.onsubmit({ preventDefault() {} }); await flush();
