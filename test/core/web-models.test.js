@@ -209,6 +209,38 @@ function fakeApi(overrides = {}) {
   return api;
 }
 
+test("maintenance and native-tool drafts survive translation; Job admission is not applied and unknown is not replayed", async () => {
+  const api = fakeApi({
+    modelMaintenance: async () => ({ moduleRevision: "a".repeat(64) }),
+    maintainModel: async input => { api.calls.push(["maintain", copy(input)]); return { created: true, run: { id: "job-exact" } }; },
+    previewModelConnection: async () => ({ planDigest: "b".repeat(64), plan: { files: [] } }),
+    applyModelConnection: async () => { api.calls.push(["apply"]); throw Object.assign(Error("lost receipt"), { disposition: "unknown" }); }
+  });
+  const { root, page } = mount(api);
+  await page.ready;
+  page.show({ section: "connection" });
+  const spec = JSON.stringify({ repository: "/owned/repository", ref: "refs/heads/main" });
+  const maintenance = all(root, n => n.tagName === "TEXTAREA")[0];
+  maintenance.value = spec; maintenance.handlers.input();
+  const tool = all(root, n => n.tagName === "TEXTAREA")[1];
+  tool.value = '{"codex":{"configPath":"/owned/config.toml"}}'; tool.handlers.input();
+  page.translate();
+  assert.equal(all(root, n => n.tagName === "TEXTAREA")[0].value, spec);
+  assert.equal(page.dirty(), true);
+  await button(root, "models.operation.check-update").handlers.click();
+  assert.equal(api.calls.filter(c => c[0] === "maintain").length, 1);
+  assert.equal(page.state.receipt.text, "models.jobAccepted");
+  assert.equal(page.state.maintenanceDrafts.bridge.spec, spec);
+  const details = find(root, n => n.tagName === "DETAILS" && text(n).includes("models.connectionToolHelp"));
+  await button(details, "models.previewBinding").handlers.click();
+  await button(details, "models.saveResource").handlers.click();
+  assert.equal(page.state.unknown, true);
+  assert.equal(api.calls.filter(c => c[0] === "apply").length, 1);
+  page.translate(); page.show({ section: "providers" }); page.show({ section: "connection" });
+  assert.equal(api.calls.filter(c => c[0] === "apply").length, 1);
+  assert.equal(page.state.toolDraft, '{"codex":{"configPath":"/owned/config.toml"}}');
+});
+
 test("resource drafts survive other editors, rerenders, writes and reconciliation; only explicit replacements discard them", async () => {
   const api = fakeApi();
   let allow = false;
@@ -247,6 +279,33 @@ test("resource drafts survive other editors, rerenders, writes and reconciliatio
     assert.deepEqual([id(0).value, id(1).value, id(2).value], ["keep-module", "keep-endpoint", "unsaved-agent"], disposition + " reread must not erase drafts or replay");
   }
   assert.equal(page.dirty(), true);
+});
+
+test("late maintenance reads and tool previews cannot replace newer drafts after rerender", async () => {
+  let finishRead, finishPreview;
+  const api = fakeApi({
+    modelMaintenance: () => new Promise(resolve => { finishRead = resolve; }),
+    previewModelConnection: () => new Promise(resolve => { finishPreview = resolve; })
+  });
+  const { root, page } = mount(api);
+  await page.ready;
+  const reading = button(root, "models.maintenanceRead").handlers.click();
+  page.translate();
+  let editors = all(root, n => n.tagName === "TEXTAREA");
+  editors[0].value = '{"repository":"/new/draft"}'; editors[0].handlers.input();
+  finishRead({ definition: { configuration: { input: { spec: { repository: "/old/delegation" } } } } });
+  await reading;
+  assert.equal(page.state.maintenanceDrafts.bridge.spec, '{"repository":"/new/draft"}');
+  editors[1].value = '{"codex":{"configPath":"/first"}}'; editors[1].handlers.input();
+  let details = find(root, n => n.tagName === "DETAILS" && text(n).includes("models.connectionToolHelp"));
+  const previewing = button(details, "models.previewBinding").handlers.click();
+  page.translate();
+  editors = all(root, n => n.tagName === "TEXTAREA");
+  editors[1].value = '{"codex":{"configPath":"/second"}}'; editors[1].handlers.input();
+  finishPreview({ planDigest: "b".repeat(64) });
+  await previewing;
+  assert.equal(page.state.toolPreview, null);
+  assert.equal(page.state.toolDraft, '{"codex":{"configPath":"/second"}}');
 });
 
 test("resource controls and confirmations use the selected product language", async () => {

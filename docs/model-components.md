@@ -1,19 +1,21 @@
 # Model components: operator and Agent manual
 
-Documentation revision 1 · 2026-10-24. Read the matching component section
+Documentation revision 2 · 2026-10-24. Read the matching component section
 before modifying a registered instance. These instructions do not grant
 permission to operate a real service or consume an account.
 
-Companion index: [unified API](model-management-api.md) and the separate
-[standalone connection tools](model-connection-tools.md). The latter is owned
-by the config-tools WorkItem and becomes available with its integrated result;
-this delivery does not copy its implementation. Lifecycle integration owns
-the final server-side tool invocation and Git/systemd entry points.
+Versioned operating manuals: [metabridge](model-metabridge.md),
+[CLIProxyAPI v8.0.12](model-cliproxyapi.md), [maintenance](model-maintenance.md),
+[standalone connection tools](model-connection-tools.md), and
+[unified API](model-management-api.md). Web serves these at `/models/docs`,
+`/models/docs/metabridge`, `/models/docs/cliproxyapi`, `/models/docs/maintenance`
+and `/models/docs/connection`. Common operations share the business service;
+complex fields use matching native instructions and explicit reread.
 
 | Component | Target evidence | Yui scope in this delivery |
 | --- | --- | --- |
 | CLIProxyAPI | `router-for-me/CLIProxyAPI`, tag `v8.0.12`, `config.example.yaml` fetched at this tag | Independent endpoints, reference registration, native configuration method, explicit configuration-status reread |
-| metabridge | `zhangqian-silk/codex-metabridge`, reference commit `ccc782e2ac3e4c91d89893207582dad16b45e623` from the assigned plan; local file contract tested | Existing Provider editor with explicit ownership, independent endpoint, reference registration |
+| metabridge | `zhangqian-silk/metabridge`, reference commit `ccc782e2ac3e4c91d89893207582dad16b45e623`; local file contract tested | Provider editor, independent endpoint, optional pinned Git/service maintenance |
 | Factory/Command Code quota extension | `factory-quota-v1` wire contract from the existing adapter; **no extension build/version verified** | Opt-in, deterministic fixture-tested read adapter; do not infer compatibility from CPA version |
 | Codex | App Server per-thread config contract; static launch fixtures, not a real installed binary compatibility test | Exact configured `codex` Agent, Responses endpoint or native |
 | Claude Code CLI | Anthropic gateway bearer-env contract; static launch fixtures, not a real CLI/model compatibility test | Exact configured `claude` Agent, Anthropic Messages endpoint or native |
@@ -27,7 +29,7 @@ Sources:
 
 The first version is a selected target, not “latest”. A locally installed
 version or tag does not establish a remote latest release. Record the resolved
-commit/artifact when the lifecycle WorkItem implements updates. No package,
+commit in the exact maintenance Job result, separately from runtime version. No package,
 plugin or binary was installed into a user's service by this delivery.
 
 ## CLIProxyAPI v8.0.12
@@ -152,9 +154,8 @@ Discover the service manager/unit through explicit instance ownership, not
 `pkill`, port matching or a system-wide service scan. Stop/restart impacts all
 known bindings and may affect unknown external consumers. A unit reporting
 running is not model readiness. Git update and user-systemd start/stop/log
-execution are assigned to the lifecycle integration WorkItem; this reference
-registry does not execute or claim them. Until integrated, use the existing
-authorized native deployment procedure and separately record its outcome.
+execution use separately delegated maintenance Jobs, not module registration.
+The maintenance manual specifies exact identity checks and recovery boundaries.
 
 Missing management route: check whether the management secret is empty or
 remote access is disabled. Missing quota route: do not enable guessed plugins;
@@ -217,10 +218,11 @@ Do not request model inference as a validation shortcut.
 
 Installation/update and service handoff follow the same exact-source,
 independent-build, prior-version/config retention and explicit unit ownership
-rules as CPA. The standalone connection tool WorkItem owns listener and
-Codex-user-config editing; this service does not duplicate it. The lifecycle
-WorkItem will compose that tool and implement Git/systemd operations. Until
-then the bridge's existing independently managed deployment remains authoritative.
+rules as CPA. The standalone connection tool owns listener and
+Codex-user-config editing; Web/Operator call that shared implementation through
+Jobs. The maintenance manual covers implemented Git/systemd operations.
+Existing independent deployments remain authoritative until exact instance
+maintenance is explicitly delegated.
 Never restart a shared Codex daemon to apply a bridge binding.
 
 ## Credentials and observation recovery

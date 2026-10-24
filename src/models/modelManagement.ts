@@ -7,6 +7,8 @@ import { createModelRegistry } from "./modelRegistry.js";
 import { modelDigest, modelJsonFile, modelKey, newModelFile, privateModelFile, replaceModelFile, type ModelFile } from "./modelManagementFiles.js";
 import { readModelJson } from "./modelManagementHttp.js";
 import type { ModelCatalogItem, ModelConnection, ModelManagementView, ModelObservation, ModelProviderView, ModelQuotaItem, ModelStatusItem } from "./modelManagementTypes.js";
+import { createModelMaintenanceService } from "./modelMaintenanceService.js";
+import type { DurableJobCaller } from "../controller/jobControl.js";
 
 type Store = Pick<TaskStore, "getConfig" | "saveConfig" | "transaction"> & Partial<Pick<TaskStore, "getConfiguredAgent">>;
 type Provider = { file: ModelFile; value: Record<string, unknown>; id: string };
@@ -23,6 +25,8 @@ export function createModelManagement(store: Store, options: {
   const registry = createModelRegistry(store);
   const observations = new Map<string, ModelObservation<ModelCatalogItem | ModelQuotaItem | ModelStatusItem>>();
   const pending = new Map<string, Promise<unknown>>();
+  // Lazy: file-only model callers need not supply a Job/Store implementation.
+  const maintenance = () => createModelMaintenanceService(store as TaskStore);
 
   function snapshot(moduleId?: string) {
     const module = moduleId ? registry.read().modules.find(m => m.id === moduleId)
@@ -328,6 +332,10 @@ export function createModelManagement(store: Store, options: {
     try { return await operation; } finally { pending.delete(identity); }
   }
   return { read, saveProvider, readCatalog, readQuota, readStatus, refresh,
+    readMaintenance: (moduleId: string) => maintenance().read(moduleId),
+    maintain: (input: unknown, caller: DurableJobCaller) => maintenance().maintain(input, caller),
+    connectionPreview: (input: unknown) => maintenance().connectionPreview(input),
+    connectionApply: (input: unknown, caller: DurableJobCaller) => maintenance().connectionApply(input, caller),
     readRegistry: () => ({ revision: registry.revision(), registry: registry.read() }),
     saveResource: registry.save, previewBinding: registry.previewBinding };
 }

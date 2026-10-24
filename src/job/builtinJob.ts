@@ -2,6 +2,8 @@ import type { BuiltinJobConfiguration } from "./jobDefinition.js";
 import type { GlobalProcessJobRun } from "./durableJob.js";
 import { fileURLToPath } from "node:url";
 import { requireKnownFields } from "../domain/validation.js";
+import { validateMaintenanceInput } from "../models/modelMaintenance.js";
+import { modelFields, modelObject } from "../models/modelManagementConfig.js";
 
 /**
  * Controlled action compilation, not a shell/Agent plugin surface.
@@ -10,6 +12,26 @@ import { requireKnownFields } from "../domain/validation.js";
 export function prepareBuiltinJob(configuration: BuiltinJobConfiguration, workspace: string,
   execution?: Readonly<{ home: string; runId: string }>):
   Pick<GlobalProcessJobRun, "workspace" | "env" | "steps" | "head"> {
+  if (configuration.action === "models.maintenance" || configuration.action === "models.connection") {
+    if (configuration.projectId !== undefined) throw new Error("Component maintenance is independent of Projects/Tasks.");
+    if (configuration.action === "models.maintenance") validateMaintenanceInput(configuration.input);
+    else {
+      const input = modelObject(configuration.input);
+      modelFields(input, ["input", "planDigest", "exclusiveWriter"]);
+      if (!/^[a-f0-9]{64}$/.test(String(input.planDigest)) || input.exclusiveWriter !== true) throw new Error("Exact native configuration preview required.");
+      modelObject(input.input);
+    }
+    const env: Record<string, string> = {};
+    for (const key of ["PATH", "HOME", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"]) {
+      if (process.env[key] !== undefined) env[key] = process.env[key]!;
+    }
+    return { workspace, env, head: "0".repeat(40), steps: [{
+      name: configuration.action, command: configuration.action,
+      argv: [process.execPath, fileURLToPath(new URL("../models/modelMaintenanceRunner.js", import.meta.url)),
+        execution?.home ?? "", execution?.runId ?? ""],
+      timeoutMs: 90 * 60_000
+    }] };
+  }
   if (configuration.action === "project.refresh") {
     projectRefreshDigest(configuration);
     // Runtime-owned Git discovery/authentication context, never caller input

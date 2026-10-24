@@ -127,4 +127,7 @@ export const MODELS_STYLES = `
   .models-reason{text-align:left;max-width:none}
   .models-catalog{grid-template-columns:minmax(0,1fr)}
 }
+ .models-maintenance{margin-block:var(--space-3,12px);min-width:0}
+ .models-maintenance textarea,.models-card textarea{width:100%;max-width:100%;box-sizing:border-box;font-family:var(--font-mono,monospace)}
+ .models-operation-result{white-space:pre-wrap;overflow-wrap:anywhere;max-height:24rem;overflow:auto;max-width:100%}
 `;

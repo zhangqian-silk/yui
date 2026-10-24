@@ -59,6 +59,7 @@ export function mountModels(root, deps) {
     // offers an explicit re-read; nothing is replayed automatically.
     pending: false, unknown: false, rejected: false, receipt: null,
     connectionDrafts: {}, providerDraft: null,
+    maintenanceDrafts: {}, maintenanceResults: {}, toolDraft: "", toolPreview: null,
     endpointId: "", moduleId: "", bridgeId: "", moduleStatuses: {},
     providerFilter: { query: "", route: "all", state: "all" },
     catalog: { page: null, items: [], loading: false, error: null, note: null, generation: 0, query: "", source: "all" },
@@ -127,7 +128,7 @@ export function mountModels(root, deps) {
   function notify() {
     onChange({ connection: hasConnectionDrafts(), provider: !!state.providerDraft, unknown: state.unknown, pending: state.pending });
   }
-  function hasConnectionDrafts() { return Object.keys(state.connectionDrafts).length > 0; }
+  function hasConnectionDrafts() { return Object.keys(state.connectionDrafts).length > 0 || Object.keys(state.maintenanceDrafts).length > 0 || !!state.toolDraft; }
 
   // ---- Routing ----------------------------------------------------------
   function show(route) {
@@ -269,9 +270,10 @@ export function mountModels(root, deps) {
           } catch (error) { status.textContent = error.message; }
         };
         return h("li", null, h("code", null, resourceId), " · " + (row.kind || row.protocol || row.adapterId),
-          kind === "module" ? h("span", null,
+          kind === "module" ? h("div.models-module-operations", null,
             h("button.btn.btn-ghost", { type: "button", disabled: blocked, onclick: () => showStatus(false) }, t("models.readCachedStatus")),
-            h("button.btn.btn-ghost", { type: "button", disabled: blocked, onclick: () => showStatus(true) }, t("models.refreshStatus")), status) : null,
+            h("button.btn.btn-ghost", { type: "button", disabled: blocked, onclick: () => showStatus(true) }, t("models.refreshStatus")), status,
+            maintenanceForm(row)) : null,
           h("button.btn.btn-ghost", { type: "button", disabled: blocked, onclick: function () {
             if (state.connectionDrafts[kind] && !confirm(t("models.replaceResourceDraft"))) return;
             state.connectionDrafts[kind] = { ...row }; renderConnection(); notify();
@@ -289,7 +291,85 @@ export function mountModels(root, deps) {
       head("connection", t("models.connectionIntro")),
       h("p.models-note", null, t("models.bindingScope")),
       receiptNode("connection") || h("span"), ...cards,
+      connectionToolForm(),
       h("p", null, h("a.btn-link", { href: "/models/docs" }, t("models.componentDocs"))));
+  }
+
+  function maintenanceForm(row) {
+    const id = row.id, draft = state.maintenanceDrafts[id] || { spec: "", commit: "" };
+    const spec = h("textarea", { rows: 10, spellcheck: "false", disabled: writesBlocked(), placeholder: t("models.maintenanceSpec") });
+    spec.value = draft.spec;
+    const commit = h("input", { type: "text", autocomplete: "off", disabled: writesBlocked(), placeholder: t("models.pinnedCommit") });
+    commit.value = draft.commit;
+    function remember() { state.maintenanceDrafts[id] = { spec: spec.value, commit: commit.value }; notify(); }
+    spec.addEventListener("input", remember); commit.addEventListener("input", remember);
+    const result = h("pre.models-operation-result", { role: "status" }, state.maintenanceResults[id] || "");
+    const read = h("button.btn", { type: "button", disabled: writesBlocked(), onclick: async function () {
+      const requestedDraft = state.maintenanceDrafts[id];
+      try {
+        const facts = await api.modelMaintenance(id);
+        state.maintenanceResults[id] = JSON.stringify(facts, null, 2); result.textContent = state.maintenanceResults[id];
+        const input = facts.definition && facts.definition.configuration.input;
+        if (input && !spec.value && state.maintenanceDrafts[id] === requestedDraft) {
+          spec.value = JSON.stringify(input.spec, null, 2); remember(); renderConnection();
+        }
+      } catch (error) { result.textContent = error.message; }
+    } }, t("models.maintenanceRead"));
+    const actions = ["check-update", "update", "rollback", "start", "stop", "restart", "status", "logs", "handoff"].map(function (operation) {
+      return h("button.btn.btn-ghost", { type: "button", disabled: writesBlocked(), onclick: async function () {
+        let specification;
+        try { specification = JSON.parse(spec.value); } catch { result.textContent = t("models.invalidJson"); return; }
+        if (!confirm(t("models.maintenanceConfirm") + "\n" + id + " · " + t("models.operation." + operation) + "\n" + spec.value)) return;
+        await write(async function () {
+          const facts = await api.modelMaintenance(id);
+          const receipt = await api.maintainModel({ revision: state.view.registryRevision, requestId: crypto.randomUUID(),
+            maintenance: { moduleId: id, moduleRevision: facts.moduleRevision, operation: operation, spec: specification,
+              ...(operation === "update" ? { commit: commit.value.trim() } : {}), exclusiveWriter: true, impactAcknowledged: true } });
+          state.maintenanceResults[id] = JSON.stringify(receipt, null, 2);
+          return api.models(state.bridgeId);
+        }, { scope: "connection", accepted: true });
+      } }, t("models.operation." + operation));
+    });
+    return h("details.models-maintenance", null, h("summary", null, t("models.maintenance")),
+      h("p.models-note", null, t("models.maintenanceHelp")),
+      field(t("models.maintenanceSpec"), spec), field(t("models.pinnedCommit"), commit),
+      h("div.settings-actions", null, read, ...actions,
+        h("button.btn", { type: "button", disabled: writesBlocked(), onclick: function () {
+          delete state.maintenanceDrafts[id]; renderConnection(); notify();
+        } }, t("models.discard"))), result, h("a.btn-link", { href: "/jobs" }, t("models.openJobs")));
+  }
+  function connectionToolForm() {
+    const input = h("textarea", { rows: 8, spellcheck: "false", disabled: writesBlocked() });
+    input.value = state.toolDraft;
+    input.addEventListener("input", function () { state.toolDraft = input.value; state.toolPreview = null; notify(); });
+    const output = h("pre.models-operation-result", { role: "status" }, state.toolPreview ? JSON.stringify(state.toolPreview, null, 2) : "");
+    return h("details.card.models-card", null, h("summary", null, t("models.connectionTool")),
+      h("p.models-note", null, t("models.connectionToolHelp")), field(t("models.connectionInput"), input),
+      h("div.settings-actions", null,
+        h("button.btn", { type: "button", disabled: writesBlocked(), onclick: async function () {
+          try {
+            const requested = input.value;
+            const preview = await api.previewModelConnection(JSON.parse(requested));
+            if (state.toolDraft !== requested) return;
+            state.toolPreview = { ...preview, requested: requested }; output.textContent = JSON.stringify(preview, null, 2);
+          } catch (error) { output.textContent = error.message; }
+        } }, t("models.previewBinding")),
+        h("button.btn.btn-primary", { type: "button", disabled: writesBlocked(), onclick: async function () {
+          const preview = state.toolPreview;
+          if (!preview || preview.requested !== input.value) { output.textContent = t("models.previewRequired"); return; }
+          if (!confirm(t("models.exclusiveWriter") + "\n" + t("models.connectionToolHelp"))) return;
+          await write(async function () {
+            const receipt = await api.applyModelConnection({ input: JSON.parse(preview.requested), planDigest: preview.planDigest,
+              requestId: crypto.randomUUID(), exclusiveWriter: true });
+            state.maintenanceResults.connection = JSON.stringify(receipt, null, 2); state.toolPreview = null;
+            return api.models(state.bridgeId);
+          }, { scope: "connection", accepted: true });
+        } }, t("models.saveResource")),
+        h("button.btn", { type: "button", disabled: writesBlocked(), onclick: function () {
+          state.toolDraft = ""; state.toolPreview = null; renderConnection(); notify();
+        } }, t("models.discard"))),
+      output, h("pre.models-operation-result", null, state.maintenanceResults.connection || ""),
+      h("a.btn-link", { href: "/models/docs/connection" }, t("models.componentDocs")));
   }
 
   // ---- Access (providers) -----------------------------------------------
@@ -722,7 +802,7 @@ export function mountModels(root, deps) {
       const view = await send(state.view.revision);
       if (options.clearConnection) delete state.connectionDrafts[options.clearConnection];
       if (options.clearProvider) state.providerDraft = null;
-      setReceipt(t("models.saved"), "ok", options.scope);
+      setReceipt(t(options.accepted ? "models.jobAccepted" : "models.saved"), "ok", options.scope);
       await adoptView(view);
     } catch (error) {
       if (error.disposition === "not-submitted") {

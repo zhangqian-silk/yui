@@ -120,6 +120,11 @@ test("Model HTTP boundary persists only references and requires token, origin an
     const docs = await fetch(`${url}/models/docs`);
     assert.equal(docs.status, 200);
     assert.match(await docs.text(), /CLIProxyAPI v8\.0\.12/);
+    for (const component of ["maintenance", "connection", "metabridge", "cliproxyapi"]) {
+      const manual = await fetch(`${url}/models/docs/${component}`);
+      assert.equal(manual.status, 200, component);
+      assert.ok((await manual.text()).length > 1000);
+    }
     assert.equal((await fetch(api)).status, 403);
     const headers = { "x-yui-web-token": "fixture-token", "content-type": "application/json" };
     const view = await (await fetch(`${api}/registry`, { headers })).json();
@@ -128,6 +133,11 @@ test("Model HTTP boundary persists only references and requires token, origin an
     const denied = await fetch(`${api}/resource`, { method: "POST", headers, body });
     assert.equal(denied.status, 409);
     assert.equal(store.getConfig().modelManagement, undefined);
+    assert.equal((await fetch(`${api}/connection/preview`, { method: "POST", headers,
+      body: JSON.stringify({ input: {} }) })).status, 409, "native preview also requires origin");
+    const invalidPreview = await fetch(`${api}/connection/preview`, { method: "POST",
+      headers: { ...headers, origin: url }, body: JSON.stringify({ input: {} }) });
+    assert.equal((await invalidPreview.json()).disposition, "not-submitted");
     const saved = await fetch(`${api}/resource`, { method: "POST", headers: { ...headers, origin: url }, body });
     assert.equal(saved.status, 200);
     assert.deepEqual(store.getConfig().modelManagement.endpoints, [endpoint]);

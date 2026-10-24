@@ -38,6 +38,19 @@ plugin platform.
 
 ## Registry and writes
 
+Optional lifecycle operations and server-side standalone-tool invocation are
+documented in [model-maintenance.md](model-maintenance.md). They reuse the
+existing global Job definition/Run contracts (no new persistent envelope).
+`models.maintain`, `models.connection-preview` and `models.connection-apply`
+share the model-management caller boundary; Task roles gain no global authority.
+`models.read` kind `maintenance` reads exact-module cached Job evidence.
+Web uses GET/POST `/api/models/maintenance`, POST
+`/api/models/connection/preview` and `/api/models/connection/apply`.
+Admission is not saved/applied: inspect the exact Job business result.
+The common UI retains specification/config-tool drafts and rejects blind replay
+of unknown submissions. Docs: `/models/docs/maintenance`, `/models/docs/metabridge`,
+`/models/docs/cliproxyapi` and `/models/docs/connection`.
+
 `GET /api/models/registry` returns `{revision,registry}`.
 The registry has `modules`, `endpoints`, `bindings` and a bounded recent request
 receipt window. `GET /api/models?moduleId=...` returns the same references plus a

@@ -11,7 +11,7 @@ export function modelDigest(value: unknown): string {
 export function privateModelFile(path: string, secret = false): string {
   try {
     if (!isAbsolute(path) || realpathSync(path) !== resolve(path)) throw new Error();
-    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
       const stat = fstatSync(fd);
       const limit = secret ? 16384 : 2 * 1024 * 1024;
