@@ -413,6 +413,7 @@ async function handleHttpRequest(
       else if (method === "GET" && pathname === "/api/models/catalog") value = service.readCatalog(query.get("cursor") ?? "0", query.get("resourceId") ?? undefined);
       else if (method === "GET" && pathname === "/api/models/quota") value = service.readQuota(query.get("source") ?? "factory", query.get("resourceId") ?? undefined);
       else if (method === "GET" && pathname === "/api/models/status") value = service.readStatus(query.get("resourceId") ?? "");
+      else if (method === "GET" && pathname === "/api/models/maintenance") value = service.readMaintenance(query.get("moduleId") ?? "");
       else if (method === "POST") {
         // Credential-bearing forms require an exact same-origin browser request.
         if (headerValue(request, "origin") !== `http://${headerValue(request, "host")}`) {
@@ -426,6 +427,9 @@ async function handleHttpRequest(
         else if (pathname === "/api/models/binding/preview") value = service.previewBinding(body);
         else if (pathname === "/api/models/provider") value = service.saveProvider(body);
         else if (pathname === "/api/models/refresh") value = await service.refresh(body);
+        else if (pathname === "/api/models/maintenance") value = service.maintain(body, { scope: "user" });
+        else if (pathname === "/api/models/connection/preview") value = service.connectionPreview(body);
+        else if (pathname === "/api/models/connection/apply") value = service.connectionApply(body, { scope: "user" });
         else throw new WebRequestRejected("Unknown Model operation.");
       } else { sendJson(response, 405, { error: "Method not allowed.", disposition: "not-submitted" }, false); return; }
       sendJson(response, 200, value, false);
@@ -739,9 +743,14 @@ async function handleHttpRequest(
 
   if (method === "GET" || method === "HEAD") {
     try {
-      if (pathname === "/models/docs") {
+      const modelDocs: Record<string, string> = {
+        "/models/docs": "model-components.md", "/models/docs/connection": "model-connection-tools.md",
+        "/models/docs/maintenance": "model-maintenance.md",
+        "/models/docs/metabridge": "model-metabridge.md", "/models/docs/cliproxyapi": "model-cliproxyapi.md"
+      };
+      if (modelDocs[pathname]) {
         sendText(response, 200, "text/plain; charset=utf-8",
-          readFileSync(new URL("../../docs/model-components.md", import.meta.url), "utf8"), method === "HEAD");
+          readFileSync(new URL(`../../docs/${modelDocs[pathname]}`, import.meta.url), "utf8"), method === "HEAD");
         return;
       }
       const assetVersion = new URL(request.url!, "http://localhost").searchParams.get("v");

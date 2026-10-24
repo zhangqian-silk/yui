@@ -51,13 +51,13 @@ const provider = Object.freeze({ id: "yui:builtin-capabilities", generation: "1"
 
 /** Source locators identify the existing semantic owner, not a new Store. */
 const definitions: readonly Omit<CapabilityDescriptor, "contractVersion" | "provider" | "scope">[] = [
-  ...["read", "save", "preview", "refresh"].map(action => ({
+  ...["read", "save", "preview", "refresh", "maintain", "connection-preview", "connection-apply"].map(action => ({
     name: `models.${action}`, summary: "Manage independent modules, endpoints and exact new-Session Agent bindings (Operator only).",
-    effect: action === "read" || action === "preview" ? "query" as const
-      : action === "refresh" ? "external-operation" as const : "local-mutation" as const,
-    requiredPermissions: [action === "read" || action === "preview" ? "config:read" : "model:manage"], source: "createModelManagement",
+    effect: action === "read" || action === "preview" || action === "connection-preview" ? "query" as const
+      : ["refresh", "maintain", "connection-apply"].includes(action) ? "external-operation" as const : "local-mutation" as const,
+    requiredPermissions: [action === "read" || action === "preview" || action === "connection-preview" ? "config:read" : "model:manage"], source: "createModelManagement",
     inputSchema: action === "read"
-      ? object({ kind: { enum: ["registry", "catalog", "quota", "status"] }, resourceId: text, source: { enum: ["factory", "command-code"] }, cursor: text }, [])
+      ? object({ kind: { enum: ["registry", "catalog", "quota", "status", "maintenance"] }, resourceId: text, source: { enum: ["factory", "command-code"] }, cursor: text }, [])
       : object({ operation: { enum: ["resource", "provider"] }, input: { type: "object" } }, ["input"]),
     outputSchema: recordOutput
   })),
@@ -306,12 +306,16 @@ export function createBuiltinCapabilities(
       }
       const taskId = invocation.context.targetId;
       if (name === "models.read") {
+        if (params.kind === "maintenance") return models.readMaintenance(params.resourceId as string ?? "");
         if (params.kind === "catalog") return models.readCatalog(params.cursor as string | undefined, params.resourceId as string | undefined);
         if (params.kind === "quota") return models.readQuota(params.source as string ?? "factory", params.resourceId as string | undefined);
         if (params.kind === "status") return models.readStatus(params.resourceId as string ?? "");
         return models.read();
       }
       if (name === "models.preview") return models.previewBinding(params.input);
+      if (name === "models.maintain") return models.maintain(params.input, caller);
+      if (name === "models.connection-preview") return models.connectionPreview(params.input);
+      if (name === "models.connection-apply") return models.connectionApply(params.input, caller);
       if (name === "models.refresh") return models.refresh(params.input);
       if (name === "models.save") return params.operation === "provider"
         ? models.saveProvider(params.input) : models.saveResource(params.input);

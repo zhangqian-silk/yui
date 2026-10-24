@@ -293,6 +293,36 @@ try {
       // Save -> pinned read is the package boundary. Preview/list/result
       // projections remain covered by job-artifact.test.js, not repeated here.
       checkNoJobSession();
+      // One real component-tool Job proves the packaged controlled executable,
+      // private plan reconstruction and files-only receipt wiring. No service,
+      // model, native user configuration or extra Controller is involved.
+      const connectionDirectory = join(sandbox, "native-connection");
+      mkdirSync(connectionDirectory, { mode: 0o700 });
+      const configPath = join(connectionDirectory, "config.toml");
+      writeFileSync(configPath, '# package fixture\nmodel = "native"\n', { mode: 0o600 });
+      const connectionInput = { codex: { configPath, provider: {
+        id: "package_fixture", name: "Package fixture", baseUrl: "http://127.0.0.1:19000/v1", auth: { type: "none" }
+      } } };
+      const { planConnectionConfig } = await import(pathToFileURL(join(root, "dist/models/connectionConfig.js")).href);
+      const { modelDigest } = await import(pathToFileURL(join(root, "dist/models/modelManagementFiles.js")).href);
+      const planDigest = modelDigest(planConnectionConfig(connectionInput, {}));
+      json("job", "define", "--global", "--job", "native-connection", "--title", "Native connection fixture",
+        "--input", JSON.stringify({ kind: "builtin", action: "models.connection",
+          input: { input: connectionInput, planDigest, exclusiveWriter: true } }));
+      const connectionRun = json("job", "run", "--global", "--job", "native-connection", "--request-id", "native-once").run;
+      const connectionRef = ["--global", "--job", "native-connection", "--run", connectionRun.id];
+      await waitFor(() => observeFixture(store => store.getGlobalJobRun(connectionRun.id)?.status === "succeeded"),
+        "Packaged native configuration Job did not complete.",
+        () => JSON.stringify(json("job", "run-result", ...connectionRef)));
+      const connectionResult = json("job", "run-result", ...connectionRef).result;
+      assert.equal(connectionResult.data.applied, "files-only");
+      assert.equal(connectionResult.data.restarted, false);
+      assert.ok(connectionResult.data.files.some(file => file.backupPath));
+      const { parse } = createRequire(join(root, "package.json"))("smol-toml");
+      const nativeConfig = parse(readFileSync(configPath, "utf8"));
+      assert.equal(nativeConfig.model_providers.package_fixture.base_url, "http://127.0.0.1:19000/v1");
+      assert.equal(nativeConfig.model_provider, undefined);
+      checkNoJobSession();
       // Exercise the supported maintenance cadence inside the bounded smoke
       // deadline; the production default is intentionally 120 seconds.
       runCli(cli, ["config", "runtime", "set", "reconciliation-interval-seconds", "5"], environment);
