@@ -41,4 +41,13 @@ test("native connection tool is preview-pinned, Job-owned, replay-safe and refus
   assert.doesNotMatch(readFileSync(configPath, "utf8"), /^model_provider/m);
   assert.ok(result.data.files.some(f => f.backupPath));
   assert.ok(plan.files.every(f => !("raw" in f)));
+  const saved = readFileSync(configPath, "utf8");
+  const revision = store.getJobDefinition({ kind: "global" }, "model-connection").revision;
+  const recovered = service.connectionApply(request, { scope: "user" });
+  assert.equal(recovered.created, false, "recover the admitted request after its file effect");
+  assert.equal(recovered.run.id, admitted.run.id);
+  assert.equal(store.getJobDefinition({ kind: "global" }, "model-connection").revision, revision);
+  assert.equal(readFileSync(configPath, "utf8"), saved, "recovery does not apply again");
+  assert.throws(() => service.connectionApply({ ...request, planDigest: "c".repeat(64) }, { scope: "user" }), /different maintenance parameters/);
+  assert.throws(() => service.connectionApply(request, { scope: "task", taskId: "task-1", role: "leader" }), /authority/);
 });

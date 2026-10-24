@@ -20,7 +20,7 @@ export function createModelMaintenanceService(store: TaskStore) {
       throw new WebRequestRejected("Component maintenance requires local user or Operator authority.");
     }
   }
-  function submit(id: string, configuration: BuiltinJobConfiguration, requestId: unknown, caller: DurableJobCaller) {
+  function submit(id: string, configuration: BuiltinJobConfiguration, requestId: unknown, caller: DurableJobCaller, beforeNew?: () => void) {
     if (typeof requestId !== "string" || !/^[a-zA-Z0-9_-]{1,64}$/.test(requestId)) throw new WebRequestRejected("Stable maintenance requestId required.");
     // Both ingresses must retain their authenticated caller; Task Roles cannot
     // gain global maintenance by invoking a model capability.
@@ -43,6 +43,7 @@ export function createModelMaintenanceService(store: TaskStore) {
           throw new WebRequestRejected("Maintenance is active or unknown; inspect its exact Job before another operation.");
         }
       }
+      beforeNew?.();
       // Use the normal Job boundary for authentication, executable validation,
       // overlap/replay fencing and supervisor process custody.
       control({ op: existing ? "update" : "define", scope, caller, id,
@@ -98,12 +99,14 @@ export function createModelMaintenanceService(store: TaskStore) {
     modelFields(body, ["input", "planDigest", "requestId", "exclusiveWriter"]);
     if (body.exclusiveWriter !== true) throw new WebRequestRejected("Exclusive native configuration ownership required.");
     if (!/^[a-f0-9]{64}$/.test(String(body.planDigest))) throw new WebRequestRejected("Exact preview digest required.");
-    // Reconstruct the private plan on the server; JSON from the client is not
-    // a ConnectionConfigPlan handle and never grants arbitrary file writes.
-    const { planDigest } = connectionPreview({ input: body.input });
-    if (planDigest !== body.planDigest) throw new WebRequestRejected("Native files or request changed; preview again.");
     return submit("model-connection", { kind: "builtin", action: "models.connection",
-      input: { input: body.input, planDigest, exclusiveWriter: true } as JsonValue }, body.requestId, caller);
+      input: { input: body.input, planDigest: body.planDigest, exclusiveWriter: true } as JsonValue }, body.requestId, caller, () => {
+      // Recover an authenticated identical request before checking files its
+      // original Job may have changed. Only a new admission needs a fresh plan.
+      // Client JSON is never a private ConnectionConfigPlan handle.
+      const { planDigest } = connectionPreview({ input: body.input });
+      if (planDigest !== body.planDigest) throw new WebRequestRejected("Native files or request changed; preview again.");
+    });
   }
   return { read, maintain, connectionPreview, connectionApply };
 }
