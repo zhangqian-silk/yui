@@ -6,6 +6,7 @@ import type { TaskStore } from "../storage/taskStore.js";
 import { createBuiltinCapabilities } from "./builtinCapabilities.js";
 import { InstanceHost } from "./instanceHost.js";
 import type { LeaderArchivePort } from "../task/leaderArchive.js";
+import { createModelManagement } from "../models/modelManagement.js";
 
 /** Called once by the existing Controller root. Does not open a Store, start
  * another Controller, or provide arbitrary persistence to plugin code.
@@ -27,10 +28,12 @@ export function createKernelPorts(
   );
   // The Controller is a long-lived consumer of this exact implementation.
   const jobHandle = host.acquire<DurableJobControlPort>(jobImplementation);
-  const capabilities = createBuiltinCapabilities(host, store, jobHandle.value, signal, contextProviders, archiveTask);
+  const models = createModelManagement(store);
+  const capabilities = createBuiltinCapabilities(host, store, jobHandle.value, signal, contextProviders, archiveTask, models);
   return {
     host,
     capabilities,
+    models,
     jobImplementation,
     runnerImplementation,
     runner: runnerHandle.value,

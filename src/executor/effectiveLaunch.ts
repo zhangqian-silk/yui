@@ -1,4 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
+import { validateBinding, validateModelRegistry } from "../models/modelRegistry.js";
+import type { AgentBinding, ModelEndpoint } from "../models/modelManagementTypes.js";
 import {
   validateExecutionEnvironmentSnapshot,
   type ExecutionEnvironmentSnapshot
@@ -63,6 +65,8 @@ type EffectiveLaunchBase = Readonly<{
   /** Profile behavior intent captured for this Session; not a provider sandbox. */
   profileAccess: EffectiveLaunchProfileAccess;
   model?: string;
+  /** References only. Retained for this Session, including process restoration. */
+  modelEndpoint?: Readonly<{ binding: AgentBinding; endpoint: ModelEndpoint }>;
   effort?: string;
   search: boolean;
   additionalDirectories?: readonly string[];
@@ -148,6 +152,10 @@ export function resolveEffectiveLaunch(
     : input.store?.getGlobalRoleSessionSet(input.role.name);
   const existing = sessions?.sessions[binding.agentId];
   const continuing = existing?.status === "active";
+  const registry = input.store?.getConfig().modelManagement;
+  const modelBinding = registry?.bindings.find(b => b.agentId === binding.agentId && b.endpointId !== null);
+  const modelEndpoint = continuing ? existing.effective.modelEndpoint
+    : modelBinding ? { binding: modelBinding, endpoint: registry!.endpoints.find(e => e.id === modelBinding.endpointId)! } : undefined;
   const skillPackages = continuing ? existing.effective.skillPackages
     : home === undefined ? undefined
     : loadYuiSkillContexts(home, roleSkillIds(input.role, roleSessionKind(input.role,
@@ -158,7 +166,8 @@ export function resolveEffectiveLaunch(
     sourceDesiredRevision: input.role.launchRevision,
     agentId: binding.agentId,
     component: resolveAgentExecutionComponent(binding.adapterId, binding.component),
-    config,
+    config: modelEndpoint === undefined ? config : { ...config, model: modelEndpoint.binding.model },
+    ...(modelEndpoint === undefined ? {} : { modelEndpoint }),
     profileAccess: input.role.defaultAccess,
     writeProjectIds,
     workspace,
@@ -336,6 +345,7 @@ function sessionContinuitySnapshot(snapshot: EffectiveLaunchSnapshot): unknown {
     writeProjectIds: snapshot.writeProjectIds,
     contextProtocolVersion: snapshot.contextProtocolVersion,
     agentId: snapshot.agentId,
+    modelEndpoint: snapshot.modelEndpoint,
     // Two products on one connection plan are two different conversations. A
     // Session that started against an unidentified ACP Agent must not silently
     // continue against the Claude Agent SDK just because both speak ACP.
@@ -358,6 +368,14 @@ function sessionContinuitySnapshot(snapshot: EffectiveLaunchSnapshot): unknown {
 export function validateEffectiveLaunchSnapshot<T extends EffectiveLaunchSnapshot>(
   snapshot: T
 ): T {
+  if (snapshot.modelEndpoint !== undefined) {
+    const { binding, endpoint } = snapshot.modelEndpoint;
+    validateModelRegistry({ modules: [], endpoints: [{ ...endpoint, moduleId: null }], bindings: [], receipts: [] });
+    validateBinding({ modules: [], endpoints: [endpoint], bindings: [], receipts: [] }, binding);
+    if (binding.agentId !== snapshot.agentId || binding.adapterId !== snapshot.adapterId || binding.endpointId !== endpoint.id) {
+      throw new Error("Effective model binding identity changed.");
+    }
+  }
   if (snapshot.schemaVersion !== 1) {
     throw new Error("Effective launch snapshot must use schemaVersion 1.");
   }
@@ -474,6 +492,7 @@ function snapshotFromConfig(input: Readonly<{
   agentId: string;
   component: AgentExecutionComponentId;
   config: RoleAgentConfig;
+  modelEndpoint?: Readonly<{ binding: AgentBinding; endpoint: ModelEndpoint }>;
   profileAccess: EffectiveLaunchProfileAccess;
   writeProjectIds: readonly string[];
   workspace: EffectiveLaunchWorkspace;
@@ -506,6 +525,7 @@ function snapshotFromConfig(input: Readonly<{
     component: input.component,
     profileAccess: input.profileAccess,
     ...(config.model === undefined ? {} : { model: config.model }),
+    ...(input.modelEndpoint === undefined ? {} : { modelEndpoint: clone(input.modelEndpoint) }),
     ...(config.effort === undefined ? {} : { effort: config.effort }),
     search: config.adapterId === "codex" && config.search === true,
     ...(config.additionalDirectories === undefined

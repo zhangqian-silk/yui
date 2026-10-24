@@ -11,6 +11,7 @@ import { migrateJobDefinitions } from "./upgrade/jobDefinitionMigration.js";
 import { migrateJobBusinessResults } from "./upgrade/jobBusinessResultMigration.js";
 import { migrateScheduleDispatch } from "./upgrade/scheduleDispatchMigration.js";
 import { migrateProjectSyncClock } from "./upgrade/projectSyncClockMigration.js";
+import { migrateModelRegistry } from "./upgrade/modelRegistryMigration.js";
 import {
   CURRENT_STORAGE_VERSION, MIN_SUPPORTED_STORAGE_VERSION, STORAGE_FORMAT,
   isMinorStorageUpgrade, isStorageVersion, storageVersionParts, type StorageVersion
@@ -45,7 +46,7 @@ export type StorageMinorUpgrade = Readonly<{
   sourceChecksum: string;
   targetChecksum: string;
   sql: string;
-  dataMigration?: "task-main-workspace" | "project-knowledge" | "job-definitions" | "job-business-results" | "schedule-dispatch" | "project-sync-clock";
+  dataMigration?: "task-main-workspace" | "project-knowledge" | "job-definitions" | "job-business-results" | "schedule-dispatch" | "project-sync-clock" | "model-registry";
 }>;
 
 // Only explicit, contiguous minor changes in this baseline may be added here.
@@ -279,6 +280,10 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   // Additive global Shell definitions with revisioned script text and exact
   // Run snapshots. Historical definitions/Runs stay byte-for-byte unchanged.
   sql: ""
+}, {
+  fromVersion: "1.23", toVersion: "1.24", name: "model-registry", introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM, targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  sql: "", dataMigration: "model-registry"
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {
@@ -418,6 +423,7 @@ export function applySqliteMinorUpgrades(
       if (step.dataMigration === "job-business-results") migrateJobBusinessResults(db);
       if (step.dataMigration === "schedule-dispatch") migrateScheduleDispatch(db);
       if (step.dataMigration === "project-sync-clock") migrateProjectSyncClock(db);
+      if (step.dataMigration === "model-registry") migrateModelRegistry(db);
       const { major, minor } = storageVersionParts(step.toVersion);
       db.prepare("UPDATE storage_schema SET major=?,minor=?,checksum=? WHERE id=1")
         .run(major, minor, step.targetChecksum);

@@ -262,7 +262,7 @@ test("storage 1.9 -> current appends schedules without changing Job history", t 
     db.prepare("UPDATE storage_schema SET minor=9,checksum=?").run(JOB_SCHEMA_CHECKSUM);
     validateSqliteSchemaObjects(db, "1.9");
     applySqliteMinorUpgrades(db, home);
-    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 23);
+    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 24);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM schedules").get().n, 0);
   } finally { db.close(); }
   const migrated = new SqliteTaskStore(home);

@@ -1,13 +1,14 @@
 import { dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { TaskStore } from "../storage/taskStore.js";
-import { webLocalMutation, WebRequestRejected } from "../web/webMutation.js";
-import { modelFields, modelObject, modelUrl, validateModelConnection } from "./modelManagementConfig.js";
-import { modelDigest, modelJsonFile, modelKey, newModelFile, replaceModelFile, type ModelFile } from "./modelManagementFiles.js";
+import { WebRequestRejected } from "../web/webMutation.js";
+import { modelFields, modelObject, modelUrl } from "./modelManagementConfig.js";
+import { createModelRegistry } from "./modelRegistry.js";
+import { modelDigest, modelJsonFile, modelKey, newModelFile, privateModelFile, replaceModelFile, type ModelFile } from "./modelManagementFiles.js";
 import { readModelJson } from "./modelManagementHttp.js";
-import type { ModelCatalogItem, ModelManagementView, ModelObservation, ModelProviderView, ModelQuotaItem } from "./modelManagementTypes.js";
+import type { ModelCatalogItem, ModelConnection, ModelManagementView, ModelObservation, ModelProviderView, ModelQuotaItem, ModelStatusItem } from "./modelManagementTypes.js";
 
-type Store = Pick<TaskStore, "getConfig" | "saveConfig" | "transaction">;
+type Store = Pick<TaskStore, "getConfig" | "saveConfig" | "transaction"> & Partial<Pick<TaskStore, "getConfiguredAgent">>;
 type Provider = { file: ModelFile; value: Record<string, unknown>; id: string };
 const NOTICE = "Configuration is owned by metabridge. Saved does not mean applied: reload through your existing deployment flow if needed, then refresh the catalog. No Session, account or model is switched; inference is not validated.";
 const empty = <T>(): ModelObservation<T> => ({
@@ -19,13 +20,20 @@ export function createModelManagement(store: Store, options: {
 } = {}) {
   const request = options.request ?? readModelJson;
   const now = options.now ?? (() => new Date());
-  let catalog = empty<ModelCatalogItem>();
-  const quotas = { factory: empty<ModelQuotaItem>(), "command-code": empty<ModelQuotaItem>() };
-  let cacheRevision = "";
+  const registry = createModelRegistry(store);
+  const observations = new Map<string, ModelObservation<ModelCatalogItem | ModelQuotaItem | ModelStatusItem>>();
   const pending = new Map<string, Promise<unknown>>();
 
-  function snapshot() {
-    const connection = store.getConfig().modelManagement ?? null;
+  function snapshot(moduleId?: string) {
+    const module = moduleId ? registry.read().modules.find(m => m.id === moduleId)
+      : registry.read().modules.find(m => m.kind === "metabridge");
+    if (moduleId && !module) throw new WebRequestRejected("Module not found.");
+    const endpoint = registry.read().endpoints.find(e => e.moduleId === module?.id && e.protocol === "responses");
+    // A read-only projection for the existing Provider editor. Never persisted.
+    const connection: ModelConnection | null = module?.kind === "metabridge" ? {
+      bridgeUrl: endpoint?.url ?? module.managementUrl, bridgeConfigFile: module.configFile,
+      cpaUrl: "", managementKeyFile: "", catalogKeyFile: endpoint?.clientKeyFile ?? ""
+    } : null;
     let root: ModelFile | undefined;
     let providers: Provider[] = [];
     let configurationError: string | null = null;
@@ -65,66 +73,45 @@ export function createModelManagement(store: Store, options: {
       configurationError = "Bridge configuration is unavailable, ambiguous or unsupported. No configuration was changed.";
       providers = [];
     }
-    const revision = modelDigest([connection, root?.raw ?? null, providers.map(p => [p.id, p.file.raw]), configurationError]);
-    if (revision !== cacheRevision) {
-      catalog = empty();
-      quotas.factory = empty();
-      quotas["command-code"] = empty();
-      cacheRevision = revision;
-    }
-    return { connection, root, providers, configurationError, revision };
+    const revision = modelDigest([registry.read(), module?.id, root?.raw ?? null, providers.map(p => [p.id, p.file.raw]), configurationError]);
+    return { connection, root, providers, configurationError, revision, module };
   }
 
-  function read(): ModelManagementView {
-    const state = snapshot();
+  function read(moduleId?: string): ModelManagementView {
+    const state = snapshot(moduleId);
     return {
-      revision: state.revision, connection: state.connection, providers: state.providers.map(providerView),
-      configurationError: state.configurationError, application: "unverified", notice: NOTICE
+      revision: state.revision, connection: state.connection, providers: state.providers.map(provider => {
+        const view = providerView(provider);
+        return state.module?.maintenance === "configuration" ? view : { ...view, editable: false, reason: "read-only-service" };
+      }),
+      configurationError: state.configurationError, application: "unverified", notice: NOTICE,
+      registry: registry.read(), registryRevision: registry.revision()
     };
   }
 
   function checkRevision(body: Record<string, unknown>) {
-    const state = snapshot();
+    const state = snapshot(typeof body.moduleId === "string" ? body.moduleId : undefined);
     if (typeof body.revision !== "string" || body.revision !== state.revision) {
       throw new WebRequestRejected("Model configuration changed; read it again before submitting.");
     }
     return state;
   }
 
-  function saveConnection(input: unknown): ModelManagementView {
-    const body = modelObject(input);
-    modelFields(body, ["revision", "connection"]);
-    const state = checkRevision(body);
-    const connection = body.connection === null ? null : validateModelConnection(body.connection);
-    if (connection && state.connection) {
-      for (const [address, credential] of [
-        ["bridgeUrl", "catalogKeyFile"], ["cpaUrl", "managementKeyFile"]
-      ] as const) {
-        const previous = state.connection;
-        const origin = (url: string) => url ? modelUrl(url).origin : "";
-        if (previous[credential] && previous[credential] === connection[credential]
-          && origin(previous[address]) !== origin(connection[address])) {
-          throw new WebRequestRejected(`Changing ${address} origin requires a new ${credential} reference, or clear the old reference and save before explicitly binding it again.`);
-        }
-      }
-    }
-    // No external I/O inside the store transaction.
-    webLocalMutation(store as TaskStore, tx => {
-      if (modelDigest(tx.getConfig().modelManagement ?? null) !== modelDigest(state.connection)) {
-        throw new WebRequestRejected("Connection changed; read it again.");
-      }
-      const config = { ...tx.getConfig() };
-      if (connection) config.modelManagement = connection;
-      else delete config.modelManagement;
-      tx.saveConfig(config);
-    });
-    return read();
-  }
-
   function saveProvider(input: unknown): ModelManagementView {
     const body = modelObject(input);
-    modelFields(body, ["revision", "operation", "provider", "id"]);
+    modelFields(body, ["revision", "operation", "provider", "id", "moduleId", "requestId", "exclusiveWriter"]);
+    const requestDigest = modelDigest(body);
+    const receipt = registry.read().receipts.find(r => r.requestId === body.requestId);
+    if (receipt) {
+      if (receipt.digest !== requestDigest) throw new WebRequestRejected("requestId already names different parameters.");
+      return read(typeof body.moduleId === "string" ? body.moduleId : undefined);
+    }
+    const registryRevision = registry.revision();
     const state = checkRevision(body);
+    if (typeof body.moduleId !== "string" || typeof body.requestId !== "string" || !/^[a-zA-Z0-9_-]{1,64}$/.test(body.requestId)
+      || body.exclusiveWriter !== true || state.module?.maintenance !== "configuration") {
+      throw new WebRequestRejected("Provider writes require requestId, configuration maintenance and an explicit exclusiveWriter agreement.");
+    }
     if (!state.root || state.configurationError) throw new WebRequestRejected("Select a readable local bridge configuration first.");
     const removing = body.operation === "remove";
     if (!removing && body.operation !== "save") throw new WebRequestRejected("Unknown provider operation.");
@@ -226,105 +213,123 @@ export function createModelManagement(store: Store, options: {
         throw error;
       }
     }
-    const view = read();
+    try { registry.recordProviderWrite(body.requestId, requestDigest, registryRevision); }
+    catch (error) { throw new Error("Provider file saved but request receipt is unconfirmed; inspect the file and registry before retrying.", { cause: error }); }
+    const view = read(state.module?.id);
     if (removing) view.notice = `Provider unlinked. Referenced files and credentials were retained; no service was stopped.${retainedFile ? ` Inline provider retained beside the bridge configuration in ${retainedFile}.` : ""} ${NOTICE}`;
     return view;
   }
 
   function current<T>(value: ModelObservation<T>): ModelObservation<T> {
-    return { ...value, stale: value.observedAt !== null && now().getTime() - Date.parse(value.observedAt) > 60_000 };
+    return { ...value, stale: value.stale || value.observedAt !== null && now().getTime() - Date.parse(value.observedAt) > 60_000 };
   }
-  function readCatalog(cursor = "0") {
-    snapshot();
+  function observationKey(kind: string, resourceId: string, source = "") {
+    const resource = kind === "catalog" ? registry.read().endpoints.find(e => e.id === resourceId)
+      : registry.read().modules.find(m => m.id === resourceId);
+    if (!resource) throw new WebRequestRejected("Observation resource not found.");
+    return modelDigest([kind, resource, source]);
+  }
+  function readCatalog(cursor = "0", endpointId = registry.read().endpoints[0]?.id ?? "") {
+    if (!endpointId) return { ...empty<ModelCatalogItem>(), total: 0, nextCursor: null };
+    const catalog = observations.get(observationKey("catalog", endpointId)) as ModelObservation<ModelCatalogItem> ?? empty<ModelCatalogItem>();
     if (!/^\d{1,5}$/.test(cursor) || Number(cursor) > 2000) throw new WebRequestRejected("Invalid catalog cursor.");
     const offset = Number(cursor);
     return { ...current(catalog), items: catalog.items.slice(offset, offset + 100), total: catalog.items.length,
       nextCursor: offset + 100 < catalog.items.length ? String(offset + 100) : null };
   }
-  function readQuota(source: string) {
-    snapshot();
+  function readQuota(source: string, moduleId = registry.read().modules.find(m => m.kind === "cliproxyapi")?.id ?? "") {
     if (source !== "factory" && source !== "command-code") throw new WebRequestRejected("Unsupported quota source.");
-    return current(quotas[source]);
+    if (!moduleId) return empty<ModelQuotaItem>();
+    return current(observations.get(observationKey("quota", moduleId, source)) ?? empty<ModelQuotaItem>());
+  }
+  function readStatus(moduleId: string) {
+    return current(observations.get(observationKey("status", moduleId)) ?? empty<ModelStatusItem>());
   }
   async function refresh(input: unknown): Promise<unknown> {
     const body = modelObject(input);
-    modelFields(body, ["revision", "kind", "source"]);
-    const state = checkRevision(body);
-    if (!state.connection) throw new WebRequestRejected("Configure a metabridge connection first.");
+    modelFields(body, ["revision", "kind", "source", "resourceId"]);
+    if (body.revision !== registry.revision()) throw new WebRequestRejected("Model registry changed; read it again.");
     const kind = body.kind;
     const source = body.source;
-    if (kind !== "catalog" && kind !== "quota" || kind === "catalog" && source !== undefined
+    if (kind !== "catalog" && kind !== "quota" && kind !== "status" || (kind === "catalog" || kind === "status") && source !== undefined
       || kind === "quota" && source !== "factory" && source !== "command-code") {
       throw new WebRequestRejected("Unsupported observation.");
     }
-    const identity = `${state.revision}/${kind}/${source ?? ""}`;
+    if (typeof body.resourceId !== "string") throw new WebRequestRejected("Select an exact observation resourceId.");
+    const resourceId = body.resourceId;
+    const identity = observationKey(kind as string, resourceId, source as string | undefined);
     const active = pending.get(identity);
     if (active) return active;
     if (pending.size >= 4) throw new WebRequestRejected("Observation capacity reached; wait for the current request.");
     const operation = (async () => {
       const attemptedAt = now().toISOString();
-      let observation: ModelObservation<ModelCatalogItem> | ModelObservation<ModelQuotaItem>;
+      let observation: ModelObservation<ModelCatalogItem | ModelQuotaItem | ModelStatusItem>;
       try {
-        const c = state.connection!;
-        if (kind === "catalog") {
-          const key = modelKey(c.catalogKeyFile);
-          const raw = modelObject(await request(c.bridgeUrl, "/v1/models", key, 8_000));
+        if (kind === "status") {
+          const module = registry.read().modules.find(m => m.id === resourceId)!;
+          if (!module.configFile) throw new Error("configuration-unavailable");
+          const raw = privateModelFile(module.configFile);
+          observation = { status: "success", items: [{ id: module.id, configurationRevision: modelDigest(raw), runtime: "unknown" }],
+            attemptedAt, observedAt: now().toISOString(), stale: false, error: null };
+        } else if (kind === "catalog") {
+          const endpoint = registry.read().endpoints.find(e => e.id === resourceId)!;
+          if (endpoint.protocol !== "responses") throw new Error("catalog-unsupported");
+          const key = modelKey(endpoint.clientKeyFile);
+          const raw = modelObject(await request(endpoint.url, "/models", key, 8_000));
           if (!Array.isArray(raw.data) || raw.data.length > 2000) throw new Error("invalid-or-oversize-catalog");
           const items = raw.data.map(item => {
             const row = modelObject(item);
             if (typeof row.id !== "string" || !row.id || row.id.length > 2048) throw new Error("invalid-catalog");
-            return { id: row.id, source: row.id.includes("/") ? row.id.split("/")[0]! : "metabridge" };
+            return { id: row.id, source: endpoint.id };
           });
-          // metabridge serves HTTP 200 even when some/all upstream catalogs fail.
-          // Its separate health read is bounded too; never expose raw upstream
-          // diagnostics, which can contain credentials or private addresses.
-          let healthError: string | null;
-          try {
-            healthError = catalogHealthError(await request(c.bridgeUrl, "/healthz", key, 8_000), items.length);
-          } catch { healthError = "catalog-health-unavailable"; }
-          if (healthError && !items.length) throw new Error(healthError);
-          observation = { status: healthError ? "partial" : "success", items, attemptedAt,
-            observedAt: now().toISOString(), stale: false, error: healthError };
+          // No hidden /healthz read: it may refresh upstreams. A catalog is
+          // the endpoint's reported list, not proof of complete upstream health.
+          observation = { status: "success", items, attemptedAt,
+            observedAt: now().toISOString(), stale: false, error: null };
         } else {
-          if (!c.cpaUrl || !c.managementKeyFile) throw new Error("quota-not-configured");
+          const module = registry.read().modules.find(m => m.id === resourceId)!;
+          if (module.kind !== "cliproxyapi" || module.quotaAdapter !== "factory-quota-v1"
+            || !module.managementUrl || !module.managementKeyFile) throw new Error("quota-unsupported");
           const suffix = source === "factory" ? "accounts" : "command-code";
-          const raw = await request(c.cpaUrl, `/v0/management/plugins/factory-quota/${suffix}`, modelKey(c.managementKeyFile), 30_000);
-          const items = normalizeQuota(source as "factory" | "command-code", raw);
+          const raw = await request(module.managementUrl, `/v0/management/plugins/factory-quota/${suffix}`, modelKey(module.managementKeyFile), 30_000);
+          const reported = normalizeQuota(source as "factory" | "command-code", raw);
+          if (reported.length && reported.every(item => item.status === "failed")) throw new Error("account-query-failed");
+          const observedAt = now().toISOString();
+          const previous = observations.get(identity) as ModelObservation<ModelQuotaItem> | undefined;
+          const items = reported.map(item => {
+            if (item.status !== "failed") return { ...item, observedAt, stale: false };
+            const old = previous?.items.find(old => old.id === item.id);
+            return { ...(old ?? item), status: item.status, error: item.error,
+              observedAt: old?.observedAt ?? null, stale: !!old?.observedAt };
+          });
           observation = { status: items.some(item => item.status !== "success") ? "partial" : "success",
-            items, attemptedAt, observedAt: now().toISOString(), stale: false, error: null };
+            items, attemptedAt, observedAt, stale: items.some(item => item.stale),
+            error: items.some(item => item.status === "failed") ? "account-query-failed" : null };
         }
       } catch (error) {
         const code = error instanceof Error && /^[a-z-]{1,64}$/.test(error.message) ? error.message : "observation-unavailable";
-        observation = { status: "failed", items: [], attemptedAt, observedAt: null, stale: false, error: code };
+        const previous = observations.get(identity);
+        observation = { status: code.endsWith("unsupported") ? "unsupported" : "failed", items: previous?.items ?? [],
+          attemptedAt, observedAt: previous?.observedAt ?? null, stale: previous?.observedAt !== null && !!previous, error: code } as typeof observation;
       }
-      if (snapshot().revision !== state.revision) throw new WebRequestRejected("Connection changed during observation; result discarded.");
-      if (kind === "catalog") {
-        catalog = observation as ModelObservation<ModelCatalogItem>;
-        return readCatalog();
+      if (observationKey(kind as string, resourceId, source as string | undefined) !== identity) {
+        throw new WebRequestRejected("Resource changed during observation; result discarded.");
       }
-      quotas[source as "factory" | "command-code"] = observation as ModelObservation<ModelQuotaItem>;
-      return readQuota(source as string);
+      observations.set(identity, observation);
+      // At most 100 endpoints, 100 module statuses and 200 quota sources.
+      // Old resource revisions cannot grow this Controller-local cache forever.
+      while (observations.size > 400) observations.delete(observations.keys().next().value!);
+      observation.source = resourceId;
+      observation.accountScope = kind === "quota" ? `${resourceId}/${source}/accounts` : resourceId;
+      observation.unit = kind === "quota" ? "per-window fraction; balanceDetails carry distinct units" : kind === "catalog" ? "model-id" : "configuration-digest";
+      return kind === "catalog" ? readCatalog("0", resourceId) : kind === "status" ? readStatus(resourceId) : readQuota(source as string, resourceId);
     })();
     pending.set(identity, operation);
     try { return await operation; } finally { pending.delete(identity); }
   }
-  return { read, saveConnection, saveProvider, readCatalog, readQuota, refresh };
-}
-
-function catalogHealthError(value: unknown, count: number): string | null {
-  const health = modelObject(value);
-  const backends = Object.values(modelObject(health.backends));
-  const official = modelObject(health.officialModels);
-  if (health.service !== "metabridge" || health.ok !== true || !backends.length || backends.length > 100
-    || typeof official.ok !== "boolean" || typeof health.models !== "number") {
-    throw new Error("invalid-catalog-health");
-  }
-  const active = backends.map(modelObject).filter(row => row.error !== "disabled");
-  if (!active.length || active.some(row => typeof row.ok !== "boolean")) throw new Error("invalid-catalog-health");
-  if (health.degraded || active.some(row => !row.ok || row.error) || official.error) return "catalog-upstream-failed";
-  // The two routes have no shared snapshot token. A changed count cannot
-  // establish a complete observation, even if both HTTP reads succeeded.
-  return health.models === count ? null : "catalog-health-mismatch";
+  return { read, saveProvider, readCatalog, readQuota, readStatus, refresh,
+    readRegistry: () => ({ revision: registry.revision(), registry: registry.read() }),
+    saveResource: registry.save, previewBinding: registry.previewBinding };
 }
 
 function providerView(provider: Provider): ModelProviderView {

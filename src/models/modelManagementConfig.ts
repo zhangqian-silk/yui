@@ -1,6 +1,4 @@
-import { isAbsolute } from "node:path";
 import { WebRequestRejected } from "../web/webMutation.js";
-import type { ModelConnection } from "./modelManagementTypes.js";
 
 export function modelObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new WebRequestRejected("Expected an object.");
@@ -21,21 +19,4 @@ export function modelUrl(value: string): URL {
     throw new WebRequestRejected("Use loopback HTTP or HTTPS without credentials, query or fragment.");
   }
   return url;
-}
-
-export function validateModelConnection(value: unknown): ModelConnection {
-  const row = modelObject(value);
-  const fields = ["bridgeUrl", "bridgeConfigFile", "cpaUrl", "managementKeyFile", "catalogKeyFile"] as const;
-  modelFields(row, fields);
-  for (const field of fields) {
-    if (typeof row[field] !== "string" || (row[field] as string).length > 4096
-      || /[\0\r\n]/.test(row[field] as string)) throw new WebRequestRejected("Invalid Model connection field.");
-  }
-  const result = row as ModelConnection;
-  modelUrl(result.bridgeUrl);
-  if (result.cpaUrl) modelUrl(result.cpaUrl);
-  for (const field of ["bridgeConfigFile", "managementKeyFile", "catalogKeyFile"] as const) {
-    if (result[field] && !isAbsolute(result[field])) throw new WebRequestRejected("Server file references must be absolute paths.");
-  }
-  return { ...result };
 }

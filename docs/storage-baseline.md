@@ -2,7 +2,13 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.23. The 1.22 → 1.23 transition adds global Shell Job
+Current storage is 1.24. The 1.23 → 1.24 transition archives and splits the
+coupled model-management connection into independent module/endpoint references.
+It creates no Agent binding, maintenance grant, service ownership or network
+effect. Fresh effective Session snapshots may capture reference-only model
+bindings; historical snapshots remain unchanged.
+
+The 1.22 → 1.23 transition adds global Shell Job
 definitions with revisioned script files and per-Run executable snapshots.
 It preserves existing payloads without rewriting any Job, schedule or history.
 

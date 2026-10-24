@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
+import { webcrypto } from "node:crypto";
 import { MODELS_VIEW_SCRIPT } from "../../dist/web/assets/client/views/models.js";
 import { MODELS_HTML } from "../../dist/web/assets/shell/models.js";
 import { appRail } from "../../dist/web/assets/shell/appRail.js";
@@ -112,7 +113,14 @@ function connection(extra = {}) {
   return { bridgeUrl: "http://127.0.0.1:9", bridgeConfigFile: "/fixture/bridge.yaml", cpaUrl: "", managementKeyFile: "", catalogKeyFile: "", ...extra };
 }
 function view(revision, extra = {}) {
-  return { revision, connection: connection(), configurationError: null, application: "unverified", notice: "notice-" + revision,
+  const c = extra.connection === undefined ? connection() : extra.connection;
+  const registry = { modules: c ? [{ id: "bridge", kind: "metabridge", version: "fixture", managementUrl: c.bridgeUrl,
+    managementKeyFile: "", configFile: c.bridgeConfigFile, maintenance: "configuration", quotaAdapter: "none" },
+    ...(c.cpaUrl ? [{ id: "cpa", kind: "cliproxyapi", version: "8.0.12", managementUrl: c.cpaUrl,
+      managementKeyFile: c.managementKeyFile, configFile: "", maintenance: "external", quotaAdapter: "factory-quota-v1" }] : [])] : [],
+    endpoints: c ? [{ id: "bridge-api", moduleId: "bridge", url: c.bridgeUrl + "/v1", protocol: "responses", clientKeyFile: "" }] : [],
+    bindings: [], receipts: [] };
+  return { revision, registryRevision: revision, registry, connection: connection(), configurationError: null, application: "unverified", notice: "notice-" + revision,
     providers: [
       { id: "official", name: "Official", via: "unknown", baseUrl: "https://upstream.invalid", prefix: "", enabled: true,
         editable: false, reason: "official subscription route", credentialPresent: true, owner: "metabridge" },
@@ -123,7 +131,7 @@ function view(revision, extra = {}) {
 const observation = (status, extra = {}) => ({ status, attemptedAt: null, observedAt: null, stale: false, error: null, items: [], ...extra });
 
 function mount(api, extra = {}) {
-  const context = vm.createContext({ h: element, icon: name => element("svg.icon." + name), formatDateTime: iso => "at:" + iso, window: {} });
+  const context = vm.createContext({ crypto: webcrypto, h: element, icon: name => element("svg.icon." + name), formatDateTime: iso => "at:" + iso, window: {} });
   vm.runInContext(MODELS_VIEW_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
   const root = element("div");
   const confirmations = [];
@@ -187,7 +195,8 @@ function fakeApi(overrides = {}) {
     models: async () => { calls.push(["models"]); return api.current; },
     modelCatalog: async cursor => { calls.push(["catalog", cursor]); return { ...observation("not-queried"), total: 0, nextCursor: null }; },
     modelQuota: async source => { calls.push(["quota", source]); return observation("not-queried"); },
-    saveModelConnection: async input => { calls.push(["connection", copy(input)]); return api.next(input); },
+    saveModelResource: async input => { calls.push(["resource", copy(input)]); api.current = api.next(input); return { application: "saved" }; },
+    previewModelBinding: async input => ({ ...input, notice: "New Session only" }),
     saveModelProvider: async input => { calls.push(["provider", copy(input)]); return api.next(input); },
     releaseModelWrites: () => calls.push(["release"]),
     refreshModels: async input => { calls.push(["refresh", copy(input)]); return observation("success"); },
@@ -261,15 +270,16 @@ test("connection and provider writes carry the read revision, never echo keys an
   assert.match(mine, /mine\//);
   assert.doesNotMatch(mine, /mine\/\//);
 
-  // Connection save sends all five fields with the read revision.
+  // Module registration sends the independent resource and registry revision.
   const form0 = connectionForm(root);
   const urlInput = find(form0, n => n.tagName === "INPUT");
-  assert.ok(button(form0, "models.discard").disabled);
-  urlInput.value = " http://127.0.0.1:10 "; urlInput.handlers.input();
-  assert.equal(button(form0, "models.discard").disabled, false, "the first edit enables discard");
+  urlInput.value = " bridge "; urlInput.handlers.input();
   await submit(form0); await tick();
-  const [, sent] = api.calls.find(c => c[0] === "connection");
-  assert.deepEqual(sent, { revision: "r1", connection: connection({ bridgeUrl: "http://127.0.0.1:10" }) });
+  const [, sent] = api.calls.find(c => c[0] === "resource");
+  assert.equal(sent.revision, "r1");
+  assert.equal(sent.kind, "module");
+  assert.equal(sent.resource.id, "bridge");
+  assert.ok(sent.requestId);
   assert.match(text(root), /models\.saved/);
 
   // New provider: key is required, sent once and cleared; it never enters page state.
@@ -306,7 +316,7 @@ test("connection and provider writes carry the read revision, never echo keys an
   keyInput.value = "sk-fixture-secret";
   await submit(form); await tick();
   const [, rejected] = api.calls.filter(c => c[0] === "provider").at(-1);
-  assert.deepEqual(rejected, { revision: "r2", operation: "save",
+  assert.deepEqual(rejected, { revision: "r2", moduleId: "bridge", operation: "save",
     provider: { name: "New", via: "direct", baseUrl: "https://new.invalid", prefix: "new/", enabled: true, apiKey: "sk-fixture-secret" } });
   assert.equal(keyInput.value, "", "key input is cleared after submission");
   assert.doesNotMatch(JSON.stringify(page.state), /sk-fixture-secret/);
@@ -328,7 +338,7 @@ test("connection and provider writes carry the read revision, never echo keys an
   form = find(root, n => n.className.includes("models-provider-form"));
   assert.ok(find(form, n => n.tagName === "BUTTON" && n.type === "submit").disabled);
   await submit(form); await submit(connectionForm(root));
-  assert.equal(api.calls.filter(c => c[0] === "provider" || c[0] === "connection").length, count + 1, "nothing is resent");
+  assert.equal(api.calls.filter(c => c[0] === "provider" || c[0] === "resource").length, count + 1, "nothing is resent");
   assert.ok(!api.calls.some(c => c[0] === "release"));
 
   api.current = view("r3");
@@ -350,8 +360,61 @@ test("editing keeps the stored credential unless a new key is typed; removal is 
   assert.equal(Object.hasOwn(saved.provider, "apiKey"), false);
   assert.equal(saved.provider.id, "mine");
   button(find(root, n => n.dataset.provider === "mine"), "models.removeProvider").handlers.click(); await tick();
-  assert.equal(confirmations.length, 1);
-  assert.deepEqual(api.calls.filter(c => c[0] === "provider").at(-1)[1], { revision: "r2", operation: "remove", id: "mine" });
+  assert.equal(confirmations.length, 2, "save confirms exclusive ownership; removal has its own confirmation");
+  assert.deepEqual(api.calls.filter(c => c[0] === "provider").at(-1)[1], { revision: "r2", moduleId: "bridge", operation: "remove", id: "mine" });
+});
+
+test("binding submit requires preview of the same draft, not a late response for earlier values", async () => {
+  let finishPreview;
+  const api = fakeApi({ previewModelBinding: input => {
+    api.calls.push(["preview", copy(input)]);
+    return new Promise(resolve => { finishPreview = resolve; });
+  } });
+  const { root, page } = mount(api);
+  await page.ready;
+  const forms = all(root, n => n.tagName === "FORM" && n.className.includes("models-connection-form"));
+  const binding = forms[2];
+  const inputs = all(binding, n => n.tagName === "INPUT");
+  inputs[0].value = "codex"; inputs[0].handlers.input();
+  inputs[1].value = "model-before"; inputs[1].handlers.input();
+  const endpoint = all(binding, n => n.tagName === "SELECT")[1];
+  endpoint.value = "bridge-api"; endpoint.handlers.input();
+  const save = find(binding, n => n.type === "submit");
+  assert.equal(save.disabled, true);
+  await submit(binding);
+  assert.equal(api.calls.some(c => c[0] === "resource"), false);
+  const pending = button(binding, "Preview binding").handlers.click();
+  inputs[1].value = "model-after"; inputs[1].handlers.input();
+  finishPreview({ notice: "New Session only" }); await pending;
+  assert.equal(save.disabled, true, "an earlier preview cannot enable a changed draft");
+  await submit(binding);
+  assert.equal(api.calls.some(c => c[0] === "resource"), false);
+  const current = button(binding, "Preview binding").handlers.click();
+  finishPreview({ notice: "New Session only" }); await current;
+  assert.equal(save.disabled, false);
+  await submit(binding); await tick();
+  const sent = api.calls.find(c => c[0] === "resource")[1];
+  assert.equal(sent.kind, "binding");
+  assert.equal(sent.resource.model, "model-after");
+  assert.equal(sent.resource.agentId, "codex");
+  assert.equal(sent.revision, "r1");
+});
+
+test("unregistering the selected bridge reads the remaining registry without targeting the removed resource", async () => {
+  const api = fakeApi({ next: () => view("r2", { connection: null, providers: [] }) });
+  api.models = async id => {
+    if (id && !api.current.registry.modules.some(m => m.id === id)) throw new Error("Module not found");
+    return api.current;
+  };
+  const { root, page } = mount(api);
+  await page.ready;
+  button(root, "Unregister").handlers.click();
+  await tick(); await tick();
+  assert.equal(page.state.unknown, false);
+  assert.equal(page.state.bridgeId, "");
+  assert.equal(page.state.view.registry.modules.length, 0);
+  const sent = api.calls.find(c => c[0] === "resource")[1];
+  assert.equal(sent.removeId, "bridge");
 });
 
 test("catalog and quota stay separate and never present unknown, failed or stale data as current success", async () => {
@@ -394,7 +457,7 @@ test("catalog and quota stay separate and never present unknown, failed or stale
 
   api.refreshModels = async input => { api.calls.push(["refresh", copy(input)]); throw new Error("billing unreachable"); };
   button(root, "models.refreshQuota").handlers.click(); await tick();
-  assert.deepEqual(api.calls.at(-1), ["refresh", { revision: "r1", kind: "quota", source: "command-code" }]);
+  assert.deepEqual(api.calls.at(-1), ["refresh", { revision: "r1", kind: "quota", source: "command-code", resourceId: "cpa" }]);
   assert.equal(page.state.quota.observation, null, "a failed refresh does not keep the previous value");
   assert.match(text(root), /models\.quotaFailed billing unreachable/);
 });
@@ -460,16 +523,16 @@ test("a stale-revision rejection keeps the draft and offers an explicit re-read 
   const api = fakeApi();
   const { root, page } = mount(api);
   await page.ready;
-  api.saveModelConnection = async input => {
-    api.calls.push(["connection", copy(input)]);
+  api.saveModelResource = async input => {
+    api.calls.push(["resource", copy(input)]);
     throw Object.assign(new Error("revision is stale"), { disposition: "not-submitted" });
   };
   let form = connectionForm(root);
   const urlInput = find(form, n => n.tagName === "INPUT");
-  urlInput.value = "http://127.0.0.1:12"; urlInput.handlers.input();
+  urlInput.value = "edited"; urlInput.handlers.input();
   await submit(form); await tick();
   assert.match(text(root), /models\.rejected revision is stale/);
-  assert.equal(page.state.connectionDraft.bridgeUrl, "http://127.0.0.1:12");
+  assert.equal(page.state.connectionDraft.resource.id, "edited");
 
   // Writes are blocked while the facts are being read again.
   const reread = deferred();
@@ -478,17 +541,17 @@ test("a stale-revision rejection keeps the draft and offers an explicit re-read 
   form = connectionForm(root);
   assert.ok(find(form, n => n.type === "submit").disabled);
   await submit(form);
-  assert.equal(api.calls.filter(c => c[0] === "connection").length, 1, "no save races the re-read");
+  assert.equal(api.calls.filter(c => c[0] === "resource").length, 1, "no save races the re-read");
   reread.resolve(view("r5")); await tick();
 
   assert.match(text(root), /models\.rereadChanged/);
   assert.ok(!api.calls.some(c => c[0] === "release"), "a rejection holds no unresolved write key");
-  assert.equal(api.calls.filter(c => c[0] === "connection").length, 1, "nothing is replayed automatically");
+  assert.equal(api.calls.filter(c => c[0] === "resource").length, 1, "nothing is replayed automatically");
   form = connectionForm(root);
-  assert.equal(find(form, n => n.tagName === "INPUT").value, "http://127.0.0.1:12", "the draft is kept");
-  api.saveModelConnection = async input => { api.calls.push(["connection", copy(input)]); return view("r6"); };
+  assert.equal(find(form, n => n.tagName === "INPUT").value, "edited", "the draft is kept");
+  api.saveModelResource = async input => { api.calls.push(["resource", copy(input)]); api.current = view("r6"); return {}; };
   await submit(form); await tick();
-  assert.equal(api.calls.filter(c => c[0] === "connection").at(-1)[1].revision, "r5", "the next save carries the re-read revision");
+  assert.equal(api.calls.filter(c => c[0] === "resource").at(-1)[1].revision, "r5", "the next save carries the re-read revision");
 });
 
 

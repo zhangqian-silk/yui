@@ -76,13 +76,13 @@ export const MODELS_STYLES = `
 .models-form-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;min-width:0}
 .models-form-head h2{font-size:var(--fs-md);font-weight:600;overflow-wrap:anywhere;min-width:0}
 .models-provider-form .settings-grid{gap:14px 20px;align-items:start}
-.models-provider-form input:not([type=checkbox]),.models-provider-form select,.models-connection-form input{width:100%;min-width:0}
+.models-provider-form input:not([type=checkbox]),.models-provider-form select,.models-connection-form input,.models-connection-form select{width:100%;min-width:0}
 .models-provider-form .settings-actions{margin-top:4px}
 
 /* Connection settings */
 .models-connection-form{display:grid;gap:16px;min-width:0}
 .models-connection-form{grid-template-columns:repeat(2,minmax(0,1fr))}
-.models-connection-form>.settings-actions,.models-connection-form>.receipt,.models-connection-form>.models-receipt-group{grid-column:1/-1;margin-top:0}
+.models-connection-form>.settings-actions,.models-connection-form>.receipt,.models-connection-form>.models-receipt,.models-connection-form>.models-receipt-group{grid-column:1/-1;margin-top:0}
 .models-fieldset{display:grid;align-content:start;gap:14px;min-width:0;margin:0;padding:0;border:0}
 .models-fieldset legend{margin-bottom:12px;padding:0;color:var(--ink);font-size:var(--fs-sm);font-weight:600}
 .models-explain h2{font-size:var(--fs-sm);font-weight:600}

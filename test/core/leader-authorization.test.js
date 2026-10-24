@@ -118,6 +118,21 @@ test("Leader grants require original input, exact bounded resources and current 
       effective: resolveEffectiveLaunch({ role: operator, purpose: "execution" })
     }, now));
   const opEnvironment = { YUI_SESSION_SCOPE: "global", YUI_ROLE: "operator", YUI_NATIVE_SESSION_ID: "operator-current" };
+  const operatorCaller = capabilities.authenticate({ scope: "global", role: "operator",
+    nativeSessionId: "operator-current" }, "task-1");
+  const modelRead = { name: "models.read", input: {} };
+  assert.notEqual((await capabilities.registry.call(caller, modelRead)).kind, "value",
+    "a Task Leader cannot read global model credentials/references");
+  const modelView = await capabilities.registry.call(operatorCaller, modelRead);
+  assert.equal(modelView.kind, "value");
+  const modelSave = { name: "models.save", requestId: "model-endpoint",
+    input: { operation: "resource", input: { revision: modelView.value.registryRevision,
+      requestId: "model-endpoint", kind: "endpoint", resource: {
+        id: "direct", moduleId: null, url: "https://example.com/v1", protocol: "responses", clientKeyFile: ""
+      } } } };
+  assert.notEqual((await capabilities.registry.call(caller, modelSave)).kind, "value");
+  assert.equal((await capabilities.registry.call(operatorCaller, modelSave)).kind, "value");
+  assert.equal(f.store.getConfig().modelManagement.endpoints[0].id, "direct");
   const operatorGrant = f.command(["grant", "issue", "task-1", "--action", "post-verify"], opEnvironment).data;
   assert.throws(() => f.command(["grant", "revoke", "task-1", operatorGrant.id]), /Operator/);
   f.command(["grant", "revoke", "task-1", operatorGrant.id], opEnvironment);
