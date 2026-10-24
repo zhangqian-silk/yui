@@ -26,6 +26,7 @@ const RUNTIME_SKILLS = [
   "yui-runtime"
 ];
 const RUNTIME_DOCUMENTS = [
+  "docs/model-connection-tools.md",
   "docs/native-agent.md",
   "docs/examples/agent-offline.mjs",
   "README.md",

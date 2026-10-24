@@ -110,6 +110,13 @@ try {
   const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
   assert.ok(packageJson.os.includes(process.platform));
   assert.ok(packageJson.cpu.includes(process.arch));
+  // Standalone configuration ships in dist, not the source-only scripts tree.
+  // Help must load all its imports without any Home setup or Controller.
+  assert.ok(statSync(join(root, "docs/model-connection-tools.md")).isFile());
+  const connectionHelp = JSON.parse(execFileSync(process.execPath,
+    [join(root, "dist/models/configureConnection.js"), "--help"], { encoding: "utf8",
+      env: { PATH: process.env.PATH, CODEX_HOME: join(sandbox, "unused-codex-home") } }));
+  assert.match(connectionHelp.usage, /preview --input/);
   // Exercise the installed binary, not a checkout helper or a fake Provider.
   const nativeRoot = join(root, "dist/runtime/native", `${process.platform}-${process.arch}`);
   assert.equal(execFileSync(join(nativeRoot, "claude-process-owner"),
