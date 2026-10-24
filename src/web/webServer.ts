@@ -1,4 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
   createServer,
   type IncomingMessage,
@@ -404,13 +405,15 @@ async function handleHttpRequest(
       const service = dependencies.models;
       if (!service) throw new WebRequestRejected("Model management unavailable.");
       const query = new URL(request.url!, "http://localhost").searchParams;
-      if ([...query.keys()].some(k => !["cursor", "source"].includes(k) || query.getAll(k).length !== 1)) {
+      if ([...query.keys()].some(k => !["cursor", "source", "resourceId", "moduleId"].includes(k) || query.getAll(k).length !== 1)) {
         throw new WebRequestRejected("Unknown Model query.");
       }
       let value: unknown;
-      if (method === "GET" && pathname === "/api/models") value = service.read();
-      else if (method === "GET" && pathname === "/api/models/catalog") value = service.readCatalog(query.get("cursor") ?? "0");
-      else if (method === "GET" && pathname === "/api/models/quota") value = service.readQuota(query.get("source") ?? "factory");
+      if (method === "GET" && pathname === "/api/models") value = service.read(query.get("moduleId") ?? undefined);
+      else if (method === "GET" && pathname === "/api/models/registry") value = service.readRegistry();
+      else if (method === "GET" && pathname === "/api/models/catalog") value = service.readCatalog(query.get("cursor") ?? "0", query.get("resourceId") ?? undefined);
+      else if (method === "GET" && pathname === "/api/models/quota") value = service.readQuota(query.get("source") ?? "factory", query.get("resourceId") ?? undefined);
+      else if (method === "GET" && pathname === "/api/models/status") value = service.readStatus(query.get("resourceId") ?? "");
       else if (method === "POST") {
         // Credential-bearing forms require an exact same-origin browser request.
         if (headerValue(request, "origin") !== `http://${headerValue(request, "host")}`) {
@@ -420,7 +423,8 @@ async function handleHttpRequest(
           throw new WebRequestRejected("Model changes require JSON.");
         }
         const body = await readMutationBody(request);
-        if (pathname === "/api/models/connection") value = service.saveConnection(body);
+        if (pathname === "/api/models/resource") value = service.saveResource(body);
+        else if (pathname === "/api/models/binding/preview") value = service.previewBinding(body);
         else if (pathname === "/api/models/provider") value = service.saveProvider(body);
         else if (pathname === "/api/models/refresh") value = await service.refresh(body);
         else throw new WebRequestRejected("Unknown Model operation.");
@@ -745,6 +749,11 @@ async function handleHttpRequest(
 
   if (method === "GET" || method === "HEAD") {
     try {
+      if (pathname === "/models/docs") {
+        sendText(response, 200, "text/plain; charset=utf-8",
+          readFileSync(new URL("../../docs/model-components.md", import.meta.url), "utf8"), method === "HEAD");
+        return;
+      }
       const assetVersion = new URL(request.url!, "http://localhost").searchParams.get("v");
       const asset = findWebAsset(pathname, assetVersion);
       const managementPage = /^\/(?:models(?:\/(?:providers|catalog|quota))?|settings(?:\/(?:preferences|skills|jobs|permissions|server|connection))?|jobs)\/?$/.test(pathname);

@@ -2,7 +2,11 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.35. The 1.34 → 1.35 transition admits optional
+Current storage is 1.36. The 1.35 → 1.36 transition archives and splits a coupled
+model-management connection into independent module/endpoint references. It creates
+no Agent binding, maintenance grant, service ownership or network effect.
+
+The 1.34 → 1.35 transition admits optional
 `migrationBackupKeep` configuration and schema-1 success receipts for new migration
 backups. Existing configuration bytes and historical backups are unchanged; the
 schema transition itself never deletes files.

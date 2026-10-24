@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { runPurposeAdmitsTaskState } from "../agentRun/agentRun.js";
 import { assertExecutionEnvironmentCurrent } from "../runtime/executionEnvironment.js";
+import { modelBindingLaunch } from "../models/modelRegistry.js";
 
 import { assertRoleEnabled } from "../role/availability.js";
 import {
@@ -467,6 +468,19 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
       ...resolvedAgentEnvironment
     };
     const launchEnvironment = { ...inheritedLaunchEnvironment };
+    const modelBinding = effective.modelEndpoint === undefined ? null
+      : modelBindingLaunch({ modules: [], endpoints: [effective.modelEndpoint.endpoint],
+          bindings: [effective.modelEndpoint.binding], receipts: [] }, configured.id, configured.adapterId);
+    if (modelBinding?.environment) {
+      // An explicit gateway must not inherit cloud routing, subscription tokens
+      // or custom authorization headers from the native account environment.
+      for (const name of nativeAgentEnvironmentNames("claude")) {
+        if (!["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "DISABLE_AUTOUPDATER"].includes(name)) {
+          delete launchEnvironment[name];
+        }
+      }
+      Object.assign(launchEnvironment, modelBinding.environment);
+    }
     const adapter = resolveAgentAdapter(binding.adapterId);
     const effectiveWorkspace = effective.workspace.root;
     if (effective.executionEnvironment !== undefined) {
@@ -563,7 +577,7 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
         )
       : binding.config;
     const effectiveConfig = withNativeProjectDirectories(
-      roleConfig,
+      modelBinding ? { ...roleConfig, model: modelBinding.model } : roleConfig,
       effective.executionEnvironment === undefined
         ? nativeAdditionalDirectories(effective.workspace, agentWorkspace)
         : []
@@ -608,8 +622,12 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
           "Native session id"
         )
       : resumeNativeSessionId;
-    const managedCompiled = adapter.compileManagedControl(
+    const compiledControl = adapter.compileManagedControl(
       compileInput, launchMode, preallocatedNativeSessionId);
+    const managedCompiled = modelBinding?.config && compiledControl.codexThread
+      ? { ...compiledControl, codexThread: { ...compiledControl.codexThread,
+          config: { ...(compiledControl.codexThread.config ?? {}), ...modelBinding.config } } }
+      : compiledControl;
     const compiled = managedCompiled;
     for (const path of [
       bootstrap.manifestPath,

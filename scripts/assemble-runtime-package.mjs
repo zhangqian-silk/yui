@@ -30,6 +30,8 @@ const RUNTIME_DOCUMENTS = [
   "docs/experiments.md",
   "docs/model-connection-tools.md",
   "docs/native-agent.md",
+  "docs/model-components.md",
+  "docs/model-management-api.md",
   "docs/examples/agent-offline.mjs",
   "README.md",
   "ARCHITECTURE.md",

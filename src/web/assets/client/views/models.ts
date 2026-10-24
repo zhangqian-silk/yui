@@ -19,11 +19,6 @@ import { formatDateTime } from "/assets/js/lib/format.js";
 
 export const QUOTA_SOURCES = ["factory", "command-code"];
 export const SECTIONS = ["providers", "catalog", "quota", "connection"];
-const CONNECTION_GROUPS = [
-  { key: "bridge", fields: ["bridgeUrl", "bridgeConfigFile", "catalogKeyFile"] },
-  { key: "cpa", fields: ["cpaUrl", "managementKeyFile"] }
-];
-const CONNECTION_FIELDS = ["bridgeUrl", "bridgeConfigFile", "cpaUrl", "managementKeyFile", "catalogKeyFile"];
 const OBSERVATION_TONES = { success: "ok", partial: "warn", failed: "bad", unsupported: "idle", "not-queried": "idle" };
 const ROUTE_FILTERS = ["all", "direct", "cpa", "unknown"];
 const STATE_FILTERS = ["all", "enabled", "disabled", "readonly"];
@@ -64,6 +59,7 @@ export function mountModels(root, deps) {
     // offers an explicit re-read; nothing is replayed automatically.
     pending: false, unknown: false, rejected: false, receipt: null,
     connectionDraft: null, providerDraft: null,
+    endpointId: "", moduleId: "", bridgeId: "", moduleStatuses: {},
     providerFilter: { query: "", route: "all", state: "all" },
     catalog: { page: null, items: [], loading: false, error: null, note: null, generation: 0, query: "", source: "all" },
     quota: { source: initial.source, observation: null, loading: false, error: null, unavailable: false, generation: 0 }
@@ -110,6 +106,13 @@ export function mountModels(root, deps) {
   function field(labelText, control, hint) {
     return h("label.field", null, h("span", null, labelText), control, hint ? h("small.faint", null, hint) : null);
   }
+  function resourcePicker(rows, selected, change) {
+    const select = h("select", { disabled: state.pending || state.loading },
+      rows.map(row => h("option", { value: row.id }, row.id)));
+    select.value = selected;
+    select.addEventListener("change", function () { change(select.value); });
+    return field("Resource", select);
+  }
   function searchBox(labelKey, value, onInput) {
     const input = h("input", { type: "search", autocomplete: "off", spellcheck: "false", placeholder: t(labelKey) });
     input.value = value;
@@ -155,7 +158,8 @@ export function mountModels(root, deps) {
     if (state.loading && !view) children.push(h("p", { role: "status" }, t("models.loading")));
     if (view && (state.route.section === "connection" || state.route.section === "providers")) {
       children.push(h("div.models-facts", null,
-        tone(view.connection ? "info" : "idle", view.connection ? t("models.connected") : t("models.disconnected")),
+        tone(view.registry.modules.length || view.registry.endpoints.length ? "info" : "idle",
+          view.registry.modules.length || view.registry.endpoints.length ? t("models.connected") : t("models.disconnected")),
         tone("warn", t("models.application." + view.application, view.application)),
         h("small.faint.models-notice", null, t(view.readOnly ? "models.readOnlyService" : "models.scope"))));
     }
@@ -175,74 +179,114 @@ export function mountModels(root, deps) {
   }
 
   // ---- Connection settings ----------------------------------------------
-  function connectionValues() {
-    if (state.connectionDraft) return state.connectionDraft;
-    const current = state.view && state.view.connection;
-    const values = {};
-    CONNECTION_FIELDS.forEach(function (key) { values[key] = current ? current[key] || "" : ""; });
-    return values;
-  }
   function renderConnection() {
     const view = state.view;
-    const values = connectionValues();
     const blocked = writesBlocked();
-    const form = h("form.models-connection-form", { novalidate: true });
-    const inputs = {};
-    const discard = h("button.btn.btn-ghost", { type: "button", disabled: !state.connectionDraft || state.pending }, t("models.discard"));
-    CONNECTION_GROUPS.forEach(function (group) {
-      const set = h("fieldset.models-fieldset", null, h("legend", null, t("models.connectionGroup." + group.key)));
-      group.fields.forEach(function (key) {
-        const input = h("input", { type: key.endsWith("Url") ? "url" : "text", autocomplete: "off", spellcheck: "false",
-          value: values[key], disabled: blocked, required: key === "bridgeUrl" });
-        input.value = values[key];
-        input.addEventListener("input", function () {
-          const draft = Object.assign({}, connectionValues());
-          draft[key] = input.value;
-          const first = !state.connectionDraft;
-          state.connectionDraft = draft;
-          discard.disabled = state.pending;
-          if (first) notify();
+    const r = view && view.registry || { modules: [], endpoints: [], bindings: [] };
+    const cards = [];
+    const schemas = {
+      module: { id: "", kind: ["metabridge", "cliproxyapi"], version: "", managementUrl: "", managementKeyFile: "",
+        configFile: "", maintenance: ["external", "configuration"], quotaAdapter: ["none", "factory-quota-v1"] },
+      endpoint: { id: "", moduleId: ["", ...r.modules.map(m => m.id)], url: "", protocol: ["responses", "anthropic-messages"], clientKeyFile: "" },
+      binding: { agentId: "", adapterId: ["codex", "claude"], endpointId: ["", ...r.endpoints.map(e => e.id)], model: "", scope: ["yui-new-session"] }
+    };
+    Object.keys(schemas).forEach(function (kind) {
+      const rows = r[kind === "module" ? "modules" : kind === "endpoint" ? "endpoints" : "bindings"];
+      const draft = state.connectionDraft && state.connectionDraft.kind === kind ? state.connectionDraft.resource : {};
+      const form = h("form.models-connection-form");
+      const inputs = {};
+      let previewed = null;
+      const previewStatus = h("p.faint.models-receipt", { role: "status" });
+      const actions = h("div.settings-actions");
+      const submit = h("button.btn.btn-primary", { type: "submit", disabled: blocked || kind === "binding" }, t("models.saveResource"));
+      Object.entries(schemas[kind]).forEach(function (entry) {
+        const key = entry[0], spec = entry[1];
+        const control = Array.isArray(spec)
+          ? h("select", { disabled: blocked }, spec.map(v => h("option", { value: v }, v || "Native / none")))
+          : h("input", { type: "text", disabled: blocked, autocomplete: "off", spellcheck: "false" });
+        control.value = draft[key] == null ? (Array.isArray(spec) ? spec[0] : spec) : draft[key];
+        inputs[key] = control;
+        control.addEventListener("input", function () {
+          state.connectionDraft = { kind: kind, resource: values() };
+          previewed = null;
+          if (kind === "binding") submit.disabled = true;
+          notify();
         });
-        inputs[key] = input;
-        set.append(field(t("models.connection." + key), input, t("models.connection." + key + "Help")));
+        form.append(field(key, control));
       });
-      form.append(set);
+      function values() {
+        const value = {};
+        Object.keys(inputs).forEach(key => { value[key] = inputs[key].value.trim(); });
+        if (kind === "endpoint" && !value.moduleId) value.moduleId = null;
+        if (kind === "binding" && !value.endpointId) value.endpointId = null;
+        return value;
+      }
+      async function save(resource, removeId) {
+        await write(async function () {
+          await api.saveModelResource({ revision: view.registryRevision, requestId: crypto.randomUUID(), kind: kind,
+            ...(removeId ? { removeId: removeId } : { resource: resource }) });
+          return api.models(kind === "module" && removeId === state.bridgeId ? undefined : state.bridgeId);
+        }, { scope: "connection", clearConnection: true });
+      }
+      if (kind === "binding") actions.append(h("button.btn", { type: "button", disabled: blocked, onclick: async function () {
+        try {
+          const binding = values();
+          const requested = JSON.stringify(binding);
+          const value = await api.previewModelBinding({ revision: view.registryRevision, binding: binding });
+          if (requested !== JSON.stringify(values())) return;
+          previewed = requested; submit.disabled = writesBlocked(); previewStatus.textContent = value.notice;
+        } catch (error) { previewStatus.textContent = error.message; submit.disabled = true; }
+      } }, "Preview binding"));
+      actions.append(submit, h("button.btn.btn-ghost", { type: "button",
+        disabled: blocked,
+        onclick: function () { state.connectionDraft = null; renderConnection(); notify(); }
+      }, t("models.discard")));
+      form.append(actions, previewStatus);
+      form.addEventListener("submit", function (event) {
+        event.preventDefault();
+        if (writesBlocked() || kind === "binding" && previewed !== JSON.stringify(values())) return;
+        void save(values());
+      });
+      const list = rows.map(function (row) {
+        const resourceId = row.id || row.agentId;
+        const status = h("p.faint.models-receipt", { role: "status" }, state.moduleStatuses[resourceId] || "");
+        const showStatus = async function (refresh) {
+          try {
+            const value = refresh
+              ? await api.refreshModels({ revision: view.registryRevision, kind: "status", resourceId: resourceId })
+              : await api.modelStatus(resourceId);
+            state.moduleStatuses[resourceId] = JSON.stringify(value);
+            status.textContent = state.moduleStatuses[resourceId];
+          } catch (error) { status.textContent = error.message; }
+        };
+        return h("li", null, h("code", null, resourceId), " · " + (row.kind || row.protocol || row.adapterId),
+          kind === "module" ? h("span", null,
+            h("button.btn.btn-ghost", { type: "button", disabled: blocked, onclick: () => showStatus(false) }, "Read cached status"),
+            h("button.btn.btn-ghost", { type: "button", disabled: blocked, onclick: () => showStatus(true) }, "Refresh configuration status"), status) : null,
+          h("button.btn.btn-ghost", { type: "button", disabled: blocked, onclick: function () {
+            state.connectionDraft = { kind: kind, resource: row }; renderConnection(); notify();
+          } }, "Edit"),
+          h("button.btn.btn-ghost", { type: "button", disabled: blocked, onclick: function () {
+            if (confirm("Remove reference only? No service, configuration file or credential is deleted.")) void save(null, resourceId);
+          } }, "Unregister"));
+      });
+      cards.push(h("div.card.models-card", null, h("div.card-body", null,
+        h("h2", null, kind), rows.length ? h("ul", null, list) : h("p.faint", null, "No registered " + kind),
+        h("details", { open: !!(state.connectionDraft && state.connectionDraft.kind === kind) },
+          h("summary", null, "Register / edit " + kind), form))));
     });
-    const save = h("button.btn.btn-primary", { type: "submit", disabled: blocked }, t("models.saveConnection"));
-    const disconnect = h("button.btn", { type: "button", disabled: blocked || !(view && view.connection) }, t("models.disconnect"));
-    form.addEventListener("submit", function (event) {
-      event.preventDefault();
-      if (writesBlocked()) return;
-      const connection = {};
-      CONNECTION_FIELDS.forEach(function (key) { connection[key] = inputs[key].value.trim(); });
-      if (!connection.bridgeUrl) { setReceipt(t("models.bridgeUrlRequired"), "bad", "connection"); renderConnection(); return; }
-      void write(function (revision) { return api.saveModelConnection({ revision: revision, connection: connection }); },
-        { scope: "connection", clearConnection: true });
-    });
-    disconnect.addEventListener("click", function () {
-      if (writesBlocked() || !confirm(t("models.disconnectConfirm"))) return;
-      void write(function (revision) { return api.saveModelConnection({ revision: revision, connection: null }); },
-        { scope: "connection", clearConnection: true });
-    });
-    discard.addEventListener("click", function () { state.connectionDraft = null; renderConnection(); notify(); });
-    form.append(h("div.settings-actions", null, save, disconnect, discard,
-      state.connectionDraft ? h("small.faint", null, t("models.unsavedDraft")) : null));
-    const receipt = receiptNode("connection");
-    if (receipt) form.append(receipt);
-    sections.connection.replaceChildren.apply(sections.connection, [
-      head("connection", t("models.connectionHelp")),
-      view && !view.connection ? h("p.models-note", null, icon("info"), t("models.notConnected")) : null,
-      h("div.card.models-card", null, h("div.card-body", null, form)),
-      h("div.card.models-card", null, h("div.card-body.models-explain", null,
-        h("h2", null, t("models.applicationTitle")),
-        h("p", null, t("models.applicationHelp")),
-        h("p", null, t("models.agentSettings") + " ", h("a.btn-link", { href: "/settings?section=server" }, t("models.openSettings")))))].filter(Boolean));
+    sections.connection.replaceChildren(
+      head("connection", "Independent endpoints, optional modules and exact Agent bindings. Registration never contacts a service."),
+      h("p.models-note", null, "Bindings affect new Yui Sessions only. Existing Sessions, shared daemons and personal configuration are unchanged. Saved is not applied."),
+      receiptNode("connection") || h("span"), ...cards,
+      h("p", null, h("a.btn-link", { href: "/models/docs" }, "Component documentation & complex configuration")));
   }
 
   // ---- Access (providers) -----------------------------------------------
   function configurable() {
     const view = state.view;
-    return !!(view && !view.readOnly && view.connection && view.connection.bridgeConfigFile);
+    return !!(view && !view.readOnly && view.connection && view.connection.bridgeConfigFile
+      && view.registry.modules.some(m => m.id === state.bridgeId && m.kind === "metabridge" && m.maintenance === "configuration"));
   }
   function startProvider(provider) {
     if (state.providerDraft && !confirm(t("models.discardProvider"))) return;
@@ -274,8 +318,8 @@ export function mountModels(root, deps) {
         h("button.btn", { type: "button", disabled: blocked, "aria-label": t("models.editProvider") + " " + provider.name,
           onclick: function () { startProvider(provider); } }, t("models.editProvider")),
         h("button.btn.btn-ghost.models-danger", { type: "button", disabled: blocked, "aria-label": t("models.removeProvider") + " " + provider.name, onclick: function () {
-          if (writesBlocked() || !confirm(t("models.removeConfirm") + " " + provider.name)) return;
-          void write(function (revision) { return api.saveModelProvider({ revision: revision, operation: "remove", id: provider.id }); },
+          if (writesBlocked() || !confirm(t("models.removeConfirm") + " " + provider.name + "\nExclusive writer required: no external configuration edits until this operation completes.")) return;
+          void write(function (revision) { return api.saveModelProvider({ revision: revision, moduleId: state.bridgeId, operation: "remove", id: provider.id }); },
             { scope: "provider", clearProvider: !!(state.providerDraft && state.providerDraft.id === provider.id) });
         } }, t("models.removeProvider")));
     } else {
@@ -345,8 +389,9 @@ export function mountModels(root, deps) {
         || (provider.via !== "direct" && provider.via !== "cpa");
       if (missing) { setReceipt(t(isNew ? "models.providerNewRequired" : "models.providerRequired"), "bad", "provider"); renderProviders(); return; }
       if (!PREFIX_PATTERN.test(provider.prefix)) { setReceipt(t("models.prefixInvalid"), "bad", "provider"); renderProviders(); return; }
+      if (!confirm("Confirm exclusive configuration ownership for this write. External editors must not write concurrently; saved does not mean applied.")) return;
       if (key) provider.apiKey = key;
-      void write(function (revision) { return api.saveModelProvider({ revision: revision, operation: "save", provider: provider }); },
+      void write(function (revision) { return api.saveModelProvider({ revision: revision, moduleId: state.bridgeId, operation: "save", provider: provider }); },
         { scope: "provider", clearProvider: true });
     });
     describeVia();
@@ -400,6 +445,10 @@ export function mountModels(root, deps) {
     const add = h("button.btn.btn-primary", { type: "button", disabled: writesBlocked() || !configurable() || !!state.providerDraft,
       onclick: function () { startProvider(null); } }, icon("plus"), t("models.addProvider"));
     const children = [head("providers", t("models.providersHelp"), view && !view.readOnly ? [add] : null)];
+    if (view) children.push(resourcePicker(view.registry.modules.filter(m => m.kind === "metabridge"), state.bridgeId, function (id) {
+      if (state.providerDraft && !confirm(t("models.discardProvider"))) return;
+      state.providerDraft = null; state.bridgeId = id; void load();
+    }));
     if (!view) children.push(h("p.models-empty", null, state.loading ? t("models.loading") : t("models.unavailable")));
     else {
       if (!configurable() && !view.readOnly) children.push(h("p.models-note", null, icon("info"), t("models.configFileRequired") + " ",
@@ -461,9 +510,12 @@ export function mountModels(root, deps) {
   function renderCatalog() {
     const catalog = state.catalog;
     const page = catalog.page;
-    const refresh = h("button.btn", { type: "button", disabled: catalog.loading || !state.view || !(state.view.connection), onclick: function () { void refreshCatalog(); } },
+    const refresh = h("button.btn", { type: "button", disabled: catalog.loading || !state.endpointId, onclick: function () { void refreshCatalog(); } },
       icon("refresh"), t("models.refreshCatalog"));
     const children = [head("catalog", t("models.catalogHelp"), [refresh])];
+    if (state.view) children.push(resourcePicker(state.view.registry.endpoints, state.endpointId, function (id) {
+      state.endpointId = id; void invalidateObservations();
+    }));
     const body = h("div.card-body");
     if (catalog.loading) body.append(h("p", { role: "status" }, t("models.loading")));
     if (catalog.error) body.append(h("p.settings-error", { role: "alert" }, t("models.catalogFailed") + " " + catalog.error));
@@ -549,6 +601,7 @@ export function mountModels(root, deps) {
         item.source === "factory" ? h("span.card-hint", { title: t("models.accountIdHelp") }, item.id) : null)),
       h("div.card-body", null,
         item.error ? h("p.settings-error", null, item.error) : null,
+        item.stale ? h("p.faint", null, t("models.stale") + " · " + t("models.observed") + " " + when(item.observedAt)) : null,
         item.windows.length ? h("div.models-groups", null, quotaGroups(item.windows).map(function (group) {
           return h("div.models-group", null, group.name ? h("h3", null, group.name) : null,
             h("ul.models-windows", null, group.windows.map(windowRow)));
@@ -556,8 +609,8 @@ export function mountModels(root, deps) {
         facts.length ? h("dl.models-balances", null, facts) : null));
   }
   function quotaReady() {
-    const connection = state.view && state.view.connection;
-    return !!(connection && connection.cpaUrl && connection.managementKeyFile);
+    return !!(state.view && state.view.registry.modules.some(m => m.id === state.moduleId
+      && m.kind === "cliproxyapi" && m.quotaAdapter !== "none" && m.managementUrl && m.managementKeyFile));
   }
   function renderQuota() {
     const quota = state.quota;
@@ -568,6 +621,9 @@ export function mountModels(root, deps) {
     const refresh = h("button.btn", { type: "button", disabled: quota.loading || !quotaReady(), onclick: function () { void refreshQuota(); } },
       icon("refresh"), t("models.refreshQuota"));
     const children = [head("quota", t("models.quotaHelp"), [refresh]), h("div.models-toolbar.models-toolbar-flat", null, tabs)];
+    if (state.view) children.push(resourcePicker(state.view.registry.modules.filter(m => m.kind === "cliproxyapi"), state.moduleId, function (id) {
+      state.moduleId = id; void invalidateObservations();
+    }));
     if (!quotaReady()) children.push(h("p.models-note", null, icon("info"), t("models.quotaNeedsCpa") + " ", sectionLink("connection", t("models.openConnection"))));
     const body = [];
     if (quota.loading) body.push(h("p", { role: "status" }, t("models.loading")));
@@ -597,6 +653,9 @@ export function mountModels(root, deps) {
   function adoptView(view) {
     const previous = state.view;
     state.view = view;
+    if (!view.registry.modules.some(m => m.id === state.bridgeId)) state.bridgeId = view.registry.modules.find(m => m.kind === "metabridge")?.id || "";
+    if (!view.registry.endpoints.some(e => e.id === state.endpointId)) state.endpointId = view.registry.endpoints[0]?.id || "";
+    if (!view.registry.modules.some(m => m.id === state.moduleId)) state.moduleId = view.registry.modules.find(m => m.kind === "cliproxyapi")?.id || "";
     if (previous && previous.revision === view.revision) return;
     return invalidateObservations();
   }
@@ -612,7 +671,7 @@ export function mountModels(root, deps) {
 
   async function load() {
     state.loading = true; state.loadError = null; renderAll();
-    try { await adoptView(await api.models()); }
+    try { await adoptView(await api.models(state.bridgeId)); }
     catch (error) { state.loadError = error.message; }
     finally { state.loading = false; renderAll(); }
     return !state.loadError;
@@ -627,6 +686,9 @@ export function mountModels(root, deps) {
     if (state.pending || state.loading) return;
     const view = state.view;
     const wasUnknown = state.unknown;
+    // Reconcile against current registry facts even if an uncertain unregister
+    // removed the selected resource. This read never replays the write.
+    if (wasUnknown) state.bridgeId = "";
     if (!(await load())) return;
     const unchanged = !!view && state.view.revision === view.revision;
     if (wasUnknown) {
@@ -679,7 +741,7 @@ export function mountModels(root, deps) {
     if (!cursor) { catalog.page = null; catalog.items = []; }
     renderCatalog();
     try {
-      const page = await api.modelCatalog(cursor || "0");
+      const page = await api.modelCatalog(cursor || "0", state.endpointId);
       if (generation !== catalog.generation) return;
       // Pages from different observations are never mixed.
       if (cursor && catalog.page && page.observedAt !== catalog.page.observedAt) {
@@ -704,7 +766,7 @@ export function mountModels(root, deps) {
     const generation = ++catalog.generation;
     catalog.loading = true; catalog.error = null; catalog.note = null; renderCatalog();
     try {
-      const page = await api.refreshModels({ revision: state.view.revision, kind: "catalog" });
+      const page = await api.refreshModels({ revision: state.view.registryRevision, kind: "catalog", resourceId: state.endpointId });
       if (generation !== catalog.generation) return;
       catalog.page = page; catalog.items = page.items.slice();
     } catch (error) {
@@ -730,7 +792,7 @@ export function mountModels(root, deps) {
     const source = quota.source;
     quota.loading = true; quota.error = null; quota.unavailable = false; quota.observation = null; renderQuota();
     try {
-      const observation = await api.modelQuota(source);
+      const observation = await api.modelQuota(source, state.moduleId);
       if (generation === quota.generation) quota.observation = observation;
     } catch (error) {
       if (generation === quota.generation) quotaFailure(quota, error);
@@ -746,7 +808,7 @@ export function mountModels(root, deps) {
     const source = quota.source;
     quota.loading = true; quota.error = null; quota.unavailable = false; renderQuota();
     try {
-      const observation = await api.refreshModels({ revision: state.view.revision, kind: "quota", source: source });
+      const observation = await api.refreshModels({ revision: state.view.registryRevision, kind: "quota", source: source, resourceId: state.moduleId });
       if (generation === quota.generation) quota.observation = observation;
     } catch (error) {
       if (generation === quota.generation) quotaFailure(quota, error);

@@ -24,12 +24,12 @@ import { contextContentDigest, createContextSnapshot } from "../../dist/context/
 import { usePre19Layout, usePre114Layout, usePre124Layout } from "../helpers/pre19Storage.mjs";
 import { loadSnapshotContent } from "../../dist/storage/taskContent.js";
 
-test("fresh storage creates only the current 1.35 contract", () => {
-  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.35");
+test("fresh storage creates only the current 1.36 contract", () => {
+  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.36");
   const db = new Database(":memory:");
   try {
     schema.initializeSqliteSchema(db);
-    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.35");
+    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.36");
     assert.equal(schema.inspectSqliteSchema(db).targetChecksum, schema.CURRENT_SCHEMA_CHECKSUM);
     assert.equal(db.prepare("SELECT count(*) AS n FROM storage_schema").get().n, 1);
     assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='schema_migrations'").get(), undefined);
@@ -64,7 +64,7 @@ test("1.29 continuation admission preserves history without inventing repair or 
   assert.throws(() => new SqliteTaskStore(home), /upgrade|storage/i);
   schema.applySqliteMinorUpgrades(db, home);
   assert.deepEqual(db.prepare("SELECT payload FROM events").all(), before);
-  assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.35");
+  assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.36");
   db.close(); db = undefined;
   store = new SqliteTaskStore(home);
   assert.equal(store.listRuns("task-1").length, 0);
@@ -293,7 +293,7 @@ test("1.1 upgrade preserves valid Operator authority without inventing user prov
         ["1.31", "1.32", "experiment-knowledge-and-role-inheritance"],
         ["1.32", "1.33", "experiment-leader-copied-configuration"],
         ["1.33", "1.34", "task-owned-context-content"],
-        ["1.34", "1.35", "migration-backup-retention"]]);
+        ["1.34", "1.35", "migration-backup-retention"], ["1.35", "1.36", "model-registry"]]);
   }
   finally { current.close(); }
 });

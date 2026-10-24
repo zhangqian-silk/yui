@@ -1,134 +1,176 @@
-# Model management Web contract
+# Unified model management
 
-This is the implementation contract for Task 122. Server implementation belongs
-to Leader; Web assets and interactions belong to the model-web WorkItem.
+Contract 1 · storage 1.24 · Task 150. This replaces the coupled Task-122
+connection API. [Component manuals](model-components.md) describe the supported
+versions, native configuration and recovery boundaries.
 
-All routes use the existing `x-yui-web-token` boundary and return JSON directly,
-not a `{data: ...}` envelope. A failed mutation returns HTTP 409 with
-`{error, disposition: "not-submitted" | "unknown"}`. Never automatically replay
-unknown writes. No arbitrary remote paths or proxy methods are accepted.
+## Ownership and entry points
 
-## Connection and providers
+Yui stores **references**, not upstream configuration: `ModuleInstance` records
+optional maintenance, `ModelEndpoint` records an inference protocol/address and
+client credential reference, and `AgentBinding` selects an endpoint for an exact
+configured Agent. An endpoint can have no module. A native binding has no endpoint.
+Multiple Agent bindings can reference one CPA; quota belongs to the CPA/account,
+not to the number of bindings. Registration and ordinary reads never contact
+an upstream. They neither install a component nor acquire a service.
 
-`GET /api/models` returns `ModelManagementView` (see
-`src/models/modelManagementTypes.ts`). This reads local configuration only.
-The revision covers both the connection and the current bridge configuration.
+Web uses the existing local token, same-origin JSON mutation and mutation-error
+boundaries. API error results distinguish `not-submitted` from `unknown`; on
+unknown outcome inspect the exact resource/request before deciding a next action.
+No automatic retry of a write is performed.
 
-`POST /api/models/connection` accepts `{revision, connection}`. Connection is
-null to disconnect, or all five string fields: `bridgeUrl`, `bridgeConfigFile`,
-`cpaUrl`, `managementKeyFile`, `catalogKeyFile`. Optional fields use empty strings.
-Bridge URL is required; bridgeConfigFile enables local configuration management.
-CPA URL and a private management-key file are needed for quota refresh. Catalog
-key is independent from the management key. Secrets are never returned.
-Disconnecting never stops services or deletes credentials.
-Changing a service URL's origin cannot silently retain its previous nonempty
-key-file reference. Supply a new reference, or clear the reference and save
-before explicitly binding it again. Equivalent URL spelling (including default
-ports and trailing slashes) does not change the origin. Saving never contacts
-either service.
+CLI and Operator use the same Controller-owned service through existing
+capabilities (a Task supplies the established authenticated capability envelope):
 
-`POST /api/models/provider` accepts:
+```sh
+yui capability describe models.read --task task-N
+yui capability call models.read --task task-N --input '{}'
+yui capability call models.save --task task-N --input \
+  '{"operation":"resource","input":{"revision":"READ_REGISTRY_REVISION","requestId":"register-api-1","kind":"endpoint","resource":{"id":"api","moduleId":null,"url":"https://gateway.example/v1","protocol":"responses","clientKeyFile":"/private/client.key"}}}'
+```
 
-- save: `{revision, operation:"save", provider:{id?,name,via,baseUrl,prefix,enabled,apiKey?}}`
-- remove: `{revision, operation:"remove", id}`
+Only an existing authenticated Operator has global configuration capability
+permission. A Task Leader or Worker does not gain access to global model
+configuration just because it can read/manage its Task. `maintenance` is a
+declared scope, **not caller authority**. The Web token represents the existing
+local user authority, not a Task-role grant. There is no new proxy or generic
+plugin platform.
 
-An absent id creates a provider. An omitted/empty apiKey preserves the existing
-credential; a nonempty value replaces it. New API-key providers require a key.
-An existing disabled static/gateway provider may stay unconfigured while
-disabled, but enabling it requires a nonempty stored or newly supplied key.
-Use a password input, never rehydrate it, clear it after submission, and never
-put it in URLs, logs, localStorage or error messages.
-`via` is direct or cpa. For cpa the key is a CPA **client inference key**,
-not an upstream account key or a management key. Prefix is the explicit model
-namespace/mapping and is mandatory for newly managed providers. Existing
-editable prefixes and save inputs include the trailing slash: for example
-`factory/`, matching `^[a-zA-Z0-9_-]{1,64}/$`. Render that value as returned,
-without appending another slash. Existing
-official/subscription, implicit-policy (no explicit `via`) and unprefixed shared
-routes are read-only. Render
-`editable/reason` rather than guessing. Removal unlinks the provider but retains
-its file/credentials; the result notice reports that fact.
+## Registry and writes
 
-Successful mutations return a fresh ModelManagementView. Saving is NOT applying:
-application stays `unverified`; an operator may need to reload metabridge using
-its existing deployment flow. This page never restarts it, rewrites Codex
-configuration, switches Sessions, or claims inference was validated.
+`GET /api/models/registry` returns `{revision,registry}`.
+The registry has `modules`, `endpoints`, `bindings` and a bounded recent request
+receipt window. `GET /api/models?moduleId=...` returns the same references plus a
+Provider-editor projection and its separate revision. Provider revisions include
+the selected bridge's native file bytes. `connection` in that view is a derived,
+non-writable bridge projection; it is never stored. The old
+`POST /api/models/connection` is removed.
 
-## Catalog and quota
+`POST /api/models/resource` accepts `{revision,requestId,kind,resource}`, where
+`kind` is `module`, `endpoint` or `binding`. For unregister use `removeId` instead
+of `resource`. References must resolve before committing; remove dependent
+bindings/endpoints explicitly first. Unregistering deletes only the Yui reference,
+never a native file, service or credential. Exact recent request replay is
+readback-only; reusing a request ID with other parameters is rejected. Outside
+the receipt window, an old revision still cannot authorize replay over new state.
 
-`GET /api/models/catalog?cursor=0` reads the cached catalog and returns
-`ModelObservation<ModelCatalogItem> & {total:number,nextCursor:string|null}`.
-Pages contain at most 100 items. `source` comes from the model ID namespace,
-or `metabridge` when absent; it is not proven account attribution.
+All object fields are explicit and unknown fields are rejected:
 
-`POST /api/models/refresh` accepts `{revision,kind:"catalog"}` and returns the
-first catalog page, or `{revision,kind:"quota",source:"factory"|"command-code"}`
-and returns `ModelObservation<ModelQuotaItem>`. Quota refresh is explicit and
-may contact the upstream billing service via the installed CPA extension.
-It does not renew credentials, reset quota or run inference. No polling.
-Catalog refresh reads both `/v1/models` and `/healthz` from metabridge, each with
-an 8-second deadline. HTTP 200 alone does not prove upstream catalog success.
-Degraded health returns `partial` when models are available and `failed` when
-empty; unavailable/invalid health or differing snapshot counts likewise never
-produce a complete success. Only bounded error codes are exposed, not upstream
-diagnostics. These are observations of metabridge's cached catalog, not proof of
-a new upstream fetch or inference compatibility.
+| Object | Fields |
+| --- | --- |
+| Module | `id`, `kind` (`metabridge`/`cliproxyapi`), `version`, `managementUrl`, `managementKeyFile`, `configFile`, `maintenance` (`external`/`configuration`), `quotaAdapter` (`none`/`factory-quota-v1`) |
+| Endpoint | `id`, `moduleId` (nullable), `url`, `protocol` (`responses`/`anthropic-messages`), `clientKeyFile` |
+| Binding | `agentId`, `adapterId` (`codex`/`claude`), `endpointId` (nullable), `model`, `scope` (`yui-new-session`) |
 
-`GET /api/models/quota?source=factory` (or command-code) reads only that cached
-observation. Sources stay separate. Null means unknown, not zero. Successful
-source responses preserve known balance components: `balanceDetails` labels
-Factory extra usage in USD separately from Command Code monthly, purchased and
-free credits. Factory extra usage is not a subscription total. Command Code's
-`balance` is only retained when all three pools and the upstream total are
-present; missing total means `partial`, not a sum invented by Yui. Failed refresh
-does not retain a successful current value. A timestamped stale success must be
-visibly marked stale. A 404 alone is an unavailable/unknown extension route, not
-proof that the plugin is uninstalled. Unsupported or failed quota must not block
-the catalog or connection editor.
+Empty optional file/management URL strings mean absent. File references must be
+absolute. Secrets themselves are not registry values. Changing a credential's
+destination origin requires a new file reference or explicitly clearing the old
+one first. A module management key is never used by an endpoint or Agent.
 
-The page should link to existing settings for Agent/model selection without
-automatically importing models. Use the existing navigation/theme/i18n and
-accessible forms; an ordinary `/models` shell is appropriate. Worker owns the
-asset manifest, shell, navigation and client assets. Leader owns server route
-wiring, controller dependency wiring, types, configuration and tests of backend
-behavior. Do not edit each other's files without coordination.
+`POST /api/models/binding/preview` accepts `{revision,binding}` and statically
+checks exact configured Agent identity/adapter, endpoint references and protocol.
+It does not validate credentials by contacting a model. Commit the same binding
+with `resource`; preview does not grant authority or waive the revision check.
+Results say `saved` for references and `new-session-only` for bindings, never
+runtime applied. No global Role configuration is edited.
+Native bindings must leave `model` empty, preserving the native model choice.
 
-## Supported configuration boundary
+Codex receives a Responses Provider in its per-thread App Server configuration;
+Claude CLI receives its own process's `ANTHROPIC_BASE_URL` and explicit gateway
+bearer credential. Claude's URL is the server root (the CLI appends `/v1/messages`),
+while the Responses URL includes `/v1`. A Responses endpoint is not accepted as
+an Anthropic endpoint. Claude gateway bindings require a client key reference so
+a saved native subscription is not forwarded by accident.
+Explicit Codex endpoint bindings use `requires_openai_auth:false` and only the
+declared client key, not a copied native login. For an existing mixed
+official-subscription metabridge deployment that requires native authentication
+forwarding, retain the native binding and its independently maintained Codex
+configuration; do not register that setup as a generic API-key binding.
 
-This implementation targets metabridge source
-`73d9963acdb0fc913702ab0ad851df1004f6bbe0`. It handles both inline `backends` and
-`providerFiles` layouts without importing the application or running its scripts.
-It preserves advanced fields on existing editable providers, including the
-distinct upstream path semantics of `base` and `base_url`, and never converts
-official authentication or implicitly opts existing providers into new request
-or compaction defaults. Writes must retain at least one enabled backend and
-must not break existing provider `webSearch.backend` references by renaming,
-removing or disabling their target. Adjust those references with their existing
-owner first. The local file adapter requires owned non-symlink files
-and non-group-writable parent directories for writes. New/rewritten files are
-0600. The current filesystem integration uses optimistic byte comparison and
-atomic rename, not a metabridge cross-client transactional/CAS API. Avoid editing
-the same file simultaneously from another manager.
+An active Session retains its captured endpoint/binding references, including
+process restoration. The current registry is considered only when resolving a
+fresh Session. Continuing an old Session after a binding change does not adopt
+that change. Stop/replace only through the existing separately authorized
+Session lifecycle. There is no shared-daemon restart or default-user-config edit.
+Credential file contents are resolved privately at launch; normal read models
+and binding previews contain references only. Real provider behavior is not
+established by deterministic launch tests.
 
-API key management here configures a metabridge Responses connection or its CPA
-client connection, not CPA's upstream OAuth/account pool. CPA remains its owner.
-Removal retains referenced provider files and separate key files. For an inline
-provider, it first retains a complete 0600 copy beside the bridge configuration;
-the success notice names that unreferenced file. An uncertain removal retains
-the copy and is not replayed automatically. Semantically equivalent URL spelling
-(including trailing slashes) preserves the original address and does not require
-a replacement credential; a changed destination still does. A failed
-multi-file addition may retain an unreferenced private provider file; uncertain
-effects are not replayed or automatically deleted.
+## Bridge Provider editor
 
-Outbound observations accept explicit loopback endpoints and public HTTPS.
-Other private/link-local targets, DNS rebinding and redirects are rejected;
-there is no proxy inheritance or TLS verification bypass. Reads use hard
-deadlines and a 2 MiB response cap; catalogs are limited to 2,000 models.
-Quota uses only the two fixed read-only extension routes, never the consuming
-CPA usage queue. Neither route availability nor catalog visibility establishes
-inference compatibility.
+`POST /api/models/provider` requires the selected `moduleId`, Provider-view
+`revision`, `requestId`, `exclusiveWriter:true`, and either:
 
-Yui storage 1.7 → 1.8 is an additive connection-reference transition. Existing
-installations remain unconfigured. No Home migration, service reload or
-deployment is performed by this feature's development.
+* `{operation:"save",provider:{id?,name,via,baseUrl,prefix,enabled,apiKey?}}`
+* `{operation:"remove",id}`
+
+The module must explicitly delegate configuration maintenance. The user must
+exclude other file writers for this operation; byte checks plus atomic rename
+are **not** a cross-process conditional-write protocol. Unknown outcomes must
+be read back, not blindly resubmitted. Multi-file additions may leave a private
+unreferenced Provider file if the root reference write is unconfirmed. It is
+retained, not automatically deleted. An inline removal retains the complete
+Provider in a private sibling file before unlinking it.
+
+Provider behavior retained from the existing editor: official/subscription,
+implicit-policy and unsupported/shared routes are read-only; preserve address
+spelling, unrelated fields, explicit namespaces and web-search references.
+No last-enabled-backend removal. Changing destination requires a newly supplied
+client key. Keys entered through Web use password inputs, are cleared after
+submission and are never projected in results. Save is not reload/application.
+
+CPA upstream configuration is **not** edited through this bridge interface.
+For v8.0.12, use the constrained native configuration method in the component
+manual. Yui does not promise conditional HTTP writes where none were verified.
+
+## Observation reads and explicit refresh
+
+* `GET /api/models/catalog?resourceId=ENDPOINT&cursor=0`
+* `GET /api/models/quota?resourceId=CPA&source=factory` (or `command-code`)
+* `GET /api/models/status?resourceId=MODULE`
+* `POST /api/models/refresh` with `{revision:REGISTRY_REVISION,kind,resourceId,source?}`
+
+Kinds are `catalog`, `quota`, `status`. For catalog the source is the exact
+endpoint and only `/models` relative to its API root is read. This is the
+endpoint-reported list, not proof that all upstreams are healthy. There is no
+implicit `/healthz`, inference, OAuth or consumption of a usage queue.
+
+Status refresh reads an explicitly referenced owned local configuration file
+and reports its digest with runtime `unknown`: configuration availability is
+not service readiness. Service-manager/process observations belong to the
+lifecycle integration, not a guessed port probe.
+
+Quota refresh is enabled only by separately declaring `factory-quota-v1`.
+That names the explicitly installed extension's **wire contract**, not a claim
+that every CPA v8.0.12 installation has the plugin. Its routes are
+`/v0/management/plugins/factory-quota/accounts` and `/command-code`.
+No installed extension artifact/version was independently verified here. The
+adapter is fixture-validated against that documented contract only; absent or
+incompatible extensions remain unsupported/failed. Do not probe a real account
+to discover compatibility without separate authorization.
+
+Observations report `source`, `accountScope`, `unit`, latest `attemptedAt`,
+last successful `observedAt`, `status`, `error`, `stale` and items. Failure keeps
+the last successful items/time, marks stale and records the recent failure.
+Partial account failures retain each failed account's prior values and
+`observedAt`, with per-item `stale:true`; successful accounts may advance.
+Unknown numeric fields stay null, never zero. Different quota units are not
+added. Account identifiers are digested; balances retain their explicit detail
+kinds (USD or separate credit pools). Ordinary reads do not request refresh.
+The bounded caches are Controller-local and expire after restart; new resource
+revisions cannot reuse another destination's observations.
+
+## Storage transition
+
+The centralized 1.23 → 1.24 transition archives the old config bytes and splits
+the old bridge/CPA references. It does not read files, migrate upstream formats,
+contact services, create bindings, switch an Agent or delegate maintenance.
+Existing historical Session snapshots remain absent of endpoint overrides.
+Fresh Sessions may capture reference-only `modelEndpoint` snapshots; old
+Sessions retain their original native behavior. There is one writable registry,
+not old/new dual configuration readers.
+
+Git update, service-manager start/stop and composition with the standalone
+configuration tool are the next integration WorkItem's committed scope. Their
+absence from this service is not a statement that those features are permanently
+unsupported. No update/service operation is simulated as successful here.

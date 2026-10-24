@@ -30,6 +30,8 @@ const required = [
   "docs/task-discovery.zh-CN.md",
   "docs/provider-retry.md",
   "docs/storage-baseline.md",
+  "docs/model-components.md",
+  "docs/model-management-api.md",
   "docs/storage-baseline.zh-CN.md",
   "skills/yui-leader/SKILL.md",
   "skills/yui-experiment-leader/SKILL.md",
