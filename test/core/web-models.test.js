@@ -8,6 +8,8 @@ import { appRail } from "../../dist/web/assets/shell/appRail.js";
 import { SETTINGS_HTML } from "../../dist/web/assets/shell/settings.js";
 import { WEB_ASSETS } from "../../dist/web/assets/assetManifest.js";
 import { MANAGE_SHELL_SCRIPT } from "../../dist/web/assets/client/layout/manageShell.js";
+import { EN } from "../../dist/web/assets/client/i18n/en.js";
+import { ZH_CN } from "../../dist/web/assets/client/i18n/zh-CN.js";
 
 // Minimal DOM: enough for h(), forms and buttons; no browser required.
 function element(spec, attrs, ...children) {
@@ -157,13 +159,13 @@ test("language changes retain current observations and drafts without loading ag
   const { page } = mount(api);
   await page.ready;
   const observation = page.state.catalog.page;
-  page.state.connectionDraft = { ...connection(), bridgeUrl: "http://127.0.0.1:91" };
+  page.state.connectionDrafts.module = { id: "draft", managementUrl: "http://127.0.0.1:91" };
   const calls = api.calls.length;
   page.translate();
   assert.equal(reads, 1);
   assert.equal(api.calls.length, calls);
   assert.equal(page.state.catalog.page, observation);
-  assert.equal(page.state.connectionDraft.bridgeUrl, "http://127.0.0.1:91");
+  assert.equal(page.state.connectionDrafts.module.managementUrl, "http://127.0.0.1:91");
   assert.equal(page.dirty(), true);
 });
 
@@ -206,6 +208,66 @@ function fakeApi(overrides = {}) {
   };
   return api;
 }
+
+test("resource drafts survive other editors, rerenders, writes and reconciliation; only explicit replacements discard them", async () => {
+  const api = fakeApi();
+  let allow = false;
+  const { root, page, confirmations } = mount(api, { confirm: message => { confirmations.push(message); return allow; } });
+  await page.ready;
+  const forms = () => all(root, n => n.tagName === "FORM" && n.className.includes("models-connection-form"));
+  const id = index => find(forms()[index], n => n.tagName === "INPUT");
+  const type = (index, value) => { const input = id(index); input.value = value; input.handlers.input(); };
+  type(0, "unsaved-module");
+  type(1, "unsaved-endpoint");
+  type(2, "unsaved-agent");
+  button(root, "models.editResource").handlers.click();
+  assert.equal(confirmations.length, 1, "replacing the same resource editor requires consent");
+  page.translate();
+  assert.deepEqual([id(0).value, id(1).value, id(2).value], ["unsaved-module", "unsaved-endpoint", "unsaved-agent"]);
+  allow = true;
+  button(root, "models.editResource").handlers.click();
+  assert.deepEqual([id(0).value, id(1).value, id(2).value], ["bridge", "unsaved-endpoint", "unsaved-agent"]);
+  button(forms()[0], "models.discard").handlers.click();
+  assert.deepEqual([id(0).value, id(1).value, id(2).value], ["", "unsaved-endpoint", "unsaved-agent"]);
+  await submit(forms()[1]); await tick();
+  assert.deepEqual([id(0).value, id(1).value, id(2).value], ["", "", "unsaved-agent"], "saving one kind clears only that draft");
+  type(0, "keep-module"); type(1, "keep-endpoint");
+  const moduleSelect = all(forms()[1], n => n.tagName === "SELECT")[0];
+  moduleSelect.value = "bridge"; moduleSelect.handlers.input();
+  api.next = () => view("r3", { connection: null, providers: [] });
+  button(root, "models.unregister").handlers.click(); await tick(); await tick();
+  assert.deepEqual([id(0).value, id(1).value, id(2).value], ["keep-module", "keep-endpoint", "unsaved-agent"], "unregister preserves all unsaved forms");
+  const retainedSelect = all(forms()[1], n => n.tagName === "SELECT")[0];
+  assert.equal(retainedSelect.value, "bridge");
+  assert.ok(all(retainedSelect, n => n.tagName === "OPTION").some(n => n.value === "bridge"), "removed references remain visible in unsaved drafts");
+  for (const disposition of ["not-submitted", "unknown"]) {
+    api.saveModelResource = async () => { throw Object.assign(new Error("fixture failure"), { disposition }); };
+    await submit(forms()[0]); await tick();
+    button(root, "models.readFacts").handlers.click(); await tick(); await tick();
+    assert.deepEqual([id(0).value, id(1).value, id(2).value], ["keep-module", "keep-endpoint", "unsaved-agent"], disposition + " reread must not erase drafts or replay");
+  }
+  assert.equal(page.dirty(), true);
+});
+
+test("resource controls and confirmations use the selected product language", async () => {
+  for (const messages of [EN, ZH_CN]) {
+    const { root, page, confirmations } = mount(fakeApi(), { t: (key, fallback) => {
+      if (/^models\.(field|option|resourceKind|resourceEmpty|resourceEditor)\./.test(key))
+        assert.ok(Object.hasOwn(messages, key), "missing translation: " + key);
+      return messages[key] || EN[key] || fallback || key;
+    } });
+    await page.ready;
+    for (const key of ["models.resource", "models.field.managementKeyFile", "models.field.clientKeyFile",
+      "models.field.agentId", "models.previewBinding", "models.readCachedStatus", "models.refreshStatus",
+      "models.bindingScope", "models.option.external", "models.option.configuration", "models.componentDocs"]) {
+      assert.ok(text(root).includes(messages[key]), key);
+    }
+    button(root, messages["models.unregister"]).handlers.click(); await tick(); await tick();
+    assert.equal(confirmations[0], messages["models.unregisterConfirm"]);
+    button(find(root, n => n.dataset.provider === "mine"), messages["models.removeProvider"]).handlers.click();
+    assert.ok(confirmations.at(-1).includes(messages["models.exclusiveWriter"]));
+  }
+});
 
 test("models shell is served and linked from the dashboard navigation", () => {
   assert.ok(WEB_ASSETS["/assets/js/app/models.js"] && WEB_ASSETS["/assets/js/views/models.js"]);
@@ -383,13 +445,13 @@ test("binding submit requires preview of the same draft, not a late response for
   assert.equal(save.disabled, true);
   await submit(binding);
   assert.equal(api.calls.some(c => c[0] === "resource"), false);
-  const pending = button(binding, "Preview binding").handlers.click();
+  const pending = button(binding, "models.previewBinding").handlers.click();
   inputs[1].value = "model-after"; inputs[1].handlers.input();
   finishPreview({ notice: "New Session only" }); await pending;
   assert.equal(save.disabled, true, "an earlier preview cannot enable a changed draft");
   await submit(binding);
   assert.equal(api.calls.some(c => c[0] === "resource"), false);
-  const current = button(binding, "Preview binding").handlers.click();
+  const current = button(binding, "models.previewBinding").handlers.click();
   finishPreview({ notice: "New Session only" }); await current;
   assert.equal(save.disabled, false);
   await submit(binding); await tick();
@@ -408,7 +470,7 @@ test("unregistering the selected bridge reads the remaining registry without tar
   };
   const { root, page } = mount(api);
   await page.ready;
-  button(root, "Unregister").handlers.click();
+  button(root, "models.unregister").handlers.click();
   await tick(); await tick();
   assert.equal(page.state.unknown, false);
   assert.equal(page.state.bridgeId, "");
@@ -532,7 +594,7 @@ test("a stale-revision rejection keeps the draft and offers an explicit re-read 
   urlInput.value = "edited"; urlInput.handlers.input();
   await submit(form); await tick();
   assert.match(text(root), /models\.rejected revision is stale/);
-  assert.equal(page.state.connectionDraft.resource.id, "edited");
+  assert.equal(page.state.connectionDrafts.module.id, "edited");
 
   // Writes are blocked while the facts are being read again.
   const reread = deferred();

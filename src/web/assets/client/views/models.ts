@@ -58,7 +58,7 @@ export function mountModels(root, deps) {
     // A rejected write (for example a stale revision) keeps its draft and
     // offers an explicit re-read; nothing is replayed automatically.
     pending: false, unknown: false, rejected: false, receipt: null,
-    connectionDraft: null, providerDraft: null,
+    connectionDrafts: {}, providerDraft: null,
     endpointId: "", moduleId: "", bridgeId: "", moduleStatuses: {},
     providerFilter: { query: "", route: "all", state: "all" },
     catalog: { page: null, items: [], loading: false, error: null, note: null, generation: 0, query: "", source: "all" },
@@ -111,7 +111,7 @@ export function mountModels(root, deps) {
       rows.map(row => h("option", { value: row.id }, row.id)));
     select.value = selected;
     select.addEventListener("change", function () { change(select.value); });
-    return field("Resource", select);
+    return field(t("models.resource"), select);
   }
   function searchBox(labelKey, value, onInput) {
     const input = h("input", { type: "search", autocomplete: "off", spellcheck: "false", placeholder: t(labelKey) });
@@ -125,8 +125,9 @@ export function mountModels(root, deps) {
     }));
   }
   function notify() {
-    onChange({ connection: !!state.connectionDraft, provider: !!state.providerDraft, unknown: state.unknown, pending: state.pending });
+    onChange({ connection: hasConnectionDrafts(), provider: !!state.providerDraft, unknown: state.unknown, pending: state.pending });
   }
+  function hasConnectionDrafts() { return Object.keys(state.connectionDrafts).length > 0; }
 
   // ---- Routing ----------------------------------------------------------
   function show(route) {
@@ -192,7 +193,7 @@ export function mountModels(root, deps) {
     };
     Object.keys(schemas).forEach(function (kind) {
       const rows = r[kind === "module" ? "modules" : kind === "endpoint" ? "endpoints" : "bindings"];
-      const draft = state.connectionDraft && state.connectionDraft.kind === kind ? state.connectionDraft.resource : {};
+      const draft = state.connectionDrafts[kind] || {};
       const form = h("form.models-connection-form");
       const inputs = {};
       let previewed = null;
@@ -201,18 +202,26 @@ export function mountModels(root, deps) {
       const submit = h("button.btn.btn-primary", { type: "submit", disabled: blocked || kind === "binding" }, t("models.saveResource"));
       Object.entries(schemas[kind]).forEach(function (entry) {
         const key = entry[0], spec = entry[1];
+        // A resource removed from the registry can still be referenced by an
+        // unsaved draft. Keep its exact selection visible for explicit repair.
+        const options = Array.isArray(spec) && draft[key] && !spec.includes(draft[key]) ? [...spec, draft[key]] : spec;
+        const optionLabel = function (value) {
+          if (!value) return t(key === "endpointId" ? "models.option.native" : "models.option.noModule");
+          return ["maintenance", "quotaAdapter", "scope"].includes(key) ? t("models.option." + value) : value;
+        };
         const control = Array.isArray(spec)
-          ? h("select", { disabled: blocked }, spec.map(v => h("option", { value: v }, v || "Native / none")))
+          ? h("select", { disabled: blocked }, options.map(v => h("option", { value: v }, optionLabel(v))))
           : h("input", { type: "text", disabled: blocked, autocomplete: "off", spellcheck: "false" });
         control.value = draft[key] == null ? (Array.isArray(spec) ? spec[0] : spec) : draft[key];
         inputs[key] = control;
         control.addEventListener("input", function () {
-          state.connectionDraft = { kind: kind, resource: values() };
+          state.connectionDrafts[kind] = values();
           previewed = null;
+          previewStatus.textContent = "";
           if (kind === "binding") submit.disabled = true;
           notify();
         });
-        form.append(field(key, control));
+        form.append(field(t("models.field." + key), control));
       });
       function values() {
         const value = {};
@@ -226,20 +235,20 @@ export function mountModels(root, deps) {
           await api.saveModelResource({ revision: view.registryRevision, requestId: crypto.randomUUID(), kind: kind,
             ...(removeId ? { removeId: removeId } : { resource: resource }) });
           return api.models(kind === "module" && removeId === state.bridgeId ? undefined : state.bridgeId);
-        }, { scope: "connection", clearConnection: true });
+        }, { scope: "connection", clearConnection: removeId ? null : kind });
       }
       if (kind === "binding") actions.append(h("button.btn", { type: "button", disabled: blocked, onclick: async function () {
         try {
           const binding = values();
           const requested = JSON.stringify(binding);
-          const value = await api.previewModelBinding({ revision: view.registryRevision, binding: binding });
+          await api.previewModelBinding({ revision: view.registryRevision, binding: binding });
           if (requested !== JSON.stringify(values())) return;
-          previewed = requested; submit.disabled = writesBlocked(); previewStatus.textContent = value.notice;
+          previewed = requested; submit.disabled = writesBlocked(); previewStatus.textContent = t("models.bindingPreviewed");
         } catch (error) { previewStatus.textContent = error.message; submit.disabled = true; }
-      } }, "Preview binding"));
+      } }, t("models.previewBinding")));
       actions.append(submit, h("button.btn.btn-ghost", { type: "button",
         disabled: blocked,
-        onclick: function () { state.connectionDraft = null; renderConnection(); notify(); }
+        onclick: function () { delete state.connectionDrafts[kind]; renderConnection(); notify(); }
       }, t("models.discard")));
       form.append(actions, previewStatus);
       form.addEventListener("submit", function (event) {
@@ -261,25 +270,26 @@ export function mountModels(root, deps) {
         };
         return h("li", null, h("code", null, resourceId), " · " + (row.kind || row.protocol || row.adapterId),
           kind === "module" ? h("span", null,
-            h("button.btn.btn-ghost", { type: "button", disabled: blocked, onclick: () => showStatus(false) }, "Read cached status"),
-            h("button.btn.btn-ghost", { type: "button", disabled: blocked, onclick: () => showStatus(true) }, "Refresh configuration status"), status) : null,
+            h("button.btn.btn-ghost", { type: "button", disabled: blocked, onclick: () => showStatus(false) }, t("models.readCachedStatus")),
+            h("button.btn.btn-ghost", { type: "button", disabled: blocked, onclick: () => showStatus(true) }, t("models.refreshStatus")), status) : null,
           h("button.btn.btn-ghost", { type: "button", disabled: blocked, onclick: function () {
-            state.connectionDraft = { kind: kind, resource: row }; renderConnection(); notify();
-          } }, "Edit"),
+            if (state.connectionDrafts[kind] && !confirm(t("models.replaceResourceDraft"))) return;
+            state.connectionDrafts[kind] = { ...row }; renderConnection(); notify();
+          } }, t("models.editResource")),
           h("button.btn.btn-ghost", { type: "button", disabled: blocked, onclick: function () {
-            if (confirm("Remove reference only? No service, configuration file or credential is deleted.")) void save(null, resourceId);
-          } }, "Unregister"));
+            if (confirm(t("models.unregisterConfirm"))) void save(null, resourceId);
+          } }, t("models.unregister")));
       });
       cards.push(h("div.card.models-card", null, h("div.card-body", null,
-        h("h2", null, kind), rows.length ? h("ul", null, list) : h("p.faint", null, "No registered " + kind),
-        h("details", { open: !!(state.connectionDraft && state.connectionDraft.kind === kind) },
-          h("summary", null, "Register / edit " + kind), form))));
+        h("h2", null, t("models.resourceKind." + kind)), rows.length ? h("ul", null, list) : h("p.faint", null, t("models.resourceEmpty." + kind)),
+        h("details", { open: !!state.connectionDrafts[kind] },
+          h("summary", null, t("models.resourceEditor." + kind)), form))));
     });
     sections.connection.replaceChildren(
-      head("connection", "Independent endpoints, optional modules and exact Agent bindings. Registration never contacts a service."),
-      h("p.models-note", null, "Bindings affect new Yui Sessions only. Existing Sessions, shared daemons and personal configuration are unchanged. Saved is not applied."),
+      head("connection", t("models.connectionIntro")),
+      h("p.models-note", null, t("models.bindingScope")),
       receiptNode("connection") || h("span"), ...cards,
-      h("p", null, h("a.btn-link", { href: "/models/docs" }, "Component documentation & complex configuration")));
+      h("p", null, h("a.btn-link", { href: "/models/docs" }, t("models.componentDocs"))));
   }
 
   // ---- Access (providers) -----------------------------------------------
@@ -318,7 +328,7 @@ export function mountModels(root, deps) {
         h("button.btn", { type: "button", disabled: blocked, "aria-label": t("models.editProvider") + " " + provider.name,
           onclick: function () { startProvider(provider); } }, t("models.editProvider")),
         h("button.btn.btn-ghost.models-danger", { type: "button", disabled: blocked, "aria-label": t("models.removeProvider") + " " + provider.name, onclick: function () {
-          if (writesBlocked() || !confirm(t("models.removeConfirm") + " " + provider.name + "\nExclusive writer required: no external configuration edits until this operation completes.")) return;
+          if (writesBlocked() || !confirm(t("models.removeConfirm") + " " + provider.name + "\n" + t("models.exclusiveWriter"))) return;
           void write(function (revision) { return api.saveModelProvider({ revision: revision, moduleId: state.bridgeId, operation: "remove", id: provider.id }); },
             { scope: "provider", clearProvider: !!(state.providerDraft && state.providerDraft.id === provider.id) });
         } }, t("models.removeProvider")));
@@ -389,7 +399,7 @@ export function mountModels(root, deps) {
         || (provider.via !== "direct" && provider.via !== "cpa");
       if (missing) { setReceipt(t(isNew ? "models.providerNewRequired" : "models.providerRequired"), "bad", "provider"); renderProviders(); return; }
       if (!PREFIX_PATTERN.test(provider.prefix)) { setReceipt(t("models.prefixInvalid"), "bad", "provider"); renderProviders(); return; }
-      if (!confirm("Confirm exclusive configuration ownership for this write. External editors must not write concurrently; saved does not mean applied.")) return;
+      if (!confirm(t("models.exclusiveWriter"))) return;
       if (key) provider.apiKey = key;
       void write(function (revision) { return api.saveModelProvider({ revision: revision, moduleId: state.bridgeId, operation: "save", provider: provider }); },
         { scope: "provider", clearProvider: true });
@@ -695,7 +705,6 @@ export function mountModels(root, deps) {
       setReceipt(t(unchanged ? "models.reconciledUnchanged" : "models.reconciledChanged"), "warn", "summary");
       state.unknown = false;
       api.releaseModelWrites();
-      state.connectionDraft = null;
     } else {
       setReceipt(t(unchanged ? "models.rereadUnchanged" : "models.rereadChanged"), unchanged ? "ok" : "warn", "summary");
     }
@@ -711,7 +720,7 @@ export function mountModels(root, deps) {
     renderAll();
     try {
       const view = await send(state.view.revision);
-      if (options.clearConnection) state.connectionDraft = null;
+      if (options.clearConnection) delete state.connectionDrafts[options.clearConnection];
       if (options.clearProvider) state.providerDraft = null;
       setReceipt(t("models.saved"), "ok", options.scope);
       await adoptView(view);
@@ -833,7 +842,7 @@ export function mountModels(root, deps) {
       if (replacement && value !== undefined) replacement.value = value;
     },
     updateFreshness: updateFreshness,
-    dirty: function () { return !!state.connectionDraft || !!state.providerDraft || state.pending; }
+    dirty: function () { return hasConnectionDrafts() || !!state.providerDraft || state.pending; }
   };
 }
 `;
