@@ -125,6 +125,26 @@ try {
   // Standalone configuration ships in dist, not the source-only scripts tree.
   // Help must load all its imports without any Home setup or Controller.
   assert.ok(statSync(join(root, "docs/model-connection-tools.md")).isFile());
+  if (profile === "full") {
+    // Resolve manuals through the installed HTTP handler, not checkout files.
+    // Documentation routes need no Store, Controller or external component.
+    const { createYuiWebServer } = await import(pathToFileURL(join(root, "dist/web/webServer.js")).href);
+    const docsServer = createYuiWebServer({}, { token: "package-docs-fixture" });
+    try {
+      await new Promise((accept, reject) => {
+        docsServer.once("error", reject);
+        docsServer.listen(0, "127.0.0.1", accept);
+      });
+      for (const suffix of ["", "/connection", "/maintenance", "/metabridge", "/cliproxyapi"]) {
+        const response = await fetch(`http://127.0.0.1:${docsServer.address().port}/models/docs${suffix}`);
+        assert.equal(response.status, 200, `installed manual ${suffix || "index"}`);
+        assert.match(response.headers.get("content-type"), /^text\/plain/);
+        assert.ok((await response.text()).trim().length > 0);
+      }
+    } finally {
+      await new Promise(resolve => docsServer.close(resolve));
+    }
+  }
   const connectionHelp = JSON.parse(execFileSync(process.execPath,
     [join(root, "dist/models/configureConnection.js"), "--help"], { encoding: "utf8",
       env: { PATH: process.env.PATH, CODEX_HOME: join(sandbox, "unused-codex-home") } }));
