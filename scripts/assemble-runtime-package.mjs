@@ -28,6 +28,7 @@ const RUNTIME_SKILLS = [
 ];
 const RUNTIME_DOCUMENTS = [
   "docs/experiments.md",
+  "docs/model-connection-tools.md",
   "docs/native-agent.md",
   "docs/examples/agent-offline.mjs",
   "README.md",
