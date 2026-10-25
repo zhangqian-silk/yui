@@ -46,7 +46,9 @@ const button = (root, label) => find(root, n => n.tagName === "BUTTON" && n.chil
 const copy = value => JSON.parse(JSON.stringify(value));
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const submit = form => form.handlers.submit({ preventDefault() {} });
-const connectionForm = root => find(root, n => n.tagName === "FORM" && n.className.includes("models-connection-form"));
+const resourceForm = (root, kind) => find(root, n => n.tagName === "FORM" && n.dataset.resourceKind === kind);
+const connectionForm = root => resourceForm(root, "module");
+const moduleCard = root => find(root, n => n.className.includes("models-card") && resourceForm(n, "module"));
 
 test("management navigation shares history across areas and normalizes direct URLs", () => {
   const elements = new Map();
@@ -69,11 +71,12 @@ test("management navigation shares history across areas and normalizes direct UR
   vm.runInContext(MANAGE_SHELL_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), ctx);
   for (const page of ["models", "settings", "jobs"]) ctx.registerManagePage(page, { show: route => shown.push({ ...route }) });
   ctx.startManagement();
-  assert.equal(location.pathname + location.search, "/models/quota?source=command-code");
+  assert.equal(location.pathname + location.search, "/models/catalog?source=command-code");
   assert.equal(history.pushes, 0, "normalizing a direct URL must not add a Back step");
   ctx.navigateManage({ page: "settings", section: "preferences" });
   ctx.navigateManage({ page: "models", section: "connection" });
-  assert.equal(location.pathname, "/settings/connection");
+  assert.equal(location.pathname, "/models/connection");
+  assert.equal(ctx.manageHref(ctx.readManageRoute(new URL("http://localhost/settings/connection"))), "/models/connection");
   assert.equal(elements.get("#models-root").hidden, false);
   ctx.navigateManage({ page: "models", section: "connection" });
   assert.equal(history.pushes, 2, "clicking the selected destination is a no-op");
@@ -83,7 +86,7 @@ test("management navigation shares history across areas and normalizes direct UR
   assert.equal(shown.at(-1).section, "server");
   assert.equal(elements.get("#settings-root").hidden, false);
   assert.equal(elements.get("#manage-scroll").scrollTop, 70, "the center column restores its own scroll");
-  assert.deepEqual({ ...places }, { models: "/models/quota?source=command-code", settings: "/settings/server", manage: "/settings/server" },
+  assert.deepEqual({ ...places }, { models: "/models/connection", settings: "/settings/server", manage: "/settings/server" },
     "each area remembers its last section for the return trip from the workbench");
   const ref = JSON.stringify({ version: "a".repeat(40), relativePath: "report.md" });
   const fixed = new URL("http://localhost/settings/jobs?job=reports&jobRun=run-1&artifact=" + encodeURIComponent(ref));
@@ -122,7 +125,7 @@ function view(revision, extra = {}) {
       managementKeyFile: c.managementKeyFile, configFile: "", maintenance: "external", quotaAdapter: "factory-quota-v1" }] : [])] : [],
     endpoints: c ? [{ id: "bridge-api", moduleId: "bridge", url: c.bridgeUrl + "/v1", protocol: "responses", clientKeyFile: "" }] : [],
     bindings: [], receipts: [] };
-  return { revision, registryRevision: revision, registry, connection: connection(), configurationError: null, application: "unverified", notice: "notice-" + revision,
+  return { revision, registryRevision: revision, registry, configuredAgents: [{ id: "codex", adapterId: "codex" }], connection: connection(), configurationError: null, application: "unverified", notice: "notice-" + revision,
     providers: [
       { id: "official", name: "Official", via: "unknown", baseUrl: "https://upstream.invalid", prefix: "", enabled: true,
         editable: false, reason: "official subscription route", credentialPresent: true, owner: "metabridge" },
@@ -151,6 +154,36 @@ test("initial observations wait for the configuration baseline", async () => {
   resolveView(view("new", { connection: connection({ bridgeUrl: "http://127.0.0.1:10" }) }));
   await page.ready;
   assert.deepEqual(api.calls.map(call => call[0]), ["catalog", "quota"]);
+});
+
+test("Agent access derives the adapter, filters sources and previews the exact new-session selection", async () => {
+  const current = view("r1");
+  current.configuredAgents = [{ id: "coding", adapterId: "codex" }, { id: "assistant", adapterId: "claude" }];
+  current.registry.endpoints.push({ id: "claude-api", moduleId: null, url: "http://localhost:9", protocol: "anthropic-messages", clientKeyFile: "/fixture/key" });
+  const api = fakeApi({ current, previewModelBinding: async input => { api.calls.push(["preview", copy(input)]); return input; } });
+  const { root, page } = mount(api);
+  await page.ready;
+  const form = () => find(root, n => n.tagName === "FORM" && n.dataset.resourceKind === "binding");
+  const control = key => find(form(), n => n.dataset.bindingField === key);
+  assert.ok(control("agentId"), "choose an existing Agent rather than typing an internal ID");
+  control("agentId").value = "coding"; control("agentId").handlers.change();
+  assert.equal(control("adapterId"), undefined, "the Agent owns its adapter");
+  assert.ok(text(control("endpointId")).includes("bridge-api"));
+  assert.ok(!text(control("endpointId")).includes("claude-api"));
+  control("endpointId").value = "bridge-api"; control("endpointId").handlers.change();
+  control("model").value = "fixture-model"; control("model").handlers.input();
+  await button(form(), "models.previewBinding").handlers.click();
+  assert.deepEqual(api.calls.find(c => c[0] === "preview")[1].binding, {
+    agentId: "coding", adapterId: "codex", endpointId: "bridge-api", model: "fixture-model", scope: "yui-new-session"
+  });
+  assert.equal(button(form(), "models.saveResource").disabled, false);
+  control("model").value = "changed"; control("model").handlers.input();
+  assert.equal(button(form(), "models.saveResource").disabled, true, "changing the model invalidates preview");
+  page.translate();
+  assert.equal(control("model").value, "changed", "language changes preserve the selection");
+  control("endpointId").value = ""; control("endpointId").handlers.change();
+  assert.equal(control("model").value, "");
+  assert.equal(control("model").disabled, true, "native access preserves native model choice");
 });
 
 test("language changes retain current observations and drafts without loading again", async () => {
@@ -246,18 +279,20 @@ test("resource drafts survive other editors, rerenders, writes and reconciliatio
   let allow = false;
   const { root, page, confirmations } = mount(api, { confirm: message => { confirmations.push(message); return allow; } });
   await page.ready;
-  const forms = () => all(root, n => n.tagName === "FORM" && n.className.includes("models-connection-form"));
+  page.state.connectionDrafts.binding = { agentId: "codex", endpointId: "bridge-api", model: "" };
+  page.translate();
+  const forms = () => ["module", "endpoint", "binding"].map(kind => resourceForm(root, kind));
   const id = index => find(forms()[index], n => n.tagName === "INPUT");
   const type = (index, value) => { const input = id(index); input.value = value; input.handlers.input(); };
   type(0, "unsaved-module");
   type(1, "unsaved-endpoint");
   type(2, "unsaved-agent");
-  button(root, "models.editResource").handlers.click();
+  button(moduleCard(root), "models.editResource").handlers.click();
   assert.equal(confirmations.length, 1, "replacing the same resource editor requires consent");
   page.translate();
   assert.deepEqual([id(0).value, id(1).value, id(2).value], ["unsaved-module", "unsaved-endpoint", "unsaved-agent"]);
   allow = true;
-  button(root, "models.editResource").handlers.click();
+  button(moduleCard(root), "models.editResource").handlers.click();
   assert.deepEqual([id(0).value, id(1).value, id(2).value], ["bridge", "unsaved-endpoint", "unsaved-agent"]);
   button(forms()[0], "models.discard").handlers.click();
   assert.deepEqual([id(0).value, id(1).value, id(2).value], ["", "unsaved-endpoint", "unsaved-agent"]);
@@ -267,7 +302,7 @@ test("resource drafts survive other editors, rerenders, writes and reconciliatio
   const moduleSelect = all(forms()[1], n => n.tagName === "SELECT")[0];
   moduleSelect.value = "bridge"; moduleSelect.handlers.input();
   api.next = () => view("r3", { connection: null, providers: [] });
-  button(root, "models.unregister").handlers.click(); await tick(); await tick();
+  button(moduleCard(root), "models.unregister").handlers.click(); await tick(); await tick();
   assert.deepEqual([id(0).value, id(1).value, id(2).value], ["keep-module", "keep-endpoint", "unsaved-agent"], "unregister preserves all unsaved forms");
   const retainedSelect = all(forms()[1], n => n.tagName === "SELECT")[0];
   assert.equal(retainedSelect.value, "bridge");
@@ -317,7 +352,7 @@ test("resource controls and confirmations use the selected product language", as
     } });
     await page.ready;
     for (const key of ["models.resource", "models.field.managementKeyFile", "models.field.clientKeyFile",
-      "models.field.agentId", "models.previewBinding", "models.readCachedStatus", "models.refreshStatus",
+      "models.access.agentId", "models.previewBinding", "models.readCachedStatus", "models.refreshStatus",
       "models.bindingScope", "models.option.external", "models.option.configuration", "models.componentDocs"]) {
       assert.ok(text(root).includes(messages[key]), key);
     }
@@ -340,8 +375,8 @@ test("models shell is served and linked from the dashboard navigation", () => {
   // The shared rail links back to Yui and Settings and gives every section a real URL.
   assert.match(MODELS_HTML, /href="\/"/);
   assert.match(MODELS_HTML, /href="\/settings"/);
-  for (const section of ["providers", "catalog", "quota", "connection"]) {
-    assert.match(MODELS_HTML, new RegExp(`href="/${section === "connection" ? "settings" : "models"}/${section}" data-page="models" data-section="${section}"`));
+  for (const section of ["providers", "catalog", "maintenance", "connection"]) {
+    assert.match(MODELS_HTML, new RegExp(`href="/models/${section}" data-page="models" data-section="${section}"`));
   }
 });
 
@@ -353,15 +388,14 @@ test("models and settings share one management rail with the same navigation", (
   for (const area of ["workbench", "jobs", "models", "settings"]) assert.match(MODELS_HTML, new RegExp(`class="rail-item"[^>]*data-area="${area}"`));
   assert.match(MODELS_HTML, /class="app manage-app"/);
   assert.match(MODELS_HTML, /<header class="top-bar">[\s\S]*data-sidebar-toggle="true"/);
-  // Daily model work stays under Models; the connection is a Settings section still served by /models.
+  // All model operations belong to Models, not Settings.
   const models = nav.match(/data-area-group="models">[\s\S]*?<\/div>\s*<\/div>/)[0];
   const settings = nav.match(/data-area-group="settings">[\s\S]*?<\/div>\s*<\/div>/)[0];
-  for (const section of ["providers", "catalog", "quota"]) assert.match(models, new RegExp(`data-section="${section}"`));
-  assert.doesNotMatch(models, /data-section="connection"/);
+  for (const section of ["providers", "catalog", "maintenance", "connection"]) assert.match(models, new RegExp(`data-section="${section}"`));
   for (const section of ["preferences", "skills", "server"]) {
     assert.match(settings, new RegExp(`href="/settings/${section}" data-page="settings" data-section="${section}"`));
   }
-  assert.match(settings, /href="\/settings\/connection" data-page="models" data-section="connection"/);
+  assert.doesNotMatch(settings, /data-page="models"/);
   // Jobs are their own entry, not a Settings section; its list mounts in the same rail.
   assert.doesNotMatch(settings, /data-section="jobs"/);
   assert.match(nav, /data-area-group="jobs">\s*<div id="jobs-index"/);
@@ -493,19 +527,19 @@ test("binding submit requires preview of the same draft, not a late response for
   } });
   const { root, page } = mount(api);
   await page.ready;
-  const forms = all(root, n => n.tagName === "FORM" && n.className.includes("models-connection-form"));
-  const binding = forms[2];
-  const inputs = all(binding, n => n.tagName === "INPUT");
-  inputs[0].value = "codex"; inputs[0].handlers.input();
-  inputs[1].value = "model-before"; inputs[1].handlers.input();
-  const endpoint = all(binding, n => n.tagName === "SELECT")[1];
-  endpoint.value = "bridge-api"; endpoint.handlers.input();
+  const agent = find(resourceForm(root, "binding"), n => n.dataset.bindingField === "agentId");
+  agent.value = "codex"; agent.handlers.change();
+  const endpoint = find(resourceForm(root, "binding"), n => n.dataset.bindingField === "endpointId");
+  endpoint.value = "bridge-api"; endpoint.handlers.change();
+  const binding = resourceForm(root, "binding");
+  const model = find(binding, n => n.dataset.bindingField === "model");
+  model.value = "model-before"; model.handlers.input();
   const save = find(binding, n => n.type === "submit");
   assert.equal(save.disabled, true);
   await submit(binding);
   assert.equal(api.calls.some(c => c[0] === "resource"), false);
   const pending = button(binding, "models.previewBinding").handlers.click();
-  inputs[1].value = "model-after"; inputs[1].handlers.input();
+  model.value = "model-after"; model.handlers.input();
   finishPreview({ notice: "New Session only" }); await pending;
   assert.equal(save.disabled, true, "an earlier preview cannot enable a changed draft");
   await submit(binding);
@@ -529,7 +563,7 @@ test("unregistering the selected bridge reads the remaining registry without tar
   };
   const { root, page } = mount(api);
   await page.ready;
-  button(root, "models.unregister").handlers.click();
+  button(moduleCard(root), "models.unregister").handlers.click();
   await tick(); await tick();
   assert.equal(page.state.unknown, false);
   assert.equal(page.state.bridgeId, "");
@@ -704,7 +738,7 @@ test("sections are routed without remounting, so drafts and typed keys survive n
   const urlInput = find(connectionForm(root), n => n.tagName === "INPUT");
   urlInput.value = "http://127.0.0.1:99"; urlInput.handlers.input();
   page.show({ section: "providers" });
-  assert.equal(flags.at(-1).connection, true, "the rail can mark the section with a draft");
+  assert.equal(flags.at(-1).maintenance, true, "the rail marks the owning section with a draft");
   button(find(root, n => n.dataset.provider === "mine"), "models.editProvider").handlers.click();
   const key = find(root, n => n.type === "password");
   key.value = "sk-typed";

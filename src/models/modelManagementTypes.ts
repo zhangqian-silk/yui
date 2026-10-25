@@ -90,4 +90,5 @@ export type ModelManagementView = {
   notice: string;
   registry: ModelRegistry;
   registryRevision: string;
+  configuredAgents: { id: string; adapterId: string }[];
 };

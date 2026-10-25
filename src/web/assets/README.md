@@ -109,7 +109,7 @@ shortcuts。主要流程：
 | 写入表单 | 表单本身 `client/domain/taskForms.ts`；提交通道 `client/ui/forms.ts` |
 | 新的 API 读写 | `client/lib/api.ts`，经控制器 `deps.api` 或 Task 页上下文传入 |
 | 选中 / URL / 加载顺序 | `client/app/selection.ts`、`client/layout/router.ts` |
-| 模型 / 设置页的导航与分区归属 | 分区表 `shared/manageNav.ts`；导航栏 `shell/manage.ts`；统一路由 `client/layout/manageShell.ts`；外观 `styles/views/manage.ts`。标准 URL 为 `/jobs`、`/models/providers\|catalog\|quota` 与 `/settings/preferences\|skills\|server\|connection`。旧 query 链接以 replaceState 规范化；管理分区不卸载控制器，离开管理文档才触发未保存提示；语言切换保留观测与草稿，不重新请求数据 |
+| 模型 / 设置页的导航与分区归属 | 分区表 `shared/manageNav.ts`；导航栏 `shell/manage.ts`；统一路由 `client/layout/manageShell.ts`；外观 `styles/views/manage.ts`。模型统一为 `/models/providers\|connection\|catalog\|maintenance`；目录与额度同页。`/settings/connection` 转入 `/models/connection`，`/models/quota` 转入 catalog 并保留来源。设置为 `/settings/preferences\|skills\|permissions\|server`，Job 为 `/jobs`。旧 query 链接以 replaceState 规范化；管理分区不卸载控制器，离开管理文档才触发未保存提示；语言切换保留观测与草稿，不重新请求数据 |
 
 ## 陷阱
 

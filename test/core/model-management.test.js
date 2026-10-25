@@ -8,6 +8,7 @@ import { createModelManagement as createService } from "../../dist/models/modelM
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { createYuiWebServer } from "../../dist/web/webServer.js";
 import { readModelJson } from "../../dist/models/modelManagementHttp.js";
+import { createConfiguredAgent } from "../../dist/agent/agent.js";
 
 // Compact fixture builder for the Provider file tests. The runtime never reads
 // this old convenience shape; the actual storage migration is tested separately.
@@ -86,6 +87,7 @@ test("Model HTTP boundary persists only references and requires token, origin an
   let store, server;
   try {
     store = new SqliteTaskStore(root);
+    store.saveConfiguredAgent(createConfiguredAgent("coding", "codex", "/fixture/codex", [], [], new Date()));
     const service = createService(store);
     server = createYuiWebServer(store, { token: "fixture-token", models: service });
     await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -94,6 +96,10 @@ test("Model HTTP boundary persists only references and requires token, origin an
     const shell = await fetch(`${url}/models`);
     assert.equal(shell.status, 200);
     const html = await shell.text();
+    for (const path of ["/models/connection", "/models/maintenance", "/settings/connection", "/models/catalog"]) {
+      assert.equal((await fetch(url + path)).status, 200, path);
+    }
+    assert.deepEqual(service.read().configuredAgents, [{ id: "coding", adapterId: "codex" }], "selection exposes no launch command or credentials");
     assert.match(html, /name="yui-web-token" content="fixture-token"/);
     assert.doesNotMatch(html, /__YUI_WEB_TOKEN__/);
     const assets = [...html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)];

@@ -92,8 +92,16 @@ procedure; Yui's storage migration never performs them.
 
 ### Common Yui registrations
 
-Use Web → Settings → Model connection → module/endpoint/binding forms,
-or the equivalent `models.save` capability. Example module:
+Use Web → Models: **Model sources** registers API/CPA/metabridge addresses;
+**Agent access** selects a configured Agent, a compatible source and a model;
+**Models & quota** reads cached observations; **Component maintenance** registers
+optional modules and exposes their explicitly authorized maintenance tools.
+Agent access derives its adapter from the selected Agent and previews the exact
+selection before saving. Native access preserves the Agent's own model choice;
+an override affects only new Yui Sessions, never existing Sessions or personal
+configuration. Cached model suggestions are not an inference test.
+The old `/settings/connection` address opens `/models/connection`.
+CLI/API callers can use the equivalent `models.save` capability. Example module:
 
 ```json
 {"id":"shared-cpa","kind":"cliproxyapi","version":"8.0.12","managementUrl":"http://127.0.0.1:18417","managementKeyFile":"","configFile":"/owned/cpa/config.yaml","maintenance":"external","quotaAdapter":"none"}

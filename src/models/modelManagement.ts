@@ -10,7 +10,7 @@ import type { ModelCatalogItem, ModelConnection, ModelManagementView, ModelObser
 import { createModelMaintenanceService } from "./modelMaintenanceService.js";
 import type { DurableJobCaller } from "../controller/jobControl.js";
 
-type Store = Pick<TaskStore, "getConfig" | "saveConfig" | "transaction"> & Partial<Pick<TaskStore, "getConfiguredAgent">>;
+type Store = Pick<TaskStore, "getConfig" | "saveConfig" | "transaction"> & Partial<Pick<TaskStore, "getConfiguredAgent" | "listConfiguredAgents">>;
 type Provider = { file: ModelFile; value: Record<string, unknown>; id: string };
 const NOTICE = "Configuration is owned by metabridge. Saved does not mean applied: reload through your existing deployment flow if needed, then refresh the catalog. No Session, account or model is switched; inference is not validated.";
 const empty = <T>(): ModelObservation<T> => ({
@@ -89,7 +89,9 @@ export function createModelManagement(store: Store, options: {
         return state.module?.maintenance === "configuration" ? view : { ...view, editable: false, reason: "read-only-service" };
       }),
       configurationError: state.configurationError, application: "unverified", notice: NOTICE,
-      registry: registry.read(), registryRevision: registry.revision()
+      registry: registry.read(), registryRevision: registry.revision(),
+      configuredAgents: (store.listConfiguredAgents?.() ?? []).filter(a => ["codex", "claude"].includes(a.adapterId))
+        .map(a => ({ id: a.id, adapterId: a.adapterId }))
     };
   }
 

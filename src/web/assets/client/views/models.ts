@@ -1,7 +1,6 @@
 export const MODELS_VIEW_SCRIPT = String.raw`
-// Model management page body, split into four routed sections: access
-// (metabridge providers), the cached model catalog, per-source quota and the
-// management connection settings. Every fact comes from /api/models*; the
+// Four model sections: sources, Agent access, catalog/quota and maintenance.
+// Every fact comes from /api/models*; the
 // page keeps only drafts and view state. Saving configuration is not applying
 // it (metabridge needs its own reload), a quota or catalog observation is
 // never upgraded to success, and an API key typed here lives only in its
@@ -18,7 +17,7 @@ import { h, icon } from "/assets/js/lib/dom.js";
 import { formatDateTime } from "/assets/js/lib/format.js";
 
 export const QUOTA_SOURCES = ["factory", "command-code"];
-export const SECTIONS = ["providers", "catalog", "quota", "connection"];
+export const SECTIONS = ["providers", "catalog", "quota", "connection", "maintenance"];
 const OBSERVATION_TONES = { success: "ok", partial: "warn", failed: "bad", unsupported: "idle", "not-queried": "idle" };
 const ROUTE_FILTERS = ["all", "direct", "cpa", "unknown"];
 const STATE_FILTERS = ["all", "enabled", "disabled", "readonly"];
@@ -69,8 +68,10 @@ export function mountModels(root, deps) {
     return h("section.manage-section.models-section", { dataset: { section: name }, "aria-labelledby": "models-" + name + "-title" });
   }
   const status = h("div.models-status", { "aria-live": "polite" });
-  const sections = { providers: panel("providers"), catalog: panel("catalog"), quota: panel("quota"), connection: panel("connection") };
-  root.replaceChildren(status, sections.providers, sections.catalog, sections.quota, sections.connection);
+  const sections = { providers: panel("providers"), catalog: panel("catalog"), quota: panel("quota"), connection: panel("connection"), maintenance: panel("maintenance") };
+  const sourceResources = h("div.models-source-resources");
+  const bindingModelOptions = h("datalist", { id: "binding-model-options" });
+  root.replaceChildren(status, sections.providers, sections.catalog, sections.quota, sections.connection, sections.maintenance);
 
   function tone(name, text) { return h("span.badge.tone-" + name, null, h("span.badge-dot"), text); }
   function when(iso) { return iso ? formatDateTime(iso, locale()) : t("models.unknown"); }
@@ -85,7 +86,7 @@ export function mountModels(root, deps) {
     else show(next);
   }
   function sectionLink(section, text) {
-    return h("a.btn-link", { href: (section === "connection" ? "/settings/" : "/models/") + section, onclick: function (event) {
+    return h("a.btn-link", { href: "/models/" + section, onclick: function (event) {
       if (event.defaultPrevented || event.button > 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       event.preventDefault(); go({ section: section });
     } }, text);
@@ -126,7 +127,9 @@ export function mountModels(root, deps) {
     }));
   }
   function notify() {
-    onChange({ connection: hasConnectionDrafts(), provider: !!state.providerDraft, unknown: state.unknown, pending: state.pending });
+    onChange({ connection: !!state.connectionDrafts.binding, provider: !!state.providerDraft || !!state.connectionDrafts.endpoint,
+      maintenance: !!state.connectionDrafts.module || Object.keys(state.maintenanceDrafts).length > 0 || !!state.toolDraft,
+      unknown: state.unknown, pending: state.pending });
   }
   function hasConnectionDrafts() { return Object.keys(state.connectionDrafts).length > 0 || Object.keys(state.maintenanceDrafts).length > 0 || !!state.toolDraft; }
 
@@ -135,11 +138,11 @@ export function mountModels(root, deps) {
     const next = normalizeRoute(route);
     // Only the quota section reads its source from the route; elsewhere the
     // last shown source is kept for the way back.
-    if (next.section !== "quota") next.source = state.quota.source;
+    if (!["quota", "catalog"].includes(next.section)) next.source = state.quota.source;
     const sourceChanged = next.source !== state.quota.source;
     state.route = next;
     state.quota.source = next.source;
-    SECTIONS.forEach(function (name) { sections[name].hidden = name !== next.section; });
+    updateSections();
     renderStatus();
     if (sourceChanged) void loadQuota();
     else renderQuota();
@@ -149,8 +152,14 @@ export function mountModels(root, deps) {
 
   function renderAll() {
     renderStatus(); renderConnection(); renderProviders(); renderCatalog(); renderQuota();
-    SECTIONS.forEach(function (name) { sections[name].hidden = name !== state.route.section; });
+    updateSections();
     notify();
+  }
+  function updateSections() {
+    SECTIONS.forEach(function (name) {
+      sections[name].hidden = name !== state.route.section &&
+        !(["catalog", "quota"].includes(name) && ["catalog", "quota"].includes(state.route.section));
+    });
   }
 
   // Page-wide facts and blocking conditions stay visible in every section.
@@ -180,23 +189,34 @@ export function mountModels(root, deps) {
     status.replaceChildren.apply(status, children.filter(Boolean));
   }
 
-  // ---- Connection settings ----------------------------------------------
+  function updateBindingSuggestions() {
+    const endpointId = state.connectionDrafts.binding?.endpointId;
+    const suggestions = endpointId && state.endpointId === endpointId ? state.catalog.items : [];
+    bindingModelOptions.replaceChildren(...suggestions.map(item => h("option", { value: item.id }, item.id)));
+  }
+
+  // ---- Model sources, Agent access and component maintenance ------------
   function renderConnection() {
     const view = state.view;
     const blocked = writesBlocked();
     const r = view && view.registry || { modules: [], endpoints: [], bindings: [] };
-    const cards = [];
+    const cards = {};
+    const agents = view && view.configuredAgents || [];
+    const bindingDraft = state.connectionDrafts.binding || {};
+    const selectedAgent = agents.find(a => a.id === bindingDraft.agentId);
+    const compatible = r.endpoints.filter(e => e.protocol === (selectedAgent?.adapterId === "claude" ? "anthropic-messages" : "responses"));
     const schemas = {
       module: { id: "", kind: ["metabridge", "cliproxyapi"], version: "", managementUrl: "", managementKeyFile: "",
         configFile: "", maintenance: ["external", "configuration"], quotaAdapter: ["none", "factory-quota-v1"] },
       endpoint: { id: "", moduleId: ["", ...r.modules.map(m => m.id)], url: "", protocol: ["responses", "anthropic-messages"], clientKeyFile: "" },
-      binding: { agentId: "", adapterId: ["codex", "claude"], endpointId: ["", ...r.endpoints.map(e => e.id)], model: "", scope: ["yui-new-session"] }
+      binding: { agentId: ["", ...agents.map(a => a.id)], endpointId: ["", ...(selectedAgent ? compatible : []).map(e => e.id)], model: "" }
     };
     Object.keys(schemas).forEach(function (kind) {
       const rows = r[kind === "module" ? "modules" : kind === "endpoint" ? "endpoints" : "bindings"];
       const draft = state.connectionDrafts[kind] || {};
-      const form = h("form.models-connection-form");
+      const form = h("form.models-connection-form", { dataset: { resourceKind: kind } });
       const inputs = {};
+      const selectionSummary = h("p.models-access-summary", { role: "status" });
       let previewed = null;
       const previewStatus = h("p.faint.models-receipt", { role: "status" });
       const actions = h("div.settings-actions");
@@ -207,38 +227,79 @@ export function mountModels(root, deps) {
         // unsaved draft. Keep its exact selection visible for explicit repair.
         const options = Array.isArray(spec) && draft[key] && !spec.includes(draft[key]) ? [...spec, draft[key]] : spec;
         const optionLabel = function (value) {
+          if (kind === "binding" && key === "agentId") return value ? value + " · " + (agents.find(a => a.id === value)?.adapterId || t("models.unavailable")) : t("models.chooseAgent");
           if (!value) return t(key === "endpointId" ? "models.option.native" : "models.option.noModule");
+          if (kind === "binding" && key === "endpointId") {
+            const endpoint = r.endpoints.find(e => e.id === value);
+            return value + (endpoint ? " · " + endpoint.url : " · " + t("models.unavailable"));
+          }
           return ["maintenance", "quotaAdapter", "scope"].includes(key) ? t("models.option." + value) : value;
         };
         const control = Array.isArray(spec)
           ? h("select", { disabled: blocked }, options.map(v => h("option", { value: v }, optionLabel(v))))
           : h("input", { type: "text", disabled: blocked, autocomplete: "off", spellcheck: "false" });
         control.value = draft[key] == null ? (Array.isArray(spec) ? spec[0] : spec) : draft[key];
+        if (kind === "binding") {
+          control.dataset.bindingField = key;
+          if (key === "endpointId") control.disabled = blocked || !selectedAgent;
+          if (key === "model") {
+            control.disabled = blocked || !draft.endpointId;
+            control.setAttribute("list", "binding-model-options");
+          }
+        }
         inputs[key] = control;
-        control.addEventListener("input", function () {
+        control.addEventListener(kind === "binding" && Array.isArray(spec) ? "change" : "input", function () {
           state.connectionDrafts[kind] = values();
           previewed = null;
           previewStatus.textContent = "";
           if (kind === "binding") submit.disabled = true;
+          if (kind === "binding" && key === "agentId") {
+            const saved = r.bindings.find(b => b.agentId === control.value);
+            state.connectionDrafts.binding.endpointId = saved?.endpointId || null;
+            state.connectionDrafts.binding.model = saved?.model || "";
+            renderConnection();
+            if (saved?.endpointId) { state.endpointId = saved.endpointId; void loadCatalog(); }
+          } else if (kind === "binding" && key === "endpointId") {
+            state.connectionDrafts.binding.model = "";
+            renderConnection();
+            if (control.value) { state.endpointId = control.value; void loadCatalog(); }
+          } else if (kind === "binding") updateSummary();
           notify();
         });
-        form.append(field(t("models.field." + key), control));
+        form.append(field(t(kind === "binding" ? "models.access." + key : "models.field." + key), control,
+          kind === "binding" && key === "model" ? t("models.modelChoiceHelp") : null));
       });
       function values() {
         const value = {};
         Object.keys(inputs).forEach(key => { value[key] = inputs[key].value.trim(); });
         if (kind === "endpoint" && !value.moduleId) value.moduleId = null;
         if (kind === "binding" && !value.endpointId) value.endpointId = null;
+        if (kind === "binding") {
+          value.adapterId = agents.find(a => a.id === value.agentId)?.adapterId || "";
+          value.scope = "yui-new-session";
+          if (!value.endpointId) value.model = "";
+        }
         return value;
+      }
+      function updateSummary() {
+        const value = values();
+        selectionSummary.textContent = value.agentId
+          ? value.agentId + " → " + (value.endpointId || t("models.option.native")) +
+            (value.endpointId ? " → " + (value.model || t("models.chooseModel")) : "") + " · " + t("models.newSessionsOnly")
+          : t("models.chooseAgent");
       }
       async function save(resource, removeId) {
         await write(async function () {
           await api.saveModelResource({ revision: view.registryRevision, requestId: crypto.randomUUID(), kind: kind,
             ...(removeId ? { removeId: removeId } : { resource: resource }) });
           return api.models(kind === "module" && removeId === state.bridgeId ? undefined : state.bridgeId);
-        }, { scope: "connection", clearConnection: removeId ? null : kind });
+        }, { scope: kind === "module" ? "maintenance" : kind === "endpoint" ? "provider" : "connection", clearConnection: removeId ? null : kind });
       }
-      if (kind === "binding") actions.append(h("button.btn", { type: "button", disabled: blocked, onclick: async function () {
+      if (kind === "binding") {
+        updateSummary();
+        updateBindingSuggestions();
+        form.append(bindingModelOptions, selectionSummary);
+        actions.append(h("button.btn", { type: "button", disabled: blocked || !selectedAgent, onclick: async function () {
         try {
           const binding = values();
           const requested = JSON.stringify(binding);
@@ -247,6 +308,7 @@ export function mountModels(root, deps) {
           previewed = requested; submit.disabled = writesBlocked(); previewStatus.textContent = t("models.bindingPreviewed");
         } catch (error) { previewStatus.textContent = error.message; submit.disabled = true; }
       } }, t("models.previewBinding")));
+      }
       actions.append(submit, h("button.btn.btn-ghost", { type: "button",
         disabled: blocked,
         onclick: function () { delete state.connectionDrafts[kind]; renderConnection(); notify(); }
@@ -269,7 +331,9 @@ export function mountModels(root, deps) {
             status.textContent = state.moduleStatuses[resourceId];
           } catch (error) { status.textContent = error.message; }
         };
-        return h("li", null, h("code", null, resourceId), " · " + (row.kind || row.protocol || row.adapterId),
+        return h("li", null, h("code", null, resourceId), kind === "binding"
+          ? " → " + (row.endpointId || t("models.option.native")) + (row.endpointId ? " → " + row.model : "") + " · " + t("models.newSessionsOnly")
+          : " · " + (row.kind || row.protocol),
           kind === "module" ? h("div.models-module-operations", null,
             h("button.btn.btn-ghost", { type: "button", disabled: blocked, onclick: () => showStatus(false) }, t("models.readCachedStatus")),
             h("button.btn.btn-ghost", { type: "button", disabled: blocked, onclick: () => showStatus(true) }, t("models.refreshStatus")), status,
@@ -282,15 +346,22 @@ export function mountModels(root, deps) {
             if (confirm(t("models.unregisterConfirm"))) void save(null, resourceId);
           } }, t("models.unregister")));
       });
-      cards.push(h("div.card.models-card", null, h("div.card-body", null,
+      cards[kind] = h("div.card.models-card", null, h("div.card-body", null,
         h("h2", null, t("models.resourceKind." + kind)), rows.length ? h("ul", null, list) : h("p.faint", null, t("models.resourceEmpty." + kind)),
-        h("details", { open: !!state.connectionDrafts[kind] },
-          h("summary", null, t("models.resourceEditor." + kind)), form))));
+        kind === "binding" && !agents.length ? h("p.models-note", null, t("models.noAgents"),
+          h("a.btn-link", { href: "/settings/server" }, t("models.configureAgents"))) : null,
+        h("details", { open: kind === "binding" || !!state.connectionDrafts[kind] },
+          h("summary", null, t("models.resourceEditor." + kind)), form)));
     });
+    sourceResources.replaceChildren(cards.endpoint);
     sections.connection.replaceChildren(
       head("connection", t("models.connectionIntro")),
       h("p.models-note", null, t("models.bindingScope")),
-      receiptNode("connection") || h("span"), ...cards,
+      receiptNode("connection") || h("span"), cards.binding,
+      sectionLink("providers", t("models.manageSources")));
+    sections.maintenance.replaceChildren(
+      head("maintenance", t("models.maintenanceHelp")),
+      receiptNode("maintenance") || h("span"), cards.module,
       connectionToolForm(),
       h("p", null, h("a.btn-link", { href: "/models/docs" }, t("models.componentDocs"))));
   }
@@ -327,7 +398,7 @@ export function mountModels(root, deps) {
               ...(operation === "update" ? { commit: commit.value.trim() } : {}), exclusiveWriter: true, impactAcknowledged: true } });
           state.maintenanceResults[id] = JSON.stringify(receipt, null, 2);
           return api.models(state.bridgeId);
-        }, { scope: "connection", accepted: true });
+        }, { scope: "maintenance", accepted: true });
       } }, t("models.operation." + operation));
     });
     return h("details.models-maintenance", null, h("summary", null, t("models.maintenance")),
@@ -363,7 +434,7 @@ export function mountModels(root, deps) {
               requestId: crypto.randomUUID(), exclusiveWriter: true });
             state.maintenanceResults.connection = JSON.stringify(receipt, null, 2); state.toolPreview = null;
             return api.models(state.bridgeId);
-          }, { scope: "connection", accepted: true });
+          }, { scope: "maintenance", accepted: true });
         } }, t("models.saveResource")),
         h("button.btn", { type: "button", disabled: writesBlocked(), onclick: function () {
           state.toolDraft = ""; state.toolPreview = null; renderConnection(); notify();
@@ -534,7 +605,8 @@ export function mountModels(root, deps) {
     const view = state.view;
     const add = h("button.btn.btn-primary", { type: "button", disabled: writesBlocked() || !configurable() || !!state.providerDraft,
       onclick: function () { startProvider(null); } }, icon("plus"), t("models.addProvider"));
-    const children = [head("providers", t("models.providersHelp"), view && !view.readOnly ? [add] : null)];
+    const children = [head("providers", t("models.providersHelp")),
+      h("header.models-subhead", null, h("h2", null, t("models.upstreamProviders")), view && !view.readOnly ? add : null)];
     if (view) children.push(resourcePicker(view.registry.modules.filter(m => m.kind === "metabridge"), state.bridgeId, function (id) {
       if (state.providerDraft && !confirm(t("models.discardProvider"))) return;
       state.providerDraft = null; state.bridgeId = id; void load();
@@ -542,12 +614,13 @@ export function mountModels(root, deps) {
     if (!view) children.push(h("p.models-empty", null, state.loading ? t("models.loading") : t("models.unavailable")));
     else {
       if (!configurable() && !view.readOnly) children.push(h("p.models-note", null, icon("info"), t("models.configFileRequired") + " ",
-        sectionLink("connection", t("models.openConnection"))));
+        sectionLink("maintenance", t("models.section.maintenance"))));
       children.push(receiptNode("provider"));
       if (state.providerDraft) children.push(h("div.card.models-card.models-editor", null, h("div.card-body", null, providerForm())));
       children.push(h("div.card.models-card", null, providerTools, providerResults));
       renderProviderTools();
     }
+    children.splice(1, 0, sourceResources);
     sections.providers.replaceChildren.apply(sections.providers, children.filter(Boolean));
   }
 
@@ -598,6 +671,7 @@ export function mountModels(root, deps) {
       })) : h("p.models-empty", null, t("models.noCatalogMatches")));
   }
   function renderCatalog() {
+    updateBindingSuggestions();
     const catalog = state.catalog;
     const page = catalog.page;
     const refresh = h("button.btn", { type: "button", disabled: catalog.loading || !state.endpointId, onclick: function () { void refreshCatalog(); } },
@@ -714,7 +788,7 @@ export function mountModels(root, deps) {
     if (state.view) children.push(resourcePicker(state.view.registry.modules.filter(m => m.kind === "cliproxyapi"), state.moduleId, function (id) {
       state.moduleId = id; void invalidateObservations();
     }));
-    if (!quotaReady()) children.push(h("p.models-note", null, icon("info"), t("models.quotaNeedsCpa") + " ", sectionLink("connection", t("models.openConnection"))));
+    if (!quotaReady()) children.push(h("p.models-note", null, icon("info"), t("models.quotaNeedsCpa") + " ", sectionLink("maintenance", t("models.section.maintenance"))));
     const body = [];
     if (quota.loading) body.push(h("p", { role: "status" }, t("models.loading")));
     if (quota.unavailable) body.push(h("p", { role: "status" }, t("models.quotaUnavailable")));
