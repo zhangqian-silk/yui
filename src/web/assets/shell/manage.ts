@@ -15,7 +15,7 @@ import { MANAGE_SECTIONS, type ManageArea, type ManagePage, type ManageSection }
 const escapeHtml = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
 
 const sectionLink = (item: ManageSection) =>
-  `<a class="manage-link" href="/${item.section === "connection" ? "settings" : item.page}/${item.section}" data-page="${item.page}" data-section="${item.section}"><span data-i18n="${item.key}">${escapeHtml(item.label)}</span><i class="manage-dirty" aria-hidden="true"></i></a>`;
+  `<a class="manage-link" href="/${item.page}/${item.section}" data-page="${item.page}" data-section="${item.section}"><span data-i18n="${item.key}">${escapeHtml(item.label)}</span><i class="manage-dirty" aria-hidden="true"></i></a>`;
 
 const area = (name: ManageArea, key: string, label: string) => `
         <div class="manage-area" data-area-group="${name}">

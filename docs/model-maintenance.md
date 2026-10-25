@@ -13,7 +13,7 @@ Register a module and endpoints first. Configuration ownership (`external` or
 an installation nor a managed service. A maintained component is independent of
 Task/AgentRun lifetime; no Task cleanup stops it.
 
-Settings → Model connection → exact module → Optional component maintenance
+Models → Component maintenance → exact module → Optional component maintenance
 accepts the specification below. Read saved delegation/Job results before an
 operation. The first successful submission saves its exact configuration in
 the existing global `model-maintenance-ID` Job definition. Each action is an

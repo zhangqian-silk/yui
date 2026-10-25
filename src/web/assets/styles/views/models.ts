@@ -15,6 +15,7 @@ export const MODELS_STYLES = `
 .models-body .models-root,.models-body .models-section:not([hidden]){display:contents}
 .models-body .manage-main>*,.models-root>*,.models-section>*{width:100%;max-width:1120px;margin-left:auto;margin-right:auto}
 .models-section>.manage-head{order:-1}
+.models-section[data-section=quota]>.manage-head{order:0}
 .models-body .manage-scope{margin-bottom:0}
 .models-root .seg-btn[aria-pressed="true"]{background:var(--surface-2);color:var(--ink);box-shadow:var(--shadow-1),0 0 0 1px var(--line-2)}
 .models-root{display:grid;gap:16px;min-width:0}
@@ -82,6 +83,9 @@ export const MODELS_STYLES = `
 /* Connection settings */
 .models-connection-form{display:grid;gap:16px;min-width:0}
 .models-connection-form{grid-template-columns:repeat(2,minmax(0,1fr))}
+.models-connection-form[data-resource-kind=binding]{grid-template-columns:1fr}
+.models-access-summary{grid-column:1/-1;padding:12px;border:1px solid var(--accent-line);border-radius:var(--r-md);background:var(--accent-soft)}
+.models-subhead{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px}
 .models-connection-form>.settings-actions,.models-connection-form>.receipt,.models-connection-form>.models-receipt,.models-connection-form>.models-receipt-group{grid-column:1/-1;margin-top:0}
 .models-fieldset{display:grid;align-content:start;gap:14px;min-width:0;margin:0;padding:0;border:0}
 .models-fieldset legend{margin-bottom:12px;padding:0;color:var(--ink);font-size:var(--fs-sm);font-weight:600}

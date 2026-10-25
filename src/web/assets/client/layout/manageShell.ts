@@ -12,7 +12,7 @@ let started = false;
 let route;
 
 export function manageArea(page, section) {
-  return section === "connection" ? "settings" : page;
+  return page;
 }
 export function pageSections(page) {
   return Object.values(SECTIONS).flat().filter(item => item.page === page).map(item => item.section);
@@ -29,10 +29,10 @@ export function readManageRoute(url) {
       job: url.searchParams.get("job"), jobRun: url.searchParams.get("jobRun"),
       artifact: url.searchParams.get("artifact"), ...(legacyJobs ? { moved: true } : {}) };
   }
-  const area = parts[0] === "settings" ? "settings" : "models";
   const requested = parts[1] || url.searchParams.get("section");
-  const section = (SECTIONS[area].find(item => item.section === requested) ||
-    (area === "models" && requested === "connection" ? SECTIONS.settings.at(-1) : SECTIONS[area][0])).section;
+  const area = parts[0] === "settings" && requested !== "connection" ? "settings" : "models";
+  const target = area === "models" && requested === "quota" ? "catalog" : requested;
+  const section = (SECTIONS[area].find(item => item.section === target) || SECTIONS[area][0]).section;
   return { page: section === "connection" ? "models" : area, section,
     source: url.searchParams.get("source") === "command-code" ? "command-code" : "factory" };
 }
@@ -43,7 +43,7 @@ export function manageHref(next) {
     return "/jobs" + (query.size ? "?" + query : "");
   }
   return "/" + manageArea(next.page, next.section) + "/" + next.section +
-    (next.section === "quota" && next.source === "command-code" ? "?source=command-code" : "");
+    (["quota", "catalog"].includes(next.section) && next.source === "command-code" ? "?source=command-code" : "");
 }
 // The center column scrolls, not the document (the frame is the workbench's).
 function scroller() { return document.querySelector("#manage-scroll"); }
