@@ -11,6 +11,8 @@ import { validateAgentLaunchConfiguration, type AgentConfigurationCatalogService
 import { resolveAgentProfileView } from "../profile/agentProfileRuntime.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import { webLocalMutation, WebRequestRejected } from "./webMutation.js";
+import { readNativeModelConfiguration } from "../models/nativeModelConfiguration.js";
+import { AGENT_EXECUTION_COMPONENT_CATALOG } from "../agent/executionComponents.js";
 
 type Field = {
   key: string; label: string; value: unknown; kind: "text" | "number" | "boolean" | "json" | "multiline";
@@ -48,6 +50,10 @@ export function createWebSettings(store: TaskStore, options: {
     ].join(" ").toLowerCase().includes(needle));
     const offset = Number(cursor);
     return { groups: all.slice(offset, offset + 50), total: all.length,
+      supportedAgents: AGENT_EXECUTION_COMPONENT_CATALOG.map(component => ({
+        id: component.id, label: component.label,
+        configuredIds: store.listConfiguredAgents().filter(agent => agent.component === component.id).map(agent => agent.id)
+      })),
       nextCursor: offset + 50 < all.length ? String(offset + 50) : null };
   }
   function read(id: string): Group {
@@ -85,6 +91,7 @@ export function createWebSettings(store: TaskStore, options: {
         { ...field("environment", agent.environment, "json"), summary: "Array of {target, source: \"process\", sourceName, required: true}. Only process-variable references are accepted." }
       ];
       observation = { component: agent.component, adapterId: agent.adapterId,
+        native: readNativeModelConfiguration(agent, options.environment),
         environment: agent.environment.map(b => ({ ...b, present: !!options.environment[b.sourceName] })) };
     } else if (id.startsWith("role/")) {
       const role = store.getGlobalRole(id.slice(5))!;

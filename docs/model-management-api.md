@@ -14,6 +14,16 @@ Multiple Agent bindings can reference one CPA; quota belongs to the CPA/account,
 not to the number of bindings. Registration and ordinary reads never contact
 an upstream. They neither install a component nor acquire a service.
 
+The Web product separates Agent management (configured tools, native model/effort
+observations, Roles and Profiles) from Provider management (connections, CPA
+configuration and account observations). `/api/settings/group` for an Agent adds
+`observation.native`, a bounded read-only user-config/native-cache projection.
+Model reads add `nativeProviders`; these are not registered endpoints and never
+become writable references implicitly. Registered CPA instances expose redacted
+provider metadata from their native JSON API-key configuration. Credential values
+and auth-file contents are never returned. No upstream lookup or native process
+launch is needed for these local projections.
+
 Web uses the existing local token, same-origin JSON mutation and mutation-error
 boundaries. API error results distinguish `not-submitted` from `unknown`; on
 unknown outcome inspect the exact resource/request before deciding a next action.

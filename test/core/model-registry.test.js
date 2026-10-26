@@ -71,6 +71,7 @@ test("resource observations keep last success and are shared by module, never by
     });
     f.save("module", { ...cpa, managementKeyFile: key, quotaAdapter: "factory-quota-v1" });
     f.save("endpoint", endpoint);
+    assert.deepEqual(f.service.read().quotaSources, [], "supported adapter is not an observed account source");
     assert.equal(calls.length, 0);
     const refresh = (kind, resourceId, source) => f.service.refresh({
       revision: f.service.readRegistry().revision, kind, resourceId, ...(source ? { source } : {})
@@ -78,6 +79,7 @@ test("resource observations keep last success and are shared by module, never by
     assert.equal((await refresh("catalog", "api")).status, "success");
     assert.equal(calls[0].credential, "", "management key must not reach inference catalog");
     const quota = await refresh("quota", "shared", "factory");
+    assert.deepEqual(f.service.read().quotaSources, [{ moduleId: "shared", source: "factory" }]);
     assert.equal(quota.items[0].windows[0].remainingFraction, 0);
     assert.equal(quota.items[0].balance, null);
     assert.equal(calls[1].credential, "private-management");
@@ -91,6 +93,8 @@ test("resource observations keep last success and are shared by module, never by
     assert.equal(partial.items[0].error, "account-query-failed");
     fail = true;
     const failed = await refresh("quota", "shared", "factory");
+    assert.deepEqual(f.service.read().quotaSources, [{ moduleId: "shared", source: "factory" }],
+      "failed refresh retains known account source alongside stale data");
     assert.equal(failed.status, "failed");
     assert.equal(failed.stale, true);
     assert.equal(failed.observedAt, partial.observedAt);
@@ -200,7 +204,7 @@ test("real planner start/restore pins each Agent endpoint without daemon restart
     store.saveGlobalRole(role);
     const keyFile = join(root, "client.key");
     writeFileSync(keyFile, "fixture-client-secret", { mode: 0o600 });
-    const service = createModelManagement(store);
+    const service = createModelManagement(store, { environment: { HOME: root } });
     const save = (kind, resource, requestId) => service.saveResource({
       revision: service.readRegistry().revision, requestId, kind, resource
     });

@@ -88,7 +88,7 @@ test("Model HTTP boundary persists only references and requires token, origin an
   try {
     store = new SqliteTaskStore(root);
     store.saveConfiguredAgent(createConfiguredAgent("coding", "codex", "/fixture/codex", [], [], new Date()));
-    const service = createService(store);
+    const service = createService(store, { environment: { HOME: root } });
     server = createYuiWebServer(store, { token: "fixture-token", models: service });
     await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
     const url = `http://127.0.0.1:${server.address().port}`;
@@ -104,7 +104,7 @@ test("Model HTTP boundary persists only references and requires token, origin an
     assert.doesNotMatch(html, /__YUI_WEB_TOKEN__/);
     const assets = [...html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)];
     assert.ok(assets.some(match => match[1].startsWith("/assets/js/app/manage.js?v=")));
-    for (const path of ["/models/providers", "/models/catalog", "/models/quota",
+    for (const path of ["/models/agents", "/settings/agents", "/models/providers", "/models/catalog", "/models/quota",
       "/settings/preferences", "/settings/skills", "/settings/server", "/settings/connection"]) {
       assert.equal(await (await fetch(url + path)).text(), html, "every direct management URL serves the same document");
     }
