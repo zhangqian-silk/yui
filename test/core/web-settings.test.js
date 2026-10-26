@@ -334,15 +334,15 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   context.renderGroup(state, group);
   const draft = state.editors[0].control;
   draft.value = "bad"; draft.handlers.input();
-  await state.content.children[0].handlers.submit({ preventDefault() {} });
+  await state.form.handlers.submit({ preventDefault() {} });
   assert.equal(submissions, 0, "basic validation happens before submission");
   draft.value = "240"; draft.handlers.input();
-  await state.content.children[0].handlers.submit({ preventDefault() {} });
+  await state.form.handlers.submit({ preventDefault() {} });
   assert.equal(draft.value, "240");
   assert.equal(state.dirty, true);
   assert.equal(state.save.disabled, false, "proven rejection is editable");
   failure = Object.assign(Error("Connection lost"), { disposition: "unknown" });
-  await state.content.children[0].handlers.submit({ preventDefault() {} });
+  await state.form.handlers.submit({ preventDefault() {} });
   assert.equal(draft.value, "240");
   assert.equal(state.unknown, true);
   assert.equal(state.save.disabled, true);
@@ -350,7 +350,7 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   draft.value = "300"; draft.handlers.input();
   assert.equal(state.receipt.textContent, unknownReceipt, "editing never erases the unknown-write warning");
   const count = submissions;
-  await state.content.children[0].handlers.submit({ preventDefault() {} });
+  await state.form.handlers.submit({ preventDefault() {} });
   assert.equal(submissions, count, "unknown outcome is not replayed");
   // A fresh, explicitly reconciled page receives a fresh read revision.
   context.renderGroup(state, { ...group, revision: "reconciled" });
@@ -358,7 +358,7 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   failure = null;
   saved = { group: { ...group, revision: "saved", fields: [{ ...group.fields[0], value: 240 }] },
     output: "saved 240", adoption: "next launch", refresh: "not-required" };
-  await state.content.children[0].handlers.submit({ preventDefault() {} });
+  await state.form.handlers.submit({ preventDefault() {} });
   assert.equal(state.dirty, false);
   assert.equal(state.group.revision, "saved");
   assert.equal(state.editors[0].control.value, "240");
@@ -379,7 +379,7 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   const query = state.content.querySelectorAll("button").find(button => button.children.includes("settings.queryCapabilities"));
   const capabilityRead = query.handlers.click();
   const beforeQuerySubmit = submissions;
-  await state.content.children[0].handlers.submit({ preventDefault() {} });
+  await state.form.handlers.submit({ preventDefault() {} });
   assert.equal(submissions, beforeQuerySubmit, "submission waits for the in-flight capability read");
   resolveCapabilities({ source: "cache", fetchedAt: "2026-10-10T00:00:00Z", catalog });
   await capabilityRead;
@@ -418,7 +418,7 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
     return { group: { ...availability, revision: "disabled",
       fields: [{ ...availability.fields[0], value: false }] }, output: "disabled", adoption: "No Session stopped" };
   };
-  await state.content.children[0].handlers.submit({ preventDefault() {} });
+  await state.form.handlers.submit({ preventDefault() {} });
   assert.deepEqual(JSON.parse(JSON.stringify(submitted.changes)), [{ key: "enabled", value: false }]);
   assert.equal(state.editors[0].control.value, "false");
   assert.equal(state.dirty, false);
@@ -432,7 +432,7 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   assert.equal(state.editors[0].control.disabled, true);
   const previous = submitted;
   state.editors[0].control.value = "deep"; state.editors[0].control.handlers.change();
-  await state.content.children[0].handlers.submit({ preventDefault() {} });
+  await state.form.handlers.submit({ preventDefault() {} });
   assert.equal(submitted, previous, "snapshot mutation is blocked even if the submit handler is invoked");
   assert.equal(state.save.disabled, true);
 
@@ -457,7 +457,7 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   };
   context.showSection("agents");
   await context.start();
-  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setTimeout(resolve, 0));
   const uiGroups = vm.runInContext("groups", context);
   const agent = uiGroups.find(group => group.meta.id === "agent/fixture");
   const role = uiGroups.find(group => group.meta.id === "role/worker");
@@ -471,8 +471,20 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   assert.match(text(role.summary), /fast/);
   assert.doesNotMatch(text(role.summary), /native-model/, "role overrides are not replaced by the Agent native default");
   assert.equal(requests.some(url => url.includes("capabilities")), false, "group summaries do not trigger capability discovery");
+  const accessText = text(vm.runInContext("agentIndex", context));
+  assert.match(accessText, /fast/, "index rows expose the Role's model evidence");
+  assert.match(accessText, /worker-inherited/, "index rows expose a resolved Profile's inherited model");
+  const findAccess = id => {
+    const visit = node => typeof node === "object" ? [node, ...(node.children || []).flatMap(visit)] : [];
+    return visit(vm.runInContext("agentIndex", context)).find(node => node.dataset?.agentId === id);
+  };
   const roleDraft = role.editors[0].control;
   roleDraft.value = "unlisted-draft"; roleDraft.handlers.input();
+  findAccess("role/worker").handlers.click();
+  findAccess("agent/fixture").handlers.click();
+  findAccess("role/worker").handlers.click();
+  assert.equal(role.editors[0].control, roleDraft, "switching index members preserves a mounted draft");
+  assert.equal(roleDraft.value, "unlisted-draft");
   shell.get("#settings-search").value = "Worker";
   await context.start();
   assert.equal(profile.root.parent.parent.open, true, "search exposes matched template groups");

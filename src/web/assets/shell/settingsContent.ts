@@ -27,10 +27,17 @@ export const SETTINGS_MAIN = `
         ${manageHead("settings-server-title", "settings.section.server", "Yui server", "settings.hint.server", "Yui server configuration.")}
         <div id="server-settings-host"></div>
       </section>
-      <section class="manage-section" data-section="agents" aria-labelledby="settings-agents-title" hidden>
-        ${manageHead("settings-agents-title", "settings.section.agents", "Agent management", "settings.hint.agents", "Configured Agents, model capabilities and Role profiles. Native model configuration remains independent of Provider registration.")}
+      <section class="manage-section agent-access" data-section="agents" aria-labelledby="settings-agents-title" hidden>
+        ${manageHead("settings-agents-title", "settings.section.agents", "Agent access", "settings.hint.agents", "Execution tools, Role defaults and reusable Profiles. Choose one member to inspect or edit it without affecting running Sessions or existing Tasks.")}
         <div id="agent-management-actions" class="settings-actions"></div>
-        <div id="agent-settings-host"></div>
+        <div class="agent-access-map" aria-label="Agent execution model">
+          <span class="agent-access-step" data-step="profile"><small>01</small><strong data-i18n="settings.area.profiles">Reusable Role templates · Profiles</strong><span data-i18n="settings.chain.profile">A one-time source copied into a Role; never a live binding</span></span>
+          <span class="agent-access-arrow" aria-hidden="true">→</span>
+          <span class="agent-access-step" data-step="role"><small>02</small><strong data-i18n="settings.area.roles">Role execution configuration</strong><span data-i18n="settings.chain.role">References one Agent and stores defaults for later launches</span></span>
+          <span class="agent-access-arrow" aria-hidden="true">→</span>
+          <span class="agent-access-step" data-step="agent"><small>03</small><strong data-i18n="settings.area.agents">Agent execution tools</strong><span data-i18n="settings.chain.agent">Tool, native model, reasoning and launch process</span></span>
+        </div>
+        <div id="agent-access-host" class="agent-access-host"></div>
       </section>
       <div id="settings-editor" hidden>
         <p id="settings-status" role="status"></p>

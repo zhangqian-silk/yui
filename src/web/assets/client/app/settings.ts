@@ -30,8 +30,9 @@ function showSection(next) {
   document.querySelectorAll("#settings-root > .manage-section[data-section]").forEach(panel => { panel.hidden = panel.dataset.section !== next; });
   const editor = $("#settings-editor");
   if (next === "agents" || next === "server") {
-    $(next === "agents" ? "#agent-settings-host" : "#server-settings-host").append(editor);
-    editor.hidden = false;
+    $(next === "agents" ? "#agent-access-host" : "#server-settings-host").append(next === "agents" ? agentAccessLayout : editor);
+    editor.hidden = next === "agents";
+    if (next === "agents") agentAccessLayout.hidden = false;
     if (settingsReady) filterGroups();
   }
   shell.set(next);
@@ -50,7 +51,6 @@ i18n.subscribe(() => shell.render());
 i18n.subscribe(() => {
   permissions?.translate();
 });
-showSection(section);
 const skills = mountSkills($("#skill-browser"), t, { heading: false, onDirty: value => markDirty("skills", value) });
 i18n.subscribe(() => skills?.translate());
 const theme = createThemeController($("#theme-options"), t);
@@ -71,13 +71,20 @@ const status = $("#settings-status");
 const search = $("#settings-search");
 const groups = [];
 const groupAreas = {};
+const agentAccess = $("#agent-access-host");
+const agentIndex = h("aside.agent-index", { "aria-label": t("settings.agentIndex") });
+const agentInspector = h("section.agent-inspector", { "aria-live": "polite" });
+const agentAccessLayout = h("div.agent-access-layout", null, agentIndex, agentInspector);
+agentAccess?.append(agentAccessLayout);
+const agentAreaFilters = h("div.agent-area-filters", { role: "group", "aria-label": t("settings.filterArea") });
+let agentAreaFilter = "all";
 for (const name of ["agents", "roles", "profiles", "server"]) {
   const list = h("div.settings-group-list.settings-group-list-" + name, { dataset: { agentGroupList: name } });
   const title = h(name === "profiles" ? "summary" : "header", null);
   const root = name === "server" ? list : h(name === "profiles" ? "details.settings-profile-library" : "section.settings-group-area.settings-area-" + name,
     { "aria-labelledby": "settings-area-" + name }, title, list);
   groupAreas[name] = { root, list, title };
-  container.append(root);
+  if (name !== "server") container.append(root);
 }
 function renderAreaTitles() {
   for (const name of ["agents", "roles", "profiles"]) {
@@ -91,6 +98,123 @@ function renderAreaTitles() {
 function groupArea(meta) {
   return meta.id.startsWith("agent/") ? "agents" : meta.id.startsWith("role/") ? "roles"
     : meta.id.startsWith("profile/") ? "profiles" : "server";
+}
+const ACCESS_AREAS = ["agents", "roles", "profiles"];
+function accessLabel(area) { return t("settings.area." + area); }
+function selectedAccess() { return groups.find(state => state.selected) || null; }
+function showAgentAreaFilter(name) {
+  agentAreaFilter = name;
+  agentAreaFilters.querySelectorAll("[data-agent-area]").forEach(button => {
+    button.setAttribute("aria-pressed", String(button.dataset.agentArea === name));
+  });
+  filterGroups();
+}
+function renderAgentAreaFilters() {
+  const counts = { all: 0, agents: 0, roles: 0, profiles: 0 };
+  groups.forEach(state => {
+    if (!state.matched || !ACCESS_AREAS.includes(groupArea(state.meta))) return;
+    counts.all++;
+    counts[groupArea(state.meta)]++;
+  });
+  agentAreaFilters.replaceChildren(...["all", ...ACCESS_AREAS].map(name =>
+    h("button.chip-tab", { type: "button", "aria-pressed": String(agentAreaFilter === name),
+      dataset: { agentArea: name }, onclick: () => showAgentAreaFilter(name) },
+      name === "all" ? t("settings.filterAll") : accessLabel(name), h("span.count", null, String(counts[name])))));
+}
+function accessMatches(state) {
+  return state.matched && (agentAreaFilter === "all" || groupArea(state.meta) === agentAreaFilter);
+}
+function defaultAccess() {
+  for (const area of ACCESS_AREAS) {
+    const row = groups.find(state => accessMatches(state) && groupArea(state.meta) === area);
+    if (row) return row;
+  }
+  return null;
+}
+function groupSnapshot(state) {
+  const group = state.group;
+  const area = groupArea(state.meta);
+  const field = key => group?.fields.find(item => item.key === key);
+  const native = area === "agents" ? group?.observation?.native : null;
+  const runtime = area === "profiles" ? group?.observation : null;
+  return {
+    group, area, native, runtime,
+    model: native?.model || field("model")?.value || (runtime?.status === "resolved" ? runtime.binding?.config?.model : ""),
+    effort: native?.effort || field("effort")?.value || (runtime?.status === "resolved" ? runtime.binding?.config?.effort : ""),
+    unavailable: state.loadError || native?.status === "unavailable" || runtime?.status === "unavailable"
+  };
+}
+function accessFacts(state) {
+  if (state.loadError) return t("settings.summaryUnavailable");
+  if (!state.group) return t("settings.summaryLoading");
+  const snapshot = groupSnapshot(state);
+  if (snapshot.unavailable) return t("settings.summaryUnavailable");
+  const facts = [snapshot.model, snapshot.effort].filter(Boolean);
+  return facts.length ? facts.join(" · ") : t(snapshot.area === "agents"
+    ? "settings.summaryNativeDefault" : "settings.summaryUnavailable");
+}
+function accessRow(state) {
+  const area = groupArea(state.meta);
+  return h("button.agent-index-row", { type: "button",
+    "aria-current": state.selected ? "true" : null, dataset: { agentId: state.meta.id, agentArea: area },
+    onclick: () => selectAccess(state) },
+    h("span.agent-index-icon.tone-" + (area === "agents" ? "info" : area === "roles" ? "accent" : "idle"), null,
+      h("span", null, area === "agents" ? "A" : area === "roles" ? "R" : "P")),
+    h("span.agent-index-copy", null, h("strong", null, state.meta.title),
+      h("small", null, area === "agents" ? t("settings.kind.agent")
+        : area === "roles" ? t("settings.kind.role") : t("settings.kind.profile")),
+      h("span.agent-index-facts", null, accessFacts(state))),
+    state.dirty ? h("span.badge.tone-warn", null, t("settings.unsavedShort")) : null,
+    h("span.agent-index-caret", { "aria-hidden": "true" }, "→"));
+}
+function renderAgentIndex() {
+  renderAgentAreaFilters();
+  const children = [h("header.agent-index-head", null,
+    h("div", null, h("h2", null, t("settings.agentIndex")), h("p", null, t("settings.agentIndexHelp"))),
+    agentAreaFilters)];
+  let total = 0;
+  for (const area of ACCESS_AREAS) {
+    if (agentAreaFilter !== "all" && agentAreaFilter !== area) continue;
+    const rows = groups.filter(state => accessMatches(state) && groupArea(state.meta) === area)
+      .sort((a, b) => a.meta.title.localeCompare(b.meta.title));
+    if (!rows.length) continue;
+    total += rows.length;
+    children.push(h("section.agent-index-group", null,
+      h("h3", null, accessLabel(area), h("span.count", null, String(rows.length))),
+      h("div.agent-index-list", null, rows.map(accessRow))));
+  }
+  if (!total) children.push(h("p.empty", null, t(search.value.trim() ? "settings.noMatches" : "settings.agentEmpty")));
+  agentIndex.replaceChildren(...children);
+}
+function selectAccess(state) {
+  if (!state) {
+    groups.forEach(item => { item.selected = false; });
+    agentInspector.replaceChildren();
+    return;
+  }
+  if (state === selectedAccess() && state.inspectorContent?.parent === agentInspector) return;
+  groups.forEach(item => { item.selected = false; });
+  state.selected = true;
+  // A Role may already be open, edited, and then shown in the Role summary
+  // rail. Moving its one content host preserves that live form. A member that
+  // has never been selected has no mounted form; do not render the closed
+  // summary card's loading text into the inspector.
+  if (state.loaded || state.loadError || state.form) {
+    if (!state.inspectorContent) state.inspectorContent = state.content;
+    state.inspectorContent.classList.add("agent-inspector-content");
+    state.content = state.inspectorContent;
+    agentInspector.replaceChildren(state.inspectorContent);
+  } else if (state.inspectorContent) {
+    agentInspector.replaceChildren(state.inspectorContent);
+  } else {
+    const loading = h("p.settings-receipt", { role: "status" }, t("settings.loading"));
+    state.inspectorContent = h("div.agent-inspector-content", null, loading);
+    state.content = state.inspectorContent;
+    agentInspector.replaceChildren(state.inspectorContent);
+  }
+  filterGroups();
+  renderAgentIndex();
+  if (!state.loaded && !state.loading) void loadGroup(state);
 }
 const agentActions = $("#agent-management-actions");
 function renderAgentActions() {
@@ -110,17 +234,24 @@ function isAgentGroup(meta) { return /^(agent|role|profile)\//.test(meta.id); }
 function filterGroups() {
   groups.forEach(state => {
     state.root.hidden = !state.matched || isAgentGroup(state.meta) !== (section === "agents");
-    if (!state.root.hidden && (state.root.open || section === "agents")) {
-      void loadGroup(state);
-    }
+    if (!state.root.hidden && !isAgentGroup(state.meta) && state.root.open) void loadGroup(state);
   });
   for (const [name, area] of Object.entries(groupAreas)) {
     area.root.hidden = !groups.some(state => !state.root.hidden && groupArea(state.meta) === name);
   }
   if (search.value.trim() && !groupAreas.profiles.root.hidden) groupAreas.profiles.root.open = true;
   renderAreaTitles();
+  if (section === "agents") {
+    renderAgentIndex();
+    for (const state of groups) {
+      if (accessMatches(state)) void loadGroup(state);
+    }
+    const current = selectedAccess();
+    if (!current || !accessMatches(current)) selectAccess(defaultAccess());
+  }
 }
 settingsReady = true;
+showSection(section);
 let searchGeneration = 0;
 let searchTimer;
 const more = h("button.btn", { type: "button", hidden: true }, t("settings.more"));
@@ -252,11 +383,7 @@ function renderGroupSummary(state) {
   const group = state.group;
   const area = groupArea(state.meta);
   const field = key => group?.fields.find(item => item.key === key);
-  const native = area === "agents" ? group?.observation?.native : null;
-  const runtime = area === "profiles" ? group?.observation : null;
-  const model = native?.model || field("model")?.value || (runtime?.status === "resolved" ? runtime.binding?.config?.model : "");
-  const effort = native?.effort || field("effort")?.value || (runtime?.status === "resolved" ? runtime.binding?.config?.effort : "");
-  const unavailable = state.loadError || native?.status === "unavailable" || runtime?.status === "unavailable";
+  const { native, runtime, model, effort, unavailable } = groupSnapshot(state);
   const source = state.loadError ? t("settings.summaryUnavailable") + ": " + state.loadError
     : !group ? t("settings.loading")
     : runtime?.status === "unavailable" ? t("settings.profileUnavailable") + ": " + runtime.reason
@@ -535,10 +662,28 @@ function renderGroup(state, group) {
     else form.append(capabilities);
   }
   if (state.readOnly) form.querySelectorAll("input,select,textarea").forEach(control => { control.disabled = true; });
-  state.content.replaceChildren(form);
-  if (isRole && Array.isArray(group.profiles)) {
-    state.content.replaceChildren(roleProfileApplication(state, group), form);
+  const inspectorLeading = [];
+  if (isRole && Array.isArray(group.profiles)) inspectorLeading.push(roleProfileApplication(state, group));
+  if (state.meta && isAgentGroup(state.meta)) {
+    form.classList.add("agent-inspector-form");
+    inspectorLeading.unshift(inspectorHeader(state));
   }
+  state.content.replaceChildren(...inspectorLeading, form);
+  state.form = form;
+}
+function inspectorHeader(state) {
+  const area = groupArea(state.meta);
+  const close = h("button.icon-btn", { type: "button", "aria-label": t("settings.closeInspector"), title: t("settings.closeInspector"),
+    onclick: () => { state.selected = false; agentInspector.replaceChildren(); filterGroups(); renderAgentIndex(); } }, "×");
+  const relation = area === "roles" && state.group?.agentId ? t("settings.inspectorRoleRelation").replace("{agent}", state.group.agentId)
+    : area === "profiles" ? t("settings.inspectorProfileRelation") : t("settings.inspectorAgentRelation");
+  return h("header.agent-inspector-head", null,
+    h("div.agent-inspector-identity", null,
+      h("span.agent-index-icon.tone-" + (area === "agents" ? "info" : area === "roles" ? "accent" : "idle"), null,
+        h("span", null, area === "agents" ? "A" : area === "roles" ? "R" : "P")),
+      h("div", null, h("p.kicker", null, accessLabel(area)), h("h2", null, state.meta.title),
+        h("code.id", null, state.meta.id), h("p.agent-inspector-relation", null, relation))),
+    close);
 }
 
 async function loadGroup(state) {
@@ -550,6 +695,10 @@ async function loadGroup(state) {
   try {
     renderGroup(state, await requestJson("/api/settings/group?" + new URLSearchParams({ id: state.meta.id })));
     state.loaded = true;
+    // The index has an independent summary surface. Refresh it after the
+    // read so a selected member's evidence appears without replacing the
+    // member's live draft form.
+    if (section === "agents") renderAgentIndex();
   } catch (error) {
     state.loadError = error.message;
     renderGroupSummary(state);
@@ -586,7 +735,7 @@ async function start(cursor) {
       const area = groupArea(meta);
       const root = h("details.settings-card" + (area !== "server" ? ".settings-group.settings-group-" + area : ""),
         { open: meta.id === "system" || !!query }, summary, content);
-      const state = { meta, root, content, summary, dirty: false, loaded: false, loading: false, matched: true };
+      const state = { meta, root, content, summary, dirty: false, loaded: false, loading: false, matched: true, selected: false };
       groups.push(state); groupAreas[area].list.append(root);
       renderGroupSummary(state);
       root.addEventListener("toggle", () => { if (root.open) void loadGroup(state); });
