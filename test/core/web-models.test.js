@@ -47,8 +47,8 @@ const copy = value => JSON.parse(JSON.stringify(value));
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const submit = form => form.handlers.submit({ preventDefault() {} });
 const resourceForm = (root, kind) => find(root, n => n.tagName === "FORM" && n.dataset.resourceKind === kind);
-const connectionForm = root => resourceForm(root, "module");
-const moduleCard = root => find(root, n => n.className.includes("models-card") && resourceForm(n, "module"));
+const connectionForm = root => resourceForm(root, "endpoint");
+const endpointCard = root => find(root, n => n.className.includes("models-card") && resourceForm(n, "endpoint"));
 
 test("management navigation shares history across areas and normalizes direct URLs", () => {
   const elements = new Map();
@@ -171,11 +171,16 @@ test("low-frequency setup starts with a safe Operator prompt; copying never subm
     assert.doesNotMatch(prompt.value, /fixture|sk-fixture|127\.0\.0\.1:9/);
     await button(panel, "models.copyOperatorPrompt").handlers.click();
     assert.equal(copied.at(-1), prompt.value);
-    // Existing manual editors are an explicit expert opt-in, not the main flow.
     const advanced = find(panel, n => n.dataset.modelAdvanced);
-    assert.ok(advanced && !advanced.open);
-    assert.equal(all(panel, n => n.tagName === "FORM").length,
-      all(advanced, n => n.tagName === "FORM").length);
+    if (section === "maintenance") {
+      assert.equal(advanced, undefined, "component setup has no manual configuration entry");
+      assert.equal(all(panel, n => n.tagName === "FORM" || n.tagName === "INPUT" || n.tagName === "SELECT" || n.tagName === "TEXTAREA" && !n.readOnly).length, 0);
+      assert.equal(page.dirty(), false);
+    } else {
+      assert.ok(advanced && !advanced.open);
+      assert.equal(all(panel, n => n.tagName === "FORM").length,
+        all(advanced, n => n.tagName === "FORM").length);
+    }
   }
   assert.equal(api.calls.length, original, "copy/show only: no network refresh or configuration write");
   const fallback = mount(fakeApi(), { copyText: async () => { throw new Error("clipboard denied"); } });
@@ -220,13 +225,13 @@ test("language changes retain current observations and drafts without loading ag
   const { page } = mount(api);
   await page.ready;
   const observation = page.state.catalog.page;
-  page.state.connectionDrafts.module = { id: "draft", managementUrl: "http://127.0.0.1:91" };
+  page.state.connectionDrafts.endpoint = { id: "draft", url: "http://127.0.0.1:91" };
   const calls = api.calls.length;
   page.translate();
   assert.equal(reads, 1);
   assert.equal(api.calls.length, calls);
   assert.equal(page.state.catalog.page, observation);
-  assert.equal(page.state.connectionDrafts.module.managementUrl, "http://127.0.0.1:91");
+  assert.equal(page.state.connectionDrafts.endpoint.url, "http://127.0.0.1:91");
   assert.equal(page.dirty(), true);
 });
 
@@ -270,38 +275,6 @@ function fakeApi(overrides = {}) {
   return api;
 }
 
-test("maintenance and native-tool drafts survive translation; Job admission is not applied and unknown is not replayed", async () => {
-  const api = fakeApi({
-    modelMaintenance: async () => ({ moduleRevision: "a".repeat(64) }),
-    maintainModel: async input => { api.calls.push(["maintain", copy(input)]); return { created: true, run: { id: "job-exact" } }; },
-    previewModelConnection: async () => ({ planDigest: "b".repeat(64), plan: { files: [] } }),
-    applyModelConnection: async () => { api.calls.push(["apply"]); throw Object.assign(Error("lost receipt"), { disposition: "unknown" }); }
-  });
-  const { root, page } = mount(api);
-  await page.ready;
-  page.show({ section: "connection" });
-  const spec = JSON.stringify({ repository: "/owned/repository", ref: "refs/heads/main" });
-  const maintenance = all(root, n => n.tagName === "TEXTAREA" && !n.readOnly)[0];
-  maintenance.value = spec; maintenance.handlers.input();
-  const tool = all(root, n => n.tagName === "TEXTAREA" && !n.readOnly)[1];
-  tool.value = '{"codex":{"configPath":"/owned/config.toml"}}'; tool.handlers.input();
-  page.translate();
-  assert.equal(all(root, n => n.tagName === "TEXTAREA" && !n.readOnly)[0].value, spec);
-  assert.equal(page.dirty(), true);
-  await button(root, "models.operation.check-update").handlers.click();
-  assert.equal(api.calls.filter(c => c[0] === "maintain").length, 1);
-  assert.equal(page.state.receipt.text, "models.jobAccepted");
-  assert.equal(page.state.maintenanceDrafts.bridge.spec, spec);
-  const details = find(root, n => n.tagName === "DETAILS" && !n.dataset.modelAdvanced && text(n).includes("models.connectionToolHelp"));
-  await button(details, "models.previewBinding").handlers.click();
-  await button(details, "models.saveResource").handlers.click();
-  assert.equal(page.state.unknown, true);
-  assert.equal(api.calls.filter(c => c[0] === "apply").length, 1);
-  page.translate(); page.show({ section: "providers" }); page.show({ section: "connection" });
-  assert.equal(api.calls.filter(c => c[0] === "apply").length, 1);
-  assert.equal(page.state.toolDraft, '{"codex":{"configPath":"/owned/config.toml"}}');
-});
-
 test("resource drafts survive other editors, rerenders, writes and reconciliation; only explicit replacements discard them", async () => {
   const api = fakeApi();
   let allow = false;
@@ -309,66 +282,39 @@ test("resource drafts survive other editors, rerenders, writes and reconciliatio
   await page.ready;
   page.state.connectionDrafts.binding = { agentId: "codex", endpointId: "bridge-api", model: "" };
   page.translate();
-  const forms = () => ["module", "endpoint", "binding"].map(kind => resourceForm(root, kind));
+  const forms = () => ["endpoint", "binding"].map(kind => resourceForm(root, kind));
   const id = index => find(forms()[index], n => n.tagName === "INPUT");
   const type = (index, value) => { const input = id(index); input.value = value; input.handlers.input(); };
-  type(0, "unsaved-module");
-  type(1, "unsaved-endpoint");
-  type(2, "unsaved-agent");
-  button(moduleCard(root), "models.editResource").handlers.click();
+  type(0, "unsaved-endpoint");
+  type(1, "unsaved-model");
+  button(endpointCard(root), "models.editResource").handlers.click();
   assert.equal(confirmations.length, 1, "replacing the same resource editor requires consent");
   page.translate();
-  assert.deepEqual([id(0).value, id(1).value, id(2).value], ["unsaved-module", "unsaved-endpoint", "unsaved-agent"]);
+  assert.deepEqual([id(0).value, id(1).value], ["unsaved-endpoint", "unsaved-model"]);
   allow = true;
-  button(moduleCard(root), "models.editResource").handlers.click();
-  assert.deepEqual([id(0).value, id(1).value, id(2).value], ["bridge", "unsaved-endpoint", "unsaved-agent"]);
+  button(endpointCard(root), "models.editResource").handlers.click();
+  assert.deepEqual([id(0).value, id(1).value], ["bridge-api", "unsaved-model"]);
   button(forms()[0], "models.discard").handlers.click();
-  assert.deepEqual([id(0).value, id(1).value, id(2).value], ["", "unsaved-endpoint", "unsaved-agent"]);
-  await submit(forms()[1]); await tick();
-  assert.deepEqual([id(0).value, id(1).value, id(2).value], ["", "", "unsaved-agent"], "saving one kind clears only that draft");
-  type(0, "keep-module"); type(1, "keep-endpoint");
-  const moduleSelect = all(forms()[1], n => n.tagName === "SELECT")[0];
+  assert.deepEqual([id(0).value, id(1).value], ["", "unsaved-model"]);
+  type(0, "saved-endpoint");
+  await submit(forms()[0]); await tick();
+  assert.deepEqual([id(0).value, id(1).value], ["", "unsaved-model"], "saving one kind clears only that draft");
+  type(0, "keep-endpoint");
+  const moduleSelect = all(forms()[0], n => n.tagName === "SELECT")[0];
   moduleSelect.value = "bridge"; moduleSelect.handlers.input();
   api.next = () => view("r3", { connection: null, providers: [] });
-  button(moduleCard(root), "models.unregister").handlers.click(); await tick(); await tick();
-  assert.deepEqual([id(0).value, id(1).value, id(2).value], ["keep-module", "keep-endpoint", "unsaved-agent"], "unregister preserves all unsaved forms");
-  const retainedSelect = all(forms()[1], n => n.tagName === "SELECT")[0];
+  button(endpointCard(root), "models.unregister").handlers.click(); await tick(); await tick();
+  assert.deepEqual([id(0).value, id(1).value], ["keep-endpoint", "unsaved-model"], "unregister preserves all unsaved forms");
+  const retainedSelect = all(forms()[0], n => n.tagName === "SELECT")[0];
   assert.equal(retainedSelect.value, "bridge");
   assert.ok(all(retainedSelect, n => n.tagName === "OPTION").some(n => n.value === "bridge"), "removed references remain visible in unsaved drafts");
   for (const disposition of ["not-submitted", "unknown"]) {
     api.saveModelResource = async () => { throw Object.assign(new Error("fixture failure"), { disposition }); };
     await submit(forms()[0]); await tick();
     button(root, "models.readFacts").handlers.click(); await tick(); await tick();
-    assert.deepEqual([id(0).value, id(1).value, id(2).value], ["keep-module", "keep-endpoint", "unsaved-agent"], disposition + " reread must not erase drafts or replay");
+    assert.deepEqual([id(0).value, id(1).value], ["keep-endpoint", "unsaved-model"], disposition + " reread must not erase drafts or replay");
   }
   assert.equal(page.dirty(), true);
-});
-
-test("late maintenance reads and tool previews cannot replace newer drafts after rerender", async () => {
-  let finishRead, finishPreview;
-  const api = fakeApi({
-    modelMaintenance: () => new Promise(resolve => { finishRead = resolve; }),
-    previewModelConnection: () => new Promise(resolve => { finishPreview = resolve; })
-  });
-  const { root, page } = mount(api);
-  await page.ready;
-  const reading = button(root, "models.maintenanceRead").handlers.click();
-  page.translate();
-  let editors = all(root, n => n.tagName === "TEXTAREA" && !n.readOnly);
-  editors[0].value = '{"repository":"/new/draft"}'; editors[0].handlers.input();
-  finishRead({ definition: { configuration: { input: { spec: { repository: "/old/delegation" } } } } });
-  await reading;
-  assert.equal(page.state.maintenanceDrafts.bridge.spec, '{"repository":"/new/draft"}');
-  editors[1].value = '{"codex":{"configPath":"/first"}}'; editors[1].handlers.input();
-  let details = find(root, n => n.tagName === "DETAILS" && !n.dataset.modelAdvanced && text(n).includes("models.connectionToolHelp"));
-  const previewing = button(details, "models.previewBinding").handlers.click();
-  page.translate();
-  editors = all(root, n => n.tagName === "TEXTAREA" && !n.readOnly);
-  editors[1].value = '{"codex":{"configPath":"/second"}}'; editors[1].handlers.input();
-  finishPreview({ planDigest: "b".repeat(64) });
-  await previewing;
-  assert.equal(page.state.toolPreview, null);
-  assert.equal(page.state.toolDraft, '{"codex":{"configPath":"/second"}}');
 });
 
 test("resource controls and confirmations use the selected product language", async () => {
@@ -379,9 +325,9 @@ test("resource controls and confirmations use the selected product language", as
       return messages[key] || EN[key] || fallback || key;
     } });
     await page.ready;
-    for (const key of ["models.resource", "models.field.managementKeyFile", "models.field.clientKeyFile",
-      "models.access.agentId", "models.previewBinding", "models.readCachedStatus", "models.refreshStatus",
-      "models.bindingScope", "models.option.external", "models.option.configuration", "models.componentDocs"]) {
+    for (const key of ["models.resource", "models.field.clientKeyFile",
+      "models.access.agentId", "models.previewBinding",
+      "models.bindingScope", "models.componentDocs"]) {
       assert.ok(text(root).includes(messages[key]), key);
     }
     button(root, messages["models.unregister"]).handlers.click(); await tick(); await tick();
@@ -453,14 +399,14 @@ test("connection and provider writes carry the read revision, never echo keys an
   assert.match(mine, /mine\//);
   assert.doesNotMatch(mine, /mine\/\//);
 
-  // Module registration sends the independent resource and registry revision.
+  // Endpoint registration sends the independent resource and registry revision.
   const form0 = connectionForm(root);
   const urlInput = find(form0, n => n.tagName === "INPUT");
   urlInput.value = " bridge "; urlInput.handlers.input();
   await submit(form0); await tick();
   const [, sent] = api.calls.find(c => c[0] === "resource");
   assert.equal(sent.revision, "r1");
-  assert.equal(sent.kind, "module");
+  assert.equal(sent.kind, "endpoint");
   assert.equal(sent.resource.id, "bridge");
   assert.ok(sent.requestId);
   assert.match(text(root), /models\.saved/);
@@ -583,21 +529,21 @@ test("binding submit requires preview of the same draft, not a late response for
   assert.equal(sent.revision, "r1");
 });
 
-test("unregistering the selected bridge reads the remaining registry without targeting the removed resource", async () => {
-  const api = fakeApi({ next: () => view("r2", { connection: null, providers: [] }) });
+test("Operator readback handles a removed bridge without targeting the removed resource or replaying a write", async () => {
+  const api = fakeApi();
   api.models = async id => {
     if (id && !api.current.registry.modules.some(m => m.id === id)) throw new Error("Module not found");
     return api.current;
   };
   const { root, page } = mount(api);
   await page.ready;
-  button(moduleCard(root), "models.unregister").handlers.click();
+  api.current = view("r2", { connection: null, providers: [] });
+  button(root, "models.operatorReadback").handlers.click();
   await tick(); await tick();
   assert.equal(page.state.unknown, false);
   assert.equal(page.state.bridgeId, "");
   assert.equal(page.state.view.registry.modules.length, 0);
-  const sent = api.calls.find(c => c[0] === "resource")[1];
-  assert.equal(sent.removeId, "bridge");
+  assert.equal(api.calls.some(c => c[0] === "resource"), false);
 });
 
 test("catalog and quota stay separate and never present unknown, failed or stale data as current success", async () => {
@@ -715,7 +661,7 @@ test("a stale-revision rejection keeps the draft and offers an explicit re-read 
   urlInput.value = "edited"; urlInput.handlers.input();
   await submit(form); await tick();
   assert.match(text(root), /models\.rejected revision is stale/);
-  assert.equal(page.state.connectionDrafts.module.id, "edited");
+  assert.equal(page.state.connectionDrafts.endpoint.id, "edited");
 
   // Writes are blocked while the facts are being read again.
   const reread = deferred();
@@ -766,7 +712,7 @@ test("sections are routed without remounting, so drafts and typed keys survive n
   const urlInput = find(connectionForm(root), n => n.tagName === "INPUT");
   urlInput.value = "http://127.0.0.1:99"; urlInput.handlers.input();
   page.show({ section: "providers" });
-  assert.equal(flags.at(-1).maintenance, true, "the rail marks the owning section with a draft");
+  assert.equal(flags.at(-1).provider, true, "the rail marks the owning section with a draft");
   button(find(root, n => n.dataset.provider === "mine"), "models.editProvider").handlers.click();
   const key = find(root, n => n.type === "password");
   key.value = "sk-typed";

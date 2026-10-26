@@ -61,8 +61,10 @@ share the model-management caller boundary; Task roles gain no global authority.
 Web uses GET/POST `/api/models/maintenance`, POST
 `/api/models/connection/preview` and `/api/models/connection/apply`.
 Admission is not saved/applied: inspect the exact Job business result.
-The UI leads with a copyable Operator prompt. Advanced manual tools retain
-specification/config-tool drafts and reject blind replay of unknown submissions.
+The UI leads with a copyable Operator prompt. Component registration,
+maintenance specifications and native configuration tools are not Web forms;
+Operator uses the CLI/API. Existing server-side revision, authorization and
+unknown-outcome protections remain unchanged.
 Docs: `/models/docs/maintenance`, `/models/docs/metabridge`,
 `/models/docs/cliproxyapi` and `/models/docs/connection`.
 

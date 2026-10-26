@@ -61,8 +61,7 @@ export function mountModels(root, deps) {
     // offers an explicit re-read; nothing is replayed automatically.
     pending: false, unknown: false, rejected: false, receipt: null,
     connectionDrafts: {}, providerDraft: null, advanced: {},
-    maintenanceDrafts: {}, maintenanceResults: {}, toolDraft: "", toolPreview: null,
-    endpointId: "", moduleId: "", bridgeId: "", moduleStatuses: {},
+    endpointId: "", moduleId: "", bridgeId: "",
     providerFilter: { query: "", route: "all", state: "all" },
     catalog: { page: null, items: [], loading: false, error: null, note: null, generation: 0, query: "", source: "all" },
     quota: { source: initial.source, observation: null, loading: false, error: null, unavailable: false, generation: 0 }
@@ -172,10 +171,10 @@ export function mountModels(root, deps) {
   }
   function notify() {
     onChange({ connection: !!state.connectionDrafts.binding, provider: !!state.providerDraft || !!state.connectionDrafts.endpoint,
-      maintenance: !!state.connectionDrafts.module || Object.keys(state.maintenanceDrafts).length > 0 || !!state.toolDraft,
+      maintenance: false,
       unknown: state.unknown, pending: state.pending });
   }
-  function hasConnectionDrafts() { return Object.keys(state.connectionDrafts).length > 0 || Object.keys(state.maintenanceDrafts).length > 0 || !!state.toolDraft; }
+  function hasConnectionDrafts() { return Object.keys(state.connectionDrafts).length > 0; }
 
   // ---- Routing ----------------------------------------------------------
   function show(route) {
@@ -250,13 +249,11 @@ export function mountModels(root, deps) {
     const selectedAgent = agents.find(a => a.id === bindingDraft.agentId);
     const compatible = r.endpoints.filter(e => e.protocol === (selectedAgent?.adapterId === "claude" ? "anthropic-messages" : "responses"));
     const schemas = {
-      module: { id: "", kind: ["metabridge", "cliproxyapi"], version: "", managementUrl: "", managementKeyFile: "",
-        configFile: "", maintenance: ["external", "configuration"], quotaAdapter: ["none", "factory-quota-v1"] },
       endpoint: { id: "", moduleId: ["", ...r.modules.map(m => m.id)], url: "", protocol: ["responses", "anthropic-messages"], clientKeyFile: "" },
       binding: { agentId: ["", ...agents.map(a => a.id)], endpointId: ["", ...(selectedAgent ? compatible : []).map(e => e.id)], model: "" }
     };
     Object.keys(schemas).forEach(function (kind) {
-      const rows = r[kind === "module" ? "modules" : kind === "endpoint" ? "endpoints" : "bindings"];
+      const rows = r[kind === "endpoint" ? "endpoints" : "bindings"];
       const draft = state.connectionDrafts[kind] || {};
       const form = h("form.models-connection-form", { dataset: { resourceKind: kind } });
       const inputs = {};
@@ -277,7 +274,7 @@ export function mountModels(root, deps) {
             const endpoint = r.endpoints.find(e => e.id === value);
             return value + (endpoint ? " · " + endpoint.url : " · " + t("models.unavailable"));
           }
-          return ["maintenance", "quotaAdapter", "scope"].includes(key) ? t("models.option." + value) : value;
+          return value;
         };
         const control = Array.isArray(spec)
           ? h("select", { disabled: blocked }, options.map(v => h("option", { value: v }, optionLabel(v))))
@@ -336,8 +333,8 @@ export function mountModels(root, deps) {
         await write(async function () {
           await api.saveModelResource({ revision: view.registryRevision, requestId: crypto.randomUUID(), kind: kind,
             ...(removeId ? { removeId: removeId } : { resource: resource }) });
-          return api.models(kind === "module" && removeId === state.bridgeId ? undefined : state.bridgeId);
-        }, { scope: kind === "module" ? "maintenance" : kind === "endpoint" ? "provider" : "connection", clearConnection: removeId ? null : kind });
+          return api.models(state.bridgeId);
+        }, { scope: kind === "endpoint" ? "provider" : "connection", clearConnection: removeId ? null : kind });
       }
       if (kind === "binding") {
         updateSummary();
@@ -365,23 +362,9 @@ export function mountModels(root, deps) {
       });
       const list = rows.map(function (row) {
         const resourceId = row.id || row.agentId;
-        const status = h("p.faint.models-receipt", { role: "status" }, state.moduleStatuses[resourceId] || "");
-        const showStatus = async function (refresh) {
-          try {
-            const value = refresh
-              ? await api.refreshModels({ revision: view.registryRevision, kind: "status", resourceId: resourceId })
-              : await api.modelStatus(resourceId);
-            state.moduleStatuses[resourceId] = JSON.stringify(value);
-            status.textContent = state.moduleStatuses[resourceId];
-          } catch (error) { status.textContent = error.message; }
-        };
         return h("li", null, h("code", null, resourceId), kind === "binding"
           ? " → " + (row.endpointId || t("models.option.native")) + (row.endpointId ? " → " + row.model : "") + " · " + t("models.newSessionsOnly")
           : " · " + (row.kind || row.protocol),
-          kind === "module" ? h("div.models-module-operations", null,
-            h("button.btn.btn-ghost", { type: "button", disabled: blocked, onclick: () => showStatus(false) }, t("models.readCachedStatus")),
-            h("button.btn.btn-ghost", { type: "button", disabled: blocked, onclick: () => showStatus(true) }, t("models.refreshStatus")), status,
-            maintenanceForm(row)) : null,
           h("button.btn.btn-ghost", { type: "button", disabled: blocked, onclick: function () {
             if (state.connectionDrafts[kind] && !confirm(t("models.replaceResourceDraft"))) return;
             state.connectionDrafts[kind] = { ...row }; renderConnection(); notify();
@@ -412,85 +395,7 @@ export function mountModels(root, deps) {
       advanced("connection", cards.binding, sectionLink("providers", t("models.manageSources"))));
     sections.maintenance.replaceChildren(
       head("maintenance", t("models.operatorMaintenanceHelp")),
-      operatorHandoff("maintenance"), receiptNode("maintenance") || h("span"),
-      advanced("maintenance", cards.module, connectionToolForm()));
-  }
-
-  function maintenanceForm(row) {
-    const id = row.id, draft = state.maintenanceDrafts[id] || { spec: "", commit: "" };
-    const spec = h("textarea", { rows: 10, spellcheck: "false", disabled: writesBlocked(), placeholder: t("models.maintenanceSpec") });
-    spec.value = draft.spec;
-    const commit = h("input", { type: "text", autocomplete: "off", disabled: writesBlocked(), placeholder: t("models.pinnedCommit") });
-    commit.value = draft.commit;
-    function remember() { state.maintenanceDrafts[id] = { spec: spec.value, commit: commit.value }; notify(); }
-    spec.addEventListener("input", remember); commit.addEventListener("input", remember);
-    const result = h("pre.models-operation-result", { role: "status" }, state.maintenanceResults[id] || "");
-    const read = h("button.btn", { type: "button", disabled: writesBlocked(), onclick: async function () {
-      const requestedDraft = state.maintenanceDrafts[id];
-      try {
-        const facts = await api.modelMaintenance(id);
-        state.maintenanceResults[id] = JSON.stringify(facts, null, 2); result.textContent = state.maintenanceResults[id];
-        const input = facts.definition && facts.definition.configuration.input;
-        if (input && !spec.value && state.maintenanceDrafts[id] === requestedDraft) {
-          spec.value = JSON.stringify(input.spec, null, 2); remember(); renderConnection();
-        }
-      } catch (error) { result.textContent = error.message; }
-    } }, t("models.maintenanceRead"));
-    const actions = ["check-update", "update", "rollback", "start", "stop", "restart", "status", "logs", "handoff"].map(function (operation) {
-      return h("button.btn.btn-ghost", { type: "button", disabled: writesBlocked(), onclick: async function () {
-        let specification;
-        try { specification = JSON.parse(spec.value); } catch { result.textContent = t("models.invalidJson"); return; }
-        if (!confirm(t("models.maintenanceConfirm") + "\n" + id + " · " + t("models.operation." + operation) + "\n" + spec.value)) return;
-        await write(async function () {
-          const facts = await api.modelMaintenance(id);
-          const receipt = await api.maintainModel({ revision: state.view.registryRevision, requestId: crypto.randomUUID(),
-            maintenance: { moduleId: id, moduleRevision: facts.moduleRevision, operation: operation, spec: specification,
-              ...(operation === "update" ? { commit: commit.value.trim() } : {}), exclusiveWriter: true, impactAcknowledged: true } });
-          state.maintenanceResults[id] = JSON.stringify(receipt, null, 2);
-          return api.models(state.bridgeId);
-        }, { scope: "maintenance", accepted: true });
-      } }, t("models.operation." + operation));
-    });
-    return h("details.models-maintenance", null, h("summary", null, t("models.maintenance")),
-      h("p.models-note", null, t("models.maintenanceHelp")),
-      field(t("models.maintenanceSpec"), spec), field(t("models.pinnedCommit"), commit),
-      h("div.settings-actions", null, read, ...actions,
-        h("button.btn", { type: "button", disabled: writesBlocked(), onclick: function () {
-          delete state.maintenanceDrafts[id]; renderConnection(); notify();
-        } }, t("models.discard"))), result, h("a.btn-link", { href: "/jobs" }, t("models.openJobs")));
-  }
-  function connectionToolForm() {
-    const input = h("textarea", { rows: 8, spellcheck: "false", disabled: writesBlocked() });
-    input.value = state.toolDraft;
-    input.addEventListener("input", function () { state.toolDraft = input.value; state.toolPreview = null; notify(); });
-    const output = h("pre.models-operation-result", { role: "status" }, state.toolPreview ? JSON.stringify(state.toolPreview, null, 2) : "");
-    return h("details.card.models-card", null, h("summary", null, t("models.connectionTool")),
-      h("p.models-note", null, t("models.connectionToolHelp")), field(t("models.connectionInput"), input),
-      h("div.settings-actions", null,
-        h("button.btn", { type: "button", disabled: writesBlocked(), onclick: async function () {
-          try {
-            const requested = input.value;
-            const preview = await api.previewModelConnection(JSON.parse(requested));
-            if (state.toolDraft !== requested) return;
-            state.toolPreview = { ...preview, requested: requested }; output.textContent = JSON.stringify(preview, null, 2);
-          } catch (error) { output.textContent = error.message; }
-        } }, t("models.previewBinding")),
-        h("button.btn.btn-primary", { type: "button", disabled: writesBlocked(), onclick: async function () {
-          const preview = state.toolPreview;
-          if (!preview || preview.requested !== input.value) { output.textContent = t("models.previewRequired"); return; }
-          if (!confirm(t("models.exclusiveWriter") + "\n" + t("models.connectionToolHelp"))) return;
-          await write(async function () {
-            const receipt = await api.applyModelConnection({ input: JSON.parse(preview.requested), planDigest: preview.planDigest,
-              requestId: crypto.randomUUID(), exclusiveWriter: true });
-            state.maintenanceResults.connection = JSON.stringify(receipt, null, 2); state.toolPreview = null;
-            return api.models(state.bridgeId);
-          }, { scope: "maintenance", accepted: true });
-        } }, t("models.saveResource")),
-        h("button.btn", { type: "button", disabled: writesBlocked(), onclick: function () {
-          state.toolDraft = ""; state.toolPreview = null; renderConnection(); notify();
-        } }, t("models.discard"))),
-      output, h("pre.models-operation-result", null, state.maintenanceResults.connection || ""),
-      h("a.btn-link", { href: "/models/docs/connection" }, t("models.componentDocs")));
+      operatorHandoff("maintenance"));
   }
 
   // ---- Access (providers) -----------------------------------------------
@@ -932,7 +837,7 @@ export function mountModels(root, deps) {
       const view = await send(state.view.revision);
       if (options.clearConnection) delete state.connectionDrafts[options.clearConnection];
       if (options.clearProvider) state.providerDraft = null;
-      setReceipt(t(options.accepted ? "models.jobAccepted" : "models.saved"), "ok", options.scope);
+      setReceipt(t("models.saved"), "ok", options.scope);
       await adoptView(view);
     } catch (error) {
       if (error.disposition === "not-submitted") {

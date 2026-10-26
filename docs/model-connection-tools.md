@@ -219,8 +219,9 @@ restore 仅恢复回执中确认 `saved` 的项，逆序检查私有备份摘要
 
 ## Yui / Agent 复用
 
-Web 的 Settings → Model connection → 独立原生接入配置工具，以及 Operator 的
-`models.connection-preview` / `models.connection-apply` 已复用此库。
+Web 的模型 → 组件维护提供可复制的 Operator 指令，不再提供手动配置表单。
+Operator 的 `yui models connection-preview` / `yui models connection-apply`
+通过现有 capability 和 Job 复用此库。
 服务器按批准的输入重建私有计划，比较公开预览摘要，再由现有受控 Job 在写前重新核验；
 不接受浏览器反序列化的私有计划。返回 Job 接受不代表文件已经保存。
 精确输入、结果读取及恢复见 [维护说明](model-maintenance.md)。
