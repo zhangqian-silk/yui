@@ -1,6 +1,6 @@
 # Model components: operator and Agent manual
 
-Documentation revision 2 · 2026-10-24. Read the matching component section
+Documentation revision 3 · 2026-10-26. Read the matching component section
 before modifying a registered instance. These instructions do not grant
 permission to operate a real service or consume an account.
 
@@ -11,6 +11,39 @@ Versioned operating manuals: [metabridge](model-metabridge.md),
 `/models/docs/metabridge`, `/models/docs/cliproxyapi`, `/models/docs/maintenance`
 and `/models/docs/connection`. Common operations share the business service;
 complex fields use matching native instructions and explicit reread.
+
+## Normal user path: copy instructions to Operator
+
+Connection, Agent binding and component maintenance are infrequent operations.
+The Web pages lead with current references and a **Copy instructions for Operator**
+button, not configuration fields. Paste the text into the existing Operator
+conversation, confirm the intended change, then reread the Web settings when
+Operator finishes. Copying neither sends a message nor executes any operation.
+On LAN HTTP, browsers may refuse automatic clipboard access; the read-only text
+remains selectable for manual copying. Prompts never include registry addresses,
+key files or secret values.
+
+Manual forms remain under a closed **Advanced: configure manually** disclosure
+for explicit expert use. Existing services, native Agent configuration, catalog
+and quota observation semantics are unchanged. No new Skill installation is
+required: Web and CLI share static prompts, and the CLI points to the manuals
+shipped with its own version rather than an independently updated instruction
+package.
+
+Start with `yui models guide metabridge --json` (or `binding`, `maintenance`).
+This offline command returns the prompt, Operator procedure, command examples
+and absolute installed manual paths. It reads no service or user configuration.
+An existing mixed official-subscription metabridge setup usually needs the native
+Agent path, not another generic API-key binding. Inspect the actual setup first.
+
+Operator must establish exact Agent, service and effect scope. Default to new
+Yui Sessions; personal native configuration is a separate explicit choice.
+Reuse existing services without installation or lifecycle takeover. Ask only
+for missing choices, explain changes before confirmation, preview/check revisions,
+back up files, apply only authorized effects and read back each result. A generic
+handoff prompt does not authorize restart, upgrade, deletion or real-model/quota
+validation. Never print secrets or copy login credentials. Unknown results require
+inspection of the same request/Job, not replay.
 
 | Component | Target evidence | Yui scope in this delivery |
 | --- | --- | --- |
@@ -92,12 +125,11 @@ procedure; Yui's storage migration never performs them.
 
 ### Common Yui registrations
 
-Use Web → Models: **Model sources** registers API/CPA/metabridge addresses;
-**Agent access** selects a configured Agent, a compatible source and a model;
-**Models & quota** reads cached observations; **Component maintenance** registers
-optional modules and exposes their explicitly authorized maintenance tools.
-Agent access derives its adapter from the selected Agent and previews the exact
-selection before saving. Native access preserves the Agent's own model choice;
+Use Web → Models: **Model sources**, **Agent access** and **Component maintenance**
+provide Operator handoff prompts; the optional manual editors are under Advanced.
+**Models & quota** reads cached observations. The advanced Agent access editor
+derives its adapter from the selected Agent and previews the exact selection
+before saving. Native access preserves the Agent's own model choice;
 an override affects only new Yui Sessions, never existing Sessions or personal
 configuration. Cached model suggestions are not an inference test.
 The old `/settings/connection` address opens `/models/connection`.

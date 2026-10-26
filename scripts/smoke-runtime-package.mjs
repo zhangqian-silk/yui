@@ -149,6 +149,17 @@ try {
     [join(root, "dist/models/configureConnection.js"), "--help"], { encoding: "utf8",
       env: { PATH: process.env.PATH, CODEX_HOME: join(sandbox, "unused-codex-home") } }));
   assert.match(connectionHelp.usage, /preview --input/);
+  const guideHome = join(sandbox, "unused-model-guide-home");
+  const modelGuide = JSON.parse(execFileSync(process.execPath,
+    [join(root, "dist/cli.js"), "models", "guide", "metabridge", "--json"], {
+      encoding: "utf8", env: { PATH: process.env.PATH, HOME: isolatedHome, YUI_HOME: guideHome }
+    })).data;
+  assert.equal(modelGuide.topic, "metabridge");
+  for (const manual of modelGuide.manuals) {
+    assert.equal(dirname(manual), join(root, "docs"), "guide resolves installed manuals");
+    assert.ok(statSync(manual).isFile());
+  }
+  assert.equal(existsSync(guideHome), false, "offline guide must not initialize a Home or Controller");
   // Exercise the installed binary, not a checkout helper or a fake Provider.
   const nativeRoot = join(root, "dist/runtime/native", `${process.platform}-${process.arch}`);
   assert.equal(execFileSync(join(nativeRoot, "claude-process-owner"),
