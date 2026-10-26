@@ -32,9 +32,12 @@ export const SETTINGS_STYLES = `
 .settings-observation{max-height:260px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:var(--fs-xs)}
 .settings-search{padding:10px 0}
 .settings-search input{width:100%;max-width:520px}
-.settings-group-area{display:grid;gap:12px;min-width:0}
-.settings-group-area>header{display:grid;gap:4px}
+.settings-group-area{display:grid;gap:16px;min-width:0;padding:20px;border:1px solid var(--line);border-radius:var(--r-lg);background:var(--surface-2)}
+.settings-group-area>header{display:grid;gap:6px;padding-bottom:14px;border-bottom:1px solid var(--line)}
+.settings-area-roles{border-top:3px solid var(--accent)}
+.settings-area-agents .settings-group{background:var(--surface)}
 .settings-group-area>header h2,.settings-area-title{font-size:var(--fs-md);font-weight:600;color:var(--ink)}
+.settings-area-roles>header h2{font-size:var(--fs-lg)}
 .settings-group-area>header p,.settings-area-help{font-size:var(--fs-sm);color:var(--ink-2);line-height:1.5}
 .settings-area-count{display:inline-block;margin-left:8px;font-size:var(--fs-xs);font-weight:400;color:var(--ink-3)}
 .settings-group-list{display:grid;gap:10px;min-width:0}
@@ -55,11 +58,23 @@ export const SETTINGS_STYLES = `
 .settings-group-agents .settings-summary-context{grid-column:1;grid-row:3}
 .settings-group-agents .settings-group-affordance{grid-column:2;grid-row:1}
 .settings-group-roles,.settings-group-profiles{padding:12px 16px;border-radius:var(--r-md)}
-.settings-profile-library{border-top:1px solid var(--line);padding-top:16px;min-width:0}
+.settings-profile-library{border:1px solid var(--line);border-radius:var(--r-lg);padding:12px 20px;min-width:0;background:var(--surface)}
 .settings-profile-library>summary{cursor:pointer;padding:8px 0;overflow-wrap:anywhere}
 .settings-profile-library>summary .settings-area-help{display:block;margin-top:5px}
 .settings-profile-library[open]>.settings-group-list{margin-top:12px}
 .settings-group>summary:focus-visible,.settings-profile-library>summary:focus-visible{outline:2px solid var(--accent);outline-offset:4px;border-radius:var(--r-sm)}
+.settings-profile-apply{display:grid;gap:10px;padding:16px;margin-bottom:20px;border:1px solid var(--line-2);border-radius:var(--r-md);background:var(--surface-2)}
+.settings-profile-picker{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap}
+.settings-profile-picker>.field{flex:1;min-width:180px}
+.settings-profile-picker select{width:100%}
+.settings-profile-preview:empty{display:none}
+.settings-profile-preview{display:grid;gap:8px}
+.settings-profile-diff-scroll{overflow:auto;max-height:360px;border:1px solid var(--line);border-radius:var(--r-sm)}
+.settings-profile-diff{border-collapse:collapse;width:100%;font-size:var(--fs-xs)}
+.settings-profile-diff th,.settings-profile-diff td{padding:10px;vertical-align:top;text-align:left;border-bottom:1px solid var(--line)}
+.settings-profile-diff thead th{background:var(--surface);font-weight:600}
+.settings-profile-diff td{min-width:150px;max-width:400px}
+.settings-profile-diff pre{white-space:pre-wrap;overflow-wrap:anywhere}
 #settings-status:empty,#browser-receipt:empty{display:none}
 .mono-line{overflow-wrap:anywhere}
 .permissions-results{display:grid;gap:12px;min-width:0}
@@ -78,6 +93,8 @@ export const SETTINGS_STYLES = `
 @media(max-width:${BREAKPOINTS.small}px){
   .settings-grid{grid-template-columns:minmax(0,1fr)}
   .settings-card{padding:14px}
+  .settings-group-area{padding:14px}
+  .settings-profile-library{padding:10px 14px}
   .settings-group-list-agents{grid-template-columns:minmax(0,1fr)}
   .settings-group>summary{grid-template-columns:minmax(0,1fr) auto}
   .settings-group .settings-summary-facts{grid-column:1/-1;grid-row:2;gap:8px}

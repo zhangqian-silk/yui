@@ -468,16 +468,18 @@ async function handleHttpRequest(
     }
     return;
   }
-  if (pathname === "/api/settings" || pathname === "/api/settings/group" || pathname === "/api/settings/capabilities") {
+  if (pathname === "/api/settings" || pathname === "/api/settings/group" || pathname === "/api/settings/capabilities" || pathname === "/api/settings/profile") {
     try {
       if (!dependencies.settings) throw new WebRequestRejected("Settings service unavailable.");
       const query = new URL(request.url!, "http://localhost").searchParams;
-      if ([...query.keys()].some(k => !["id", "refresh", "q", "cursor"].includes(k))) throw new WebRequestRejected("Unknown settings query.");
+      if ([...query.keys()].some(k => !(pathname === "/api/settings/profile" ? ["id", "profileId"] : ["id", "refresh", "q", "cursor"]).includes(k))) throw new WebRequestRejected("Unknown settings query.");
       let value: unknown;
       if (method === "GET" && pathname === "/api/settings") value = dependencies.settings.index(query.get("q") ?? "", query.get("cursor") ?? "0");
       else if (method === "GET" && pathname === "/api/settings/group") value = dependencies.settings.read(query.get("id") ?? "");
       else if (method === "GET" && pathname === "/api/settings/capabilities") value = await dependencies.settings.capabilities(query.get("id") ?? "", query.get("refresh") === "true");
       else if (method === "POST" && pathname === "/api/settings/group") value = await dependencies.settings.save(await readMutationBody(request));
+      else if (method === "GET" && pathname === "/api/settings/profile") value = dependencies.settings.previewProfile(query.get("id") ?? "", query.get("profileId") ?? "");
+      else if (method === "POST" && pathname === "/api/settings/profile") value = await dependencies.settings.applyProfile(await readMutationBody(request));
       else {
         sendJson(response, 405, { error: "Method not allowed.", disposition: "not-submitted" }, false);
         return;

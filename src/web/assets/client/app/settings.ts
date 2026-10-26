@@ -74,7 +74,7 @@ const groupAreas = {};
 for (const name of ["agents", "roles", "profiles", "server"]) {
   const list = h("div.settings-group-list.settings-group-list-" + name, { dataset: { agentGroupList: name } });
   const title = h(name === "profiles" ? "summary" : "header", null);
-  const root = name === "server" ? list : h(name === "profiles" ? "details.settings-profile-library" : "section.settings-group-area",
+  const root = name === "server" ? list : h(name === "profiles" ? "details.settings-profile-library" : "section.settings-group-area.settings-area-" + name,
     { "aria-labelledby": "settings-area-" + name }, title, list);
   groupAreas[name] = { root, list, title };
   container.append(root);
@@ -96,7 +96,7 @@ const agentActions = $("#agent-management-actions");
 function renderAgentActions() {
   agentActions.replaceChildren(h("button.btn.btn-primary", { type: "button", onclick: () => openOperatorHandoff({
     topic: "agent", t, locale: i18n.getLocale, onReadback: async () => {
-      for (const state of groups) if (!state.dirty && !state.pending) state.loaded = false;
+      for (const state of groups) if (!state.dirty && !state.pending && !state.unknown) state.loaded = false;
       await start();
     }
   }) }, t("models.configure.agent")),
@@ -126,7 +126,7 @@ let searchTimer;
 const more = h("button.btn", { type: "button", hidden: true }, t("settings.more"));
 container.after(more);
 window.addEventListener("beforeunload", event => {
-  if (!groups.some(g => g.dirty)) return;
+  if (!groups.some(g => g.dirty || g.pending || g.unknown)) return;
   event.preventDefault(); event.returnValue = "";
 });
 
@@ -168,6 +168,7 @@ function editor(field, group, state) {
   function mark() {
     control.disabled = state.readOnly || reset.checked || unavailable;
     state.dirty = state.editors.some(e => e.changed());
+    state.profileApplication?.invalidate();
     markDirty("server", groups.some(g => g.dirty && !isAgentGroup(g.meta)));
     markDirty("agents", groups.some(g => g.dirty && isAgentGroup(g.meta)));
     state.save.disabled = state.readOnly || !state.dirty || state.pending || state.capabilityPending || state.unknown;
@@ -278,12 +279,112 @@ function renderGroupSummary(state) {
     h("span.settings-group-affordance", null, t("settings.viewConfiguration")));
 }
 
+// A Profile is copied once into a Role. Selection and preview never change
+// the Role's draft, nor claim a durable Profile binding.
+function roleProfileApplication(state, group) {
+  let epoch = 0, preview = null, loading = false;
+  const generation = state.renderGeneration;
+  const select = h("select", { dataset: { profileAction: "select" } },
+    h("option", { value: "" }, t("settings.profileChoose")),
+    group.profiles.map(profile => h("option", { value: profile.id, disabled: !profile.available },
+      profile.id + (profile.available ? "" : " · " + (profile.reason || t("settings.profileUnavailable"))))));
+  select.value = "";
+  const info = h("p.settings-receipt", { role: "status", "aria-live": "polite" });
+  const result = h("div.settings-profile-preview", { dataset: { profileAction: "preview" } });
+  const acknowledge = h("input", { type: "checkbox", dataset: { profileAction: "acknowledge" } });
+  const confirm = h("button.btn.btn-primary", { type: "button", disabled: true, dataset: { profileAction: "confirm" } }, t("settings.profileApply"));
+  const reread = h("button.btn", { type: "button", disabled: true }, t("settings.profilePreview"));
+  const blocked = () => state.dirty || state.pending || state.unknown || state.capabilityPending;
+  function sync() {
+    select.disabled = !!blocked();
+    reread.disabled = !!blocked() || loading || !select.value;
+    confirm.disabled = state.readOnly || !!blocked() || loading || !preview;
+    acknowledge.disabled = state.readOnly || !!blocked() || !preview;
+  }
+  function invalidate() {
+    epoch++; preview = null; loading = false;
+    result.replaceChildren();
+    info.textContent = state.unknown ? t("settings.unknown") : t("settings.profilePreviewInvalid");
+    sync();
+  }
+  async function read() {
+    const current = ++epoch;
+    preview = null; result.replaceChildren(); acknowledge.checked = false;
+    const profileId = select.value;
+    if (blocked() || !group.profiles.some(profile => profile.id === profileId && profile.available)) {
+      loading = false; info.textContent = blocked() ? t("settings.profileDraftBlocked") : ""; sync(); return;
+    }
+    const baseline = state.group;
+    loading = true; info.textContent = t("settings.profileLoading"); sync();
+    // Changing the selection is allowed while a read is in flight.
+    select.disabled = false;
+    try {
+      const value = await requestJson("/api/settings/profile?" + new URLSearchParams({ id: group.id, profileId }));
+      if (current !== epoch || state.renderGeneration !== generation || baseline !== state.group || blocked()) return;
+      if (value.id !== group.id || value.profileId !== profileId) throw Error(t("settings.profilePreviewInvalid"));
+      preview = value;
+      result.replaceChildren(h("h4", null, t("settings.profileDifference") + " · " + profileId),
+        h("p", null, value.notice),
+        h("div.settings-profile-diff-scroll", null, h("table.settings-profile-diff", null,
+          h("thead", null, h("tr", null, ["settings.profileField", "settings.profileBefore", "settings.profileAfter"]
+            .map(label => h("th", { scope: "col" }, t(label))))),
+          h("tbody", null, value.changes.map(change => h("tr", null,
+            h("th", { scope: "row" }, t("settings.field." + change.key, change.key)),
+            h("td", null, h("pre", null, format(change.before) ?? "—")),
+            h("td", null, h("pre", null, format(change.after) ?? "—"))))))));
+      info.textContent = state.readOnly ? t("settings.profileReadOnly") : t("settings.profileConfirmHelp");
+    } catch (error) {
+      if (current === epoch && state.renderGeneration === generation) info.textContent = error.message;
+    } finally {
+      if (current === epoch && state.renderGeneration === generation) { loading = false; sync(); }
+    }
+  }
+  select.addEventListener("change", read); reread.addEventListener("click", read);
+  confirm.addEventListener("click", async () => {
+    if (state.readOnly || blocked() || loading || !preview || state.renderGeneration !== generation) return;
+    const confirmed = preview;
+    const acknowledged = acknowledge.checked;
+    state.pending = true; epoch++; loading = false; sync(); state.save.disabled = true;
+    const controls = [...state.content.querySelectorAll("input,select,textarea,button")];
+    const disabled = controls.map(control => control.disabled);
+    controls.forEach(control => { control.disabled = true; });
+    try {
+      const saved = await submitMutation("settings/" + group.id, "/api/settings/profile", {
+        id: group.id, profileId: confirmed.profileId, revision: confirmed.revision, acknowledgeLive: acknowledged
+      });
+      renderGroup(state, saved.group);
+      state.receipt.textContent = t("settings.profileApplied") + "\n" + saved.output + "\n" + saved.adoption + "\n" + saved.refresh;
+    } catch (error) {
+      state.unknown = error.disposition !== "not-submitted";
+      preview = null;
+      info.textContent = error.message + "\n" + t(state.unknown ? "settings.unknown" : "settings.profileReadAgain");
+      state.receipt.textContent = info.textContent;
+      controls.forEach((control, i) => { control.disabled = disabled[i]; });
+    } finally {
+      state.pending = false;
+      state.save.disabled = state.readOnly || !state.dirty || state.unknown;
+      state.profileApplication?.sync();
+    }
+  });
+  state.profileApplication = { invalidate, sync };
+  sync();
+  return h("section.settings-profile-apply", null,
+    h("h3", null, t("settings.profileApplyTitle")), h("p", null, t("settings.profileCopyHelp")),
+    h("div.settings-profile-picker", null, h("label.field", null, h("span", null, t("settings.profileChoose")), select), reread),
+    group.profiles.length ? null : h("p", null, t("settings.profileEmpty")),
+    ...group.profiles.filter(profile => !profile.available).map(profile =>
+      h("p.faint", null, profile.id + " · " + (profile.reason || t("settings.profileUnavailable")))),
+    result, info, h("label.settings-reset", null, acknowledge, t("settings.acknowledge")),
+    h("div.settings-actions", null, confirm));
+}
+
 function renderGroup(state, group) {
   const generation = state.renderGeneration = (state.renderGeneration || 0) + 1;
   state.loadError = null;
   state.group = group; state.editors = []; state.dirty = false; state.unknown = false;
   state.readOnly = !!(settingsReadOnly || group.readOnly);
   state.capabilityPending = false;
+  state.profileApplication = null;
   markDirty("server", groups.some(g => g.dirty && !isAgentGroup(g.meta)));
   markDirty("agents", groups.some(g => g.dirty && isAgentGroup(g.meta)));
   const form = h("form.settings-stack");
@@ -344,6 +445,7 @@ function renderGroup(state, group) {
       const adopt = h("button.btn", { type: "button", disabled: state.unknown || agentChanged }, t("settings.useBaseline"));
       adopt.addEventListener("click", () => {
         state.group = current;
+        state.profileApplication?.invalidate();
         receipt.textContent = t("settings.baselineChanged");
         values.remove(); adopt.remove();
       });
@@ -363,6 +465,7 @@ function renderGroup(state, group) {
     catch (error) { receipt.textContent = error.message; receipt.classList.add("settings-error"); return; }
     if (!changes.length) return;
     state.pending = true; save.disabled = true;
+    state.profileApplication?.invalidate();
     // Keep controls frozen during one submission. Failed saves keep all drafts.
     const controls = [...form.querySelectorAll("input,select,textarea,button")];
     const disabled = controls.map(c => c.disabled);
@@ -381,6 +484,7 @@ function renderGroup(state, group) {
     } finally {
       state.pending = false;
       state.save.disabled = state.readOnly || !state.dirty || state.unknown;
+      state.profileApplication?.sync();
     }
   });
   if (group.observation) form.append(h("details", null, h("summary", null, t("settings.observation")),
@@ -396,6 +500,7 @@ function renderGroup(state, group) {
         info.textContent = t("settings.saveAgentFirst"); return;
       }
       state.capabilityPending = true; save.disabled = true;
+      state.profileApplication?.invalidate();
       query.disabled = refresh.disabled = true; info.textContent = t("settings.querying");
       try {
         const result = await requestJson("/api/settings/capabilities?" + new URLSearchParams({ id: group.id, refresh: String(force) }));
@@ -420,6 +525,7 @@ function renderGroup(state, group) {
         if (state.renderGeneration === generation) {
           state.capabilityPending = false;
           state.save.disabled = state.readOnly || !state.dirty || state.pending || state.unknown;
+          state.profileApplication?.sync();
         }
       }
     }
@@ -430,10 +536,13 @@ function renderGroup(state, group) {
   }
   if (state.readOnly) form.querySelectorAll("input,select,textarea").forEach(control => { control.disabled = true; });
   state.content.replaceChildren(form);
+  if (isRole && Array.isArray(group.profiles)) {
+    state.content.replaceChildren(roleProfileApplication(state, group), form);
+  }
 }
 
 async function loadGroup(state) {
-  if (state.loaded || state.loading) return;
+  if (state.loaded || state.loading || state.dirty || state.pending || state.unknown) return;
   state.loading = true;
   state.loadError = null;
   renderGroupSummary(state);
