@@ -11,6 +11,7 @@ import { checkCurrentSkills, SKILL_REUSE_RULE } from "../context/currentSkills.j
 import { runtimeDiagnosticGroups, runtimeDiagnosticEvidence } from "../controller/globalRuntimeAttention.js";
 import { roleSkillIds } from "../context/roleSessionContext.js";
 import { isEnabled } from "../role/availability.js";
+import { requireResolvedAgentProfileRuntime } from "../profile/agentProfileRuntime.js";
 import {
   createRoleSessionSet,
   recordRoleAgentSession,
@@ -119,6 +120,10 @@ export function previewGlobalRoleAgentConfigurationMutation(
   options: GlobalRoleCommandOptions = {}
 ): GlobalRoleAgentConfigurationMutation | undefined {
   const [command, rawName, ...tail] = args;
+  if (command === "apply-profile") {
+    const { role, binding } = previewGlobalRoleProfileApplication(required(rawName, "Role"), required(tail[0], "Profile"), store);
+    return { agentId: binding.agentId, config: binding.config, cwd: role.workspace };
+  }
   if (command !== "add" && command !== "update") return undefined;
   const name = roleName(rawName);
   const parsed = parseRoleOptions(tail, roleOptionSpecs({
@@ -245,6 +250,7 @@ export function runGlobalRoleCommand(
     case "show": return showRole(rest, store);
     case "context": return roleContext(rest, store, options);
     case "update": return updateRole(rest, store, options);
+    case "apply-profile": return applyProfile(rest, store, options);
     case "enable":
     case "disable": {
       if (rest.length !== 1) throw usageError(`Usage: yui config role ${command} <role>`);
@@ -262,6 +268,57 @@ export function runGlobalRoleCommand(
         ? "Role command is required."
         : `Unknown command: config role ${command}`);
   }
+}
+
+/** One-time template materialization, shared by CLI and Web; never a live link. */
+export function previewGlobalRoleProfileApplication(name: string, profileId: string, store: GlobalRoleTransactionStore) {
+  const role = requireRole(name, store);
+  const profile = store.listAgentProfiles().find(item => item.id === profileId);
+  if (!profile) throw usageError(`Agent Profile not found: ${profileId}`);
+  const { binding } = requireResolvedAgentProfileRuntime(profile, store);
+  const patch = {
+    defaultAccess: profile.defaultAccess,
+    description: profile.description,
+    systemPrompt: profile.instructions,
+    skills: profile.skills === undefined ? undefined : [...profile.skills],
+    constraints: profile.defaultAccess === "read" ? ["Do not modify files or external state."] : undefined
+  };
+  return { role, profile, binding, patch };
+}
+
+function applyProfile(args: string[], store: GlobalRoleStore, options: GlobalRoleCommandOptions): string {
+  const [name, profileId, ...tail] = args;
+  if (tail.length > 1 || tail.some(value => value !== "--yes")) {
+    throw usageError("Usage: yui config role apply-profile <role> <profile> [--yes]");
+  }
+  const next = store.transaction(tx => {
+    const { role, binding, patch } = previewGlobalRoleProfileApplication(
+      required(name, "Role"), required(profileId, "Profile"), tx);
+    assertRoleRuntimeMutationAllowed(tx, { scope: "global", roleName: role.name }, "Profile application");
+    const sessions = tx.getGlobalRoleSessionSet(role.name);
+    assertLiveRoleSessionAcknowledged({
+      sessions, roleName: role.name, desiredRevision: role.launchRevision,
+      acknowledged: tail.includes("--yes"), stopCommand: "yui session stop --all"
+    });
+    options.validateAgentConfiguration?.({ agentId: binding.agentId, config: binding.config, cwd: role.workspace });
+    validateConfiguredRoleSkills(options.yuiHome, patch.skills ?? []);
+    const updated = updateGlobalRole(role, {
+      ...patch, agentBindings: { ...role.agentBindings, [binding.agentId]: binding }
+    }, new Date());
+    if (binding.agentId === role.activeAgentId) {
+      tx.saveGlobalRole(updated);
+      return updated;
+    }
+    const activeSession = sessions?.sessions[sessions.activeAgentId];
+    const switched = switchActiveRoleAgent(updated, sessions ?? createRoleSessionSet(
+      { scope: "global", roleName: role.name }, role.activeAgentId, new Date()),
+    binding.agentId, { activeRun: false, nativeProcessRunning: activeSession?.status === "active" }, new Date());
+    tx.saveGlobalRoleWithSessionSet(switched.role, switched.sessions);
+    return switched.role;
+  });
+  return `Applied Profile ${profileId} once. Future template edits do not change this Role.\n`
+    + renderRoleDetails(`Updated role ${name}`, next, { kind: isSystemRoleName(name!) ? "system" : "global",
+      sessions: store.getGlobalRoleSessionSet(name!) });
 }
 
 function roleContext(

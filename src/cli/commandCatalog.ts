@@ -281,6 +281,7 @@ const roleChildren: readonly NodeInput[] = [
   },
   { name: "remove", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Remove a global Role.", usage: "yui config role remove <name>" },
   { name: "bind", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Bind and activate an Agent for a global Role.", usage: "yui config role bind <role> <agent-id>" },
+  { name: "apply-profile", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Copy one Profile into a global Role; existing Sessions and Tasks keep their configuration.", usage: "yui config role apply-profile <role> <profile> [--yes]", options: ["--yes"] },
   { name: "unbind", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Unbind a dormant Agent from a global Role.", usage: "yui config role unbind <role> <agent-id>" }
 ];
 
@@ -1507,7 +1508,7 @@ export const ROOT_COMMAND = buildNode({
           examples: ["yui config role list", "yui config role show operator"],
           sections: [
             { id: "inspect", title: "Inspect", entries: ["list", "show"] },
-            { id: "manage", title: "Manage", entries: ["add", "update", "enable", "disable", "remove", "bind", "unbind"] }
+            { id: "manage", title: "Manage", entries: ["add", "update", "apply-profile", "enable", "disable", "remove", "bind", "unbind"] }
           ],
           children: roleChildren
         },

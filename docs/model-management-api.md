@@ -34,6 +34,33 @@ addresses do not prove equal credentials, accounts or an active request path.
 Catalog and quota observations live inside Provider management and refresh only
 after the corresponding explicit action.
 
+### Role execution settings and reusable templates
+
+Agent management separates execution tools, global Role execution settings and
+the secondary Profile template library. Each Role can select one Profile, read
+a before/after preview, then explicitly apply it. Selection is not a write and
+Profiles are not stacked. Unsaved Role edits must be resolved first.
+
+Applying a Profile copies its resolved Agent runtime, access, description,
+instructions, Skills and access constraints once. Role name, workspace, enabled
+state, responsibilities and expected output remain unchanged. Template-owned
+empty values clear prior values, including prior constraints for a write Profile;
+these removals appear in the preview. A read Profile supplies the same read-only
+constraint as task-role Profile application. This is not a permanent binding:
+subsequent Profile edits do not update existing Roles. Running Sessions retain
+their captured configuration and existing Tasks are never rebound.
+
+`GET /api/settings/group?id=role/NAME` includes available and unavailable
+`profiles`. `GET /api/settings/profile?id=role/NAME&profileId=ID` performs a local,
+read-only preview without native capability discovery. Its revision pins the
+target Role, Profile and resolved runtime (including inherited Worker settings).
+`POST /api/settings/profile` takes `{id,profileId,revision,acknowledgeLive}`.
+It validates the candidate, rechecks the preview inside the transaction and
+uses the same application command as
+`yui config role apply-profile NAME PROFILE [--yes]`. A live Session requires
+acknowledgement; pending runtime lifecycle work still blocks mutation.
+Preview does not guarantee runtime/model availability.
+
 Provider projections include known, bounded display fields for protocol, source
 file, model aliases/exclusions, priority, route matchers and compaction policy.
 Conditional local compaction rules must not label the whole route as local
