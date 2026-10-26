@@ -65,7 +65,7 @@ inspection of the same request/Job, not replay.
 | Component | Target evidence | Yui scope in this delivery |
 | --- | --- | --- |
 | CLIProxyAPI | `router-for-me/CLIProxyAPI`, tag `v8.0.12`, `config.example.yaml` fetched at this tag | Independent endpoints, reference registration, native configuration method, explicit configuration-status reread |
-| metabridge | `zhangqian-silk/metabridge`, reference commit `ccc782e2ac3e4c91d89893207582dad16b45e623`; local file contract tested | Provider editor, independent endpoint, optional pinned Git/service maintenance |
+| metabridge | `zhangqian-silk/metabridge`, reference commit `ccc782e2ac3e4c91d89893207582dad16b45e623`; local file contract tested | Provider/configuration projection, independent endpoint, optional pinned Git/service maintenance |
 | Factory/Command Code quota extension | `factory-quota-v1` wire contract from the existing adapter; **no extension build/version verified** | Opt-in, deterministic fixture-tested read adapter; do not infer compatibility from CPA version |
 | Codex | App Server per-thread config contract; static launch fixtures, not a real installed binary compatibility test | Exact configured `codex` Agent, Responses endpoint or native |
 | Claude Code CLI | Anthropic gateway bearer-env contract; static launch fixtures, not a real CLI/model compatibility test | Exact configured `claude` Agent, Anthropic Messages endpoint or native |
@@ -142,15 +142,16 @@ procedure; Yui's storage migration never performs them.
 
 ### Common Yui registrations
 
-Use Web → Models: **Model sources**, **Agent access** and **Component maintenance**
-provide Operator handoff prompts; only sources and Agent selection retain optional
-manual editors under Advanced. Component configuration is handled through Operator.
-**Models & quota** reads cached observations. The advanced Agent access editor
-derives its adapter from the selected Agent and previews the exact selection
-before saving. Native access preserves the Agent's own model choice;
+Use Web → **Agent** or **Provider**. Agent contains configured tools, their native
+connections/model capabilities and Role/Profile configuration. Provider lists
+all configured sources without first selecting a component. Only configured
+metabridge/CPA instances appear as expandable component details; catalog and
+quota observations are part of this same page, not extra primary destinations.
+Provider and component configuration is handled through the Operator handoff,
+not manual Web forms. Native access preserves the Agent's own model choice;
 an override affects only new Yui Sessions, never existing Sessions or personal
 configuration. Cached model suggestions are not an inference test.
-The old `/settings/connection` address opens `/models/connection`.
+The old connection address opens Agent management.
 CLI/API callers can use the equivalent `models.save` capability. Example module:
 
 ```json
@@ -259,15 +260,15 @@ For the existing mixed official-subscription mode requiring native auth
 forwarding, keep the Agent's native binding/configuration instead. Yui does not
 copy that login into a generic endpoint or claim this API-key mode replaces it.
 
-The Provider form performs preview by loading current facts and requiring the
-current revision on submit. It preserves official routes, prevents broken
+The Provider configuration API performs preview by loading current facts and
+requiring the current revision on submit. It preserves official routes, prevents broken
 web-search dependencies and retains unlinked secret-bearing files. Concurrent
 external writers must be excluded. A failed root-reference update can leave a
 private orphan file; inspect its identity/reference status before any cleanup.
 Saved is not applied, and directory refresh is not inference verification.
 
 Complex field example: an authorized Agent may edit a native `webSearch`
-reference that the form intentionally does not expose. Back up both referenced
+reference that the narrow configuration API intentionally does not expose. Back up both referenced
 files, require exclusive ownership/current byte digests, verify the destination
 backend exists and is enabled where required, preserve unrelated native fields,
 atomically replace the owning file, then reread `/api/models?moduleId=ID` and

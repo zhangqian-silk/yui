@@ -86,7 +86,7 @@ export function createModelManagement(store: Store, options: {
     const state = snapshot(moduleId);
     let cpaProviders: ModelProviderView[] = [];
     if (state.module?.kind === "cliproxyapi" && state.module.configFile) {
-      try { cpaProviders = readCpaProviders(modelJsonFile(state.module.configFile).value); }
+      try { cpaProviders = readCpaProviders(modelJsonFile(state.module.configFile).value, state.module.configFile); }
       catch { state.configurationError = "CPA configuration is unavailable or unsupported. No configuration was changed."; }
     }
     return {
@@ -357,10 +357,10 @@ export function createModelManagement(store: Store, options: {
 
 /** CPA's native configuration stays owned by CPA; this is a read-only projection
  * of its configured API-key providers, never keys or an inferred account list. */
-function readCpaProviders(config: Record<string, unknown>): ModelProviderView[] {
+function readCpaProviders(config: Record<string, unknown>, sourceFile: string): ModelProviderView[] {
   const groups = config["api-keys"];
   if (!groups || typeof groups !== "object" || Array.isArray(groups)) return [];
-  return ["openai-compatibility", "codex", "claude"].flatMap(group => {
+  return ["openai-compatibility", "codex", "claude", "gemini", "interactions", "vertex", "meta", "xai"].flatMap(group => {
     const rows = (groups as Record<string, unknown>)[group];
     if (!Array.isArray(rows) || rows.length > 100) return [];
     return rows.map((value, index) => {
@@ -369,8 +369,12 @@ function readCpaProviders(config: Record<string, unknown>): ModelProviderView[] 
         via: "cpa" as const, baseUrl: safeUrl(p["base-url"]),
         prefix: safeText(p.prefix) ?? "", enabled: p.disabled !== true, editable: false,
         reason: "CPA native configuration; use its existing owner.",
-        credentialPresent: Array.isArray(p.keys) && p.keys.length > 0,
-        credentialKind: "key" as const, owner: "cliproxyapi" as const };
+        credentialPresent: Array.isArray(p.keys) && p.keys.length > 0
+          || typeof p["api-key"] === "string" && !!p["api-key"],
+        credentialKind: "key" as const, owner: "cliproxyapi" as const,
+        protocol: group, sourceFile, priority: signedFinite(p.priority),
+        models: modelMappings(p.models), excludedModels: textList(p["excluded-models"]),
+        routeModels: [], requestMode: null, compaction: null };
     });
   });
 }
@@ -392,8 +396,50 @@ function providerView(provider: Provider): ModelProviderView {
     enabled: p.enabled !== false, editable, reason: editable ? null : "Official, implicit-policy, shared-route or unsupported provider; manage with its existing owner.",
     credentialPresent: typeof auth.key === "string" && !!auth.key || typeof auth.file === "string" && !!auth.file,
     credentialKind: p.protocol === "codex-subscription" ? "subscription" : "key",
-    owner: "metabridge"
+    owner: "metabridge",
+    protocol: safeText(p.protocol) ?? "responses", sourceFile: provider.file.path,
+    priority: signedFinite(p.priority), models: modelMappings(p.models), excludedModels: [],
+    routeModels: matcherList(p.routeModels), requestMode: safeText(p.requestMode),
+    compaction: compactionView(p.compaction)
   };
+}
+// Only project known display fields. Never serialize arbitrary configuration
+// objects, request headers, key entries or executable rules into Web responses.
+function textList(value: unknown): string[] {
+  return Array.isArray(value) ? value.slice(0, 1000).flatMap(item => {
+    const text = safeText(item, 512); return text === null ? [] : [text];
+  }) : [];
+}
+function matcherList(value: unknown): string[] {
+  return Array.isArray(value) ? value.slice(0, 1000).flatMap(item => {
+    const text = safeText(item, 512);
+    if (text !== null) return [text];
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const rule = item as Record<string, unknown>;
+    const regex = safeText(rule.regex, 512);
+    return regex === null ? [] : [`/${regex}/${safeText(rule.flags, 16) ?? ""}`];
+  }) : [];
+}
+function modelMappings(value: unknown): { name: string; alias?: string }[] {
+  return Array.isArray(value) ? value.slice(0, 1000).flatMap(item => {
+    if (typeof item === "string") {
+      const name = safeText(item, 512); return name === null ? [] : [{ name }];
+    }
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const row = item as Record<string, unknown>;
+    const name = safeText(row.name, 512);
+    const alias = safeText(row.alias, 512);
+    return name === null ? [] : [{ name, ...(alias === null ? {} : { alias }) }];
+  }) : [];
+}
+function compactionView(value: unknown): ModelProviderView["compaction"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  return { mode: row.mode === "local" || row.mode === "passthrough" ? row.mode : "unknown",
+    models: matcherList(row.models), stripImages: row.stripImages === true };
+}
+function signedFinite(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 function safeUrl(value: unknown): string {
   try { return modelUrl(typeof value === "string" ? value : "").toString().replace(/\/+$/, ""); }

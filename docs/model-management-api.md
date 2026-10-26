@@ -24,6 +24,22 @@ provider metadata from their native JSON API-key configuration. Credential value
 and auth-file contents are never returned. No upstream lookup or native process
 launch is needed for these local projections.
 
+Only Agent and Provider are primary Web destinations. Provider reads all
+configured module views through the existing read selector, preserving the
+module identity and partial failures rather than hiding other modules behind
+a resource selector. metabridge and CPA are optional, expandable component
+details, not mandatory pages or suppliers. Their configuration rows, registered
+endpoints and native connections retain distinct identities; equal names or
+addresses do not prove equal credentials, accounts or an active request path.
+Catalog and quota observations live inside Provider management and refresh only
+after the corresponding explicit action.
+
+Provider projections include known, bounded display fields for protocol, source
+file, model aliases/exclusions, priority, route matchers and compaction policy.
+Conditional local compaction rules must not label the whole route as local
+compaction. These are configuration observations, not proof of runtime support;
+headers, key payloads and arbitrary configuration objects are not exposed.
+
 Web uses the existing local token, same-origin JSON mutation and mutation-error
 boundaries. API error results distinguish `not-submitted` from `unknown`; on
 unknown outcome inspect the exact resource/request before deciding a next action.

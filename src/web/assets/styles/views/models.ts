@@ -27,6 +27,20 @@ export const MODELS_STYLES = `
 .models-section .manage-heading p:not(.kicker){color:var(--ink-3)}
 .models-card{overflow:hidden}
 .models-card>.card-body{gap:12px}
+.models-disclosure{min-width:0;padding:14px 16px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface)}
+.models-disclosure>summary{cursor:pointer;font-size:var(--fs-sm);font-weight:600;overflow-wrap:anywhere}
+.models-disclosure[open]>summary{margin-bottom:12px}
+.models-disclosure .models-disclosure{margin-top:12px;background:var(--surface-2)}
+.models-table .models-disclosure{padding:0;border:0;background:transparent;min-width:110px}
+.models-table .models-disclosure[open]{min-width:200px;max-width:360px}
+.models-record-facts{display:grid;gap:8px;margin:10px 0;min-width:0;font-size:var(--fs-sm)}
+.models-record-facts>div{display:grid;grid-template-columns:minmax(80px,auto) minmax(0,1fr);gap:12px}
+.models-record-facts dt{color:var(--ink-3);font-size:var(--fs-xs)}
+.models-record-facts dd{margin:0;overflow-wrap:anywhere}
+.models-configured-models{padding-left:18px;max-height:18rem;overflow:auto;font-size:var(--fs-sm)}
+.models-configured-models li{overflow-wrap:anywhere;margin:5px 0}
+.models-component-connection{padding-top:12px;border-top:1px solid var(--line)}
+.models-disclosure .models-section:not([hidden]){display:grid;gap:12px;margin-top:12px}
 .models-status{display:grid;gap:8px;min-width:0}
 .models-status:empty{display:none}
 .models-facts{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;min-width:0}
