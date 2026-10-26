@@ -200,6 +200,13 @@ test("Provider overview includes every configured source, keeps instance identit
   const records = all(root, node => node.dataset.providerIdentity);
   assert.equal(records.length, 11, "one bridge Provider, nine CPA Providers and one native record are all visible by default");
   assert.equal(new Set(records.map(node => node.dataset.providerIdentity)).size, 11, "same names and IDs from distinct sources are not merged");
+  const layers = all(root, node => node.dataset.supplyLayer);
+  assert.deepEqual(layers.map(node => node.dataset.supplyLayer), ["component", "endpoint", "native"],
+    "the Provider view presents optional component, direct endpoint and native supply as distinct layers");
+  assert.equal(records.filter(node => node.dataset.layer === "component").length, 10);
+  assert.equal(records.filter(node => node.dataset.layer === "native").length, 1);
+  assert.equal(layers[1].children.some(node => node.className.includes("models-supply-empty")), true,
+    "an empty direct-endpoint layer is honest without inventing a Provider");
   assert.equal(records.some(node => node.dataset.provider === "cpa-upstream"), false, "the CPA connection is not counted as a supplier");
   assert.match(text(root), /CPA connection/);
   assert.match(text(root), /matching\/\*/);
