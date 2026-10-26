@@ -72,7 +72,7 @@ test("management navigation shares history across areas and normalizes direct UR
   vm.runInContext(MANAGE_SHELL_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), ctx);
   for (const page of ["models", "settings", "jobs"]) ctx.registerManagePage(page, { show: route => shown.push({ ...route }) });
   ctx.startManagement();
-  assert.equal(location.pathname + location.search, "/models/quota?source=command-code");
+  assert.equal(location.pathname + location.search, "/models/providers?detail=quota&source=command-code");
   assert.equal(history.pushes, 0, "normalizing a direct URL must not add a Back step");
   ctx.navigateManage({ page: "settings", section: "preferences" });
   ctx.navigateManage({ page: "models", section: "connection" });
@@ -142,6 +142,8 @@ function mount(api, extra = {}) {
     openOperatorHandoff: options => { handoff = options; } });
   vm.runInContext(MODELS_VIEW_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
   const root = element("div");
+  root.querySelectorAll = selector => all(root, node => selector === "[data-model-detail]"
+    ? node.dataset.modelDetail !== undefined : node.dataset.observationTime !== undefined);
   const confirmations = [];
   const page = context.mountModels(root, { t: (key, fallback) => key, api,
     confirm: message => { confirmations.push(message); return true; }, ...extra });
@@ -150,11 +152,12 @@ function mount(api, extra = {}) {
 
 test("initial observations wait for the configuration baseline", async () => {
   let resolveView;
-  const api = fakeApi({ models: () => new Promise(resolve => { resolveView = resolve; }) });
+  const baseline = view("new", { connection: connection({ bridgeUrl: "http://127.0.0.1:10" }) });
+  const api = fakeApi({ models: id => id ? Promise.resolve(baseline) : new Promise(resolve => { resolveView = resolve; }) });
   const { page } = mount(api);
   await tick();
   assert.equal(api.calls.length, 0, "no observation may precede the first configuration read");
-  resolveView(view("new", { connection: connection({ bridgeUrl: "http://127.0.0.1:10" }) }));
+  resolveView(baseline);
   await page.ready;
   assert.deepEqual(api.calls.map(call => call[0]), ["catalog", "quota"]);
 });
@@ -167,10 +170,90 @@ test("language changes retain current observations without loading again", async
   const observation = page.state.catalog.page;
   const calls = api.calls.length;
   page.translate();
-  assert.equal(reads, 1);
+  assert.equal(reads, 2, "one baseline plus one explicit component-source read");
   assert.equal(api.calls.length, calls);
   assert.equal(page.state.catalog.page, observation);
   assert.equal(page.dirty(), false);
+});
+
+test("Provider overview includes every configured source, keeps instance identity and isolates component failures", async () => {
+  const baseline = view("r1", { quotaSources: [],
+    connection: connection({ cpaUrl: "https://cpa.invalid", managementKeyFile: "/fixture/key" }),
+    nativeProviders: [{ id: "native-bridge", name: "Same name", agentId: "codex", sourceFile: "/fixture/config",
+      baseUrl: "https://native.invalid", protocol: "responses", credentialPresent: true }] });
+  const direct = { ...baseline.providers[1], id: "shared-name", name: "Same name", protocol: "responses",
+    models: [{ name: "upstream-model", alias: "public-model" }], sourceFile: "/fixture/bridge",
+    compaction: { mode: "local", models: ["matching/*"], stripImages: true }, apiKey: "must-not-render" };
+  const forwarding = { ...direct, id: "cpa-upstream", name: "CPA connection", via: "cpa" };
+  const cpa = Array.from({ length: 9 }, (_, index) => ({ ...direct, id: index ? "cpa-" + index : "shared-name",
+    owner: "cliproxyapi", via: "direct", sourceFile: "/fixture/cpa" }));
+  let fail = false;
+  const calls = [];
+  const api = fakeApi({ models: async id => {
+    calls.push(id || "baseline");
+    if (!id) return baseline;
+    if (id === "cpa" && fail) throw Error("CPA config unreadable");
+    return { ...baseline, providers: id === "cpa" ? cpa : [direct, forwarding] };
+  } });
+  const { root, page, handoff } = mount(api);
+  await page.ready;
+  const records = all(root, node => node.dataset.providerIdentity);
+  assert.equal(records.length, 11, "one bridge Provider, nine CPA Providers and one native record are all visible by default");
+  assert.equal(new Set(records.map(node => node.dataset.providerIdentity)).size, 11, "same names and IDs from distinct sources are not merged");
+  assert.equal(records.some(node => node.dataset.provider === "cpa-upstream"), false, "the CPA connection is not counted as a supplier");
+  assert.match(text(root), /CPA connection/);
+  assert.match(text(root), /matching\/\*/);
+  assert.match(text(root), /models.compactionMatched/);
+  assert.match(text(root), /public-model/);
+  assert.doesNotMatch(text(root), /must-not-render/);
+  assert.equal(api.calls.some(call => call[0] === "refresh"), false);
+  assert.deepEqual(calls, ["baseline", "bridge", "cpa"]);
+  assert.equal(!!find(root, node => node.dataset.modelDetail === "maintenance").open, false);
+  page.show({ section: "catalog" });
+  assert.equal(find(root, node => node.dataset.modelDetail === "catalog").open, true, "retired catalog URL opens the in-page detail");
+  assert.equal(all(root, node => node.tagName === "H1").length, 1);
+  fail = true;
+  button(root, "models.configure.provider").handlers.click();
+  await handoff().onReadback();
+  assert.equal(all(root, node => node.dataset.providerIdentity).length, 2, "a failed source does not erase other configuration records");
+  assert.match(text(root), /CPA config unreadable/);
+  const providerSection = find(root, node => node.dataset.section === "providers");
+  const visibleAlert = providerSection.children.flatMap(node => node.children || [])
+    .find(node => node.role === "alert");
+  assert.ok(visibleAlert, "source failures are visible beside the main list without opening component details");
+  assert.match(text(visibleAlert), /CPA config unreadable/);
+});
+
+test("native-only Provider records have no invented components, catalog, quota placeholder or upstream reads", async () => {
+  const api = fakeApi({ current: view("r1", { connection: null, providers: [], quotaSources: [],
+    nativeProviders: [{ id: "native", agentId: "codex", name: "Native", sourceFile: "/fixture/config",
+      baseUrl: "https://native.invalid", credentialPresent: false }] }) });
+  const { root, page } = mount(api);
+  await page.ready;
+  assert.match(text(root), /Native/);
+  assert.doesNotMatch(text(root), /models.disconnected/, "native Agent use does not require component registration");
+  for (const key of ["maintenance", "catalog", "quota"]) {
+    assert.equal(find(root, node => node.dataset.modelDetail === key), undefined);
+  }
+  assert.deepEqual(api.calls.map(call => call[0]), ["models"]);
+  page.show({ section: "maintenance" });
+  assert.equal(find(root, node => node.dataset.modelDetail === "maintenance"), undefined);
+});
+
+test("a standalone registered endpoint remains visible without any optional component", async () => {
+  const current = view("r1", { connection: null, providers: [], quotaSources: [] });
+  current.registry.endpoints.push({ id: "standalone", moduleId: null, url: "https://standalone.invalid",
+    protocol: "responses", clientKeyFile: "/fixture/private-reference" });
+  const api = fakeApi({ current });
+  const { root, page } = mount(api);
+  await page.ready;
+  const record = find(root, node => node.dataset.providerIdentity === "endpoint:standalone");
+  assert.ok(record);
+  assert.match(text(record), /https:\/\/standalone.invalid/);
+  assert.match(text(record), /models.origin.endpoint/);
+  assert.match(text(record), /\/fixture\/private-reference/);
+  assert.equal(find(root, node => node.dataset.modelDetail === "maintenance"), undefined);
+  assert.deepEqual(api.calls.map(call => call[0]), ["models", "catalog"], "only the explicitly registered endpoint cache is read");
 });
 
 // Manual Provider/binding forms have been retired. Their mutation authority,
@@ -193,7 +276,7 @@ test("Provider facts distinguish native connections and snapshots, with one non-
   assert.equal(handoff().topic, "provider");
   assert.equal(button(root, "models.refreshCatalog").disabled, true);
   await button(root, "models.refreshCatalog").handlers.click();
-  await button(root, "models.readQuota").handlers.click();
+  assert.equal(button(root, "models.readQuota"), undefined, "no quota component means no empty quota control");
   assert.equal(api.calls.some(call => ["resource", "provider", "refresh"].includes(call[0])), false,
     "snapshot refresh is blocked in handlers as well as controls");
 });
@@ -315,7 +398,7 @@ test("models shell is served and linked from the dashboard navigation", () => {
   // The shared rail links back to Yui and Settings and gives every section a real URL.
   assert.match(MODELS_HTML, /href="\/"/);
   assert.match(MODELS_HTML, /href="\/settings"/);
-  for (const section of ["providers", "catalog", "quota"]) {
+  for (const section of ["providers"]) {
     assert.match(MODELS_HTML, new RegExp(`href="/models/${section}" data-page="models" data-section="${section}"`));
   }
 });
@@ -331,7 +414,8 @@ test("models and settings share one management rail with the same navigation", (
   // All model operations belong to Models, not Settings.
   const models = nav.match(/data-area-group="models">[\s\S]*?<\/div>\s*<\/div>/)[0];
   const settings = nav.match(/data-area-group="settings">[\s\S]*?<\/div>\s*<\/div>/)[0];
-  for (const section of ["providers", "catalog", "quota", "agents"]) assert.match(models, new RegExp(`data-section="${section}"`));
+  for (const section of ["providers", "agents"]) assert.match(models, new RegExp(`data-section="${section}"`));
+  assert.doesNotMatch(models, /data-section="(catalog|quota|maintenance)"/, "only Agent and Provider are navigation entries");
   for (const section of ["preferences", "skills", "server"]) {
     assert.match(settings, new RegExp(`href="/settings/${section}" data-page="settings" data-section="${section}"`));
   }

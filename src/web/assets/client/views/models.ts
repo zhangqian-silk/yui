@@ -6,16 +6,16 @@ import { h, icon } from "/assets/js/lib/dom.js";
 import { formatDateTime } from "/assets/js/lib/format.js";
 import { openOperatorHandoff } from "/assets/js/views/operatorHandoff.js";
 
-export const SECTIONS = ["providers", "catalog", "quota", "connection", "maintenance"];
+export const SECTIONS = ["providers"];
 const OBSERVATION_TONES = { success: "ok", partial: "warn", failed: "bad", unsupported: "idle", "not-queried": "idle" };
-const ROUTE_FILTERS = ["all", "direct", "cpa", "unknown"];
-const STATE_FILTERS = ["all", "enabled", "disabled", "readonly"];
 
 // Normalizes any requested route; unknown values fall back to the defaults.
 export function normalizeRoute(route) {
   const value = route || {};
   return {
-    section: SECTIONS.includes(value.section) ? value.section : SECTIONS[0],
+    section: "providers",
+    detail: ["catalog", "quota", "maintenance"].includes(value.section) ? value.section
+      : ["catalog", "quota", "maintenance"].includes(value.detail) ? value.detail : "",
     source: typeof value.source === "string" ? value.source : ""
   };
 }
@@ -39,8 +39,9 @@ export function mountModels(root, deps) {
     route: initial,
     view: null, loading: false, loadError: null,
     pending: false, unknown: false, receipt: null,
+    components: [], expanded: initial.detail ? { [initial.detail]: true } : {},
     endpointId: "", moduleId: "", bridgeId: "",
-    providerFilter: { query: "", route: "all", state: "all" },
+    providerFilter: { query: "" },
     catalog: { page: null, items: [], loading: false, error: null, note: null, generation: 0, query: "", source: "all" },
     quota: { source: initial.source, observation: null, loading: false, error: null, unavailable: false, generation: 0 }
   };
@@ -48,8 +49,8 @@ export function mountModels(root, deps) {
     return h("section.manage-section.models-section", { dataset: { section: name }, "aria-labelledby": "models-" + name + "-title" });
   }
   const status = h("div.models-status", { "aria-live": "polite" });
-  const sections = { providers: panel("providers"), catalog: panel("catalog"), quota: panel("quota"), connection: panel("connection"), maintenance: panel("maintenance") };
-  root.replaceChildren(status, sections.providers, sections.catalog, sections.quota, sections.connection, sections.maintenance);
+  const sections = { providers: panel("providers"), catalog: panel("catalog"), quota: panel("quota") };
+  root.replaceChildren(status, sections.providers);
 
   function tone(name, text) { return h("span.badge.tone-" + name, null, h("span.badge-dot"), text); }
   function when(iso) { return iso ? formatDateTime(iso, locale()) : t("models.unknown"); }
@@ -61,16 +62,10 @@ export function mountModels(root, deps) {
     if (deps.navigate) deps.navigate(next);
     else show(next);
   }
-  function sectionLink(section, text) {
-    return h("a.btn-link", { href: "/models/" + section, onclick: function (event) {
-      if (event.defaultPrevented || event.button > 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-      event.preventDefault(); go({ section: section });
-    } }, text);
-  }
   function head(name, hint, actions) {
     return h("header.manage-head", null,
       h("div.manage-heading", null,
-        h("h1", { id: "models-" + name + "-title" }, t("models.section." + name)), hint ? h("p", null, hint) : null),
+        h(name === "providers" ? "h1" : "h2", { id: "models-" + name + "-title" }, t("models.section." + name)), hint ? h("p", null, hint) : null),
       actions && actions.length ? h("div.card-actions", null, actions) : null);
   }
   function receiptNode(scope) {
@@ -84,15 +79,21 @@ export function mountModels(root, deps) {
       openOperatorHandoff({ topic: "provider", t, locale, copyText: deps.copyText, onReadback: reconcile });
     } }, t("models.configure.provider"));
   }
+  function disclosure(key, label, ...children) {
+    const node = h("details.models-disclosure", { open: !!state.expanded[key], dataset: { modelDetail: key } },
+      h("summary", key === "catalog" || key === "quota" ? { id: "models-" + key + "-title" } : null, label), ...children);
+    node.addEventListener("toggle", function () { state.expanded[key] = node.open; });
+    return node;
+  }
   function field(labelText, control, hint) {
     return h("label.field", null, h("span", null, labelText), control, hint ? h("small.faint", null, hint) : null);
   }
-  function resourcePicker(rows, selected, change) {
+  function resourcePicker(rows, selected, change, label = "models.queryInstance") {
     const select = h("select", { disabled: state.pending || state.loading || state.quota.loading },
       rows.map(row => h("option", { value: row.id }, row.id)));
     select.value = selected;
     select.addEventListener("change", function () { change(select.value); });
-    return field(t("models.resource"), select);
+    return field(t(label), select);
   }
   function searchBox(labelKey, value, onInput) {
     const input = h("input", { type: "search", autocomplete: "off", spellcheck: "false", placeholder: t(labelKey) });
@@ -114,11 +115,12 @@ export function mountModels(root, deps) {
     const next = normalizeRoute(route);
     // Only the quota section reads its source from the route; elsewhere the
     // last shown source is kept for the way back.
-    if (next.section !== "quota" || !next.source) next.source = state.quota.source;
+    if (next.detail !== "quota" || !next.source) next.source = state.quota.source;
     const available = (state.view?.quotaSources || []).filter(item => item.moduleId === state.moduleId).map(item => item.source);
     if (state.view && !available.includes(next.source)) next.source = available[0] || "";
     const sourceChanged = next.source !== state.quota.source;
     state.route = next;
+    if (next.detail) state.expanded[next.detail] = true;
     state.quota.source = next.source;
     updateSections();
     renderStatus();
@@ -129,13 +131,13 @@ export function mountModels(root, deps) {
   }
 
   function renderAll() {
-    renderStatus(); renderConnection(); renderProviders(); renderCatalog(); renderQuota();
+    renderStatus(); renderProviders(); renderCatalog(); renderQuota();
     updateSections();
     notify();
   }
   function updateSections() {
-    SECTIONS.forEach(function (name) {
-      sections[name].hidden = name !== state.route.section;
+    root.querySelectorAll?.("[data-model-detail]").forEach(node => {
+      if (state.expanded[node.dataset.modelDetail]) node.open = true;
     });
   }
 
@@ -147,8 +149,8 @@ export function mountModels(root, deps) {
     if (state.loading && !view) children.push(h("p", { role: "status" }, t("models.loading")));
     if (view && !(view.readOnly && view.provenance) && (state.route.section === "connection" || state.route.section === "providers")) {
       children.push(h("div.models-facts", null,
-        tone(view.registry.modules.length || view.registry.endpoints.length ? "info" : "idle",
-          view.registry.modules.length || view.registry.endpoints.length ? t("models.connected") : t("models.disconnected")),
+        view.registry.modules.length || view.registry.endpoints.length ? tone("info", t("models.connected"))
+          : view.nativeProviders?.length ? null : tone("idle", t("models.disconnected")),
         tone("warn", t("models.application." + view.application, view.application)),
         h("small.faint.models-notice", null, t(view.readOnly ? "models.readOnlyService" : "models.scope"))));
     }
@@ -163,109 +165,135 @@ export function mountModels(root, deps) {
     status.replaceChildren.apply(status, children.filter(Boolean));
   }
 
-  // ---- Model sources, Agent access and component maintenance ------------
-  function renderConnection() {
-    sections.connection.replaceChildren(head("connection", t("models.operatorAccessHelp")),
-      h("a.btn", { href: "/models/agents" }, t("settings.section.agents")));
-    sections.maintenance.replaceChildren(head("maintenance", t("models.operatorMaintenanceHelp"), [configureButton()]));
+  // ---- Provider records from all explicit configuration sources --------
+  function componentName(module) { return module.kind === "cliproxyapi" ? "CPA" : module.kind; }
+  function providerRecords() {
+    if (!state.view) return [];
+    const native = (state.view.nativeProviders || []).map(provider => ({
+      provider, identity: "native:" + provider.agentId + ":" + provider.sourceFile + ":" + provider.id,
+      origin: t("models.origin.native") + " · " + provider.agentId, native: true
+    }));
+    const configured = state.components.flatMap(component => (component.view?.providers || [])
+      .filter(provider => !(component.module.kind === "metabridge" && provider.via === "cpa"))
+      .map(provider => ({ provider, identity: component.module.id + ":" + provider.id,
+        origin: componentName(component.module) + " · " + component.module.id, native: false })));
+    const endpoints = state.view.registry.endpoints.filter(endpoint => !endpoint.moduleId).map(endpoint => ({
+      provider: { id: endpoint.id, name: endpoint.id, baseUrl: endpoint.url, protocol: endpoint.protocol,
+        credentialKind: "reference", credentialReference: endpoint.clientKeyFile, models: [] },
+      identity: "endpoint:" + endpoint.id, origin: t("models.origin.endpoint"), native: false
+    }));
+    return configured.concat(endpoints, native);
   }
-
-  // ---- Access (providers) -----------------------------------------------
-  function providerMatches(provider) {
-    const filter = state.providerFilter;
-    if (filter.route !== "all" && provider.via !== filter.route) return false;
-    if (filter.state === "enabled" && !provider.enabled) return false;
-    if (filter.state === "disabled" && provider.enabled) return false;
-    if (filter.state === "readonly" && provider.editable) return false;
-    const query = filter.query.trim().toLowerCase();
-    if (!query) return true;
-    return [provider.name, provider.id, provider.baseUrl, provider.prefix].some(function (value) {
-      return String(value || "").toLowerCase().includes(query);
-    });
+  function providerMatches(record) {
+    const query = state.providerFilter.query.trim().toLowerCase();
+    return !query || [record.origin, record.identity, record.provider.name, record.provider.baseUrl,
+      record.provider.protocol, record.provider.sourceFile, record.provider.prefix,
+      ...(record.provider.models || []).map(model => (model.name || model.value) + " " + (model.alias || ""))]
+      .some(value => String(value || "").toLowerCase().includes(query));
   }
-  function providerRow(provider) {
-    const actions = h("div.models-row-actions");
-    actions.append(h("span.chip", null, t("models.readOnly")));
-    return h("tr", { dataset: { provider: provider.id } },
+  function facts(entries) {
+    return h("dl.models-record-facts", null, entries.filter(([, value]) => value !== null && value !== undefined && value !== "")
+      .map(([label, value]) => h("div", null, h("dt", null, label), h("dd", null, String(value)))));
+  }
+  function providerDetails(provider, identity) {
+    const models = provider.models || [];
+    const children = [facts([
+      [t("models.recordId"), provider.id], [t("models.configurationSource"), provider.sourceFile],
+      [t("models.credentialReference"), provider.credentialReference],
+      [t("models.provider.prefix"), provider.prefix === "" ? t("models.noPrefix") : provider.prefix], [t("models.priority"), provider.priority],
+      [t("models.requestMode"), provider.requestMode]
+    ])];
+    if (models.length) children.push(h("h3", null, t("models.configuredModels")),
+      h("p.faint", null, t("models.configuredModelsHelp")),
+      h("ul.models-configured-models", null, models.map(model => h("li", null,
+        h("code", null, model.name || model.value), model.alias ? " → " + model.alias : ""))));
+    if (provider.excludedModels?.length) children.push(facts([[t("models.excludedModels"), provider.excludedModels.join(", ")]]));
+    if (provider.routeModels?.length) children.push(facts([[t("models.routeRules"), provider.routeModels.join(", ")]]));
+    if (provider.compaction) {
+      const policy = provider.compaction;
+      children.push(h("h3", null, t("models.compaction")),
+        h("p", null, t(policy.mode === "local" && policy.models?.length ? "models.compactionMatched" : "models.compaction." + policy.mode)),
+        facts([[t("models.routeRules"), policy.models?.join(", ")],
+          [t("models.stripImages"), policy.stripImages === true ? t("models.yes") : policy.stripImages === false ? t("models.no") : null]]));
+    }
+    return disclosure("record:" + identity, t("models.recordDetails") + (models.length ? " · " + models.length + " " + t("models.modelsUnit") : ""), ...children);
+  }
+  function providerRow(record) {
+    const provider = record.provider;
+    const credential = provider.credentialKind === "reference" ? t(provider.credentialReference ? "models.credentialReference" : "models.credentialReferenceMissing")
+      : provider.credentialKind === "subscription" ? t("models.subscriptionAuth")
+      : provider.credentialPresent ? t("models.credentialStored")
+      : record.native ? t("models.nativeCredentialUnknown") : t("models.credentialMissing");
+    return h("tr", { dataset: { provider: provider.id, providerIdentity: record.identity } },
       h("td", { dataset: { label: t("models.column.provider") } },
-        h("div.models-cell-main", null, h("strong", null, provider.name), h("code.id", { title: provider.id }, provider.id.slice(0, 12)))),
+        h("div.models-cell-main", null, h("strong", null, provider.name || provider.id),
+          h("code.id", { title: provider.id }, record.native ? provider.id : provider.id.slice(0, 12)),
+          record.native && typeof provider.selected === "boolean" ? tone(provider.selected ? "info" : "idle",
+            t(provider.selected ? "models.nativeSelected" : "models.nativeNotSelected")) : null,
+          provider.enabled === false ? tone("idle", t("models.disabled")) : null)),
+      h("td", { dataset: { label: t("models.configurationSource") } },
+        record.native ? h("a.btn-link", { href: "/models/agents" }, record.origin) : h("span", null, record.origin)),
+      h("td", { dataset: { label: t("models.protocol") } }, h("code", null, provider.protocol || t("models.notReported"))),
       h("td", { dataset: { label: t("models.column.baseUrl") } },
-        h("span.mono-line.models-url", { title: provider.baseUrl || "" }, provider.baseUrl || t("models.unknown"))),
-      h("td", { dataset: { label: t("models.column.prefix") } },
-        provider.prefix ? h("code.id", null, provider.prefix) : h("span.chip", null, t("models.noPrefix"))),
-      h("td", { dataset: { label: t("models.column.route") } }, h("span.chip", null, t("models.via." + provider.via, provider.via))),
-      h("td", { dataset: { label: t("models.column.state") } }, h("div.models-facts", null,
-        tone(provider.enabled ? "ok" : "idle", provider.enabled ? t("models.enabled") : t("models.disabled")),
-        tone(provider.credentialPresent ? "info" : "idle", provider.credentialKind === "subscription" ? t("models.subscriptionAuth")
-          : provider.credentialPresent ? t("models.credentialStored") : t("models.credentialMissing")))),
-      h("td", { dataset: { label: t("models.column.actions") } }, actions));
+        h("span.mono-line.models-url", { title: provider.baseUrl || "" }, provider.baseUrl || t("models.notReported"))),
+      h("td", { dataset: { label: t("models.credential") } }, h("span", null, credential)),
+      h("td", { dataset: { label: t("models.recordDetails") } }, providerDetails(provider, record.identity)));
   }
-  // The list re-renders on every keystroke in the search box; the toolbar
-  // (and the editor above it) are left alone so neither loses focus or input.
   const providerResults = h("div.models-results");
   function renderProviderResults() {
-    const view = state.view;
-    if (!view) { providerResults.replaceChildren(); return; }
-    const rows = view.providers.filter(providerMatches);
+    const records = providerRecords();
+    const rows = records.filter(providerMatches);
     const count = h("p.faint.models-count", { role: "status" }, t("models.providerCount")
-      .replace("{shown}", String(rows.length)).replace("{total}", String(view.providers.length)));
-    if (!view.providers.length) { providerResults.replaceChildren(h("p.models-empty", null, t("models.noProviders"))); return; }
+      .replace("{shown}", String(rows.length)).replace("{total}", String(records.length)));
+    if (!records.length) { providerResults.replaceChildren(h("p.models-empty", null,
+      t(state.loading ? "models.loading" : "models.noProviders"))); return; }
     if (!rows.length) { providerResults.replaceChildren(count, h("p.models-empty", null, t("models.noProviderMatches"))); return; }
     providerResults.replaceChildren(count, h("div.models-table-wrap", null, h("table.models-table", null,
-      h("thead", null, h("tr", null, ["provider", "baseUrl", "prefix", "route", "state", "actions"].map(function (key) {
-        return h("th", { scope: "col" }, t("models.column." + key));
-      }))),
-      h("tbody", null, rows.map(providerRow)))));
+      h("thead", null, h("tr", null, ["models.column.provider", "models.configurationSource", "models.protocol", "models.column.baseUrl", "models.credential", "models.recordDetails"]
+        .map(key => h("th", { scope: "col" }, t(key))))), h("tbody", null, rows.map(providerRow)))));
   }
-  // Filters re-render only the toolbar and list, never an open editor.
   const providerTools = h("div.models-toolbar");
-  function renderProviderTools() {
-    const filter = state.providerFilter;
-    providerTools.replaceChildren(
-      searchBox("models.searchProviders", filter.query, function (value) { filter.query = value; renderProviderResults(); }),
-      filterGroup("models.filter.route", ROUTE_FILTERS, filter.route, function (value) {
-        return value === "all" ? t("models.filter.all") : t("models.via." + value, value);
-      }, function (value) { filter.route = value; renderProviderTools(); }),
-      filterGroup("models.filter.state", STATE_FILTERS, filter.state, function (value) {
-        return t("models.filter." + value);
-      }, function (value) { filter.state = value; renderProviderTools(); }));
-    renderProviderResults();
+  function componentDetails(component) {
+    const module = component.module;
+    const links = (component.view?.providers || []).filter(provider => module.kind === "metabridge" && provider.via === "cpa");
+    const children = [facts([[t("models.recordId"), module.id], [t("models.version"), module.version],
+      [t("models.managementAddress"), module.managementUrl], [t("models.configurationSource"), module.configFile],
+      [t("models.credentialReference"), module.managementKeyFile]]), h("p.faint", null, t("models.componentScope"))];
+    const error = component.error || component.view?.configurationError;
+    if (error) children.push(h("p.settings-error", { role: "alert" }, error));
+    else if (component.view) children.push(h("p", null, t("models.componentProviderCount")
+      .replace("{count}", String(component.view.providers.length - links.length))));
+    if (links.length) children.push(h("h3", null, t("models.componentConnections")), h("p.faint", null, t("models.componentConnectionsHelp")),
+      ...links.map(provider => h("div.models-component-connection", null,
+        h("strong", null, provider.name || provider.id), facts([[t("models.column.baseUrl"), provider.baseUrl],
+          [t("models.protocol"), provider.protocol], [t("models.credential"), provider.credentialPresent ? t("models.credentialStored") : t("models.credentialMissing")]]),
+        providerDetails(provider, module.id + ":" + provider.id))));
+    return disclosure("component:" + module.id, componentName(module) + " · " + module.id, ...children);
   }
   function renderProviders() {
     const view = state.view;
-    const children = [
-      h("header.models-subhead", null, h("h2", null, t("models.upstreamProviders")))];
-    if (view && view.registry.modules.length > 1) children.push(resourcePicker(view.registry.modules, state.bridgeId, function (id) {
-      state.bridgeId = id; void load();
+    providerTools.replaceChildren(searchBox("models.searchProviders", state.providerFilter.query, value => {
+      state.providerFilter.query = value; renderProviderResults();
     }));
-    if (!view) children.push(h("p.models-empty", null, state.loading ? t("models.loading") : t("models.unavailable")));
-    else {
-      children.push(receiptNode("provider"));
-      children.push(h("div.card.models-card", null, providerTools, providerResults));
-      renderProviderTools();
-    }
+    renderProviderResults();
+    const failures = state.components.filter(component => component.error || component.view?.configurationError);
+    const children = [head("providers", t("models.providerOverviewHelp"), [configureButton()]),
+      h("div.card.models-card", null,
+        failures.length ? h("div.models-alert", { role: "alert" },
+          h("p", null, t("models.incompleteSources")),
+          ...failures.map(component => h("p.settings-error", null, componentName(component.module) + " · " + component.module.id
+            + ": " + (component.error || component.view.configurationError)))) : null,
+        providerTools, providerResults)];
+    if (state.components.length) children.push(disclosure("maintenance", t("models.optionalComponents") + " · " + state.components.length,
+      ...state.components.map(componentDetails)));
     const endpoints = view?.registry.endpoints || [];
-    const summary = h("div.card.models-card", null, h("div.card-body", null,
-      h("h2", null, t("models.currentServices")),
-      endpoints.length ? h("ul", null, endpoints.map(e => h("li", null, h("code", null, e.id), " · " + e.protocol,
-        h("p.mono-line", null, e.url), h("p.faint", null, t("models.credentialReference") + ": " + (e.clientKeyFile || t("models.unknown"))))))
-        : h("p.faint", null, t("models.resourceEmpty.endpoint"))));
-    const native = view?.nativeProviders || [];
-    const nativeSummary = native.length ? h("div.card.models-card", null, h("div.card-body", null,
-      h("h2", null, t("models.nativeProviders")), h("p.faint", null, t("models.nativeProvidersHelp")),
-      h("ul", null, native.map(provider => h("li", null,
-        h("strong", null, provider.name || provider.id), " · " + (provider.agentId || ""),
-        h("p.mono-line", null, provider.baseUrl || t("models.nativeProviderUrl")),
-        h("p.faint", null, provider.credentialPresent ? t("models.credentialStored") : t("models.nativeCredentialUnknown"))))))) : null;
-    const components = view?.registry.modules || [];
-    const componentSummary = components.length ? h("div.card.models-card", null, h("div.card-body", null,
-      h("h2", null, t("models.components")), h("ul", null, components.map(module => h("li", null,
-        h("strong", null, module.id), " · " + module.kind,
-        h("p.mono-line", null, module.managementUrl || t("models.unknown")),
-        h("p.faint", null, t("models.credentialReference") + ": " + (module.managementKeyFile || t("models.unknown")))))))) : null;
-    sections.providers.replaceChildren(
-      head("providers", t("models.operatorSourcesHelp"), [configureButton()]), ...(endpoints.length ? [summary] : []),
-      ...children.filter(Boolean), ...(nativeSummary ? [nativeSummary] : []), ...(componentSummary ? [componentSummary] : []));
+    if (endpoints.length) children.push(disclosure("catalog", t("models.endpointCatalog"),
+      h("p.faint", null, t("models.endpointCatalogHelp")),
+      facts(endpoints.flatMap(endpoint => [[endpoint.id + " · " + endpoint.protocol, endpoint.url],
+        [endpoint.id + " · " + t("models.credentialReference"), endpoint.clientKeyFile]])), sections.catalog));
+    const quotaModules = view?.registry.modules.filter(module => module.kind === "cliproxyapi" && module.quotaAdapter !== "none") || [];
+    if (quotaModules.length || view?.quotaSources?.length) children.push(disclosure("quota", t("models.section.quota"), sections.quota));
+    sections.providers.replaceChildren(...children);
   }
 
   // ---- Observations -----------------------------------------------------
@@ -319,10 +347,10 @@ export function mountModels(root, deps) {
     const page = catalog.page;
     const refresh = h("button.btn", { type: "button", disabled: catalog.loading || !state.endpointId || state.view?.readOnly, onclick: function () { void refreshCatalog(); } },
       icon("refresh"), t("models.refreshCatalog"));
-    const children = [head("catalog", t("models.catalogHelp"), [refresh])];
+    const children = [h("div.models-subhead", null, h("p.faint", null, t("models.catalogHelp")), refresh)];
     if (state.view) children.push(resourcePicker(state.view.registry.endpoints, state.endpointId, function (id) {
       state.endpointId = id; void invalidateObservations();
-    }));
+    }, "models.queryEndpoint"));
     const body = h("div.card-body");
     if (catalog.loading) body.append(h("p", { role: "status" }, t("models.loading")));
     if (catalog.error) body.append(h("p.settings-error", { role: "alert" }, t("models.catalogFailed") + " " + catalog.error));
@@ -429,7 +457,8 @@ export function mountModels(root, deps) {
     const refresh = h("button.btn", { type: "button", disabled: quota.loading || !quotaReady() || state.view?.readOnly, onclick: function () {
       return quota.source ? refreshQuota() : readInitialQuota();
     } }, icon("refresh"), t(quota.source ? "models.refreshQuota" : "models.readQuota"));
-    const children = [head("quota", t("models.quotaHelp"), [refresh]), h("div.models-toolbar.models-toolbar-flat", null, tabs)];
+    const children = [h("div.models-subhead", null, h("p.faint", null, t("models.quotaHelp")), refresh),
+      h("div.models-toolbar.models-toolbar-flat", null, tabs)];
     if (state.view) children.push(resourcePicker(state.view.registry.modules.filter(m => m.kind === "cliproxyapi"), state.moduleId, function (id) {
       state.moduleId = id;
       state.quota.source = (state.view.quotaSources || []).find(item => item.moduleId === id)?.source || "";
@@ -467,7 +496,8 @@ export function mountModels(root, deps) {
     state.view = view;
     if (!view.registry.modules.some(m => m.id === state.bridgeId)) state.bridgeId = view.registry.modules.find(m => m.kind === "metabridge")?.id || "";
     if (!view.registry.endpoints.some(e => e.id === state.endpointId)) state.endpointId = view.registry.endpoints[0]?.id || "";
-    if (!view.registry.modules.some(m => m.id === state.moduleId)) state.moduleId = view.registry.modules.find(m => m.kind === "cliproxyapi")?.id || "";
+    if (!view.registry.modules.some(m => m.id === state.moduleId)) state.moduleId = view.registry.modules.find(m => m.kind === "cliproxyapi" && m.quotaAdapter !== "none")?.id
+      || view.quotaSources?.[0]?.moduleId || "";
     const sources = (view.quotaSources || []).filter(item => item.moduleId === state.moduleId).map(item => item.source);
     if (!sources.includes(state.quota.source)) state.quota.source = sources[0] || "";
     if (previous && previous.revision === view.revision) return;
@@ -485,17 +515,27 @@ export function mountModels(root, deps) {
 
   async function load() {
     state.loading = true; state.loadError = null; renderAll();
-    try { await adoptView(await api.models(state.bridgeId)); }
+    try {
+      const view = await api.models();
+      // Each configured component is an independent read source. A failed
+      // source remains visible as a scoped error, without hiding other records.
+      const components = await Promise.all(view.registry.modules.map(async module => {
+        try {
+          const current = await api.models(module.id);
+          if (current.registryRevision !== view.registryRevision) return { module, error: t("models.configurationChangedRead") };
+          return { module, view: current };
+        } catch (error) { return { module, error: error.message }; }
+      }));
+      state.components = components;
+      await adoptView(view);
+    }
     catch (error) { state.loadError = error.message; }
     finally { state.loading = false; renderAll(); }
     return !state.loadError;
   }
 
-  // An unknown write is never resent. Reading current facts again lets the
-  // reader see whether it landed; later writes carry that fresh revision, so
-  // the server's revision check rejects anything based on the old view.
-  // After a rejection the same explicit read refreshes the revision while the
-  // non-secret drafts stay for the reader to review and save again.
+  // Operator owns configuration changes. Read every current source again;
+  // this action never replays a write or contacts an upstream model service.
   async function reconcile() {
     if (state.pending || state.loading) return;
     const view = state.view;
@@ -509,7 +549,7 @@ export function mountModels(root, deps) {
   }
 
   async function loadCatalog(cursor) {
-    if (!state.view) return;
+    if (!state.view || !state.endpointId) return;
     const catalog = state.catalog;
     const generation = ++catalog.generation;
     catalog.loading = true; catalog.error = null; catalog.note = null;
@@ -646,12 +686,8 @@ export function mountModels(root, deps) {
     state: state,
     show: show,
     translate: function () {
-      // Keep data and drafts in this mount; never reload on language change.
-      const password = root.querySelector?.('input[type="password"]');
-      const value = password?.value;
+      // Keep observations and expanded details; locale changes make no reads.
       renderAll();
-      const replacement = root.querySelector?.('input[type="password"]');
-      if (replacement && value !== undefined) replacement.value = value;
     },
     updateFreshness: updateFreshness,
     dirty: function () { return false; }

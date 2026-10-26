@@ -33,9 +33,11 @@ export function readManageRoute(url) {
   const requested = parts[1] || url.searchParams.get("section");
   if (requested === "connection" || requested === "agents") return { page: "settings", section: "agents" };
   const area = parts[0] === "settings" && requested !== "connection" ? "settings" : "models";
-  const target = requested === "maintenance" ? "providers" : requested;
+  const detail = ["catalog", "quota", "maintenance"].includes(requested) ? requested : url.searchParams.get("detail");
+  const target = ["catalog", "quota", "maintenance"].includes(requested) ? "providers" : requested;
   const item = SECTIONS[area].find(item => item.section === target) || SECTIONS[area][0];
-  return { page: item.page, section: item.section, source: url.searchParams.get("source") || "" };
+  return { page: item.page, section: item.section, source: url.searchParams.get("source") || "",
+    detail: ["catalog", "quota", "maintenance"].includes(detail) ? detail : "" };
 }
 export function manageHref(next) {
   if (next.page === "jobs") {
@@ -43,8 +45,10 @@ export function manageHref(next) {
     for (const key of ["task", "job", "jobRun", "artifact"]) if (next[key]) query.set(key, next[key]);
     return "/jobs" + (query.size ? "?" + query : "");
   }
-  return "/" + manageArea(next.page, next.section) + "/" + next.section +
-    (next.section === "quota" && next.source ? "?source=" + encodeURIComponent(next.source) : "");
+  const query = new URLSearchParams();
+  if (next.section === "providers" && next.detail) query.set("detail", next.detail);
+  if ((next.section === "quota" || next.detail === "quota") && next.source) query.set("source", next.source);
+  return "/" + manageArea(next.page, next.section) + "/" + next.section + (query.size ? "?" + query : "");
 }
 // The center column scrolls, not the document (the frame is the workbench's).
 function scroller() { return document.querySelector("#manage-scroll"); }

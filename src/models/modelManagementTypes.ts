@@ -51,6 +51,15 @@ export type ModelProviderView = {
   credentialPresent: boolean;
   credentialKind?: "subscription" | "key";
   owner: "metabridge" | "cliproxyapi";
+  /** Configuration observations, not inferred runtime paths or model availability. */
+  protocol?: string;
+  sourceFile?: string;
+  priority?: number | null;
+  models?: { name: string; alias?: string }[];
+  excludedModels?: string[];
+  routeModels?: string[];
+  requestMode?: string | null;
+  compaction?: { mode: "local" | "passthrough" | "unknown"; models: string[]; stripImages: boolean } | null;
 };
 
 export type ModelObservation<T> = {
