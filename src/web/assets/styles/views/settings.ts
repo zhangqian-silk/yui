@@ -30,8 +30,36 @@ export const SETTINGS_STYLES = `
 .settings-receipt{white-space:pre-wrap;overflow-wrap:anywhere}
 .settings-error{color:var(--bad)!important}
 .settings-observation{max-height:260px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:var(--fs-xs)}
-.settings-search{position:sticky;top:var(--header-h);z-index:var(--z-raised);padding:10px 0;background:var(--canvas)}
+.settings-search{padding:10px 0}
 .settings-search input{width:100%;max-width:520px}
+.settings-group-area{display:grid;gap:12px;min-width:0}
+.settings-group-area>header{display:grid;gap:4px}
+.settings-group-area>header h2,.settings-area-title{font-size:var(--fs-md);font-weight:600;color:var(--ink)}
+.settings-group-area>header p,.settings-area-help{font-size:var(--fs-sm);color:var(--ink-2);line-height:1.5}
+.settings-area-count{display:inline-block;margin-left:8px;font-size:var(--fs-xs);font-weight:400;color:var(--ink-3)}
+.settings-group-list{display:grid;gap:10px;min-width:0}
+.settings-group-list-agents{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}
+.settings-group-list-agents>.settings-group[open]{grid-column:1/-1}
+.settings-group>summary{display:grid;grid-template-columns:minmax(100px,.8fr) minmax(0,2fr) auto;gap:10px 16px;align-items:center;list-style:none}
+.settings-group>summary::-webkit-details-marker{display:none}
+.settings-group-name,.settings-summary-fact{display:grid;gap:4px;min-width:0}
+.settings-group-name small,.settings-summary-fact small,.settings-summary-context{font-size:var(--fs-xs);font-weight:400;color:var(--ink-3)}
+.settings-summary-facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;min-width:0;font-size:var(--fs-sm);font-weight:400}
+.settings-summary-fact>span{overflow-wrap:anywhere}
+.settings-summary-context{grid-column:2}
+.settings-group-affordance{grid-column:3;grid-row:1/3;color:var(--accent);font-size:var(--fs-xs);font-weight:400;white-space:nowrap}
+.settings-group-affordance::after{content:" +";display:inline-block;margin-left:4px}
+.settings-group[open]>summary .settings-group-affordance::after{content:" −"}
+.settings-group-agents>summary{grid-template-columns:minmax(0,1fr) auto}
+.settings-group-agents .settings-summary-facts{grid-column:1/-1;grid-row:2;padding:12px 0 4px;border-top:1px solid var(--line)}
+.settings-group-agents .settings-summary-context{grid-column:1;grid-row:3}
+.settings-group-agents .settings-group-affordance{grid-column:2;grid-row:1}
+.settings-group-roles,.settings-group-profiles{padding:12px 16px;border-radius:var(--r-md)}
+.settings-profile-library{border-top:1px solid var(--line);padding-top:16px;min-width:0}
+.settings-profile-library>summary{cursor:pointer;padding:8px 0;overflow-wrap:anywhere}
+.settings-profile-library>summary .settings-area-help{display:block;margin-top:5px}
+.settings-profile-library[open]>.settings-group-list{margin-top:12px}
+.settings-group>summary:focus-visible,.settings-profile-library>summary:focus-visible{outline:2px solid var(--accent);outline-offset:4px;border-radius:var(--r-sm)}
 #settings-status:empty,#browser-receipt:empty{display:none}
 .mono-line{overflow-wrap:anywhere}
 .permissions-results{display:grid;gap:12px;min-width:0}
@@ -50,5 +78,10 @@ export const SETTINGS_STYLES = `
 @media(max-width:${BREAKPOINTS.small}px){
   .settings-grid{grid-template-columns:minmax(0,1fr)}
   .settings-card{padding:14px}
+  .settings-group-list-agents{grid-template-columns:minmax(0,1fr)}
+  .settings-group>summary{grid-template-columns:minmax(0,1fr) auto}
+  .settings-group .settings-summary-facts{grid-column:1/-1;grid-row:2;gap:8px}
+  .settings-group .settings-summary-context{grid-column:1/-1;grid-row:3}
+  .settings-group .settings-group-affordance{grid-column:2;grid-row:1}
 }
 `;

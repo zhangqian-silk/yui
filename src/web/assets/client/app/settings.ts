@@ -70,6 +70,28 @@ const container = $("#settings-groups");
 const status = $("#settings-status");
 const search = $("#settings-search");
 const groups = [];
+const groupAreas = {};
+for (const name of ["agents", "roles", "profiles", "server"]) {
+  const list = h("div.settings-group-list.settings-group-list-" + name, { dataset: { agentGroupList: name } });
+  const title = h(name === "profiles" ? "summary" : "header", null);
+  const root = name === "server" ? list : h(name === "profiles" ? "details.settings-profile-library" : "section.settings-group-area",
+    { "aria-labelledby": "settings-area-" + name }, title, list);
+  groupAreas[name] = { root, list, title };
+  container.append(root);
+}
+function renderAreaTitles() {
+  for (const name of ["agents", "roles", "profiles"]) {
+    const count = groups.filter(state => state.matched && groupArea(state.meta) === name).length;
+    groupAreas[name].title.replaceChildren(
+      h(name === "profiles" ? "span.settings-area-title" : "h2", { id: "settings-area-" + name }, t("settings.area." + name),
+        h("span.settings-area-count", null, String(count))),
+      h(name === "profiles" ? "span.settings-area-help" : "p", null, t("settings.areaHelp." + name)));
+  }
+}
+function groupArea(meta) {
+  return meta.id.startsWith("agent/") ? "agents" : meta.id.startsWith("role/") ? "roles"
+    : meta.id.startsWith("profile/") ? "profiles" : "server";
+}
 const agentActions = $("#agent-management-actions");
 function renderAgentActions() {
   agentActions.replaceChildren(h("button.btn.btn-primary", { type: "button", onclick: () => openOperatorHandoff({
@@ -92,11 +114,11 @@ function filterGroups() {
       void loadGroup(state);
     }
   });
-  if (section === "agents") {
-    const order = meta => meta.id.startsWith("agent/") ? 0 : meta.id.startsWith("role/") ? 1 : 2;
-    groups.filter(state => !state.root.hidden).sort((a, b) => order(a.meta) - order(b.meta))
-      .forEach(state => container.append(state.root));
+  for (const [name, area] of Object.entries(groupAreas)) {
+    area.root.hidden = !groups.some(state => !state.root.hidden && groupArea(state.meta) === name);
   }
+  if (search.value.trim() && !groupAreas.profiles.root.hidden) groupAreas.profiles.root.open = true;
+  renderAreaTitles();
 }
 settingsReady = true;
 let searchGeneration = 0;
@@ -224,8 +246,41 @@ function applyCapabilities(state, result) {
   updateEffort();
 }
 
+function renderGroupSummary(state) {
+  if (!state.summary || !isAgentGroup(state.meta)) return;
+  const group = state.group;
+  const area = groupArea(state.meta);
+  const field = key => group?.fields.find(item => item.key === key);
+  const native = area === "agents" ? group?.observation?.native : null;
+  const runtime = area === "profiles" ? group?.observation : null;
+  const model = native?.model || field("model")?.value || (runtime?.status === "resolved" ? runtime.binding?.config?.model : "");
+  const effort = native?.effort || field("effort")?.value || (runtime?.status === "resolved" ? runtime.binding?.config?.effort : "");
+  const unavailable = state.loadError || native?.status === "unavailable" || runtime?.status === "unavailable";
+  const source = state.loadError ? t("settings.summaryUnavailable") + ": " + state.loadError
+    : !group ? t("settings.loading")
+    : runtime?.status === "unavailable" ? t("settings.profileUnavailable") + ": " + runtime.reason
+    : runtime?.source === "global-worker" ? t("settings.inheritWorker")
+    : area === "profiles" ? t("settings.explicitTemplate")
+    : area === "roles" ? t("settings.roleDefaults") : t("settings.nativeConfiguration");
+  const fact = (label, value) => h("span.settings-summary-fact", null,
+    h("small", null, t(label)), h("span", null, value || t(unavailable ? "settings.summaryUnavailable"
+      : !group ? "settings.summaryLoading" : area === "agents" && native?.status !== "read"
+        ? "settings.summaryUnread" : "settings.summaryNativeDefault")));
+  state.summary.replaceChildren(
+    h("span.settings-group-name", null, h("strong", null, state.meta.title), h("small", null, state.meta.id),
+      field("enabled")?.value === false ? h("span.badge", null, t("settings.summaryDisabled")) : null),
+    h("span.settings-summary-facts", null,
+      area !== "agents" ? fact("settings.assignmentAgent", group?.agentId || t(!group ? "settings.summaryLoading" : "settings.summaryUnavailable")) : null,
+      fact("settings.nativeModel", model), fact("settings.nativeEffort", effort),
+      area === "agents" ? fact("settings.cachedModels", native?.models?.length ? String(native.models.length) : t("settings.summaryUnread")) : null),
+    h("span.settings-summary-context", null, source,
+      area === "roles" && field("model")?.source ? " · " + t("settings.source." + field("model").source, field("model").source) : ""),
+    h("span.settings-group-affordance", null, t("settings.viewConfiguration")));
+}
+
 function renderGroup(state, group) {
   const generation = state.renderGeneration = (state.renderGeneration || 0) + 1;
+  state.loadError = null;
   state.group = group; state.editors = []; state.dirty = false; state.unknown = false;
   state.readOnly = !!(settingsReadOnly || group.readOnly);
   state.capabilityPending = false;
@@ -240,14 +295,7 @@ function renderGroup(state, group) {
     group.provenance.label + " · " + group.provenance.capturedAt));
   if (state.readOnly) form.append(h("p.faint", null, t("settings.snapshotReadOnly")));
   const native = group.observation?.native;
-  if (state.summary && isAgentGroup(state.meta)) {
-    const model = native?.model || group.fields.find(field => field.key === "model")?.value;
-    const effort = native?.effort || group.fields.find(field => field.key === "effort")?.value;
-    state.summary.replaceChildren(
-      h("strong", null, t("settings.section." + state.meta.section, state.meta.section) + " · " + state.meta.title),
-      h("span.faint", null, [group.agentId, model || t("settings.inherit"), effort,
-        native?.models?.length ? t("settings.nativeModels") + ": " + native.models.length : ""].filter(Boolean).join(" · ")));
-  }
+  renderGroupSummary(state);
   if (native) {
     const rows = [
       ["settings.nativeModel", native.model],
@@ -387,11 +435,15 @@ function renderGroup(state, group) {
 async function loadGroup(state) {
   if (state.loaded || state.loading) return;
   state.loading = true;
+  state.loadError = null;
+  renderGroupSummary(state);
   state.content.textContent = t("settings.loading");
   try {
     renderGroup(state, await requestJson("/api/settings/group?" + new URLSearchParams({ id: state.meta.id })));
     state.loaded = true;
   } catch (error) {
+    state.loadError = error.message;
+    renderGroupSummary(state);
     state.content.replaceChildren(h("p.settings-error", null, error.message),
       h("button.btn", { type: "button", onclick: () => loadGroup(state) }, t("settings.retry")));
   } finally { state.loading = false; }
@@ -422,9 +474,12 @@ async function start(cursor) {
       }
       const content = h("div");
       const summary = h("summary", null, t("settings.section." + meta.section, meta.section) + " · " + meta.title);
-      const root = h("details.settings-card", { open: meta.id === "system" || !!query }, summary, content);
+      const area = groupArea(meta);
+      const root = h("details.settings-card" + (area !== "server" ? ".settings-group.settings-group-" + area : ""),
+        { open: meta.id === "system" || !!query }, summary, content);
       const state = { meta, root, content, summary, dirty: false, loaded: false, loading: false, matched: true };
-      groups.push(state); container.append(root);
+      groups.push(state); groupAreas[area].list.append(root);
+      renderGroupSummary(state);
       root.addEventListener("toggle", () => { if (root.open) void loadGroup(state); });
       if (root.open) void loadGroup(state);
     });
@@ -438,6 +493,8 @@ async function start(cursor) {
 }
 i18n.subscribe(() => {
   more.textContent = t("settings.more");
+  renderAreaTitles();
+  groups.forEach(renderGroupSummary);
 });
 void start();
 `;
