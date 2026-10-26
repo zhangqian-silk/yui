@@ -57,6 +57,8 @@ import {
   type AgentCommandStore
 } from "./commands/agentCommands.js";
 import { runCapabilityCommand } from "./commands/capabilityCommands.js";
+import { modelCommandArguments } from "./commands/modelCommands.js";
+import { modelOperatorGuide } from "./models/modelOperatorGuide.js";
 import { runConfigCommand } from "./commands/configCommands.js";
 import { runConfigOverview } from "./commands/configOverview.js";
 import {
@@ -335,6 +337,7 @@ export async function main(): Promise<void> {
   invocationHome = home;
   const routedForFence = args.length === 0 ? undefined : routeInvocation(args);
   const homeFreeInvocation = args.length === 0
+    || (args[0] === "models" && args[1] === "guide")
     || (args[0] === "config" && (args[1] === "describe"
       || (args[1] === "completion" && args[2] === "candidates")))
     || (args[0] === "version" && args.length === 1)
@@ -401,6 +404,13 @@ export async function main(): Promise<void> {
   }
 
   if (args[0] === "version") throw usageError("Version usage: yui version");
+  if (args[0] === "models" && args[1] === "guide") {
+    if (args.length > 3) throw usageError("Usage: yui models guide [metabridge|binding|maintenance]");
+    const guide = modelOperatorGuide(args[2]);
+    const result = { ...guide, manuals: guide.manuals.map(name => fileURLToPath(new URL(`../docs/${name}`, import.meta.url))) };
+    emit(JSON.stringify(result, null, 2), false, result);
+    return;
+  }
   // Offline discovery is not an execution credential. Target selectors enter
   // the original authenticated path lazily, only when stored data is needed.
   if (args[0] === "config" && args[1] === "completion" && args[2] === "candidates") {
@@ -471,8 +481,8 @@ export async function main(): Promise<void> {
     return;
   }
 
-  if (args[0] === "capability") {
-    const result = await runCapabilityCommand(args.slice(1), home, process.env);
+  if (args[0] === "capability" || args[0] === "models") {
+    const result = await runCapabilityCommand(args[0] === "models" ? modelCommandArguments(args.slice(1)) : args.slice(1), home, process.env);
     emit(JSON.stringify(result, null, 2), false, result);
     const kind = (result as Record<string, unknown> | null)?.kind;
     if (typeof result === "object" && result !== null && !Array.isArray(result)

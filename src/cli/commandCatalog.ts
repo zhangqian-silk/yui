@@ -2,6 +2,7 @@ import { supportedAgentAdapterIds } from "../agent/adapterCatalog.js";
 import { supportedAgentExecutionComponentIds } from "../agent/executionComponents.js";
 import { productConfigurationOptions } from "../nativeAgent/product/config.js";
 import { catalogCommands, catalogCommandOptions } from "../nativeAgent/product/catalog.js";
+import { MODEL_COMMAND_ACTIONS } from "../commands/modelCommands.js";
 import {
   CONFIG_DEFINITIONS,
   CONFIG_DOMAINS,
@@ -1246,7 +1247,7 @@ export const ROOT_COMMAND = buildNode({
     ] },
     { id: "workflow", title: "Workflow", entries: ["agent", "operator", "role", "inbox", "project", "task"] },
     { id: "configuration", title: "Configuration", entries: ["config"] },
-    { id: "operations", title: "Operations", entries: ["web", "controller", "session", "execution", "capability", "job", "schedule", "jobs", "telemetry", "release"] },
+    { id: "operations", title: "Operations", entries: ["web", "controller", "session", "execution", "models", "capability", "job", "schedule", "jobs", "telemetry", "release"] },
     { id: "resources", title: "Resources", entries: ["resources"] },
     { id: "internal", title: "Internal", entries: ["internal"] }
   ],
@@ -1741,6 +1742,23 @@ export const ROOT_COMMAND = buildNode({
         { id: "knowledge", title: "Task Knowledge", entries: ["search", "brief", "decision", "milestone", "event", "continuation", "wake", "usage"] }
       ],
       children: taskChildren
+    },
+    {
+      name: "models",
+      summary: "Operator-guided model setup and narrow model-management commands.",
+      sections: [{ id: "entry", title: "Commands", entries: ["guide", ...MODEL_COMMAND_ACTIONS] }],
+      children: [
+        { name: "guide", discovery: { surface: "public", audiences: ["public", "operator", "leader", "assignment", "global", "unbound"] },
+          summary: "Read offline Operator instructions and installed manual paths; no configuration changes.",
+          usage: "yui models guide [metabridge|binding|maintenance]",
+          argumentValues: { 0: ["metabridge", "binding", "maintenance"] } },
+        ...MODEL_COMMAND_ACTIONS.map(name => ({
+          name, discovery: { surface: "managed" as const, audiences: ["operator", "leader", "assignment"] as const },
+          summary: `Invoke models ${name} through the existing authenticated capability boundary.`,
+          usage: `yui models ${name} --task <id> ${name === "read" ? "[--input <json>]" : "--input <json>"} [--request-id <id>]`,
+          options: ["--task", "--input", "--request-id"]
+        }))
+      ]
     },
     {
       name: "capability", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] },

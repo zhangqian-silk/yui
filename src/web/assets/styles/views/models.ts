@@ -8,6 +8,10 @@ import { BREAKPOINTS } from "../../shared/geometry.js";
  * the provider table becomes stacked rows.
  */
 export const MODELS_STYLES = `
+.models-operator-prompt{width:100%;box-sizing:border-box;resize:vertical;min-height:10rem;line-height:1.7}
+.models-operator .card-body{display:grid;gap:12px}
+.models-advanced{margin-top:16px}
+.models-advanced>summary{cursor:pointer;padding:12px 0}
 /* Heading first, as on every management page: the page scope and the shared
    connection status sit under the current section's heading. The wrappers
    flatten into one column so only order changes, never the DOM. */

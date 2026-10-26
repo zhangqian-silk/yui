@@ -1,3 +1,5 @@
+import { MODEL_OPERATOR_PROMPTS } from "../../../../models/modelOperatorGuide.js";
+
 export const MODELS_VIEW_SCRIPT = String.raw`
 // Four model sections: sources, Agent access, catalog/quota and maintenance.
 // Every fact comes from /api/models*; the
@@ -16,6 +18,7 @@ export const MODELS_VIEW_SCRIPT = String.raw`
 import { h, icon } from "/assets/js/lib/dom.js";
 import { formatDateTime } from "/assets/js/lib/format.js";
 
+const OPERATOR_PROMPTS = ${JSON.stringify(MODEL_OPERATOR_PROMPTS)};
 export const QUOTA_SOURCES = ["factory", "command-code"];
 export const SECTIONS = ["providers", "catalog", "quota", "connection", "maintenance"];
 const OBSERVATION_TONES = { success: "ok", partial: "warn", failed: "bad", unsupported: "idle", "not-queried": "idle" };
@@ -57,7 +60,7 @@ export function mountModels(root, deps) {
     // A rejected write (for example a stale revision) keeps its draft and
     // offers an explicit re-read; nothing is replayed automatically.
     pending: false, unknown: false, rejected: false, receipt: null,
-    connectionDrafts: {}, providerDraft: null,
+    connectionDrafts: {}, providerDraft: null, advanced: {},
     maintenanceDrafts: {}, maintenanceResults: {}, toolDraft: "", toolPreview: null,
     endpointId: "", moduleId: "", bridgeId: "", moduleStatuses: {},
     providerFilter: { query: "", route: "all", state: "all" },
@@ -107,6 +110,47 @@ export function mountModels(root, deps) {
   }
   function field(labelText, control, hint) {
     return h("label.field", null, h("span", null, labelText), control, hint ? h("small.faint", null, hint) : null);
+  }
+  function advanced(section, ...children) {
+    const details = h("details.models-advanced", { open: !!state.advanced[section], dataset: { modelAdvanced: section } },
+      h("summary", null, t("models.advancedManual")),
+      h("p.faint", null, t("models.advancedManualHelp")), ...children);
+    details.addEventListener("toggle", function () { state.advanced[section] = details.open; });
+    return details;
+  }
+  function operatorHandoff(topic) {
+    const prompt = OPERATOR_PROMPTS[locale().startsWith("zh") ? "zh" : "en"][topic];
+    const input = h("textarea.models-operator-prompt", {
+      readOnly: true, rows: 7, spellcheck: false, "aria-label": t("models.operatorPrompt"),
+      dataset: { operatorPrompt: topic }
+    });
+    input.value = prompt;
+    const result = h("p.faint", { role: "status", "aria-live": "polite" });
+    const copy = h("button.btn.btn-primary", { type: "button", onclick: async function () {
+      try {
+        if (deps.copyText) await deps.copyText(prompt);
+        else if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) await navigator.clipboard.writeText(prompt);
+        else {
+          // LAN HTTP often has no secure-context clipboard API. Keep the text
+          // available for manual copy even if the browser refuses this fallback.
+          input.focus(); input.select();
+          if (!document.execCommand("copy")) throw new Error("Clipboard unavailable");
+        }
+        result.textContent = t("models.operatorPromptCopied");
+      } catch {
+        input.focus?.(); input.select?.();
+        result.textContent = t("models.copyPromptManually");
+      }
+    } }, t("models.copyOperatorPrompt"));
+    return h("div.card.models-card.models-operator", null, h("div.card-body", null,
+      h("h2", null, t("models.operatorTitle." + topic)),
+      h("p", null, t("models.operatorHandoffHelp")), input,
+      h("div.settings-actions", null, copy,
+        h("button.btn", { type: "button", disabled: state.loading || state.pending, onclick: function () {
+          state.bridgeId = ""; void reconcile();
+        } }, t("models.operatorReadback"))),
+      result, h("p.faint", null, t("models.operatorNoEffect")),
+      h("a.btn-link", { href: "/models/docs" }, t("models.componentDocs"))));
   }
   function resourcePicker(rows, selected, change) {
     const select = h("select", { disabled: state.pending || state.loading },
@@ -354,16 +398,22 @@ export function mountModels(root, deps) {
           h("summary", null, t("models.resourceEditor." + kind)), form)));
     });
     sourceResources.replaceChildren(cards.endpoint);
+    const agentSummary = h("div.card.models-card", null, h("div.card-body", null,
+      h("h2", null, t("models.currentAgentModels")),
+      agents.length ? h("ul", null, agents.map(function (agent) {
+        const binding = r.bindings.find(b => b.agentId === agent.id);
+        return h("li", null, h("code", null, agent.id), " → ",
+          binding?.endpointId ? binding.endpointId + " → " + binding.model : t("models.option.native"));
+      })) : h("p.faint", null, t("models.noAgents")),
+      h("p.faint", null, t("models.bindingScope"))));
     sections.connection.replaceChildren(
-      head("connection", t("models.connectionIntro")),
-      h("p.models-note", null, t("models.bindingScope")),
-      receiptNode("connection") || h("span"), cards.binding,
-      sectionLink("providers", t("models.manageSources")));
+      head("connection", t("models.operatorAccessHelp")), agentSummary,
+      operatorHandoff("binding"), receiptNode("connection") || h("span"),
+      advanced("connection", cards.binding, sectionLink("providers", t("models.manageSources"))));
     sections.maintenance.replaceChildren(
-      head("maintenance", t("models.maintenanceHelp")),
-      receiptNode("maintenance") || h("span"), cards.module,
-      connectionToolForm(),
-      h("p", null, h("a.btn-link", { href: "/models/docs" }, t("models.componentDocs"))));
+      head("maintenance", t("models.operatorMaintenanceHelp")),
+      operatorHandoff("maintenance"), receiptNode("maintenance") || h("span"),
+      advanced("maintenance", cards.module, connectionToolForm()));
   }
 
   function maintenanceForm(row) {
@@ -605,7 +655,7 @@ export function mountModels(root, deps) {
     const view = state.view;
     const add = h("button.btn.btn-primary", { type: "button", disabled: writesBlocked() || !configurable() || !!state.providerDraft,
       onclick: function () { startProvider(null); } }, icon("plus"), t("models.addProvider"));
-    const children = [head("providers", t("models.providersHelp")),
+    const children = [
       h("header.models-subhead", null, h("h2", null, t("models.upstreamProviders")), view && !view.readOnly ? add : null)];
     if (view) children.push(resourcePicker(view.registry.modules.filter(m => m.kind === "metabridge"), state.bridgeId, function (id) {
       if (state.providerDraft && !confirm(t("models.discardProvider"))) return;
@@ -620,8 +670,14 @@ export function mountModels(root, deps) {
       children.push(h("div.card.models-card", null, providerTools, providerResults));
       renderProviderTools();
     }
-    children.splice(1, 0, sourceResources);
-    sections.providers.replaceChildren.apply(sections.providers, children.filter(Boolean));
+    const endpoints = view?.registry.endpoints || [];
+    const summary = h("div.card.models-card", null, h("div.card-body", null,
+      h("h2", null, t("models.currentServices")),
+      endpoints.length ? h("ul", null, endpoints.map(e => h("li", null, h("code", null, e.id), " · " + e.protocol)))
+        : h("p.faint", null, t("models.resourceEmpty.endpoint"))));
+    sections.providers.replaceChildren(
+      head("providers", t("models.operatorSourcesHelp")), summary, operatorHandoff("metabridge"),
+      advanced("providers", sourceResources, ...children.filter(Boolean)));
   }
 
   // ---- Observations -----------------------------------------------------

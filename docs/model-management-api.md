@@ -23,11 +23,25 @@ CLI and Operator use the same Controller-owned service through existing
 capabilities (a Task supplies the established authenticated capability envelope):
 
 ```sh
-yui capability describe models.read --task task-N
-yui capability call models.read --task task-N --input '{}'
-yui capability call models.save --task task-N --input \
-  '{"operation":"resource","input":{"revision":"READ_REGISTRY_REVISION","requestId":"register-api-1","kind":"endpoint","resource":{"id":"api","moduleId":null,"url":"https://gateway.example/v1","protocol":"responses","clientKeyFile":"/private/client.key"}}}'
+yui models guide metabridge --json
+yui models read --task task-N --json
+yui models save --task task-N --input \
+  '{"revision":"READ_REGISTRY_REVISION","requestId":"register-api-1","kind":"endpoint","resource":{"id":"api","moduleId":null,"url":"https://gateway.example/v1","protocol":"responses","clientKeyFile":"/private/client.key"}}'
 ```
+
+Use a real, existing authorized Task ID, not the illustrative `task-N`.
+`models guide [metabridge|binding|maintenance]` is offline and needs no Task.
+Other `models` commands are narrow aliases for the existing capability calls;
+they retain caller authentication, Task scope and request/Job semantics.
+`read` accepts the existing read selectors directly (and defaults to `{}`).
+`preview`, `save`, `save-provider`, `refresh`, `maintain`, `connection-preview`
+and `connection-apply` take the documented Web request body directly as `--input`
+JSON. The CLI supplies the capability's outer `input` envelope; `save` selects
+resource and `save-provider` selects Provider. Optional `--request-id` is the
+outer capability invocation ID, distinct from the body request ID. Neither is
+automatically regenerated. There is no implicit apply, retry, refresh or install.
+`yui capability describe models.save --task task-N --input ...` remains available
+for an exact authorization assessment using the original capability envelope.
 
 Only an existing authenticated Operator has global configuration capability
 permission. A Task Leader or Worker does not gain access to global model
@@ -47,8 +61,9 @@ share the model-management caller boundary; Task roles gain no global authority.
 Web uses GET/POST `/api/models/maintenance`, POST
 `/api/models/connection/preview` and `/api/models/connection/apply`.
 Admission is not saved/applied: inspect the exact Job business result.
-The common UI retains specification/config-tool drafts and rejects blind replay
-of unknown submissions. Docs: `/models/docs/maintenance`, `/models/docs/metabridge`,
+The UI leads with a copyable Operator prompt. Advanced manual tools retain
+specification/config-tool drafts and reject blind replay of unknown submissions.
+Docs: `/models/docs/maintenance`, `/models/docs/metabridge`,
 `/models/docs/cliproxyapi` and `/models/docs/connection`.
 
 `GET /api/models/registry` returns `{revision,registry}`.

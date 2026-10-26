@@ -13,7 +13,14 @@ Register a module and endpoints first. Configuration ownership (`external` or
 an installation nor a managed service. A maintained component is independent of
 Task/AgentRun lifetime; no Task cleanup stops it.
 
-Models → Component maintenance → exact module → Optional component maintenance
+Models → Component maintenance normally offers a copyable Operator prompt.
+Run `yui models guide maintenance --json` for its current procedure/manual paths;
+this reads no instance and submits no Job. Copy/paste into Operator is a handoff,
+not blanket authorization for service operations. Ordinary model use does not
+require maintenance.
+
+For explicit manual use, Models → Component maintenance → Advanced: configure
+manually → exact module → Optional component maintenance
 accepts the specification below. Read saved delegation/Job results before an
 operation. The first successful submission saves its exact configuration in
 the existing global `model-maintenance-ID` Job definition. Each action is an

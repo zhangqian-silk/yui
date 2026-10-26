@@ -156,6 +156,34 @@ test("initial observations wait for the configuration baseline", async () => {
   assert.deepEqual(api.calls.map(call => call[0]), ["catalog", "quota"]);
 });
 
+test("low-frequency setup starts with a safe Operator prompt; copying never submits configuration", async () => {
+  const api = fakeApi();
+  const copied = [];
+  const { root, page } = mount(api, { copyText: async value => { copied.push(value); } });
+  await page.ready;
+  const original = api.calls.length;
+  for (const section of ["providers", "connection", "maintenance"]) {
+    page.show({ section });
+    const panel = find(root, n => n.dataset.section === section);
+    const prompt = find(panel, n => n.dataset.operatorPrompt);
+    assert.equal(prompt.readOnly, true);
+    assert.match(prompt.value, /yui models guide/);
+    assert.doesNotMatch(prompt.value, /fixture|sk-fixture|127\.0\.0\.1:9/);
+    await button(panel, "models.copyOperatorPrompt").handlers.click();
+    assert.equal(copied.at(-1), prompt.value);
+    // Existing manual editors are an explicit expert opt-in, not the main flow.
+    const advanced = find(panel, n => n.dataset.modelAdvanced);
+    assert.ok(advanced && !advanced.open);
+    assert.equal(all(panel, n => n.tagName === "FORM").length,
+      all(advanced, n => n.tagName === "FORM").length);
+  }
+  assert.equal(api.calls.length, original, "copy/show only: no network refresh or configuration write");
+  const fallback = mount(fakeApi(), { copyText: async () => { throw new Error("clipboard denied"); } });
+  await fallback.page.ready;
+  await button(fallback.root, "models.copyOperatorPrompt").handlers.click();
+  assert.match(text(fallback.root), /models\.copyPromptManually/);
+});
+
 test("Agent access derives the adapter, filters sources and previews the exact new-session selection", async () => {
   const current = view("r1");
   current.configuredAgents = [{ id: "coding", adapterId: "codex" }, { id: "assistant", adapterId: "claude" }];
@@ -253,18 +281,18 @@ test("maintenance and native-tool drafts survive translation; Job admission is n
   await page.ready;
   page.show({ section: "connection" });
   const spec = JSON.stringify({ repository: "/owned/repository", ref: "refs/heads/main" });
-  const maintenance = all(root, n => n.tagName === "TEXTAREA")[0];
+  const maintenance = all(root, n => n.tagName === "TEXTAREA" && !n.readOnly)[0];
   maintenance.value = spec; maintenance.handlers.input();
-  const tool = all(root, n => n.tagName === "TEXTAREA")[1];
+  const tool = all(root, n => n.tagName === "TEXTAREA" && !n.readOnly)[1];
   tool.value = '{"codex":{"configPath":"/owned/config.toml"}}'; tool.handlers.input();
   page.translate();
-  assert.equal(all(root, n => n.tagName === "TEXTAREA")[0].value, spec);
+  assert.equal(all(root, n => n.tagName === "TEXTAREA" && !n.readOnly)[0].value, spec);
   assert.equal(page.dirty(), true);
   await button(root, "models.operation.check-update").handlers.click();
   assert.equal(api.calls.filter(c => c[0] === "maintain").length, 1);
   assert.equal(page.state.receipt.text, "models.jobAccepted");
   assert.equal(page.state.maintenanceDrafts.bridge.spec, spec);
-  const details = find(root, n => n.tagName === "DETAILS" && text(n).includes("models.connectionToolHelp"));
+  const details = find(root, n => n.tagName === "DETAILS" && !n.dataset.modelAdvanced && text(n).includes("models.connectionToolHelp"));
   await button(details, "models.previewBinding").handlers.click();
   await button(details, "models.saveResource").handlers.click();
   assert.equal(page.state.unknown, true);
@@ -326,16 +354,16 @@ test("late maintenance reads and tool previews cannot replace newer drafts after
   await page.ready;
   const reading = button(root, "models.maintenanceRead").handlers.click();
   page.translate();
-  let editors = all(root, n => n.tagName === "TEXTAREA");
+  let editors = all(root, n => n.tagName === "TEXTAREA" && !n.readOnly);
   editors[0].value = '{"repository":"/new/draft"}'; editors[0].handlers.input();
   finishRead({ definition: { configuration: { input: { spec: { repository: "/old/delegation" } } } } });
   await reading;
   assert.equal(page.state.maintenanceDrafts.bridge.spec, '{"repository":"/new/draft"}');
   editors[1].value = '{"codex":{"configPath":"/first"}}'; editors[1].handlers.input();
-  let details = find(root, n => n.tagName === "DETAILS" && text(n).includes("models.connectionToolHelp"));
+  let details = find(root, n => n.tagName === "DETAILS" && !n.dataset.modelAdvanced && text(n).includes("models.connectionToolHelp"));
   const previewing = button(details, "models.previewBinding").handlers.click();
   page.translate();
-  editors = all(root, n => n.tagName === "TEXTAREA");
+  editors = all(root, n => n.tagName === "TEXTAREA" && !n.readOnly);
   editors[1].value = '{"codex":{"configPath":"/second"}}'; editors[1].handlers.input();
   finishPreview({ planDigest: "b".repeat(64) });
   await previewing;
