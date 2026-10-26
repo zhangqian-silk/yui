@@ -1,6 +1,6 @@
 # Model components: operator and Agent manual
 
-Documentation revision 3 · 2026-10-26. Read the matching component section
+Documentation revision 4 · 2026-10-26. Read the matching component section
 before modifying a registered instance. These instructions do not grant
 permission to operate a real service or consume an account.
 
@@ -14,23 +14,38 @@ complex fields use matching native instructions and explicit reread.
 
 ## Normal user path: copy instructions to Operator
 
-Connection, Agent binding and component maintenance are infrequent operations.
-The Web pages lead with current references and a **Copy instructions for Operator**
-button, not configuration fields. Paste the text into the existing Operator
+Agent management owns configured execution tools, their model/effort capabilities,
+and Role/Profile configuration. Provider management owns native/registered service
+connections, general versus CPA configuration, and account quota observations.
+Yui server settings are separate. A Provider catalog is not an Agent compatibility
+list, and a native Agent does not need a Yui Provider registration to keep working.
+
+The Web pages show configuration facts first. Open **Configure** when needed,
+then use **Copy instructions for Operator**. Agent and Provider requests have
+different goals; they do not share an ambiguous connection wizard. Paste the text into the existing Operator
 conversation, confirm the intended change, then reread the Web settings when
 Operator finishes. Copying neither sends a message nor executes any operation.
 On LAN HTTP, browsers may refuse automatic clipboard access; the read-only text
 remains selectable for manual copying. Prompts never include registry addresses,
 key files or secret values.
 
-Model-source and Agent-selection forms remain under a closed **Advanced:
-configure manually** disclosure. Component registration, maintenance specifications
+Provider, binding, component registration, maintenance specifications
 and native configuration tools have no manual Web editor; Operator uses the
 existing CLI/API and standalone tools. Existing services, native Agent configuration, catalog
 and quota observation semantics are unchanged. No new Skill installation is
 required: Web and CLI share static prompts, and the CLI points to the manuals
 shipped with its own version rather than an independently updated instruction
 package.
+
+Agent details may read their user-level Codex TOML or Claude JSON configuration
+and existing Codex model cache. These are local observations, not a live Session's
+effective settings: Role, project and Session overrides remain distinct. Native
+model cache timestamps and source are shown; missing cache is not lack of model
+support. No authentication files are read, no native process is started by this
+projection, and URLs exclude credentials/query tokens. Only credential presence
+is returned, never headers, environment values or API keys. Registered CPA JSON
+configuration can expose read-only general provider metadata from its `api-keys`
+groups; management credentials and upstream account secrets remain in CPA.
 
 Start with `yui models guide metabridge --json` (or `binding`, `maintenance`).
 This offline command returns the prompt, Operator procedure, command examples

@@ -765,7 +765,7 @@ async function handleHttpRequest(
       }
       const assetVersion = new URL(request.url!, "http://localhost").searchParams.get("v");
       const asset = findWebAsset(pathname, assetVersion);
-      const managementPage = /^\/(?:models(?:\/(?:providers|connection|maintenance|catalog|quota))?|settings(?:\/(?:preferences|skills|jobs|permissions|server|connection))?|jobs)\/?$/.test(pathname);
+      const managementPage = /^\/(?:models(?:\/(?:agents|providers|connection|maintenance|catalog|quota))?|settings(?:\/(?:agents|preferences|skills|jobs|permissions|server|connection))?|jobs)\/?$/.test(pathname);
       if (pathname === "/" || pathname === "/index.html" || managementPage) {
         sendText(
           response,

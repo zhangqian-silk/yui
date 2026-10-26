@@ -9,11 +9,15 @@ import { clearPreference, readSessionAccessMode, writeSessionAccessMode } from "
 import { i18n, createManageShell, pageSections, registerManagePage, navigateManage } from "/assets/js/layout/manageShell.js";
 import { mountSkills } from "/assets/js/views/skills.js";
 import { mountPermissions } from "/assets/js/views/permissions.js";
+import { openOperatorHandoff } from "/assets/js/views/operatorHandoff.js";
 
 const $ = selector => document.querySelector(selector);
 const t = i18n.t;
 const SECTIONS = pageSections("settings");
-const dirtySections = { skills: false, server: false };
+const dirtySections = { skills: false, server: false, agents: false };
+let settingsReady = false;
+let settingsReadOnly = false;
+let supportedAgents = [];
 function readSection() {
   const section = new URLSearchParams(window.location.search).get("section");
   return SECTIONS.includes(section) ? section : SECTIONS[0];
@@ -24,6 +28,12 @@ const shell = createManageShell({ page: "settings", t, onNavigate: navigate });
 function showSection(next) {
   section = next;
   document.querySelectorAll("#settings-root > .manage-section[data-section]").forEach(panel => { panel.hidden = panel.dataset.section !== next; });
+  const editor = $("#settings-editor");
+  if (next === "agents" || next === "server") {
+    $(next === "agents" ? "#agent-settings-host" : "#server-settings-host").append(editor);
+    editor.hidden = false;
+    if (settingsReady) filterGroups();
+  }
   shell.set(next);
   if (next === "permissions" && !permissions) permissions = mountPermissions($("#permission-browser"), t);
 }
@@ -60,6 +70,35 @@ const container = $("#settings-groups");
 const status = $("#settings-status");
 const search = $("#settings-search");
 const groups = [];
+const agentActions = $("#agent-management-actions");
+function renderAgentActions() {
+  agentActions.replaceChildren(h("button.btn.btn-primary", { type: "button", onclick: () => openOperatorHandoff({
+    topic: "agent", t, locale: i18n.getLocale, onReadback: async () => {
+      for (const state of groups) if (!state.dirty && !state.pending) state.loaded = false;
+      await start();
+    }
+  }) }, t("models.configure.agent")),
+    supportedAgents.length ? h("p.faint", null, t("settings.supportedAgents") + ": ",
+      supportedAgents.map(agent => agent.label + " · " +
+        (agent.configuredIds.length ? agent.configuredIds.join(", ") : t("settings.notConfigured"))).join(" / ")) : null);
+}
+renderAgentActions();
+i18n.subscribe(renderAgentActions);
+function isAgentGroup(meta) { return /^(agent|role|profile)\//.test(meta.id); }
+function filterGroups() {
+  groups.forEach(state => {
+    state.root.hidden = !state.matched || isAgentGroup(state.meta) !== (section === "agents");
+    if (!state.root.hidden && (state.root.open || section === "agents")) {
+      void loadGroup(state);
+    }
+  });
+  if (section === "agents") {
+    const order = meta => meta.id.startsWith("agent/") ? 0 : meta.id.startsWith("role/") ? 1 : 2;
+    groups.filter(state => !state.root.hidden).sort((a, b) => order(a.meta) - order(b.meta))
+      .forEach(state => container.append(state.root));
+  }
+}
+settingsReady = true;
 let searchGeneration = 0;
 let searchTimer;
 const more = h("button.btn", { type: "button", hidden: true }, t("settings.more"));
@@ -105,10 +144,11 @@ function editor(field, group, state) {
     field.reset ? h("label.settings-reset", null, reset, t("settings.reset")) : null);
   let unavailable = false;
   function mark() {
-    control.disabled = reset.checked || unavailable;
+    control.disabled = state.readOnly || reset.checked || unavailable;
     state.dirty = state.editors.some(e => e.changed());
-    markDirty("server", groups.some(g => g.dirty));
-    state.save.disabled = !state.dirty || state.pending || state.capabilityPending || state.unknown;
+    markDirty("server", groups.some(g => g.dirty && !isAgentGroup(g.meta)));
+    markDirty("agents", groups.some(g => g.dirty && isAgentGroup(g.meta)));
+    state.save.disabled = state.readOnly || !state.dirty || state.pending || state.capabilityPending || state.unknown;
     if (!state.unknown && !state.pending) state.receipt.textContent = state.dirty ? t("settings.unsaved") : "";
   }
   function listen() {
@@ -134,13 +174,14 @@ function editor(field, group, state) {
       if (value && !values.includes(value)) selected.append(h("option", { value }, value + " · " + t("settings.notListed")));
       control = choices.length ? selected : h("input");
       control.value = value;
-      control.disabled = reset.checked || unavailable;
+      control.disabled = state.readOnly || reset.checked || unavailable;
       listen();
       label.replaceChildren(fieldLabel(), control);
       choiceActions.replaceChildren();
       if (choices.length && options.allowCustom && !unavailable) {
-        const custom = h("button.btn", { type: "button" }, t("settings.custom"));
+        const custom = h("button.btn", { type: "button", disabled: state.readOnly }, t("settings.custom"));
         custom.addEventListener("click", () => {
+          if (state.readOnly) return;
           const value = control.value;
           control = h("input", { value });
           control.disabled = reset.checked;
@@ -186,13 +227,43 @@ function applyCapabilities(state, result) {
 function renderGroup(state, group) {
   const generation = state.renderGeneration = (state.renderGeneration || 0) + 1;
   state.group = group; state.editors = []; state.dirty = false; state.unknown = false;
+  state.readOnly = !!(settingsReadOnly || group.readOnly);
   state.capabilityPending = false;
-  markDirty("server", groups.some(g => g.dirty));
+  markDirty("server", groups.some(g => g.dirty && !isAgentGroup(g.meta)));
+  markDirty("agents", groups.some(g => g.dirty && isAgentGroup(g.meta)));
   const form = h("form.settings-stack");
   const receipt = h("p.settings-receipt", { role: "status", "aria-live": "polite" });
   const save = h("button.btn.btn-primary", { type: "submit", disabled: true, "data-i18n": "settings.save" }, t("settings.save"));
   state.save = save; state.receipt = receipt;
   form.append(h("p", null, group.notice));
+  if (group.provenance) form.append(h("p.models-note", null,
+    group.provenance.label + " · " + group.provenance.capturedAt));
+  if (state.readOnly) form.append(h("p.faint", null, t("settings.snapshotReadOnly")));
+  const native = group.observation?.native;
+  if (state.summary && isAgentGroup(state.meta)) {
+    const model = native?.model || group.fields.find(field => field.key === "model")?.value;
+    const effort = native?.effort || group.fields.find(field => field.key === "effort")?.value;
+    state.summary.replaceChildren(
+      h("strong", null, t("settings.section." + state.meta.section, state.meta.section) + " · " + state.meta.title),
+      h("span.faint", null, [group.agentId, model || t("settings.inherit"), effort,
+        native?.models?.length ? t("settings.nativeModels") + ": " + native.models.length : ""].filter(Boolean).join(" · ")));
+  }
+  if (native) {
+    const rows = [
+      ["settings.nativeModel", native.model],
+      ["settings.nativeEffort", native.effort],
+      ["settings.nativeProvider", native.provider],
+      ["settings.nativeFile", native.sourceFile]
+    ].filter(([, value]) => value !== undefined && value !== null && value !== "");
+    form.append(h("section.models-native-config", null, h("h3", null, t("settings.nativeConfiguration")),
+      h("p", null, t("settings.nativeIndependent")),
+      h("dl.models-balances", null, rows.map(([key, value]) => h("div", null, h("dt", null, t(key)), h("dd", null, String(value))))),
+      native.models?.length ? h("details", null, h("summary", null, t("settings.nativeModels") + " · " + native.models.length),
+        h("p.faint", null, (native.catalogSource || "") + (native.catalogFetchedAt ? " · " + native.catalogFetchedAt : "")),
+        h("ul", null, native.models.map(model => h("li", null,
+        typeof model === "string" ? model : (model.label || model.name || model.id || model.value),
+        typeof model === "object" && model.efforts?.length ? " · " + model.efforts.map(e => typeof e === "string" ? e : e.label || e.value).join(", ") : "")))) : h("p.faint", null, t("settings.nativeModelsUnknown"))));
+  }
   const isRole = group.id.startsWith("role/");
   if (isRole) form.append(h("p", null, "Agent: " + group.agentId + " · " + t("settings.roleScope")));
   const advanced = h("details", { open: !!search.value.trim() }, h("summary", null, t("settings.advancedFields")));
@@ -200,10 +271,12 @@ function renderGroup(state, group) {
   group.fields.forEach(field => {
     const item = editor(field, group, state);
     state.editors.push(item);
-    if (isRole) (["model", "effort"].includes(field.key) ? common : advanced).append(item.row);
+    if (isRole) (["activeAgentId", "model", "effort"].includes(field.key) ? common : advanced).append(item.row);
+    else if (group.id.startsWith("agent/")) advanced.append(item.row);
     else form.append(item.row);
   });
   if (isRole) form.append(common, advanced);
+  else if (group.id.startsWith("agent/")) form.append(advanced);
   const acknowledge = h("input", { type: "checkbox" });
   if (group.id.startsWith("role/") || group.id.startsWith("agent/")) form.append(h("label.settings-reset", null,
     acknowledge, t("settings.acknowledge")));
@@ -233,7 +306,7 @@ function renderGroup(state, group) {
   form.append(h("div.settings-actions", null, save, compare), receipt);
   form.addEventListener("submit", async event => {
     event.preventDefault();
-    if (state.pending || state.capabilityPending || state.unknown) return;
+    if (state.readOnly || state.pending || state.capabilityPending || state.unknown) return;
     let changes;
     if (state.editors.some(e => e.blocked)) {
       receipt.textContent = t("settings.unsupportedDraft"); return;
@@ -259,7 +332,7 @@ function renderGroup(state, group) {
       controls.forEach((c, i) => { c.disabled = disabled[i]; });
     } finally {
       state.pending = false;
-      state.save.disabled = !state.dirty || state.unknown;
+      state.save.disabled = state.readOnly || !state.dirty || state.unknown;
     }
   });
   if (group.observation) form.append(h("details", null, h("summary", null, t("settings.observation")),
@@ -267,10 +340,10 @@ function renderGroup(state, group) {
   if (group.agentId) {
     const info = h("p", { role: "status" }, t("settings.notQueried"));
     const query = h("button.btn", { type: "button" }, t("settings.queryCapabilities"));
-    const refresh = h("button.btn", { type: "button" }, t("settings.refreshCapabilities"));
+    const refresh = h("button.btn", { type: "button", disabled: state.readOnly }, t("settings.refreshCapabilities"));
     const output = h("div");
     async function load(force) {
-      if (state.pending || state.capabilityPending) return;
+      if (state.pending || state.capabilityPending || force && state.readOnly) return;
       if (state.editors.some(e => e.field.key === "activeAgentId" && e.changed())) {
         info.textContent = t("settings.saveAgentFirst"); return;
       }
@@ -295,10 +368,10 @@ function renderGroup(state, group) {
             h("pre.settings-observation", null, JSON.stringify(result.catalog, null, 2))));
       } catch (error) { info.textContent = t("settings.queryFailed") + ": " + error.message; }
       finally {
-        query.disabled = refresh.disabled = false;
+        query.disabled = false; refresh.disabled = state.readOnly;
         if (state.renderGeneration === generation) {
           state.capabilityPending = false;
-          state.save.disabled = !state.dirty || state.pending || state.unknown;
+          state.save.disabled = state.readOnly || !state.dirty || state.pending || state.unknown;
         }
       }
     }
@@ -307,6 +380,7 @@ function renderGroup(state, group) {
     if (isRole) common.before(capabilities);
     else form.append(capabilities);
   }
+  if (state.readOnly) form.querySelectorAll("input,select,textarea").forEach(control => { control.disabled = true; });
   state.content.replaceChildren(form);
 }
 
@@ -335,23 +409,28 @@ async function start(cursor) {
   try {
     const data = await requestJson("/api/settings?" + new URLSearchParams({ q: query, cursor: cursor || "0" }));
     if (generation !== searchGeneration) return;
-    if (!cursor) groups.forEach(state => { state.root.hidden = true; });
+    settingsReadOnly = !!data.readOnly;
+    supportedAgents = data.supportedAgents || [];
+    renderAgentActions();
+    if (!cursor) groups.forEach(state => { state.matched = false; state.root.hidden = true; });
     data.groups.forEach(meta => {
       const existing = groups.find(g => g.meta.id === meta.id);
       if (existing) {
-        existing.root.hidden = false;
+        existing.matched = true;
         if (query) { existing.root.open = true; void loadGroup(existing); }
         return;
       }
       const content = h("div");
-      const root = h("details.settings-card", { open: meta.id === "system" || !!query },
-        h("summary", null, t("settings.section." + meta.section, meta.section) + " · " + meta.title), content);
-      const state = { meta, root, content, dirty: false, loaded: false, loading: false };
+      const summary = h("summary", null, t("settings.section." + meta.section, meta.section) + " · " + meta.title);
+      const root = h("details.settings-card", { open: meta.id === "system" || !!query }, summary, content);
+      const state = { meta, root, content, summary, dirty: false, loaded: false, loading: false, matched: true };
       groups.push(state); container.append(root);
       root.addEventListener("toggle", () => { if (root.open) void loadGroup(state); });
       if (root.open) void loadGroup(state);
     });
-    status.textContent = data.total ? String(data.total) + " " + t("settings.groups") : t("settings.noMatches");
+    filterGroups();
+    status.textContent = data.provenance ? data.provenance.label + " · " + data.provenance.capturedAt
+      : data.total ? t(section === "agents" ? "settings.agentGroupsHelp" : "settings.serverGroupsHelp") : t("settings.noMatches");
     more.hidden = !data.nextCursor;
     more.onclick = () => start(data.nextCursor);
   } catch (error) { status.textContent = error.message; }

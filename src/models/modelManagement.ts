@@ -9,16 +9,17 @@ import { readModelJson } from "./modelManagementHttp.js";
 import type { ModelCatalogItem, ModelConnection, ModelManagementView, ModelObservation, ModelProviderView, ModelQuotaItem, ModelStatusItem } from "./modelManagementTypes.js";
 import { createModelMaintenanceService } from "./modelMaintenanceService.js";
 import type { DurableJobCaller } from "../controller/jobControl.js";
+import { readNativeModelConfiguration } from "./nativeModelConfiguration.js";
 
 type Store = Pick<TaskStore, "getConfig" | "saveConfig" | "transaction"> & Partial<Pick<TaskStore, "getConfiguredAgent" | "listConfiguredAgents">>;
 type Provider = { file: ModelFile; value: Record<string, unknown>; id: string };
-const NOTICE = "Configuration is owned by metabridge. Saved does not mean applied: reload through your existing deployment flow if needed, then refresh the catalog. No Session, account or model is switched; inference is not validated.";
+const NOTICE = "Native configuration remains owned by its Agent or service. Reading it does not register or take over that service. Saved does not mean applied: use the owning service's deployment flow when needed. No Session, account or model is switched; inference is not validated.";
 const empty = <T>(): ModelObservation<T> => ({
   status: "not-queried", attemptedAt: null, observedAt: null, stale: false, error: null, items: []
 });
 
 export function createModelManagement(store: Store, options: {
-  request?: typeof readModelJson; now?: () => Date;
+  request?: typeof readModelJson; now?: () => Date; environment?: NodeJS.ProcessEnv;
 } = {}) {
   const request = options.request ?? readModelJson;
   const now = options.now ?? (() => new Date());
@@ -83,13 +84,25 @@ export function createModelManagement(store: Store, options: {
 
   function read(moduleId?: string): ModelManagementView {
     const state = snapshot(moduleId);
+    let cpaProviders: ModelProviderView[] = [];
+    if (state.module?.kind === "cliproxyapi" && state.module.configFile) {
+      try { cpaProviders = readCpaProviders(modelJsonFile(state.module.configFile).value); }
+      catch { state.configurationError = "CPA configuration is unavailable or unsupported. No configuration was changed."; }
+    }
     return {
-      revision: state.revision, connection: state.connection, providers: state.providers.map(provider => {
+      revision: state.revision, connection: state.connection, providers: [...cpaProviders, ...state.providers.map(provider => {
         const view = providerView(provider);
         return state.module?.maintenance === "configuration" ? view : { ...view, editable: false, reason: "read-only-service" };
-      }),
+      })],
       configurationError: state.configurationError, application: "unverified", notice: NOTICE,
       registry: registry.read(), registryRevision: registry.revision(),
+      nativeProviders: (store.listConfiguredAgents?.() ?? [])
+        .flatMap(a => readNativeModelConfiguration(a, options.environment).providers),
+      // An adapter's supported wire operations are not configured accounts.
+      // Only sources with actual retained account observations become UI tabs.
+      quotaSources: registry.read().modules.filter(m => m.kind === "cliproxyapi").flatMap(m =>
+        ["factory", "command-code"].flatMap(source =>
+          readQuota(source, m.id).items.length ? [{ moduleId: m.id, source }] : [])),
       configuredAgents: (store.listConfiguredAgents?.() ?? []).filter(a => ["codex", "claude"].includes(a.adapterId))
         .map(a => ({ id: a.id, adapterId: a.adapterId }))
     };
@@ -340,6 +353,26 @@ export function createModelManagement(store: Store, options: {
     connectionApply: (input: unknown, caller: DurableJobCaller) => maintenance().connectionApply(input, caller),
     readRegistry: () => ({ revision: registry.revision(), registry: registry.read() }),
     saveResource: registry.save, previewBinding: registry.previewBinding };
+}
+
+/** CPA's native configuration stays owned by CPA; this is a read-only projection
+ * of its configured API-key providers, never keys or an inferred account list. */
+function readCpaProviders(config: Record<string, unknown>): ModelProviderView[] {
+  const groups = config["api-keys"];
+  if (!groups || typeof groups !== "object" || Array.isArray(groups)) return [];
+  return ["openai-compatibility", "codex", "claude"].flatMap(group => {
+    const rows = (groups as Record<string, unknown>)[group];
+    if (!Array.isArray(rows) || rows.length > 100) return [];
+    return rows.map((value, index) => {
+      const p = modelObject(value);
+      return { id: `cpa-${group}-${index}`, name: safeText(p.name) ?? `${group}-${index + 1}`,
+        via: "cpa" as const, baseUrl: safeUrl(p["base-url"]),
+        prefix: safeText(p.prefix) ?? "", enabled: p.disabled !== true, editable: false,
+        reason: "CPA native configuration; use its existing owner.",
+        credentialPresent: Array.isArray(p.keys) && p.keys.length > 0,
+        credentialKind: "key" as const, owner: "cliproxyapi" as const };
+    });
+  });
 }
 
 function providerView(provider: Provider): ModelProviderView {

@@ -24,11 +24,19 @@ export const SETTINGS_MAIN = `
         <section id="skill-browser" class="card settings-card settings-stack"></section>
       </section>
       <section class="manage-section" data-section="server" aria-labelledby="settings-server-title" hidden>
-        ${manageHead("settings-server-title", "settings.section.server", "Agents & server", "settings.hint.server", "Desired configuration for Yui, Roles, Agents and Profiles. Saving targets later launches; it is not proof that existing Sessions adopted it.")}
+        ${manageHead("settings-server-title", "settings.section.server", "Yui server", "settings.hint.server", "Yui server configuration.")}
+        <div id="server-settings-host"></div>
+      </section>
+      <section class="manage-section" data-section="agents" aria-labelledby="settings-agents-title" hidden>
+        ${manageHead("settings-agents-title", "settings.section.agents", "Agent management", "settings.hint.agents", "Configured Agents, model capabilities and Role profiles. Native model configuration remains independent of Provider registration.")}
+        <div id="agent-management-actions" class="settings-actions"></div>
+        <div id="agent-settings-host"></div>
+      </section>
+      <div id="settings-editor" hidden>
         <label class="field settings-search"><span data-i18n="settings.search">Find a setting</span><input id="settings-search" type="search" autocomplete="off"></label>
         <p id="settings-status" role="status"></p>
         <div id="settings-groups" class="settings-stack"></div>
-      </section>
+      </div>
       <section class="manage-section" data-section="permissions" aria-labelledby="settings-permissions-title" hidden>
         ${manageHead("settings-permissions-title", "settings.section.permissions", "Command permissions", "permissions.intro", "Read-only discovery templates, not authorization for a specific call. No rules or Grants are changed.")}
         <section id="permission-browser" class="settings-stack"></section>

@@ -135,6 +135,9 @@ export const MODELS_STYLES = `
   .models-reason{text-align:left;max-width:none}
   .models-catalog{grid-template-columns:minmax(0,1fr)}
 }
+ .models-handoff{width:min(40rem,calc(100vw - 2rem));max-height:calc(100dvh - 2rem);overflow:auto;padding:24px;border:1px solid var(--line);border-radius:var(--radius-lg,12px);background:var(--surface);color:var(--ink)}
+ .models-handoff::backdrop{background:rgba(0,0,0,.45)}
+ .models-handoff textarea{width:100%;box-sizing:border-box;resize:vertical}
  .models-maintenance{margin-block:var(--space-3,12px);min-width:0}
  .models-maintenance textarea,.models-card textarea{width:100%;max-width:100%;box-sizing:border-box;font-family:var(--font-mono,monospace)}
  .models-operation-result{white-space:pre-wrap;overflow-wrap:anywhere;max-height:24rem;overflow:auto;max-width:100%}

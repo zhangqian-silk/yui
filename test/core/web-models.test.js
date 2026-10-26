@@ -3,6 +3,7 @@ import test from "node:test";
 import vm from "node:vm";
 import { webcrypto } from "node:crypto";
 import { MODELS_VIEW_SCRIPT } from "../../dist/web/assets/client/views/models.js";
+import { OPERATOR_HANDOFF_SCRIPT } from "../../dist/web/assets/client/views/operatorHandoff.js";
 import { MODELS_HTML } from "../../dist/web/assets/shell/models.js";
 import { appRail } from "../../dist/web/assets/shell/appRail.js";
 import { SETTINGS_HTML } from "../../dist/web/assets/shell/settings.js";
@@ -71,13 +72,13 @@ test("management navigation shares history across areas and normalizes direct UR
   vm.runInContext(MANAGE_SHELL_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), ctx);
   for (const page of ["models", "settings", "jobs"]) ctx.registerManagePage(page, { show: route => shown.push({ ...route }) });
   ctx.startManagement();
-  assert.equal(location.pathname + location.search, "/models/catalog?source=command-code");
+  assert.equal(location.pathname + location.search, "/models/quota?source=command-code");
   assert.equal(history.pushes, 0, "normalizing a direct URL must not add a Back step");
   ctx.navigateManage({ page: "settings", section: "preferences" });
   ctx.navigateManage({ page: "models", section: "connection" });
-  assert.equal(location.pathname, "/models/connection");
-  assert.equal(ctx.manageHref(ctx.readManageRoute(new URL("http://localhost/settings/connection"))), "/models/connection");
-  assert.equal(elements.get("#models-root").hidden, false);
+  assert.equal(location.pathname, "/models/agents");
+  assert.equal(ctx.manageHref(ctx.readManageRoute(new URL("http://localhost/settings/connection"))), "/models/agents");
+  assert.equal(elements.get("#settings-root").hidden, false);
   ctx.navigateManage({ page: "models", section: "connection" });
   assert.equal(history.pushes, 2, "clicking the selected destination is a no-op");
   location.href = "http://localhost/settings/server";
@@ -86,7 +87,7 @@ test("management navigation shares history across areas and normalizes direct UR
   assert.equal(shown.at(-1).section, "server");
   assert.equal(elements.get("#settings-root").hidden, false);
   assert.equal(elements.get("#manage-scroll").scrollTop, 70, "the center column restores its own scroll");
-  assert.deepEqual({ ...places }, { models: "/models/connection", settings: "/settings/server", manage: "/settings/server" },
+  assert.deepEqual({ ...places }, { models: "/models/agents", settings: "/settings/server", manage: "/settings/server" },
     "each area remembers its last section for the return trip from the workbench");
   const ref = JSON.stringify({ version: "a".repeat(40), relativePath: "report.md" });
   const fixed = new URL("http://localhost/settings/jobs?job=reports&jobRun=run-1&artifact=" + encodeURIComponent(ref));
@@ -125,7 +126,7 @@ function view(revision, extra = {}) {
       managementKeyFile: c.managementKeyFile, configFile: "", maintenance: "external", quotaAdapter: "factory-quota-v1" }] : [])] : [],
     endpoints: c ? [{ id: "bridge-api", moduleId: "bridge", url: c.bridgeUrl + "/v1", protocol: "responses", clientKeyFile: "" }] : [],
     bindings: [], receipts: [] };
-  return { revision, registryRevision: revision, registry, configuredAgents: [{ id: "codex", adapterId: "codex" }], connection: connection(), configurationError: null, application: "unverified", notice: "notice-" + revision,
+  return { revision, registryRevision: revision, registry, quotaSources: ["factory", "command-code"].map(source => ({ moduleId: c?.cpaUrl ? "cpa" : "", source })), configuredAgents: [{ id: "codex", adapterId: "codex" }], connection: connection(), configurationError: null, application: "unverified", notice: "notice-" + revision,
     providers: [
       { id: "official", name: "Official", via: "unknown", baseUrl: "https://upstream.invalid", prefix: "", enabled: true,
         editable: false, reason: "official subscription route", credentialPresent: true, owner: "metabridge" },
@@ -136,13 +137,15 @@ function view(revision, extra = {}) {
 const observation = (status, extra = {}) => ({ status, attemptedAt: null, observedAt: null, stale: false, error: null, items: [], ...extra });
 
 function mount(api, extra = {}) {
-  const context = vm.createContext({ crypto: webcrypto, h: element, icon: name => element("svg.icon." + name), formatDateTime: iso => "at:" + iso, window: {} });
+  let handoff;
+  const context = vm.createContext({ crypto: webcrypto, h: element, icon: name => element("svg.icon." + name), formatDateTime: iso => "at:" + iso, window: {},
+    openOperatorHandoff: options => { handoff = options; } });
   vm.runInContext(MODELS_VIEW_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
   const root = element("div");
   const confirmations = [];
   const page = context.mountModels(root, { t: (key, fallback) => key, api,
     confirm: message => { confirmations.push(message); return true; }, ...extra });
-  return { root, page, confirmations };
+  return { root, page, confirmations, handoff: () => handoff };
 }
 
 test("initial observations wait for the configuration baseline", async () => {
@@ -156,83 +159,108 @@ test("initial observations wait for the configuration baseline", async () => {
   assert.deepEqual(api.calls.map(call => call[0]), ["catalog", "quota"]);
 });
 
-test("low-frequency setup starts with a safe Operator prompt; copying never submits configuration", async () => {
-  const api = fakeApi();
-  const copied = [];
-  const { root, page } = mount(api, { copyText: async value => { copied.push(value); } });
-  await page.ready;
-  const original = api.calls.length;
-  for (const section of ["providers", "connection", "maintenance"]) {
-    page.show({ section });
-    const panel = find(root, n => n.dataset.section === section);
-    const prompt = find(panel, n => n.dataset.operatorPrompt);
-    assert.equal(prompt.readOnly, true);
-    assert.match(prompt.value, /yui models guide/);
-    assert.doesNotMatch(prompt.value, /fixture|sk-fixture|127\.0\.0\.1:9/);
-    await button(panel, "models.copyOperatorPrompt").handlers.click();
-    assert.equal(copied.at(-1), prompt.value);
-    const advanced = find(panel, n => n.dataset.modelAdvanced);
-    if (section === "maintenance") {
-      assert.equal(advanced, undefined, "component setup has no manual configuration entry");
-      assert.equal(all(panel, n => n.tagName === "FORM" || n.tagName === "INPUT" || n.tagName === "SELECT" || n.tagName === "TEXTAREA" && !n.readOnly).length, 0);
-      assert.equal(page.dirty(), false);
-    } else {
-      assert.ok(advanced && !advanced.open);
-      assert.equal(all(panel, n => n.tagName === "FORM").length,
-        all(advanced, n => n.tagName === "FORM").length);
-    }
-  }
-  assert.equal(api.calls.length, original, "copy/show only: no network refresh or configuration write");
-  const fallback = mount(fakeApi(), { copyText: async () => { throw new Error("clipboard denied"); } });
-  await fallback.page.ready;
-  await button(fallback.root, "models.copyOperatorPrompt").handlers.click();
-  assert.match(text(fallback.root), /models\.copyPromptManually/);
-});
-
-test("Agent access derives the adapter, filters sources and previews the exact new-session selection", async () => {
-  const current = view("r1");
-  current.configuredAgents = [{ id: "coding", adapterId: "codex" }, { id: "assistant", adapterId: "claude" }];
-  current.registry.endpoints.push({ id: "claude-api", moduleId: null, url: "http://localhost:9", protocol: "anthropic-messages", clientKeyFile: "/fixture/key" });
-  const api = fakeApi({ current, previewModelBinding: async input => { api.calls.push(["preview", copy(input)]); return input; } });
-  const { root, page } = mount(api);
-  await page.ready;
-  const form = () => find(root, n => n.tagName === "FORM" && n.dataset.resourceKind === "binding");
-  const control = key => find(form(), n => n.dataset.bindingField === key);
-  assert.ok(control("agentId"), "choose an existing Agent rather than typing an internal ID");
-  control("agentId").value = "coding"; control("agentId").handlers.change();
-  assert.equal(control("adapterId"), undefined, "the Agent owns its adapter");
-  assert.ok(text(control("endpointId")).includes("bridge-api"));
-  assert.ok(!text(control("endpointId")).includes("claude-api"));
-  control("endpointId").value = "bridge-api"; control("endpointId").handlers.change();
-  control("model").value = "fixture-model"; control("model").handlers.input();
-  await button(form(), "models.previewBinding").handlers.click();
-  assert.deepEqual(api.calls.find(c => c[0] === "preview")[1].binding, {
-    agentId: "coding", adapterId: "codex", endpointId: "bridge-api", model: "fixture-model", scope: "yui-new-session"
-  });
-  assert.equal(button(form(), "models.saveResource").disabled, false);
-  control("model").value = "changed"; control("model").handlers.input();
-  assert.equal(button(form(), "models.saveResource").disabled, true, "changing the model invalidates preview");
-  page.translate();
-  assert.equal(control("model").value, "changed", "language changes preserve the selection");
-  control("endpointId").value = ""; control("endpointId").handlers.change();
-  assert.equal(control("model").value, "");
-  assert.equal(control("model").disabled, true, "native access preserves native model choice");
-});
-
-test("language changes retain current observations and drafts without loading again", async () => {
+test("language changes retain current observations without loading again", async () => {
   let reads = 0;
   const api = fakeApi({ models: async () => { reads++; return view("r1"); } });
   const { page } = mount(api);
   await page.ready;
   const observation = page.state.catalog.page;
-  page.state.connectionDrafts.endpoint = { id: "draft", url: "http://127.0.0.1:91" };
   const calls = api.calls.length;
   page.translate();
   assert.equal(reads, 1);
   assert.equal(api.calls.length, calls);
   assert.equal(page.state.catalog.page, observation);
-  assert.equal(page.state.connectionDrafts.endpoint.url, "http://127.0.0.1:91");
-  assert.equal(page.dirty(), true);
+  assert.equal(page.dirty(), false);
+});
+
+// Manual Provider/binding forms have been retired. Their mutation authority,
+// preview, credential and replay contracts remain covered by model-management
+// and model-registry tests; the Web now protects a read-only handoff boundary.
+test("Provider facts distinguish native connections and snapshots, with one non-mutating configuration handoff", async () => {
+  const api = fakeApi({ current: view("r1", { readOnly: true, quotaSources: [],
+    provenance: { label: "Production snapshot", capturedAt: "2026-10-26T00:00:00Z" },
+    nativeProviders: [{ id: "native", agentId: "codex", name: "Native service", baseUrl: "https://native.invalid",
+      credentialPresent: true }] }) });
+  const { root, page, handoff } = mount(api);
+  await page.ready;
+  assert.match(text(root), /Production snapshot/);
+  assert.match(text(root), /Native service.*codex/);
+  assert.match(text(root), /https:\/\/native.invalid/);
+  assert.equal(all(root, n => n.tagName === "FORM" || n.tagName === "TEXTAREA" || n.type === "password").length, 0);
+  assert.equal(api.calls.some(call => call[0] === "quota"), false, "no invented default quota source");
+  assert.equal(all(root, n => n.tagName === "BUTTON" && /models.source.(factory|command-code)/.test(text(n))).length, 0);
+  button(root, "models.configure.provider").handlers.click();
+  assert.equal(handoff().topic, "provider");
+  assert.equal(button(root, "models.refreshCatalog").disabled, true);
+  await button(root, "models.refreshCatalog").handlers.click();
+  await button(root, "models.readQuota").handlers.click();
+  assert.equal(api.calls.some(call => ["resource", "provider", "refresh"].includes(call[0])), false,
+    "snapshot refresh is blocked in handlers as well as controls");
+});
+
+test("first quota read is explicit and exposes only real accounts while retaining a partial success", async () => {
+  const account = { id: "actual-account", source: "factory", status: "success", windows: [],
+    balance: null, balanceDetails: [], periodEnd: null, error: null };
+  const actual = observation("success", { items: [account], observedAt: "2026-10-26T00:00:00Z" });
+  const api = fakeApi({ current: view("r1", { quotaSources: [],
+    connection: connection({ cpaUrl: "https://fixture.invalid", managementKeyFile: "/fixture/private-key" }) }),
+    modelQuota: async source => { api.calls.push(["quota", source]); return actual; },
+    refreshModels: async input => {
+      api.calls.push(["refresh", copy(input)]);
+      if (input.source === "command-code") throw new Error("quota request failed");
+      api.current.quotaSources = [{ moduleId: "cpa", source: "factory" }];
+      return actual;
+    }
+  });
+  const { root, page } = mount(api);
+  await page.ready;
+  page.show({ section: "quota" });
+  assert.equal(api.calls.some(call => ["quota", "refresh"].includes(call[0])), false);
+  assert.equal(button(root, "models.source.factory"), undefined);
+  assert.equal(button(root, "models.source.command-code"), undefined);
+  const read = button(root, "models.readQuota");
+  assert.equal(read.disabled, false);
+  await read.handlers.click();
+  assert.equal(api.calls.filter(call => call[0] === "refresh").length, 2);
+  assert.match(text(root), /actual-account/);
+  assert.match(text(root), /quota request failed/);
+  assert.equal(page.state.quota.source, "factory");
+  assert.equal(button(root, "models.source.command-code"), undefined, "failed source never becomes an invented account tab");
+  page.show({ section: "providers" }); page.show({ section: "quota" });
+  assert.equal(api.calls.filter(call => call[0] === "refresh").length, 2, "navigation does not repeat upstream calls");
+});
+
+test("Agent and Provider handoffs are distinct, copy-only and restore focus when closed", async () => {
+  const body = element("body");
+  let focused = 0;
+  const document = { body, activeElement: { focus() { focused++; } } };
+  const h = (...args) => {
+    const node = element(...args);
+    node.focus = () => {};
+    node.select = () => {};
+    node.showModal = () => { node.open = true; };
+    node.close = () => { node.open = false; node.handlers.close?.(); };
+    node.remove = () => { body.children = body.children.filter(child => child !== node); };
+    return node;
+  };
+  const context = vm.createContext({ h, document });
+  vm.runInContext(OPERATOR_HANDOFF_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
+  const copied = [];
+  let reads = 0;
+  for (const topic of ["agent", "provider"]) {
+    const dialog = context.openOperatorHandoff({ topic, t: key => key, locale: () => "zh-CN",
+      copyText: async prompt => { copied.push(prompt); }, onReadback: async () => { reads++; } });
+    assert.equal(dialog.open, true);
+    assert.equal(find(dialog, node => node.tagName === "TEXTAREA").readOnly, true);
+    await button(dialog, "models.copyOperatorPrompt").handlers.click();
+    assert.equal(reads, 0, "copy does not execute or reread");
+    button(dialog, "models.closePanel").handlers.click();
+    assert.equal(body.children.length, 0);
+  }
+  assert.match(copied[0], /接入 Agent/);
+  assert.match(copied[1], /模型 Provider/);
+  assert.notEqual(copied[0], copied[1]);
+  assert.equal(focused, 2);
 });
 
 test("cached observations become stale locally without requests or replacing controls", async () => {
@@ -275,68 +303,6 @@ function fakeApi(overrides = {}) {
   return api;
 }
 
-test("resource drafts survive other editors, rerenders, writes and reconciliation; only explicit replacements discard them", async () => {
-  const api = fakeApi();
-  let allow = false;
-  const { root, page, confirmations } = mount(api, { confirm: message => { confirmations.push(message); return allow; } });
-  await page.ready;
-  page.state.connectionDrafts.binding = { agentId: "codex", endpointId: "bridge-api", model: "" };
-  page.translate();
-  const forms = () => ["endpoint", "binding"].map(kind => resourceForm(root, kind));
-  const id = index => find(forms()[index], n => n.tagName === "INPUT");
-  const type = (index, value) => { const input = id(index); input.value = value; input.handlers.input(); };
-  type(0, "unsaved-endpoint");
-  type(1, "unsaved-model");
-  button(endpointCard(root), "models.editResource").handlers.click();
-  assert.equal(confirmations.length, 1, "replacing the same resource editor requires consent");
-  page.translate();
-  assert.deepEqual([id(0).value, id(1).value], ["unsaved-endpoint", "unsaved-model"]);
-  allow = true;
-  button(endpointCard(root), "models.editResource").handlers.click();
-  assert.deepEqual([id(0).value, id(1).value], ["bridge-api", "unsaved-model"]);
-  button(forms()[0], "models.discard").handlers.click();
-  assert.deepEqual([id(0).value, id(1).value], ["", "unsaved-model"]);
-  type(0, "saved-endpoint");
-  await submit(forms()[0]); await tick();
-  assert.deepEqual([id(0).value, id(1).value], ["", "unsaved-model"], "saving one kind clears only that draft");
-  type(0, "keep-endpoint");
-  const moduleSelect = all(forms()[0], n => n.tagName === "SELECT")[0];
-  moduleSelect.value = "bridge"; moduleSelect.handlers.input();
-  api.next = () => view("r3", { connection: null, providers: [] });
-  button(endpointCard(root), "models.unregister").handlers.click(); await tick(); await tick();
-  assert.deepEqual([id(0).value, id(1).value], ["keep-endpoint", "unsaved-model"], "unregister preserves all unsaved forms");
-  const retainedSelect = all(forms()[0], n => n.tagName === "SELECT")[0];
-  assert.equal(retainedSelect.value, "bridge");
-  assert.ok(all(retainedSelect, n => n.tagName === "OPTION").some(n => n.value === "bridge"), "removed references remain visible in unsaved drafts");
-  for (const disposition of ["not-submitted", "unknown"]) {
-    api.saveModelResource = async () => { throw Object.assign(new Error("fixture failure"), { disposition }); };
-    await submit(forms()[0]); await tick();
-    button(root, "models.readFacts").handlers.click(); await tick(); await tick();
-    assert.deepEqual([id(0).value, id(1).value], ["keep-endpoint", "unsaved-model"], disposition + " reread must not erase drafts or replay");
-  }
-  assert.equal(page.dirty(), true);
-});
-
-test("resource controls and confirmations use the selected product language", async () => {
-  for (const messages of [EN, ZH_CN]) {
-    const { root, page, confirmations } = mount(fakeApi(), { t: (key, fallback) => {
-      if (/^models\.(field|option|resourceKind|resourceEmpty|resourceEditor)\./.test(key))
-        assert.ok(Object.hasOwn(messages, key), "missing translation: " + key);
-      return messages[key] || EN[key] || fallback || key;
-    } });
-    await page.ready;
-    for (const key of ["models.resource", "models.field.clientKeyFile",
-      "models.access.agentId", "models.previewBinding",
-      "models.bindingScope", "models.componentDocs"]) {
-      assert.ok(text(root).includes(messages[key]), key);
-    }
-    button(root, messages["models.unregister"]).handlers.click(); await tick(); await tick();
-    assert.equal(confirmations[0], messages["models.unregisterConfirm"]);
-    button(find(root, n => n.dataset.provider === "mine"), messages["models.removeProvider"]).handlers.click();
-    assert.ok(confirmations.at(-1).includes(messages["models.exclusiveWriter"]));
-  }
-});
-
 test("models shell is served and linked from the dashboard navigation", () => {
   assert.ok(WEB_ASSETS["/assets/js/app/models.js"] && WEB_ASSETS["/assets/js/views/models.js"]);
   assert.ok(WEB_ASSETS["/assets/css/views/models.css"]);
@@ -349,7 +315,7 @@ test("models shell is served and linked from the dashboard navigation", () => {
   // The shared rail links back to Yui and Settings and gives every section a real URL.
   assert.match(MODELS_HTML, /href="\/"/);
   assert.match(MODELS_HTML, /href="\/settings"/);
-  for (const section of ["providers", "catalog", "maintenance", "connection"]) {
+  for (const section of ["providers", "catalog", "quota"]) {
     assert.match(MODELS_HTML, new RegExp(`href="/models/${section}" data-page="models" data-section="${section}"`));
   }
 });
@@ -365,7 +331,7 @@ test("models and settings share one management rail with the same navigation", (
   // All model operations belong to Models, not Settings.
   const models = nav.match(/data-area-group="models">[\s\S]*?<\/div>\s*<\/div>/)[0];
   const settings = nav.match(/data-area-group="settings">[\s\S]*?<\/div>\s*<\/div>/)[0];
-  for (const section of ["providers", "catalog", "maintenance", "connection"]) assert.match(models, new RegExp(`data-section="${section}"`));
+  for (const section of ["providers", "catalog", "quota", "agents"]) assert.match(models, new RegExp(`data-section="${section}"`));
   for (const section of ["preferences", "skills", "server"]) {
     assert.match(settings, new RegExp(`href="/settings/${section}" data-page="settings" data-section="${section}"`));
   }
@@ -375,158 +341,12 @@ test("models and settings share one management rail with the same navigation", (
   assert.match(nav, /data-area-group="jobs">\s*<div id="jobs-index"/);
   assert.match(MODELS_HTML, /<div id="jobs-root" class="jobs-root" hidden><\/div>/);
   assert.match(appRail("jobs"), /href="\/jobs" data-area="jobs" aria-current="page" data-nav-area="jobs"/);
-  assert.match(nav, /Agents &amp; server/, "labels are HTML-escaped");
+  assert.doesNotMatch(settings, /data-section="agents"/, "Agent editing has one entry in the Agent/Provider area");
   for (const section of ["preferences", "skills", "server"]) assert.match(SETTINGS_HTML, new RegExp(`data-section="${section}"`));
   assert.match(SETTINGS_HTML, /id="settings-search"/);
   assert.match(SETTINGS_HTML, /id="skill-browser"/);
   assert.match(SETTINGS_HTML, /src="\/assets\/js\/app\/manage\.js"/);
   assert.ok(WEB_ASSETS["/assets/js/layout/manageShell.js"] && WEB_ASSETS["/assets/css/views/manage.css"]);
-});
-
-test("connection and provider writes carry the read revision, never echo keys and never resend unknown outcomes", async () => {
-  const api = fakeApi();
-  const { root, page } = mount(api);
-  await page.ready;
-  assert.match(text(root), /models\.application\.unverified/);
-  assert.doesNotMatch(text(root), /\b(null|undefined)\b/, "empty slots never render as text");
-  assert.match(text(root), /models\.scope/, "the ownership notice uses the current UI language");
-  // Read-only providers expose their reason, never edit controls.
-  const official = find(root, n => n.dataset.provider === "official");
-  assert.match(text(official), /models\.providerReadOnlyHelp/);
-  assert.equal(all(official, n => n.tagName === "BUTTON").length, 0);
-  // The server returns the prefix with its trailing slash; it is shown as-is.
-  const mine = text(find(root, n => n.dataset.provider === "mine"));
-  assert.match(mine, /mine\//);
-  assert.doesNotMatch(mine, /mine\/\//);
-
-  // Endpoint registration sends the independent resource and registry revision.
-  const form0 = connectionForm(root);
-  const urlInput = find(form0, n => n.tagName === "INPUT");
-  urlInput.value = " bridge "; urlInput.handlers.input();
-  await submit(form0); await tick();
-  const [, sent] = api.calls.find(c => c[0] === "resource");
-  assert.equal(sent.revision, "r1");
-  assert.equal(sent.kind, "endpoint");
-  assert.equal(sent.resource.id, "bridge");
-  assert.ok(sent.requestId);
-  assert.match(text(root), /models\.saved/);
-
-  // New provider: key is required, sent once and cleared; it never enters page state.
-  button(root, "models.addProvider").handlers.click();
-  let form = find(root, n => n.className.includes("models-provider-form"));
-  const inputs = all(form, n => n.tagName === "INPUT");
-  const [name, baseUrl, prefix] = inputs.filter(n => n.type !== "password" && n.type !== "checkbox");
-  const key = inputs.find(n => n.type === "password");
-  assert.equal(key.autocomplete, "new-password");
-  name.value = "New"; name.handlers.input();
-  baseUrl.value = "https://new.invalid"; baseUrl.handlers.input();
-  assert.equal(prefix.placeholder, "mine/");
-  prefix.value = "new/"; prefix.handlers.input();
-  await submit(form);
-  assert.equal(api.calls.filter(c => c[0] === "provider").length, 0, "new provider without key is not submitted");
-  assert.match(text(root), /models\.providerNewRequired/);
-  for (const invalid of ["new", "a/b/", "bad prefix/", "x".repeat(65) + "/"]) {
-    form = find(root, n => n.className.includes("models-provider-form"));
-    all(form, n => n.tagName === "INPUT")[2].value = invalid;
-    find(form, n => n.type === "password").value = "sk-fixture-secret";
-    await submit(form);
-    assert.match(text(root), /models\.prefixInvalid/, invalid);
-  }
-  assert.equal(api.calls.filter(c => c[0] === "provider").length, 0, "prefixes outside the server contract are not submitted");
-  form = find(root, n => n.className.includes("models-provider-form"));
-  all(form, n => n.tagName === "INPUT")[2].value = "new/";
-
-  api.saveModelProvider = async input => {
-    api.calls.push(["provider", copy(input)]);
-    throw Object.assign(new Error("prefix taken"), { disposition: "not-submitted" });
-  };
-  form = find(root, n => n.className.includes("models-provider-form"));
-  const keyInput = find(form, n => n.type === "password");
-  keyInput.value = "sk-fixture-secret";
-  await submit(form); await tick();
-  const [, rejected] = api.calls.filter(c => c[0] === "provider").at(-1);
-  assert.deepEqual(rejected, { revision: "r2", moduleId: "bridge", operation: "save",
-    provider: { name: "New", via: "direct", baseUrl: "https://new.invalid", prefix: "new/", enabled: true, apiKey: "sk-fixture-secret" } });
-  assert.equal(keyInput.value, "", "key input is cleared after submission");
-  assert.doesNotMatch(JSON.stringify(page.state), /sk-fixture-secret/);
-  assert.doesNotMatch(text(root), /sk-fixture-secret/);
-  form = find(root, n => n.className.includes("models-provider-form"));
-  assert.equal(find(form, n => n.type === "password").value, "", "rendered key is never rehydrated");
-  assert.equal(all(form, n => n.tagName === "INPUT")[0].value, "New", "rejected draft is kept");
-  assert.match(text(root), /models\.rejected prefix taken/);
-
-  // Unknown outcome: every model write is blocked until current facts are read.
-  api.saveModelProvider = async input => {
-    api.calls.push(["provider", copy(input)]);
-    throw Object.assign(new Error("connection reset"), { disposition: "unknown" });
-  };
-  find(form, n => n.type === "password").value = "sk-second";
-  await submit(form); await tick();
-  const count = api.calls.filter(c => c[0] === "provider").length;
-  assert.match(text(root), /models\.unknownBlocked/);
-  form = find(root, n => n.className.includes("models-provider-form"));
-  assert.ok(find(form, n => n.tagName === "BUTTON" && n.type === "submit").disabled);
-  await submit(form); await submit(connectionForm(root));
-  assert.equal(api.calls.filter(c => c[0] === "provider" || c[0] === "resource").length, count + 1, "nothing is resent");
-  assert.ok(!api.calls.some(c => c[0] === "release"));
-
-  api.current = view("r3");
-  button(root, "models.readFacts").handlers.click(); await tick(); await tick();
-  assert.ok(api.calls.some(c => c[0] === "release"), "explicit reconciliation releases the write key");
-  assert.match(text(root), /models\.reconciledChanged/);
-  assert.equal(button(find(root, n => n.dataset.provider === "mine"), "models.editProvider").disabled, false);
-});
-
-test("editing keeps the stored credential unless a new key is typed; removal is confirmed", async () => {
-  const api = fakeApi();
-  const { root, page, confirmations } = mount(api);
-  await page.ready;
-  button(find(root, n => n.dataset.provider === "mine"), "models.editProvider").handlers.click();
-  const form = find(root, n => n.className.includes("models-provider-form"));
-  assert.match(text(form), /models\.provider\.apiKeyKeepHelp/);
-  await submit(form); await tick();
-  const [, saved] = api.calls.find(c => c[0] === "provider");
-  assert.equal(Object.hasOwn(saved.provider, "apiKey"), false);
-  assert.equal(saved.provider.id, "mine");
-  button(find(root, n => n.dataset.provider === "mine"), "models.removeProvider").handlers.click(); await tick();
-  assert.equal(confirmations.length, 2, "save confirms exclusive ownership; removal has its own confirmation");
-  assert.deepEqual(api.calls.filter(c => c[0] === "provider").at(-1)[1], { revision: "r2", moduleId: "bridge", operation: "remove", id: "mine" });
-});
-
-test("binding submit requires preview of the same draft, not a late response for earlier values", async () => {
-  let finishPreview;
-  const api = fakeApi({ previewModelBinding: input => {
-    api.calls.push(["preview", copy(input)]);
-    return new Promise(resolve => { finishPreview = resolve; });
-  } });
-  const { root, page } = mount(api);
-  await page.ready;
-  const agent = find(resourceForm(root, "binding"), n => n.dataset.bindingField === "agentId");
-  agent.value = "codex"; agent.handlers.change();
-  const endpoint = find(resourceForm(root, "binding"), n => n.dataset.bindingField === "endpointId");
-  endpoint.value = "bridge-api"; endpoint.handlers.change();
-  const binding = resourceForm(root, "binding");
-  const model = find(binding, n => n.dataset.bindingField === "model");
-  model.value = "model-before"; model.handlers.input();
-  const save = find(binding, n => n.type === "submit");
-  assert.equal(save.disabled, true);
-  await submit(binding);
-  assert.equal(api.calls.some(c => c[0] === "resource"), false);
-  const pending = button(binding, "models.previewBinding").handlers.click();
-  model.value = "model-after"; model.handlers.input();
-  finishPreview({ notice: "New Session only" }); await pending;
-  assert.equal(save.disabled, true, "an earlier preview cannot enable a changed draft");
-  await submit(binding);
-  assert.equal(api.calls.some(c => c[0] === "resource"), false);
-  const current = button(binding, "models.previewBinding").handlers.click();
-  finishPreview({ notice: "New Session only" }); await current;
-  assert.equal(save.disabled, false);
-  await submit(binding); await tick();
-  const sent = api.calls.find(c => c[0] === "resource")[1];
-  assert.equal(sent.kind, "binding");
-  assert.equal(sent.resource.model, "model-after");
-  assert.equal(sent.resource.agentId, "codex");
-  assert.equal(sent.revision, "r1");
 });
 
 test("Operator readback handles a removed bridge without targeting the removed resource or replaying a write", async () => {
@@ -535,10 +355,11 @@ test("Operator readback handles a removed bridge without targeting the removed r
     if (id && !api.current.registry.modules.some(m => m.id === id)) throw new Error("Module not found");
     return api.current;
   };
-  const { root, page } = mount(api);
+  const { root, page, handoff } = mount(api);
   await page.ready;
   api.current = view("r2", { connection: null, providers: [] });
-  button(root, "models.operatorReadback").handlers.click();
+  button(root, "models.configure.provider").handlers.click();
+  await handoff().onReadback();
   await tick(); await tick();
   assert.equal(page.state.unknown, false);
   assert.equal(page.state.bridgeId, "");
@@ -558,7 +379,7 @@ test("catalog and quota stay separate and never present unknown, failed or stale
     modelCatalog: async cursor => { api.calls.push(["catalog", cursor]); return pages[cursor]; },
     modelQuota: async source => { api.calls.push(["quota", source]); return quotaRead(source); }
   });
-  const { root, page } = mount(api);
+  const { root, page, handoff } = mount(api);
   await page.ready; await tick();
   assert.match(text(root), /models\.quotaUnavailable/);
   assert.doesNotMatch(text(root), /models\.quotaFailed/);
@@ -602,7 +423,7 @@ test("observations are invalidated with the configuration revision and late resp
     modelCatalog: async cursor => { api.calls.push(["catalog", cursor]); const d = deferred(); reads.push(d); return d.promise; },
     modelQuota: async source => { api.calls.push(["quota", source]); const d = deferred(); quotaReads.push(d); return d.promise; }
   });
-  const { root, page } = mount(api);
+  const { root, page, handoff } = mount(api);
   await tick();
   reads.shift().resolve(success([{ id: "old/a", source: "metabridge" }]));
   quotaReads.shift().resolve(observation("success", { items: [{ id: "old-acct", source: "factory", status: "success", windows: [], balance: 1, periodEnd: null, error: null }] }));
@@ -614,9 +435,9 @@ test("observations are invalidated with the configuration revision and late resp
   const lateRefresh = deferred();
   api.refreshModels = async input => { api.calls.push(["refresh", copy(input)]); return lateRefresh.promise; };
   button(root, "models.refreshCatalog").handlers.click(); await tick();
-  const form0 = connectionForm(root);
-  find(form0, n => n.tagName === "INPUT").value = "http://127.0.0.1:11";
-  await submit(form0); await tick();
+  api.current = view("r2", { connection: connection({ cpaUrl: "http://127.0.0.1:8", managementKeyFile: "/fixture/key" }) });
+  button(root, "models.configure.provider").handlers.click();
+  void handoff().onReadback(); await tick();
 
   const refreshes = api.calls.filter(c => c[0] === "refresh").length;
   assert.equal(page.state.view.revision, "r2");
@@ -632,11 +453,9 @@ test("observations are invalidated with the configuration revision and late resp
   assert.equal(page.state.quota.observation, null);
   assert.equal(api.calls.filter(c => c[0] === "refresh").length, refreshes, "no external refresh is sent automatically");
 
-  // Reconciling an unknown write that landed invalidates the same way.
-  api.saveModelProvider = async input => { api.calls.push(["provider", copy(input)]); throw Object.assign(new Error("reset"), { disposition: "unknown" }); };
-  button(find(root, n => n.dataset.provider === "mine"), "models.removeProvider").handlers.click(); await tick();
+  // A second Operator change invalidates the same way, with no Web mutation.
   api.current = view("r3");
-  button(root, "models.readFacts").handlers.click(); await tick();
+  void handoff().onReadback(); await tick();
   assert.equal(page.state.catalog.page, null);
   assert.equal(api.calls.filter(c => c[0] === "catalog").length, 3);
 
@@ -646,89 +465,6 @@ test("observations are invalidated with the configuration revision and late resp
   assert.match(text(root), /models\.catalogItemsUnknown/);
   assert.match(text(root), /models\.quotaItemsUnknown/);
   assert.doesNotMatch(text(root), /models\.catalogEmpty|models\.quotaEmpty/);
-});
-
-test("a stale-revision rejection keeps the draft and offers an explicit re-read without replay", async () => {
-  const api = fakeApi();
-  const { root, page } = mount(api);
-  await page.ready;
-  api.saveModelResource = async input => {
-    api.calls.push(["resource", copy(input)]);
-    throw Object.assign(new Error("revision is stale"), { disposition: "not-submitted" });
-  };
-  let form = connectionForm(root);
-  const urlInput = find(form, n => n.tagName === "INPUT");
-  urlInput.value = "edited"; urlInput.handlers.input();
-  await submit(form); await tick();
-  assert.match(text(root), /models\.rejected revision is stale/);
-  assert.equal(page.state.connectionDrafts.endpoint.id, "edited");
-
-  // Writes are blocked while the facts are being read again.
-  const reread = deferred();
-  api.models = async () => { api.calls.push(["models"]); return reread.promise; };
-  button(root, "models.readFacts").handlers.click(); await tick();
-  form = connectionForm(root);
-  assert.ok(find(form, n => n.type === "submit").disabled);
-  await submit(form);
-  assert.equal(api.calls.filter(c => c[0] === "resource").length, 1, "no save races the re-read");
-  reread.resolve(view("r5")); await tick();
-
-  assert.match(text(root), /models\.rereadChanged/);
-  assert.ok(!api.calls.some(c => c[0] === "release"), "a rejection holds no unresolved write key");
-  assert.equal(api.calls.filter(c => c[0] === "resource").length, 1, "nothing is replayed automatically");
-  form = connectionForm(root);
-  assert.equal(find(form, n => n.tagName === "INPUT").value, "edited", "the draft is kept");
-  api.saveModelResource = async input => { api.calls.push(["resource", copy(input)]); api.current = view("r6"); return {}; };
-  await submit(form); await tick();
-  assert.equal(api.calls.filter(c => c[0] === "resource").at(-1)[1].revision, "r5", "the next save carries the re-read revision");
-});
-
-
-test("sections are routed without remounting, so drafts and typed keys survive navigation and filtering", async () => {
-  const api = fakeApi();
-  const routes = [];
-  const flags = [];
-  const context = vm.createContext({ h: element, icon: name => element("svg.icon." + name), formatDateTime: iso => "at:" + iso, window: {} });
-  vm.runInContext(MODELS_VIEW_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
-  assert.deepEqual({ ...context.normalizeRoute({ section: "bogus", source: "nope" }) }, { section: "providers", source: "factory" });
-  const root = element("div");
-  const page = context.mountModels(root, { t: key => key, api, confirm: () => true,
-    route: { section: "quota", source: "command-code" },
-    navigate: route => { routes.push({ ...route }); page.show(route); },
-    onChange: next => flags.push({ ...next }) });
-  await page.ready;
-  const section = name => find(root, n => n.dataset.section === name);
-  assert.equal(section("quota").hidden, false);
-  assert.equal(section("providers").hidden, true);
-  assert.deepEqual(api.calls.filter(c => c[0] === "quota").map(c => c[1]), ["command-code"], "a direct open reads the routed source");
-
-  // In-page links go through navigate(); the quota source is part of the route.
-  button(root, "models.source.factory").handlers.click(); await tick();
-  assert.deepEqual(routes.at(-1), { section: "quota", source: "factory" });
-  assert.deepEqual(api.calls.filter(c => c[0] === "quota").map(c => c[1]), ["command-code", "factory"]);
-
-  // A connection draft and a provider editor with a typed key survive section
-  // changes, back/forward (show) and provider filtering.
-  const urlInput = find(connectionForm(root), n => n.tagName === "INPUT");
-  urlInput.value = "http://127.0.0.1:99"; urlInput.handlers.input();
-  page.show({ section: "providers" });
-  assert.equal(flags.at(-1).provider, true, "the rail marks the owning section with a draft");
-  button(find(root, n => n.dataset.provider === "mine"), "models.editProvider").handlers.click();
-  const key = find(root, n => n.type === "password");
-  key.value = "sk-typed";
-  const search = find(section("providers"), n => n.type === "search");
-  search.value = "official"; search.handlers.input();
-  assert.equal(find(root, n => n.dataset.provider === "mine"), undefined, "search filters rows");
-  assert.match(text(section("providers")), /models\.providerCount/);
-  button(section("providers"), "models.filter.readonly").handlers.click();
-  assert.ok(find(root, n => n.dataset.provider === "official"));
-  assert.equal(find(root, n => n.type === "password"), key, "filtering never rebuilds the editor");
-  assert.equal(key.value, "sk-typed");
-  page.show({ section: "catalog" }); page.show({ section: "providers" });
-  assert.equal(find(root, n => n.type === "password").value, "sk-typed");
-  assert.equal(connectionForm(root).children.length > 0 && find(connectionForm(root), n => n.tagName === "INPUT").value, "http://127.0.0.1:99");
-  assert.equal(page.state.quota.source, "factory", "leaving quota keeps its source for the way back");
-  assert.ok(page.dirty());
 });
 
 test("quota groups windows by the server's own labels and never draws unknown as zero", async () => {

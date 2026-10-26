@@ -50,7 +50,7 @@ export type ModelProviderView = {
   reason: string | null;
   credentialPresent: boolean;
   credentialKind?: "subscription" | "key";
-  owner: "metabridge";
+  owner: "metabridge" | "cliproxyapi";
 };
 
 export type ModelObservation<T> = {
@@ -81,6 +81,8 @@ export type ModelQuotaItem = {
 };
 
 export type ModelManagementView = {
+  nativeProviders?: import("./nativeModelConfiguration.js").NativeProvider[];
+  quotaSources?: { moduleId: string; source: string }[];
   readOnly?: boolean;
   revision: string;
   connection: ModelConnection | null;

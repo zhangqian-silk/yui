@@ -32,7 +32,7 @@ function fixture(t) {
   let refreshed = 0;
   const queries = [];
   const service = createWebSettings(store, {
-    environment: { FIXTURE_SECRET: "must-never-be-exposed" },
+    environment: { HOME: home, FIXTURE_SECRET: "must-never-be-exposed" },
     catalogs: { resolve: async input => {
       queries.push(input);
       return { source: "fallback", attemptedAt: new Date().toISOString(),
@@ -48,6 +48,8 @@ function fixture(t) {
 
 test("settings use CLI defaults and validation, atomic group writes, stale-read protection and supported reset", async t => {
   const f = fixture(t);
+  assert.deepEqual(f.service.index().supportedAgents.find(a => a.id === "codex-cli").configuredIds, ["fixture"]);
+  assert.deepEqual(f.service.index().supportedAgents.find(a => a.id === "claude-code-cli").configuredIds, []);
   assert.deepEqual(f.service.read("system").fields.find(f => f.key === "time-zone").value,
     runConfigCommand("system", ["show"], f.store).data.timeZone);
   const original = f.service.read("runtime");
@@ -180,7 +182,7 @@ test("settings HTTP ingress requires page token and reports rejected writes with
 test("Role default model/effort saves validate the selected model without changing a live Session", async t => {
   const f = fixture(t);
   const service = createWebSettings(f.store, {
-    environment: {},
+    environment: { HOME: f.home },
     catalogs: { resolve: async () => ({
       source: "live", attemptedAt: "2026-10-10T00:00:00Z",
       catalog: { schemaVersion: 1, agentId: "fixture", adapterId: "codex",
@@ -415,4 +417,17 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   assert.deepEqual(JSON.parse(JSON.stringify(submitted.changes)), [{ key: "enabled", value: false }]);
   assert.equal(state.editors[0].control.value, "false");
   assert.equal(state.dirty, false);
+  context.renderGroup(state, { ...roleGroup, readOnly: true,
+    provenance: { label: "Production snapshot", capturedAt: "2026-10-26T00:00:00Z" } });
+  context.applyCapabilities(state, { catalog });
+  assert.ok(state.editors.every(editor => editor.control.disabled), "capability choices cannot unlock snapshot inputs");
+  const snapshotCustom = state.editors[0].row.querySelectorAll("button").find(button => button.children.includes("settings.custom"));
+  assert.equal(snapshotCustom.disabled, true);
+  snapshotCustom.handlers.click();
+  assert.equal(state.editors[0].control.disabled, true);
+  const previous = submitted;
+  state.editors[0].control.value = "deep"; state.editors[0].control.handlers.change();
+  await state.content.children[0].handlers.submit({ preventDefault() {} });
+  assert.equal(submitted, previous, "snapshot mutation is blocked even if the submit handler is invoked");
+  assert.equal(state.save.disabled, true);
 });
