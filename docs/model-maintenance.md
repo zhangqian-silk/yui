@@ -19,9 +19,9 @@ this reads no instance and submits no Job. Copy/paste into Operator is a handoff
 not blanket authorization for service operations. Ordinary model use does not
 require maintenance.
 
-For explicit manual use, Models → Component maintenance → Advanced: configure
-manually → exact module → Optional component maintenance
-accepts the specification below. Read saved delegation/Job results before an
+There is no manual component configuration form in Web. Operator uses
+`yui models maintain --task <actual-task-id> --input <json>` with the specification
+below, or the existing capability/API. Read saved delegation/Job results before an
 operation. The first successful submission saves its exact configuration in
 the existing global `model-maintenance-ID` Job definition. Each action is an
 ordinary JobRun with its own frozen input, request identity, process custody,

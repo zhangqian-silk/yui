@@ -70,8 +70,10 @@ ownership; `external` is reference-only. Register a separate Responses endpoint
 for the exact Codex Agent, or retain native binding for mixed subscription mode.
 No CPA, default Provider switch or service takeover is implied. The
 [shared API](model-management-api.md) gives full registration shapes.
-Models → Component maintenance previews/submits the same standalone implementation
-through Jobs; independent entry is
+Models → Component maintenance provides instructions to copy to Operator, without
+a manual configuration form. Operator uses `yui models connection-preview` and
+`connection-apply` to invoke the same standalone implementation through Jobs;
+independent entry is
 `node /absolute/yui/dist/models/configureConnection.js --help`.
 
 ## Save, application and service control

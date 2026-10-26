@@ -111,8 +111,9 @@ shortcuts。主要流程：
 | 选中 / URL / 加载顺序 | `client/app/selection.ts`、`client/layout/router.ts` |
 | 模型 / 设置页的导航与分区归属 | 分区表 `shared/manageNav.ts`；导航栏 `shell/manage.ts`；统一路由 `client/layout/manageShell.ts`；外观 `styles/views/manage.ts`。模型统一为 `/models/providers\|connection\|catalog\|maintenance`；目录与额度同页。`/settings/connection` 转入 `/models/connection`，`/models/quota` 转入 catalog 并保留来源。设置为 `/settings/preferences\|skills\|permissions\|server`，Job 为 `/jobs`。旧 query 链接以 replaceState 规范化；管理分区不卸载控制器，离开管理文档才触发未保存提示；语言切换保留观测与草稿，不重新请求数据 |
 
-模型接入、绑定和维护的默认交互为复制 Operator 指令；原手动编辑器在
-`高级：手动配置` 中默认折叠，保留草稿及原权限/回执行为。指令来自
+模型接入、绑定和维护的默认交互为复制 Operator 指令；来源和 Agent 选择的手动编辑器在
+`高级：手动配置` 中默认折叠，保留草稿及原权限/回执行为。组件登记、维护参数和原生配置工具不提供手动页面表单，
+由 Operator 调用现有 CLI/API 完成。指令来自
 `src/models/modelOperatorGuide.ts`，与 `yui models guide` 共用，不嵌入用户配置或凭据；
 复制不发送消息、不执行操作。HTTP 页面没有 Clipboard API 时尝试浏览器复制，
 失败保留可选中文字和手动复制提示。Operator 完成后显式回读，不自动查询真实模型或额度。

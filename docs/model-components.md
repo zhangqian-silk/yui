@@ -23,8 +23,10 @@ On LAN HTTP, browsers may refuse automatic clipboard access; the read-only text
 remains selectable for manual copying. Prompts never include registry addresses,
 key files or secret values.
 
-Manual forms remain under a closed **Advanced: configure manually** disclosure
-for explicit expert use. Existing services, native Agent configuration, catalog
+Model-source and Agent-selection forms remain under a closed **Advanced:
+configure manually** disclosure. Component registration, maintenance specifications
+and native configuration tools have no manual Web editor; Operator uses the
+existing CLI/API and standalone tools. Existing services, native Agent configuration, catalog
 and quota observation semantics are unchanged. No new Skill installation is
 required: Web and CLI share static prompts, and the CLI points to the manuals
 shipped with its own version rather than an independently updated instruction
@@ -126,7 +128,8 @@ procedure; Yui's storage migration never performs them.
 ### Common Yui registrations
 
 Use Web → Models: **Model sources**, **Agent access** and **Component maintenance**
-provide Operator handoff prompts; the optional manual editors are under Advanced.
+provide Operator handoff prompts; only sources and Agent selection retain optional
+manual editors under Advanced. Component configuration is handled through Operator.
 **Models & quota** reads cached observations. The advanced Agent access editor
 derives its adapter from the selected Agent and previews the exact selection
 before saving. Native access preserves the Agent's own model choice;

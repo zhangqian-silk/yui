@@ -147,14 +147,9 @@ export const api = {
   // covers the connection and providers together, so an unknown outcome
   // blocks every model write until the page reads current facts again.
   models: function (moduleId) { return requestJson("/api/models" + (moduleId ? "?" + new URLSearchParams({ moduleId: moduleId }) : "")); },
-  modelStatus: function (resourceId) { return requestJson("/api/models/status?" + new URLSearchParams({ resourceId: resourceId })); },
   modelCatalog: function (cursor, resourceId) { return requestJson("/api/models/catalog?" + new URLSearchParams({ cursor: cursor || "0", ...(resourceId ? { resourceId: resourceId } : {}) })); },
   modelQuota: function (source, resourceId) { return requestJson("/api/models/quota?" + new URLSearchParams({ source: source, ...(resourceId ? { resourceId: resourceId } : {}) })); },
   saveModelResource: function (input) { return submitMutation("models/configuration", "/api/models/resource", input); },
-  modelMaintenance: function (moduleId) { return requestJson("/api/models/maintenance?" + new URLSearchParams({ moduleId: moduleId })); },
-  maintainModel: function (input) { return submitMutation("models/configuration", "/api/models/maintenance", input); },
-  previewModelConnection: function (input) { return postJson("/api/models/connection/preview", { input: input }); },
-  applyModelConnection: function (input) { return submitMutation("models/configuration", "/api/models/connection/apply", input); },
   previewModelBinding: function (input) { return postJson("/api/models/binding/preview", input); },
   saveModelProvider: function (input) { return submitMutation("models/configuration", "/api/models/provider", Object.assign({ requestId: crypto.randomUUID(), exclusiveWriter: true }, input)); },
   releaseModelWrites: function () { releaseMutation("models/configuration"); },
