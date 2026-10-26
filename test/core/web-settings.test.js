@@ -210,7 +210,10 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
       dataset: {}, handlers: {}, children: [], classList: { add() {} },
       append(...items) {
         const children = items.flat().filter(x => x != null);
-        for (const child of children) if (typeof child === "object") child.parent = this;
+        for (const child of children) if (typeof child === "object") {
+          if (child.parent) child.parent.children = child.parent.children.filter(item => item !== child);
+          child.parent = this;
+        }
         this.children.push(...children);
       },
       replaceChildren(...items) { this.children = []; this.append(...items); },
@@ -249,6 +252,8 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   let failure = Object.assign(Error("Invalid value"), { disposition: "not-submitted" });
   let saved;
   let submissions = 0;
+  let language = "";
+  const translations = [];
   const context = vm.createContext({
     h: element, URLSearchParams,
     document: { querySelector: key => {
@@ -256,7 +261,7 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
       return shell.get(key);
     }, querySelectorAll: () => panels },
     window: { addEventListener() {}, location: { search: "?section=server" }, history: { pushState() {} }, scrollTo() {} },
-    i18n: { t: k => k, subscribe() {} }, createThemeController: () => ({}),
+    i18n: { t: k => language + k, subscribe(fn) { translations.push(fn); } }, createThemeController: () => ({ render() {} }),
     registerManagePage() {}, navigateManage() {},
     pageSections: () => ["preferences", "skills", "server"],
     createManageShell: () => ({ set: section => shown.push(section), setDirty() {}, render() {} }),
@@ -386,4 +391,62 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   await state.content.children[0].handlers.submit({ preventDefault() {} });
   assert.equal(submitted, previous, "snapshot mutation is blocked even if the submit handler is invoked");
   assert.equal(state.save.disabled, true);
+
+  const metadata = [
+    { id: "profile/reader", section: "profiles", title: "Reader" },
+    { id: "role/worker", section: "roles", title: "Worker" },
+    { id: "agent/fixture", section: "agents", title: "Fixture" }
+  ];
+  const currentGroups = {
+    "role/worker": { ...roleGroup, fields: roleGroup.fields.map(field => ({ ...field, source: "stored" })) },
+    "agent/fixture": { id: "agent/fixture", agentId: "fixture", fields: [],
+      observation: { native: { model: "native-model", effort: "medium", models: [{ value: "native-model" }] } } },
+    "profile/reader": { id: "profile/reader", agentId: "fixture",
+      fields: [{ key: "model", label: "Model", kind: "text", value: "" }],
+      observation: { source: "global-worker", status: "resolved", binding: { config: { model: "worker-inherited", effort: "high" } } } }
+  };
+  const requests = [];
+  context.requestJson = async url => {
+    requests.push(url);
+    if (url.startsWith("/api/settings/group?")) return currentGroups[new URL(url, "http://fixture").searchParams.get("id")];
+    return { groups: metadata, total: 3, supportedAgents: [] };
+  };
+  context.showSection("agents");
+  await context.start();
+  await new Promise(resolve => setImmediate(resolve));
+  const uiGroups = vm.runInContext("groups", context);
+  const agent = uiGroups.find(group => group.meta.id === "agent/fixture");
+  const role = uiGroups.find(group => group.meta.id === "role/worker");
+  const profile = uiGroups.find(group => group.meta.id === "profile/reader");
+  const text = node => typeof node === "object" ? [node.textContent || "", ...node.children.map(text)].join(" ") : String(node);
+  assert.equal(agent.root.parent.dataset.agentGroupList, "agents");
+  assert.equal(role.root.parent.dataset.agentGroupList, "roles");
+  assert.equal(profile.root.parent.dataset.agentGroupList, "profiles");
+  assert.equal(!!profile.root.parent.parent.open, false, "templates are secondary and closed by default");
+  assert.match(text(profile.summary), /worker-inherited/, "template summaries show resolved inherited model, not an empty override");
+  assert.match(text(role.summary), /fast/);
+  assert.doesNotMatch(text(role.summary), /native-model/, "role overrides are not replaced by the Agent native default");
+  assert.equal(requests.some(url => url.includes("capabilities")), false, "group summaries do not trigger capability discovery");
+  const roleDraft = role.editors[0].control;
+  roleDraft.value = "unlisted-draft"; roleDraft.handlers.input();
+  shell.get("#settings-search").value = "Worker";
+  await context.start();
+  assert.equal(profile.root.parent.parent.open, true, "search exposes matched template groups");
+  context.showSection("server");
+  context.showSection("agents");
+  assert.equal(role.editors[0].control, roleDraft, "regrouping and navigation retain the existing editor");
+  assert.equal(roleDraft.value, "unlisted-draft");
+  assert.equal(role.dirty, true);
+  language = "translated:";
+  translations.forEach(update => update());
+  assert.match(text(role.summary), /translated:settings.roleDefaults/);
+  assert.match(text(shell.get("#settings-groups")), /translated:settings.area.roles/);
+  assert.equal(role.editors[0].control, roleDraft, "translation updates summaries without rebuilding draft controls");
+  assert.equal(roleDraft.value, "unlisted-draft");
+  context.renderGroup(profile, { ...currentGroups["profile/reader"],
+    fields: [{ key: "enabled", kind: "boolean", value: false }],
+    observation: { source: "global-worker", status: "unavailable", reason: "Worker is unavailable" } });
+  assert.match(text(profile.summary), /Worker is unavailable/);
+  assert.match(text(profile.summary), /settings.summaryDisabled/);
+  assert.doesNotMatch(text(profile.summary), /settings.summaryNativeDefault/, "an unresolved template is not presented as a native-default choice");
 });

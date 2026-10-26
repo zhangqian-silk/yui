@@ -33,8 +33,8 @@ export const SETTINGS_MAIN = `
         <div id="agent-settings-host"></div>
       </section>
       <div id="settings-editor" hidden>
-        <label class="field settings-search"><span data-i18n="settings.search">Find a setting</span><input id="settings-search" type="search" autocomplete="off"></label>
         <p id="settings-status" role="status"></p>
+        <label class="field settings-search"><span data-i18n="settings.search">Find a setting</span><input id="settings-search" type="search" autocomplete="off"></label>
         <div id="settings-groups" class="settings-stack"></div>
       </div>
       <section class="manage-section" data-section="permissions" aria-labelledby="settings-permissions-title" hidden>
