@@ -16,6 +16,8 @@ export const SETTINGS_STYLES = `
 .agent-access-arrow{align-self:center;color:var(--ink-4)}
 .agent-access-host{min-width:0}
 .agent-access-layout{display:grid;grid-template-columns:minmax(250px,.72fr) minmax(0,1.6fr);gap:16px;align-items:start;min-width:0}
+.settings-section-status{min-height:1.4em;color:var(--ink-3);font-size:var(--fs-xs);line-height:1.45}
+.settings-section-status:empty{display:none}
 .agent-index{display:grid;gap:12px;min-width:0;padding:14px;border:1px solid var(--line);border-radius:var(--r-lg);background:var(--surface-2)}
 .agent-index-head{display:grid;gap:10px}
 .agent-index-head h2{font-size:var(--fs-md);font-weight:600;color:var(--ink)}
@@ -41,8 +43,11 @@ export const SETTINGS_STYLES = `
 .agent-index-facts{color:var(--ink-2);font-size:var(--fs-2xs);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 .agent-index-caret{color:var(--ink-4);font-size:var(--fs-sm)}
 .agent-inspector{min-width:0;min-height:18rem;border:1px solid var(--line);border-radius:var(--r-lg);background:var(--surface);overflow:hidden}
-.agent-inspector:empty{display:none}
 .agent-inspector-content{min-width:0}
+.agent-inspector-empty{display:grid;place-items:center;align-content:center;gap:14px;min-height:18rem;padding:28px;text-align:center;background:linear-gradient(135deg,var(--surface-2),var(--surface))}
+.agent-inspector-empty-mark{display:grid;place-items:center;width:42px;height:42px;border:1px solid var(--accent-line);border-radius:50%;background:var(--accent-soft);color:var(--accent);font:600 var(--fs-md)/1 var(--font-mono)}
+.agent-inspector-empty h2{color:var(--ink);font-size:var(--fs-md);font-weight:600}
+.agent-inspector-empty p{max-width:42ch;margin-top:5px;color:var(--ink-3);font-size:var(--fs-sm);line-height:1.55}
 .agent-inspector-form{display:grid;gap:16px;padding:0 18px 18px;min-width:0}
 .agent-inspector-head{display:flex;justify-content:space-between;gap:12px;align-items:start;padding:18px;border-bottom:1px solid var(--line);margin:0 -18px;background:var(--surface-2)}
 .agent-inspector-identity{display:flex;gap:12px;align-items:flex-start;min-width:0}
@@ -122,7 +127,7 @@ export const SETTINGS_STYLES = `
 .settings-profile-diff thead th{background:var(--surface);font-weight:600}
 .settings-profile-diff td{min-width:150px;max-width:400px}
 .settings-profile-diff pre{white-space:pre-wrap;overflow-wrap:anywhere}
-#settings-status:empty,#browser-receipt:empty{display:none}
+#browser-receipt:empty{display:none}
 .mono-line{overflow-wrap:anywhere}
 .permissions-results{display:grid;gap:12px;min-width:0}
 .permissions-scroll{overflow:auto;border:1px solid var(--line);border-radius:var(--r-lg);background:var(--surface)}
@@ -145,6 +150,7 @@ export const SETTINGS_STYLES = `
   .agent-access-arrow{display:none}
   .agent-access-layout{grid-template-columns:minmax(0,1fr)}
   .agent-inspector{min-height:0}
+  .agent-inspector-empty{min-height:12rem;padding:20px}
   .agent-index{max-height:24rem;overflow:auto}
   .agent-inspector-form{padding:0 14px 14px}
   .agent-inspector-head{margin:0 -14px;padding:14px}
