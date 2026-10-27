@@ -2,6 +2,21 @@
 
 # Session、AgentRun 与通知
 
+局部停止等待自身的持久清理义务完成，不等待整个 Home 的 `scheduler.scan`
+循环排空。signal 只请求调度；完成仍以现有物理停止证明及清理事务为准。
+超时保留义务并阻止替换；选择失败和新会话启动未确认分别报告，不允许重放未知效果。
+
+`operator status` 与 Session context 区分 desired/effective 配置版本、选定写入者
+状态和 Host 观测健康。旧会话失败保留为审计证据，不是新会话的当前失败。
+明确 rejected 的过时输入可以显式退役；accepted、submitting、unknown 和
+interrupt-owned 输入仍保留原处理路径。
+
+`controller status --json` 的 `identity.runtime.observations` 分别呈现已认证请求、
+调度待处理范围、阶段／读取成本及采样的事件循环延迟。样本使用进程单调时钟，
+目标／请求标签仅保存哈希；每组最多保留 16 个近期样本、16 个活动样本及最慢完成样本。
+in-flight 请求数不是排队数，路由前等待尚未测量。观测不能反推旧事故的唯一根因，
+也不构成静止证明；重启 Controller 不会刷新存活 Host。
+
 ## 当前身份与持久处理回执
 
 桌面与 TUI 使用相同的当前 Session 授权。只有 `CODEX_THREAD_ID` 的桌面命令

@@ -315,6 +315,7 @@ export function runInboxCommand(
         if (message.inbox?.ack || message.delivery !== undefined || message.interruptThen !== undefined
           || message.control !== undefined && message.control.outcome !== "rejected"
           || turn?.attemptId === `global-input:${current.roleName}/${message.id}`
+            && turn.status !== "rejected"
           || !foreignTarget && message.notDelivered === undefined) {
           throw new Error("Retirement requires obsolete, proven-unsubmitted input; unknown/accepted/interrupt-owned input must retain its exact handling path.");
         }

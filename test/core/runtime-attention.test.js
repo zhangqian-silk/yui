@@ -2,6 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { recordGlobalRuntimeAttention, recordGlobalRuntimeRecovery, runtimeDiagnosticGroups }
   from "../../dist/controller/globalRuntimeAttention.js";
+import { mapCodexAgentError } from "../../dist/runtime/builtinAgentErrorMappers.js";
+
+test("known systemError pre-submission failure has stable diagnostics without retry permission", () => {
+  const result = mapCodexAgentError({ message: "Codex Session inspection failed before input submission.",
+    raw: JSON.stringify({ cause: "Codex Session availability is systemError; no input was submitted." }) });
+  assert.equal(result.code, "provider.session-system-error");
+  assert.equal(result.inputDisposition, "not-accepted");
+  assert.equal(result.sessionDisposition, "unknown");
+  assert.notEqual(result.retryable, true);
+  assert.notEqual(mapCodexAgentError({ message: "systemError", raw: "{}" }).code, result.code);
+});
 
 test("diagnostics coalesce across Turns, preserve evidence and distinguish impact and recovery", () => {
   const messages = [];

@@ -22,7 +22,7 @@ import { applyGlobalInputControl } from "../../dist/commands/globalRoleCommands.
 import { readDocument } from "../helpers/read-document.js";
 import { createReviewRound, createTaskReviewRound, attachReviewRoundWorkspace, startReviewRound } from "../../dist/review/reviewRound.js";
 import { createFixtureRun } from "../helpers/runFixture.mjs";
-import { acceptProviderTurn, beginProviderTurn, createProviderRuntimeBinding } from "../../dist/runtime/providerRuntimeIdentity.js";
+import { acceptProviderTurn, beginProviderTurn, createProviderRuntimeBinding, rejectProviderTurn } from "../../dist/runtime/providerRuntimeIdentity.js";
 import { failRun } from "../../dist/agentRun/agentRun.js";
 import { createProject } from "../../dist/repository/project.js";
 import { stopTaskExecutionCommand, startTaskExecutionCommand } from "../../dist/commands/taskExecutionCommands.js";
@@ -31,6 +31,7 @@ import { callerDiscoveryAudience } from "../../dist/cli/callerDiscovery.js";
 import { createTaskEvent } from "../../dist/event/taskEvent.js";
 import { createRuntimeObservation } from "../../dist/runtime/runtimeObservation.js";
 import { globalInboxRecovery } from "../../dist/message/globalInboxRecovery.js";
+import { globalSessionHealth } from "../../dist/runtime/globalSessionHealth.js";
 
 const now = new Date("2026-10-13T00:00:00Z");
 function fixture(t, name) {
@@ -56,6 +57,66 @@ function fixture(t, name) {
   };
   return { store, command, add, env };
 }
+
+test("Global health distinguishes desired configuration, current native state and retained old failure", t => {
+  const { store } = fixture(t, "operator");
+  const role = store.getGlobalRole("operator");
+  const sessions = store.getGlobalRoleSessionSet("operator");
+  const drift = globalSessionHealth({ ...role, launchRevision: role.launchRevision + 1 }, sessions);
+  assert.equal(drift.configurationDrift, true);
+  assert.equal(drift.effectiveRevision, role.launchRevision);
+  assert.equal(drift.hostObservation, "unobserved");
+  const binding = rejectProviderTurn(beginProviderTurn(createProviderRuntimeBinding({
+    providerNamespace: "openai/codex", accountScope: "codex", conversationId: "old-native",
+    startedAt: now.toISOString()
+  }), { attemptId: "old-attempt", authorityEpoch: 1, submittedAt: now.toISOString() }),
+  { attemptId: "old-attempt", rejectedAt: now.toISOString(), reason: "old rejection" });
+  const current = globalSessionHealth(role, { ...sessions, providerBinding: binding });
+  assert.equal(current.historicalBinding, true);
+  assert.equal(current.nativeTurn, null);
+  assert.equal(current.currentFailure, null);
+  assert.equal(current.retry, null);
+});
+
+test("exact rejected input can retire; pending, unknown, accepted and interrupt-owned effects cannot", t => {
+  const { store, command, add } = fixture(t, "operator");
+  const id = add("Obsolete input");
+  command("claim", id, "--request-id", "original-inspection");
+  const original = command("show", id);
+  store.updateGlobalRoleMessage({ ...original,
+    notDelivered: { reason: "Provider rejected before submission", at: now.toISOString() } });
+  let binding = beginProviderTurn(createProviderRuntimeBinding({
+    providerNamespace: "openai/codex", accountScope: "codex",
+    conversationId: "operator-native", startedAt: now.toISOString()
+  }), { attemptId: `global-input:operator/${id}`, authorityEpoch: 1, submittedAt: now.toISOString() });
+  const save = value => store.saveGlobalRoleSessionSet({
+    ...store.getGlobalRoleSessionSet("operator"), providerBinding: value });
+  const retire = () => command("retire", id, "--request-id", "obsolete-negative",
+    "--reason", "Verified exact rejection; business request superseded");
+  save(binding);
+  assert.throws(retire, /proven-unsubmitted/);
+  save({ ...binding, run: { ...binding.run, status: "delivery-unknown" } });
+  assert.throws(retire, /proven-unsubmitted/);
+  save(acceptProviderTurn(binding, { attemptId: binding.run.attemptId, nativeTurnId: "native",
+    acceptedAt: now.toISOString() }));
+  assert.throws(retire, /proven-unsubmitted/);
+  binding = rejectProviderTurn(binding, { attemptId: binding.run.attemptId,
+    rejectedAt: now.toISOString(), reason: "no input submitted" });
+  save(binding);
+  const result = retire();
+  assert.equal(result.inbox.retirement.reason, "Verified exact rejection; business request superseded");
+  assert.equal(result.inbox.claim.requestId, "original-inspection");
+  assert.equal(store.getGlobalRoleSessionSet("operator").providerBinding.run.status, "rejected");
+  assert.equal(command("show", id).notDelivered.reason, "Provider rejected before submission");
+  const reserved = add("Retained interrupt continuation");
+  store.updateGlobalRoleMessage({ ...command("show", reserved),
+    notDelivered: { reason: "target changed", at: now.toISOString() },
+    interruptThen: { requestId: "reserved-then", targetAttemptId: "old-turn",
+      targetNativeSessionId: "old-session", targetAgentId: "codex",
+      targetAuthorityEpoch: 1, targetAuthorityHolderId: "original-host" } });
+  assert.throws(() => command("retire", reserved, "--request-id", "cannot-retire-reservation",
+    "--reason", "No terminal proof"), /proven-unsubmitted/);
+});
 
 test("automatic Global delivery checks missing handling at exact terminal without acknowledging or replaying effects", t => {
   const { store, command, add } = fixture(t, "operator");

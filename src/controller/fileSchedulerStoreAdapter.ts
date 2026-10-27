@@ -3,6 +3,7 @@ import { assertJobRoleRunnable } from "../job/agentRoleScope.js";
 import { recordJobAgentObservation } from "../job/agentJobObservation.js";
 import { isDeepStrictEqual } from "node:util";
 import { nonReplayableMessageWake, pinMessageRevisions, taskMessageInboxReceipt, unfinishedLeaderInbox } from "../message/taskInboxOwnership.js";
+import { ControllerWorkObserver } from "../core/controllerTelemetry.js";
 import { contextSnapshotRef } from "../context/contextSnapshot.js";
 import { freezeRunContextSnapshot } from "../context/runContextPack.js";
 import { taskNotificationPresentation } from "../interaction/notificationPresentation.js";
@@ -234,6 +235,18 @@ export class AgentHostProviderSessionBusyError extends AgentHostProviderTurnFenc
 
 /** Maps authoritative TaskStore records to the scheduler's narrow port. */
 export class FileSchedulerStoreAdapter implements SchedulerStorePort {
+  readonly #reads = new ControllerWorkObserver();
+  readonly #projectionCache = { hits: 0, rebuilds: 0, invalidations: 0 };
+  readObservationMetrics() {
+    return { ...this.#reads.snapshot(), projectionCache: { ...this.#projectionCache } };
+  }
+
+  #observeRead<T>(phase: string, target: string, read: () => T): T {
+    const finish = this.#reads.start(phase, target);
+    try { const result = read(); finish(); return result; }
+    catch (error) { finish(true); throw error; }
+  }
+
   /** Diagnostic telemetry is optional and never participates in runtime truth. */
   constructor(
     readonly store: TaskStore,
@@ -1127,26 +1140,30 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       this.#readProjection === null
       || this.#readProjection.revision !== revision
     ) {
+      if (this.#readProjection !== null) this.#projectionCache.invalidations++;
       this.#readProjection = { revision, tasks: new Map() };
     }
     const tasks = this.#readProjection.tasks;
     let task = tasks.get(taskId);
     if (task === undefined) {
-      const events = this.store.listEvents(taskId);
-      task = {
-        events,
-        runFacts: foldRunProgressFacts(events),
-        runs: this.store.listRuns(taskId),
-        workItems: this.store.listWorkItems(taskId),
-        reviewRounds: this.store.listReviewRounds(taskId),
-        changeSets: this.store.listChangeSets(taskId),
-        integrationAttempts: this.store.listIntegrationAttempts(taskId),
-        inputRequests: this.store.listInputRequests(taskId),
-        durableJobs: this.store.listDurableJobs(taskId),
-        messages: this.store.listMessages(taskId)
-      };
+      this.#projectionCache.rebuilds++;
+      task = this.#observeRead("task-projection-rebuild", taskId, () => {
+        const events = this.#observeRead("task-events-read", taskId, () => this.store.listEvents(taskId));
+        return {
+          events,
+          runFacts: foldRunProgressFacts(events),
+          runs: this.store.listRuns(taskId),
+          workItems: this.store.listWorkItems(taskId),
+          reviewRounds: this.store.listReviewRounds(taskId),
+          changeSets: this.store.listChangeSets(taskId),
+          integrationAttempts: this.store.listIntegrationAttempts(taskId),
+          inputRequests: this.store.listInputRequests(taskId),
+          durableJobs: this.store.listDurableJobs(taskId),
+          messages: this.store.listMessages(taskId)
+        };
+      });
       tasks.set(taskId, task);
-    }
+    } else this.#projectionCache.hits++;
     return task;
   }
 
@@ -1154,7 +1171,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
     return this.store.withRuntimeEventTransaction(execute);
   }
 
-  listTasks() { return this.store.listTasks(); }
+  listTasks() { return this.#observeRead("list-tasks", "home", () => this.store.listTasks()); }
   listActiveTaskIds(): readonly string[] {
     return [...this.store.listActiveTaskIds()].sort((left, right) => (
       left.localeCompare(right, undefined, { numeric: true })
@@ -2857,7 +2874,8 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       && preparedRun.executionLaneId !== undefined
       && preparedRun.workspace !== undefined
       && input.outcome.status === "completed"
-      ? this.snapshotExecutionLaneWorkspace(this.store, preparedRun.workspace)
+      ? this.#observeRead("git-workspace-snapshot", preparedRun.taskId,
+          () => this.snapshotExecutionLaneWorkspace(this.store, preparedRun.workspace!))
       : undefined;
     return this.store.transaction((store) => {
       const task = store.getTask(input.taskId);

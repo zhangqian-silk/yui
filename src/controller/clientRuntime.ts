@@ -638,10 +638,7 @@ export class FileTaskWorkflowRuntime implements TaskWorkflowRuntimePort {
     }
     if (targets.length === 0) return;
 
-    await callFileTaskController(this.home, "scheduler.scan", {}, {
-      ...this.clientOptions,
-      requestTimeoutMs: LIFECYCLE_REQUEST_TIMEOUT_MS
-    });
+    await Promise.all(targets.map(target => this.#waitForRuntimeCleanup(target)));
 
     for (const target of targets) {
       if (hasRuntimeLifecycleWork(this.store.getWorkMailbox(target))) {
@@ -689,10 +686,7 @@ export class FileTaskWorkflowRuntime implements TaskWorkflowRuntimePort {
         `Role Session changed before its exact stop was reserved: ${input.taskId}/${input.roleName}.`
       );
     }
-    await callFileTaskController(this.home, "scheduler.scan", {}, {
-      ...this.clientOptions,
-      requestTimeoutMs: LIFECYCLE_REQUEST_TIMEOUT_MS
-    });
+    await this.#waitForRuntimeCleanup(target);
     if (hasRuntimeLifecycleWork(this.store.getWorkMailbox(target))) {
       throw new Error(`Role runtime did not stop: ${input.taskId}/${input.roleName}.`);
     }
@@ -708,7 +702,7 @@ export class FileTaskWorkflowRuntime implements TaskWorkflowRuntimePort {
       const active = this.store.listActiveDurableJobs()
         .filter((job) => job.taskId === taskId);
       if (active.length === 0) return;
-      await callFileTaskController(this.home, "scheduler.scan", {}, {
+      await callFileTaskController(this.home, "scheduler.signal", { key: `task:${encodeURIComponent(taskId)}` }, {
         ...this.clientOptions,
         requestTimeoutMs: LIFECYCLE_REQUEST_TIMEOUT_MS
       });
@@ -820,10 +814,7 @@ export class FileTaskWorkflowRuntime implements TaskWorkflowRuntimePort {
     if (target?.kind !== "global-role-runtime") {
       throw new Error(`Global Role runtime cleanup target is invalid: ${roleName}.`);
     }
-    await callFileTaskController(this.home, "scheduler.scan", {}, {
-      ...this.clientOptions,
-      requestTimeoutMs: LIFECYCLE_REQUEST_TIMEOUT_MS
-    });
+    await this.#waitForRuntimeCleanup(target);
     if (hasRuntimeLifecycleWork(this.store.getWorkMailbox(target))) {
       throw new Error(`Global Role runtime did not stop: ${roleName}.`);
     }
@@ -831,6 +822,39 @@ export class FileTaskWorkflowRuntime implements TaskWorkflowRuntimePort {
     const active = sessions?.sessions[sessions.activeAgentId];
     if (active !== undefined && active.status !== "ended") {
       throw new Error(`Global Role runtime session is still active: ${roleName}.`);
+    }
+  }
+
+  /**
+   * The durable cleanup mailbox is completed only after stopOwner proves
+   * quiescence and commits the existing cleanup transaction. A scheduler hint
+   * is not that proof; nor is exhaustion of the Home-wide coalescing loop.
+   */
+  async #waitForRuntimeCleanup(target: MailboxTarget): Promise<void> {
+    const timeoutMs = this.clientOptions.requestTimeoutMs ?? LIFECYCLE_REQUEST_TIMEOUT_MS;
+    const deadline = Date.now() + timeoutMs;
+    const label = controllerMailboxKey(target);
+    try {
+      await callFileTaskController(this.home, "scheduler.signal", { key: label }, {
+        ...this.clientOptions, requestTimeoutMs: timeoutMs
+      });
+      while (hasRuntimeLifecycleWork(this.store.getWorkMailbox(target))) {
+        if (Date.now() >= deadline) {
+          throw new Error("Timed out awaiting the target's durable cleanup transaction.");
+        }
+        await new Promise<void>(resolve => setTimeout(resolve,
+          Math.min(this.clientOptions.pollIntervalMs ?? POLL_INTERVAL_MS, Math.max(1, deadline - Date.now()))));
+      }
+    } catch (error) {
+      // A lost hint response must not hide cleanup that actually committed.
+      // No hint or native input is replayed here.
+      if (!hasRuntimeLifecycleWork(this.store.getWorkMailbox(target))) return;
+      throw new Error(
+        `Runtime stop remains unconfirmed for ${label}; cleanup obligation retained. `
+          + "No replacement was started by this stop operation. Inspect the exact Session/Host "
+          + "and cleanup failure before retrying; no physical exit is inferred.",
+        { cause: error }
+      );
     }
   }
 

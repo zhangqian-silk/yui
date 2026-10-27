@@ -1,4 +1,5 @@
 import type { AgentAdapterId } from "../agent/adapterCatalog.js";
+import type { ControllerReadMetrics } from "../core/controllerTelemetry.js";
 import type { AgentRun, AgentRunFailureReason, AgentRunPurpose } from "../agentRun/agentRun.js";
 import type { TaskBrief } from "../brief/taskBrief.js";
 import type {
@@ -266,6 +267,8 @@ export type AgentRunProgressFacts = Readonly<{
  * Role/session-set model and performs each multi-record persistence operation.
  */
 export interface SchedulerStorePort {
+  /** Optional bounded, in-memory read costs; never admission evidence. */
+  readObservationMetrics?(): ControllerReadMetrics;
   listTasks(): readonly SchedulerTask[];
   /**
    * Indexed active-Task selection for full Controller reconciliation.

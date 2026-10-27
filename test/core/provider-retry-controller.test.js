@@ -450,6 +450,30 @@ test("cancel, authority revocation and deadline stop waiting recovery without di
   }
 });
 
+test("Global configuration drift cancels retry with zero admissions, preserving exact failure and intent", async t => {
+  const f = fixture(t, "global");
+  f.fail(); f.due();
+  const previous = f.read().retry;
+  const role = f.store.getGlobalRole(f.roleName);
+  f.store.saveGlobalRole({ ...role, launchRevision: role.launchRevision + 1 });
+  await f.hooks().reconcile();
+  assert.equal(f.submissions.length, 0);
+  assert.equal(f.read().retry.status, "cancelled");
+  assert.equal(f.read().retry.reason, "role-configuration-changed");
+  assert.equal(f.read().retry.attempts, 0);
+  assert.equal(f.read().retry.failedNativeTurnId, previous.failedNativeTurnId);
+  assert.equal(f.read().retry.failureRef, previous.failureRef);
+  assert.equal(f.store.listGlobalRoleMessages(f.roleName)[0].body, f.body);
+  const set = f.loadSessions();
+  f.saveSessions({ ...set, sessions: { ...set.sessions,
+    codex: { ...set.sessions.codex, nativeSessionId: "successor-session" } } });
+  const view = JSON.parse(runGlobalRoleCommand(["session", "retry", f.roleName, "show"],
+    f.store, { env: {}, jsonOutput: true }));
+  assert.equal(view.retryScope, "historical-session");
+  assert.equal(view.retry.nativeSessionId, previous.nativeSessionId);
+  assert.equal(view.selectedNativeSessionId, "successor-session");
+});
+
 test("Global exhausted and unknown recovery hand off exact facts once without replay", async t => {
   for (const outcome of ["deadline", "unknown", "new-input"]) {
     const f = fixture(t, "global");

@@ -11,6 +11,28 @@ notifications cannot restart an explicitly stopped Session; normal Host detach
 preserves an active Session and remains reconnectable. A switch after a partial
 failure still settles the retained input before selecting a new conversation.
 
+Local stop waits for its durable cleanup obligation, not for the Home-wide
+`scheduler.scan` loop to empty. A signal only requests reconciliation; the
+existing physical-stop proof and cleanup transaction remain the completion
+boundary. A timeout retains the obligation and blocks replacement. Selection
+failure and unconfirmed startup are reported separately; neither permits
+replaying an uncertain native operation.
+
+`operator status` and Session context distinguish desired/effective launch
+revisions and selected-writer state from Host observation health. Old-conversation
+failures remain audit evidence, not the new Session's current failure.
+An exact rejected input can be explicitly retired when obsolete; accepted,
+submitting, unknown and interrupt-owned input still retain their handling path.
+
+`controller status --json` exposes bounded observations under
+`identity.runtime.observations`: authenticated requests, scheduler pending
+scopes, phase/read costs and sampled event-loop lag are separate facts.
+Samples use a process-monotonic clock and hashed target/request labels, with
+at most 16 recent and 16 active samples plus the slowest completed sample.
+In-flight request count is not queue depth, and pre-routing wait is not
+measured. These observations neither identify an old incident retroactively
+nor establish quiescence; restarting a Controller does not refresh live Hosts.
+
 A newly created global Operator conversation requests the native title
 `Yui · Operator · MMdd`, using Yui's configured time zone. The request is made
 only after the provider returns the exact new conversation identity; restore

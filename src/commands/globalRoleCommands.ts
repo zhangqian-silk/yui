@@ -2,7 +2,8 @@ import { roleNotFound, usageError } from "../errors/cliError.js";
 import { hasManagedIdentity } from "../runtime/managedIdentity.js";
 import { requireManagedGlobalCaller } from "../runtime/managedCaller.js";
 import { boundedDocument, recordPage, readOptions, readDigest, messageReceipt, summaryText, summaryMetadata } from "../output/boundedRead.js";
-import { controlProviderRetry, providerRetryProjection, providerRetrySummary, renderProviderRetry } from "../runtime/providerRetry.js";
+import { controlProviderRetry, providerRetryProjection, renderProviderRetry } from "../runtime/providerRetry.js";
+import { globalSessionHealth } from "../runtime/globalSessionHealth.js";
 import { pendingGlobalInboxMessages, inboxHandlingState, globalInboxDeliveryState } from "../message/inboxReceipt.js";
 import { settleGlobalRetryInput } from "../message/globalProviderRetry.js";
 import { globalInputBacklog } from "../message/globalInputBacklog.js";
@@ -286,6 +287,7 @@ function roleContext(
   const effective = resolveEffectiveLaunch({ role, purpose: "execution" });
   const sessions = store.getGlobalRoleSessionSet(name);
   const session = sessions?.sessions[role.activeAgentId];
+  const health = globalSessionHealth(role, sessions);
   const currentSkills = checkCurrentSkills(options.yuiHome ?? environment.YUI_HOME,
     roleSkillIds(session?.effective.context ?? role, role.name === "operator" ? "operator" : "global"));
   // Native delivery and explicit Agent handling settle the same queued input
@@ -318,7 +320,9 @@ function roleContext(
       agentId: binding.agentId,
       adapterId: binding.adapterId,
       workspace: role.workspace,
-      effectiveRevision: role.launchRevision,
+      desiredRevision: health.desiredRevision,
+      effectiveRevision: health.effectiveRevision,
+      configurationDrift: health.configurationDrift,
       ...(session?.nativeSessionId === undefined
         ? {}
         : { nativeSessionId: session.nativeSessionId })
@@ -334,7 +338,7 @@ function roleContext(
     authority: {
       view: role.name === "operator" ? "operator" : "global",
       taskImplementation: false,
-      writableProjectIds: effective.writeProjectIds,
+      writableProjectIds: (session?.effective ?? effective).writeProjectIds,
       allowedActions: role.name === "operator"
         ? ["route-request", "inspect-catalog", "answer-user-boundary"]
         : ["perform-global-role-request"]
@@ -350,17 +354,14 @@ function roleContext(
       diagnostics: `role message list ${name} --diagnostics`,
       retry: `session retry ${name} show`
     },
-    nativeTurn: sessions?.providerBinding?.run == null ? null : {
-      attemptId: sessions.providerBinding.run.attemptId,
-      nativeTurnId: sessions.providerBinding.run.nativeTurnId,
-      status: sessions.providerBinding.run.status
-    },
+    nativeTurn: health.nativeTurn,
+    health,
     ...(role.jobOwner === undefined ? {} : { job: {
       owner: role.jobOwner,
       read: `yui job show ${role.jobOwner.scope.kind === "global" ? "--global" : `--task ${role.jobOwner.scope.taskId}`} --job ${role.jobOwner.jobId} --json`,
       boundary: "Job execution only. This Role is not Operator and owns no Task delivery authority. Read the exact Run from its original message."
     } }),
-    retry: providerRetrySummary(sessions?.providerBinding),
+    retry: health.retry,
     // Historical interrupt receipts are available through Session inspection;
     // only this Turn's exact identity is required at entry.
     sessionManifestPath: environment.YUI_SESSION_MANIFEST,
@@ -710,7 +711,7 @@ function roleSession(
       throw usageError("Usage: yui session retry <role> [show|cancel|disable|enable]");
     }
     return store.transaction(tx => {
-      requireRole(name, tx);
+      const role = requireRole(name, tx);
       const sessions = tx.getGlobalRoleSessionSet(name);
       let binding = sessions?.providerBinding ?? null;
       if (action !== "show") {
@@ -719,9 +720,14 @@ function roleSession(
         tx.saveGlobalRoleSessionSet({ ...sessions, providerBinding: binding });
         settleGlobalRetryInput(tx, name, binding, new Date());
       }
+      const health = globalSessionHealth(role, sessions);
+      const historical = binding?.retry !== undefined && health.retry === null;
       return options.jsonOutput ? JSON.stringify({
-        roleName: name, retry: providerRetryProjection(binding), disabled: binding?.retryDisabled ?? false
-      }) + "\n" : renderProviderRetry(binding) + "\n";
+        roleName: name, retry: providerRetryProjection(binding), disabled: binding?.retryDisabled ?? false,
+        selectedNativeSessionId: health.nativeSessionId,
+        retryScope: historical ? "historical-session" : "current-session"
+      }) + "\n" : (historical ? "Historical Session evidence (not the selected Session's current failure): " : "")
+        + renderProviderRetry(binding) + "\n";
     });
   }
   if (command !== "record" && command !== "replace") {

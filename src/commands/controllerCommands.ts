@@ -243,6 +243,7 @@ export type ControllerRuntimeSnapshot = Readonly<{
   queueDepth?: number;
   oldestInFlightAgeMs?: number | null;
   eventLoopMaxLagMs?: number;
+  observations?: JsonValue;
   error?: string;
 }>;
 
@@ -294,11 +295,9 @@ export function parseControllerRuntimeSnapshot(
   const drain = runtime.drain as Record<string, unknown> | undefined;
   const commands = runtime.commands as Record<string, unknown> | undefined;
   const routes = commands?.routes as Record<string, unknown> | undefined;
-  const dispatcher = commands?.dispatcher as Record<string, unknown> | undefined;
   const eventLoopDelay = commands?.eventLoopDelay as Record<string, unknown> | undefined;
-  const queueDepth =
-    (typeof routes?.inFlight === "number" ? routes.inFlight : 0)
-    + (typeof dispatcher?.inFlight === "number" ? dispatcher.inFlight : 0);
+  // Dispatcher work is a subset of authenticated routes, not another queue.
+  const queueDepth = typeof routes?.inFlight === "number" ? routes.inFlight : undefined;
   return {
     source: "controller.status",
     pid: typeof record.pid === "number" ? record.pid : undefined,
@@ -316,6 +315,14 @@ export function parseControllerRuntimeSnapshot(
       ? drain.progressEventsCoalesced
       : undefined,
     droppedEvents,
+    observations: {
+      commands: (runtime.commands ?? null) as JsonValue,
+      phases: (runtime.phases ?? null) as JsonValue,
+      reads: (runtime.reads ?? null) as JsonValue,
+      scheduler: (runtime.scheduler ?? null) as JsonValue,
+      preRoutingWait: "unmeasured; event-loop lag is sampled, not per-request queue time",
+      clock: "process-monotonic milliseconds; target/request labels are sha256 prefixes"
+    },
     queueDepth,
     oldestInFlightAgeMs: typeof routes?.oldestInFlightAgeMs === "number"
       ? routes.oldestInFlightAgeMs
@@ -358,7 +365,7 @@ export function renderRuntimeIdentitySection(input: Readonly<{
       ? `PID ${runtime.pid}${runtime.uptimeMs === undefined ? "" : `, up ${formatDuration(runtime.uptimeMs)}`}${runtime.protocolVersion === undefined ? "" : `, protocol ${runtime.protocolVersion}`}`
       : "not running (unsupported)"}`,
     `  Controller RSS  ${runtime.rssBytes !== undefined ? formatBytes(runtime.rssBytes) : UNSUPPORTED} (inventory ${formatBytes(inventoryRssBytes)})`,
-    `  Command queue   depth ${runtime.queueDepth ?? UNSUPPORTED} · oldest ${
+    `  Commands        in flight ${runtime.queueDepth ?? UNSUPPORTED} · oldest ${
       runtime.oldestInFlightAgeMs === undefined
         ? UNSUPPORTED
         : runtime.oldestInFlightAgeMs === null

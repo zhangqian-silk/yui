@@ -39,7 +39,9 @@ import {
   type RunningControllerServer
 } from "../core/controllerServer.js";
 import {
+  ControllerWorkObserver,
   monotonicMilliseconds,
+  type ControllerReadMetrics,
   type ControllerEventLoopDelayMetrics,
   type ControllerRouteMetrics
 } from "../core/controllerTelemetry.js";
@@ -229,6 +231,9 @@ export type RunningFileTaskController = Readonly<{
 }>;
 
 export type ControllerRuntimeMetrics = Readonly<{
+  phases: ReturnType<ControllerWorkObserver["snapshot"]>;
+  reads: ControllerReadMetrics | null;
+  scheduler: Readonly<{ running: boolean; pendingFull: boolean; pendingKeys: number }>;
   inbox: Readonly<{
     depth: number;
     semanticDepth: number;
@@ -290,8 +295,12 @@ export async function runControllerSchedulerPass(
   blockedTaskIds: ReadonlySet<string> = new Set(),
   diagnosticAfterMs = DEFAULT_WORKFLOW_STALL_CANDIDATE_AGE_MS,
   leaderWakeFence?: () => boolean,
-  onError?: (error: unknown) => void
+  onError?: (error: unknown) => void,
+  observer?: ControllerWorkObserver
 ): Promise<ControllerSchedulerResult> {
+  const target = scope.kind === "full" ? "home" : scope.keys.slice(0, 16).join(",");
+  const observe = <T>(phase: string, action: () => T | Promise<T>): Promise<T> =>
+    observer === undefined ? Promise.resolve().then(action) : observer.observe(phase, target, action);
   const compiledSelection = compileReconcileSelection(scope);
   const selection = includeOperator
     ? { ...compiledSelection, blockedTaskIds }
@@ -301,7 +310,7 @@ export async function runControllerSchedulerPass(
   // event-loop turn. Give already-written requests a poll boundary before the
   // next durable phase; later phases retain their existing CAS fences.
   await controlEventLoopRun();
-  const failedCleanupRoles = await processSelectedRoleRuntimeCleanups(
+  const failedCleanupRoles = await observe("runtime-cleanup", () => processSelectedRoleRuntimeCleanups(
     store,
     delivery,
     lifecycleHost,
@@ -309,7 +318,7 @@ export async function runControllerSchedulerPass(
     now,
     runtimeCleanupOutcomes,
     blockedTaskIds
-  );
+  ));
   const roleSelection = selectionWithoutFailedCleanupRoles(
     store,
     selection,
@@ -329,32 +338,33 @@ export async function runControllerSchedulerPass(
     // Durable Leader work that already has a ready Task workspace belongs to
     // the control path. Dispatch it before any unrelated Task workspace I/O;
     // the processor itself retains the fail-closed workspace-ready guard.
-    const initialWakeups = selectedPendingWakeups(store, availableWakeupSelection());
-    const initialWakeupResults = await processLeaderWakeups(
+    const initialWakeups = await observe("wakeup-projection",
+      () => selectedPendingWakeups(store, availableWakeupSelection()));
+    const initialWakeupResults = await observe("leader-delivery", () => processLeaderWakeups(
       store,
       delivery,
       now,
       exactTaskSelection(new Set(initialWakeups.keys()))
-    );
+    ));
     // Preserve ready-Leader-first ordering, then bound the repeated state
     // projections that follow it in this pass.
     await controlEventLoopRun();
     // A Task whose deferred activation was just released must become active
     // before the workspace phase, so its first workspace preparation happens in
     // this same pass rather than waiting for the next one.
-    await adoptReleasedTaskActivations(store, workspacePreparer, selection, onError);
+    await observe("activation", () => adoptReleasedTaskActivations(store, workspacePreparer, selection, onError));
     await controlEventLoopRun();
-    const workspacePreparation = await prepareActiveWorkspaces(
+    const workspacePreparation = await observe("workspace-preparation", () => prepareActiveWorkspaces(
       store,
       workspacePreparer,
       selection,
       maintenanceFence,
       onMaintenanceFenceDefer
-    );
+    ));
     await controlEventLoopRun();
-    const activeRunDeliveries = await processActiveRoleRunDeliveries(
+    const activeRunDeliveries = await observe("run-delivery", () => processActiveRoleRunDeliveries(
       store, delivery, now, roleSelection
-    );
+    ));
     await controlEventLoopRun();
     const unsettledRunRefs = new Set(activeRunDeliveries.flatMap((result) => (
       result.reason === "delivery-uncertain"
@@ -394,7 +404,7 @@ export async function runControllerSchedulerPass(
     await controlEventLoopRun();
     const liveStatuses = new Map<string, "present" | "absent">();
     const resourceEvidence = new Map<string, RoleRunResourceEvidence>();
-    const failedRunRefs = await reconcileExitedRoleRuns(
+    const failedRunRefs = await observe("run-liveness", () => reconcileExitedRoleRuns(
       store,
       delivery,
       now,
@@ -403,7 +413,7 @@ export async function runControllerSchedulerPass(
       liveStatuses,
       resourceEvidence,
       scope.kind === "dirty"
-    );
+    ));
     await controlEventLoopRun();
     await reconcileStalledRoleRuns(
       store,
@@ -1114,6 +1124,7 @@ export class FileTaskController {
   readonly #continuationReconciler: ControllerRuntimeOptions["continuationReconciler"];
   readonly #hostTerminalRecovery: ControllerRuntimeOptions["hostTerminalRecovery"];
   #current: Promise<ControllerSchedulerResult> | undefined;
+  readonly #phases = new ControllerWorkObserver();
   #operatorCurrent: Promise<void> | undefined;
   #runtimeObserverCurrent: Promise<void> | undefined;
   #pendingFull = false;
@@ -1249,9 +1260,13 @@ export class FileTaskController {
     return this.#intervalMs;
   }
 
-  runtimeMetrics(): Pick<ControllerRuntimeMetrics, "inbox" | "drain"> {
+  runtimeMetrics(): Pick<ControllerRuntimeMetrics, "inbox" | "drain" | "phases" | "reads" | "scheduler"> {
     const metrics = this.#lastRuntimeDrain?.metrics ?? ZERO_DRAIN_METRICS;
     return {
+      phases: this.#phases.snapshot(),
+      reads: this.store.readObservationMetrics?.() ?? null,
+      scheduler: { running: this.#current !== undefined, pendingFull: this.#pendingFull,
+        pendingKeys: this.#pendingKeys.size },
       // Status is intentionally O(1): scanning the inbox while serving the
       // control socket would recreate the starvation this metric diagnoses.
       inbox: {
@@ -1428,7 +1443,7 @@ export class FileTaskController {
   /** Optional maintenance is not execution admission. Keep its failure visible
    * without bypassing the scheduler's own ownership and delivery fences. */
   async #observeMaintenance<T>(phase: string, action: () => Promise<T>): Promise<T | undefined> {
-    try { return await action(); }
+    try { return await this.#phases.observe(phase, "home", action); }
     catch (error) {
       this.#onError(new Error(`${phase} failed: ${error instanceof Error ? error.message : String(error)}. `
         + "No successful cleanup or quiescence is inferred; inspect the original failure.", { cause: error }));
@@ -1471,12 +1486,13 @@ export class FileTaskController {
               }
             }
           }
-          const firstRuntimeDrain = await this.#drainRuntimeEvents();
+          const firstRuntimeDrain = await this.#phases.observe("runtime-drain", "home", () => this.#drainRuntimeEvents());
           if (scope.kind === "full" && this.#hostTerminalRecovery !== undefined) {
             await this.#observeMaintenance("Host terminal recovery", this.#hostTerminalRecovery);
           }
-          await this.#providerRetry?.reconcile();
-          await this.#globalInputDelivery?.({ reconcile: scope.kind === "full", now: this.#now() });
+          await this.#phases.observe("provider-retry", "home", () => this.#providerRetry?.reconcile());
+          await this.#phases.observe("global-input", "home",
+            () => this.#globalInputDelivery?.({ reconcile: scope.kind === "full", now: this.#now() }));
           for (const taskId of runtimeTaskFailureIds(firstRuntimeDrain)) {
             runtimeFailedTaskIds.add(taskId);
           }
@@ -1493,7 +1509,7 @@ export class FileTaskController {
           this.#schedules?.reconcile(this.#now());
           this.#jobSupervisor?.reconcile(this.#now());
           if (scope.kind === "full") {
-            result = await runControllerSchedulerPass(
+            result = await this.#phases.observe("scheduler-full", "home", () => runControllerSchedulerPass(
               this.store,
               this.delivery,
               this.#now(),
@@ -1508,18 +1524,20 @@ export class FileTaskController {
               runtimeFailedTaskIds,
               this.#diagnosticAfterMs,
               this.#leaderWakeFence,
-              this.#onError
-            );
+              this.#onError,
+              this.#phases
+            ));
           } else {
-            const dirtyPass = await this.#runDirtySchedulerPass(
+            const dirtyPass = await this.#phases.observe("scheduler-dirty", scope.keys.slice(0, 16).join(","),
+              () => this.#runDirtySchedulerPass(
               scope,
               runtimeCleanupOutcomes,
               runtimeFailedTaskIds
-            );
+            ));
             result = dirtyPass.result;
             failedTaskScopes = dirtyPass.failedTaskScopes;
           }
-          const secondRuntimeDrain = await this.#drainRuntimeEvents();
+          const secondRuntimeDrain = await this.#phases.observe("runtime-drain", "home", () => this.#drainRuntimeEvents());
           for (const taskId of runtimeTaskFailureIds(secondRuntimeDrain)) {
             runtimeFailedTaskIds.add(taskId);
           }
@@ -1537,7 +1555,7 @@ export class FileTaskController {
           // scheduler.
           if (scope.kind === "full" && this.#resourceAutoGc !== undefined) {
             try {
-              const gc = await this.#resourceAutoGc();
+              const gc = await this.#phases.observe("resource-gc", "home", this.#resourceAutoGc);
               if (!gc.skipped && gc.failed > 0) {
                 this.#onError(new Error(
                   `Resource auto-GC failed to quarantine ${gc.failed} `
@@ -1644,7 +1662,8 @@ export class FileTaskController {
         blockedTaskIds,
         this.#diagnosticAfterMs,
         this.#leaderWakeFence,
-        this.#onError
+        this.#onError,
+        this.#phases
       ));
     }
     if (
@@ -1699,7 +1718,8 @@ export class FileTaskController {
               blockedTaskIds,
               this.#diagnosticAfterMs,
               this.#leaderWakeFence,
-              this.#onError
+              this.#onError,
+              this.#phases
             );
             this.#clearTaskPassRetry(selected.taskScope.taskId);
           } catch (error) {
