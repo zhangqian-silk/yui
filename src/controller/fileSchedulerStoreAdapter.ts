@@ -757,7 +757,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
           ? "applied" : "obsolete";
       }
       const knownContinuation = (input.kind.startsWith("continuation.") || input.kind === "observer.health")
-        && projectProviderContinuations(store.listEvents(input.fence.taskId!)).some((entry) => (
+        && projectProviderContinuations(store.listEventsByType(input.fence.taskId!, [RUNTIME_OBSERVATION_TASK_EVENT])).some((entry) => (
           entry.runId === input.fence.runId
           && entry.identity.providerNamespace === input.fence.driverId
           && entry.identity.accountScope === input.fence.agentId
@@ -857,7 +857,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       );
       store.saveTaskRoleSessionSet(updatedSessions);
       for (const continuation of projectProviderContinuations(
-        store.listEvents(input.fence.taskId!)
+        store.listEventsByType(input.fence.taskId!, [RUNTIME_OBSERVATION_TASK_EVENT])
       )) {
         if (continuation.runId !== input.fence.runId || continuation.identity.conversationId
             !== (input.fence.conversationId ?? input.fence.nativeSessionId) || continuation.execution === "quiescent" || continuation.attachment === "detached") continue;
@@ -944,7 +944,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
     this.store.transaction((store) => {
       const taskId = input.fence.taskId!;
       if (hasPersistedRuntimeObservation(store, input)) return;
-      const events = store.listEvents(taskId);
+      const events = store.listEventsByType(taskId, [RUNTIME_OBSERVATION_TASK_EVENT]);
       if (usageSnapshotIsSuperseded(events, input)) return;
       const removable = compactedRuntimeObservationIds(events, input);
       if (removable.length > 0) store.removeEvents(taskId, removable);
@@ -1691,8 +1691,8 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       // This shares the exact writer/session admission and its transaction.
       if ((input.authorityOwner === "human" || input.attemptId.startsWith(`human:${input.holderId}:`)) && input.roleName === "leader"
         && input.runId === undefined && input.boundedText !== undefined) {
-        const prior = store.listEvents(input.taskId).find(event =>
-          event.type === "message.native-user-input" && event.payload.attemptId === input.attemptId);
+        const prior = store.listEventsByType(input.taskId, ["message.native-user-input"]).find(event =>
+          event.payload.attemptId === input.attemptId);
         if (prior !== undefined) {
           const message = store.listMessages(input.taskId).find(entry => entry.id === prior.payload.messageId);
           if (message?.body !== input.boundedText || prior.payload.nativeSessionId !== input.nativeSessionId) {
@@ -2570,8 +2570,8 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       const processing = mailbox?.processing;
       if (mailbox == null || processing == null || processing.batchId !== attemptId
         || !processing.owner.startsWith("leader-notification:")) return;
-      if (!store.listEvents(taskId).some((event) => event.type === "notification.delivery"
-        && event.payload.attemptId === attemptId && event.payload.outcome === outcome)) {
+      if (!store.listEventsByType(taskId, ["notification.delivery"]).some((event) =>
+        event.payload.attemptId === attemptId && event.payload.outcome === outcome)) {
         // Native ingress may already have persisted the same rejection. Reuse
         // that original failure rather than reporting it twice from the caller.
         const existing = store.listEventsByType(taskId, ["runtime.agent-error"])
@@ -2640,8 +2640,8 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
             nativeSessionId: input.session.nativeSessionId
           }, "active", input.now);
         }
-        if (!defersConversationReplacement && !store.listEvents(input.task.id).some((event) =>
-          event.type === "run.session-prepared" && event.payload.runId === input.run.id
+        if (!defersConversationReplacement && !store.listEventsByType(input.task.id, ["run.session-prepared"]).some((event) =>
+          event.payload.runId === input.run.id
           && event.payload.nativeSessionId === input.session!.nativeSessionId)) {
           store.saveEvent(input.task.id, createTaskEvent(store.nextEventId(input.task.id), input.task.id,
             "run.session-prepared", { runId: input.run.id, roleName: role.name,
@@ -3564,7 +3564,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       ...(boundNativeSessionId === undefined ? {} : { nativeSessionId: boundNativeSessionId })
     };
     const driverId = this.drivers.requireByAdapterId(run.effective.adapterId).id;
-    const lifecycleEvents = store.listEvents(fence.taskId).flatMap((event) => {
+    const lifecycleEvents = store.listEventsByType(fence.taskId, [RUNTIME_OBSERVATION_TASK_EVENT]).flatMap((event) => {
       const observation = runtimeObservationFromTaskEvent(event);
       return observation !== null && (observation.kind === "session.started" || observation.kind === "session.ready") && observation.fence.roleName === fence.roleName && observation.fence.agentId === run.effective.agentId && observation.fence.driverId === driverId && observation.fence.nativeSessionId === (boundNativeSessionId ?? fence.nativeSessionId)
         ? [observation]
@@ -3817,7 +3817,7 @@ function runtimeReceiptBelongsToRun(
     && sessions?.sessions[input.fence.agentId]?.nativeSessionId === input.fence.nativeSessionId) {
     return true;
   }
-  return store.listEvents(taskId).some((event) => {
+  return store.listEventsByType(taskId, [RUNTIME_OBSERVATION_TASK_EVENT]).some((event) => {
     const accepted = runtimeObservationFromTaskEvent(event);
     return accepted?.kind === "turn.accepted" && accepted.fence.runId === runId && accepted.fence.roleName === input.fence.roleName && accepted.fence.agentId === input.fence.agentId && accepted.fence.nativeSessionId === input.fence.nativeSessionId && accepted.fence.receiptId === receiptId;
   });
@@ -3861,9 +3861,8 @@ function recordObsoleteRuntimeEvent(
   reason: string,
   now: Date
 ): void {
-  if (store.listEvents(input.taskId).some((event) => (
-    event.type === "runtime.event-obsolete"
-    && (event.payload.dedupeKey ?? event.payload.eventId) === (input.dedupeKey ?? input.eventId)
+  if (store.listEventsByType(input.taskId, ["runtime.event-obsolete"]).some((event) => (
+    (event.payload.dedupeKey ?? event.payload.eventId) === (input.dedupeKey ?? input.eventId)
   ))) return;
   store.saveEvent(input.taskId, createTaskEvent(
     store.nextEventId(input.taskId),
@@ -4563,7 +4562,7 @@ function resolveTerminalExecution(store: TaskStore, input: TerminalExecutionInpu
   const session = sessions?.sessions[input.agentId];
   const binding = sessions?.providerBinding;
   const pending = binding?.run;
-  const evidence = store.listEvents(input.taskId).map(runtimeObservationFromTaskEvent)
+  const evidence = store.listEventsByType(input.taskId, [RUNTIME_OBSERVATION_TASK_EVENT]).map(runtimeObservationFromTaskEvent)
     .filter((event): event is RuntimeObservation => event !== null
       && (event.kind === "turn.accepted" || isRunTerminalObservation(event)));
   if (input.attemptId !== undefined && evidence.some((event) => (
@@ -4636,7 +4635,7 @@ function assertConsistentTerminal(
   }>,
   run: AgentRun | null
 ): void {
-  const previous = store.listEvents(input.taskId).map(runtimeObservationFromTaskEvent)
+  const previous = store.listEventsByType(input.taskId, [RUNTIME_OBSERVATION_TASK_EVENT]).map(runtimeObservationFromTaskEvent)
     .filter((event): event is RuntimeObservation => event !== null
       && isRunTerminalObservation(event)
       && event.fence.roleName === input.roleName

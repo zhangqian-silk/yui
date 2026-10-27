@@ -2,6 +2,7 @@ import { BASELINE_SCHEMA_CHECKSUM, BASELINE_SCHEMA_SQL, SCHEDULE_SCHEMA_CHECKSUM
 import { TASK_READ_REVISION_SOURCES } from "../../dist/storage/taskReadRevisionSchema.js";
 
 export function usePre124Layout(db) {
+  db.exec("DROP INDEX idx_runtime_observation_semantic; DROP INDEX idx_runtime_observation_event");
   for (const table of TASK_READ_REVISION_SOURCES) {
     for (const suffix of ["ai", "ad", "au"]) db.exec(`DROP TRIGGER ${table}_read_${suffix}`);
   }

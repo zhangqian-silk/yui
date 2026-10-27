@@ -12,6 +12,12 @@ CREATE TABLE task_read_revisions (
   task_id TEXT PRIMARY KEY,
   revision INTEGER NOT NULL
 );
+CREATE INDEX idx_runtime_observation_semantic
+  ON events(task_id, json_extract(payload, '$.payload.semanticKey'))
+  WHERE type = 'runtime.observation';
+CREATE INDEX idx_runtime_observation_event
+  ON events(task_id, json_extract(payload, '$.payload.eventId'))
+  WHERE type = 'runtime.observation';
 ${TASK_READ_REVISION_SOURCES.map(table => `
 CREATE TRIGGER ${table}_read_ai AFTER INSERT ON ${table}
 BEGIN

@@ -8,6 +8,8 @@ updates and deletions invalidate only the affected Task; rollback also rolls
 back the token. These tokens are derived cache identities, never Task authority
 or a replacement for the Home revision CAS. Historical payloads are unchanged,
 and existing Tasks start with an implicit zero token until their first mutation.
+Two partial indexes support exact runtime-observation identity lookup without
+scanning or deserializing the historical observation set.
 
 The 1.22 → 1.23 transition adds global Shell Job
 definitions with revisioned script files and per-Run executable snapshots.
