@@ -1,0 +1,14 @@
+[
+  {
+    "name": "settings server semantics and localized comparison at 1365",
+    "status": "passed"
+  },
+  {
+    "name": "Agent/Role/Profile localization and safeguards at 390/1365",
+    "status": "passed"
+  },
+  {
+    "name": "real Provider panel data, long content and keyboard focus at 390/1365",
+    "status": "passed"
+  }
+]

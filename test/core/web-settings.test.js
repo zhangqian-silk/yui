@@ -433,13 +433,18 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   ];
   const currentGroups = {
     system: { id: "system", revision: "system-first", notice: "server settings",
-      fields: [{ key: "delivery-timeout-seconds", label: "Timeout", kind: "number", value: 120, reset: true }] },
+      fields: [
+        { key: "default-agent", label: "Default Agent", kind: "text", value: "fixture", source: "stored", reset: true },
+        { key: "default-workspace", label: "Default workspace", kind: "text", value: "/fixture/workspace", source: "default", reset: true },
+        { key: "time-zone", label: "Time zone", kind: "text", value: "Asia/Shanghai", source: "stored", reset: true },
+        { key: "delivery-timeout-seconds", label: "Timeout", kind: "number", value: 120, reset: true }
+      ] },
     "role/worker": { ...roleGroup, fields: roleGroup.fields.map(field => ({ ...field, source: "stored" })) },
     "role/empty": { id: "role/empty", agentId: "fixture",
       fields: [{ key: "model", label: "Model", kind: "text", value: "" },
         { key: "effort", label: "Effort", kind: "text", value: "" }] },
     "agent/fixture": { id: "agent/fixture", agentId: "fixture", fields: [],
-      observation: { native: { model: "native-model", effort: "medium", models: [{ value: "native-model" }] } } },
+      observation: { native: { model: "native-model", effort: "medium", catalogFetchedAt: "2026-10-27T08:00:00Z", models: [{ value: "native-model" }] } } },
     "profile/reader": { id: "profile/reader", agentId: "fixture",
       fields: [{ key: "model", label: "Model", kind: "text", value: "" }],
       observation: { source: "global-worker", status: "resolved", binding: { config: { model: "worker-inherited", effort: "high" } } } },
@@ -486,6 +491,14 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
     const visit = node => typeof node === "object" ? [node, ...(node.children || []).flatMap(visit)] : [];
     return visit(vm.runInContext("agentIndex", context)).find(node => node.dataset?.agentId === id);
   };
+  const timestampState = { content: element("div"), pending: false };
+  context.renderGroup(timestampState, currentGroups["agent/fixture"]);
+  assert.match(text(timestampState.content), /settings.source.observed · 2026-10-27T08:00:00Z/,
+    "a Native overview reports the actual observation timestamp");
+  context.renderGroup(timestampState, { ...currentGroups["agent/fixture"],
+    observation: { native: { model: "native-model", effort: "medium", models: [] } } });
+  assert.match(text(timestampState.content), /settings.source.observationUnknown/,
+    "an absent Native observation time is labelled unknown rather than presented as a blank timestamp");
   const roleDraft = role.editors[0].control;
   roleDraft.value = "unlisted-draft"; roleDraft.handlers.input();
   findAccess("role/worker").handlers.click();
@@ -524,6 +537,48 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   const serverControl = serverGroup?.editors[0]?.control;
   assert.equal(serverControl?.disabled, false, "system fields remain editable through the actual server entry");
   assert.equal(typeof serverControl?.handlers.input, "function", "system fields keep their editable input listener");
+  const serverText = text(serverGroup.content);
+  assert.match(serverText, /translated:settings.notice.server|settings.notice.server/,
+    "Server cards use the shared CLI source/reset notice, not the Role launch notice");
+  assert.doesNotMatch(serverText, /settings.notice.role/);
+  const serverSections = serverGroup.content.querySelectorAll("section").filter(section => section.children[0]?.tagName === "H3");
+  const sectionFor = key => serverSections.find(section => text(section.children[0]).includes(key));
+  assert.match(text(sectionFor("settings.group.defaults")), /settings.field.default-agent/);
+  assert.match(text(sectionFor("settings.group.defaults")), /settings.field.default-workspace/);
+  assert.match(text(sectionFor("settings.group.defaults")), /settings.field.time-zone/);
+  assert.doesNotMatch(text(sectionFor("settings.group.defaults")), /settings.group.permissions/);
+  assert.match(text(sectionFor("settings.group.runtime")), /settings.field.delivery-timeout-seconds/);
+  assert.match(text(sectionFor("settings.group.defaults")), /settings.takesEffect.time-zone/,
+    "the time-zone field keeps its distinct next-render effect text");
+  const compare = serverGroup.content.querySelectorAll("button").find(button => button.children.includes("settings.compare"));
+  await compare.handlers.click();
+  const compareText = text(serverGroup.content);
+  assert.match(compareText, /settings.compare.server/);
+  assert.doesNotMatch(compareText, /server settings/, "the raw backend notice is not shown in the localized comparison");
+  assert.match(compareText, /settings.field.time-zone/);
+  const roleWithProfiles = { content: element("div"), pending: false };
+  context.renderGroup(roleWithProfiles, { ...roleGroup, profiles: [{ id: "reader", available: true }] });
+  const roleText = text(roleWithProfiles.content);
+  assert.equal((roleText.match(/settings\.notice\.role/g) || []).length, 1,
+    "Role guidance has one notice rather than repeating the same later-launch warning");
+  assert.match(roleText, /settings\.profileAcknowledge/,
+    "Profile application has a one-time-copy acknowledgement distinct from ordinary Save");
+  assert.match(roleText, /settings\.acknowledge\.role/,
+    "ordinary Role Save retains its live-session safeguard");
+  const assertLocalizedCompare = async (state, group, key, backendNotice) => {
+    context.renderGroup(state, group);
+    const button = state.content.querySelectorAll("button").find(item => item.children.includes("settings.compare"));
+    await button.handlers.click();
+    const compared = text(state.content);
+    assert.match(compared, new RegExp(key), `${group.id} compare uses its localized explanation`);
+    assert.doesNotMatch(compared, new RegExp(backendNotice), `${group.id} compare does not leak the backend notice`);
+  };
+  await assertLocalizedCompare({ content: element("div"), pending: false }, roleGroup,
+    "settings.compare.roles", "next launch");
+  await assertLocalizedCompare({ content: element("div"), pending: false }, currentGroups["agent/fixture"],
+    "settings.compare.agents", "native configuration");
+  await assertLocalizedCompare({ content: element("div"), pending: false }, currentGroups["profile/reader"],
+    "settings.compare.profiles", "Template only");
   context.showSection("agents");
   assert.equal(panels.find(panel => panel.dataset.section === "agents").hidden, false);
   assert.equal(role.editors[0].control, roleDraft, "navigation retains the existing editor");

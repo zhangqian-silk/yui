@@ -105,7 +105,6 @@ export const SETTINGS_STYLES = `
 .agent-cached-models small{color:var(--ink-3)}
 .agent-status-pill{display:inline-flex;align-items:center;padding:2px 7px;border:1px solid var(--line);border-radius:var(--r-pill);background:var(--surface);color:var(--ink-3);font-size:var(--fs-2xs);white-space:nowrap}
 .agent-status-pill.tone-info{border-color:var(--info-soft);color:var(--info)}
-.agent-scope-note{margin:0;color:var(--ink-3);font-size:var(--fs-xs);line-height:1.45}
 .agent-capability-section{gap:9px}
 .agent-capability-section .settings-actions{margin:0;flex-wrap:nowrap}
 .agent-capability-info{margin:0!important;color:var(--ink-3)!important;font-size:var(--fs-2xs)!important}
