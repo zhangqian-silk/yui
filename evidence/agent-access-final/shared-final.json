@@ -1,0 +1,18 @@
+{
+  "provider": {
+    "url": "http://127.0.0.1:4197/models/providers",
+    "title": "Provider 管理 · Agent 与 Provider · Yui",
+    "head": "偏好设置",
+    "overflow": 0,
+    "body": "Yui\n任务\nJob\nAgent 与 Provider\n设置\nAgent 与 Provider\nAgent 接入\nProvider 管理\nAgent 与 Provider\n/\nProvider 管理\n语言\nEnglish\n简体中文\n\n无法读取模型配置： Model management unavailable.\n\n重试\nProvider 管理\n\n查看全部模型服务配置记录。保留来源和记录身份，不按名称或地址合并；配置声明不代表实时调用链路。\n\n配置 Agent 接入\n添加或配置",
+    "visual_status": "bounded fixture limitation: model-management dependency unavailable; route/header/overflow verified only"
+  },
+  "server": {
+    "url": "http://127.0.0.1:4197/settings/server",
+    "title": "Yui 服务 · 设置 · Yui",
+    "overflow": 0,
+    "body": "Yui\n任务\nJob\nAgent 与 Provider\n设置\n设置\n偏好设置\nSkill\n命令权限\nYui 服务\n设置\n/\nYui 服务\n语言\nEnglish\n简体中文\nYui 服务\n\nYui 服务自身的配置。Agent、角色和 Profile 位于 Agent 管理。\n\n查找设置\n通用 · system\n\n这里的默认值只用于后续启动；保存不会重启正在运行的会话，也不会重绑已有任务。\n\n权限与高级选项\nDefault Agent\nclaude\ncodex\n\nConfigure",
+    "head_actual": "偏好设置",
+    "mislabel_absent": true
+  }
+}

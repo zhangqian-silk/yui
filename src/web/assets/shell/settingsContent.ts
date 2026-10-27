@@ -34,19 +34,24 @@ export const SETTINGS_MAIN = `
       </section>
       <section class="manage-section agent-access" data-section="agents" aria-labelledby="settings-agents-title" hidden>
         ${manageHead("settings-agents-title", "settings.section.agents", "Agent access", "settings.hint.agents", "Execution tools, Role defaults and reusable Profiles. Choose one member to inspect or edit it without affecting running Sessions or existing Tasks.")}
-        <div id="agent-management-actions" class="settings-actions"></div>
-        <div class="agent-access-map" aria-label="Agent execution model">
-          <span class="agent-access-step" data-step="profile"><small>01</small><strong data-i18n="settings.area.profiles">Reusable Role templates · Profiles</strong><span data-i18n="settings.chain.profile">A one-time source copied into a Role; never a live binding</span></span>
-          <span class="agent-access-arrow" aria-hidden="true">→</span>
-          <span class="agent-access-step" data-step="role"><small>02</small><strong data-i18n="settings.area.roles">Role execution configuration</strong><span data-i18n="settings.chain.role">References one Agent and stores defaults for later launches</span></span>
-          <span class="agent-access-arrow" aria-hidden="true">→</span>
-          <span class="agent-access-step" data-step="agent"><small>03</small><strong data-i18n="settings.area.agents">Agent execution tools</strong><span data-i18n="settings.chain.agent">Tool, native model, reasoning and launch process</span></span>
+        <div class="agent-access-toolbar">
+          <label class="field settings-search agent-access-search"><span data-i18n="settings.search">Find a setting</span><input id="agent-access-search" type="search" autocomplete="off"></label>
+          <div id="agent-management-actions" class="settings-actions"></div>
         </div>
-        <p id="agent-access-status" class="settings-section-status" role="status"></p>
-        <label class="field settings-search"><span data-i18n="settings.search">Find a setting</span><input id="agent-access-search" type="search" autocomplete="off"></label>
+        <div class="agent-access-meta">
+          <p id="agent-access-status" class="settings-section-status" role="status"></p>
+          <details class="agent-access-help">
+            <summary data-i18n="settings.chain.title">三者如何关联</summary>
+            <div class="agent-access-help-grid">
+              <span><strong data-i18n="settings.area.profiles">可复用角色模板 · Profile</strong><small data-i18n="settings.chain.profile">复制到角色的一次性来源，不是持续绑定</small></span>
+              <span><strong data-i18n="settings.area.roles">角色执行配置</strong><small data-i18n="settings.chain.role">引用一个 Agent，并保存后续启动的默认值</small></span>
+              <span><strong data-i18n="settings.area.agents">Agent 执行工具</strong><small data-i18n="settings.chain.agent">执行工具、原生模型、思考强度与启动进程</small></span>
+            </div>
+          </details>
+        </div>
         <div id="agent-access-host" class="agent-access-host"></div>
         <div id="agent-settings-groups" class="agent-settings-groups" hidden></div>
-        <div class="settings-actions"><button id="agent-access-more" class="btn" type="button" hidden data-i18n="settings.more">More</button></div>
+        <div class="settings-actions agent-more"><button id="agent-access-more" class="btn" type="button" hidden data-i18n="settings.more">More</button></div>
       </section>
       <section class="manage-section" data-section="permissions" aria-labelledby="settings-permissions-title" hidden>
         ${manageHead("settings-permissions-title", "settings.section.permissions", "Command permissions", "permissions.intro", "Read-only discovery templates, not authorization for a specific call. No rules or Grants are changed.")}

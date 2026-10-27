@@ -1,0 +1,16 @@
+{
+  "draft": {
+    "len": 606,
+    "chars": 606
+  },
+  "retained": {
+    "retained": true,
+    "len": 606,
+    "dirty": "1 项未保存"
+  },
+  "close": {
+    "empty": true,
+    "focus": "role/leader",
+    "expanded": "true"
+  }
+}

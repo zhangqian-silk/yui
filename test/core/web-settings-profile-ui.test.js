@@ -61,6 +61,9 @@ test("Role Profile application previews a single snapshot and shares guarded set
   assert.equal(reads.length, 1);
   assert.equal(writes.length, 0, "choosing a template is read-only");
   assert.match(text(control(state, "preview")), /current.*new/);
+  assert.match(text(control(state, "preview")), /settings.profileCopyHelp/,
+    "the localized one-time-copy contract replaces backend English prose in the preview");
+  assert.doesNotMatch(text(control(state, "preview")), /Copies once/);
   assert.equal(control(state, "confirm").disabled, false);
   control(state, "acknowledge").checked = true;
   let finish;

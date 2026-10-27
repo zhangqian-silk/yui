@@ -1,0 +1,17 @@
+{
+  "viewport": [
+    390,
+    844
+  ],
+  "notice": "这是线上配置的只读快照；此处不会修改线上配置。",
+  "ordinary_controls_disabled": 26,
+  "ordinary_controls_total": 27,
+  "only_enabled_control": "Profile template selector",
+  "save_disabled": true,
+  "compare_disabled": false,
+  "profile_select_disabled": false,
+  "preview_confirm_disabled": true,
+  "preview_acknowledge_disabled": true,
+  "localized_preview_leak": false,
+  "preview": "配置差异 · reviewer\n\n选择一个模板，先查看差异再确认。应用会复制当前模板配置，不建立持续绑定；以后修改模板不会自动更新此角色。\n\n配置项\t当前配置\t应用后\nAgent 完整执行配置\t\n{\n  \"adapterId\": \"codex\",\n  \"permission\": {\n    \"strategy\": \"bypass\"\n  }\n}\n\t\n{\n  \"adapterId\": \"codex\",\n  \"permission\": {\n    \"strategy\": \"bypass\"\n  },\n  \"model\": "
+}
