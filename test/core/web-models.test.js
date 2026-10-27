@@ -207,6 +207,9 @@ test("Provider overview includes every configured source, keeps instance identit
   assert.equal(records.filter(node => node.dataset.layer === "native").length, 1);
   assert.equal(layers[1].children.some(node => node.className.includes("models-supply-empty")), true,
     "an empty direct-endpoint layer is honest without inventing a Provider");
+  assert.match(text(records.find(node => node.dataset.providerIdentity.startsWith("native:"))), /models.enablementUnknown/,
+    "an unspecified native enablement is unknown, not presented as enabled");
+  assert.doesNotMatch(text(records.find(node => node.dataset.providerIdentity.startsWith("native:"))), /models.enabled/);
   assert.equal(records.some(node => node.dataset.provider === "cpa-upstream"), false, "the CPA connection is not counted as a supplier");
   assert.match(text(root), /CPA connection/);
   assert.match(text(root), /matching\/\*/);
@@ -434,7 +437,10 @@ test("models and settings share one management rail with the same navigation", (
   assert.match(appRail("jobs"), /href="\/jobs" data-area="jobs" aria-current="page" data-nav-area="jobs"/);
   assert.doesNotMatch(settings, /data-section="agents"/, "Agent editing has one entry in the Agent/Provider area");
   for (const section of ["preferences", "skills", "server"]) assert.match(SETTINGS_HTML, new RegExp(`data-section="${section}"`));
-  assert.match(SETTINGS_HTML, /id="settings-search"/);
+  assert.match(SETTINGS_HTML, /id="server-settings-search"/);
+  assert.match(SETTINGS_HTML, /id="agent-access-search"/);
+  assert.match(SETTINGS_HTML, /id="server-settings-groups"/);
+  assert.doesNotMatch(SETTINGS_HTML, /id="settings-editor"/, "section chrome is mounted with each visible section rather than a hidden shared editor");
   assert.match(SETTINGS_HTML, /id="skill-browser"/);
   assert.match(SETTINGS_HTML, /src="\/assets\/js\/app\/manage\.js"/);
   assert.ok(WEB_ASSETS["/assets/js/layout/manageShell.js"] && WEB_ASSETS["/assets/css/views/manage.css"]);

@@ -237,7 +237,9 @@ export function mountModels(root, deps) {
             h("code.id", { title: provider.id }, record.native ? provider.id : provider.id.slice(0, 12)),
             h("small", null, record.origin))),
         h("div.models-supply-status", null,
-          provider.enabled === false ? tone("idle", t("models.disabled")) : tone("ok", t("models.enabled")),
+          provider.enabled === true ? tone("ok", t("models.enabled"))
+            : provider.enabled === false ? tone("idle", t("models.disabled"))
+              : tone("idle", t("models.enablementUnknown")),
           record.native && typeof provider.selected === "boolean" ? tone(provider.selected ? "info" : "idle",
             t(provider.selected ? "models.nativeSelected" : "models.nativeNotSelected")) : null)),
       h("dl.models-supply-facts", null,

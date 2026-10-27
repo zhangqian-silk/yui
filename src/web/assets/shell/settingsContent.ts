@@ -25,7 +25,12 @@ export const SETTINGS_MAIN = `
       </section>
       <section class="manage-section" data-section="server" aria-labelledby="settings-server-title" hidden>
         ${manageHead("settings-server-title", "settings.section.server", "Yui server", "settings.hint.server", "Yui server configuration.")}
-        <div id="server-settings-host"></div>
+        <div id="server-settings-host">
+          <p id="server-settings-status" class="settings-section-status" role="status"></p>
+          <label class="field settings-search"><span data-i18n="settings.search">Find a setting</span><input id="server-settings-search" type="search" autocomplete="off"></label>
+          <div id="server-settings-groups" class="settings-stack"></div>
+          <div class="settings-actions"><button id="server-settings-more" class="btn" type="button" hidden data-i18n="settings.more">More</button></div>
+        </div>
       </section>
       <section class="manage-section agent-access" data-section="agents" aria-labelledby="settings-agents-title" hidden>
         ${manageHead("settings-agents-title", "settings.section.agents", "Agent access", "settings.hint.agents", "Execution tools, Role defaults and reusable Profiles. Choose one member to inspect or edit it without affecting running Sessions or existing Tasks.")}
@@ -37,13 +42,12 @@ export const SETTINGS_MAIN = `
           <span class="agent-access-arrow" aria-hidden="true">→</span>
           <span class="agent-access-step" data-step="agent"><small>03</small><strong data-i18n="settings.area.agents">Agent execution tools</strong><span data-i18n="settings.chain.agent">Tool, native model, reasoning and launch process</span></span>
         </div>
+        <p id="agent-access-status" class="settings-section-status" role="status"></p>
+        <label class="field settings-search"><span data-i18n="settings.search">Find a setting</span><input id="agent-access-search" type="search" autocomplete="off"></label>
         <div id="agent-access-host" class="agent-access-host"></div>
+        <div id="agent-settings-groups" class="agent-settings-groups" hidden></div>
+        <div class="settings-actions"><button id="agent-access-more" class="btn" type="button" hidden data-i18n="settings.more">More</button></div>
       </section>
-      <div id="settings-editor" hidden>
-        <p id="settings-status" role="status"></p>
-        <label class="field settings-search"><span data-i18n="settings.search">Find a setting</span><input id="settings-search" type="search" autocomplete="off"></label>
-        <div id="settings-groups" class="settings-stack"></div>
-      </div>
       <section class="manage-section" data-section="permissions" aria-labelledby="settings-permissions-title" hidden>
         ${manageHead("settings-permissions-title", "settings.section.permissions", "Command permissions", "permissions.intro", "Read-only discovery templates, not authorization for a specific call. No rules or Grants are changed.")}
         <section id="permission-browser" class="settings-stack"></section>

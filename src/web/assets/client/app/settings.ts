@@ -28,14 +28,8 @@ const shell = createManageShell({ page: "settings", t, onNavigate: navigate });
 function showSection(next) {
   section = next;
   document.querySelectorAll("#settings-root > .manage-section[data-section]").forEach(panel => { panel.hidden = panel.dataset.section !== next; });
-  const editor = $("#settings-editor");
-  if (next === "agents" || next === "server") {
-    $(next === "agents" ? "#agent-access-host" : "#server-settings-host").append(next === "agents" ? agentAccessLayout : editor);
-    editor.hidden = next === "agents";
-    if (next === "agents") agentAccessLayout.hidden = false;
-    if (settingsReady) filterGroups();
-  }
   shell.set(next);
+  if (settingsReady && (next === "agents" || next === "server")) filterGroups();
   if (next === "permissions" && !permissions) permissions = mountPermissions($("#permission-browser"), t);
 }
 function navigate(next) {
@@ -66,11 +60,15 @@ $("#reset-layout").addEventListener("click", () => {
   $("#browser-receipt").textContent = results.every(Boolean) ? t("settings.layoutReset") : t("settings.storageFailed");
 });
 
-const container = $("#settings-groups");
-const status = $("#settings-status");
-const search = $("#settings-search");
+const serverGroups = $("#server-settings-groups");
+const agentGroups = $("#agent-settings-groups");
+const serverStatus = $("#server-settings-status");
+const serverSearch = $("#server-settings-search");
+const serverMore = $("#server-settings-more");
+const agentStatus = $("#agent-access-status");
+const agentSearch = $("#agent-access-search");
+const agentMore = $("#agent-access-more");
 const groups = [];
-const groupAreas = {};
 const agentAccess = $("#agent-access-host");
 const agentIndex = h("aside.agent-index", { "aria-label": t("settings.agentIndex") });
 const agentInspector = h("section.agent-inspector", { "aria-live": "polite" });
@@ -78,23 +76,11 @@ const agentAccessLayout = h("div.agent-access-layout", null, agentIndex, agentIn
 agentAccess?.append(agentAccessLayout);
 const agentAreaFilters = h("div.agent-area-filters", { role: "group", "aria-label": t("settings.filterArea") });
 let agentAreaFilter = "all";
-for (const name of ["agents", "roles", "profiles", "server"]) {
-  const list = h("div.settings-group-list.settings-group-list-" + name, { dataset: { agentGroupList: name } });
-  const title = h(name === "profiles" ? "summary" : "header", null);
-  const root = name === "server" ? list : h(name === "profiles" ? "details.settings-profile-library" : "section.settings-group-area.settings-area-" + name,
-    { "aria-labelledby": "settings-area-" + name }, title, list);
-  groupAreas[name] = { root, list, title };
-  if (name !== "server") container.append(root);
-}
-function renderAreaTitles() {
-  for (const name of ["agents", "roles", "profiles"]) {
-    const count = groups.filter(state => state.matched && groupArea(state.meta) === name).length;
-    groupAreas[name].title.replaceChildren(
-      h(name === "profiles" ? "span.settings-area-title" : "h2", { id: "settings-area-" + name }, t("settings.area." + name),
-        h("span.settings-area-count", null, String(count))),
-      h(name === "profiles" ? "span.settings-area-help" : "p", null, t("settings.areaHelp." + name)));
-  }
-}
+let agentInspectorOpen = true;
+function currentStatus() { return section === "agents" ? agentStatus : serverStatus; }
+function currentSearch() { return section === "agents" ? agentSearch : serverSearch; }
+function currentMore() { return section === "agents" ? agentMore : serverMore; }
+function searchValue() { return currentSearch()?.value || ""; }
 function groupArea(meta) {
   return meta.id.startsWith("agent/") ? "agents" : meta.id.startsWith("role/") ? "roles"
     : meta.id.startsWith("profile/") ? "profiles" : "server";
@@ -167,7 +153,26 @@ function accessRow(state) {
     state.dirty ? h("span.badge.tone-warn", null, t("settings.unsavedShort")) : null,
     h("span.agent-index-caret", { "aria-hidden": "true" }, "→"));
 }
+function inside(node, root) {
+  for (let parent = node; parent; parent = parent.parentNode || parent.parentElement) if (parent === root) return true;
+  return false;
+}
+function indexControls() {
+  const controls = [];
+  const visit = node => {
+    if (!node || typeof node !== "object") return;
+    if (node.dataset && (node.dataset.agentId || node.dataset.agentArea)) controls.push(node);
+    (node.children || []).forEach(visit);
+  };
+  visit(agentIndex);
+  return controls;
+}
 function renderAgentIndex() {
+  const active = document.activeElement;
+  const insideIndex = inside(active, agentIndex);
+  const focus = insideIndex && active?.dataset
+    ? { agentId: active.dataset.agentId || "", agentArea: active.dataset.agentArea || "" }
+    : active?.tagName === "BUTTON" ? { agentId: "", agentArea: "all" } : null;
   renderAgentAreaFilters();
   const children = [h("header.agent-index-head", null,
     h("div", null, h("h2", null, t("settings.agentIndex")), h("p", null, t("settings.agentIndexHelp"))),
@@ -183,16 +188,30 @@ function renderAgentIndex() {
       h("h3", null, accessLabel(area), h("span.count", null, String(rows.length))),
       h("div.agent-index-list", null, rows.map(accessRow))));
   }
-  if (!total) children.push(h("p.empty", null, t(search.value.trim() ? "settings.noMatches" : "settings.agentEmpty")));
+  if (!total) children.push(h("p.empty", null, t(searchValue().trim() ? "settings.noMatches" : "settings.agentEmpty")));
   agentIndex.replaceChildren(...children);
+  if (!focus) return;
+  const candidates = indexControls();
+  let restored = focus.agentId ? candidates.find(node => node.dataset.agentId === focus.agentId) : null;
+  if (!restored && focus.agentArea) restored = candidates.find(node => !node.dataset.agentId && node.dataset.agentArea === focus.agentArea);
+  if (!restored && active?.tagName === "BUTTON") restored = candidates.find(node => node.dataset.agentArea === "all");
+  if (restored && restored !== document.activeElement) restored.focus();
+}
+function renderInspectorEmpty() {
+  agentInspector.replaceChildren(h("div.agent-inspector-empty", null,
+    h("span.agent-inspector-empty-mark", { "aria-hidden": "true" }, "A"),
+    h("div", null, h("h2", null, t("settings.inspectorEmpty")), h("p", null, t("settings.inspectorEmptyHelp")))));
 }
 function selectAccess(state) {
   if (!state) {
+    agentInspectorOpen = false;
     groups.forEach(item => { item.selected = false; });
-    agentInspector.replaceChildren();
+    renderInspectorEmpty();
+    renderAgentIndex();
     return;
   }
-  if (state === selectedAccess() && state.inspectorContent?.parent === agentInspector) return;
+  agentInspectorOpen = true;
+  if (state === selectedAccess() && inside(state.inspectorContent, agentInspector)) return;
   groups.forEach(item => { item.selected = false; });
   state.selected = true;
   // A Role may already be open, edited, and then shown in the Role summary
@@ -233,29 +252,38 @@ i18n.subscribe(renderAgentActions);
 function isAgentGroup(meta) { return /^(agent|role|profile)\//.test(meta.id); }
 function filterGroups() {
   groups.forEach(state => {
-    state.root.hidden = !state.matched || isAgentGroup(state.meta) !== (section === "agents");
-    if (!state.root.hidden && !isAgentGroup(state.meta) && state.root.open) void loadGroup(state);
+    if (isAgentGroup(state.meta)) {
+      state.root.hidden = true;
+      return;
+    }
+    state.root.hidden = !state.matched;
+    if (!state.root.hidden && state.root.open) void loadGroup(state);
   });
-  for (const [name, area] of Object.entries(groupAreas)) {
-    area.root.hidden = !groups.some(state => !state.root.hidden && groupArea(state.meta) === name);
-  }
-  if (search.value.trim() && !groupAreas.profiles.root.hidden) groupAreas.profiles.root.open = true;
-  renderAreaTitles();
   if (section === "agents") {
     renderAgentIndex();
     for (const state of groups) {
       if (accessMatches(state)) void loadGroup(state);
     }
     const current = selectedAccess();
-    if (!current || !accessMatches(current)) selectAccess(defaultAccess());
+    if (!current || !accessMatches(current)) {
+      if (agentInspectorOpen) selectAccess(defaultAccess());
+      else renderInspectorEmpty();
+    }
   }
 }
 settingsReady = true;
 showSection(section);
 let searchGeneration = 0;
 let searchTimer;
-const more = h("button.btn", { type: "button", hidden: true }, t("settings.more"));
-container.after(more);
+function setSearch(value) {
+  [serverSearch, agentSearch].forEach(input => { if (input) input.value = value; });
+  searchGeneration++;
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => start(), 200);
+}
+[serverSearch, agentSearch].forEach(input => input?.addEventListener("input", () => setSearch(input.value)));
+serverMore?.addEventListener("click", () => start(serverMore.dataset.cursor));
+agentMore?.addEventListener("click", () => start(agentMore.dataset.cursor));
 window.addEventListener("beforeunload", event => {
   if (!groups.some(g => g.dirty || g.pending || g.unknown)) return;
   event.preventDefault(); event.returnValue = "";
@@ -304,6 +332,7 @@ function editor(field, group, state) {
     markDirty("agents", groups.some(g => g.dirty && isAgentGroup(g.meta)));
     state.save.disabled = state.readOnly || !state.dirty || state.pending || state.capabilityPending || state.unknown;
     if (!state.unknown && !state.pending) state.receipt.textContent = state.dirty ? t("settings.unsaved") : "";
+    if (section === "agents") renderAgentIndex();
   }
   function listen() {
     control.addEventListener("input", mark);
@@ -542,7 +571,7 @@ function renderGroup(state, group) {
   }
   const isRole = group.id.startsWith("role/");
   if (isRole) form.append(h("p", null, "Agent: " + group.agentId + " · " + t("settings.roleScope")));
-  const advanced = h("details", { open: !!search.value.trim() }, h("summary", null, t("settings.advancedFields")));
+  const advanced = h("details", { open: !!searchValue().trim() }, h("summary", null, t("settings.advancedFields")));
   const common = h("div.settings-grid");
   group.fields.forEach(field => {
     const item = editor(field, group, state);
@@ -674,7 +703,7 @@ function renderGroup(state, group) {
 function inspectorHeader(state) {
   const area = groupArea(state.meta);
   const close = h("button.icon-btn", { type: "button", "aria-label": t("settings.closeInspector"), title: t("settings.closeInspector"),
-    onclick: () => { state.selected = false; agentInspector.replaceChildren(); filterGroups(); renderAgentIndex(); } }, "×");
+    onclick: () => selectAccess(null) }, "×");
   const relation = area === "roles" && state.group?.agentId ? t("settings.inspectorRoleRelation").replace("{agent}", state.group.agentId)
     : area === "profiles" ? t("settings.inspectorProfileRelation") : t("settings.inspectorAgentRelation");
   return h("header.agent-inspector-head", null,
@@ -706,14 +735,11 @@ async function loadGroup(state) {
       h("button.btn", { type: "button", onclick: () => loadGroup(state) }, t("settings.retry")));
   } finally { state.loading = false; }
 }
-search.addEventListener("input", () => {
-  searchGeneration++;
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => start(), 200);
-});
 async function start(cursor) {
   const generation = ++searchGeneration;
-  const query = search.value.trim();
+  const query = searchValue().trim();
+  const status = currentStatus();
+  const more = currentMore();
   status.textContent = t("settings.loading");
   more.disabled = true;
   try {
@@ -736,7 +762,9 @@ async function start(cursor) {
       const root = h("details.settings-card" + (area !== "server" ? ".settings-group.settings-group-" + area : ""),
         { open: meta.id === "system" || !!query }, summary, content);
       const state = { meta, root, content, summary, dirty: false, loaded: false, loading: false, matched: true, selected: false };
-      groups.push(state); groupAreas[area].list.append(root);
+      groups.push(state);
+      if (area === "server") serverGroups.append(root);
+      else agentGroups.append(root);
       renderGroupSummary(state);
       root.addEventListener("toggle", () => { if (root.open) void loadGroup(state); });
       if (root.open) void loadGroup(state);
@@ -745,14 +773,15 @@ async function start(cursor) {
     status.textContent = data.provenance ? data.provenance.label + " · " + data.provenance.capturedAt
       : data.total ? t(section === "agents" ? "settings.agentGroupsHelp" : "settings.serverGroupsHelp") : t("settings.noMatches");
     more.hidden = !data.nextCursor;
-    more.onclick = () => start(data.nextCursor);
+    if (data.nextCursor) more.dataset.cursor = data.nextCursor;
+    else delete more.dataset.cursor;
   } catch (error) { status.textContent = error.message; }
   finally { if (generation === searchGeneration) more.disabled = false; }
 }
 i18n.subscribe(() => {
-  more.textContent = t("settings.more");
-  renderAreaTitles();
+  [serverMore, agentMore].forEach(button => { if (button) button.textContent = t("settings.more"); });
   groups.forEach(renderGroupSummary);
+  if (section === "agents") renderAgentIndex();
 });
 void start();
 `;
