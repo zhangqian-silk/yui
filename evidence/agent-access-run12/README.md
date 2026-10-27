@@ -4,7 +4,7 @@ This directory contains browser evidence from a disposable local fixture at `htt
 
 ## Browser measurements and coverage
 
-All captures use Chinese. The CSS viewports were **390 × 800** (mobile) and **1365 × 800** (desktop). Both measured `scrollWidth === clientWidth`, including the expanded Provider records. Earlier representative responsive coverage in `evidence/agent-access-final/README.md` remains applicable to unchanged layout behavior; this run repeats only the affected and previously missing paths.
+All captures use Chinese. The actual narrow captures were **390 × 844**, the desktop captures were **1365 × 800**, and the Server captures were **1365 × 757**. The original claim of a **390 × 800** mobile viewport was incorrect. Both measured `scrollWidth === clientWidth`, including the expanded Provider records. Earlier representative responsive coverage in `evidence/agent-access-final/README.md` remains applicable to unchanged layout behavior; this run repeats only the affected and previously missing paths.
 
 - `/settings/server`: correct shared CLI source/reset/no-restart notice, distinct Defaults and Runtime groups, the time-zone next-render effect, and localized comparison values. The backend Server notice and raw English Role launch text are absent.
 - Agent/Role/Profile details: each comparison view uses its own localized source/semantics explanation. Backend Agent, Role and Profile notice prose is not appended.
@@ -13,7 +13,9 @@ All captures use Chinese. The CSS viewports were **390 × 800** (mobile) and **1
 - Provider data panel: visible metabridge, CPA and native Provider facts with long names and URLs, expansion without horizontal overflow, and keyboard-visible focus on a record summary. Credential sentinel strings are absent.
 - The compact mobile master/detail composition and long-path wrapping remain usable in the inspected captures.
 
-`browser-results.json` records the three browser check groups as passed. Captures are `1365-server-zh.png`, `1365-server-compare-zh.png`, `390-role-zh.png`, `1365-role-zh.png`, `390-role-profile-preview-zh.png`, `390-agent-observation-zh.png`, `390-providers-zh.png`, `390-providers-expanded-zh.png`, and `1365-providers-expanded-zh.png`. Structured observations are in the adjacent JSON files.
+`browser-results.json` records the three browser check groups as passed. Valid Run 12 captures are `1365-server-zh.png`, `1365-server-compare-zh.png`, `390-role-zh.png`, `1365-role-zh.png`, `390-providers-zh.png`, `390-providers-expanded-zh.png`, and `1365-providers-expanded-zh.png`. Structured observations are in the adjacent JSON files.
+
+Two original mobile captures were invalid and have been retained only under explicit `INVALID-...` names: both are actually 1365 × 800, and the purported Profile preview is the Role home view. They must not be cited as narrow-layout evidence. See [`../agent-access-run13/README.md`](../agent-access-run13/README.md) for corrected real 360 × 800 and 390 × 844 captures, dimensions, reproduced defects and post-fix geometry.
 
 ## Fixture and cleanup
 

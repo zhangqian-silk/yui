@@ -397,6 +397,12 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   assert.match(roleView, /settings.editCount/, "the sticky action footer reports unsaved state");
   assert.match(SETTINGS_STYLES, /\.agent-inspector\{[^}]*overflow:clip/,
     "the inspector must not become the sticky containing block for its action footer");
+  assert.match(SETTINGS_STYLES, /\.agent-native-head\{[^}]*flex-wrap:wrap/,
+    "the Native card stacks its non-shrinking observation pill before the title can collapse");
+  assert.match(SETTINGS_STYLES, /\.agent-native-head \.agent-status-pill\{white-space:normal\}/,
+    "an observation label may wrap rather than overflow its narrow card");
+  assert.match(SETTINGS_STYLES, /\.settings-profile-diff\{[^}]*table-layout:fixed/,
+    "Profile values wrap inside the narrow preview instead of forcing horizontal scrolling");
   const catalog = { agentId: "fixture", models: [
     { value: "fast", label: "Fast", isDefault: true, efforts: [{ value: "low", label: "Low" }] },
     { value: "deep", label: "Deep", efforts: [{ value: "high", label: "High" }] }

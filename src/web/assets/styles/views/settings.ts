@@ -90,7 +90,9 @@ export const SETTINGS_STYLES = `
 .agent-field-help{margin:0;color:var(--ink-3)!important;font-size:var(--fs-2xs)!important;line-height:1.45!important}
 .settings-field>small{color:var(--ink-4);font-size:var(--fs-2xs);line-height:1.4}
 .agent-native-card{display:grid;gap:11px;padding:14px;border:1px solid var(--info-soft);border-radius:var(--r-md);background:linear-gradient(135deg,var(--info-soft),var(--surface) 70%)}
-.agent-native-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+.agent-native-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap}
+.agent-native-head>div{min-width:0;flex:1 1 220px}
+.agent-native-head .agent-status-pill{white-space:normal}
 .agent-native-head h3{font-size:var(--fs-sm);font-weight:650;color:var(--ink)}
 .agent-native-head p{max-width:72ch;margin:2px 0 0;color:var(--ink-3)!important;font-size:var(--fs-2xs)!important;line-height:1.45}
 .agent-fact-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
@@ -103,7 +105,7 @@ export const SETTINGS_STYLES = `
 .agent-cached-models ul{columns:2;column-gap:20px;margin:8px 0 0;padding-left:16px;font-size:var(--fs-xs)}
 .agent-cached-models li{margin:3px 0;overflow-wrap:anywhere;break-inside:avoid}
 .agent-cached-models small{color:var(--ink-3)}
-.agent-status-pill{display:inline-flex;align-items:center;padding:2px 7px;border:1px solid var(--line);border-radius:var(--r-pill);background:var(--surface);color:var(--ink-3);font-size:var(--fs-2xs);white-space:nowrap}
+.agent-status-pill{display:inline-flex;align-items:center;padding:2px 7px;border:1px solid var(--line);border-radius:var(--r-pill);background:var(--surface);color:var(--ink-3);font-size:var(--fs-2xs);white-space:nowrap;max-width:100%;overflow-wrap:anywhere}
 .agent-status-pill.tone-info{border-color:var(--info-soft);color:var(--info)}
 .agent-capability-section{gap:9px}
 .agent-capability-section .settings-actions{margin:0;flex-wrap:nowrap}
@@ -146,10 +148,12 @@ export const SETTINGS_STYLES = `
 .settings-profile-preview:empty{display:none}
 .settings-profile-preview{display:grid;gap:8px}
 .settings-profile-diff-scroll{overflow:auto;max-height:360px;border:1px solid var(--line);border-radius:var(--r-sm)}
-.settings-profile-diff{border-collapse:collapse;width:100%;font-size:var(--fs-xs)}
+.settings-profile-diff{border-collapse:collapse;width:100%;font-size:var(--fs-xs);table-layout:fixed}
 .settings-profile-diff th,.settings-profile-diff td{padding:10px;vertical-align:top;text-align:left;border-bottom:1px solid var(--line)}
 .settings-profile-diff thead th{background:var(--surface);font-weight:600}
-.settings-profile-diff td{min-width:150px;max-width:400px}
+.settings-profile-diff th,.settings-profile-diff td{min-width:0;max-width:none}
+.settings-profile-diff th:first-child{width:28%}
+.settings-profile-diff th:not(:first-child){width:36%}
 .settings-profile-diff pre{white-space:pre-wrap;overflow-wrap:anywhere}
 #browser-receipt:empty{display:none}
 .mono-line{overflow-wrap:anywhere}
