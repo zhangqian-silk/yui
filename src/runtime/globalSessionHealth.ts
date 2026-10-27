@@ -10,8 +10,12 @@ export function globalSessionHealth(role: GlobalRole, sessions: GlobalRoleSessio
   const matches = session !== undefined && binding != null
     && sessions?.activeAgentId === role.activeAgentId
     && currentProviderConversation(binding).conversationId === session.nativeSessionId;
-  const turn = matches ? binding.run : null;
-  const retry = binding?.retry?.nativeSessionId === session?.nativeSessionId && matches
+  // Conversation replacement retains the terminal Turn as audit evidence while
+  // advancing writer authority. Matching the new conversation alone is insufficient.
+  const turnMatches = matches && binding.run?.authorityEpoch === binding.authority.epoch;
+  const turn = turnMatches ? binding.run : null;
+  const retry = matches && binding.retry?.nativeSessionId === session?.nativeSessionId
+    && binding.retry?.authorityEpoch === binding.authority.epoch
     ? providerRetrySummary(binding) : null;
   const failure = turn?.status === "failed" || turn?.status === "rejected" ? turn.failure : undefined;
   return {
@@ -30,7 +34,7 @@ export function globalSessionHealth(role: GlobalRole, sessions: GlobalRoleSessio
       sessionDisposition: failure.error.sessionDisposition
     },
     retry,
-    historicalBinding: binding != null && !matches,
+    historicalBinding: binding != null && (!matches || (binding.run !== null && !turnMatches)),
     hostObservation: "unobserved" as const,
     note: "Selected/active writer state is not delivery or terminal-observation health. "
       + "Inspect exact Host capabilities and runtime diagnostics; Controller restart does not refresh a live Host."
