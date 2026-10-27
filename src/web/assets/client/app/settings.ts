@@ -162,17 +162,17 @@ function indexControls() {
   const visit = node => {
     if (!node || typeof node !== "object") return;
     if (node.dataset && (node.dataset.agentId || node.dataset.agentArea)) controls.push(node);
-    (node.children || []).forEach(visit);
+    Array.from(node.children || []).forEach(visit);
   };
   visit(agentIndex);
   return controls;
 }
-function renderAgentIndex() {
+function renderAgentIndex(closedId = "") {
   const active = document.activeElement;
   const insideIndex = inside(active, agentIndex);
-  const focus = insideIndex && active?.dataset
-    ? { agentId: active.dataset.agentId || "", agentArea: active.dataset.agentArea || "" }
-    : active?.tagName === "BUTTON" ? { agentId: "", agentArea: "all" } : null;
+  const focus = closedId ? { agentId: closedId, agentArea: "" }
+    : insideIndex && active?.dataset ? { agentId: active.dataset.agentId || "", agentArea: active.dataset.agentArea || "" }
+      : null;
   renderAgentAreaFilters();
   const children = [h("header.agent-index-head", null,
     h("div", null, h("h2", null, t("settings.agentIndex")), h("p", null, t("settings.agentIndexHelp"))),
@@ -204,10 +204,11 @@ function renderInspectorEmpty() {
 }
 function selectAccess(state) {
   if (!state) {
+    const closedId = selectedAccess()?.meta.id || "";
     agentInspectorOpen = false;
     groups.forEach(item => { item.selected = false; });
     renderInspectorEmpty();
-    renderAgentIndex();
+    renderAgentIndex(closedId);
     return;
   }
   agentInspectorOpen = true;

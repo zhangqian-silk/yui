@@ -249,10 +249,17 @@ test("browser session access preference is isolated, validated and truthful when
 
 test("settings editor preserves drafts and unknown receipts, with model-dependent capability choices", async () => {
   let activeElement = null;
+  const childCollection = (items = []) => new Proxy(items, {
+    get(target, key, receiver) {
+      // HTMLCollection supports indexed iteration but not Array#forEach.
+      if (key === "forEach") return undefined;
+      return Reflect.get(target, key, receiver);
+    }
+  });
   function element(spec, attrs, ...children) {
     const result = {
       tagName: spec.split(".")[0].toUpperCase(), value: "", checked: false, disabled: false,
-      dataset: {}, handlers: {}, children: [], classList: { add() {} },
+      dataset: {}, handlers: {}, children: childCollection(), classList: { add() {} },
       get parentElement() { return this.parent && this.parent.tagName ? this.parent : null; },
       get parentNode() { return this.parent || null; },
       append(...items) {
@@ -263,7 +270,7 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
         }
         this.children.push(...children);
       },
-      replaceChildren(...items) { this.children = []; this.append(...items); },
+      replaceChildren(...items) { this.children = childCollection(); this.append(...items); },
       addEventListener(name, fn) {
         const previous = this.handlers[name];
         this.handlers[name] = previous ? event => { previous(event); return fn(event); } : fn;
@@ -501,10 +508,16 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   assert.equal(activeElement, restoredAccess, "index rerender restores focus to the same member control");
   assert.equal(restoredAccess.focused, true, "index rerender restores keyboard focus to the selected member");
   const close = role.inspectorContent.querySelectorAll("button").find(button => button["aria-label"] === "settings.closeInspector");
+  activeElement = close;
   close.handlers.click();
   assert.equal(text(vm.runInContext("agentInspector", context)).includes("settings.inspectorEmpty"), true,
     "closing the inspector shows an explicit empty state instead of reopening the first member");
   assert.equal(vm.runInContext("selectedAccess()", context), null);
+  assert.equal(activeElement, findAccess("role/worker"), "closing moves focus to the row for the member that was closed");
+  const externalButton = element("button");
+  activeElement = externalButton;
+  context.renderAgentIndex();
+  assert.equal(activeElement, externalButton, "an index redraw never steals focus from an unrelated button");
   findAccess("role/worker").handlers.click();
   assert.equal(role.editors[0].control, roleDraft, "selecting after close retains the mounted draft");
   assert.equal(roleDraft.value, "unlisted-draft");
