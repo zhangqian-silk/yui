@@ -777,6 +777,10 @@ export async function startFileTaskControllerRuntime(
               )
             )
             : new FileRuntimeEventProcessor(runtimeEventInbox, schedulerStore)),
+        persistenceMetrics: () => ({
+          worker: asyncStoreClient?.observationMetrics() ?? null,
+          database: store instanceof SqliteTaskStore ? store.storageObservationMetrics() : null
+        }),
         runtimeObserver: options.runtimeObserver
           ?? new AgentRuntimeObserver(store, runtimeEventInbox),
         domainIdentity,

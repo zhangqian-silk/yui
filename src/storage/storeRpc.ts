@@ -27,6 +27,8 @@ import {
   type SerializedError
 } from "../core/boundedRpc.js";
 import type { TelemetryProgressEntry } from "../telemetry/telemetryStore.js";
+import { ControllerWorkObserver, compactWorkObservation } from "../core/controllerTelemetry.js";
+import type { SqliteTaskStore } from "./sqliteStore.js";
 import {
   StorageCancelledError,
   StorageConflictError,
@@ -63,11 +65,19 @@ export type WorkerRequest =
   | { kind: "shutdown" };
 
 /** Responses posted worker -> main. */
-export type WorkerResponse =
+export type PersistenceWorkerObservation = {
+  instance: string;
+  work: ReturnType<typeof compactWorkObservation>;
+  database: ReturnType<SqliteTaskStore["storageObservationMetrics"]> | null;
+  reads: ReturnType<typeof compactWorkObservation> | null;
+};
+
+export type WorkerResponse = (
   | { kind: "ready" }
   | { kind: "result"; requestId: string; result: unknown }
   | { kind: "already-applied"; requestId: string }
-  | { kind: "error"; requestId: string; error: SerializedError };
+  | { kind: "error"; requestId: string; error: SerializedError }
+) & { observation?: PersistenceWorkerObservation };
 
 // -- Async store interface ---------------------------------------------------
 
@@ -144,6 +154,8 @@ const READ_ONLY_STORE_METHODS: ReadonlySet<string> = new Set([
   "getHomeIdentity",
   "getReviewConfig",
   "getRevision",
+  "getStateRevision",
+  "getTaskReadRevision",
   "listConfiguredAgents",
   "getConfiguredAgent",
   "listProjects",
@@ -164,6 +176,7 @@ const READ_ONLY_STORE_METHODS: ReadonlySet<string> = new Set([
   "queryTaskSearch",
   "latestEventSequence",
   "listEventsByType",
+  "hasRuntimeObservation",
   "readTaskUsageFacts",
   "listTaskRunWorkspaceBases",
   "contextInputReferences",
@@ -255,7 +268,8 @@ function deserializeError(serialized: SerializedError): Error {
 
 function storageProtocol(
   home: string,
-  options: RpcOptions
+  options: RpcOptions,
+  observe: (observation: PersistenceWorkerObservation) => void
 ): BoundedRpcProtocol<WorkerRequest, WorkerResponse> {
   return {
     initRequest: () => ({
@@ -276,6 +290,7 @@ function storageProtocol(
       return response.requestId;
     },
     settle: (response, settlement) => {
+      if (response.observation !== undefined) observe(response.observation);
       if (response.kind === "result") {
         settlement.resolve(response.result);
         return;
@@ -306,9 +321,19 @@ function storageProtocol(
  */
 export class AsyncTaskStoreClient {
   readonly #rpc: BoundedRpcClient<WorkerRequest, WorkerResponse>;
+  readonly #waits = new ControllerWorkObserver();
+  #worker: PersistenceWorkerObservation | null = null;
+
+  /** Cached observations only: status never waits on a busy persistence worker. */
+  observationMetrics() {
+    return { roundTrips: this.#waits.snapshot(), worker: this.#worker,
+      inFlight: this.inFlight, queueDepth: this.queueDepth };
+  }
 
   constructor(home: string, options: RpcOptions = {}) {
-    this.#rpc = new BoundedRpcClient(storageProtocol(home, options), {
+    this.#rpc = new BoundedRpcClient(storageProtocol(home, options, observation => {
+      this.#worker = observation;
+    }), {
       maxInFlight: options.maxInFlight,
       maxQueue: options.maxQueue,
       workerScript: options.workerScript ?? new URL("./persistenceWorker.js", import.meta.url)
@@ -318,7 +343,7 @@ export class AsyncTaskStoreClient {
   /** Invoke a TaskStore method over the RPC (used by the Proxy). */
   callStore(method: string, args: unknown[], options?: RpcCallOptions): Promise<unknown> {
     const requestId = options?.requestId ?? nextRequestId();
-    return this.#rpc.send(
+    return this.#waits.observe("store-call", requestId, () => this.#rpc.send(
       requestId,
       {
         kind: "call",
@@ -328,7 +353,7 @@ export class AsyncTaskStoreClient {
         readOnly: isReadOnlyMethod(method)
       },
       { signal: options?.signal }
-    );
+    ));
   }
 
   /** Run a command batch atomically in the worker (§3.2). */
@@ -341,7 +366,7 @@ export class AsyncTaskStoreClient {
       op: command.op,
       args: command.args as unknown[]
     }));
-    return this.#rpc.send(
+    return this.#waits.observe("store-transaction", requestId, () => this.#rpc.send(
       requestId,
       {
         kind: "transaction",
@@ -350,7 +375,7 @@ export class AsyncTaskStoreClient {
         ...(options?.expectedRevision === undefined ? {} : { expectedRevision: options.expectedRevision })
       },
       { signal: options?.signal }
-    ) as Promise<T[]>;
+    )) as Promise<T[]>;
   }
 
   /**
@@ -360,11 +385,11 @@ export class AsyncTaskStoreClient {
    */
   invokeObserver(method: string, args: unknown[], options?: RpcCallOptions): Promise<unknown> {
     const requestId = options?.requestId ?? nextRequestId();
-    return this.#rpc.send(
+    return this.#waits.observe("store-observer", requestId, () => this.#rpc.send(
       requestId,
       { kind: "observer", requestId, method, args },
       { signal: options?.signal }
-    );
+    ));
   }
 
   /** Close the worker and release its connections. */

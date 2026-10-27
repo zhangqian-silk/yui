@@ -11,6 +11,13 @@ export type GlobalMessageQuery = Readonly<{
   id?: string;
   requestId?: string;
   interruptThen?: boolean;
+  /** An undelivered then handoff owned by this exact writer, including claims. */
+  reservedThen?: Readonly<{
+    nativeSessionId: string;
+    agentId: string;
+    authorityEpoch: number;
+    holderId: string;
+  }>;
   operatorNotice?: boolean;
   /** Delivery admission excludes actively consumed originals, not other input. */
   unclaimed?: boolean;

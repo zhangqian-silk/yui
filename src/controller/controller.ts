@@ -116,6 +116,7 @@ export type ControllerSchedulerResult = Readonly<{
 }>;
 
 export type ControllerRuntimeOptions = Readonly<{
+  persistenceMetrics?: () => ControllerRuntimeMetrics["persistence"];
   intervalMs?: number;
   signalWindowMs?: number;
   taskConcurrency?: number;
@@ -231,6 +232,10 @@ export type RunningFileTaskController = Readonly<{
 }>;
 
 export type ControllerRuntimeMetrics = Readonly<{
+  persistence: {
+    worker: ReturnType<import("../storage/storeRpc.js").AsyncTaskStoreClient["observationMetrics"]> | null;
+    database: ReturnType<import("../storage/sqliteStore.js").SqliteTaskStore["storageObservationMetrics"]> | null;
+  } | null;
   phases: ReturnType<ControllerWorkObserver["snapshot"]>;
   reads: ControllerReadMetrics | null;
   scheduler: Readonly<{ running: boolean; pendingFull: boolean; pendingKeys: number }>;
@@ -1123,6 +1128,7 @@ export class FileTaskController {
   readonly #providerRetry: ControllerRuntimeOptions["providerRetry"];
   readonly #continuationReconciler: ControllerRuntimeOptions["continuationReconciler"];
   readonly #hostTerminalRecovery: ControllerRuntimeOptions["hostTerminalRecovery"];
+  readonly #persistenceMetrics: ControllerRuntimeOptions["persistenceMetrics"];
   #current: Promise<ControllerSchedulerResult> | undefined;
   readonly #phases = new ControllerWorkObserver();
   #operatorCurrent: Promise<void> | undefined;
@@ -1145,6 +1151,7 @@ export class FileTaskController {
     readonly delivery: TmuxDeliveryPort,
     options: ControllerRuntimeOptions = {}
   ) {
+    this.#persistenceMetrics = options.persistenceMetrics;
     this.#intervalMs = positiveInteger(
       options.intervalMs,
       DEFAULT_RECONCILIATION_INTERVAL_MS,
@@ -1260,10 +1267,11 @@ export class FileTaskController {
     return this.#intervalMs;
   }
 
-  runtimeMetrics(): Pick<ControllerRuntimeMetrics, "inbox" | "drain" | "phases" | "reads" | "scheduler"> {
+  runtimeMetrics(): Pick<ControllerRuntimeMetrics, "inbox" | "drain" | "phases" | "reads" | "scheduler" | "persistence"> {
     const metrics = this.#lastRuntimeDrain?.metrics ?? ZERO_DRAIN_METRICS;
     return {
       phases: this.#phases.snapshot(),
+      persistence: this.#persistenceMetrics?.() ?? null,
       reads: this.store.readObservationMetrics?.() ?? null,
       scheduler: { running: this.#current !== undefined, pendingFull: this.#pendingFull,
         pendingKeys: this.#pendingKeys.size },

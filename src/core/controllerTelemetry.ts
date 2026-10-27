@@ -83,6 +83,12 @@ export type ControllerReadMetrics = ReturnType<ControllerWorkObserver["snapshot"
   projectionCache: { hits: number; rebuilds: number; invalidations: number };
 };
 
+/** Small worker-response observation; no historical arrays on the RPC wire. */
+export function compactWorkObservation(observer: ControllerWorkObserver) {
+  const { completed, maximumMs, slowest, recent } = observer.snapshot();
+  return { completed, maximumMs, slowest, latest: recent.at(-1) ?? null };
+}
+
 export type ControllerEventLoopDelayMetrics = Readonly<{
   samples: number;
   maximumLagMs: number;

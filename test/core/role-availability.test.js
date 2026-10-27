@@ -20,6 +20,7 @@ import { FileRoleLaunchPlanner } from "../../dist/executor/fileRoleLaunchPlanner
 import { getSelectionCandidates } from "../../dist/cli/interactionCandidates.js";
 import { runStorageUpgrade } from "../../dist/storage/upgrade/upgradeOrchestrator.js";
 import { processActiveRoleRunDeliveries } from "../../dist/scheduler/activeRoleRunDelivery.js";
+import { usePre124Layout } from "../helpers/pre19Storage.mjs";
 import { RuntimeLaunchCoordinator } from "../../dist/controller/runtimeLaunchCoordinator.js";
 import { TmuxSessionHost } from "../../dist/runtime/tmuxAdapters.js";
 import { assertRoleEnabled } from "../../dist/role/availability.js";
@@ -126,6 +127,7 @@ test("availability persists without changing launch identity, copied bindings or
   delete oldProfile.enabled;
   store.saveAgentProfile(oldProfile);
   const oldPayload = store.databaseHandle().prepare("SELECT payload FROM global_roles WHERE name='worker'").get().payload;
+  usePre124Layout(store.databaseHandle());
   store.databaseHandle().prepare("UPDATE storage_schema SET minor=21").run();
   store.close();
   assert.equal((await runStorageUpgrade({ home, mode: "execute" })).outcome, "upgraded");

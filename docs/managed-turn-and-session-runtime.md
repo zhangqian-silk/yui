@@ -33,6 +33,23 @@ In-flight request count is not queue depth, and pre-routing wait is not
 measured. These observations neither identify an old incident retroactively
 nor establish quiescence; restarting a Controller does not refresh live Hosts.
 
+`observations.persistence` separates main-thread database lock/body/commit
+costs from persistence-worker round trips, worker execution and worker reads.
+Worker summaries travel on existing replies and retain a worker-instance ID;
+status reads only cached facts, never performs a diagnostic worker RPC.
+Match hashed request targets when comparing round trip and execution. The
+difference includes startup, queueing, transport and main-loop delay, not a
+pure queue-time measurement. Nested database/read durations overlap worker
+execution and must not be added to it. Historical maxima may belong to other
+requests; the latest/slowest samples retain their own timestamps.
+
+Scheduler caches load families lazily and use transaction-maintained Task
+read revisions. Another Task or Global message does not invalidate an unchanged
+Task history; updates, deletions and external writers still do. Compound folds
+pin a read snapshot, uncommitted writes cannot publish a reusable cache token,
+and only 16 recent Task projections are retained. Cache entries never authorize
+dispatch or replace exact mutation-time checks.
+
 A newly created global Operator conversation requests the native title
 `Yui · Operator · MMdd`, using Yui's configured time zone. The request is made
 only after the provider returns the exact new conversation identity; restore

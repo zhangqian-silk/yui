@@ -3,7 +3,7 @@ import { assertJobRoleRunnable } from "../job/agentRoleScope.js";
 import { recordJobAgentObservation } from "../job/agentJobObservation.js";
 import { isDeepStrictEqual } from "node:util";
 import { nonReplayableMessageWake, pinMessageRevisions, taskMessageInboxReceipt, unfinishedLeaderInbox } from "../message/taskInboxOwnership.js";
-import { ControllerWorkObserver } from "../core/controllerTelemetry.js";
+import { ControllerWorkObserver, compactWorkObservation } from "../core/controllerTelemetry.js";
 import { contextSnapshotRef } from "../context/contextSnapshot.js";
 import { freezeRunContextSnapshot } from "../context/runContextPack.js";
 import { taskNotificationPresentation } from "../interaction/notificationPresentation.js";
@@ -200,17 +200,15 @@ import type {
  * progress facts in a single O(events) pass; every per-Role/per-phase query is
  * then served from this bounded projection instead of re-cloning and
  * re-scanning the whole history per candidate. The projection is rebuilt as
- * soon as the durable revision advances (own commit or external writer), so it
+ * soon as this Task's read revision advances (own commit or external writer), so it
  * is never dispatch/claim/complete authority: every mutation re-reads the
  * exact records under the storage lock/CAS.
  *
- * All seven record families the actionability digest folds (turns,
- * workItems, reviewRounds, integrationAttempts, inputRequests, durableJobs,
- * messages) are read in the same projection build, so a single digest
- * computation sees a consistent per-revision snapshot even under concurrent
- * writers (Issue 05).
+ * Families are loaded on demand. Each cache lookup and its source read share a
+ * SQLite read snapshot; compound folds pin that snapshot across all families.
+ * A small WorkItem/Message read must not deserialize unrelated event history.
  */
-type TaskReadProjection = Readonly<{
+type TaskReadProjection = {
   events: readonly TaskEvent[];
   runFacts: ReadonlyMap<string, AgentRunProgressFacts>;
   runs: ReturnType<TaskStore["listRuns"]>;
@@ -221,7 +219,7 @@ type TaskReadProjection = Readonly<{
   inputRequests: ReturnType<TaskStore["listInputRequests"]>;
   durableJobs: ReturnType<TaskStore["listDurableJobs"]>;
   messages: ReturnType<TaskStore["listMessages"]>;
-}>;
+};
 
 export class AgentHostProviderTurnFenceError extends Error {
   constructor(message: string) {
@@ -239,6 +237,10 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
   readonly #projectionCache = { hits: 0, rebuilds: 0, invalidations: 0 };
   readObservationMetrics() {
     return { ...this.#reads.snapshot(), projectionCache: { ...this.#projectionCache } };
+  }
+
+  compactReadObservationMetrics() {
+    return compactWorkObservation(this.#reads);
   }
 
   #observeRead<T>(phase: string, target: string, read: () => T): T {
@@ -353,7 +355,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
           && native.nativeTurnId === input.fence.nativeTurnId
           && sessions?.sessions[input.fence.agentId]?.nativeSessionId === input.fence.nativeSessionId;
         if (!runFolded && !(isSteer && input.fence.runId === undefined)) return "obsolete";
-        if (runFolded && !hasPersistedRuntimeObservation(store.listEvents(taskId), input) && run!.status === "active") {
+        if (runFolded && !hasPersistedRuntimeObservation(store, input) && run!.status === "active") {
           const updated = appendRunInput(run!, createRunInput({
             source: input.fence.receiptId!.startsWith("native-input:")
               ? { type: "provider", channel: "visible-input" }
@@ -380,7 +382,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
     if ((input.kind === "input.rejected" || input.kind === "input.delivery-unknown")
       && input.fence.receiptId?.startsWith("steer:") === true) {
       return this.store.transaction((store) => {
-        if (hasPersistedRuntimeObservation(store.listEvents(taskId), input)) return "applied";
+        if (hasPersistedRuntimeObservation(store, input)) return "applied";
         const recorded = this.recordSteerControlOutcome(store, input.fence.receiptId!,
           input.kind === "input.rejected" ? "rejected" : "delivery-unknown", now);
         if (!recorded) {
@@ -401,7 +403,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
     // together, including a retry after a previously interrupted fold.
     if (!isRunTerminalObservation(input)
       && input.kind !== "turn.accepted" && input.kind !== "input.accepted"
-      && hasPersistedRuntimeObservation(this.store.listEvents(taskId), input)) return "applied";
+      && hasPersistedRuntimeObservation(this.store, input)) return "applied";
     let outcome: ProviderLifecycleObservation;
     switch (input.kind) {
       case "session.started":
@@ -534,7 +536,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         recordCanonicalObservationObsolete(store, input, "steer-receipt-fence-mismatch", now);
         return "obsolete";
       }
-      if (hasPersistedRuntimeObservation(store.listEvents(taskId), input)) return "applied";
+      if (hasPersistedRuntimeObservation(store, input)) return "applied";
       const target = { kind: "role", taskId, roleName: "leader" } as const;
       const mailbox = store.getWorkMailbox(target);
       const processing = mailbox?.processing;
@@ -609,8 +611,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       }
       if (input.kind === "turn.accepted") {
         if (input.authority === "transport" && matches) {
-          const message = store.listGlobalRoleMessages(fence.roleName).find(entry =>
-            receipt === `global-input:${fence.roleName}/${entry.id}`);
+          const message = globalMessageForReceipt(store, fence.roleName, receipt);
           if (message !== undefined) store.updateGlobalRoleMessage(
             markGlobalRoleMessageDelivered(message, new Date(at), "transport"));
           return "applied";
@@ -626,10 +627,9 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
           binding = acceptProviderTurn(binding, { attemptId: receipt!,
             nativeTurnId: fence.nativeTurnId, acceptedAt: at });
         } else if (binding.run?.status !== "accepted") return "applied";
-        const message = store.listGlobalRoleMessages(fence.roleName).find(entry =>
-          receipt === `global-input:${fence.roleName}/${entry.id}`
-          || binding?.retry?.currentAttemptId === receipt && binding.retry.input.kind === "message"
-            && binding.retry.input.messageId === entry.id);
+        const message = globalMessageForReceipt(store, fence.roleName, receipt, "global-input",
+          binding?.retry?.currentAttemptId === receipt && binding.retry.input.kind === "message"
+            ? binding.retry.input.messageId : undefined);
         if (message !== undefined) store.updateGlobalRoleMessage(markGlobalRoleMessageDelivered(message, new Date(at)));
       } else if (["turn.completed", "turn.cancelled", "turn.failed"].includes(input.kind)) {
         if (!matches || input.authority !== "provider-structured") return "obsolete";
@@ -639,10 +639,9 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         if (input.kind === "turn.completed" && binding.run != null
           && ["submitting", "delivery-unknown"].includes(binding.run.status)) {
           binding = acceptProviderTurn(binding, { attemptId: receipt!, nativeTurnId: fence.nativeTurnId, acceptedAt: at });
-          const message = store.listGlobalRoleMessages(fence.roleName).find(entry =>
-            receipt === `global-input:${fence.roleName}/${entry.id}`
-            || binding?.retry?.currentAttemptId === receipt && binding.retry.input.kind === "message"
-              && binding.retry.input.messageId === entry.id);
+          const message = globalMessageForReceipt(store, fence.roleName, receipt, "global-input",
+            binding?.retry?.currentAttemptId === receipt && binding.retry.input.kind === "message"
+              ? binding.retry.input.messageId : undefined);
           if (message !== undefined) store.updateGlobalRoleMessage(markGlobalRoleMessageDelivered(message, new Date(at)));
         }
         if (binding.run?.status !== "accepted") return binding.run != null
@@ -658,8 +657,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       } else if (["input.accepted", "input.rejected", "input.delivery-unknown"].includes(input.kind)) {
         if (input.authority !== "provider-structured" || binding.run?.nativeTurnId !== fence.nativeTurnId
           || binding.run?.status !== "accepted") return "obsolete";
-        const message = store.listGlobalRoleMessages(fence.roleName).find(entry =>
-          receipt === `steer:${fence.roleName}/${entry.id}`);
+        const message = globalMessageForReceipt(store, fence.roleName, receipt, "steer");
         if (message !== undefined && message.inputControl !== undefined) {
           const outcome = input.kind === "input.accepted" ? "accepted"
             : input.kind === "input.rejected" ? "rejected" : "delivery-unknown";
@@ -742,7 +740,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
     now: Date
   ): ProviderLifecycleObservation {
     return this.store.transaction((store) => {
-      if (hasPersistedRuntimeObservation(store.listEvents(input.fence.taskId!), input)) {
+      if (hasPersistedRuntimeObservation(store, input)) {
         return "applied";
       }
       const run = input.fence.runId === undefined ? null : store.getRun(input.fence.taskId!, input.fence.runId);
@@ -945,8 +943,8 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
   private persistRuntimeObservation(input: RuntimeObservation, now: Date, notifyGoal = true): void {
     this.store.transaction((store) => {
       const taskId = input.fence.taskId!;
+      if (hasPersistedRuntimeObservation(store, input)) return;
       const events = store.listEvents(taskId);
-      if (hasPersistedRuntimeObservation(events, input)) return;
       if (usageSnapshotIsSuperseded(events, input)) return;
       const removable = compactedRuntimeObservationIds(events, input);
       if (removable.length > 0) store.removeEvents(taskId, removable);
@@ -1123,48 +1121,50 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
   }
 
   /**
-   * Revision-scoped read projection. Keyed by the store's durable revision;
-   * any committed mutation (ours or an external writer's) advances it and the
-   * next read rebuilds. A store without getStateRevision disables caching.
+   * Task-scoped cache tokens cover the exact source tables across connections.
+   * Unrelated Tasks/Global traffic do not invalidate these projections. Retain
+   * only the 16 most recently read Tasks; eviction changes cost, never truth.
    */
-  #readProjection: {
-    revision: number;
-    tasks: Map<string, TaskReadProjection>;
-  } | null = null;
+  readonly #readProjection = new Map<string, { revision: number; value: Partial<TaskReadProjection> }>();
 
-  #taskReadProjection(taskId: string): TaskReadProjection {
-    const revision = typeof this.store.getStateRevision === "function"
-      ? this.store.getStateRevision()
-      : Number.NaN;
-    if (
-      this.#readProjection === null
-      || this.#readProjection.revision !== revision
-    ) {
-      if (this.#readProjection !== null) this.#projectionCache.invalidations++;
-      this.#readProjection = { revision, tasks: new Map() };
+  #projected<K extends keyof TaskReadProjection>(
+    taskId: string, family: K, read: () => TaskReadProjection[K]
+  ): TaskReadProjection[K] {
+    const observed = this.store.getTaskReadRevision(taskId);
+    const previous = this.#readProjection.get(taskId);
+    const hit = previous?.revision === observed ? previous.value[family] : undefined;
+    if (hit !== undefined) {
+      // The token read is the read's snapshot point. A cache hit needs no new
+      // transaction: its value was built under that exact committed token.
+      this.#projectionCache.hits++;
+      this.#readProjection.delete(taskId);
+      this.#readProjection.set(taskId, previous!);
+      return hit;
     }
-    const tasks = this.#readProjection.tasks;
-    let task = tasks.get(taskId);
-    if (task === undefined) {
-      this.#projectionCache.rebuilds++;
-      task = this.#observeRead("task-projection-rebuild", taskId, () => {
-        const events = this.#observeRead("task-events-read", taskId, () => this.store.listEvents(taskId));
-        return {
-          events,
-          runFacts: foldRunProgressFacts(events),
-          runs: this.store.listRuns(taskId),
-          workItems: this.store.listWorkItems(taskId),
-          reviewRounds: this.store.listReviewRounds(taskId),
-          changeSets: this.store.listChangeSets(taskId),
-          integrationAttempts: this.store.listIntegrationAttempts(taskId),
-          inputRequests: this.store.listInputRequests(taskId),
-          durableJobs: this.store.listDurableJobs(taskId),
-          messages: this.store.listMessages(taskId)
-        };
-      });
-      tasks.set(taskId, task);
-    } else this.#projectionCache.hits++;
-    return task;
+    // Pin and recheck misses before reading any source rows: an external writer
+    // may have advanced the token after the optimistic lookup above.
+    return this.store.readTransaction(() => {
+      const revision = this.store.getTaskReadRevision(taskId);
+      let task = this.#readProjection.get(taskId);
+      if (task === undefined || task.revision !== revision) {
+        if (task !== undefined) this.#projectionCache.invalidations++;
+        this.#projectionCache.rebuilds++;
+        task = { revision, value: {} };
+      }
+      this.#readProjection.delete(taskId);
+      this.#readProjection.set(taskId, task);
+      if (this.#readProjection.size > 16) {
+        this.#readProjection.delete(this.#readProjection.keys().next().value!);
+      }
+      const cached = task.value[family];
+      if (cached !== undefined) {
+        this.#projectionCache.hits++;
+        return cached;
+      }
+      const value = this.#observeRead(`task-${family}-read`, taskId, read);
+      task.value[family] = value;
+      return value;
+    });
   }
 
   withRuntimeEventTransaction<T>(execute: () => T): T {
@@ -1301,39 +1301,39 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
   }
 
   listEvents(taskId: string) {
-    return this.#taskReadProjection(taskId).events;
+    return this.#projected(taskId, "events", () => this.store.listEvents(taskId));
   }
 
   listRuns(taskId: string) {
-    return this.#taskReadProjection(taskId).runs;
+    return this.#projected(taskId, "runs", () => this.store.listRuns(taskId));
   }
 
   listWorkItems(taskId: string) {
-    return this.#taskReadProjection(taskId).workItems;
+    return this.#projected(taskId, "workItems", () => this.store.listWorkItems(taskId));
   }
 
   listReviewRounds(taskId: string) {
-    return this.#taskReadProjection(taskId).reviewRounds;
+    return this.#projected(taskId, "reviewRounds", () => this.store.listReviewRounds(taskId));
   }
 
   listIntegrationAttempts(taskId: string) {
-    return this.#taskReadProjection(taskId).integrationAttempts;
+    return this.#projected(taskId, "integrationAttempts", () => this.store.listIntegrationAttempts(taskId));
   }
 
   listDurableJobs(taskId: string) {
-    return this.#taskReadProjection(taskId).durableJobs;
+    return this.#projected(taskId, "durableJobs", () => this.store.listDurableJobs(taskId));
   }
 
   listInputRequests(taskId: string) {
-    return this.#taskReadProjection(taskId).inputRequests;
+    return this.#projected(taskId, "inputRequests", () => this.store.listInputRequests(taskId));
   }
 
   listMessages(taskId: string) {
-    return this.#taskReadProjection(taskId).messages;
+    return this.#projected(taskId, "messages", () => this.store.listMessages(taskId));
   }
 
   getRunProgressFacts(taskId: string, runId: string): AgentRunProgressFacts | undefined {
-    return this.#taskReadProjection(taskId).runFacts.get(runId);
+    return this.#projected(taskId, "runFacts", () => foldRunProgressFacts(this.listEvents(taskId))).get(runId);
   }
 
   getRunDurableProgress(
@@ -1341,24 +1341,21 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
     roleName: string,
     runId: string
   ): SchedulerRunProgress | null {
-    const projected = this.#taskReadProjection(taskId);
-    // Serve the related-record fold from the same revision's projection: the
-    // event history and the WorkItem/Review/ChangeSet/Integration/Input lists
-    // are read once per Task per revision, and the per-AgentRun checkpoint/activity
-    // facts come from the one-pass fold instead of per-candidate scans.
-    const view = {
-      getRun: (id: string, runId: string) => this.store.getRun(id, runId),
-      listEvents: () => projected.events,
-      getWorkItem: (id: string, workItemId: string) => this.store.getWorkItem(id, workItemId),
-      listReviewRounds: () => projected.reviewRounds,
-      listChangeSets: () => projected.changeSets,
-      listIntegrationAttempts: () => projected.integrationAttempts,
-      listInputRequests: () => projected.inputRequests
-    };
-    // A missing fold entry is an authoritative empty fold, not a signal to
-    // re-scan the whole history. Pass {} so latestTurnDurableProgressAt treats
-    // the fold as present and skips the per-candidate fallback scans.
-    return latestRunDurableProgressAt(view, taskId, roleName, runId, projected.runFacts.get(runId) ?? {});
+    return this.store.readTransaction(() => {
+      // Pin related reads to one snapshot while loading only required families.
+      const view = {
+        getRun: (id: string, runId: string) => this.store.getRun(id, runId),
+        listEvents: () => this.listEvents(taskId),
+        getWorkItem: (id: string, workItemId: string) => this.store.getWorkItem(id, workItemId),
+        listReviewRounds: () => this.listReviewRounds(taskId),
+        listChangeSets: () => this.#projected(taskId, "changeSets", () => this.store.listChangeSets(taskId)),
+        listIntegrationAttempts: () => this.listIntegrationAttempts(taskId),
+        listInputRequests: () => this.listInputRequests(taskId)
+      };
+      // A missing fold entry is authoritative empty evidence, not permission
+      // to fall back to a per-candidate full-history scan.
+      return latestRunDurableProgressAt(view, taskId, roleName, runId, this.getRunProgressFacts(taskId, runId) ?? {});
+    });
   }
 
   recordRoleRunDiagnostic(
@@ -1561,14 +1558,11 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         if (turn != null && ["submitting", "accepted", "delivery-unknown"].includes(turn.status)) {
           throw new AgentHostProviderSessionBusyError("Global Conversation has an unsettled input.");
         }
-        const message = store.listGlobalRoleMessages(input.roleName).find(entry =>
-          input.attemptId === `global-input:${input.roleName}/${entry.id}`);
-        const reserved = store.listGlobalRoleMessages(input.roleName).find(entry =>
-          entry.delivery === undefined && entry.notDelivered === undefined
-          && entry.interruptThen?.targetNativeSessionId === input.nativeSessionId
-          && entry.interruptThen.targetAgentId === input.agentId
-          && entry.interruptThen.targetAuthorityEpoch === input.authorityEpoch
-          && entry.interruptThen.targetAuthorityHolderId === input.holderId);
+        const message = globalMessageForReceipt(store, input.roleName, input.attemptId);
+        const reserved = store.queryGlobalRoleMessages(input.roleName, {
+          limit: 1, reservedThen: { nativeSessionId: input.nativeSessionId,
+            agentId: input.agentId, authorityEpoch: input.authorityEpoch, holderId: input.holderId }
+        }).messages[0];
         if (reserved !== undefined && reserved.id !== message?.id) {
           throw new AgentHostProviderSessionBusyError("The next Global input belongs to an explicit then handoff.");
         }
@@ -1773,8 +1767,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
             unknown: "External effects are not established by submission settlement."
           }, input.now);
         }
-        const message = store.listGlobalRoleMessages(input.roleName).find(entry =>
-          input.attemptId === `global-input:${input.roleName}/${entry.id}`);
+        const message = globalMessageForReceipt(store, input.roleName, input.attemptId);
         if (message !== undefined && message.delivery?.via !== "provider") {
           const outcome = input.status === "delivery-unknown" ? "delivery-unknown" : "rejected";
           const updated = { ...message, control: {
@@ -2452,10 +2445,10 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         if (!processing.owner.startsWith("leader-notification:")) return null;
         const wakeId = processing.owner.slice("leader-notification:".length);
         const attemptId = processing.batchId;
-        const previous = store.listEvents(taskId).filter((event) =>
-          event.type === "notification.delivery" && event.payload.attemptId === attemptId).at(-1);
+        const previous = store.listEventsByType(taskId, ["notification.delivery"]).filter((event) =>
+          event.payload.attemptId === attemptId).at(-1);
         const native = provider?.attemptId === attemptId ? provider : undefined;
-        const accepted = store.listEvents(taskId).some((event) => {
+        const accepted = store.listEventsByType(taskId, [RUNTIME_OBSERVATION_TASK_EVENT]).some((event) => {
           const observation = runtimeObservationFromTaskEvent(event);
           return observation?.fence.roleName === "leader"
             && observation.fence.receiptId === attemptId
@@ -3167,7 +3160,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
   ): ProviderLifecycleObservation {
     return this.store.transaction((store) => {
       const taskId = input.fence.taskId!;
-      if (hasPersistedRuntimeObservation(store.listEvents(taskId), input)) return "applied";
+      if (hasPersistedRuntimeObservation(store, input)) return "applied";
       const sessions = store.getTaskRoleSessionSet(taskId, input.fence.roleName);
       const binding = sessions?.providerBinding;
       if (sessions === null || sessions === undefined || binding === null || binding === undefined
@@ -4809,18 +4802,27 @@ function usageSnapshotIsSuperseded(
 }
 
 function hasPersistedRuntimeObservation(
-  events: readonly TaskEvent[],
+  store: TaskStore,
   incoming: RuntimeObservation
 ): boolean {
   const usageIdentity = isRuntimeUsageEvidence(incoming)
     ? incoming.eventId
     : undefined;
-  return events.some((event) => (
-    event.type === RUNTIME_OBSERVATION_TASK_EVENT
-    && (usageIdentity === undefined
-      ? event.payload.semanticKey === incoming.semanticKey
-      : event.payload.eventId === usageIdentity)
-  ));
+  return store.hasRuntimeObservation(incoming.fence.taskId!, usageIdentity === undefined
+    ? { semanticKey: incoming.semanticKey } : { eventId: usageIdentity });
+}
+
+function globalMessageForReceipt(
+  store: TaskStore, roleName: string, receipt: string | undefined,
+  kind = "global-input", retryMessageId?: string
+) {
+  const prefix = `${kind}:${roleName}/`;
+  const id = receipt?.startsWith(prefix) ? receipt.slice(prefix.length) : undefined;
+  // A retry references the original Message, not a second input. Preserve the
+  // old numeric-id ordering if both explicit identities name different rows.
+  return [...new Set([id, retryMessageId].filter((value): value is string => value !== undefined))]
+    .flatMap(id => store.queryGlobalRoleMessages(roleName, { id, limit: 1 }).messages)
+    .sort((left, right) => left.id.localeCompare(right.id, undefined, { numeric: true }))[0];
 }
 
 function observationIsStrictlyNewer(
