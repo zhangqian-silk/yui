@@ -72,8 +72,15 @@ const groups = [];
 const agentAccess = $("#agent-access-host");
 const agentIndex = h("aside.agent-index", { "aria-label": t("settings.agentIndex") });
 const agentInspector = h("section.agent-inspector", { "aria-live": "polite" });
-const agentAccessLayout = h("div.agent-access-layout", null, agentIndex, agentInspector);
+const agentIndexToggle = h("button.agent-index-toggle", { type: "button", "aria-expanded": "true",
+  onclick: () => setAgentIndexCollapsed(!agentIndex.classList.contains("is-collapsed")) },
+  h("span", null, t("settings.agentIndex")), h("span.agent-index-toggle-mark", { "aria-hidden": "true" }, "⌄"));
+const agentAccessLayout = h("div.agent-access-layout", null, agentIndexToggle, agentIndex, agentInspector);
 agentAccess?.append(agentAccessLayout);
+function setAgentIndexCollapsed(collapsed) {
+  agentIndex.classList.toggle("is-collapsed", collapsed);
+  agentIndexToggle.setAttribute("aria-expanded", String(!collapsed));
+}
 const agentAreaFilters = h("div.agent-area-filters", { role: "group", "aria-label": t("settings.filterArea") });
 let agentAreaFilter = "all";
 let agentInspectorOpen = true;
@@ -127,7 +134,7 @@ function groupSnapshot(state) {
     group, area, native, runtime,
     model: native?.model || field("model")?.value || (runtime?.status === "resolved" ? runtime.binding?.config?.model : ""),
     effort: native?.effort || field("effort")?.value || (runtime?.status === "resolved" ? runtime.binding?.config?.effort : ""),
-    unavailable: state.loadError || native?.status === "unavailable" || runtime?.status === "unavailable"
+    unavailable: !!state.loadError || native?.status === "unavailable" || runtime?.status === "unavailable"
   };
 }
 function accessFacts(state) {
@@ -136,22 +143,26 @@ function accessFacts(state) {
   const snapshot = groupSnapshot(state);
   if (snapshot.unavailable) return t("settings.summaryUnavailable");
   const facts = [snapshot.model, snapshot.effort].filter(Boolean);
-  return facts.length ? facts.join(" · ") : t(snapshot.area === "agents"
-    ? "settings.summaryNativeDefault" : "settings.summaryUnavailable");
+  if (facts.length) return facts.join(" · ");
+  if (snapshot.area === "profiles" && snapshot.runtime?.source === "global-worker") return t("settings.inheritWorker");
+  if (snapshot.area === "roles") return t("settings.roleDefaults") + " · " + t("settings.summaryNativeDefault");
+  return t("settings.summaryNativeDefault");
 }
 function accessRow(state) {
   const area = groupArea(state.meta);
+  const snapshot = groupSnapshot(state);
+  const status = state.loadError || snapshot.unavailable ? t("settings.summaryUnavailable")
+    : state.dirty ? t("settings.unsavedShort") : null;
   return h("button.agent-index-row", { type: "button",
     "aria-current": state.selected ? "true" : null, dataset: { agentId: state.meta.id, agentArea: area },
     onclick: () => selectAccess(state) },
     h("span.agent-index-icon.tone-" + (area === "agents" ? "info" : area === "roles" ? "accent" : "idle"), null,
-      h("span", null, area === "agents" ? "A" : area === "roles" ? "R" : "P")),
+      h("span", { "aria-hidden": "true" }, area === "agents" ? "A" : area === "roles" ? "R" : "P")),
     h("span.agent-index-copy", null, h("strong", null, state.meta.title),
-      h("small", null, area === "agents" ? t("settings.kind.agent")
-        : area === "roles" ? t("settings.kind.role") : t("settings.kind.profile")),
+      h("small", null, accessLabel(area)),
       h("span.agent-index-facts", null, accessFacts(state))),
-    state.dirty ? h("span.badge.tone-warn", null, t("settings.unsavedShort")) : null,
-    h("span.agent-index-caret", { "aria-hidden": "true" }, "→"));
+    status ? h("span.badge" + (state.dirty ? ".tone-warn" : ""), null, status) : null,
+    h("span.agent-index-caret", { "aria-hidden": "true" }, "›"));
 }
 function inside(node, root) {
   for (let parent = node; parent; parent = parent.parentNode || parent.parentElement) if (parent === root) return true;
@@ -175,7 +186,8 @@ function renderAgentIndex(closedId = "") {
       : null;
   renderAgentAreaFilters();
   const children = [h("header.agent-index-head", null,
-    h("div", null, h("h2", null, t("settings.agentIndex")), h("p", null, t("settings.agentIndexHelp"))),
+    h("div", null, h("h2", null, t("settings.agentIndex")),
+      h("p", null, t("settings.agentIndexHelp"))),
     agentAreaFilters)];
   let total = 0;
   for (const area of ACCESS_AREAS) {
@@ -212,6 +224,7 @@ function selectAccess(state) {
     return;
   }
   agentInspectorOpen = true;
+  if (typeof matchMedia === "function" && matchMedia("(max-width: 620px)").matches) setAgentIndexCollapsed(true);
   if (state === selectedAccess() && inside(state.inspectorContent, agentInspector)) return;
   groups.forEach(item => { item.selected = false; });
   state.selected = true;
@@ -244,9 +257,10 @@ function renderAgentActions() {
       await start();
     }
   }) }, t("models.configure.agent")),
-    supportedAgents.length ? h("p.faint", null, t("settings.supportedAgents") + ": ",
-      supportedAgents.map(agent => agent.label + " · " +
-        (agent.configuredIds.length ? agent.configuredIds.join(", ") : t("settings.notConfigured"))).join(" / ")) : null);
+    supportedAgents.length ? h("details.agent-supported", null,
+      h("summary", null, t("settings.supportedAgents") + " · " + supportedAgents.length),
+      h("p", null, supportedAgents.map(agent => agent.label + " · " +
+        (agent.configuredIds.length ? agent.configuredIds.join(", ") : t("settings.notConfigured"))).join(" / "))) : null);
 }
 renderAgentActions();
 i18n.subscribe(renderAgentActions);
@@ -307,7 +321,8 @@ function editor(field, group, state) {
   let control;
   if (field.kind === "boolean" || field.choices && field.choices.length) {
     const values = field.kind === "boolean" ? ["true", "false"] : field.choices;
-    control = h("select", null, values.map(v => h("option", { value: v }, v || t("settings.inherit"))));
+    control = h("select", null, values.map(v => h("option", { value: v },
+      field.kind === "boolean" ? t(v === "true" ? "settings.booleanOn" : "settings.booleanOff") : v || t("settings.inherit"))));
     if (!values.includes(String(field.value ?? ""))) control.append(h("option", { value: String(field.value ?? "") }, String(field.value ?? "")));
   } else control = h(field.kind === "json" || field.kind === "multiline" ? "textarea" : "input", {
     ...(field.kind === "number" ? { type: "number", step: "any" } : {}),
@@ -317,12 +332,16 @@ function editor(field, group, state) {
   control.value = initial;
   label.append(control);
   const reset = h("input", { type: "checkbox" });
+  const helpKey = "settings.help." + field.key;
+  const help = t(helpKey, "");
+  const technical = [
+    field.source ? t("settings.source." + field.source, field.source) : "",
+    Object.hasOwn(field, "defaultValue") ? t("settings.default") + ": " + format(field.defaultValue) : "",
+    field.value === "" ? t("settings.inherit") : ""
+  ].filter(Boolean).join(" · ");
   const row = h("div.settings-field", { dataset: { field: field.key } }, label,
-    field.summary ? h("p", null, field.summary) : null,
-    h("small", null, t("settings.current") + ": " + (field.value === "" ? t("settings.inherit") : format(field.value)) +
-      (field.source ? " · " + t("settings.source." + field.source, field.source) : "") +
-      (Object.hasOwn(field, "defaultValue") ? " · " + t("settings.default") + ": " + format(field.defaultValue) : "")),
-    field.takesEffect ? h("small", null, field.takesEffect) : null,
+    help ? h("p.agent-field-help", null, help) : field.summary ? h("p.agent-field-help", null, field.summary) : null,
+    technical || field.takesEffect ? h("small", null, [technical, field.takesEffect].filter(Boolean).join(" · ")) : null,
     field.reset ? h("label.settings-reset", null, reset, t("settings.reset")) : null);
   let unavailable = false;
   function mark() {
@@ -333,6 +352,8 @@ function editor(field, group, state) {
     markDirty("agents", groups.some(g => g.dirty && isAgentGroup(g.meta)));
     state.save.disabled = state.readOnly || !state.dirty || state.pending || state.capabilityPending || state.unknown;
     if (!state.unknown && !state.pending) state.receipt.textContent = state.dirty ? t("settings.unsaved") : "";
+    state.dirtyIndicator && (state.dirtyIndicator.textContent = t("settings.editCount").replace("{count}", String(state.editors.filter(e => e.changed()).length)));
+    if (state.dirtyIndicator) state.dirtyIndicator.dataset.dirty = String(state.dirty);
     if (section === "agents") renderAgentIndex();
   }
   function listen() {
@@ -481,7 +502,7 @@ function roleProfileApplication(state, group) {
       if (value.id !== group.id || value.profileId !== profileId) throw Error(t("settings.profilePreviewInvalid"));
       preview = value;
       result.replaceChildren(h("h4", null, t("settings.profileDifference") + " · " + profileId),
-        h("p", null, value.notice),
+        h("p", null, t("settings.profileCopyHelp")),
         h("div.settings-profile-diff-scroll", null, h("table.settings-profile-diff", null,
           h("thead", null, h("tr", null, ["settings.profileField", "settings.profileBefore", "settings.profileAfter"]
             .map(label => h("th", { scope: "col" }, t(label))))),
@@ -523,7 +544,7 @@ function roleProfileApplication(state, group) {
       state.profileApplication?.sync();
     }
   });
-  state.profileApplication = { invalidate, sync };
+  state.profileApplication = { invalidate, sync, control: select };
   sync();
   return h("section.settings-profile-apply", null,
     h("h3", null, t("settings.profileApplyTitle")), h("p", null, t("settings.profileCopyHelp")),
@@ -535,7 +556,90 @@ function roleProfileApplication(state, group) {
     h("div.settings-actions", null, confirm));
 }
 
+function editCount(state) {
+  return state.editors.filter(editor => editor.changed()).length;
+}
+function configSection(titleKey, className = "") {
+  return h("section.agent-config-section" + (className ? "." + className : ""), null,
+    h("h3", null, t(titleKey)));
+}
+function fieldGroupKey(field) {
+  if (["activeAgentId", "enabled", "agent", "access"].includes(field.key)) return "settings.group.identity";
+  if (["model", "effort"].includes(field.key)) return "settings.group.models";
+  if (field.key === "workspace") return "settings.group.workspace";
+  if (["description", "systemPrompt", "instructions", "expectedOutput", "responsibilities", "constraints", "skills", "profile"].includes(field.key)) return "settings.group.instructions";
+  if (field.key === "command" || field.key === "baseArgs" || field.key === "environment") return "settings.group.launch";
+  return "settings.group.permissions";
+}
+function fieldOrder(field) {
+  const order = {
+    "enabled": 0, "agent": 1, "activeAgentId": 1, "access": 2, "model": 3, "effort": 4,
+    "workspace": 5, "description": 6, "systemPrompt": 7, "instructions": 7, "expectedOutput": 8,
+    "responsibilities": 9, "constraints": 10, "skills": 11,
+    "command": 20, "baseArgs": 21, "environment": 22
+  };
+  return order[field.key] ?? 100 + Object.keys(order).length;
+}
+function statusPill(label, tone = "") {
+  return h("span.agent-status-pill" + (tone ? ".tone-" + tone : ""), null, label);
+}
+function sourceBlock(state, group) {
+  const provenance = group.provenance;
+  const native = group.observation?.native;
+  const runtime = group.id.startsWith("profile/") ? group.observation : null;
+  const details = [];
+  if (provenance) details.push(h("div.agent-source-row", null,
+    h("span", null, t("settings.source.snapshot")), h("strong", null, provenance.label),
+    h("small", null, provenance.capturedAt)));
+  if (group.agentId) details.push(h("div.agent-source-row", null,
+    h("span", null, t("settings.assignmentAgent")), h("code", null, group.agentId)));
+  if (native) {
+    if (native.sourceFile) details.push(h("div.agent-source-row", null,
+      h("span", null, t("settings.nativeFile")), h("code", null, native.sourceFile)));
+    if (native.catalogSource) details.push(h("div.agent-source-row", null,
+      h("span", null, t("settings.source.catalog")), h("span", null, native.catalogSource)));
+    if (native.catalogFetchedAt) details.push(h("div.agent-source-row", null,
+      h("span", null, t("settings.source.observed")), h("time", { datetime: native.catalogFetchedAt }, native.catalogFetchedAt)));
+  }
+  if (runtime?.reason) details.push(h("div.agent-source-row", null,
+    h("span", null, t("settings.source.runtime")), h("span", null, runtime.reason)));
+  if (!details.length && !group.observation) return null;
+  return h("details.agent-source", null,
+    h("summary", null, t("settings.source.title")),
+    h("div.agent-source-body", null,
+      details.length ? details : h("p", null, t("settings.source.technical")),
+      group.observation ? h("details.agent-technical", null,
+        h("summary", null, t("settings.source.raw")),
+        h("pre.settings-observation", null, JSON.stringify(group.observation, null, 2))) : null));
+}
+function nativeOverview(group) {
+  const native = group.observation?.native;
+  if (!native) return null;
+  const rows = [
+    ["settings.nativeModel", native.model],
+    ["settings.nativeEffort", native.effort],
+    ["settings.nativeProvider", native.provider]
+  ].filter(([, value]) => value !== undefined && value !== null && value !== "");
+  return h("section.agent-native-card", null,
+    h("div.agent-native-head", null,
+      h("div", null, h("h3", null, t("settings.nativeConfiguration")),
+        h("p", null, t("settings.nativeIndependent"))),
+      statusPill(t("settings.source.observed"), "info")),
+    rows.length ? h("dl.agent-fact-grid", null, rows.map(([key, value]) => h("div", null,
+      h("dt", null, t(key)), h("dd", null, String(value))))) : null,
+    h("p.agent-native-note", null, t(native.models?.length ? "settings.nativeModelsCached" : "settings.nativeModelsUnknown")),
+    native.models?.length ? h("details.agent-cached-models", null,
+      h("summary", null, t("settings.nativeModels") + " · " + native.models.length),
+      h("ul", null, native.models.map(model => h("li", null,
+        typeof model === "string" ? model : (model.label || model.name || model.id || model.value),
+        typeof model === "object" && model.efforts?.length ? h("small", null, " · " +
+          model.efforts.map(e => typeof e === "string" ? e : e.label || e.value).join(", ")) : null)))) : null);
+}
+function roleScopeNote() {
+  return h("p.agent-scope-note", null, t("settings.roleScope"));
+}
 function renderGroup(state, group) {
+  const previousContent = state.content;
   const generation = state.renderGeneration = (state.renderGeneration || 0) + 1;
   state.loadError = null;
   state.group = group; state.editors = []; state.dirty = false; state.unknown = false;
@@ -544,113 +648,37 @@ function renderGroup(state, group) {
   state.profileApplication = null;
   markDirty("server", groups.some(g => g.dirty && !isAgentGroup(g.meta)));
   markDirty("agents", groups.some(g => g.dirty && isAgentGroup(g.meta)));
-  const form = h("form.settings-stack");
-  const receipt = h("p.settings-receipt", { role: "status", "aria-live": "polite" });
+  const area = group.id.startsWith("agent/") ? "agents" : group.id.startsWith("role/") ? "roles"
+    : group.id.startsWith("profile/") ? "profiles" : "server";
+  const isRole = group.id.startsWith("role/");
+  const isAgent = group.id.startsWith("agent/");
+  const notice = h("p.agent-notice", null, t(area === "agents" ? "settings.notice.agent"
+    : area === "profiles" ? "settings.notice.profile" : "settings.notice.role"));
+  const receipt = h("p.settings-receipt.agent-receipt", { role: "status", "aria-live": "polite" });
   const save = h("button.btn.btn-primary", { type: "submit", disabled: true, "data-i18n": "settings.save" }, t("settings.save"));
   state.save = save; state.receipt = receipt;
-  form.append(h("p", null, group.notice));
-  if (group.provenance) form.append(h("p.models-note", null,
-    group.provenance.label + " · " + group.provenance.capturedAt));
-  if (state.readOnly) form.append(h("p.faint", null, t("settings.snapshotReadOnly")));
-  const native = group.observation?.native;
+  const form = h("form.settings-stack.agent-inspector-form");
+  const canvas = h("div.agent-inspector-canvas");
+  const actionFooter = h("div.agent-action-bar");
+  if (state.readOnly) canvas.append(h("p.agent-readonly-note", null, t("settings.snapshotReadOnly")));
   renderGroupSummary(state);
-  if (native) {
-    const rows = [
-      ["settings.nativeModel", native.model],
-      ["settings.nativeEffort", native.effort],
-      ["settings.nativeProvider", native.provider],
-      ["settings.nativeFile", native.sourceFile]
-    ].filter(([, value]) => value !== undefined && value !== null && value !== "");
-    form.append(h("section.models-native-config", null, h("h3", null, t("settings.nativeConfiguration")),
-      h("p", null, t("settings.nativeIndependent")),
-      h("dl.models-balances", null, rows.map(([key, value]) => h("div", null, h("dt", null, t(key)), h("dd", null, String(value))))),
-      native.models?.length ? h("details", null, h("summary", null, t("settings.nativeModels") + " · " + native.models.length),
-        h("p.faint", null, (native.catalogSource || "") + (native.catalogFetchedAt ? " · " + native.catalogFetchedAt : "")),
-        h("ul", null, native.models.map(model => h("li", null,
-        typeof model === "string" ? model : (model.label || model.name || model.id || model.value),
-        typeof model === "object" && model.efforts?.length ? " · " + model.efforts.map(e => typeof e === "string" ? e : e.label || e.value).join(", ") : "")))) : h("p.faint", null, t("settings.nativeModelsUnknown"))));
-  }
-  const isRole = group.id.startsWith("role/");
-  if (isRole) form.append(h("p", null, "Agent: " + group.agentId + " · " + t("settings.roleScope")));
-  const advanced = h("details", { open: !!searchValue().trim() }, h("summary", null, t("settings.advancedFields")));
-  const common = h("div.settings-grid");
-  group.fields.forEach(field => {
+  const native = nativeOverview(group);
+  if (native) canvas.append(native);
+  if (isRole) canvas.append(roleScopeNote());
+  const grouped = new Map();
+  for (const field of [...group.fields].sort((a, b) => fieldOrder(a) - fieldOrder(b))) {
     const item = editor(field, group, state);
     state.editors.push(item);
-    if (isRole) (["activeAgentId", "model", "effort"].includes(field.key) ? common : advanced).append(item.row);
-    else if (group.id.startsWith("agent/")) advanced.append(item.row);
-    else form.append(item.row);
-  });
-  if (isRole) form.append(common, advanced);
-  else if (group.id.startsWith("agent/")) form.append(advanced);
-  const acknowledge = h("input", { type: "checkbox" });
-  if (group.id.startsWith("role/") || group.id.startsWith("agent/")) form.append(h("label.settings-reset", null,
-    acknowledge, t("settings.acknowledge")));
-  const compare = h("button.btn", { type: "button", "data-i18n": "settings.compare" }, t("settings.compare"));
-  compare.addEventListener("click", async () => {
-    compare.disabled = true;
-    try {
-      const current = await requestJson("/api/settings/group?" + new URLSearchParams({ id: group.id }));
-      const values = h("div.settings-observation", null,
-        h("p", null, current.notice),
-        current.fields.map(field => h("p", null,
-          t("settings.field." + field.key, field.label) + ": " +
-          (field.value === "" ? t("settings.inherit") : format(field.value)) +
-          (field.source ? " · " + t("settings.source." + field.source, field.source) : ""))));
-      const agentChanged = current.agentId !== group.agentId;
-      if (agentChanged) values.append(h("p.settings-error", null, t("settings.agentChanged")));
-      const adopt = h("button.btn", { type: "button", disabled: state.unknown || agentChanged }, t("settings.useBaseline"));
-      adopt.addEventListener("click", () => {
-        state.group = current;
-        state.profileApplication?.invalidate();
-        receipt.textContent = t("settings.baselineChanged");
-        values.remove(); adopt.remove();
-      });
-      state.content.append(values, adopt);
-    } catch (error) { receipt.textContent = error.message; }
-    finally { compare.disabled = false; }
-  });
-  form.append(h("div.settings-actions", null, save, compare), receipt);
-  form.addEventListener("submit", async event => {
-    event.preventDefault();
-    if (state.readOnly || state.pending || state.capabilityPending || state.unknown) return;
-    let changes;
-    if (state.editors.some(e => e.blocked)) {
-      receipt.textContent = t("settings.unsupportedDraft"); return;
-    }
-    try { changes = state.editors.filter(e => e.changed()).map(e => e.change()); }
-    catch (error) { receipt.textContent = error.message; receipt.classList.add("settings-error"); return; }
-    if (!changes.length) return;
-    state.pending = true; save.disabled = true;
-    state.profileApplication?.invalidate();
-    // Keep controls frozen during one submission. Failed saves keep all drafts.
-    const controls = [...form.querySelectorAll("input,select,textarea,button")];
-    const disabled = controls.map(c => c.disabled);
-    controls.forEach(c => { c.disabled = true; });
-    try {
-      const result = await submitMutation("settings/" + group.id, "/api/settings/group", {
-        id: group.id, revision: state.group.revision, changes, acknowledgeLive: acknowledge.checked
-      });
-      renderGroup(state, result.group);
-      state.receipt.textContent = t("settings.saved") + "\n" + result.output + "\n" + result.adoption + "\n" + result.refresh;
-    } catch (error) {
-      state.unknown = error.disposition !== "not-submitted";
-      receipt.textContent = error.message + "\n" + (state.unknown ? t("settings.unknown") : t("settings.draftKept"));
-      receipt.classList.add("settings-error");
-      controls.forEach((c, i) => { c.disabled = disabled[i]; });
-    } finally {
-      state.pending = false;
-      state.save.disabled = state.readOnly || !state.dirty || state.unknown;
-      state.profileApplication?.sync();
-    }
-  });
-  if (group.observation) form.append(h("details", null, h("summary", null, t("settings.observation")),
-    h("pre.settings-observation", null, JSON.stringify(group.observation, null, 2))));
+    const key = fieldGroupKey(field);
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(item);
+  }
+  let capabilities;
   if (group.agentId) {
-    const info = h("p", { role: "status" }, t("settings.notQueried"));
+    const info = h("p.agent-capability-info", { role: "status" }, t("settings.notQueried"));
     const query = h("button.btn", { type: "button" }, t("settings.queryCapabilities"));
     const refresh = h("button.btn", { type: "button", disabled: state.readOnly }, t("settings.refreshCapabilities"));
-    const output = h("div");
+    const output = h("div.agent-capability-output");
     async function load(force) {
       if (state.pending || state.capabilityPending || force && state.readOnly) return;
       if (state.editors.some(e => e.field.key === "activeAgentId" && e.changed())) {
@@ -674,7 +702,7 @@ function renderGroup(state, group) {
         applyCapabilities(state, result);
         output.replaceChildren(
           ...result.catalog.warnings.map(w => h("p", null, w)),
-          h("details", null, h("summary", null, t("settings.capabilityDetails")),
+          h("details.agent-technical", null, h("summary", null, t("settings.capabilityDetails")),
             h("pre.settings-observation", null, JSON.stringify(result.catalog, null, 2))));
       } catch (error) { info.textContent = t("settings.queryFailed") + ": " + error.message; }
       finally {
@@ -687,22 +715,121 @@ function renderGroup(state, group) {
       }
     }
     query.addEventListener("click", () => load(false)); refresh.addEventListener("click", () => load(true));
-    const capabilities = h("div", null, h("div.settings-actions", null, query, refresh), info, output);
-    if (isRole) common.before(capabilities);
-    else form.append(capabilities);
+    capabilities = h("section.agent-config-section.agent-capability-section", null,
+      h("div.agent-section-heading", null,
+        h("div", null, h("h3", null, t("settings.capability.title")), h("p", null, t("settings.capability.help"))),
+        h("div.settings-actions", null, query, refresh)),
+      info, output);
   }
-  if (state.readOnly) form.querySelectorAll("input,select,textarea").forEach(control => { control.disabled = true; });
-  const inspectorLeading = [];
-  if (isRole && Array.isArray(group.profiles)) inspectorLeading.push(roleProfileApplication(state, group));
-  if (state.meta && isAgentGroup(state.meta)) {
-    form.classList.add("agent-inspector-form");
-    inspectorLeading.unshift(inspectorHeader(state));
+  for (const key of ["settings.group.identity", "settings.group.models", "settings.group.workspace", "settings.group.instructions", "settings.group.launch", "settings.group.permissions"]) {
+    const items = grouped.get(key);
+    if (!items?.length) continue;
+    const primary = key === "settings.group.identity" || key === "settings.group.models";
+    const section = configSection(key, primary ? "agent-config-primary" : "");
+    section.append(h("div.agent-field-grid" + (primary ? ".agent-field-grid-primary" : ""), null,
+      items.map(item => item.row)));
+    if (key === "settings.group.models" && capabilities) section.append(capabilities);
+    canvas.append(section);
   }
+  if (capabilities && !grouped.get("settings.group.models")) canvas.append(capabilities);
+  if (isRole && Array.isArray(group.profiles)) {
+    const profileApplication = roleProfileApplication(state, group);
+    profileApplication.classList.add("agent-profile-section");
+    canvas.append(profileApplication);
+  }
+  const acknowledge = h("input", { type: "checkbox" });
+  if (isRole || isAgent) canvas.append(h("label.settings-reset.agent-live-ack", null,
+    acknowledge, t("settings.acknowledge")));
+  const compare = h("button.btn", { type: "button", "data-i18n": "settings.compare" }, t("settings.compare"));
+  compare.addEventListener("click", async () => {
+    compare.disabled = true;
+    try {
+      const current = await requestJson("/api/settings/group?" + new URLSearchParams({ id: group.id }));
+      const values = h("div.settings-observation.agent-comparison", null,
+        h("p", null, current.notice),
+        current.fields.map(field => h("p", null,
+          t("settings.field." + field.key, field.label) + ": " +
+          (field.value === "" ? t("settings.inherit") : format(field.value)) +
+          (field.source ? " · " + t("settings.source." + field.source, field.source) : ""))));
+      const agentChanged = current.agentId !== group.agentId;
+      if (agentChanged) values.append(h("p.settings-error", null, t("settings.agentChanged")));
+      const adopt = h("button.btn", { type: "button", disabled: state.unknown || agentChanged }, t("settings.useBaseline"));
+      adopt.addEventListener("click", () => {
+        state.group = current;
+        state.profileApplication?.invalidate();
+        receipt.textContent = t("settings.baselineChanged");
+        values.remove(); adopt.remove();
+      });
+      canvas.append(values, adopt);
+    } catch (error) { receipt.textContent = error.message; }
+    finally { compare.disabled = false; }
+  });
+  const dirtyIndicator = h("span.agent-dirty-indicator", { "data-dirty": String(state.dirty) },
+    t("settings.editCount").replace("{count}", String(editCount(state))));
+  state.dirtyIndicator = dirtyIndicator;
+  const footStatus = h("div.agent-foot-status", null, dirtyIndicator, receipt);
+  actionFooter.append(footStatus, h("div.agent-action-buttons", null, compare, save));
+  const source = sourceBlock(state, group);
+  if (source) canvas.append(source);
+  form.append(notice, canvas, actionFooter);
+  form.addEventListener("submit", async event => {
+    event.preventDefault();
+    if (state.readOnly || state.pending || state.capabilityPending || state.unknown) return;
+    let changes;
+    if (state.editors.some(e => e.blocked)) {
+      receipt.textContent = t("settings.unsupportedDraft"); return;
+    }
+    try { changes = state.editors.filter(e => e.changed()).map(e => e.change()); }
+    catch (error) { receipt.textContent = error.message; receipt.classList.add("settings-error"); return; }
+    if (!changes.length) return;
+    state.pending = true; save.disabled = true;
+    state.profileApplication?.invalidate();
+    const controls = [...form.querySelectorAll("input,select,textarea,button")];
+    const disabled = controls.map(c => c.disabled);
+    controls.forEach(c => { c.disabled = true; });
+    try {
+      const result = await submitMutation("settings/" + group.id, "/api/settings/group", {
+        id: group.id, revision: state.group.revision, changes, acknowledgeLive: acknowledge.checked
+      });
+      renderGroup(state, result.group);
+      state.receipt.textContent = t("settings.saved") + "\n" + result.output + "\n" + result.adoption + "\n" + result.refresh;
+    } catch (error) {
+      state.unknown = error.disposition !== "not-submitted";
+      receipt.textContent = error.message + "\n" + (state.unknown ? t("settings.unknown") : t("settings.draftKept"));
+      receipt.classList.add("settings-error");
+      controls.forEach((c, i) => { c.disabled = disabled[i]; });
+    } finally {
+      state.pending = false;
+      state.save.disabled = state.readOnly || !state.dirty || state.unknown;
+      state.profileApplication?.sync();
+    }
+  });
+  // Inspector identity chrome belongs only to Agent/Role/Profile members.
+  // Server cards keep their own summary and form so a system group is never
+  // mislabeled as an execution tool.
+  const inspectorLeading = /^(agent|role|profile)\//.test(group.id) ? [inspectorHeader(state)] : [];
   state.content.replaceChildren(...inspectorLeading, form);
   state.form = form;
+  state.canvas = canvas;
+  if (previousContent && previousContent !== state.content) {
+    state.content.classList.add("agent-inspector-content");
+  }
+  state.save.disabled = state.readOnly || !state.dirty || state.unknown;
+  if (state.readOnly) {
+    const profileControls = new Set(state.profileApplication && state.profileApplication.control
+      ? [state.profileApplication.control] : []);
+    form.querySelectorAll("input,select,textarea").forEach(control => {
+      if (!profileControls.has(control)) control.disabled = true;
+    });
+    state.profileApplication?.sync();
+  }
 }
+
 function inspectorHeader(state) {
-  const area = groupArea(state.meta);
+  const area = state.group?.id.startsWith("agent/") ? "agents" : state.group?.id.startsWith("role/") ? "roles"
+    : state.group?.id.startsWith("profile/") ? "profiles" : groupArea(state.meta || { id: "" });
+  const title = state.meta?.title || state.group?.title || "";
+  const id = state.meta?.id || state.group?.id || "";
   const close = h("button.icon-btn", { type: "button", "aria-label": t("settings.closeInspector"), title: t("settings.closeInspector"),
     onclick: () => selectAccess(null) }, "×");
   const relation = area === "roles" && state.group?.agentId ? t("settings.inspectorRoleRelation").replace("{agent}", state.group.agentId)
@@ -710,9 +837,9 @@ function inspectorHeader(state) {
   return h("header.agent-inspector-head", null,
     h("div.agent-inspector-identity", null,
       h("span.agent-index-icon.tone-" + (area === "agents" ? "info" : area === "roles" ? "accent" : "idle"), null,
-        h("span", null, area === "agents" ? "A" : area === "roles" ? "R" : "P")),
-      h("div", null, h("p.kicker", null, accessLabel(area)), h("h2", null, state.meta.title),
-        h("code.id", null, state.meta.id), h("p.agent-inspector-relation", null, relation))),
+        h("span", { "aria-hidden": "true" }, area === "agents" ? "A" : area === "roles" ? "R" : "P")),
+      h("div", null, h("p.kicker", null, accessLabel(area === "server" ? "agents" : area)), h("h2", null, title),
+        h("code.id", null, id), h("p.agent-inspector-relation", null, relation))),
     close);
 }
 

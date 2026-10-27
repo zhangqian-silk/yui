@@ -17,6 +17,11 @@ import { WebRequestRejected } from "../../dist/web/webMutation.js";
 import { createYuiWebServer } from "../../dist/web/webServer.js";
 import { PREFS_SCRIPT } from "../../dist/web/assets/client/lib/prefs.js";
 import { SETTINGS_SCRIPT } from "../../dist/web/assets/client/app/settings.js";
+import { SETTINGS_STYLES } from "../../dist/web/assets/styles/views/settings.js";
+
+const nodeText = node => typeof node === "object" && node
+  ? [node.textContent || "", ...Array.from(node.children || [], nodeText)].join(" ")
+  : String(node);
 
 function fixture(t) {
   const home = mkdtempSync(join(tmpdir(), "yui-settings-"));
@@ -330,12 +335,24 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   assert.equal(state.editors[0].control.value, "240");
 
   const roleGroup = { id: "role/worker", agentId: "fixture", revision: "role-first", notice: "next launch",
+    provenance: { label: "Fixture snapshot", capturedAt: "2026-10-27T00:00:00Z" },
     fields: [
       { key: "model", label: "Model", kind: "text", value: "fast", reset: true },
       { key: "effort", label: "Effort", kind: "text", value: "low", reset: true },
-      { key: "systemPrompt", label: "Instructions", kind: "multiline", value: "" }
+      { key: "systemPrompt", label: "Instructions", kind: "multiline", value: "" },
+      { key: "workspace", label: "Workspace", kind: "text", value: "/fixture/workspace" },
+      { key: "enabled", label: "Enabled", kind: "boolean", value: true }
     ] };
   context.renderGroup(state, roleGroup);
+  const editorFor = key => state.editors.find(editor => editor.field.key === key);
+  const roleView = nodeText(state.content);
+  for (const heading of ["settings.group.identity", "settings.group.models", "settings.group.workspace",
+    "settings.group.instructions", "settings.source.title"]) {
+    assert.match(roleView, new RegExp(heading), `the rebuilt inspector exposes ${heading}`);
+  }
+  assert.match(roleView, /settings.editCount/, "the sticky action footer reports unsaved state");
+  assert.match(SETTINGS_STYLES, /\.agent-inspector\{[^}]*overflow:clip/,
+    "the inspector must not become the sticky containing block for its action footer");
   const catalog = { agentId: "fixture", models: [
     { value: "fast", label: "Fast", isDefault: true, efforts: [{ value: "low", label: "Low" }] },
     { value: "deep", label: "Deep", efforts: [{ value: "high", label: "High" }] }
@@ -351,7 +368,8 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   await capabilityRead;
   assert.equal(state.capabilityPending, false);
   assert.equal(query.disabled, false);
-  const [model, effort] = state.editors;
+  const model = editorFor("model");
+  const effort = editorFor("effort");
   assert.equal(model.control.tagName, "SELECT");
   assert.equal(effort.control.tagName, "SELECT");
   assert.equal(state.dirty, false, "a capability read does not change defaults");
@@ -377,6 +395,8 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   const toggle = state.editors[0].control;
   assert.equal(toggle.tagName, "SELECT");
   assert.equal(toggle.value, "true");
+  assert.deepEqual(toggle.children.map(nodeText).map(value => value.trim()), ["settings.booleanOn", "settings.booleanOff"],
+    "boolean values use localized labels instead of true/false");
   toggle.value = "false"; toggle.handlers.change();
   let submitted;
   context.submitMutation = async (_key, _url, body) => {
@@ -392,12 +412,13 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
     provenance: { label: "Production snapshot", capturedAt: "2026-10-26T00:00:00Z" } });
   context.applyCapabilities(state, { catalog });
   assert.ok(state.editors.every(editor => editor.control.disabled), "capability choices cannot unlock snapshot inputs");
-  const snapshotCustom = state.editors[0].row.querySelectorAll("button").find(button => button.children.includes("settings.custom"));
+  const snapshotModel = editorFor("model");
+  const snapshotCustom = snapshotModel.row.querySelectorAll("button").find(button => button.children.includes("settings.custom"));
   assert.equal(snapshotCustom.disabled, true);
   snapshotCustom.handlers.click();
-  assert.equal(state.editors[0].control.disabled, true);
+  assert.equal(snapshotModel.control.disabled, true);
   const previous = submitted;
-  state.editors[0].control.value = "deep"; state.editors[0].control.handlers.change();
+  snapshotModel.control.value = "deep"; snapshotModel.control.handlers.change();
   await state.form.handlers.submit({ preventDefault() {} });
   assert.equal(submitted, previous, "snapshot mutation is blocked even if the submit handler is invoked");
   assert.equal(state.save.disabled, true);
@@ -405,18 +426,27 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   const metadata = [
     { id: "system", section: "server", title: "System" },
     { id: "profile/reader", section: "profiles", title: "Reader" },
+    { id: "profile/empty", section: "profiles", title: "Empty reader" },
     { id: "role/worker", section: "roles", title: "Worker" },
+    { id: "role/empty", section: "roles", title: "Empty worker" },
     { id: "agent/fixture", section: "agents", title: "Fixture" }
   ];
   const currentGroups = {
     system: { id: "system", revision: "system-first", notice: "server settings",
       fields: [{ key: "delivery-timeout-seconds", label: "Timeout", kind: "number", value: 120, reset: true }] },
     "role/worker": { ...roleGroup, fields: roleGroup.fields.map(field => ({ ...field, source: "stored" })) },
+    "role/empty": { id: "role/empty", agentId: "fixture",
+      fields: [{ key: "model", label: "Model", kind: "text", value: "" },
+        { key: "effort", label: "Effort", kind: "text", value: "" }] },
     "agent/fixture": { id: "agent/fixture", agentId: "fixture", fields: [],
       observation: { native: { model: "native-model", effort: "medium", models: [{ value: "native-model" }] } } },
     "profile/reader": { id: "profile/reader", agentId: "fixture",
       fields: [{ key: "model", label: "Model", kind: "text", value: "" }],
-      observation: { source: "global-worker", status: "resolved", binding: { config: { model: "worker-inherited", effort: "high" } } } }
+      observation: { source: "global-worker", status: "resolved", binding: { config: { model: "worker-inherited", effort: "high" } } } },
+    "profile/empty": { id: "profile/empty", agentId: "fixture",
+      fields: [{ key: "model", label: "Model", kind: "text", value: "" },
+        { key: "effort", label: "Effort", kind: "text", value: "" }],
+      observation: { source: "explicit", status: "resolved", binding: { config: { model: "", effort: "" } } } }
   };
   const requests = [];
   context.requestJson = async url => {
@@ -431,7 +461,9 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   const agent = uiGroups.find(group => group.meta.id === "agent/fixture");
   const role = uiGroups.find(group => group.meta.id === "role/worker");
   const profile = uiGroups.find(group => group.meta.id === "profile/reader");
-  const text = node => typeof node === "object" ? [node.textContent || "", ...node.children.map(text)].join(" ") : String(node);
+  const emptyRole = uiGroups.find(group => group.meta.id === "role/empty");
+  const emptyProfile = uiGroups.find(group => group.meta.id === "profile/empty");
+  const text = nodeText;
   assert.equal(agent.root.parent, shell.get("#agent-settings-groups"));
   assert.equal(role.root.parent, shell.get("#agent-settings-groups"));
   assert.equal(profile.root.parent, shell.get("#agent-settings-groups"));
@@ -440,6 +472,12 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   assert.match(text(profile.summary), /worker-inherited/, "template summaries show resolved inherited model, not an empty override");
   assert.match(text(role.summary), /fast/);
   assert.doesNotMatch(text(role.summary), /native-model/, "role overrides are not replaced by the Agent native default");
+  for (const emptySummary of [text(emptyRole.summary), text(emptyProfile.summary)]) {
+    assert.doesNotMatch(emptySummary, /settings.summaryUnavailable/,
+      "a resolved group with empty overrides is not misreported as unreadable");
+    assert.match(emptySummary, /settings.summaryNativeDefault/);
+  }
+  assert.match(text(emptyRole.summary), /settings.roleDefaults/);
   assert.equal(requests.some(url => url.includes("capabilities")), false, "group summaries do not trigger capability discovery");
   const accessText = text(vm.runInContext("agentIndex", context));
   assert.match(accessText, /fast/, "index rows expose the Role's model evidence");
