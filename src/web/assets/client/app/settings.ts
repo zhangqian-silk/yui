@@ -315,8 +315,11 @@ function inputValue(field, control) {
   return control.value;
 }
 
+function fieldText(kind, field, fallback = "") {
+  return t("settings." + kind + "." + field.key, fallback);
+}
 function editor(field, group, state) {
-  const fieldLabel = () => h("span", { "data-i18n": "settings.field." + field.key, "data-i18n-fallback": field.label }, t("settings.field." + field.key, field.label));
+  const fieldLabel = () => h("span", { "data-i18n": "settings.field." + field.key, "data-i18n-fallback": field.label }, fieldText("field", field, field.label));
   const label = h("label.field", null, fieldLabel());
   let control;
   if (field.kind === "boolean" || field.choices && field.choices.length) {
@@ -332,8 +335,8 @@ function editor(field, group, state) {
   control.value = initial;
   label.append(control);
   const reset = h("input", { type: "checkbox" });
-  const helpKey = "settings.help." + field.key;
-  const help = t(helpKey, "");
+  const help = fieldText("help", field);
+  const takesEffect = fieldText("takesEffect", field);
   const technical = [
     field.source ? t("settings.source." + field.source, field.source) : "",
     Object.hasOwn(field, "defaultValue") ? t("settings.default") + ": " + format(field.defaultValue) : "",
@@ -341,7 +344,7 @@ function editor(field, group, state) {
   ].filter(Boolean).join(" · ");
   const row = h("div.settings-field", { dataset: { field: field.key } }, label,
     help ? h("p.agent-field-help", null, help) : field.summary ? h("p.agent-field-help", null, field.summary) : null,
-    technical || field.takesEffect ? h("small", null, [technical, field.takesEffect].filter(Boolean).join(" · ")) : null,
+    technical || takesEffect || field.takesEffect ? h("small", null, [technical, takesEffect || field.takesEffect].filter(Boolean).join(" · ")) : null,
     field.reset ? h("label.settings-reset", null, reset, t("settings.reset")) : null);
   let unavailable = false;
   function mark() {
@@ -552,7 +555,7 @@ function roleProfileApplication(state, group) {
     group.profiles.length ? null : h("p", null, t("settings.profileEmpty")),
     ...group.profiles.filter(profile => !profile.available).map(profile =>
       h("p.faint", null, profile.id + " · " + (profile.reason || t("settings.profileUnavailable")))),
-    result, info, h("label.settings-reset", null, acknowledge, t("settings.acknowledge")),
+    result, info, h("label.settings-reset", null, acknowledge, t("settings.profileAcknowledge")),
     h("div.settings-actions", null, confirm));
 }
 
@@ -563,7 +566,14 @@ function configSection(titleKey, className = "") {
   return h("section.agent-config-section" + (className ? "." + className : ""), null,
     h("h3", null, t(titleKey)));
 }
-function fieldGroupKey(field) {
+function fieldGroupKey(field, area) {
+  if (area === "server") {
+    if (["default-agent", "default-workspace", "time-zone"].includes(field.key)) return "settings.group.defaults";
+    if (field.key === "review") return "settings.group.workflow";
+    if (field.key.startsWith("resources-")) return "settings.group.resources";
+    if (field.key.startsWith("tmux-") || field.key.startsWith("telemetry-")) return "settings.group.tools";
+    return "settings.group.runtime";
+  }
   if (["activeAgentId", "enabled", "agent", "access"].includes(field.key)) return "settings.group.identity";
   if (["model", "effort"].includes(field.key)) return "settings.group.models";
   if (field.key === "workspace") return "settings.group.workspace";
@@ -573,6 +583,12 @@ function fieldGroupKey(field) {
 }
 function fieldOrder(field) {
   const order = {
+    "default-agent": 0, "default-workspace": 1, "time-zone": 2,
+    "reconciliation-interval-seconds": 10, "controller-task-concurrency": 11, "runtime-health": 12,
+    "agent-launch-inactivity-timeout-seconds": 13, "delivery-timeout-seconds": 14,
+    "review": 20, "resources-gc-mode": 30, "resources-gc-auto-quarantine": 31,
+    "resources-quarantine-ttl-hours": 32, "tmux-bin": 40, "tmux-history-limit": 41,
+    "telemetry-enabled": 50, "telemetry-terminal-keep": 51, "telemetry-run-cap": 52,
     "enabled": 0, "agent": 1, "activeAgentId": 1, "access": 2, "model": 3, "effort": 4,
     "workspace": 5, "description": 6, "systemPrompt": 7, "instructions": 7, "expectedOutput": 8,
     "responsibilities": 9, "constraints": 10, "skills": 11,
@@ -615,6 +631,7 @@ function sourceBlock(state, group) {
 function nativeOverview(group) {
   const native = group.observation?.native;
   if (!native) return null;
+  const observedAt = native.catalogFetchedAt || native.observedAt || "";
   const rows = [
     ["settings.nativeModel", native.model],
     ["settings.nativeEffort", native.effort],
@@ -624,7 +641,7 @@ function nativeOverview(group) {
     h("div.agent-native-head", null,
       h("div", null, h("h3", null, t("settings.nativeConfiguration")),
         h("p", null, t("settings.nativeIndependent"))),
-      statusPill(t("settings.source.observed"), "info")),
+      statusPill(observedAt ? t("settings.source.observed") + " · " + observedAt : t("settings.source.observationUnknown"), observedAt ? "info" : "")),
     rows.length ? h("dl.agent-fact-grid", null, rows.map(([key, value]) => h("div", null,
       h("dt", null, t(key)), h("dd", null, String(value))))) : null,
     h("p.agent-native-note", null, t(native.models?.length ? "settings.nativeModelsCached" : "settings.nativeModelsUnknown")),
@@ -634,9 +651,6 @@ function nativeOverview(group) {
         typeof model === "string" ? model : (model.label || model.name || model.id || model.value),
         typeof model === "object" && model.efforts?.length ? h("small", null, " · " +
           model.efforts.map(e => typeof e === "string" ? e : e.label || e.value).join(", ")) : null)))) : null);
-}
-function roleScopeNote() {
-  return h("p.agent-scope-note", null, t("settings.roleScope"));
 }
 function renderGroup(state, group) {
   const previousContent = state.content;
@@ -651,9 +665,9 @@ function renderGroup(state, group) {
   const area = group.id.startsWith("agent/") ? "agents" : group.id.startsWith("role/") ? "roles"
     : group.id.startsWith("profile/") ? "profiles" : "server";
   const isRole = group.id.startsWith("role/");
-  const isAgent = group.id.startsWith("agent/");
-  const notice = h("p.agent-notice", null, t(area === "agents" ? "settings.notice.agent"
-    : area === "profiles" ? "settings.notice.profile" : "settings.notice.role"));
+  const noticeKey = area === "server" ? "settings.notice.server" : area === "agents" ? "settings.notice.agent"
+    : area === "profiles" ? "settings.notice.profile" : "settings.notice.role";
+  const notice = h("p.agent-notice", null, t(noticeKey));
   const receipt = h("p.settings-receipt.agent-receipt", { role: "status", "aria-live": "polite" });
   const save = h("button.btn.btn-primary", { type: "submit", disabled: true, "data-i18n": "settings.save" }, t("settings.save"));
   state.save = save; state.receipt = receipt;
@@ -664,12 +678,11 @@ function renderGroup(state, group) {
   renderGroupSummary(state);
   const native = nativeOverview(group);
   if (native) canvas.append(native);
-  if (isRole) canvas.append(roleScopeNote());
   const grouped = new Map();
   for (const field of [...group.fields].sort((a, b) => fieldOrder(a) - fieldOrder(b))) {
     const item = editor(field, group, state);
     state.editors.push(item);
-    const key = fieldGroupKey(field);
+    const key = fieldGroupKey(field, area);
     if (!grouped.has(key)) grouped.set(key, []);
     grouped.get(key).push(item);
   }
@@ -721,7 +734,10 @@ function renderGroup(state, group) {
         h("div.settings-actions", null, query, refresh)),
       info, output);
   }
-  for (const key of ["settings.group.identity", "settings.group.models", "settings.group.workspace", "settings.group.instructions", "settings.group.launch", "settings.group.permissions"]) {
+  const groupOrder = area === "server"
+    ? ["settings.group.defaults", "settings.group.runtime", "settings.group.workflow", "settings.group.resources", "settings.group.tools"]
+    : ["settings.group.identity", "settings.group.models", "settings.group.workspace", "settings.group.instructions", "settings.group.launch", "settings.group.permissions"];
+  for (const key of groupOrder) {
     const items = grouped.get(key);
     if (!items?.length) continue;
     const primary = key === "settings.group.identity" || key === "settings.group.models";
@@ -738,17 +754,18 @@ function renderGroup(state, group) {
     canvas.append(profileApplication);
   }
   const acknowledge = h("input", { type: "checkbox" });
-  if (isRole || isAgent) canvas.append(h("label.settings-reset.agent-live-ack", null,
-    acknowledge, t("settings.acknowledge")));
+  const liveAcknowledge = area === "agents" ? t("settings.acknowledge.agent") : area === "roles" ? t("settings.acknowledge.role") : "";
+  if (liveAcknowledge) canvas.append(h("label.settings-reset.agent-live-ack", null,
+    acknowledge, liveAcknowledge));
   const compare = h("button.btn", { type: "button", "data-i18n": "settings.compare" }, t("settings.compare"));
   compare.addEventListener("click", async () => {
     compare.disabled = true;
     try {
       const current = await requestJson("/api/settings/group?" + new URLSearchParams({ id: group.id }));
       const values = h("div.settings-observation.agent-comparison", null,
-        h("p", null, current.notice),
+        h("p", null, t("settings.compare." + area)),
         current.fields.map(field => h("p", null,
-          t("settings.field." + field.key, field.label) + ": " +
+          fieldText("field", field, field.label) + ": " +
           (field.value === "" ? t("settings.inherit") : format(field.value)) +
           (field.source ? " · " + t("settings.source." + field.source, field.source) : ""))));
       const agentChanged = current.agentId !== group.agentId;

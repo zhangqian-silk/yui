@@ -248,6 +248,78 @@ test("provider edits preserve address semantics and reject broken backend depend
   }
 });
 
+
+test("real model management projects optional metabridge, CPA and native Provider facts without secrets", async () => {
+  const root = mkdtempSync(join(tmpdir(), "yui-models-integrated-"));
+  let store, server;
+  try {
+    store = new SqliteTaskStore(root);
+    store.saveConfiguredAgent(createConfiguredAgent(
+      "codex-long-fixture", "codex", "/fixture/codex", [], [], new Date()
+    ));
+    const longName = "Metabridge provider with a deliberately long operator-facing name for wrapping checks";
+    const longUrl = "https://metabridge-provider-with-a-very-long-hostname-and-path.invalid/v1/responses/upstream";
+    const bridge = join(root, "bridge.json");
+    const cpa = join(root, "cpa.json");
+    writeFileSync(bridge, JSON.stringify({ backends: [
+      { name: longName, via: "direct", protocol: "responses", base_url: longUrl,
+        prefix: "long-provider-prefix/", auth: { type: "static", key: "must-not-leak-bridge" },
+        models: [{ name: "upstream-long-model", alias: "public-long-model" }] },
+      { name: "official-subscription", protocol: "codex-subscription", auth: { type: "passthrough" } }
+    ] }), { mode: 0o600 });
+    writeFileSync(cpa, JSON.stringify({ "api-keys": { codex: [{
+      name: "CPA provider with a deliberately long name for narrow layout checks",
+      "base-url": "https://cpa-provider-with-a-very-long-hostname-and-path.invalid/v1",
+      prefix: "cpa-long/", keys: ["must-not-leak-cpa"], models: [{ name: "cpa-upstream", alias: "cpa-public" }]
+    }] } }), { mode: 0o600 });
+    mkdirSync(join(root, ".codex"));
+    writeFileSync(join(root, ".codex", "config.toml"), [
+      'model = "native-long-model"',
+      'model_reasoning_effort = "medium"',
+      'model_provider = "native-long"',
+      '[model_providers.native-long]',
+      'name = "Native provider with a deliberately long name for wrapping checks"',
+      'base_url = "https://native-provider-with-a-very-long-hostname-and-path.invalid/v1"',
+      'wire_api = "responses"',
+      'http_headers = { Authorization = "Bearer must-not-leak-native" }'
+    ].join("\n"), { mode: 0o600 });
+    store.saveConfig({ ...store.getConfig(), modelManagement: {
+      modules: [
+        { id: "bridge", kind: "metabridge", version: "fixture", managementUrl: "http://127.0.0.1:9",
+          managementKeyFile: "", configFile: bridge, maintenance: "configuration", quotaAdapter: "none" },
+        { id: "cpa", kind: "cliproxyapi", version: "8.0.12", managementUrl: "http://127.0.0.1:8",
+          managementKeyFile: "", configFile: cpa, maintenance: "external", quotaAdapter: "factory-quota-v1" }
+      ],
+      endpoints: [{ id: "bridge-api", moduleId: "bridge", url: "http://127.0.0.1:9/v1",
+        protocol: "responses", clientKeyFile: "" }],
+      bindings: [], receipts: []
+    } });
+    const service = createService(store, { environment: { HOME: root } });
+    server = createYuiWebServer(store, { token: "provider-fixture-token", models: service });
+    await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+    const url = `http://127.0.0.1:${server.address().port}`;
+    const headers = { "x-yui-web-token": "provider-fixture-token" };
+    const bridgeView = await (await fetch(url + "/api/models?moduleId=bridge", { headers })).json();
+    const cpaView = await (await fetch(url + "/api/models?moduleId=cpa", { headers })).json();
+    const baseline = await (await fetch(url + "/api/models", { headers })).json();
+    assert.equal(bridgeView.configurationError, null);
+    assert.equal(bridgeView.providers.find(provider => provider.name === longName)?.baseUrl, longUrl);
+    assert.equal(cpaView.providers.find(provider => provider.prefix === "cpa-long/")?.via, "cpa");
+    assert.equal(baseline.nativeProviders.find(provider => provider.name.includes("Native provider"))?.baseUrl,
+      "https://native-provider-with-a-very-long-hostname-and-path.invalid/v1");
+    assert.deepEqual(bridgeView.registry.modules.map(module => module.kind).sort(), ["cliproxyapi", "metabridge"]);
+    const serialized = JSON.stringify({ baseline, bridgeView, cpaView });
+    for (const secret of ["must-not-leak-bridge", "must-not-leak-cpa", "must-not-leak-native"]) {
+      assert.doesNotMatch(serialized, new RegExp(secret));
+    }
+    assert.equal(service.read().application, "unverified", "configuration facts do not claim inference or account availability");
+  } finally {
+    if (server) await new Promise(resolve => server.close(resolve));
+    store?.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("domain observations honor Node all-address lookup without losing pinned target checks", async () => {
   const server = createServer((req, res) => {
     assert.equal(req.headers.authorization, "Bearer private-fixture-key");
