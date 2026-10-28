@@ -13,6 +13,11 @@ import { once } from "node:events";
 import { setImmediate as yieldLoop } from "node:timers/promises";
 import { callController } from "../../dist/core/controllerClient.js";
 import { createProject } from "../../dist/repository/project.js";
+import { createConfiguredAgent } from "../../dist/agent/agent.js";
+import { createGlobalRole, createRoleAgentBinding } from "../../dist/role/role.js";
+import { bindGlobalRoleProviderRuntime, createRoleSessionSet, recordRoleAgentSession } from "../../dist/executor/agentExecutor.js";
+import { createProviderRuntimeBinding } from "../../dist/runtime/providerRuntimeIdentity.js";
+import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
 
 test("production scheduler maintenance waits for a write lock without blocking status", async t => {
   const home = await mkdtemp(join(tmpdir(), "yui-scheduler-lock-"));
@@ -33,6 +38,21 @@ test("production scheduler maintenance waits for a write lock without blocking s
   running.store.saveProject(createProject("project-1", "Isolated", join(home, "projects/project-1"),
     { stable: "main", development: "main" }, new Date("2026-10-28T01:00:00Z"),
     { ownership: "managed", remoteUrl: "/nonexistent-local-fixture.git" }));
+  const now = new Date("2026-10-28T01:00:00Z");
+  const agent = createConfiguredAgent("codex", "codex", "codex", [], [], now);
+  running.store.saveConfiguredAgent(agent);
+  for (const name of ["operator", "assistant"]) {
+    const role = createGlobalRole(name, [createRoleAgentBinding(agent)], agent.id, home, now);
+    running.store.createGlobalRoleIfAbsent(role);
+    const sessions = recordRoleAgentSession(createRoleSessionSet(
+      { scope: "global", roleName: name }, agent.id, now), {
+      agentId: agent.id, adapterId: "codex", nativeSessionId: `${name}-idle`,
+      policy: "fixed", status: "active", effective: resolveEffectiveLaunch({ role, purpose: "execution" })
+    }, now);
+    running.store.saveGlobalRoleSessionSet(bindGlobalRoleProviderRuntime(sessions,
+      createProviderRuntimeBinding({ providerNamespace: "openai/codex", accountScope: "codex",
+        conversationId: `${name}-idle`, startedAt: now.toISOString() }), now));
+  }
   holder = new Worker(`
     const { parentPort, workerData } = require("node:worker_threads");
     (async () => {
@@ -57,6 +77,7 @@ test("production scheduler maintenance waits for a write lock without blocking s
     file: join(home, "yui.db"), held: held.buffer
   } });
   await once(holder, "message");
+  const started = performance.now();
   let settled = false;
   pump = running.runtime.pump().finally(() => { settled = true; });
   void pump.catch(() => undefined); // failure is asserted below/awaited; teardown releases the lock
@@ -68,6 +89,8 @@ test("production scheduler maintenance waits for a write lock without blocking s
       .some(entry => entry.phase === "store-observer")) await yieldLoop();
   assert.equal(settled, false, "maintenance must still be waiting for the held lock");
   await callController(home, "controller.status", {}, { timeoutMs: 2000 });
+  assert.ok(performance.now() - started < 2000,
+    "idle Global recovery must not block the event loop before status can even start");
   assert.equal(Atomics.load(held, 0), 1, "status responds before the independent writer releases");
   holder.postMessage("release");
   await pump;

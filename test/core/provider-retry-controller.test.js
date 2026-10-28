@@ -804,7 +804,9 @@ test("Global exhaustion and cancellation settle the original queue entry without
       assert.equal(error.cause, beforeNative);
       assert.match(error.message, new RegExp(f.roleName));
     });
-    await inspectQueue();
+    const transaction = f.store.transaction.bind(f.store);
+    f.store.transaction = () => assert.fail("settled retry polling must not reserve the writer");
+    try { await inspectQueue(); } finally { f.store.transaction = transaction; }
     assert.equal(prepares, 0, "A stopped retry cannot silently return to ordinary delivery.");
     f.advanceTo(f.now().getTime() + 1);
     f.store.saveGlobalRoleMessage(createGlobalRoleMessage(f.store.nextGlobalRoleMessageId(), f.roleName,

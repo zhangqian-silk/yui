@@ -430,10 +430,17 @@ test("Global successor initialization uses one pinned notice while original clai
     conversationId: "successor", startedAt: now.toISOString() });
   store.saveGlobalRoleSessionSet(bindGlobalRoleProviderRuntime(successor, binding, now));
   const next = add("New independent input");
+  // No-op polling must be legal on a read-only connection; it cannot reserve
+  // SQLite's writer slot merely to discover an already-created notice.
   const notice = globalInboxRecovery(store, "assistant", now);
   assert.ok(notice);
   assert.equal(notice.deliveryTarget.nativeSessionId, "successor");
-  assert.deepEqual(globalInboxRecovery(store, "assistant", now), notice, "restart/reconcile reuse the same Message");
+  const transaction = store.transaction.bind(store);
+  store.transaction = () => assert.fail("an existing notice must not reserve the writer");
+  try {
+    assert.deepEqual(globalInboxRecovery(store, "assistant", now), notice,
+      "restart/reconcile reuse the same Message without a write");
+  } finally { store.transaction = transaction; }
   const adapter = new FileSchedulerStoreAdapter(store);
   const input = message => ({ roleName: "assistant", agentId: "codex", nativeSessionId: "successor",
     attemptId: `global-input:assistant/${message}`, authorityEpoch: 1, authorityOwner: "controller",
@@ -449,6 +456,33 @@ test("Global successor initialization uses one pinned notice while original clai
   function commandSafe(store, message) {
     return runInboxCommand(["show", message], store, { CODEX_THREAD_ID: "successor" }, now);
   }
+});
+
+for (const change of ["settle-claim", "end-session"]) test(`Global recovery rechecks ${change} inside its write transaction`, t => {
+  const { store, command, add } = fixture(t, "assistant");
+  const id = add("Retained handling");
+  command("claim", id, "--request-id", "original-claim");
+  const ended = updateRoleAgentSessionStatus(store.getGlobalRoleSessionSet("assistant"), "codex", "ended", now, "stopped");
+  const successor = recordRoleAgentSession(ended, { ...ended.sessions.codex,
+    status: "active", endReason: undefined, nativeSessionId: "successor" }, now);
+  store.saveGlobalRoleSessionSet(bindGlobalRoleProviderRuntime(successor, createProviderRuntimeBinding({
+    providerNamespace: "openai/codex", accountScope: "codex", conversationId: "successor",
+    startedAt: now.toISOString()
+  }), now));
+  const transaction = store.transaction.bind(store);
+  let entered = false;
+  store.transaction = execute => {
+    store.transaction = transaction;
+    entered = true;
+    if (change === "settle-claim") runInboxCommand(["ack", id, "--request-id", "settled",
+      "--reason", "Verified original effects"], store, { CODEX_THREAD_ID: "successor" }, now);
+    else store.saveGlobalRoleSessionSet(updateRoleAgentSessionStatus(
+      store.getGlobalRoleSessionSet("assistant"), "codex", "ended", now, "stopped"));
+    return transaction(execute);
+  };
+  assert.equal(globalInboxRecovery(store, "assistant", now), undefined);
+  assert.equal(entered, true);
+  assert.equal(store.listGlobalRoleMessages("assistant").length, 1, "no stale recovery notice");
 });
 
 test("an unsubmitted Global steer can be explicitly handled without replay or blocking later input", t => {

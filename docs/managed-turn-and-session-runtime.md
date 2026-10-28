@@ -54,6 +54,12 @@ admission and other lifecycle writes still require their own boundary analysis.
 Status responsiveness during these maintenance operations is not proof that
 every possible Controller stall has been eliminated.
 
+Idle Global inbox recovery and already-settled retry checks use read-only
+snapshots, without reserving SQLite's writer. Creating a recovery notice or
+settling an outstanding retry still rechecks the current Session/claim/input
+inside the original write transaction. This removes no-op lock waits, not
+contention from actual writes.
+
 Production Controller startup (including handover promotion) retains operational
 diagnostics in `runtime/controller-diagnostics.jsonl`, with two rotated files.
 Each file is bounded to 1 MiB and owner-readable/writable only. An asynchronous

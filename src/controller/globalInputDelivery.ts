@@ -6,7 +6,7 @@ import { currentProviderConversation } from "../runtime/providerRuntimeIdentity.
 import { hasRuntimeCleanupObligation, runtimeLifecycleTarget } from "../runtime/lifecycleReservation.js";
 import { markGlobalRoleMessageNotDelivered, type GlobalRoleMessage } from "../message/message.js";
 import { providerRetryPending } from "../runtime/providerRetry.js";
-import { settleGlobalRetryInput } from "../message/globalProviderRetry.js";
+import { globalRetryInputSettlement, settleGlobalRetryInput } from "../message/globalProviderRetry.js";
 import { globalMessagePresentation } from "../interaction/notificationPresentation.js";
 import { recordGlobalRuntimeAttention, recordGlobalRuntimeRecovery } from "./globalRuntimeAttention.js";
 import { globalInboxRecovery } from "../message/globalInboxRecovery.js";
@@ -103,8 +103,12 @@ export async function deliverGlobalInputs(
       const currentRole = store.getGlobalRole(role.name);
       if (currentRole === null || !isEnabled(currentRole)) continue;
       if (sessions?.providerBinding?.retry !== undefined && !providerRetryPending(sessions.providerBinding)) {
-        store.transaction(tx => settleGlobalRetryInput(tx, role.name,
-          tx.getGlobalRoleSessionSet(role.name)?.providerBinding, new Date()));
+        const now = options.now ?? new Date();
+        // Retained terminal retry history is not new write work each pass.
+        const settlement = store.readTransaction(tx => globalRetryInputSettlement(tx, role.name,
+          tx.getGlobalRoleSessionSet(role.name)?.providerBinding, now));
+        if (settlement !== undefined) store.transaction(tx => settleGlobalRetryInput(tx, role.name,
+          tx.getGlobalRoleSessionSet(role.name)?.providerBinding, now));
         pending = store.queryGlobalRoleMessages(role.name, { pending: true, unclaimed: true, limit: 64 }).messages;
         if (pending.length === 0) continue;
       }
