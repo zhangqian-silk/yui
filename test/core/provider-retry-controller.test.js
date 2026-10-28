@@ -44,6 +44,8 @@ import { ProviderContinuationReconciliationService } from "../../dist/runtime/pr
 import { blockingProviderContinuations } from "../../dist/runtime/runtimeContinuationProjection.js";
 import { createInputRequest, answerInputRequest, cancelInputRequest } from "../../dist/input/inputRequest.js";
 import { CodexAppServerRuntime } from "../../dist/runtime/codexAppServerRuntime.js";
+import { AsyncTaskStoreClient } from "../../dist/storage/storeRpc.js";
+import { workerSchedulerStore } from "../../dist/controller/workerSchedulerStore.js";
 
 const epoch = Date.parse("2026-09-13T00:00:00Z");
 const rawFailure = JSON.stringify({
@@ -450,6 +452,30 @@ test("cancel, authority revocation and deadline stop waiting recovery without di
   }
 });
 
+test("Global configuration drift cancels retry with zero admissions, preserving exact failure and intent", async t => {
+  const f = fixture(t, "global");
+  f.fail(); f.due();
+  const previous = f.read().retry;
+  const role = f.store.getGlobalRole(f.roleName);
+  f.store.saveGlobalRole({ ...role, launchRevision: role.launchRevision + 1 });
+  await f.hooks().reconcile();
+  assert.equal(f.submissions.length, 0);
+  assert.equal(f.read().retry.status, "cancelled");
+  assert.equal(f.read().retry.reason, "role-configuration-changed");
+  assert.equal(f.read().retry.attempts, 0);
+  assert.equal(f.read().retry.failedNativeTurnId, previous.failedNativeTurnId);
+  assert.equal(f.read().retry.failureRef, previous.failureRef);
+  assert.equal(f.store.listGlobalRoleMessages(f.roleName)[0].body, f.body);
+  const set = f.loadSessions();
+  f.saveSessions({ ...set, sessions: { ...set.sessions,
+    codex: { ...set.sessions.codex, nativeSessionId: "successor-session" } } });
+  const view = JSON.parse(runGlobalRoleCommand(["session", "retry", f.roleName, "show"],
+    f.store, { env: {}, jsonOutput: true }));
+  assert.equal(view.retryScope, "historical-session");
+  assert.equal(view.retry.nativeSessionId, previous.nativeSessionId);
+  assert.equal(view.selectedNativeSessionId, "successor-session");
+});
+
 test("Global exhausted and unknown recovery hand off exact facts once without replay", async t => {
   for (const outcome of ["deadline", "unknown", "new-input"]) {
     const f = fixture(t, "global");
@@ -591,7 +617,45 @@ test("detached child observation failures hand off once, back off and retain wri
   assert.equal(f.read().run.status, "accepted", "Child metadata never terminalizes the parent.");
 });
 
-test("recommended Input timeout remains a single prior-decision execution, never overriding resolved input", t => {
+test("worker maintenance preserves run fences and idempotent diagnostic results across restart", async t => {
+  const f = fixture(t);
+  const run = createFixtureRun(f.store, f.store.nextRunId("task-1"), "task-1", f.roleName, "resume",
+    createRunInput({ source: { type: "yui", channel: "task-dispatch" },
+      directive: f.body, deltaRefIds: [] }), f.now(),
+    { effective: f.loadSessions().sessions.codex.effective });
+  f.store.saveRun(run);
+  f.store.saveActiveRun(run);
+  f.begin(`task-1/turn/${run.id}`, f.body, run.id);
+  f.observe("turn.accepted");
+  const client = new AsyncTaskStoreClient(f.home, {
+    observerModule: new URL("../../dist/controller/fileSchedulerStoreAdapter.js", import.meta.url)
+  });
+  try {
+    const adapter = workerSchedulerStore(new FileSchedulerStoreAdapter(f.store), client);
+    const identity = { taskId: "task-1", roleName: f.roleName, runId: run.id, now: f.now() };
+    const diagnostic = { ...identity, startedAt: f.now().toISOString(), outcome: "observed" };
+    assert.equal(await adapter.recordRoleRunDiagnostic(diagnostic), "recorded");
+    assert.equal(await adapter.recordRoleRunDiagnostic(diagnostic), "already-recorded");
+    const progress = { ...identity, progressAt: f.now().toISOString() };
+    assert.equal(await adapter.recordRoleRunProgress(progress), "recorded");
+    assert.equal(await adapter.recordRoleRunProgress(progress), "already-recorded");
+    const stall = { ...identity, agentId: "codex", adapterId: "codex",
+      session: adapter.getRoleSession("task-1", f.roleName),
+      progressAt: adapter.getRunDurableProgress("task-1", f.roleName, run.id).progressAt,
+      kind: "workflow-not-progressing", classification: "truly-stalled", idleMs: 60_000,
+      evidenceKey: "fixture-progress" };
+    assert.equal(await adapter.recordRoleRunStall(stall), "raised");
+    const committed = f.store.listEvents("task-1");
+    await client.crashForTest();
+    assert.equal(await adapter.recordRoleRunStall(stall), "already-raised");
+    assert.equal(await adapter.recordRoleRunDiagnostic(diagnostic), "already-recorded");
+    assert.equal(await adapter.recordRoleRunProgress({ ...progress, runId: "run-stale" }), "state-changed");
+    assert.deepEqual(f.store.listEvents("task-1"), committed,
+      "worker restart and stale identities do not create duplicate effects");
+  } finally { await client.close(); }
+});
+
+for (const backend of ["direct", "worker"]) test(`recommended Input timeout preserves prior decisions and resolved input (${backend})`, async t => {
   const f = fixture(t);
   const make = (id, recommended = true) => createInputRequest(id, "task-1", {
     taskId: "task-1", roleName: "leader", agentId: "codex", nativeSessionId: f.nativeSessionId
@@ -602,15 +666,21 @@ test("recommended Input timeout remains a single prior-decision execution, never
   f.store.saveInputRequest("task-1", answerInputRequest(make("input-2"), { choiceKey: "b" }, "user", f.now()));
   f.store.saveInputRequest("task-1", cancelInputRequest(make("input-3"), "cancelled", f.now()));
   f.store.saveInputRequest("task-1", make("input-4", false));
-  const adapter = new FileSchedulerStoreAdapter(f.store);
-  assert.deepEqual(adapter.resolveExpiredInputRecommendations(f.now()), []);
-  f.advanceTo(epoch + 1000);
-  assert.equal(adapter.resolveExpiredInputRecommendations(f.now()).length, 1);
-  assert.deepEqual(adapter.resolveExpiredInputRecommendations(f.now()), []);
-  assert.equal(f.store.getInputRequest("task-1", "input-1").resolution.answer.choiceKey, "a");
-  assert.equal(f.store.getInputRequest("task-1", "input-2").resolution.answer.choiceKey, "b");
-  assert.equal(f.store.getInputRequest("task-1", "input-3").status, "cancelled");
-  assert.equal(f.store.getInputRequest("task-1", "input-4").status, "open");
+  const client = backend === "worker" ? new AsyncTaskStoreClient(f.home, {
+    observerModule: new URL("../../dist/controller/fileSchedulerStoreAdapter.js", import.meta.url)
+  }) : undefined;
+  try {
+    const direct = new FileSchedulerStoreAdapter(f.store);
+    const adapter = client ? workerSchedulerStore(direct, client) : direct;
+    assert.deepEqual(await adapter.resolveExpiredInputRecommendations(f.now()), []);
+    f.advanceTo(epoch + 1000);
+    assert.equal((await adapter.resolveExpiredInputRecommendations(f.now())).length, 1);
+    assert.deepEqual(await adapter.resolveExpiredInputRecommendations(f.now()), []);
+    assert.equal(f.store.getInputRequest("task-1", "input-1").resolution.answer.choiceKey, "a");
+    assert.equal(f.store.getInputRequest("task-1", "input-2").resolution.answer.choiceKey, "b");
+    assert.equal(f.store.getInputRequest("task-1", "input-3").status, "cancelled");
+    assert.equal(f.store.getInputRequest("task-1", "input-4").status, "open");
+  } finally { await client?.close(); }
 });
 
 test("an explicit no-Run input supersedes waiting automatic recovery at the same admission boundary", async t => {
@@ -734,7 +804,9 @@ test("Global exhaustion and cancellation settle the original queue entry without
       assert.equal(error.cause, beforeNative);
       assert.match(error.message, new RegExp(f.roleName));
     });
-    await inspectQueue();
+    const transaction = f.store.transaction.bind(f.store);
+    f.store.transaction = () => assert.fail("settled retry polling must not reserve the writer");
+    try { await inspectQueue(); } finally { f.store.transaction = transaction; }
     assert.equal(prepares, 0, "A stopped retry cannot silently return to ordinary delivery.");
     f.advanceTo(f.now().getTime() + 1);
     f.store.saveGlobalRoleMessage(createGlobalRoleMessage(f.store.nextGlobalRoleMessageId(), f.roleName,

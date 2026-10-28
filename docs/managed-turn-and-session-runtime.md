@@ -11,6 +11,80 @@ notifications cannot restart an explicitly stopped Session; normal Host detach
 preserves an active Session and remains reconnectable. A switch after a partial
 failure still settles the retained input before selecting a new conversation.
 
+Local stop waits for its durable cleanup obligation, not for the Home-wide
+`scheduler.scan` loop to empty. A signal only requests reconciliation; the
+existing physical-stop proof and cleanup transaction remain the completion
+boundary. A timeout retains the obligation and blocks replacement. Selection
+failure and unconfirmed startup are reported separately; neither permits
+replaying an uncertain native operation.
+
+`operator status` and Session context distinguish desired/effective launch
+revisions and selected-writer state from Host observation health. Old-conversation
+failures remain audit evidence, not the new Session's current failure.
+An exact rejected input can be explicitly retired when obsolete; accepted,
+submitting, unknown and interrupt-owned input still retain their handling path.
+
+`controller status --json` exposes bounded observations under
+`identity.runtime.observations`: authenticated requests, scheduler pending
+scopes, phase/read costs and sampled event-loop lag are separate facts.
+Samples use a process-monotonic clock and hashed target/request labels, with
+at most 16 recent and 16 active samples plus the slowest completed sample.
+In-flight request count is not queue depth, and pre-routing wait is not
+measured. These observations neither identify an old incident retroactively
+nor establish quiescence; restarting a Controller does not refresh live Hosts.
+
+`observations.persistence` separates main-thread database lock/body/commit
+costs from persistence-worker round trips, worker execution and worker reads.
+Worker summaries travel on existing replies and retain a worker-instance ID;
+status reads only cached facts, never performs a diagnostic worker RPC.
+Match hashed request targets when comparing round trip and execution. The
+difference includes startup, queueing, transport and main-loop delay, not a
+pure queue-time measurement. Nested database/read durations overlap worker
+execution and must not be added to it. Historical maxima may belong to other
+requests; the latest/slowest samples retain their own timestamps.
+
+With the default persistence worker, periodic Project-sync configuration checks,
+expired Input recommendations and run-progress/stall diagnostic transactions
+execute on that worker as complete read/check/write operations. Their callers
+await completion; lock waiting does not block the socket thread. Existing
+transaction fences and idempotent folds remain unchanged. Explicit worker-off
+mode and injected adapters retain synchronous behavior. This is not blanket
+isolation of all database writes: launch admission, mailbox claims, due Job
+admission and other lifecycle writes still require their own boundary analysis.
+Status responsiveness during these maintenance operations is not proof that
+every possible Controller stall has been eliminated.
+
+Idle Global inbox recovery and already-settled retry checks use read-only
+snapshots, without reserving SQLite's writer. Creating a recovery notice or
+settling an outstanding retry still rechecks the current Session/claim/input
+inside the original write transaction. This removes no-op lock waits, not
+contention from actual writes.
+
+Production Controller startup (including handover promotion) retains operational
+diagnostics in `runtime/controller-diagnostics.jsonl`, with two rotated files.
+Each file is bounded to 1 MiB and owner-readable/writable only. An asynchronous
+writer admits at most 32 queued records (16 KiB each); it never writes the
+business database. Scheduler/startup errors retain a classification, fingerprint
+and build-relative source frames, not raw messages, arguments or credentials.
+A 250 ms memory-only sampler records new failed/slow observations (at least
+1 second), active slow work or its own loop delay at most once per second.
+Records carry wall time, monotonic time, PID, process-instance ID and version;
+bounded phase snapshots retain hashed request/target identities. It is sampled
+evidence, not a trace of every request or the exact cause of pre-routing delay.
+`observations.diagnostics` reports written/dropped/pending records and write
+failures. No successful diagnostic write is assumed when storage fails.
+Rotation, queue overflow and abrupt termination can lose evidence; a blocked
+loop cannot emit a snapshot until it resumes. No automatic restart or operation
+replay is introduced. These disposable operational logs are not Task state,
+acceptance, a second recovery authority or a Home schema migration.
+
+Scheduler caches load families lazily and use transaction-maintained Task
+read revisions. Another Task or Global message does not invalidate an unchanged
+Task history; updates, deletions and external writers still do. Compound folds
+pin a read snapshot, uncommitted writes cannot publish a reusable cache token,
+and only 16 recent Task projections are retained. Cache entries never authorize
+dispatch or replace exact mutation-time checks.
+
 A newly created global Operator conversation requests the native title
 `Yui · Operator · MMdd`, using Yui's configured time zone. The request is made
 only after the provider returns the exact new conversation identity; restore

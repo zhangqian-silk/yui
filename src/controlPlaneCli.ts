@@ -711,8 +711,9 @@ export async function main(): Promise<void> {
           { timeoutMs: 2_000 }
         );
         runtime = parseControllerRuntimeSnapshot(result, droppedEvents);
-      } catch {
-        runtime = { source: "unsupported", droppedEvents };
+      } catch (error) {
+        runtime = { source: "unsupported", droppedEvents,
+          error: describeCliFailure(error, failureContext()).message.slice(0, 1000) };
       }
       const mismatch = summarizeDurablePhysicalMismatch(snapshot);
       const identitySection = renderRuntimeIdentitySection({
@@ -3194,6 +3195,7 @@ async function executeOperatorSessionControl(
 
   await prepareInteractiveCodexApp(control.targetAgentId, store, home);
   await ensureFileTaskController(home, { environment: process.env });
+  let stopDisposition = "not-required";
   if (
     paneRunning
     || (
@@ -3205,9 +3207,22 @@ async function executeOperatorSessionControl(
     || (sessionSet?.providerBinding?.goal != null && sessionSet.providerBinding.goal.status !== "complete")
   ) {
     await runtime.stopGlobalRoleSession(role.name);
+    stopDisposition = "completed";
   }
-  applyOperatorSessionControl(control, store);
-  await runtime.prepareGlobalRoleEnter(role.name);
+  try {
+    applyOperatorSessionControl(control, store);
+  } catch (error) {
+    throw new Error(`Operator replacement selection failed; prior stop=${stopDisposition}; `
+      + "new Session startup has not begun. Inspect the retained Session state.", { cause: error });
+  }
+  try {
+    await runtime.prepareGlobalRoleEnter(role.name);
+  } catch (error) {
+    throw new Error(`Operator replacement selection committed; prior stop=${stopDisposition}; its startup phase failed `
+      + "without readiness confirmation. Whether native startup began is unconfirmed. "
+      + "Inspect the exact current Session/Host before retrying; "
+      + "do not infer that startup had no effect.", { cause: error });
+  }
   tmux.attachRole("operator", role.name, "auto");
 }
 

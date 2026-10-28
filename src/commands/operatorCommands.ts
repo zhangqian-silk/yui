@@ -1,5 +1,6 @@
 import { agentAdapterLabel as adapterLabel } from "../agent/adapterCatalog.js";
 import { assertRoleEnabled } from "../role/availability.js";
+import { globalSessionHealth } from "../runtime/globalSessionHealth.js";
 import { usageError } from "../errors/cliError.js";
 import {
   createRoleSessionSet,
@@ -69,11 +70,11 @@ function status(
   if (activeBinding === undefined) {
     throw usageError(`Operator active Agent is not bound: ${role.activeAgentId}.`);
   }
-  const projection = projectOperatorStatus(
-    store.getGlobalRoleSessionSet(role.name),
-    role.activeAgentId,
-    activeBinding.adapterId
-  );
+  const sessions = store.getGlobalRoleSessionSet(role.name);
+  const projection = {
+    ...projectOperatorStatus(sessions, role.activeAgentId, activeBinding.adapterId),
+    health: globalSessionHealth(role, sessions)
+  };
   const writer = projection.writer;
   const writerLines = [
     "Operator status",
@@ -83,7 +84,10 @@ function status(
     `  Adapter: ${adapterLabel(writer.adapterId)}`,
     `  Conversation: ${writer.sessionRef ?? "-"}`,
     `  Native session: ${writer.nativeSessionId ?? "-"}`,
-    `  Session state: ${writer.sessionStatus ?? "-"}`
+    `  Session state: ${writer.sessionStatus ?? "-"}`,
+    `  Configuration: desired r${projection.health.desiredRevision}, effective r${projection.health.effectiveRevision ?? "unknown"}`,
+    `  Host observation: ${projection.health.hostObservation}`,
+    `  ${projection.health.note}`
   ];
   const history = projection.historicalConversations;
   const historyOutput = history.length === 0

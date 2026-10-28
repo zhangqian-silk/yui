@@ -151,7 +151,7 @@ test("scoped repositories serialize initial creation and preserve Task Git refer
     usePre120Layout(db);
     db.prepare("UPDATE storage_schema SET minor=16").run();
     applySqliteMinorUpgrades(db, home);
-    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 23);
+    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 24);
     assert.equal(db.prepare("SELECT payload FROM global_job_runs").get().payload, before);
   } finally { db.close(); }
   await saveArtifactCapability(home, "task-1", { relativePath: "old.md", content: "new Task evidence" });

@@ -505,7 +505,7 @@ async function routeRequest(
   // observation completes when the response is handed to the socket, so a
   // later status snapshot sees prior built-in completions and the dispatcher
   // service-time metric stays a distinct observation.
-  const observation = telemetry.commandObserver.start();
+  const observation = telemetry.commandObserver.start(request.method, request.id);
   const send = (response: ControllerResponse, onFlushed?: () => void): void => {
     observation.complete(
       isBuiltinControllerMethod(request.method) ? "builtin" : "dispatched",

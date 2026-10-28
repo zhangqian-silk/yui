@@ -42,6 +42,10 @@ export function mapCodexAgentError(
 
 function mapCodexDisplayError(input: AgentDriverErrorInput): AgentErrorClassification {
   const text = `${input.message}\n${input.raw}`;
+  if (/Codex Session availability is systemError; no input was submitted\./u.test(text)) {
+    return { category: "session", code: "provider.session-system-error",
+      inputDisposition: "not-accepted", sessionDisposition: "unknown" };
+  }
   if (/^server_error$/iu.test(input.message)) {
     return recoverable("availability", "provider.server-error");
   }

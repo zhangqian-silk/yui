@@ -22,7 +22,7 @@ import { applyGlobalInputControl } from "../../dist/commands/globalRoleCommands.
 import { readDocument } from "../helpers/read-document.js";
 import { createReviewRound, createTaskReviewRound, attachReviewRoundWorkspace, startReviewRound } from "../../dist/review/reviewRound.js";
 import { createFixtureRun } from "../helpers/runFixture.mjs";
-import { acceptProviderTurn, beginProviderTurn, createProviderRuntimeBinding } from "../../dist/runtime/providerRuntimeIdentity.js";
+import { acceptProviderTurn, beginProviderTurn, createProviderRuntimeBinding, rejectProviderTurn } from "../../dist/runtime/providerRuntimeIdentity.js";
 import { failRun } from "../../dist/agentRun/agentRun.js";
 import { createProject } from "../../dist/repository/project.js";
 import { stopTaskExecutionCommand, startTaskExecutionCommand } from "../../dist/commands/taskExecutionCommands.js";
@@ -31,6 +31,9 @@ import { callerDiscoveryAudience } from "../../dist/cli/callerDiscovery.js";
 import { createTaskEvent } from "../../dist/event/taskEvent.js";
 import { createRuntimeObservation } from "../../dist/runtime/runtimeObservation.js";
 import { globalInboxRecovery } from "../../dist/message/globalInboxRecovery.js";
+import { globalSessionHealth } from "../../dist/runtime/globalSessionHealth.js";
+import { applyOperatorSessionControl } from "../../dist/commands/operatorCommands.js";
+import { standardAgentError } from "../../dist/runtime/agentError.js";
 
 const now = new Date("2026-10-13T00:00:00Z");
 function fixture(t, name) {
@@ -56,6 +59,98 @@ function fixture(t, name) {
   };
   return { store, command, add, env };
 }
+
+test("Global health distinguishes desired configuration, current native state and retained old failure", t => {
+  const { store } = fixture(t, "operator");
+  const role = store.getGlobalRole("operator");
+  const sessions = store.getGlobalRoleSessionSet("operator");
+  const drift = globalSessionHealth({ ...role, launchRevision: role.launchRevision + 1 }, sessions);
+  assert.equal(drift.configurationDrift, true);
+  assert.equal(drift.effectiveRevision, role.launchRevision);
+  assert.equal(drift.hostObservation, "unobserved");
+  const binding = rejectProviderTurn(beginProviderTurn(createProviderRuntimeBinding({
+    providerNamespace: "openai/codex", accountScope: "codex", conversationId: "old-native",
+    startedAt: now.toISOString()
+  }), { attemptId: "old-attempt", authorityEpoch: 1, submittedAt: now.toISOString() }),
+  { attemptId: "old-attempt", rejectedAt: now.toISOString(), reason: "old rejection" });
+  const current = globalSessionHealth(role, { ...sessions, providerBinding: binding });
+  assert.equal(current.historicalBinding, true);
+  assert.equal(current.nativeTurn, null);
+  assert.equal(current.currentFailure, null);
+  assert.equal(current.retry, null);
+
+  const oldBinding = { ...binding,
+    conversations: [{ ...binding.conversations[0], conversationId: "operator-native" }],
+    run: { ...binding.run, failure: { ref: "old-failure", error: standardAgentError({
+      source: "provider", phase: "turn-submit", message: "Rejected before submission",
+      raw: "Rejected before submission", inputDisposition: "not-accepted"
+    }) } }
+  };
+  store.saveGlobalRoleSessionSet(bindGlobalRoleProviderRuntime(sessions, oldBinding, now));
+  assert.equal(globalSessionHealth(role, store.getGlobalRoleSessionSet("operator"))
+    .currentFailure.ref, "old-failure");
+  store.saveGlobalRoleSessionSet(updateRoleAgentSessionStatus(
+    store.getGlobalRoleSessionSet("operator"), "codex", "ended", now, "stopped"));
+  applyOperatorSessionControl({ kind: "session", action: "new", targetAgentId: "codex" }, store, now);
+  new FileSchedulerStoreAdapter(store).recordLaunchedRuntimeNativeSession({
+    owner: { scope: "global", roleName: "operator" }, agentId: "codex", adapterId: "codex",
+    nativeSessionId: "new-native", effective: resolveEffectiveLaunch({ role, purpose: "execution" })
+  }, () => {}, now);
+  const replaced = store.getGlobalRoleSessionSet("operator");
+  assert.equal(replaced.providerBinding.authority.epoch, 2);
+  assert.deepEqual(replaced.providerBinding.run, oldBinding.run, "retain historical failure evidence");
+  const newHealth = globalSessionHealth(role, replaced);
+  assert.equal(newHealth.nativeSessionId, "new-native");
+  assert.equal(newHealth.nativeTurn, null);
+  assert.equal(newHealth.currentFailure, null);
+  assert.equal(newHealth.historicalBinding, true);
+  const nextBinding = beginProviderTurn(replaced.providerBinding, {
+    attemptId: "new-attempt", authorityEpoch: 2, submittedAt: now.toISOString()
+  });
+  const nextHealth = globalSessionHealth(role, { ...replaced, providerBinding: nextBinding });
+  assert.equal(nextHealth.nativeTurn.attemptId, "new-attempt");
+  assert.equal(nextHealth.historicalBinding, false);
+});
+
+test("exact rejected input can retire; pending, unknown, accepted and interrupt-owned effects cannot", t => {
+  const { store, command, add } = fixture(t, "operator");
+  const id = add("Obsolete input");
+  command("claim", id, "--request-id", "original-inspection");
+  const original = command("show", id);
+  store.updateGlobalRoleMessage({ ...original,
+    notDelivered: { reason: "Provider rejected before submission", at: now.toISOString() } });
+  let binding = beginProviderTurn(createProviderRuntimeBinding({
+    providerNamespace: "openai/codex", accountScope: "codex",
+    conversationId: "operator-native", startedAt: now.toISOString()
+  }), { attemptId: `global-input:operator/${id}`, authorityEpoch: 1, submittedAt: now.toISOString() });
+  const save = value => store.saveGlobalRoleSessionSet({
+    ...store.getGlobalRoleSessionSet("operator"), providerBinding: value });
+  const retire = () => command("retire", id, "--request-id", "obsolete-negative",
+    "--reason", "Verified exact rejection; business request superseded");
+  save(binding);
+  assert.throws(retire, /proven-unsubmitted/);
+  save({ ...binding, run: { ...binding.run, status: "delivery-unknown" } });
+  assert.throws(retire, /proven-unsubmitted/);
+  save(acceptProviderTurn(binding, { attemptId: binding.run.attemptId, nativeTurnId: "native",
+    acceptedAt: now.toISOString() }));
+  assert.throws(retire, /proven-unsubmitted/);
+  binding = rejectProviderTurn(binding, { attemptId: binding.run.attemptId,
+    rejectedAt: now.toISOString(), reason: "no input submitted" });
+  save(binding);
+  const result = retire();
+  assert.equal(result.inbox.retirement.reason, "Verified exact rejection; business request superseded");
+  assert.equal(result.inbox.claim.requestId, "original-inspection");
+  assert.equal(store.getGlobalRoleSessionSet("operator").providerBinding.run.status, "rejected");
+  assert.equal(command("show", id).notDelivered.reason, "Provider rejected before submission");
+  const reserved = add("Retained interrupt continuation");
+  store.updateGlobalRoleMessage({ ...command("show", reserved),
+    notDelivered: { reason: "target changed", at: now.toISOString() },
+    interruptThen: { requestId: "reserved-then", targetAttemptId: "old-turn",
+      targetNativeSessionId: "old-session", targetAgentId: "codex",
+      targetAuthorityEpoch: 1, targetAuthorityHolderId: "original-host" } });
+  assert.throws(() => command("retire", reserved, "--request-id", "cannot-retire-reservation",
+    "--reason", "No terminal proof"), /proven-unsubmitted/);
+});
 
 test("automatic Global delivery checks missing handling at exact terminal without acknowledging or replaying effects", t => {
   const { store, command, add } = fixture(t, "operator");
@@ -335,10 +430,17 @@ test("Global successor initialization uses one pinned notice while original clai
     conversationId: "successor", startedAt: now.toISOString() });
   store.saveGlobalRoleSessionSet(bindGlobalRoleProviderRuntime(successor, binding, now));
   const next = add("New independent input");
+  // No-op polling must be legal on a read-only connection; it cannot reserve
+  // SQLite's writer slot merely to discover an already-created notice.
   const notice = globalInboxRecovery(store, "assistant", now);
   assert.ok(notice);
   assert.equal(notice.deliveryTarget.nativeSessionId, "successor");
-  assert.deepEqual(globalInboxRecovery(store, "assistant", now), notice, "restart/reconcile reuse the same Message");
+  const transaction = store.transaction.bind(store);
+  store.transaction = () => assert.fail("an existing notice must not reserve the writer");
+  try {
+    assert.deepEqual(globalInboxRecovery(store, "assistant", now), notice,
+      "restart/reconcile reuse the same Message without a write");
+  } finally { store.transaction = transaction; }
   const adapter = new FileSchedulerStoreAdapter(store);
   const input = message => ({ roleName: "assistant", agentId: "codex", nativeSessionId: "successor",
     attemptId: `global-input:assistant/${message}`, authorityEpoch: 1, authorityOwner: "controller",
@@ -354,6 +456,33 @@ test("Global successor initialization uses one pinned notice while original clai
   function commandSafe(store, message) {
     return runInboxCommand(["show", message], store, { CODEX_THREAD_ID: "successor" }, now);
   }
+});
+
+for (const change of ["settle-claim", "end-session"]) test(`Global recovery rechecks ${change} inside its write transaction`, t => {
+  const { store, command, add } = fixture(t, "assistant");
+  const id = add("Retained handling");
+  command("claim", id, "--request-id", "original-claim");
+  const ended = updateRoleAgentSessionStatus(store.getGlobalRoleSessionSet("assistant"), "codex", "ended", now, "stopped");
+  const successor = recordRoleAgentSession(ended, { ...ended.sessions.codex,
+    status: "active", endReason: undefined, nativeSessionId: "successor" }, now);
+  store.saveGlobalRoleSessionSet(bindGlobalRoleProviderRuntime(successor, createProviderRuntimeBinding({
+    providerNamespace: "openai/codex", accountScope: "codex", conversationId: "successor",
+    startedAt: now.toISOString()
+  }), now));
+  const transaction = store.transaction.bind(store);
+  let entered = false;
+  store.transaction = execute => {
+    store.transaction = transaction;
+    entered = true;
+    if (change === "settle-claim") runInboxCommand(["ack", id, "--request-id", "settled",
+      "--reason", "Verified original effects"], store, { CODEX_THREAD_ID: "successor" }, now);
+    else store.saveGlobalRoleSessionSet(updateRoleAgentSessionStatus(
+      store.getGlobalRoleSessionSet("assistant"), "codex", "ended", now, "stopped"));
+    return transaction(execute);
+  };
+  assert.equal(globalInboxRecovery(store, "assistant", now), undefined);
+  assert.equal(entered, true);
+  assert.equal(store.listGlobalRoleMessages("assistant").length, 1, "no stale recovery notice");
 });
 
 test("an unsubmitted Global steer can be explicitly handled without replay or blocking later input", t => {

@@ -37,6 +37,9 @@ import type {
   WorkerResponse
 } from "./storeRpc.js";
 import { StorageRecordError } from "./taskStore.js";
+import { randomUUID } from "node:crypto";
+import { ControllerWorkObserver, compactWorkObservation } from "../core/controllerTelemetry.js";
+import type { PersistenceWorkerObservation } from "./storeRpc.js";
 
 // -- method invocation -------------------------------------------------------
 
@@ -52,7 +55,16 @@ function invokeMethod(target: object, method: string, args: readonly unknown[]):
 
 type ObserverHost = {
   invoke(method: string, args: readonly unknown[]): unknown;
+  compactReadObservationMetrics?(): ReturnType<typeof compactWorkObservation>;
 };
+
+const workerInstance = randomUUID();
+const work = new ControllerWorkObserver();
+function observation(): PersistenceWorkerObservation {
+  return { instance: workerInstance, work: compactWorkObservation(work),
+    database: state.writer?.storageObservationMetrics() ?? null,
+    reads: state.observer?.compactReadObservationMetrics?.() ?? null };
+}
 
 /**
  * Sentinel returned by a handler when the durable outbox already records the
@@ -108,7 +120,10 @@ async function handleInit(request: Extract<WorkerRequest, { kind: "init" }>): Pr
     state.observer = {
       invoke(method, args) {
         return invokeMethod(host, method, args);
-      }
+      },
+      ...(host.compactReadObservationMetrics === undefined ? {} : {
+        compactReadObservationMetrics: () => host.compactReadObservationMetrics!()
+      })
     };
   }
 }
@@ -198,21 +213,25 @@ runRpcWorker<WorkerRequest, WorkerResponse>({
   },
   init: (request) => handleInit(request as Extract<WorkerRequest, { kind: "init" }>),
   handle: async (request) => {
-    switch (request.kind) {
-      case "call":
-        return handleCall(request);
-      case "transaction":
-        return handleTransaction(request);
-      case "observer":
-        return handleObserver(request);
-      case "telemetry":
-        if (state.writer === undefined) throw new Error("Worker not initialized.");
-        return state.writer.flushTelemetry(request.entries, request.runCap);
-      case "init":
-      case "cancel":
-      case "shutdown":
-        throw new Error(`Unexpected request kind for handle: ${request.kind}`);
-    }
+    const finish = work.start(request.kind, "requestId" in request ? request.requestId : undefined);
+    try {
+      switch (request.kind) {
+        case "call":
+          return await handleCall(request);
+        case "transaction":
+          return await handleTransaction(request);
+        case "observer":
+          return await handleObserver(request);
+        case "telemetry":
+          if (state.writer === undefined) throw new Error("Worker not initialized.");
+          return state.writer.flushTelemetry(request.entries, request.runCap);
+        case "init":
+        case "cancel":
+        case "shutdown":
+          throw new Error(`Unexpected request kind for handle: ${request.kind}`);
+      }
+    } catch (error) { finish(true); throw error; }
+    finally { finish(); }
   },
   cancel: (requestId) => {
     state.cancelled.add(requestId);
@@ -226,8 +245,8 @@ runRpcWorker<WorkerRequest, WorkerResponse>({
   ready: () => ({ kind: "ready" }),
   result: (requestId, value) => (
     value === ALREADY_APPLIED
-      ? { kind: "already-applied", requestId }
-      : { kind: "result", requestId, result: value }
+      ? { kind: "already-applied", requestId, observation: observation() }
+      : { kind: "result", requestId, result: value, observation: observation() }
   ),
-  error: (requestId, error) => ({ kind: "error", requestId, error })
+  error: (requestId, error) => ({ kind: "error", requestId, error, observation: observation() })
 });

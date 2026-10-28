@@ -5,6 +5,7 @@ import { migrateTaskMainWorkspaces } from "./upgrade/taskMainWorkspaceMigration.
 import { migrateProjectKnowledge } from "./upgrade/projectKnowledgeMigration.js";
 import { JOB_SCHEMA_SQL } from "./jobSchema.js";
 import { AGENT_JOB_SCHEMA_SQL } from "./agentJobSchema.js";
+import { TASK_READ_REVISION_SCHEMA_SQL } from "./taskReadRevisionSchema.js";
 import { SCHEDULE_SCHEMA_SQL } from "./scheduleSchema.js";
 import { GLOBAL_SESSION_TABLE_SQL, SESSION_HISTORY_UPGRADE_SQL } from "./sessionHistorySchema.js";
 import { migrateJobDefinitions } from "./upgrade/jobDefinitionMigration.js";
@@ -17,7 +18,7 @@ import {
 } from "./storageVersions.js";
 
 export { BASELINE_SCHEMA_SQL };
-export const SQLITE_SCHEMA_TABLES = [...BASELINE_SCHEMA_TABLES, "job_definitions", "global_job_runs", "schedules", "agent_job_runs"] as const;
+export const SQLITE_SCHEMA_TABLES = [...BASELINE_SCHEMA_TABLES, "job_definitions", "global_job_runs", "schedules", "agent_job_runs", "task_read_revisions"] as const;
 export const TELEMETRY_KEEP_PER_RUN = 200;
 export const TELEMETRY_RUN_CAP = 50_000;
 export const BASELINE_SCHEMA_CHECKSUM = createHash("sha256").update(BASELINE_SCHEMA_SQL).digest("hex");
@@ -28,7 +29,9 @@ export const SCHEDULE_SCHEMA_CHECKSUM = createHash("sha256").update(SCHEDULE_SCH
 const SESSION_SCHEMA_SQL = SCHEDULE_SCHEMA_SQL_COMPLETE.replace(
   /CREATE TABLE global_role_session_sets \([\s\S]*?\n\);/, GLOBAL_SESSION_TABLE_SQL);
 const SESSION_SCHEMA_CHECKSUM = createHash("sha256").update(SESSION_SCHEMA_SQL).digest("hex");
-export const CURRENT_SCHEMA_SQL = SESSION_SCHEMA_SQL + AGENT_JOB_SCHEMA_SQL;
+export const PRE_READ_REVISION_SCHEMA_SQL = SESSION_SCHEMA_SQL + AGENT_JOB_SCHEMA_SQL;
+const PRE_READ_REVISION_SCHEMA_CHECKSUM = createHash("sha256").update(PRE_READ_REVISION_SCHEMA_SQL).digest("hex");
+export const CURRENT_SCHEMA_SQL = PRE_READ_REVISION_SCHEMA_SQL + TASK_READ_REVISION_SCHEMA_SQL;
 export const CURRENT_SCHEMA_CHECKSUM = createHash("sha256").update(CURRENT_SCHEMA_SQL).digest("hex");
 
 export class SqliteSchemaError extends Error {
@@ -246,7 +249,7 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   name: "job-agent-execution",
   introducedIn: "next",
   sourceChecksum: SESSION_SCHEMA_CHECKSUM,
-  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: PRE_READ_REVISION_SCHEMA_CHECKSUM,
   // Existing records and immutable artifacts remain byte-for-byte unchanged.
   // Declares Agent definitions/Runs and optional Job ownership of a non-Task Role.
   sql: AGENT_JOB_SCHEMA_SQL
@@ -255,8 +258,8 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   toVersion: "1.21",
   name: "project-sync-clock",
   introducedIn: "next",
-  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
-  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  sourceChecksum: PRE_READ_REVISION_SCHEMA_CHECKSUM,
+  targetChecksum: PRE_READ_REVISION_SCHEMA_CHECKSUM,
   sql: "",
   dataMigration: "project-sync-clock"
 }, {
@@ -264,8 +267,8 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   toVersion: "1.22",
   name: "role-profile-availability",
   introducedIn: "next",
-  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
-  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  sourceChecksum: PRE_READ_REVISION_SCHEMA_CHECKSUM,
+  targetChecksum: PRE_READ_REVISION_SCHEMA_CHECKSUM,
   // Optional enabled flag; absence means enabled. Preserve all historical
   // Role/Profile bytes, frozen contexts and Session snapshots.
   sql: ""
@@ -274,11 +277,21 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   toVersion: "1.23",
   name: "global-shell-scripts",
   introducedIn: "next",
-  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
-  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  sourceChecksum: PRE_READ_REVISION_SCHEMA_CHECKSUM,
+  targetChecksum: PRE_READ_REVISION_SCHEMA_CHECKSUM,
   // Additive global Shell definitions with revisioned script text and exact
   // Run snapshots. Historical definitions/Runs stay byte-for-byte unchanged.
   sql: ""
+}, {
+  fromVersion: "1.23",
+  toVersion: "1.24",
+  name: "task-read-revisions",
+  introducedIn: "next",
+  sourceChecksum: PRE_READ_REVISION_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // No payload rewriting or historical revision invention. A newly opened
+  // reader starts empty; zero is the initial token until the first mutation.
+  sql: TASK_READ_REVISION_SCHEMA_SQL
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {
@@ -308,6 +321,7 @@ export function validateSqliteSchemaObjects(db: Database.Database, version: Stor
   const checksum = version === CURRENT_STORAGE_VERSION
     ? CURRENT_SCHEMA_CHECKSUM : storageMinorUpgradePlan(version)?.[0]?.sourceChecksum;
   const sql = checksum === CURRENT_SCHEMA_CHECKSUM ? CURRENT_SCHEMA_SQL
+    : checksum === PRE_READ_REVISION_SCHEMA_CHECKSUM ? PRE_READ_REVISION_SCHEMA_SQL
     : checksum === SESSION_SCHEMA_CHECKSUM ? SESSION_SCHEMA_SQL
     : checksum === SCHEDULE_SCHEMA_CHECKSUM ? SCHEDULE_SCHEMA_SQL_COMPLETE
     : checksum === JOB_SCHEMA_CHECKSUM ? BASELINE_SCHEMA_SQL + JOB_SCHEMA_SQL

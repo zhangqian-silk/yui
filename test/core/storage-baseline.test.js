@@ -21,14 +21,14 @@ import { readTaskUsage } from "../../dist/runtime/taskUsageQuery.js";
 import { addProjectKnowledge, createProject } from "../../dist/repository/project.js";
 import { createTaskMessage } from "../../dist/message/message.js";
 import { contextContentDigest, createContextSnapshot } from "../../dist/context/contextSnapshot.js";
-import { usePre19Layout, usePre114Layout } from "../helpers/pre19Storage.mjs";
+import { usePre19Layout, usePre114Layout, usePre124Layout } from "../helpers/pre19Storage.mjs";
 
-test("fresh storage creates only the current 1.23 contract", () => {
-  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.23");
+test("fresh storage creates only the current 1.24 contract", () => {
+  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.24");
   const db = new Database(":memory:");
   try {
     schema.initializeSqliteSchema(db);
-    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.23");
+    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.24");
     assert.equal(schema.inspectSqliteSchema(db).targetChecksum, schema.CURRENT_SCHEMA_CHECKSUM);
     assert.equal(db.prepare("SELECT count(*) AS n FROM storage_schema").get().n, 1);
     assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='schema_migrations'").get(), undefined);
@@ -43,6 +43,42 @@ test("fresh storage creates only the current 1.23 contract", () => {
     db.exec("DROP INDEX idx_mailboxes_ready");
     assert.throws(() => schema.validateSqliteSchema(db), /idx_mailboxes_ready/);
   } finally { db.close(); }
+});
+
+test("1.23 upgrade preserves history and starts transaction-owned read revisions", async t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-read-revision-upgrade-"));
+  let store, db;
+  t.after(() => { store?.close(); db?.close(); rmSync(home, { recursive: true, force: true }); });
+  store = new SqliteTaskStore(home);
+  const at = new Date("2026-10-27T00:00:00Z");
+  store.saveTask(createTask("task-1", "History", at));
+  const event = createTaskEvent("event-1", "task-1", "diagnostic.sample", { original: "yes" }, at);
+  store.saveEvent("task-1", event);
+  const message = createTaskMessage("message-1", "task-1", "original", "user", { type: "user" }, at);
+  store.saveMessage("task-1", message);
+  const revision = store.getRevision();
+  store.close(); store = undefined;
+  db = new Database(join(home, "yui.db"));
+  usePre124Layout(db);
+  db.prepare("UPDATE storage_schema SET minor=23").run();
+  const before = db.prepare("SELECT payload FROM events").get().payload;
+  schema.validateSqliteSchemaObjects(db, "1.23");
+  db.close(); db = undefined;
+  assert.equal((await runStorageUpgrade({ home, mode: "execute" })).outcome, "upgraded");
+  store = new SqliteTaskStore(home);
+  assert.equal(store.databaseHandle().prepare("SELECT payload FROM events").get().payload, before);
+  assert.equal(store.getRevision(), revision);
+  assert.equal(store.getTaskReadRevision("task-1"), 0);
+  store.updateMessage("task-1", { ...message, body: "updated" });
+  assert.equal(store.getTaskReadRevision("task-1"), 1);
+  assert.throws(() => store.transaction(s => {
+    s.removeEvents("task-1", ["event-1"]);
+    throw new Error("rollback");
+  }), /rollback/);
+  assert.equal(store.getTaskReadRevision("task-1"), 1);
+  assert.equal(store.listEvents("task-1").length, 1);
+  store.removeEvents("task-1", ["event-1"]);
+  assert.equal(store.getTaskReadRevision("task-1"), 2);
 });
 
 test("1.13 upgrade preserves exact Session bytes and Role deletion retains identity evidence", async t => {
@@ -164,7 +200,8 @@ test("1.1 upgrade preserves valid Operator authority without inventing user prov
         ["1.19", "1.20", "job-agent-execution"],
         ["1.20", "1.21", "project-sync-clock"],
         ["1.21", "1.22", "role-profile-availability"],
-        ["1.22", "1.23", "global-shell-scripts"]]);
+        ["1.22", "1.23", "global-shell-scripts"],
+        ["1.23", "1.24", "task-read-revisions"]]);
   }
   finally { current.close(); }
 });

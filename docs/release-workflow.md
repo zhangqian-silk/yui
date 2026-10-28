@@ -51,6 +51,49 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.18.0 compatibility and migration notes
+
+This minor includes the already-merged independent Jobs workspace and global
+Shell script Jobs (PR #490), plus Controller reliability and diagnostics.
+Exact Session stop/replacement no longer waits for unrelated global scheduling
+to drain. Stop proof, single-writer ownership and unknown-input replay fences
+remain required. Session health distinguishes historical failures from the
+current authority; conclusively rejected obsolete inputs can be retired without
+erasing their original evidence.
+
+Task-scoped lazy read caches, indexed observation queries and persistence
+timings reduce projection work and separate request/worker/database costs.
+With the default persistence worker, periodic maintenance lock waits no longer
+block the socket thread; idle Global recovery and settled retry checks are
+read-only. Actual admission and other business writes may still contend.
+Bounded, redacted asynchronous diagnostics retain incident evidence in
+`runtime/controller-diagnostics.jsonl` and two rotated files. These changes
+address reproduced mechanisms, not a proven unique cause of every historical
+timeout. See [managed runtime](managed-turn-and-session-runtime.md).
+
+Storage advances from **1.22 through 1.23 to 1.24**: 1.23 declares revisioned
+global Shell script definitions and Run snapshots; 1.24 adds Task read-revision
+tokens and triggers without rewriting historical payloads. A production 1.21
+Home first applies the existing 1.22 Role/Profile availability transition.
+Use the centralized contiguous same-major migration, never manual schema edits.
+Controller RPC and Host control/event protocols remain v1. Compatible live
+Hosts/Sessions are retained, not hot-upgraded; unreported Host capabilities and
+unknown results remain explicit.
+
+With separate production authority, the Operator uses
+`yui update --version 2.18.0` after verifying the published artifact. Refresh a
+consistent maintenance backup and capture the current executable/Controller
+identity before migration. An earlier online DB snapshot alone is not a complete
+rollback point and cannot overwrite subsequently accepted input. Do not open a
+1.24 Home with an older binary; rollback requires the matching pre-upgrade
+program and consistent Home backup, with intervening effects reconciled.
+
+Release gates require exact-merge-commit Core CI and the same runtime archive's
+fresh-install platform/Node matrix before npm publication. Local deterministic
+tests and prior smoke evidence do not replace those gates or prove real-model
+behavior. Publication does not itself update a production Home or resolve
+another Task's execution.
+
 ### 2.17.0 compatibility and migration notes
 
 This minor adds persistent Role/Profile enable and disable controls in CLI and

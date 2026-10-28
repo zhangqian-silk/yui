@@ -10,7 +10,7 @@ import { createScheduleControl, reconcileSchedules } from "../../dist/controller
 import { createJobDefinitionControl, authorizeGlobalJobStart } from "../../dist/controller/jobDefinitionControl.js";
 import Database from "../../dist/sqlite/driver.js";
 import { applySqliteMinorUpgrades } from "../../dist/storage/sqliteSchema.js";
-import { usePre120Layout } from "../helpers/pre19Storage.mjs";
+import { usePre120Layout, usePre124Layout } from "../helpers/pre19Storage.mjs";
 
 test("default sync uses explicit local clock boundaries and retains its timezone across restart", t => {
   const home = mkdtempSync(join(tmpdir(), "yui-project-sync-clock-"));
@@ -71,6 +71,7 @@ test("1.20 upgrade converts only proven unedited builtins, preserving overrides 
     }
     const before = db.prepare("SELECT * FROM schedules ORDER BY schedule_id").all();
     const definitions = db.prepare("SELECT payload FROM job_definitions").all();
+    usePre124Layout(db);
     db.prepare("UPDATE storage_schema SET minor=20").run();
     applySqliteMinorUpgrades(db, home);
     const after = db.prepare("SELECT * FROM schedules ORDER BY schedule_id").all();
@@ -185,7 +186,7 @@ test("1.17 upgrade preserves custom definitions, service grants, overrides and R
     usePre120Layout(db);
     db.prepare("UPDATE storage_schema SET minor=17").run();
     applySqliteMinorUpgrades(db, home);
-    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 23);
+    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 24);
     assert.deepEqual(tables.map(table => db.prepare(`SELECT payload FROM ${table}`).all()), before);
   } finally { db.close(); }
   store = new SqliteTaskStore(home);

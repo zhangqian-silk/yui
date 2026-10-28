@@ -34,6 +34,7 @@ import { validateAgentJobRun, assertAgentJobRunTransition, type AgentJobRun, typ
  * in-process contract or deferred validation phase.
  */
 import Database from "../sqlite/driver.js";
+import { ControllerWorkObserver, compactWorkObservation } from "../core/controllerTelemetry.js";
 import { findNativeSessionSets } from "./nativeSessionLookup.js";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -283,10 +284,32 @@ function assertRunAdmission(task: Task | null, run: AgentRun): void {
 }
 
 export class SqliteTaskStore implements TaskStore {
+  readonly #payloadReads = new ControllerWorkObserver();
+  readonly #transactions = {
+    "write-lock": new ControllerWorkObserver(),
+    "write-body": new ControllerWorkObserver(),
+    "transaction-commit": new ControllerWorkObserver()
+  };
+
+  storageObservationMetrics() {
+    return {
+      lock: compactWorkObservation(this.#transactions["write-lock"]),
+      body: compactWorkObservation(this.#transactions["write-body"]),
+      commit: compactWorkObservation(this.#transactions["transaction-commit"]),
+      payloadReads: compactWorkObservation(this.#payloadReads)
+    };
+  }
+
+  #observeTransaction<T>(phase: "write-lock" | "write-body" | "transaction-commit", action: () => T): T {
+    const finish = this.#transactions[phase].start(phase);
+    try { const result = action(); finish(); return result; }
+    catch (error) { finish(true); throw error; }
+  }
   readonly #db: Database.Database;
   readonly #rootDir: string;
   readonly #openedSchemaHead: Readonly<{ version: StorageVersion; checksum: string }>;
   #inTransaction = false;
+  #writeTransaction = false;
   #dirty = false;
 
   constructor(rootDir: string, _options: SqliteTaskStoreOptions = {}) {
@@ -426,6 +449,14 @@ export class SqliteTaskStore implements TaskStore {
     ), event => event.id);
   }
 
+  hasRuntimeObservation(taskId: string, identity: { semanticKey: string } | { eventId: string }): boolean {
+    const byEvent = "eventId" in identity;
+    return this.#db.prepare(`SELECT 1 FROM events WHERE task_id = ?
+      AND type = 'runtime.observation'
+      AND json_extract(payload, '${byEvent ? "$.payload.eventId" : "$.payload.semanticKey"}') = ?
+      LIMIT 1`).get(taskId, byEvent ? identity.eventId : identity.semanticKey) !== undefined;
+  }
+
   readTaskUsageFacts(taskId: string): import("../runtime/taskUsageQuery.js").TaskUsageFacts {
     // Bounded source selection, not a scan/deserialization of Task history.
     // Strip result bodies before they cross the SQLite boundary.
@@ -515,20 +546,23 @@ export class SqliteTaskStore implements TaskStore {
   }
 
   #begin(): void {
-    this.#db.exec("BEGIN IMMEDIATE");
+    this.#observeTransaction("write-lock", () => this.#db.exec("BEGIN IMMEDIATE"));
     this.#inTransaction = true;
+    this.#writeTransaction = true;
     this.#dirty = false;
   }
 
   #commit(): void {
-    this.#db.exec("COMMIT");
+    this.#observeTransaction("transaction-commit", () => this.#db.exec("COMMIT"));
     this.#inTransaction = false;
+    this.#writeTransaction = false;
     this.#dirty = false;
   }
 
   #rollback(): void {
     try { this.#db.exec("ROLLBACK"); } catch { /* already closed */ }
     this.#inTransaction = false;
+    this.#writeTransaction = false;
     this.#dirty = false;
   }
 
@@ -568,7 +602,7 @@ export class SqliteTaskStore implements TaskStore {
     this.#begin();
     try {
       this.#prepareWrite();
-      const result = fn();
+      const result = this.#observeTransaction("write-body", fn);
       this.#bumpRevision();
       this.#commit();
       return result;
@@ -597,7 +631,7 @@ export class SqliteTaskStore implements TaskStore {
       // This prevents a long-lived Store from executing SQL after the database
       // schema head has changed underneath it.
       this.#prepareWrite();
-      const result = run(this);
+      const result = this.#observeTransaction("write-body", () => run(this));
       if (this.#dirty) {
         if (options?.requestId !== undefined) {
           this.#insertOutbox(options.requestId, options.outboxCommand ?? null);
@@ -621,7 +655,7 @@ export class SqliteTaskStore implements TaskStore {
     this.#begin();
     try {
       this.#prepareWrite();
-      const result = await execute(this);
+      const result = await this.#transactions["write-body"].observe("write-body", undefined, () => execute(this));
       if (this.#dirty) this.#bumpRevision();
       this.#commit();
       return result;
@@ -660,7 +694,7 @@ export class SqliteTaskStore implements TaskStore {
           current
         );
       }
-      const result = execute(this);
+      const result = this.#observeTransaction("write-body", () => execute(this));
       if (this.#dirty) {
         this.#prepareWrite();
         if (options?.requestId !== undefined) {
@@ -684,6 +718,13 @@ export class SqliteTaskStore implements TaskStore {
   }
 
   getStateRevision(): number { return this.getRevision(); }
+
+  getTaskReadRevision(taskId: string): number {
+    // Uncommitted writes have no durable cache identity, even if rolled back.
+    if (this.#writeTransaction) return Number.NaN;
+    return (this.#db.prepare("SELECT revision FROM task_read_revisions WHERE task_id = ?")
+      .get(taskId) as { revision: number } | undefined)?.revision ?? 0;
+  }
 
   /**
    * Run an ordered command batch inside one `BEGIN IMMEDIATE … COMMIT`, yielding
@@ -884,8 +925,15 @@ export class SqliteTaskStore implements TaskStore {
   }
 
   #listPayload<T>(table: string, where: string, params: readonly unknown[]): T[] {
-    const rows = this.#db.prepare(`SELECT payload FROM ${table} WHERE ${where}`).all(...params) as Array<{ payload: string }>;
-    return rows.map((row) => this.#validateTaskPayload<T>(table, row.payload));
+    // Table names are fixed internal callers; no SQL, parameters or payload
+    // text enters diagnostics. Include parsing/validation, not only SQLite IO.
+    const finish = this.#payloadReads.start(`list-${table}`);
+    try {
+      const rows = this.#db.prepare(`SELECT payload FROM ${table} WHERE ${where}`).all(...params) as Array<{ payload: string }>;
+      const values = rows.map((row) => this.#validateTaskPayload<T>(table, row.payload));
+      finish();
+      return values;
+    } catch (error) { finish(true); throw error; }
   }
 
   #validateTaskPayload<T>(table: string, payload: string): T {
@@ -1323,6 +1371,17 @@ export class SqliteTaskStore implements TaskStore {
       AND (json_extract(payload, '$.inputControl.action') = 'queue'
         OR json_extract(payload, '$.interruptThen') IS NOT NULL)`);
     if (query.interruptThen) where.push("json_extract(payload, '$.interruptThen') IS NOT NULL");
+    if (query.reservedThen !== undefined) {
+      where.push(`json_extract(payload, '$.delivery') IS NULL
+        AND json_extract(payload, '$.notDelivered') IS NULL
+        AND json_extract(payload, '$.interruptThen.targetNativeSessionId') = @thenSession
+        AND json_extract(payload, '$.interruptThen.targetAgentId') = @thenAgent
+        AND json_extract(payload, '$.interruptThen.targetAuthorityEpoch') = @thenEpoch
+        AND json_extract(payload, '$.interruptThen.targetAuthorityHolderId') = @thenHolder`);
+      Object.assign(params, { thenSession: query.reservedThen.nativeSessionId,
+        thenAgent: query.reservedThen.agentId, thenEpoch: query.reservedThen.authorityEpoch,
+        thenHolder: query.reservedThen.holderId });
+    }
     if (query.operatorNotice) where.push("json_extract(payload, '$.inputControl.requestId') LIKE 'operator-notice:%'");
     if (query.afterSequence !== undefined) {
       where.push("seq > @after"); params.after = query.afterSequence;

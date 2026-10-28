@@ -205,6 +205,7 @@ export type TaskStore = {
   queryContextRecords(taskId: string, query: ContextRecordQuery): ContextRecordPage;
   latestEventSequence(taskId: string): number;
   listEventsByType(taskId: string, types: readonly string[]): TaskEvent[];
+  hasRuntimeObservation(taskId: string, identity: { semanticKey: string } | { eventId: string }): boolean;
   readTaskUsageFacts(taskId: string): import("../runtime/taskUsageQuery.js").TaskUsageFacts;
   listTaskRunWorkspaceBases(taskId: string): Pick<AgentRun, "id" | "createdAt" | "workspace">[];
   contextInputReferences(taskId: string, scope: ContextInputScope): { messages: string[]; events: string[] };
@@ -296,6 +297,8 @@ export type TaskStore = {
   listPendingActivationRequestTaskIds(): string[];
   /** Current durable state revision; advances once per committed mutation. */
   getStateRevision(): number;
+  /** Read-cache token only; uncommitted mutations have no reusable identity. */
+  getTaskReadRevision(taskId: string): number;
   getTask(id: string): Task | null;
   /**
    * Issue 07 (Leader convergence): load exactly the records the next-action

@@ -1,10 +1,12 @@
+import { createHash } from "node:crypto";
+
 /**
- * Pure-memory, fixed-space command observation for the Controller socket.
+ * Pure-memory command observation for the Controller socket.
  *
  * The core server owns route/built-in command observation: every authenticated
  * request is counted once at the routing layer, and a bounded unrefed scheduler
- * samples event-loop delay so an already-written request's pre-dispatch wait is
- * observable even when the loop is saturated by scheduler projections. The
+ * samples event-loop delay as evidence of loop saturation, not an exact
+ * measurement of any one request's pre-dispatch queue time. The
  * FileTaskController composes these snapshots into its runtime status metric;
  * nothing here is persisted and every snapshot is O(1).
  */
@@ -19,18 +21,79 @@ export type ControllerRouteMetrics = Readonly<{
   inFlight: number;
   /**
    * Age of the oldest in-flight request in milliseconds, or null when nothing
-   * is in flight. Issue 11 status answers "how old is the queued work" without
-   * persisting anything.
+   * is in flight. This includes execution, not just time queued.
    */
   oldestInFlightAgeMs: number | null;
   builtin: Readonly<{ completed: number; failed: number }>;
   dispatched: Readonly<{ completed: number; failed: number }>;
+  observations: ReturnType<ControllerWorkObserver["snapshot"]>;
 }>;
+
+/** Fixed-size retained diagnostics; live bookkeeping follows in-flight work.
+ * Not a log or scheduling authority. No params,
+ * prompts, paths, failure text or credentials are retained. Target/request
+ * hashes correlate an observation without publishing arbitrary input. */
+export class ControllerWorkObserver {
+  readonly #active = new Map<object, { phase: string; target: string | null; startedAt: number }>();
+  readonly #recent: { phase: string; target: string | null; startedAtMs: number; elapsedMs: number; failed: boolean }[] = [];
+  #completed = 0;
+  #maximumMs = 0;
+  #slowest: { phase: string; target: string | null; startedAtMs: number; elapsedMs: number; failed: boolean } | null = null;
+  constructor(readonly clock: () => number = monotonicMilliseconds) {}
+
+  start(phase: string, target?: string): (failed?: boolean) => void {
+    const token = {};
+    const entry = { phase, target: target === undefined ? null
+      : createHash("sha256").update(target).digest("hex").slice(0, 16), startedAt: this.clock() };
+    this.#active.set(token, entry);
+    return (failed = false) => {
+      if (!this.#active.delete(token)) return;
+      const elapsedMs = Math.max(0, this.clock() - entry.startedAt);
+      this.#completed++;
+      this.#maximumMs = Math.max(this.#maximumMs, elapsedMs);
+      const completed = { phase, target: entry.target, startedAtMs: entry.startedAt, elapsedMs, failed };
+      if (this.#slowest === null || elapsedMs > this.#slowest.elapsedMs) this.#slowest = completed;
+      this.#recent.push(completed);
+      if (this.#recent.length > 16) this.#recent.shift();
+    };
+  }
+
+  async observe<T>(phase: string, target: string | undefined, action: () => T | Promise<T>): Promise<T> {
+    const finish = this.start(phase, target);
+    try { const value = await action(); finish(); return value; }
+    catch (error) { finish(true); throw error; }
+  }
+
+  snapshot() {
+    const active = [];
+    for (const entry of this.#active.values()) {
+      active.push({ phase: entry.phase, target: entry.target, startedAtMs: entry.startedAt,
+        ageMs: Math.max(0, this.clock() - entry.startedAt) });
+      if (active.length === 16) break;
+    }
+    return {
+      completed: this.#completed, maximumMs: this.#maximumMs, inFlight: this.#active.size,
+      active, slowest: this.#slowest,
+      recent: [...this.#recent]
+    };
+  }
+}
+
+export type ControllerReadMetrics = ReturnType<ControllerWorkObserver["snapshot"]> & {
+  projectionCache: { hits: number; rebuilds: number; invalidations: number };
+};
+
+/** Small worker-response observation; no historical arrays on the RPC wire. */
+export function compactWorkObservation(observer: ControllerWorkObserver) {
+  const { completed, maximumMs, slowest, recent } = observer.snapshot();
+  return { completed, maximumMs, slowest, latest: recent.at(-1) ?? null };
+}
 
 export type ControllerEventLoopDelayMetrics = Readonly<{
   samples: number;
   maximumLagMs: number;
   lagBuckets: Readonly<Record<string, number>>;
+  maximumObservedAtMs: number | null;
 }>;
 
 /**
@@ -54,6 +117,13 @@ const BUILTIN_METHODS = new Set([
   "controller.commit-handover",
   "controller.rollback-handover",
   "controller.handover-state"
+]);
+
+const OBSERVED_METHODS = new Set([...BUILTIN_METHODS,
+  "scheduler.signal", "scheduler.scan", "scheduler.configure",
+  "runtime.ensure-role-session", "runtime.stop-role-session",
+  "capability.search", "capability.describe", "capability.call",
+  "schedule.control", "job.definition", "job.start", "job.get", "job.cancel", "job.acknowledge"
 ]);
 
 export function isBuiltinControllerMethod(method: string): boolean {
@@ -105,28 +175,34 @@ export class ControllerCommandObserver {
   #completed = 0;
   #failed = 0;
   #inFlight = 0;
-  /** Monotonic arrival timestamps of in-flight observations (FIFO). */
-  readonly #inFlightStarted: number[] = [];
+  /** Insertion order preserves arrival order; completion removes its own token. */
+  readonly #inFlightStarted = new Map<object, number>();
   #builtinCompleted = 0;
   #builtinFailed = 0;
   #dispatchedCompleted = 0;
   #dispatchedFailed = 0;
+  readonly #observations: ControllerWorkObserver;
 
   constructor(clock: () => number = monotonicMilliseconds) {
     this.#clock = clock;
+    this.#observations = new ControllerWorkObserver(clock);
   }
 
-  start(): ControllerCommandObservation {
+  start(method = "unknown", requestId?: string): ControllerCommandObservation {
     this.#received += 1;
     this.#inFlight += 1;
-    this.#inFlightStarted.push(this.#clock());
+    const token = {};
+    this.#inFlightStarted.set(token, this.#clock());
+    const finish = this.#observations.start(
+      OBSERVED_METHODS.has(method) ? method : "other", requestId);
     let completed = false;
     return {
       complete: (kind, outcome) => {
         if (completed) return;
         completed = true;
         this.#inFlight = Math.max(0, this.#inFlight - 1);
-        this.#inFlightStarted.shift();
+        this.#inFlightStarted.delete(token);
+        finish(outcome === "failure");
         this.#completed += 1;
         if (outcome === "failure") this.#failed += 1;
         if (kind === "builtin") {
@@ -142,9 +218,9 @@ export class ControllerCommandObserver {
   }
 
   snapshot(): ControllerRouteMetrics {
-    const oldest = this.#inFlightStarted.length === 0
+    const oldest = this.#inFlightStarted.size === 0
       ? null
-      : Math.max(0, this.#clock() - this.#inFlightStarted[0]!);
+      : Math.max(0, this.#clock() - this.#inFlightStarted.values().next().value!);
     return {
       received: this.#received,
       completed: this.#completed,
@@ -158,7 +234,8 @@ export class ControllerCommandObserver {
       dispatched: {
         completed: this.#dispatchedCompleted,
         failed: this.#dispatchedFailed
-      }
+      },
+      observations: this.#observations.snapshot()
     };
   }
 }
@@ -178,6 +255,7 @@ export class ControllerEventLoopDelay {
   #expectedAt = 0;
   #samples = 0;
   #maximumLagMs = 0;
+  #maximumObservedAtMs: number | null = null;
   readonly #buckets = new Map<number, number>(
     CONTROLLER_DELAY_BUCKETS_MS.map((threshold) => [threshold, 0])
   );
@@ -208,7 +286,10 @@ export class ControllerEventLoopDelay {
     this.#expectedAt = this.#clock() + this.#intervalMs;
     this.#samples += 1;
     const bounded = Math.ceil(lag);
-    this.#maximumLagMs = Math.max(this.#maximumLagMs, bounded);
+    if (this.#maximumObservedAtMs === null || bounded > this.#maximumLagMs) {
+      this.#maximumLagMs = bounded;
+      this.#maximumObservedAtMs = this.#clock();
+    }
     for (const threshold of CONTROLLER_DELAY_BUCKETS_MS) {
       if (bounded <= threshold) {
         this.#buckets.set(threshold, (this.#buckets.get(threshold) ?? 0) + 1);
@@ -226,6 +307,7 @@ export class ControllerEventLoopDelay {
     return {
       samples: this.#samples,
       maximumLagMs: this.#maximumLagMs,
+      maximumObservedAtMs: this.#maximumObservedAtMs,
       lagBuckets: Object.fromEntries(
         CONTROLLER_DELAY_BUCKETS_MS.map((threshold) => [
           `le${threshold}ms`,
