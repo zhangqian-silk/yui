@@ -309,7 +309,7 @@ export interface SchedulerStorePort {
   resolveExpiredInputRecommendations(
     now: Date,
     taskIds?: ReadonlySet<string>
-  ): readonly AutoResolvedInput[];
+  ): readonly AutoResolvedInput[] | Promise<readonly AutoResolvedInput[]>;
   /** Persist exact tmux remain-on-exit evidence before rebuilding an Agent Host. */
   saveRoleHostExitObservation(input: Readonly<{
     taskId: string;
@@ -349,11 +349,11 @@ export interface SchedulerStorePort {
    */
   getRunProgressFacts(taskId: string, runId: string): AgentRunProgressFacts | undefined;
   /** Materializes a newly observed related-record fold as one turn.progress fact. */
-  recordRoleRunProgress(input: RoleRunProgressPersistence): "recorded" | "already-recorded" | "state-changed";
+  recordRoleRunProgress(input: RoleRunProgressPersistence): "recorded" | "already-recorded" | "state-changed" | Promise<"recorded" | "already-recorded" | "state-changed">;
   /** Closes one coalesced read-only runtime diagnostic window. */
-  recordRoleRunDiagnostic(input: RoleRunDiagnosticPersistence): "recorded" | "already-recorded" | "state-changed";
+  recordRoleRunDiagnostic(input: RoleRunDiagnosticPersistence): "recorded" | "already-recorded" | "state-changed" | Promise<"recorded" | "already-recorded" | "state-changed">;
   /** Atomically records one advisory no-progress episode. */
-  recordRoleRunStall(input: RoleRunStallPersistence): "raised" | "already-raised" | "state-changed";
+  recordRoleRunStall(input: RoleRunStallPersistence): "raised" | "already-raised" | "state-changed" | Promise<"raised" | "already-raised" | "state-changed">;
   /** Exact durable Provider writer; human/unknown ownership blocks Controller writes. */
   getProviderAuthorityFence(input: Readonly<{
     taskId: string;

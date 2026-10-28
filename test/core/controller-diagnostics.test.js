@@ -8,6 +8,75 @@ import { startFileTaskControllerRuntime } from "../../dist/controller/runtime.js
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
 import { createHash } from "node:crypto";
+import { Worker } from "node:worker_threads";
+import { once } from "node:events";
+import { setImmediate as yieldLoop } from "node:timers/promises";
+import { callController } from "../../dist/core/controllerClient.js";
+import { createProject } from "../../dist/repository/project.js";
+
+test("production scheduler maintenance waits for a write lock without blocking status", async t => {
+  const home = await mkdtemp(join(tmpdir(), "yui-scheduler-lock-"));
+  const held = new Int32Array(new SharedArrayBuffer(4));
+  let running, holder, pump;
+  t.after(async () => {
+    holder?.postMessage("release");
+    await pump?.catch(() => undefined);
+    await holder?.terminate();
+    await running?.close();
+    await rm(home, { recursive: true, force: true });
+  });
+  running = await startFileTaskControllerRuntime(home, {
+    environment: { ...process.env, YUI_STORE_WORKER: "1" }, intervalMs: 60_000,
+    now: () => new Date("2026-10-28T01:00:00Z")
+  });
+  await running.runtime.pump();
+  running.store.saveProject(createProject("project-1", "Isolated", join(home, "projects/project-1"),
+    { stable: "main", development: "main" }, new Date("2026-10-28T01:00:00Z"),
+    { ownership: "managed", remoteUrl: "/nonexistent-local-fixture.git" }));
+  holder = new Worker(`
+    const { parentPort, workerData } = require("node:worker_threads");
+    (async () => {
+      const {default: Database} = await import(workerData.driver);
+      const db = new Database(workerData.file);
+      const held = new Int32Array(workerData.held);
+      db.exec("BEGIN IMMEDIATE");
+      Atomics.store(held, 0, 1);
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        db.exec("ROLLBACK");
+        Atomics.store(held, 0, 0);
+        db.close();
+      };
+      parentPort.on("message", release);
+      parentPort.postMessage("locked");
+    })();
+  `, { eval: true, workerData: {
+    driver: new URL("../../dist/sqlite/driver.js", import.meta.url).href,
+    file: join(home, "yui.db"), held: held.buffer
+  } });
+  await once(holder, "message");
+  let settled = false;
+  pump = running.runtime.pump().finally(() => { settled = true; });
+  void pump.catch(() => undefined); // failure is asserted below/awaited; teardown releases the lock
+  // Wait for the real maintenance RPC, not a timer racing a pass that has not
+  // reached the write boundary. The other connection releases on our command.
+  const deadline = performance.now() + 2000;
+  while (!settled && performance.now() < deadline &&
+    !running.runtime.runtimeMetrics().persistence.worker.roundTrips.active
+      .some(entry => entry.phase === "store-observer")) await yieldLoop();
+  assert.equal(settled, false, "maintenance must still be waiting for the held lock");
+  await callController(home, "controller.status", {}, { timeoutMs: 2000 });
+  assert.equal(Atomics.load(held, 0), 1, "status responds before the independent writer releases");
+  holder.postMessage("release");
+  await pump;
+  const schedule = running.store.getSchedule({ kind: "global" }, "project-sync-project-1");
+  assert.ok(schedule, "the original transaction still commits after lock release");
+  await running.runtime.pump();
+  assert.deepEqual(running.store.getSchedule({ kind: "global" }, schedule.id), schedule,
+    "another pass does not rewrite the unchanged schedule");
+});
 
 test("Controller diagnostics survive restart, rotate, redact and isolate filesystem failure", async t => {
   const home = await mkdtemp(join(tmpdir(), "yui-diagnostic-journal-"));

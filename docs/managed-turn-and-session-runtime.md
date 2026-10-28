@@ -43,6 +43,17 @@ pure queue-time measurement. Nested database/read durations overlap worker
 execution and must not be added to it. Historical maxima may belong to other
 requests; the latest/slowest samples retain their own timestamps.
 
+With the default persistence worker, periodic Project-sync configuration checks,
+expired Input recommendations and run-progress/stall diagnostic transactions
+execute on that worker as complete read/check/write operations. Their callers
+await completion; lock waiting does not block the socket thread. Existing
+transaction fences and idempotent folds remain unchanged. Explicit worker-off
+mode and injected adapters retain synchronous behavior. This is not blanket
+isolation of all database writes: launch admission, mailbox claims, due Job
+admission and other lifecycle writes still require their own boundary analysis.
+Status responsiveness during these maintenance operations is not proof that
+every possible Controller stall has been eliminated.
+
 Production Controller startup (including handover promotion) retains operational
 diagnostics in `runtime/controller-diagnostics.jsonl`, with two rotated files.
 Each file is bounded to 1 MiB and owner-readable/writable only. An asynchronous

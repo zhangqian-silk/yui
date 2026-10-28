@@ -680,9 +680,9 @@ export async function reconcileStalledRoleRuns(
   });
   if (stallCandidates.length === 0) return [];
   const diagnosticStartedAt = now.toISOString();
-  const finishDiagnostics = (outcome: "observed" | "observation-error"): void => {
+  const finishDiagnostics = async (outcome: "observed" | "observation-error"): Promise<void> => {
     for (const { task, role, run } of stallCandidates) {
-      store.recordRoleRunDiagnostic({
+      await store.recordRoleRunDiagnostic({
         taskId: task.id,
         roleName: role.name,
         runId: run.id,
@@ -748,7 +748,7 @@ export async function reconcileStalledRoleRuns(
       // Health inspection is advisory. Unknown host state must leave the exact
       // AgentRun/Session fence untouched. Closing this window schedules the next
       // bounded diagnostic thirty minutes later instead of hot-looping.
-      finishDiagnostics("observation-error");
+      await finishDiagnostics("observation-error");
       return [];
     }
   }
@@ -759,7 +759,7 @@ export async function reconcileStalledRoleRuns(
     } catch {
       // A malformed/partial provider snapshot is not evidence of a stall.
       // Leave all fences untouched and let the next full pass retry.
-      finishDiagnostics("observation-error");
+      await finishDiagnostics("observation-error");
       return [];
     }
   }
@@ -773,7 +773,7 @@ export async function reconcileStalledRoleRuns(
     let live: "present" | "absent";
     try {
       if (liveStatuses !== undefined && !liveStatuses.has(key)) {
-        finishDiagnostics("observation-error");
+        await finishDiagnostics("observation-error");
         return [];
       }
       live = liveStatuses !== undefined
@@ -793,7 +793,7 @@ export async function reconcileStalledRoleRuns(
       // Without a complete live snapshot, especially for downstream AgentRuns,
       // Leader classification would be unsafe. Treat the whole advisory pass
       // as unknown instead of escalating a false stall.
-      finishDiagnostics("observation-error");
+      await finishDiagnostics("observation-error");
       return [];
     }
     // A missing process is handled by the existing fenced liveness pass. This
@@ -916,7 +916,7 @@ export async function reconcileStalledRoleRuns(
       // A new semantic progress point closes the previous episode first. It
       // may itself already be older than the window, in which case the same
       // pass records the next AgentRun+progressAt episode below.
-      store.recordRoleRunProgress({
+      await store.recordRoleRunProgress({
         taskId: candidate.task.id,
         roleName: candidate.role.name,
         runId: candidate.run.id,
@@ -947,7 +947,7 @@ export async function reconcileStalledRoleRuns(
     // New role/session/provider evidence is retained in the Leader's next
     // diagnostic context, not duplicated as another Task-level alert.
     if (previous?.progressAt === progressAt) continue;
-    const persisted = store.recordRoleRunStall({
+    const persisted = await store.recordRoleRunStall({
       taskId: candidate.task.id,
       roleName: candidate.role.name,
       runId: candidate.run.id,
@@ -988,7 +988,7 @@ export async function reconcileStalledRoleRuns(
       previous !== undefined
       && Date.parse(progressAt) > Date.parse(previous.progressAt)
     ) {
-      store.recordRoleRunProgress({
+      await store.recordRoleRunProgress({
         taskId: candidate.task.id,
         roleName: candidate.role.name,
         runId: candidate.run.id,
@@ -998,7 +998,7 @@ export async function reconcileStalledRoleRuns(
       });
     }
   }
-  finishDiagnostics("observed");
+  await finishDiagnostics("observed");
   return raised;
 }
 

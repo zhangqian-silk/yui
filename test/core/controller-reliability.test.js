@@ -18,6 +18,7 @@ import { createTask } from "../../dist/task/task.js";
 import { createTaskEvent } from "../../dist/event/taskEvent.js";
 import { AsyncTaskStoreClient } from "../../dist/storage/storeRpc.js";
 import { createTaskMessage } from "../../dist/message/message.js";
+import { serializeError, deserializeError } from "../../dist/core/boundedRpc.js";
 
 test("scheduler reads only requested families and refreshes after external writes and rollback", t => {
   const home = mkdtempSync(join(tmpdir(), "yui-read-projection-"));
@@ -64,6 +65,10 @@ test("scheduler reads only requested families and refreshes after external write
 });
 
 test("worker observations correlate round trips without a status RPC and preserve failure", async t => {
+  const lockFailure = Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+  const transported = deserializeError(serializeError(lockFailure));
+  assert.equal(transported.code, "SQLITE_BUSY", "thread isolation must retain the diagnostic error class");
+  assert.equal(transported.stack, lockFailure.stack);
   const home = mkdtempSync(join(tmpdir(), "yui-worker-observation-"));
   let store, client;
   t.after(async () => { await client?.close(); store?.close(); rmSync(home, { recursive: true, force: true }); });

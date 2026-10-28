@@ -22,6 +22,7 @@
  */
 import {
   BoundedRpcClient,
+  deserializeError as deserializeRpcError,
   nextRequestId,
   type BoundedRpcProtocol,
   type SerializedError
@@ -259,9 +260,7 @@ function deserializeError(serialized: SerializedError): Error {
   if (name === "StorageCancelledError" || name === "AbortError") {
     return new StorageCancelledError(message);
   }
-  const error = new Error(message);
-  error.name = name;
-  return error;
+  return deserializeRpcError(serialized);
 }
 
 // -- Storage protocol adapter -------------------------------------------------

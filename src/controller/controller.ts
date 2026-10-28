@@ -189,7 +189,7 @@ export type ControllerRuntimeOptions = Readonly<{
   jobDefinitions?: (params: JsonValue, now: Date) => unknown;
   schedules?: Readonly<{
     control(params: JsonValue, now: Date): unknown;
-    reconcile(now: Date): void;
+    reconcile(now: Date): void | Promise<void>;
   }>;
   capabilityDispatcher?: ControllerDispatcher;
 }>;
@@ -435,10 +435,10 @@ export async function runControllerSchedulerPass(
     await controlEventLoopRun();
     const selectedInputTaskIds = selectedTaskIdsForBoundedPass(store, selection);
     const autoResolvedInputs = selectedInputTaskIds === undefined
-      ? store.resolveExpiredInputRecommendations(now)
+      ? await store.resolveExpiredInputRecommendations(now)
       : selectedInputTaskIds.size === 0
         ? []
-        : store.resolveExpiredInputRecommendations(now, selectedInputTaskIds);
+        : await store.resolveExpiredInputRecommendations(now, selectedInputTaskIds);
     // Liveness and auto-resolution can durably queue new Leader work. Process
     // only Tasks that were not part of phase one, except when a same-pass due
     // completion made an initially busy Leader idle. Result order remains
@@ -1519,7 +1519,7 @@ export class FileTaskController {
           // DurableJob reconciliation runs before the scheduler pass so a
           // terminal job's Leader wakeup is enqueued in the same pass that
           // processes Leader wakeups.
-          this.#schedules?.reconcile(this.#now());
+          await this.#schedules?.reconcile(this.#now());
           this.#jobSupervisor?.reconcile(this.#now());
           if (scope.kind === "full") {
             result = await this.#phases.observe("scheduler-full", "home", () => runControllerSchedulerPass(

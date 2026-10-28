@@ -62,6 +62,8 @@ export function serializeError(error: unknown): SerializedError {
 export function deserializeError(serialized: SerializedError): Error {
   const error = new Error(serialized.message);
   error.name = serialized.name;
+  if (serialized.code !== undefined) Object.assign(error, { code: serialized.code });
+  if (serialized.stack !== undefined) error.stack = serialized.stack;
   return error;
 }
 

@@ -135,7 +135,6 @@ import { authorizeJobStart } from "./jobControl.js";
 import { authorizeGlobalJobStart, createJobDefinitionControl } from "./jobDefinitionControl.js";
 import { reconcileTaskDelegation } from "./jobTaskDelegationControl.js";
 import { createScheduleControl, reconcileSchedules } from "./scheduleControl.js";
-import { reconcileProjectSync } from "../job/projectSync.js";
 import {
   createFileArtifactPort,
   createLinuxProcessPort,
@@ -161,6 +160,8 @@ import {
 } from "./runtimeLaunchCoordinator.js";
 import { SessionOwnerReconciliation } from "./sessionOwnerReconciliation.js";
 import { readTaskAgentCapabilities } from "./agentCapabilities.js";
+import { workerSchedulerStore } from "./workerSchedulerStore.js";
+import { deserializeError, type SerializedError } from "../core/boundedRpc.js";
 
 export type FileTaskControllerFactoryOptions = ControllerRuntimeOptions & Readonly<{
   store?: TaskStore;
@@ -281,6 +282,10 @@ async function createFileTaskControllerRuntime(
         store,
         telemetry
       );
+    // Injected stores/adapters retain their owner and semantics. Only the
+    // production SQLite adapter shares the worker's exact Home and behavior.
+    const workerMaintenance = asyncStoreClient !== undefined
+      && options.store === undefined && options.schedulerStore === undefined;
     const domainIdentity = options.domainIdentity
       ?? ephemeralDomainFromEnvironment(options.environment ?? process.env);
     const planner = options.planner ?? new FileRoleLaunchPlanner(home, store, {
@@ -746,7 +751,9 @@ async function createFileTaskControllerRuntime(
         );
     const running = await startFileTaskController(
       home,
-      schedulerStore,
+      workerMaintenance
+        ? workerSchedulerStore(schedulerStore, asyncStoreClient!)
+        : schedulerStore,
       delivery,
       (method, params) => method === "task.role-capabilities"
         ? readTaskAgentCapabilities(store, catalogs, params)
@@ -798,8 +805,11 @@ async function createFileTaskControllerRuntime(
         jobDefinitions: createJobDefinitionControl(store, home),
         schedules: {
           control: createScheduleControl(store, home),
-          reconcile: now => {
-            reconcileProjectSync(store, now, options.onError);
+          reconcile: async now => {
+            const errors = workerMaintenance
+              ? await asyncStoreClient!.invokeObserver("reconcileProjectSync", [now]) as SerializedError[]
+              : schedulerStore.reconcileProjectSync(now);
+            for (const error of errors) options.onError?.(deserializeError(error));
             reconcileSchedules(store, home, now, options.onError);
           }
         },
