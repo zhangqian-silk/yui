@@ -116,6 +116,7 @@ export type ControllerSchedulerResult = Readonly<{
 }>;
 
 export type ControllerRuntimeOptions = Readonly<{
+  diagnosticMetrics?: () => { written: number; dropped: number; writeFailures: number; pending: number };
   persistenceMetrics?: () => ControllerRuntimeMetrics["persistence"];
   intervalMs?: number;
   signalWindowMs?: number;
@@ -232,6 +233,7 @@ export type RunningFileTaskController = Readonly<{
 }>;
 
 export type ControllerRuntimeMetrics = Readonly<{
+  diagnostics: { written: number; dropped: number; writeFailures: number; pending: number } | null;
   persistence: {
     worker: ReturnType<import("../storage/storeRpc.js").AsyncTaskStoreClient["observationMetrics"]> | null;
     database: ReturnType<import("../storage/sqliteStore.js").SqliteTaskStore["storageObservationMetrics"]> | null;
@@ -1129,6 +1131,7 @@ export class FileTaskController {
   readonly #continuationReconciler: ControllerRuntimeOptions["continuationReconciler"];
   readonly #hostTerminalRecovery: ControllerRuntimeOptions["hostTerminalRecovery"];
   readonly #persistenceMetrics: ControllerRuntimeOptions["persistenceMetrics"];
+  readonly #diagnosticMetrics: ControllerRuntimeOptions["diagnosticMetrics"];
   #current: Promise<ControllerSchedulerResult> | undefined;
   readonly #phases = new ControllerWorkObserver();
   #operatorCurrent: Promise<void> | undefined;
@@ -1152,6 +1155,7 @@ export class FileTaskController {
     options: ControllerRuntimeOptions = {}
   ) {
     this.#persistenceMetrics = options.persistenceMetrics;
+    this.#diagnosticMetrics = options.diagnosticMetrics;
     this.#intervalMs = positiveInteger(
       options.intervalMs,
       DEFAULT_RECONCILIATION_INTERVAL_MS,
@@ -1267,9 +1271,10 @@ export class FileTaskController {
     return this.#intervalMs;
   }
 
-  runtimeMetrics(): Pick<ControllerRuntimeMetrics, "inbox" | "drain" | "phases" | "reads" | "scheduler" | "persistence"> {
+  runtimeMetrics(): Pick<ControllerRuntimeMetrics, "inbox" | "drain" | "phases" | "reads" | "scheduler" | "persistence" | "diagnostics"> {
     const metrics = this.#lastRuntimeDrain?.metrics ?? ZERO_DRAIN_METRICS;
     return {
+      diagnostics: this.#diagnosticMetrics?.() ?? null,
       phases: this.#phases.snapshot(),
       persistence: this.#persistenceMetrics?.() ?? null,
       reads: this.store.readObservationMetrics?.() ?? null,

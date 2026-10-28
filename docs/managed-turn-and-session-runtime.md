@@ -43,6 +43,24 @@ pure queue-time measurement. Nested database/read durations overlap worker
 execution and must not be added to it. Historical maxima may belong to other
 requests; the latest/slowest samples retain their own timestamps.
 
+Production Controller startup (including handover promotion) retains operational
+diagnostics in `runtime/controller-diagnostics.jsonl`, with two rotated files.
+Each file is bounded to 1 MiB and owner-readable/writable only. An asynchronous
+writer admits at most 32 queued records (16 KiB each); it never writes the
+business database. Scheduler/startup errors retain a classification, fingerprint
+and build-relative source frames, not raw messages, arguments or credentials.
+A 250 ms memory-only sampler records new failed/slow observations (at least
+1 second), active slow work or its own loop delay at most once per second.
+Records carry wall time, monotonic time, PID, process-instance ID and version;
+bounded phase snapshots retain hashed request/target identities. It is sampled
+evidence, not a trace of every request or the exact cause of pre-routing delay.
+`observations.diagnostics` reports written/dropped/pending records and write
+failures. No successful diagnostic write is assumed when storage fails.
+Rotation, queue overflow and abrupt termination can lose evidence; a blocked
+loop cannot emit a snapshot until it resumes. No automatic restart or operation
+replay is introduced. These disposable operational logs are not Task state,
+acceptance, a second recovery authority or a Home schema migration.
+
 Scheduler caches load families lazily and use transaction-maintained Task
 read revisions. Another Task or Global message does not invalidate an unchanged
 Task history; updates, deletions and external writers still do. Compound folds

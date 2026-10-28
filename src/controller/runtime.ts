@@ -1,4 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
+import { ControllerDiagnosticJournal } from "./diagnosticJournal.js";
+import { monotonicMilliseconds } from "../core/controllerTelemetry.js";
 import { prepareNativeHostSteer } from "./nativeHostInput.js";
 import { archiveLeaderTask } from "../task/leaderArchive.js";
 import { TaskWorkspaceCoordinator } from "../repository/taskWorkspaceCoordinator.js";
@@ -194,6 +196,47 @@ export type RunningFileTaskControllerRuntime = RunningFileTaskController & Reado
 export async function startFileTaskControllerRuntime(
   home: string,
   options: FileTaskControllerFactoryOptions = {}
+): Promise<RunningFileTaskControllerRuntime> {
+  const diagnostics = new ControllerDiagnosticJournal(home);
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const closeDiagnostics = async (): Promise<void> => {
+    if (timer !== undefined) clearInterval(timer);
+    await diagnostics.close();
+  };
+  try {
+    const running = await createFileTaskControllerRuntime(home, {
+      ...options,
+      diagnosticMetrics: () => diagnostics.metrics(),
+      onError: error => { diagnostics.error(error); options.onError?.(error); }
+    });
+    let expectedAt = monotonicMilliseconds() + 250;
+    timer = setInterval(() => {
+      const now = monotonicMilliseconds();
+      const lagMs = Math.max(0, now - expectedAt);
+      expectedAt = now + 250;
+      diagnostics.observe({
+        ...running.runtime.runtimeMetrics(),
+        commands: {
+          routes: running.server.commandObserver.snapshot(),
+          eventLoopDelay: running.server.eventLoopDelay.snapshot()
+        }
+      }, lagMs);
+    }, 250);
+    timer.unref();
+    const closed = running.closed.finally(closeDiagnostics);
+    return { ...running, closed, close: async () => {
+      try { await running.close(); } finally { await closeDiagnostics(); }
+    } };
+  } catch (error) {
+    diagnostics.error(error);
+    await closeDiagnostics();
+    throw error;
+  }
+}
+
+async function createFileTaskControllerRuntime(
+  home: string,
+  options: FileTaskControllerFactoryOptions
 ): Promise<RunningFileTaskControllerRuntime> {
   // The current Home always uses SQLite. The persistence worker is enabled by
   // default; YUI_STORE_WORKER=0/false keeps the same database in-process.
@@ -725,6 +768,7 @@ export async function startFileTaskControllerRuntime(
           ?? resolveRuntimeHealth(durableConfig.runtimeHealth).diagnosticAfterMs,
         now: options.now,
         onError: options.onError,
+        diagnosticMetrics: options.diagnosticMetrics,
         lifecycleHost,
         providerRetry: createProviderRetryHooks(home, store, {
           now: options.now,
