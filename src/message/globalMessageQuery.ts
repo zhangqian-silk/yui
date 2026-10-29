@@ -19,6 +19,10 @@ export type GlobalMessageQuery = Readonly<{
     holderId: string;
   }>;
   operatorNotice?: boolean;
+  /** Read-only health projection; includes retained explicit nondelivery. */
+  awaitingDelivery?: boolean;
+  excludeHealthNotices?: boolean;
+  systemBodyPrefix?: string;
   /** Delivery admission excludes actively consumed originals, not other input. */
   unclaimed?: boolean;
 }>;

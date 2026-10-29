@@ -480,3 +480,40 @@ Task。Operator 诊断和 Controller 重启不先要求一个健康的 Controlle
 也能到达专用的迁移入口，而不先要求 Home 已经处于目标存储版本。完成、取消和归档具有
 彼此不同的权限和资源边界。存储变更使用唯一的
 [升级合同](sqlite-control-plane-design.zh-CN.md)。
+
+## 消息投递健康度
+
+Controller 在既有 full reconciliation 中观察 Task Role 通知 mailbox、
+Assignment continuation、Global Role 输入及 Operator attention mailbox。
+分别读取真实 `pending` 后缀与 `processing`，不把 `getPendingWakeup` 的兼容投影
+当作底层队列；不启动 Agent 私有轮询、不自动 ACK、释放占用或重放未知输入。
+
+`yui controller status --verbose --json` 的
+`identity.runtime.observations.messageHealth` 提供带采样时间的缓存诊断；Controller RPC 对应
+`runtime.messageHealth`。可查看数量、最老等待与占用时长、精确 Session/attempt/wake/
+message、已回答输入、投递证据、重试归属与既有 Host 核对结果。`unobserved` 不代表
+Host 健康。按其中的 Event/Message 读取命令核对持久原始证据。状态读取不会扫描数据库
+或发起探测；最多展示 64 个 owner 并显式报告省略数量，重启后原始记录仍可读取。
+
+符合异常条件的投递等待在 5 分钟后预警，30 分钟后最多升级一次；若队列至少翻倍且达到
+8 条，可在 15 分钟后提前升级。仅一条长期不推进的输入也会检测。采样复用 full-pass
+间隔（默认 120 秒，可设 5–300 秒），健康响应的 Controller 在超过阈值后的首次完整
+检查发现；停机、I/O 堵塞和 Provider 不可用期间不保证墙钟时限或即时送达。没有精确
+Host 反证的 accepted 长 Turn 视为忙碌；显式停止、Role 禁用、human 所有权、原生
+暂停、匹配的未回答输入等待单独区分。有效的有界重试仍由既有恢复机制拥有。只有历史
+缺 ACK、没有新待投递后缀，不会生成积压告警。
+
+按受影响的投递 owner 合并一个未关闭异常，最多保存预警、升级和积压消除三个阶段，
+并发到达不会逐条调用模型。Task 使用普通 `message.health.<role>` Event，Global
+使用 record-only system Message，都是既有开放内容格式中的追加证据，不新增存储
+envelope、schema 或调度权威。最新证据用于重启后的去重。告警使用稳定 request ID，
+走独立于受影响 Task 占用的 Operator Global Message 通道；最多保留一条未发送的
+工程通知，其余待告警证据持久保留并在后续 full pass 检查。
+
+Operator 缺席、已停止或没有受控 binding 时，不自动创建 Session；忙碌时保留已保存
+通知，失败时保留原 Message 和原因、不重放。诊断区分已生成证据、已保存通知、传输
+接受、Provider 送达与显式处置。告警 ACK 不关闭异常。只有观察到投递积压消失才记录
+恢复；显式暂停、或仅释放旧 processing 但 pending 仍在，不算恢复。积压消除也不证明
+业务处理完成、Task 验收或获得任何额外恢复权限。
+pending 全部转入新 processing owner 也不算清除：即便当前 Turn 已完成，持续 deferred
+的 processing 仍保留监测及精确 attempt、投递拒绝详情。

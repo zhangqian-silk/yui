@@ -321,6 +321,7 @@ export function parseControllerRuntimeSnapshot(
       reads: (runtime.reads ?? null) as JsonValue,
       persistence: (runtime.persistence ?? null) as JsonValue,
       diagnostics: (runtime.diagnostics ?? null) as JsonValue,
+      messageHealth: (runtime.messageHealth ?? null) as JsonValue,
       scheduler: (runtime.scheduler ?? null) as JsonValue,
       preRoutingWait: "unmeasured; event-loop lag is sampled, not per-request queue time",
       clock: "process-monotonic milliseconds; target/request labels are sha256 prefixes"

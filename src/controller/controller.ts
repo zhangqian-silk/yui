@@ -116,6 +116,7 @@ export type ControllerSchedulerResult = Readonly<{
 }>;
 
 export type ControllerRuntimeOptions = Readonly<{
+  messageHealth?: (now: Date) => Promise<import("./messageHealth.js").MessageHealthSnapshot>;
   diagnosticMetrics?: () => { written: number; dropped: number; writeFailures: number; pending: number };
   persistenceMetrics?: () => ControllerRuntimeMetrics["persistence"];
   intervalMs?: number;
@@ -233,6 +234,7 @@ export type RunningFileTaskController = Readonly<{
 }>;
 
 export type ControllerRuntimeMetrics = Readonly<{
+  messageHealth: import("./messageHealth.js").MessageHealthSnapshot | null;
   diagnostics: { written: number; dropped: number; writeFailures: number; pending: number } | null;
   persistence: {
     worker: ReturnType<import("../storage/storeRpc.js").AsyncTaskStoreClient["observationMetrics"]> | null;
@@ -1127,6 +1129,8 @@ export class FileTaskController {
   readonly #jobSupervisor: ControllerRuntimeOptions["jobSupervisor"];
   readonly #schedules: ControllerRuntimeOptions["schedules"];
   readonly #globalInputDelivery: ControllerRuntimeOptions["globalInputDelivery"];
+  readonly #messageHealth: ControllerRuntimeOptions["messageHealth"];
+  #lastMessageHealth: ControllerRuntimeMetrics["messageHealth"] = null;
   readonly #providerRetry: ControllerRuntimeOptions["providerRetry"];
   readonly #continuationReconciler: ControllerRuntimeOptions["continuationReconciler"];
   readonly #hostTerminalRecovery: ControllerRuntimeOptions["hostTerminalRecovery"];
@@ -1232,6 +1236,7 @@ export class FileTaskController {
     this.#continuationReconciler = options.continuationReconciler;
     this.#hostTerminalRecovery = options.hostTerminalRecovery;
     this.#globalInputDelivery = options.globalInputDelivery;
+    this.#messageHealth = options.messageHealth;
     this.#providerRetry = options.providerRetry;
     this.#signalScheduler = new MailboxScheduler(
       async (keys) => { await this.#requestPass({ kind: "dirty", keys }); },
@@ -1271,9 +1276,10 @@ export class FileTaskController {
     return this.#intervalMs;
   }
 
-  runtimeMetrics(): Pick<ControllerRuntimeMetrics, "inbox" | "drain" | "phases" | "reads" | "scheduler" | "persistence" | "diagnostics"> {
+  runtimeMetrics(): Pick<ControllerRuntimeMetrics, "inbox" | "drain" | "phases" | "reads" | "scheduler" | "persistence" | "diagnostics" | "messageHealth"> {
     const metrics = this.#lastRuntimeDrain?.metrics ?? ZERO_DRAIN_METRICS;
     return {
+      messageHealth: this.#lastMessageHealth,
       diagnostics: this.#diagnosticMetrics?.() ?? null,
       phases: this.#phases.snapshot(),
       persistence: this.#persistenceMetrics?.() ?? null,
@@ -1502,6 +1508,12 @@ export class FileTaskController {
           const firstRuntimeDrain = await this.#phases.observe("runtime-drain", "home", () => this.#drainRuntimeEvents());
           if (scope.kind === "full" && this.#hostTerminalRecovery !== undefined) {
             await this.#observeMaintenance("Host terminal recovery", this.#hostTerminalRecovery);
+          }
+          if (scope.kind === "full" && this.#messageHealth !== undefined) {
+            // Consume already collected Host evidence, never another live probe.
+            const health = await this.#observeMaintenance("message-health",
+              () => this.#messageHealth!(this.#now()));
+            if (health !== undefined) this.#lastMessageHealth = health;
           }
           await this.#phases.observe("provider-retry", "home", () => this.#providerRetry?.reconcile());
           await this.#phases.observe("global-input", "home",
