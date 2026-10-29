@@ -51,6 +51,26 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.19.0 compatibility and migration notes
+
+This minor adds message backlog and blocked-delivery monitoring with Operator
+alerts (PR #492). Observations distinguish live work, paused execution and bounded
+retry from stalled delivery, retain original evidence, and deduplicate alerts
+across Controller restarts. Alerts include evidence-matched management guidance:
+inspect the exact input and execution first, distinguish rejected retry from
+unknown-result resolution, and require scoped stop proof or explicit replacement
+authority where applicable. Monitoring never retries, stops or replaces execution
+automatically; an alert is not recovery authority or proof of a unique root cause.
+
+Storage remains **1.24**, and Controller/Host protocols remain v1. Existing
+messages and events are preserved; this release adds no storage migration.
+Older supported Homes still use the centralized contiguous migration chain.
+With separate update authority, the Operator verifies the published artifact
+then runs `yui update --version 2.19.0`. Compatible live Sessions are retained;
+publishing alone does not update the installed program or recover other Tasks.
+Exact-merge Core CI and the same tarball's fresh-install platform/Node matrix
+remain release gates. These checks do not establish real-model behavior.
+
 ### 2.18.0 compatibility and migration notes
 
 This minor includes the already-merged independent Jobs workspace and global
