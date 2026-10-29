@@ -29,6 +29,7 @@ export type ContextRecordQuery = Readonly<{
   eventTypes?: readonly string[];
   eventRequestId?: string;
   eventMessageId?: string;
+  eventAttemptId?: string;
   afterSequence?: number;
   throughSequence?: number;
   descending?: boolean;
@@ -36,6 +37,8 @@ export type ContextRecordQuery = Readonly<{
   offset?: number;
   /** Presentation only: acknowledgement/retirement come from existing receipts. */
   unhandledMessages?: boolean;
+  /** Pending Assignment continuations, not historical missing ACKs. */
+  queuedForRole?: string;
 }>;
 export type ContextRecordPage = Readonly<{
   count: number;
@@ -85,6 +88,20 @@ export function queryContextRecords(
   const from = `${table} r${candidate ? ", json_each(r.payload, '$.candidates') candidate" : ""}`;
   const where = ["r.task_id = @taskId"];
   const params: Record<string, string | number> = { taskId };
+  if (query.eventAttemptId !== undefined) {
+    if (query.family !== "task-event") throw new Error("Attempt selection requires Events.");
+    where.push("json_extract(r.payload, '$.payload.attemptId') = @eventAttemptId");
+    params.eventAttemptId = query.eventAttemptId;
+  }
+  if (query.queuedForRole !== undefined) {
+    if (query.family !== "task-message") throw new Error("Queued Role selection requires Messages.");
+    where.push(`json_extract(r.payload, '$.recipient.roleName') = @queuedRole
+      AND json_extract(r.payload, '$.recipient.ownerRunId') IS NOT NULL
+      AND json_extract(r.payload, '$.inbox') IS NULL
+      AND json_extract(r.payload, '$.continuation.runId') IS NULL
+      AND COALESCE(json_extract(r.payload, '$.inputControl.action'), '') != 'steer'`);
+    params.queuedRole = query.queuedForRole;
+  }
   if (query.ids !== undefined) {
     where.push(`${id} IN (SELECT value FROM json_each(@ids))`);
     params.ids = JSON.stringify(query.ids);

@@ -643,3 +643,99 @@ Operator storage diagnosis/upgrade also reaches the dedicated migration entry
 without first requiring the Home to already have the target storage version.
 Completion, cancellation and archive have distinct authority and resource
 boundaries. Storage changes use the single [upgrade contract](sqlite-control-plane-design.md).
+
+## Message delivery health
+
+The Controller's existing full reconciliation observes Task Role notification
+mailboxes, Assignment continuations, Global Role input and the Operator attention
+mailbox. It reads the real `pending` suffix separately from `processing`, never
+the compatibility `getPendingWakeup` projection. It does not run an Agent polling
+loop, acknowledge input, release a claim, resend an uncertain input or start an
+unavailable Operator.
+
+`yui controller status --verbose --json` exposes a cached, timestamped
+`identity.runtime.observations.messageHealth` view (the Controller RPC exposes
+`runtime.messageHealth`). It includes counts, oldest wait/occupancy, exact
+Session/attempt/wake/message references, answered input references, recorded
+delivery outcome, retry ownership and the existing Host reconciliation evidence.
+`unobserved` is not proof of Host health. Inspect its exact Event/Message read
+commands for durable originals. Status reads perform no database scans or probes.
+The view shows at most 64 owners and reports omissions; records remain readable
+through the existing Task event and Global Role message commands after restart.
+
+An eligible stalled delivery warns after 5 minutes and escalates once at
+30 minutes, or after 15 minutes if the queue at least doubles and reaches eight
+items. A single old input is sufficient. Sampling is on the configured full-pass
+interval (default 120 seconds, permitted 5–300 seconds): with a responsive
+Controller, detection occurs on the first completed pass after the threshold.
+These are not wall-clock delivery guarantees during downtime, blocked I/O or
+unavailable Providers. Accepted long Turns without contrary exact Host evidence
+are busy, not faults; explicit stops, disabled Roles, human ownership, native
+pause and matching open input waits are distinct from blocked delivery. Valid
+bounded retry remains owned by its existing recovery mechanism. Historical
+missing ACKs without a new waiting suffix do not generate backlog alerts.
+
+Each affected delivery owner has one open diagnostic episode: at most a warning,
+one escalation and a backlog-clear observation. Concurrent arrivals coalesce;
+they do not each call a model. Task evidence uses ordinary `message.health.<role>`
+Events; Global evidence uses record-only system Messages. These are append-only
+content in the existing open Event/Message formats, not a new storage envelope,
+schema version or scheduling aggregate. The newest evidence reconstructs
+notification deduplication after restart. Each notice reuses the ordinary
+Operator Global Message queue with a stable request ID, independent of the
+affected Task's occupied mailbox. Only one unsent engineering notice is admitted;
+later evidence stays durable and is reconsidered on subsequent full passes.
+
+If Operator is absent/stopped/uncontrolled, evidence remains generated but no
+new Session is started. If it is busy, the notice stays saved; failures retain
+their exact message and reason and are not replayed. Diagnostics distinguish
+generated evidence, saved notice, transport acceptance, Provider delivery and
+explicit handling. An alert ACK is never recovery. Only an observed empty
+delivery backlog closes an episode; an explicit pause or merely releasing the
+old processing claim while a pending suffix remains does not. Backlog clearance
+itself proves neither business handling nor completion, and grants no recovery
+authority. Moving all pending work to a new processing owner is not clearance:
+retained processing with a deferred delivery remains observable, including its
+exact attempt and rejection detail, even when the current Turn is completed.
+
+### Management recovery guidance
+
+Notices include the current observation time, exact identities, original read
+commands and conditional recovery guidance, also available in the cached
+`recovery` field. A notice delayed by Operator unavailability uses current facts
+when it is finally saved, not the original incident's intervention advice.
+Already-saved notices remain immutable evidence and are not resent merely to
+update advice: always refresh status and exact Session/wake/message evidence
+before acting. A command template is neither authorization nor proof that a
+later invocation still targets the observed Session; current CLI fences apply.
+
+An affected Leader is supervised by Operator; a subordinate Task Role by its
+authorized Leader or Operator. Normal busy work, legitimate pause and owned
+bounded retry receive non-intervention guidance. For an established retained
+Task Host barrier, the supervisor may consider the existing targeted
+`task role session stop` path without waiting for a complete engineering repair
+or perfect historical projections. Inspect exact native/background execution,
+event persistence, authority and cleanup consequences first. Unpersisted Host
+facts must not be destroyed. A saved stop request is not successful physical
+cleanup; retain failure evidence when cleanup cannot be proven. Existing
+authorized lifecycle/delivery may reuse the retained conversation after proven
+stop; verify its identity. Deliberate `task role session new` is a different,
+explicit replacement decision, requiring durable progress and fenced cleanup.
+Goal `stalled` alone neither establishes the cause nor warrants clearing Goal.
+
+In this candidate, `task wake retry` requires a proven-rejected, unconsumed
+exact claim, a corrected cause and no accepted/uncertain native execution.
+`task wake resolve` supports an unknown exact claim after shared-native
+quiescence; it releases scheduling without replay or semantic acknowledgement.
+Deferred delivery meets neither precondition. Do not assume another recovery
+package's extended behavior is installed. For Global Roles, this candidate
+does not establish a dedicated targeted Host-stop command: inspect original
+input/control and `session retry <role> show`, then discover current authorized
+capabilities. There is no guessed Task equivalent or stop-all fallback.
+
+On refusal or failure, preserve the exact receipt, original inputs and work,
+and escalate only the missing authority, capability or cleanup evidence.
+Verify management request, physical stop, conversation reuse/replacement,
+actual subsequent Provider acceptance and business handling separately.
+Missing evidence remains unverified; no automatic recovery, replay, forced
+ACK, model/account/permission change or Controller-wide restart is introduced.

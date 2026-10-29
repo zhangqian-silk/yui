@@ -1383,6 +1383,21 @@ export class SqliteTaskStore implements TaskStore {
         thenHolder: query.reservedThen.holderId });
     }
     if (query.operatorNotice) where.push("json_extract(payload, '$.inputControl.requestId') LIKE 'operator-notice:%'");
+    if (query.awaitingDelivery) where.push(`(json_extract(payload, '$.delivery') IS NULL
+        OR json_extract(payload, '$.delivery.via') = 'transport')
+      AND json_extract(payload, '$.inbox.ack') IS NULL
+      AND json_extract(payload, '$.inbox.retirement') IS NULL
+      AND (json_extract(payload, '$.inputControl.action') = 'queue'
+        OR json_extract(payload, '$.interruptThen') IS NOT NULL
+        OR json_extract(payload, '$.control.outcome') IN ('pending','delivery-unknown'))`);
+    if (query.excludeHealthNotices) where.push(
+      "COALESCE(json_extract(payload, '$.inputControl.requestId'), '') NOT LIKE 'operator-notice:message-health:%'");
+    if (query.systemBodyPrefix !== undefined) {
+      where.push(`json_extract(payload, '$.kind') = 'system'
+        AND json_extract(payload, '$.author.type') = 'system'
+        AND substr(json_extract(payload, '$.body'), 1, length(@bodyPrefix)) = @bodyPrefix`);
+      params.bodyPrefix = query.systemBodyPrefix;
+    }
     if (query.afterSequence !== undefined) {
       where.push("seq > @after"); params.after = query.afterSequence;
     }

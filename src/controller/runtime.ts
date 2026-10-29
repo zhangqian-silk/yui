@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { ControllerDiagnosticJournal } from "./diagnosticJournal.js";
+import { reconcileMessageHealth, type MessageHealthSnapshot } from "./messageHealth.js";
 import { monotonicMilliseconds } from "../core/controllerTelemetry.js";
 import { prepareNativeHostSteer } from "./nativeHostInput.js";
 import { archiveLeaderTask } from "../task/leaderArchive.js";
@@ -101,7 +102,7 @@ import { createWebTaskSurface } from "../web/webTaskSurface.js";
 import { createWebConversationSurface } from "../web/webConversation.js";
 import { WebRequestRejected } from "../web/webMutation.js";
 import { inspectAgentHost, sendAgentHostNativeControl, AGENT_HOST_CONTROL_PROTOCOL } from "../runtime/agentHost.js";
-import { recoverTaskHostTerminals } from "./taskHostTerminalRecovery.js";
+import { recoverTaskHostTerminals, type TaskHostTerminalObservation } from "./taskHostTerminalRecovery.js";
 import { archiveOrdinaryTask } from "../task/ordinaryArchive.js";
 import { createWebSettings } from "../web/webSettings.js";
 import { createModelManagement } from "../models/modelManagement.js";
@@ -749,6 +750,7 @@ async function createFileTaskControllerRuntime(
           options.continuationMetadata,
           options.onError
         );
+    let messageHealthHosts: TaskHostTerminalObservation[] = [];
     const running = await startFileTaskController(
       home,
       workerMaintenance
@@ -797,7 +799,13 @@ async function createFileTaskControllerRuntime(
           }
         }),
         jobSupervisor,
-        hostTerminalRecovery: () => recoverTaskHostTerminals(home, store, options.onError ?? (() => undefined)),
+        messageHealth: async now => workerMaintenance
+          ? await asyncStoreClient!.invokeObserver("reconcileMessageHealth", [now, messageHealthHosts]) as MessageHealthSnapshot
+          : reconcileMessageHealth(store, now, messageHealthHosts),
+        hostTerminalRecovery: async () => {
+          messageHealthHosts = [];
+          messageHealthHosts = await recoverTaskHostTerminals(home, store, options.onError ?? (() => undefined));
+        },
         globalInputDelivery: (deliveryOptions) => deliverGlobalInputs(home, store, async (roleName) => {
           await lifecycleDispatcher("runtime.ensure-role-session", { scope: "global", roleName });
         }, options.onError ?? (() => undefined), deliveryOptions),

@@ -96,6 +96,35 @@ test("worker observations correlate round trips without a status RPC and preserv
   assert.deepEqual(client.observationMetrics(), failure, "reading diagnostics sends no worker RPC");
   const snapshot = parseControllerRuntimeSnapshot({ runtime: { persistence: { worker: failure } } }, 0);
   assert.equal(snapshot.observations.persistence.worker.worker.instance, failure.worker.instance);
+  const health = await client.invokeObserver("reconcileMessageHealth", [new Date("2026-10-29T00:00:00Z"), []]);
+  assert.deepEqual(health.items, [], "The production persistence-worker entry can observe without any Agent.");
+  assert.equal(health.warningAfterMs, 300_000);
+});
+
+test("full-pass message health remains independently readable when later Global delivery fails", async t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-health-wiring-"));
+  let store, controller;
+  t.after(async () => {
+    await controller?.shutdownAndDrain();
+    store?.close();
+    rmSync(home, { recursive: true, force: true });
+  });
+  store = new SqliteTaskStore(home);
+  const snapshot = { observedAt: "2026-10-29T00:05:00Z", warningAfterMs: 300_000,
+    criticalAfterMs: 1_800_000, total: 0, omitted: 0, items: [] };
+  const calls = [];
+  controller = new FileTaskController(new FileSchedulerStoreAdapter(store), {}, {
+    hostTerminalRecovery: async () => { calls.push("host"); },
+    messageHealth: async () => { calls.push("health"); return snapshot; },
+    globalInputDelivery: async () => { calls.push("delivery"); throw new Error("Operator unavailable"); },
+    onError: () => {}
+  });
+  await controller.pump().catch(() => {});
+  assert.deepEqual(calls, ["host", "health", "delivery"]);
+  assert.deepEqual(controller.runtimeMetrics().messageHealth, snapshot);
+  const view = parseControllerRuntimeSnapshot({ runtime: controller.runtimeMetrics() }, 0);
+  assert.deepEqual(view.observations.messageHealth, snapshot);
+  assert.deepEqual(calls, ["host", "health", "delivery"], "Status reads cannot probe or resubmit input.");
 });
 
 test("request accounting keeps the oldest exact request through out-of-order completion", () => {

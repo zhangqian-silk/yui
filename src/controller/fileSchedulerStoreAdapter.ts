@@ -100,6 +100,8 @@ import { recordTaskAgentError } from "./taskAgentError.js";
 import { recordGlobalRuntimeAttention, recordGlobalRuntimeFailure, recordGlobalRuntimeRecovery } from "./globalRuntimeAttention.js";
 import { checkInboxTurn } from "./inboxTurnCheck.js";
 import { queueOperatorNotification } from "./operatorNotification.js";
+import { reconcileMessageHealth } from "./messageHealth.js";
+import type { TaskHostTerminalObservation } from "./taskHostTerminalRecovery.js";
 import { reconcileProjectSync } from "../job/projectSync.js";
 import { serializeError, type SerializedError } from "../core/boundedRpc.js";
 import { claimOperatorAttention } from "../scheduler/operatorEvent.js";
@@ -258,6 +260,10 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
     private readonly drivers: AgentDriverRegistry = builtinAgentDriverRegistry(),
     private readonly snapshotExecutionLaneWorkspace = snapshotExecutionLaneWorkspaceSync
   ) {}
+
+  reconcileMessageHealth(now: Date, hosts: TaskHostTerminalObservation[]) {
+    return reconcileMessageHealth(this.store, now, hosts);
+  }
 
   /** Registry maintenance only; this never executes a Job or starts a process. */
   reconcileProjectSync(now: Date): SerializedError[] {
