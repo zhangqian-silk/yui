@@ -517,3 +517,31 @@ Operator 缺席、已停止或没有受控 binding 时，不自动创建 Session
 业务处理完成、Task 验收或获得任何额外恢复权限。
 pending 全部转入新 processing owner 也不算清除：即便当前 Turn 已完成，持续 deferred
 的 processing 仍保留监测及精确 attempt、投递拒绝详情。
+
+### 管理恢复引导
+
+通知直接包含当前观测时间、精确身份、原始读取命令及有前提的恢复引导，缓存诊断的
+`recovery` 字段也提供同一引导。Operator 不可用导致延迟保存的通知使用保存当时的
+当前观测，不复制旧异常的操作建议；已保存通知不重写，也不为更新建议重复发送。
+执行前必须刷新 status 和准确 Session/wake/message 原始证据。命令模板不是授权，
+也不能固定未来调用的目标身份；实际操作仍受现有 CLI 围栏约束。
+
+Leader 自身受阻由 Operator 处理，下属 Task Role 由有权限的 Leader 或 Operator
+处理。正常忙碌、合法暂停、有界重试仍拥有恢复时，不推荐打断。确认 Task Host 遗留
+占用后，可评估已有准确 `task role session stop` 管理路径，不必等待完整工程修复包
+或所有历史投影对齐；先核对准确原生/后台执行、事件持久化、权限和清理影响，不能丢失
+Host 中尚未持久化的事实。stop 请求保存不等于物理清理成功，失败时保留原证据。
+证明停止后，既有授权生命周期/投递可在支持时复用原 conversation，须验证实际身份。
+`task role session new` 则是另行明确选择新 Session，需保存进展并通过清理围栏。
+仅显示 Goal stalled 不能确定根因，也不能据此要求清 Goal。
+
+本候选的 `task wake retry` 仅适用已纠正原因、原准确 claim 仍未消费的明确 rejected，
+且不能存在已接受或不确定原生执行；`task wake resolve` 仅支持准确 unknown claim
+在共享原生静止证明后释放调度，不重放、不 ACK。deferred 不满足二者前提，不能假定
+其他恢复包的扩展行为已经安装。GlobalRole 未确认有专用准确 Host-stop 命令时，读取
+原输入/control 和 `session retry <role> show`，再发现当前权限下的能力；不臆造
+Task 等价命令，也不退化为 stop-all。
+
+动作拒绝或失败后，保留精确回执、原输入和工作区，只升级缺失的权限、能力或清理证据。
+分别验证管理请求、物理停止、原会话复用/显式替换、后续实际 Provider 接受及业务处置；
+缺证据仍标为未验证。不新增自动恢复、重放、强制 ACK、模型/账号/权限变更或全局重启。

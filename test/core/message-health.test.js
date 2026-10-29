@@ -17,6 +17,7 @@ import { createTaskMessage, createGlobalRoleMessage, markGlobalRoleMessageNotDel
 import { createRoleSessionSet, recordRoleAgentSession, bindTaskRoleProviderRuntime, bindGlobalRoleProviderRuntime } from "../../dist/executor/agentExecutor.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
 import { createProviderRuntimeBinding, beginProviderTurn, acceptProviderTurn } from "../../dist/runtime/providerRuntimeIdentity.js";
+import { recordProviderFailure } from "../../dist/runtime/providerRetry.js";
 
 const start = new Date("2026-10-29T00:00:00Z");
 const at = minutes => new Date(+start + minutes * 60_000);
@@ -104,6 +105,8 @@ test("retained unknown then rejected wake alerts outside its queue; restart, gro
   assert.deepEqual(result.answeredInputs, ["task-1/input-1"]);
   assert.equal(result.batchId, "attempt-1");
   assert.equal(result.alert.reason, "operator-unconfigured");
+  assert.match(result.recovery, /wake retry task-1 wake-1/);
+  assert.doesNotMatch(result.recovery, /wake resolve task-1 wake-1/);
   assert.equal(f.facts().length, 1);
   f.reopen();
   f.operator(false);
@@ -113,6 +116,8 @@ test("retained unknown then rejected wake alerts outside its queue; restart, gro
   result = f.observe(6).items[0];
   assert.equal(result.alert.stage, "saved", "The retained evidence queues once the Operator is available.");
   assert.equal(f.notices().length, 1);
+  assert.match(f.notices()[0].body, /wake retry task-1 wake-1/);
+  assert.match(f.notices()[0].body, /Operator/);
   assert.deepEqual(f.store.getWorkMailbox(target), original, "Monitoring never releases the retained claim or pending suffix.");
   for (let i = 0; i < 10; i++) enqueueWork(f.store, target, `arrival-${i}`, at(7));
   f.observe(15);
@@ -134,6 +139,7 @@ test("retained unknown then rejected wake alerts outside its queue; restart, gro
   f.store.saveWorkMailbox({ ...f.store.getWorkMailbox(target), pending: null });
   result = f.observe(43).items.find(item => item.target.taskId === "task-1");
   assert.equal(result.state, "clear");
+  assert.doesNotMatch(result.recovery, /session stop|session new|wake retry|wake resolve/);
   assert.equal(JSON.parse(f.facts()[2].payload.evidence).phase, "recovered");
   assert.deepEqual(f.store.getTaskWake("task-1", "wake-1"), wake, "No fabricated delivery or ACK.");
   assert.deepEqual(f.store.getInputRequest("task-1", "input-1"), input);
@@ -156,13 +162,28 @@ test("exact Host evidence distinguishes idle-but-owned from a long accepted Turn
   assert.equal(reconcileMessageHealth(f.store, at(120), [{ ...host, attemptId: "long-turn" }]).items[0].state,
     "critical");
   f.store.saveRole("task-1", { ...f.store.getRole("task-1", "leader"), enabled: false });
-  assert.equal(f.observe(121).items[0].state, "paused");
+  const paused = f.observe(121).items[0];
+  assert.equal(paused.state, "paused");
+  assert.doesNotMatch(paused.recovery, /session stop|session new|wake retry|wake resolve/);
   assert.equal(f.facts().length, 1, "An intentional pause is not a recovery observation.");
   assert.deepEqual(f.store.getWorkMailbox(target), pending);
+  f.store.saveRole("task-1", { ...f.store.getRole("task-1", "leader"), enabled: true });
+  const set = f.store.getTaskRoleSessionSet("task-1", "leader");
+  const failed = { ...set.providerBinding, run: { ...set.providerBinding.run, status: "failed",
+    retrySupported: true, input: { kind: "wake", taskId: "task-1", wakeId: "wake-1" } } };
+  const binding = recordProviderFailure(failed, { at: +at(121), random: () => 0, failureRef: "failed-host",
+    error: { source: "provider", phase: "turn-execute", category: "availability", code: "provider.model-capacity",
+      message: "Capacity", raw: "fixture-capacity", inputDisposition: "accepted", sessionDisposition: "recoverable", retryable: true } });
+  f.store.saveTaskRoleSessionSet({ ...set, providerBinding: binding });
+  const recovering = f.observe(122).items[0];
+  assert.equal(recovering.state, "recovering");
+  assert.match(recovering.recovery, /bounded retry owns recovery/);
+  assert.doesNotMatch(recovering.recovery, /session stop|session new|wake retry|wake resolve/);
 });
 
 test("pending transferred to a new deferred processing owner is not recovery even with an idle completed Turn", t => {
   const f = fixture(t);
+  f.operator();
   f.accepted();
   const set = f.store.getTaskRoleSessionSet("task-1", "leader");
   f.store.saveTaskRoleSessionSet({ ...set, providerBinding: { ...set.providerBinding,
@@ -190,8 +211,36 @@ test("pending transferred to a new deferred processing owner is not recovery eve
   assert.equal(result.state, "warning");
   assert.equal(result.deliveryEvidence.outcome, "deferred");
   assert.equal(result.deliveryEvidence.detail, detail);
+  assert.match(result.recovery, /task role session stop task-1 leader/);
+  assert.doesNotMatch(result.recovery, /wake (retry|resolve) task-1 wake-2/);
+  assert.match(result.recovery, /physical stop/);
+  assert.match(result.recovery, /not.*Goal/);
   assert.equal(f.facts().length, 1, "Changing processing owner must not recover or duplicate the open incident.");
   assert.deepEqual(f.store.getWorkMailbox(target), retained);
+});
+
+test("unknown guidance preserves uncertainty; delayed notice uses current busy state instead of old intervention", t => {
+  const f = fixture(t);
+  const pending = enqueueWork(f.store, target, "unknown-input", start);
+  f.store.saveWorkMailbox(claimPending(pending, { batchId: "unknown-attempt",
+    owner: "leader-notification:wake-1", startedAt: start.toISOString() }));
+  f.store.saveEvent("task-1", createTaskEvent(f.store.nextEventId("task-1"), "task-1",
+    "notification.delivery", { attemptId: "unknown-attempt", outcome: "unknown" }, start));
+  const warning = f.observe(5).items[0];
+  assert.match(warning.recovery, /wake resolve task-1 wake-1/);
+  assert.match(warning.recovery, /quiescence/);
+  assert.doesNotMatch(warning.recovery, /wake retry/);
+  f.accepted();
+  f.operator();
+  const busy = f.observe(6).items[0];
+  assert.equal(busy.state, "busy");
+  const notice = f.notices()[0];
+  assert.match(notice.body, /Current state: busy/);
+  assert.match(notice.body, /2026-10-29T00:06:00.000Z/);
+  assert.doesNotMatch(notice.body, /wake resolve|session stop|session new/);
+  f.reopen();
+  f.observe(7);
+  assert.equal(f.notices().length, 1, "Fresh guidance does not create another notification protocol.");
 });
 
 test("historical handling alone does not alert; a pending suffix behind an idle claim is observable", t => {
@@ -220,6 +269,9 @@ test("Assignment continuations expose blocked input without counting an already 
   assert.equal(observed.count, 1);
   assert.equal(observed.state, "warning");
   assert.equal(observed.refs[0].messageId, "message-1");
+  assert.match(observed.recovery, /authorized Task Leader, or Operator/);
+  assert.match(observed.recovery, /not established/);
+  assert.doesNotMatch(observed.recovery, /yui task role session stop/);
   const request = createInputRequest("input-1", "task-1",
     { taskId: "task-1", roleName: "leader", agentId: "codex", nativeSessionId: "leader-native" },
     { question: "Required decision", choices: [], blockedRefs: [
@@ -245,6 +297,8 @@ test("Global failed input is retained and alerts once; delivery evidence is sepa
   f.store.updateGlobalRoleMessage(message);
   let observed = f.observe(5);
   assert.equal(observed.items.find(i => i.target.roleName === "assistant").state, "warning");
+  assert.match(observed.items.find(i => i.target.roleName === "assistant").recovery, /No per-GlobalRole Host-stop command/);
+  assert.doesNotMatch(f.notices()[0].body, /yui task role session stop|yui session stop/);
   assert.equal(f.notices().length, 1);
   f.reopen();
   f.observe(6);

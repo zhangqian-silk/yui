@@ -69,6 +69,62 @@ type Evidence = {
   observation: Observation;
 };
 type Saved = { id: string; read: string; evidence: Evidence };
+// Display-only shell arguments; guidance never executes these commands.
+function arg(value: string) {
+  return /^[a-zA-Z0-9_.:/-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function recoveryGuidance(o: Omit<Observation, "recovery">): string {
+  const { taskId, roleName } = o.target;
+  const owner = taskId === undefined ? "Operator (or the user if Operator itself is unavailable)"
+    : roleName === "leader" ? "Operator; the affected Leader must not synchronously stop itself"
+    : "the authorized Task Leader, or Operator";
+  const retryRead = taskId === undefined ? `yui session retry ${arg(roleName)} show`
+    : `yui task role session retry ${arg(taskId)} ${arg(roleName)} show`;
+  const lines = [
+    `Responsible: ${owner}. Guidance is not authorization and executes nothing.`,
+    `Snapshot ${o.observedAt}; Current state: ${o.state}; reason: ${o.reason}. Refresh yui controller status --verbose --json before acting; an old notice is not a current instruction.`,
+    `Exact target: Session=${o.session ?? "unreported"}, attempt=${o.attemptId ?? "unreported"}, batch=${o.batchId ?? "none"}, wake=${o.wakeId ?? "none"}.`,
+    `Read first: ${[...o.reads, retryRead, ...(o.deliveryEvidence ? [o.deliveryEvidence.read] : [])].join("; ")}.`,
+    "Check current CLI help and reported Host capabilities as the responsible caller. Missing capability, inaccessible evidence or an identity change blocks the proposed action; do not guess another command or target."
+  ];
+  if (o.state === "recovering") {
+    lines.push("Existing bounded retry owns recovery. Observe its exact attempt/deadline; do not duplicate or interrupt it. Escalate its retained failure only if exhausted or needs-attention.");
+  } else if (o.state === "busy" || o.state === "waiting") {
+    lines.push("No intervention is indicated: accepted work or claimed handling can be slow. Inspect actual progress and delivery evidence; silence or a missing ACK is not permission to interrupt.");
+  } else if (o.state === "paused") {
+    lines.push("Respect the deliberate stop/pause, human ownership, matching InputRequest or pending lifecycle cleanup. Inspect that existing obligation; this notice does not authorize resumption or another stop.");
+  } else if (o.state === "clear") {
+    lines.push("Only delivery backlog clearance was observed. No management action is indicated; inspect original inputs and handling before concluding business recovery.");
+  } else if (taskId === undefined) {
+    lines.push("No per-GlobalRole Host-stop command is established by this candidate. Read the original Global Message/control and retry evidence; use current caller capability discovery for a supported targeted lifecycle action. Do not translate Task commands to a GlobalRole or use a stop-all fallback.");
+  } else {
+    const target = `${arg(taskId)} ${arg(roleName)}`;
+    lines.push("Choose only the path matching refreshed evidence, not a stop/replace/retry sequence. Prefer correction plus guarded retry for a proven rejection when sufficient; stop is for an independently established residual Host barrier, and replacement is not the default.");
+    lines.push(`Observed barrier: delivery=${o.deliveryEvidence?.outcome ?? "unreported"}; detail=${o.deliveryEvidence?.detail ?? "unreported"}; Host=${o.hostObservation.state}/${o.hostObservation.reconciliation ?? "unreported"}; retry=${o.retry?.status ?? "unreported"}. These observations do not establish quiescence or prove Goal is the cause; do not clear Goal merely because it says stalled.`);
+    if (o.session !== null && o.blocked) {
+      lines.push(`For confirmed residual Host ownership, the responsible supervisor may consider the existing targeted management path without waiting for a full repair package or every historical projection to align. Template: yui task role session stop ${target} --reason '<verified target, authority and stop rationale>'. First refresh the exact Session/Host identity, native/background work and event persistence; normal busy work, owned retry, intentional pause, unpersisted Host events or unknown cleanup consequences block a routine stop. The CLI captures and fences the current target; this snapshot cannot pin a later invocation.`);
+      lines.push("A stop request being saved is not physical stop. Require the exact Host/resource cleanup result; if cleanup fails or volatile facts remain, retain that process and evidence and escalate the precise boundary, without force-kill or claiming it stopped. After proven stop, let existing authorized delivery/lifecycle reuse the retained conversation when supported; verify the actual native Session identity, never infer reuse from Host ready.");
+      lines.push(`Only if reuse is unsuitable and deliberate replacement is justified, preserve durable progress and use the separately authorized template: yui task role session new ${target} --reason '<why replacement is necessary>'. This requests fresh Session selection after fenced cleanup, not same-conversation reuse. A self-replacing Leader must end its turn. Retained inputs/claims still require inspection, not replay.`);
+    } else {
+      lines.push("A current controlled Session/residual Host barrier is not established. Inspect the missing runtime or Assignment evidence first; no targeted stop is recommended from this snapshot.");
+    }
+    if (o.wakeId !== null && roleName === "leader") {
+      const wakeTarget = `${arg(taskId)} ${arg(o.wakeId)}`;
+      if (o.deliveryEvidence?.outcome === "rejected") {
+        lines.push(`After correcting the rejection cause, and only if this exact wake is still unconsumed, its original claim matches and native acceptance/activity are proven absent: yui task wake retry ${wakeTarget} --reason '<verified correction and quiescence>'. Queued is not accepted. Do not retry accepted/unknown input. This candidate does not establish resolve support for rejected wakes; do not assume another recovery package is installed.`);
+      } else if (o.deliveryEvidence?.outcome === "unknown") {
+        lines.push(`Do not replay unknown input. After exact shared-native/background/writer quiescence and persisted evidence, with the original unknown claim still current: yui task wake resolve ${wakeTarget} --reason '<exact quiescence evidence>'. This releases only scheduling without replay, ACK or acceptance. The rightful handler must inspect original effects and settle still-valid obligations separately.`);
+      } else {
+        lines.push("Deferred, accepted or unreported delivery does not meet this candidate's rejected-retry/unknown-resolve preconditions. Keep the original wake and inspect the runtime barrier instead of mechanically invoking either action.");
+      }
+    }
+  }
+  lines.push("Verify separately: management request saved; exact physical stop if requested; retained conversation reused or explicit replacement recorded; subsequent original wake/message actually accepted by Provider; real handling/progress and remaining obligations. Host ready, pending=0, command success or alert ACK alone proves none of the later stages. If evidence is missing, recovery remains unverified.");
+  lines.push("If an action is refused or fails, retain its exact target, receipt/error, original input and workspace; report the smallest missing capability, authority or cleanup evidence to the responsible supervisor. No private retry loop, forced ACK, queue clearing, raw DB edits, unknown-effect replay, model/account/permission changes or whole-Controller/all-Session restart.");
+  return lines.join("\n");
+}
+
 export type MessageHealthSnapshot = {
   observedAt: string; warningAfterMs: number; criticalAfterMs: number;
   total: number; omitted: number; items: Array<Observation & {
@@ -85,14 +141,14 @@ function latest(store: TaskStore, target: Target): Saved | null {
     const event = store.queryContextRecords(target.taskId, { family: "task-event",
       eventTypes: [eventType(target.roleName)], descending: true, limit: 1 }).records[0]?.value as TaskEvent | undefined;
     return event ? { id: `${target.taskId}/${event.id}`,
-      read: `yui task event show ${target.taskId} ${event.id}`,
+      read: `yui task event show ${arg(target.taskId)} ${arg(event.id)}`,
       evidence: JSON.parse(event.payload.evidence!) as Evidence } : null;
   }
   const message = store.queryGlobalRoleMessages(target.roleName, {
     systemBodyPrefix: prefix(target), descending: true, limit: 1
   }).messages[0];
   return message ? { id: `${target.roleName}/${message.id}`,
-    read: `yui role message show ${target.roleName} ${message.id}`,
+    read: `yui role message show ${arg(target.roleName)} ${arg(message.id)}`,
     evidence: JSON.parse(message.body.slice(prefix(target).length)) as Evidence } : null;
 }
 
@@ -101,12 +157,12 @@ function record(store: TaskStore, target: Target, evidence: Evidence, now: Date)
     const event = createTaskEvent(store.nextEventId(target.taskId), target.taskId,
       eventType(target.roleName), { evidence: JSON.stringify(evidence) }, now);
     store.saveEvent(target.taskId, event);
-    return { id: `${target.taskId}/${event.id}`, read: `yui task event show ${target.taskId} ${event.id}`, evidence };
+    return { id: `${target.taskId}/${event.id}`, read: `yui task event show ${arg(target.taskId)} ${arg(event.id)}`, evidence };
   }
   const message = createGlobalRoleMessage(store.nextGlobalRoleMessageId(), target.roleName,
     prefix(target) + JSON.stringify(evidence), "system", { type: "system" }, now);
   store.saveGlobalRoleMessage(message);
-  return { id: `${target.roleName}/${message.id}`, read: `yui role message show ${target.roleName} ${message.id}`, evidence };
+  return { id: `${target.roleName}/${message.id}`, read: `yui role message show ${arg(target.roleName)} ${arg(message.id)}`, evidence };
 }
 
 function alertStatus(store: TaskStore, saved: Saved | null) {
@@ -134,19 +190,21 @@ function operatorAvailable(store: TaskStore) {
 /** Same Global Message queue and receipt contract as ordinary Operator notices.
  * No Task mailbox is involved. A busy/unavailable Operator never loses evidence.
  * At most one unsent engineering notice; original failed notices are not replayed. */
-function notify(store: TaskStore, saved: Saved, now: Date): void {
+function notify(store: TaskStore, saved: Saved, observation: Observation, now: Date): void {
   if (store.getGlobalRole("operator") === null
     || !operatorAvailable(store)
     || store.queryGlobalRoleMessages("operator", { requestId: noticeId(saved), limit: 1 }).count
     || store.queryGlobalRoleMessages("operator", { pending: true, operatorNotice: true, limit: 1 }).count) return;
-  const { phase, observation } = saved.evidence;
+  const { phase } = saved.evidence;
   const sessions = store.getGlobalRoleSessionSet("operator")!;
   const session = sessions.sessions[sessions.activeAgentId]!;
   const message = createGlobalRoleMessage(store.nextGlobalRoleMessageId(), "operator", [
-    `Yui-Summary: Message delivery ${phase}: ${observation.target.taskId ?? "global"}/${observation.target.roleName}.`,
+    `Yui-Summary: Message delivery ${observation.state}: ${observation.target.taskId ?? "global"}/${observation.target.roleName} (retained ${phase} evidence).`,
     `Inspect: ${saved.read}`,
+    `Original diagnostic phase=${phase}, first=${saved.evidence.firstAt}, latest evidence=${saved.evidence.at}; guidance below uses the current observation.`,
     "Independent diagnostics: yui controller status --verbose --json",
-    "Read current facts before acting. Alert acknowledgement is not recovery.",
+    `Waiting=${observation.count}, pending=${observation.pendingCount}, processing=${observation.processingCount}, ageMs=${observation.ageMs}, occupancyMs=${observation.occupancyMs}; answered inputs=${observation.answeredInputs.join(", ") || "none observed"}.`,
+    observation.recovery,
     "Do not ACK business inputs, release unknown writers, replay input, replace Sessions or change models automatically."
   ].join("\n"), "system", { type: "system" }, now,
   { inputControl: { action: "queue", requestId: noticeId(saved) } });
@@ -252,9 +310,9 @@ function observe(store: TaskStore, target: Target, now: Date, hosts: TaskHostTer
       && binding!.retry!.authorityEpoch === binding!.authority.epoch ? { retryDeadline: binding!.retry!.deadline } : {})
   };
   const classification = classifyMessageHealth(facts, now);
-  const readBase = taskId ? `yui task role session inspect ${taskId} ${roleName}`
-    : `yui config role show ${roleName}`;
-  return {
+  const readBase = taskId ? `yui task role session inspect ${arg(taskId)} ${arg(roleName)}`
+    : `yui config role show ${arg(roleName)}`;
+  const observation: Omit<Observation, "recovery"> = {
     ...facts, ...classification, target, observedAt: now.toISOString(),
     session: session?.nativeSessionId ?? null, agentId: session?.agentId ?? null, hostObservation,
     attemptId: turn?.attemptId ?? null, nativeTurnId: turn?.nativeTurnId ?? null,
@@ -264,7 +322,7 @@ function observe(store: TaskStore, target: Target, now: Date, hosts: TaskHostTer
     wakeId, batchId: mailbox?.processing?.batchId ?? null, processingOwner: mailbox?.processing?.owner ?? null,
     deliveryEvidence: delivery ? { outcome: delivery.payload.outcome ?? "unreported",
       detail: delivery.payload.detail ?? null,
-      read: `yui task event show ${taskId} ${delivery.id}` } : null,
+      read: `yui task event show ${arg(taskId!)} ${arg(delivery.id)}` } : null,
     pendingCount: (mailbox?.pending?.requestCount ?? 0) + (globalPage?.count ?? 0) + (taskPage?.count ?? 0),
     processingCount: mailbox?.processing?.batch.requestCount ?? 0,
     pendingSince: mailbox?.pending?.firstQueuedAt ?? globalPage?.oldestCreatedAt ?? taskMessages[0]?.createdAt ?? null,
@@ -276,13 +334,11 @@ function observe(store: TaskStore, target: Target, now: Date, hosts: TaskHostTer
     }))], omittedRefs: Math.max(0, refs.length - 8) + Math.max(0, (globalPage?.count ?? 0) - messages.length)
       + Math.max(0, (taskPage?.count ?? 0) - taskMessages.length),
     answeredInputs: answeredInputs.slice(0, 8),
-    reads: [readBase, ...(wakeId && taskId ? [`yui task wake show ${taskId} ${wakeId}`] : []),
-      ...messages.map(message => `yui role message show ${roleName} ${message.id}`),
-      ...taskMessages.map(message => `yui task message show ${taskId}/${message.id}`)],
-    recovery: classification.state === "recovering" ? "Existing bounded retry owns recovery; do not start another attempt."
-      : wakeId && taskId ? `Inspect the exact wake/attempt and Host terminal first. Only proven quiescence permits yui task wake resolve ${taskId} ${wakeId}; corrected rejection may permit yui task wake retry ${taskId} ${wakeId}. Neither action is performed by monitoring.`
-      : "Inspect Session, original input/control and Host evidence. No timeout proves quiescence or permits replay. An empty queue proves only delivery backlog clearance, not handling or business recovery."
+    reads: [readBase, ...(wakeId && taskId ? [`yui task wake show ${arg(taskId)} ${arg(wakeId)}`] : []),
+      ...messages.map(message => `yui role message show ${arg(roleName)} ${arg(message.id)}`),
+      ...taskMessages.map(message => `yui task message show ${arg(`${taskId}/${message.id}`)}`)]
   };
+  return { ...observation, recovery: recoveryGuidance(observation) };
 }
 
 /** Low-rate Controller observation, not an Agent loop. All decisions use current
@@ -316,7 +372,7 @@ export function reconcileMessageHealth(
           previous: saved?.id ?? null, observation
         }, now);
       }
-      if (saved !== null) notify(tx, saved, now);
+      if (saved !== null) notify(tx, saved, observation, now);
       if (observation.count > 0 || observation.processingAt !== null || saved !== null) {
         items.push({ ...observation, evidence: saved?.read ?? null, alert: alertStatus(tx, saved),
           incident: saved ? { phase: saved.evidence.phase, firstAt: saved.evidence.firstAt,

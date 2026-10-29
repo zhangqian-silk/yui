@@ -697,3 +697,45 @@ itself proves neither business handling nor completion, and grants no recovery
 authority. Moving all pending work to a new processing owner is not clearance:
 retained processing with a deferred delivery remains observable, including its
 exact attempt and rejection detail, even when the current Turn is completed.
+
+### Management recovery guidance
+
+Notices include the current observation time, exact identities, original read
+commands and conditional recovery guidance, also available in the cached
+`recovery` field. A notice delayed by Operator unavailability uses current facts
+when it is finally saved, not the original incident's intervention advice.
+Already-saved notices remain immutable evidence and are not resent merely to
+update advice: always refresh status and exact Session/wake/message evidence
+before acting. A command template is neither authorization nor proof that a
+later invocation still targets the observed Session; current CLI fences apply.
+
+An affected Leader is supervised by Operator; a subordinate Task Role by its
+authorized Leader or Operator. Normal busy work, legitimate pause and owned
+bounded retry receive non-intervention guidance. For an established retained
+Task Host barrier, the supervisor may consider the existing targeted
+`task role session stop` path without waiting for a complete engineering repair
+or perfect historical projections. Inspect exact native/background execution,
+event persistence, authority and cleanup consequences first. Unpersisted Host
+facts must not be destroyed. A saved stop request is not successful physical
+cleanup; retain failure evidence when cleanup cannot be proven. Existing
+authorized lifecycle/delivery may reuse the retained conversation after proven
+stop; verify its identity. Deliberate `task role session new` is a different,
+explicit replacement decision, requiring durable progress and fenced cleanup.
+Goal `stalled` alone neither establishes the cause nor warrants clearing Goal.
+
+In this candidate, `task wake retry` requires a proven-rejected, unconsumed
+exact claim, a corrected cause and no accepted/uncertain native execution.
+`task wake resolve` supports an unknown exact claim after shared-native
+quiescence; it releases scheduling without replay or semantic acknowledgement.
+Deferred delivery meets neither precondition. Do not assume another recovery
+package's extended behavior is installed. For Global Roles, this candidate
+does not establish a dedicated targeted Host-stop command: inspect original
+input/control and `session retry <role> show`, then discover current authorized
+capabilities. There is no guessed Task equivalent or stop-all fallback.
+
+On refusal or failure, preserve the exact receipt, original inputs and work,
+and escalate only the missing authority, capability or cleanup evidence.
+Verify management request, physical stop, conversation reuse/replacement,
+actual subsequent Provider acceptance and business handling separately.
+Missing evidence remains unverified; no automatic recovery, replay, forced
+ACK, model/account/permission change or Controller-wide restart is introduced.
