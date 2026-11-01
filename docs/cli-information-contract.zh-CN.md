@@ -32,10 +32,23 @@ Context 列表还暴露候选、Review、Job、Project Knowledge、工作区等�
 `--status`、`--after`、`--work-item` 缩小发现范围；续读必须保留过滤条件。
 Run 列表接受 Task 或 `task/work` 目标。
 
+`task run show <task>/<run> --view status` 返回身份、记录状态、delivery/retry
+观察、退役与结果可用性，不复制输入、启动配置或报告正文。它与默认 `--view full`
+共用授权检查；完整视图仍保留全部审计证据和文档分页。处置前须通过 Message 或
+完整 Run 视图读取原始结果；status 不是报告或验收。精确原文仍在当前上下文时，
+用 status 补充执行事实，避免再读一份报告；不引入读取回执或模型记忆缓存。
+
 当前 Context 的 `attention.messages` 排除明确 ack 或退役的 Message；投递成功不代表
 处理完成。精确 wake 回执必须覆盖最新原文版本。用 `--view current` 续读当前视图，
 默认分类列表仍保留完整历史。`collections` 计数与 `omitted` 明确表达发现不完整。抽样不能证明没有更早的待处理
 或相关输入。读取相关固定 wake 与原始 Message；更广的需求/历史审计使用分类发现。
+
+当前 Context 是工作索引，不是每轮重复的配置或需求全文。Task/Brief、Role、
+Project policy、工作区、交付和决策记录即使很小，也只返回摘要与确切引用；
+生命周期、执行权限、待处理数量和活跃执行／重试观察仍直接显示。
+在依据需求或权限行动前，用 `context inspect` 读取相关原件；
+`omitted: true` 不代表原件为空。每次读取仍重新计算当前身份并校验范围，
+没有增加模型记忆缓存、推断 ACK 或陈旧状态自动复用。
 
 ## 预算与续读
 
@@ -62,7 +75,8 @@ Run 列表接受 Task 或 `task/work` 目标。
   配置元信息过大时使用相同文档分页。
 - 不超过 16 KiB 的详情保持普通 JSON。更大详情返回 `contentPage`：确切来源、
   SHA-256 digest、JSON 字符偏移、总字节数/字符数、文本、完整性与下一游标。
-  每块最多 4096 个 UTF-16 单元，不拆代理对，转义后的输出低于 32 KiB。
+  每块长度按完整编码后的 32 KiB 响应预算调整，计入身份与游标，并为小型命令包装
+  预留 256 字节。不拆代理对，偏移仍以 UTF-16 单元计，已发出的旧游标仍可续读。
   不再因 4 MiB 上限而永久无法读取合法原文。
 - Task 元信息/next-action/remote-delivery、Brief、WorkItem、Message、Run、
   决策/里程碑/事件、Role show/status/Session 检查、wake 详情、InputRequest、
@@ -72,6 +86,16 @@ Run 列表接受 Task 或 `task/work` 目标。
 长详情用同一读取命令加 `--cursor <contentPage.nextCursor>` 继续。按 offset 顺序拼接
 `text`，校验相同 source 与 digest，最后一次性解析 JSON。不要分别解析块，也不要把
 第一块当成完整报告。
+
+可复制的 Node.js 消费示例见
+[详情读取示例](cli-information-contract.md#copyable-detail-reading-example)：
+只对指定的 `task context inspect` 原文沿游标续读，验证 source/digest/连续 offset，
+直到 `complete: true` 才拼接解析一次；不是“两页读完”，也不自动重试拒绝或源变化。
+示例只读取，不代替 Agent 阅读、claim 或 ACK；大输出须保存在自有临时目录并分段读取。
+不要把半页 `text` 传给 `jq fromjson`，其错误可能回显整段长文。
+已获取页面的元数据可用
+`.data.contentPage | {offset,len:(.text|length),complete,nextCursor}` 查看，不必重取正文。
+此示例按需查阅，不是每次通知的新必读内容。
 
 列表包含 `items`、`total`、`complete`、`nextCursor`。计数、条目和游标校验处于同一
 授权范围。游标是不透明位置，不是通行令牌：每页重新授权。集合或文档改变时明确报错，

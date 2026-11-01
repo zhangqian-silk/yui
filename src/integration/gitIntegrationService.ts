@@ -178,7 +178,8 @@ export class GitIntegrationService {
   async integrate(
     taskId: string,
     integrationId: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    intent?: "continue"
   ): Promise<IntegrationResult> {
     let initial = requireIntegration(this.store, taskId, integrationId);
     this.#targetCheckout(initial);
@@ -288,7 +289,8 @@ export class GitIntegrationService {
     try {
       current = await applyIntegrationSource({
         attempt: current, workspace, remoteUrl: project.remoteUrl,
-        git: this.git, store: this.store, now: this.now
+        git: this.git, store: this.store, now: this.now,
+        continueOwnedOperation: intent === "continue"
       });
       if (current.status === "conflicted" || current.status === "blocked") {
         return { status: current.status, attempt: current, workspace };

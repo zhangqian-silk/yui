@@ -1,0 +1,17 @@
+{
+  "version": "task-154-confirmation-1",
+  "provenance": "Synthetic families authored for task-154 before its first calibration. Not the historical 28 Leader sessions or the old business holdout.",
+  "status": "not-run",
+  "families": {
+    "CTX-OP-CONFIRM": {
+      "body": "仅分析当前合成材料。保留所有原文，不根据旧通知重新执行，不创建或激活 Task，不发布、不重发。The latest scope is read-only; unknown effects remain unknown.",
+      "padding": "Synthetic source fragment — café / 数据 / α. No additional authority.\n",
+      "repeat": 600
+    },
+    "CTX-LEADER-CONFIRM": {
+      "body": "Review only this synthetic candidate. Completed execution is not acceptance. Checks for an older head cannot accept a newer head. Do not edit, accept, publish or discard the candidate; preserve missing evidence explicitly.",
+      "padding": "Synthetic candidate evidence fragment — 未验收 / original required.\n",
+      "repeat": 650
+    }
+  }
+}

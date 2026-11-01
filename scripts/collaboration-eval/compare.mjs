@@ -41,7 +41,8 @@ function outcome(evidence, condition) {
     businessStatus: condition.businessStatus ?? "unknown",
     stages: condition.stages ?? null, boundaries: condition.boundaries ?? null,
     score: condition.score ?? null, error: condition.error ?? null,
-    cleanup: condition.cleanup ?? null, costs: costs(evidence, condition)
+    cleanup: condition.cleanup ?? null, costs: costs(evidence, condition),
+    contextProxy: condition.proxy?.cost ?? null
   };
 }
 
@@ -53,6 +54,15 @@ export function compareEvidence(a, b) {
       || !isDeepStrictEqual(x, y)) mismatches.push(label);
   }
   for (const field of provenance) match(field, a[field], b[field]);
+  // Earlier business-only records remain usable, but cannot pair against the
+  // new profile without matching its frozen experiment and confirmation bytes.
+  if (a.contextFreezeSha256 !== undefined || b.contextFreezeSha256 !== undefined)
+    match("contextFreezeSha256", a.contextFreezeSha256, b.contextFreezeSha256);
+  if (a.harnessVersion !== undefined || b.harnessVersion !== undefined) {
+    match("harnessVersion.commit", a.harnessVersion?.commit, b.harnessVersion?.commit);
+    for (const [label, evidence] of [["a", a], ["b", b]])
+      if (evidence.harnessVersion?.worktreeStatus !== "") mismatches.push(`${label}: unclean/unknown harness`);
+  }
   for (const field of environment) match(`version.${field}`, a.version?.[field], b.version?.[field]);
   for (const [label, evidence] of [["a", a], ["b", b]]) {
     if (evidence.version?.worktreeStatus !== "") mismatches.push(`${label}: unclean/unknown source`);
@@ -76,7 +86,17 @@ export function compareEvidence(a, b) {
     return { condition: k, category: x?.category ?? y.category,
       split: x?.split ?? y.split, a: oa, b: ob,
       costDelta: comparable && oa?.costs && ob?.costs
-        ? Object.fromEntries(Object.keys(oa.costs).map(f => [f, ob.costs[f] - oa.costs[f]])) : null };
+        ? Object.fromEntries(Object.keys(oa.costs).map(f => [f, ob.costs[f] - oa.costs[f]])) : null,
+      contextProxyDelta: comparable && oa?.contextProxy && ob?.contextProxy ? {
+        newVisibleUtf8: ob.contextProxy.newVisibleUtf8 - oa.contextProxy.newVisibleUtf8,
+        notificationUtf8: ob.contextProxy.notificationUtf8 - oa.contextProxy.notificationUtf8,
+        recoveryReloadUtf8: ob.contextProxy.recoveryReloadUtf8 - oa.contextProxy.recoveryReloadUtf8,
+        cliCalls: ob.contextProxy.cliCalls - oa.contextProxy.cliCalls,
+        reductionFraction: oa.contextProxy.newVisibleUtf8 > 0
+          ? 1 - ob.contextProxy.newVisibleUtf8 / oa.contextProxy.newVisibleUtf8 : null,
+        // Threshold attainment is descriptive; pending semantic review cannot pass.
+        semanticQuality: "pending-human", optimizationBenefit: "not-established"
+      } : null };
   });
   return {
     schemaVersion: 1, experiments: [a.experiment, b.experiment],

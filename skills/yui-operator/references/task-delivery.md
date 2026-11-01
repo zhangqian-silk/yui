@@ -37,7 +37,7 @@ Separate lifecycle, execution gate and Session authority:
 - A completed, unarchived Task has separate local acceptance and remote delivery
   facts. An explicit user request to continue the same result authorizes the
   necessary `task reopen` before submitting that bounded request. Follow the
-  [authorized two-step path](../../yui-runtime/references/publication.md#post-completion-routing-boundary);
+  [authorized two-step path](../../yui-runtime/references/completed-followup.md);
   do not require a second mechanical “reopen” confirmation.
   The current matching Leader may perform that reopen itself and continue
   an already-received request; it need not send the work back to Operator.

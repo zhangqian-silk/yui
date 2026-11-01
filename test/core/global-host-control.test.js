@@ -553,7 +553,9 @@ test("Operator natural terminals settle through Host and Inbox and automatically
     assert.ok(f.store.listGlobalRoleMessages("operator").find(message => message.id === id)?.inbox?.ack,
       "Both consumption paths must retain the fake Agent's actual handling receipt.");
   }
-  assert.equal(f.store.listGlobalRoleMessages("operator")[0].delivery.via, "provider");
+  const messages = f.store.listGlobalRoleMessages("operator");
+  assert.equal(messages.find(message => message.id === notice.messageId)?.delivery?.via, "provider",
+    JSON.stringify(messages.map(({ id, kind, delivery }) => ({ id, kind, delivery }))));
   await f.wait(async () => (await inspectAgentHost({
     home: f.home, scope: "global", roleName: "operator"
   })).state === "idle");

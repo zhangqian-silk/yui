@@ -816,6 +816,12 @@ and timeout hierarchy. A no-target activation, help, `--json`, and every other
 command remain on the global CLI. Activation does not add another ordinary CLI
 routing path.
 
+Activation's two storage preflights use the verified target's existing read-only
+upgrade primitive in an isolated process, not its ordinary inactive CLI entry.
+The target must be installed in this Home with matching integrity and smoke
+evidence before each preflight. This neither migrates storage nor permits an
+inactive release or checkout CLI to read/write the Home through ordinary commands.
+
 ## Step catalog
 
 The plan is a fixed, predeclared subset of operations. Each plan entry has an

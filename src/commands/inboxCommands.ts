@@ -10,6 +10,7 @@ import { nonReplayableMessageWake, isLeaderSteer, pinMessageRevisions, releasedN
 import { hasRuntimeCleanupObligation, runtimeLifecycleTarget } from "../runtime/lifecycleReservation.js";
 import { isTaskRecordRetired, retiredTaskRecordIds } from "../task/taskRecordRetirement.js";
 import { blocksInboxOrder, inboxEntryCategory, inboxSettled } from "../message/inboxTurn.js";
+import { recoveredMessageContinuation } from "../controller/taskRunRecovery.js";
 
 type Entry = GlobalRoleMessage | TaskMessage | TaskWake;
 type Address = InboxActor;
@@ -43,6 +44,15 @@ function currentTurn(store: TaskStore, address: Address) {
     : store.getTaskRoleSessionSet(address.taskId!, address.roleName)?.providerBinding;
   return binding?.conversations.find(c => c.epoch === binding.currentConversationEpoch)?.conversationId === address.nativeSessionId
     ? binding?.run : undefined;
+}
+function isRecoveredMessage(store: TaskStore, address: Address, entry: Entry): boolean {
+  if (address.scope !== "task" || address.runId === undefined || isWake(entry)) return false;
+  const run = store.getRun(address.taskId!, address.runId);
+  return run !== null && recoveredMessageContinuation(store, entry as TaskMessage, run);
+}
+function entryCategory(store: TaskStore, address: Address, entry: Entry) {
+  return isRecoveredMessage(store, address, entry) ? "current" as const
+    : inboxEntryCategory(entry, address, currentTurn(store, address));
 }
 function ownsMessage(store: TaskStore, address: Address, message: TaskMessage): boolean {
   if (address.roleName === "leader" && message.taskId === address.taskId && isLeaderSteer(message)) return true;
@@ -131,7 +141,8 @@ function blocker(store: TaskStore, address: Address, entry: Entry): string | und
     if (turn?.attemptId === `global-input:${address.roleName}/${entry.id}`) return `native-attempt-${turn.status}`;
   } else {
     const message = entry as TaskMessage;
-    if (message.continuation?.runId !== undefined && message.continuation.runId !== address.runId) {
+    if (message.continuation?.runId !== undefined && message.continuation.runId !== address.runId
+      && !isRecoveredMessage(store, address, message)) {
       return "continuation-already-dispatched";
     }
     if (!accepted && message.inputControl?.expectedSessionId !== undefined
@@ -157,7 +168,7 @@ function checkMutation(store: TaskStore, address: Address): void {
 
 function summary(store: TaskStore, address: Address, entry: Entry) {
   return { id: entry.id, kind: isWake(entry) ? "notification-window" : "message",
-    category: inboxEntryCategory(entry, address, currentTurn(store, address)),
+    category: entryCategory(store, address, entry),
     createdAt: entry.createdAt, summary: summaryText(isWake(entry) ? entry.reasons.join(", ") : entry.body),
     blocked: blocker(store, address, entry) ?? null, inbox: summaryMetadata(entry.inbox ?? null),
     handling: inboxHandlingState(entry.inbox),
@@ -196,8 +207,7 @@ export function runInboxCommand(
     const selected = address.scope === "global" ? pendingGlobalInboxMessages(store.listGlobalRoleMessages(address.roleName))
       : entries(store, address).filter(entry => (isWake(entry) || !retired.has(entry.id))
         && !inboxSettled(entry.inbox));
-    const turn = currentTurn(store, address);
-    const categories = selected.map(entry => ({ entry, category: inboxEntryCategory(entry, address, turn) }));
+    const categories = selected.map(entry => ({ entry, category: entryCategory(store, address, entry) }));
     const rank = { current: 0, available: 1, history: 2 };
     categories.sort((a, b) => rank[a.category] - rank[b.category]);
     const items: object[] = categories.filter(item => view === "all"

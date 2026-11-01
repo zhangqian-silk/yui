@@ -60,13 +60,15 @@ export function withSessionContextPointer(
   ].join("\n");
 }
 
-/** No remembered/sent flag can prove instructions survived context compaction. */
+/** Host metadata checks do not prove instructions survived context compaction.
+ * Unmediated/native clients retain the explicit diagnostic fallback. */
 export function sessionContextInstructions(manifestPath: string, digest?: string): string {
   return `Yui Session Manifest: ${manifestPath}${digest === undefined ? "" : ` (digest ${digest})`}. `
-    + `Before work on every turn run the Manifest's contextProtocol.skillCheckCommand `
-    + `(older Manifests: ${SKILL_CHECK_COMMAND}; Global loadCommand also checks current Skills). `
-    + "Use its current stable Skill paths instead of historical frozen-package paths; preserve the Manifest's Role profile. "
-    + SKILL_REUSE_RULE;
+    + "For inputs carrying the Yui Host Skill-check notice, engineering has checked current versions; do not repeat that check. "
+    + `Otherwise run its contextProtocol.skillCheckCommand (fallback: ${SKILL_CHECK_COMMAND}). `
+    + "On first entry or lost instructions, read the current applicable Skill entry points, then only references needed for the current action. "
+    + "On change reload affected instructions. Compaction does not require restoring every previously used procedure. "
+    + "Preserve the Manifest Role profile; metadata never proves loading or memory.";
 }
 
 /** The caller must already pass the ordinary managed Session/CLI/Home checks.

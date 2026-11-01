@@ -11,7 +11,7 @@ import {
   controllerCallMayHaveApplied,
   readControllerDiscovery
 } from "../../dist/core/controllerClient.js";
-import { assertFileTaskControllerStorageCompatible, ensureFileTaskController } from "../../dist/controller/clientRuntime.js";
+import { assertFileTaskControllerStorageCompatible, ensureFileTaskController, restartFileTaskController } from "../../dist/controller/clientRuntime.js";
 import { buildDoctorReport, checkController } from "../../dist/doctor/doctor.js";
 import { assertRuntimeCoherence } from "../../dist/runtime/runtimeCoherence.js";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
@@ -157,4 +157,25 @@ test("Controller failure reaches the CLI with recovery guidance while offline re
     /Startup PID: 4242.*timeout does not prove it stopped.*yui doctor/s
   );
   assert.equal(started, 1);
+});
+
+test("a reset after stop acknowledgement is not exit proof or permission to spawn a successor", async () => {
+  const reset = classifyControllerSocketError(
+    Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }), true);
+  const calls = [];
+  let stopped = false;
+  let spawned = 0;
+  await assert.rejects(restartFileTaskController("/unused-reset-fixture", {
+    call: async (_home, method) => {
+      calls.push(method);
+      if (method === "controller.stop") { stopped = true; return { stopped: true }; }
+      if (stopped) throw reset;
+      return { running: true, pid: 4242, ...yuiVersionIdentity(),
+        protocolVersion: yuiVersionIdentity().controllerProtocolVersion };
+    },
+    spawnController: () => { spawned++; }
+  }), error => error === reset);
+  assert.deepEqual(calls, ["controller.status", "controller.stop", "controller.status"]);
+  assert.equal(spawned, 0);
+  assert.equal(controllerCallMayHaveApplied(reset), true);
 });

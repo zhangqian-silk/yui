@@ -41,6 +41,8 @@ const AGENT_VALUE_OPTIONS: readonly [string, RoleOptionKind][] = [
   ["--permission-strategy", "value"],
   ["--sandbox", "value"],
   ["--approval", "value"],
+  ["--exclude-tmpdir-env-var", "value"],
+  ["--exclude-slash-tmp", "value"],
   ["--permission-mode", "value"],
   ["--search", "value"]
 ];
@@ -56,6 +58,8 @@ const AGENT_CLEAR_OPTIONS: readonly [string, RoleOptionKind][] = [
   ["--clear-allowed-tools", "flag"],
   ["--clear-disallowed-tools", "flag"],
   ["--clear-search", "flag"],
+  ["--clear-exclude-tmpdir-env-var", "flag"],
+  ["--clear-exclude-slash-tmp", "flag"],
   ["--clear-agent-config", "flag"]
 ];
 
@@ -228,6 +232,8 @@ function permissionPatch(
     : undefined;
   const nativeOptions = [
     "--sandbox", "--approval", "--permission-mode",
+    "--exclude-tmpdir-env-var", "--exclude-slash-tmp",
+    "--clear-exclude-tmpdir-env-var", "--clear-exclude-slash-tmp",
     "--allowed-tool", "--clear-allowed-tools",
     "--disallowed-tool", "--clear-disallowed-tools"
   ].some((option) => parsed.has(option));
@@ -251,6 +257,17 @@ function permissionPatch(
   if (binding.adapterId === "codex") {
     if (parsed.has("--sandbox")) permission.sandbox = requiredText(parsed.one("--sandbox"));
     if (parsed.has("--approval")) permission.approval = requiredText(parsed.one("--approval"));
+    for (const [option, key] of [
+      ["exclude-tmpdir-env-var", "excludeTmpdirEnvVar"],
+      ["exclude-slash-tmp", "excludeSlashTmp"]
+    ] as const) {
+      if (parsed.has(`--${option}`)) {
+        const value = parsed.one(`--${option}`);
+        if (value !== "true" && value !== "false") throw usageError(`--${option} requires true or false.`);
+        permission[key] = value === "true";
+      }
+      if (parsed.has(`--clear-${option}`)) delete permission[key];
+    }
   } else if (binding.adapterId === "acp") {
     // An ACP Session's configured permission is exactly one mode id, matched
     // against what the Agent enumerates at launch. Tool rules are a Claude
@@ -313,7 +330,9 @@ function assertAgentOptionConflicts(parsed: ParsedRoleOptions): void {
     ["--effort", "--clear-effort"],
     ["--allowed-tool", "--clear-allowed-tools"],
     ["--disallowed-tool", "--clear-disallowed-tools"],
-    ["--search", "--clear-search"]
+    ["--search", "--clear-search"],
+    ["--exclude-tmpdir-env-var", "--clear-exclude-tmpdir-env-var"],
+    ["--exclude-slash-tmp", "--clear-exclude-slash-tmp"]
   ]);
   if (parsed.has("--clear-agent-config")
     && [...parsed.seen].some((option) => option !== "--clear-agent-config" && AGENT_CONFIG_OPTIONS.has(option))) {
@@ -322,7 +341,9 @@ function assertAgentOptionConflicts(parsed: ParsedRoleOptions): void {
 }
 
 function assertAdapterOptions(adapterId: string, parsed: ParsedRoleOptions): void {
-  const codex = ["--sandbox", "--approval", "--search", "--clear-search"];
+  const codex = ["--sandbox", "--approval", "--search", "--clear-search",
+    "--exclude-tmpdir-env-var", "--exclude-slash-tmp",
+    "--clear-exclude-tmpdir-env-var", "--clear-exclude-slash-tmp"];
   const tools = [
     "--allowed-tool", "--clear-allowed-tools",
     "--disallowed-tool", "--clear-disallowed-tools"

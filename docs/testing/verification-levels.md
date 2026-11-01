@@ -53,12 +53,12 @@ is required.
 Both include `test/core` and `test/platform`. For an already built checkout,
 `npm run test:business` runs only `test/core` and `npm run test:platform` runs
 only `test/platform`; neither rebuilds. CI owns one explicit build per job.
-The stable suite owns current storage 1.24 and its declared 1.0 through 1.23 minor
+The stable suite owns current storage 1.25 and its declared 1.0 through 1.24 minor
 transition. It contains no undeclared historical format compatibility path.
 
 Current coverage includes:
 
-1. Fresh storage 1.24, exact schema/record validation, no initialization over
+1. Fresh storage 1.25, exact schema/record validation, no initialization over
    unknown data, and rejection of old integer formats without mutation.
 2. Exact-version staging, mismatched-target refusal, same-major contiguous
    minor preflight, explicit maintenance-owner identity across handover, and
@@ -89,6 +89,29 @@ not a second daemon matrix. Do not reconstruct retired storage paths in the
 stable suite. Real-model or real-Home checks require explicit authorization.
 Current envelope checks reject arbitrary unknown fields, rather than maintaining
 a blacklist of retired field names.
+
+## Collaboration framework checks
+
+`npm run eval:check` checks evaluation contracts without starting a Home.
+The explicit `npm run eval:wiring -- --product <absolute-checkout> --out <new-dir>`
+uses the [maintained framework](../../scripts/collaboration-eval/framework/README.md)
+for multi-input CLI/Controller/Host/fake-Provider chains and bounded fault checks.
+It remains outside `npm test` and the platform matrix: package smoke continues
+to own package/OS wiring. Fake success is not a real-model, native-compaction or
+lossless-observation claim. Historical performance ledgers are not reset by
+framework validation; live resources require a separately authorized freeze.
+The fake-only `native-normal` scenario verifies completed native tool evidence
+through the real adapter without participant files. Read/load checks are bound
+to Role/Thread/context epoch and decision time; unsupported evidence stays
+unknown. Current observation cannot yield an unqualified valid-pass.
+Proxy checks exercise both managed and identity-free detached control clients;
+detached transport cannot supply subject read/load evidence.
+The opt-in wiring `--profile recovery` checks a scheduled retained-claim
+Session replacement using the same native evidence adapter as real mode:
+exact predecessor stop, fresh successor ownership/read/load, preserved effect
+and successor ACK; a native background-inspection rejection fences replacement.
+It is deterministic CLI/Host wiring, not live model recovery or native
+compaction. Real `session-recovery` requires its own exact authorized freeze.
 
 ## Skill and instruction changes
 

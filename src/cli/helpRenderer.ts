@@ -41,6 +41,7 @@ function describeOption(option: string): string {
     "--detach": "Return after Controller starts Web; use --status / --stop. Operator and --json starts always return.",
     "--port": "Set the local listen port.",
     "--json": "Emit machine-readable JSON.",
+    "--recursive": "Expand the complete caller-filtered command tree (requires --json).",
     "--project": "Select a Project.",
     "--role": "Select a Task role.",
     "--summary": "Set summary text.",

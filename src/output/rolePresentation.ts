@@ -157,7 +157,9 @@ function permission(binding: RoleAgentBinding): string {
     if (permission.strategy === "bypass") return "bypass";
     return [
       permission.sandbox === undefined ? undefined : `sandbox=${permission.sandbox}`,
-      permission.approval === undefined ? undefined : `approval=${permission.approval}`
+      permission.approval === undefined ? undefined : `approval=${permission.approval}`,
+      permission.excludeTmpdirEnvVar === undefined ? undefined : `excludeTmpdirEnvVar=${permission.excludeTmpdirEnvVar}`,
+      permission.excludeSlashTmp === undefined ? undefined : `excludeSlashTmp=${permission.excludeSlashTmp}`
     ].filter((value): value is string => value !== undefined).join("; ");
   }
   // ACP's strategy decides the Session mode Yui requests over the protocol. It

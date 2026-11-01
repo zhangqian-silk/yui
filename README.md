@@ -459,6 +459,11 @@ manage global installations; do not use the global `yui` to validate local chang
 Live-model, paid or shared-resource
 tests require an explicit request for those resources.
 
+For collaboration-evaluation infrastructure, see the
+[maintained framework](scripts/collaboration-eval/framework/README.md).
+`npm run eval:check` is fast and offline; `eval:wiring` is an explicit isolated
+fake-Provider check, outside the default core gate. It is not model validation.
+
 ## Community and support
 
 - Questions, bugs and feature requests: open a

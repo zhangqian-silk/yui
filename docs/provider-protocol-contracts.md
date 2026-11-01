@@ -78,6 +78,29 @@ validation was performed for this follow-up.
 
 ## Codex App Server
 
+The 2026-10-30 long-history recovery correction also checked the installed
+Codex **0.159.2** `app-server generate-json-schema --experimental` output,
+without opening a native Session. `ThreadResumeParams.excludeTurns` omits
+history hydration; `ThreadTurnsListParams` supports descending, metadata-only
+(`itemsView: notLoaded`) pages, and `ThreadItemsListParams` supports exact
+`turnId` filtering and descending item pages. `ThreadItemEntry.turnId` binds
+each item to its Turn.
+
+Host resume now requests metadata, then one latest Turn. State/control reads
+never request the complete transcript. Restoring a persisted owned terminal
+scans metadata pages for its exact ID and reads only that Turn's items,
+newest first, stopping at the last nonempty assistant message. Notifications
+remain buffered during that lookup. Missing/invalid pages, repeated cursors,
+foreign items and individually oversized items remain failures, not evidence
+of quiescence or successful output. This does not raise the 16 MiB transport
+limit, change Session identity, or replay input. Transport failure diagnostics
+record pending request IDs/methods and request byte sizes, not request bodies;
+a rejected frame's exact identity/size may remain unknown.
+
+These deterministic regressions demonstrate the oversized-history path and
+the corrected behavior, not which specific frame caused a historical live
+failure. Native adoption and successful recovery remain separate evidence.
+
 | Surface | Consumed current contract |
 | --- | --- |
 | Thread start/read/resume | Nested `thread`; mandatory exact `thread.id`. No direct-object fallback or request-ID substitution. |

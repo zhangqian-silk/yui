@@ -2,7 +2,14 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.24. The 1.23 → 1.24 transition adds transaction-maintained
+Current storage is 1.25. The 1.24 → 1.25 transition admits optional Codex
+workspace-write temp-directory exclusions on structured Role permission
+configuration and subsequent launch snapshots. SQL layout and all existing
+payload bytes remain unchanged; no exclusions or past enforcement are inferred.
+Old configurations continue to follow native defaults. Existing Homes require
+the explicit supported upgrade before current readers open them.
+
+The 1.23 → 1.24 transition adds transaction-maintained
 Task read-cache revisions for the scheduler's nine source tables. Inserts,
 updates and deletions invalidate only the affected Task; rollback also rolls
 back the token. These tokens are derived cache identities, never Task authority

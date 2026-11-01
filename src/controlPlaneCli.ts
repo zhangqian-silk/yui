@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { isatty } from "node:tty";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { agentAdapterLabel as adapterLabel } from "./agent/adapterCatalog.js";
@@ -20,7 +21,7 @@ import {
 import {
   renderAgentConfigurationResolutionNotice
 } from "./cli/agentConfigurationPicker.js";
-import { describeCommandTree, findCommandNode } from "./cli/commandCatalog.js";
+import { describeCommandHelp, describeCommandTree, findCommandNode } from "./cli/commandCatalog.js";
 import { discoveryCommandTree } from "./cli/commandDiscovery.js";
 import { callerDiscoveryAudience } from "./cli/callerDiscovery.js";
 import { contextRecordReader } from "./context/taskContext.js";
@@ -374,7 +375,7 @@ export async function main(): Promise<void> {
     return;
   }
   if (args.length === 0) {
-    emit(renderCommandHelp(discovery, VERSION), false, jsonOutput ? describeCommandTree(discovery) : undefined);
+    emit(renderCommandHelp(discovery, VERSION), false, jsonOutput ? describeCommandHelp(discovery) : undefined);
     return;
   }
   if (args[0] === "version" && args.length === 1) {
@@ -384,7 +385,10 @@ export async function main(): Promise<void> {
 
   const invocation = routeInvocation(args, discovery);
   if (invocation.kind === "help") {
-    emit(renderCommandHelp(invocation.node, VERSION), true, jsonOutput ? describeCommandTree(invocation.node) : undefined);
+    if (invocation.recursive && !jsonOutput) throw usageError("Recursive help requires --json.");
+    emit(renderCommandHelp(invocation.node, VERSION), true, jsonOutput
+      ? invocation.recursive ? describeCommandTree(invocation.node) : describeCommandHelp(invocation.node)
+      : undefined);
     return;
   }
   if (invocation.kind === "path-error") {
@@ -856,7 +860,6 @@ export async function main(): Promise<void> {
     {
       yuiHome: home,
       historyLimit: resolveTmuxHistoryLimit(store.getConfig().tmuxHistoryLimit),
-      terminalInput: process.stdin,
       onWarning: (message) => writeCliWarning(message)
     }
   );
@@ -3378,7 +3381,9 @@ async function resolveTerminalArguments(
   store: TaskStore,
   catalogs: AgentConfigurationCatalogService
 ): Promise<string[] | null> {
-  const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
+  // Probe the descriptor without constructing a stdin stream: Node makes
+  // pipes nonblocking on stream creation, breaking later --body-file - reads.
+  const interactive = isatty(0) && process.stdout.isTTY === true;
   if (!interactive || !allowsInteractiveSelection(commandArgs, jsonOutput)) {
     return [...commandArgs];
   }

@@ -292,6 +292,16 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   // No payload rewriting or historical revision invention. A newly opened
   // reader starts empty; zero is the initial token until the first mutation.
   sql: TASK_READ_REVISION_SCHEMA_SQL
+}, {
+  fromVersion: "1.24",
+  toVersion: "1.25",
+  name: "codex-workspace-temp-exclusions",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Optional configured workspace-write permission fields. Do not infer
+  // exclusions or rewrite existing config, Role, Session or frozen snapshots.
+  sql: ""
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {

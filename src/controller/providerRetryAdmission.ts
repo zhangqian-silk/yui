@@ -9,6 +9,7 @@ import { blockingProviderContinuations } from "../runtime/runtimeContinuationPro
 import { validateExactRunReviewRound } from "../lifecycle/exactRunTerminalization.js";
 import { isDeepStrictEqual } from "node:util";
 import { isHandlingReminder } from "../message/inboxTurn.js";
+import { roleSessionMayContinue } from "../executor/effectiveLaunch.js";
 
 export type OwnedProviderAdmission = Readonly<{
   taskId?: string; roleName: string; runId?: string; agentId: string;
@@ -96,8 +97,23 @@ export function admitOwnedProviderInput(
   if (input.taskId !== undefined && input.runId !== undefined) {
     const run = store.getRun(input.taskId, input.runId);
     const sessions = store.getTaskRoleSessionSet(input.taskId, input.roleName);
+    const session = sessions?.sessions[input.agentId];
+    // Session provenance can describe an older ReviewRound. The exact failed
+    // Run, not that first launch, owns this retry's frozen launch configuration.
+    // Continuity still fences the native Session's physical workspace/authority;
+    // exact equality with the failed Run retains model, permission and candidate.
+    const previous = run?.purpose === "review" && retry.previousRunId !== undefined
+      ? store.getRun(input.taskId, retry.previousRunId) : null;
+    const matchesLaunch = run !== null && session !== undefined && (
+      run.purpose === "review"
+        ? previous?.status === "failed" && previous.purpose === "review"
+          && previous.roleName === run.roleName && previous.reviewRoundId === run.reviewRoundId
+          && isDeepStrictEqual(run.effective, previous.effective)
+          && roleSessionMayContinue(session.effective, run.effective)
+        : isDeepStrictEqual(run.effective, session.effective)
+    );
     if (run === null || run.status !== "active"
-      || !isDeepStrictEqual(run.effective, sessions?.sessions[input.agentId]?.effective)) {
+      || !matchesLaunch) {
       throw new Error("Retry execution no longer matches its fixed native Session.");
     }
     if (run.workspace !== undefined && !isDeepStrictEqual(store.getManagedWorkspace(run.workspace.owner), run.workspace)) {

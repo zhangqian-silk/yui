@@ -78,3 +78,16 @@ test("unknown provenance and missing trace ranges cannot become zero-cost eviden
   delete d.caseModuleSha256;
   assert.equal(compareEvidence(record(), d).comparable, false);
 });
+
+test("context cost decreases cannot waive semantic review or extra requests", () => {
+  const a = record(), b = record("b");
+  a.conditions[0].proxy = { cost: { newVisibleUtf8: 1000, notificationUtf8: 100,
+    recoveryReloadUtf8: 200, cliCalls: 6 } };
+  b.conditions[0].proxy = { cost: { newVisibleUtf8: 800, notificationUtf8: 100,
+    recoveryReloadUtf8: 100, cliCalls: 7 } };
+  const pair = compareEvidence(a, b).pairs[0];
+  assert.equal(pair.contextProxyDelta.newVisibleUtf8, -200);
+  assert.equal(pair.contextProxyDelta.cliCalls, 1);
+  assert.equal(pair.contextProxyDelta.semanticQuality, "pending-human");
+  assert.equal(pair.contextProxyDelta.optimizationBenefit, "not-established");
+});

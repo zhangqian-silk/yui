@@ -22,6 +22,13 @@ const MAX_VALUE_BYTES = 2048;
 const MAX_PAGE_BYTES = 24 * 1024;
 const MAX_EVENTS = 100;
 const MAX_ATTENTION_REFS = 8;
+// The current read is a working index, not a replay of configuration, workspace
+// inventories and requirements on every wake. Exact bodies use the same scoped,
+// digest-checked inspect path regardless of how small a record happens to be.
+const INDEX_ONLY_FAMILIES = new Set([
+  "task", "task-brief", "remote-delivery", "role", "project-policy",
+  "managed-workspace", "task-decision", "task-message", "run", "work-item", "project-knowledge"
+]);
 type Ref = Readonly<{ store: string; refId: string; revision: string; digest: string }>;
 type Entry = Readonly<{ ref: Ref; value: unknown }>;
 type Cursor = Readonly<{ taskId: string; source: string; sequence: number; revision: number }>;
@@ -59,14 +66,14 @@ export function readTaskContext(
     const attention = summarizeAttention(reader, taskId, scope.allow);
     let bytes = Buffer.byteLength(JSON.stringify(attention));
     const records: Array<{ ref: Ref; summary?: string; value?: unknown; omitted: boolean;
-      execution?: ReturnType<typeof runExecutionObservation> }> = [];
+      execution?: ReturnType<typeof currentRunExecution> }> = [];
     let runtimeEvents: TaskEvent[] | undefined;
     page: for (const source of sources) for (const entry of source.read()) {
       if (records.length >= MAX_RECORDS) break page;
       if (records.filter(record => record.ref.store === source.family).length >= 8) continue;
       if (entry.ref.store === "run") runtimeEvents ??= reader.listEventsByType(taskId, ["runtime.agent-error"]);
       const valueBytes = Buffer.byteLength(JSON.stringify(entry.value));
-      const content = valueBytes > MAX_VALUE_BYTES || ["role", "task-message", "run", "work-item", "project-knowledge"].includes(entry.ref.store)
+      const content = valueBytes > MAX_VALUE_BYTES || INDEX_ONLY_FAMILIES.has(entry.ref.store)
         ? { ref: entry.ref, summary: summarize(entry.value), omitted: true }
         : { ...entry, omitted: false };
       const revisedAfterActivation = entry.ref.store === "task-message" && phaseSource?.ref !== undefined
@@ -83,11 +90,11 @@ export function readTaskContext(
                 ? "recorded-before-activation-request" : "recorded-after-activation-request"
           } : {}),
         ...(entry.ref.store === "run" ? {
-        execution: runExecutionObservation(entry.value as AgentRun,
-          reader.getTaskRoleSessionSet(taskId, (entry.value as AgentRun).roleName)?.providerBinding, runtimeEvents)
+        execution: currentRunExecution(reader, entry.value as AgentRun, runtimeEvents)
       } : {}), ...(entry.ref.store === "role" ? {
         providerRetry: providerRetrySummary(reader.getTaskRoleSessionSet(taskId,
-          (entry.value as { name: string }).name)?.providerBinding)
+          (entry.value as { name: string }).name)?.providerBinding,
+          `yui task role session retry ${taskId} ${(entry.value as { name: string }).name} show --json`)
       } : {}) };
       const size = Buffer.byteLength(JSON.stringify(record));
       if (bytes + size > MAX_PAGE_BYTES) break page;
@@ -138,6 +145,17 @@ export function readTaskContext(
     if (!fitsReadBudget(result)) throw usageError("Context identities exceed the response budget; use scoped discovery.");
     return result;
   });
+}
+
+/** Keep live delivery/attempt facts, but do not replay retry diagnostics and
+ * history into the working index. Exact Run inspect below retains the full
+ * observation, under the same authorization and document-pagination contract.
+ */
+function currentRunExecution(store: TaskStore, run: AgentRun, events?: TaskEvent[]) {
+  const binding = store.getTaskRoleSessionSet(run.taskId, run.roleName)?.providerBinding;
+  const execution = runExecutionObservation(run, binding, events);
+  return { ...execution, retry: execution.retry === null ? null : providerRetrySummary(binding,
+    `yui task role session retry ${run.taskId} ${run.roleName} show --json`) };
 }
 
 function summarizeAttention(store: TaskStore, taskId: string, allow: Set<string> | undefined) {
@@ -672,7 +690,7 @@ function freeze<T>(value: T): T {
 }
 function summarize(value: unknown): string {
   const record = value as Record<string, unknown>;
-  return summaryText(["title", "name", "activeAgentId", "scope", "expiresWhen", "version", "objective", "question", "summary", "body", "status", "type"]
+  return summaryText(["title", "name", "status", "type", "currentFocus", "root", "activeAgentId", "scope", "expiresWhen", "version", "objective", "question", "summary", "body"]
     .flatMap((key) => typeof record[key] === "string" || (key === "version" && typeof record[key] === "number")
       ? [`${key}: ${record[key]}`] : [])
     .join("; "));

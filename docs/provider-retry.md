@@ -25,6 +25,17 @@ next input. Agents still own semantic recovery and acceptance.
   accepted failed Turn and original input. The error need not have qualified
   for automation; manual intent does not waive Session, authority, latest-Turn
   or background-quiescence checks.
+- A current-owner manual execution retry can recover that same failed Turn
+  across a message continuation and subsequent retries only when the durable
+  chain proves every intervening attempt was rejected before a Provider write.
+  Session, authority, Assignment, launch configuration and workspace must match.
+  It carries the current continuation input, not the earlier business directive,
+  and preserves the original automatic budget. Missing proof or any intervening
+  accepted/unknown input leaves ordinary admission fenced.
+- Once that exact recovery is accepted, its Agent can claim and acknowledge
+  the original continuation Message through the same verified lineage. This
+  is handling authority, not another delivery: recipient, continuation target,
+  prior claims and failure records stay unchanged; no Message is requeued.
 
 The records live on the existing Provider binding, with indexed pending-record
 reads and the existing Controller deadline timer. There is no retry Task status,

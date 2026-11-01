@@ -27,9 +27,85 @@ import { prepareOperatorNewSession } from "../../dist/operator/operatorSessionHi
 import { prepareNativeHostSteer } from "../../dist/controller/nativeHostInput.js";
 import { resolveAgentHostObservation } from "../../dist/controller/agentHostObservation.js";
 import { runInboxCommand } from "../../dist/commands/inboxCommands.js";
+import { runSessionStopCommand } from "../../dist/commands/sessionCommands.js";
 
 const at = new Date("2026-09-11T00:00:00Z");
 const later = new Date("2026-09-11T00:01:00Z");
+
+test("idle maintenance fences Global native work at preflight, drain and atomic cleanup", async t => {
+  const { store, role } = globalFixture(t);
+  recordGlobalSession(store, role);
+  const scheduler = new FileSchedulerStoreAdapter(store);
+  const owner = { scope: "global", roleName: role.name };
+  const snapshot = () => ({ candidates: scheduler.listRuntimeSessionCandidates(),
+    dormant: scheduler.listDormantRuntimeOwners() });
+  const idle = snapshot().dormant[0];
+  assert(idle, "An idle Global Session remains maintainable");
+  assert.equal(scheduler.enqueueRuntimeCleanup(owner, later,
+    { ...idle, nativeSessionId: "different-session" }), null);
+  const effects = [];
+  const runtime = {
+    beginMaintenance: () => ({ release: () => effects.push("release") }),
+    snapshot, drainController: async () => effects.push("drain"),
+    stopController: async () => { effects.push("stop-controller"); return { stopped: true }; },
+    startController: async () => effects.push("restart"),
+    stopDormantSession: async () => effects.push("stop-session")
+  };
+  withGlobalControllerTurn(store, role.name, { attemptId: "maintenance", nativeTurnId: "busy" });
+  assert.deepEqual(snapshot().dormant, []);
+  assert.equal(scheduler.enqueueRuntimeCleanup(owner, later, idle), null);
+  assert.equal(scheduler.enqueueRuntimeHostDetach(owner, later, idle), null);
+  assert.equal((await runSessionStopCommand({ options: { all: true }, runtime })).exitCode, 5);
+  assert.deepEqual(effects, ["release"], "Busy preflight never reaches a stopping call");
+  const settle = () => {
+    const set = store.getGlobalRoleSessionSet(role.name);
+    store.saveGlobalRoleSessionSet(updateGlobalRoleProviderRuntime(set,
+      settleProviderTurn(set.providerBinding, { attemptId: "maintenance", nativeTurnId: "busy",
+        status: "completed", settledAt: later.toISOString() }), later));
+  };
+  settle();
+  effects.length = 0;
+  const drainRuntime = { ...runtime, drainController: async () => {
+    effects.push("drain");
+    const set = store.getGlobalRoleSessionSet(role.name);
+    const pending = beginProviderTurn(set.providerBinding, {
+      attemptId: "maintenance", authorityEpoch: 1, submittedAt: later.toISOString()
+    });
+    store.saveGlobalRoleSessionSet(updateGlobalRoleProviderRuntime(set,
+      acceptProviderTurn(pending, { attemptId: "maintenance",
+        nativeTurnId: "busy", acceptedAt: later.toISOString() }), later));
+  } };
+  assert.equal((await runSessionStopCommand({ options: { all: true }, runtime: drainRuntime })).exitCode, 5);
+  assert.deepEqual(effects, ["drain", "stop-controller", "restart", "release"]);
+  settle();
+  effects.length = 0;
+  await assert.rejects(runSessionStopCommand({ options: { all: true },
+    runtime: { ...runtime, stopController: async () => ({ stopped: false }) } }), /stop.*confirm/i);
+  assert.deepEqual(effects, ["drain", "restart", "release"]);
+  effects.length = 0;
+  assert.equal((await runSessionStopCommand({ options: { all: true }, runtime })).exitCode, 0);
+  assert.deepEqual(effects, ["drain", "stop-controller", "stop-session", "release"]);
+});
+
+test("Global submitting and unknown native delivery are not dormant", t => {
+  for (const unknown of [false, true]) {
+    const { store, role } = globalFixture(t);
+    recordGlobalSession(store, role);
+    const scheduler = new FileSchedulerStoreAdapter(store);
+    const idle = scheduler.listDormantRuntimeOwners()[0];
+    let binding = beginProviderTurn(createProviderRuntimeBinding({
+      providerNamespace: "openai/codex", accountScope: "codex",
+      conversationId: `${role.name}-native`, startedAt: at.toISOString()
+    }), { attemptId: "pending", authorityEpoch: 1, submittedAt: at.toISOString() });
+    if (unknown) binding = markProviderTurnDeliveryUnknown(binding, {
+      attemptId: "pending", observedAt: later.toISOString(), reason: "No acceptance evidence"
+    });
+    store.saveGlobalRoleSessionSet(bindGlobalRoleProviderRuntime(
+      store.getGlobalRoleSessionSet(role.name), binding, later));
+    assert.deepEqual(scheduler.listDormantRuntimeOwners(), []);
+    assert.equal(scheduler.enqueueRuntimeCleanup(idle.owner, later, idle), null);
+  }
+});
 
 test("native Global steer uses a durable user Message and exact settlement without replacing the active Turn", t => {
   const { store, home, role } = globalFixture(t);

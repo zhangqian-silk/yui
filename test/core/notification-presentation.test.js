@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  authoredNotificationSummary, taskMessagePresentation, taskNotificationPresentation
+  authoredNotificationSummary, taskMessagePresentation, taskNotificationPresentation, globalMessagePresentation
 } from "../../dist/interaction/notificationPresentation.js";
 import { withSessionContextPointer } from "../../dist/context/sessionBootstrapManifest.js";
 
@@ -28,6 +28,9 @@ test("notification presentation is bounded, attributed and cannot turn reports i
   const notification = taskNotificationPresentation(wake, store);
   assert.match(notification, /21 more messages/);
   assert.match(notification, /yui task wake show task-1 wake-1 --json/);
+  assert.match(notification, /message-1 \[role:reviewer\]: Review result returned \(failed\); disposition pending/);
+  assert.ok(!notification.includes(presentation.summary),
+    "Delivery carries identities and failure status; the mandatory original read supplies authored summaries.");
   assert.ok(Buffer.byteLength(notification) < 4000);
   assert.equal(store.getRun().result.output, text);
   const first = withSessionContextPointer(notification, { YUI_SESSION_MANIFEST: "/exact/digest-one.json" });
@@ -36,4 +39,10 @@ test("notification presentation is bounded, attributed and cannot turn reports i
   const changed = withSessionContextPointer(notification, { YUI_SESSION_MANIFEST: "/exact/digest-two.json" });
   assert.ok(changed.includes("/exact/digest-two.json") && !changed.includes("/exact/digest-one.json"));
   assert.equal(withSessionContextPointer(notification, {}), notification);
+  const global = { id: "global-message-1", author: { type: "user" }, body: text };
+  const globalNotification = globalMessagePresentation("assistant", global.id, global);
+  assert.match(globalNotification, /yui role message show assistant global-message-1 --json/);
+  assert.ok(!globalNotification.includes(presentation.summary));
+  assert.equal(global.body, text, "Presentation must not rewrite the original or its qualifications.");
+  assert.equal(authoredNotificationSummary(global.body), presentation.summary);
 });

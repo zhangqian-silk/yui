@@ -58,6 +58,11 @@ Integration 在候选 worktree 中套用固定来源提交，运行已配置的�
 已有 merge/rebase/cherry-pick 若缺少原尝试的进度回执，不根据 Git 标记接管。
 保留现场并选择显式恢复；正常续作使用原回执，不重放已完成步骤。
 
+若 Git 已停止而保存冲突的事务失败，显式 `task integration continue` 可以继续
+同一次操作，但原进度回执、工作区、分支、来源和 Git 元数据必须全部匹配。
+此恢复要求非空且全部暂存的解决结果，无未解决、未暂存或未跟踪文件。
+普通重入不授权恢复；缺少证据仍拒绝。不伪造冲突记录、不重新发起来源命令，也不跳过检查。
+
 当检查是一个 DurableJob 时，Integration 在运行期间保留那个确切的 jobId。Job 结算
 后，`task integration continue <task>/<integration>` 消费其结果并执行带守卫的收尾。
 未结算的 Integration（包括冲突）仍阻止完成，不依赖 Agent 采用了什么执行顺序。

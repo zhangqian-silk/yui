@@ -103,6 +103,13 @@ test("local transport distinguishes unsent failure, missing acknowledgement and 
       assert.equal(error.code, code);
       assert.equal(error.diagnostic.delivery, delivery);
       assert.equal(error.diagnostic.requestId, method);
+      const timing = error.diagnostic.timing;
+      assert.ok(timing.startedAtMs <= timing.connectedAtMs);
+      assert.ok(timing.connectedAtMs <= timing.endedAtMs);
+      assert.ok(timing.writeCompletedAtMs >= timing.connectedAtMs);
+      assert.ok(timing.writeCompletedAtMs <= timing.endedAtMs);
+      assert.equal(timing.responseAtMs === null, method === "timeout");
+      assert.deepEqual(describeCliFailure(error).details.diagnostic.controller.timing, timing);
       assert.doesNotMatch(JSON.stringify(describeCliFailure(error)), /private-token/);
       return true;
     });
@@ -113,6 +120,8 @@ test("local transport distinguishes unsent failure, missing acknowledgement and 
   await assert.rejects(callController(home, "offline", {}, { id: "not-sent" }), error => {
     assert.equal(error.diagnostic.delivery, "not-sent");
     assert.equal(error.diagnostic.method, "offline");
+    assert.equal(error.diagnostic.timing.connectedAtMs, null);
+    assert.equal(error.diagnostic.timing.writeCompletedAtMs, null);
     return true;
   });
 });

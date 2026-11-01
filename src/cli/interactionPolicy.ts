@@ -154,6 +154,7 @@ export const INTERACTION_POLICIES: readonly InteractionPolicy[] = Object.freeze(
       "--responsibility": "value", "--constraint": "value", "--expected-output": "value",
       "--system-prompt": "value", "--skill": "value", "--model": "value",
       "--effort": "value", "--permission-strategy": "value", "--sandbox": "value", "--approval": "value",
+      "--exclude-tmpdir-env-var": "value", "--exclude-slash-tmp": "value",
       "--permission-mode": "value", "--allowed-tool": "value", "--disallowed-tool": "value",
       "--search": "value"
     }
@@ -440,6 +441,7 @@ export const INTERACTION_POLICIES: readonly InteractionPolicy[] = Object.freeze(
       "--constraint": "value", "--expected-output": "value", "--system-prompt": "value",
       "--skill": "value", "--model": "value", "--effort": "value",
       "--permission-strategy": "value", "--sandbox": "value", "--approval": "value", "--permission-mode": "value",
+      "--exclude-tmpdir-env-var": "value", "--exclude-slash-tmp": "value",
       "--allowed-tool": "value", "--disallowed-tool": "value", "--search": "value"
     }
   },

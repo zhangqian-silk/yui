@@ -106,6 +106,23 @@ different contracts. Provider bypass does not grant writes to another Project.
 Managed workspace owner, exact Assignment and resource grants enforce Yui
 operations; broad native permissions are not an OS sandbox.
 
+Codex configured permissions can explicitly exclude automatic writable temp roots:
+`--sandbox workspace-write --exclude-tmpdir-env-var true --exclude-slash-tmp true`.
+Each exclusion accepts `true` or `false`; `--clear-exclude-tmpdir-env-var` and
+`--clear-exclude-slash-tmp` remove the respective override. Omission preserves
+native defaults, not an implicit exclusion. Both fields require an explicit
+`workspace-write` sandbox and reject other adapters or conflicting strategies.
+Managed launches compile them into per-thread `sandbox_workspace_write`
+configuration on start/resume, never shared-daemon defaults or account files.
+Ordinary interactive launches use equivalent invocation-local structured options.
+The mapping follows the native
+[configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+These exclude automatic `$TMPDIR` and `/tmp` grants, not explicitly authorized
+writable roots within those paths. They do not establish read isolation or
+prevent effects through an authorized Controller RPC. Inspect the actual native
+receipt and validate enforcement in a separately authorized disposable fixture;
+accepting the configuration does not prove OS sandbox enforcement.
+
 A write-intent delivery Leader launched in its own Task-owned main workspace
 captures that workspace's bound writable Projects without needing an open
 WorkItem. Accepted results do not remove this direct-delivery scope. An explicit

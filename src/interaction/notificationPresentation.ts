@@ -74,33 +74,26 @@ export function taskNotificationPresentation(
     `Changes: ${labels.slice(0, 4).join("; ")}${labels.length > 4 ? "; more in wake" : ""}.`,
     ...messages.slice(0, 4).map(message => {
       const item = taskMessagePresentation(message, (task, run) => store.getRun(task, run));
-      return `- ${message.id} [${message.author.type}${message.author.type === "role" ? `:${message.author.roleName}` : ""}]: ${item.fact}.`
-        + (item.summary === undefined ? "" : ` Author summary (${item.summarySource}): ${JSON.stringify(item.summary)}`);
+      // Keep failure/disposition facts here. Authored summaries remain in the
+      // mandatory wake/original reads, not a second copy in every delivery.
+      return `- ${message.id} [${message.author.type}${message.author.type === "role" ? `:${message.author.roleName}` : ""}]: ${item.fact}.`;
     }),
     ...(messages.length > 4 ? [`${messages.length - 4} more messages in the fixed wake.`] : []),
     `Refresh: yui task context ${wake.taskId} --json`,
     `Read inputs/results: yui task wake show ${wake.taskId} ${wake.id} --json`,
-    `Handling: claim exact inbox entry ${wake.id}; after disposition, ack it with a concrete reason before ending this turn.`,
-    "Use yui inbox list --view current --json for current inputs. Historical missing receipts are not new work; never replay effects to repair an ACK.",
+    `Inbox: ${wake.id}; follow Runtime claim → original → disposition → ACK.`,
     ...(wake.reasons.includes("session-replaced") ? [
-      "Session replacement is initialization, not replay or completion of earlier input.",
-      "Read yui inbox list --view history --json; inspect retained originals, prior effects and current authority before explicit settlement.",
-      "Preserve original claims and delivery targets. Unknown external effects require evidence, not another execution."
-    ] : []),
-    "Check current Skills each turn: yui session skills --json. Apply current yui-leader; read relevant originals in full and advance authorized work."
+      "Session replaced: yui inbox list --view history --json; follow Runtime inbox recovery before settling retained claims. Do not replay unknown effects."
+    ] : [])
   ].join("\n");
 }
 
 export function globalMessagePresentation(roleName: string, messageId: string, message?: GlobalRoleMessage): string {
-  const summary = authoredNotificationSummary(message?.body);
   return [
     `Yui Global Message: role=${roleName} message=${messageId}.`,
     `Changes: ${message?.author.type ?? "Recorded"} input received.`,
-    ...(summary === undefined ? [] : [`Author summary (message-body): ${JSON.stringify(summary)}`]),
     "Refresh Session Context using the current Manifest's loadCommand.",
     `Read original: yui role message show ${roleName} ${messageId} --json`,
-    `Handling: claim exact inbox entry ${messageId}; after disposition, ack it with a concrete reason before ending this turn.`,
-    "Routing to a Task or asking a necessary user question can settle this input without completing the Task. Missing ACK is not permission to repeat effects.",
-    `The Global loadCommand checks current Skill versions each turn. Apply current ${roleName === "operator" ? "yui-operator" : "yui-runtime"} within existing authority.`
+    `Inbox: ${messageId}; follow Runtime claim → original → disposition → ACK.`
   ].join("\n");
 }

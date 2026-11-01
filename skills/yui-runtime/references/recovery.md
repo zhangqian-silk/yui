@@ -1,194 +1,34 @@
 # Runtime recovery
 
-Read this when a native Turn fails, delivery acceptance is unknown, the
-Controller is unavailable, or an authorized supervisor chooses Session
-replacement. Workers and Reviewers report exact evidence; they do not acquire
-supervisor authority by reading this procedure.
+Read before retry, Session replacement or intervention in failed/uncertain
+execution. Workers and Reviewers report exact evidence; reading recovery
+instructions grants no supervisor authority.
 
-## Inspect the failed execution
+Preserve pending intent, original input, exact execution identity, workspace
+progress and resource ownership. Never replay unknown native/external effects,
+edit Run status or substitute a Session behind Yui. A timeout, quiet observation
+or failed attempt proves neither stopped execution nor failed business
+acceptance. Recovery grants no new Task, model, account or resource authority.
 
-Read the referenced `runtime.agent-error`, exact AgentRun, Role Session and
-affected WorkItem, ReviewRound or Integration. Use `task next-action` and
-`execution audit` as decision support, not as an automatic plan.
-Active or quiet observations are not a Task-wide lock or proof of failure.
+Read only the complete procedure for the action actually needed:
 
-### Configuration and model-name failures
+- **Failed native Turn/launch, configuration/model-name failure, Provider retry
+  or manual successor:** [Failed execution](execution-failure.md). Inspect the
+  exact failure and current retry projection before choosing an attempt; do not
+  duplicate Controller-owned recovery.
+- **Deliberate authorized Session replacement:** [Session replacement](session-replacement.md).
+  Failure alone does not require replacement. Preserve successor context and
+  exact stop/writer proof; replacing yourself ends the native turn.
+- **Unknown delivery, unavailable Controller or failed cleanup:**
+  [Execution uncertainty](uncertain-execution.md). Diagnostic access needs no
+  preliminary successful RPC; restart/cleanup still needs its existing authority.
+- **Host protocol/custody or persistence failure, or Host replacement during
+  an upgrade:** [Host custody](host-custody.md). An ordinary Controller outage
+  alone does not trigger this procedure.
 
-The already-running caller handles a failed launch: Worker/Reviewer failures
-go to their Leader, and an unavailable Leader's failure goes to the existing
-Operator channel. A target that did not start cannot repair itself. Read the
-referenced error once; do not create a recovery Agent, a polling loop or a new
-Task merely to handle it.
-
-Use the error's capability-query pointer to inspect native metadata with the
-recorded failed configuration:
-
-```sh
-yui task event show <task> <error-event>
-yui task role capabilities <task> <role> --error <error-event> --refresh
-```
-
-The query uses the Controller's Provider environment, not your own Agent's
-possibly different account variables, and requires that Controller to be running.
-It preserves the requested model, workspace, profile/settings selection and
-configured Agent identity. Native settings files and credentials are still read
-currently, not copied into error history. A historical error without a recorded
-configuration, or a changed Agent command/bindings, returns a diagnosis instead
-of borrowing today's Role configuration. To inspect the desired next launch
-explicitly, omit `--error`. Distinguish live enumeration, identity-matched cached
-observations, declared static adapter inputs, and unavailable fields. Read field
-reasons, warnings, observation/attempt times and the current query error: a live
-query can contain static or unavailable fields, and a cache hit is not current
-Provider confirmation. Do not treat an alias list as a complete Provider
-whitelist or a static/custom choice as proven native support.
-
-Reconcile the original user requirement with exact native IDs and alias
-mappings. Correcting the name of the same authorized model is routine recovery;
-selecting another model, account, permission or cost boundary is not. If there
-is no proven equivalent, preserve the failure and report the missing choice.
-Do not guess names, select a similarly named variant, or silently fall back.
-
-After correcting only the intended configuration, choose the existing operation
-that matches current facts. A rejected notification retains its input:
-
-```sh
-yui task wake show <task> <wake>
-yui task wake retry <task> <wake> --reason "<correction and evidence>"
-```
-
-Retry does not replace a Session or change its immutable effective configuration.
-If an existing Session must adopt changed settings, use the deliberate Session
-replacement operation below; an assigned Run uses its own legal retry operation.
-Accepted or uncertain input cannot be replayed through notification retry.
-Configuration failure is not transient infrastructure recovery, and unchanged
-configuration does not justify another attempt.
-
-### Bounded infrastructure retry
-
-The Controller, not the Agent, counts and schedules qualifying transient
-Provider retries: at most five automatic executions after the initial failure,
-within one ten-minute recovery window. Native acceptance, activity and partial
-output do not reset that count. Unknown delivery remains fenced for exact
-readback; it is never replayed.
-
-Inspect the current projection in Context, or use
-`task role session retry <task> <role> show`; Global Sessions use
-`session retry <role> show`. While `waiting` or `in-flight`, do not dispatch a
-duplicate. A readable failed Run remains immutable evidence while its recovery
-successor handles the same responsibility and frozen Review boundary.
-
-`cancel` withdraws pending automatic recovery; `disable` additionally disables
-future automatic chains on that Provider binding. Neither stops an admitted
-native Turn. `enable` permits future failures to qualify, without replaying
-old failures. These controls require the existing user/supervisor authority.
-
-`exhausted`, `cancelled` and `needs-attention` preserve the error, input and
-work. Read their exact reason, then choose an authorized next action. Unsupported
-Hosts/Adapters or unprovable Session/background state do not trigger automatic
-replacement, cleanup, model switching or a new grant.
-
-A failed AgentRun is immutable; retry creates a new attempt. Reuse a recoverable
-Session when useful and load the new attempt's current context, not an old
-Assignment from memory. A new Host process need not mean a new native Session.
-Preserve frozen Review candidates and selected synthesis sources on retry.
-An infrastructure failure is not a defect in the business result.
-
-Native internal retries are not failed terminals: observe without submitting
-another input. A missing automatic retry record is not evidence of exhausted
-budget or a damaged Session. An explicit `task run retry <task>/<run>` can
-continue from the current exact failed Turn even without an earlier automatic
-chain. Codex `systemError` alone does not require replacement; the normal
-submission path checks that the latest Turn is that failed Turn and background
-execution is empty. Missing or changed proof is a refusal, not permission to
-replay, change models or silently replace the Session.
-
-## Replace a Session deliberately
-
-An authorized Leader or Operator may request:
-
-```sh
-yui task role session new <task> <role> --reason "<reason>"
-```
-
-The old Run may still be active, the Session may already be released, or fresh
-context may simply be preferable. Save necessary requirements, decisions,
-progress and results first. Yui persists replacement intent, stops the exact
-execution and retires its engineering attempts while retaining Task history and
-workspaces. Do not manipulate Run status, delete context or change models to
-make replacement legal.
-
-When replacing yourself, end the native turn. The successor reads durable Task
-context and fixed notification references, then chooses which still-valid
-assignment to continue. Released Leaders retain scoped diagnostic reads but
-cannot regain write authority.
-
-Leader initialization is delivered separately from old inbox handling and
-new queued business. A retained claim cannot block this lifecycle notification.
-The current Leader reads `yui inbox list --view history --json`, then the exact originals and
-prior effects. Claims survive unchanged; use `inbox ack` only after actual
-handling, with the successor's own disposition. Do not claim an already-claimed
-entry again. Repeated reconciliation or Controller restart does not settle
-anything or repeatedly wake an idle handler.
-
-A legally started GlobalRole successor with claims from a previous Session
-receives one Session-pinned recovery Message in its existing inbox. It requests
-the same inspection, not replay of those Messages. A stopped Global Session
-is not started by this notice. Worker/Reviewer Assignment changes still require
-the existing explicit handoff or retirement; no bulk transfer is implied.
-
-Replacement waits for exact native/resource stop and writer release. Missing
-proof requires repairing that observation or a genuinely missing user decision,
-not a timeout, another name, force-ACK or record deletion. Uncertain old
-notification submissions are released from scheduling without replay, retaining
-their fixed wakes and `notification.resolved` evidence. They become explicitly
-inspectable/settleable, not automatically accepted or resubmitted.
-
-## Handle uncertainty and failed cleanup
-
-Never replay a notification whose acceptance is unknown. After evidence
-establishes shared-native quiescence, an authorized supervisor can use:
-
-```sh
-yui task wake resolve <task> <wake> --reason "<quiescence evidence>"
-```
-
-This releases only the claim, preserves the original unknown record, and lets
-independent later inputs proceed. It neither asserts acceptance nor implements
-the Message. Uncertain native activity still blocks conflicting execution;
-unrelated authorized local work can continue.
-
-If the Controller is unresponsive, an authorized Operator can use
-`controller status` and explicit `controller restart` without a successful
-preliminary RPC. Preserve the resource and restart authorization boundary.
-If exact native stop or inspection fails, read the persisted diagnostic and
-resolve that resource boundary; do not kill arbitrary processes, clear unknown
-execution records, or modify managed refs, tmux Sessions or state files.
-
-Compatible upgrades preserve logical Sessions. Build generations and historical
-Skill packages are provenance, not continuation gates. Load current stable
-Skills and current authority; never change a user's model, account, native
-permissions or workspace to make an upgrade work.
-
-Within Host control/event v1, status advertises `controlCapabilities` and the
-loaded `hostImplementation`, independently of `endpointImplementation`. Missing
-capabilities or `eventDelivery` are unreported, not healthy. A Controller must
-not repeatedly send an unsupported `reconcile-turn`; the existing raw Inbox
-still permits exact event consumption without executing the input again.
-Current Hosts retain unpersisted original facts during a filesystem failure;
-keep that process alive until persistence recovers. Those volatile bytes cannot
-be recovered after process loss merely by restarting the Controller.
-
-Program/storage upgrade success does not mean Host replacement succeeded.
-Compatible live Hosts may continue, including busy ones. A new Host may resume
-the same native Session only through the existing authorized lifecycle after
-exact execution, background resources and writer release are proven. An idle
-status, a stopped proxy or a missing control field is insufficient. Unknown
-effects preserve the original Session, input and resources; do not force-kill,
-replay, hot-replace loaded modules or silently create a new Session. Existing
-explicit stop/replacement authority is separate from an ordinary upgrade.
-Unsupported protocols require an explicit bounded recovery plan, not arbitrary
-historical Host adoption. Storage migration remains independently fenced.
-
-After repeated failure of the same bounded recovery, report the observed
-cause, impact and smallest remaining options. Do not broaden cleanup or add
-a private retry loop. A failed recovery does not erase the pending requirement.
+Several actions may apply: read each triggered procedure, not every branch.
+Follow further links only at their stated action. For retained input claims,
+failed ACK or Session-successor handling, also use
+[Inbox recovery](inbox-recovery.md); recovery notices do not settle inputs.
+After recovery inspect prior work and external receipts before continuing;
+preserve unresolved facts rather than broadening cleanup or adding retry loops.

@@ -14,22 +14,40 @@ import { observe } from "./cases/business.mjs";
 import { selectConditions, parseOptions } from "./selection.mjs";
 import { NativeObserver } from "./native-session.mjs";
 import { stagePredecessor, publishAfterPredecessor } from "./predecessor-setup.mjs";
+import { contextDefinitions, runContextProxy } from "./context-profile.mjs";
 
 const options = parseOptions(process.argv.slice(2));
 const checkout = resolve(options.version), output = resolve(options.out);
 if (existsSync(output)) throw new Error("Output already exists; refusing to overwrite evidence.");
-const conditions = selectConditions(options, definitions, variants);
+// Explicit opt-in keeps the historical dev/all business selections unchanged.
+const conditions = selectConditions(options,
+  options.case.startsWith("CTX-") ? contextDefinitions : definitions, variants);
 const git = (...args) => execFileSync("git", ["-C", checkout, ...args], { encoding: "utf8" }).trim();
 const hashFile = path => digest(readFileSync(path));
 const trace = [];
 const evidence = {
   schemaVersion: 1, mode: "offline", experiment: randomUUID(), createdAt: new Date().toISOString(),
   version: { checkout, commit: git("rev-parse", "HEAD"), worktreeStatus: git("status", "--porcelain"),
+    // Harness-only commits must not silently become a new product B0.
+    productCommit: git("log", "-1", "--format=%H", "--", ".", ":(exclude)scripts/collaboration-eval"),
+    productSourceSha256: digest(git("ls-tree", "-r", "HEAD").split("\n")
+      .filter(line => !line.split("\t")[1]?.startsWith("scripts/collaboration-eval/")).join("\n")),
+    productDeltaFromB0: git("diff", "--name-only", "13ba89cf89d5f993cb22cd5e8a02ac2cad643a7d", "HEAD",
+      "--", ".", ":(exclude)scripts/collaboration-eval"),
     cliSha256: hashFile(join(checkout, "dist/cli.js")), node: process.version,
     platform: process.platform, architecture: process.arch,
     packageLockSha256: hashFile(join(checkout, "package-lock.json")) },
   caseSet: caseSetVersion, seed: 89, options,
+  harnessVersion: {
+    checkout: fileURLToPath(new URL("../..", import.meta.url)),
+    commit: execFileSync("git", ["-C", fileURLToPath(new URL("../..", import.meta.url)),
+      "rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+    worktreeStatus: execFileSync("git", ["-C", fileURLToPath(new URL("../..", import.meta.url)),
+      "status", "--porcelain"], { encoding: "utf8" }).trim()
+  },
   freezeSha256: hashFile(new URL("./cases/freeze.json", import.meta.url)),
+  contextFreezeSha256: Object.fromEntries(["context-experiment", "context-confirmation"]
+    .map(name => [name, hashFile(new URL(`./${name}.json`, import.meta.url))])),
   policySha256: hashFile(new URL("./cases/participant.mjs", import.meta.url)),
   oracleSha256: hashFile(new URL("./cases/oracle.mjs", import.meta.url)),
   // Hash the executed modules, not just a declaration that can become stale.
@@ -38,7 +56,7 @@ const evidence = {
     .map(name => [name, hashFile(new URL(`./cases/${name}.mjs`, import.meta.url))])),
   harnessSha256: Object.fromEntries(["run", "fixture", "evidence", "readback", "selection", "case-process",
     "native-session", "native-fake-cli", "native-turn", "native-business", "native-worker",
-    "native-predecessor", "predecessor-setup", "native-trace"]
+    "native-predecessor", "predecessor-setup", "native-trace", "context-profile", "context-oracle"]
     .map(name => [name, hashFile(new URL(`./${name}.mjs`, import.meta.url))])),
   proxySha256: hashFile(new URL("../../test/fixtures/fake-codex-app-server-proxy.mjs", import.meta.url)),
   trace, conditions
@@ -127,6 +145,11 @@ async function runCondition(condition) {
   try {
     fixture.prepare({ native });
     condition.runtime = fixture.call(["controller", "status"], "prepare").identity;
+    if (condition.category === "context") {
+      condition.budget = { wallSeconds: 90, reads: 60, bytes: 2 * 1024 * 1024 };
+      await runContextProxy(checkout, fixture, condition);
+      return;
+    }
     mkdirSync(root);
     const prepared = await prepareCase(condition.id, condition.variant, root, { deferNotification: native && condition.id === "O02" });
     condition.manifest = prepared.manifest;

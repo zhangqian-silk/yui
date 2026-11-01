@@ -2,7 +2,7 @@ import { findChild, ROOT_COMMAND, type CommandNode } from "./commandCatalog.js";
 
 export type Invocation =
   | Readonly<{ kind: "execute"; node: CommandNode }>
-  | Readonly<{ kind: "help"; node: CommandNode }>
+  | Readonly<{ kind: "help"; node: CommandNode; recursive: boolean }>
   | Readonly<{ kind: "path-error"; typedPath: string; helpNode: CommandNode }>
   | Readonly<{ kind: "incomplete"; typedPath: string; helpNode: CommandNode }>;
 
@@ -22,10 +22,11 @@ export function routeInvocation(args: readonly string[], discoveryRoot = ROOT_CO
 }
 
 function resolveHelpPath(path: readonly string[], root: CommandNode): Invocation {
-  if (path.length === 0) return { kind: "help", node: root };
+  const recursive = path.at(-1) === "--recursive";
+  const segments = recursive ? path.slice(0, -1) : path;
   let node = root;
   let nearestGroup = root;
-  for (const segment of path) {
+  for (const segment of segments) {
     const child = findChild(node, segment);
     if (child === undefined || child.hidden) {
       return { kind: "path-error", typedPath: path.join(" "), helpNode: nearestGroup };
@@ -33,7 +34,7 @@ function resolveHelpPath(path: readonly string[], root: CommandNode): Invocation
     node = child;
     if (node.kind !== "leaf") nearestGroup = node;
   }
-  return { kind: "help", node };
+  return { kind: "help", node, recursive };
 }
 
 function resolveExecutionPath(args: readonly string[]): Invocation {

@@ -706,10 +706,12 @@ function roleSession(
   const [command, rawName, ...tail] = args;
   if (command === "retry") {
     const name = roleName(rawName);
-    const [action = "show", ...extra] = tail;
+    const parsed = readOptions(tail, ["--cursor"]);
+    const [action = "show", ...extra] = parsed.positionals;
     if (extra.length > 0 || !["show", "cancel", "disable", "enable"].includes(action)) {
       throw usageError("Usage: yui session retry <role> [show|cancel|disable|enable]");
     }
+    if (action !== "show" && parsed.cursor !== undefined) throw usageError("Only retry show accepts --cursor.");
     return store.transaction(tx => {
       const role = requireRole(name, tx);
       const sessions = tx.getGlobalRoleSessionSet(name);
@@ -722,11 +724,14 @@ function roleSession(
       }
       const health = globalSessionHealth(role, sessions);
       const historical = binding?.retry !== undefined && health.retry === null;
-      return options.jsonOutput ? JSON.stringify({
+      const detail = {
         roleName: name, retry: providerRetryProjection(binding), disabled: binding?.retryDisabled ?? false,
         selectedNativeSessionId: health.nativeSessionId,
         retryScope: historical ? "historical-session" : "current-session"
-      }) + "\n" : (historical ? "Historical Session evidence (not the selected Session's current failure): " : "")
+      };
+      return options.jsonOutput ? JSON.stringify(action === "show"
+        ? boundedDocument(detail, `global:${name}/retry`, parsed.cursor) : detail) + "\n"
+        : (historical ? "Historical Session evidence (not the selected Session's current failure): " : "")
         + renderProviderRetry(binding) + "\n";
     });
   }

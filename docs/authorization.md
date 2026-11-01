@@ -20,9 +20,24 @@ authorization for any external effect.
 | May it access an additional resource or irreversible effect? | `CapabilityGrant`, `grant/taskAuthorization.ts`, resource/plugin/release consumers | Task activation does not authorize arbitrary resources |
 
 The full command inventory is generated from the catalog, not maintained as a
-second per-command permissions table: use `yui --json help` and scoped
-`yui --json help task`, or traverse `describeCommandTree(discoveryCommandTree(env))`
-in offline tooling. Complete role hints retain an offline template even without
+second per-command permissions table. `yui --json help` and scoped
+`yui --json help task` return the selected command's full details and all its
+immediate child **summaries**, not a recursively expanded tree. The `discovery`
+field labels this boundary and gives the detail and full-tree commands. Follow
+each child's `path` with `yui --json help <command ...>` for full usage, options,
+values and examples, or use `yui --json help [command ...] --recursive` for the
+complete caller-filtered tree in one call.
+
+This changes the default JSON help shape: consumers that previously traversed
+nested `children` must request `--recursive`; absence of child details in the
+default view is not proof that the child has no options or descendants.
+Focused leaf details are unchanged, with additive discovery metadata.
+Text help still shows immediate children; `--recursive` requires `--json`.
+`config describe --json` and the offline
+`describeCommandTree(discoveryCommandTree(env))` API retain full recursive
+descriptions. Native `yui agent` product help is a separate surface and unchanged.
+
+Complete role hints retain an offline template even without
 a running Home; that is not authentication. Native-ID-only callers are resolved
 from read-only local storage for help/completion; if that read fails the CLI shows
 the restricted `unbound` template. No Controller or provider is started for that

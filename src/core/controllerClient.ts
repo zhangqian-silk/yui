@@ -9,6 +9,7 @@ import {
   inspectLiveControllerProcess
 } from "./controllerProcessIdentity.js";
 import { readHomeFilesystemId } from "./homeFilesystemIdentity.js";
+import { monotonicMilliseconds } from "./controllerTelemetry.js";
 import {
   CONTROLLER_DISCOVERY_PATH,
   ControllerProtocolError,
@@ -31,6 +32,14 @@ export class ControllerClientError extends Error {
       method?: string;
       requestId?: string;
       socketPath?: string;
+      /** Local monotonic socket events; null means not observed, not not applied. */
+      timing?: Readonly<{
+        startedAtMs: number;
+        connectedAtMs: number | null;
+        writeCompletedAtMs: number | null;
+        responseAtMs: number | null;
+        endedAtMs: number;
+      }>;
     }>
   ) {
     super(message, { cause });
@@ -225,6 +234,10 @@ function exchange(
   method: string
 ): Promise<JsonValue> {
   return new Promise((resolve, reject) => {
+    const startedAtMs = monotonicMilliseconds();
+    let connectedAtMs: number | null = null;
+    let writeCompletedAtMs: number | null = null;
+    let responseAtMs: number | null = null;
     const socket = createConnection(socketPath);
     let buffer = Buffer.alloc(0);
     let settled = false;
@@ -252,19 +265,26 @@ function exchange(
         delivery: error.diagnostic?.delivery ?? (deliveryStarted ? "unconfirmed" : "not-sent"),
         method,
         requestId: expectedId,
-        socketPath
+        socketPath,
+        timing: { startedAtMs, connectedAtMs, writeCompletedAtMs, responseAtMs,
+          endedAtMs: monotonicMilliseconds() }
       }));
     };
 
     socket.on("connect", () => {
+      if (settled) return;
+      connectedAtMs = monotonicMilliseconds();
       // Once write begins, a missing response cannot prove that the Controller
       // did not commit the request. Callers must use their domain identity to
       // decide whether an explicit retry is safe.
       deliveryStarted = true;
-      socket.write(requestLine);
+      socket.write(requestLine, error => {
+        if (error == null) writeCompletedAtMs = monotonicMilliseconds();
+      });
     });
     socket.on("data", (chunk: Buffer) => {
       if (settled) return;
+      responseAtMs ??= monotonicMilliseconds();
       buffer = Buffer.concat([buffer, chunk]);
       const newline = buffer.indexOf(0x0a);
       if (newline < 0) {

@@ -3,7 +3,7 @@ import test from "node:test";
 import { CapabilityRegistry } from "../../dist/kernel/capabilityRegistry.js";
 import { InstanceHost } from "../../dist/kernel/instanceHost.js";
 import { discoveryCommandTree, discoveryAudience } from "../../dist/cli/commandDiscovery.js";
-import { findCommandNode, listPublicCommandPaths } from "../../dist/cli/commandCatalog.js";
+import { describeCommandHelp, describeCommandTree, findCommandNode, listPublicCommandPaths } from "../../dist/cli/commandCatalog.js";
 import { resolveCompletionCandidates } from "../../dist/cli/dynamicCompletion.js";
 import { routeInvocation } from "../../dist/cli/invocationRouter.js";
 import { renderCommandHelp } from "../../dist/cli/helpRenderer.js";
@@ -58,8 +58,38 @@ test("one caller projection drives help and completion without restricting direc
   const candidates = await resolveCompletionCandidates({ words: ["task"], current: "", ports, root: worker });
   assert.ok(candidates.includes("context"));
   assert.ok(!candidates.includes("create"));
+  assert.deepEqual(await resolveCompletionCandidates({
+    words: ["help", "task"], current: "--r", ports, root: worker
+  }), ["--recursive"]);
   assert.equal(routeInvocation(["task", "work", "dispatch", "work-1"], worker).kind, "execute");
   assert.equal(routeInvocation(["help", "task", "work", "dispatch"], worker).kind, "path-error");
+});
+
+test("bounded help reaches every filtered command with full details and explicit tree discovery", () => {
+  for (const audience of ["public", "operator", "leader", "assignment", "global", "unbound"]) {
+    const tree = discoveryCommandTree({}, audience);
+    const visit = node => {
+      const help = describeCommandHelp(node);
+      assert.equal(help.discovery.children, "complete-immediate-summaries");
+      assert.equal(help.discovery.details, "yui --json help <command ...>");
+      assert.equal(help.discovery.tree, "yui --json help [command ...] --recursive");
+      const children = help.children.map(child => {
+        assert.deepEqual(Object.keys(child).sort(), ["path", "summary"]);
+        const route = routeInvocation(["help", ...child.path.split(" ")], tree);
+        assert.equal(route.kind, "help", child.path);
+        assert.equal(route.node.summary, child.summary);
+        return visit(route.node);
+      });
+      const { discovery, ...details } = help;
+      return { ...details, children };
+    };
+    assert.deepEqual(visit(tree), describeCommandTree(tree), audience);
+    const recursive = routeInvocation(["help", "--recursive"], tree);
+    assert.equal(recursive.kind, "help");
+    assert.equal(recursive.recursive, true);
+    assert.equal(routeInvocation(["help", "task", "--unknown"], tree).kind, "path-error");
+    assert.equal(routeInvocation(["help", "internal", "--recursive"], tree).kind, "path-error");
+  }
 });
 
 test("exact discovery is pure, runtime-independent and never an execution credential", async t => {

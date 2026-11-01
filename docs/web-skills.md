@@ -42,8 +42,10 @@ package even when `SKILL.md` is unchanged.
 
 ## Current loading and internal versions
 
-Bindings remain Session-scoped, but instruction content is current. Every managed
-turn checks `yui session skills --json`: builtins resolve to the current installed
+Bindings remain Session-scoped, but instruction content is current. Managed Hosts
+check versions before input submission and notify only initial/changed pointers;
+ordinary inputs need no duplicate Agent check. Unmediated clients and explicit
+diagnostics use `yui session skills --json`. Builtins resolve to the current installed
 `skills/<id>` directory, configured Skills to `YUI_HOME/skills/<id>`, never to a
 Session-specific frozen package. Each directory must include a readable `VERSION`
 file containing a positive integer (initially `1`). Increment it for substantive

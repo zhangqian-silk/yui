@@ -566,7 +566,8 @@ function readLiveTaskState(store: TaskStore, taskId: string): AgentRunContextLiv
     }));
   return Object.freeze({
     providerRetries: Object.freeze(store.listRoleSessionSets(taskId).flatMap(set => set.providerBinding?.retry === undefined
-      ? [] : [{ roleName: set.owner.roleName, retry: providerRetrySummary(set.providerBinding) }])),
+      ? [] : [{ roleName: set.owner.roleName, retry: providerRetrySummary(set.providerBinding,
+        `yui task role session retry ${taskId} ${set.owner.roleName} show --json`) }])),
     activeRuns: Object.freeze(activeRuns),
     activeTaskReviews: Object.freeze(activeTaskReviews)
   });

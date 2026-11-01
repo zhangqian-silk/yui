@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:net";
-import { writeFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 
 const WEB_SOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 let input = Buffer.alloc(0);
@@ -8,6 +8,7 @@ let upgraded = false;
 let turnSequence = 0;
 let activeTurnId;
 let latestTurn;
+let blockedByName = false;
 let model = "fixture-default";
 const controlled = process.env.YUI_FAKE_CONTROLLED === "1";
 let threadId = process.env.YUI_FAKE_THREAD_ID ?? "fake-thread-1";
@@ -102,6 +103,7 @@ function receiveFrames() {
 
 function handleMessage(message) {
   const respond = (result) => sendJson({ id: message.id, result });
+  if (blockedByName) return;
   switch (message.method) {
     case "initialize":
       respond({ codexHome: process.env.CODEX_HOME ?? "/tmp/fake-codex-home" });
@@ -115,9 +117,19 @@ function handleMessage(message) {
       threadId = message.params.threadId;
       model = message.params.model ?? model;
       respond({ model, thread: { id: message.params.threadId, status: { type: "idle" },
-        turns: JSON.parse(process.env.YUI_FAKE_RESUMED_TURNS ?? "[]") } });
+        turns: message.params.excludeTurns ? [] : process.env.YUI_FAKE_LARGE_HISTORY === "1"
+          ? [{ id: "huge-history", status: "completed", items: [
+            { type: "agentMessage", text: "x".repeat(17 * 1024 * 1024) }
+          ] }] : JSON.parse(process.env.YUI_FAKE_RESUMED_TURNS ?? "[]") } });
       break;
     case "thread/name/set":
+      if (process.env.YUI_FAKE_STALL_THREAD_NAME === "1") {
+        // A provider can apply metadata but stop answering on this connection.
+        // The watchdog also bounds cleanup when testing the old blocking path.
+        blockedByName = true;
+        setTimeout(() => process.exit(93), 3500);
+        break;
+      }
       if (process.env.YUI_FAKE_EXPECT_THREAD_NAME !== undefined
         && message.params.name !== process.env.YUI_FAKE_EXPECT_THREAD_NAME) {
         sendJson({
@@ -138,17 +150,29 @@ function handleMessage(message) {
         thread: {
           id: message.params.threadId ?? threadId,
           status: { type: activeTurnId !== undefined ? "active" : latestTurn?.status === "failed" ? "systemError" : "idle" },
-          turns: activeTurnId === undefined ? (latestTurn ? [latestTurn] : JSON.parse(process.env.YUI_FAKE_RESUMED_TURNS ?? "[]"))
+          turns: message.params.includeTurns === false ? [] : activeTurnId === undefined ? (latestTurn ? [latestTurn] : JSON.parse(process.env.YUI_FAKE_RESUMED_TURNS ?? "[]"))
             : [{ id: activeTurnId, status: "inProgress", items: [] }]
         }
       });
       break;
-    case "thread/turns/list":
-      respond({ data: latestTurn ? [latestTurn] : JSON.parse(process.env.YUI_FAKE_RESUMED_TURNS ?? "[]"), nextCursor: null });
+    case "thread/turns/list": {
+      const turns = activeTurnId ? [{ id: activeTurnId, status: "inProgress", items: [] }]
+        : latestTurn ? [latestTurn] : JSON.parse(process.env.YUI_FAKE_RESUMED_TURNS ?? "[]").reverse();
+      const offset = Number(message.params.cursor ?? 0);
+      const limit = message.params.limit ?? 50;
+      const data = turns.slice(offset, offset + limit).map(turn => message.params.itemsView === "notLoaded"
+        ? { ...turn, items: [], itemsView: "notLoaded" } : turn);
+      respond({ data, nextCursor: offset + limit < turns.length ? String(offset + limit) : null });
       break;
+    }
     case "thread/items/list": {
+      if (process.env.YUI_FAKE_RESTORE_EVENTS) {
+        for (const event of JSON.parse(process.env.YUI_FAKE_RESTORE_EVENTS)) sendJson(event);
+        delete process.env.YUI_FAKE_RESTORE_EVENTS;
+      }
       const turns = JSON.parse(process.env.YUI_FAKE_RESUMED_TURNS ?? "[]");
-      const items = turns.flatMap(turn => turn.items.map(item => ({ turnId: turn.id, item }))).reverse();
+      const items = turns.filter(turn => !message.params.turnId || turn.id === message.params.turnId)
+        .flatMap(turn => turn.items.map(item => ({ turnId: turn.id, item }))).reverse();
       const offset = Number(message.params.cursor ?? 0);
       const limit = message.params.limit ?? 40;
       respond({ data: items.slice(offset, offset + limit),
@@ -165,6 +189,8 @@ function handleMessage(message) {
       respond({ data: [], nextCursor: null });
       break;
     case "turn/start":
+      if (process.env.YUI_FAKE_INPUT_LOG) appendFileSync(process.env.YUI_FAKE_INPUT_LOG,
+        JSON.stringify({ threadId, input: message.params.input }) + "\n");
       turnSequence += 1;
       const turnId = `fake-turn-${turnSequence}`;
       if (controlled || turnHandler) activeTurnId = turnId;

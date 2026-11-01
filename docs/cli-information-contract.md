@@ -37,6 +37,15 @@ workspaces and other authorized record families. `--status`, `--after` and
 `--work-item` narrow Context discovery; every continuation must retain filters.
 Run listing accepts a Task or `task/work` target.
 
+`task run show <task>/<run> --view status` reads identity, record status,
+delivery/retry observations, retirement and result availability without copying
+input, launch or report bodies. It uses the same authorization as the default
+`--view full`, which retains complete audit evidence and document pagination.
+Read the original result through its Message or full Run view before disposition;
+status is neither a report nor acceptance. Once that exact original is available
+in current context, use status for additional execution facts instead of loading
+the report twice. No read receipt or model-memory cache is introduced.
+
 Current Context's `attention.messages` excludes explicit acknowledgements and
 retirements; delivery alone is not handling. The exact wake receipt and latest
 Message revision determine coverage. `--view current` continues that view;
@@ -44,6 +53,15 @@ the default family list still includes history. `collections` counts and `omitte
 explicitly describe incomplete discovery. Samples are not proof that no older pending or
 relevant input exists. Read the relevant fixed wake and original Messages;
 use family discovery when a broader requirement/history audit is needed.
+
+Current Context is a working index, not a repeated configuration or requirements
+dump. Task/Brief, Role, Project policy, workspace, delivery and decision records
+return summaries and exact references even when their bodies are small. Lifecycle,
+execution authority, attention counts and active execution/retry observations
+remain inline. Read a relevant original through `context inspect` before acting
+on its requirements or authority; `omitted: true` is not an empty original.
+Fresh reads still compute current identities and enforce scope. There is no
+model-memory cache, inferred handling receipt or automatic reuse of stale state.
 
 ## Budgets and continuations
 
@@ -80,9 +98,11 @@ use family discovery when a broader requirement/history audit is needed.
   only when the configured metadata exceeds the inline budget.
 - Detail documents up to 16 KiB remain ordinary JSON. Larger documents return
   `contentPage`: exact source, SHA-256 digest, JSON-character offset, total bytes
-  and characters, text, completeness and a next cursor. Chunks contain at most
-  4096 UTF-16 code units without splitting surrogate pairs, keeping escaped
-  wire output below 32 KiB. There is no 4 MiB cutoff that makes a legal original
+  and characters, text, completeness and a next cursor. Chunk lengths adapt to
+  the complete encoded 32 KiB response budget, including identity and cursors,
+  with 256 bytes reserved for small command wrappers. Chunks never split
+  surrogate pairs; offsets remain UTF-16 units and previously issued cursors
+  remain readable. There is no 4 MiB cutoff that makes a legal original
   permanently unreadable.
 - Task metadata/next-action/remote-delivery, Brief, WorkItem, Message, Run,
   decision/milestone/event, Role show/status/Session inspection, wake detail,
@@ -93,6 +113,78 @@ Use `--json` and read the top-level `data`. Run context and expansion use
 `--cursor <contentPage.nextCursor>`. Concatenate `text` in offset order, checking
 the same source and digest, and parse the combined JSON once. Do not parse
 chunks individually or treat a first chunk as the complete report.
+
+### Copyable detail-reading example
+
+For `task context inspect`, the following Node.js example consumes the outer
+`data` envelope. Supply the authorized CLI path and exact discovery arguments;
+keep the current Session environment. It only reads that record, does not claim
+or acknowledge input, and does not prove that an Agent has read its contents.
+Save as a local `.mjs` file and invoke
+`node reader.mjs /absolute/path/to/yui task-1 task-message message-1 <digest>`.
+The final stdout is the reconstructed record; capture it in your owned scratch
+directory and read it in bounded portions if it exceeds the tool output limit.
+Do not re-fetch earlier pages just to inspect metadata.
+
+```js
+import { spawnSync } from "node:child_process";
+
+function readDocument(read) {
+  let cursor, source, digest, total, offset = 0;
+  const chunks = [];
+  for (;;) {
+    const data = read(cursor);
+    const page = data.contentPage;
+    if (!page) {
+      if (chunks.length) throw Error("Detail changed shape during pagination");
+      return data;
+    }
+    if (!chunks.length) {
+      ({ source, digest, totalCharacters: total } = page);
+    }
+    if (page.source !== source || page.digest !== digest ||
+        page.totalCharacters !== total || page.offset !== offset ||
+        typeof page.text !== "string" || !page.text.length) {
+      throw Error(`Detail identity/offset mismatch at ${offset}`);
+    }
+    chunks.push(page.text);
+    offset += page.text.length; // UTF-16 units, not UTF-8 bytes.
+    if (page.complete === true && page.nextCursor === null && offset === total) {
+      try { return JSON.parse(chunks.join("")); }
+      catch { throw Error(`Invalid completed detail at ${offset}`); }
+    }
+    if (page.complete !== false || offset >= total ||
+        typeof page.nextCursor !== "string" || !page.nextCursor.length) {
+      throw Error(`Invalid continuation at ${offset}`);
+    }
+    cursor = page.nextCursor;
+  }
+}
+
+const [cli, task, store, ref, digest] = process.argv.slice(2);
+if (![cli, task, store, ref, digest].every(Boolean)) throw Error("Five arguments required");
+const args = ["task", "context", "inspect", task, "--store", store,
+  "--ref", ref, "--digest", digest, "--json"];
+const record = readDocument(cursor => {
+  const result = spawnSync(cli, [...args, ...(cursor ? ["--cursor", cursor] : [])],
+    { encoding: "utf8", maxBuffer: 1024 * 1024 });
+  if (result.error || result.status !== 0) throw Error("Detail command failed; stop without replay");
+  let reply;
+  try { reply = JSON.parse(result.stdout); }
+  catch { throw Error("Invalid CLI envelope"); }
+  if (reply.ok !== true || !reply.data) throw Error("Detail read refused");
+  return reply.data;
+});
+console.log(JSON.stringify(record));
+```
+
+This is a detail consumer, not a list paginator or a mutation retry helper.
+On a changed source or refusal, stop and reassess the original read; do not
+silently restart or mix versions. Errors deliberately exclude document text:
+passing a partial `contentPage.text` to `jq fromjson` can echo the entire
+fragment on failure. To inspect one already-fetched page without parsing it,
+use `.data.contentPage | {offset,len:(.text|length),complete,nextCursor}`.
+Two pages are not a completion condition; only the returned metadata is.
 
 List responses carry `items`, `total`, `complete`, and `nextCursor`. Counts,
 items and cursor validation occur inside the same authorized scope. Cursors

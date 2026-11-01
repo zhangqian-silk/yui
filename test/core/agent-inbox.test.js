@@ -31,6 +31,7 @@ import { callerDiscoveryAudience } from "../../dist/cli/callerDiscovery.js";
 import { createTaskEvent } from "../../dist/event/taskEvent.js";
 import { createRuntimeObservation } from "../../dist/runtime/runtimeObservation.js";
 import { globalInboxRecovery } from "../../dist/message/globalInboxRecovery.js";
+import { queueLeaderWakeup } from "../../dist/scheduler/wakeupQueue.js";
 import { globalSessionHealth } from "../../dist/runtime/globalSessionHealth.js";
 import { applyOperatorSessionControl } from "../../dist/commands/operatorCommands.js";
 import { standardAgentError } from "../../dist/runtime/agentError.js";
@@ -532,6 +533,30 @@ function taskFixture(t, draft = false) {
   return { ...f, task, inbox, envFor };
 }
 
+for (const [processingCount, pendingCount] of [[1, 3], [3, 1]]) {
+  test(`Leader signal appends actual pending suffix (${processingCount} processing, ${pendingCount} pending)`, t => {
+    const { store } = taskFixture(t);
+    const target = { kind: "role", taskId: "task-1", roleName: "leader" };
+    const enqueue = (prefix, count) => {
+      for (let i = 0; i < count; i++) enqueueWork(store, target, `${prefix}-${i}`, now,
+        [{ type: "event", taskId: "task-1", id: `event-${(prefix === "old" ? 1 : 10) + i}` }]);
+    };
+    enqueue("old", processingCount);
+    new FileSchedulerStoreAdapter(store).claimLeaderNotification("task-1", now);
+    enqueue("new", pendingCount);
+    const before = store.getWorkMailbox(target);
+    const result = store.transaction(tx => queueLeaderWakeup(tx, "task-1", "integration-conflicted:integration-1", now));
+    const after = store.getWorkMailbox(target);
+    assert.deepEqual(after.processing, before.processing);
+    assert.deepEqual(after.pending.refs, before.pending.refs);
+    assert.deepEqual(after.pending.reasons, [...before.pending.reasons, "integration-conflicted:integration-1"]);
+    assert.equal(after.pending.requestCount, pendingCount + 1);
+    assert.equal(after.nextSequence, before.nextSequence + 1);
+    assert.equal(result.requestCount, pendingCount + 1, "return new pending, not the processing projection");
+    assert.deepEqual(result.reasons, after.pending.reasons);
+  });
+}
+
 for (const mode of ["automatic", "active", "reminder"]) test(`Leader terminal checks ${mode} consumption and preserves later input`, t => {
   const automatic = mode === "automatic";
   const reminder = mode === "reminder";
@@ -850,6 +875,70 @@ for (const activeClaim of [false, true]) test(`replacement bootstraps before ret
   assert.ok(store.getTaskWake("task-1", next.wakeId).refs.some(ref => ref.id === "message-2"));
   assert.ok(!store.getTaskWake("task-1", next.wakeId).refs.some(ref => ref.id === "message-1"));
   assert.equal(successor("show", id).inbox.claim.actor.nativeSessionId, "leader-native");
+});
+
+for (const retainedClaim of [true, false]) test(`explicit notification settlement preserves rejected/unknown evidence (mailbox retained: ${retainedClaim})`, t => {
+  const { store, task, inbox } = taskFixture(t);
+  const scheduler = new FileSchedulerStoreAdapter(store);
+  const target = { kind: "role", taskId: "task-1", roleName: "leader" };
+  task(["message", "queue", "task-1", "Inspect original effects, never replay", "--request-id", "original"]);
+  const notification = scheduler.claimLeaderNotification("task-1", now);
+  if (retainedClaim) scheduler.settleLeaderNotification("task-1", notification.attemptId, "unknown", now);
+  scheduler.settleLeaderNotification("task-1", notification.attemptId, "rejected", now);
+  const original = store.getTaskWake("task-1", notification.wakeId);
+  const deliveries = store.listEvents("task-1").filter(event => event.type === "notification.delivery");
+  if (!retainedClaim) {
+    // The normal stop/start path drops operational mailboxes, not durable wakes.
+    stopTaskExecutionCommand({ taskId: "task-1", reason: "Stop exact fixture execution" },
+      store, { environment: {}, now: () => now });
+    startTaskExecutionCommand("task-1", store, { environment: {}, now: () => now });
+  }
+  task(["message", "queue", "task-1", "Independent later input", "--request-id", "later"]);
+  const pending = store.getWorkMailbox(target).pending;
+  const resolve = () => task(["wake", "resolve", "task-1", notification.wakeId,
+    "--reason", "Verified exact native/resource stop and inspected original effect receipts; no replay"]);
+  assert.throws(() => inbox("leader", "claim", notification.wakeId, "--request-id", "premature"), /automatic/);
+  const sessions = store.getTaskRoleSessionSet("task-1", "leader");
+  let binding = createProviderRuntimeBinding({ providerNamespace: "openai/codex", accountScope: "codex",
+    conversationId: "leader-native", startedAt: now.toISOString() });
+  binding = beginProviderTurn(binding, { attemptId: "direct:still-running", authorityEpoch: 1,
+    submittedAt: now.toISOString() });
+  binding = acceptProviderTurn(binding, { attemptId: "direct:still-running", nativeTurnId: "live",
+    acceptedAt: now.toISOString() });
+  store.saveTaskRoleSessionSet(bindTaskRoleProviderRuntime(sessions, binding, now));
+  assert.throws(resolve, /not proven quiescent/, "a rejection cannot establish shared-native quiescence");
+  store.saveTaskRoleSessionSet(sessions); // Fixture has no external native process.
+  const unrelated = retainedClaim ? null : scheduler.claimLeaderNotification("task-1", now);
+  const unrelatedClaim = store.getWorkMailbox(target).processing;
+  assert.equal(resolve().data.outcome, "released-without-replay");
+  assert.deepEqual(store.getTaskWake("task-1", notification.wakeId), original, "release neither accepts nor ACKs");
+  assert.deepEqual(store.listEvents("task-1").filter(event => event.type === "notification.delivery"), deliveries);
+  assert.equal(store.listEvents("task-1").filter(event => event.type === "notification.resolved").at(-1)
+    .payload.attemptId, notification.attemptId);
+  if (retainedClaim) {
+    assert.equal(store.getWorkMailbox(target).processing, null);
+    assert.deepEqual(store.getWorkMailbox(target).pending, pending);
+  } else {
+    assert.deepEqual(store.getWorkMailbox(target).processing, unrelatedClaim, "historical settlement cannot release another window");
+  }
+  const revision = store.getStateRevision();
+  resolve();
+  assert.equal(store.getStateRevision(), revision, "uncertain resolve response can be read/retried without another effect");
+  inbox("leader", "claim", notification.wakeId, "--request-id", "inspect");
+  inbox("leader", "ack", notification.wakeId, "--request-id", "handled",
+    "--reason", "Read original effect evidence; no action remains");
+  assert.equal(store.getTaskWake("task-1", notification.wakeId).status, "dispatched");
+  assert.equal(store.listMessages("task-1").length, 2);
+  assert.deepEqual(pendingCompletionMessages(store, "task-1").map(message => message.id), ["message-2"]);
+  const next = unrelated ?? scheduler.claimLeaderNotification("task-1", now);
+  assert.ok(store.getTaskWake("task-1", next.wakeId).refs.some(ref => ref.id === "message-2"));
+  assert.ok(!store.getTaskWake("task-1", next.wakeId).refs.some(ref => ref.id === "message-1"));
+  // Missing delivery evidence is not an inferred unknown/rejected outcome.
+  assert.throws(() => task(["wake", "resolve", "task-1", next.wakeId, "--reason", "No evidence"]),
+    /unknown or rejected/);
+  scheduler.settleLeaderNotification("task-1", next.attemptId, "accepted", now);
+  assert.throws(() => task(["wake", "resolve", "task-1", next.wakeId, "--reason", "Already accepted"]),
+    /accepted notification/);
 });
 
 test("replacement releases uncertain transport for inspection, never for automatic business replay", t => {

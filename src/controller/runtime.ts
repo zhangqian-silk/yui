@@ -153,7 +153,8 @@ import { FileRuntimeEventInbox } from "./runtimeEventInbox.js";
 import {
   AsyncRuntimeEventProcessor,
   createAsyncRuntimeObserver,
-  FileRuntimeEventProcessor
+  FileRuntimeEventProcessor,
+  type ProviderLifecycleObservation
 } from "./runtimeEventProcessor.js";
 import {
   RuntimeLaunchCoordinator,
@@ -209,6 +210,7 @@ export async function startFileTaskControllerRuntime(
     const running = await createFileTaskControllerRuntime(home, {
       ...options,
       diagnosticMetrics: () => diagnostics.metrics(),
+      onRequestDiagnostic: record => diagnostics.request(record),
       onError: error => { diagnostics.error(error); options.onError?.(error); }
     });
     let expectedAt = monotonicMilliseconds() + 250;
@@ -359,7 +361,7 @@ async function createFileTaskControllerRuntime(
           ) {
             return session.nativeSessionId;
           }
-          for (const event of runtimeEventInbox.list()) {
+          for (const event of await runtimeEventInbox.listAsync()) {
             if (
               event.type === "runtime-observation" && event.observation.kind === "session.started"
               && event.observation.fence.taskId === owner.taskId
@@ -582,7 +584,8 @@ async function createFileTaskControllerRuntime(
       sessionHost,
       options.dispatcher,
       launchCoordinator,
-      planner
+      planner,
+      workerMaintenance ? asyncStoreClient : undefined
     );
     // Process-exit observations are persisted by the Agent Host before socket
     // delivery. Drain them while this Controller is still the only storage
@@ -778,6 +781,7 @@ async function createFileTaskControllerRuntime(
         now: options.now,
         onError: options.onError,
         diagnosticMetrics: options.diagnosticMetrics,
+        onRequestDiagnostic: options.onRequestDiagnostic,
         lifecycleHost,
         providerRetry: createProviderRetryHooks(home, store, {
           now: options.now,
@@ -937,7 +941,8 @@ export function createRuntimeLifecycleDispatcher(
   sessionHost: SessionHostPort,
   fallback?: ControllerDispatcher,
   sharedLaunchCoordinator?: RuntimeLaunchPreparationPort,
-  environmentRefresher?: AgentEnvironmentRefreshPort
+  environmentRefresher?: AgentEnvironmentRefreshPort,
+  observationWorker?: Pick<AsyncTaskStoreClient, "invokeObserver">
 ): ControllerDispatcher {
   const launchCoordinator = sharedLaunchCoordinator
     ?? new RuntimeLaunchCoordinator(schedulerStore, sessionHost, {
@@ -957,15 +962,22 @@ export function createRuntimeLifecycleDispatcher(
       if (event.type !== "runtime-observation" || event.host === undefined) {
         throw applicationError("INVALID_PARAMS", "Expected an Agent Host observation.");
       }
-      return { outcome: schedulerStore.observeAgentHostObservation(event, new Date()) };
+      // Eager Host delivery and the normal Inbox drainer fold the same durable
+      // fact. Share their existing worker writer: a second synchronous writer
+      // here can wait on BEGIN IMMEDIATE and starve even status socket I/O.
+      // Await the original atomic fold; no eager ACK or cursor advancement.
+      return { outcome: observationWorker === undefined
+        ? schedulerStore.observeAgentHostObservation(event, new Date())
+        : await observationWorker.invokeObserver("observeAgentHostObservation",
+          [event, new Date()]) as ProviderLifecycleObservation };
     }
     if (method === "runtime.observation-apply") {
       try {
         return {
-          outcome: schedulerStore.observeRuntimeObservation(
-            createRuntimeObservation(params as never),
-            new Date()
-          )
+          outcome: observationWorker === undefined
+            ? schedulerStore.observeRuntimeObservation(createRuntimeObservation(params as never), new Date())
+            : await observationWorker.invokeObserver("observeRuntimeObservation",
+              [createRuntimeObservation(params as never), new Date()]) as ProviderLifecycleObservation
         };
       } catch (error) {
         throw applicationError(

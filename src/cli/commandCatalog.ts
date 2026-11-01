@@ -231,6 +231,7 @@ const roleProfileOptions = [
 ] as const;
 const roleAgentOptions = [
   "--model", "--effort", "--permission-strategy", "--sandbox", "--approval", "--permission-mode",
+  "--exclude-tmpdir-env-var", "--exclude-slash-tmp",
   "--allowed-tool", "--disallowed-tool", "--search"
 ] as const;
 const roleProfileClearOptions = [
@@ -239,7 +240,7 @@ const roleProfileClearOptions = [
 ] as const;
 const roleAgentClearOptions = [
   "--clear-model", "--clear-effort", "--clear-allowed-tools", "--clear-disallowed-tools",
-  "--clear-search", "--clear-agent-config"
+  "--clear-search", "--clear-agent-config", "--clear-exclude-tmpdir-env-var", "--clear-exclude-slash-tmp"
 ] as const;
 const agentProfileOptions = [
   "--description", "--instructions", "--skill",
@@ -252,6 +253,8 @@ const agentProfileClearOptions = [
 const roleAgentOptionValues = {
   "--sandbox": ["read-only", "workspace-write", "danger-full-access"],
   "--approval": ["untrusted", "on-request", "never"],
+  "--exclude-tmpdir-env-var": ["true", "false"],
+  "--exclude-slash-tmp": ["true", "false"],
   "--permission-strategy": ["default", "bypass", "configured"],
   "--search": ["true"]
 } as const;
@@ -324,7 +327,8 @@ const globalSessionChildren: readonly NodeInput[] = [
   {
     name: "retry", discovery: { surface: "public", audiences: ["public","operator"] },
     summary: "Inspect or control bounded Provider recovery for this Global Session.",
-    usage: "yui session retry <role> [show|cancel|disable|enable]"
+    usage: "yui session retry <role> [show|cancel|disable|enable] [--cursor <cursor> (show only)]",
+    options: ["--cursor"]
   }
 ];
 
@@ -831,7 +835,8 @@ const taskChildren: readonly NodeInput[] = [
           {
             name: "retry", discovery: { surface: "managed", audiences: ["operator","leader"] },
             summary: "Inspect or control Provider recovery without stopping an admitted Turn.",
-            usage: "yui task role session retry <task> <role> [show|cancel|disable|enable]"
+            usage: "yui task role session retry <task> <role> [show|cancel|disable|enable] [--cursor <cursor> (show only)]",
+            options: ["--cursor"]
           },
           {
             name: "inspect", discovery: { surface: "managed", audiences: ["operator","leader"] },
@@ -1005,9 +1010,9 @@ const taskChildren: readonly NodeInput[] = [
       { name: "list", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] }, summary: "Discover AgentRuns for a Task or one WorkItem.", usage: "yui task run list <task|task/work> [--limit <1..100>] [--cursor <cursor>]", options: ["--limit", "--cursor"] },
       {
         name: "show", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] },
-        summary: "Show one AgentRun and its retained audit evidence.",
-        usage: "yui task run show <task>/<run> [--cursor <cursor>] [--json]",
-        options: ["--cursor", "--json"]
+        summary: "Show one AgentRun's audit evidence, or status without input/report bodies.",
+        usage: "yui task run show <task>/<run> [--view full|status] [--cursor <cursor>] [--json]",
+        options: ["--view", "--cursor", "--json"]
       },
       {
         name: "retry", discovery: { surface: "managed", audiences: ["operator","leader"] },
@@ -1215,7 +1220,7 @@ const taskChildren: readonly NodeInput[] = [
       { name: "show", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Show fixed wake inputs/results; expand diagnostics with --history.", usage: "yui task wake show <task> <wake> [--history] [--cursor <cursor>]", options: ["--history", "--cursor"] },
       { name: "retry", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Retry a rejected notification after correcting its cause; preserve original input.",
         usage: "yui task wake retry <task> <wake> --reason <correction>", options: ["--reason"] },
-      { name: "resolve", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Release an unknown notification claim after explicit quiescence evidence, without replay.",
+      { name: "resolve", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Release an unknown or rejected notification for explicit handling after quiescence evidence, without replay.",
         usage: "yui task wake resolve <task> <wake> --reason <quiescence-evidence>", options: ["--reason"] }
     ]
   },
@@ -1333,7 +1338,12 @@ export const ROOT_COMMAND = buildNode({
         }
       ]
     },
-    { name: "help", discovery: { surface: "public", audiences: ["public","operator","leader","assignment","global","unbound"] }, summary: "Show root or scoped command help.", usage: "yui help [command ...]", commandPathArguments: true },
+    {
+      name: "help", discovery: { surface: "public", audiences: ["public","operator","leader","assignment","global","unbound"] },
+      summary: "Show root or scoped command help; JSON defaults to immediate child summaries.",
+      usage: ["yui help [command ...]", "yui --json help [command ...] --recursive"],
+      options: ["--recursive"], commandPathArguments: true
+    },
     { name: "version", discovery: { surface: "public", audiences: ["public","operator","leader","assignment","global","unbound"] }, summary: "Print the installed Yui version." },
     {
       name: "update", discovery: { surface: "public", audiences: ["public","operator"] },
@@ -1930,8 +1940,7 @@ export type CommandDescription = Readonly<{
   children: readonly CommandDescription[];
 }>;
 
-/** Structured help projection consumed by `config describe --json` and Operator. */
-export function describeCommandTree(node: CommandNode): CommandDescription {
+function describeCommand(node: CommandNode): Omit<CommandDescription, "children"> {
   return {
     path: node.path.slice(1).join(" "),
     summary: node.summary,
@@ -1940,8 +1949,36 @@ export function describeCommandTree(node: CommandNode): CommandDescription {
     options: node.options,
     optionValues: node.optionValues,
     argumentValues: node.argumentValues,
-    values: node.values,
-    children: visibleChildren(node).map(describeCommandTree)
+    values: node.values
+  };
+}
+
+/** Complete caller-filtered tree for explicit recursive help and offline tools. */
+export function describeCommandTree(node: CommandNode): CommandDescription {
+  return { ...describeCommand(node), children: visibleChildren(node).map(describeCommandTree) };
+}
+
+export type CommandHelpDescription = Omit<CommandDescription, "children"> & Readonly<{
+  children: readonly Pick<CommandDescription, "path" | "summary">[];
+  discovery: Readonly<{
+    children: "complete-immediate-summaries";
+    details: string;
+    tree: string;
+  }>;
+}>;
+
+/** Complete current-command details; descendants require explicit navigation. */
+export function describeCommandHelp(node: CommandNode): CommandHelpDescription {
+  return {
+    ...describeCommand(node),
+    children: visibleChildren(node).map(child => ({
+      path: child.path.slice(1).join(" "), summary: child.summary
+    })),
+    discovery: {
+      children: "complete-immediate-summaries",
+      details: "yui --json help <command ...>",
+      tree: "yui --json help [command ...] --recursive"
+    }
   };
 }
 
@@ -1974,7 +2011,6 @@ export function validateCommandCatalog(root: CommandNode): void {
         || node.children.length > 0
         || node.values.length > 0
         || node.sections.length > 0
-        || node.options.length > 0
         || node.hiddenOptions.length > 0
         || Object.keys(node.optionValues).length > 0
         || Object.keys(node.argumentValues).length > 0
@@ -1982,7 +2018,7 @@ export function validateCommandCatalog(root: CommandNode): void {
         || node.fileArguments.length > 0
         || node.executableOptions.length > 0;
       if (ownsOtherCompletionMetadata) {
-        throw new Error(`Command-path provider must be a visible metadata-free leaf: ${node.path.join(" ")}`);
+        throw new Error(`Command-path provider must be a visible leaf with only flag options: ${node.path.join(" ")}`);
       }
     }
 

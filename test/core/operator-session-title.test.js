@@ -115,7 +115,7 @@ test("only a newly created global Operator Session receives the dated title", (t
   assert.equal(resumed.launch.env.YUI_SESSION_TITLE, undefined);
 });
 
-test("a rejected Codex rename is diagnostic and does not discard the new Session", async (t) => {
+test("unsubmitted native title synchronization is explicit and keeps the new Session usable", async (t) => {
   let session;
   t.after(() => session?.terminate("SIGTERM"));
   const diagnostics = [];
@@ -150,6 +150,41 @@ test("a rejected Codex rename is diagnostic and does not discard the new Session
 
   assert.equal(session.nativeSessionId, "fake-thread-1");
   assert.equal(diagnostics.length, 1);
-  assert.match(diagnostics[0].failure.detail, /thread naming is unavailable/u);
+  assert.match(diagnostics[0].failure.detail, /title synchronization was not submitted/u);
+  assert.equal(diagnostics[0].failure.sessionDisposition, "recoverable");
+});
+
+test("an unanswered rename cannot stall business control on the new Session", async (t) => {
+  let session;
+  t.after(() => session?.terminate("SIGTERM"));
+  const diagnostics = [];
+  let finish;
+  const terminal = new Promise(resolve => { finish = resolve; });
+  const opened = await startStructuredProviderSession({
+    schemaVersion: 1,
+    command: process.execPath,
+    args: [join(root, "test", "fixtures", "fake-codex-app-server-proxy.mjs")],
+    environment: { ...process.env, YUI_FAKE_STALL_THREAD_NAME: "1" },
+    cwd: root,
+    childLifecycle: "persistent",
+    startMode: "provider",
+    providerControl: {
+      schemaVersion: 1, adapterId: "codex", transport: "codex-app-server-proxy",
+      kind: "start", mode: "new", sessionOnly: true,
+      sessionTitle: "Yui · Operator · 0920",
+      authority: { epoch: 1, owner: "controller", holderId: "controller" },
+      codexThread: {}
+    }
+  }, {
+    onDiagnostic: diagnostic => diagnostics.push(diagnostic),
+    onTerminal: finish,
+    mirrorOutput: () => {}
+  });
+  session = opened.session;
+  assert.equal(opened.goal, null);
+  await session.submitTurn({ attemptId: "rename-stall-business", boundedText: "business proceeds" });
+  assert.equal((await terminal).status, "completed");
+  assert.equal(diagnostics.length, 1);
+  assert.match(diagnostics[0].failure.detail, /title synchronization was not submitted/u);
   assert.equal(diagnostics[0].failure.sessionDisposition, "recoverable");
 });

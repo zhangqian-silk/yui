@@ -87,6 +87,18 @@ Provider 权限策略、Profile 访问意图和 Project 写范围是不同的合
 不授予对另一个 Project 的写入。受管工作区 owner、精确 Assignment 和资源 grant
 落实 Yui 操作；宽泛的原生权限不是 OS 沙箱。
 
+Codex configured 权限可显式排除自动加入的可写临时目录：
+`--sandbox workspace-write --exclude-tmpdir-env-var true --exclude-slash-tmp true`。
+两项均接受 `true`/`false`；`--clear-exclude-tmpdir-env-var` 和
+`--clear-exclude-slash-tmp` 分别清除覆盖。省略时保留原生默认语义，不默认排除。
+两项都要求显式 `workspace-write`，其他 adapter 或冲突策略会被拒绝。
+受管 start/resume 编译到该 Thread 的 `sandbox_workspace_write`，不修改共享 daemon
+默认值或账户文件；普通交互启动使用等价的单次调用结构化选项。
+映射依据[原生配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)。
+这只排除自动 `$TMPDIR`、`/tmp` 写授权，不排除位于其中且被显式授权的 writable root；
+也不证明读隔离或阻止合法 Controller RPC 的副作用。配置被接受不是 OS 沙箱生效证明；
+应检查原生回执，并在另行授权的可丢弃 fixture 内验证实际执行边界。
+
 以 write 意图在自己 Task-owned main 工作区启动的 delivery Leader，从该工作区
 捕获已绑定 Project 的写域，不要求存在 open WorkItem；已接受结果也不会移除这个
 直接交付写域。显式 Assignment（包括空写域）仍决定受派发执行的范围。

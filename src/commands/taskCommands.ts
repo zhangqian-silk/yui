@@ -201,6 +201,7 @@ import {
 } from "../runtime/lifecycleReservation.js";
 import { currentManagedRuntime, resolveManagedTaskReader } from "../runtime/managedCaller.js";
 import { controlProviderRetry, providerRunRetry, providerRetryProjection, renderProviderRetry } from "../runtime/providerRetry.js";
+import { taskRunRecovery } from "../controller/taskRunRecovery.js";
 import { currentProviderConversation, transferProviderAuthority } from "../runtime/providerRuntimeIdentity.js";
 import { projectProviderContinuations } from "../runtime/runtimeContinuationProjection.js";
 import { runtimeObservationFromTaskEvent } from "../runtime/runtimeObservation.js";
@@ -700,7 +701,8 @@ export function runTaskCommand(
     || (["brief", "decision", "milestone", "event", "work", "wake", "review", "change-set"].includes(args[0] ?? "")
       && args[1] === "show")
     || (args[0] === "role" && (["show", "status"].includes(args[1] ?? "")
-      || args[1] === "session" && args[2] === "inspect"));
+      || args[1] === "session" && (args[2] === "inspect"
+        || args[2] === "retry" && (args[5] === undefined || args[5] === "show" || args[5] === "--cursor"))));
   if (!detail) return executeTaskCommand(args, store, options);
   const cursorIndex = args.indexOf("--cursor");
   const cursor = cursorIndex < 0 ? undefined : args[cursorIndex + 1];
@@ -6076,7 +6078,7 @@ function runContextCommand(
     }
     const { taskId, runId } = parseRunContextReference(parsed.positionals[0]!);
     authorizeRunContext(store, taskId, runId, options.environment);
-    const expanded = store.transaction((tx) => expandRunContextRef(
+    const expanded = store.readTransaction((tx) => expandRunContextRef(
       tx,
       taskId,
       runId,
@@ -6096,7 +6098,7 @@ function runContextCommand(
     }
     const { taskId, runId } = parseRunContextReference(parsed.positionals[0]!);
     authorizeRunContext(store, taskId, runId, options.environment);
-    const delta = store.transaction((tx) => (
+    const delta = store.readTransaction((tx) => (
       buildRunContextDelta(tx, taskId, runId, parsed.values.get("--after")!)
     ));
     const data = boundedDocument(delta, `run:${taskId}/${runId}/delta/${parsed.values.get("--after")}`,
@@ -6109,7 +6111,7 @@ function runContextCommand(
   }
   const { taskId, runId } = parseRunContextReference(first);
   authorizeRunContext(store, taskId, runId, options.environment);
-  const pack = store.transaction((tx) => buildRunContextPack(tx, taskId, runId));
+  const pack = store.readTransaction((tx) => buildRunContextPack(tx, taskId, runId));
   const view = parsed.values.get("--view") ?? "current";
   if (!["current", "full", "refs", "input"].includes(view)) throw usageError("Run Context view must be current, refs, input or full.");
   const data = view === "refs" ? runContextPointerPage(pack, parsed)
@@ -6301,7 +6303,8 @@ function retryRun(
     const sessions = tx.getTaskRoleSessionSet(previous.taskId, previous.roleName);
     const retry = options.providerRetryChainId !== undefined ? sessions?.providerBinding?.retry
       : sessions?.providerBinding == null ? undefined
-      : providerRunRetry(sessions.providerBinding, previous.id, clock(options).getTime());
+      : providerRunRetry(sessions.providerBinding, previous.id, clock(options).getTime())
+        ?? taskRunRecovery(tx, sessions.providerBinding, previous);
     if (options.providerRetryChainId !== undefined
       && (retry?.chainId !== options.providerRetryChainId || retry.status !== "waiting"
         || retry.previousRunId !== previous.id || clock(options).getTime() < Date.parse(retry.nextEligibleAt)
@@ -7410,11 +7413,13 @@ function showRun(
   store: TaskWorkflowStore,
   options: TaskCommandOptions
 ): TaskCommandExecution {
-  const usage = "Task run show usage: yui task run show <task>/<run> [--json].";
-  const parsed = readOptions(args.filter((arg) => arg !== "--json"), ["--cursor"]);
+  const usage = "Task run show usage: yui task run show <task>/<run> [--view full|status] [--cursor <cursor>] [--json].";
+  const parsed = readOptions(args.filter((arg) => arg !== "--json"), ["--cursor", "--view"]);
+  const view = parsed.values.get("--view") ?? "full";
+  if (view !== "full" && view !== "status") throw usageError(usage);
   const positionals = parsed.positionals;
   exactPositionals(positionals, 1, usage);
-  const data = store.transaction((tx) => {
+  const data = store.readTransaction((tx) => {
     const run = requireRun(tx, positionals[0], options);
     const retirement = tx.listEvents(run.taskId)
       .map(taskRecordRetirement)
@@ -7422,6 +7427,29 @@ function showRun(
     return { run: run, retirement, execution: runExecutionObservation(run,
       tx.getTaskRoleSessionSet(run.taskId, run.roleName)?.providerBinding, tx.listEvents(run.taskId)) };
   });
+  if (view === "status") {
+    const { run } = data;
+    const status = {
+      run: {
+        id: run.id, taskId: run.taskId, roleName: run.roleName,
+        purpose: run.purpose, mode: run.mode, status: run.status,
+        workItemId: run.workItemId, reviewRoundId: run.reviewRoundId,
+        createdAt: run.createdAt, updatedAt: run.updatedAt
+      },
+      retirement: data.retirement,
+      execution: data.execution,
+      result: {
+        available: run.result?.output !== undefined,
+        bytes: run.result?.output === undefined ? 0 : Buffer.byteLength(run.result.output),
+        completedAt: run.result?.completedAt,
+        failureReason: run.result?.failureReason,
+        diagnostic: run.result?.diagnostic,
+        read: `yui task run show ${run.taskId}/${run.id} --view full --json`
+      }
+    };
+    const bounded = boundedDocument(status, `run:${run.taskId}/${run.id}:status`, parsed.cursor);
+    return output(`${JSON.stringify(bounded, null, 2)}\n`, bounded);
+  }
   const bounded = boundedDocument(data, `run:${data.run.taskId}/${data.run.id}`, parsed.cursor);
   if ("contentPage" in bounded) return output(`${JSON.stringify(bounded, null, 2)}\n`, bounded);
   return {
@@ -8897,31 +8925,43 @@ function taskWakeDispatch(
       const target = leaderMailbox(task.id);
       const mailbox = tx.getWorkMailbox(target);
       const claim = mailbox?.processing;
-      if (claim === undefined || claim === null || claim.owner !== `leader-notification:${wake.id}`) {
-        throw usageError("This wake has no unresolved notification claim.");
+      const ownsClaim = claim?.owner === `leader-notification:${wake.id}`;
+      const events = tx.listEvents(task.id);
+      const resolved = events.find(event => event.type === "notification.resolved"
+        && event.payload.wakeId === wake.id && event.payload.outcome === "released-without-replay");
+      if (resolved !== undefined) {
+        return { taskId: task.id, wakeId: wake.id, outcome: "released-without-replay" };
       }
-      const previous = tx.listEvents(task.id).filter((event) =>
-        event.type === "notification.delivery" && event.payload.attemptId === claim.batchId).at(-1);
+      if (wake.status === "consumed") throw usageError("An accepted notification uses ordinary inbox handling.");
+      // Operational mailboxes may disappear on execution stop. Resolve only
+      // the original durable delivery attempt, using the same exact wake
+      // identity as wake inspection; missing evidence is not an unknown result.
+      const previous = events.filter(event => event.type === "notification.delivery"
+        && (ownsClaim ? event.payload.attemptId === claim!.batchId
+          : event.payload.attemptId?.startsWith(`notification:${task.id}/${wake.id}/`))).at(-1);
+      if (previous?.payload.outcome !== "unknown" && previous?.payload.outcome !== "rejected") {
+        throw usageError("Only an unknown or rejected notification can be resolved without replay.");
+      }
       const sessions = tx.getTaskRoleSessionSet(task.id, "leader");
       const provider = sessions?.providerBinding;
-      if (previous?.payload.outcome !== "unknown") throw usageError("Only an unknown notification can be resolved.");
       if (tx.getActiveRun(task.id, "leader") !== null
         || provider?.authority.owner === "human" || provider?.authority.owner === "unknown"
         || (provider?.run !== undefined && provider.run !== null
           && ["submitting", "accepted", "delivery-unknown"].includes(provider.run.status))) {
         throw usageError("Shared native execution is not proven quiescent; resolve that exact runtime boundary first.");
       }
-      // Preserve the original unknown outcome and the unconsumed fixed wake.
+      // Rejection is not quiescence. Preserve every original delivery outcome
+      // (including unknown followed by rejected) and the unconsumed fixed wake.
       // This releases only the scheduling claim; it never replays, claims
       // acceptance, or asserts that Message requirements were implemented.
       recordTaskEvent(tx, task.id, "notification.resolved", {
-        wakeId: wake.id, attemptId: claim.batchId, reason, outcome: "released-without-replay"
+        wakeId: wake.id, attemptId: previous.payload.attemptId!, reason, outcome: "released-without-replay"
       }, now);
-      tx.saveWorkMailbox(completeProcessing(mailbox!, claim.batchId));
+      if (ownsClaim) tx.saveWorkMailbox(completeProcessing(mailbox!, claim!.batchId));
       return { taskId: task.id, wakeId: wake.id, outcome: "released-without-replay" };
     });
     notifyMailbox(options.runtime, leaderMailbox(result.taskId));
-    return output(`Released ${result.wakeId} without replay; original acceptance remains unknown.\n`, result);
+    return output(`Released ${result.wakeId} without replay; original delivery evidence is unchanged.\n`, result);
   }
   if (subcommand === "list" || subcommand === "show") {
     return taskWakeInspectionCommand(args, store);

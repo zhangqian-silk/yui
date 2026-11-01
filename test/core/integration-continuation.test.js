@@ -537,6 +537,72 @@ test("ordinary conflict continues without resolve and consumes one exact check J
   assert.equal(f.store.getDurableJob("task-1", "job-1").status, "succeeded");
 });
 
+test("explicit continue recovers an owned staged rebase after conflict persistence failed, without replay", async t => {
+  const f = integrationFixture(t, "rebase");
+  const saveMailbox = f.store.saveWorkMailbox.bind(f.store);
+  let failPause = true;
+  f.store.saveWorkMailbox = mailbox => {
+    if (failPause && mailbox.pending?.reasons.includes("integration-conflicted:integration-1")) {
+      failPause = false;
+      throw new Error("fixture: pause notification persistence failed");
+    }
+    return saveMailbox(mailbox);
+  };
+  const failed = await f.service().integrate("task-1", "integration-1");
+  assert.equal(failed.status, "blocked");
+  assert.equal(failed.attempt.status, "running", "failed transaction cannot fabricate a recorded conflict");
+  assert.match(failed.attempt.summary, /pause notification persistence failed/);
+  assert.ok(failed.attempt.sourceProgress.activeAction);
+  const path = failed.workspace.path;
+  const originalProgress = failed.attempt.sourceProgress;
+  const operationHead = git(path, "rev-parse", "REBASE_HEAD");
+  f.resolve(path);
+  const unstated = await f.service().integrate("task-1", "integration-1");
+  assert.match(unstated.attempt.summary, /no paused conflict/, "ordinary re-entry has no implicit continue intent");
+  const saved = f.store.getIntegrationAttempt("task-1", "integration-1");
+  const { activeAction: omittedAction, ...withoutAction } = originalProgress;
+  const resume = () => runTaskIntegrationCommand(["continue", "task-1/integration-1"], f.store, f.home,
+    { now: () => now, environment: { PATH: process.env.PATH }, jobPort: f.jobs });
+  for (const [patch, expected] of [
+    [{ sourceProgress: undefined }, /no attempt-owned progress/],
+    [{ sourceProgress: { ...originalProgress, sourceDigest: "0".repeat(64) } }, /identity changed/],
+    [{ sourceProgress: { ...originalProgress, workspace: `${path}-other` } }, /identity changed/],
+    [{ sourceProgress: { ...originalProgress, branch: "refs/heads/other" } }, /identity changed/],
+    [{ sourceProgress: withoutAction }, /unfinished Git operation/]
+  ]) {
+    const { sourceProgress: omitted, ...withoutProgress } = saved;
+    f.store.saveIntegrationAttempt("task-1", patch.sourceProgress === undefined ? withoutProgress : { ...saved, ...patch });
+    const result = await resume();
+    assert.match(result.data.attempt.summary, expected);
+    assert.equal(git(path, "rev-parse", "REBASE_HEAD"), operationHead);
+    assert.equal(f.starts(), 0);
+  }
+  f.store.saveIntegrationAttempt("task-1", saved);
+  const ontoPath = git(path, "rev-parse", "--git-path", "rebase-merge/onto");
+  const originalOnto = readFileSync(ontoPath, "utf8");
+  writeFileSync(ontoPath, `${saved.beforeCommit}\n`);
+  const foreignOperation = await resume();
+  assert.match(foreignOperation.data.attempt.summary, /does not belong/);
+  assert.equal(git(path, "rev-parse", "REBASE_HEAD"), operationHead);
+  writeFileSync(ontoPath, originalOnto);
+  writeFileSync(join(path, "file"), "unstaged edit\n");
+  const unstaged = await resume();
+  assert.match(unstaged.data.attempt.summary, /staged/);
+  assert.equal(git(path, "rev-parse", "REBASE_HEAD"), operationHead);
+  f.resolve(path);
+  const checking = await resume();
+  assert.equal(checking.data.status, "checks-running", checking.data.attempt.summary);
+  assert.equal(checking.data.attempt.sourceProgress.completedSteps, 1);
+  assert.equal(checking.data.attempt.sourceProgress.activeAction, undefined);
+  assert.equal(checking.data.attempt.sourceProgress.sourceDigest, originalProgress.sourceDigest);
+  assert.equal(checking.data.attempt.id, saved.id);
+  assert.equal(f.starts(), 1);
+  f.finishJob();
+  const completed = await resume();
+  assert.equal(completed.data.status, "committed");
+  assert.equal(f.starts(), 1);
+});
+
 test("an old Git conflict without its Integration receipt is diagnosed without adopting or replaying it", async t => {
   const f = integrationFixture(t);
   const conflict = await f.service().integrate("task-1", "integration-1");

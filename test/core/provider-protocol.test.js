@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   CodexAppServerRuntime, CodexPreSubmissionError, codexTurnInput, codexTurnOutput
 } from "../../dist/runtime/codexAppServerRuntime.js";
-import { startStructuredProviderSession } from "../../dist/runtime/structuredProviderHost.js";
+import { startStructuredProviderSession, openCodexInteractiveConnection } from "../../dist/runtime/structuredProviderHost.js";
 import { builtinAgentDriverRegistry } from "../../dist/runtime/builtinAgentDrivers.js";
 import { claudeTranscriptObserver } from "../../dist/runtime/builtinTranscriptObserver.js";
 import { publishStructuredProviderTerminal } from "../../dist/controller/structuredProviderObservation.js";
@@ -32,6 +32,9 @@ test("Codex keeps method-specific identities and current input/output shapes", a
     calls.push({ method, params });
     if (method === "turn/start") return { turn: { ...turn, status: "inProgress" } };
     if (method === "turn/steer") return { turnId };
+    if (method === "thread/turns/list") return {
+      data: [{ ...turn, status: "inProgress" }], nextCursor: null
+    };
     return { thread: { id: threadId, status: { type: "active", activeFlags: [] },
       turns: [{ ...turn, status: "inProgress" }] } };
   } });
@@ -98,7 +101,7 @@ function fixtureHome(t) {
   return home;
 }
 
-async function peer(t, adapterId, events, callbacks, restoredTurns) {
+async function peer(t, adapterId, events, callbacks, restoredTurns, extraEnvironment = {}) {
   let session;
   t.after(async () => {
     if (session === undefined) return;
@@ -113,6 +116,7 @@ async function peer(t, adapterId, events, callbacks, restoredTurns) {
     environment: {
       PATH: process.env.PATH, YUI_FAKE_THREAD_ID: threadId,
       YUI_FAKE_PROTOCOL_EVENTS: JSON.stringify(events),
+      ...extraEnvironment,
       ...(restoredTurns === undefined ? {} : { YUI_FAKE_RESUMED_TURNS: JSON.stringify(restoredTurns) })
     },
     cwd: root, childLifecycle: "persistent", startMode: "provider",
@@ -203,6 +207,50 @@ test("Codex restore recovers only its exact owned terminal with the original rep
   assert.equal(recoveredTerminal.clientOwned, true);
   assert.equal(recoveredTerminal.status, "completed");
   assert.equal(recoveredTerminal.output, agentItem.text);
+});
+
+test("Codex long-history Host restores its exact report without hydrating history", { timeout: 5000 }, async t => {
+  const { recoveredTerminal } = await peer(t, "codex", [], { mirrorOutput: () => {} },
+    [turn, { ...turn, id: "later", items: [] }], { YUI_FAKE_LARGE_HISTORY: "1" });
+  assert.equal(recoveredTerminal.output, agentItem.text);
+  assert.equal(recoveredTerminal.nativeTurnId, turnId);
+});
+
+test("terminal notifications during paginated restore are returned once with exact ownership", { timeout: 5000 }, async t => {
+  const emitted = [];
+  const { session, recoveredTerminal } = await peer(t, "codex", [], {
+    mirrorOutput: () => {}, onTerminal: value => emitted.push(value)
+  }, [turn], {
+    YUI_FAKE_RESTORE_EVENTS: JSON.stringify([
+      { method: "turn/completed", params: { threadId, turn } },
+      { method: "turn/started", params: {
+        threadId, turn: { id: "newer-active", status: "inProgress", items: [] }
+      } }
+    ])
+  });
+  assert.equal(recoveredTerminal.output, agentItem.text);
+  assert.equal(recoveredTerminal.attemptId, "restored-input");
+  assert.equal(session.activeTurnId, "newer-active");
+  assert.deepEqual(emitted, []);
+});
+
+test("oversized history stays bounded and diagnoses pending request metadata without replay", { timeout: 5000 }, async t => {
+  const channel = await openCodexInteractiveConnection({
+    command: process.execPath,
+    args: [join(root, "test/fixtures/fake-codex-app-server-proxy.mjs"), threadId],
+    environment: { PATH: process.env.PATH, YUI_FAKE_LARGE_HISTORY: "1" },
+    cwd: root
+  });
+  t.after(() => channel.close());
+  await assert.rejects(channel.request("thread/resume", { threadId }), error => {
+    assert.match(error.message, /Max payload size exceeded/);
+    assert.match(error.message, /thread\/resume/);
+    assert.match(error.message, /messageLimitBytes=16777216/);
+    assert.match(error.message, /requestBytes/);
+    assert.doesNotMatch(error.message, /xxxx/);
+    return true;
+  });
+  await assert.rejects(channel.request("thread/read", { threadId }), /transport closed/);
 });
 
 test("Claude stream uses current result and Goal events, never guessed success", { timeout: 5000 }, async t => {

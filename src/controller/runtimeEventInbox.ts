@@ -16,6 +16,7 @@ import {
   unlinkSync,
   writeFileSync
 } from "node:fs";
+import { lstat, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
@@ -126,6 +127,9 @@ export type RuntimeEventInboxHooks = Readonly<{
  */
 export class FileRuntimeEventInbox {
   private readonly directory: string;
+  // Serialize this producer's async admissions, not the consumer/ACK path.
+  // No persistent index or cache: each scan retains the existing validation.
+  #asyncAdmission: Promise<unknown> = Promise.resolve();
 
   constructor(
     readonly home: string,
@@ -139,6 +143,40 @@ export class FileRuntimeEventInbox {
     input: RuntimeObservation,
     host?: AgentHostObservationSource
   ): RuntimeEventEnqueueResult<RuntimeObservationInboxEvent> {
+    return this.publish(this.observationEvent(input, host));
+  }
+
+  /** Controller sampler ingress. The full usage dedup scan yields to control
+   * I/O; publication keeps the existing atomic fsync/link/conflict boundary.
+   * Callers must await before advancing cursor/state. Throughput remains O(U*E)
+   * and a scan still retains O(E) payload memory. */
+  enqueueObservationAsync(
+    input: RuntimeObservation,
+    host?: AgentHostObservationSource
+  ): Promise<RuntimeEventEnqueueResult<RuntimeObservationInboxEvent>> {
+    const event = this.observationEvent(input, host);
+    const admission = this.#asyncAdmission.then(async () => {
+      this.hooks.afterAdmission?.();
+      if (isRuntimeUsageEvidence(event.observation)) {
+        const existing = (await this.listAsync()).find(candidate => (
+          candidate.type === "runtime-observation"
+          && candidate.taskId === event.taskId
+          && candidate.observation.eventId === event.observation.eventId
+        ));
+        if (existing !== undefined) return {
+          event: existing as RuntimeObservationInboxEvent, created: false
+        };
+      }
+      return this.publishUnlocked(event);
+    });
+    this.#asyncAdmission = admission.catch(() => undefined);
+    return admission;
+  }
+
+  private observationEvent(
+    input: RuntimeObservation,
+    host?: AgentHostObservationSource
+  ): RuntimeObservationInboxEvent {
     const observation = createRuntimeObservation(input);
     const scope = observation.fence.taskId === undefined ? "global" : "task";
     const event = Object.freeze({
@@ -153,7 +191,7 @@ export class FileRuntimeEventInbox {
       observation,
       ...(host === undefined ? {} : { host: readAgentHostObservationSource(host) })
     });
-    return this.publish(event);
+    return event;
   }
 
   enqueueRunTerminal(
@@ -206,6 +244,46 @@ export class FileRuntimeEventInbox {
     return events.sort(compareRuntimeEvents);
   }
 
+  /** Controller consumers must not synchronously read an entire retained
+   * backlog before accepting control sockets. Keep the same validated,
+   * sorted snapshot; the fold/ACK batch and durable identities are unchanged. */
+  async listAsync(): Promise<RuntimeLifecycleEvent[]> {
+    let names: string[];
+    try { names = await readdir(this.directory); }
+    catch (error) {
+      if (isNodeError(error, "ENOENT")) return [];
+      throw error;
+    }
+    const events: RuntimeLifecycleEvent[] = [];
+    for (const name of names.filter((entry) => entry.endsWith(".json"))) {
+      try {
+        const id = name.slice(0, -".json".length);
+        assertEventId(id);
+        const path = this.eventPath(id);
+        let metadata;
+        try { metadata = await lstat(path); }
+        catch (error) {
+          if (isNodeError(error, "ENOENT")) continue;
+          throw error;
+        }
+        assertEventFile(metadata, id);
+        let content: string;
+        try { content = await readFile(path, "utf8"); }
+        catch { throw invalidEvent(`Runtime event JSON is invalid: ${id}`); }
+        const event = parseEventFile(content, id);
+        events.push(event);
+      } catch (error) {
+        if (!(error instanceof RuntimeEventInboxError)
+          || error.code !== "RUNTIME_EVENT_INVALID") throw error;
+        try { this.quarantine(name); }
+        catch {
+          // Match list(): an invalid entry cannot block independent facts.
+        }
+      }
+    }
+    return events.sort(compareRuntimeEvents);
+  }
+
   read(id: string): RuntimeLifecycleEvent | null {
     assertEventId(id);
     const path = this.eventPath(id);
@@ -216,24 +294,11 @@ export class FileRuntimeEventInbox {
       if (isNodeError(error, "ENOENT")) return null;
       throw error;
     }
-    if (
-      !metadata.isFile()
-      || (metadata.mode & 0o777) !== 0o600
-      || metadata.size > MAX_RUNTIME_EVENT_FILE_BYTES
-    ) {
-      throw invalidEvent(`Runtime event file is invalid: ${id}`);
-    }
-    let value: unknown;
-    try {
-      value = JSON.parse(readFileSync(path, "utf8"));
-    } catch {
-      throw invalidEvent(`Runtime event JSON is invalid: ${id}`);
-    }
-    const event = parseRuntimeEvent(decodeInboxV1(value));
-    if (event.id !== id || runtimeEventId(event.type, event) !== id) {
-      throw invalidEvent(`Runtime event identity is invalid: ${id}`);
-    }
-    return event;
+    assertEventFile(metadata, id);
+    let content: string;
+    try { content = readFileSync(path, "utf8"); }
+    catch { throw invalidEvent(`Runtime event JSON is invalid: ${id}`); }
+    return parseEventFile(content, id);
   }
 
   /** Producer-local delivery diagnostics need only existence, never a read of
@@ -373,6 +438,27 @@ export class FileRuntimeEventInbox {
       if (!isNodeError(error, "ENOENT")) throw error;
     }
   }
+}
+
+function assertEventFile(
+  metadata: Readonly<{ isFile(): boolean; mode: number; size: number }>,
+  id: string
+): void {
+  if (!metadata.isFile() || (metadata.mode & 0o777) !== 0o600
+    || metadata.size > MAX_RUNTIME_EVENT_FILE_BYTES) {
+    throw invalidEvent(`Runtime event file is invalid: ${id}`);
+  }
+}
+
+function parseEventFile(content: string, id: string): RuntimeLifecycleEvent {
+  let value: unknown;
+  try { value = JSON.parse(content); }
+  catch { throw invalidEvent(`Runtime event JSON is invalid: ${id}`); }
+  const event = parseRuntimeEvent(decodeInboxV1(value));
+  if (event.id !== id || runtimeEventId(event.type, event) !== id) {
+    throw invalidEvent(`Runtime event identity is invalid: ${id}`);
+  }
+  return event;
 }
 
 export class RuntimeEventInboxError extends Error {

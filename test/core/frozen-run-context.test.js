@@ -28,6 +28,8 @@ import { addProjectKnowledge, createProject, retireProjectKnowledge } from "../.
 import { createIntegrationAttempt } from "../../dist/integration/integrationAttempt.js";
 import { createTaskBrief } from "../../dist/brief/taskBrief.js";
 import { createDecision, supersedeDecision } from "../../dist/decision/decision.js";
+import { AsyncTaskStoreClient } from "../../dist/storage/storeRpc.js";
+import { setImmediate as yieldLoop } from "node:timers/promises";
 
 test("Run delta is a complete source-qualified patch, not its clipped launch hint", t => {
   const home = mkdtempSync(join(tmpdir(), "yui-run-delta-"));
@@ -154,6 +156,19 @@ test("managed dispatch freezes explicit materials and candidate reports; continu
   const report = "Original report😀\n".repeat(2400);
   store.saveRun(completeRun(worker, report, later));
   store.clearActiveRun(task.id, "worker");
+  const status = runTaskCommand(["run", "show", `${task.id}/${worker.id}`, "--view", "status"],
+    store, { environment: {} }).data;
+  assert.equal(status.run.id, worker.id);
+  assert.equal(status.run.status, "completed");
+  assert.equal(status.run.result, undefined, "Status inspection must not duplicate the original report.");
+  assert.equal(status.run.inputs, undefined);
+  assert.equal(status.run.effective, undefined);
+  assert.equal(status.result.available, true);
+  assert.equal(status.result.bytes, Buffer.byteLength(report));
+  const full = readDocument(cursor => runTaskCommand(["run", "show", `${task.id}/${worker.id}`,
+    ...(cursor ? ["--cursor", cursor] : [])], store, { environment: {} }).data);
+  assert.equal(full.run.result.output, report, "Default full audit evidence remains available.");
+  assert.deepEqual(status.execution, full.execution);
   runTaskCommand(["work", "update", `${task.id}/work-item-1`, "done", "--summary", "Capture original result"],
     store, { now: () => later, environment: {}, candidateGitSnapshot: {
       schemaVersion: 1, reviewBaseCommit: "b".repeat(40),
@@ -338,10 +353,20 @@ test("managed dispatch freezes explicit materials and candidate reports; continu
     .value.result.output, "Original review result");
 });
 
-test("Run Context uses only its exact frozen evidence and explicit store/refId", t => {
-  const home = mkdtempSync(join(tmpdir(), "yui-frozen-context-"));
-  const store = new SqliteTaskStore(home);
-  t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
+test("Run Context uses only its exact frozen evidence and explicit store/refId", async t => {
+  let home, store, client, holding;
+  const gate = new Int32Array(new SharedArrayBuffer(4));
+  t.after(async () => {
+    Atomics.store(gate, 0, 2);
+    Atomics.notify(gate, 0);
+    try { await holding; } finally {
+      await client?.close();
+      store?.close();
+      if (home !== undefined) rmSync(home, { recursive: true, force: true });
+    }
+  });
+  home = mkdtempSync(join(tmpdir(), "yui-frozen-context-"));
+  store = new SqliteTaskStore(home);
   const now = new Date("2026-09-17T00:00:00Z");
   const task = activateTask(createTask("task-1", "Frozen intent", now), now);
   store.saveTask(task);
@@ -373,6 +398,22 @@ test("Run Context uses only its exact frozen evidence and explicit store/refId",
   };
   const run = createRun("run-1", task.id, role.name, "new", input, now, context);
   store.saveRun(run);
+  const revision = store.getRevision();
+  client = new AsyncTaskStoreClient(home, {
+    observerModule: new URL("../helpers/lockedObserver.mjs", import.meta.url)
+  });
+  holding = client.invokeObserver("holdFixtureWriteLock", [gate.buffer, task.id]);
+  const deadline = Date.now() + 5_000;
+  while (Atomics.load(gate, 0) !== 1 && Date.now() < deadline) await yieldLoop();
+  assert.equal(Atomics.load(gate, 0), 1, "The real worker owns SQLite's writer slot");
+  // Fail immediately if a read accidentally reserves the writer; production
+  // retains its ordinary five-second busy timeout.
+  store.databaseHandle().pragma("busy_timeout = 0");
+  const options = { environment: sanitizedTestEnv() };
+  assert.equal(runTaskCommand(["run", "context", `${task.id}/${run.id}`], store, options)
+    .data.context.identity.runId, run.id);
+  assert.equal(runTaskCommand(["run", "show", `${task.id}/${run.id}`], store, options)
+    .data.run.id, run.id);
   assert.equal(runTaskCommand(["run", "context", "expand", `${task.id}/${run.id}`, task.id,
     "--store", "task", "--mode", "full"], store, { environment: sanitizedTestEnv() }).data.context.value.title,
   task.title);
@@ -384,6 +425,15 @@ test("Run Context uses only its exact frozen evidence and explicit store/refId",
     ...(cursor === undefined ? [] : ["--cursor", cursor])
   ], store, { environment: sanitizedTestEnv() }).data.context);
   assert.equal(expandedReport.value.result.output, originalReport);
+  assert.equal(store.getTask(task.id).title, task.title, "Uncommitted worker data stays invisible");
+  assert.equal(store.getRevision(), revision, "Context and Run inspection never write a revision");
+  Atomics.store(gate, 0, 2);
+  Atomics.notify(gate, 0);
+  await holding;
+  holding = undefined;
+  await client.close();
+  client = undefined;
+  store.databaseHandle().pragma("busy_timeout = 5000");
   // A synthesis snapshot remains readable even when live assignment/source
   // collection cannot be repeated. Only the live activity projection is fresh.
   for (const method of ["getTask", "getTaskBrief", "getRole", "getWorkItem", "getProject", "listMessages"]) {

@@ -22,6 +22,10 @@
     "LICENSE"
   ],
   "scripts": {
+    "eval:collaboration": "node scripts/collaboration-eval/framework/run.mjs",
+    "eval:check": "node --test scripts/collaboration-eval/framework/check.mjs scripts/collaboration-eval/framework/native.check.mjs scripts/collaboration-eval/framework/provider.check.mjs scripts/collaboration-eval/framework/isolation.check.mjs",
+    "eval:wiring": "node scripts/collaboration-eval/framework/wiring-check.mjs",
+    "eval:analyze": "node scripts/collaboration-eval/framework/analyze.mjs",
     "build": "tsc -p tsconfig.json && node scripts/build-runtime-native.mjs",
     "pretest:core": "npm run build",
     "test:core": "node --import ./test/helpers/physical-tmpdir.mjs --test test/core/*.test.js test/platform/*.test.js",

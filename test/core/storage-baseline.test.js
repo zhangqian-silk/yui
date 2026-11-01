@@ -23,12 +23,12 @@ import { createTaskMessage } from "../../dist/message/message.js";
 import { contextContentDigest, createContextSnapshot } from "../../dist/context/contextSnapshot.js";
 import { usePre19Layout, usePre114Layout, usePre124Layout } from "../helpers/pre19Storage.mjs";
 
-test("fresh storage creates only the current 1.24 contract", () => {
-  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.24");
+test("fresh storage creates only the current 1.25 contract", () => {
+  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.25");
   const db = new Database(":memory:");
   try {
     schema.initializeSqliteSchema(db);
-    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.24");
+    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.25");
     assert.equal(schema.inspectSqliteSchema(db).targetChecksum, schema.CURRENT_SCHEMA_CHECKSUM);
     assert.equal(db.prepare("SELECT count(*) AS n FROM storage_schema").get().n, 1);
     assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='schema_migrations'").get(), undefined);
@@ -111,6 +111,36 @@ test("1.13 upgrade preserves exact Session bytes and Role deletion retains ident
     assert.equal(current.removeGlobalRole(role.name), true);
     assert.throws(() => sessionCallerEnvironment(current, { CODEX_THREAD_ID: "retained-native" }), /no longer current/);
     assert.deepEqual(current.listRuntimeSessionCandidates(), []);
+  } finally { current.close(); }
+});
+
+test("1.24 upgrade preserves permission bytes and admits optional workspace temp exclusions", async t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-temp-exclusion-upgrade-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const at = new Date("2026-10-25T00:00:00Z");
+  const store = new SqliteTaskStore(home);
+  const agent = createConfiguredAgent("fixture", "codex", "false", [], [], at);
+  const binding = createRoleAgentBinding(agent);
+  binding.config = { adapterId: "codex", permission: { strategy: "configured", sandbox: "workspace-write", approval: "never" } };
+  const role = createGlobalRole("fixture", [binding], agent.id, home, at);
+  store.saveGlobalRole(role);
+  const before = store.databaseHandle().prepare("SELECT payload FROM global_roles").get().payload;
+  store.databaseHandle().prepare("UPDATE storage_schema SET minor=24").run();
+  store.close();
+  assert.throws(() => new SqliteTaskStore(home), /not current/);
+  const plan = schema.storageMinorUpgradePlan("1.24");
+  assert.equal(plan.length, 1);
+  assert.equal(plan[0].sourceChecksum, plan[0].targetChecksum);
+  assert.equal((await runStorageUpgrade({ home, mode: "execute" })).outcome, "upgraded");
+  const current = new SqliteTaskStore(home);
+  try {
+    assert.equal(current.databaseHandle().prepare("SELECT payload FROM global_roles").get().payload, before);
+    assert.deepEqual(current.getGlobalRole(role.name), role);
+    const narrowed = structuredClone(role);
+    narrowed.agentBindings[agent.id].config.permission.excludeTmpdirEnvVar = true;
+    narrowed.agentBindings[agent.id].config.permission.excludeSlashTmp = true;
+    current.saveGlobalRole(narrowed);
+    assert.deepEqual(current.getGlobalRole(role.name), narrowed);
   } finally { current.close(); }
 });
 
@@ -201,7 +231,8 @@ test("1.1 upgrade preserves valid Operator authority without inventing user prov
         ["1.20", "1.21", "project-sync-clock"],
         ["1.21", "1.22", "role-profile-availability"],
         ["1.22", "1.23", "global-shell-scripts"],
-        ["1.23", "1.24", "task-read-revisions"]]);
+        ["1.23", "1.24", "task-read-revisions"],
+        ["1.24", "1.25", "codex-workspace-temp-exclusions"]]);
   }
   finally { current.close(); }
 });

@@ -1,4 +1,85 @@
-# Collaboration evaluation — deterministic partial baseline
+# Collaboration evaluation
+
+The maintained framework entry is
+[`framework/run.mjs`](framework/README.md), exposed as
+`npm run eval:collaboration`. Run `npm run eval:check` for fast contracts and
+`npm run eval:wiring -- --product <checkout> --out <new-directory>` for isolated
+fake CLI/Controller/Host chains. Offline/fake and real share orchestration;
+real execution needs explicit authorization and retains the observation
+limitations documented in the framework guide.
+
+The remaining sections describe historical partial research adapters, not the
+current framework or evidence of real-model quality.
+
+## Task-154 current context-cost experiment
+
+`context-experiment.json` freezes the product B0, eight development conditions,
+two newly authored confirmation families, quality floor, 10% per-role meaningful
+visible-UTF-8 threshold and the shared 60-condition budget (failures/retries
+included). The Leader owns the cross-run budget; these scripts do not create a
+new scheduler or global budget store. Unit checks are reported separately from
+full isolated condition executions. No confirmation is run by W2.
+
+The existing runner additionally accepts explicit `--case CTX-OP,CTX-LEADER`.
+`dev`/`all` keep their historical business meaning. For example, from the clean,
+built checkout with Node 24 and the runtime-provided `TMPDIR`:
+
+```sh
+node scripts/collaboration-eval/run.mjs --version /absolute/target/Yui \
+  --case CTX-OP,CTX-LEADER --out /existing/evidence-parent/b0-context
+node scripts/collaboration-eval/run.mjs --version /absolute/target/Yui \
+  --case O02,W02,C06 --out /existing/evidence-parent/b0-business
+node scripts/collaboration-eval/run.mjs --version /absolute/target/Yui \
+  --case O02 --mode P --out /existing/evidence-parent/b0-recovery
+node scripts/collaboration-eval/native-session-probe.mjs /absolute/target/Yui /existing/evidence-parent/b0-session
+node scripts/collaboration-eval/native-worker-probe.mjs /absolute/target/Yui /existing/evidence-parent/b0-worker
+```
+
+Run the **same absolute harness entry** against each clean built product checkout.
+The saved harness commit/module hashes are distinct from `version.productCommit`,
+the product Git-tree digest excluding this research directory, and the diff
+against fixed B0 `13ba89cf89d5f993cb22cd5e8a02ac2cad643a7d`. A harness-only
+commit is not a new product baseline. If harness/scoring changes, recompute
+both sides; do not compare a corrected candidate against an older harness B0.
+
+The two context conditions reuse Fixture, append-once evidence, independent
+scoring and saved comparison. They measure actual target notification renderers,
+compiled developer instructions, current Skill/reference files and isolated
+CLI outputs over fixed entry/continuation/recovery frames. The component
+Manifest is measurement material, **not a forged active Session**. Operator
+uses the actual public Global Context; Leader uses actual Task Context plus
+the target's Skill-check component. This does not test managed Operator
+execution, inbox ACK, filesystem enforcement or autonomous read selection.
+The ordinary native calibrations separately exercise real managed identities.
+
+Costs retain actual UTF-8, Unicode character counts, notification growth,
+declared request-before-action residence, recovery reload bytes, CLI calls,
+and raw bytes/digests. Residence is the synthetic accumulated input at each
+proxy frame, with a declared reset, **not observed model compaction**. No output,
+hidden prompts, tool definitions, model requests/usage, or executor-tree cost
+is inferred; exact tokens remain unknown. The recipe never assigns a cheaper
+score to the candidate: target changes must change actual observed bytes.
+
+Independent `context-oracle.mjs` checks full original equality, identity,
+read-only action traces and unchanged Draft Task facts. Successful mechanical
+checks remain `pending-human`; reviewers must inspect the saved full text and
+instruction sufficiency. A 10% byte reduction alone is not acceptance. Reject
+boundary regression, extra requests or executor-cost transfer; do not promote
+missing data, partial evidence or pending-human to a pass.
+
+`CTX-OP-CONFIRM` and `CTX-LEADER-CONFIRM` freeze separate multilingual long
+original families in `context-confirmation.json`, not the historical 28-session
+exploration or the already-run historical business holdout. They are explicitly
+holdout-gated, never selected by `dev`/`all`, and **not run in W2**. Only a
+later authorized final confirmation may use `--allow-holdout true`; using its
+outcomes for tuning invalidates that confirmation identity. Long-original
+behavior and budgets are unverified until that execution.
+
+Focused new checks:
+
+```sh
+node --test scripts/collaboration-eval/context.check.mjs scripts/collaboration-eval/compare.check.mjs
+```
 
 This small research entry is outside `npm test` and core CI. It measures
 deterministic scripts using Yui persistence and discovery, not model coding
