@@ -18,6 +18,7 @@ export type RuntimeLaunchSessionPort = Readonly<{
     adapterId: string;
     nativeSessionId: string;
     effective: import("../executor/effectiveLaunch.js").EffectiveLaunchSnapshot;
+    generatedTitle?: string;
   }>, assertCurrent: () => void, now?: Date): void;
 }>;
 export type RuntimeLaunchCoordinatorOptions = Readonly<{
@@ -99,6 +100,7 @@ export class RuntimeLaunchCoordinator implements RuntimeLaunchPreparationPort {
       }
     }
     let preflightObserved = beforeHostStart === undefined;
+    let generatedTitle: string | undefined;
     const observePreflight: RuntimeLaunchPreStart = (preflight) => {
       if (preflightObserved || !sameOwner(preflight.owner, request.owner)
         || preflight.runId !== request.runId
@@ -110,6 +112,7 @@ export class RuntimeLaunchCoordinator implements RuntimeLaunchPreparationPort {
       }
       assertLaunchCurrent();
       preflightObserved = true;
+      generatedTitle = preflight.generatedTitle;
       beforeHostStart?.(preflight);
     };
     const shared = {
@@ -124,7 +127,9 @@ export class RuntimeLaunchCoordinator implements RuntimeLaunchPreparationPort {
     };
     // Even without a startup-facts consumer, recheck after asynchronous Host
     // validation and immediately before creating the process.
-    const callback = beforeHostStart === undefined ? () => assertLaunchCurrent() : observePreflight;
+    const callback: RuntimeLaunchPreStart = beforeHostStart === undefined
+      ? (preflight) => { assertLaunchCurrent(); generatedTitle = preflight.generatedTitle; }
+      : observePreflight;
     if (request.mode === "resume" && !request.nativeSessionId) {
       throw new Error("Restoring a Session requires its native session id.");
     }
@@ -139,11 +144,18 @@ export class RuntimeLaunchCoordinator implements RuntimeLaunchPreparationPort {
       throw new Error("Session host returned facts inconsistent with the requested launch.");
     }
     if (binding.nativeSessionId !== undefined) {
+      // A live Host may reuse its Provider without applying the new plan.
+      // Codex reports the actual naming effect; other adapters can only name
+      // at creation and must not overwrite native user names on resume.
+      const recordedTitle = request.adapterId === "codex"
+        ? binding.appliedGeneratedTitle
+        : request.mode === "new" ? generatedTitle : undefined;
       this.sessions.recordLaunchedRuntimeNativeSession({
         owner: request.owner,
         agentId: request.agentId,
         adapterId: request.adapterId,
         nativeSessionId: binding.nativeSessionId,
+        ...(recordedTitle === undefined ? {} : { generatedTitle: recordedTitle }),
         effective
       }, assertLaunchCurrent, this.options.now?.() ?? new Date());
     }

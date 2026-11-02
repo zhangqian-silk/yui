@@ -292,6 +292,16 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   // No payload rewriting or historical revision invention. A newly opened
   // reader starts empty; zero is the initial token until the first mutation.
   sql: TASK_READ_REVISION_SCHEMA_SQL
+}, {
+  fromVersion: "1.24",
+  toVersion: "1.25",
+  name: "role-instance-code-session-titles",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Optional Role presentation and generated-title provenance. Never infer
+  // ownership of historical titles, rewrite frozen profiles, or fill defaults.
+  sql: ""
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {

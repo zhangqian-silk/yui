@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { validateInstanceCode, type RoleDisplaySettings } from "./instanceCode.js";
 import { assertRoleEnabled, validateEnabled } from "./availability.js";
 import { requireKnownFields } from "../domain/validation.js";
 import { jobScopeKey } from "../job/jobDefinition.js";
@@ -56,7 +57,7 @@ export type RoleAgentBinding = {
   config: RoleAgentConfig;
 };
 
-type RoleAgentOwner = RoleProfile & {
+type RoleAgentOwner = RoleProfile & RoleDisplaySettings & {
   enabled?: boolean;
   /** Monotonic desired configuration revision. It only affects the next launch. */
   launchRevision: number;
@@ -130,7 +131,7 @@ export function createRole(
   activeAgentId: string,
   workspace: string,
   now: Date,
-  profile: RoleProfile = {},
+  profile: RoleProfile & RoleDisplaySettings = {},
   defaultAccess: WorkerAccess = "write"
 ): Role {
   const owner = createRoleOwner(name, bindings, activeAgentId, workspace, now, profile, defaultAccess);
@@ -147,7 +148,7 @@ export function createGlobalRole(
   activeAgentId: string,
   workspace: string,
   now: Date,
-  profile: RoleProfile = {},
+  profile: RoleProfile & RoleDisplaySettings = {},
   defaultAccess: WorkerAccess = "write"
 ): GlobalRole {
   return validateGlobalRole({
@@ -167,6 +168,7 @@ export function copyGlobalRoleToTaskRole(
   const timestamp = now.toISOString();
   return validateTaskRole({
     ...cloneProfile(globalRole),
+    ...(globalRole.instanceCode === undefined ? {} : { instanceCode: globalRole.instanceCode }),
     schemaVersion: 1,
     enabled: true,
     launchRevision: 1,
@@ -189,7 +191,7 @@ export function activeRoleAgentBinding(role: Role | GlobalRole): RoleAgentBindin
 export function updateGlobalRole(
   role: GlobalRole,
   patch: Partial<Pick<GlobalRole,
-    "name" | "activeAgentId" | "agentBindings" | "workspace" | "defaultAccess" | "enabled">> & RoleProfile,
+    "name" | "activeAgentId" | "agentBindings" | "workspace" | "defaultAccess" | "enabled">> & RoleProfile & RoleDisplaySettings,
   now: Date
 ): GlobalRole {
   validateGlobalRole(role);
@@ -200,6 +202,7 @@ export function updateGlobalRole(
     updatedAt: now.toISOString()
   };
   clearProfileFields(updated, patch);
+  if (Object.hasOwn(patch, "instanceCode") && patch.instanceCode === undefined) delete updated.instanceCode;
   updated.launchRevision = isDeepStrictEqual(desiredBefore, desiredLaunchProjection(updated))
     ? role.launchRevision
     : role.launchRevision + 1;
@@ -209,7 +212,7 @@ export function updateGlobalRole(
 export function updateRole(
   role: Role,
   patch: Partial<Pick<Role,
-    "name" | "activeAgentId" | "agentBindings" | "workspace" | "defaultAccess" | "enabled">> & RoleProfile & {
+    "name" | "activeAgentId" | "agentBindings" | "workspace" | "defaultAccess" | "enabled">> & RoleProfile & RoleDisplaySettings & {
       executionEnvironment?: ExecutionEnvironmentSnapshot | null;
     },
   now: Date
@@ -226,6 +229,7 @@ export function updateRole(
     updated.executionEnvironment = cloneJson(patch.executionEnvironment);
   }
   clearProfileFields(updated, patch);
+  if (Object.hasOwn(patch, "instanceCode") && patch.instanceCode === undefined) delete updated.instanceCode;
   updated.launchRevision = isDeepStrictEqual(desiredBefore, desiredLaunchProjection(updated))
     ? role.launchRevision
     : role.launchRevision + 1;
@@ -415,7 +419,7 @@ function createRoleOwner(
   activeAgentId: string,
   workspace: string,
   now: Date,
-  profile: RoleProfile,
+  profile: RoleProfile & RoleDisplaySettings,
   defaultAccess: WorkerAccess
 ): RoleAgentOwner {
   const mappedBindings: Record<string, RoleAgentBinding> = {};
@@ -429,6 +433,7 @@ function createRoleOwner(
   const timestamp = now.toISOString();
   return {
     ...cloneProfile(profile),
+    ...(profile.instanceCode === undefined ? {} : { instanceCode: validateInstanceCode(profile.instanceCode) }),
     enabled: true,
     launchRevision: 1,
     defaultAccess,
@@ -442,6 +447,7 @@ function createRoleOwner(
 }
 
 function validateRoleOwner<T extends GlobalRole | TaskRole>(role: T): T {
+  if (role.instanceCode !== undefined) validateInstanceCode(role.instanceCode);
   validateEnabled(role.enabled);
   if (role.schemaVersion !== 1) {
     throw new Error("Role schema version is invalid.");
@@ -511,9 +517,10 @@ function assertSessionOwnerMatchesRole(role: Role | GlobalRole, sessions: RoleSe
 
 function cloneRolePatch(
   patch: Partial<Pick<GlobalRole,
-    "name" | "activeAgentId" | "agentBindings" | "workspace" | "defaultAccess" | "enabled">> & RoleProfile
+    "name" | "activeAgentId" | "agentBindings" | "workspace" | "defaultAccess" | "enabled">> & RoleProfile & RoleDisplaySettings
 ): typeof patch {
   return {
+    ...(patch.instanceCode === undefined ? {} : { instanceCode: validateInstanceCode(patch.instanceCode) }),
     ...(patch.enabled === undefined ? {} : { enabled: patch.enabled }),
     ...(patch.name === undefined ? {} : { name: requireSafeIdentity(patch.name, "Role name") }),
     ...(patch.activeAgentId === undefined

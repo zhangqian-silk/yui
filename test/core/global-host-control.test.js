@@ -15,7 +15,8 @@ import { FileRoleLaunchPlanner } from "../../dist/executor/fileRoleLaunchPlanner
 import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
 import { startControllerServer } from "../../dist/core/controllerServer.js";
 import { launchBrokerForHome } from "../../dist/runtime/launchBroker.js";
-import { inspectAgentHost, reconcileAgentHostTurn, sendAgentHostCancelControl, sendAgentHostSteerControl, sendAgentHostNativeControl, sendAgentHostRunControl } from "../../dist/runtime/agentHost.js";
+import { inspectAgentHost, reconcileAgentHostTurn, sendAgentHostCancelControl, sendAgentHostSteerControl, sendAgentHostNativeControl, sendAgentHostRunControl, sendAgentHostLaunchControl } from "../../dist/runtime/agentHost.js";
+import { AGENT_HOST_CONTROL_PROTOCOL } from "../../dist/runtime/agentHostProtocol.js";
 import { deliverGlobalInputs } from "../../dist/controller/globalInputDelivery.js";
 import { runGlobalRoleCommand } from "../../dist/commands/globalRoleCommands.js";
 import { runInboxCommand } from "../../dist/commands/inboxCommands.js";
@@ -32,7 +33,7 @@ import { createProviderRetryHooks } from "../../dist/controller/providerRetryDel
 
 async function globalHostFixture(t, adapterId = "codex", {
   controlled = true, roleName = "assistant", autoDeliver = false, capacityFailure = false,
-  omitTerminalOnce = false, direct = false
+  omitTerminalOnce = false, direct = false, instanceCode
 } = {}) {
   const home = mkdtempSync(join(tmpdir(), "yui-global-host-"));
   const store = new SqliteTaskStore(home);
@@ -54,6 +55,7 @@ async function globalHostFixture(t, adapterId = "codex", {
   store.saveConfiguredAgent(agent);
   const role = createGlobalRole(roleName, [createRoleAgentBinding(agent)], agent.id, home, now);
   store.createGlobalRoleIfAbsent(role);
+  if (instanceCode !== undefined) runGlobalRoleCommand(["update", roleName, "--instance-code", instanceCode], store, { env: {} });
   const effective = resolveEffectiveLaunch({ store, role, purpose: "execution" });
   const planned = new FileRoleLaunchPlanner(home, store, {
     cliPath: resolve("dist/cli.js"), environment: { HOME: home, PATH: process.env.PATH }
@@ -197,6 +199,14 @@ async function globalHostFixture(t, adapterId = "codex", {
   });
   const native = () => store.getGlobalRoleSessionSet(role.name).providerBinding.run;
   return { store, home, role, command, submitNext, native, wait, host, errors, observations, scheduler,
+    reuseHost: async sessionTitle => {
+      const { ticket } = launchBrokerForHome(home).reserve({ ...launchPayload,
+        providerControl: { ...launchPayload.providerControl, kind: "restore", mode: "resume",
+          nativeSessionId, sessionTitle } });
+      return sendAgentHostLaunchControl({ home, scope: "global", roleName, control: {
+        protocol: AGENT_HOST_CONTROL_PROTOCOL, type: "launch", ticket
+      } });
+    },
     restartQuiescentFixtureHost: async () => {
       assert.equal((await inspectAgentHost({ home, scope: "global", roleName: role.name })).state, "idle");
       host.kill("SIGTERM");
@@ -221,6 +231,15 @@ async function globalHostFixture(t, adapterId = "codex", {
     advanceTo: at => { fakeNow = new Date(at); },
     nativeSessionId, output: () => output };
 }
+
+test("live Host reuse reports the applied native title, not its new launch intent", async t => {
+  const f = await globalHostFixture(t, "codex", { instanceCode: "old" });
+  const original = await inspectAgentHost({ home: f.home, scope: "global", roleName: f.role.name });
+  assert.equal(original.appliedGeneratedTitle, "Yui assistant @old");
+  const reused = await f.reuseHost("Yui assistant @new");
+  assert.equal(reused.snapshot.nativeSessionId, original.nativeSessionId);
+  assert.equal(reused.snapshot.appliedGeneratedTitle, original.appliedGeneratedTitle);
+});
 
 test("disable at atomic Host admission preserves the original Global input until enabled", async t => {
   const f = await globalHostFixture(t, "codex", { controlled: false });

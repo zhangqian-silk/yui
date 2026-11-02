@@ -53,6 +53,8 @@ type AgentHostProviderControlBase = Readonly<{
   component?: AgentExecutionComponentId;
   transport: AgentTransport;
   sessionTitle?: string;
+  /** Resume may rename only if the Provider still exposes this Yui-owned name. */
+  previousSessionTitle?: string;
   authority: ProviderAuthorityFence;
   codexThread?: CodexThreadOptions;
   /** ACP has no launch flags; its per-Session facts travel with the control. */
@@ -249,6 +251,9 @@ function validateProviderControl(control: AgentHostProviderControl): void {
     ) {
       throw new Error("Agent Host Provider session title is invalid.");
     }
+  }
+  if (control.previousSessionTitle !== undefined) {
+    text(control.previousSessionTitle, "previousSessionTitle");
   }
   validateProviderAuthorityFence(control.authority);
 }
