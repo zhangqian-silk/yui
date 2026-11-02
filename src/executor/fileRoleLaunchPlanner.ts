@@ -565,7 +565,9 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
       agent,
       config: effectiveConfig,
       workspace: agentWorkspace,
-      ...(sessionTitle === undefined || postCreateOperatorTitle
+      // CLI --name has no ownership check on resume. Only the Codex native
+      // metadata path below may rename an existing conversation.
+      ...(sessionTitle === undefined || postCreateOperatorTitle || input.mode === "resume"
         ? {}
         : { sessionTitle }),
       ...sessionContext

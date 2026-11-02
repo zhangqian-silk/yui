@@ -150,6 +150,8 @@ export type StructuredProviderDiagnostic = Readonly<{
 }>;
 
 export interface StructuredProviderSession {
+  /** Last generated name this connection actually applied, not launch intent. */
+  readonly appliedGeneratedTitle?: string;
   readonly nativeAccess?: CodexNativeAccess;
   readonly publicReply?: PublicReply;
   /** Exact process whose exit proves the dedicated local execution drained. */
@@ -604,6 +606,7 @@ class ChildProcessDuplex extends Duplex {
 }
 
 class CodexStructuredProviderSession implements StructuredProviderSession {
+  appliedGeneratedTitle: string | undefined;
   nativeAccess!: CodexNativeAccess;
   readonly #turnAttempts = new Map<string, string>();
   readonly adapterId = "codex" as const;
@@ -695,6 +698,7 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
       && !Array.isArray(threadMetadata) ? (threadMetadata as Record<string, unknown>).name : undefined;
     // A native rename belongs to the user. Missing metadata is not evidence
     // that an old title is still ours; leave it alone on resume.
+    let appliedGeneratedTitle: string | undefined;
     if (control.sessionTitle !== undefined && (control.mode === "new"
       || (control.previousSessionTitle !== undefined && nativeTitle === control.previousSessionTitle))) {
       try {
@@ -702,6 +706,7 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
           conversationId,
           name: control.sessionTitle
         });
+        appliedGeneratedTitle = control.sessionTitle;
       } catch (error) {
         onDiagnostic?.({
           nativeSessionId: conversationId,
@@ -728,6 +733,7 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
       optionalId(initialized.codexHome)
     );
     session.nativeAccess = createCodexNativeAccess(conversationId, initialized, channel, openingMessages, nativeConfiguration);
+    session.appliedGeneratedTitle = appliedGeneratedTitle;
     session.#activeTurnId = resumedActiveTurnId;
     const ownedTurn = control.kind === "restore" ? control.ownedTurn : undefined;
     session.#clientOwnedTurnId = ownedTurn?.turnId;

@@ -67,6 +67,7 @@ export type AgentEndpointConfiguration = Readonly<{
 export interface AgentEndpoint {
   readonly nativeAccess?: import("./codexNativeAccess.js").CodexNativeAccess;
   readonly publicReply?: import("./publicReply.js").PublicReply;
+  readonly appliedGeneratedTitle?: string;
   readonly ownedProcessId?: number;
   readonly nativeAccountHome?: string;
   readonly adapterId: StructuredProviderSession["adapterId"];
@@ -199,6 +200,7 @@ type EventValue =
 
 class BuiltinAgentEndpoint implements AgentEndpoint {
   get nativeAccess() { return this.driver.nativeAccess; }
+  get appliedGeneratedTitle() { return this.driver.appliedGeneratedTitle; }
   get ownedProcessId(): number | undefined { return this.driver.ownedProcessId; }
   get nativeAccountHome(): string | undefined { return this.driver.nativeAccountHome; }
   readonly capabilities;

@@ -201,6 +201,8 @@ export type AgentHostProviderState =
   | "exited";
 
 export type AgentHostSnapshot = Readonly<{
+  /** Confirmed native naming effect of this Provider connection. */
+  appliedGeneratedTitle?: string;
   nativeTui?: boolean;
   nativeRequests?: readonly CodexNativeRequest[];
   nativeRequestsOmitted?: boolean;
@@ -393,7 +395,13 @@ export async function runAgentHost(input: Readonly<{
   await replayExitOutbox(input.home);
 
   const updateSnapshot = (next: AgentHostSnapshot): void => {
-    snapshot = validateSnapshot(next);
+    const { appliedGeneratedTitle: _oldTitle, ...rest } = next;
+    snapshot = validateSnapshot({
+      ...rest,
+      ...(session?.appliedGeneratedTitle === undefined ? {} : {
+        appliedGeneratedTitle: session.appliedGeneratedTitle
+      })
+    });
   };
 
   const authorityFields = (): Pick<

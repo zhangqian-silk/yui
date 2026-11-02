@@ -717,6 +717,9 @@ export class TmuxSessionHost implements SessionHostPort {
         roleName: request.owner.roleName
       }),
       hostCreated,
+      ...(providerSnapshot?.appliedGeneratedTitle === undefined ? {} : {
+        appliedGeneratedTitle: providerSnapshot.appliedGeneratedTitle
+      }),
       ...((providerSnapshot?.nativeSessionId ?? nativeSessionId) === undefined
         ? {}
         : { nativeSessionId: providerSnapshot?.nativeSessionId ?? nativeSessionId }),

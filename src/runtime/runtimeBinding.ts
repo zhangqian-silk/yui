@@ -15,6 +15,8 @@ export type RuntimeBinding = Readonly<{
   /** True only when this lifecycle request created the external Role host. */
   hostCreated?: boolean;
   nativeSessionId?: string;
+  /** Native naming receipt; absent when skipped, failed or not observed. */
+  appliedGeneratedTitle?: string;
   /** Exact durable single-writer fence used by structured Provider mutation. */
   providerAuthority?: ProviderAuthorityFence;
 }>;
@@ -33,6 +35,9 @@ export function createRuntimeBinding(input: RuntimeBinding): RuntimeBinding {
     ...(input.nativeSessionId === undefined
       ? {}
       : { nativeSessionId: requireText(input.nativeSessionId, "Native session id") }),
+    ...(input.appliedGeneratedTitle === undefined ? {} : {
+      appliedGeneratedTitle: requireText(input.appliedGeneratedTitle, "Applied generated title")
+    }),
     ...(input.providerAuthority === undefined
       ? {}
       : { providerAuthority: validateProviderAuthorityFence(input.providerAuthority) })

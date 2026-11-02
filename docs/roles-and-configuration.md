@@ -52,15 +52,17 @@ pairs; if the identity itself cannot fit the 80-unit title limit, launch fails
 with a bounded diagnostic instead of truncating the identity.
 
 Configuration does not rename, stop or recreate a live Session. New Sessions
-use it; a subsequent normal Host launch/resume refreshes Yui-owned title intent,
+use it; a subsequent normal Host launch/resume can refresh confirmed Yui-owned titles,
 not historical records. Existing untagged titles and recorded user names stay
 untouched. Codex applies a resume rename only when its returned native name still
 matches the previous generated title; absent metadata or a user rename prevents
-the rename. Provider naming is best effort, not proof of native title adoption;
-unsupported Providers or rename failures do not invalidate the Session. Other
-Providers retain their existing naming capabilities. No restart is performed to
-force a naming change. Clearing a custom Global Role's code restores `Yui role`;
-clearing Operator's code restores its unconfigured format.
+the rename. Codex records only successfully applied names; live Host reuse,
+skipped naming and naming failures do not advance title provenance. Naming is
+best effort; unsupported Providers or failures do not invalidate the Session.
+Other Providers receive generated names only on creation, never on resume,
+to protect native user renames. No restart is performed to force a naming change.
+On the safe Codex resume path, clearing a custom Global Role's code restores
+`Yui role`; clearing Operator's code restores its unconfigured format.
 
 Storage 1.24 → 1.25 adds optional code/title provenance without rewriting
 historical payloads or inferring who named an old Session.

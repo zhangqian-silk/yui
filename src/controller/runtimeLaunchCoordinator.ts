@@ -144,12 +144,18 @@ export class RuntimeLaunchCoordinator implements RuntimeLaunchPreparationPort {
       throw new Error("Session host returned facts inconsistent with the requested launch.");
     }
     if (binding.nativeSessionId !== undefined) {
+      // A live Host may reuse its Provider without applying the new plan.
+      // Codex reports the actual naming effect; other adapters can only name
+      // at creation and must not overwrite native user names on resume.
+      const recordedTitle = request.adapterId === "codex"
+        ? binding.appliedGeneratedTitle
+        : request.mode === "new" ? generatedTitle : undefined;
       this.sessions.recordLaunchedRuntimeNativeSession({
         owner: request.owner,
         agentId: request.agentId,
         adapterId: request.adapterId,
         nativeSessionId: binding.nativeSessionId,
-        ...(generatedTitle === undefined ? {} : { generatedTitle }),
+        ...(recordedTitle === undefined ? {} : { generatedTitle: recordedTitle }),
         effective
       }, assertLaunchCurrent, this.options.now?.() ?? new Date());
     }
