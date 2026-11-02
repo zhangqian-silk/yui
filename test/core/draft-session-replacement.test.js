@@ -37,9 +37,14 @@ function fixture(t) {
   const scheduler = new FileSchedulerStoreAdapter(store);
   assert.equal(scheduler.prepareDraftPlanning("task-1", now), true);
   const run = store.getActiveRun("task-1", "leader");
+  const planned = new FileRoleLaunchPlanner(home, store, { environment: { HOME: home, PATH: process.env.PATH } })
+    .plan({ taskId: "task-1", roleName: "leader", agentId: agent.id, adapterId: agent.adapterId,
+      mode: "new", runId: run.id, effective: run.effective });
+  assert.match(planned.sessionTitle, /^Yui Leader task-1 Draft · /);
+  assert.equal(planned.generatedTitle, planned.sessionTitle);
   scheduler.recordLaunchedRuntimeNativeSession({
     owner, agentId: agent.id, adapterId: agent.adapterId,
-    nativeSessionId: "original-planning", effective: run.effective
+    nativeSessionId: "original-planning", effective: run.effective, generatedTitle: planned.generatedTitle
   }, () => {}, now);
   const command = args => runTaskCommand(args, store, { environment: {}, now: () => later });
   const inbox = (session, ...args) => runInboxCommand(args, store, { CODEX_THREAD_ID: session }, later).data;

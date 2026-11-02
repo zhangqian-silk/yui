@@ -18,6 +18,53 @@ requiring a same-named global Role. A global Role is a creation template only
 when the requested Task Role does not exist. Availability, producer separation
 and the frozen review candidate still apply.
 
+## Optional instance codes and Session titles
+
+Each Role can independently set a display-only instance code. For example,
+configure only Operator, leaving Leader and all other Roles unset:
+
+```sh
+yui config role update operator --instance-code dev-bj
+yui config role show operator
+yui config role update operator --clear-instance-code
+yui task role update task-159 leader --instance-code dev-sg
+```
+
+`add` also accepts `--instance-code`. Codes accept 1–24 UTF-16 units of Unicode
+letters, numbers, combining marks, hyphen and underscore; omit `@`. Whitespace,
+controls, escapes and punctuation are rejected, not silently normalized.
+There is no Home-wide fallback. A Global Role's code is copied when that template
+creates a Task Role; later template changes do not rewrite the copy. Agent
+Profiles do not supply display codes. Use Task Role update/clear for an existing
+copy. Codes do not alter launch revisions, permissions, IDs or message routing.
+Choose recognizable values; codes are not globally unique identities. Use
+Session inspection and the actual Home/native identity when resolving ambiguity.
+
+Generated Task titles use `Yui Leader task-159 Draft @dev-sg · Task name`.
+`Draft` means the Leader Session has planning authority, including a retained
+planning Session after activation; delivery Sessions omit it. Other Role names
+and the full lowercase Task ID remain intact. Operator uses
+`Yui Operator @dev-bj · MMDD`; without a code its existing
+`Yui · Operator · MMDD` format remains. The date derives from Session creation
+and the configured timezone. Other Global Roles get a generated title when a
+code is configured. Descriptions are truncated first without splitting surrogate
+pairs; if the identity itself cannot fit the 80-unit title limit, launch fails
+with a bounded diagnostic instead of truncating the identity.
+
+Configuration does not rename, stop or recreate a live Session. New Sessions
+use it; a subsequent normal Host launch/resume refreshes Yui-owned title intent,
+not historical records. Existing untagged titles and recorded user names stay
+untouched. Codex applies a resume rename only when its returned native name still
+matches the previous generated title; absent metadata or a user rename prevents
+the rename. Provider naming is best effort, not proof of native title adoption;
+unsupported Providers or rename failures do not invalidate the Session. Other
+Providers retain their existing naming capabilities. No restart is performed to
+force a naming change. Clearing a custom Global Role's code restores `Yui role`;
+clearing Operator's code restores its unconfigured format.
+
+Storage 1.24 → 1.25 adds optional code/title provenance without rewriting
+historical payloads or inferring who named an old Session.
+
 ## Enable and disable
 
 Availability is configuration, separate from active Agent selection, Session

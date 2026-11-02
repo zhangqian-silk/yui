@@ -51,6 +51,32 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.20.0 compatibility and migration notes
+
+This minor adds independent optional Role instance codes (`--instance-code` /
+`--clear-instance-code`) and a `Draft` marker for Leader Sessions with planning
+authority. Operator-only configuration does not propagate to Leader or other
+Roles. Task Role template copies remain independent; codes are presentation,
+not identity, authorization or launch-configuration drift. Full lowercase Task
+IDs remain unchanged. See [Role configuration](roles-and-configuration.md).
+
+New Sessions use the configured code. Normal Host launches/resumes refresh
+Yui-owned title intent without forcing a stop/replacement. Historical untagged
+titles and recorded custom names are preserved. Codex resume naming requires
+the native name to match the previous generated title; missing metadata and
+user renames are left untouched. Provider naming remains best effort.
+
+Storage advances **1.24 → 1.25** through an additive, no-rewrite transition for
+optional Role code and Session title provenance. Older supported Homes follow
+the centralized contiguous chain; do not open an upgraded Home with older
+software. Controller/Host protocols remain v1. Publication does not authorize
+installing the release, migrating a production Home, restarting shared services,
+replacing Sessions or choosing codes for existing Roles.
+
+Release gates require exact-merge Core CI and the same runtime tarball's
+fresh-install matrix before npm `latest` publication. These deterministic
+checks do not establish real-model behavior.
+
 ### 2.19.0 compatibility and migration notes
 
 This minor adds message backlog and blocked-delivery monitoring with Operator

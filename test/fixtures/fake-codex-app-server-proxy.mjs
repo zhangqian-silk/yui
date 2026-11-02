@@ -115,6 +115,7 @@ function handleMessage(message) {
       threadId = message.params.threadId;
       model = message.params.model ?? model;
       respond({ model, thread: { id: message.params.threadId, status: { type: "idle" },
+        ...(process.env.YUI_FAKE_THREAD_NAME === undefined ? {} : { name: process.env.YUI_FAKE_THREAD_NAME }),
         turns: JSON.parse(process.env.YUI_FAKE_RESUMED_TURNS ?? "[]") } });
       break;
     case "thread/name/set":

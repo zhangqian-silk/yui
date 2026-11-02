@@ -41,6 +41,7 @@ export type PlannedRoleSession = Readonly<{
   launch: TmuxLaunchPlan;
   session: SchedulerRoleSession | null;
   sessionTitle?: string;
+  generatedTitle?: string;
 }>;
 
 export interface RoleLaunchPlanner {

@@ -15,6 +15,42 @@ Task Role 是 Task 局部的；global Role 提供已配置的默认值和全局�
 的 global Role。只有当请求的 Task Role 不存在时，global Role 才作为创建模板。
 可用性、producer 分离和冻结的审查候选仍然适用。
 
+## 可选实例码与会话标题
+
+每个 Role 独立配置仅用于展示的实例码。例如只设置 Operator，其他角色留空：
+
+```sh
+yui config role update operator --instance-code dev-bj
+yui config role show operator
+yui config role update operator --clear-instance-code
+yui task role update task-159 leader --instance-code dev-sg
+```
+
+`add` 也接受 `--instance-code`。允许 1–24 个 UTF-16 单位的 Unicode 字母、
+数字、组合标记、短横线和下划线，不输入 `@`。空白、控制字符、转义和其他标点
+直接拒绝，不静默清洗。没有 Home 级默认值；Global Role 作为模板创建 Task Role
+时复制其值，之后模板变化不回写。Agent Profile 不携带实例码；既有 Task Role
+通过自己的 update/clear 修改。实例码不改变启动版本、权限、内部 ID 或消息寻址，
+也不保证全局唯一；遇到歧义应查看实际 Home、Session 和原生身份。
+
+生成的 Task 标题为 `Yui Leader task-159 Draft @dev-sg · 任务名`。
+`Draft` 根据 Leader Session 的 planning 权限显示；Task 激活后保留的 planning
+会话仍显示 Draft，delivery 会话不显示。保留完整小写 Task ID。
+Operator 为 `Yui Operator @dev-bj · MMDD`；未配置保持
+`Yui · Operator · MMDD`，日期使用会话创建时间和配置时区。
+其他 Global Role 配置实例码后生成标题。80 单位总长度内优先截断任务名，
+不拆开代理对；身份部分无法容纳则明确报错，不静默截断。
+
+配置修改不会立即重命名、停止或重建活动会话。新会话采用新配置，后续正常
+Host 启动/恢复刷新可确认由 Yui 管理的标题意图，不改写历史记录。
+缺少来源标记的旧标题及已记录的用户标题保留。Codex 恢复时只有原生返回的
+名字仍等于上次生成标题才改名；原生信息缺失或用户已改名则跳过。
+Provider 命名为尽力能力，不等于原生采用证据；失败或不支持不会使会话失效，
+其他 Provider 保留原有命名能力，不为改名主动重启。
+清除自定义 Global Role 实例码后恢复 `Yui role`；Operator 恢复未配置格式。
+
+存储 1.24 → 1.25 增加可选实例码和生成标题来源，不回填历史记录或猜测标题所有权。
+
 ## 启用与停用
 
 启停是配置状态，与 Active Agent、Session 是否运行和 Task executionGate 分开：

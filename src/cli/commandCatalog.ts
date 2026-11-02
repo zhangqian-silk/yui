@@ -226,6 +226,7 @@ const agentChildren: readonly NodeInput[] = [
 ];
 
 const roleProfileOptions = [
+  "--instance-code",
   "--description", "--responsibility", "--constraint",
   "--expected-output", "--system-prompt", "--skill"
 ] as const;
@@ -234,6 +235,7 @@ const roleAgentOptions = [
   "--allowed-tool", "--disallowed-tool", "--search"
 ] as const;
 const roleProfileClearOptions = [
+  "--clear-instance-code",
   "--clear-description", "--clear-responsibilities", "--clear-constraints",
   "--clear-expected-output", "--clear-system-prompt", "--clear-skills"
 ] as const;

@@ -690,7 +690,13 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
         throw error;
       }
     }
-    if (control.sessionTitle !== undefined) {
+    const threadMetadata = nativeConfiguration.thread;
+    const nativeTitle = typeof threadMetadata === "object" && threadMetadata !== null
+      && !Array.isArray(threadMetadata) ? (threadMetadata as Record<string, unknown>).name : undefined;
+    // A native rename belongs to the user. Missing metadata is not evidence
+    // that an old title is still ours; leave it alone on resume.
+    if (control.sessionTitle !== undefined && (control.mode === "new"
+      || (control.previousSessionTitle !== undefined && nativeTitle === control.previousSessionTitle))) {
       try {
         await runtime.setConversationName({
           conversationId,

@@ -2757,10 +2757,11 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
     adapterId: string;
     nativeSessionId: string;
     effective: EffectiveLaunchSnapshot;
+    generatedTitle?: string;
   }>, assertCurrent: () => void, now = new Date()): RoleAgentSession {
     return this.store.transaction((store) => {
       assertCurrent();
-      const session = input.owner.scope === "task"
+      let session = input.owner.scope === "task"
         ? recordTaskRuntimeNativeSession(store, {
             taskId: input.owner.taskId,
             roleName: input.owner.roleName,
@@ -2776,6 +2777,18 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
             nativeSessionId: input.nativeSessionId,
             effective: input.effective
           }, now);
+      if (input.generatedTitle !== undefined && (session.title === undefined
+        || session.title === session.generatedTitle || session.title === input.generatedTitle)) {
+        const set = input.owner.scope === "task"
+          ? store.getTaskRoleSessionSet(input.owner.taskId, input.owner.roleName)!
+          : store.getGlobalRoleSessionSet(input.owner.roleName)!;
+        const titled = recordRoleAgentSession(set, {
+          ...session, title: input.generatedTitle, generatedTitle: input.generatedTitle
+        }, now);
+        if (titled.owner.scope === "task") store.saveTaskRoleSessionSet(titled as TaskRoleSessionSet);
+        else store.saveGlobalRoleSessionSet(titled as GlobalRoleSessionSet);
+        session = titled.sessions[input.agentId]!;
+      }
       if (input.owner.scope === "global") {
         let sessions = store.getGlobalRoleSessionSet(input.owner.roleName)!;
         let binding = sessions.providerBinding;

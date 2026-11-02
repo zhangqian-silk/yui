@@ -69,6 +69,7 @@ export type RuntimeTmuxLaunchPlan = Readonly<{
 }>;
 
 export type RuntimePlannedSession = Readonly<{
+  generatedTitle?: string;
   role: RuntimeTmuxRole;
   launch: RuntimeTmuxLaunchPlan;
   session: Readonly<{ nativeSessionId?: string }> | null;
@@ -494,6 +495,7 @@ export class TmuxSessionHost implements SessionHostPort {
       agentId: request.agentId,
       adapterId: request.adapterId,
       effective: request.effective,
+      ...(planned.generatedTitle === undefined ? {} : { generatedTitle: planned.generatedTitle }),
       ...(planned.launch.env.YUI_SESSION_TITLE === undefined
         ? {}
         : { sessionTitle: planned.launch.env.YUI_SESSION_TITLE }),

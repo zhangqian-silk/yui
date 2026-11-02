@@ -653,6 +653,8 @@ export async function runAgentHost(input: Readonly<{
             && currentPayload.environment.YUI_ROLE === "operator")
           ? {}
           : { sessionTitle: previousControl.sessionTitle }),
+        ...(previousControl.previousSessionTitle === undefined
+          ? {} : { previousSessionTitle: previousControl.previousSessionTitle }),
         codexThread: disconnectedSession.configuration.threadOptions!,
         endpointImplementation: disconnectedSession.configuration.implementation,
         ...(ownedTurn === undefined ? {} : { ownedTurn }),
