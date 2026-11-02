@@ -60,11 +60,14 @@ Roles. Task Role template copies remain independent; codes are presentation,
 not identity, authorization or launch-configuration drift. Full lowercase Task
 IDs remain unchanged. See [Role configuration](roles-and-configuration.md).
 
-New Sessions use the configured code. Normal Host launches/resumes refresh
-Yui-owned title intent without forcing a stop/replacement. Historical untagged
+New Sessions use the configured code. Normal Codex Host launches/resumes can refresh
+confirmed Yui-owned titles without forcing a stop/replacement. Historical untagged
 titles and recorded custom names are preserved. Codex resume naming requires
 the native name to match the previous generated title; missing metadata and
-user renames are left untouched. Provider naming remains best effort.
+user renames are left untouched. Title provenance advances only after a successful
+native naming receipt, not pre-start registration or live Host reuse. Other
+Providers receive generated names only on creation, never on resume. Provider
+naming remains best effort.
 
 Storage advances **1.24 → 1.25** through an additive, no-rewrite transition for
 optional Role code and Session title provenance. Older supported Homes follow

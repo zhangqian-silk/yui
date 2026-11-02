@@ -2650,8 +2650,14 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
           && existing.nativeSessionId !== input.session.nativeSessionId
           && existing.status === "active";
         if (!defersConversationReplacement && (existing?.nativeSessionId !== input.session.nativeSessionId || existing.status !== "active")) {
+          // Preparation reactivates the fixed native identity, not its name.
+          // Preserve the stored title even for an ended Session; only the
+          // naming receipt may advance it on resume.
+          const { title, ...preparedSession } = input.session;
           saveTaskSession(store, role, {
-            ...input.session,
+            ...preparedSession,
+            ...(existing?.nativeSessionId !== input.session.nativeSessionId && title !== undefined
+              ? { title } : {}),
             nativeSessionId: input.session.nativeSessionId
           }, "active", input.now);
         }
