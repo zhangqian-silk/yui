@@ -11,8 +11,9 @@ export type ManageSection = Readonly<{ page: ManagePage; section: string; key: s
 
 export const MANAGE_SECTIONS: Readonly<Record<ManageArea, readonly ManageSection[]>> = Object.freeze({
   models: [
-    { page: "settings", section: "agents", key: "settings.section.agents", label: "Agent management" },
-    { page: "models", section: "providers", key: "models.section.providers", label: "Provider management" }
+    { page: "settings", section: "roles", key: "settings.section.roles", label: "Execution configs" },
+    { page: "settings", section: "agents", key: "settings.section.agents", label: "Agents" },
+    { page: "models", section: "providers", key: "models.section.providers", label: "Model services" }
   ],
   settings: [
     { page: "settings", section: "preferences", key: "settings.section.preferences", label: "Preferences" },

@@ -32,26 +32,14 @@ export const SETTINGS_MAIN = `
           <div class="settings-actions"><button id="server-settings-more" class="btn" type="button" hidden data-i18n="settings.more">More</button></div>
         </div>
       </section>
-      <section class="manage-section agent-access" data-section="agents" aria-labelledby="settings-agents-title" hidden>
-        ${manageHead("settings-agents-title", "settings.section.agents", "Agent access", "settings.hint.agents", "Execution tools, Role defaults and reusable Profiles. Choose one member to inspect or edit it without affecting running Sessions or existing Tasks.")}
-        <div class="agent-access-toolbar">
-          <label class="field settings-search agent-access-search"><span data-i18n="settings.search">Find a setting</span><input id="agent-access-search" type="search" autocomplete="off"></label>
-          <div id="agent-management-actions" class="settings-actions"></div>
-        </div>
-        <div class="agent-access-meta">
-          <p id="agent-access-status" class="settings-section-status" role="status"></p>
-          <details class="agent-access-help">
-            <summary data-i18n="settings.chain.title">三者如何关联</summary>
-            <div class="agent-access-help-grid">
-              <span><strong data-i18n="settings.area.profiles">可复用角色模板 · Profile</strong><small data-i18n="settings.chain.profile">复制到角色的一次性来源，不是持续绑定</small></span>
-              <span><strong data-i18n="settings.area.roles">角色执行配置</strong><small data-i18n="settings.chain.role">引用一个 Agent，并保存后续启动的默认值</small></span>
-              <span><strong data-i18n="settings.area.agents">Agent 执行工具</strong><small data-i18n="settings.chain.agent">执行工具、原生模型、思考强度与启动进程</small></span>
-            </div>
-          </details>
-        </div>
-        <div id="agent-access-host" class="agent-access-host"></div>
+      <section class="manage-section access-page" data-section="roles" aria-labelledby="settings-roles-title" hidden>
+        <header class="manage-head access-head"><div class="manage-heading"><h1 id="settings-roles-title" data-i18n="settings.section.roles">Execution configs</h1><p data-i18n="access.hint.roles">Which Agent, model and effort each Role starts new Sessions with, and the Profile templates you can copy from.</p></div><div id="role-access-snapshot" class="access-snapshot-slot"></div><div id="role-access-actions" class="access-head-actions"></div></header>
+        <div id="role-access-host" class="access-host"></div>
+      </section>
+      <section class="manage-section access-page" data-section="agents" aria-labelledby="settings-agents-title" hidden>
+        <header class="manage-head access-head"><div class="manage-heading"><h1 id="settings-agents-title" data-i18n="settings.section.agents">Agents</h1><p data-i18n="access.hint.agents">Execution tools, their own native model settings, and whether Yui routes them through a model service.</p></div><div id="agent-access-snapshot" class="access-snapshot-slot"></div><div id="agent-access-actions" class="access-head-actions"></div></header>
+        <div id="agent-access-host" class="access-host"></div>
         <div id="agent-settings-groups" class="agent-settings-groups" hidden></div>
-        <div class="settings-actions agent-more"><button id="agent-access-more" class="btn" type="button" hidden data-i18n="settings.more">More</button></div>
       </section>
       <section class="manage-section" data-section="permissions" aria-labelledby="settings-permissions-title" hidden>
         ${manageHead("settings-permissions-title", "settings.section.permissions", "Command permissions", "permissions.intro", "Read-only discovery templates, not authorization for a specific call. No rules or Grants are changed.")}
