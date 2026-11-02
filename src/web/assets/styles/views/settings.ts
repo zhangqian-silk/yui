@@ -8,71 +8,139 @@ import { BREAKPOINTS } from "../../shared/geometry.js";
  * the catalog) sit one surface step lower instead of nesting full cards.
  */
 export const SETTINGS_STYLES = `
-/* Agent access: a dense index leading to one focused inspector. */
-.agent-access{--agent-index-w:clamp(250px,25vw,310px);gap:12px}
-.agent-index-toggle{display:none}
-.agent-access-toolbar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px 16px;min-width:0}
-.agent-access-search{flex:1 1 320px;max-width:560px;padding:0}
-.agent-access-toolbar #agent-management-actions{flex:0 1 auto;justify-content:flex-end;margin:0}
-.agent-access-toolbar #agent-management-actions .settings-actions{margin:0}
-.agent-access-toolbar #agent-management-actions>p{max-width:56ch;margin:5px 0 0;text-align:right}
-.agent-supported{max-width:64ch;color:var(--ink-3);font-size:var(--fs-2xs)}
-.agent-supported>summary{cursor:pointer;text-align:right}
-.agent-supported>p{margin:4px 0 0;line-height:1.45}
-.agent-access-meta{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:4px 16px;min-width:0;margin-top:-4px}
-.agent-access-meta .settings-section-status{flex:1 1 360px;min-height:0;margin:0}
-.agent-access-help{min-width:0;color:var(--ink-3);font-size:var(--fs-xs)}
-.agent-access-help>summary{cursor:pointer;padding:3px 0;color:var(--ink-3);font-weight:500}
-.agent-access-help[open]>summary{color:var(--ink-2)}
-.agent-access-help-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:8px;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface-2)}
-.agent-access-help-grid span{display:grid;gap:2px;min-width:0}
-.agent-access-help-grid strong{color:var(--ink-2);font-size:var(--fs-xs);font-weight:600;overflow-wrap:anywhere}
-.agent-access-help-grid small{color:var(--ink-3);font-size:var(--fs-2xs);line-height:1.45;overflow-wrap:anywhere}
-.agent-access-host{min-width:0}
-.agent-access-layout{display:grid;grid-template-columns:var(--agent-index-w) minmax(0,1fr);gap:14px;align-items:start;min-width:0}
-.agent-index{display:grid;gap:10px;min-width:0;padding:12px;border:1px solid var(--line);border-radius:var(--r-lg);background:var(--surface-2);position:sticky;top:12px;max-height:calc(100vh - var(--header-h) - 36px);overflow:auto;overscroll-behavior:contain}
-.agent-index-head{display:grid;gap:8px}
-.agent-index-head h2{font-size:var(--fs-md);font-weight:600;color:var(--ink)}
-.agent-index-head p{margin-top:2px;color:var(--ink-3);font-size:var(--fs-2xs);line-height:1.45}
-.agent-area-filters{display:flex;flex-wrap:wrap;gap:4px}
-.chip-tab{display:inline-flex;align-items:center;gap:5px;min-height:28px;padding:0 9px;border:1px solid var(--line);border-radius:var(--r-pill);background:var(--surface);color:var(--ink-2);font-size:var(--fs-2xs);cursor:pointer}
-.chip-tab[aria-pressed=true]{border-color:var(--accent-line);background:var(--accent-soft);color:var(--ink);font-weight:600}
-.chip-tab .count{color:var(--ink-3);font-variant-numeric:tabular-nums}
-.agent-index-group{display:grid;gap:4px;min-width:0;padding-top:4px;border-top:1px solid var(--line)}
-.agent-index-group:first-of-type{border-top:0;padding-top:0}
-.agent-index-group>h3{display:flex;justify-content:space-between;gap:8px;padding:3px 4px;margin:0;color:var(--ink-3);font-size:var(--fs-2xs);font-weight:600;letter-spacing:.04em}
-.agent-index-list{display:grid;gap:2px}
-.agent-index-row{display:grid;grid-template-columns:26px minmax(0,1fr) auto auto;gap:8px;align-items:center;width:100%;padding:7px 8px;border:1px solid transparent;border-radius:var(--r-md);background:transparent;color:var(--ink-2);text-align:left;cursor:pointer;min-width:0}
-.agent-index-row:hover{background:var(--surface);border-color:var(--line)}
-.agent-index-row[aria-current=true]{background:var(--surface);border-color:var(--accent-line);box-shadow:inset 3px 0 0 var(--accent)}
-.agent-index-row:focus-visible,.chip-tab:focus-visible,.agent-inspector-head .icon-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.agent-index-icon{display:grid;place-items:center;width:26px;height:26px;border-radius:50%;background:var(--surface-3);color:var(--ink-2);font:600 var(--fs-2xs)/1 var(--font-mono);flex:none}
-.agent-index-icon.tone-info{background:var(--info-soft);color:var(--info)}
-.agent-index-icon.tone-accent{background:var(--accent-soft);color:var(--accent)}
-.agent-index-icon.tone-idle{background:var(--surface-3);color:var(--ink-3)}
-.agent-index-copy{display:grid;gap:1px;min-width:0}
-.agent-index-copy strong{font-size:var(--fs-sm);font-weight:600;color:var(--ink);overflow-wrap:anywhere}
-.agent-index-copy small{color:var(--ink-3);font-size:var(--fs-2xs);overflow-wrap:anywhere}
-.agent-index-facts{color:var(--ink-2);font-size:var(--fs-2xs);line-height:1.35;overflow-wrap:anywhere}
-.agent-index-caret{color:var(--ink-4);font-size:var(--fs-md)}
-.agent-index-row .badge{font-size:var(--fs-2xs);white-space:nowrap}
-.agent-more{padding:0;margin:0}
-.agent-more .btn{margin:0}
-.agent-inspector{min-width:0;min-height:18rem;border:1px solid var(--line);border-radius:var(--r-lg);background:var(--surface);overflow:clip}
+/* Execution configs and Agents: full-width tables; a selected row opens its
+   detail beside the list when there is room, otherwise in place of it. */
+.access-page{gap:12px}
+.access-head{align-items:center}
+.access-head .manage-heading{flex:1 1 420px}
+.access-head-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.access-head-actions .btn{min-height:34px}
+.access-snapshot-slot:empty{display:none}
+.access-snapshot{display:inline-flex;align-items:center;gap:7px;max-width:100%;padding:4px 10px;border:1px solid var(--warn-soft);border-radius:var(--r-pill);background:var(--warn-soft);color:var(--warn);font-size:var(--fs-2xs);white-space:nowrap}
+.access-snapshot strong{font-weight:650}
+.access-snapshot time{color:var(--ink-2);font-family:var(--font-mono);overflow:hidden;text-overflow:ellipsis}
+.btn-sm{height:28px;padding:0 10px;font-size:var(--fs-xs)}
+.access-host{min-width:0}
+.access-frame{container:access/inline-size;display:grid;gap:10px;min-width:0}
+.access-toolbar{display:flex;align-items:center;gap:12px;min-width:0}
+.access-search{flex:0 1 340px;min-width:0}
+.access-search input{height:32px}
+.access-status{margin:0;color:var(--ink-3);font-size:var(--fs-2xs)}
+.access-status:empty{display:none}
+.access-more:has(.btn[hidden]){display:none}
+.access-layout{display:grid;grid-template-columns:minmax(0,1fr);gap:14px;align-items:start;min-width:0}
+.access-list{container:accesslist/inline-size;display:grid;gap:18px;min-width:0}
+.access-detail{display:none;min-width:0;border:1px solid var(--line);border-radius:var(--r-lg);background:var(--surface);overflow:clip}
+.access-layout[data-detail=open] .access-detail{display:block}
+.access-block{display:grid;gap:8px;min-width:0}
+.access-block-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px;min-width:0}
+.access-block-head h2{display:flex;align-items:center;gap:8px;color:var(--ink);font-size:var(--fs-md);font-weight:650}
+.access-block-head p{color:var(--ink-3);font-size:var(--fs-xs);line-height:1.45}
+.access-table{--cols:minmax(130px,1.1fr) minmax(130px,1fr) minmax(190px,1.6fr) minmax(64px,auto);min-width:0;border:1px solid var(--line);border-radius:var(--r-lg);background:var(--surface);overflow:hidden}
+.access-table[data-columns=agents]{--cols:minmax(96px,.8fr) minmax(130px,1fr) minmax(150px,1.2fr) minmax(130px,1.1fr) minmax(90px,.9fr) minmax(48px,auto)}
+.access-row-head,.access-row{display:grid;grid-template-columns:var(--cols);gap:12px;align-items:center;padding:0 14px}
+.access-row-head{min-height:32px;border-bottom:1px solid var(--line);background:var(--surface-2);color:var(--ink-3);font-size:var(--fs-2xs);font-weight:600;letter-spacing:.02em}
+.access-row{width:100%;min-height:54px;padding-top:9px;padding-bottom:9px;border:0;border-bottom:1px solid var(--line);border-radius:0;background:transparent;color:var(--ink-2);font:inherit;text-align:left;cursor:pointer;transition:background var(--t-fast)}
+.access-row:last-child{border-bottom:0}
+.access-row:hover{background:var(--surface-2)}
+.access-row[aria-current=true]{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--accent)}
+.access-row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.access-cell{display:grid;gap:2px;min-width:0;font-size:var(--fs-xs)}
+.access-cell strong{color:var(--ink);font-size:var(--fs-sm);font-weight:600;overflow-wrap:anywhere}
+.access-cell small{color:var(--ink-3);font-size:var(--fs-2xs);line-height:1.35;overflow-wrap:anywhere}
+.access-cell-name small{display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
+.access-cell-kind{display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px}
+.access-model,.access-route,.access-agent{color:var(--ink);font-family:var(--font-mono);font-size:var(--fs-xs);overflow-wrap:anywhere}
+.access-agent{display:inline-flex;flex-wrap:wrap;align-items:center;gap:6px}
+.access-effort{color:var(--ink-3)}
+.access-source.source-route{color:var(--info)}
+.access-source.source-native{color:var(--ink-4)}
+.access-muted{color:var(--ink-4)}
+.access-warn{color:var(--warn)!important}
+.access-cell-status{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px}
+.access-cell-status .badge{font-size:var(--fs-2xs);white-space:nowrap}
+.access-chip{display:inline-flex;align-items:center;height:18px;padding:0 7px;border-radius:var(--r-pill);background:var(--surface-3);color:var(--ink-2);font:600 10px/1 var(--font-sans);white-space:nowrap}
+.access-chip.adapter-codex{background:var(--info-soft);color:var(--info)}
+.access-chip.adapter-claude{background:var(--accent-soft);color:var(--accent)}
+.access-empty{padding:12px 14px;border:1px dashed var(--line-2);border-radius:var(--r-lg);color:var(--ink-3);font-size:var(--fs-sm)}
+.access-footnote{color:var(--ink-3);font-size:var(--fs-xs)}
+/* Compact rows: a narrow list (a phone, or beside an open detail). */
+@container accesslist (max-width:640px){
+  .access-row-head{display:none}
+  .access-row{grid-template-columns:minmax(0,1fr) auto;gap:3px 10px;min-height:0;padding:10px 12px}
+  .access-cell-name{grid-column:1;grid-row:1}
+  .access-cell-status{grid-column:2;grid-row:1;align-self:start}
+  .access-cell:not(.access-cell-name):not(.access-cell-status){grid-column:1/-1;display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px}
+  .access-cell-users{color:var(--ink-3)}
+  .access-cell-users:empty{display:none}
+}
+/* The six-column Agent table needs more room before it can stay a table. */
+@container accesslist (min-width:640.02px) and (max-width:800px){
+  .access-table[data-columns=agents] .access-row-head{display:none}
+  .access-table[data-columns=agents] .access-row{grid-template-columns:minmax(0,1fr) auto;gap:3px 10px;min-height:0;padding:10px 12px}
+  .access-table[data-columns=agents] .access-cell-name{grid-column:1;grid-row:1}
+  .access-table[data-columns=agents] .access-cell-status{grid-column:2;grid-row:1;align-self:start}
+  .access-table[data-columns=agents] .access-cell:not(.access-cell-name):not(.access-cell-status){grid-column:1/-1;display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px}
+}
+@container access (min-width:900px){
+  .access-layout[data-detail=open]{grid-template-columns:minmax(280px,.8fr) minmax(0,1.2fr)}
+  .access-layout[data-detail=open] .access-detail{position:sticky;top:12px;max-height:calc(100dvh - var(--header-h) - 26px);overflow:auto;overscroll-behavior:contain}
+  .access-layout[data-detail=open] .access-cell-users,.access-layout[data-detail=open] .access-cell-kind small{display:none}
+  .access-back-label{display:none}
+  .access-detail-bar .access-back{order:2;width:30px;padding:0}
+}
+@container access (max-width:899.98px){
+  .access-layout[data-detail=open] .access-list{display:none}
+  .access-close-mark{display:none}
+}
+.access-detail-head{display:grid;gap:8px;padding:12px 16px 14px;border-bottom:1px solid var(--line);background:var(--surface-2);min-width:0}
+.access-detail-bar{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.access-back{height:30px;padding:0 8px;color:var(--ink-2);font-size:var(--fs-xs)}
+.access-close-mark{font-size:18px;line-height:1}
+.access-detail-head .agent-inspector-identity>div{display:grid;gap:2px;min-width:0}
+.access-detail-head h2{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 10px;color:var(--ink);font-size:var(--fs-lg);font-weight:650;overflow-wrap:anywhere}
+.access-detail-head h2 .id{color:var(--ink-4);font-size:var(--fs-2xs);font-weight:400}
+.access-detail-head .kicker{margin:0;color:var(--accent);font-size:var(--fs-2xs);font-weight:700;letter-spacing:.06em}
+.access-detail-facts{display:flex;flex-wrap:wrap;gap:8px 22px;margin-top:6px}
+.access-detail-facts:empty{display:none}
+.access-fact{display:grid;gap:1px;min-width:0}
+.access-fact>span{color:var(--ink-3);font-size:var(--fs-2xs)}
+.access-fact>strong{color:var(--ink);font-family:var(--font-mono);font-size:var(--fs-xs);font-weight:550;overflow-wrap:anywhere}
+.access-fact>small{color:var(--ink-3);font-size:var(--fs-2xs)}
+.access-fact.tone-warn>strong{color:var(--warn)}
+.access-derived{display:grid;gap:10px;padding:12px 14px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface-2)}
+.access-derived:empty{display:none}
+.agent-inspector-form>.agent-notice{padding:10px 18px 0}
+.access-derived-row{display:grid;grid-template-columns:96px minmax(0,1fr);gap:4px 12px;min-width:0}
+.access-derived-row>span{padding-top:1px;color:var(--ink-3);font-size:var(--fs-2xs)}
+.access-derived-row>div{display:grid;gap:4px;min-width:0}
+.access-derived p{margin:0;color:var(--ink-2);font-size:var(--fs-xs);line-height:1.5;overflow-wrap:anywhere}
+.access-derived .access-derived-main{color:var(--ink);font-family:var(--font-mono);font-size:var(--fs-sm)}
+.access-derived-note{color:var(--ink-3)!important}
+.access-link{justify-self:start;color:var(--accent);font-size:var(--fs-xs)}
+.access-chips{display:flex;flex-wrap:wrap;gap:6px}
+.access-chip-link{height:26px;padding:0 10px;border:1px solid var(--line-2);background:var(--surface);font:500 var(--fs-xs)/1 var(--font-mono);cursor:pointer}
+.access-chip-link:hover{border-color:var(--accent-line);color:var(--ink)}
+.agent-config-section.agent-config-more{padding:0;gap:0}
+.agent-config-more>summary{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:42px;padding:0 14px;cursor:pointer;list-style:none}
+.agent-config-more>summary::-webkit-details-marker{display:none}
+.agent-config-more>summary::after{content:"";width:7px;height:7px;margin-left:auto;border-right:1.5px solid var(--ink-3);border-bottom:1.5px solid var(--ink-3);transform:rotate(45deg) translateY(-2px);transition:transform var(--t-fast)}
+.agent-config-more[open]>summary::after{transform:rotate(225deg) translateY(-1px)}
+.agent-config-more>summary h3{margin:0;color:var(--ink);font-size:var(--fs-sm);font-weight:600}
+.agent-config-more>summary:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:var(--r-md)}
+.agent-config-count{color:var(--warn);font-size:var(--fs-2xs);font-weight:600}
+.agent-config-section.agent-config-more[open]{padding-bottom:14px}
+.agent-config-more[open]>:not(summary){margin:0 14px}
+.agent-config-more[open]>.agent-field-grid{margin-top:4px}
+.agent-profile-more .agent-profile-section{border:0;background:transparent;padding:0}
+@container access (max-width:520px){
+  .access-derived-row{grid-template-columns:minmax(0,1fr)}
+  .access-detail-head{padding:10px 12px 12px}
+}
+
+.agent-inspector{min-width:0;border:1px solid var(--line);border-radius:var(--r-lg);background:var(--surface);overflow:clip}
 .agent-inspector-content{min-width:0}
-.agent-inspector-empty{display:grid;place-items:center;align-content:center;gap:10px;min-height:18rem;padding:24px;text-align:center;background:linear-gradient(135deg,var(--surface-2),var(--surface))}
-.agent-inspector-empty-mark{display:grid;place-items:center;width:42px;height:42px;border:1px solid var(--accent-line);border-radius:50%;background:var(--accent-soft);color:var(--accent);font:600 var(--fs-md)/1 var(--font-mono)}
-.agent-inspector-empty h2{color:var(--ink);font-size:var(--fs-md);font-weight:600}
-.agent-inspector-empty p{max-width:38ch;margin-top:3px;color:var(--ink-3);font-size:var(--fs-sm);line-height:1.5}
 .agent-inspector-form{display:grid;gap:0;padding:0;min-width:0}
-.agent-inspector-head{display:flex;justify-content:space-between;gap:12px;align-items:start;padding:16px 18px 14px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,var(--surface-2),var(--surface));min-width:0}
-.agent-inspector-identity{display:flex;gap:11px;align-items:flex-start;min-width:0}
-.agent-inspector-identity>div{display:grid;gap:2px;min-width:0}
-.agent-inspector-identity h2{font-size:var(--fs-lg);font-weight:650;color:var(--ink);overflow-wrap:anywhere}
-.agent-inspector-identity .kicker{color:var(--accent);font-size:var(--fs-2xs);font-weight:700;letter-spacing:.06em}
-.agent-inspector-identity .id{color:var(--ink-3);font-size:var(--fs-2xs);overflow-wrap:anywhere}
-.agent-inspector-relation{margin:2px 0 0;color:var(--ink-3);font-size:var(--fs-xs);line-height:1.4}
-.agent-inspector-head .icon-btn{flex:none}
 .agent-inspector-canvas{display:grid;gap:12px;padding:14px 18px 22px;min-width:0}
 .agent-notice{color:var(--ink-3)!important;font-size:var(--fs-xs)!important;line-height:1.5!important;margin:0 0 2px}
 .agent-readonly-note{padding:9px 11px;border:1px solid var(--warn-soft);border-radius:var(--r-md);background:var(--warn-soft);color:var(--ink-2);font-size:var(--fs-xs)}
@@ -171,33 +239,12 @@ export const SETTINGS_STYLES = `
 .permissions-visible{color:var(--ink);white-space:nowrap}
 .permissions-hidden{color:var(--ink-3);white-space:nowrap}
 @media(max-width:${BREAKPOINTS.narrow}px){
-  .agent-access{--agent-index-w:235px}
-  .agent-access-layout{grid-template-columns:var(--agent-index-w) minmax(0,1fr)}
   .agent-field-grid-primary,.agent-field-grid{grid-template-columns:minmax(0,1fr)}
   .agent-field-grid .settings-field:nth-last-child(-n+2){border-bottom:1px solid var(--line);padding-bottom:12px}
   .agent-field-grid .settings-field:last-child{border-bottom:0;padding-bottom:0}
 }
 @media(max-width:${BREAKPOINTS.small}px){
-  .agent-access{gap:10px}
-  .agent-access-toolbar{align-items:stretch}
-  .agent-access-toolbar #agent-management-actions{justify-content:flex-start}
-  .agent-access-toolbar #agent-management-actions>p{text-align:left}
-  .agent-supported>summary{text-align:left}
-  .agent-access-meta{display:grid}
-  .agent-access-help-grid{grid-template-columns:minmax(0,1fr)}
-  .agent-access-layout{grid-template-columns:minmax(0,1fr);gap:10px}
-  .agent-index-toggle{display:flex;align-items:center;justify-content:space-between;width:100%;min-height:38px;padding:0 12px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface-2);color:var(--ink-2);font-size:var(--fs-xs);font-weight:600;cursor:pointer}
-  .agent-index-toggle[aria-expanded=true] .agent-index-toggle-mark{transform:rotate(180deg)}
-  .agent-index-toggle-mark{color:var(--ink-4);font-size:var(--fs-sm);transition:transform .15s ease}
-  .agent-index{position:static;max-height:none;padding:10px}
-  .agent-index.is-collapsed{display:none}
-  .agent-index-head p{display:none}
-  .agent-index-row{grid-template-columns:26px minmax(0,1fr) auto;padding:8px}
-  .agent-index-caret{display:none}
-  .agent-index-row .badge{grid-column:2/-1;justify-self:start}
   .agent-inspector{min-height:0;border-radius:var(--r-md)}
-  .agent-inspector-empty{min-height:12rem;padding:24px}
-  .agent-inspector-head{padding:14px}
   .agent-inspector-canvas{padding:12px 12px 18px;gap:10px}
   .agent-config-section{padding:12px}
   .agent-fact-grid{grid-template-columns:minmax(0,1fr)}
@@ -218,5 +265,12 @@ export const SETTINGS_STYLES = `
   .settings-group .settings-summary-facts{grid-column:1/-1;grid-row:2;gap:8px}
   .settings-group .settings-summary-context{grid-column:1/-1;grid-row:3}
   .settings-group .settings-group-affordance{grid-column:2;grid-row:1}
+}
+/* Touch: every list, detail and disclosure control in model management keeps
+   a comfortable tap target; desktop density is unchanged. */
+@media(pointer:coarse){
+  .access-head-actions .btn,.access-detail-bar .btn,.agent-action-buttons .btn,.agent-inspector .btn{min-height:40px}
+  .access-detail-bar .access-back{min-width:40px}
+  .agent-inspector details>summary{min-height:40px;display:flex;align-items:center}
 }
 `;

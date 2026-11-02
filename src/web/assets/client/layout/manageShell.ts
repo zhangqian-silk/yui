@@ -12,7 +12,7 @@ let started = false;
 let route;
 
 export function manageArea(page, section) {
-  if (page === "settings" && section === "agents") return "models";
+  if (page === "settings" && (section === "agents" || section === "roles")) return "models";
   return page;
 }
 export function pageSections(page) {
@@ -32,6 +32,7 @@ export function readManageRoute(url) {
   }
   const requested = parts[1] || url.searchParams.get("section");
   if (requested === "connection" || requested === "agents") return { page: "settings", section: "agents" };
+  if (requested === "roles" || requested === "profiles") return { page: "settings", section: "roles" };
   const area = parts[0] === "settings" && requested !== "connection" ? "settings" : "models";
   const detail = ["catalog", "quota", "maintenance"].includes(requested) ? requested : url.searchParams.get("detail");
   const target = ["catalog", "quota", "maintenance"].includes(requested) ? "providers" : requested;

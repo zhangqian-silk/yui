@@ -41,7 +41,6 @@ export function mountModels(root, deps) {
     pending: false, unknown: false, receipt: null,
     components: [], expanded: initial.detail ? { [initial.detail]: true } : {},
     endpointId: "", moduleId: "", bridgeId: "",
-    providerFilter: { query: "" },
     catalog: { page: null, items: [], loading: false, error: null, note: null, generation: 0, query: "", source: "all" },
     quota: { source: initial.source, observation: null, loading: false, error: null, unavailable: false, generation: 0 }
   };
@@ -50,7 +49,7 @@ export function mountModels(root, deps) {
   }
   const status = h("div.models-status", { "aria-live": "polite" });
   const sections = { providers: panel("providers"), catalog: panel("catalog"), quota: panel("quota") };
-  root.replaceChildren(status, sections.providers);
+  root.replaceChildren(sections.providers);
 
   function tone(name, text) { return h("span.badge.tone-" + name, null, h("span.badge-dot"), text); }
   function when(iso) { return iso ? formatDateTime(iso, locale()) : t("models.unknown"); }
@@ -73,11 +72,6 @@ export function mountModels(root, deps) {
     const line = h("p.receipt.models-receipt", { role: "status", "aria-live": "polite" }, state.receipt.text);
     line.dataset.state = state.receipt.state;
     return line;
-  }
-  function configureButton() {
-    return h("button.btn.btn-primary", { type: "button", onclick: function () {
-      openOperatorHandoff({ topic: "provider", t, locale, copyText: deps.copyText, onReadback: reconcile });
-    } }, t("models.configure.provider"));
   }
   function disclosure(key, label, ...children) {
     const node = h("details.models-disclosure", { open: !!state.expanded[key], dataset: { modelDetail: key } },
@@ -145,15 +139,7 @@ export function mountModels(root, deps) {
   function renderStatus() {
     const view = state.view;
     const children = [];
-    if (view?.provenance) children.push(h("p.models-note", null, view.provenance.label + " · " + view.provenance.capturedAt));
     if (state.loading && !view) children.push(h("p", { role: "status" }, t("models.loading")));
-    if (view && !(view.readOnly && view.provenance) && (state.route.section === "connection" || state.route.section === "providers")) {
-      children.push(h("div.models-facts", null,
-        view.registry.modules.length || view.registry.endpoints.length ? tone("info", t("models.connected"))
-          : view.nativeProviders?.length ? null : tone("idle", t("models.disconnected")),
-        tone("warn", t("models.application." + view.application, view.application)),
-        h("small.faint.models-notice", null, t(view.readOnly ? "models.readOnlyService" : "models.scope"))));
-    }
     if (state.loadError) {
       children.push(h("div.models-alert", { role: "alert" }, icon("alert"), h("p.settings-error", null, t("models.loadFailed") + " " + state.loadError),
         h("button.btn", { type: "button", onclick: function () { void load(); } }, t("models.retry"))));
@@ -165,34 +151,16 @@ export function mountModels(root, deps) {
     status.replaceChildren.apply(status, children.filter(Boolean));
   }
 
-  // ---- Provider records from all explicit configuration sources --------
+  // ---- Model services, by how each Agent connects ----------------------
+  // The usage dimension is the Agent adapter's wire protocol (Codex:
+  // Responses, Claude: Anthropic Messages), never a model name or vendor.
+  // Each record keeps its owner: the Agent's native file, Yui's registry,
+  // or an optional component's own configuration.
   function componentName(module) { return module.kind === "cliproxyapi" ? "CPA" : module.kind; }
-  function providerRecords() {
-    if (!state.view) return [];
-    const native = (state.view.nativeProviders || []).map(provider => ({
-      provider, identity: "native:" + provider.agentId + ":" + provider.sourceFile + ":" + provider.id,
-      origin: t("models.origin.native") + " · " + provider.agentId, native: true, layer: "native", sourceLabel: provider.agentId
-    }));
-    const configured = state.components.flatMap(component => (component.view?.providers || [])
-      .filter(provider => !(component.module.kind === "metabridge" && provider.via === "cpa"))
-      .map(provider => ({ provider, identity: component.module.id + ":" + provider.id,
-        origin: componentName(component.module) + " · " + component.module.id, native: false,
-        layer: "component", sourceLabel: componentName(component.module) + " · " + component.module.id })));
-    const endpoints = state.view.registry.endpoints.filter(endpoint => !endpoint.moduleId).map(endpoint => ({
-      provider: { id: endpoint.id, name: endpoint.id, baseUrl: endpoint.url, protocol: endpoint.protocol,
-        credentialKind: "reference", credentialReference: endpoint.clientKeyFile, models: [] },
-      identity: "endpoint:" + endpoint.id, origin: t("models.origin.endpoint"), native: false,
-      layer: "endpoint", sourceLabel: endpoint.id
-    }));
-    return configured.concat(endpoints, native);
-  }
-  function providerMatches(record) {
-    const query = state.providerFilter.query.trim().toLowerCase();
-    return !query || [record.origin, record.identity, record.provider.name, record.provider.baseUrl,
-      record.provider.protocol, record.provider.sourceFile, record.provider.prefix,
-      ...(record.provider.models || []).map(model => (model.name || model.value) + " " + (model.alias || ""))]
-      .some(value => String(value || "").toLowerCase().includes(query));
-  }
+  const DIMENSIONS = [
+    { adapter: "codex", protocol: "responses" },
+    { adapter: "claude", protocol: "anthropic-messages" }
+  ];
   function facts(entries) {
     return h("dl.models-record-facts", null, entries.filter(([, value]) => value !== null && value !== undefined && value !== "")
       .map(([label, value]) => h("div", null, h("dt", null, label), h("dd", null, String(value)))));
@@ -205,7 +173,7 @@ export function mountModels(root, deps) {
       [t("models.provider.prefix"), provider.prefix === "" ? t("models.noPrefix") : provider.prefix], [t("models.priority"), provider.priority],
       [t("models.requestMode"), provider.requestMode]
     ])];
-    if (models.length) children.push(h("h3", null, t("models.configuredModels")),
+    if (models.length) children.push(h("h4", null, t("models.configuredModels")),
       h("p.faint", null, t("models.configuredModelsHelp")),
       h("ul.models-configured-models", null, models.map(model => h("li", null,
         h("code", null, model.name || model.value), model.alias ? " → " + model.alias : ""))));
@@ -213,7 +181,7 @@ export function mountModels(root, deps) {
     if (provider.routeModels?.length) children.push(facts([[t("models.routeRules"), provider.routeModels.join(", ")]]));
     if (provider.compaction) {
       const policy = provider.compaction;
-      children.push(h("h3", null, t("models.compaction")),
+      children.push(h("h4", null, t("models.compaction")),
         h("p", null, t(policy.mode === "local" && policy.models?.length ? "models.compactionMatched" : "models.compaction." + policy.mode)),
         facts([[t("models.routeRules"), policy.models?.join(", ")],
           [t("models.stripImages"), policy.stripImages === true ? t("models.yes") : policy.stripImages === false ? t("models.no") : null]]));
@@ -226,111 +194,147 @@ export function mountModels(root, deps) {
     if (provider.credentialPresent) return t("models.credentialStored");
     return native ? t("models.nativeCredentialUnknown") : t("models.credentialMissing");
   }
-  function providerCard(record) {
-    const provider = record.provider;
-    const models = provider.models || [];
-    return h("article.models-supply-record", { dataset: { provider: provider.id, providerIdentity: record.identity, layer: record.layer } },
-      h("div.models-supply-record-head", null,
-        h("div.models-supply-record-title", null,
-          h("span.models-supply-mark", { "aria-hidden": "true" }, record.native ? "N" : record.layer === "endpoint" ? "D" : "C"),
-          h("div", null, h("strong", null, provider.name || provider.id),
-            h("code.id", { title: provider.id }, record.native ? provider.id : provider.id.slice(0, 12)),
-            h("small", null, record.origin))),
-        h("div.models-supply-status", null,
-          provider.enabled === true ? tone("ok", t("models.enabled"))
-            : provider.enabled === false ? tone("idle", t("models.disabled"))
-              : tone("idle", t("models.enablementUnknown")),
-          record.native && typeof provider.selected === "boolean" ? tone(provider.selected ? "info" : "idle",
-            t(provider.selected ? "models.nativeSelected" : "models.nativeNotSelected")) : null)),
-      h("dl.models-supply-facts", null,
-        h("div", null, h("dt", null, t("models.protocol")), h("dd", null, h("code", null, provider.protocol || t("models.notReported")))),
-        h("div", null, h("dt", null, t("models.column.baseUrl")), h("dd", null, h("span.mono-line.models-url", { title: provider.baseUrl || "" }, provider.baseUrl || t("models.notReported")))),
-        h("div", null, h("dt", null, t("models.credential")), h("dd", null, credentialLabel(provider, record.native))),
-        h("div", null, h("dt", null, t("models.provider.prefix")), h("dd", null, provider.prefix === "" ? t("models.noPrefix") : provider.prefix || t("models.notReported"))),
-        h("div", null, h("dt", null, t("models.configuredModels")), h("dd", null, models.length ? String(models.length) : t("models.notReported")))),
-      providerDetails(provider, record.identity));
+  function enabledBadge(provider) {
+    return provider.enabled === true ? tone("ok", t("models.enabled"))
+      : provider.enabled === false ? tone("idle", t("models.disabled")) : tone("idle", t("models.enablementUnknown"));
   }
-  const providerResults = h("div.models-results");
-  function supplyLayer(key, label, help, records) {
-    return h("section.models-supply-layer", { dataset: { supplyLayer: key } },
-      h("header.models-supply-layer-head", null,
-        h("div", null, h("h3", null, label), h("p", null, help)),
-        h("span.models-supply-count", null, String(records.length))),
-      records.length ? h("div.models-supply-records", null, records.map(providerCard))
-        : h("p.models-supply-empty", null, t("models.supplyNone")));
+  function guide(labelKey, scenario, className = "btn btn-sm") {
+    return h("button." + className.split(" ").join("."), { type: "button", dataset: { guide: scenario.kind },
+      onclick: () => openOperatorHandoff({ scenario, t, locale, copyText: deps.copyText, onReadback: reconcile }) }, t(labelKey));
   }
-  const LAYERS = [
-    ["component", "models.supplyComponents", "models.supplyComponentsHelp"],
-    ["endpoint", "models.supplyEndpoints", "models.supplyEndpointsHelp"],
-    ["native", "models.supplyNative", "models.supplyNativeHelp"]
-  ];
-  function renderProviderResults() {
-    const records = providerRecords();
-    const rows = records.filter(providerMatches);
-    const count = h("p.faint.models-count", { role: "status" }, t("models.providerCount")
-      .replace("{shown}", String(rows.length)).replace("{total}", String(records.length)));
-    if (!records.length) { providerResults.replaceChildren(h("p.models-empty", null,
-      t(state.loading ? "models.loading" : "models.noProviders"))); return; }
-    if (!rows.length) { providerResults.replaceChildren(count, h("p.models-empty", null, t("models.noProviderMatches"))); return; }
-    providerResults.replaceChildren(count, ...LAYERS.map(([key, label, help]) =>
-      supplyLayer(key, t(label), t(help), rows.filter(record => record.layer === key))));
+  function table(columns, rows, key) {
+    return h("div.services-table", { dataset: { servicesTable: key }, role: "table" },
+      h("div.services-row.services-row-head", { role: "row" }, columns.map(label => h("span", { role: "columnheader" }, label))),
+      ...rows.map(row => {
+        // A row is its cells, optionally with the exact record identity.
+        const cells = Array.isArray(row) ? row : row.cells;
+        return h("div.services-row", { role: "row", dataset: Array.isArray(row) ? {} : row.data }, cells.map((value, index) =>
+          h("span", { role: "cell", dataset: { label: columns[index] } }, value)));
+      }));
   }
-  const providerTools = h("div.models-toolbar");
-  function componentDetails(component) {
+  function moduleOf(endpoint) {
+    return endpoint?.moduleId ? state.view.registry.modules.find(module => module.id === endpoint.moduleId) || null : null;
+  }
+  function viaLabel(endpoint) {
+    const module = moduleOf(endpoint);
+    return module ? componentName(module) + " · " + module.id : t("services.direct");
+  }
+  function agentRoute(agent) {
+    const registry = state.view.registry;
+    const binding = registry.bindings.find(item => item.agentId === agent.id && item.endpointId);
+    const endpoint = binding ? registry.endpoints.find(item => item.id === binding.endpointId) : null;
+    const natives = (state.view.nativeProviders || []).filter(provider => provider.agentId === agent.id);
+    const selected = natives.find(provider => provider.selected);
+    const nativeText = selected ? t("services.nativeSelected").replace("{name}", selected.name || selected.id)
+      : t("services.nativeDefault");
+    const target = binding
+      ? [h("strong", null, t("services.viaEndpoint").replace("{id}", binding.endpointId)),
+        h("small", null, viaLabel(endpoint) + " · " + t("services.model") + " " + (binding.model || "—") + " · " + t("services.newSessionsOnly")),
+        h("small.faint", null, t("services.outsideYui").replace("{native}", nativeText))]
+      : [h("strong", null, nativeText), h("small", null, selected ? t("services.ownedNative") : t("services.noCustomProvider"))];
+    return h("li.services-route", { dataset: { routeAgent: agent.id } },
+      h("span.services-route-agent", null, h("code", null, agent.id)),
+      h("span.services-route-arrow", { "aria-hidden": "true" }, "→"),
+      h("span.services-route-target", null, ...target),
+      tone(binding ? "info" : "idle", t(binding ? "services.routeYui" : "services.routeNative")));
+  }
+  function dimension(spec) {
+    const view = state.view;
+    const agents = (view.configuredAgents || []).filter(agent => agent.adapterId === spec.adapter);
+    const endpoints = view.registry.endpoints.filter(endpoint => endpoint.protocol === spec.protocol);
+    const natives = (view.nativeProviders || []).filter(provider => agents.some(agent => agent.id === provider.agentId));
+    const bound = endpoint => view.registry.bindings.filter(binding => binding.endpointId === endpoint.id).map(binding => binding.agentId);
+    const children = [
+      h("header.services-dim-head", null,
+        h("div", null, h("h2", null, t("services.dim." + spec.adapter)),
+          h("p", null, t("services.dimHelp." + spec.adapter))),
+        guide("services.guide." + spec.adapter, { kind: "service", adapter: spec.adapter,
+          agents: agents.map(agent => agent.id), endpoints: endpoints.map(endpoint => endpoint.id) }))
+    ];
+    children.push(h("h3.services-sub", null, t("services.routes")),
+      agents.length ? h("ul.services-routes", null, agents.map(agentRoute))
+        : h("p.models-empty", null, t("services.noAgents." + spec.adapter)));
+    children.push(h("h3.services-sub", null, t("services.endpoints"), h("span.count", null, String(endpoints.length))),
+      endpoints.length ? table([t("services.col.endpoint"), t("services.col.via"), t("models.column.baseUrl"), t("services.col.key"), t("services.col.bound")],
+        endpoints.map(endpoint => ({ data: { providerIdentity: "endpoint:" + endpoint.id }, cells: [h("code", null, endpoint.id), viaLabel(endpoint),
+          h("span.mono-line", { title: endpoint.url }, endpoint.url),
+          h("span.services-key", null, t(endpoint.clientKeyFile ? "services.keyReferenced" : "services.keyNone"),
+            endpoint.clientKeyFile ? h("small.mono-line", null, endpoint.clientKeyFile) : null),
+          bound(endpoint).join(", ") || h("span.faint", null, t("services.unbound"))] })), "endpoints-" + spec.adapter)
+        : h("p.models-empty", null, t("services.noEndpoints")));
+    children.push(h("h3.services-sub", null, t("services.native"), h("span.count", null, String(natives.length))),
+      natives.length ? table([t("services.col.provider"), t("services.col.agent"), t("models.column.baseUrl"), t("models.credential"), ""],
+        natives.map(provider => ({ data: { providerIdentity: "native:" + provider.agentId + ":" + provider.sourceFile + ":" + provider.id }, cells: [h("strong", null, provider.name || provider.id), h("code", null, provider.agentId),
+          h("span.mono-line", { title: provider.baseUrl || "" }, provider.baseUrl || t("models.notReported")),
+          credentialLabel(provider, true),
+          provider.selected ? tone("info", t("models.nativeSelected")) : h("span.faint", null, t("models.nativeNotSelected"))] })), "native-" + spec.adapter)
+        : h("p.models-empty", null, t("services.noNative")));
+    return h("section.services-dim", { dataset: { dimension: spec.adapter } }, ...children);
+  }
+  function componentCard(component) {
     const module = component.module;
-    const links = (component.view?.providers || []).filter(provider => module.kind === "metabridge" && provider.via === "cpa");
-    const children = [facts([[t("models.recordId"), module.id], [t("models.version"), module.version],
-      [t("models.managementAddress"), module.managementUrl], [t("models.configurationSource"), module.configFile],
-      [t("models.credentialReference"), module.managementKeyFile]]), h("p.faint", null, t("models.componentScope"))];
+    const view = state.view;
+    const providers = component.view?.providers || [];
+    const exposed = view.registry.endpoints.filter(endpoint => endpoint.moduleId === module.id);
     const error = component.error || component.view?.configurationError;
+    const children = [
+      h("header.services-component-head", null,
+        h("div", null, h("h3", null, componentName(module), h("code.id", null, module.id)),
+          h("p", null, t("services.componentRole." + module.kind))),
+        h("div.services-component-tags", null, tone("idle", t("services.version").replace("{version}", module.version)),
+          tone(module.maintenance === "configuration" ? "info" : "idle", t("services.maintenance." + module.maintenance)),
+          guide("services.guide.component", { kind: "component", componentKind: module.kind, id: module.id }))),
+      facts([[t("services.ownerFile"), module.configFile || t("models.notReported")],
+        [t("models.managementAddress"), module.managementUrl],
+        [t("services.exposes"), exposed.map(endpoint => endpoint.id + " (" + endpoint.protocol + ")").join(", ") || t("services.exposesNone")]])
+    ];
     if (error) children.push(h("p.settings-error", { role: "alert" }, error));
-    else if (component.view) children.push(h("p", null, t("models.componentProviderCount")
-      .replace("{count}", String(component.view.providers.length - links.length))));
-    if (links.length) children.push(h("h3", null, t("models.componentConnections")), h("p.faint", null, t("models.componentConnectionsHelp")),
-      ...links.map(provider => h("div.models-component-connection", null,
-        h("strong", null, provider.name || provider.id), facts([[t("models.column.baseUrl"), provider.baseUrl],
-          [t("models.protocol"), provider.protocol], [t("models.credential"), provider.credentialPresent ? t("models.credentialStored") : t("models.credentialMissing")]]),
-        providerDetails(provider, module.id + ":" + provider.id))));
-    return disclosure("component:" + module.id, componentName(module) + " · " + module.id, ...children);
-  }
-  function supplySummary(view) {
-    const records = providerRecords();
-    const counts = { component: 0, endpoint: 0, native: 0 };
-    records.forEach(record => { counts[record.layer]++; });
-    return h("div.models-supply-map", null,
-      h("div.models-supply-map-head", null,
-        h("p.kicker", null, t("models.supplyTitle")), h("p", null, t("models.supplyHelp"))),
-      h("div.models-supply-map-grid", null, LAYERS.map(([key, label, help]) =>
-        h("div.models-supply-map-item." + key, null,
-          h("span.models-supply-map-index", null, key === "component" ? "01" : key === "endpoint" ? "02" : "03"),
-          h("strong", null, t(label)), h("span.models-supply-map-count", null, String(counts[key])), h("small", null, t(help))))),
-      h("p.models-supply-flow", null, t("models.supplyIdentityHelp")));
+    else if (component.view) children.push(providers.length
+      ? table([t("services.col.provider"), t("services.col.route"), t("models.column.baseUrl"), t("services.col.state"), ""],
+        providers.map(provider => ({ data: { providerIdentity: module.id + ":" + provider.id, provider: provider.id }, cells: [
+          h("span.services-provider-name", null, h("strong", null, provider.name || provider.id),
+            provider.prefix ? h("small", null, provider.prefix) : null),
+          t("services.upstream." + (provider.via || "unknown"), provider.via || ""),
+          h("span.mono-line", { title: provider.baseUrl || "" }, provider.baseUrl || t("models.notReported")),
+          h("span.services-provider-state", null, enabledBadge(provider), h("small", null, credentialLabel(provider, false))),
+          providerDetails(provider, module.id + ":" + provider.id)] })), "component-" + module.id)
+      : h("p.models-empty", null, t("services.noUpstreams")));
+    else children.push(h("p", { role: "status" }, t("models.loading")));
+    return h("article.services-component", { dataset: { component: module.kind, componentId: module.id } }, ...children);
   }
   function renderProviders() {
     const view = state.view;
-    providerTools.replaceChildren(searchBox("models.searchProviders", state.providerFilter.query, value => {
-      state.providerFilter.query = value; renderProviderResults();
-    }));
-    renderProviderResults();
-    const failures = state.components.filter(component => component.error || component.view?.configurationError);
-    const agentLink = h("a.btn", { href: "/models/agents" }, t("models.configureAgentAccess"));
-    const children = [head("providers", t("models.providerOverviewHelp"), [agentLink, configureButton()]),
-      view ? supplySummary(view) : null,
-      h("div.card.models-card.models-supply-card", null,
-        failures.length ? h("div.models-alert", { role: "alert" },
-          h("p", null, t("models.incompleteSources")),
-          ...failures.map(component => h("p.settings-error", null, componentName(component.module) + " · " + component.module.id
-            + ": " + (component.error || component.view.configurationError)))) : null,
-        providerTools, providerResults)];
-    if (state.components.length) children.push(disclosure("maintenance", t("models.optionalComponents") + " · " + state.components.length,
-      ...state.components.map(componentDetails)));
-    const endpoints = view?.registry.endpoints || [];
-    if (endpoints.length) children.push(disclosure("catalog", t("models.endpointCatalog"),
-      h("p.faint", null, t("models.endpointCatalogHelp")),
-      facts(endpoints.flatMap(endpoint => [[endpoint.id + " · " + endpoint.protocol, endpoint.url],
-        [endpoint.id + " · " + t("models.credentialReference"), endpoint.clientKeyFile]])), sections.catalog));
-    const quotaModules = view?.registry.modules.filter(module => module.kind === "cliproxyapi" && module.quotaAdapter !== "none") || [];
-    if (quotaModules.length || view?.quotaSources?.length) children.push(disclosure("quota", t("models.section.quota"), sections.quota));
+    const snapshot = view?.provenance ? h("span.access-snapshot", { title: view.provenance.label },
+      h("strong", null, t("access.snapshot")), h("time", null, view.provenance.capturedAt)) : null;
+    const reread = h("button.btn.btn-sm", { type: "button", disabled: state.loading || state.pending, onclick: function () { void reconcile(); } },
+      icon("refresh"), t("services.reread"));
+    const children = [h("header.manage-head.access-head", null,
+      h("div.manage-heading", null, h("h1", { id: "models-providers-title" }, t("models.section.providers")),
+        h("p", null, t("services.hint"))), snapshot ? h("div.access-snapshot-slot", null, snapshot) : null,
+      h("div.access-head-actions", null, reread))];
+    if (!view) {
+      sections.providers.replaceChildren(...children, status);
+      return;
+    }
+    children.push(status, h("div.services-dims", null, DIMENSIONS.map(dimension)));
+    const modules = state.components;
+    children.push(h("section.services-components", null,
+      h("header.services-dim-head", null, h("div", null, h("h2", null, t("services.components")),
+        h("p", null, t("services.componentsHelp")))),
+      modules.length ? h("div.services-component-list", null, modules.map(componentCard))
+        : h("div.services-none", null, h("p", null, t("services.noComponents")),
+          h("div.settings-actions", null,
+            guide("services.guide.metabridge", { kind: "component", componentKind: "metabridge" }),
+            guide("services.guide.cpa", { kind: "component", componentKind: "cliproxyapi" })))));
+    const endpoints = view.registry.endpoints || [];
+    const quotaModules = view.registry.modules.filter(module => module.kind === "cliproxyapi" && module.quotaAdapter !== "none");
+    const observed = [];
+    if (endpoints.length) observed.push(disclosure("catalog", t("models.endpointCatalog"),
+      h("p.faint", null, t("models.endpointCatalogHelp")), sections.catalog));
+    if (quotaModules.length || view.quotaSources?.length) observed.push(disclosure("quota", t("models.section.quota"), sections.quota));
+    if (observed.length) children.push(h("section.services-observed", null, h("h2", null, t("services.observed")),
+      h("p.faint", null, t("services.observedHelp")), ...observed));
+    children.push(h("p.services-footnote", null, t("services.footnote")));
     sections.providers.replaceChildren(...children.filter(Boolean));
   }
 

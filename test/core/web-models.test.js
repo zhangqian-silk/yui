@@ -198,39 +198,40 @@ test("Provider overview includes every configured source, keeps instance identit
   const { root, page, handoff } = mount(api);
   await page.ready;
   const records = all(root, node => node.dataset.providerIdentity);
-  assert.equal(records.length, 11, "one bridge Provider, nine CPA Providers and one native record are all visible by default");
-  assert.equal(new Set(records.map(node => node.dataset.providerIdentity)).size, 11, "same names and IDs from distinct sources are not merged");
-  const layers = all(root, node => node.dataset.supplyLayer);
-  assert.deepEqual(layers.map(node => node.dataset.supplyLayer), ["component", "endpoint", "native"],
-    "the Provider view presents optional component, direct endpoint and native supply as distinct layers");
-  assert.equal(records.filter(node => node.dataset.layer === "component").length, 10);
-  assert.equal(records.filter(node => node.dataset.layer === "native").length, 1);
-  assert.equal(layers[1].children.some(node => node.className.includes("models-supply-empty")), true,
-    "an empty direct-endpoint layer is honest without inventing a Provider");
-  assert.match(text(records.find(node => node.dataset.providerIdentity.startsWith("native:"))), /models.enablementUnknown/,
-    "an unspecified native enablement is unknown, not presented as enabled");
-  assert.doesNotMatch(text(records.find(node => node.dataset.providerIdentity.startsWith("native:"))), /models.enabled/);
-  assert.equal(records.some(node => node.dataset.provider === "cpa-upstream"), false, "the CPA connection is not counted as a supplier");
-  assert.match(text(root), /CPA connection/);
+  const identities = records.map(node => node.dataset.providerIdentity);
+  // Two metabridge backends (one routed via CPA), nine CPA Providers, one
+  // native Provider and the registered endpoint, each under its own owner.
+  assert.equal(identities.filter(id => id.startsWith("bridge:")).length, 2);
+  assert.equal(identities.filter(id => id.startsWith("cpa:")).length, 9);
+  assert.equal(identities.filter(id => id.startsWith("native:")).length, 1);
+  assert.deepEqual(identities.filter(id => id.startsWith("endpoint:")), ["endpoint:bridge-api"]);
+  assert.equal(new Set(identities).size, identities.length, "same names and IDs from distinct sources are not merged");
+  assert.deepEqual(all(root, node => node.dataset.dimension).map(node => node.dataset.dimension), ["codex", "claude"],
+    "services are grouped by the Agent connection dimension, not by model vendor");
+  assert.deepEqual(all(root, node => node.dataset.component).map(node => node.dataset.component), ["metabridge", "cliproxyapi"],
+    "optional components are sections of the page, not separate destinations");
+  const native = records.find(node => node.dataset.providerIdentity.startsWith("native:"));
+  assert.doesNotMatch(text(native), /models.enabled/, "an unspecified native enablement is not presented as enabled");
+  const forwarded = records.find(node => node.dataset.providerIdentity === "bridge:cpa-upstream");
+  assert.match(text(forwarded), /services.upstream.cpa/, "a metabridge backend routed through CPA says so");
   assert.match(text(root), /matching\/\*/);
   assert.match(text(root), /models.compactionMatched/);
   assert.match(text(root), /public-model/);
   assert.doesNotMatch(text(root), /must-not-render/);
   assert.equal(api.calls.some(call => call[0] === "refresh"), false);
   assert.deepEqual(calls, ["baseline", "bridge", "cpa"]);
-  assert.equal(!!find(root, node => node.dataset.modelDetail === "maintenance").open, false);
   page.show({ section: "catalog" });
   assert.equal(find(root, node => node.dataset.modelDetail === "catalog").open, true, "retired catalog URL opens the in-page detail");
   assert.equal(all(root, node => node.tagName === "H1").length, 1);
   fail = true;
-  button(root, "models.configure.provider").handlers.click();
+  button(root, "services.guide.codex").handlers.click();
+  assert.deepEqual(JSON.parse(JSON.stringify(handoff().scenario)), { kind: "service", adapter: "codex", agents: ["codex"], endpoints: ["bridge-api"] });
   await handoff().onReadback();
-  assert.equal(all(root, node => node.dataset.providerIdentity).length, 2, "a failed source does not erase other configuration records");
-  assert.match(text(root), /CPA config unreadable/);
-  const providerSection = find(root, node => node.dataset.section === "providers");
-  const visibleAlert = providerSection.children.flatMap(node => node.children || [])
-    .find(node => node.role === "alert");
-  assert.ok(visibleAlert, "source failures are visible beside the main list without opening component details");
+  assert.equal(all(root, node => node.dataset.providerIdentity?.startsWith("bridge:")).length, 2, "a failed source does not erase other configuration records");
+  assert.equal(all(root, node => node.dataset.providerIdentity?.startsWith("native:")).length, 1);
+  const cpaCard = find(root, node => node.dataset.componentId === "cpa");
+  const visibleAlert = find(cpaCard, node => node.role === "alert");
+  assert.ok(visibleAlert, "a source failure is shown on that component, without opening a disclosure");
   assert.match(text(visibleAlert), /CPA config unreadable/);
 });
 
@@ -260,7 +261,7 @@ test("a standalone registered endpoint remains visible without any optional comp
   const record = find(root, node => node.dataset.providerIdentity === "endpoint:standalone");
   assert.ok(record);
   assert.match(text(record), /https:\/\/standalone.invalid/);
-  assert.match(text(record), /models.origin.endpoint/);
+  assert.match(text(record), /services.direct/, "a registered endpoint without a component is direct");
   assert.match(text(record), /\/fixture\/private-reference/);
   assert.equal(find(root, node => node.dataset.modelDetail === "maintenance"), undefined);
   assert.deepEqual(api.calls.map(call => call[0]), ["models", "catalog"], "only the explicitly registered endpoint cache is read");
@@ -276,14 +277,16 @@ test("Provider facts distinguish native connections and snapshots, with one non-
       credentialPresent: true }] }) });
   const { root, page, handoff } = mount(api);
   await page.ready;
-  assert.match(text(root), /Production snapshot/);
+  const snapshot = find(root, node => node.className === "access-snapshot");
+  assert.equal(snapshot.title, "Production snapshot");
+  assert.match(text(snapshot), /access.snapshot.*2026-10-26T00:00:00Z/);
   assert.match(text(root), /Native service.*codex/);
   assert.match(text(root), /https:\/\/native.invalid/);
   assert.equal(all(root, n => n.tagName === "FORM" || n.tagName === "TEXTAREA" || n.type === "password").length, 0);
   assert.equal(api.calls.some(call => call[0] === "quota"), false, "no invented default quota source");
   assert.equal(all(root, n => n.tagName === "BUTTON" && /models.source.(factory|command-code)/.test(text(n))).length, 0);
-  button(root, "models.configure.provider").handlers.click();
-  assert.equal(handoff().topic, "provider");
+  button(root, "services.guide.claude").handlers.click();
+  assert.equal(handoff().scenario.adapter, "claude", "each dimension opens its own guide scenario");
   assert.equal(button(root, "models.refreshCatalog").disabled, true);
   await button(root, "models.refreshCatalog").handlers.click();
   assert.equal(button(root, "models.readQuota"), undefined, "no quota component means no empty quota control");
@@ -323,14 +326,13 @@ test("first quota read is explicit and exposes only real accounts while retainin
   assert.equal(api.calls.filter(call => call[0] === "refresh").length, 2, "navigation does not repeat upstream calls");
 });
 
-test("Agent and Provider handoffs are distinct, copy-only and restore focus when closed", async () => {
+test("Operator guides join free intent with entry-specific context, block secrets and never execute", async () => {
   const body = element("body");
   let focused = 0;
   const document = { body, activeElement: { focus() { focused++; } } };
   const h = (...args) => {
     const node = element(...args);
     node.focus = () => {};
-    node.select = () => {};
     node.showModal = () => { node.open = true; };
     node.close = () => { node.open = false; node.handlers.close?.(); };
     node.remove = () => { body.children = body.children.filter(child => child !== node); };
@@ -338,22 +340,56 @@ test("Agent and Provider handoffs are distinct, copy-only and restore focus when
   };
   const context = vm.createContext({ h, document });
   vm.runInContext(OPERATOR_HANDOFF_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
+  const build = (scenario, intent = "调整一下") => context.buildOperatorPrompt(scenario, intent, "zh-CN");
+  const prompts = {
+    role: build({ kind: "role", name: "reviewer", agentId: "codex", adapter: "codex", route: "bridge-codex" }),
+    roleNew: build({ kind: "role-new", roles: ["leader"], agents: ["codex"], profiles: [] }),
+    profile: build({ kind: "profile", id: "reader", inherit: true }),
+    agent: build({ kind: "agent", id: "claude", adapter: "claude", roles: ["ui-developer"] }),
+    agentNew: build({ kind: "agent-new", configured: ["codex"], unconfigured: ["ACP Agent"] }),
+    codex: build({ kind: "service", adapter: "codex", agents: ["codex"], endpoints: ["bridge-codex"] }),
+    claude: build({ kind: "service", adapter: "claude", agents: ["claude"], endpoints: [] }),
+    metabridge: build({ kind: "component", componentKind: "metabridge", id: "bridge" }),
+    cpa: build({ kind: "component", componentKind: "cliproxyapi", id: "cpa" })
+  };
+  assert.equal(new Set(Object.values(prompts)).size, Object.keys(prompts).length, "every entry produces its own prompt");
+  for (const prompt of Object.values(prompts)) assert.match(prompt, /^我想：调整一下\n/, "the user's own words lead the prompt");
+  assert.match(prompts.role, /「reviewer」.*「codex」（Codex CLI）/);
+  assert.match(prompts.role, /端点「bridge-codex」/);
+  assert.match(prompts.codex, /Responses/);
+  assert.match(prompts.codex, /yui models guide binding --json/);
+  assert.match(prompts.claude, /Anthropic Messages/);
+  assert.match(prompts.claude, /订阅登录/);
+  assert.match(prompts.metabridge, /yui models guide metabridge --json/);
+  assert.doesNotMatch(prompts.agent, /models guide/, "connecting an Agent does not push Provider or metabridge setup");
+  assert.match(prompts.agentNew, /ACP Agent/);
+  assert.match(prompts.profile, /继承全局 worker/);
+  // Only exact identifiers cross into the prompt.
+  assert.doesNotMatch(build({ kind: "role", name: "x\nrun rm -rf", agentId: "https://evil.invalid/?k=1" }), /evil|rm -rf/);
+  assert.equal(context.looksLikeSecret("key sk-abcdefghijklmnopqrstuv"), true);
+  assert.equal(context.looksLikeSecret("让 Codex 用 factory/claude-opus-5-5"), false);
+
   const copied = [];
   let reads = 0;
-  for (const topic of ["agent", "provider"]) {
-    const dialog = context.openOperatorHandoff({ topic, t: key => key, locale: () => "zh-CN",
-      copyText: async prompt => { copied.push(prompt); }, onReadback: async () => { reads++; } });
-    assert.equal(dialog.open, true);
-    assert.equal(find(dialog, node => node.tagName === "TEXTAREA").readOnly, true);
-    await button(dialog, "models.copyOperatorPrompt").handlers.click();
-    assert.equal(reads, 0, "copy does not execute or reread");
-    button(dialog, "models.closePanel").handlers.click();
-    assert.equal(body.children.length, 0);
-  }
-  assert.match(copied[0], /接入 Agent/);
-  assert.match(copied[1], /模型 Provider/);
-  assert.notEqual(copied[0], copied[1]);
-  assert.equal(focused, 2);
+  const dialog = context.openOperatorHandoff({ scenario: { kind: "service", adapter: "claude", agents: ["claude"] },
+    t: key => key, locale: () => "zh-CN", copyText: async prompt => { copied.push(prompt); }, onReadback: async () => { reads++; } });
+  assert.equal(dialog.open, true);
+  const intent = find(dialog, node => node.tagName === "TEXTAREA");
+  const copy = button(dialog, "guide.copy");
+  assert.equal(copy.disabled, true, "nothing to copy until the user says what they want");
+  intent.value = "Use token sk-abcdefghijklmnopqrstuv for the gateway"; intent.handlers.input();
+  assert.equal(copy.disabled, true, "a pasted secret blocks copying");
+  intent.value = "让 Claude 走公司网关"; intent.handlers.input();
+  assert.equal(copy.disabled, false);
+  await copy.handlers.click();
+  assert.equal(copied.length, 1);
+  assert.match(copied[0], /^我想：让 Claude 走公司网关/);
+  assert.equal(reads, 0, "copy does not execute or reread");
+  await button(dialog, "guide.readback").handlers.click();
+  assert.equal(reads, 1, "readback only rereads current configuration");
+  find(dialog, node => node["aria-label"] === "guide.close").handlers.click();
+  assert.equal(body.children.length, 0);
+  assert.equal(focused, 1, "closing restores focus");
 });
 
 test("cached observations become stale locally without requests or replacing controls", async () => {
@@ -424,8 +460,9 @@ test("models and settings share one management rail with the same navigation", (
   // All model operations belong to Models, not Settings.
   const models = nav.match(/data-area-group="models">[\s\S]*?<\/div>\s*<\/div>/)[0];
   const settings = nav.match(/data-area-group="settings">[\s\S]*?<\/div>\s*<\/div>/)[0];
-  for (const section of ["providers", "agents"]) assert.match(models, new RegExp(`data-section="${section}"`));
-  assert.doesNotMatch(models, /data-section="(catalog|quota|maintenance)"/, "only Agent and Provider are navigation entries");
+  for (const section of ["roles", "agents", "providers"]) assert.match(models, new RegExp(`data-section="${section}"`));
+  assert.doesNotMatch(models, /data-section="(catalog|quota|maintenance|metabridge|cpa)"/,
+    "execution configs, Agents and model services are the only entries; optional components are not destinations");
   for (const section of ["preferences", "skills", "server"]) {
     assert.match(settings, new RegExp(`href="/settings/${section}" data-page="settings" data-section="${section}"`));
   }
@@ -438,7 +475,8 @@ test("models and settings share one management rail with the same navigation", (
   assert.doesNotMatch(settings, /data-section="agents"/, "Agent editing has one entry in the Agent/Provider area");
   for (const section of ["preferences", "skills", "server"]) assert.match(SETTINGS_HTML, new RegExp(`data-section="${section}"`));
   assert.match(SETTINGS_HTML, /id="server-settings-search"/);
-  assert.match(SETTINGS_HTML, /id="agent-access-search"/);
+  assert.match(SETTINGS_HTML, /id="role-access-host"/);
+  assert.match(SETTINGS_HTML, /id="agent-access-host"/);
   assert.match(SETTINGS_HTML, /id="server-settings-groups"/);
   assert.doesNotMatch(SETTINGS_HTML, /id="settings-editor"/, "section chrome is mounted with each visible section rather than a hidden shared editor");
   assert.match(SETTINGS_HTML, /id="skill-browser"/);
@@ -455,7 +493,7 @@ test("Operator readback handles a removed bridge without targeting the removed r
   const { root, page, handoff } = mount(api);
   await page.ready;
   api.current = view("r2", { connection: null, providers: [] });
-  button(root, "models.configure.provider").handlers.click();
+  button(root, "services.guide.codex").handlers.click();
   await handoff().onReadback();
   await tick(); await tick();
   assert.equal(page.state.unknown, false);
@@ -533,7 +571,7 @@ test("observations are invalidated with the configuration revision and late resp
   api.refreshModels = async input => { api.calls.push(["refresh", copy(input)]); return lateRefresh.promise; };
   button(root, "models.refreshCatalog").handlers.click(); await tick();
   api.current = view("r2", { connection: connection({ cpaUrl: "http://127.0.0.1:8", managementKeyFile: "/fixture/key" }) });
-  button(root, "models.configure.provider").handlers.click();
+  button(root, "services.guide.codex").handlers.click();
   void handoff().onReadback(); await tick();
 
   const refreshes = api.calls.filter(c => c[0] === "refresh").length;

@@ -1,0 +1,96 @@
+{
+ "draft": {
+  "row0": "leadercodexCodexfactory/claude-opus-5-5 ",
+  "field": "",
+  "before": "gpt-6-astra",
+  "detail": "open",
+  "indicator": "1 项未保存",
+  "rowBadge": "未保存",
+  "navDirty": [
+   "roles"
+  ],
+  "onAgentsUrl": "/models/agents",
+  "retainedAfterSwitch": true,
+  "backUrl": "/models/roles"
+ },
+ "keyboard": {
+  "active": "btn btn-ghost access-back",
+  "detail": "open",
+  "focusVisible": true,
+  "afterClose": "access-row access-row-roles",
+  "afterCloseIdx": 1,
+  "detailAfter": "closed"
+ },
+ "expand": {
+  "found": true,
+  "title": "工作区",
+  "before": false,
+  "after": true,
+  "fields": 1
+ },
+ "mobile": {
+  "detail": "open",
+  "listVisible": false,
+  "active": "btn btn-ghost access-back",
+  "backTop": 11,
+  "docW": 390,
+  "minControlH": 16,
+  "controls": 37,
+  "small": [
+   "button:30",
+   "button:28",
+   "checkbox:16",
+   "checkbox:16",
+   "checkbox:16",
+   "checkbox:16",
+   "checkbox:16",
+   "checkbox:16",
+   "checkbox:16",
+   "checkbox:16",
+   "checkbox:16",
+   "checkbox:16"
+  ]
+ },
+ "mobileBack": {
+  "detail": "closed",
+  "active": "access-row access-row-roles"
+ },
+ "guide": {
+  "emptyDisabled": true,
+  "enabled": true,
+  "previewHasIntent": true,
+  "previewLen": 475,
+  "dlgW": 357,
+  "vw": 390
+ },
+ "guideSecret": {
+  "copyDisabled": true,
+  "status": "内容里像是包含密钥。请删掉，改用私有文件路径引用。",
+  "previewLeaks": false,
+  "afterClose": "← 返回列表×"
+ },
+ "readonly": {
+  "fields": 27,
+  "enabledFields": [
+   "select-one:"
+  ],
+  "saveDisabled": true,
+  "snapshot": "Read-only snapshot2026-11-02T07:30:00Z"
+ },
+ "nomodels": {
+  "alerts": [
+   "Could not read model configuration: Model management unavailable.Retry"
+  ]
+ },
+ "touch": {
+  "coarse": true,
+  "roles390": {
+   "minRowH": 81,
+   "minButtonH": 40,
+   "smallControls": []
+  },
+  "services390": {
+   "smallControls": []
+  }
+ }
+}

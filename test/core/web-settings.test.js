@@ -262,7 +262,7 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   }
   const shell = new Map();
   const shown = [];
-  const panels = ["preferences", "skills", "server", "agents"].map(section => ({ hidden: false, dataset: { section } }));
+  const panels = ["preferences", "skills", "server", "agents", "roles"].map(section => ({ hidden: false, dataset: { section } }));
   let skillOptions;
   let failure = Object.assign(Error("Invalid value"), { disposition: "not-submitted" });
   let saved;
@@ -286,10 +286,10 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
     requestJson: async () => ({}),
     submitMutation: async () => { submissions++; if (failure) throw failure; return saved; }
   });
-  vm.runInContext(SETTINGS_SCRIPT.replace(/^import .*;\n/gm, "").replace("void start();", ""), context);
+  vm.runInContext(SETTINGS_SCRIPT.replace(/^import .*;\n/gm, "").replace("void start();", "").replace("void loadRoutes();", ""), context);
   // A direct open of ?section=server shows only that section in the shared rail.
   assert.deepEqual(shown, ["server"]);
-  assert.deepEqual(panels.map(panel => panel.hidden), [true, true, false, true]);
+  assert.deepEqual(panels.map(panel => panel.hidden), [true, true, false, true, true]);
   assert.equal(skillOptions.heading, false, "the section heading replaces the Skills card title");
   assert.equal(typeof skillOptions.onDirty, "function");
   shell.get("#reset-layout").handlers.click();
@@ -465,7 +465,7 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
     if (url.startsWith("/api/settings/group?")) return currentGroups[new URL(url, "http://fixture").searchParams.get("id")];
     return { groups: metadata, total: 4, supportedAgents: [] };
   };
-  context.showSection("agents");
+  context.showSection("roles");
   await context.start();
   await new Promise(resolve => setTimeout(resolve, 0));
   const uiGroups = vm.runInContext("groups", context);
@@ -508,9 +508,13 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   const roleDraft = role.editors[0].control;
   roleDraft.value = "unlisted-draft"; roleDraft.handlers.input();
   findAccess("role/worker").handlers.click();
+  context.showSection("agents");
+  assert.match(text(vm.runInContext("agentIndex", context)), /native-model/, "the Agents page lists the Agent's native default");
+  assert.match(text(vm.runInContext("agentIndex", context)), /Worker/, "an Agent row names the Roles that use it");
   findAccess("agent/fixture").handlers.click();
+  context.showSection("roles");
   findAccess("role/worker").handlers.click();
-  assert.equal(role.editors[0].control, roleDraft, "switching index members preserves a mounted draft");
+  assert.equal(role.editors[0].control, roleDraft, "switching pages and members preserves a mounted draft");
   assert.equal(roleDraft.value, "unlisted-draft");
   const indexText = text(vm.runInContext("agentIndex", context));
   assert.match(indexText, /settings.unsavedShort/, "an input event updates the index's unsaved badge immediately");
@@ -523,8 +527,8 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   const close = role.inspectorContent.querySelectorAll("button").find(button => button["aria-label"] === "settings.closeInspector");
   activeElement = close;
   close.handlers.click();
-  assert.equal(text(vm.runInContext("agentInspector", context)).includes("settings.inspectorEmpty"), true,
-    "closing the inspector shows an explicit empty state instead of reopening the first member");
+  assert.equal(vm.runInContext("accessLayout.dataset.detail", context), "closed",
+    "closing the detail returns the list to full width instead of reopening the first member");
   assert.equal(vm.runInContext("selectedAccess()", context), null);
   assert.equal(activeElement, findAccess("role/worker"), "closing moves focus to the row for the member that was closed");
   const externalButton = element("button");
@@ -537,6 +541,7 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   context.showSection("server");
   assert.equal(panels.find(panel => panel.dataset.section === "server").hidden, false);
   assert.equal(panels.find(panel => panel.dataset.section === "agents").hidden, true);
+  assert.equal(panels.find(panel => panel.dataset.section === "roles").hidden, true);
   const serverGroup = uiGroups.find(group => group.meta.id === "system");
   assert.equal(serverGroup?.root.parent, shell.get("#server-settings-groups"), "server group cards are attached to the visible server section");
   assert.equal(serverGroup?.loaded, true);
@@ -585,15 +590,15 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
     "settings.compare.agents", "native configuration");
   await assertLocalizedCompare({ content: element("div"), pending: false }, currentGroups["profile/reader"],
     "settings.compare.profiles", "Template only");
-  context.showSection("agents");
-  assert.equal(panels.find(panel => panel.dataset.section === "agents").hidden, false);
+  context.showSection("roles");
+  assert.equal(panels.find(panel => panel.dataset.section === "roles").hidden, false);
   assert.equal(role.editors[0].control, roleDraft, "navigation retains the existing editor");
   assert.equal(roleDraft.value, "unlisted-draft");
   assert.equal(role.dirty, true);
   language = "translated:";
   translations.forEach(update => update());
   assert.match(text(role.summary), /translated:settings.roleDefaults/);
-  assert.match(text(vm.runInContext("agentIndex", context)), /translated:settings.area.roles/);
+  assert.match(text(vm.runInContext("agentIndex", context)), /translated:access.block.roles/);
   assert.equal(role.editors[0].control, roleDraft, "translation updates summaries without rebuilding draft controls");
   assert.equal(roleDraft.value, "unlisted-draft");
   context.renderGroup(profile, { ...currentGroups["profile/reader"],

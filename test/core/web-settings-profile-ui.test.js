@@ -34,7 +34,7 @@ function mount() {
     requestJson: async url => { reads.push(url); return preview(new URL(url, "http://fixture").searchParams.get("profileId")); },
     submitMutation: async (...args) => { writes.push(args); return { group: role(), output: "Applied", adoption: "Later launch", refresh: "None" }; }
   });
-  vm.runInContext(SETTINGS_SCRIPT.replace(/^import .*;\n/gm, "").replace("void start();", ""), context);
+  vm.runInContext(SETTINGS_SCRIPT.replace(/^import .*;\n/gm, "").replace("void start();", "").replace("void loadRoutes();", ""), context);
   const state = { content: h("div"), pending: false };
   context.renderGroup(state, role());
   return { context, state, reads, writes };
@@ -126,4 +126,72 @@ test("Profile previews fence stale selection, draft edits and unknown outcomes w
   assert.match(text(state.content), /Lost response/);
   await control(state, "confirm").handlers.click();
   assert.equal(count, 1, "unknown writes must not replay");
+});
+
+test("execution configs show the model a new Session launches with, using the launch precedence", async () => {
+  const groups = {
+    "role/routed": { id: "role/routed", revision: "a", agentId: "codex",
+      fields: [{ key: "model", label: "Model", kind: "text", value: "saved-model" }, { key: "effort", label: "Effort", kind: "text", value: "high" }] },
+    "role/plain": { id: "role/plain", revision: "b", agentId: "claude",
+      fields: [{ key: "model", label: "Model", kind: "text", value: "" }, { key: "effort", label: "Effort", kind: "text", value: "" }] },
+    "agent/codex": { id: "agent/codex", revision: "c", agentId: "codex", fields: [],
+      observation: { adapterId: "codex", native: { status: "read", model: "codex-native", effort: "medium" } } },
+    "agent/claude": { id: "agent/claude", revision: "d", agentId: "claude", fields: [],
+      observation: { adapterId: "claude", native: { status: "read", model: "claude-native", effort: "xhigh" } } }
+  };
+  const meta = Object.keys(groups).map(id => ({ id, title: id.split("/")[1], section: id.split("/")[0] + "s" }));
+  function h(spec, attrs, ...children) {
+    const node = { tagName: spec.split(".")[0].toUpperCase(), children: [], handlers: {}, dataset: {},
+      value: "", disabled: false, classList: { add() {} },
+      append(...items) { for (const child of items.flat(Infinity).filter(item => item != null)) {
+        if (typeof child === "object") child.parent = this;
+        this.children.push(child);
+      } },
+      replaceChildren(...items) { this.children = []; this.append(...items); },
+      addEventListener(name, fn) { this.handlers[name] = fn; }, focus() {}, remove() {},
+      querySelectorAll(selector) { const tags = selector.toUpperCase().split(","); return walk(this).slice(1).filter(item => tags.includes(item.tagName)); }
+    };
+    for (const [key, value] of Object.entries(attrs || {})) {
+      if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+      else if (key === "dataset") Object.assign(node.dataset, value);
+      else node[key] = value;
+    }
+    node.append(...children);
+    return node;
+  }
+  const elements = new Map();
+  const panels = ["roles", "agents"].map(section => ({ hidden: false, dataset: { section } }));
+  const context = vm.createContext({ h, URLSearchParams,
+    document: { querySelector: key => { if (!elements.has(key)) elements.set(key, h("div")); return elements.get(key); }, querySelectorAll: () => panels },
+    window: { location: { search: "?section=roles" }, addEventListener() {} },
+    i18n: { t: key => key, subscribe() {} }, pageSections: () => ["roles", "agents", "server"],
+    createManageShell: () => ({ set() {}, setDirty() {} }), registerManagePage() {}, navigateManage() {},
+    createThemeController: () => ({}), mountSkills() {}, readSessionAccessMode: () => "native",
+    requestJson: async url => {
+      if (url === "/api/models") return { registry: { modules: [], endpoints: [{ id: "gateway", moduleId: null, protocol: "responses" }],
+        bindings: [{ agentId: "codex", adapterId: "codex", endpointId: "gateway", model: "routed-model", scope: "yui-new-session" }] } };
+      if (url.startsWith("/api/settings/group?")) return groups[new URL(url, "http://fixture").searchParams.get("id")];
+      return { groups: meta, total: meta.length, supportedAgents: [] };
+    },
+    submitMutation: async () => { throw new Error("no writes"); }
+  });
+  vm.runInContext(SETTINGS_SCRIPT.replace(/^import .*;\n/gm, "").replace("void start();", "").replace("void loadRoutes();", ""), context);
+  await context.start();
+  await context.loadRoutes();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const index = () => vm.runInContext("agentIndex", context);
+  const row = id => walk(index()).find(node => node.dataset?.agentId === id);
+  assert.match(text(row("role/routed")), /routed-model.*high/, "an endpoint binding sets the model; the Role keeps its effort");
+  assert.match(text(row("role/routed")), /access.source.route/);
+  assert.doesNotMatch(text(row("role/routed")), /saved-model/, "a model that will not launch is not presented as current");
+  assert.match(text(row("role/plain")), /claude-native.*xhigh/, "an empty Role falls back to its Agent's native default");
+  assert.match(text(row("role/plain")), /access.source.native/);
+  assert.equal(row("agent/codex"), undefined, "Agents have their own page");
+  row("role/routed").handlers.click();
+  assert.match(text(vm.runInContext("agentInspector", context)), /access.routeOverrides/,
+    "the detail explains that the saved Role model does not apply while the binding exists");
+  context.showSection("agents");
+  assert.match(text(row("agent/codex")), /gateway/);
+  assert.match(text(row("agent/codex")), /routed/, "an Agent row names the Roles that use it");
+  assert.equal(vm.runInContext("accessLayout.dataset.detail", context), "closed", "a Role detail does not stay open on the Agents page");
 });

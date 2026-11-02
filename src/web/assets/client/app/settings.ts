@@ -14,10 +14,11 @@ import { openOperatorHandoff } from "/assets/js/views/operatorHandoff.js";
 const $ = selector => document.querySelector(selector);
 const t = i18n.t;
 const SECTIONS = pageSections("settings");
-const dirtySections = { skills: false, server: false, agents: false };
+const dirtySections = { skills: false, server: false, agents: false, roles: false };
 let settingsReady = false;
 let settingsReadOnly = false;
 let supportedAgents = [];
+let settingsProvenance = null;
 function readSection() {
   const section = new URLSearchParams(window.location.search).get("section");
   return SECTIONS.includes(section) ? section : SECTIONS[0];
@@ -29,7 +30,7 @@ function showSection(next) {
   section = next;
   document.querySelectorAll("#settings-root > .manage-section[data-section]").forEach(panel => { panel.hidden = panel.dataset.section !== next; });
   shell.set(next);
-  if (settingsReady && (next === "agents" || next === "server")) filterGroups();
+  if (settingsReady && (next === "agents" || next === "roles" || next === "server")) filterGroups();
   if (next === "permissions" && !permissions) permissions = mountPermissions($("#permission-browser"), t);
 }
 function navigate(next) {
@@ -65,105 +66,167 @@ const agentGroups = $("#agent-settings-groups");
 const serverStatus = $("#server-settings-status");
 const serverSearch = $("#server-settings-search");
 const serverMore = $("#server-settings-more");
-const agentStatus = $("#agent-access-status");
-const agentSearch = $("#agent-access-search");
-const agentMore = $("#agent-access-more");
 const groups = [];
-const agentAccess = $("#agent-access-host");
-const agentIndex = h("aside.agent-index", { "aria-label": t("settings.agentIndex") });
-const agentInspector = h("section.agent-inspector", { "aria-live": "polite" });
-const agentIndexToggle = h("button.agent-index-toggle", { type: "button", "aria-expanded": "true",
-  onclick: () => setAgentIndexCollapsed(!agentIndex.classList.contains("is-collapsed")) },
-  h("span", null, t("settings.agentIndex")), h("span.agent-index-toggle-mark", { "aria-hidden": "true" }, "⌄"));
-const agentAccessLayout = h("div.agent-access-layout", null, agentIndexToggle, agentIndex, agentInspector);
-agentAccess?.append(agentAccessLayout);
-function setAgentIndexCollapsed(collapsed) {
-  agentIndex.classList.toggle("is-collapsed", collapsed);
-  agentIndexToggle.setAttribute("aria-expanded", String(!collapsed));
+// Execution configs (Roles + Profiles) and Agents share one list/detail frame.
+// It moves to the visible section; every member keeps its own mounted form.
+const ACCESS_SECTIONS = { roles: ["roles", "profiles"], agents: ["agents"] };
+const ACCESS_AREAS = ["agents", "roles", "profiles"];
+const agentSearch = h("input", { type: "search", autocomplete: "off", spellcheck: false, id: "access-search" });
+const agentSearchLabel = h("label.access-search", { for: "access-search" }, h("span.sr-only", null, t("access.search")), agentSearch);
+const agentStatus = h("p.access-status", { role: "status" });
+const agentMore = h("button.btn", { type: "button", hidden: true }, t("settings.more"));
+const agentIndex = h("div.access-list", { role: "region", "aria-label": t("access.list") });
+const agentInspector = h("section.access-detail.agent-inspector", { "aria-label": t("access.detail") });
+const accessLayout = h("div.access-layout", { dataset: { detail: "closed" } }, agentIndex, agentInspector);
+const accessFrame = h("div.access-frame", null, h("div.access-toolbar", null, agentSearchLabel, agentStatus),
+  accessLayout, h("div.access-more", null, agentMore));
+let agentInspectorOpen = false;
+let modelRoutes = { status: "loading", bindings: [], endpoints: [], modules: [] };
+function accessSection() { return ACCESS_SECTIONS[section] ? section : null; }
+function mountAccessFrame() {
+  const host = section === "roles" ? $("#role-access-host") : section === "agents" ? $("#agent-access-host") : null;
+  if (!host) return;
+  if (accessFrame.parentNode !== host) host.append(accessFrame);
+  agentSearch.placeholder = t(section === "roles" ? "access.searchRoles" : "access.searchAgents");
 }
-const agentAreaFilters = h("div.agent-area-filters", { role: "group", "aria-label": t("settings.filterArea") });
-let agentAreaFilter = "all";
-let agentInspectorOpen = true;
-function currentStatus() { return section === "agents" ? agentStatus : serverStatus; }
-function currentSearch() { return section === "agents" ? agentSearch : serverSearch; }
-function currentMore() { return section === "agents" ? agentMore : serverMore; }
+function currentStatus() { return accessSection() ? agentStatus : serverStatus; }
+function currentSearch() { return accessSection() ? agentSearch : serverSearch; }
+function currentMore() { return accessSection() ? agentMore : serverMore; }
 function searchValue() { return currentSearch()?.value || ""; }
 function groupArea(meta) {
   return meta.id.startsWith("agent/") ? "agents" : meta.id.startsWith("role/") ? "roles"
     : meta.id.startsWith("profile/") ? "profiles" : "server";
 }
-const ACCESS_AREAS = ["agents", "roles", "profiles"];
+// A rendered member may not have index metadata (a directly rendered group).
+function stateArea(state) { return groupArea(state.meta || { id: state.group?.id || "" }); }
+function stateTitle(state) { return state.meta?.title || state.group?.title || state.group?.id || ""; }
 function accessLabel(area) { return t("settings.area." + area); }
 function selectedAccess() { return groups.find(state => state.selected) || null; }
-function showAgentAreaFilter(name) {
-  agentAreaFilter = name;
-  agentAreaFilters.querySelectorAll("[data-agent-area]").forEach(button => {
-    button.setAttribute("aria-pressed", String(button.dataset.agentArea === name));
-  });
-  filterGroups();
-}
-function renderAgentAreaFilters() {
-  const counts = { all: 0, agents: 0, roles: 0, profiles: 0 };
-  groups.forEach(state => {
-    if (!state.matched || !ACCESS_AREAS.includes(groupArea(state.meta))) return;
-    counts.all++;
-    counts[groupArea(state.meta)]++;
-  });
-  agentAreaFilters.replaceChildren(...["all", ...ACCESS_AREAS].map(name =>
-    h("button.chip-tab", { type: "button", "aria-pressed": String(agentAreaFilter === name),
-      dataset: { agentArea: name }, onclick: () => showAgentAreaFilter(name) },
-      name === "all" ? t("settings.filterAll") : accessLabel(name), h("span.count", null, String(counts[name])))));
+function markAccessDirty() {
+  markDirty("roles", groups.some(g => g.dirty && ["roles", "profiles"].includes(groupArea(g.meta))));
+  markDirty("agents", groups.some(g => g.dirty && groupArea(g.meta) === "agents"));
 }
 function accessMatches(state) {
-  return state.matched && (agentAreaFilter === "all" || groupArea(state.meta) === agentAreaFilter);
+  return state.matched && !!ACCESS_SECTIONS[accessSection()]?.includes(groupArea(state.meta));
 }
-function defaultAccess() {
-  for (const area of ACCESS_AREAS) {
-    const row = groups.find(state => accessMatches(state) && groupArea(state.meta) === area);
-    if (row) return row;
-  }
-  return null;
+
+// ---- Facts derived from the loaded groups and the model registry --------
+function loadedGroup(id) { return groups.find(state => state.meta.id === id)?.group || null; }
+function nativeOf(agentId) { return agentId ? loadedGroup("agent/" + agentId)?.observation?.native || null : null; }
+function agentAdapter(agentId) { return agentId ? loadedGroup("agent/" + agentId)?.observation?.adapterId || "" : ""; }
+function agentKind(agentId) {
+  const component = supportedAgents.find(item => (item.configuredIds || []).includes(agentId));
+  return component?.label || agentAdapter(agentId) || "";
 }
-function groupSnapshot(state) {
+function routeFor(agentId) {
+  if (modelRoutes.status !== "read" || !agentId) return null;
+  const binding = modelRoutes.bindings.find(item => item.agentId === agentId && item.endpointId);
+  if (!binding) return null;
+  const endpoint = modelRoutes.endpoints.find(item => item.id === binding.endpointId) || null;
+  const module = endpoint?.moduleId ? modelRoutes.modules.find(item => item.id === endpoint.moduleId) || null : null;
+  return { binding, endpoint, module };
+}
+function rolesUsing(agentId) {
+  return groups.filter(state => groupArea(state.meta) === "roles" && state.group?.agentId === agentId);
+}
+// What a new Session would launch with, using the same precedence as the
+// launch planner: a Yui endpoint binding replaces the model; otherwise the
+// Role/Profile value; otherwise the Agent's own native default.
+function effective(state) {
   const group = state.group;
-  const area = groupArea(state.meta);
-  const field = key => group?.fields.find(item => item.key === key);
-  const native = area === "agents" ? group?.observation?.native : null;
-  const runtime = area === "profiles" ? group?.observation : null;
-  return {
-    group, area, native, runtime,
-    model: native?.model || field("model")?.value || (runtime?.status === "resolved" ? runtime.binding?.config?.model : ""),
-    effort: native?.effort || field("effort")?.value || (runtime?.status === "resolved" ? runtime.binding?.config?.effort : ""),
-    unavailable: !!state.loadError || native?.status === "unavailable" || runtime?.status === "unavailable"
-  };
+  if (!group) return null;
+  const area = stateArea(state);
+  const value = key => group.fields.find(item => item.key === key)?.value || "";
+  if (area === "agents") {
+    const native = group.observation?.native;
+    return { agentId: group.agentId, model: native?.model || "", effort: native?.effort || "",
+      modelSource: "native", effortSource: "native", route: routeFor(group.agentId),
+      nativeStatus: native?.status || "unsupported" };
+  }
+  let agentId = group.agentId || "", model, effort, own;
+  if (area === "profiles") {
+    const runtime = group.observation;
+    if (!runtime || runtime.status !== "resolved") return { unavailable: runtime?.reason || t("settings.profileUnavailable"), agentId };
+    agentId = runtime.binding?.agentId || agentId;
+    model = runtime.binding?.config?.model || ""; effort = runtime.binding?.config?.effort || "";
+    own = runtime.source === "global-worker" ? "worker" : "profile";
+  } else { model = value("model"); effort = value("effort"); own = "role"; }
+  const native = nativeOf(agentId);
+  const route = routeFor(agentId);
+  return { agentId, ownModel: model, route,
+    model: route ? route.binding.model : model || native?.model || "",
+    effort: effort || native?.effort || "",
+    modelSource: route ? "route" : model ? own : "native", effortSource: effort ? own : "native",
+    nativeStatus: native?.status || (nativeOf(agentId) ? "read" : "unknown") };
 }
-function accessFacts(state) {
-  if (state.loadError) return t("settings.summaryUnavailable");
-  if (!state.group) return t("settings.summaryLoading");
-  const snapshot = groupSnapshot(state);
-  if (snapshot.unavailable) return t("settings.summaryUnavailable");
-  const facts = [snapshot.model, snapshot.effort].filter(Boolean);
-  if (facts.length) return facts.join(" · ");
-  if (snapshot.area === "profiles" && snapshot.runtime?.source === "global-worker") return t("settings.inheritWorker");
-  if (snapshot.area === "roles") return t("settings.roleDefaults") + " · " + t("settings.summaryNativeDefault");
-  return t("settings.summaryNativeDefault");
+function sourceText(kind, route) {
+  return kind === "route" ? t("access.source.route").replace("{id}", route?.binding.endpointId || "")
+    : t("access.source." + kind);
+}
+function adapterChip(agentId) {
+  const adapter = agentAdapter(agentId);
+  return adapter ? h("span.access-chip.adapter-" + adapter, null, adapter === "codex" ? "Codex" : adapter === "claude" ? "Claude" : adapter) : null;
+}
+
+// ---- List ---------------------------------------------------------------
+function cell(name, ...children) { return h("span.access-cell.access-cell-" + name, null, ...children); }
+function modelLine(e) {
+  if (!e) return [h("span.access-muted", null, t("settings.summaryLoading"))];
+  if (e.unavailable) return [h("span.access-warn", null, t("access.unresolved"))];
+  return [h("span.access-model", null, e.model || t("access.nativeDefault"),
+      h("span.access-effort", null, " · " + (e.effort || t("access.nativeDefault")))),
+    h("small.access-source.source-" + e.modelSource, null, sourceText(e.modelSource, e.route))];
+}
+function badges(state) {
+  const group = state.group;
+  const list = [];
+  if (state.loadError) list.push(h("span.badge.tone-bad", null, t("settings.summaryUnavailable")));
+  if (state.dirty) list.push(h("span.badge.tone-warn", null, t("settings.unsavedShort")));
+  if (state.unknown) list.push(h("span.badge.tone-bad", null, t("access.unknownWrite")));
+  if (group?.fields.find(item => item.key === "enabled")?.value === false) list.push(h("span.badge", null, t("settings.summaryDisabled")));
+  if (groupArea(state.meta) === "roles" && group?.observation?.session && group.observation.session !== "absent")
+    list.push(h("span.badge.tone-info", null, t("access.session." + group.observation.session, group.observation.session)));
+  return list;
 }
 function accessRow(state) {
   const area = groupArea(state.meta);
-  const snapshot = groupSnapshot(state);
-  const status = state.loadError || snapshot.unavailable ? t("settings.summaryUnavailable")
-    : state.dirty ? t("settings.unsavedShort") : null;
-  return h("button.agent-index-row", { type: "button",
+  const e = effective(state);
+  const group = state.group;
+  const columns = [];
+  const description = group?.fields.find(item => item.key === "description")?.value;
+  columns.push(cell("name", h("strong", null, state.meta.title),
+    description ? h("small", null, description) : null));
+  if (area === "agents") {
+    const route = e?.route;
+    const users = rolesUsing(group?.agentId || state.meta.title);
+    columns.push(cell("kind", h("span", null, agentKind(group?.agentId) || t("settings.summaryLoading")), adapterChip(group?.agentId)),
+      cell("model", ...(group ? [h("span.access-model", null, e.model || t(e.nativeStatus === "read" ? "access.nativeDefault" : "access.nativeUnread"),
+        e.effort ? h("span.access-effort", null, " · " + e.effort) : null),
+        h("small.access-source", null, t("access.nativeFile." + (e.nativeStatus === "read" ? "read" : e.nativeStatus === "absent" ? "absent" : "other")))] : modelLine(null))),
+      cell("route", modelRoutes.status === "read"
+        ? route ? [h("span.access-route", null, route.binding.endpointId), h("small", null, route.module ? (route.module.kind === "metabridge" ? "metabridge" : "CPA") + " · " + route.module.id : t("access.directEndpoint"))]
+          : [h("span", null, t("access.routeNative")), h("small", null, t("access.routeNativeHelp"))]
+        : h("span.access-muted", null, t(modelRoutes.status === "loading" ? "settings.summaryLoading" : "access.unknown"))),
+      cell("users", users.length ? users.map(user => user.meta.title).join(", ") : h("span.access-muted", null, t("access.noRoles"))));
+  } else {
+    const agentId = e?.agentId || group?.agentId || "";
+    const runtime = area === "profiles" ? group?.observation : null;
+    columns.push(cell("agent", area === "profiles" && runtime?.source === "global-worker"
+      ? [h("span", null, t("access.inheritWorker")), agentId ? h("small", null, agentId) : null]
+      : [h("span.access-agent", null, agentId || t(group ? "access.unknown" : "settings.summaryLoading"), adapterChip(agentId)),
+        area === "profiles" ? h("small", null, t("access.explicitAgent")) : null]),
+      cell("model", ...modelLine(group ? e : null)));
+  }
+  columns.push(cell("status", ...badges(state)));
+  return h("button.access-row.access-row-" + area, { type: "button",
     "aria-current": state.selected ? "true" : null, dataset: { agentId: state.meta.id, agentArea: area },
-    onclick: () => selectAccess(state) },
-    h("span.agent-index-icon.tone-" + (area === "agents" ? "info" : area === "roles" ? "accent" : "idle"), null,
-      h("span", { "aria-hidden": "true" }, area === "agents" ? "A" : area === "roles" ? "R" : "P")),
-    h("span.agent-index-copy", null, h("strong", null, state.meta.title),
-      h("small", null, accessLabel(area)),
-      h("span.agent-index-facts", null, accessFacts(state))),
-    status ? h("span.badge" + (state.dirty ? ".tone-warn" : ""), null, status) : null,
-    h("span.agent-index-caret", { "aria-hidden": "true" }, "›"));
+    onclick: () => selectAccess(state) }, ...columns);
 }
+const COLUMNS = {
+  roles: ["access.col.role", "access.col.agent", "access.col.model", ""],
+  profiles: ["access.col.profile", "access.col.runtime", "access.col.model", ""],
+  agents: ["access.col.agent", "access.col.kind", "access.col.native", "access.col.route", "access.col.users", ""]
+};
 function inside(node, root) {
   for (let parent = node; parent; parent = parent.parentNode || parent.parentElement) if (parent === root) return true;
   return false;
@@ -178,41 +241,55 @@ function indexControls() {
   visit(agentIndex);
   return controls;
 }
+function guideButton(labelKey, scenario, className = "btn") {
+  return h("button." + className.split(" ").join("."), { type: "button", dataset: { guide: scenario().kind },
+    onclick: () => openOperatorHandoff({ scenario: scenario(), t, locale: i18n.getLocale, onReadback: readback }) }, t(labelKey));
+}
+function roleNames() { return groups.filter(s => groupArea(s.meta) === "roles").map(s => s.meta.title); }
+function agentNames() { return groups.filter(s => groupArea(s.meta) === "agents").map(s => s.meta.title); }
+function profileNames() { return groups.filter(s => groupArea(s.meta) === "profiles").map(s => s.meta.title); }
 function renderAgentIndex(closedId = "") {
   const active = document.activeElement;
   const insideIndex = inside(active, agentIndex);
   const focus = closedId ? { agentId: closedId, agentArea: "" }
     : insideIndex && active?.dataset ? { agentId: active.dataset.agentId || "", agentArea: active.dataset.agentArea || "" }
       : null;
-  renderAgentAreaFilters();
-  const children = [h("header.agent-index-head", null,
-    h("div", null, h("h2", null, t("settings.agentIndex")),
-      h("p", null, t("settings.agentIndexHelp"))),
-    agentAreaFilters)];
+  const areas = ACCESS_SECTIONS[accessSection()] || [];
+  const blocks = [];
   let total = 0;
-  for (const area of ACCESS_AREAS) {
-    if (agentAreaFilter !== "all" && agentAreaFilter !== area) continue;
+  for (const area of areas) {
     const rows = groups.filter(state => accessMatches(state) && groupArea(state.meta) === area)
       .sort((a, b) => a.meta.title.localeCompare(b.meta.title));
-    if (!rows.length) continue;
     total += rows.length;
-    children.push(h("section.agent-index-group", null,
-      h("h3", null, accessLabel(area), h("span.count", null, String(rows.length))),
-      h("div.agent-index-list", null, rows.map(accessRow))));
+    const searching = !!searchValue().trim();
+    if (!rows.length && searching) continue;
+    blocks.push(h("section.access-block", { dataset: { accessBlock: area } },
+      h("header.access-block-head", null,
+        h("h2", null, t("access.block." + area), h("span.count", null, String(rows.length))),
+        h("p", null, t("access.blockHelp." + area))),
+      rows.length ? h("div.access-table", { dataset: { columns: area } },
+        h("div.access-row-head", { "aria-hidden": "true" }, COLUMNS[area].map(key => h("span", null, key ? t(key) : ""))),
+        ...rows.map(accessRow))
+        : h("p.access-empty", null, t("access.empty." + area))));
   }
-  if (!total) children.push(h("p.empty", null, t(searchValue().trim() ? "settings.noMatches" : "settings.agentEmpty")));
-  agentIndex.replaceChildren(...children);
+  if (accessSection() === "agents") {
+    const missing = supportedAgents.filter(item => !(item.configuredIds || []).length);
+    if (missing.length) blocks.push(h("p.access-footnote", null,
+      t("access.alsoSupported") + " " + missing.map(item => item.label).join(" · ")));
+  }
+  if (!total && searchValue().trim()) blocks.unshift(h("p.access-empty", null, t("settings.noMatches")));
+  agentIndex.replaceChildren(...blocks);
+  const current = selectedAccess();
+  if (current) refreshDerived(current);
   if (!focus) return;
   const candidates = indexControls();
   let restored = focus.agentId ? candidates.find(node => node.dataset.agentId === focus.agentId) : null;
   if (!restored && focus.agentArea) restored = candidates.find(node => !node.dataset.agentId && node.dataset.agentArea === focus.agentArea);
-  if (!restored && active?.tagName === "BUTTON") restored = candidates.find(node => node.dataset.agentArea === "all");
   if (restored && restored !== document.activeElement) restored.focus();
 }
 function renderInspectorEmpty() {
-  agentInspector.replaceChildren(h("div.agent-inspector-empty", null,
-    h("span.agent-inspector-empty-mark", { "aria-hidden": "true" }, "A"),
-    h("div", null, h("h2", null, t("settings.inspectorEmpty")), h("p", null, t("settings.inspectorEmptyHelp")))));
+  accessLayout.dataset.detail = "closed";
+  agentInspector.replaceChildren();
 }
 function selectAccess(state) {
   if (!state) {
@@ -224,14 +301,12 @@ function selectAccess(state) {
     return;
   }
   agentInspectorOpen = true;
-  if (typeof matchMedia === "function" && matchMedia("(max-width: 620px)").matches) setAgentIndexCollapsed(true);
+  accessLayout.dataset.detail = "open";
   if (state === selectedAccess() && inside(state.inspectorContent, agentInspector)) return;
   groups.forEach(item => { item.selected = false; });
   state.selected = true;
-  // A Role may already be open, edited, and then shown in the Role summary
-  // rail. Moving its one content host preserves that live form. A member that
-  // has never been selected has no mounted form; do not render the closed
-  // summary card's loading text into the inspector.
+  // A member may already be open and edited. Moving its one content host
+  // preserves that live form; a never-selected member gets a loading host.
   if (state.loaded || state.loadError || state.form) {
     if (!state.inspectorContent) state.inspectorContent = state.content;
     state.inspectorContent.classList.add("agent-inspector-content");
@@ -248,19 +323,26 @@ function selectAccess(state) {
   filterGroups();
   renderAgentIndex();
   if (!state.loaded && !state.loading) void loadGroup(state);
+  // On narrow layouts the detail replaces the list: bring it into view and
+  // keep keyboard focus in it rather than on a now-hidden row.
+  const replaced = typeof getComputedStyle === "function" && getComputedStyle(agentIndex).display === "none";
+  if (replaced) agentInspector.scrollIntoView?.({ block: "start" });
+  const back = state.backButton;
+  if (back && typeof back.focus === "function" && (replaced || inside(document.activeElement, agentIndex))) back.focus({ preventScroll: true });
 }
-const agentActions = $("#agent-management-actions");
+async function readback() {
+  for (const state of groups) if (!state.dirty && !state.pending && !state.unknown) state.loaded = false;
+  await Promise.all([start(), loadRoutes()]);
+}
 function renderAgentActions() {
-  agentActions.replaceChildren(h("button.btn.btn-primary", { type: "button", onclick: () => openOperatorHandoff({
-    topic: "agent", t, locale: i18n.getLocale, onReadback: async () => {
-      for (const state of groups) if (!state.dirty && !state.pending && !state.unknown) state.loaded = false;
-      await start();
-    }
-  }) }, t("models.configure.agent")),
-    supportedAgents.length ? h("details.agent-supported", null,
-      h("summary", null, t("settings.supportedAgents") + " · " + supportedAgents.length),
-      h("p", null, supportedAgents.map(agent => agent.label + " · " +
-        (agent.configuredIds.length ? agent.configuredIds.join(", ") : t("settings.notConfigured"))).join(" / "))) : null);
+  $("#role-access-actions")?.replaceChildren(guideButton("access.guide.roles",
+    () => ({ kind: "role-new", roles: roleNames(), agents: agentNames(), profiles: profileNames() }), "btn btn-primary"));
+  $("#agent-access-actions")?.replaceChildren(guideButton("access.guide.agents",
+    () => ({ kind: "agent-new", configured: agentNames(),
+      unconfigured: supportedAgents.filter(item => !(item.configuredIds || []).length).map(item => item.label) }), "btn btn-primary"));
+  const badge = () => settingsProvenance ? h("span.access-snapshot", { title: settingsProvenance.label },
+    h("strong", null, t("access.snapshot")), h("time", null, settingsProvenance.capturedAt)) : null;
+  for (const id of ["#role-access-snapshot", "#agent-access-snapshot"]) $(id)?.replaceChildren(...[badge()].filter(Boolean));
 }
 renderAgentActions();
 i18n.subscribe(renderAgentActions);
@@ -274,24 +356,41 @@ function filterGroups() {
     state.root.hidden = !state.matched;
     if (!state.root.hidden && state.root.open) void loadGroup(state);
   });
-  if (section === "agents") {
+  if (accessSection()) {
+    mountAccessFrame();
     renderAgentIndex();
+    // Each page explains the other: Agent facts (adapter, native defaults)
+    // annotate Role rows, and Role bindings say who uses an Agent.
     for (const state of groups) {
-      if (accessMatches(state)) void loadGroup(state);
+      if (accessMatches(state) || state.matched && isAgentGroup(state.meta)) void loadGroup(state);
     }
     const current = selectedAccess();
-    if (!current || !accessMatches(current)) {
-      if (agentInspectorOpen) selectAccess(defaultAccess());
-      else renderInspectorEmpty();
-    }
+    if (current && !accessMatches(current)) {
+      current.selected = false;
+      agentInspectorOpen = false;
+      renderInspectorEmpty();
+      renderAgentIndex();
+    } else if (!current) renderInspectorEmpty();
   }
+}
+async function loadRoutes() {
+  try {
+    const view = await requestJson("/api/models");
+    const registry = view?.registry || {};
+    modelRoutes = { status: "read", bindings: registry.bindings || [], endpoints: registry.endpoints || [], modules: registry.modules || [] };
+  } catch (error) {
+    modelRoutes = { status: "unavailable", error: error.message, bindings: [], endpoints: [], modules: [] };
+  }
+  if (accessSection()) renderAgentIndex();
+  const current = selectedAccess();
+  if (current) refreshDerived(current);
 }
 settingsReady = true;
 showSection(section);
 let searchGeneration = 0;
 let searchTimer;
 function setSearch(value) {
-  [serverSearch, agentSearch].forEach(input => { if (input) input.value = value; });
+  [serverSearch, agentSearch].forEach(input => { if (input && input.value !== value) input.value = value; });
   searchGeneration++;
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => start(), 200);
@@ -352,12 +451,12 @@ function editor(field, group, state) {
     state.dirty = state.editors.some(e => e.changed());
     state.profileApplication?.invalidate();
     markDirty("server", groups.some(g => g.dirty && !isAgentGroup(g.meta)));
-    markDirty("agents", groups.some(g => g.dirty && isAgentGroup(g.meta)));
+    markAccessDirty();
     state.save.disabled = state.readOnly || !state.dirty || state.pending || state.capabilityPending || state.unknown;
     if (!state.unknown && !state.pending) state.receipt.textContent = state.dirty ? t("settings.unsaved") : "";
     state.dirtyIndicator && (state.dirtyIndicator.textContent = t("settings.editCount").replace("{count}", String(state.editors.filter(e => e.changed()).length)));
     if (state.dirtyIndicator) state.dirtyIndicator.dataset.dirty = String(state.dirty);
-    if (section === "agents") renderAgentIndex();
+    if (accessSection()) renderAgentIndex();
   }
   function listen() {
     control.addEventListener("input", mark);
@@ -432,6 +531,19 @@ function applyCapabilities(state, result) {
   updateEffort();
 }
 
+function groupSnapshot(state) {
+  const group = state.group;
+  const area = groupArea(state.meta);
+  const field = key => group?.fields.find(item => item.key === key);
+  const native = area === "agents" ? group?.observation?.native : null;
+  const runtime = area === "profiles" ? group?.observation : null;
+  return {
+    group, area, native, runtime,
+    model: native?.model || field("model")?.value || (runtime?.status === "resolved" ? runtime.binding?.config?.model : ""),
+    effort: native?.effort || field("effort")?.value || (runtime?.status === "resolved" ? runtime.binding?.config?.effort : ""),
+    unavailable: !!state.loadError || native?.status === "unavailable" || runtime?.status === "unavailable"
+  };
+}
 function renderGroupSummary(state) {
   if (!state.summary || !isAgentGroup(state.meta)) return;
   const group = state.group;
@@ -550,7 +662,7 @@ function roleProfileApplication(state, group) {
   state.profileApplication = { invalidate, sync, control: select };
   sync();
   return h("section.settings-profile-apply", null,
-    h("h3", null, t("settings.profileApplyTitle")), h("p", null, t("settings.profileCopyHelp")),
+    h("p", null, t("settings.profileCopyHelp")),
     h("div.settings-profile-picker", null, h("label.field", null, h("span", null, t("settings.profileChoose")), select), reread),
     group.profiles.length ? null : h("p", null, t("settings.profileEmpty")),
     ...group.profiles.filter(profile => !profile.available).map(profile =>
@@ -561,6 +673,15 @@ function roleProfileApplication(state, group) {
 
 function editCount(state) {
   return state.editors.filter(editor => editor.changed()).length;
+}
+function collapsedSection(titleKey, items) {
+  const changed = () => items.some(item => item.changed());
+  const count = h("span.agent-config-count");
+  const node = h("details.agent-config-section.agent-config-more", null,
+    h("summary", null, h("h3", null, t(titleKey)), count));
+  node.addEventListener("input", () => { count.textContent = changed() ? t("settings.unsavedShort") : ""; });
+  node.addEventListener("change", () => { count.textContent = changed() ? t("settings.unsavedShort") : ""; });
+  return node;
 }
 function configSection(titleKey, className = "") {
   return h("section.agent-config-section" + (className ? "." + className : ""), null,
@@ -661,7 +782,7 @@ function renderGroup(state, group) {
   state.capabilityPending = false;
   state.profileApplication = null;
   markDirty("server", groups.some(g => g.dirty && !isAgentGroup(g.meta)));
-  markDirty("agents", groups.some(g => g.dirty && isAgentGroup(g.meta)));
+  markAccessDirty();
   const area = group.id.startsWith("agent/") ? "agents" : group.id.startsWith("role/") ? "roles"
     : group.id.startsWith("profile/") ? "profiles" : "server";
   const isRole = group.id.startsWith("role/");
@@ -676,6 +797,10 @@ function renderGroup(state, group) {
   const actionFooter = h("div.agent-action-bar");
   if (state.readOnly) canvas.append(h("p.agent-readonly-note", null, t("settings.snapshotReadOnly")));
   renderGroupSummary(state);
+  // Facts derived from other members and the model registry. They refresh in
+  // place, never by rebuilding this form (which would discard drafts).
+  state.derived = area === "server" ? null : h("div.access-derived");
+  if (state.derived) canvas.append(state.derived);
   const native = nativeOverview(group);
   if (native) canvas.append(native);
   const grouped = new Map();
@@ -741,7 +866,10 @@ function renderGroup(state, group) {
     const items = grouped.get(key);
     if (!items?.length) continue;
     const primary = key === "settings.group.identity" || key === "settings.group.models";
-    const section = configSection(key, primary ? "agent-config-primary" : "");
+    // Execution members keep the daily choices open; less frequent groups
+    // stay one click away instead of lengthening every detail.
+    const section = area !== "server" && !primary ? collapsedSection(key, items)
+      : configSection(key, primary ? "agent-config-primary" : "");
     section.append(h("div.agent-field-grid" + (primary ? ".agent-field-grid-primary" : ""), null,
       items.map(item => item.row)));
     if (key === "settings.group.models" && capabilities) section.append(capabilities);
@@ -751,7 +879,9 @@ function renderGroup(state, group) {
   if (isRole && Array.isArray(group.profiles)) {
     const profileApplication = roleProfileApplication(state, group);
     profileApplication.classList.add("agent-profile-section");
-    canvas.append(profileApplication);
+    canvas.append(h("details.agent-config-section.agent-config-more.agent-profile-more", null,
+      h("summary", null, h("h3", null, t("settings.profileApplyTitle")),
+        h("span.agent-config-count", null, group.profiles.length ? String(group.profiles.length) : "")), profileApplication));
   }
   const acknowledge = h("input", { type: "checkbox" });
   const liveAcknowledge = area === "agents" ? t("settings.acknowledge.agent") : area === "roles" ? t("settings.acknowledge.role") : "";
@@ -826,6 +956,7 @@ function renderGroup(state, group) {
   // mislabeled as an execution tool.
   const inspectorLeading = /^(agent|role|profile)\//.test(group.id) ? [inspectorHeader(state)] : [];
   state.content.replaceChildren(...inspectorLeading, form);
+  refreshDerived(state);
   state.form = form;
   state.canvas = canvas;
   if (previousContent && previousContent !== state.content) {
@@ -842,22 +973,89 @@ function renderGroup(state, group) {
   }
 }
 
+function memberScenario(state) {
+  const area = stateArea(state);
+  const group = state.group;
+  const route = routeFor(group?.agentId)?.binding.endpointId || "";
+  if (area === "agents") return { kind: "agent", id: stateTitle(state), adapter: agentAdapter(group?.agentId),
+    roles: rolesUsing(group?.agentId).map(role => role.meta.title), route };
+  if (area === "profiles") return { kind: "profile", id: stateTitle(state), inherit: group?.observation?.source === "global-worker",
+    agentId: effective(state)?.agentId || "" };
+  return { kind: "role", name: stateTitle(state), agentId: group?.agentId || "", adapter: agentAdapter(group?.agentId), route };
+}
 function inspectorHeader(state) {
   const area = state.group?.id.startsWith("agent/") ? "agents" : state.group?.id.startsWith("role/") ? "roles"
     : state.group?.id.startsWith("profile/") ? "profiles" : groupArea(state.meta || { id: "" });
   const title = state.meta?.title || state.group?.title || "";
   const id = state.meta?.id || state.group?.id || "";
-  const close = h("button.icon-btn", { type: "button", "aria-label": t("settings.closeInspector"), title: t("settings.closeInspector"),
-    onclick: () => selectAccess(null) }, "×");
-  const relation = area === "roles" && state.group?.agentId ? t("settings.inspectorRoleRelation").replace("{agent}", state.group.agentId)
-    : area === "profiles" ? t("settings.inspectorProfileRelation") : t("settings.inspectorAgentRelation");
-  return h("header.agent-inspector-head", null,
+  // One control closes the detail: a back link where the detail replaces the
+  // list (narrow), a close mark where both are visible (wide).
+  const close = h("button.btn.btn-ghost.access-back", { type: "button", "aria-label": t("settings.closeInspector"), title: t("settings.closeInspector"),
+    onclick: () => selectAccess(null) }, h("span.access-back-label", null, "← " + t("access.back")), h("span.access-close-mark", { "aria-hidden": "true" }, "×"));
+  state.backButton = close;
+  state.headerFacts = h("div.access-detail-facts");
+  renderHeaderFacts(state);
+  const guide = guideButton("access.guide.member", () => memberScenario(state), "btn btn-sm access-detail-guide");
+  return h("header.agent-inspector-head.access-detail-head", null,
+    h("div.access-detail-bar", null, close, guide),
     h("div.agent-inspector-identity", null,
-      h("span.agent-index-icon.tone-" + (area === "agents" ? "info" : area === "roles" ? "accent" : "idle"), null,
-        h("span", { "aria-hidden": "true" }, area === "agents" ? "A" : area === "roles" ? "R" : "P")),
-      h("div", null, h("p.kicker", null, accessLabel(area === "server" ? "agents" : area)), h("h2", null, title),
-        h("code.id", null, id), h("p.agent-inspector-relation", null, relation))),
-    close);
+      h("div", null, h("p.kicker", null, accessLabel(area === "server" ? "agents" : area)),
+        h("h2", null, title, h("code.id", null, id)), state.headerFacts)));
+}
+function fact(label, value, note, tone) {
+  return h("div.access-fact" + (tone ? ".tone-" + tone : ""), null, h("span", null, label),
+    h("strong", null, value), note ? h("small", null, note) : null);
+}
+function renderHeaderFacts(state) {
+  if (!state.headerFacts || !state.group) return;
+  const area = stateArea(state);
+  const e = effective(state);
+  const items = [];
+  if (area === "agents") {
+    items.push(fact(t("access.col.kind"), agentKind(state.group.agentId) || t("access.unknown")),
+      fact(t("access.col.native"), (e.model || t("access.nativeDefault")) + (e.effort ? " · " + e.effort : "")),
+      fact(t("access.col.route"), modelRoutes.status !== "read" ? t("access.unknown") : e.route ? e.route.binding.endpointId : t("access.routeNative")));
+  } else if (e?.unavailable) {
+    items.push(fact(t("access.col.model"), t("access.unresolved"), e.unavailable, "warn"));
+  } else if (e) {
+    items.push(fact(t("access.col.agent"), (area === "profiles" && state.group.observation?.source === "global-worker" ? t("access.inheritWorker") + " · " : "") + (e.agentId || t("access.unknown"))),
+      fact(t("access.newSession"), (e.model || t("access.nativeDefault")) + " · " + (e.effort || t("access.nativeDefault")), sourceText(e.modelSource, e.route)));
+  }
+  state.headerFacts.replaceChildren(...items);
+}
+// Explains the launch result in words the list cannot: an endpoint binding
+// that replaces the Role model, or which Roles depend on an Agent.
+function refreshDerived(state) {
+  renderHeaderFacts(state);
+  const host = state.derived;
+  if (!host || !state.group) return;
+  const area = stateArea(state);
+  const e = effective(state);
+  const lines = [];
+  if (area === "agents") {
+    const users = rolesUsing(state.group.agentId);
+    const route = e.route;
+    lines.push(h("div.access-derived-row", null, h("span", null, t("access.col.route")),
+      h("div", null, modelRoutes.status !== "read"
+        ? h("p", null, t(modelRoutes.status === "loading" ? "settings.summaryLoading" : "access.routeUnknown"))
+        : route ? h("p", null, t("access.routeBound").replace("{endpoint}", route.binding.endpointId).replace("{model}", route.binding.model)
+            + " " + (route.module ? t("access.routeVia").replace("{module}", (route.module.kind === "metabridge" ? "metabridge" : "CPA") + " · " + route.module.id) : t("access.directEndpoint")))
+          : h("p", null, t("access.routeNativeLong")),
+        h("a.access-link", { href: "/models/providers" }, t("access.openServices")))));
+    lines.push(h("div.access-derived-row", null, h("span", null, t("access.col.users")),
+      h("div.access-chips", null, users.length ? users.map(role => h("button.access-chip.access-chip-link", { type: "button",
+        onclick: () => { navigateManage({ page: "settings", section: "roles" }); selectAccess(role); } }, role.meta.title))
+        : h("p", null, t("access.noRolesLong")))));
+  } else if (e && !e.unavailable) {
+    const native = nativeOf(e.agentId);
+    lines.push(h("div.access-derived-row", null, h("span", null, t("access.modelSource")),
+      h("div", null, h("p", null, t("access.explain." + e.modelSource).replace("{endpoint}", e.route?.binding.endpointId || "")
+          .replace("{native}", native?.model || t("access.unknown"))),
+        e.route && e.ownModel ? h("p.access-warn", null, t("access.routeOverrides").replace("{model}", e.ownModel)) : null)));
+    if (area === "profiles") lines.push(h("p.access-derived-note", null,
+      t(state.group.observation?.source === "global-worker" ? "access.profileInherits" : "access.profileExplicit")));
+  } else if (e?.unavailable) lines.push(h("p.access-warn", null, e.unavailable));
+  host.replaceChildren(...lines);
 }
 
 async function loadGroup(state) {
@@ -872,7 +1070,7 @@ async function loadGroup(state) {
     // The index has an independent summary surface. Refresh it after the
     // read so a selected member's evidence appears without replacing the
     // member's live draft form.
-    if (section === "agents") renderAgentIndex();
+    if (accessSection()) renderAgentIndex();
   } catch (error) {
     state.loadError = error.message;
     renderGroupSummary(state);
@@ -891,6 +1089,7 @@ async function start(cursor) {
     const data = await requestJson("/api/settings?" + new URLSearchParams({ q: query, cursor: cursor || "0" }));
     if (generation !== searchGeneration) return;
     settingsReadOnly = !!data.readOnly;
+    settingsProvenance = data.provenance || null;
     supportedAgents = data.supportedAgents || [];
     renderAgentActions();
     if (!cursor) groups.forEach(state => { state.matched = false; state.root.hidden = true; });
@@ -915,8 +1114,11 @@ async function start(cursor) {
       if (root.open) void loadGroup(state);
     });
     filterGroups();
-    status.textContent = data.provenance ? data.provenance.label + " · " + data.provenance.capturedAt
-      : data.total ? t(section === "agents" ? "settings.agentGroupsHelp" : "settings.serverGroupsHelp") : t("settings.noMatches");
+    // Execution pages show the snapshot badge in their heading; the list
+    // itself reports no-match states.
+    status.textContent = accessSection() ? ""
+      : data.provenance ? data.provenance.label + " · " + data.provenance.capturedAt
+        : data.total ? t("settings.serverGroupsHelp") : t("settings.noMatches");
     more.hidden = !data.nextCursor;
     if (data.nextCursor) more.dataset.cursor = data.nextCursor;
     else delete more.dataset.cursor;
@@ -926,7 +1128,8 @@ async function start(cursor) {
 i18n.subscribe(() => {
   [serverMore, agentMore].forEach(button => { if (button) button.textContent = t("settings.more"); });
   groups.forEach(renderGroupSummary);
-  if (section === "agents") renderAgentIndex();
+  if (accessSection()) { mountAccessFrame(); renderAgentIndex(); }
 });
 void start();
+void loadRoutes();
 `;
