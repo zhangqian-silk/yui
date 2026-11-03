@@ -32,8 +32,10 @@ export const SETTINGS_STYLES = `
 .access-block-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px;min-width:0}
 .access-block-head h2{display:flex;align-items:center;gap:8px;color:var(--ink);font-size:var(--fs-md);font-weight:650}
 .access-block-head p{color:var(--ink-3);font-size:var(--fs-xs);line-height:1.45}
-.access-table{--cols:minmax(130px,1.1fr) minmax(130px,1fr) minmax(190px,1.6fr) minmax(64px,auto);min-width:0;border:1px solid var(--line);border-radius:var(--r-lg);background:var(--surface);overflow:hidden}
-.access-table[data-columns=agents]{--cols:minmax(96px,.8fr) minmax(130px,1fr) minmax(150px,1.2fr) minmax(130px,1.1fr) minmax(90px,.9fr) minmax(48px,auto)}
+/* Every row is its own grid, so all tracks must be content-independent or the
+   columns drift between rows (e.g. a row carrying a status badge). */
+.access-table{--cols:minmax(130px,1.1fr) minmax(130px,1fr) minmax(190px,1.6fr) 136px;min-width:0;border:1px solid var(--line);border-radius:var(--r-lg);background:var(--surface);overflow:hidden}
+.access-table[data-columns=agents]{--cols:minmax(96px,.8fr) minmax(130px,1fr) minmax(150px,1.2fr) minmax(130px,1.1fr) minmax(90px,.9fr) 96px}
 .access-row-head,.access-row{display:grid;grid-template-columns:var(--cols);gap:12px;align-items:center;padding:0 14px}
 .access-row-head{min-height:32px;border-bottom:1px solid var(--line);background:var(--surface-2);color:var(--ink-3);font-size:var(--fs-2xs);font-weight:600;letter-spacing:.02em}
 .access-row{width:100%;min-height:54px;padding-top:9px;padding-bottom:9px;border:0;border-bottom:1px solid var(--line);border-radius:0;background:transparent;color:var(--ink-2);font:inherit;text-align:left;cursor:pointer;transition:background var(--t-fast)}
