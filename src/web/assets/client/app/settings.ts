@@ -906,11 +906,11 @@ function renderGroup(state, group) {
   const dirtyIndicator = h("span.agent-dirty-indicator", { "data-dirty": String(state.dirty) },
     t("settings.editCount").replace("{count}", String(editCount(state))));
   state.dirtyIndicator = dirtyIndicator;
-  const footStatus = h("div.agent-foot-status", null, dirtyIndicator, receipt);
+  const footStatus = h("div.agent-foot-status", null, dirtyIndicator, notice, receipt);
   actionFooter.append(footStatus, h("div.agent-action-buttons", null, compare, save));
   const source = sourceBlock(state, group);
   if (source) canvas.append(source);
-  form.append(notice, canvas, actionFooter);
+  form.append(canvas, actionFooter);
   form.addEventListener("submit", async event => {
     event.preventDefault();
     if (state.readOnly || state.pending || state.capabilityPending || state.unknown) return;
@@ -988,11 +988,9 @@ function inspectorHeader(state) {
   state.headerFacts = h("div.access-detail-facts");
   renderHeaderFacts(state);
   const guide = guideButton("access.guide.member", () => memberScenario(state), "btn btn-sm access-detail-guide");
-  return h("header.agent-inspector-head.access-detail-head", null,
-    h("div.access-detail-bar", null, close, guide),
-    h("div.agent-inspector-identity", null,
-      h("div", null, h("p.kicker", null, accessLabel(area === "server" ? "agents" : area)),
-        h("h2", null, title, h("code.id", null, id)), state.headerFacts)));
+  return h("header.agent-inspector-head.access-detail-head", { dataset: { area }, title: id }, close,
+    h("div.agent-inspector-identity.access-detail-title", null,
+      h("h2", null, title), state.headerFacts), guide);
 }
 function fact(label, value, note, tone) {
   return h("div.access-fact" + (tone ? ".tone-" + tone : ""), null, h("span", null, label),
@@ -1039,13 +1037,9 @@ function refreshDerived(state) {
         onclick: () => { navigateManage({ page: "settings", section: "roles" }); selectAccess(role); } }, role.meta.title))
         : h("p", null, t("access.noRolesLong")))));
   } else if (e && !e.unavailable) {
-    const native = nativeOf(e.agentId);
-    lines.push(h("div.access-derived-row", null, h("span", null, t("access.modelSource")),
-      h("div", null, h("p", null, t("access.explain." + e.modelSource).replace("{endpoint}", e.route?.binding.endpointId || "")
-          .replace("{native}", native?.model || t("access.unknown"))),
-        e.route && e.ownModel ? h("p.access-warn", null, t("access.routeOverrides").replace("{model}", e.ownModel)) : null)));
-    if (area === "profiles") lines.push(h("p.access-derived-note", null,
-      t(state.group.observation?.source === "global-worker" ? "access.profileInherits" : "access.profileExplicit")));
+    // The header already states the model and its source; only a saved value
+    // that will not launch needs words here.
+    if (e.route && e.ownModel) lines.push(h("p.access-warn", null, t("access.routeOverrides").replace("{model}", e.ownModel)));
   } else if (e?.unavailable) lines.push(h("p.access-warn", null, e.unavailable));
   host.replaceChildren(...lines);
 }

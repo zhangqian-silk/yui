@@ -45,3 +45,13 @@ Reproduce: `npm run build`, then `harness/start.sh full 4301` (also `readonly 43
     detail at 390 and 1365; Save stays disabled;
   - nomodels: services page shows the read error with Retry;
   - touch (`pointer:coarse`): rows ≥81px, every button/summary ≥40px.
+
+## Detail panel simplification (follow-up)
+
+The detail is one frame with a flat interior: a header with the name and the launch facts on one line
+(Agent · model · effort · source), groups separated by hairlines with small muted headings instead of
+nested cards, saved value and reset on one row under each field, the "defaults apply to later launches"
+note moved into the sticky footer (replaced by the unsaved count while editing), and the model-source box
+removed — the header already states it; only an override warning remains as a slim inline strip.
+Screenshots: `d-1365-role.png`, `d-390-role.png`, `d-1365-agent.png`, `d-1365-role-expanded.png`,
+`d-1365-dirty.png`.
