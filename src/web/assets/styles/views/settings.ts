@@ -140,6 +140,8 @@ export const SETTINGS_STYLES = `
 }
 
 .agent-inspector{min-width:0;border:1px solid var(--line);border-radius:var(--r-lg);background:var(--surface);overflow:clip}
+/* Opening a detail on a narrow screen scrolls it below the sticky top bar. */
+.agent-inspector,.access-detail{scroll-margin-top:calc(var(--header-h) + 12px)}
 .agent-inspector-content{min-width:0}
 .agent-inspector-form{display:grid;gap:0;padding:0;min-width:0}
 .agent-inspector-canvas{display:grid;gap:0;padding:6px 18px 18px;min-width:0}
