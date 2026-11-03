@@ -42,6 +42,9 @@ test("role template preview is read-only; application is atomic and pins role, t
   assert.deepEqual(store.getGlobalRole("reviewer"), initial);
   assert.ok(preview.changes.some(change => change.key === "systemPrompt" && change.after === "Inspect without edits"));
   assert.equal(preview.result.systemPrompt, "Inspect without edits", "the preview carries the instructions the Role will read");
+  const blank = value => value === null || value === undefined || value === "" || (Array.isArray(value) && !value.length);
+  assert.ok(!preview.changes.some(change => blank(change.before) && blank(change.after)),
+    "an empty value replaced by another empty value (null, \"\" or []) is not reported as a change");
   assert.ok(Object.hasOwn(preview.result, "description") && Object.hasOwn(preview.result, "constraints"));
   const body = { id: "role/reviewer", profileId: "reader", revision: preview.revision, acknowledgeLive: false };
   store.saveAgentProfile(updateAgentProfile(store.getAgentProfile("reader"), { instructions: "New version" }, new Date()));
