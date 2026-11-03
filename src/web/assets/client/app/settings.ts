@@ -447,7 +447,11 @@ function fieldText(kind, field, fallback = "") {
   return t("settings." + kind + "." + field.key, fallback);
 }
 function editor(field, group, state) {
-  const fieldLabel = () => h("span", { "data-i18n": "settings.field." + field.key, "data-i18n-fallback": field.label }, fieldText("field", field, field.label));
+  // Execution members show short labels in their compact block; the full
+  // name stays available as the label's title.
+  const shortKey = /^(agent|role|profile)\//.test(group.id || "") ? "access.short." + field.key : "";
+  const fieldLabel = () => shortKey && t(shortKey, "") ? h("span", { title: fieldText("field", field, field.label) }, t(shortKey))
+    : h("span", { "data-i18n": "settings.field." + field.key, "data-i18n-fallback": field.label }, fieldText("field", field, field.label));
   const label = h("label.field", null, fieldLabel());
   let control;
   if (field.kind === "boolean" || field.choices && field.choices.length) {
@@ -486,9 +490,10 @@ function editor(field, group, state) {
     markDirty("server", groups.some(g => g.dirty && !isAgentGroup(g.meta)));
     markAccessDirty();
     state.save.disabled = state.readOnly || !state.dirty || state.pending || state.capabilityPending || state.unknown;
-    if (!state.unknown && !state.pending) state.receipt.textContent = state.dirty ? t("settings.unsaved") : "";
+    if (!state.unknown && !state.pending) state.receipt.textContent = "";
     state.dirtyIndicator && (state.dirtyIndicator.textContent = t("settings.editCount").replace("{count}", String(state.editors.filter(e => e.changed()).length)));
     if (state.dirtyIndicator) state.dirtyIndicator.dataset.dirty = String(state.dirty);
+    if (state.form?.dataset) state.form.dataset.dirty = String(state.dirty);
     if (accessSection()) renderAgentIndex();
   }
   function listen() {
@@ -710,8 +715,9 @@ function editCount(state) {
 function collapsedSection(titleKey, items) {
   const changed = () => items.some(item => item.changed());
   const count = h("span.agent-config-count");
+  const hint = t(titleKey.replace("settings.group.", "access.groupHint."), "");
   const node = h("details.agent-config-section.agent-config-more", null,
-    h("summary", null, h("h3", null, t(titleKey)), count));
+    h("summary", null, h("h3", null, t(titleKey)), hint ? h("span.agent-config-hint", null, hint) : null, count));
   node.addEventListener("input", () => { count.textContent = changed() ? t("settings.unsavedShort") : ""; });
   node.addEventListener("change", () => { count.textContent = changed() ? t("settings.unsavedShort") : ""; });
   return node;
@@ -822,7 +828,7 @@ function renderGroup(state, group) {
   const receipt = h("p.settings-receipt.agent-receipt", { role: "status", "aria-live": "polite" });
   const save = h("button.btn.btn-primary", { type: "submit", disabled: true, "data-i18n": "settings.save" }, t("settings.save"));
   state.save = save; state.receipt = receipt;
-  const form = h("form.settings-stack.agent-inspector-form");
+  const form = h("form.settings-stack.agent-inspector-form", { dataset: { dirty: "false" } });
   const canvas = h("div.agent-inspector-canvas");
   const actionFooter = h("div.agent-action-bar");
   renderGroupSummary(state);
@@ -841,7 +847,7 @@ function renderGroup(state, group) {
     grouped.get(key).push(item);
   }
   let capabilities;
-  if (group.agentId) {
+  if (group.agentId && group.fields.some(field => field.key === "model")) {
     const info = h("p.agent-capability-info", { role: "status" }, t("settings.notQueried"));
     const query = h("button.btn", { type: "button" }, t("settings.queryCapabilities"));
     const refresh = h("button.btn", { type: "button", disabled: state.readOnly }, t("settings.refreshCapabilities"));
@@ -881,16 +887,27 @@ function renderGroup(state, group) {
         }
       }
     }
-    query.addEventListener("click", () => load(false)); refresh.addEventListener("click", () => load(true));
-    capabilities = h("section.agent-config-section.agent-capability-section", null,
-      h("div.agent-section-heading", null,
-        h("div", null, h("h3", null, t("settings.capability.title")), h("p", null, t("settings.capability.help"))),
-        h("div.settings-actions", null, query, refresh)),
-      info, output);
+    query.addEventListener("click", () => { refresh.hidden = state.readOnly; return load(false); });
+    refresh.addEventListener("click", () => load(true));
+    refresh.hidden = true;
+    capabilities = h("div.agent-capability-section.agent-capability-inline", { title: t("settings.capability.help") },
+      h("div.agent-capability-line", null, info, h("div.settings-actions", null, query, refresh)), output);
   }
   const groupOrder = area === "server"
     ? ["settings.group.defaults", "settings.group.runtime", "settings.group.workflow", "settings.group.resources", "settings.group.tools"]
     : ["settings.group.identity", "settings.group.models", "settings.group.workspace", "settings.group.instructions", "settings.group.launch", "settings.group.permissions"];
+  // Execution members: the short daily choices (enabled, Agent, model,
+  // effort) form one compact block without headings; each is one line.
+  if (area !== "server") {
+    const core = ["settings.group.identity", "settings.group.models"].flatMap(key => grouped.get(key) || []);
+    if (core.length) {
+      const section = h("section.agent-config-section.agent-config-primary.agent-config-core");
+      section.append(h("div.agent-field-grid.agent-field-grid-compact", null, core.map(item => item.row)));
+      if (capabilities) section.append(capabilities);
+      canvas.append(section);
+    }
+    grouped.delete("settings.group.identity"); grouped.delete("settings.group.models");
+  }
   for (const key of groupOrder) {
     const items = grouped.get(key);
     if (!items?.length) continue;
@@ -904,12 +921,12 @@ function renderGroup(state, group) {
     if (key === "settings.group.models" && capabilities) section.append(capabilities);
     canvas.append(section);
   }
-  if (capabilities && !grouped.get("settings.group.models")) canvas.append(capabilities);
+  if (capabilities && !capabilities.parentNode) canvas.append(capabilities);
   if (isRole && Array.isArray(group.profiles)) {
     const profileApplication = roleProfileApplication(state, group);
     profileApplication.classList.add("agent-profile-section");
     canvas.append(h("details.agent-config-section.agent-config-more.agent-profile-more", null,
-      h("summary", null, h("h3", null, t("settings.profileApplyTitle")),
+      h("summary", null, h("h3", null, t("settings.profileApplyTitle")), h("span.agent-config-hint", null, t("access.groupHint.profile")),
         h("span.agent-config-count", null, group.profiles.length ? String(group.profiles.length) : "")), profileApplication));
   }
   const acknowledge = h("input", { type: "checkbox" });

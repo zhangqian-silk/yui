@@ -68,3 +68,16 @@ Screenshots: `d-1365-role.png`, `d-390-role.png`, `d-1365-agent.png`, `d-1365-ro
 - `harness/motion.py` checks: transition started/finished for open and close, row switch animates the
   content only, focus shows help + `aria-describedby`, 390 animates the detail, reduced motion runs no
   transition. `c-open-frame1.png` is a frame captured at 8% playback.
+
+## Third pass: compact core block and self-explaining sections
+
+- Enabled / Agent / Model / Effort are one compact block without headings: each is a single line
+  (short label · control · Reset), two per row when the detail is wide (76px for all four at 1365/1920),
+  four 34px lines at 390. Full field names and the saved-value note are hover titles.
+- "Native capabilities" became one line under the model fields: what it does ("read the options this Agent
+  supports and pick from a list"; tooltip: no Session, no quota) and one "Read supported models" button;
+  "Read again" appears only after a read. Agents without a model field no longer show it.
+- Collapsed groups say what they hold in the summary (e.g. Workspace — default working directory for new
+  Sessions); "Apply from Profile" is now "Overwrite from a Profile template — copy once, preview first".
+- The running-Session acknowledgement appears only once there are edits to save; the duplicate
+  "Unsaved changes" receipt line is gone. `harness/compact.py` measures the block and the dirty state.
