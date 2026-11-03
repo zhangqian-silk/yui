@@ -51,6 +51,37 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.22.0 compatibility and migration notes
+
+Context reads now support bounded discovery, precise batched original retrieval,
+body transport receipts and focused notifications. Runtime/Role Skills organize
+required material around actions and recovery after compaction; pointers and
+transport receipts never prove semantic reading or acknowledge an input.
+Full originals remain available. Automated consumers must follow explicit
+pagination and retrieval references rather than assuming every default response
+contains every body. Help is focused by default; consumers needing the complete
+recursive command tree must explicitly request recursive help, including JSON
+consumers affected by the changed child projection.
+
+Host restoration and Controller scheduling/SQLite transaction boundaries are
+bounded without replaying unknown effects. Codex Host native title mutation is
+omitted where it could stall execution; Yui presentation retains Role instance
+codes and planning markers, but an unapplied native title is not recorded as
+success. Codex temporary-directory exclusion options are preserved end to end.
+
+Storage advances to **1.26** through the centralized **1.25 → 1.26** migration;
+the already-published 1.24 → 1.25 migration is unchanged. Back up the Home and
+use the normal upgrade/migration path; do not open a migrated Home with an older
+binary. Controller/Host protocols remain v1. Publishing this version does not
+update the global CLI, migrate a production Home or restart its services.
+
+The maintained evaluation entry is `scripts/eval/`, with shared infrastructure
+separate from context-specific logic. Context guidance and historical analyses
+live under `docs/evaluations/context/`; the old `scripts/collaboration-eval/`
+entry is retired. Engineering gathers measurements; Agents interpret actual
+experimental and production traces, including compaction boundaries and missing
+evidence. Local output reductions are not a claim of universal token savings.
+
 ### 2.21.0 compatibility and migration notes
 
 Ordinary Task, Assignment and frozen-context evidence reads now use the local
