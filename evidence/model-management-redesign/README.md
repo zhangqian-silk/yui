@@ -96,3 +96,5 @@ Screenshots: `d-1365-role.png`, `d-390-role.png`, `d-1365-agent.png`, `d-1365-ro
   `p-*.png`.
 
 - Fifth pass: the Role workspace is no longer shown (nor written) in execution details. The template picker is a single radio list: name + description, one 42px line each; launch facts appear only in the change list. `s-*.png`.
+
+- Sixth pass: choosing a template previews the description, system instructions and constraints the Role will read after applying (Changes / Unchanged tag each; long text clamps with Show all). The preview API adds an additive `result` with those three values; the settings table keeps the short settings. `t-*.png`, `harness/profile-text.py`.

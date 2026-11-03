@@ -66,7 +66,8 @@ store.transaction(w => {
     w.saveGlobalRole(role("reviewer", codex, "gpt-6.1-sol", "max"));
     w.saveGlobalRole(role("ui-developer", claude, "", "", { description: "Independent product and frontend design work." }));
     w.saveAgentProfile(createAgentProfile({ id: "reader", runtime: { source: "global-worker" }, description: "Read-only research template" }, now));
-    w.saveAgentProfile(createAgentProfile({ id: "designer", runtime: { source: "explicit", agentId: "claude", model: "opus", effort: "high" }, description: "Design and frontend work" }, now));
+    w.saveAgentProfile(createAgentProfile({ id: "designer", runtime: { source: "explicit", agentId: "claude", model: "opus", effort: "high" }, description: "Design and frontend work",
+      instructions: "You own product and frontend design.\nStart from the user's scenario, not from the existing layout.\nPrefer one clear primary action per view.\nKeep copy short and concrete; avoid explanations users must read before acting.\nVerify every change in a real browser at desktop, tablet and phone widths.\nNever change production configuration or personal settings." }, now));
     w.saveAgentProfile(createAgentProfile({ id: "fast-fix", runtime: { source: "explicit", agentId: "codex", model: "gpt-6-astra", effort: "low" } }, now));
   }
   const config = { schemaVersion: CURRENT_CONFIG_SCHEMA_VERSION, defaultAgent: "codex", defaultWorkspace: ws };
