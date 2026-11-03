@@ -481,7 +481,9 @@ function editor(field, group, state) {
     helpText ? h("p.agent-field-help", { id: helpId }, helpText) : null,
     technical || takesEffect || field.takesEffect ? h("small.settings-field-meta", { title: [technical, takesEffect || field.takesEffect].filter(Boolean).join(" · ") },
       [technical, takesEffect || field.takesEffect].filter(Boolean).join(" · ")) : null,
-    field.reset ? h("label.settings-reset", { title: t("settings.reset") }, reset, t("settings.resetShort")) : null);
+    // Execution members have no separate reset control: the user picks or
+    // types the value; emptying a clearable field removes the saved setting.
+    field.reset && !shortKey ? h("label.settings-reset", { title: t("settings.reset") }, reset, t("settings.resetShort")) : null);
   let unavailable = false;
   function mark() {
     control.disabled = state.readOnly || reset.checked || unavailable;
@@ -508,7 +510,7 @@ function editor(field, group, state) {
     get value() { return reset.checked ? "" : control.value; },
     get blocked() { return unavailable && !reset.checked && control.value !== "" && control.value !== initial; },
     changed: () => reset.checked || control.value !== initial,
-    change: () => reset.checked || (["model", "effort"].includes(field.key) && field.reset && control.value === "")
+    change: () => reset.checked || (field.reset && (shortKey || ["model", "effort"].includes(field.key)) && String(control.value).trim() === "")
       ? { key: field.key, reset: true } : { key: field.key, value: inputValue(field, control) },
     setChoices(choices, options = {}) {
       const value = control.value;

@@ -355,6 +355,7 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   assert.ok(compact && compact === editorFor("enabled").row.parentNode && compact === editorFor("effort").row.parentNode,
     "enabled, model and effort share the compact block");
   assert.match(roleView, /settings.editCount/, "the sticky action footer reports unsaved state");
+  assert.doesNotMatch(roleView, /settings.resetShort|settings.reset\b/, "execution members have no separate reset checkbox");
   assert.match(SETTINGS_STYLES, /\.agent-inspector\{[^}]*overflow:clip/,
     "the inspector must not become the sticky containing block for its action footer");
   assert.match(SETTINGS_STYLES, /\.agent-native-head\{[^}]*flex-wrap:wrap/,

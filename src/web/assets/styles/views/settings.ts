@@ -181,7 +181,7 @@ export const SETTINGS_STYLES = `
    available on focus / hover instead of taking lines. */
 .agent-config-core{gap:10px;padding-top:14px}
 .agent-field-grid.agent-field-grid-compact{grid-template-columns:repeat(auto-fill,minmax(min(100%,250px),1fr));gap:8px 22px}
-.agent-field-grid-compact>.settings-field{display:grid;grid-template-columns:64px minmax(0,1fr) auto;align-items:center;gap:4px 10px}
+.agent-field-grid-compact>.settings-field{display:grid;grid-template-columns:64px minmax(0,1fr);align-items:center;gap:4px 10px}
 .agent-field-grid-compact>.settings-field>label.field>span{grid-column:1;color:var(--ink-3);font-size:var(--fs-xs);font-weight:500;line-height:1.3}
 .agent-field-grid-compact>.settings-field>label.field>:is(input,select,textarea){grid-column:2;height:34px;min-height:34px;font-size:var(--fs-sm)}
 .agent-field-grid-compact>.settings-field>small.settings-field-meta{display:none}
