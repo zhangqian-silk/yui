@@ -458,7 +458,7 @@ function editor(field, group, state) {
     const values = field.kind === "boolean" ? ["true", "false"] : field.choices;
     control = h("select", null, values.map(v => h("option", { value: v },
       field.kind === "boolean" ? t(v === "true" ? "settings.booleanOn" : "settings.booleanOff") : v || t("settings.inherit"))));
-    if (!values.includes(String(field.value ?? ""))) control.append(h("option", { value: String(field.value ?? "") }, String(field.value ?? "")));
+    if (!values.includes(String(field.value ?? ""))) control.append(h("option", { value: String(field.value ?? "") }, String(field.value ?? "") || t("settings.inherit")));
   } else control = h(field.kind === "json" || field.kind === "multiline" ? "textarea" : "input", {
     ...(field.kind === "number" ? { type: "number", step: "any" } : {}),
     ...(field.kind === "json" || field.kind === "multiline" ? { rows: 4 } : {})
@@ -640,36 +640,61 @@ function profileDiffRows(changes) {
   }
   return rows;
 }
-// Description, instructions and constraints decide whether a template fits:
-// they are shown in full (clamped, expandable) as the Role will read them.
+// Description, instructions and constraints decide whether a template fits.
+// The dialog shows a short excerpt of each as the Role will read it; long or
+// changed text opens a side-by-side comparison (current | after applying).
 const PROFILE_TEXT_KEYS = ["description", "systemPrompt", "constraints"];
+function blankValue(value) {
+  return value === undefined || value === null || value === "" || (Array.isArray(value) && !value.length);
+}
+// null, "" and [] mean the same thing to a Role: not a change.
+function meaningfulChanges(changes) {
+  return changes.filter(change => !(blankValue(change.before) && blankValue(change.after)));
+}
+function textOf(value) {
+  if (blankValue(value)) return "";
+  if (Array.isArray(value)) return value.map(item => "• " + (typeof item === "string" ? item : JSON.stringify(item))).join("\n");
+  return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+}
+function openTextCompare(label, before, after) {
+  const pane = (title, value) => h("section.text-compare-pane", null, h("h3", null, title),
+    textOf(value) ? h("pre.text-compare-body", { tabindex: "0" }, textOf(value)) : h("p.profile-text-empty", null, t("access.profileEmpty")));
+  const close = h("button.icon-btn.guide-close", { type: "button", "aria-label": t("guide.close"), title: t("guide.close") }, "×");
+  const dialog = h("dialog.text-compare", { "aria-label": label },
+    h("header.text-compare-head", null, h("h2", null, label), close),
+    h("div.text-compare-grid", null, pane(t("settings.profileBefore"), before), pane(t("settings.profileAfter"), after)));
+  const opener = typeof document !== "undefined" ? document.activeElement : null;
+  const done = () => { if (dialog.open) dialog.close?.(); dialog.remove?.(); opener?.focus?.(); };
+  close.addEventListener("click", done);
+  dialog.addEventListener?.("cancel", event => { event.preventDefault?.(); done(); });
+  dialog.addEventListener?.("click", event => { if (event.target === dialog) done(); });
+  document.body?.append?.(dialog);
+  if (typeof dialog.showModal === "function") dialog.showModal(); else dialog.open = true;
+  close.focus?.();
+  return dialog;
+}
 function profileTextSection(value) {
-  const changed = new Set(value.changes.map(change => change.key));
-  const fromChanges = key => value.changes.find(change => change.key === key)?.after;
+  const changes = meaningfulChanges(value.changes);
+  const changeOf = key => changes.find(change => change.key === key);
   const blocks = PROFILE_TEXT_KEYS.map(key => {
+    const change = changeOf(key);
     const known = value.result && Object.hasOwn(value.result, key);
-    const content = known ? value.result[key] : changed.has(key) ? fromChanges(key) : undefined;
-    const empty = content === undefined || content === null || content === "" || (Array.isArray(content) && !content.length);
-    const body = content === undefined ? h("p.profile-text-empty", null, t("access.profileSame"))
-      : empty ? h("p.profile-text-empty", null, t("access.profileEmpty"))
-      : Array.isArray(content) ? h("ul.profile-text-body", null, content.map(item => h("li", null, typeof item === "string" ? item : JSON.stringify(item))))
-      : h("p.profile-text-body", null, typeof content === "string" ? content : JSON.stringify(content, null, 2));
-    const long = !empty && content !== undefined && (Array.isArray(content) ? content.length > 4 : String(content).length > 220 || String(content).split("\n").length > 4);
-    const block = h("div.profile-text", { dataset: { key, clamped: String(long) } },
-      h("div.profile-text-head", null, h("span", null, t("settings.field." + key, key)),
-        h("span.profile-text-tag", { dataset: { changed: String(changed.has(key)) } }, t(changed.has(key) ? "access.profileWillChange" : "access.profileUnchanged"))),
+    const after = change ? change.after : known ? value.result[key] : undefined;
+    const before = change ? change.before : after;
+    const label = t("settings.field." + key, key);
+    const text = textOf(after);
+    const body = after === undefined ? h("p.profile-text-empty", null, t("access.profileSame"))
+      : !text ? h("p.profile-text-empty", null, t("access.profileEmpty"))
+      : h("p.profile-text-body", null, text);
+    const long = text.length > 160 || text.split("\n").length > 2;
+    const compare = change || long ? h("button.btn-link.profile-text-toggle", { type: "button", dataset: { compare: key } },
+      t(change ? "access.profileCompare" : "access.profileReadAll")) : null;
+    compare?.addEventListener("click", () => openTextCompare(label, before, after));
+    return h("div.profile-text", { dataset: { key, changed: String(!!change) } },
+      h("div.profile-text-head", null, h("span", null, label),
+        h("span.profile-text-tag", { dataset: { changed: String(!!change) } }, t(change ? "access.profileWillChange" : "access.profileUnchanged")),
+        compare),
       body);
-    if (long) {
-      const toggle = h("button.btn-link.profile-text-toggle", { type: "button", "aria-expanded": "false" }, t("access.profileExpand"));
-      toggle.addEventListener("click", () => {
-        const open = block.dataset.clamped === "true";
-        block.dataset.clamped = String(!open);
-        toggle.setAttribute?.("aria-expanded", String(open));
-        toggle.textContent = t(open ? "access.profileCollapse" : "access.profileExpand");
-      });
-      block.append(toggle);
-    }
-    return block;
   });
   return h("section.profile-texts", { "aria-label": t("access.profileContent") }, blocks);
 }
@@ -746,9 +771,10 @@ function roleProfileApplication(state, group) {
       if (value.id !== group.id || value.profileId !== profileId) throw Error(t("settings.profilePreviewInvalid"));
       preview = value;
       result.dataset.profileId = profileId;
-      const textChanges = value.changes.filter(change => PROFILE_TEXT_KEYS.includes(change.key));
-      const rows = profileDiffRows(value.changes.filter(change => !PROFILE_TEXT_KEYS.includes(change.key)));
-      result.replaceChildren(
+      const changes = meaningfulChanges(value.changes);
+      const textChanges = changes.filter(change => PROFILE_TEXT_KEYS.includes(change.key));
+      const rows = profileDiffRows(changes.filter(change => !PROFILE_TEXT_KEYS.includes(change.key)));
+      result.replaceChildren(...[
         h("p.profile-status", null, t("access.profileChanges").replace("{count}", String(rows.length + textChanges.length)).replace("{profile}", profileId)),
         profileTextSection(value),
         rows.length ? h("table.settings-profile-diff", null,
@@ -759,7 +785,7 @@ function roleProfileApplication(state, group) {
             h("td", null, h("pre", null, row.before)),
             h("td", null, h("pre", null, row.after))))))
           : textChanges.length ? null : h("p", null, t("access.profileNoChange")),
-        h("p.profile-copy-note", null, t("settings.profileCopyHelp")));
+        h("p.profile-copy-note", null, t("settings.profileCopyHelp"))].filter(Boolean));
       info.textContent = "";
     } catch (error) {
       if (current === epoch && state.renderGeneration === generation) info.textContent = error.message;
@@ -1046,7 +1072,10 @@ function renderGroup(state, group) {
   if (capabilities && !capabilities.parentNode) canvas.append(capabilities);
   if (isRole && Array.isArray(group.profiles)) {
     const profileApplication = roleProfileApplication(state, group);
-    canvas.append(h("div.agent-config-section.agent-config-more.agent-profile-more", null, profileApplication.trigger), profileApplication.dialog);
+    const entry = h("div.agent-config-section.agent-config-more.agent-profile-more", null, profileApplication.trigger);
+    const core = canvas.querySelector?.(".agent-config-core");
+    if (core && typeof core.after === "function" && core.parentNode === canvas) core.after(entry); else canvas.append(entry);
+    canvas.append(profileApplication.dialog);
   }
   const acknowledge = h("input", { type: "checkbox" });
   const liveAcknowledge = area === "agents" ? t("settings.acknowledge.agent") : area === "roles" ? t("settings.acknowledge.role") : "";
@@ -1285,6 +1314,9 @@ async function start(cursor) {
 i18n.subscribe(() => {
   [serverMore, agentMore].forEach(button => { if (button) button.textContent = t("settings.more"); });
   groups.forEach(renderGroupSummary);
+  for (const state of groups) {
+    if (state.group && state.form && !state.dirty && !state.pending && !state.unknown && /^(agent|role|profile)\//.test(state.group.id)) renderGroup(state, state.group);
+  }
   if (accessSection()) { mountAccessFrame(); renderAgentIndex(); }
 });
 void start();

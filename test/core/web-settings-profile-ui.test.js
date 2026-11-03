@@ -45,7 +45,8 @@ const control = (state, key) => walk(state.content).find(node => node.dataset.pr
 const option = (state, id) => walk(state.content).find(node => node.dataset.profileAction === "option" && node.dataset.profileId === id);
 const choose = (state, id) => option(state, id).handlers.click();
 const preview = profileId => ({ id: "role/worker", profileId, revision: "composite-" + profileId, agentId: "other",
-  changes: [{ key: "model", before: "current", after: "new" }, { key: "systemPrompt", before: "", after: "Inspect " + profileId }],
+  changes: [{ key: "model", before: "current", after: "new" }, { key: "systemPrompt", before: "", after: "Inspect " + profileId },
+    { key: "skills", before: [], after: null }],
   result: { description: "Template for " + profileId, systemPrompt: "Inspect " + profileId, constraints: ["No writes"] }, notice: "Copies once" });
 const role = () => ({ id: "role/worker", revision: "role-rev", agentId: "fixture",
   fields: [{ key: "model", label: "Model", kind: "text", value: "current" }],
@@ -71,6 +72,11 @@ test("Role Profile application previews a single snapshot and shares guarded set
   const previewText = text(control(state, "preview"));
   for (const expected of [/settings.field.description.*Template for reader/, /settings.field.systemPrompt.*access.profileWillChange.*Inspect reader/, /settings.field.constraints.*No writes/])
     assert.match(previewText, expected, "description, instructions and constraints are previewed as the Role will read them");
+  assert.doesNotMatch(previewText, /\bnull\b|settings.field.skills/, "no stray null and no empty-to-empty change");
+  const compare = walk(control(state, "preview")).find(node => node.dataset?.compare === "systemPrompt");
+  assert.ok(compare, "changed instructions open a before/after comparison");
+  const shown = compare.handlers.click();
+  assert.match(text(shown), /settings.profileBefore.*settings.profileAfter.*Inspect reader/, "the comparison shows current and applied text side by side");
   assert.equal(control(state, "confirm").disabled, false);
   control(state, "acknowledge").checked = true;
   let finish;

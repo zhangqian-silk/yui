@@ -148,6 +148,7 @@ export function createWebSettings(store: TaskStore, options: {
     try { return previewGlobalRoleProfileApplication(id.slice(5), profileId, store); }
     catch (error) { throw new WebRequestRejected(error instanceof Error ? error.message : "Profile unavailable."); }
   }
+  const blank = (value: unknown) => value === undefined || value === null || value === "" || (Array.isArray(value) && value.length === 0);
   function previewProfile(id: string, profileId: string) {
     const { role, profile, binding, patch } = profileCandidate(id, profileId);
     const previous = role.agentBindings[role.activeAgentId]!;
@@ -160,7 +161,8 @@ export function createWebSettings(store: TaskStore, options: {
     return {
       id, profileId, agentId: binding.agentId,
       revision: createHash("sha256").update(JSON.stringify({ role, profile, binding })).digest("hex"),
-      changes: Object.keys(after).filter(key => JSON.stringify(before[key]) !== JSON.stringify(after[key]))
+      // null, "" and [] are the same "not set" value for a Role: not a change.
+      changes: Object.keys(after).filter(key => JSON.stringify(before[key]) !== JSON.stringify(after[key]) && !(blank(before[key]) && blank(after[key])))
         .map(key => ({ key, before: before[key] ?? null, after: after[key] ?? null })),
       // What the Role will read after applying: the template's copied text, or
       // the Role's own value where the template copies nothing.
