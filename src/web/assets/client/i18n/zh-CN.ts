@@ -797,6 +797,7 @@ export const ZH_CN: Readonly<Partial<Record<MessageKey, string>>> = {
   "settings.default": "重置后的默认值",
   "settings.inherit": "继承 / 未配置",
   "settings.reset": "保存时重置此项",
+  "settings.resetShort": "重置",
   "settings.unsaved": "有未保存的更改",
   "settings.save": "保存此组",
   "settings.compare": "读取当前值并比较",

@@ -159,10 +159,21 @@ export const SETTINGS_STYLES = `
 .agent-field-grid .settings-field:last-child,.agent-field-grid .settings-field:nth-last-child(-n+2){border-bottom:0;padding-bottom:0}
 /* In the detail, a field is label, control, one muted help line, then saved
    value and reset on a single row. */
-.agent-field-grid>.settings-field{display:flex;flex-wrap:wrap;align-items:baseline;gap:5px 10px;padding:0;border:0}
-.agent-field-grid>.settings-field>*{flex:1 1 100%;min-width:0}
-.agent-field-grid>.settings-field>small{flex:1 1 auto}
-.agent-field-grid>.settings-field>.settings-reset{flex:0 0 auto;margin:0;color:var(--ink-3);font-size:var(--fs-2xs)}
+/* Label row: name · saved value · reset, then the control. Help is the
+   control's description: shown while the field is being edited, otherwise
+   available on hover (title) and to assistive tech (aria-describedby). */
+.agent-field-grid>.settings-field{display:flex;flex-wrap:wrap;align-items:baseline;align-content:flex-start;gap:6px 10px;padding:0;border:0}
+.agent-field-grid>.settings-field>*{min-width:0}
+.agent-field-grid>.settings-field>label.field{display:contents}
+.agent-field-grid>.settings-field>label.field>span{order:0;flex:0 1 auto}
+.agent-field-grid>.settings-field>small{order:4;flex:1 1 100%}
+.agent-field-grid>.settings-field>small.settings-field-meta{order:1;flex:1 1 auto;color:var(--ink-4);font-size:var(--fs-2xs);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.agent-field-grid>.settings-field>.settings-reset{order:2;flex:0 0 auto;margin:0 0 0 auto;color:var(--ink-3);font-size:var(--fs-2xs)}
+.agent-field-grid>.settings-field>label.field>:is(input,select,textarea),.agent-field-grid>.settings-field>label.field>.settings-custom,.agent-field-grid>.settings-field>:not(label):not(small):not(.settings-reset):not(.agent-field-help){order:3;flex:1 1 100%}
+.agent-field-grid>.settings-field>small:empty,.agent-field-grid>.settings-field>.settings-actions:empty{display:none}
+.agent-field-grid>.settings-field>.agent-field-help{order:4;flex:1 1 100%;display:none}
+.agent-field-grid>.settings-field:focus-within>.agent-field-help{display:block}
+.agent-section-heading p,.agent-native-head p,.agent-native-note{display:none}
 .settings-field>.field{gap:5px;min-width:0}
 .settings-field label.field>span{color:var(--ink-2);font-size:var(--fs-xs);font-weight:550}
 .agent-field-help{margin:0;color:var(--ink-3)!important;font-size:var(--fs-2xs)!important;line-height:1.45!important}
@@ -284,4 +295,21 @@ export const SETTINGS_STYLES = `
   .access-detail-bar .access-back{min-width:40px}
   .agent-inspector details>summary{min-height:40px;display:flex;align-items:center}
 }
+/* Opening and closing a detail on wide layouts: the list glides to its new
+   column while the detail slides in from the side (client accessTransition
+   adds .vt-access only while the transition runs). */
+.vt-access .access-list{view-transition-name:access-list}
+.vt-access .access-detail{view-transition-name:access-detail}
+::view-transition-group(access-list),::view-transition-group(access-detail){animation-duration:260ms;animation-timing-function:cubic-bezier(.2,0,0,1)}
+::view-transition-old(access-list),::view-transition-new(access-list){width:100%;height:100%;object-fit:none;object-position:0 0}
+/* The list changes layout (table ⇄ compact rows): never show both at once. */
+::view-transition-old(access-list){animation:access-fade-out 90ms cubic-bezier(.4,0,1,1) both}
+::view-transition-new(access-list){animation:access-fade-in 180ms cubic-bezier(.2,0,0,1) 90ms both}
+::view-transition-new(access-detail):only-child{animation:access-slide-in 260ms cubic-bezier(.2,0,0,1) both}
+::view-transition-old(access-detail):only-child{animation:access-slide-out 160ms cubic-bezier(.4,0,1,1) both}
+@keyframes access-fade-in{from{opacity:0}}
+@keyframes access-fade-out{to{opacity:0}}
+@keyframes access-slide-in{from{opacity:0;transform:translate3d(24px,0,0)}}
+@keyframes access-slide-out{to{opacity:0;transform:translate3d(16px,0,0)}}
+@media(prefers-reduced-motion:reduce){.vt-access .access-list,.vt-access .access-detail{view-transition-name:none}}
 `;

@@ -290,7 +290,40 @@ function renderInspectorEmpty() {
   accessLayout.dataset.detail = "closed";
   agentInspector.replaceChildren();
 }
+// Detail motion. Wide: list and detail glide to their new columns (a View
+// Transition, names exist only while it runs). Narrow, or a row switch while
+// open: the new content rises in. Reduced motion or no API: instant.
+function accessMotionAllowed() {
+  return typeof matchMedia === "function" && !matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+function accessTransition(update) {
+  const root = typeof document !== "undefined" ? document.documentElement : null;
+  const wide = accessLayout.getBoundingClientRect?.().width >= 900;
+  if (!root || !wide || !accessMotionAllowed() || typeof document.startViewTransition !== "function" || document.hidden) { update(); return; }
+  root.classList.add("vt-access");
+  let transition;
+  try { transition = document.startViewTransition(update); } catch { root.classList.remove("vt-access"); update(); return; }
+  transition.finished.finally(() => root.classList.remove("vt-access"));
+}
+function riseIn(el) {
+  if (!el || typeof el.animate !== "function" || !accessMotionAllowed()) return;
+  el.animate([{ opacity: 0, transform: "translate3d(0,6px,0)" }, { opacity: 1, transform: "none" }],
+    { duration: 180, easing: "cubic-bezier(.2,0,0,1)" });
+}
 function selectAccess(state) {
+  const wasOpen = accessLayout.dataset.detail === "open";
+  const opening = !!state && !wasOpen;
+  if (!state && wasOpen || opening) {
+    const wide = accessLayout.getBoundingClientRect?.().width >= 900;
+    accessTransition(() => applyAccessSelection(state));
+    if (!wide) riseIn(state ? agentInspector : agentIndex);
+    return;
+  }
+  const switching = !!state && state !== selectedAccess();
+  applyAccessSelection(state);
+  if (switching) riseIn(agentInspector.firstElementChild || agentInspector);
+}
+function applyAccessSelection(state) {
   if (!state) {
     const closedId = selectedAccess()?.meta.id || "";
     agentInspectorOpen = false;
@@ -437,10 +470,13 @@ function editor(field, group, state) {
     Object.hasOwn(field, "defaultValue") ? t("settings.default") + ": " + format(field.defaultValue) : "",
     field.value === "" ? t("settings.inherit") : ""
   ].filter(Boolean).join(" · ");
-  const row = h("div.settings-field", { dataset: { field: field.key } }, label,
-    help ? h("p.agent-field-help", null, help) : field.summary ? h("p.agent-field-help", null, field.summary) : null,
-    technical || takesEffect || field.takesEffect ? h("small", null, [technical, takesEffect || field.takesEffect].filter(Boolean).join(" · ")) : null,
-    field.reset ? h("label.settings-reset", null, reset, t("settings.reset")) : null);
+  const helpText = help || field.summary || "";
+  const helpId = helpText ? "help-" + String(group.id + "-" + field.key).replace(/[^A-Za-z0-9_-]/g, "-") : "";
+  if (helpId && control.setAttribute) control.setAttribute("aria-describedby", helpId);
+  const row = h("div.settings-field", { dataset: { field: field.key }, ...(helpText ? { title: helpText } : {}) }, label,
+    helpText ? h("p.agent-field-help", { id: helpId }, helpText) : null,
+    technical || takesEffect || field.takesEffect ? h("small.settings-field-meta", null, [technical, takesEffect || field.takesEffect].filter(Boolean).join(" · ")) : null,
+    field.reset ? h("label.settings-reset", { title: t("settings.reset") }, reset, t("settings.resetShort")) : null);
   let unavailable = false;
   function mark() {
     control.disabled = state.readOnly || reset.checked || unavailable;

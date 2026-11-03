@@ -55,3 +55,16 @@ note moved into the sticky footer (replaced by the unsaved count while editing),
 removed — the header already states it; only an override warning remains as a slim inline strip.
 Screenshots: `d-1365-role.png`, `d-390-role.png`, `d-1365-agent.png`, `d-1365-role-expanded.png`,
 `d-1365-dirty.png`.
+
+## Second pass: denser fields and open/close motion
+
+- Each field is now one label row (name · saved value · Reset) above its control. Help text is the
+  control's description: visible while the field is focused, on hover (title) and to screen readers
+  (`aria-describedby`), hidden otherwise. Section intro paragraphs are hidden the same way.
+- Opening/closing a detail on wide layouts runs a same-document View Transition: the list glides to its
+  new column (old layout fades out before the new one fades in, never both), the detail slides in 24px
+  from the side. Switching rows while open fades/rises only the detail content. Narrow layouts rise the
+  detail (or the list on Back) in. `prefers-reduced-motion` and browsers without the API change instantly.
+- `harness/motion.py` checks: transition started/finished for open and close, row switch animates the
+  content only, focus shows help + `aria-describedby`, 390 animates the detail, reduced motion runs no
+  transition. `c-open-frame1.png` is a frame captured at 8% playback.
