@@ -42,6 +42,8 @@ function mount() {
 const walk = node => typeof node === "object" && node ? [node, ...node.children.flatMap(walk)] : [];
 const text = node => typeof node === "object" && node ? [node.textContent || "", ...node.children.map(text)].join(" ") : String(node);
 const control = (state, key) => walk(state.content).find(node => node.dataset.profileAction === key);
+const option = (state, id) => walk(state.content).find(node => node.dataset.profileAction === "option" && node.dataset.profileId === id);
+const choose = (state, id) => option(state, id).handlers.click();
 const preview = profileId => ({ id: "role/worker", profileId, revision: "composite-" + profileId, agentId: "other",
   changes: [{ key: "model", before: "current", after: "new" }], notice: "Copies once" });
 const role = () => ({ id: "role/worker", revision: "role-rev", agentId: "fixture",
@@ -51,13 +53,14 @@ const role = () => ({ id: "role/worker", revision: "role-rev", agentId: "fixture
 
 test("Role Profile application previews a single snapshot and shares guarded settings mutation identity", async () => {
   const { state, context, reads, writes } = mount();
-  const select = control(state, "select");
-  assert.ok(select, "the Role exposes one template selector");
-  assert.equal(select.value, "");
-  assert.equal(select.children.find(option => option.value === "broken").disabled, true);
+  assert.ok(control(state, "open"), "the Role exposes one entry that opens the template dialog");
+  assert.ok(option(state, "reader") && option(state, "writer"), "each template is one selectable card");
+  assert.equal(state.profileApplication.selected(), "");
+  assert.equal(option(state, "broken").disabled, true);
   assert.match(text(state.content), /Agent missing/);
-  select.value = "reader";
-  await select.handlers.change();
+  control(state, "open").handlers.click();
+  await choose(state, "reader");
+  assert.equal(option(state, "reader").dataset.selected, "true");
   assert.equal(reads.length, 1);
   assert.equal(writes.length, 0, "choosing a template is read-only");
   assert.match(text(control(state, "preview")), /current.*new/);
@@ -69,7 +72,7 @@ test("Role Profile application previews a single snapshot and shares guarded set
   let finish;
   context.submitMutation = (...args) => { writes.push(args); return new Promise(resolve => { finish = resolve; }); };
   const applying = control(state, "confirm").handlers.click();
-  assert.equal(select.disabled, true);
+  assert.equal(option(state, "writer").disabled, true);
   assert.equal(state.editors[0].control.disabled, true, "both profile and ordinary editors are frozen during application");
   await control(state, "confirm").handlers.click();
   assert.equal(writes.length, 1, "an in-flight application cannot be duplicated");
@@ -80,12 +83,11 @@ test("Role Profile application previews a single snapshot and shares guarded set
   assert.deepEqual(JSON.parse(JSON.stringify(writes[0][2])), {
     id: "role/worker", profileId: "reader", revision: "composite-reader", acknowledgeLive: true
   });
-  assert.equal(control(state, "select").value, "", "success resets the selector instead of implying a durable binding");
+  assert.equal(state.profileApplication.selected(), "", "success resets the choice instead of implying a durable binding");
 
   context.renderGroup(state, { ...role(), readOnly: true });
-  assert.equal(control(state, "select").disabled, false, "snapshot preview remains available outside disabled field controls");
-  control(state, "select").value = "reader";
-  await control(state, "select").handlers.change();
+  assert.equal(option(state, "reader").disabled, false, "snapshot preview remains available outside disabled field controls");
+  await choose(state, "reader");
   assert.equal(control(state, "confirm").disabled, true);
   await control(state, "confirm").handlers.click();
   assert.equal(writes.length, 1, "readonly never posts");
@@ -95,14 +97,12 @@ test("Profile previews fence stale selection, draft edits and unknown outcomes w
   const { state, context } = mount();
   const pending = [];
   context.requestJson = () => new Promise(resolve => pending.push(resolve));
-  const select = control(state, "select");
-  select.value = "reader"; const first = select.handlers.change();
-  select.value = "writer"; const second = select.handlers.change();
+  const first = choose(state, "reader");
+  const second = choose(state, "writer");
   pending[1](preview("writer")); await second;
   pending[0](preview("reader")); await first;
-  assert.match(text(control(state, "preview")), /writer/);
-  assert.doesNotMatch(text(control(state, "preview")), /reader/);
-  select.value = "reader"; const late = select.handlers.change();
+  assert.equal(control(state, "preview").dataset.profileId, "writer", "a stale earlier preview never replaces the latest choice");
+  const late = choose(state, "reader");
   const draft = state.editors[0].control;
   draft.value = "draft"; draft.handlers.input();
   pending[2](preview("reader")); await late;
@@ -111,18 +111,18 @@ test("Profile previews fence stale selection, draft edits and unknown outcomes w
   assert.equal(state.dirty, true);
   context.renderGroup(state, role());
   context.requestJson = async () => preview("reader");
-  control(state, "select").value = "reader"; await control(state, "select").handlers.change();
+  await choose(state, "reader");
   context.submitMutation = async () => { throw Object.assign(Error("Configuration changed"), { disposition: "not-submitted" }); };
   await control(state, "confirm").handlers.click();
   assert.equal(state.unknown, false);
-  assert.equal(control(state, "select").value, "reader", "a proven rejection retains the selection");
+  assert.equal(state.profileApplication.selected(), "reader", "a proven rejection retains the selection");
   assert.equal(control(state, "confirm").disabled, true, "rejected application requires a fresh preview");
-  await control(state, "select").handlers.change();
+  await choose(state, "reader");
   let count = 0;
   context.submitMutation = async () => { count++; throw Object.assign(Error("Lost response"), { disposition: "unknown" }); };
   await control(state, "confirm").handlers.click();
   assert.equal(state.unknown, true);
-  assert.equal(control(state, "select").value, "reader");
+  assert.equal(state.profileApplication.selected(), "reader");
   assert.match(text(state.content), /Lost response/);
   await control(state, "confirm").handlers.click();
   assert.equal(count, 1, "unknown writes must not replay");

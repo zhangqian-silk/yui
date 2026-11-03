@@ -614,69 +614,125 @@ function renderGroupSummary(state) {
 
 // A Profile is copied once into a Role. Selection and preview never change
 // the Role's draft, nor claim a durable Profile binding.
+// A template diff reads as single settings: nested objects (the Agent
+// execution configuration) are flattened to their changed leaves, and an
+// adapter id that only repeats the Agent change is left out.
+function profileDiffRows(changes) {
+  const plain = value => value && typeof value === "object" && !Array.isArray(value);
+  const shown = value => value === undefined || value === null || value === "" ? "—"
+    : Array.isArray(value) ? (value.length ? value.map(item => typeof item === "string" ? item : JSON.stringify(item)).join("\n") : "—")
+    : typeof value === "object" ? JSON.stringify(value) : String(value);
+  const label = key => t("access.short." + key, t("settings.field." + key, key));
+  const rows = [];
+  const agentChanged = changes.some(change => ["agent", "activeAgentId"].includes(change.key));
+  for (const change of changes) {
+    if (plain(change.before) || plain(change.after)) {
+      const walk = (before, after, path) => {
+        for (const key of new Set([...Object.keys(before || {}), ...Object.keys(after || {})])) {
+          const b = before?.[key], a = after?.[key];
+          if (plain(b) || plain(a)) walk(plain(b) ? b : {}, plain(a) ? a : {}, path.concat(key));
+          else if (JSON.stringify(b) !== JSON.stringify(a) && !(key === "adapterId" && agentChanged))
+            rows.push({ label: path.concat(key).map(label).join(" · "), before: shown(b), after: shown(a) });
+        }
+      };
+      walk(plain(change.before) ? change.before : {}, plain(change.after) ? change.after : {}, []);
+    } else rows.push({ label: label(change.key), before: shown(change.before), after: shown(change.after) });
+  }
+  return rows;
+}
+// Role ← Profile template. A row in the detail opens one dialog: pick a
+// template card, read the exact change list, confirm. The copy is one-time;
+// the live-Session acknowledgement appears only when a Session may be live.
 function roleProfileApplication(state, group) {
-  let epoch = 0, preview = null, loading = false;
+  let epoch = 0, preview = null, loading = false, selected = "";
   const generation = state.renderGeneration;
-  const select = h("select", { dataset: { profileAction: "select" } },
-    h("option", { value: "" }, t("settings.profileChoose")),
-    group.profiles.map(profile => h("option", { value: profile.id, disabled: !profile.available },
-      profile.id + (profile.available ? "" : " · " + (profile.reason || t("settings.profileUnavailable"))))));
-  select.value = "";
-  const info = h("p.settings-receipt", { role: "status", "aria-live": "polite" });
+  const session = group.observation?.session;
+  const mayBeLive = session !== "absent";
+  const profileFacts = id => {
+    const member = groups.find(item => item.meta?.id === "profile/" + id);
+    const e = member?.group ? effective(member) : null;
+    return e && !e.unavailable ? [e.agentId, (e.model || t("access.nativeDefault")) + " · " + (e.effort || t("access.nativeDefault"))].filter(Boolean).join(" · ") : "";
+  };
+  const options = group.profiles.map(profile => {
+    // Template facts come from the Profile list, which may load after this
+    // Role; they are filled each time the dialog opens.
+    const facts = h("code.profile-option-facts");
+    const option = h("button.profile-option", { type: "button", role: "radio", "aria-checked": "false",
+      disabled: !profile.available, dataset: { profileAction: "option", profileId: profile.id } },
+      h("strong", null, profile.id),
+      profile.available ? facts : h("small.profile-option-reason", null, profile.reason || t("settings.profileUnavailable")),
+      profile.description ? h("small", null, profile.description) : null);
+    option.addEventListener("click", () => choose(profile.id));
+    return { profile, option, facts };
+  });
+  const list = h("div.profile-options", { role: "radiogroup", "aria-label": t("settings.profileChoose") }, options.map(item => item.option));
+  const info = h("p.profile-status", { role: "status", "aria-live": "polite" }, t("access.profilePick"));
   const result = h("div.settings-profile-preview", { dataset: { profileAction: "preview" } });
   const acknowledge = h("input", { type: "checkbox", dataset: { profileAction: "acknowledge" } });
-  const confirm = h("button.btn.btn-primary", { type: "button", disabled: true, dataset: { profileAction: "confirm" } }, t("settings.profileApply"));
-  const reread = h("button.btn", { type: "button", disabled: true }, t("settings.profilePreview"));
+  const ackRow = h("label.profile-ack", null, acknowledge, t("settings.profileAcknowledge"));
+  ackRow.hidden = !mayBeLive;
+  const confirm = h("button.btn.btn-primary", { type: "button", disabled: true, dataset: { profileAction: "confirm" } }, t("access.profileConfirm"));
+  const cancel = h("button.btn", { type: "button", onclick: () => close() }, t("access.profileCancel"));
   const blocked = () => state.dirty || state.pending || state.unknown || state.capabilityPending;
   function sync() {
-    select.disabled = !!blocked();
-    reread.disabled = !!blocked() || loading || !select.value;
+    const lock = !!blocked() && !loading;
+    for (const { profile, option } of options) {
+      option.disabled = !profile.available || lock;
+      option.setAttribute?.("aria-checked", String(profile.id === selected));
+      option.dataset.selected = String(profile.id === selected);
+    }
     confirm.disabled = state.readOnly || !!blocked() || loading || !preview;
     acknowledge.disabled = state.readOnly || !!blocked() || !preview;
+    trigger.disabled = !group.profiles.length;
   }
   function invalidate() {
     epoch++; preview = null; loading = false;
-    result.replaceChildren();
-    info.textContent = state.unknown ? t("settings.unknown") : t("settings.profilePreviewInvalid");
+    result.replaceChildren(); delete result.dataset.profileId;
+    info.textContent = state.unknown ? t("settings.unknown") : blocked() ? t("settings.profileDraftBlocked") : t("access.profilePick");
     sync();
+  }
+  function choose(profileId) {
+    selected = profileId;
+    return read();
   }
   async function read() {
     const current = ++epoch;
-    preview = null; result.replaceChildren(); acknowledge.checked = false;
-    const profileId = select.value;
+    preview = null; result.replaceChildren(); delete result.dataset.profileId; acknowledge.checked = false;
+    const profileId = selected;
     if (blocked() || !group.profiles.some(profile => profile.id === profileId && profile.available)) {
-      loading = false; info.textContent = blocked() ? t("settings.profileDraftBlocked") : ""; sync(); return;
+      loading = false; info.textContent = blocked() ? t("settings.profileDraftBlocked") : t("access.profilePick"); sync(); return;
     }
     const baseline = state.group;
     loading = true; info.textContent = t("settings.profileLoading"); sync();
-    // Changing the selection is allowed while a read is in flight.
-    select.disabled = false;
     try {
       const value = await requestJson("/api/settings/profile?" + new URLSearchParams({ id: group.id, profileId }));
       if (current !== epoch || state.renderGeneration !== generation || baseline !== state.group || blocked()) return;
       if (value.id !== group.id || value.profileId !== profileId) throw Error(t("settings.profilePreviewInvalid"));
       preview = value;
-      result.replaceChildren(h("h4", null, t("settings.profileDifference") + " · " + profileId),
-        h("p", null, t("settings.profileCopyHelp")),
-        h("div.settings-profile-diff-scroll", null, h("table.settings-profile-diff", null,
+      result.dataset.profileId = profileId;
+      const rows = profileDiffRows(value.changes);
+      result.replaceChildren(
+        h("p.profile-status", null, t("access.profileChanges").replace("{count}", String(rows.length)).replace("{profile}", profileId)),
+        rows.length ? h("table.settings-profile-diff", null,
           h("thead", null, h("tr", null, ["settings.profileField", "settings.profileBefore", "settings.profileAfter"]
             .map(label => h("th", { scope: "col" }, t(label))))),
-          h("tbody", null, value.changes.map(change => h("tr", null,
-            h("th", { scope: "row" }, t("settings.field." + change.key, change.key)),
-            h("td", null, h("pre", null, format(change.before) ?? "—")),
-            h("td", null, h("pre", null, format(change.after) ?? "—"))))))));
-      info.textContent = state.readOnly ? t("settings.profileReadOnly") : t("settings.profileConfirmHelp");
+          h("tbody", null, rows.map(row => h("tr", null,
+            h("th", { scope: "row" }, row.label),
+            h("td", null, h("pre", null, row.before)),
+            h("td", null, h("pre", null, row.after))))))
+          : h("p", null, t("access.profileNoChange")),
+        h("p.profile-copy-note", null, t("settings.profileCopyHelp")));
+      info.textContent = "";
     } catch (error) {
       if (current === epoch && state.renderGeneration === generation) info.textContent = error.message;
     } finally {
       if (current === epoch && state.renderGeneration === generation) { loading = false; sync(); }
     }
   }
-  select.addEventListener("change", read); reread.addEventListener("click", read);
   confirm.addEventListener("click", async () => {
     if (state.readOnly || blocked() || loading || !preview || state.renderGeneration !== generation) return;
     const confirmed = preview;
-    const acknowledged = acknowledge.checked;
+    const acknowledged = mayBeLive && acknowledge.checked;
     state.pending = true; epoch++; loading = false; sync(); state.save.disabled = true;
     const controls = [...state.content.querySelectorAll("input,select,textarea,button")];
     const disabled = controls.map(control => control.disabled);
@@ -685,6 +741,7 @@ function roleProfileApplication(state, group) {
       const saved = await submitMutation("settings/" + group.id, "/api/settings/profile", {
         id: group.id, profileId: confirmed.profileId, revision: confirmed.revision, acknowledgeLive: acknowledged
       });
+      close();
       renderGroup(state, saved.group);
       state.receipt.textContent = t("settings.profileApplied") + "\n" + saved.output + "\n" + saved.adoption + "\n" + saved.refresh;
     } catch (error) {
@@ -699,16 +756,38 @@ function roleProfileApplication(state, group) {
       state.profileApplication?.sync();
     }
   });
-  state.profileApplication = { invalidate, sync, control: select };
+  const dialog = h("dialog.profile-dialog", { "aria-labelledby": "profile-dialog-title-" + group.id.replace(/[^A-Za-z0-9_-]/g, "-") },
+    h("header.profile-dialog-head", null,
+      h("div", null, h("h2", { id: "profile-dialog-title-" + group.id.replace(/[^A-Za-z0-9_-]/g, "-") },
+        t("access.profileTitle").replace("{role}", stateTitle(state) || group.id.slice(5))),
+        h("p", null, t("access.profileLead"))),
+      h("button.icon-btn.guide-close", { type: "button", "aria-label": t("guide.close"), title: t("guide.close"), onclick: () => close() }, "×")),
+    group.profiles.length ? list : h("p", null, t("settings.profileEmpty")),
+    info, result,
+    h("footer.profile-dialog-foot", null, ackRow, h("span.spacer"), cancel, confirm));
+  let opener = null;
+  function open() {
+    opener = trigger;
+    for (const item of options) item.facts.textContent = profileFacts(item.profile.id);
+    invalidate();
+    if (typeof dialog.showModal === "function" && !dialog.open) dialog.showModal();
+    else dialog.open = true;
+    (options.find(item => item.profile.available)?.option || dialog).focus?.();
+  }
+  function close() {
+    if (typeof dialog.close === "function" && dialog.open) dialog.close();
+    else dialog.open = false;
+    selected = ""; preview = null; epoch++; result.replaceChildren(); sync();
+    if (opener && typeof opener.focus === "function" && opener.isConnected !== false) opener.focus();
+  }
+  dialog.addEventListener?.("cancel", event => { event.preventDefault?.(); close(); });
+  const trigger = h("button.access-row-action", { type: "button", dataset: { profileAction: "open" }, onclick: () => open() },
+    h("span.access-row-action-title", null, t("settings.profileApplyTitle")),
+    h("span.agent-config-hint", null, t("access.groupHint.profile")),
+    h("span.agent-config-count", null, group.profiles.length ? String(group.profiles.length) : ""));
+  state.profileApplication = { invalidate, sync, controls: () => [...options.map(item => item.option), trigger], selected: () => selected, open, close };
   sync();
-  return h("section.settings-profile-apply", null,
-    h("p", null, t("settings.profileCopyHelp")),
-    h("div.settings-profile-picker", null, h("label.field", null, h("span", null, t("settings.profileChoose")), select), reread),
-    group.profiles.length ? null : h("p", null, t("settings.profileEmpty")),
-    ...group.profiles.filter(profile => !profile.available).map(profile =>
-      h("p.faint", null, profile.id + " · " + (profile.reason || t("settings.profileUnavailable")))),
-    result, info, h("label.settings-reset", null, acknowledge, t("settings.profileAcknowledge")),
-    h("div.settings-actions", null, confirm));
+  return { trigger, dialog };
 }
 
 function editCount(state) {
@@ -901,14 +980,14 @@ function renderGroup(state, group) {
   // Execution members: the short daily choices (enabled, Agent, model,
   // effort) form one compact block without headings; each is one line.
   if (area !== "server") {
-    const core = ["settings.group.identity", "settings.group.models"].flatMap(key => grouped.get(key) || []);
+    const core = ["settings.group.identity", "settings.group.models", "settings.group.workspace"].flatMap(key => grouped.get(key) || []);
     if (core.length) {
       const section = h("section.agent-config-section.agent-config-primary.agent-config-core");
       section.append(h("div.agent-field-grid.agent-field-grid-compact", null, core.map(item => item.row)));
       if (capabilities) section.append(capabilities);
       canvas.append(section);
     }
-    grouped.delete("settings.group.identity"); grouped.delete("settings.group.models");
+    grouped.delete("settings.group.identity"); grouped.delete("settings.group.models"); grouped.delete("settings.group.workspace");
   }
   for (const key of groupOrder) {
     const items = grouped.get(key);
@@ -926,10 +1005,7 @@ function renderGroup(state, group) {
   if (capabilities && !capabilities.parentNode) canvas.append(capabilities);
   if (isRole && Array.isArray(group.profiles)) {
     const profileApplication = roleProfileApplication(state, group);
-    profileApplication.classList.add("agent-profile-section");
-    canvas.append(h("details.agent-config-section.agent-config-more.agent-profile-more", null,
-      h("summary", null, h("h3", null, t("settings.profileApplyTitle")), h("span.agent-config-hint", null, t("access.groupHint.profile")),
-        h("span.agent-config-count", null, group.profiles.length ? String(group.profiles.length) : "")), profileApplication));
+    canvas.append(h("div.agent-config-section.agent-config-more.agent-profile-more", null, profileApplication.trigger), profileApplication.dialog);
   }
   const acknowledge = h("input", { type: "checkbox" });
   const liveAcknowledge = area === "agents" ? t("settings.acknowledge.agent") : area === "roles" ? t("settings.acknowledge.role") : "";
@@ -964,7 +1040,7 @@ function renderGroup(state, group) {
   state.dirtyIndicator = dirtyIndicator;
   const footStatus = h("div.agent-foot-status", null, dirtyIndicator, notice, receipt);
   actionFooter.append(footStatus, h("div.agent-action-buttons", null, compare, save));
-  const source = sourceBlock(state, group);
+  const source = area === "server" ? sourceBlock(state, group) : null;
   if (source) canvas.append(source);
   form.append(canvas, actionFooter);
   form.addEventListener("submit", async event => {
@@ -1012,8 +1088,7 @@ function renderGroup(state, group) {
   }
   state.save.disabled = state.readOnly || !state.dirty || state.unknown;
   if (state.readOnly) {
-    const profileControls = new Set(state.profileApplication && state.profileApplication.control
-      ? [state.profileApplication.control] : []);
+    const profileControls = new Set(state.profileApplication ? state.profileApplication.controls() : []);
     form.querySelectorAll("input,select,textarea").forEach(control => {
       if (!profileControls.has(control)) control.disabled = true;
     });

@@ -83,3 +83,14 @@ Screenshots: `d-1365-role.png`, `d-390-role.png`, `d-1365-agent.png`, `d-1365-ro
   "Unsaved changes" receipt line is gone. `harness/compact.py` measures the block and the dirty state.
 
 - Execution members have no separate Reset checkbox: the user picks or types the value; emptying a clearable field removes the saved setting (same CLI clear operation). Server settings keep their reset. `r-*-no-reset.png`.
+
+## Fourth pass: no diagnostics, workspace inline, Profile dialog
+
+- Execution members no longer show "Configuration source & evidence" or the raw observation JSON (server
+  settings keep theirs). The Role workspace is a full-width line in the compact block, not a collapsed group.
+- "Apply a Profile template…" is a row that opens one dialog: template cards (name, Agent · model · effort,
+  description; unavailable ones disabled with the reason), then the exact change list flattened to single
+  settings (nested execution config → Model / Effort rows, adapter id omitted when the Agent changes), then
+  Cancel / Apply template. The live-Session acknowledgement appears only when a Session may be live. Esc or
+  × closes and returns focus to the row; read-only previews but cannot apply. `harness/profile.py`,
+  `p-*.png`.
