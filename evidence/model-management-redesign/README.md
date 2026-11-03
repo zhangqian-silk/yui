@@ -81,3 +81,5 @@ Screenshots: `d-1365-role.png`, `d-390-role.png`, `d-1365-agent.png`, `d-1365-ro
   Sessions); "Apply from Profile" is now "Overwrite from a Profile template — copy once, preview first".
 - The running-Session acknowledgement appears only once there are edits to save; the duplicate
   "Unsaved changes" receipt line is gone. `harness/compact.py` measures the block and the dirty state.
+
+- Execution members have no separate Reset checkbox: the user picks or types the value; emptying a clearable field removes the saved setting (same CLI clear operation). Server settings keep their reset. `r-*-no-reset.png`.
