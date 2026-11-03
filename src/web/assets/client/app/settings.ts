@@ -475,7 +475,8 @@ function editor(field, group, state) {
   if (helpId && control.setAttribute) control.setAttribute("aria-describedby", helpId);
   const row = h("div.settings-field", { dataset: { field: field.key }, ...(helpText ? { title: helpText } : {}) }, label,
     helpText ? h("p.agent-field-help", { id: helpId }, helpText) : null,
-    technical || takesEffect || field.takesEffect ? h("small.settings-field-meta", null, [technical, takesEffect || field.takesEffect].filter(Boolean).join(" · ")) : null,
+    technical || takesEffect || field.takesEffect ? h("small.settings-field-meta", { title: [technical, takesEffect || field.takesEffect].filter(Boolean).join(" · ") },
+      [technical, takesEffect || field.takesEffect].filter(Boolean).join(" · ")) : null,
     field.reset ? h("label.settings-reset", { title: t("settings.reset") }, reset, t("settings.resetShort")) : null);
   let unavailable = false;
   function mark() {
