@@ -117,6 +117,7 @@ function handleMessage(message) {
       threadId = message.params.threadId;
       model = message.params.model ?? model;
       respond({ model, thread: { id: message.params.threadId, status: { type: "idle" },
+        ...(process.env.YUI_FAKE_THREAD_NAME === undefined ? {} : { name: process.env.YUI_FAKE_THREAD_NAME }),
         turns: message.params.excludeTurns ? [] : process.env.YUI_FAKE_LARGE_HISTORY === "1"
           ? [{ id: "huge-history", status: "completed", items: [
             { type: "agentMessage", text: "x".repeat(17 * 1024 * 1024) }

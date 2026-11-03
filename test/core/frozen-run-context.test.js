@@ -167,9 +167,11 @@ test("managed dispatch freezes explicit materials and candidate reports; continu
   };
   const privateMessage = createTaskMessage("message-2", task.id, "Private other-role evidence", "system", { type: "system" }, now);
   store.saveMessage(task.id, privateMessage);
-  assert.throws(() => readDispatchContextRefs(store, task.id,
-    [`task-message/${privateMessage.id}@${contextContentDigest(privateMessage)}`], workerEnv),
-  /current scope|Assignment/);
+  assert.equal(readDispatchContextRefs(store, task.id,
+    [`task-message/${privateMessage.id}@${contextContentDigest(privateMessage)}`], workerEnv).length, 1);
+  assert.throws(() => expandRunContextRef(store, task.id, worker.id, privateMessage.id, "task-message"),
+    /not uniquely authorized/,
+    "Reading current evidence does not add it to a previously frozen Assignment.");
   const report = "Original report😀\n".repeat(2400);
   store.saveRun(completeRun(worker, report, later));
   store.clearActiveRun(task.id, "worker");
@@ -467,7 +469,7 @@ test("Run Context uses only its exact frozen evidence and explicit store/refId",
   assert.throws(() => batch(Array(9).fill(selection[0])), /1..8/i);
   assert.throws(() => batch(selection, undefined, sanitizedTestEnv({
     YUI_SESSION_SCOPE: "task", YUI_TASK_ID: task.id, YUI_ROLE: "foreign"
-  })), /current runtime|authorized/i);
+  })), /current runtime|authorized|no longer exists/i);
   assert.equal(store.getTask(task.id).title, task.title, "Uncommitted worker data stays invisible");
   assert.equal(store.getRevision(), revision, "Context and Run inspection never write a revision");
   Atomics.store(gate, 0, 2);

@@ -161,7 +161,7 @@ test("Job admission, management and spawn keep a Worker inside its current Assig
   }), /restore active fixture/);
   assert.throws(() => control.startJob({ ...params, requestId: "leader-private-workspace",
     caller: caller("leader") }, at), /Assignment/);
-  assert.throws(() => control.getJob(task.id, leaderJob.id, caller("worker")), /Assignment/i);
+  assert.equal(control.getJob(task.id, leaderJob.id, caller("worker")).id, leaderJob.id);
   assert.throws(() => control.cancelJob(task.id, leaderJob.id, at, caller("worker")), /[Aa]ssignment/);
   assert.throws(() => control.acknowledgeJob(task.id, leaderJob.id, at, caller("worker")), /[Aa]ssignment/);
   assert.equal(store.getDurableJob(task.id, leaderJob.id).cancelRequestedAt, undefined);
@@ -199,8 +199,8 @@ test("Job admission, management and spawn keep a Worker inside its current Assig
   assert.equal(advanced.run.head, advancedHead);
   assert.deepEqual(store.getDurableJob(task.id, first.run.id), original);
 
-  // An Operator can retarget a definition, but that does not grant the new
-  // Assignment permission to read an already-admitted Run's old snapshot.
+  // Retargeting preserves the old Run as readable evidence but does not grant
+  // the new Assignment permission to execute its old specification.
   for (const name of ["operator", "assistant"]) {
     const globalRole = createGlobalRole(name, [createRoleAgentBinding(agent)], agent.id, root, at);
     store.createGlobalRoleIfAbsent(globalRole);
@@ -223,8 +223,8 @@ test("Job admission, management and spawn keep a Worker inside its current Assig
     ...configuration, owner: params.owner, workspace: worker, head: workerHead
   } }, at);
   const workerRequest = { id: definition.id, scope, caller: caller("worker") };
-  assert.throws(() => definitions({ ...workerRequest, op: "run-get", runId: advanced.run.id }, at), /Assignment/i);
-  assert.deepEqual(definitions({ ...workerRequest, op: "runs" }, at), []);
+  assert.equal(definitions({ ...workerRequest, op: "run-get", runId: advanced.run.id }, at).id, advanced.run.id);
+  assert.ok(definitions({ ...workerRequest, op: "runs" }, at).some(run => run.id === advanced.run.id));
   const trigger = { source: "manual", key: "retargeted" };
   assert.throws(() => definitions({ ...workerRequest, op: "run", trigger }, at),
     error => error.code === "UNAUTHORIZED" && /Assignment/i.test(error.message));

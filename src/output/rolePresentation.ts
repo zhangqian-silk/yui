@@ -81,6 +81,7 @@ export function renderRoleDetails(
     ...(!isEnabled(role) ? [`  Availability     ${roleDisabledReason(role)}`] : []),
     `  Active Agent     ${role.activeAgentId}`,
     `  Workspace        ${role.workspace}`,
+    `  Instance code    ${role.instanceCode ?? "-"} (display only; next Session launch)`,
     ...("taskId" in role ? [
       `  Desired environment ${role.executionEnvironment === undefined
         ? "managed workspace"

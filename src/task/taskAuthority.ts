@@ -190,10 +190,16 @@ export function projectActor(environment: NodeJS.ProcessEnv | undefined): Projec
   return "user";
 }
 
+/** Read-only Job requests carry the original identity, not the record's owner.
+ * The Controller authenticates it; mutations keep resolveJobCaller's target check. */
+export function resolveJobReadCaller(environment: NodeJS.ProcessEnv | undefined, taskId: string): DurableJobCaller {
+  return resolveJobCaller(environment,
+    environment?.YUI_SESSION_SCOPE === "task" ? environment.YUI_TASK_ID ?? "" : taskId);
+}
+
 /**
- * Resolve the caller's Task, Role and native Session identity. The Controller
- * verifies it against durable state and supplies the current AgentRun. A Task
- * caller cannot control another Task; an incomplete identity is not a user.
+ * Resolve execution identity. The Controller verifies it against durable state;
+ * a Task caller cannot control another Task or infer user authority.
  */
 export function resolveJobCaller(
   environment: NodeJS.ProcessEnv | undefined,

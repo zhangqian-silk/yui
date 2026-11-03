@@ -1,4 +1,5 @@
 import { usageError } from "../errors/cliError.js";
+import { validateInstanceCode, type RoleDisplaySettings } from "../role/instanceCode.js";
 import { parseEnabled } from "../role/availability.js";
 import {
   defaultRoleAgentConfig,
@@ -101,6 +102,8 @@ export function roleOptionSpecs(input: Readonly<{
     ...(input.includeWorkspace === true ? [["--workspace", "value"] as const] : []),
     ...(input.update ? [["--yes", "flag"] as const] : []),
     ...(input.update ? [["--enabled", "value"] as const] : []),
+    ["--instance-code", "value"],
+    ...(input.update ? [["--clear-instance-code", "flag"] as const] : []),
     ...PROFILE_OPTIONS,
     ...agentValueOptions,
     ...agentRepeatableOptions,
@@ -143,8 +146,9 @@ export function parseRoleOptions(
   };
 }
 
-export function roleProfileFrom(parsed: ParsedRoleOptions): RoleProfile {
+export function roleProfileFrom(parsed: ParsedRoleOptions): RoleProfile & RoleDisplaySettings {
   return {
+    ...roleDisplayPatch(parsed),
     ...(parsed.has("--description") ? { description: requiredText(parsed.one("--description")) } : {}),
     responsibilities: parsed.many("--responsibility").map(requiredText),
     constraints: parsed.many("--constraint").map(requiredText),
@@ -156,7 +160,7 @@ export function roleProfileFrom(parsed: ParsedRoleOptions): RoleProfile {
   };
 }
 
-export function roleProfilePatch(parsed: ParsedRoleOptions): RoleProfile & { enabled?: boolean } {
+export function roleProfilePatch(parsed: ParsedRoleOptions): RoleProfile & RoleDisplaySettings & { enabled?: boolean } {
   assertPairs(parsed, [
     ["--description", "--clear-description"],
     ["--responsibility", "--clear-responsibilities"],
@@ -166,6 +170,7 @@ export function roleProfilePatch(parsed: ParsedRoleOptions): RoleProfile & { ena
     ["--skill", "--clear-skills"]
   ]);
   return {
+    ...roleDisplayPatch(parsed),
     ...(parsed.has("--enabled") ? { enabled: parseEnabled(parsed.one("--enabled")) } : {}),
     ...(parsed.has("--description") ? { description: requiredText(parsed.one("--description")) } : {}),
     ...(parsed.has("--clear-description") ? { description: undefined } : {}),
@@ -184,6 +189,18 @@ export function roleProfilePatch(parsed: ParsedRoleOptions): RoleProfile & { ena
     ...(parsed.has("--skill") ? { skills: parsed.many("--skill").map(requiredText) } : {}),
     ...(parsed.has("--clear-skills") ? { skills: [] } : {})
   };
+}
+
+function roleDisplayPatch(parsed: ParsedRoleOptions): RoleDisplaySettings {
+  assertPairs(parsed, [["--instance-code", "--clear-instance-code"]]);
+  try {
+    return {
+      ...(parsed.has("--instance-code") ? { instanceCode: validateInstanceCode(parsed.one("--instance-code")) } : {}),
+      ...(parsed.has("--clear-instance-code") ? { instanceCode: undefined } : {})
+    };
+  } catch (error) {
+    throw usageError(error instanceof Error ? error.message : String(error));
+  }
 }
 
 export function hasAgentConfigOptions(parsed: ParsedRoleOptions): boolean {

@@ -1,13 +1,16 @@
 # Continue a completed result
 
-Read before reopening a completed, unarchived Task for an explicitly authorized
-same-result implementation or delivery request. This grants no new authority.
+Read before reopening a completed, unarchived Task for authorized same-result
+follow-up or an explicitly identified unfulfilled commitment. This grants no
+new authority.
 
 ## Post-completion routing boundary
 
-An explicit user request to continue implementation or delivery of the same
-completed, unarchived result authorizes its necessary reopening within that
-request's scope. The current matching Leader may call `task reopen <task>` for
+An authorized same-result follow-up or explicitly identified unfulfilled
+commitment may require reopening for tracked diagnosis, evidence handoff,
+necessary coordination, implementation or delivery. A simple factual query
+does not. Diagnosis remains read-only unless changes are requested; reopening
+does not turn discussion into implementation. The current matching Leader may call `task reopen <task>` for
 its own Task and continue that request; an Operator handoff is not mandatory,
 and neither Role needs the user to additionally say “reopen.” Read the original
 completion, fixed heads/reports, Publication, new request and current authority
@@ -24,7 +27,7 @@ new input, use the existing two operations:
 ```sh
 yui task reopen <task>
 yui operator submit "<new request, authority, boundaries and prior evidence>" \
-  --task <task> --intent develop --request-id <id>
+  --task <task> --intent <discuss|develop> --request-id <id>
 ```
 
 Unaddressed `task message send` with the same intent/key options is an alternative
@@ -38,8 +41,12 @@ original completion events, fixed commits/artifacts and Publication history stay
 intact. The Leader must assess the new request and separately accept any new
 result, not pretend old validation proves changed work. Reopen does not replay
 historical Messages/Runs, change the Role's Agent/model/permissions, or lift an
-independent execution stop. Queries, ordinary record/discussion input and Session
-recovery do not authorize resumption. Cancelled intent needs explicit
+independent execution stop. Choose `discuss` for diagnosis/explanation and
+`develop` only with implementation authority. Simple queries, record-only input,
+ordinary notifications, Session recovery or an opportunity for improvement do
+not themselves authorize resumption. New goals need their own Task, not an
+expanded old result.
+Cancelled intent needs explicit
 user/Operator restoration authority and cannot be restored by the Leader;
 archived Tasks cannot reopen. A stopped gate still needs
 the separately authorized start/cleanup path.

@@ -116,7 +116,7 @@ test("completed Task presents its terminal summary while retaining the last work
   assert.equal(store.getTaskBrief(task.id).leaderSummary, "Awaiting a corrected result");
 });
 
-test("catalog scope, cursor and exact refs cannot widen a Session or Assignment", (t) => {
+test("ordinary catalog reads preserve identity and pinned references without Task-based isolation", (t) => {
   const home = mkdtempSync(join(tmpdir(), "yui-catalog-scope-"));
   const store = new SqliteTaskStore(home);
   t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
@@ -148,18 +148,19 @@ test("catalog scope, cursor and exact refs cannot widen a Session or Assignment"
   const global = read({});
   const before = store.getStateRevision();
   const scoped = read(env);
-  assert.equal(scoped.total, 1);
-  assert.equal(scoped.nextCursor, null);
-  assert.equal(scoped.attention.executionSignals.count, 0);
+  assert.equal(scoped.total, 2);
+  assert.ok(scoped.nextCursor);
+  assert.equal(scoped.attention.executionSignals.count, 1);
   assert.equal(global.attention.executionSignals.count, 1);
-  assert.equal(read(env, "--project", "project-2").total, 0);
+  assert.equal(read(env, "--project", "project-2").total, 1);
   assert.equal(read({}, "--project", "project-2").tasks[0].id, "task-2");
   assert.equal(store.getStateRevision(), before);
-  assert.throws(() => read(env, "--cursor", global.nextCursor), /cursor/i);
-  assert.throws(() => read({ ...env, YUI_ROLE: "worker", YUI_NATIVE_SESSION_ID: "worker" }), /Assignment/i);
+  assert.equal(read(env, "--cursor", global.nextCursor).tasks.length, 1);
+  assert.equal(read({ ...env, YUI_ROLE: "worker", YUI_NATIVE_SESSION_ID: "worker" }).total, 2);
   assert.throws(() => read({ YUI_SESSION_SCOPE: "global", YUI_ROLE: "reviewer" }), /Operator/i);
   assert.throws(() => read({ YUI_ROLE: "leader" }), /identity/i);
-  assert.throws(() => inspectTaskContext(store, "task-2", global.tasks[0].ref, env), /outside/i);
+  const foreign = read(env, "--project", "project-2").tasks[0];
+  assert.equal(inspectTaskContext(store, "task-2", foreign.ref, env).value.id, "task-2");
   const old = scoped.tasks[0].ref;
   store.saveTask({ ...store.getTask("task-1"), title: "Changed" });
   assert.throws(() => inspectTaskContext(store, "task-1", old, env), /changed/i);

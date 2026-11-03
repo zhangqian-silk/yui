@@ -50,7 +50,10 @@ Use the existing reopen and submission operations, not an invented auto-reopen
 option or a new delivery Task. Reopening and saving input have separate receipts;
 inspect current state after a failure and retain the original request identity.
 Only a real missing authority, resource or unresolved execution boundary calls
-for escalation. Do not reopen for a query, implicitly restore cancelled intent,
+for escalation. Simple queries and ordinary reads stay completed. Tracked
+same-result diagnosis, evidence handoff or necessary coordination can instead
+follow the shared post-completion boundary; diagnosis remains read-only.
+Do not implicitly restore cancelled intent,
 use archived workspaces, restart a separate execution stop, or claim rejected
 input was saved.
 

@@ -94,6 +94,7 @@ export type RuntimeLaunchPreflight = Readonly<{
   adapterId: string;
   effective: EffectiveLaunchSnapshot;
   sessionTitle?: string;
+  generatedTitle?: string;
   nativeSessionId?: string;
 }>;
 

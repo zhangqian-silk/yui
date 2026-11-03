@@ -48,6 +48,8 @@ export type RoleAgentSession = {
   adapterId: string;
   nativeSessionId: string;
   title?: string;
+  /** Last program-generated title. Untagged history and differing titles are user-owned. */
+  generatedTitle?: string;
   preview?: string;
   policy: "fixed" | "leader-controlled";
   /** Immutable actual configuration for this native session. */
@@ -130,6 +132,7 @@ export type RecordRoleAgentSessionInput = {
   adapterId: string;
   nativeSessionId: string;
   title?: string;
+  generatedTitle?: string;
   preview?: string;
   policy: RoleAgentSession["policy"];
   status: AgentSessionStatus;
@@ -250,6 +253,8 @@ export function recordRoleAgentSession<TSet extends RoleSessionSet>(
     adapterId,
     nativeSessionId,
     ...optionalSessionText("title", input.title ?? continuing?.title),
+    ...((input.generatedTitle ?? continuing?.generatedTitle) === undefined ? {}
+      : { generatedTitle: input.generatedTitle ?? continuing?.generatedTitle }),
     ...optionalSessionText("preview", input.preview ?? continuing?.preview),
     policy: input.policy,
     effective: continuing?.effective ?? effective,
@@ -800,6 +805,11 @@ export function validateRoleAgentSession(
     throw new Error(`Role Agent session effective identity is inconsistent: ${agentId}.`);
   }
   requireText(session.nativeSessionId, "Native session id");
+  if (session.generatedTitle !== undefined
+    && (typeof session.generatedTitle !== "string" || session.generatedTitle.length > 80
+      || optionalSessionText("title", session.generatedTitle).title !== session.generatedTitle)) {
+    throw new Error("Role Agent generated title is invalid.");
+  }
   if (
     session.title !== undefined
     && optionalSessionText("title", session.title).title !== session.title

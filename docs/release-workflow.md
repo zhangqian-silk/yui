@@ -51,6 +51,60 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.21.0 compatibility and migration notes
+
+Ordinary Task, Assignment and frozen-context evidence reads now use the local
+resource boundary rather than Task ownership as a confidentiality boundary.
+Catalog/search and relevant records are readable without borrowing the target
+Task's identity or execution authority. Cross-Task context explicitly reports
+`reference-only`. Consumers must not treat readable records, returned instructions,
+or a frozen pack as permission to write, claim input, dispatch, or control work.
+Real user/tenant, filesystem, authenticated transport and explicit read limits
+remain. Native conversation reads use existing legal native tools, not a new gateway.
+
+Leader follow-up guidance permits the existing reopen operation for same-result
+tracked diagnosis, evidence handoff, necessary coordination or delivery authorized
+by the user's request or an explicit unfinished commitment. Simple questions stay
+completed, diagnosis stays read-only, and reopen does not lift stop, archive,
+cancelled-intent, Session, workspace or external-effect restrictions. Existing
+reopen and InputRequest operations remain separate; no completed-state write
+exception or automatic replay is introduced.
+
+Storage remains **1.25** and Controller/Host protocols remain v1; no migration is
+added. Runtime and Role Skill versions advance independently of the package.
+Exact-merge Core CI and the same runtime archive's fresh-install matrix gate npm
+publication. These deterministic checks do not establish model semantic behavior.
+Publishing does not authorize a global installation update or production restart.
+
+### 2.20.0 compatibility and migration notes
+
+This minor adds independent optional Role instance codes (`--instance-code` /
+`--clear-instance-code`) and a `Draft` marker for Leader Sessions with planning
+authority. Operator-only configuration does not propagate to Leader or other
+Roles. Task Role template copies remain independent; codes are presentation,
+not identity, authorization or launch-configuration drift. Full lowercase Task
+IDs remain unchanged. See [Role configuration](roles-and-configuration.md).
+
+New Sessions use the configured code. Normal Codex Host launches/resumes can refresh
+confirmed Yui-owned titles without forcing a stop/replacement. Historical untagged
+titles and recorded custom names are preserved. Codex resume naming requires
+the native name to match the previous generated title; missing metadata and
+user renames are left untouched. Title provenance advances only after a successful
+native naming receipt, not pre-start registration or live Host reuse. Other
+Providers receive generated names only on creation, never on resume. Provider
+naming remains best effort.
+
+Storage advances **1.24 → 1.25** through an additive, no-rewrite transition for
+optional Role code and Session title provenance. Older supported Homes follow
+the centralized contiguous chain; do not open an upgraded Home with older
+software. Controller/Host protocols remain v1. Publication does not authorize
+installing the release, migrating a production Home, restarting shared services,
+replacing Sessions or choosing codes for existing Roles.
+
+Release gates require exact-merge Core CI and the same runtime tarball's
+fresh-install matrix before npm `latest` publication. These deterministic
+checks do not establish real-model behavior.
+
 ### 2.19.0 compatibility and migration notes
 
 This minor adds message backlog and blocked-delivery monitoring with Operator

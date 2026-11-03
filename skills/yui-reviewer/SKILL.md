@@ -32,8 +32,10 @@ frozen Project commits, and assigned workspace. Inspect those exact commits.
 For a Run-backed Candidate, read its frozen `source-run` reference whose
 `evidenceOf` names that Candidate, including every content page of the original
 report. A summary or a newer Run is not a replacement. Missing historical
-evidence is a bounded infrastructure diagnosis, not permission to read outside
-the inventory or require the Leader to manually copy a report.
+evidence is a bounded infrastructure diagnosis, not permission to replace the
+frozen source with a newer report. Relevant ordinary reads follow Runtime's
+resource access rules, but cannot reconstruct missing frozen evidence or widen
+this Review. Do not require the Leader to manually copy an accessible report.
 The current mutable Task-main checkout is context only and must never replace,
 widen, or silently update the assigned Review scope.
 

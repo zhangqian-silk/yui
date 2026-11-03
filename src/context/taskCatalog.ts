@@ -56,29 +56,19 @@ export function parseTaskCatalogOptions(args: readonly string[]): TaskCatalogOpt
   };
 }
 
-/** Task-local Leaders discover only their Task. Assignment Roles use their
- * existing Context pack: whole-Task counts would leak unrelated assignments. */
-export function taskCatalogScope(store: TaskStore, environment: NodeJS.ProcessEnv) {
-  const caller = resolveContextReader(store, environment);
-  if (caller !== undefined && caller.roleName !== "leader") {
-    throw usageError("Task discovery is unavailable to an Assignment-scoped Role; use its authorized Run Context.");
-  }
-  return caller?.taskId;
-}
-
 export function readTaskCatalog(
   store: TaskStore, options: TaskCatalogOptions, environment: NodeJS.ProcessEnv = {}
 ) {
   return store.transaction(reader => {
-    const taskId = taskCatalogScope(reader, environment);
+    resolveContextReader(reader, environment);
     const { cursor: rawCursor, ...filters } = options;
     if (!Number.isSafeInteger(filters.limit) || filters.limit < 1 || filters.limit > MAX_LIMIT) {
       throw usageError("Task catalog limit must be between 1 and 100.");
     }
-    const scope = contextContentDigest({ taskId: taskId ?? null, ...filters });
+    const scope = contextContentDigest({ taskId: null, ...filters });
     const cursor = rawCursor === undefined ? undefined : decodeCursor(rawCursor, scope);
     const facts = reader.queryTaskCatalog({
-      ...filters, ...(taskId === undefined ? {} : { taskId }),
+      ...filters,
       ...(cursor === undefined ? {} : { after: cursor.after, through: cursor.through }),
       limit: options.limit + 1
     });
@@ -116,7 +106,7 @@ export function readTaskCatalog(
     }>;
     const response = {
       view: "compact" as const,
-      scope: { taskId: taskId ?? null, archived: options.all ? "included" : "excluded",
+      scope: { taskId: null, archived: options.all ? "included" : "excluded",
         attention: "authorized-catalog-before-filters", executionSignals: "raw-inspection-candidates-not-execution-status" },
       filters, total: facts.total, counts: facts.counts, attention,
       tasks: [] as Array<{

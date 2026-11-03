@@ -115,14 +115,13 @@ pin a read snapshot, uncommitted writes cannot publish a reusable cache token,
 and only 16 recent Task projections are retained. Cache entries never authorize
 dispatch or replace exact mutation-time checks.
 
-A newly created global Operator conversation requests the native title
-`Yui · Operator · MMdd`, using Yui's configured time zone. The request is made
-only after the provider returns the exact new conversation identity; restore
-and reconnect paths never replay it. Providers without a post-create rename
-capability keep the usable Session and expose a diagnostic instead of treating
-metadata failure as Session-creation failure.
-Managed Codex currently retains the title in Yui's launch metadata but does not
-submit native title synchronization, reporting that limitation diagnostically.
+Role instance codes and generated Session/planning titles are Yui presentation
+metadata, using Yui's configured time zone where a date is included.
+Managed Codex retains this launch title but does not submit native title
+synchronization, including on restore and reconnect. This intentional omission
+is logged locally, not emitted as a failed operation or recovery notification.
+An unsubmitted name is never persisted as an applied native title; the native
+conversation and business execution remain usable.
 The native title mutation has been observed to persist without replying and
 block later Goal/Turn requests, even with a separate metadata client. Automatic
 synchronization must not be restored merely by increasing a timeout or retrying

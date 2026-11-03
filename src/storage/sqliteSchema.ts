@@ -295,12 +295,21 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
 }, {
   fromVersion: "1.24",
   toVersion: "1.25",
+  name: "role-instance-code-session-titles",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Optional Role presentation and generated-title provenance. Never infer
+  // ownership of historical titles, rewrite frozen profiles, or fill defaults.
+  sql: ""
+}, {
+  fromVersion: "1.25",
+  toVersion: "1.26",
   name: "codex-workspace-temp-exclusions",
   introducedIn: "next",
   sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
   targetChecksum: CURRENT_SCHEMA_CHECKSUM,
-  // Optional configured workspace-write permission fields. Do not infer
-  // exclusions or rewrite existing config, Role, Session or frozen snapshots.
+  // Optional workspace-write permission fields; preserve all existing payloads.
   sql: ""
 }]);
 

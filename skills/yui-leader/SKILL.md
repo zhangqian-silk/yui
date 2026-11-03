@@ -26,11 +26,14 @@ promote an old planning Session or override an independent stop.
   intent advances the existing bounded requirement. A valid activation handoff
   needs no second “continue.” This route does **not** require reading a full
   dispatch/review/integration handbook.
-- A completed, unarchived result may reopen for an explicit same-result
-  implementation/delivery follow-up: first read
+- A completed, unarchived result may reopen for an authorized same-result
+  follow-up or an explicitly identified unfulfilled commitment: first read
   [Reopen](../yui-runtime/references/completed-followup.md), inspect the result
   and reassess authority/gates. No mandatory Operator handoff or extra “reopen”
-  confirmation is needed. A lifecycle-only notice is not the follow-up request.
+  confirmation is needed. Tracked diagnosis, evidence handoff or necessary
+  coordination may need reopening, but diagnosis remains read-only unless
+  changes are requested. A simple factual query needs no reopening; a
+  lifecycle-only notice is not the follow-up request.
 - Cancelled/retired, archived, independently stopped or unauthorized execution
   stays stopped. Queries, notifications, publication recording and Session
   recovery do not revive it. Report the exact missing legal action.

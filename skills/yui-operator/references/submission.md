@@ -22,9 +22,10 @@ create/submit/activate sequence.
 
 Discussion does not authorize delivery; follow the Leader's
 [planning and activation boundary](../../yui-leader/references/planning.md) before
-activation. Queries, record-only input and discussion do not authorize
-reopening. An explicit request to continue the same completed result can
-authorize the necessary reopening; first read
+activation. Simple queries and record-only input need no reopening. An authorized
+same-result follow-up or explicitly identified unfulfilled commitment can require
+tracked diagnosis, evidence handoff, coordination or delivery after reopening;
+diagnosis remains read-only unless changes are requested. First read
 [same-Task delivery](task-delivery.md), not Draft activation.
 
 ```sh

@@ -701,16 +701,8 @@ test("a replayed Host settlement folds the control op exactly once", t => {
   assert.equal(folded.length, 1, "the settlement is persisted and folded exactly once");
 });
 
-// ── steer read authority: the promised Context reconcile path (message-5 gap E) ─
-// The steer receipt directs the recipient to reconcile the pushed input "through
-// your authorized Context read path". A steer is TARGETED (recipient + work scope)
-// and created AFTER the Assignment snapshot, so it enters neither the frozen
-// readableRefs nor the untargeted-shared set — the promised read would deny it.
-// The fix authorizes exactly the steers addressed to the caller's current
-// Assignment scope as a live delta, and nothing wider: an ordinary addressed
-// Message still needs its own frozen delta, and a steer for another Role or
-// WorkItem stays out of scope. These drive the REAL read path end to end
-// (inspectTaskContext / listContextMessages), the exact `context expand` entry.
+// Ordinary Context reads expose evidence without adopting a steer or changing
+// its delivery target. Assignment ownership is enforced by inbox/control paths.
 
 /** The managed caller identity of the Worker's current native Session — the env a
  * Worker's own `yui task context` invocation carries. YUI_WORKSPACE is omitted on
@@ -735,42 +727,41 @@ test("a Worker reconciles its own steer through the authorized Context read path
   assert.equal(expanded.ref.refId, steer.messageId);
   assert.equal(expanded.value.inputControl.action, "steer");
   assert.ok(listContextMessages(store, "task-1", env).some(m => m.id === steer.messageId));
-  // The delta is exactly the steer, not a widening of the frozen Assignment: an
-  // ordinary addressed Message to the same scope still requires its own frozen
-  // delta, so it is not readable off the back of the steer grant.
+  // Ordinary follow-up evidence is readable even before a new frozen input.
   const ordinary = command(["message", "send", "task-1", "Ordinary follow-up",
     "--to", "worker", "--work-item", "work-item-1"]);
-  assert.throws(() => inspectTaskContext(store, "task-1",
-    { store: "task-message", refId: ordinary.data.message.id }, env),
-    /unavailable in the caller's current scope/);
-  assert.ok(!listContextMessages(store, "task-1", env).some(m => m.id === ordinary.data.message.id));
+  assert.equal(inspectTaskContext(store, "task-1",
+    { store: "task-message", refId: ordinary.data.message.id }, env).value.body, "Ordinary follow-up");
+  assert.ok(listContextMessages(store, "task-1", env).some(m => m.id === ordinary.data.message.id));
   const discovered = listTaskContext(store, "task-1", "task-message", {}, env);
   const authorized = listContextMessages(store, "task-1", env);
   assert.equal(discovered.total, authorized.length, "Discovery counts cannot include an unauthorized Message.");
   assert.deepEqual(discovered.items.map(item => item.ref.refId).sort(), authorized.map(item => item.id).sort());
 });
 
-test("a steer to another Role is not authorized to this Worker (message-5 gap E scope isolation)", t => {
+test("reading another Role's steer does not retarget its control or change the Worker Assignment", t => {
   const { store, home, command } = fixture(t);
   dispatchWorker(store, command, home);
   const run = store.getActiveRun("task-1", "worker");
   withRunBoundTurn(store, "worker", { runId: run.id, attemptId: "a-1", nativeTurnId: "t-1" });
   // A Leader steer stores as an untargeted `user` Message (a Leader holds no
-  // Assignment), yet it is a live-turn control for the Leader alone — never shared
-  // Task intent. The untargeted-shared grant must not leak it to a Worker.
+  // Assignment), yet it is a live-turn control for the Leader alone, even when
+  // another Role reads it as evidence.
   withLeaderTurn(store, { attemptId: "la-1", nativeTurnId: "lt-1" });
   const leaderSteer = runTaskCommand(["message", "steer", "task-1", "Re-plan around the new constraint",
     "--request-id", "ls-1", "--expected-target", "lt-1", "--to", "leader"],
     store, { now: () => later, environment: {} });
   assert.equal(leaderSteer.kind, "input-steer");
   const env = workerContextEnv();
-  assert.throws(() => inspectTaskContext(store, "task-1",
-    { store: "task-message", refId: leaderSteer.messageId }, env),
-    /unavailable in the caller's current scope/);
-  assert.ok(!listContextMessages(store, "task-1", env).some(m => m.id === leaderSteer.messageId));
+  const before = store.listMessages("task-1").find(message => message.id === leaderSteer.messageId);
+  assert.equal(inspectTaskContext(store, "task-1",
+    { store: "task-message", refId: leaderSteer.messageId }, env).value.id, leaderSteer.messageId);
+  assert.ok(listContextMessages(store, "task-1", env).some(m => m.id === leaderSteer.messageId));
+  assert.deepEqual(store.listMessages("task-1").find(message => message.id === leaderSteer.messageId), before);
+  assert.equal(store.getActiveRun("task-1", "worker").id, run.id);
 });
 
-test("a steer for a different WorkItem is not authorized in the Worker's current scope (message-5 gap E)", t => {
+test("reading a prior WorkItem steer preserves the current Assignment", t => {
   const { store, home, command } = fixture(t);
   dispatchWorker(store, command, home);
   const run1 = store.getActiveRun("task-1", "worker");
@@ -804,12 +795,12 @@ test("a steer for a different WorkItem is not authorized in the Worker's current
   const steer2 = command(["message", "steer", "task-1", "Prefer B on the second WorkItem",
     "--request-id", "s-2", "--expected-target", "t-2", "--to", "worker", "--work-item", "work-item-2"]);
   const env = workerContextEnv();
-  // The current-scope steer resolves; the prior WorkItem's steer stays out of scope.
+  // Both are readable, but the earlier steer is not the new Assignment's input.
   assert.equal(inspectTaskContext(store, "task-1",
     { store: "task-message", refId: steer2.messageId }, env).ref.refId, steer2.messageId);
-  assert.throws(() => inspectTaskContext(store, "task-1",
-    { store: "task-message", refId: steer1.messageId }, env),
-    /unavailable in the caller's current scope/);
+  assert.equal(inspectTaskContext(store, "task-1",
+    { store: "task-message", refId: steer1.messageId }, env).ref.refId, steer1.messageId);
+  assert.equal(store.getActiveRun("task-1", "worker").id, run2.id);
 });
 
 // ── interrupt ──────────────────────────────────────────────────────────────

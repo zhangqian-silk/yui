@@ -150,6 +150,8 @@ export type StructuredProviderDiagnostic = Readonly<{
 }>;
 
 export interface StructuredProviderSession {
+  /** Last generated name this connection actually applied, not launch intent. */
+  readonly appliedGeneratedTitle?: string;
   readonly nativeAccess?: CodexNativeAccess;
   readonly publicReply?: PublicReply;
   /** Exact process whose exit proves the dedicated local execution drained. */
@@ -621,6 +623,7 @@ class ChildProcessDuplex extends Duplex {
 }
 
 class CodexStructuredProviderSession implements StructuredProviderSession {
+  appliedGeneratedTitle: string | undefined;
   nativeAccess!: CodexNativeAccess;
   readonly #turnAttempts = new Map<string, string>();
   readonly adapterId = "codex" as const;

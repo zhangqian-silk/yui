@@ -106,6 +106,18 @@ Project policy、工作区、交付和决策记录即使很小，也只返回摘
   决策/里程碑/事件、Role show/status/Session 检查、wake 详情、InputRequest、
   Run Context 与冻结展开使用有界详情读取。
 
+普通 Task 读取验证原调用者身份，但不按 Task 或 Assignment ID 隔离数据。Yui 是单用户本地产品，
+资源边界由本地文件权限和已认证服务传输承担，Task 归属不是租户边界。跨 Task 当前 Context
+保留调用者自己的 Task 身份，并标记 `reference-only`。搜索、记录、artifact 和原生会话证据
+不切换身份，不继承其他 Run 的指令，也不授予写入、inbox 处理、派工或外部效果权限。
+明确资源限制和 Job-owned Role 限制仍有效。原生会话读取无需 Yui 网关或 Task 映射；
+应使用实际合法可用的读取工具，并保持工作相关范围。
+
+completed 结果仍可读。简单问答无需重开；同结果请求或明确未履行承诺需要持续诊断、
+证据交接、必要权限协调或已授权交付时，当前 Leader 可自行重开自己的未归档结果。
+诊断仍只读；重开保留历史完成证据，不解除停止、不恢复取消意图、不升级 planning
+Session，也不授予外部效果权限。
+
 使用 `--json` 读取顶层 `data`；Run Context 和展开使用 `data.context`，Run Context delta 使用 `data.contextDelta`。
 长详情用同一读取命令加 `--cursor <contentPage.nextCursor>` 继续。按 offset 顺序拼接
 `text`，校验相同 source 与 digest，最后一次性解析 JSON。不要分别解析块，也不要把

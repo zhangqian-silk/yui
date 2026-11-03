@@ -18,6 +18,8 @@ import { runControllerSchedulerPass } from "../../dist/controller/controller.js"
 import { FileRoleLaunchPlanner } from "../../dist/executor/fileRoleLaunchPlanner.js";
 import { resolveManagedTaskCaller } from "../../dist/runtime/managedCaller.js";
 import { retireTask, archiveTask } from "../../dist/task/task.js";
+import { recordRoleAgentSession } from "../../dist/executor/agentExecutor.js";
+import { processActiveRoleRunDeliveries } from "../../dist/scheduler/activeRoleRunDelivery.js";
 
 const now = new Date("2026-10-22T00:00:00Z");
 const later = new Date(now.getTime() + 120_000);
@@ -37,13 +39,60 @@ function fixture(t) {
   const scheduler = new FileSchedulerStoreAdapter(store);
   assert.equal(scheduler.prepareDraftPlanning("task-1", now), true);
   const run = store.getActiveRun("task-1", "leader");
+  const planned = new FileRoleLaunchPlanner(home, store, { environment: { HOME: home, PATH: process.env.PATH } })
+    .plan({ taskId: "task-1", roleName: "leader", agentId: agent.id, adapterId: agent.adapterId,
+      mode: "new", runId: run.id, effective: run.effective });
+  assert.match(planned.sessionTitle, /^Yui Leader task-1 Draft · /);
+  assert.equal(planned.generatedTitle, planned.sessionTitle);
   scheduler.recordLaunchedRuntimeNativeSession({
     owner, agentId: agent.id, adapterId: agent.adapterId,
-    nativeSessionId: "original-planning", effective: run.effective
+    nativeSessionId: "original-planning", effective: run.effective, generatedTitle: planned.generatedTitle
   }, () => {}, now);
   const command = args => runTaskCommand(args, store, { environment: {}, now: () => later });
   const inbox = (session, ...args) => runInboxCommand(args, store, { CODEX_THREAD_ID: session }, later).data;
   return { store, home, scheduler, run, command, inbox };
+}
+
+for (const status of ["ended", "active"]) {
+  test(`Task ${status} Session resume preserves its title until native naming succeeds`, async t => {
+    const { store, home, scheduler, run, command } = fixture(t);
+    const original = store.getRoleSessionSet("task-1", "leader").sessions.codex;
+    store.saveRoleSessionSet(recordRoleAgentSession(store.getRoleSessionSet("task-1", "leader"),
+      { ...original, status }, later));
+    store.saveRun({ ...run, mode: "resume" });
+    command(["role", "update", "task-1", "leader", "--instance-code", "new"]);
+    const planner = new FileRoleLaunchPlanner(home, store, {
+      environment: { HOME: home, PATH: process.env.PATH }
+    });
+    const host = {
+      start: async () => assert.fail("Must restore the same native Session"),
+      restore: async (request, before) => {
+        const planned = planner.plan({ ...request, taskId: "task-1", roleName: "leader" });
+        assert.match(planned.sessionTitle, /@new/);
+        before({ ...request, sessionTitle: planned.sessionTitle, generatedTitle: planned.generatedTitle });
+        return { id: "resume-binding", owner, agentId: "codex", adapterId: "codex",
+          hostRef: "isolated-host", nativeSessionId: original.nativeSessionId };
+      }
+    };
+    const delivery = new ExecutorRegistry({}, {}, undefined, {
+      sessionHost: host,
+      launchCoordinator: new RuntimeLaunchCoordinator(scheduler, host, { now: () => later }),
+      promptPush: { tryPush: async () => ({ result: "delivered" }) }
+    });
+    const results = await processActiveRoleRunDeliveries(scheduler, delivery, later);
+    assert.equal(results[0].status, "delivered", JSON.stringify(results));
+    const resumed = store.getRoleSessionSet("task-1", "leader").sessions.codex;
+    assert.equal(resumed.title, original.title, "preflight is not a native naming receipt");
+    assert.equal(resumed.generatedTitle, original.generatedTitle);
+    const next = planner.plan({ taskId: "task-1", roleName: "leader", agentId: "codex",
+      adapterId: "codex", mode: "resume", nativeSessionId: original.nativeSessionId,
+      effective: run.effective, runId: run.id });
+    assert.equal(next.launch.providerControl.previousSessionTitle, original.generatedTitle);
+    scheduler.recordLaunchedRuntimeNativeSession({ owner, agentId: "codex", adapterId: "codex",
+      nativeSessionId: original.nativeSessionId, effective: run.effective, generatedTitle: next.sessionTitle
+    }, () => {}, later);
+    assert.equal(store.getRoleSessionSet("task-1", "leader").sessions.codex.title, next.sessionTitle);
+  });
 }
 
 for (const interrupted of [false, true]) {
