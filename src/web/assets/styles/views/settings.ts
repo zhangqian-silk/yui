@@ -197,7 +197,6 @@ export const SETTINGS_STYLES = `
 .agent-config-more>summary .agent-config-count{flex:0 0 auto}
 .agent-config-more>summary h3{flex:0 0 auto}
 .agent-inspector-form[data-dirty=false] .agent-live-ack{display:none}
-.agent-field-grid-compact>.settings-field[data-field=workspace]{grid-column:1/-1}
 /* "Apply a Profile template…" is a row like the collapsed groups; it opens a dialog. */
 .agent-profile-more{padding:0}
 .access-row-action{display:flex;align-items:center;gap:10px;width:100%;min-height:44px;padding:0;border:0;background:none;color:var(--ink-3);font:inherit;text-align:left;cursor:pointer}
@@ -212,15 +211,16 @@ export const SETTINGS_STYLES = `
 .profile-dialog-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
 .profile-dialog-head h2{font-size:var(--fs-md);font-weight:650}
 .profile-dialog-head p{margin:3px 0 0;color:var(--ink-3);font-size:var(--fs-xs)}
-.profile-options{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,170px),1fr));gap:8px}
-.profile-option{display:grid;gap:3px;align-content:start;min-width:0;padding:10px 12px;border:1px solid var(--line-2);border-radius:var(--r-md);background:var(--surface);color:var(--ink-2);font:inherit;text-align:left;cursor:pointer;transition:border-color var(--t-fast),background var(--t-fast)}
+.profile-options{display:grid;gap:0;border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}
+.profile-option{display:grid;grid-template-columns:16px auto minmax(0,1fr);align-items:center;gap:10px;min-width:0;min-height:42px;padding:8px 12px;border:0;border-bottom:1px solid var(--line);border-radius:0;background:var(--surface);color:var(--ink-2);font:inherit;text-align:left;cursor:pointer;transition:background var(--t-fast)}
+.profile-option:last-child{border-bottom:0}
 .profile-option strong{color:var(--ink);font-size:var(--fs-sm);font-weight:600}
-.profile-option code:empty{display:none}
-.profile-option code{color:var(--ink-2);font-size:var(--fs-2xs);overflow-wrap:anywhere}
-.profile-option small{color:var(--ink-3);font-size:var(--fs-2xs);line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.profile-option:hover:not(:disabled){border-color:var(--accent-line)}
-.profile-option[data-selected=true]{border-color:var(--accent);background:var(--accent-soft);box-shadow:inset 0 0 0 1px var(--accent)}
-.profile-option:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.profile-option small{min-width:0;color:var(--ink-3);font-size:var(--fs-xs);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.profile-option-mark{width:14px;height:14px;border:1.5px solid var(--line-2);border-radius:50%;background:var(--surface);transition:border-color var(--t-fast),box-shadow var(--t-fast)}
+.profile-option:hover:not(:disabled){background:var(--surface-2)}
+.profile-option[data-selected=true]{background:var(--accent-soft)}
+.profile-option[data-selected=true] .profile-option-mark{border-color:var(--accent);box-shadow:inset 0 0 0 3px var(--surface),inset 0 0 0 8px var(--accent)}
+.profile-option:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 .profile-option:disabled{cursor:not-allowed;opacity:.55}
 .profile-option-reason{color:var(--warn)!important}
 .profile-status{margin:0;color:var(--ink-2);font-size:var(--fs-xs)}

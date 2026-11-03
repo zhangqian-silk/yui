@@ -94,3 +94,5 @@ Screenshots: `d-1365-role.png`, `d-390-role.png`, `d-1365-agent.png`, `d-1365-ro
   Cancel / Apply template. The live-Session acknowledgement appears only when a Session may be live. Esc or
   × closes and returns focus to the row; read-only previews but cannot apply. `harness/profile.py`,
   `p-*.png`.
+
+- Fifth pass: the Role workspace is no longer shown (nor written) in execution details. The template picker is a single radio list: name + description, one 42px line each; launch facts appear only in the change list. `s-*.png`.

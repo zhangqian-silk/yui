@@ -802,7 +802,6 @@ export const ZH_CN: Readonly<Partial<Record<MessageKey, string>>> = {
   "access.short.permission": "权限",
   "access.short.strategy": "策略",
   "access.short.adapterId": "适配器",
-  "access.short.workspace": "工作目录",
   "access.profileTitle": "把 Profile 模板套用到 {role}",
   "access.profilePick": "选择一个模板，查看会改变哪些设置。",
   "access.profileChanges": "套用 {profile} 会改变 {count} 项设置：",
