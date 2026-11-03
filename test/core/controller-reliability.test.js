@@ -146,6 +146,31 @@ test("request accounting keeps the oldest exact request through out-of-order com
   assert.equal(observer.snapshot().oldestInFlightAgeMs, null);
 });
 
+test("socket stages correlate an authenticated request without changing route accounting", () => {
+  let clock = 10;
+  const observer = new ControllerCommandObserver(() => clock);
+  const request = observer.start("controller.status", "same-request", {
+    acceptedAtMs: 1, receivedAtMs: 8
+  });
+  clock = 12;
+  request.complete("builtin", "success");
+  assert.equal(observer.snapshot().completed, 1);
+  assert.equal(observer.snapshot().transport.inFlight, 1, "queued is not flushed");
+  clock = 30;
+  request.flushed(true);
+  request.flushed(false);
+  const stages = observer.snapshot().transport;
+  assert.equal(stages.inFlight, 0);
+  assert.equal(stages.completed, 3);
+  assert.deepEqual(stages.recent.map(item => [item.phase, item.startedAtMs, item.elapsedMs, item.failed]), [
+    ["socket.accept-to-route", 1, 9, false],
+    ["socket.receive-to-route", 8, 2, false],
+    ["socket.route-to-flush", 10, 20, true]
+  ]);
+  assert.ok(stages.recent.every(item => item.target === observer.snapshot().observations.recent[0].target));
+  assert.doesNotMatch(JSON.stringify(stages), /same-request/);
+});
+
 test("local stop observes its cleanup while an unrelated full scan remains blocked", async () => {
   const target = { kind: "global-role-runtime", roleName: "operator" };
   let mailbox = createWorkMailbox(target);

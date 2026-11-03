@@ -19,7 +19,9 @@ export async function resolveCompletionCandidates(
   const root = input.root ?? ROOT_COMMAND;
   if (words[0] === "help") {
     const { node, consumed } = resolveCommand(words.slice(1), root);
-    return consumed === words.length - 1 ? prefix(visibleChildren(node).map(child => child.name), input.current) : [];
+    if (consumed !== words.length - 1) return [];
+    return prefix(input.current.startsWith("-") ? findChild(root, "help")?.options ?? []
+      : visibleChildren(node).map(child => child.name), input.current);
   }
   const { node, consumed } = resolveCommand(words, root);
   if (node.kind === "group" && consumed < words.length) return [];

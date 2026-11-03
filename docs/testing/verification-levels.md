@@ -53,12 +53,12 @@ is required.
 Both include `test/core` and `test/platform`. For an already built checkout,
 `npm run test:business` runs only `test/core` and `npm run test:platform` runs
 only `test/platform`; neither rebuilds. CI owns one explicit build per job.
-The stable suite owns current storage 1.25 and its declared 1.0 through 1.24 minor
+The stable suite owns current storage 1.26 and its declared 1.0 through 1.25 minor
 transition. It contains no undeclared historical format compatibility path.
 
 Current coverage includes:
 
-1. Fresh storage 1.25, exact schema/record validation, no initialization over
+1. Fresh storage 1.26, exact schema/record validation, no initialization over
    unknown data, and rejection of old integer formats without mutation.
 2. Exact-version staging, mismatched-target refusal, same-major contiguous
    minor preflight, explicit maintenance-owner identity across handover, and
@@ -89,6 +89,49 @@ not a second daemon matrix. Do not reconstruct retired storage paths in the
 stable suite. Real-model or real-Home checks require explicit authorization.
 Current envelope checks reject arbitrary unknown fields, rather than maintaining
 a blacklist of retired field names.
+
+## Context evaluation checks
+
+Evaluation code is organized by topic under [scripts/eval](../../scripts/eval/README.md).
+Core evidence utilities and provider usage adapters are separate from the Yui
+context scenarios below and the independent review-material evaluation.
+
+The framework produces engineering measurements and objective check evidence;
+the executing Agent interprets actual trajectories, semantic quality, model
+variation and optimization benefit. Assemble related changes before a bounded
+representative experiment. Wording-only or small byte reductions normally need
+deterministic checks, not their own full A/B and model-review chains. Record the
+decision question and spending bounds in the experiment plan; independent model
+review is optional for material disputes, never automatic. This does not grant
+real-resource authorization.
+
+New runs freeze `decisionPolicy: agent-analysis`: process exit describes complete
+collection and released cleanup, not quality acceptance. Original check failures
+and unknowns remain in reports. Only bounded non-recovery business reading/load
+findings cease to censor later safe inputs; authority, effects, handling, identity,
+native execution and recovery fences remain. Historical exits and seals are not
+rewritten. See the framework README for exact boundaries and Agent handoff.
+
+`npm run eval:check` checks evaluation contracts without starting a Home.
+The explicit `npm run eval:context:wiring -- --product <absolute-checkout> --out <new-dir>`
+uses the [maintained framework](../../scripts/eval/context/README.md)
+for multi-input CLI/Controller/Host/fake-Provider chains and bounded fault checks.
+It remains outside `npm test` and the platform matrix: package smoke continues
+to own package/OS wiring. Fake success is not a real-model, native-compaction or
+lossless-observation claim. Historical performance ledgers are not reset by
+framework validation; live resources require a separately authorized freeze.
+The fake-only `native-normal` scenario verifies completed native tool evidence
+through the real adapter without participant files. Read/load checks are bound
+to Role/Thread/context epoch and decision time; unsupported evidence stays
+unknown. Current observation cannot yield an unqualified valid-pass.
+Proxy checks exercise both managed and identity-free detached control clients;
+detached transport cannot supply subject read/load evidence.
+The opt-in wiring `--profile recovery` checks a scheduled retained-claim
+Session replacement using the same native evidence adapter as real mode:
+exact predecessor stop, fresh successor ownership/read/load, preserved effect
+and successor ACK; a native background-inspection rejection fences replacement.
+It is deterministic CLI/Host wiring, not live model recovery or native
+compaction. Real `session-recovery` requires its own exact authorized freeze.
 
 ## Skill and instruction changes
 

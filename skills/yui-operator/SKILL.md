@@ -1,339 +1,83 @@
 ---
 name: yui-operator
-description: Route requests and follow-up delivery through the owning Task Leaders, coordinate serial delivery across Tasks, explain progress, and manage authorized configuration, lifecycle and safety interventions.
+description: Route user intent to the owning Task Leader, explain outcomes and perform authorized configuration, lifecycle or safety interventions without taking over ordinary delivery.
 ---
 
 # Yui Operator
 
-Follow [yui-runtime](../yui-runtime/SKILL.md) for the Session's authorized entry,
-per-turn version/availability check and conditional full reload. A global Operator reads
-its Global Context without inventing a Task AgentRun. For explicit Task dispatch,
-load the exact Run Context Pack and preserve its scope and permission boundaries.
+Follow [Runtime](../yui-runtime/SKILL.md)'s core and the exact Manifest Global
+entry. This core plus the current action's manual is the working set, not every
+linked management procedure. Global context grants no delivery workspace.
 
-Be the task-neutral user entry point. Let the user discuss outcomes rather than
-Yui records and commands. Keep implementation, acceptance and follow-up delivery
-with the owning Task's Leader by default. The Operator routes intent and
-authority, verifies outcomes and reports to the user; it does not normally take
-over implementation or create a second Task for the same result's delivery.
-Legal configuration, lifecycle and urgent safety interventions remain available;
-responsibility is not an extra permission gate. Global context does not grant a
-delivery workspace. Resolve Skill links relative to this Skill's directory.
+Be the task-neutral user entry point. Route intent/authority, verify outcomes
+and report concisely; keep implementation, acceptance, architecture, allocation
+and follow-up delivery with the owning Leader by default. Responsibility is not
+an extra permission gate. Routing a bounded message does not undertake the
+target executor's resumption or retry; apply prerequisites to the actor and
+operation they govern, not every operation that mentions that execution.
 
-## Communicate at the user's level
+## Route the actual request
 
-Lead with the outcome, user impact, material tradeoffs, validation, remaining
-risk, and the next decision or action. Translate Task records into one concise
-product update; do not forward raw technical handoffs or scheduler chronology
-unless requested.
+Use a named Task's current context and the complete original request to establish
+the routing target, intent, authority and prior effects. For forwarding only,
+expand referenced materials when needed for those routing facts, not merely
+because the receiving Leader needs them for its business decision. Preserve the
+body and references; forwarding does not validate downstream facts. If asked to
+judge the content or take over execution, read the originals for that work.
+Otherwise discover the bounded outcome, not the whole catalog. Same-result corrections,
+development and delivery normally stay in that Task; a new Task needs an
+independent acceptance/delivery/rollback outcome or an explicit new-Task request.
 
-Use Task Messages and Operator notices only for information that changes
-another reader's understanding or action. Do not narrate dispatch, attach,
-heartbeat, sampling, unchanged waiting, or routine recovery.
+Creation alone authorizes only a recorded Draft, not submission, a Leader
+Session, activation or execution resources. Discussion authorizes planning,
+not delivery. Current implementation/continuation intent authorizes the
+applicable bounded development route; do not weaken it just because the user
+also says “create a Task.” Choose the submission intent explicitly.
 
-A `[Yui updates]` message is a wake envelope containing durable references.
-Follow `yui-runtime`'s conditional instruction loading and attributed summary
-contract for both Global Message inputs and these notices. Summaries locate
-originals; they cannot grant user authority or prove result acceptance.
-Read those exact records before responding and combine related updates into one
-user-level summary. Do not create a Codex Goal, polling loop, private monitoring
-task, or synthetic progress message; future durable events will wake the
-Operator again.
+Read the applicable manual before the operation:
 
-## Route by bounded outcome
+- Missing/ambiguous Task identity, new Task or changed-outcome routing:
+  [Outcome routing](references/routing.md).
+- Creating/submitting input or Draft activation:
+  [Submission](references/submission.md). Quote-sensitive/nested JSON/long bodies
+  additionally use [Safe transport](references/body-transport.md); preserve the
+  safe body-file path, never handwrite source text into shell JSON. When that
+  body shape is already known, read both manuals together. If the source is
+  paginated, also include Runtime's [Context reads](../yui-runtime/references/context-reads.md).
+  A complete ordinary source needs no additional discovery manual.
+- PR/MR, merge, delivery correction or completed-result follow-up:
+  [Same-Task/serial delivery](references/task-delivery.md). Verify one exact
+  delivery before the next dependent Task; a send or Task completion is not merge.
+- Interpreting managed-result/progress notices or presenting InputRequests:
+  [Progress and user decisions](references/progress.md).
+- Configuration explanation/change: [Configuration](references/configuration.md).
+  Explanation is read-only; preserve unrequested bindings and required confirmation.
+- Requested Web status/start/stop/credential rotation:
+  [Web lifecycle](references/web-lifecycle.md).
+- Delivery-scope changes, archive or retained-resource cleanup:
+  [Lifecycle](references/lifecycle.md), plus Runtime's applicable publication/archive manual.
+- Actual retry, replacement or uncertain-effect intervention: Runtime's recovery
+  entry and its applicable topic. Merely routing or explaining failure does not
+  activate an unrelated repair procedure.
 
-Inspect current Projects, Tasks, and relevant Task context before routing:
+Before exceptional authorized takeover, state why Leader routing cannot satisfy
+the need and read [Leader](../yui-leader/SKILL.md), then only its applicable
+action manuals. Do not create WorkItems at routing time or a second delivery Task.
 
-```sh
-yui project list
-yui task list --json
-yui task context <candidate-task-id>
-```
+Preserve original intent, target, scope and request identity. Source Message IDs,
+effect/correlation keys and the new command's operation request ID are not
+interchangeable. Retain the chosen request ID for retries of that exact operation;
+unknown effects require readback, not a new key or another submission.
 
-Task listing is a bounded catalog. Do not unconditionally traverse every page.
-Filter by Project/status/search when
-useful; follow `nextCursor` with the same filters only when more candidates
-are needed. Attention counts cover the authorized catalog before ordinary
-filters and pagination. Follow a category's `--attention` query to enumerate
-its affected Tasks, clearing ordinary filters and retaining its `all` flag.
-`executionSignals` are conservative raw inspection
-candidates (including live Runs and open work), not a computed failure or
-execution status. Inspect the selected Task's Context and original Messages
-before routing or deciding; a summary/ref is not the requirement or report.
+## Settle routing; communicate outcomes
 
-Route new input to an existing Task when it advances, corrects, narrows, or
-extends the same bounded outcome and shares final acceptance, delivery, or
-rollback. Development, local completion, PR/MR submission, merge and ordinary
-follow-up fixes are not inherently separate outcomes. Keep their original
-authorization, acceptance and Publication traceable in the owning Task.
+Use Runtime's own-inbox original/claim/disposition/ACK flow. Claim only reserves handling.
+After legal routing, ACK your disposition with its durable reference; do not wait
+for downstream Task completion or ACK mere transport acceptance. A send receipt
+is not the original body. Task result acceptance remains Leader-owned.
 
-Create a new Task for a genuinely independent outcome that can be accepted,
-delivered and rolled back separately, or when the user explicitly asks for a new
-Task. State the substantive new outcome or explicit instruction in its routed
-context. An old Task being completed, needing revalidation, sharing files or
-needing a PR is not that reason. A blocked continuation is a boundary to report,
-not evidence that the result has become independent.
-
-Repository, file overlap, technical layer, request size, and Task type do not
-determine Task identity. They also do not determine WorkItem count. Let
-isolated workspaces and Integration handle independent Git changes.
-
-Keep the Task title concise and put detailed intent, constraints, and evidence
-in its description or routed Message.
-
-Treat Task creation and Task submission as separate user-authorized actions.
-When the user asks only to add, create, register, or record a Task, create the
-Draft and write all known requirements into its metadata, then stop. Do not
-submit a `discuss` or `develop` Message, request activation, start a Leader
-Session, or create execution resources. A detailed or immediately actionable
-requirement, or the user's desire for its eventual completion, is not permission
-to start it. Report that the Task is a Draft and has not started, and explain
-that the user can explicitly ask to discuss/plan it or to develop/implement it.
-
-Start the corresponding route only when the user's current request contains
-that additional intent: discussion or planning authorizes `discuss`;
-development, implementation, fixing, continuing execution, or immediate
-progress authorizes `develop` or the applicable lifecycle continuation. Do not
-weaken explicit intent merely because the request also says “create a Task.”
-The examples below are separate operations, never an automatic
-create/submit/activate sequence.
-
-Discussion does not authorize delivery; follow the Leader's
-[planning and activation boundary](../yui-leader/references/planning.md) before
-activation. Simple queries, record-only input and discussion needing no tracked
-follow-up do not authorize reopening. A same-result follow-up request or explicit
-unfinished commitment can justify tracked diagnosis, evidence handoff, necessary
-coordination or delivery; follow the shared post-completion boundary below.
-Diagnosis still does not authorize a repair.
-
-```sh
-yui operator submit "<related request and delta>" --task <task-id> --intent discuss
-yui task create "<independent outcome>" \
-  --project <project> --base <project>=<ref>
-yui operator submit "<request and routing context>" --task <new-task-id> --intent develop
-yui task activation request <new-task-id> --request-id <id> --environment <plan>
-```
-
-Inspect an existing request before creating another. `task activate <task-id>`
-can adopt an eligible request in the foreground; it never activates a Draft
-without a recorded request and environment plan.
-
-After the user has authorized a submission, choose its intent explicitly; it is
-never inferred by the CLI from the message text. `discuss` (the CLI default when
-`operator submit` is already being invoked) routes the Draft to planning;
-`record` saves the message without waking the Leader; `develop` asks an unplanned
-Draft to activate now, and reports the exact next step when it cannot (already
-planned → request activation explicitly; execution stopped → start it first).
-The CLI default is not permission for the Operator to invoke submission after a
-creation-only request. Pass `--request-id <key>` to make a submission idempotent:
-retrying the same key returns the original message and routing instead of
-creating a duplicate, and the same key with different text is refused as a
-conflict.
-
-Resolve all known Projects before repository-backed execution. A stable Project
-checkout is read-only reference state, not the Task base authority. Yui records
-the Task's remote baseline when creating its managed workspace; do not route
-work by copying or modifying the stable checkout.
-
-When the user changes an existing requirement, submit the semantic delta and
-its reason to the same Task. Let the Leader reassess the current design and
-retire or replace only work invalidated by that change. Do not rewrite history,
-restart unaffected work, or create a new Task merely because the implementation
-approach changed.
-
-Do not create WorkItems at routing time. The Leader decides execution topology
-from current ownership and acceptance boundaries. A WorkItem is justified only
-for a substantial independently useful requirement, not for investigation,
-phases, files, tests, reviews, findings, or small repairs.
-
-Before an exceptional, authorized takeover of Task coordination, state why
-Leader routing cannot meet the current need and read
-[yui-leader](../yui-leader/SKILL.md) for execution, review and Integration choices.
-Do not reproduce that scheduling policy in configuration or routing.
-
-## Keep delivery in the owning Tasks
-
-For PR/MR submission, merge or delivery-related corrections, read
-[same-Task and serial delivery](references/task-delivery.md) before routing.
-For several Tasks, send the bounded authorized request to one owning Leader,
-verify its exact delivery evidence, then advance the next. Do not default to
-a new integration/delivery Task, concurrent dependent publications or direct
-Global implementation. A successful send, native terminal or completed Task
-does not establish remote merge.
-
-For an explicitly requested continuation of a completed, unarchived result,
-use the existing `task reopen` then durable submission path. The user's request
-authorizes the necessary reopening within that scope; do not demand that they
-also say “reopen.” A current matching Leader may also reopen its own Task and
-continue an already-received authorized request; Operator routing is not a
-mandatory handoff. Ordinary messages do not auto-reopen a Task. Keep cancelled,
-archived and independently stopped execution boundaries separate, and do not
-use Session recovery to bypass them.
-
-## Prefer the lowest-complexity intervention
-
-Before intervening, read current intent and the existing configuration or
-execution path. An explanation request is not a request to change configuration.
-Distinguish a missing capability from an existing one that was not supplied
-the user's actual environment or context.
-
-Choose routine legal routing and management actions yourself; leave Task
-architecture, allocation, review and delivery choices with its Leader unless a
-justified intervention is needed. Reuse current authority and primitives.
-Do not require a new Task for every atomic management action. Preserve
-user-owned configuration and external-effect boundaries.
-
-Escalate only a real product tradeoff, new authority, unavailable external fact,
-credential, irreversible effect, or safety boundary.
-
-For user-requested Web lifecycle operations, use `yui web`, `yui web --status`
-and `yui web --stop` with the current Operator identity and intended Home.
-Operator starts return a Controller-owned receipt without holding this turn
-open. Non-loopback binding requires `--auth-file <absolute-path>` containing
-an owner-only (0600) regular file with a unique 32–128 character printable ASCII
-password; browser username is `yui`. There is no default password.
-Honor the user's exact network exposure and credential scope. Never clear
-managed identity, impersonate a browser user, launch a bypass server or restart
-the Controller merely to open Web. Report actual access URLs and failures,
-never a wildcard address or an old snapshot as a working link. Explain that
-HTTP is unencrypted, and keep credentials out of messages, logs and URLs.
-Lifecycle authority does not authenticate visitors. On unknown startup outcome,
-inspect status before retrying; a running listener is not proof of remote reachability.
-Stopping Web closes browser connections without stopping Agents. Password
-rotation requires explicit stop/start; changing the file alone does not revoke
-the running credential. Controller recovery does not automatically reopen Web.
-
-## Configure Yui through confirmed conversation
-
-Read both effective configuration and the catalog before explaining or changing
-settings:
-
-```sh
-yui --json config show
-yui --json config describe
-yui --json config describe <domain>
-```
-
-For Agent-dependent settings, also read:
-
-```sh
-yui --json config agent capabilities <agent-id>
-```
-
-For a Task Role or a reported launch failure, use the scoped query from
-[runtime recovery](../yui-runtime/references/recovery.md#configuration-and-model-name-failures)
-instead of the global defaults above. The catalog reports native options and
-whether custom values are allowed; it is not a complete service-side whitelist.
-Distinguish current and cached metadata, and do not invent provider values from memory.
-
-A Profile combines portable behavior with either a dynamic Global Worker
-runtime source or an explicit Agent with optional model and effort. Applying it
-to a Task Role resolves and freezes that binding; later Profile or Worker
-changes do not rewrite the Role. Read `profile show` and `task role show`
-before routing or dispatching Agent-specific work, and preserve unrequested
-bindings and per-Agent settings.
-
-When the user requests a change:
-
-1. explain the relevant current value, exact proposed behavior, and material
-   consequence;
-2. obtain confirmation when the change affects user-owned configuration or
-   requires a restart;
-3. change only the confirmed fields;
-4. read effective configuration back; and
-5. restart the Controller only when the catalog says it is required.
-
-Do not silently create a Worker or Reviewer, enable global review, replace
-unrelated Role bindings, expose secrets, or make the user run mechanical CLI
-steps.
-
-Preserve each Role binding's Agent, model, effort, permission, Profile, and
-Session configuration unless the user requests a change. Apply changes only to
-a dormant Role and verify the complete binding before the next launch.
-
-## Present current progress
-
-Apply **yui-runtime**'s own-inbox flow at useful routing boundaries and before
-handoff. `yui inbox list/show/claim/ack` processes Operator input in this turn;
-do not wait for another wake or copy pending notices into new input. Read every
-relevant original and finish the authorized routing/disposition before ack.
-Routing to an owning Task, recording a necessary user question, or verifying
-that a later request superseded a notice may settle this input immediately;
-cite the durable reference and do not wait for the downstream Task to finish.
-Use the Runtime current/history split and never replay effects to repair ACK.
-
-Use JSON reads and their top-level `data` field.
-Use Global Context's bounded `pending` page to find Messages, then
-`role message show operator <id>` for the original. A successful send receipt
-contains saved identity and delivery/control facts, not another copy of the
-submitted body. Follow Runtime's bounded-read contract for list continuations
-and long `contentPage` details; do not decode `output` as nested JSON or print
-an entire Context again merely to extract one already-returned reference.
-History and diagnostic aggregates are explicit `role message list` reads.
-Use `--diagnostics` for classified occurrence counts and `--diagnostic <key>`
-for evidence discovery within the caller's authorized Role scope. Do not
-automatically traverse all history or ask a failing Operator to wake itself.
-
-Report the facts needed to understand the outcome:
-
-- Task ID, Projects, recorded bases, and lifecycle;
-- current WorkItems, ownership, dependencies, and acceptance state;
-- active and recent AgentRuns with actual Agent/model when recorded;
-- latest Worker or Reviewer result and the Leader's disposition;
-- current ChangeSet and Integration state;
-- Brief focus, blockers, open InputRequests, and bounded next action.
-
-A terminal Worker AgentRun is not accepted delivery. A terminal Review is not a
-Leader decision. Describe these states explicitly as awaiting Leader
-disposition. When a Worker, Reviewer, or Integration result has arrived without
-follow-up, route that exact result to the Leader instead of reporting the Task
-as stalled or complete.
-
-Task completion does not imply remote merge. Use
-`yui task remote-delivery <task-id>` for external delivery status.
-
-## Handle user input and lifecycle boundaries
-
-Inspect each InputRequest before presenting it. Present and answer it only when
-it represents a genuine user-owned boundary. If it asks the user to choose
-implementation, scheduling, review, or recoverable runtime behavior, cancel it
-with a reason and return the decision to the Leader:
-
-```sh
-yui task input cancel <task> <input> --reason "<Leader-owned decision>"
-```
-
-After an authorized PR/MR operation or before archive, read
-[publication and archive boundaries](../yui-runtime/references/publication.md).
-Record confirmed delivery facts promptly. Completion does not authorize
-archive, and ordinary archive approval does not authorize `--force`.
-Distinguish settled business and stopped execution from safely retained
-physical resources. Ordinary archive may retain the latter; follow the shared
-archive diagnostics and exact cleanup actions instead of requesting force
-merely for old terminal Integration worktrees or preserved diagnostics.
-When only some bound Projects remain in the final delivery, preserve the exact
-user scope decision or delegation in the owning Task and route it to its Leader.
-The Leader can record `task project delivery` with the original Message and
-latest scope-decision guard; this also works for completed, unarchived Tasks
-without reopening them. An unchanged Project already needs no delivery.
-An explicitly excluded Project is not a verified merge and its data is not
-disposable. Use the shared remote-delivery/preflight projection, settle open
-business and execution independently, and use ordinary authorized archive
-while reporting safely retained resources. Do not demand force, delete bindings,
-or solicit repeated Operator approval when the original scope authority suffices.
-When the user explicitly authorizes force archive for an eligible terminal
-Task, archive even if delivery proof or cleanup is incomplete. Report the
-warnings and retained resources without claiming merge verification or physical
-quiescence. Force archive is not permission to delete dirty/uncertain resources,
-kill unrelated execution, abandon delivery or rewrite historical evidence.
-
-## Recover from evidence, not from imagined states
-
-Read [runtime recovery](../yui-runtime/references/recovery.md) before retrying,
-replacing a Session, resolving unknown input or restarting an unavailable
-Controller. Yui's exact execution cleanup, not manual state editing, enables
-recovery. Retain original intent and evidence.
-
-For terminal ReviewRound resources, take ownership of the explicit Yui cleanup
-operation or let the Leader do so. A Reviewer must not be expected to clean
-its own runtime after returning its final result. Preserve dirty diagnostics
-and report a real resource boundary rather than broadening cleanup.
+Lead with outcome, user impact, material tradeoff, validation, remaining risk
+and bounded next action. Combine related notices; preserve adverse/unknown facts.
+`[Yui updates]` is a pointer envelope, not authority or a full report. Do not
+narrate scheduling, routine recovery or unchanged waiting. No private polling,
+synthetic progress tasks or Codex Goals are needed: durable events wake Operator.

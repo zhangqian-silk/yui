@@ -27,9 +27,85 @@ import { prepareOperatorNewSession } from "../../dist/operator/operatorSessionHi
 import { prepareNativeHostSteer } from "../../dist/controller/nativeHostInput.js";
 import { resolveAgentHostObservation } from "../../dist/controller/agentHostObservation.js";
 import { runInboxCommand } from "../../dist/commands/inboxCommands.js";
+import { runSessionStopCommand } from "../../dist/commands/sessionCommands.js";
 
 const at = new Date("2026-09-11T00:00:00Z");
 const later = new Date("2026-09-11T00:01:00Z");
+
+test("idle maintenance fences Global native work at preflight, drain and atomic cleanup", async t => {
+  const { store, role } = globalFixture(t);
+  recordGlobalSession(store, role);
+  const scheduler = new FileSchedulerStoreAdapter(store);
+  const owner = { scope: "global", roleName: role.name };
+  const snapshot = () => ({ candidates: scheduler.listRuntimeSessionCandidates(),
+    dormant: scheduler.listDormantRuntimeOwners() });
+  const idle = snapshot().dormant[0];
+  assert(idle, "An idle Global Session remains maintainable");
+  assert.equal(scheduler.enqueueRuntimeCleanup(owner, later,
+    { ...idle, nativeSessionId: "different-session" }), null);
+  const effects = [];
+  const runtime = {
+    beginMaintenance: () => ({ release: () => effects.push("release") }),
+    snapshot, drainController: async () => effects.push("drain"),
+    stopController: async () => { effects.push("stop-controller"); return { stopped: true }; },
+    startController: async () => effects.push("restart"),
+    stopDormantSession: async () => effects.push("stop-session")
+  };
+  withGlobalControllerTurn(store, role.name, { attemptId: "maintenance", nativeTurnId: "busy" });
+  assert.deepEqual(snapshot().dormant, []);
+  assert.equal(scheduler.enqueueRuntimeCleanup(owner, later, idle), null);
+  assert.equal(scheduler.enqueueRuntimeHostDetach(owner, later, idle), null);
+  assert.equal((await runSessionStopCommand({ options: { all: true }, runtime })).exitCode, 5);
+  assert.deepEqual(effects, ["release"], "Busy preflight never reaches a stopping call");
+  const settle = () => {
+    const set = store.getGlobalRoleSessionSet(role.name);
+    store.saveGlobalRoleSessionSet(updateGlobalRoleProviderRuntime(set,
+      settleProviderTurn(set.providerBinding, { attemptId: "maintenance", nativeTurnId: "busy",
+        status: "completed", settledAt: later.toISOString() }), later));
+  };
+  settle();
+  effects.length = 0;
+  const drainRuntime = { ...runtime, drainController: async () => {
+    effects.push("drain");
+    const set = store.getGlobalRoleSessionSet(role.name);
+    const pending = beginProviderTurn(set.providerBinding, {
+      attemptId: "maintenance", authorityEpoch: 1, submittedAt: later.toISOString()
+    });
+    store.saveGlobalRoleSessionSet(updateGlobalRoleProviderRuntime(set,
+      acceptProviderTurn(pending, { attemptId: "maintenance",
+        nativeTurnId: "busy", acceptedAt: later.toISOString() }), later));
+  } };
+  assert.equal((await runSessionStopCommand({ options: { all: true }, runtime: drainRuntime })).exitCode, 5);
+  assert.deepEqual(effects, ["drain", "stop-controller", "restart", "release"]);
+  settle();
+  effects.length = 0;
+  await assert.rejects(runSessionStopCommand({ options: { all: true },
+    runtime: { ...runtime, stopController: async () => ({ stopped: false }) } }), /stop.*confirm/i);
+  assert.deepEqual(effects, ["drain", "restart", "release"]);
+  effects.length = 0;
+  assert.equal((await runSessionStopCommand({ options: { all: true }, runtime })).exitCode, 0);
+  assert.deepEqual(effects, ["drain", "stop-controller", "stop-session", "release"]);
+});
+
+test("Global submitting and unknown native delivery are not dormant", t => {
+  for (const unknown of [false, true]) {
+    const { store, role } = globalFixture(t);
+    recordGlobalSession(store, role);
+    const scheduler = new FileSchedulerStoreAdapter(store);
+    const idle = scheduler.listDormantRuntimeOwners()[0];
+    let binding = beginProviderTurn(createProviderRuntimeBinding({
+      providerNamespace: "openai/codex", accountScope: "codex",
+      conversationId: `${role.name}-native`, startedAt: at.toISOString()
+    }), { attemptId: "pending", authorityEpoch: 1, submittedAt: at.toISOString() });
+    if (unknown) binding = markProviderTurnDeliveryUnknown(binding, {
+      attemptId: "pending", observedAt: later.toISOString(), reason: "No acceptance evidence"
+    });
+    store.saveGlobalRoleSessionSet(bindGlobalRoleProviderRuntime(
+      store.getGlobalRoleSessionSet(role.name), binding, later));
+    assert.deepEqual(scheduler.listDormantRuntimeOwners(), []);
+    assert.equal(scheduler.enqueueRuntimeCleanup(idle.owner, later, idle), null);
+  }
+});
 
 test("native Global steer uses a durable user Message and exact settlement without replacing the active Turn", t => {
   const { store, home, role } = globalFixture(t);
@@ -486,6 +562,29 @@ test("an idle self-read exposes intent but never fabricates a Provider receipt",
   // A repeated self-read is idempotent: the consumed queue is not re-delivered.
   const second = contextSelfRead(store, "assistant");
   assert.deepEqual(second.pending.items, first.pending.items);
+});
+
+test("Global context supplies only bounded exact current-Turn originals without handling input", t => {
+  const { store, command, role } = globalFixture(t);
+  recordGlobalSession(store, role);
+  const receipt = command(["message", "queue", role.name, "Current complete source", "--request-id", "focused"]).message;
+  const selected = store.listGlobalRoleMessages(role.name).find(m => m.id === receipt.id);
+  command(["message", "queue", role.name, "Future input must stay discovery-only", "--request-id", "future"]);
+  withGlobalControllerTurn(store, role.name, {
+    attemptId: `global-input:${role.name}/${selected.id}`, nativeTurnId: "focused-turn"
+  });
+  const before = store.listGlobalRoleMessages(role.name);
+  const context = contextSelfRead(store, role.name);
+  assert.deepEqual(context.currentOriginals, [selected]);
+  assert.deepEqual(context.pending.items.map(m => m.id), before.map(m => m.id));
+  assert.deepEqual(store.listGlobalRoleMessages(role.name), before, "Reading never claims, ACKs or delivers input.");
+  const inspected = command(["context", role.name]);
+  assert.deepEqual(inspected.currentOriginals, [], "An inspection is not the managed Turn's working set.");
+  store.updateGlobalRoleMessage({ ...selected, body: "大".repeat(2000) });
+  const oversized = contextSelfRead(store, role.name);
+  assert.deepEqual(oversized.currentOriginals, []);
+  assert.equal(oversized.pending.items[0].read, `role message show ${role.name} ${selected.id}`);
+  assert.ok(Buffer.byteLength(JSON.stringify(oversized)) < 32 * 1024);
 });
 
 test("a self-read while the Role's own native Turn is in flight delivers nothing (busy-gate)", t => {

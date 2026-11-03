@@ -15,9 +15,11 @@ questions, recommendations and accepted decisions.
 Planning can include research explicitly authorized by the user and permitted
 by the Session, Project and resource boundaries. Discussion is not delivery
 authorization: do not modify Project code or run implementation tests merely
-to support a proposal. Keep full planning results in supported Task result
-storage and maintain the Brief's current summary and references. Planning
-storage and Project delivery workspaces have different purposes and authority.
+to support a proposal. Subject to Runtime's read-only intent boundary, keep
+authorized planning results in supported Task result storage and maintain the
+Brief's current summary and references. A read-only analysis returns its result
+in the response, not planning storage. Planning storage and Project delivery
+workspaces have different purposes and authority.
 
 Saving a useful revision, reporting what changed and waiting for feedback is
 the normal end of a discussion. Do not create implementation WorkItems,
@@ -44,7 +46,7 @@ reopen it. A stopped execution gate is not permission to
 resume. `--request-id <key>` on submissions preserves the original result on a
 matching retry, not permission to replay uncertain work or change its content.
 For expressly requested continuation of a completed result, use the existing
-[authorized reopen and submission path](../../yui-runtime/references/publication.md#post-completion-routing-boundary),
+[authorized reopen and submission path](../../yui-runtime/references/completed-followup.md),
 not Draft activation or an implicit transition inferred from `--intent develop`.
 
 Once planning has been entered, starting delivery requires a distinct,
@@ -84,44 +86,4 @@ delivery-authorized Session/workspace is ready. Do not demand another
 “continue.” An old planning Session remains planning-scoped: preserve its
 successor context and end its turn rather than promoting itself.
 
-## Task artifact operations
-
-These operations apply to planning and delivery results. The current Leader
-adopts contributions from other Agents' authorized workspaces; do not share
-an uncoordinated Git index or edit Yui storage directly.
-
-```sh
-yui task artifact list <task-id>
-yui task artifact save <task-id> plans/design.md "<UTF-8 content>" --message "Revise design"
-yui task artifact read <task-id> plans/design.md
-yui task artifact read <task-id> plans/design.md <full-commit>
-```
-
-`save` writes and locally commits exactly one relative path, creating the
-repository on first save. The `artifact.save` capability takes `taskId`,
-`relativePath`, `content`, optional `message` and optional `expectedHead`;
-the CLI equivalent is `--expected-head <commit>`. A head conflict leaves
-the save unapplied: re-read and reconcile the intended update, not overwrite
-blindly. The text interface accepts UTF-8 files up to 8 MiB, not arbitrary
-binary payloads or an invented directory-upload command.
-
-Current reads use Task and relative path at HEAD. Frozen Candidate, Review,
-Context and completion evidence use the returned `taskId + commit +
-relativePath`; do not replace a pinned read with a current read. For same-Task
-string reference lists, use `git:<full-commit>:<relativePath>`, including
-`task complete ... --artifact-ref "git:<full-commit>:plans/design.md"`.
-The commit must be the artifact repository's returned commit, not the Project
-code head. Preserve fixed old references when updating the current document.
-
-After a meaningful save, update the Brief's summary/reference; keep Decisions
-to the choice, reason and boundary. No document-body, HEAD or timestamp mirror
-is needed. The artifact repository has no remote or transport; this does not
-prohibit a Project code repository's legitimate remote. Saving in Draft grants
-no delivery authority; Session handoff and archive preserve the artifacts.
-Stored scripts/HTML remain data and are never implicitly executed or previewed.
-
-These commands describe this source version's interface. A managed Session
-still uses its authorized CLI and actual available capabilities. If an older
-installation lacks them, report that version boundary; do not switch it to
-an unapproved checkout CLI, migrate a shared Home, or upgrade the installation
-merely to save a result.
+Before saving or citing a Task artifact, read [Task artifact operations](artifacts.md).

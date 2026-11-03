@@ -118,6 +118,7 @@ export type ControllerSchedulerResult = Readonly<{
 export type ControllerRuntimeOptions = Readonly<{
   messageHealth?: (now: Date) => Promise<import("./messageHealth.js").MessageHealthSnapshot>;
   diagnosticMetrics?: () => { written: number; dropped: number; writeFailures: number; pending: number };
+  onRequestDiagnostic?: import("../core/controllerTelemetry.js").ControllerCommandObserver["onRequestDiagnostic"];
   persistenceMetrics?: () => ControllerRuntimeMetrics["persistence"];
   intervalMs?: number;
   signalWindowMs?: number;
@@ -234,6 +235,7 @@ export type RunningFileTaskController = Readonly<{
 }>;
 
 export type ControllerRuntimeMetrics = Readonly<{
+  sampler: ReturnType<NonNullable<AgentRuntimeObserverPort["metrics"]>> | null;
   messageHealth: import("./messageHealth.js").MessageHealthSnapshot | null;
   diagnostics: { written: number; dropped: number; writeFailures: number; pending: number } | null;
   persistence: {
@@ -1276,9 +1278,10 @@ export class FileTaskController {
     return this.#intervalMs;
   }
 
-  runtimeMetrics(): Pick<ControllerRuntimeMetrics, "inbox" | "drain" | "phases" | "reads" | "scheduler" | "persistence" | "diagnostics" | "messageHealth"> {
+  runtimeMetrics(): Pick<ControllerRuntimeMetrics, "inbox" | "drain" | "phases" | "reads" | "scheduler" | "persistence" | "diagnostics" | "messageHealth" | "sampler"> {
     const metrics = this.#lastRuntimeDrain?.metrics ?? ZERO_DRAIN_METRICS;
     return {
+      sampler: this.#runtimeObserver?.metrics?.() ?? null,
       messageHealth: this.#lastMessageHealth,
       diagnostics: this.#diagnosticMetrics?.() ?? null,
       phases: this.#phases.snapshot(),
@@ -1413,7 +1416,8 @@ export class FileTaskController {
   #requestRuntimeObservation(): void {
     if (this.#stopped || this.#runtimeObserver === undefined
       || this.#runtimeObserverCurrent !== undefined) return;
-    const running = this.#runtimeObserver.sample(this.#now()).then((keys) => {
+    const running = this.#phases.observe("runtime-sample", "home",
+      () => this.#runtimeObserver!.sample(this.#now(), this.#phases)).then((keys) => {
       if (this.#stopped) return;
       for (const key of keys) this.signal(key);
     }).catch(this.#onError).finally(() => {
@@ -2413,6 +2417,7 @@ export async function startFileTaskController(
     await runtime.shutdownAndDrain();
   }, {
     domainIdentity: options.domainIdentity,
+    onRequestDiagnostic: options.onRequestDiagnostic,
     status: ({ commandObserver, eventLoopDelay }) => ({
       ...runtime.runtimeMetrics(),
       commands: {

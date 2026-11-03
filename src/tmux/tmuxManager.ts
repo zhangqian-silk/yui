@@ -117,7 +117,7 @@ export class TmuxManager {
   readonly #yuiHome: string;
   readonly #serverName: string;
   readonly #onRoleTargetRecorded: ((target: string) => void) | undefined;
-  readonly #terminalInput: TerminalInput;
+  readonly #terminalInput: TerminalInput | undefined;
   readonly #terminalType: string;
   readonly #closeInteractiveInput: () => void;
   readonly #readinessTimeoutMs: number;
@@ -140,7 +140,9 @@ export class TmuxManager {
     this.#yuiHome = options.yuiHome ?? process.env.YUI_HOME ?? process.cwd();
     this.#serverName = yuiTmuxServerName(this.#yuiHome);
     this.#onRoleTargetRecorded = options.onRoleTargetRecorded;
-    this.#terminalInput = options.terminalInput ?? process.stdin as Readable & TerminalInput;
+    // Creating Node's stdin stream can make piped fd 0 nonblocking. Commands
+    // may still need to read that pipe synchronously before any attach.
+    this.#terminalInput = options.terminalInput;
     this.#terminalType = usableInteractiveTerminal(options.terminalType ?? process.env.TERM);
     this.#closeInteractiveInput = options.closeInteractiveInput ?? (() => {});
     this.#readinessTimeoutMs = positiveInteger(
@@ -350,7 +352,10 @@ export class TmuxManager {
         );
       }
       if (resolvedAccess === "read-write") options.revalidateWritableAttach?.();
-      handoffTerminal(this.#terminalInput, this.#closeInteractiveInput);
+      handoffTerminal(
+        this.#terminalInput ?? process.stdin as Readable & TerminalInput,
+        this.#closeInteractiveInput
+      );
       this.run([
         "attach-session",
         ...(resolvedAccess === "read-only" ? ["-r"] : []),

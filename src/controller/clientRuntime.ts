@@ -4,9 +4,9 @@ import { describeCliFailure } from "../errors/cliFailure.js";
 import { fileURLToPath } from "node:url";
 import {
   findLiveControllerProcessForHome,
-  inspectLiveControllerProcess,
   type LiveControllerProcess
 } from "../core/controllerProcessIdentity.js";
+import { processGenerationIsLive } from "../core/fileLockOwner.js";
 import { readHomeFilesystemId } from "../core/homeFilesystemIdentity.js";
 import { parseControllerIdentity, type ControllerIdentity } from "../core/controllerIdentity.js";
 
@@ -35,6 +35,7 @@ import type { TaskWorkspacePreparer } from "../repository/taskWorkspacePreparer.
 import { WorkspaceCleanupBlockedError } from "../repository/taskWorkspacePreparer.js";
 import { hasRuntimeLifecycleWork } from "../runtime/lifecycleReservation.js";
 import { assertControllerStatusIdentity } from "../runtime/runtimeCoherence.js";
+import { readLinuxProcessIdentity } from "../runtime/sessionOwnerIdentity.js";
 import {
   CONTROLLER_SHUTDOWN_TIMEOUT_MS,
   LIFECYCLE_REQUEST_TIMEOUT_MS
@@ -279,13 +280,25 @@ export async function stopFileTaskController(
   await waitForForeignHandover(home, options);
   const physical = options.call === undefined
     ? findLiveControllerProcessForHome(readHomeFilesystemId(home)) : undefined;
-  const expectedPid = options.expectedPid ?? physical?.pid;
+  // A protected, Home-validated discovery can retain the generation fence
+  // even if the optional /proc ownership inventory is currently unreadable.
+  // It is not signal authority; physical recovery still revalidates ownership.
+  let captured = physical;
+  if (captured === undefined && options.call === undefined) {
+    try {
+      const discovery = await readControllerDiscovery(home);
+      captured = { pid: discovery.pid, processStartIdentity: discovery.processStartIdentity };
+    } catch (error) {
+      if (!isDefinitelyNotRunning(error)) throw error;
+    }
+  }
+  const expectedPid = options.expectedPid ?? captured?.pid;
   const bounded = { ...options, requestTimeoutMs: options.requestTimeoutMs ?? 2000,
     ...(expectedPid === undefined ? {} : { expectedPid }) };
   try {
     const result = await stopControllerGracefully(home, bounded);
-    if (result.stopped && physical !== undefined) {
-      await waitForControllerProcessExit(home, physical, options);
+    if (result.stopped && captured !== undefined) {
+      await waitForControllerProcessExit(captured, options);
     }
     if (result.stopped || options.call !== undefined) return result;
   } catch (error) {
@@ -294,13 +307,16 @@ export async function stopFileTaskController(
   const stopped = await stopOrphanedFileTaskController(
     home, options.shutdownTimeoutMs ?? CONTROLLER_SHUTDOWN_TIMEOUT_MS,
     { force: true, ...(expectedPid === undefined ? {} : { expectedPid }),
-      ...(physical === undefined ? {} : { expectedProcessStartIdentity: physical.processStartIdentity }) }
+      ...(captured === undefined ? {} : { expectedProcessStartIdentity: captured.processStartIdentity }) }
   );
+  // No match is not exit proof: /proc ownership inspection may have become
+  // unreadable after we captured this exact generation. Physical recovery
+  // cannot authorize a successor until that original generation is gone.
+  if (captured !== undefined) await waitForControllerProcessExit(captured, options);
   return stopped === undefined ? { stopped: false, alreadyStopped: true } : { stopped: true, pid: stopped.pid };
 }
 
 async function waitForControllerProcessExit(
-  home: string,
   controller: LiveControllerProcess,
   options: FileControllerClientOptions
 ): Promise<void> {
@@ -310,15 +326,16 @@ async function waitForControllerProcessExit(
     "shutdownTimeoutMs"
   );
   const pollMs = positive(options.pollIntervalMs, POLL_INTERVAL_MS, "pollIntervalMs");
-  const homeFilesystemId = readHomeFilesystemId(home);
   const deadline = Date.now() + timeoutMs;
-  while (
-    inspectLiveControllerProcess(
-      controller.pid,
-      homeFilesystemId,
-      controller.processStartIdentity
-    ) !== undefined
-  ) {
+  // This check is tri-state: unreadable OS identity throws rather than
+  // collapsing an unknown/live process into the absence of a Controller match.
+  while (processGenerationIsLive(controller.pid, controller.processStartIdentity)) {
+    if (process.platform === "linux") {
+      const observed = readLinuxProcessIdentity(controller.pid);
+      // Preserve the existing physical-stop boundary: an exact zombie has
+      // exited, even if its parent has not reaped the process table entry.
+      if (observed?.startIdentity === controller.processStartIdentity && observed.state === "Z") return;
+    }
     if (Date.now() >= deadline) {
       throw new ControllerClientError(
         "CONTROLLER_TIMEOUT",

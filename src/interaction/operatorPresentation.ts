@@ -26,7 +26,7 @@ export function createOperatorBatchPresentation(
     receiptId: `operator-batch:${batchId}`,
     text: [
       "[Yui updates]",
-      "Check current Skills each turn via the Global Manifest's loadCommand. Apply current yui-operator; inspect these originals and present material changes or decisions.",
+      "Apply current yui-operator and refresh Global Context; inspect these originals and present material changes or decisions.",
       ...items.flatMap(renderItem)
     ].join("\n")
   };

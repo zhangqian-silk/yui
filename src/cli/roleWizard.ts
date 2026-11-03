@@ -686,7 +686,13 @@ function agentFields(
       agentField("sandbox", "Sandbox", permission.sandbox, "--sandbox", ["--permission-strategy", "default"],
         catalogField(catalog, "permission.sandbox")),
       agentField("approval", "Approval", permission.approval, "--approval", ["--permission-strategy", "default"],
-        catalogField(catalog, "permission.approval"))
+        catalogField(catalog, "permission.approval")),
+      ...(permission.sandbox === "workspace-write" ? [
+        agentField("exclude-tmpdir-env-var", "Exclude TMPDIR write access", permission.excludeTmpdirEnvVar,
+          "--exclude-tmpdir-env-var", ["--clear-exclude-tmpdir-env-var"], catalogField(catalog, "permission.excludeTmpdirEnvVar")),
+        agentField("exclude-slash-tmp", "Exclude /tmp write access", permission.excludeSlashTmp,
+          "--exclude-slash-tmp", ["--clear-exclude-slash-tmp"], catalogField(catalog, "permission.excludeSlashTmp"))
+      ] : [])
     ] : []),
     ...(binding.adapterId === "codex" ? [
       agentField("search", "Web search", config.search, "--search", ["--clear-search"],

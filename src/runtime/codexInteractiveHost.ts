@@ -7,6 +7,7 @@ import type { AgentHostSnapshot, openAgentHostControl as OpenAgentHostControl } 
 import { AGENT_HOST_CONTROL_PROTOCOL } from "./agentHostProtocol.js";
 import type { AgentHostLaunchPayload } from "./launchBroker.js";
 import { openCodexInteractiveConnection } from "./structuredProviderHost.js";
+import { createSessionSkillNotice } from "../context/sessionSkillNotice.js";
 
 /**
  * Keep the native TUI and its transparent App Server attachment in one pane.
@@ -23,6 +24,8 @@ export async function runCodexInteractiveHost(
   openAgentHostControl: typeof OpenAgentHostControl
 ): Promise<number> {
   const environment = payload.environment;
+  const skillNotice = createSessionSkillNotice(home);
+  const pendingNotices = new Map<string | number, { commit(): void; expectedTurnId?: string }>();
   if (environment.YUI_SESSION_SCOPE !== "global" || environment.YUI_ADAPTER_ID !== "codex"
     || payload.providerControl !== undefined) {
     throw new Error("Interactive Codex Host requires a global native TUI launch.");
@@ -111,6 +114,20 @@ export async function runCodexInteractiveHost(
             startupRequestId = message.id;
             message.params = codexInteractiveStartupParameters(payload, params);
           }
+          if (message.method === "turn/start" || message.method === "turn/steer") {
+            if (snapshot.nativeSessionId === undefined) throw new Error("Skill check requires the reserved native Thread.");
+            if (typeof message.id !== "string" && typeof message.id !== "number"
+              || pendingNotices.has(message.id)) throw new Error("Turn input requires a unique correlation id.");
+            const params = jsonObject(message.params);
+            if (params.threadId !== snapshot.nativeSessionId) throw new Error("Turn input targets another Thread.");
+            const prepared = codexInteractiveSkillInput(skillNotice, environment, snapshot.nativeSessionId, params);
+            message.params = prepared.params;
+            pendingNotices.set(message.id, {
+              commit: prepared.commit,
+              ...(message.method === "turn/steer" && typeof params.expectedTurnId === "string"
+                ? { expectedTurnId: params.expectedTurnId } : {})
+            });
+          }
           void connection!.send(message).catch(fail);
         } catch (error) {
           fail(error);
@@ -119,6 +136,16 @@ export async function runCodexInteractiveHost(
     });
     connection.onMessage((message) => {
       try {
+        if (message.method === undefined && (typeof message.id === "string" || typeof message.id === "number")) {
+          const pending = pendingNotices.get(message.id);
+          if (pending !== undefined) {
+            pendingNotices.delete(message.id);
+            const result = message.result as { turn?: { id?: unknown }; turnId?: unknown } | undefined;
+            const turnId = result?.turn?.id ?? result?.turnId;
+            if (message.error === undefined && typeof turnId === "string" && turnId.length > 0
+              && (pending.expectedTurnId === undefined || pending.expectedTurnId === turnId)) pending.commit();
+          }
+        }
         let nativeSessionId: string | undefined;
         if (startupRequestId !== undefined && message.id === startupRequestId
           && message.method === undefined) {
@@ -173,6 +200,26 @@ export async function runCodexInteractiveHost(
     if (relay !== undefined) await new Promise<void>((done) => relay!.close(() => done()));
     await control.close();
   }
+}
+
+/** Preserve all native content parts (including images), adding only Host metadata. */
+export function codexInteractiveSkillInput(
+  notice: ReturnType<typeof createSessionSkillNotice>,
+  environment: Readonly<Record<string, string | undefined>>,
+  nativeSessionId: string,
+  params: Readonly<Record<string, unknown>>
+): { params: Record<string, unknown>; commit(): void } {
+  if (!Array.isArray(params.input)) throw new Error("Turn input must be an array.");
+  const prepared = notice.prepare("", environment, nativeSessionId);
+  return {
+    params: {
+      ...params,
+      input: prepared.text.length === 0 ? params.input : [
+        { type: "text", text: prepared.text.trimEnd(), text_elements: [] }, ...params.input
+      ]
+    },
+    commit: prepared.commit
+  };
 }
 
 /** The remote TUI can omit local launch configuration. Apply the reserved

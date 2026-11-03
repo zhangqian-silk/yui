@@ -219,7 +219,7 @@ export async function startStructuredProviderSession(
       const opened = await CodexStructuredProviderSession.open(
         proxy.child, proxy.exit, proxy.processInstanceId, payload, control, proxy.channel,
         input.onStarted, input.onTerminal, input.onGoal, input.onInput,
-        input.onActivity, input.onDiagnostic, mirror
+        input.onActivity, mirror
       );
       return Object.freeze({
         session: opened.session,
@@ -381,6 +381,8 @@ async function connectCodexProxy(
 
 class CodexProxyWebSocketChannel {
   readonly #pending = new Map<string, Readonly<{
+    method: string;
+    requestBytes: number;
     resolve: (value: JsonObject) => void;
     reject: (error: Error) => void;
     timer: NodeJS.Timeout | undefined;
@@ -466,7 +468,10 @@ class CodexProxyWebSocketChannel {
         this.#pending.delete(id);
         reject(new Error(`Provider request timed out: ${method}.`));
       }, PROVIDER_ACCEPT_TIMEOUT_MS);
-      this.#pending.set(id, { resolve: resolvePromise, reject, timer });
+      this.#pending.set(id, {
+        resolve: resolvePromise, reject, timer, method,
+        requestBytes: Buffer.byteLength(JSON.stringify({ id, method, params }), "utf8")
+      });
     });
     try {
       await this.send({ id, method, params });
@@ -509,7 +514,7 @@ class CodexProxyWebSocketChannel {
     if (isBinary || encoded.byteLength > PROVIDER_MESSAGE_MAX_BYTES) {
       this.#close(new Error(isBinary
         ? "Provider returned an unsupported binary WebSocket message."
-        : "Provider response message exceeds its bound."));
+        : `Provider response message exceeds its bound (receivedBytes=${encoded.byteLength}).`));
       terminateProcessGroup(this.child, "SIGTERM");
       return;
     }
@@ -547,6 +552,18 @@ class CodexProxyWebSocketChannel {
 
   #close(error: Error): void {
     if (this.#closedError !== undefined) return;
+    // A rejected WebSocket frame has not reached #receive: its full size and
+    // response/notification identity are unknown. Record pending request
+    // metadata, not parameters or transcript bytes, and never blame a specific
+    // response just because that request was in flight.
+    const pendingMetadata = [...this.#pending].slice(0, 8).map(([id, pending]) => ({
+      id, method: pending.method, requestBytes: pending.requestBytes
+    }));
+    error = new Error(
+      `Codex proxy transport closed: ${error.message}; messageLimitBytes=${PROVIDER_MESSAGE_MAX_BYTES}; `
+      + `pendingRequests=${JSON.stringify(pendingMetadata)}; pendingCount=${this.#pending.size}.`,
+      { cause: error }
+    );
     this.#closedError = error;
     if (!this.#ready) this.#rejectReady(error);
     for (const pending of this.#pending.values()) {
@@ -650,7 +667,6 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
     onGoal: ((goal: StructuredProviderGoal | null) => void) | undefined,
     onInput: ((input: StructuredProviderInputObserved) => void) | undefined,
     onActivity: ((activity: StructuredProviderActivity) => void) | undefined,
-    onDiagnostic: ((diagnostic: StructuredProviderDiagnostic) => void) | undefined,
     mirror: (stream: "stdout" | "stderr", text: string) => void
   ): Promise<Readonly<{
     session: CodexStructuredProviderSession;
@@ -665,7 +681,6 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
     let conversationId: string;
     let nativeConfiguration: JsonObject;
     let resumedActiveTurnId: string | undefined;
-    let resumedTurns: import("./codexAppServerRuntime.js").CodexThreadSnapshot["turns"] = [];
     if (control.mode === "new") {
       const opened = await runtime.openConversation({
         cwd: payload.cwd,
@@ -682,7 +697,6 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
         conversationId = resumed.threadId;
         nativeConfiguration = resumed.raw;
         resumedActiveTurnId = resumed.activeTurnId;
-        resumedTurns = resumed.turns;
       } catch (error) {
         if (codexAppServerErrorIsMissing(error)) {
           throw new ProviderConversationMissingError(
@@ -693,31 +707,22 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
         throw error;
       }
     }
-    const threadMetadata = nativeConfiguration.thread;
-    const nativeTitle = typeof threadMetadata === "object" && threadMetadata !== null
-      && !Array.isArray(threadMetadata) ? (threadMetadata as Record<string, unknown>).name : undefined;
-    // A native rename belongs to the user. Missing metadata is not evidence
-    // that an old title is still ours; leave it alone on resume.
-    let appliedGeneratedTitle: string | undefined;
-    if (control.sessionTitle !== undefined && (control.mode === "new"
-      || (control.previousSessionTitle !== undefined && nativeTitle === control.previousSessionTitle))) {
-      try {
-        await runtime.setConversationName({
-          conversationId,
-          name: control.sessionTitle
-        });
-        appliedGeneratedTitle = control.sessionTitle;
-      } catch (error) {
-        onDiagnostic?.({
-          nativeSessionId: conversationId,
-          failure: providerDeliveryFailureFrom(error, {
-            phase: "session-start",
-            inputDisposition: "not-accepted",
-            sessionDisposition: "recoverable"
-          })
-        });
-      }
+    if (control.sessionTitle !== undefined) {
+      // The native title mutation can persist without replying and stall later
+      // Goal/Turn requests, even through a separate metadata connection. Keep
+      // Yui's launch title, but do not put that optional mutation on a managed
+      // Session's execution path. Reconnect must not replay it either.
+      // This is an intentional omission, not a failed delivery or unavailable
+      // observer. Keep it in the Host log without waking an Agent to recover
+      // an operation that was never attempted.
+      mirror("stderr", "Native title synchronization was not submitted; Yui retains its Session title without blocking native Goal/Turn control.\n");
     }
+    const ownedTurn = control.kind === "restore" ? control.ownedTurn : undefined;
+    // Keep notifications buffered during paginated recovery. Otherwise a live
+    // terminal can be emitted before open returns and then returned again as a
+    // synthetic recovered terminal, or a newer start can be overwritten.
+    const recoveredOwnedTurn = ownedTurn !== undefined && resumedActiveTurnId !== ownedTurn.turnId
+      ? await runtime.readTurn(conversationId, ownedTurn.turnId) : undefined;
     const session = new CodexStructuredProviderSession(
       child,
       exit,
@@ -733,9 +738,7 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
       optionalId(initialized.codexHome)
     );
     session.nativeAccess = createCodexNativeAccess(conversationId, initialized, channel, openingMessages, nativeConfiguration);
-    session.appliedGeneratedTitle = appliedGeneratedTitle;
     session.#activeTurnId = resumedActiveTurnId;
-    const ownedTurn = control.kind === "restore" ? control.ownedTurn : undefined;
     session.#clientOwnedTurnId = ownedTurn?.turnId;
     session.#clientOwnedAttemptId = ownedTurn?.attemptId;
     if (ownedTurn !== undefined) session.#turnAttempts.set(ownedTurn.turnId, ownedTurn.attemptId);
@@ -750,7 +753,7 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
     });
     if (ownedTurn !== undefined && recoveredTerminal === undefined
       && session.#activeTurnId !== ownedTurn.turnId) {
-      const recovered = resumedTurns.find((turn) => turn.turnId === ownedTurn.turnId);
+      const recovered = recoveredOwnedTurn;
       if (recovered?.status === "completed"
         || recovered?.status === "interrupted"
         || recovered?.status === "failed") {

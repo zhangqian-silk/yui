@@ -106,7 +106,9 @@ test("retained unknown then rejected wake alerts outside its queue; restart, gro
   assert.equal(result.batchId, "attempt-1");
   assert.equal(result.alert.reason, "operator-unconfigured");
   assert.match(result.recovery, /wake retry task-1 wake-1/);
-  assert.doesNotMatch(result.recovery, /wake resolve task-1 wake-1/);
+  assert.match(result.recovery, /wake resolve task-1 wake-1/);
+  assert.match(result.recovery, /alternative.*not a sequence/);
+  assert.match(result.recovery, /rejection is not quiescence/);
   assert.equal(f.facts().length, 1);
   f.reopen();
   f.operator(false);
@@ -117,6 +119,7 @@ test("retained unknown then rejected wake alerts outside its queue; restart, gro
   assert.equal(result.alert.stage, "saved", "The retained evidence queues once the Operator is available.");
   assert.equal(f.notices().length, 1);
   assert.match(f.notices()[0].body, /wake retry task-1 wake-1/);
+  assert.match(f.notices()[0].body, /wake resolve task-1 wake-1/);
   assert.match(f.notices()[0].body, /Operator/);
   assert.deepEqual(f.store.getWorkMailbox(target), original, "Monitoring never releases the retained claim or pending suffix.");
   for (let i = 0; i < 10; i++) enqueueWork(f.store, target, `arrival-${i}`, at(7));
@@ -130,6 +133,7 @@ test("retained unknown then rejected wake alerts outside its queue; restart, gro
   f.store.updateGlobalRoleMessage(markGlobalRoleMessageNotDelivered(firstNotice, "host-unavailable", at(40)));
   f.observe(41);
   assert.equal(f.notices().length, 2);
+  assert.equal(f.notices()[0].body, firstNotice.body, "Saved guidance is original evidence, not rewritten.");
   assert.equal(f.notices()[0].notDelivered.reason, "host-unavailable", "Failed notice remains inspectable; never replayed.");
   // Explicit fixture-owned recovery, not the monitor: settle only old processing.
   const current = f.store.getWorkMailbox(target);

@@ -22,6 +22,7 @@ import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import { buildReleaseManifest } from "./lib/runtime-package.mjs";
 
 const started = performance.now();
 let phaseStarted = started;
@@ -81,11 +82,14 @@ const skills = [
 
 try {
   console.log(`Runtime package profile: ${profile}; ${process.platform}/${process.arch}; Node ${process.version}`);
+  console.log(`Runtime package fixture: ${sandbox}`);
   mkdirSync(isolatedHome, { recursive: true, mode: 0o700 });
   mkdirSync(fakeBin, { recursive: true, mode: 0o755 });
   const fakeCodex = new URL("../test/fixtures/fake-codex-cli.mjs", import.meta.url);
   writeFileSync(join(fakeBin, "codex"),
-    `#!${process.execPath}\nprocess.env.YUI_FAKE_UNIQUE_THREADS = "1";\nimport(${JSON.stringify(fakeCodex.href)}).catch(error => { console.error(error); process.exitCode = 1; });\n`,
+    `#!${process.execPath}\nprocess.env.YUI_FAKE_UNIQUE_THREADS = "1";\n`
+    + `process.env.YUI_FAKE_INPUT_LOG = ${JSON.stringify(join(sandbox, "skill-inputs.jsonl"))};\n`
+    + `import(${JSON.stringify(fakeCodex.href)}).catch(error => { console.error(error); process.exitCode = 1; });\n`,
     { mode: 0o755 });
   symlinkSync(process.execPath, join(fakeBin, "node"));
   // Optional real Git for the compatibility matrix; never replace system Git.
@@ -145,7 +149,7 @@ try {
     for (const [, href] of content.matchAll(/\[[^\]]+\]\(([^)\s]+)\)/gu)) {
       if (/^[a-z][a-z\d+.-]*:/iu.test(href)) continue;
       const target = href.split("#")[0];
-      if (!target.endsWith(".md")) continue;
+      if (!target.endsWith(".md") && !target.endsWith(".mjs")) continue;
       const resolved = resolve(dirname(path), target);
       const local = relative(skillRoot, resolved);
       if (local === ".." || local.startsWith("../") || isAbsolute(local)) {
@@ -154,6 +158,12 @@ try {
       pendingSkills.push(resolved);
     }
   }
+  // Execute the packaged local helper, not a source-checkout substitute.
+  // Its business comparison is covered in Core; here check shipped Node wiring.
+  const verifier = spawnSync(process.execPath,
+    [join(skillRoot, "yui-operator/scripts/verify-submission.mjs")], { encoding: "utf8" });
+  assert.equal(verifier.status, 1);
+  assert.match(JSON.parse(verifier.stderr).message, /^Usage: node verify-submission\.mjs /);
   if (packageJson.bin?.yui !== "./dist/cli.js") {
     throw new Error("Installed runtime package does not expose the expected yui bin.");
   }
@@ -462,7 +472,7 @@ try {
     const { createUpdatePorts } = await import(pathToFileURL(join(root, "dist", "cli", "updatePorts.js")).href);
     // Real update lifecycle children, bounded so a self-wait regression does not
     // spend the production 90-second handover deadline in CI. No npm operation.
-    const updatePorts = createUpdatePorts(environment, (command, args, options) =>
+    let updatePorts = createUpdatePorts(environment, (command, args, options) =>
       spawnSync(command, args, { ...options, timeout: 15_000 }));
     const lifecycle = updatePorts.controllerStatus(yuiHome);
     const controller = status.resources.find(resource => resource.kind === "controller" && resource.state === "current");
@@ -516,6 +526,11 @@ try {
       "CLI input did not traverse Controller, Host and fake Provider back to durable results.",
       () => JSON.stringify({ task: json("task", "show", task.id), events: json("task", "event", "list", task.id) }));
     assert.match(JSON.stringify(events()), /Native Codex result\./);
+    const initialInputs = readFileSync(join(sandbox, "skill-inputs.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+    assert.ok(initialInputs.some(row => JSON.stringify(row.input).includes("Current Skill pointers:")),
+      "Actual Host-to-Provider input carries current pointers on first entry.");
+    assert.ok(initialInputs.every(row => JSON.stringify(row.input).includes("Yui Host checked current Skills")),
+      "Actual managed submissions perform engineering checks, not just notification rendering.");
     assert.equal(json("task", "show", task.id).task.status, "active");
     assert.equal(existsSync(join(yuiHome, "runtime", "session-cli")), false,
       "Launching and waking a Leader must not generate a Session CLI script.");
@@ -699,6 +714,11 @@ try {
     const serverPid = Number(tmux("display-message", "-p", "-t", `=${neighbor}:`, "#{pid}").trim());
     tmux("kill-session", "-t", `=${neighbor}`);
     await waitFor(() => processExited(serverPid), "The empty fixture tmux server did not exit.");
+    const deliveredInputs = readFileSync(join(sandbox, "skill-inputs.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+    assert.ok(deliveredInputs.some(row => {
+      const input = JSON.stringify(row.input);
+      return input.includes("Yui Host checked current Skills") && !input.includes("Current Skill pointers:");
+    }), "A later actual Host Turn omits unchanged Skill metadata without skipping its check.");
     phase("task/session/archive");
 
     const updateStarted = performance.now();
@@ -952,6 +972,51 @@ try {
         } finally { read.close(); }
       }, "Agent Job native Turns did not settle before fixture teardown.");
       phase("agent-jobs");
+    }
+    if (assembled) {
+      // Exercise release activation, not only updater stop/restore. The second
+      // immutable build has a different digest while keeping storage/protocol
+      // unchanged; both preflights must run while the first release is active.
+      // The earlier historical-session probe intentionally replaced hostPid.
+      const activationHost = await inspectAgentHost(target);
+      const activationHostPid = operatorHostPid;
+      assert.equal(processExited(activationHostPid), false);
+      const first = json("release", "install", root);
+      assert.equal(first.outcome, "installed");
+      assert.equal(json("release", "activate", first.releaseId).outcome, "activated");
+      cli = join(first.releaseDir, "dist/cli.js");
+      const nextSource = join(sandbox, "next-release");
+      cpSync(root, nextSource, { recursive: true });
+      writeFileSync(join(nextSource, "activation-fixture.txt"), "same code, distinct immutable build\n");
+      const nextManifest = buildReleaseManifest(nextSource, { version: packageJson.version });
+      writeFileSync(join(nextSource, "release-manifest.json"), JSON.stringify(nextManifest));
+      const next = json("release", "install", nextSource);
+      assert.equal(next.outcome, "installed");
+      const nextCli = join(next.releaseDir, "dist/cli.js");
+      assert.throws(() => runCli(nextCli, ["--json", "upgrade", "--update-preflight"], environment),
+        /Refusing installed-release CLI access/, "inactive ordinary CLI remains fenced");
+      const before = json("task", "message", "list", task.id);
+      const activated = json("release", "activate", next.releaseId);
+      assert.equal(activated.outcome, "activated");
+      assert.equal(processExited(activated.oldPid), true);
+      cli = nextCli;
+      const { createUpdatePorts: activeUpdatePorts } = await import(
+        pathToFileURL(join(next.releaseDir, "dist/cli/updatePorts.js")).href);
+      updatePorts = activeUpdatePorts(environment, (command, args, options) =>
+        spawnSync(command, args, { ...options, timeout: 15_000 }));
+      const { callController } = await import(pathToFileURL(join(root, "dist/core/controllerClient.js")).href);
+      const identity = await callController(yuiHome, "controller.identity", {});
+      assert.equal(identity.buildId, next.buildId, "read back the promoted candidate, not the old owner");
+      const pointer = JSON.parse(readFileSync(join(yuiHome, "runtime/active-release.json"), "utf8"));
+      assert.equal(pointer.packageDigest, next.packageDigest);
+      assert.deepEqual(json("task", "message", "list", task.id), before);
+      const retainedHost = await inspectAgentHost(target);
+      assert.equal(processExited(activationHostPid), false);
+      for (const key of ["nativeSessionId", "processInstanceId", "authorityEpoch", "authorityHolderId"]) {
+        assert.deepEqual(retainedHost[key], activationHost[key], `Activation must preserve Host ${key}`);
+      }
+      console.log("Installed inactive release activation passed: read-only/fenced preflights, candidate promotion, identity and retained Host.");
+      phase("release-activation");
     }
     runCli(cli, ["session", "stop", "--all"], environment);
     await waitFor(() => processExited(operatorHostPid), "The fixture Operator Host did not exit.");

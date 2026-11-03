@@ -235,7 +235,8 @@ async function globalHostFixture(t, adapterId = "codex", {
 test("live Host reuse reports the applied native title, not its new launch intent", async t => {
   const f = await globalHostFixture(t, "codex", { instanceCode: "old" });
   const original = await inspectAgentHost({ home: f.home, scope: "global", roleName: f.role.name });
-  assert.equal(original.appliedGeneratedTitle, "Yui assistant @old");
+  assert.equal(original.appliedGeneratedTitle, undefined,
+    "Optional native synchronization is not submitted or falsely recorded as applied");
   const reused = await f.reuseHost("Yui assistant @new");
   assert.equal(reused.snapshot.nativeSessionId, original.nativeSessionId);
   assert.equal(reused.snapshot.appliedGeneratedTitle, original.appliedGeneratedTitle);
@@ -572,7 +573,9 @@ test("Operator natural terminals settle through Host and Inbox and automatically
     assert.ok(f.store.listGlobalRoleMessages("operator").find(message => message.id === id)?.inbox?.ack,
       "Both consumption paths must retain the fake Agent's actual handling receipt.");
   }
-  assert.equal(f.store.listGlobalRoleMessages("operator")[0].delivery.via, "provider");
+  const messages = f.store.listGlobalRoleMessages("operator");
+  assert.equal(messages.find(message => message.id === notice.messageId)?.delivery?.via, "provider",
+    JSON.stringify(messages.map(({ id, kind, delivery }) => ({ id, kind, delivery }))));
   await f.wait(async () => (await inspectAgentHost({
     home: f.home, scope: "global", roleName: "operator"
   })).state === "idle");

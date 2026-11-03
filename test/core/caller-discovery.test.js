@@ -3,10 +3,10 @@ import test from "node:test";
 import { CapabilityRegistry } from "../../dist/kernel/capabilityRegistry.js";
 import { InstanceHost } from "../../dist/kernel/instanceHost.js";
 import { discoveryCommandTree, discoveryAudience } from "../../dist/cli/commandDiscovery.js";
-import { findCommandNode, listPublicCommandPaths } from "../../dist/cli/commandCatalog.js";
+import { describeCommandHelp, describeCommandTree, findCommandNode, listPublicCommandPaths } from "../../dist/cli/commandCatalog.js";
 import { resolveCompletionCandidates } from "../../dist/cli/dynamicCompletion.js";
 import { routeInvocation } from "../../dist/cli/invocationRouter.js";
-import { renderCommandHelp } from "../../dist/cli/helpRenderer.js";
+import { renderCommandHelp, renderCommandPathHint } from "../../dist/cli/helpRenderer.js";
 
 test("native Codex identity discovers the same offline catalog as transport identity", async () => {
   const leader = { YUI_SESSION_SCOPE: "task", YUI_TASK_ID: "task-1",
@@ -58,8 +58,73 @@ test("one caller projection drives help and completion without restricting direc
   const candidates = await resolveCompletionCandidates({ words: ["task"], current: "", ports, root: worker });
   assert.ok(candidates.includes("context"));
   assert.ok(!candidates.includes("create"));
+  assert.deepEqual(await resolveCompletionCandidates({
+    words: ["help", "task"], current: "--r", ports, root: worker
+  }), ["--recursive"]);
   assert.equal(routeInvocation(["task", "work", "dispatch", "work-1"], worker).kind, "execute");
-  assert.equal(routeInvocation(["help", "task", "work", "dispatch"], worker).kind, "path-error");
+  const omitted = routeInvocation(["help", "task", "work", "dispatch"], worker);
+  assert.equal(omitted.kind, "path-error");
+  assert.equal(omitted.discoveryOnly, true, "Missing help is not an attempted execution or permission check");
+  const unknown = routeInvocation(["task", "not-a-command"], worker);
+  assert.equal(unknown.kind, "path-error");
+  assert.equal(unknown.discoveryOnly, undefined, "Keep execution parsing errors distinct");
+  const publicMissing = routeInvocation(["help", "task", "work"], publicTree);
+  const hint = renderCommandPathHint(publicMissing.helpNode);
+  assert.match(hint, /\bcontext\b/);
+  assert.doesNotMatch(hint, /\bwork\b|\binternal\b/);
+  assert.match(hint, /yui --json help task/);
+  assert.ok(Buffer.byteLength(hint) < Buffer.byteLength(renderCommandHelp(publicMissing.helpNode, "test")));
+});
+
+test("bounded help reaches every filtered command with full details and explicit tree discovery", () => {
+  for (const audience of ["public", "operator", "leader", "assignment", "global", "unbound"]) {
+    const tree = discoveryCommandTree({}, audience);
+    const visit = node => {
+      const help = describeCommandHelp(node);
+      assert.equal(help.discovery.children, "complete-immediate-summaries");
+      assert.equal(help.discovery.details, "yui --json help <command ...>");
+      assert.equal(help.discovery.tree, "yui --json help [command ...] --recursive");
+      const children = help.children.map(child => {
+        assert.deepEqual(Object.keys(child).sort(), ["path", "summary"]);
+        const route = routeInvocation(["help", ...child.path.split(" ")], tree);
+        assert.equal(route.kind, "help", child.path);
+        assert.equal(route.node.summary, child.summary);
+        return visit(route.node);
+      });
+      const { discovery, ...details } = help;
+      return { ...details, children };
+    };
+    assert.deepEqual(visit(tree), describeCommandTree(tree), audience);
+    const recursive = routeInvocation(["help", "--recursive"], tree);
+    assert.equal(recursive.kind, "help");
+    assert.equal(recursive.recursive, true);
+    assert.equal(routeInvocation(["help", "task", "--unknown"], tree).kind, "path-error");
+    assert.equal(routeInvocation(["help", "internal", "--recursive"], tree).kind, "path-error");
+  }
+});
+
+test("context operation discovery separates lookup, timestamp filtering and event cursors", async () => {
+  const tree = discoveryCommandTree({});
+  const ports = { call() { throw new Error("Context discovery must remain offline"); } };
+  for (const action of ["read", "list", "delta", "inspect"]) {
+    const route = routeInvocation(["help", "task", "context", action], tree);
+    assert.equal(route.kind, "help", action);
+    assert.equal(routeInvocation(["task", "context", action, "task-1"], tree).kind, "execute");
+  }
+  assert.equal(routeInvocation(["task", "context", "task-1"], tree).kind, "execute",
+    "The existing implicit current read remains executable.");
+  const list = findCommandNode(["task", "context", "list"], tree);
+  const delta = findCommandNode(["task", "context", "delta"], tree);
+  const inspect = findCommandNode(["task", "context", "inspect"], tree);
+  assert.match(list.usage.join(" "), /--after <timestamp>/);
+  assert.match(delta.usage.join(" "), /--after <cursor>/);
+  assert.ok(!list.options.includes("--ref"));
+  assert.ok(!inspect.options.includes("--after"));
+  assert.ok(inspect.options.includes("--context-ref"));
+  assert.deepEqual((await resolveCompletionCandidates({
+    words: ["task", "context"], current: "", ports, root: tree
+  })).filter(value => ["read", "list", "delta", "inspect"].includes(value)).sort(),
+  ["delta", "inspect", "list", "read"]);
 });
 
 test("exact discovery is pure, runtime-independent and never an execution credential", async t => {

@@ -18,6 +18,102 @@ import { createGlobalRole, createRoleAgentBinding } from "../../dist/role/role.j
 import { bindGlobalRoleProviderRuntime, createRoleSessionSet, recordRoleAgentSession } from "../../dist/executor/agentExecutor.js";
 import { createProviderRuntimeBinding } from "../../dist/runtime/providerRuntimeIdentity.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
+import { startControllerServer } from "../../dist/core/controllerServer.js";
+import { ControllerCommandObserver } from "../../dist/core/controllerTelemetry.js";
+
+test("slow/failed request journal keeps all socket stages together beyond recent-sample eviction", async t => {
+  const home = await mkdtemp(join(tmpdir(), "yui-request-journal-"));
+  let journal;
+  t.after(async () => { await journal?.close(); await rm(home, { recursive: true, force: true }); });
+  journal = new ControllerDiagnosticJournal(home);
+  let clock = 30;
+  const observer = new ControllerCommandObserver(() => clock, record => journal.request(record));
+  const command = observer.start("controller.status", "private-request-id", {
+    acceptedAtMs: 10, receivedAtMs: 20
+  });
+  clock = 40;
+  command.flushed(true); // Peer closes before the handler returns.
+  clock = 50;
+  command.complete("builtin", "success");
+  for (let i = 0; i < 30; i++) {
+    const other = observer.start("controller.status", `other-${i}`, { acceptedAtMs: clock, receivedAtMs: clock });
+    other.complete("builtin", "success"); other.flushed();
+  }
+  command.flushed(); command.complete("builtin", "failure");
+  await journal.flush();
+  const text = await readFile(join(home, "runtime/controller-diagnostics.jsonl"), "utf8");
+  const records = text.trim().split("\n").map(JSON.parse);
+  assert.equal(records.length, 1, "one failed request, no duplicate finalization or healthy-request storm");
+  assert.equal(records[0].kind, "request");
+  assert.deepEqual(records[0].request, {
+    target: createHash("sha256").update("private-request-id").digest("hex").slice(0, 16),
+    phase: "controller.status", acceptedAtMs: 10, receivedAtMs: 20,
+    routedAtMs: 30, handlerCompletedAtMs: 50, flushCompletedAtMs: 40,
+    failed: true, handlerFailed: false, flushFailed: true, elapsedMs: 40
+  });
+  assert.equal(text.includes("private-request-id"), false);
+  journal.request({ ...records[0].request, token: "secret", params: { raw: "secret" }, locator: "secret" });
+  await journal.flush();
+  assert.equal((await readFile(join(home, "runtime/controller-diagnostics.jsonl"), "utf8")).includes("secret"), false);
+  clock = 2000;
+  const slow = observer.start("controller.status", "slow", { acceptedAtMs: 100, receivedAtMs: 150 });
+  slow.complete("builtin", "success"); slow.flushed();
+  await journal.flush();
+  assert.equal(journal.metrics().written, 3, "slow total duration includes the pre-route interval");
+});
+
+test("real socket stages distinguish routing from local flush and retain request correlation", async t => {
+  const home = await mkdtemp(join(tmpdir(), "yui-socket-stages-"));
+  let server, release, journal;
+  const blocked = new Promise(resolve => { release = resolve; });
+  t.after(async () => {
+    release();
+    await server?.close();
+    await journal?.close();
+    await rm(home, { recursive: true, force: true });
+  });
+  new SqliteTaskStore(home).close();
+  journal = new ControllerDiagnosticJournal(home);
+  server = await startControllerServer(home, () => blocked, undefined, {
+    onRequestDiagnostic: record => journal.request(record)
+  });
+  const requestId = "fixture-same-request";
+  let timeout;
+  await assert.rejects(callController(home, "fixture.wait", {}, { id: requestId, timeoutMs: 100 }), error => {
+    timeout = error;
+    assert.equal(error.diagnostic.delivery, "unconfirmed");
+    assert.equal(error.diagnostic.timing.responseAtMs, null);
+    return true;
+  });
+  // A slow asynchronous business handler must not block the status/coherence path.
+  assert.equal((await callController(home, "controller.status", {}, { id: "fixture-status" })).running, true);
+  const target = createHash("sha256").update(requestId).digest("hex").slice(0, 16);
+  const pending = server.commandObserver.snapshot();
+  const statusHash = createHash("sha256").update("fixture-status").digest("hex").slice(0, 16);
+  assert.equal(pending.transport.recent.find(item => item.target === statusHash
+    && item.phase === "socket.route-to-flush").failed, false);
+  assert.ok(pending.observations.active.some(item => item.target === target));
+  const stages = pending.transport.recent.filter(item => item.target === target);
+  assert.deepEqual(stages.slice(0, 2).map(item => item.phase), ["socket.accept-to-route", "socket.receive-to-route"]);
+  assert.ok(stages.every(item => item.startedAtMs >= timeout.diagnostic.timing.startedAtMs));
+  release({ done: true });
+  const deadline = performance.now() + 1000;
+  while ((server.commandObserver.snapshot().transport.active.some(item => item.target === target)
+      || server.commandObserver.snapshot().observations.active.some(item => item.target === target))
+    && performance.now() < deadline) await yieldLoop();
+  const completed = server.commandObserver.snapshot().transport.recent.find(item =>
+    item.target === target && item.phase === "socket.route-to-flush");
+  assert.equal(completed.failed, true, "a timed-out peer is not a successful flush");
+  await journal.flush();
+  const records = (await readFile(join(home, "runtime/controller-diagnostics.jsonl"), "utf8"))
+    .trim().split("\n").map(JSON.parse);
+  const request = records.find(record => record.kind === "request" && record.request.target === target).request;
+  assert.equal(request.failed, true);
+  assert.equal(request.flushFailed, true);
+  assert.ok(request.receivedAtMs >= request.acceptedAtMs);
+  assert.ok(request.routedAtMs >= request.receivedAtMs);
+  assert.ok(request.handlerCompletedAtMs >= request.routedAtMs);
+});
 
 test("production scheduler maintenance waits for a write lock without blocking status", async t => {
   const home = await mkdtemp(join(tmpdir(), "yui-scheduler-lock-"));
@@ -107,7 +203,9 @@ test("Controller diagnostics survive restart, rotate, redact and isolate filesys
   const journal = new ControllerDiagnosticJournal(home, { maxBytes: 1800 });
   const secret = "private prompt token=do-not-record /home/private";
   journal.error(Object.assign(new Error(secret), { code: "SQLITE_BUSY" }));
-  journal.sample({ commands: { observations: { completed: 1, recent: [{
+  journal.sample({ commands: { transport: { completed: 1, recent: [{
+    phase: "socket.route-to-flush", target: "0123456789abcdef", elapsedMs: 5200, failed: true
+  }] }, observations: { completed: 1, recent: [{
     phase: "controller.status", target: "0123456789abcdef", elapsedMs: 5200, failed: false
   }] } }, arbitrary: secret }, 1500);
   await journal.flush();
@@ -117,6 +215,7 @@ test("Controller diagnostics survive restart, rotate, redact and isolate filesys
   const records = original.trim().split("\n").map(JSON.parse);
   assert.equal(records[0].error.code, "SQLITE_BUSY");
   assert.equal(records[1].snapshot.commands.observations.recent[0].target, "0123456789abcdef");
+  assert.equal(records[1].snapshot.commands.transport.recent[0].failed, true);
   assert.equal(records[1].lagMs, 1500);
   assert.equal((await stat(file)).mode & 0o777, 0o600);
   for (let i = 0; i < 12; i++) { journal.error(new Error(`sample-${i}`)); await journal.flush(); }

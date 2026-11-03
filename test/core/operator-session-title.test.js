@@ -202,10 +202,11 @@ test("only a newly created global Operator Session receives the dated title", (t
   assert.equal(resumed.launch.env.YUI_SESSION_TITLE, undefined);
 });
 
-test("a rejected Codex rename is diagnostic and does not discard the new Session", async (t) => {
+test("intentionally skipped native title stays visible locally without a false runtime failure", async (t) => {
   let session;
   t.after(() => session?.terminate("SIGTERM"));
   const diagnostics = [];
+  const mirrored = [];
   const opened = await startStructuredProviderSession({
     schemaVersion: 1,
     command: process.execPath,
@@ -231,18 +232,50 @@ test("a rejected Codex rename is diagnostic and does not discard the new Session
     }
   }, {
     onDiagnostic: diagnostic => diagnostics.push(diagnostic),
-    mirrorOutput: () => {}
+    mirrorOutput: (stream, text) => mirrored.push({ stream, text })
   });
   session = opened.session;
 
   assert.equal(session.nativeSessionId, "fake-thread-1");
-  assert.equal(session.appliedGeneratedTitle, undefined);
-  assert.equal(diagnostics.length, 1);
-  assert.match(diagnostics[0].failure.detail, /thread naming is unavailable/u);
-  assert.equal(diagnostics[0].failure.sessionDisposition, "recoverable");
+  assert.deepEqual(diagnostics, [], "An optional action not attempted is not a delivery/observer failure");
+  assert.ok(mirrored.some(item => item.stream === "stderr"
+    && /title synchronization was not submitted/u.test(item.text)));
 });
 
-test("resume renames only a native title still owned by Yui", async t => {
+test("an unanswered rename cannot stall business control on the new Session", async (t) => {
+  let session;
+  t.after(() => session?.terminate("SIGTERM"));
+  const diagnostics = [];
+  let finish;
+  const terminal = new Promise(resolve => { finish = resolve; });
+  const opened = await startStructuredProviderSession({
+    schemaVersion: 1,
+    command: process.execPath,
+    args: [join(root, "test", "fixtures", "fake-codex-app-server-proxy.mjs")],
+    environment: { ...process.env, YUI_FAKE_STALL_THREAD_NAME: "1" },
+    cwd: root,
+    childLifecycle: "persistent",
+    startMode: "provider",
+    providerControl: {
+      schemaVersion: 1, adapterId: "codex", transport: "codex-app-server-proxy",
+      kind: "start", mode: "new", sessionOnly: true,
+      sessionTitle: "Yui · Operator · 0920",
+      authority: { epoch: 1, owner: "controller", holderId: "controller" },
+      codexThread: {}
+    }
+  }, {
+    onDiagnostic: diagnostic => diagnostics.push(diagnostic),
+    onTerminal: finish,
+    mirrorOutput: () => {}
+  });
+  session = opened.session;
+  assert.equal(opened.goal, null);
+  await session.submitTurn({ attemptId: "rename-stall-business", boundedText: "business proceeds" });
+  assert.equal((await terminal).status, "completed");
+  assert.deepEqual(diagnostics, [], "No attempted rename means no native failure or recovery notice");
+});
+
+test("resume does not claim native title ownership when synchronization is intentionally omitted", async t => {
   for (const [nativeName, reject] of [["Yui Operator @old · 1102", true],
     ["User title", false], [undefined, false], ["Yui Operator @old · 1102", false]]) {
     const diagnostics = [];
@@ -261,9 +294,9 @@ test("resume renames only a native title still owned by Yui", async t => {
     }, { onDiagnostic: value => diagnostics.push(value), mirrorOutput: () => {} });
     t.after(() => opened.session.terminate("SIGTERM"));
     assert.equal(opened.session.nativeSessionId, "existing-thread");
-    assert.equal(diagnostics.length, reject ? 1 : 0);
-    assert.equal(opened.session.appliedGeneratedTitle,
-      !reject && nativeName === "Yui Operator @old · 1102" ? "Yui Operator @new · 1102" : undefined);
+    assert.equal(diagnostics.length, 0, "An unsubmitted optional rename is not a provider failure");
+    assert.equal(opened.session.appliedGeneratedTitle, undefined,
+      "Yui's generated label must not be recorded as an applied native title");
     opened.session.terminate("SIGTERM");
   }
 });

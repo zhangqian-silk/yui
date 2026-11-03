@@ -119,9 +119,10 @@ export class CodexAppServerRuntime implements
     const result = await this.transport.request("thread/resume", {
       threadId: id,
       ...(options.cwd === undefined ? {} : { cwd: text(options.cwd, "Codex thread cwd") }),
-      ...threadOptions(options)
+      ...threadOptions(options),
+      excludeTurns: true
     });
-    return parseThreadSnapshot(result, id, true);
+    return this.withLatestTurn(parseThreadSnapshot(result, id, true));
   }
 
   async setConversationName(input: Readonly<{
@@ -141,9 +142,78 @@ export class CodexAppServerRuntime implements
     const id = text(conversationId, "Codex thread id");
     const result = await this.transport.request("thread/read", {
       threadId: id,
-      includeTurns: options.includeTurns ?? true
+      includeTurns: false
     });
-    return parseThreadSnapshot(result, id, "unknown");
+    const snapshot = parseThreadSnapshot(result, id, "unknown");
+    return options.includeTurns === false ? snapshot : this.withLatestTurn(snapshot);
+  }
+
+  /** Current execution metadata, never an unbounded transcript hydration. */
+  private async withLatestTurn(snapshot: CodexThreadSnapshot): Promise<CodexThreadSnapshot> {
+    const page = await this.transport.request("thread/turns/list", {
+      threadId: snapshot.threadId, limit: 1, sortDirection: "desc", itemsView: "notLoaded"
+    });
+    const records = codexPage(page, new Set()).data;
+    if (records.length > 1) throw new Error("Codex latest Turn page exceeded its requested bound.");
+    const turns = records.map(parseTurnSnapshot);
+    const latest = turns[0];
+    return {
+      ...snapshot,
+      // The metadata response may contain no Turns. Do not carry an old active
+      // identity over a separately observed latest Turn.
+      activeTurnId: latest?.status === "inProgress" ? latest.turnId : undefined,
+      latestTurnStatus: latest?.status,
+      turns
+    };
+  }
+
+  /** Recover only the persisted owned Turn. Scan metadata, then its items,
+   * newest first, stopping at the last nonempty assistant message. A malformed
+   * page or oversized individual item remains an error, never guessed success. */
+  async readTurn(conversationId: string, turnId: string): Promise<CodexThreadTurnSnapshot | undefined> {
+    const threadId = text(conversationId, "Codex thread id");
+    const expectedTurnId = text(turnId, "Codex owned Turn id");
+    const seen = new Set<string>();
+    let cursor: string | undefined;
+    for (;;) {
+      const page = codexPage(await this.transport.request("thread/turns/list", {
+        threadId, limit: 50, sortDirection: "desc", itemsView: "notLoaded",
+        ...(cursor === undefined ? {} : { cursor })
+      }), seen);
+      if (page.data.length > 50) throw new Error("Codex Turn page exceeded its requested bound.");
+      const found = page.data.map(parseTurnSnapshot).find(turn => turn.turnId === expectedTurnId);
+      if (found !== undefined) {
+        if (found.status === "inProgress") return found;
+        const output = await this.readTurnOutput(threadId, expectedTurnId);
+        return { ...found, ...(output === undefined ? {} : { output }) };
+      }
+      if (page.nextCursor === null) return undefined;
+      cursor = page.nextCursor;
+    }
+  }
+
+  private async readTurnOutput(threadId: string, turnId: string): Promise<string | undefined> {
+    const seen = new Set<string>();
+    let cursor: string | undefined;
+    for (;;) {
+      const page = codexPage(await this.transport.request("thread/items/list", {
+        threadId, turnId, limit: 1, sortDirection: "desc",
+        ...(cursor === undefined ? {} : { cursor })
+      }), seen);
+      if (page.data.length > 1) throw new Error("Codex item page exceeded its requested bound.");
+      for (const value of page.data) {
+        const entry = object(value);
+        const item = object(entry?.item);
+        if (entry?.turnId !== turnId || item === null) {
+          throw new Error("Codex item page does not belong to the owned Turn.");
+        }
+        if (item.type === "agentMessage" && typeof item.text === "string" && item.text.trim().length > 0) {
+          return item.text;
+        }
+      }
+      if (page.nextCursor === null) return undefined;
+      cursor = page.nextCursor;
+    }
   }
 
   async readGoal(conversationId: string): Promise<CodexThreadGoal | null> {
@@ -446,24 +516,7 @@ function parseThreadSnapshot(
   const status = threadStatus(thread.status);
   if (status === "unknown") throw new Error("Codex thread status is missing or unsupported.");
   if (!Array.isArray(thread.turns)) throw new Error("Codex thread turns are missing or invalid.");
-  const turnSnapshots = thread.turns.map((value): CodexThreadTurnSnapshot => {
-    const turn = object(value);
-    if (turn === null) throw new Error("Codex thread contains an invalid Turn.");
-    const turnId = text(optionalId(turn.id), "Codex response Turn id");
-    const status = optionalTurnStatus(turn.status);
-    if (status === undefined) throw new Error("Codex Turn status is missing or unsupported.");
-    const output = codexTurnOutput(turn);
-    const error = providerError(turn.error);
-    return {
-      turnId,
-      status,
-      ...(output === undefined ? {} : { output }),
-      ...(error === undefined ? {} : { error }),
-      ...(turn.error === undefined || turn.error === null ? {} : {
-        rawError: serializeAgentErrorRaw(turn.error)
-      })
-    };
-  });
+  const turnSnapshots = thread.turns.map(parseTurnSnapshot);
   const active = [...turnSnapshots].reverse().find((turn) => turn.status === "inProgress");
   const latestStatus = turnSnapshots.at(-1)?.status;
   return {
@@ -478,6 +531,39 @@ function parseThreadSnapshot(
       : { parentThreadId: optionalId(thread.parentThreadId) }),
     raw: result
   };
+}
+
+function parseTurnSnapshot(value: unknown): CodexThreadTurnSnapshot {
+  const turn = object(value);
+  if (turn === null) throw new Error("Codex thread contains an invalid Turn.");
+  const turnId = text(optionalId(turn.id), "Codex response Turn id");
+  const status = optionalTurnStatus(turn.status);
+  if (status === undefined) throw new Error("Codex Turn status is missing or unsupported.");
+  const output = codexTurnOutput(turn);
+  const error = providerError(turn.error);
+  return {
+    turnId,
+    status,
+    ...(output === undefined ? {} : { output }),
+    ...(error === undefined ? {} : { error }),
+    ...(turn.error === undefined || turn.error === null ? {} : {
+      rawError: serializeAgentErrorRaw(turn.error)
+    })
+  };
+}
+
+function codexPage(page: JsonRpcObject, seen: Set<string>): {
+  data: unknown[]; nextCursor: string | null;
+} {
+  if (!Array.isArray(page.data)
+    || !(page.nextCursor === null || typeof page.nextCursor === "string" && page.nextCursor.length > 0)) {
+    throw new Error("Codex history page is missing data or its continuation boundary.");
+  }
+  if (typeof page.nextCursor === "string") {
+    if (seen.has(page.nextCursor)) throw new Error("Codex history cursor repeated.");
+    seen.add(page.nextCursor);
+  }
+  return { data: page.data, nextCursor: page.nextCursor };
 }
 
 /** Extract the last assistant message from one native Codex Turn without rewriting it. */

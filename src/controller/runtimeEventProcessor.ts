@@ -127,7 +127,7 @@ export type FileRuntimeEventProcessorOptions = Readonly<{
 }>;
 
 type RuntimeEventInboxPort = Pick<FileRuntimeEventInbox, "list" | "acknowledge">
-  & Partial<Pick<FileRuntimeEventInbox, "acknowledgeMany">>;
+  & Partial<Pick<FileRuntimeEventInbox, "acknowledgeMany" | "listAsync">>;
 
 export type CoalescedRuntimeEvent = Readonly<{
   event: RuntimeLifecycleEvent;
@@ -796,8 +796,8 @@ export function createAsyncRuntimeObserver(invoke: AsyncObserverInvoker): AsyncR
 /**
  * The async counterpart to {@link FileRuntimeEventProcessor}: folds immutable
  * Hook facts one at a time (awaiting the worker-hosted observer) before
- * acknowledging them. The inbox itself is file-based and stays on the main
- * thread; only the db-touching folds are proxied to the worker.
+ * acknowledging them. File reads are asynchronous so a retained backlog
+ * cannot hold the control event loop before the worker's bounded fold.
  */
 export class AsyncRuntimeEventProcessor {
   private drainLaneCursor = 0;
@@ -814,7 +814,7 @@ export class AsyncRuntimeEventProcessor {
     const failed: RuntimeEventDrainFailure[] = [];
     let events: readonly RuntimeLifecycleEvent[];
     try {
-      events = this.inbox.list();
+      events = this.inbox.listAsync === undefined ? this.inbox.list() : await this.inbox.listAsync();
     } catch (error) {
       return emptyDrainFailure(error);
     }

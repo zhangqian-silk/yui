@@ -125,6 +125,18 @@ Provider 权限策略、Profile 访问意图和 Project 写范围是不同的合
 不授予对另一个 Project 的写入。受管工作区 owner、精确 Assignment 和资源 grant
 落实 Yui 操作；宽泛的原生权限不是 OS 沙箱。
 
+Codex configured 权限可显式排除自动加入的可写临时目录：
+`--sandbox workspace-write --exclude-tmpdir-env-var true --exclude-slash-tmp true`。
+两项均接受 `true`/`false`；`--clear-exclude-tmpdir-env-var` 和
+`--clear-exclude-slash-tmp` 分别清除覆盖。省略时保留原生默认语义，不默认排除。
+两项都要求显式 `workspace-write`，其他 adapter 或冲突策略会被拒绝。
+受管 start/resume 编译到该 Thread 的 `sandbox_workspace_write`，不修改共享 daemon
+默认值或账户文件；普通交互启动使用等价的单次调用结构化选项。
+映射依据[原生配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)。
+这只排除自动 `$TMPDIR`、`/tmp` 写授权，不排除位于其中且被显式授权的 writable root；
+也不证明读隔离或阻止合法 Controller RPC 的副作用。配置被接受不是 OS 沙箱生效证明；
+应检查原生回执，并在另行授权的可丢弃 fixture 内验证实际执行边界。
+
 以 write 意图在自己 Task-owned main 工作区启动的 delivery Leader，从该工作区
 捕获已绑定 Project 的写域，不要求存在 open WorkItem；已接受结果也不会移除这个
 直接交付写域。显式 Assignment（包括空写域）仍决定受派发执行的范围。
@@ -189,11 +201,20 @@ yui config role show <global-role>
 yui config profile show <profile>
 yui task role add <task> <role> --profile <profile>
 yui task role show <task> <role>
+yui task role show <task> <role> --view full
 yui task role update <task> <role> --environment <preparation-id>
 yui task role update <task> <role> --managed-environment
 yui task role session inspect <task> <role>
 yui task role session new <task> <role> --reason "<why a fresh Session is useful>"
 ```
+
+`task role show` 默认返回完整的期望 Role 配置及当前记录的 Session 配置，
+不再附带历史 Run 配置副本。记录配置和保留的控制目标不等于实时状态或停止
+证明；需要这些事实时使用返回的 status/session 检查入口。`--view full`
+保留原来的完整 `role`、`sessions`、`runs` 文档及有界分页。依赖这些历史
+字段的 JSON 消费者须显式选择 full，并在后续游标读取中保持同一视图。
+这是 CLI 默认 JSON 视图变更，不改变存储，也不改变交互配置向导使用的
+`task.role.show` 配置 RPC。
 
 全局查询使用调用进程的默认原生环境；Task 查询使用 Controller 的原生账户环境及
 所选 Role 配置，不把调用方的凭据转交给其他 Provider。省略 `--error` 查看当前期望

@@ -14,6 +14,7 @@ import {
   rmSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { callController, ControllerClientError } from "../core/controllerClient.js";
 import { processGenerationIsLive } from "../core/fileLockOwner.js";
@@ -429,10 +430,23 @@ export function createReleaseActivatePorts(
         }
       }),
     runPreflight: overrides.runPreflight ?? ((releaseDir, home) => {
-      const cli = join(releaseDir, "dist", "cli.js");
+      assertReleaseIsNotWorktreeOrLinked(releaseDir);
+      const manifest = verifyReleaseIntegrity(releaseDir);
+      if (resolve(releaseDir) !== resolve(releaseDirectoryFor(home, manifest))
+        || !hasMatchingSmokeReceipt(releaseDir, manifest)) {
+        throw new Error("Release preflight requires this Home's verified installed target and matching smoke receipt.");
+      }
       // The target owns current-record and database integrity validation.
       // Activation never migrates; a valid but older Home still blocks here.
-      const result = spawnSync(process.execPath, [cli, "--json", "upgrade", "--update-preflight"], {
+      // Invoke its read-only primitive, not an ordinary inactive CLI command:
+      // the Home's CLI fence must remain closed until handover completes.
+      const module = pathToFileURL(join(releaseDir, "dist", "storage", "upgrade", "upgradeOrchestrator.js")).href;
+      const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+        const { runStorageUpgrade } = await import(process.argv[1]);
+        const data = await runStorageUpgrade({ home: process.argv[2], mode: "update-preflight" });
+        process.stdout.write(JSON.stringify({ ok: true, data }));
+        process.exitCode = data.outcome === "update-preflight" ? 0 : 5;
+      `, module, home], {
         env: { ...process.env, YUI_HOME: home, NO_COLOR: "1" },
         encoding: "utf8",
         timeout: 60_000

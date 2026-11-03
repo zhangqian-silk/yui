@@ -73,6 +73,13 @@ An existing merge/rebase/cherry-pick without the attempt's own progress receipt
 is not adopted from Git markers. Preserve the scene and choose explicit recovery;
 normal continuation uses the original receipt and never replays a completed step.
 
+If Git stopped but persisting the conflict failed, explicit `task integration
+continue` can resume that same operation when the original progress receipt,
+workspace, branch, source and Git metadata all match. This recovery requires a
+nonempty staged resolution with no unresolved, unstaged or untracked files.
+Ordinary re-entry does not authorize it; missing evidence still refuses recovery.
+It does not invent a conflict record, restart the source command or bypass checks.
+
 When checks are a DurableJob, the Integration retains that exact jobId while
 running. Once the Job settles, `task integration continue <task>/<integration>`
 consumes its result and performs the guarded finalization. Existing unsettled

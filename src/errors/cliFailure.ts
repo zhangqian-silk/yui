@@ -18,6 +18,8 @@ export type FailureContext = Readonly<{
 export type CliFailure = Readonly<{
   code: string;
   message: string;
+  /** JSON keeps full identity/cause data in details.diagnostic, not twice. */
+  jsonMessage: string;
   details: Readonly<Record<string, unknown>>;
   exitCode: number;
 }>;
@@ -92,8 +94,18 @@ export function describeCliFailure(error: unknown, context: FailureContext = {})
         ? "The Controller returned an error response; it does not prove rollback of earlier effects. " + RECONCILE
         : RECONCILE;
   const help = error instanceof CliError && error.helpText !== undefined ? clean(error.helpText.trimEnd()) : undefined;
-  const message = [
-    ...chain.map((item, index) => `${index === 0 ? "" : "Caused by: "}${item.code === undefined ? "" : `[${item.code}] `}${item.message}`),
+  const causes = chain.map((item, index) => `${index === 0 ? "" : "Caused by: "}${item.code === undefined ? "" : `[${item.code}] `}${item.message}`);
+  const lines = (parts: (string | undefined)[]): string =>
+    parts.filter((part): part is string => part !== undefined && part.length > 0).join("\n");
+  const jsonMessage = lines([
+    causes[0],
+    effects,
+    guidance,
+    "Use the same Home and CLI in details.diagnostic; its causes retain the full error chain. Recovery commands are not run automatically.",
+    help
+  ]);
+  const message = lines([
+    ...causes,
     diagnostic.operation === undefined ? undefined : `Operation: ${diagnostic.operation}`,
     diagnostic.home === undefined ? undefined : `YUI_HOME: ${diagnostic.home}`,
     diagnostic.cli === undefined ? undefined : `CLI entry: ${diagnostic.cli}`,
@@ -105,9 +117,9 @@ export function describeCliFailure(error: unknown, context: FailureContext = {})
     guidance,
     "Recovery commands shown as `yui` must use the same Home and matching CLI entry above; they are not run automatically.",
     help
-  ].filter((part): part is string => part !== undefined && part.length > 0).join("\n");
+  ]);
   return {
-    code, exitCode, message,
+    code, exitCode, message, jsonMessage,
     details: {
       ...(error instanceof CliError ? sanitizeFailureDetails(error.details, context) : {}),
       diagnostic
@@ -117,7 +129,7 @@ export function describeCliFailure(error: unknown, context: FailureContext = {})
 
 export function renderCliFailure(failure: CliFailure, json: boolean, jsonCode = failure.code): string {
   return json
-    ? JSON.stringify({ ok: false, code: jsonCode, message: failure.message, details: failure.details })
+    ? JSON.stringify({ ok: false, code: jsonCode, message: failure.jsonMessage, details: failure.details })
     : `${failure.code}: ${failure.message}`;
 }
 

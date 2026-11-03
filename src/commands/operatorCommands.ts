@@ -174,11 +174,8 @@ function submit(
   if (requestId !== undefined && requestId.length === 0) {
     throw usageError("--request-id is required.", usage);
   }
-  const body = readCommandText(positionals[0], bodyFile, "--body", usage);
-  return {
-    kind: "output",
-    output: submitOperatorMessage(body, taskId, store, options, intent, requestId)
-  };
+  const body = readCommandText(positionals[0], bodyFile, "--body", usage, { preserveFileWhitespace: true });
+  return submitOperatorMessage(body, taskId, store, options, intent, requestId);
 }
 
 function listSessions(

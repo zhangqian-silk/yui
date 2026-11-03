@@ -29,6 +29,7 @@ const required = [
   "skills/yui-leader/SKILL.md",
   "skills/yui-worker/SKILL.md",
   "skills/yui-operator/SKILL.md",
+  "skills/yui-operator/scripts/verify-submission.mjs",
   "skills/yui-reviewer/SKILL.md",
   "skills/yui-runtime/SKILL.md",
   "skills/yui-runtime/references/recovery.md",

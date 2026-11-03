@@ -21,6 +21,10 @@ export function staticAgentConfigurationFields(id: AgentAdapterId): AgentConfigu
     staticField("permission.sandbox", CODEX_SANDBOXES, false),
     staticField("permission.approval", CODEX_APPROVALS, false,
       "Native versions may retire values accepted by the adapter."),
+    staticField("permission.excludeTmpdirEnvVar", ["true", "false"], false,
+      "Requires explicit workspace-write; omission follows the native default."),
+    staticField("permission.excludeSlashTmp", ["true", "false"], false,
+      "Requires explicit workspace-write; omission follows the native default."),
     staticField("search", ["true"], false),
     staticField("profile", [], true),
     staticField("additionalDirectories", [], true)

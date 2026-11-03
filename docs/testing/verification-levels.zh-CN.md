@@ -39,12 +39,12 @@ Yui 是一个单用户本地产品。永久验证保护关键的 happy path 和�
 两者均包含 `test/core` 和 `test/platform`。已构建的 checkout 可分别运行
 `npm run test:business` 与 `npm run test:platform`，它们不会再次构建。
 CI 每个作业只显式构建一次。
-稳定套件维护当前存储 1.25 和明确声明的 1.0 至 1.24 连续小版本迁移，
+稳定套件维护当前存储 1.26 和明确声明的 1.0 至 1.25 连续小版本迁移，
 不包含未声明的历史格式兼容路径。
 
 当前覆盖包括：
 
-1. 新建存储 1.24、精确结构与记录校验、禁止覆盖未知数据库、无修改拒绝旧整数格式。
+1. 新建存储 1.26、精确结构与记录校验、禁止覆盖未知数据库、无修改拒绝旧整数格式。
 2. 精确版本暂存、目标不匹配拒绝、同主版本连续小版本预检、交接锁显式所有者，
    以及恢复时核对捕获的协议和存储身份，不接受缺失字段。
 3. 持久 Task／Message／Decision 上下文、Draft 激活权威、mailbox 认领、
@@ -65,6 +65,25 @@ CI 每个作业只显式构建一次。
 组装包冒烟，不新增守护进程矩阵；稳定套件不重建任何已退役的存储路径。
 真实模型或真实 Home 检查需要显式授权。
 当前记录按声明的字段集合拒绝未知字段，不维护退役字段名称黑名单。
+
+## 上下文评测检查
+
+评测代码按专题组织在 [scripts/eval](../../scripts/eval/README.md)：
+通用证据工具、Provider统计适配与下述Yui上下文场景分开；代码审查材料评测
+也是独立专题，不继承上下文场景的义务判定。
+
+`npm run eval:check` 不启动 Home，只检查评测契约。
+`npm run eval:context:wiring -- --product <绝对路径> --out <全新目录>` 显式运行
+[维护框架](../../scripts/eval/context/README.md)的多输入
+CLI/Controller/Host/fake Provider 闭环和有限故障验证。它不加入默认 `npm test`
+或平台矩阵；安装包与 OS wiring 仍由现有 package smoke 负责。
+fake 通过不证明真实模型、原生压缩或无损观测；框架验证不重置历史性能账本，
+真实资源需另行明确授权和冻结。
+fake 专用 `native-normal` 场景不写 participant 文件，经真实适配分支检查完成的
+native 工具证据；读取/加载限定 Role、Thread、上下文代次与决策时间。
+不支持的证据仍为 unknown；当前观测条件不能产生无保留 valid-pass。
+代理检查同时覆盖 managed 和无管理身份的 detached control；
+后者仅保留控制传输记录，不能提供主体原文/加载证据。
 
 ## Skill 与指令变更
 

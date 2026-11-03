@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { mkdir, open, rename } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { monotonicMilliseconds } from "../core/controllerTelemetry.js";
+import { monotonicMilliseconds, type ControllerRequestDiagnostic } from "../core/controllerTelemetry.js";
 import { YUI_VERSION } from "../version.js";
 
 // Operational evidence only: no business records, recovery policy or SQLite
@@ -14,13 +14,15 @@ const NUMERIC_KEYS = new Set([
   "completed", "failed", "received", "inFlight", "maximumMs", "maximumLagMs",
   "maximumObservedAtMs", "oldestInFlightAgeMs", "startedAtMs", "elapsedMs",
   "ageMs", "depth", "semanticDepth", "progressDepth", "pendingKeys", "queueDepth",
-  "hits", "rebuilds", "invalidations", "passes", "listedEvents", "selectedEvents"
+  "hits", "rebuilds", "invalidations", "passes", "listedEvents", "selectedEvents",
+  "acceptedAtMs", "receivedAtMs", "routedAtMs", "handlerCompletedAtMs", "flushCompletedAtMs",
+  "handlerFailed", "flushFailed", "samples", "sources", "published", "usagePublications"
 ]);
 const CONTAINER_KEYS = new Set([
   "commands", "observations", "routes", "eventLoopDelay", "phases", "reads",
   "persistence", "main", "worker", "database", "roundTrips", "work", "body",
   "lock", "commit", "payloadReads", "inbox", "scheduler", "projectionCache",
-  "active", "recent", "slowest", "latest"
+  "active", "recent", "slowest", "latest", "transport", "sampler"
 ]);
 const ERROR_CODES = new Set([
   "SQLITE_BUSY", "SQLITE_LOCKED", "SQLITE_IOERR", "SQLITE_FULL", "SQLITE_READONLY",
@@ -97,6 +99,13 @@ export class ControllerDiagnosticJournal {
     this.#enqueue("error", { error: errorEvidence(error) });
   }
 
+  /** Completion-driven evidence bypasses the periodic recent-array/sample
+   * window, but uses the same allowlist, queue/record/file bounds and async I/O.
+   * Disk failure, queue pressure and force-kill remain explicit evidence gaps. */
+  request(record: ControllerRequestDiagnostic): void {
+    this.#enqueue("request", { request: safeSnapshot(record) });
+  }
+
   sample(snapshot: unknown, lagMs: number): void {
     const now = monotonicMilliseconds();
     if (now - this.#lastSampleAt < 1000) { this.#dropped++; return; }
@@ -131,7 +140,7 @@ export class ControllerDiagnosticJournal {
       writeFailures: this.#writeFailures, pending: this.#pending.length };
   }
 
-  #enqueue(kind: "error" | "latency", detail: Record<string, unknown>): void {
+  #enqueue(kind: "error" | "latency" | "request", detail: Record<string, unknown>): void {
     if (this.#closed) return;
     if (this.#pending.length >= MAX_PENDING) { this.#dropped++; return; }
     const line = JSON.stringify({ schemaVersion: 1, kind, at: new Date().toISOString(),

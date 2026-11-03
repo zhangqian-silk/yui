@@ -314,7 +314,8 @@ test("Session replacement preserves durable intent and releases only its own eng
 
   const wake = store.getTaskWake("task-1", "wake-1");
   const shown = command(["wake", "show", "task-1", wake.id]);
-  assert.equal(shown.data.messages[0].read, "task message show task-1/message-1");
+  assert.equal(shown.data.messages[0].refreshRead, "task message show task-1/message-1");
+  assert.equal(shown.data.messages[0].value.body, "Original user requirement must survive");
   assert.equal(command(["message", "show", "task-1/message-1"]).data.body, "Original user requirement must survive");
   store.saveTaskRoleSessionSet(recordRoleAgentSession(createRoleSessionSet(
     { scope: "task", taskId: "task-1", roleName: "worker" }, "codex", later
@@ -329,13 +330,31 @@ test("Session replacement preserves durable intent and releases only its own eng
     YUI_SESSION_SCOPE: "task", YUI_TASK_ID: "task-1", YUI_ROLE: "worker",
     YUI_NATIVE_SESSION_ID: "worker-current", YUI_WORKSPACE: unaffected.effective.workspace.root
   };
+  store.saveManagedWorkspace(createManagedWorkspace({
+    owner: { type: "integration-attempt", taskId: "task-1", integrationAttemptId: "integration-99" },
+    root: join(unaffected.effective.workspace.root, "outside-frozen-assignment"), entries: []
+  }, later));
   const workerContext = readTaskContext(store, "task-1", workerEnvironment);
+  const workerWorkspaces = workerContext.records.filter(r => r.ref.store === "managed-workspace");
+  assert.equal(workerWorkspaces[0]?.ref.refId, "task-1/worker",
+    "The exact Run workspace overlay precedes historical workspace discovery");
+  assert.ok(workerWorkspaces.some(r => r.ref.refId === "integration-attempt:task-1:integration-99"),
+    "Ordinary workspace evidence is readable without granting execution in it");
   const messages = workerContext.records.filter(r => r.ref.store === "task-message")
     .map(r => inspectTaskContext(store, "task-1", r.ref, workerEnvironment).value);
   assert.ok(messages.some(message => message.body === "Original user requirement must survive"),
   "The original shared user amendment is readable even though it arrived after the frozen Assignment.");
   assert.ok(messages.some(message => message.body === "Leader-only coordination"),
-    "Ordinary evidence reads do not adopt another Assignment's input.");
+    "Another Assignment's coordination is evidence, not an input assigned to this Worker");
+  const hidden = store.listMessages("task-1").find(message => message.body === "Leader-only coordination");
+  const sharedRef = workerContext.records.find(r =>
+    r.ref.store === "task-message" && r.ref.refId !== hidden.id).ref;
+  const revision = store.getStateRevision();
+  assert.throws(() => runTaskCommand(["context", "inspect", "task-1", "--refs",
+    JSON.stringify([sharedRef, { store: "task-message", refId: hidden.id, digest: "0".repeat(64) }])],
+  store, { environment: workerEnvironment }), /changed|digest|stale/i,
+  "Readable evidence still requires exact version binding; stale batches return no partial results");
+  assert.equal(store.getStateRevision(), revision);
 });
 
 test("Runless questions survive replacement and a successor can manage the original question", t => {

@@ -28,6 +28,8 @@ import { addProjectKnowledge, createProject, retireProjectKnowledge } from "../.
 import { createIntegrationAttempt } from "../../dist/integration/integrationAttempt.js";
 import { createTaskBrief } from "../../dist/brief/taskBrief.js";
 import { createDecision, supersedeDecision } from "../../dist/decision/decision.js";
+import { AsyncTaskStoreClient } from "../../dist/storage/storeRpc.js";
+import { setImmediate as yieldLoop } from "node:timers/promises";
 
 test("Run delta is a complete source-qualified patch, not its clipped launch hint", t => {
   const home = mkdtempSync(join(tmpdir(), "yui-run-delta-"));
@@ -96,11 +98,12 @@ test("managed dispatch freezes explicit materials and candidate reports; continu
     entries: [{ ...projectEntry(home), access: "write" }]
   }, now));
   const binding = createRoleAgentBinding({ id: "codex", adapterId: "codex" });
-  for (const name of ["worker", "reviewer", "reader"]) {
+  for (const name of ["worker", "reviewer", "reader", "leader"]) {
     store.saveRole(task.id, createRole(task.id, name, [binding], binding.agentId, home, now));
   }
   const command = args => runTaskCommand(args, store, { now: () => later, environment: {} });
-  const message = createTaskMessage("message-1", task.id, "Original bounded requirement", "user", { type: "user" }, now);
+  const message = createTaskMessage("message-1", task.id,
+    "Original bounded requirement\n" + "修订🌱 ".repeat(80), "user", { type: "user" }, now);
   store.saveMessage(task.id, message);
   command(["work", "create", task.id, "Bounded repair", "--role", "worker"]);
   const workerRoot = join(home, "work-1");
@@ -121,6 +124,19 @@ test("managed dispatch freezes explicit materials and candidate reports; continu
   }
   command(["work", "dispatch", `${task.id}/work-item-1`, "--context-ref", selector]);
   const worker = store.getActiveRun(task.id, "worker");
+  const messagePointer = buildRunContextPack(store, task.id, worker.id).pointers
+    .find(ref => ref.store === "task-message" && ref.refId === message.id);
+  assert.match(messagePointer.summary, /^Excerpt: Original bounded requirement\n/);
+  assert.ok(Buffer.byteLength(messagePointer.summary) <= 160);
+  assert.equal(messagePointer.summary.includes("\uFFFD"), false, "Do not split Unicode in discovery excerpts.");
+  assert.equal(messagePointer.revision, message.createdAt);
+  assert.equal(messagePointer.digest, contextContentDigest(message));
+  const planningSnapshot = freezeRunContextSnapshot(store, {
+    taskId: task.id, roleName: "leader", purpose: "planning", workspace: home
+  }, later);
+  assert.equal(planningSnapshot.refs.find(ref => ref.store === "task-message"
+    && ref.refId === message.id).summary, messagePointer.summary,
+  "Automatic and explicitly selected message pointers use the same bounded excerpt.");
   const knowledgePointer = buildRunContextPack(store, task.id, worker.id).pointers
     .find(ref => ref.store === "project-knowledge");
   assert.match(knowledgePointer.summary, /Review and implementation/);
@@ -133,6 +149,9 @@ test("managed dispatch freezes explicit materials and candidate reports; continu
   assert.equal(expandRunContextRef(store, task.id, worker.id, message.id, "task-message").value.body,
     message.body);
   store.updateMessage(task.id, { ...message, body: "Later revision must not leak" });
+  assert.deepEqual(buildRunContextPack(store, task.id, worker.id).pointers
+    .find(ref => ref.store === "task-message" && ref.refId === message.id), messagePointer,
+  "A later mutable message cannot rewrite the dispatched discovery excerpt.");
   assert.equal(expandRunContextRef(store, task.id, worker.id, message.id, "task-message").value.body,
     message.body);
   const session = recordRoleAgentSession(createRoleSessionSet({
@@ -156,6 +175,19 @@ test("managed dispatch freezes explicit materials and candidate reports; continu
   const report = "Original report😀\n".repeat(2400);
   store.saveRun(completeRun(worker, report, later));
   store.clearActiveRun(task.id, "worker");
+  const status = runTaskCommand(["run", "show", `${task.id}/${worker.id}`, "--view", "status"],
+    store, { environment: {} }).data;
+  assert.equal(status.run.id, worker.id);
+  assert.equal(status.run.status, "completed");
+  assert.equal(status.run.result, undefined, "Status inspection must not duplicate the original report.");
+  assert.equal(status.run.inputs, undefined);
+  assert.equal(status.run.effective, undefined);
+  assert.equal(status.result.available, true);
+  assert.equal(status.result.bytes, Buffer.byteLength(report));
+  const full = readDocument(cursor => runTaskCommand(["run", "show", `${task.id}/${worker.id}`,
+    ...(cursor ? ["--cursor", cursor] : [])], store, { environment: {} }).data);
+  assert.equal(full.run.result.output, report, "Default full audit evidence remains available.");
+  assert.deepEqual(status.execution, full.execution);
   runTaskCommand(["work", "update", `${task.id}/work-item-1`, "done", "--summary", "Capture original result"],
     store, { now: () => later, environment: {}, candidateGitSnapshot: {
       schemaVersion: 1, reviewBaseCommit: "b".repeat(40),
@@ -340,10 +372,20 @@ test("managed dispatch freezes explicit materials and candidate reports; continu
     .value.result.output, "Original review result");
 });
 
-test("Run Context uses only its exact frozen evidence and explicit store/refId", t => {
-  const home = mkdtempSync(join(tmpdir(), "yui-frozen-context-"));
-  const store = new SqliteTaskStore(home);
-  t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
+test("Run Context uses only its exact frozen evidence and explicit store/refId", async t => {
+  let home, store, client, holding;
+  const gate = new Int32Array(new SharedArrayBuffer(4));
+  t.after(async () => {
+    Atomics.store(gate, 0, 2);
+    Atomics.notify(gate, 0);
+    try { await holding; } finally {
+      await client?.close();
+      store?.close();
+      if (home !== undefined) rmSync(home, { recursive: true, force: true });
+    }
+  });
+  home = mkdtempSync(join(tmpdir(), "yui-frozen-context-"));
+  store = new SqliteTaskStore(home);
   const now = new Date("2026-09-17T00:00:00Z");
   const task = activateTask(createTask("task-1", "Frozen intent", now), now);
   store.saveTask(task);
@@ -354,7 +396,8 @@ test("Run Context uses only its exact frozen evidence and explicit store/refId",
   const resources = [
     ["task", task.id, task],
     ["task-brief", task.id, { objective: "The original objective" }],
-    ["source-run", "run-source", { result: { output: originalReport } }]
+    ["source-run", "run-source", { result: { output: originalReport } }],
+    ["source-run", "run@named", { result: { output: "Named original" } }]
   ].map(([refStore, refId, value]) => ({
     ref: { layer: "L3", store: refStore, refId, revision: "1", digest: contextContentDigest(value) },
     value
@@ -375,6 +418,22 @@ test("Run Context uses only its exact frozen evidence and explicit store/refId",
   };
   const run = createRun("run-1", task.id, role.name, "new", input, now, context);
   store.saveRun(run);
+  const revision = store.getRevision();
+  client = new AsyncTaskStoreClient(home, {
+    observerModule: new URL("../helpers/lockedObserver.mjs", import.meta.url)
+  });
+  holding = client.invokeObserver("holdFixtureWriteLock", [gate.buffer, task.id]);
+  const deadline = Date.now() + 5_000;
+  while (Atomics.load(gate, 0) !== 1 && Date.now() < deadline) await yieldLoop();
+  assert.equal(Atomics.load(gate, 0), 1, "The real worker owns SQLite's writer slot");
+  // Fail immediately if a read accidentally reserves the writer; production
+  // retains its ordinary five-second busy timeout.
+  store.databaseHandle().pragma("busy_timeout = 0");
+  const options = { environment: sanitizedTestEnv() };
+  assert.equal(runTaskCommand(["run", "context", `${task.id}/${run.id}`], store, options)
+    .data.context.identity.runId, run.id);
+  assert.equal(runTaskCommand(["run", "show", `${task.id}/${run.id}`], store, options)
+    .data.run.id, run.id);
   assert.equal(runTaskCommand(["run", "context", "expand", `${task.id}/${run.id}`, task.id,
     "--store", "task", "--mode", "full"], store, { environment: sanitizedTestEnv() }).data.context.value.title,
   task.title);
@@ -386,6 +445,40 @@ test("Run Context uses only its exact frozen evidence and explicit store/refId",
     ...(cursor === undefined ? [] : ["--cursor", cursor])
   ], store, { environment: sanitizedTestEnv() }).data.context);
   assert.equal(expandedReport.value.result.output, originalReport);
+  const selection = resources.map(({ ref }) => `${ref.store}/${ref.refId}@${ref.digest}`);
+  const batch = (selected = selection, cursor, environment = sanitizedTestEnv()) => runTaskCommand([
+    "run", "context", "expand", `${task.id}/${run.id}`,
+    ...selected.flatMap(ref => ["--context-ref", ref]),
+    ...(cursor === undefined ? [] : ["--cursor", cursor])
+  ], store, { environment }).data.context;
+  const firstPage = batch();
+  assert.ok(firstPage.contentPage, "The batch shares the ordinary bounded-document budget");
+  assert.ok(Buffer.byteLength(JSON.stringify(firstPage)) <= 32 * 1024);
+  const expandedBatch = readDocument(cursor => batch(selection, cursor));
+  assert.deepEqual(expandedBatch, { taskId: task.id, runId: run.id,
+    items: resources.map(({ ref }) => expandRunContextRef(store, task.id, run.id, ref.refId, ref.store)) });
+  assert.equal(expandedBatch.items[2].value.result.output, originalReport);
+  const shortSelection = resources.map(({ ref }) => `${ref.store}/${ref.refId}`);
+  assert.deepEqual(readDocument(cursor => batch(shortSelection, cursor)), expandedBatch);
+  assert.throws(() => batch([...shortSelection].reverse(), batch(shortSelection).contentPage.nextCursor), /cursor|source/i);
+  assert.throws(() => batch([`${shortSelection[0]}@bad`]), /not uniquely authorized/i);
+  assert.throws(() => batch([...selection].reverse(), firstPage.contentPage.nextCursor), /cursor|source/i);
+  assert.throws(() => batch([selection[0], selection[0]]), /duplicate/i);
+  assert.throws(() => batch([...selection, `task-message/message-absent@${"a".repeat(64)}`]), /authorized/i);
+  assert.throws(() => batch([`task/${task.id}@${"a".repeat(64)}`]), /digest|changed/i);
+  assert.throws(() => batch(Array(9).fill(selection[0])), /1..8/i);
+  assert.throws(() => batch(selection, undefined, sanitizedTestEnv({
+    YUI_SESSION_SCOPE: "task", YUI_TASK_ID: task.id, YUI_ROLE: "foreign"
+  })), /current runtime|authorized|no longer exists/i);
+  assert.equal(store.getTask(task.id).title, task.title, "Uncommitted worker data stays invisible");
+  assert.equal(store.getRevision(), revision, "Context and Run inspection never write a revision");
+  Atomics.store(gate, 0, 2);
+  Atomics.notify(gate, 0);
+  await holding;
+  holding = undefined;
+  await client.close();
+  client = undefined;
+  store.databaseHandle().pragma("busy_timeout = 5000");
   // A synthesis snapshot remains readable even when live assignment/source
   // collection cannot be repeated. Only the live activity projection is fresh.
   for (const method of ["getTask", "getTaskBrief", "getRole", "getWorkItem", "getProject", "listMessages"]) {
@@ -487,6 +580,10 @@ test("CLI rejects inferred Context stores and the retired progress flag before r
   const options = { environment: sanitizedTestEnv() };
   assert.throws(() => runTaskCommand(["run", "context", "expand", "task-1/run-1", "message-1"], store, options),
     /--store.*required/i);
+  for (const extra of [["message-1"], ["--store", "task-message"]])
+    assert.throws(() => runTaskCommand(["run", "context", "expand", "task-1/run-1",
+      "--context-ref", `task-message/message-1@${"a".repeat(64)}`, ...extra], store, options),
+    /combine|usage/i);
   assert.throws(() => runTaskCommand(["run", "retire", "task-1/run-1", "--reason", "obsolete",
     "--progress-at", "2026-09-17T00:00:00Z"], store, options), /Unsupported option.*--progress-at/i);
   const retire = findCommandNode(["task", "run", "retire"]);

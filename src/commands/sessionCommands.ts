@@ -23,7 +23,7 @@ type SessionStopRuntime = Readonly<{
     dormant: readonly DormantRuntimeOwnerCandidate[];
   }>;
   drainController(): Promise<void>;
-  stopController(): Promise<Readonly<{ stopped: boolean }>>;
+  stopController(): Promise<Readonly<{ stopped: boolean; alreadyStopped?: boolean }>>;
   startController(): Promise<void>;
   stopDormantSession(candidate: DormantRuntimeOwnerCandidate): Promise<void>;
 }>;
@@ -67,7 +67,10 @@ export async function runSessionStopCommand(input: Readonly<{
     // Leader dispatch. The explicit full pass settles pending runtime inbox and
     // lifecycle work that may exist without a current Session candidate.
     await input.runtime.drainController();
-    await input.runtime.stopController();
+    const stoppedController = await input.runtime.stopController();
+    if (stoppedController.stopped !== true && stoppedController.alreadyStopped !== true) {
+      throw new Error("Controller stop was not confirmed; no Session was stopped.");
+    }
     // Re-read the authoritative facts after the drain because a AgentRun that was
     // already inside a pass may have changed state meanwhile.
     const settled = input.runtime.snapshot();
@@ -128,7 +131,7 @@ function blockedStopResult(
   blocked: SessionStopResult["data"]["blocked"]
 ): SessionStopResult {
   const details = blocked.map(({ session }) => (
-    `- ${renderSessionOwner(session)} (an active AgentRun or lifecycle operation is still pending)`
+    `- ${renderSessionOwner(session)} (native execution, an active AgentRun or lifecycle operation is still pending)`
   ));
   return {
     output: [

@@ -95,6 +95,7 @@ type GlobalRoleTransactionStore = AgentCommandTransactionStore & RoleRuntimeGuar
 
 type GlobalRoleStore = GlobalRoleTransactionStore & Readonly<{
   transaction<T>(execute: (store: GlobalRoleTransactionStore) => T): T;
+  readTransaction<T>(execute: (store: GlobalRoleTransactionStore) => T): T;
 }>;
 
 export type GlobalInputFailure = Readonly<{ code: string; detail: string; data: unknown }>;
@@ -305,6 +306,19 @@ function roleContext(
       historyRead: "yui inbox list --view history --json",
       note: "Historical absence of handling evidence is not new work or permission to replay effects."
     });
+  // Only the managed Turn's exact inputs, not the available queue or history.
+  // Keep pending's cursor lineage unchanged; oversized originals retain their
+  // existing exact detail read. No delivery/claim/ACK is performed here.
+  let originalBudget = 8 * 1024;
+  const visibleIds = new Set(pending.items.map(message => message.id));
+  const category = globalInboxCategory(name, sessions);
+  const currentOriginals = selfRead ? current.filter(message => {
+    if (!visibleIds.has(message.id) || category(message) !== "current") return false;
+    const bytes = Buffer.byteLength(JSON.stringify(message));
+    if (bytes > 4 * 1024 || bytes > originalBudget) return false;
+    originalBudget -= bytes;
+    return true;
+  }) : [];
   const observedAt = new Date();
   const { oldestAgeMs, messages: _backlogMessages, ...backlog } = globalInputBacklog(queued, sessions, observedAt, {
     attention: name === "operator" ? store.getWorkMailbox({ kind: "operator" }) : null,
@@ -345,6 +359,7 @@ function roleContext(
     },
     // Reading pending input is neither delivery nor implementation.
     pending,
+    currentOriginals,
     backlog,
     reads: {
       ownInbox: "yui inbox list --view current --json",
@@ -388,13 +403,17 @@ function roleContext(
   ].join("\n") };
 }
 
-function currentGlobalInboxMessages(messages: readonly GlobalRoleMessage[], name: string, sessions: GlobalRoleSessionSet | null) {
+function globalInboxCategory(name: string, sessions: GlobalRoleSessionSet | null) {
   const actor = { scope: "global" as const, roleName: name, agentId: sessions?.activeAgentId ?? "",
     nativeSessionId: sessions?.sessions[sessions.activeAgentId]?.nativeSessionId ?? "" };
   const binding = sessions?.providerBinding;
   const turn = binding?.conversations.find(c => c.epoch === binding.currentConversationEpoch)?.conversationId === actor.nativeSessionId
     ? binding?.run : undefined;
-  const category = (message: GlobalRoleMessage) => inboxEntryCategory(message, actor, turn);
+  return (message: GlobalRoleMessage) => inboxEntryCategory(message, actor, turn);
+}
+
+function currentGlobalInboxMessages(messages: readonly GlobalRoleMessage[], name: string, sessions: GlobalRoleSessionSet | null) {
+  const category = globalInboxCategory(name, sessions);
   return pendingGlobalInboxMessages(messages).filter(message => category(message) !== "history")
     .sort((a, b) => Number(category(b) === "current") - Number(category(a) === "current"));
 }
@@ -706,11 +725,13 @@ function roleSession(
   const [command, rawName, ...tail] = args;
   if (command === "retry") {
     const name = roleName(rawName);
-    const [action = "show", ...extra] = tail;
+    const parsed = readOptions(tail, ["--cursor"]);
+    const [action = "show", ...extra] = parsed.positionals;
     if (extra.length > 0 || !["show", "cancel", "disable", "enable"].includes(action)) {
       throw usageError("Usage: yui session retry <role> [show|cancel|disable|enable]");
     }
-    return store.transaction(tx => {
+    if (action !== "show" && parsed.cursor !== undefined) throw usageError("Only retry show accepts --cursor.");
+    return store[action === "show" ? "readTransaction" : "transaction"](tx => {
       const role = requireRole(name, tx);
       const sessions = tx.getGlobalRoleSessionSet(name);
       let binding = sessions?.providerBinding ?? null;
@@ -722,11 +743,14 @@ function roleSession(
       }
       const health = globalSessionHealth(role, sessions);
       const historical = binding?.retry !== undefined && health.retry === null;
-      return options.jsonOutput ? JSON.stringify({
+      const detail = {
         roleName: name, retry: providerRetryProjection(binding), disabled: binding?.retryDisabled ?? false,
         selectedNativeSessionId: health.nativeSessionId,
         retryScope: historical ? "historical-session" : "current-session"
-      }) + "\n" : (historical ? "Historical Session evidence (not the selected Session's current failure): " : "")
+      };
+      return options.jsonOutput ? JSON.stringify(action === "show"
+        ? boundedDocument(detail, `global:${name}/retry`, parsed.cursor) : detail) + "\n"
+        : (historical ? "Historical Session evidence (not the selected Session's current failure): " : "")
         + renderProviderRetry(binding) + "\n";
     });
   }
@@ -932,7 +956,7 @@ function globalRoleMessage(
     ["--request-id", false],
     ...(action === "steer" ? [["--expected-target", false] as const] : [])
   ]));
-  const body = readCommandText(positionalBody, parsed.one("--body-file"), "--body", usage);
+  const body = readCommandText(positionalBody, parsed.one("--body-file"), "--body", usage, { preserveFileWhitespace: true });
   const requestId = required(parsed.one("--request-id"), "--request-id");
   const expectedTarget = action === "steer"
     ? required(parsed.one("--expected-target"), "--expected-target")

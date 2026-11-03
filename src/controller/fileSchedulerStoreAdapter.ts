@@ -133,6 +133,7 @@ import {
   createProviderRuntimeBinding,
   currentProviderConversation,
   managedProviderTurnId,
+  providerTurnIsActive,
   settleProviderTurn,
   settleProviderTurnSubmission,
   supersedeProviderConversation,
@@ -273,12 +274,25 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
   }
 
   observeAgentHostObservation(event: RuntimeObservationInboxEvent, now = new Date()): ProviderLifecycleObservation {
+    let preparation: RuntimeTerminalPreparation | undefined;
+    if (isRunTerminalObservation(event.observation)) {
+      preparation = {};
+      try {
+        preparation = this.prepareRuntimeTerminalObservation(resolveAgentHostObservation(this.store, event), now);
+      } catch (error) {
+        if (!(error instanceof AgentHostObservationDeferred || error instanceof RuntimeHookRunFenceError)) throw error;
+        // Re-resolve under the committing fence below; preparation grants no
+        // authority and must not settle a deferred/obsolete Host envelope.
+      }
+    }
     // Match canonical ingress: archive and Host fact settlement share the
     // same write boundary, including the original transport envelope.
-    return this.store.transaction(() => this.foldAgentHostObservation(event, now));
+    return this.store.transaction(() => this.foldAgentHostObservation(event, now, preparation));
   }
 
-  private foldAgentHostObservation(event: RuntimeObservationInboxEvent, now: Date): ProviderLifecycleObservation {
+  private foldAgentHostObservation(
+    event: RuntimeObservationInboxEvent, now: Date, preparation?: RuntimeTerminalPreparation
+  ): ProviderLifecycleObservation {
     const raw = createRuntimeObservation(event.observation);
     const task = raw.fence.taskId === undefined ? null : this.store.getTask(raw.fence.taskId);
     if (raw.fence.taskId !== undefined && task === null) return "obsolete";
@@ -317,7 +331,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       // Rejection is durable diagnostic evidence, never business acceptance.
       return this.recordObsoleteCanonicalObservation(event.observation, error.message, now);
     }
-    return this.observeRuntimeObservation(input, now);
+    return this.foldRuntimeObservation(input, now, preparation);
   }
 
   /**
@@ -330,15 +344,34 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
     raw: RuntimeObservation,
     now = new Date()
   ): ProviderLifecycleObservation {
+    const preparation = this.prepareRuntimeTerminalObservation(raw, now);
     // Archive and observation settlement share the same write boundary.
     // An ingress read outside this transaction must never authorize clearing
     // a claim after another CLI has committed archive.
-    return this.store.transaction(() => this.foldRuntimeObservation(raw, now));
+    return this.store.transaction(() => this.foldRuntimeObservation(raw, now, preparation));
+  }
+
+  private prepareRuntimeTerminalObservation(
+    raw: RuntimeObservation, now: Date
+  ): RuntimeTerminalPreparation | undefined {
+    const input = createRuntimeObservation(raw);
+    if (!isRunTerminalObservation(input)) return undefined;
+    if (input.fence.taskId === undefined || Date.parse(input.receivedAt) > now.getTime()) return {};
+    const adapterId = this.adapterForRuntimeObservation(input);
+    if (adapterId === null) return {};
+    return this.prepareRuntimeTerminal({
+      taskId: input.fence.taskId, roleName: input.fence.roleName,
+      agentId: input.fence.agentId, adapterId, conversationId: input.fence.conversationId,
+      nativeSessionId: input.fence.nativeSessionId!, nativeTurnId: input.fence.nativeTurnId,
+      attemptId: input.fence.receiptId, runId: input.fence.runId
+    }, input.kind === "turn.completed" && input.payload.resultTransportDiagnostic === undefined
+      && transportAgentResult(input.payload.output).status === "completed");
   }
 
   private foldRuntimeObservation(
     raw: RuntimeObservation,
-    now: Date
+    now: Date,
+    preparation?: RuntimeTerminalPreparation
   ): ProviderLifecycleObservation {
     const input = createRuntimeObservation(raw);
     const taskId = input.fence.taskId;
@@ -434,7 +467,8 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
           input,
           adapterId,
           "completed",
-          now
+          now,
+          preparation
         );
         break;
       case "turn.failed": {
@@ -445,7 +479,8 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
           input,
           adapterId,
           "failed",
-          now
+          now,
+          preparation
         );
         break;
       }
@@ -467,7 +502,8 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
           input,
           adapterId,
           "cancelled",
-          now
+          now,
+          preparation
         );
         break;
       }
@@ -800,7 +836,8 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
     input: RuntimeObservation,
     adapterId: string,
     providerStatus: "completed" | "failed" | "cancelled",
-    now: Date
+    now: Date,
+    preparation?: RuntimeTerminalPreparation
   ): ProviderLifecycleObservation {
     const outcome = providerStatus === "completed"
       ? input.payload.resultTransportDiagnostic === undefined
@@ -839,7 +876,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
     };
     const classification = this.classifyRuntimeRunTerminal(completed);
     if (classification !== "apply") return classification;
-    const result = this.observeRuntimeRunTerminal(completed, now);
+    const result = this.foldRuntimeRunTerminal(completed, now, preparation ?? {});
     return result.disposition === "obsolete" ? "obsolete" : "applied";
   }
 
@@ -2273,13 +2310,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         hasRuntimeLifecycleWork(
           this.store.getWorkMailbox(runtimeLifecycleTarget(candidate.owner))
         )
-        || (
-          candidate.owner.scope === "task"
-          && this.store.getActiveRun(
-            candidate.owner.taskId,
-            candidate.owner.roleName
-          ) !== null
-        )
+        || runtimeOwnerHasActiveWork(this.store, candidate.owner)
       ) {
         return [];
       }
@@ -2874,6 +2905,19 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
     return resolveTerminalExecution(this.store, input) === null ? "obsolete" : "apply";
   }
 
+  private prepareRuntimeTerminal(input: TerminalExecutionInput, completed: boolean): RuntimeTerminalPreparation {
+    const run = resolveTerminalExecution(this.store, input)?.run;
+    const workspace = run?.status === "active"
+      && run.executionGroupId !== undefined
+      && run.executionLaneId !== undefined
+      && run.workspace !== undefined
+      && completed
+      ? this.#observeRead("git-workspace-snapshot", run.taskId,
+          () => this.snapshotExecutionLaneWorkspace(this.store, run.workspace!))
+      : undefined;
+    return { run, workspace };
+  }
+
   observeRuntimeRunTerminal(input: Readonly<{
     taskId: string;
     roleName: string;
@@ -2893,17 +2937,18 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
     run?: AgentRun;
     disposition?: "obsolete";
   }> {
+    return this.foldRuntimeRunTerminal(input, now,
+      this.prepareRuntimeTerminal(input, input.outcome.status === "completed"));
+  }
+
+  private foldRuntimeRunTerminal(
+    input: Parameters<FileSchedulerStoreAdapter["observeRuntimeRunTerminal"]>[0],
+    now: Date,
+    preparation: RuntimeTerminalPreparation
+  ): ReturnType<FileSchedulerStoreAdapter["observeRuntimeRunTerminal"]> {
     // Resource inspection is bounded but external to SQLite. Revalidate the
     // immutable AgentRun workspace after acquiring the write transaction.
-    const preparedRun = resolveTerminalExecution(this.store, input)?.run;
-    const workspace = preparedRun?.status === "active"
-      && preparedRun.executionGroupId !== undefined
-      && preparedRun.executionLaneId !== undefined
-      && preparedRun.workspace !== undefined
-      && input.outcome.status === "completed"
-      ? this.#observeRead("git-workspace-snapshot", preparedRun.taskId,
-          () => this.snapshotExecutionLaneWorkspace(this.store, preparedRun.workspace!))
-      : undefined;
+    const { run: preparedRun, workspace } = preparation;
     return this.store.transaction((store) => {
       const task = store.getTask(input.taskId);
       if (task === null) throw new Error(`Task not found: ${input.taskId}.`);
@@ -2913,7 +2958,8 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       const resolved = resolveTerminalExecution(store, input);
       if (resolved === null) throw new Error("Runtime terminal has no exact execution binding.");
       const { run: observedRun, current: recordedProviderTurn, attemptId } = resolved;
-      if (!isDeepStrictEqual(preparedRun?.workspace, observedRun?.workspace)) {
+      if (preparedRun?.id !== observedRun?.id
+        || !isDeepStrictEqual(preparedRun?.workspace, observedRun?.workspace)) {
         throw new Error("Runtime terminal workspace changed during result preparation.");
       }
       if (workspace !== undefined && observedRun?.workspace !== undefined
@@ -4015,8 +4061,7 @@ function dormantRuntimeCandidateIsCurrent(
 ): boolean {
   const { owner } = candidate;
   if (
-    !allowActiveRun && owner.scope === "task"
-    && store.getActiveRun(owner.taskId, owner.roleName) !== null
+    !allowActiveRun && runtimeOwnerHasActiveWork(store, owner)
   ) {
     return false;
   }
@@ -4026,6 +4071,19 @@ function dormantRuntimeCandidateIsCurrent(
     : sessions?.sessions[sessions.activeAgentId];
   return active !== undefined && active.agentId === candidate.agentId && active.adapterId === candidate.adapterId
     && active.nativeSessionId === candidate.nativeSessionId && (allowActiveRun || active.updatedAt === candidate.sessionUpdatedAt);
+}
+
+function runtimeOwnerHasActiveWork(store: TaskStore, owner: RuntimeRoleOwner): boolean {
+  if (owner.scope === "task") return store.getActiveRun(owner.taskId, owner.roleName) !== null;
+  // Global Turns do not have Task AgentRun records. Use their existing native
+  // delivery binding, including submitting and uncertain acceptance.
+  const sessions = store.getGlobalRoleSessionSet(owner.roleName);
+  const binding = sessions?.providerBinding;
+  return binding != null && (
+    providerTurnIsActive(binding.run)
+    || currentProviderConversation(binding).conversationId
+      !== sessions?.sessions[sessions.activeAgentId]?.nativeSessionId
+  );
 }
 
 function endRuntimeOwnerSession(
@@ -4580,6 +4638,12 @@ type TerminalExecutionInput = Readonly<{
   nativeTurnId?: string;
   attemptId?: string;
   runId?: string;
+}>;
+
+/** Per-call external inspection only; all authority is rechecked in the fold. */
+type RuntimeTerminalPreparation = Readonly<{
+  run?: AgentRun | null;
+  workspace?: ReturnType<typeof snapshotExecutionLaneWorkspaceSync>;
 }>;
 
 /** One correlation boundary shared by classification and the committing fold. */

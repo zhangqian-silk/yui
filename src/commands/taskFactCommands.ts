@@ -5,7 +5,8 @@ import { materialize } from "../context/taskContext.js";
 import {
   enqueueWork
 } from "../coordination/workMailboxQueue.js";
-import { createDecision, supersedeDecision } from "../decision/decision.js";
+import { createDecision, supersedeDecision, type Decision } from "../decision/decision.js";
+import { readDigest } from "../output/boundedRead.js";
 import {
   dataError,
   usageError
@@ -145,6 +146,19 @@ export function taskBriefCommand(
 }
 
 
+function decisionReceipt(decision: Decision) {
+  // A short saved value lets the caller inspect the actual effect without
+  // another read. Bound the complete JSON record, including title/reason.
+  const contentOmitted = Buffer.byteLength(JSON.stringify(decision)) > 2048;
+  const value = contentOmitted ? {
+    id: decision.id, taskId: decision.taskId, status: decision.status,
+    createdAt: decision.createdAt, updatedAt: decision.updatedAt
+  } : decision;
+  return { taskId: decision.taskId, effect: "saved", contentOmitted, decision: { ...value,
+    digest: readDigest(decision), rationaleBytes: Buffer.byteLength(decision.rationale)
+  }, ...(contentOmitted ? { read: `yui task decision show ${decision.taskId} ${decision.id} --json` } : {}) };
+}
+
 export function taskDecisionCommand(
   args: string[],
   store: TaskWorkflowStore,
@@ -177,7 +191,7 @@ export function taskDecisionCommand(
     });
     notifyMailbox(options.runtime, taskMailbox(result.task.id));
     if (result.task.status === "active") notifyMailbox(options.runtime, leaderMailbox(result.task.id));
-    return output(`Recorded decision ${result.decision.id} for ${result.task.id}\n`);
+    return output(`Recorded decision ${result.decision.id} for ${result.task.id}\n`, decisionReceipt(result.decision));
   }
   if (command === "list") {
     return taskRecordList(rest, store, "task-decision", options.environment);
@@ -228,7 +242,7 @@ export function taskDecisionCommand(
     });
     notifyMailbox(options.runtime, taskMailbox(result.task.id));
     if (result.task.status === "active") notifyMailbox(options.runtime, leaderMailbox(result.task.id));
-    return output(`Superseded decision ${result.decision.id} for ${result.task.id}\n`);
+    return output(`Superseded decision ${result.decision.id} for ${result.task.id}\n`, decisionReceipt(result.decision));
   }
   throw usageError(command === undefined
     ? "Task decision command is required."

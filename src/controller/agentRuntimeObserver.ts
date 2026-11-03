@@ -18,6 +18,7 @@ import {
 import type { TaskStore } from "../storage/taskStore.js";
 import type { MailboxKey } from "./controller.js";
 import { FileRuntimeEventInbox } from "./runtimeEventInbox.js";
+import type { ControllerWorkObserver } from "../core/controllerTelemetry.js";
 
 type ObserverStore = Pick<
   TaskStore,
@@ -35,7 +36,8 @@ type ObserverState = {
 };
 
 export interface AgentRuntimeObserverPort {
-  sample(now?: Date): Promise<readonly MailboxKey[]>;
+  sample(now?: Date, phases?: ControllerWorkObserver): Promise<readonly MailboxKey[]>;
+  metrics?(): Readonly<{ samples: number; sources: number; published: number; usagePublications: number; failed: number }>;
 }
 
 export type AgentRuntimeObserverOptions = Readonly<{
@@ -54,6 +56,11 @@ export class AgentRuntimeObserver implements AgentRuntimeObserverPort {
   readonly #states = new Map<string, ObserverState>();
   readonly #maxConcurrentSamples: number;
   #sequence = 0;
+  #samples = 0;
+  #sources = 0;
+  #published = 0;
+  #usagePublications = 0;
+  #failed = 0;
 
   constructor(
     readonly store: ObserverStore,
@@ -64,8 +71,25 @@ export class AgentRuntimeObserver implements AgentRuntimeObserverPort {
     this.#maxConcurrentSamples = sampleConcurrency(options.maxConcurrentSamples);
   }
 
-  async sample(now = new Date()): Promise<readonly MailboxKey[]> {
-    const active = this.activeSources();
+  async sample(now = new Date(), phases?: ControllerWorkObserver): Promise<readonly MailboxKey[]> {
+    this.#samples++;
+    const finishDiscovery = phases?.start("runtime-sample-discovery", "home");
+    let active: ReturnType<AgentRuntimeObserver["activeSources"]>;
+    try { active = this.activeSources(); finishDiscovery?.(); }
+    catch (error) { finishDiscovery?.(true); throw error; }
+    this.#sources += active.length;
+    const publish = async (observation: RuntimeObservation) => {
+      try {
+        const result = await (phases === undefined
+          ? this.inbox.enqueueObservationAsync(observation)
+          : phases.observe(
+            observation.payload.usage === undefined ? "runtime-sample-publish" : "runtime-usage-publish",
+            undefined, () => this.inbox.enqueueObservationAsync(observation)));
+        this.#published++;
+        if (observation.payload.usage !== undefined) this.#usagePublications++;
+        return result;
+      } catch (error) { this.#failed++; throw error; }
+    };
     const activeKeys = new Set(active.map(({ key }) => key));
     for (const key of this.#states.keys()) {
       if (!activeKeys.has(key)) this.#states.delete(key);
@@ -82,7 +106,10 @@ export class AgentRuntimeObserver implements AgentRuntimeObserverPort {
         // usage/activity baseline is durable. Rehydrate it after Controller
         // restart so rereading the bounded transcript tail cannot manufacture a
         // fresh activity edge from tokens that were already observed.
-        const state = existingState ?? { ...persistedState };
+        // Commit process-local state only when every fact from this sample is
+        // durable. A failed later publication must leave the old cursor usable;
+        // retry deduplicates any already-persisted prefix.
+        const state = { ...(existingState ?? persistedState) };
         const restoredUsageEventId = existingState === undefined
           ? persistedState.usageEventId
           : undefined;
@@ -106,7 +133,6 @@ export class AgentRuntimeObserver implements AgentRuntimeObserverPort {
             detail: error instanceof Error ? error.message : String(error)
           });
         }
-        state.cursor = sample.cursor;
         const at = now.toISOString();
         // Reserve sequence numbers in source-key order before sampling. Provider
         // latency can change completion order without changing observation
@@ -144,7 +170,7 @@ export class AgentRuntimeObserver implements AgentRuntimeObserverPort {
             const identity = completeHistory
               ? tokenObservationIdentity("baseline", fence, source.sourceId, baselineKey)
               : usageObservationIdentity(fence, source.sourceId, latestOccurrence!);
-            this.inbox.enqueueObservation(createRuntimeObservation({
+            await publish(createRuntimeObservation({
               schemaVersion: 1,
               eventId: identity.eventId,
               semanticKey: identity.semanticKey,
@@ -177,7 +203,7 @@ export class AgentRuntimeObserver implements AgentRuntimeObserverPort {
         }
         const health = JSON.stringify([sample.status, sample.detail ?? null]);
         if (state.health !== health) {
-          this.inbox.enqueueObservation(createRuntimeObservation({
+          await publish(createRuntimeObservation({
             schemaVersion: 1,
             eventId: observationId("health", fence, source.sourceId, health),
             semanticKey: observationId("health", fence, source.sourceId, health),
@@ -222,9 +248,9 @@ export class AgentRuntimeObserver implements AgentRuntimeObserverPort {
             ));
           }
         }
-        usages.forEach((occurrence, usageIndex) => {
+        for (const [usageIndex, occurrence] of usages.entries()) {
           const identity = usageObservationIdentity(fence, source.sourceId, occurrence);
-          this.inbox.enqueueObservation(createRuntimeObservation({
+          await publish(createRuntimeObservation({
             schemaVersion: 1,
             eventId: identity.eventId,
             semanticKey: identity.semanticKey,
@@ -252,9 +278,9 @@ export class AgentRuntimeObserver implements AgentRuntimeObserverPort {
             state.usageOccurrenceId = occurrence.occurrenceId;
             state.usageOccurrenceCheckpoint = occurrence.resumeCheckpoint;
           }
-        });
-        if (activityChanged && state.cursor !== undefined) {
-          this.inbox.enqueueObservation(createRuntimeObservation({
+        }
+        if (activityChanged && sample.cursor !== undefined) {
+          await publish(createRuntimeObservation({
             schemaVersion: 1,
             eventId: observationId("activity", fence, source.sourceId, sample.activityId!),
             semanticKey: observationId("activity", fence, source.sourceId, sample.activityId!),
@@ -273,10 +299,18 @@ export class AgentRuntimeObserver implements AgentRuntimeObserverPort {
           dirty.add(`role:${fence.taskId}/${fence.roleName}`);
         }
         if (sample.activityId !== undefined) state.activityId = sample.activityId;
+        state.cursor = sample.cursor;
         this.#states.set(key, state);
       }
     );
     return Object.freeze([...dirty].sort(numericCompare));
+  }
+
+  /** Counts successful durable admissions (including duplicates), not tokens or
+   * provider content. Phase observations carry discovery/publication duration. */
+  metrics() {
+    return { samples: this.#samples, sources: this.#sources, published: this.#published,
+      usagePublications: this.#usagePublications, failed: this.#failed };
   }
 
   private activeSources(): readonly Readonly<{
@@ -417,13 +451,17 @@ async function forEachConcurrent<T>(
 ): Promise<void> {
   let nextIndex = 0;
   const workers = Math.min(limit, values.length);
-  await Promise.all(Array.from({ length: workers }, async () => {
+  const results = await Promise.allSettled(Array.from({ length: workers }, async () => {
     while (nextIndex < values.length) {
       const index = nextIndex;
       nextIndex += 1;
       await visit(values[index]!, index);
     }
   }));
+  // An admission failure must not release the Controller's in-flight sample
+  // guard while another source can still commit state from that sample.
+  const failure = results.find(result => result.status === "rejected");
+  if (failure?.status === "rejected") throw failure.reason;
 }
 
 function sampleConcurrency(value: number | undefined): number {

@@ -266,6 +266,8 @@ const ROLE_FIELDS: Record<string, { set: string; clear?: string; many?: boolean 
   model: { set: "--model", clear: "--clear-model" }, effort: { set: "--effort", clear: "--clear-effort" },
   "permission.strategy": { set: "--permission-strategy" }, "permission.sandbox": { set: "--sandbox" },
   "permission.approval": { set: "--approval" }, "permission.mode": { set: "--permission-mode" },
+  "permission.excludeTmpdirEnvVar": { set: "--exclude-tmpdir-env-var", clear: "--clear-exclude-tmpdir-env-var" },
+  "permission.excludeSlashTmp": { set: "--exclude-slash-tmp", clear: "--clear-exclude-slash-tmp" },
   "permission.allowedTools": { set: "--allowed-tool", clear: "--clear-allowed-tools", many: true },
   "permission.disallowedTools": { set: "--disallowed-tool", clear: "--clear-disallowed-tools", many: true },
   search: { set: "--search", clear: "--clear-search" },

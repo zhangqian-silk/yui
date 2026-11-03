@@ -302,6 +302,15 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   // Optional Role presentation and generated-title provenance. Never infer
   // ownership of historical titles, rewrite frozen profiles, or fill defaults.
   sql: ""
+}, {
+  fromVersion: "1.25",
+  toVersion: "1.26",
+  name: "codex-workspace-temp-exclusions",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Optional workspace-write permission fields; preserve all existing payloads.
+  sql: ""
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {

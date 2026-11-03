@@ -4,7 +4,7 @@ import { createConnection, createServer, type Server } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { withSessionContextPointer } from "../context/sessionBootstrapManifest.js";
+import { createSessionSkillNotice } from "../context/sessionSkillNotice.js";
 
 
 import type { AgentAdapterId } from "../agent/adapterCatalog.js";
@@ -347,6 +347,7 @@ export async function runAgentHost(input: Readonly<{
     return runCodexInteractiveHost(input.home, payload, openAgentHostControl);
   }
   let session: AgentEndpoint | undefined;
+  const skillNotice = createSessionSkillNotice(input.home);
   // This process really holds the Endpoint code its Session runs on. The lease
   // spans the Session's Turns, so installing a newer generation does not change
   // the implementation under a Session that is still using this one.
@@ -683,6 +684,7 @@ export async function runAgentHost(input: Readonly<{
           throw new Error("Codex client reconnect lost its Endpoint implementation lease.");
         }
         const started = await endpointLease.resume(reconnectPayload);
+        skillNotice.invalidate();
         session = started.session;
         sessionPayload = currentPayload;
         started.session.events((event) => {
@@ -928,6 +930,7 @@ export async function runAgentHost(input: Readonly<{
         session = started.session;
         sessionPayload = next;
         await recordProviderConnection(input.home, next, started.session);
+        skillNotice.invalidate();
         lastTerminalPayload = undefined;
         lastTerminal = undefined;
         directObservation = undefined;
@@ -1185,9 +1188,13 @@ export async function runAgentHost(input: Readonly<{
     try {
       // beginDurableProviderTurn validated current execution-environment,
       // authority and Session identity before this native write.
+      const notice = skillNotice.prepare(
+        recoveryInput?.text ?? request.run.boundedText, activeRunPayload.environment,
+        session.nativeSessionId, { recovery: recoveryInput !== undefined }
+      );
       const receipt = endpointReceipt(await session.submit({
         ...request.run,
-        boundedText: withSessionContextPointer(recoveryInput?.text ?? request.run.boundedText, activeRunPayload.environment),
+        boundedText: notice.text,
         ...(recoveryInput === undefined ? {} : { requireQuiescent: true }),
         ...(recoveryInput?.expectedFailedNativeTurnId === undefined ? {} : {
           expectedFailedNativeTurnId: recoveryInput.expectedFailedNativeTurnId
@@ -1196,6 +1203,7 @@ export async function runAgentHost(input: Readonly<{
       }), request.run.attemptId);
       transportAccepted = true;
       providerAccepted = receipt.acceptance === "provider";
+      if (providerAccepted) notice.commit();
       activeNativeTurnId = receipt.nativeTurnId;
       try {
         await publishStructuredProviderAccepted({
@@ -1320,9 +1328,10 @@ export async function runAgentHost(input: Readonly<{
     }
     try {
       await assertHostExecutionEnvironment(input.home, sessionPayload, session.nativeSessionId);
+      const notice = skillNotice.prepare(request.run.boundedText, sessionPayload.environment, session.nativeSessionId);
       const receipt = endpointReceipt(await session.steer({
         ...request.run,
-        boundedText: withSessionContextPointer(request.run.boundedText, sessionPayload.environment),
+        boundedText: notice.text,
         inputRef: request.run.attemptId
       }), request.run.attemptId);
       if (receipt.nativeTurnId !== request.nativeTurnId) {
@@ -1331,6 +1340,7 @@ export async function runAgentHost(input: Readonly<{
           request.run.attemptId
         );
       }
+      if (receipt.acceptance === "provider") notice.commit();
     } catch (error) {
       const unknown = error instanceof ProviderDeliveryUnknownError;
       operation.failure = providerDeliveryFailureFrom(error, {

@@ -155,6 +155,23 @@ different contracts. Provider bypass does not grant writes to another Project.
 Managed workspace owner, exact Assignment and resource grants enforce Yui
 operations; broad native permissions are not an OS sandbox.
 
+Codex configured permissions can explicitly exclude automatic writable temp roots:
+`--sandbox workspace-write --exclude-tmpdir-env-var true --exclude-slash-tmp true`.
+Each exclusion accepts `true` or `false`; `--clear-exclude-tmpdir-env-var` and
+`--clear-exclude-slash-tmp` remove the respective override. Omission preserves
+native defaults, not an implicit exclusion. Both fields require an explicit
+`workspace-write` sandbox and reject other adapters or conflicting strategies.
+Managed launches compile them into per-thread `sandbox_workspace_write`
+configuration on start/resume, never shared-daemon defaults or account files.
+Ordinary interactive launches use equivalent invocation-local structured options.
+The mapping follows the native
+[configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+These exclude automatic `$TMPDIR` and `/tmp` grants, not explicitly authorized
+writable roots within those paths. They do not establish read isolation or
+prevent effects through an authorized Controller RPC. Inspect the actual native
+receipt and validate enforcement in a separately authorized disposable fixture;
+accepting the configuration does not prove OS sandbox enforcement.
+
 A write-intent delivery Leader launched in its own Task-owned main workspace
 captures that workspace's bound writable Projects without needing an open
 WorkItem. Accepted results do not remove this direct-delivery scope. An explicit
@@ -236,11 +253,22 @@ yui config role show <global-role>
 yui config profile show <profile>
 yui task role add <task> <role> --profile <profile>
 yui task role show <task> <role>
+yui task role show <task> <role> --view full
 yui task role update <task> <role> --environment <preparation-id>
 yui task role update <task> <role> --managed-environment
 yui task role session inspect <task> <role>
 yui task role session new <task> <role> --reason "<why a fresh Session is useful>"
 ```
+
+`task role show` defaults to the complete desired Role configuration and its
+current recorded Session configuration, not historical Run snapshots. Recorded
+configuration and a retained control target are not live-state or stop evidence;
+use the returned status/session inspection commands for those questions.
+`--view full` retains the previous complete `role`, `sessions`, and `runs`
+document with bounded pagination. JSON consumers needing those historical
+fields must now request that view and retain it on cursor continuations.
+This changes the CLI default JSON view, not storage or the `task.role.show`
+configuration RPC used by the interactive wizard.
 
 The global query uses the calling process's default native context. Task-scoped
 queries use the Controller's native account environment and the selected Role

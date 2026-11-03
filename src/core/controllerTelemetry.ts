@@ -27,6 +27,7 @@ export type ControllerRouteMetrics = Readonly<{
   builtin: Readonly<{ completed: number; failed: number }>;
   dispatched: Readonly<{ completed: number; failed: number }>;
   observations: ReturnType<ControllerWorkObserver["snapshot"]>;
+  transport: ReturnType<ControllerWorkObserver["snapshot"]>;
 }>;
 
 /** Fixed-size retained diagnostics; live bookkeeping follows in-flight work.
@@ -41,10 +42,10 @@ export class ControllerWorkObserver {
   #slowest: { phase: string; target: string | null; startedAtMs: number; elapsedMs: number; failed: boolean } | null = null;
   constructor(readonly clock: () => number = monotonicMilliseconds) {}
 
-  start(phase: string, target?: string): (failed?: boolean) => void {
+  start(phase: string, target?: string, startedAtMs = this.clock()): (failed?: boolean) => void {
     const token = {};
     const entry = { phase, target: target === undefined ? null
-      : createHash("sha256").update(target).digest("hex").slice(0, 16), startedAt: this.clock() };
+      : createHash("sha256").update(target).digest("hex").slice(0, 16), startedAt: startedAtMs };
     this.#active.set(token, entry);
     return (failed = false) => {
       if (!this.#active.delete(token)) return;
@@ -120,6 +121,7 @@ const BUILTIN_METHODS = new Set([
 ]);
 
 const OBSERVED_METHODS = new Set([...BUILTIN_METHODS,
+  "runtime.host-observation-apply", "runtime.observation-apply",
   "scheduler.signal", "scheduler.scan", "scheduler.configure",
   "runtime.ensure-role-session", "runtime.stop-role-session",
   "capability.search", "capability.describe", "capability.call",
@@ -161,6 +163,23 @@ export const productionTelemetryScheduler: ControllerTelemetryScheduler = {
 
 export type ControllerCommandObservation = Readonly<{
   complete(kind: ControllerRouteKind, outcome: ControllerRouteOutcome): void;
+  flushed(failed?: boolean): void;
+}>;
+
+/** One authenticated request, not a rolling sample. Local flush is not a
+ * client receipt; a closed peer may precede handler completion. */
+export type ControllerRequestDiagnostic = Readonly<{
+  target: string | null;
+  phase: string;
+  acceptedAtMs: number;
+  receivedAtMs: number;
+  routedAtMs: number;
+  handlerCompletedAtMs: number;
+  flushCompletedAtMs: number;
+  failed: boolean;
+  handlerFailed: boolean;
+  flushFailed: boolean;
+  elapsedMs: number;
 }>;
 
 /**
@@ -182,24 +201,66 @@ export class ControllerCommandObserver {
   #dispatchedCompleted = 0;
   #dispatchedFailed = 0;
   readonly #observations: ControllerWorkObserver;
+  readonly #transport: ControllerWorkObserver;
 
-  constructor(clock: () => number = monotonicMilliseconds) {
+  constructor(clock: () => number = monotonicMilliseconds,
+    readonly onRequestDiagnostic?: (record: ControllerRequestDiagnostic) => void
+  ) {
     this.#clock = clock;
     this.#observations = new ControllerWorkObserver(clock);
+    this.#transport = new ControllerWorkObserver(clock);
   }
 
-  start(method = "unknown", requestId?: string): ControllerCommandObservation {
+  start(method = "unknown", requestId?: string,
+    socketTiming?: Readonly<{ acceptedAtMs: number; receivedAtMs: number }>
+  ): ControllerCommandObservation {
     this.#received += 1;
     this.#inFlight += 1;
     const token = {};
     this.#inFlightStarted.set(token, this.#clock());
     const finish = this.#observations.start(
       OBSERVED_METHODS.has(method) ? method : "other", requestId);
+    // Attach socket timestamps only after authentication, using the same hash
+    // as route accounting. No raw frames, params or tokens enter observations.
+    if (socketTiming !== undefined) {
+      this.#transport.start("socket.accept-to-route", requestId, socketTiming.acceptedAtMs)();
+      this.#transport.start("socket.receive-to-route", requestId, socketTiming.receivedAtMs)();
+    }
+    const finishFlush = socketTiming === undefined ? () => undefined
+      : this.#transport.start("socket.route-to-flush", requestId);
+    const routedAtMs = this.#clock();
+    let handlerCompletedAtMs: number | undefined, flushCompletedAtMs: number | undefined;
+    let handlerFailed = false, flushFailed = false;
+    const emit = () => {
+      if (socketTiming === undefined || handlerCompletedAtMs === undefined
+        || flushCompletedAtMs === undefined) return;
+      const elapsedMs = Math.max(0,
+        Math.max(handlerCompletedAtMs, flushCompletedAtMs) - socketTiming.acceptedAtMs);
+      if (!handlerFailed && !flushFailed && elapsedMs < 1000) return;
+      try {
+        this.onRequestDiagnostic?.({
+          target: requestId === undefined ? null
+            : createHash("sha256").update(requestId).digest("hex").slice(0, 16),
+          phase: OBSERVED_METHODS.has(method) ? method : "other",
+          ...socketTiming, routedAtMs, handlerCompletedAtMs, flushCompletedAtMs,
+          failed: handlerFailed || flushFailed, handlerFailed, flushFailed, elapsedMs
+        });
+      } catch { /* Diagnostic sinks cannot change command effects. */ }
+    };
     let completed = false;
     return {
+      flushed: (failed = false) => {
+        if (flushCompletedAtMs !== undefined) return;
+        flushCompletedAtMs = this.#clock();
+        flushFailed = failed;
+        finishFlush(failed);
+        emit();
+      },
       complete: (kind, outcome) => {
         if (completed) return;
         completed = true;
+        handlerCompletedAtMs = this.#clock();
+        handlerFailed = outcome === "failure";
         this.#inFlight = Math.max(0, this.#inFlight - 1);
         this.#inFlightStarted.delete(token);
         finish(outcome === "failure");
@@ -213,6 +274,7 @@ export class ControllerCommandObserver {
         } else {
           this.#dispatchedCompleted += 1;
         }
+        emit();
       }
     };
   }
@@ -235,7 +297,8 @@ export class ControllerCommandObserver {
         completed: this.#dispatchedCompleted,
         failed: this.#dispatchedFailed
       },
-      observations: this.#observations.snapshot()
+      observations: this.#observations.snapshot(),
+      transport: this.#transport.snapshot()
     };
   }
 }

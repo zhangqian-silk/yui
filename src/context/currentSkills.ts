@@ -40,7 +40,9 @@ export function checkCurrentSkills(home: string | undefined, ids: readonly strin
 }
 
 export const SKILL_CHECK_COMMAND = "yui session skills --json";
-export const SKILL_REUSE_RULE = "At the start of every turn, check current Skill versions and availability. "
-  + "Read full SKILL.md and necessary references on first entry, version change, recovery, "
-  + "or missing/compacted/uncertain context; reuse only unchanged full instructions available now. "
-  + "A version check is not a loading receipt or authority.";
+export const SKILL_REUSE_RULE = "The managed Host checks current Skill versions/availability before each input; "
+  + "do not repeat an explicit Host check. Without that notice, check through the Manifest's command. "
+  + "Reuse unchanged full instructions in context; messages alone require no reload. "
+  + "Read affected entries/references fully on change or localized loss. On first entry, recovery or lost context, "
+  + "rebuild the current working set from applicable Skill entry points and action-relevant references, not all past procedures. "
+  + "Metadata proves neither loading, memory nor authority.";

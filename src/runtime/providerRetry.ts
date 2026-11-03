@@ -264,7 +264,7 @@ export function providerRetryProjection(binding: ProviderRuntimeBinding | null |
 
 /** Entry-point facts, never accumulated retry history or raw diagnostics.
  * Exact Session retry/show and failureRef retain the original evidence. */
-export function providerRetrySummary(binding: ProviderRuntimeBinding | null | undefined) {
+export function providerRetrySummary(binding: ProviderRuntimeBinding | null | undefined, detailCommand?: string) {
   const view = providerRetryProjection(binding);
   if (view === null) return null;
   const { history, error, currentTurn, ...facts } = view;
@@ -276,7 +276,10 @@ export function providerRetrySummary(binding: ProviderRuntimeBinding | null | un
     currentTurn: currentTurn === null ? null : {
       attemptId: currentTurn.attemptId, status: currentTurn.status, nativeTurnId: currentTurn.nativeTurnId
     },
-    historyCount: history.length, detailOmitted: true
+    historyCount: history.length, detailOmitted: true,
+    // This reads current Session evidence, not a frozen Run snapshot. The
+    // returned chain/attempt identities must still be compared by the caller.
+    ...(detailCommand === undefined ? {} : { currentDetailCommand: detailCommand })
   };
 }
 

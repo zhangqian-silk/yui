@@ -34,11 +34,21 @@ import { TmuxSessionHost } from "../../dist/runtime/tmuxAdapters.js";
 import { launchBrokerForHome } from "../../dist/runtime/launchBroker.js";
 import { createSessionOwnerIdentity } from "../../dist/runtime/sessionOwnerIdentity.js";
 import { recoverTaskHostTerminals } from "../../dist/controller/taskHostTerminalRecovery.js";
+import { AsyncTaskStoreClient } from "../../dist/storage/storeRpc.js";
+import { callController } from "../../dist/core/controllerClient.js";
+import { setImmediate as yieldLoop } from "node:timers/promises";
+import { runtimeObservationFromTaskEvent } from "../../dist/runtime/runtimeObservation.js";
 
-function executionFixture(t) {
-  const home = mkdtempSync(join(tmpdir(), "yui-host-execution-"));
-  const store = new SqliteTaskStore(home);
-  t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
+function executionFixture(t, cleanup = async () => {}) {
+  let home, store;
+  t.after(async () => {
+    try { await cleanup(); } finally {
+      store?.close();
+      if (home !== undefined) rmSync(home, { recursive: true, force: true });
+    }
+  });
+  home = mkdtempSync(join(tmpdir(), "yui-host-execution-"));
+  store = new SqliteTaskStore(home);
   const now = new Date();
   const agent = createConfiguredAgent("codex", "codex", "codex", [], [], now);
   store.saveConfiguredAgent(agent);
@@ -313,6 +323,84 @@ test("Host saves exact provider facts without opening Controller-owned storage",
   assert.equal(globalEvents.length, 2, "Global Host must also enqueue without opening the store.");
   assert.ok(globalEvents.every(event => event.host && event.observation.fence.taskId === undefined
     && event.observation.fence.runId === undefined));
+});
+
+test("eager Host ingress shares the worker writer without blocking status or losing a stopped fold", async t => {
+  let client, controller, holding, eager;
+  const gate = new Int32Array(new SharedArrayBuffer(4));
+  const release = () => { Atomics.store(gate, 0, 2); Atomics.notify(gate, 0); };
+  const f = executionFixture(t, async () => {
+    release();
+    await holding?.catch(() => undefined);
+    await eager?.catch(() => undefined);
+    await controller?.close();
+    await client?.close();
+  });
+  // Publish only to the durable Inbox before opening the socket.
+  await publishStructuredProviderAccepted({ home: f.home, environment: f.environment,
+    receipt: { ...f.identity, acceptance: "provider", acceptedAt: new Date().toISOString() } });
+  const inbox = new FileRuntimeEventInbox(f.home);
+  const event = inbox.list()[0];
+  client = new AsyncTaskStoreClient(f.home, {
+    observerModule: new URL("../helpers/lockedObserver.mjs", import.meta.url)
+  });
+  const dispatch = () => createRuntimeLifecycleDispatcher(f.store, f.scheduler, {},
+    undefined, undefined, undefined, client);
+  controller = await startControllerServer(f.home, (method, params) => dispatch()(method, params));
+  const hold = async taskId => {
+    Atomics.store(gate, 0, 0);
+    holding = client.invokeObserver("holdFixtureWriteLock", [gate.buffer, taskId]);
+    void holding.catch(() => undefined);
+    const deadline = performance.now() + 2000;
+    while (Atomics.load(gate, 0) !== 1 && performance.now() < deadline) await yieldLoop();
+    assert.equal(Atomics.load(gate, 0), 1, "the actual persistence worker owns BEGIN IMMEDIATE");
+  };
+  await hold();
+  let settled = false;
+  eager = callController(f.home, "runtime.host-observation-apply", { eventId: event.id })
+    .finally(() => { settled = true; });
+  void eager.catch(() => undefined);
+  // Wait until the real route is admitted, without racing socket startup.
+  const deadline = performance.now() + 2000;
+  while (!settled && controller.commandObserver.snapshot().inFlight === 0
+    && performance.now() < deadline) await yieldLoop();
+  assert.equal(settled, false, "Host fold must await the worker, not fail on the main connection");
+  const statusStarted = performance.now();
+  assert.equal((await callController(f.home, "controller.status")).running, true);
+  t.diagnostic(`status under worker write lock: ${(performance.now() - statusStarted).toFixed(2)} ms (default 5000 ms deadline)`);
+  assert.equal(Atomics.load(gate, 0), 1, "status responds while the worker still holds the write lock");
+  assert.notEqual(f.store.getTaskRoleSessionSet("task-1", "worker").providerBinding.run.status, "accepted");
+  release();
+  await holding;
+  assert.deepEqual(await eager, { outcome: "applied" });
+  assert.equal(f.store.getTaskRoleSessionSet("task-1", "worker").providerBinding.run.status, "accepted");
+  const committed = f.store.listEvents("task-1");
+  assert.deepEqual(await dispatch()("runtime.host-observation-apply", { eventId: event.id }), { outcome: "applied" });
+  assert.deepEqual(f.store.listEvents("task-1"), committed, "eager replay uses the existing semantic dedup");
+  const canonical = committed.map(runtimeObservationFromTaskEvent).find(value => value?.kind === "turn.accepted");
+  assert.ok(canonical);
+  await dispatch()("runtime.observation-apply", canonical);
+  assert.deepEqual(f.store.listEvents("task-1"), committed, "canonical ingress shares the same durable dedup");
+  await assert.rejects(dispatch()("runtime.observation-apply", { kind: "invalid" }), error => error.code === "INVALID_PARAMS");
+
+  // A worker shutdown must reject the pending fold, not report an uncommitted
+  // success or consume the durable file. Its successor rechecks the same fact.
+  const taskBefore = f.store.getTask("task-1");
+  await hold("task-1");
+  assert.deepEqual(f.store.getTask("task-1"), taskBefore, "uncommitted worker state is not visible");
+  eager = dispatch()("runtime.host-observation-apply", { eventId: event.id });
+  const rejected = assert.rejects(eager, /closed/i);
+  await client.close();
+  await rejected;
+  await holding.catch(() => undefined);
+  assert.equal(inbox.has(event.id), true);
+  assert.deepEqual(f.store.listEvents("task-1"), committed);
+  assert.deepEqual(f.store.getTask("task-1"), taskBefore, "terminated worker rolls its open write back");
+  client = new AsyncTaskStoreClient(f.home, {
+    observerModule: new URL("../../dist/controller/fileSchedulerStoreAdapter.js", import.meta.url)
+  });
+  assert.deepEqual(await dispatch()("runtime.host-observation-apply", { eventId: event.id }), { outcome: "applied" });
+  assert.deepEqual(f.store.listEvents("task-1"), committed);
 });
 
 test("Controller resolves Host facts, retains ACK-loss replay and rejects wrong/old identities", async t => {

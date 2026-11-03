@@ -157,16 +157,18 @@ for (const name of RUNTIME_DOCUMENTS) {
 const expectedSkills = [];
 for (const skill of RUNTIME_SKILLS) {
   const resources = ["SKILL.md", "VERSION"];
-  const references = resolve(root, "skills", skill, "references");
-  if (existsSync(references)) {
-    if (!lstatSync(references).isDirectory() || lstatSync(references).isSymbolicLink()) {
-      throw new Error(`Runtime Skill references must be a regular directory: ${skill}.`);
-    }
-    for (const name of listRegularFiles(references)) {
-      if (!name.endsWith(".md")) {
-        throw new Error(`Unsupported Runtime Skill reference: ${skill}/references/${name}.`);
+  for (const [directory, extension] of [["references", ".md"], ["scripts", ".mjs"]]) {
+    const resourceRoot = resolve(root, "skills", skill, directory);
+    if (existsSync(resourceRoot)) {
+      if (!lstatSync(resourceRoot).isDirectory() || lstatSync(resourceRoot).isSymbolicLink()) {
+        throw new Error(`Runtime Skill ${directory} must be a regular directory: ${skill}.`);
       }
-      resources.push(`references/${name}`);
+      for (const name of listRegularFiles(resourceRoot)) {
+        if (!name.endsWith(extension)) {
+          throw new Error(`Unsupported Runtime Skill resource: ${skill}/${directory}/${name}.`);
+        }
+        resources.push(`${directory}/${name}`);
+      }
     }
   }
   for (const resource of resources) {

@@ -3,9 +3,9 @@ import test from "node:test";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cases } from "../../scripts/review-eval/cases.mjs";
-import { verifyCases } from "../../scripts/review-eval/verify.mjs";
-import { makePlan, summarize, participantFiles, exportParticipant } from "../../scripts/review-eval/evaluate.mjs";
+import { cases } from "../../scripts/eval/review/cases.mjs";
+import { verifyCases } from "../../scripts/eval/review/verify.mjs";
+import { makePlan, summarize, participantFiles, exportParticipant } from "../../scripts/eval/review/evaluate.mjs";
 
 const protocol = {
   model: "deterministic-test-only", effort: "fixed", tools: "local read", environment: "fixture",

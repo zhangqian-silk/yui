@@ -151,7 +151,7 @@ export function serializeRunInputEnvelope(value: AgentRunInputEnvelope): string 
     .join(",");
   const snapshot = normalized.contextSnapshotRef;
   const lines = [
-    "Yui AgentRun input. Check current Skills: yui session skills --json. Follow the Session Manifest profile and current Skills.",
+    "Yui AgentRun input. Follow the Session Manifest profile and current Skills; use the Host check when supplied.",
     `${normalized.subject.taskId === undefined ? "" : `task=${normalized.subject.taskId} `}run=${normalized.runId} role=${normalized.roleName}`,
     `source=${normalized.source.type}/${normalized.source.channel} purpose=${normalized.purpose} subject=${subject || "global"} snapshot=${snapshot === undefined ? "none" : `${snapshot.id}@${snapshot.digest}`}`,
     normalized.deltaRefIds.length === 0

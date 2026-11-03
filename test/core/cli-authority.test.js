@@ -144,6 +144,19 @@ test("public CLI separates ordinary Task reads from identity and mutation author
   const taskHelp = async caller => (await cli(["help", "task"], caller)).data.data.children.map(c => c.path);
   assert.ok((await taskHelp(ordinary)).includes("task create"));
   assert.ok(!(await taskHelp({ ...base, CODEX_THREAD_ID: "operator-old" })).includes("task create"));
+  const rootHelp = (await cli(["help"], ordinary)).data.data;
+  assert.equal(rootHelp.discovery.children, "complete-immediate-summaries");
+  assert.ok(rootHelp.children.some(c => c.path === "task"));
+  assert.ok(rootHelp.children.every(c => c.usage === undefined && c.children === undefined));
+  const leaf = (await cli(["help", "task", "decision", "record"], current)).data.data;
+  const { discovery, ...leafDetails } = leaf;
+  assert.deepEqual(leafDetails, (await cli(["help", "task", "decision", "record", "--recursive"], current)).data.data);
+  assert.match(leaf.usage[0], /task decision record/);
+  const recursiveHelp = (await cli(["help", "task", "--recursive"], current)).data.data;
+  assert.ok(recursiveHelp.children.find(c => c.path === "task decision").children.some(c => c.path === leaf.path));
+  assert.equal((await cli(["help", "task", "decision", "record", "--recursive"], ordinary)).ok, false);
+  assert.equal((await cli(["help", "internal", "--recursive"], ordinary)).ok, false);
+  assert.equal((await cli(["help", "task", "decision", "not-a-command"], ordinary)).ok, false);
   assert.equal((await cli(["project", "list"], ordinary)).ok, true);
   assert.equal((await cli(knowledge, { ...base, CODEX_THREAD_ID: "operator-old" })).ok, false);
   const desktopInbox = await cli(["inbox", "list"], desktop);
@@ -217,8 +230,20 @@ test("public CLI separates ordinary Task reads from identity and mutation author
   assert.equal((await cli(["task", "context", "list", "task-2", "--store", "task-message"], env)).ok, true);
   assert.equal((await cli(["role", "message", "list", "operator"], env)).ok, false);
   assert.equal((await cli(["task", "context", "inspect", "task-1", "--store", "task", "--ref", "task-1"], env)).ok, true);
+  const staleRef = await cli(["task", "context", "inspect", "task-1",
+    "--store", "task", "--ref", "task-1", "--digest", "private-stale-digest"], env);
+  assert.equal(staleRef.ok, false);
+  const currentRef = JSON.parse(staleRef.error).details.currentRef;
+  assert.equal(currentRef.store, "task", "Public reference families remain usable in recovery diagnostics.");
+  assert.equal(currentRef.refId, "task-1");
+  assert.equal((await cli(["task", "context", "inspect", "task-1", "--store", currentRef.store,
+    "--ref", currentRef.refId, "--digest", currentRef.digest], env)).ok, true);
+  const invalidStore = await cli(["task", "context", "list", "task-1",
+    "--store", "private-unknown-store"], env);
+  assert.equal(invalidStore.ok, false);
+  assert.doesNotMatch(invalidStore.error, /private-unknown-store/);
   assert.equal((await cli(["task", "usage", "task-1", "--limit", "20"], env)).ok, true,
-    "Usage is ordinary evidence, not execution authority.");
+    "Usage is ordinary readable evidence, not execution authority over another Role.");
   assert.equal((await cli(["task", "usage", "task-1"], current)).ok, true);
   assert.equal((await cli(["task", "decision", "list", "task-2"], current)).ok, true);
   const searched = await cli(["task", "search", "Other rationale"], current);

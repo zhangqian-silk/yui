@@ -38,10 +38,17 @@ export function readDigest(value: unknown): string {
 
 /** A save receipt is not another read of the submitted body. Keep the exact
  * delivery/control facts and identity; body/history are read on demand.
+ * bodySha256 hashes the saved string's UTF-8 bytes, not its JSON encoding or
+ * record metadata. It permits transport comparison, not semantic read credit.
  */
 export function messageReceipt<T extends { id: string; body: string }>(message: T) {
   const { body: _body, ...facts } = message;
-  return { ...facts, digest: readDigest(message), bodyBytes: Buffer.byteLength(message.body) };
+  return {
+    ...facts,
+    digest: readDigest(message),
+    bodyBytes: Buffer.byteLength(message.body, "utf8"),
+    bodySha256: createHash("sha256").update(message.body, "utf8").digest("hex")
+  };
 }
 
 export function encodeReadCursor(cursor: Cursor): string {
@@ -120,14 +127,33 @@ export function boundedDocument<T>(value: T, source: string, cursor?: string): T
   const digest = readDigest(value);
   const offset = cursor === undefined ? 0 : decodeReadCursor(cursor, source, digest);
   if (offset >= text.length && offset !== 0) throw usageError("Read cursor exceeds this document.");
-  let end = Math.min(offset + 4096, text.length);
-  // Never cut between UTF-16 surrogate halves.
-  if (end < text.length && /[\uD800-\uDBFF]/u.test(text[end - 1]!)) end--;
-  return { contentPage: {
-    source, digest, encoding: "json", offset, totalCharacters: text.length,
+  const boundary = (end: number) => end < text.length && /[\uD800-\uDBFF]/u.test(text[end - 1]!)
+    ? end - 1 : end;
+  const page = (end: number) => ({ contentPage: {
+    source, digest, encoding: "json" as const, offset, totalCharacters: text.length,
     totalBytes, text: text.slice(offset, end), complete: end === text.length,
     nextCursor: end < text.length ? encodeReadCursor({ source, digest, offset: end }) : null
-  } };
+  } });
+  // A code unit costs at least one encoded byte. Bound each trial independently
+  // of document size, and budget the entire response including escaped identity.
+  const upper = boundary(Math.min(offset + READ_PAGE_BYTES, text.length));
+  const largest = page(upper);
+  if (fitsReadBudget(largest)) return largest;
+  // The terminal page drops its cursor: test it above, separately from the
+  // monotone non-terminal search. Raw indices advance even at surrogate pairs.
+  let low = offset + 1;
+  let high = upper - 1;
+  let end = offset;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const candidate = boundary(middle);
+    if (fitsReadBudget(page(candidate))) {
+      end = candidate;
+      low = middle + 1;
+    } else high = middle - 1;
+  }
+  if (end === offset) throw usageError("Read identity and text exceed the response budget.");
+  return page(end);
 }
 
 /** Shared parser for list/detail command tails; no options reach mutations. */
