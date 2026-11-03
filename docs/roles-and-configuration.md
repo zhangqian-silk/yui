@@ -204,11 +204,22 @@ yui config role show <global-role>
 yui config profile show <profile>
 yui task role add <task> <role> --profile <profile>
 yui task role show <task> <role>
+yui task role show <task> <role> --view full
 yui task role update <task> <role> --environment <preparation-id>
 yui task role update <task> <role> --managed-environment
 yui task role session inspect <task> <role>
 yui task role session new <task> <role> --reason "<why a fresh Session is useful>"
 ```
+
+`task role show` defaults to the complete desired Role configuration and its
+current recorded Session configuration, not historical Run snapshots. Recorded
+configuration and a retained control target are not live-state or stop evidence;
+use the returned status/session inspection commands for those questions.
+`--view full` retains the previous complete `role`, `sessions`, and `runs`
+document with bounded pagination. JSON consumers needing those historical
+fields must now request that view and retain it on cursor continuations.
+This changes the CLI default JSON view, not storage or the `task.role.show`
+configuration RPC used by the interactive wizard.
 
 The global query uses the calling process's default native context. Task-scoped
 queries use the Controller's native account environment and the selected Role

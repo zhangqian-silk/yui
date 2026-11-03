@@ -163,11 +163,20 @@ yui config role show <global-role>
 yui config profile show <profile>
 yui task role add <task> <role> --profile <profile>
 yui task role show <task> <role>
+yui task role show <task> <role> --view full
 yui task role update <task> <role> --environment <preparation-id>
 yui task role update <task> <role> --managed-environment
 yui task role session inspect <task> <role>
 yui task role session new <task> <role> --reason "<why a fresh Session is useful>"
 ```
+
+`task role show` 默认返回完整的期望 Role 配置及当前记录的 Session 配置，
+不再附带历史 Run 配置副本。记录配置和保留的控制目标不等于实时状态或停止
+证明；需要这些事实时使用返回的 status/session 检查入口。`--view full`
+保留原来的完整 `role`、`sessions`、`runs` 文档及有界分页。依赖这些历史
+字段的 JSON 消费者须显式选择 full，并在后续游标读取中保持同一视图。
+这是 CLI 默认 JSON 视图变更，不改变存储，也不改变交互配置向导使用的
+`task.role.show` 配置 RPC。
 
 全局查询使用调用进程的默认原生环境；Task 查询使用 Controller 的原生账户环境及
 所选 Role 配置，不把调用方的凭据转交给其他 Provider。省略 `--error` 查看当前期望

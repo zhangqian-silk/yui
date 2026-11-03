@@ -3,8 +3,14 @@
 Read before using help/capability discovery or diagnosing a hidden command.
 The shared [yui-runtime](../SKILL.md) remains the loading and authority contract.
 
-Use `yui help` or `yui --json help [command ...]` through the authorized CLI
-entry for the current caller's command view. Help, examples and shell completion
+Use the narrowest known `yui --json help <command ...>` path through the authorized
+CLI; do not rediscover its ancestors first. A leaf includes its complete usage
+and options; default group help lists immediate children only. When an action
+needs several commands in a known small group, use
+`yui --json help <group ...> --recursive` once instead of serial child lookups.
+Keep root or broad groups non-recursive for discovery; expand only the needed
+group and recover any truncated output. Neither form grants execution authority.
+Help, examples and shell completion
 share the catalog projection; public terminals and unmanaged Agents share one
 public view. This offline view is only guidance, not an authenticated permission
 or a way to switch Roles. An incomplete or stale managed identity must not be

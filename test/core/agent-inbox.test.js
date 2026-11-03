@@ -742,7 +742,20 @@ test("automatic windows pin same-tick revisions and require explicit acknowledge
   assert.equal(adapter.claimLeaderNotification("task-1", now), null, "duplicate notification cannot replay a delivered revision");
   assert.equal(pendingCompletionMessages(store, "task-1").length, 1);
   assert.equal(inbox("leader", "list").items[0].id, first.wakeId);
-  inbox("leader", "claim", first.wakeId, "--request-id", "automatic-B");
+  const beforeRead = store.getTaskWake("task-1", first.wakeId);
+  const shown = inbox("leader", "show", first.wakeId);
+  assert.equal(shown.id, first.wakeId);
+  assert.equal(shown.originalContext.messages.find(message => message.id === "message-1").value.body, "B",
+    "Own wake inspection should include the same bounded complete ordinary original as wake show");
+  const { wake: _wake, ...focused } = task(["wake", "show", "task-1", first.wakeId]).data;
+  assert.deepEqual(shown.originalContext, focused, "Reuse the canonical focused wake projection");
+  assert.deepEqual(store.getTaskWake("task-1", first.wakeId), beforeRead,
+    "Reading originals neither claims nor acknowledges the wake");
+  const claimed = inbox("leader", "claim", first.wakeId, "--request-id", "automatic-B");
+  assert.equal(claimed.originals, undefined);
+  assert.equal(claimed.refreshOriginals, `yui task wake show task-1 ${first.wakeId} --json`,
+    "An existing wake receipt offers refresh, not a mandatory duplicate of inbox show");
+  assert.deepEqual(inbox("leader", "claim", first.wakeId, "--request-id", "automatic-B"), claimed);
   task(["message", "update", "task-1/message-1", "C"]);
   inbox("leader", "ack", first.wakeId, "--request-id", "B-handled", "--reason", "Handled B; C is later input");
   assert.equal(pendingCompletionMessages(store, "task-1").length, 1, "old acknowledgement cannot handle new revision");
@@ -759,7 +772,13 @@ test("Draft edits have distinct inbox ownership even under the same clock", t =>
   task(["message", "send", "task-1", "A", "--intent", "discuss"]);
   const claim = request => inbox("leader", "claim",
     inbox("leader", "list").items.find(item => item.id.startsWith("pending-")).id, "--request-id", request);
-  const first = claim("A");
+  const pendingId = inbox("leader", "list").items.find(item => item.id.startsWith("pending-")).id;
+  const first = inbox("leader", "claim", pendingId, "--request-id", "A");
+  assert.equal(first.originals, `yui task wake show task-1 ${first.id} --json`,
+    "A newly fixed pending window still needs its first complete original read");
+  assert.equal(first.refreshOriginals, undefined);
+  assert.deepEqual(inbox("leader", "claim", pendingId, "--request-id", "A"), first,
+    "A retried pending claim retains its original navigation and receipt identity");
   inbox("leader", "ack", first.id, "--request-id", "A-done", "--reason", "Handled A");
   task(["message", "update", "task-1/message-1", "B"]);
   assert.deepEqual(pendingCompletionMessages(store, "task-1").map(message => message.id), ["message-1"]);

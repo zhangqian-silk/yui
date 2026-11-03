@@ -564,6 +564,29 @@ test("an idle self-read exposes intent but never fabricates a Provider receipt",
   assert.deepEqual(second.pending.items, first.pending.items);
 });
 
+test("Global context supplies only bounded exact current-Turn originals without handling input", t => {
+  const { store, command, role } = globalFixture(t);
+  recordGlobalSession(store, role);
+  const receipt = command(["message", "queue", role.name, "Current complete source", "--request-id", "focused"]).message;
+  const selected = store.listGlobalRoleMessages(role.name).find(m => m.id === receipt.id);
+  command(["message", "queue", role.name, "Future input must stay discovery-only", "--request-id", "future"]);
+  withGlobalControllerTurn(store, role.name, {
+    attemptId: `global-input:${role.name}/${selected.id}`, nativeTurnId: "focused-turn"
+  });
+  const before = store.listGlobalRoleMessages(role.name);
+  const context = contextSelfRead(store, role.name);
+  assert.deepEqual(context.currentOriginals, [selected]);
+  assert.deepEqual(context.pending.items.map(m => m.id), before.map(m => m.id));
+  assert.deepEqual(store.listGlobalRoleMessages(role.name), before, "Reading never claims, ACKs or delivers input.");
+  const inspected = command(["context", role.name]);
+  assert.deepEqual(inspected.currentOriginals, [], "An inspection is not the managed Turn's working set.");
+  store.updateGlobalRoleMessage({ ...selected, body: "大".repeat(2000) });
+  const oversized = contextSelfRead(store, role.name);
+  assert.deepEqual(oversized.currentOriginals, []);
+  assert.equal(oversized.pending.items[0].read, `role message show ${role.name} ${selected.id}`);
+  assert.ok(Buffer.byteLength(JSON.stringify(oversized)) < 32 * 1024);
+});
+
 test("a self-read while the Role's own native Turn is in flight delivers nothing (busy-gate)", t => {
   const { store, command, role } = globalFixture(t);
   recordGlobalSession(store, role);

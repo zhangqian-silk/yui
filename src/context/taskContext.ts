@@ -3,6 +3,7 @@ import { isGitArtifactRefString, parseGitArtifactRef } from "../artifacts/gitArt
 import { taskNotFound, usageError } from "../errors/cliError.js";
 import type { TaskEvent } from "../event/taskEvent.js";
 import { expandTaskMessageResult, type TaskMessage } from "../message/message.js";
+import { taskMessagePresentation } from "../interaction/notificationPresentation.js";
 import { currentManagedRuntime, resolveManagedTaskReader } from "../runtime/managedCaller.js";
 import { hasManagedIdentity } from "../runtime/managedIdentity.js";
 import { providerRetrySummary } from "../runtime/providerRetry.js";
@@ -14,8 +15,9 @@ import { managedWorkspaceKey } from "../worktree/managedWorkspace.js";
 import { contextContentDigest } from "./contextSnapshot.js";
 import { buildRunContextPack } from "./runContextPack.js";
 import { sourceRunContextValue } from "./sourceRunContext.js";
-import { boundedDocument, fitsReadBudget, summaryText, recordPage, type ReadPageOptions } from "../output/boundedRead.js";
+import { boundedDocument, fitsReadBudget, summaryText, recordPage, readDigest, type ReadPageOptions } from "../output/boundedRead.js";
 import { taskBriefGuard, taskPhase } from "./taskPhase.js";
+import { CONTEXT_FAMILIES } from "./contextFamilies.js";
 
 const MAX_RECORDS = 64;
 const MAX_VALUE_BYTES = 2048;
@@ -74,7 +76,7 @@ export function readTaskContext(
       if (entry.ref.store === "run") runtimeEvents ??= reader.listEventsByType(taskId, ["runtime.agent-error"]);
       const valueBytes = Buffer.byteLength(JSON.stringify(entry.value));
       const content = valueBytes > MAX_VALUE_BYTES || INDEX_ONLY_FAMILIES.has(entry.ref.store)
-        ? { ref: entry.ref, summary: summarize(entry.value), omitted: true }
+        ? { ref: entry.ref, summary: summarizeEntry(reader, entry), omitted: true }
         : { ...entry, omitted: false };
       const revisedAfterActivation = entry.ref.store === "task-message" && phaseSource?.ref !== undefined
         && reader.queryContextRecords(taskId, {
@@ -257,6 +259,47 @@ export function inspectTaskContext(
   return boundedDocument(response, `task:${taskId}/${selector.store}/${selector.refId}`, selector.cursor);
 }
 
+/** CLI spelling shared by explicit dispatch selection and grouped reading. */
+export function parseExactContextRef(selector: string) {
+  const match = /^([^/]+)\/(.+)@([0-9a-f]{64})$/u.exec(selector);
+  if (match === null)
+    throw usageError(`Invalid required Context reference: ${selector}. Use store/refId@digest from the applicable Context pointers or list/inspect.`);
+  return { store: match[1]!, refId: match[2]!, digest: match[3]! };
+}
+
+/** Explicit independent originals, one shared transport budget. Reuse the
+ * single-reference authorization/digest checks on every page. No implicit
+ * discovery, partial success, cached values or read/handling receipts.
+ */
+export function inspectTaskContextBatch(
+  store: TaskStore, taskId: string, selectors: unknown, cursor?: string,
+  environment: NodeJS.ProcessEnv = {}
+) {
+  if (!Array.isArray(selectors) || selectors.length < 1 || selectors.length > 8)
+    throw usageError("Context batch requires 1..8 exact references.");
+  const seen = new Set<string>();
+  const refs = selectors.map((value: unknown) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value))
+      throw usageError("Context batch reference requires store, refId and digest.");
+    const ref = value as Record<string, unknown>;
+    if (Object.keys(ref).some(key => !["store", "refId", "digest", "revision"].includes(key))
+      || typeof ref.store !== "string" || !ref.store
+      || typeof ref.refId !== "string" || !ref.refId
+      || typeof ref.digest !== "string" || !/^[a-f0-9]{64}$/.test(ref.digest)
+      || ref.revision !== undefined && typeof ref.revision !== "string")
+      throw usageError("Context batch reference requires exact store, refId and digest; revision is optional metadata.");
+    const key = JSON.stringify([ref.store, ref.refId]);
+    if (seen.has(key)) throw usageError("Duplicate Context batch reference.");
+    seen.add(key);
+    return { store: ref.store, refId: ref.refId, digest: ref.digest };
+  });
+  // All-or-error: a stale/forbidden source cannot be silently skipped. Each
+  // source is independently digest-pinned; this is not a new cross-record
+  // snapshot. A continuation is additionally bound to the complete response.
+  const items = refs.map(ref => readTaskContextResource(store, taskId, ref, environment));
+  return boundedDocument({ taskId, items }, `task:${taskId}/context-batch:${readDigest(refs)}`, cursor);
+}
+
 /** The same authorized read as inspect, before transport pagination. */
 export function readTaskContextResource(
   store: TaskStore, taskId: string, selector: Readonly<{ store: string; refId: string; digest?: string }>,
@@ -313,7 +356,7 @@ export function listTaskContext(
           if (options.status !== undefined && value.status !== options.status
             || options.workItemId !== undefined && value.workItemId !== options.workItemId
             || options.after !== undefined && Date.parse(String(value.createdAt)) <= Date.parse(options.after)) continue;
-          records.push({ ref: entry.ref, summary: summarize(value),
+          records.push({ ref: entry.ref, summary: summarizeEntry(reader, entry),
             ...(retired === undefined ? {} : { history: retired.has(entry.ref.refId) ? "retired" : "active" }),
             ...Object.fromEntries(["status", "kind", "type", "createdAt", "roleName", "assignee", "purpose", "workItemId", "reviewRoundId"]
               .filter(key => typeof value[key] === "string").map(key => [key, value[key]])) });
@@ -326,13 +369,6 @@ export function listTaskContext(
   });
 }
 
-export const CONTEXT_FAMILIES = [
-  "task", "task-brief", "remote-delivery", "role", "role-profile",
-  "project-policy", "project-knowledge", "input-request", "work-item",
-  "accepted-work-item", "candidate", "environment-preparation", "managed-workspace",
-  "change-set", "task-message", "run", "source-run", "review-round", "mailbox",
-  "task-decision", "task-milestone", "job", "publication", "task-event"
-];
 export function listContextMessages(
   store: TaskStore, taskId: string, environment: NodeJS.ProcessEnv = {}
 ): TaskMessage[] {
@@ -579,10 +615,20 @@ function authorizedSources(store: TaskStore, { task, allow, caller }: ReturnType
     if (requestedFamily !== undefined && requestedFamily !== family) return;
     const selection = { ...options, family, ids: allowedIds(allow, family) };
     const { count } = store.queryContextRecords(taskId, { ...selection, limit: 0 });
+    // The bounded current index must not bury Task main behind alphabetically
+    // earlier integration/review history. Full discovery keeps its stable order.
+    const taskWorkspaceKey = managedWorkspaceKey({ type: "task", taskId });
+    const preferredWorkspace = current && !discovery && family === "managed-workspace"
+      && isAllowed(allow, family, taskWorkspaceKey)
+      ? store.getManagedWorkspace({ type: "task", taskId }) : null;
     sources.push({ family, count, *read(offset = 0) {
+      if (preferredWorkspace !== null) yield materialize(family, taskWorkspaceKey, preferredWorkspace);
       for (const { id, value } of store.queryContextRecords(taskId, {
         ...selection, offset, limit: current && !discovery ? 8 : MAX_RECORDS
-      }).records) yield materialize(family, id, value);
+      }).records) {
+        if (preferredWorkspace !== null && id === taskWorkspaceKey) continue;
+        yield materialize(family, id, value);
+      }
     } });
   };
   add("task", taskId, task);
@@ -616,11 +662,12 @@ function authorizedSources(store: TaskStore, { task, allow, caller }: ReturnType
   // listed on demand via the async `artifact.list` capability; frozen Candidate
   // artifacts remain reachable as commit-pinned pointers under their Candidate.
   if (!current) query("environment-preparation");
-  query("managed-workspace");
+  if (!current || discovery) query("managed-workspace");
   if (caller?.currentRunId !== undefined) {
     add("managed-workspace", `${taskId}/${caller.roleName}`,
       store.getRun(taskId, caller.currentRunId)?.workspace ?? null);
   }
+  if (current && !discovery) query("managed-workspace");
   if (!current) query("change-set");
   query("task-message", { descending: true, unhandledMessages: current });
   query("run", { descending: true, ...(current ? { statuses: ["active"] } : {}) });
@@ -694,4 +741,28 @@ function summarize(value: unknown): string {
     .flatMap((key) => typeof record[key] === "string" || (key === "version" && typeof record[key] === "number")
       ? [`${key}: ${record[key]}`] : [])
     .join("; "));
+}
+
+/** Reuse producer-authored navigation, never generate a verdict or copy a
+ * report. The authorized Message already permits its matching terminal result
+ * through exact inspect; unrelated/malformed links cannot supply summaries.
+ */
+function summarizeEntry(store: TaskStore, entry: Entry): string {
+  if (entry.ref.store === "task-message") {
+    const message = entry.value as TaskMessage;
+    const presentation = taskMessagePresentation(message, (taskId, runId) => {
+      const run = store.getRun(taskId, runId);
+      return run !== null && run.taskId === message.taskId
+        && message.author.type === "role" && run.roleName === message.author.roleName
+        && run.status !== "active" && run.result !== undefined ? run : null;
+    });
+    if (presentation.summary !== undefined) {
+      // Include attribution in the existing budget without clipping qualifiers.
+      const label = `Author summary (${presentation.summarySource})`;
+      const text = `${label}: ${presentation.summary}`;
+      return Buffer.byteLength(text) <= 512 ? text
+        : `${label} omitted: exceeds discovery budget; read original.`;
+    }
+  }
+  return summarize(entry.value);
 }

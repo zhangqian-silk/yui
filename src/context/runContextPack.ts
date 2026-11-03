@@ -521,9 +521,11 @@ export function runContextEntry(pack: AgentRunContextPack) {
   const { skillPackages: _packages, pointers: _pointers, deltaRefs, liveTaskState, input, ...identity } = pack;
   const { directive, ...inputIdentity } = input;
   const { items, ...pointerPage } = runContextPointerPage(pack, { limit: 16 });
+  const directiveSummary = directive === undefined ? undefined : summaryText(directive);
   return {
     ...identity, input: { ...inputIdentity, ...(directive === undefined ? {} : {
-      directiveSummary: summaryText(directive), directiveOmitted: true
+      ...(directiveSummary === directive ? { directive, directiveOmitted: false }
+        : { directiveSummary, directiveOmitted: true })
     }) }, pointers: items, pointerPage,
     deltaRefs: deltaRefs.slice(0, 16), deltaRefsTotal: deltaRefs.length,
     inventory: { ...pack.inventory, complete: pointerPage.complete },
@@ -536,9 +538,16 @@ export function runContextEntry(pack: AgentRunContextPack) {
     },
     reads: {
       inbox: "yui inbox list --view current --json",
-      refs: `yui task run context ${pack.identity.taskId}/${pack.identity.runId} --view refs`,
+      ...(items.length > 0 ? {
+        expand: `yui task run context expand ${pack.identity.taskId}/${pack.identity.runId} --context-ref <store/refId> [--context-ref <store/refId> ...] --mode full --json`
+      } : {}),
+      ...(!pointerPage.complete ? {
+        refs: `yui task run context ${pack.identity.taskId}/${pack.identity.runId} --view refs`
+      } : {}),
       full: `yui task run context ${pack.identity.taskId}/${pack.identity.runId} --view full`,
-      input: `yui task run context ${pack.identity.taskId}/${pack.identity.runId} --view input`,
+      ...(directiveSummary !== directive ? {
+        input: `yui task run context ${pack.identity.taskId}/${pack.identity.runId} --view input`
+      } : {}),
       live: `yui task context ${pack.identity.taskId}`
     }
   };
@@ -583,6 +592,42 @@ export function expandRunContextRef(
   requireIdentity(refStore, "Context ref store");
   const run = requireExactRun(store, taskId, runId);
   const snapshot = readRunContextSnapshot(store, run);
+  return expandSnapshotRef(snapshot, refId, refStore);
+}
+
+/** Explicit originals from one already-authorized frozen Run, not live Task
+ * discovery. Read the snapshot once and reject the entire selection on drift. */
+export function expandRunContextRefs(
+  store: TaskStore,
+  taskId: string,
+  runId: string,
+  selectors: readonly (Pick<ContextRef, "store" | "refId"> & { digest?: string })[]
+) {
+  if (selectors.length < 1 || selectors.length > 8)
+    throw new Error("Run Context batch requires 1..8 exact references.");
+  const seen = new Set<string>();
+  for (const ref of selectors) {
+    requireIdentity(ref.store, "Context ref store");
+    requireIdentity(ref.refId, "Context ref id");
+    if (ref.digest !== undefined && !/^[a-f0-9]{64}$/.test(ref.digest))
+      throw new Error("An explicit Run Context digest must be exact.");
+    const key = JSON.stringify([ref.store, ref.refId]);
+    if (seen.has(key)) throw new Error("Duplicate Run Context batch reference.");
+    seen.add(key);
+  }
+  const snapshot = readRunContextSnapshot(store, requireExactRun(store, taskId, runId));
+  const items = selectors.map(ref => {
+    const expanded = expandSnapshotRef(snapshot, ref.refId, ref.store);
+    if (ref.digest !== undefined && expanded.ref.digest !== ref.digest)
+      throw new Error(`Run Context reference digest does not match its frozen Snapshot: ${ref.store}/${ref.refId}.`);
+    return expanded;
+  });
+  return { taskId, runId, items };
+}
+
+function expandSnapshotRef(
+  snapshot: ContextSnapshot, refId: string, refStore: string
+): Readonly<{ ref: ContextRef; value: unknown; digest: string }> {
   const authorized = snapshot.refs.filter((ref) => (
     ref.refId === refId && ref.store === refStore
   ));
@@ -1004,7 +1049,9 @@ function materialize(layer: ContextRef["layer"], store: string, refId: string, v
       summary: (store === "project-knowledge"
         ? [title, `version: ${record.version}`, ...(record.scope === undefined ? [] : [`scope: ${record.scope}`]),
           ...(record.expiresWhen === undefined ? [] : [`expiresWhen: ${record.expiresWhen}`])].join("; ")
-        : title).slice(0, 400)
+        : store === "task-message" && typeof record.body === "string"
+          ? summaryText(`Excerpt: ${record.body}`, 160)
+          : title).slice(0, 400)
     }),
     value
   });

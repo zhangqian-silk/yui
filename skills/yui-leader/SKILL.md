@@ -58,6 +58,8 @@ Leader owns coordination, result disposition, acceptance and integration.
 Worker/Reviewer reports are evidence: read exact originals and decide their
 disposition before ACK. Runtime activity is no global lock; use exact bindings.
 Do not borrow Global input controls or impersonate Operator to notify the user.
+Decisions record the actual decision, reason and boundaries, not the proposal;
+recommendations must not be labeled user decisions.
 
 ## Read manuals at the action boundary
 
@@ -71,13 +73,17 @@ Run/Review bindings as decision facts, never a global activity lock.
   controlling an existing Assignment: [Assignment execution](references/assignment-execution.md).
 - Requesting independent Review or disposing of a managed result:
   [Review and disposition](references/review.md).
+  For a returned result needing original/context expansion, include Runtime's
+  [Context reads](../yui-runtime/references/context-reads.md) in that same read
+  group. Add [Working context](references/task-progress.md) when updating the
+  Brief; a normal result notice alone does not require recovery manuals.
 - Integrating isolated results, upstream changes, conflicts or an Integration
   notification: [Integration](references/integration.md).
 - Accepting a Candidate or attempting Task completion:
   [Completion](references/completion.md). Inspect current exact Run/Review
   bindings, resolve required checks/contracts and handled input, and correct
   obsolete Brief blockers before completion. Chat alone does not complete a Task.
-- Material Brief/Decision/Knowledge updates: [Working context](references/task-progress.md).
+- Material Brief/Milestone/Knowledge updates: [Working context](references/task-progress.md).
   Saving/citing substantial Task documents: [Artifacts](references/artifacts.md).
   Unchanged routine continuation needs no record or full manual reload.
 - Replicated attempts: [Replication](references/replicated-execution.md).

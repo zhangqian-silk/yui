@@ -44,6 +44,18 @@ Missing current entries/VERSIONs are concrete installation errors: report exact
 paths, preserve input/authority, repair legally and recheck. Damaged historical
 packages do not revoke a valid Session and current source cannot prove past loads.
 
+Prefer grouping already-known, independent, necessary read-only requests in one
+tool call when their combined output fits its budget. Inspect each result and recover
+missing or truncated bodies. Stop at dependencies on earlier results; do not
+guess targets or mix writes into a read group. Grouping does not bypass required
+instruction loading, authority checks or input-handling order.
+Choose the working set for one action, not one file at a time: combine its known
+applicable manuals before acting, then follow newly discovered prerequisites.
+Use directories, timestamps and excerpts to select sources, never to replace
+required originals or infer authority from recency. Prefer complete relevant
+documents/sections over serial field probes; a citation location is not a read
+plan. After compaction select again from current intent, not the old reading list.
+
 ## Use the exact authority and originals
 
 Manifest/Bootstrap are pointers, not requirements. Tasks, WorkItems, Messages,
@@ -55,6 +67,7 @@ Refresh relevant dynamic facts even when reusing instructions:
   or `yui task context <task-id> --json`. No self-wake or old completed Run is
   needed. Pending delivery/missing reports do not revoke the current Leader.
 - Explicit managed Task Run: read [Dispatched context](references/dispatched-run.md)
+  and, when expanding its input/refs/pages, [Context reads](references/context-reads.md)
   before planning/acting; load the newest exact Run, verify its frozen identity,
   Snapshot, scope/workspace and relevant original requirements. A wake is not a Run.
 - Global Role: execute the exact self-contained Manifest `loadCommand`, not a
@@ -97,12 +110,15 @@ After context load, at useful boundaries and before handoff, use
 `yui inbox list --view current --json`. Handle an exact delivered entry directly,
 not by rediscovering history; do not poll empty inboxes or manufacture turns.
 
-1. Read `yui inbox show <entry> --json` to identify it.
+1. Identify the exact entry from its complete original. Global Context may supply
+   it in `currentOriginals`; otherwise read `yui inbox show <entry> --json`.
 2. Reserve it with `yui inbox claim <entry> --request-id <stable-id> --json`.
    Claim only reserves handling; it is neither processing nor business effect.
 3. Read/reuse complete relevant originals/results, then handle within scope.
-   For a Leader window follow the returned `originals` commands and use its
-   returned wake ID; Assignment input does not expand its frozen permissions.
+   A Leader wake's `inbox show` may include the focused `originalContext`;
+   reuse its complete originals, following exact reads only for missing content.
+   A pending-window claim still returns its durable wake ID and `originals` read.
+   Assignment input does not expand its frozen permissions.
 4. After your disposition, use
    `yui inbox ack <returned-entry> --request-id <stable-id> --reason "<disposition>" --json`.
    Record executed, legally routed, necessary question, or inspected supersession/

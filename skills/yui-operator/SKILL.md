@@ -18,8 +18,13 @@ operation they govern, not every operation that mentions that execution.
 
 ## Route the actual request
 
-Use a named Task's current context and exact originals directly. Otherwise
-discover the bounded outcome, not the whole catalog. Same-result corrections,
+Use a named Task's current context and the complete original request to establish
+the routing target, intent, authority and prior effects. For forwarding only,
+expand referenced materials when needed for those routing facts, not merely
+because the receiving Leader needs them for its business decision. Preserve the
+body and references; forwarding does not validate downstream facts. If asked to
+judge the content or take over execution, read the originals for that work.
+Otherwise discover the bounded outcome, not the whole catalog. Same-result corrections,
 development and delivery normally stay in that Task; a new Task needs an
 independent acceptance/delivery/rollback outcome or an explicit new-Task request.
 
@@ -36,7 +41,10 @@ Read the applicable manual before the operation:
 - Creating/submitting input or Draft activation:
   [Submission](references/submission.md). Quote-sensitive/nested JSON/long bodies
   additionally use [Safe transport](references/body-transport.md); preserve the
-  safe body-file path, never handwrite source text into shell JSON.
+  safe body-file path, never handwrite source text into shell JSON. When that
+  body shape is already known, read both manuals together. If the source is
+  paginated, also include Runtime's [Context reads](../yui-runtime/references/context-reads.md).
+  A complete ordinary source needs no additional discovery manual.
 - PR/MR, merge, delivery correction or completed-result follow-up:
   [Same-Task/serial delivery](references/task-delivery.md). Verify one exact
   delivery before the next dependent Task; a send or Task completion is not merge.
@@ -63,7 +71,7 @@ unknown effects require readback, not a new key or another submission.
 
 ## Settle routing; communicate outcomes
 
-Use Runtime's own-inbox show/claim/original/ACK flow. Claim only reserves handling.
+Use Runtime's own-inbox original/claim/disposition/ACK flow. Claim only reserves handling.
 After legal routing, ACK your disposition with its durable reference; do not wait
 for downstream Task completion or ACK mere transport acceptance. A send receipt
 is not the original body. Task result acceptance remains Leader-owned.

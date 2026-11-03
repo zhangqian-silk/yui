@@ -26,6 +26,7 @@ import {
   runContextPointerPage,
   contextSnapshotDeltaRefIds,
   expandRunContextRef,
+  expandRunContextRefs,
   freezeReviewStageContextSnapshot,
   freezeRunContextSnapshot,
   freezeWorkItemExecutionAssignmentContextSnapshot,
@@ -40,9 +41,9 @@ import {
   readTaskCatalog,
   renderTaskCatalog
 } from "../context/taskCatalog.js";
-import { assertContextRecordReadable, readTaskContextResource } from "../context/taskContext.js";
+import { assertContextRecordReadable, materialize, parseExactContextRef, readTaskContextResource } from "../context/taskContext.js";
 import { parseTaskSearchOptions, searchTaskBodies } from "../context/taskSearch.js";
-import { boundedDocument, readOptions, messageReceipt, recordPage } from "../output/boundedRead.js";
+import { boundedDocument, readOptions, messageReceipt, recordPage, summaryText } from "../output/boundedRead.js";
 import { referencedWakeRunIds } from "../context/wakeRunReferences.js";
 import { taskMessagePresentation, wakeChangeLabels, wakeMessages } from "../interaction/notificationPresentation.js";
 import {
@@ -87,6 +88,7 @@ import {
   selectedWorkItemSynthesisProducers
 } from "../execution/workItemMainRun.js";
 import {
+  activeRoleAgentSession,
   createRoleSessionSet,
   roleAgentSessionResumeMode,
   roleSessionControlTarget,
@@ -200,7 +202,7 @@ import {
   runtimeLifecycleTarget
 } from "../runtime/lifecycleReservation.js";
 import { currentManagedRuntime, resolveManagedTaskReader } from "../runtime/managedCaller.js";
-import { controlProviderRetry, providerRunRetry, providerRetryProjection, renderProviderRetry } from "../runtime/providerRetry.js";
+import { controlProviderRetry, providerRunRetry, providerRetryProjection, providerRetrySummary, renderProviderRetry } from "../runtime/providerRetry.js";
 import { taskRunRecovery } from "../controller/taskRunRecovery.js";
 import { currentProviderConversation, transferProviderAuthority } from "../runtime/providerRuntimeIdentity.js";
 import { projectProviderContinuations } from "../runtime/runtimeContinuationProjection.js";
@@ -263,7 +265,8 @@ import {
   createTaskRecordRetirement,
   isTaskRecordRetired,
   operationalTaskRecords,
-  taskRecordRetirement
+  taskRecordRetirement,
+  TASK_RECORD_RETIRED_EVENT
 } from "../task/taskRecordRetirement.js";
 import {
   decideSubmissionRouting,
@@ -1338,7 +1341,7 @@ export function submitOperatorMessage(
   options: TaskCommandOptions = {},
   intent?: TaskSubmissionIntent,
   submissionKey?: string
-): string {
+): Extract<TaskCommandExecution, { kind: "output" }> {
   // Public terminals and ordinary unmanaged Agents retain the submission
   // route. Managed callers cannot turn a Task Assignment into Operator input.
   const callerEnvironment = options.environment ?? {};
@@ -1390,7 +1393,15 @@ export function submitOperatorMessage(
   const header = result.created
     ? `Created Draft task ${result.task.id}: ${result.task.title}\n`
     : "";
-  return `${header}${renderSubmissionFeedback(result.feedback)}`;
+  return {
+    kind: "output",
+    output: `${header}${renderSubmissionFeedback(result.feedback)}`,
+    data: {
+      taskId: result.task.id,
+      message: messageReceipt(result.message),
+      submission: result.feedback
+    }
+  };
 }
 
 /**
@@ -2435,7 +2446,8 @@ function taskMessageCommand(
       parsed.positionals[1],
       parsed.options.get("--body-file"),
       "--body",
-      usage
+      usage,
+      { preserveFileWhitespace: true }
     );
     const intent = parseSubmissionIntentOption(parsed.options.get("--intent"), usage);
     const submissionKey = parsed.options.get("--request-id");
@@ -2515,7 +2527,7 @@ function queueTaskMessage(
     usage
   );
   if (parsed.positionals.length < 1 || parsed.positionals.length > 2) throw usageError(usage);
-  const body = readCommandText(parsed.positionals[1], parsed.options.get("--body-file"), "--body", usage);
+  const body = readCommandText(parsed.positionals[1], parsed.options.get("--body-file"), "--body", usage, { preserveFileWhitespace: true });
   const requestId = requiredOption(parsed.options, "--request-id");
   const recipientRole = parsed.options.get("--to");
   const workItemId = parsed.options.get("--work-item");
@@ -2567,7 +2579,7 @@ function steerTaskMessage(
     usage
   );
   if (parsed.positionals.length < 1 || parsed.positionals.length > 2) throw usageError(usage);
-  const body = readCommandText(parsed.positionals[1], parsed.options.get("--body-file"), "--body", usage);
+  const body = readCommandText(parsed.positionals[1], parsed.options.get("--body-file"), "--body", usage, { preserveFileWhitespace: true });
   const requestId = requiredOption(parsed.options, "--request-id");
   const expectedTarget = requiredOption(parsed.options, "--expected-target");
   const recipientRole = parsed.options.get("--to");
@@ -2874,7 +2886,8 @@ function updateMessage(
     parsed.positionals[1],
     parsed.options.get("--body-file"),
     "--body",
-    usage
+    usage,
+    { preserveFileWhitespace: true }
   );
   const reference = taskRecordReference(
     parsed.positionals[0],
@@ -3325,7 +3338,7 @@ function taskRoleSessionCommand(
     if (extra.length > 0 || !["show", "cancel", "disable", "enable"].includes(action)) {
       throw usageError("Usage: yui task role session retry <task> <role> [show|cancel|disable|enable]");
     }
-    return store.transaction(tx => {
+    return store[action === "show" ? "readTransaction" : "transaction"](tx => {
       const task = requireTask(tx, taskId);
       const role = requireRole(tx, task.id, roleName);
       if (action !== "show") taskActor(tx, options, task.id);
@@ -3609,9 +3622,12 @@ function taskRoleStatus(
   store: TaskWorkflowStore,
   options: TaskCommandOptions
 ): TaskCommandExecution {
-  exactPositionals(args, 2, "Task role status usage: yui task role status <task> <role>.");
-  const task = requireTask(store, args[0]);
-  const role = requireRole(store, task.id, args[1]);
+  const parsed = readOptions(args, ["--view"]);
+  exactPositionals(parsed.positionals, 2, "Task role status usage: yui task role status <task> <role> [--view current|full].");
+  const view = parsed.values.get("--view") ?? "current";
+  if (!["current", "full"].includes(view)) throw usageError("Task role status --view must be current or full.");
+  const task = requireTask(store, parsed.positionals[0]);
+  const role = requireRole(store, task.id, parsed.positionals[1]);
   const [status] = inspectTaskRoleRuntimeStatuses(
     task.id,
     [role],
@@ -3621,22 +3637,82 @@ function taskRoleStatus(
   );
   if (status === undefined) throw roleNotFound(role.name);
   const observed = withTaskRoleHostObservation(status, options.liveHostObservations?.[role.name]);
-  return output(renderTaskRoleRuntimeStatus(observed), { role: observed });
+  if (view === "full") return output(renderTaskRoleRuntimeStatus(observed), { role: observed });
+  // Presentation only: retain the already-computed health, live Host and
+  // uncertain delivery facts. Run/WorkItem originals are not status fields.
+  const currentRun = (run: AgentRun | null) => run === null ? null : ({
+    id: run.id, taskId: run.taskId, roleName: run.roleName,
+    purpose: run.purpose, mode: run.mode, status: run.status,
+    workItemId: run.workItemId, reviewRoundId: run.reviewRoundId,
+    executionGroupId: run.executionGroupId, executionLaneId: run.executionLaneId,
+    sourceExecutionGroupId: run.sourceExecutionGroupId,
+    createdAt: run.createdAt, updatedAt: run.updatedAt,
+    result: run.result === undefined ? null : {
+      available: run.result.output !== undefined,
+      bytes: run.result.output === undefined ? 0 : Buffer.byteLength(run.result.output),
+      completedAt: run.result.completedAt, failureReason: run.result.failureReason,
+      diagnostic: run.result.diagnostic, provider: run.result.provider,
+      read: `yui task run show ${run.taskId}/${run.id} --view result --json`
+    },
+    read: `yui task run show ${run.taskId}/${run.id} --view full --json`
+  });
+  const session = observed.nativeSession;
+  const work = observed.activeWork;
+  return output(renderTaskRoleRuntimeStatus(observed), { role: {
+    ...observed,
+    activeRun: currentRun(observed.activeRun), lastRun: currentRun(observed.lastRun),
+    activeWork: work === null ? null : {
+      id: work.id, taskId: work.taskId, title: work.title, status: work.status,
+      revision: work.revision, updatedAt: work.updatedAt,
+      read: `yui task work show ${work.taskId}/${work.id} --json`
+    },
+    nativeSession: session === null ? null : {
+      agentId: session.agentId, adapterId: session.adapterId,
+      nativeSessionId: session.nativeSessionId, status: session.status,
+      endReason: session.endReason, policy: session.policy, effective: session.effective,
+      createdAt: session.createdAt, updatedAt: session.updatedAt,
+      read: `yui task role session inspect ${task.id} ${role.name} --json`
+    },
+    execution: observed.execution === undefined ? undefined : {
+      ...observed.execution,
+      retry: observed.execution.retry === null ? null : providerRetrySummary(
+        store.getTaskRoleSessionSet(task.id, role.name)?.providerBinding,
+        `yui task role session retry ${task.id} ${role.name} show --json`)
+    }
+  }, reads: { full: `yui task role status ${task.id} ${role.name} --view full --json` } });
 }
 
 function showTaskRole(args: string[], store: TaskWorkflowStore): TaskCommandExecution {
-  exactPositionals(args, 2, "Task role show usage: yui task role show <task> <role>.");
-  const task = requireTask(store, args[0]);
-  const role = requireRole(store, task.id, args[1]);
+  const parsed = readOptions(args, ["--view"]);
+  exactPositionals(parsed.positionals, 2, "Task role show usage: yui task role show <task> <role> [--view current|full].");
+  const view = parsed.values.get("--view") ?? "current";
+  if (!["current", "full"].includes(view)) throw usageError("Task role show --view must be current or full.");
+  const task = requireTask(store, parsed.positionals[0]);
+  const role = requireRole(store, task.id, parsed.positionals[1]);
   const sessions = store.getTaskRoleSessionSet(task.id, role.name);
-  return output(renderRoleDetails(`Task Role: ${role.name}`, role, {
-    kind: "task",
-    sessions
-  }), {
+  const text = renderRoleDetails(`Task Role: ${role.name}`, role, { kind: "task", sessions });
+  if (view === "full") return output(text, {
     role,
     sessions,
     runs: store.listRuns(task.id).filter((run) => run.roleName === role.name)
       .map((run) => ({ id: run.id, status: run.status, effective: run.effective }))
+  });
+  const active = activeRoleAgentSession(sessions);
+  return output(text + `\nFull history: yui task role show ${task.id} ${role.name} --view full\n`, {
+    role,
+    observation: "recorded-configuration-not-live-state",
+    session: active === null ? null : {
+      agentId: active.agentId, adapterId: active.adapterId, nativeSessionId: active.nativeSessionId,
+      status: active.status, endReason: active.endReason, policy: active.policy, effective: active.effective,
+      createdAt: active.createdAt, updatedAt: active.updatedAt
+    },
+    // A missing/ended cached Session does not prove retained execution stopped.
+    controlTarget: roleSessionControlTarget(sessions) ?? null,
+    reads: {
+      full: `yui task role show ${task.id} ${role.name} --view full`,
+      session: `yui task role session inspect ${task.id} ${role.name}`,
+      status: `yui task role status ${task.id} ${role.name}`
+    }
   });
 }
 
@@ -4761,22 +4837,19 @@ export function readDispatchContextRefs(
     throw usageError("Dispatch requires at most 16 distinct --context-ref values.");
   }
   return selectors.flatMap(selector => {
-    const match = /^([^/]+)\/(.+)@([0-9a-f]{64})$/u.exec(selector);
-    if (match === null) {
-      throw usageError(`Invalid required Context reference: ${selector}. Use store/refId@digest from task context list/inspect.`);
-    }
-    const [, family, refId, digest] = match;
+    const ref = parseExactContextRef(selector);
     try {
-      const entry = readTaskContextResource(store, taskId, {
-        store: family!, refId: refId!, digest: digest!
-      }, environment);
+      const entry = readTaskContextResource(store, taskId, ref, environment);
       const resources: MaterializedRef[] = [{
-        ref: { ...entry.ref, layer: "L4" as const, evidenceOf: "dispatch-required" },
+        ref: { ...entry.ref, layer: "L4" as const, evidenceOf: "dispatch-required",
+          ...(ref.store === "task-message" ? {
+            summary: summaryText(`Excerpt: ${(entry.value as TaskMessage).body}`, 160)
+          } : {}) },
         value: entry.value
       }];
       // Selecting a result Message selects its already-authorized original
       // result too, not just a pointer the receiving Assignment cannot expand.
-      if (family === "task-message" && "result" in entry) {
+      if (ref.store === "task-message" && "result" in entry) {
         const message = entry.value as TaskMessage;
         const source = store.getRun(taskId, message.resultRef!.runId)!;
         const value = sourceRunContextValue(source);
@@ -6068,25 +6141,33 @@ function runContextCommand(
 ): TaskCommandExecution {
   const [first, ...rest] = args;
   if (first === "expand") {
-    const usage = "Task run context expand usage: yui task run context expand <task>/<run> <ref-id> --store <store> [--mode full].";
-    const parsed = parseTail(rest, new Set(["--store", "--mode", "--cursor"]), usage);
-    exactPositionals(parsed.positionals, 2, usage);
-    const refStore = requiredOption(parsed.options, "--store");
+    const usage = "Task run context expand usage: yui task run context expand <task>/<run> (<ref-id> --store <store> | --context-ref <store/refId[@digest]> ...) [--mode full] [--cursor <cursor>].";
+    const parsed = parseMultiValueTail(rest, new Set(["--store", "--mode", "--cursor"]),
+      new Set(["--context-ref"]), usage);
+    const batch = parsed.multiOptions.get("--context-ref");
+    if (batch !== undefined && (parsed.positionals.length !== 1 || parsed.options.has("--store")))
+      throw usageError("Do not combine --context-ref with a positional ref-id or --store.", usage);
+    exactPositionals(parsed.positionals, batch === undefined ? 2 : 1, usage);
+    const refStore = batch === undefined ? requiredOption(parsed.options, "--store") : undefined;
+    const refs = batch?.map(selector => {
+      if (/@[0-9a-f]{64}$/u.test(selector)) return parseExactContextRef(selector);
+      const match = /^([^/]+)\/(.+)$/u.exec(selector);
+      if (match === null) throw usageError("Run Context reference requires store/refId, optionally followed by @digest.", usage);
+      return { store: match[1]!, refId: match[2]! };
+    });
     const mode = parsed.options.get("--mode");
     if (mode !== undefined && mode !== "full") {
       throw usageError("AgentRun Context expansion mode must be full.", usage);
     }
     const { taskId, runId } = parseRunContextReference(parsed.positionals[0]!);
     authorizeRunContext(store, taskId, runId, options.environment);
-    const expanded = store.readTransaction((tx) => expandRunContextRef(
-      tx,
-      taskId,
-      runId,
-      parsed.positionals[1]!,
-      refStore
-    ));
-    const data = boundedDocument(expanded, `run:${taskId}/${runId}/${refStore}/${parsed.positionals[1]}`,
-      parsed.options.get("--cursor"));
+    const expanded = store.readTransaction((tx) => refs === undefined
+      ? expandRunContextRef(tx, taskId, runId, parsed.positionals[1]!, refStore!)
+      : expandRunContextRefs(tx, taskId, runId, refs));
+    const source = refs === undefined
+      ? `run:${taskId}/${runId}/${refStore}/${parsed.positionals[1]}`
+      : `run:${taskId}/${runId}/context-batch:${contextContentDigest(refs)}`;
+    const data = boundedDocument(expanded, source, parsed.options.get("--cursor"));
     return output(`${JSON.stringify(data, null, 2)}\n`, { context: data });
   }
   if (first === "delta") {
@@ -7413,21 +7494,26 @@ function showRun(
   store: TaskWorkflowStore,
   options: TaskCommandOptions
 ): TaskCommandExecution {
-  const usage = "Task run show usage: yui task run show <task>/<run> [--view full|status] [--cursor <cursor>] [--json].";
+  const usage = "Task run show usage: yui task run show <task>/<run> [--view full|status|result] [--cursor <cursor>] [--json].";
   const parsed = readOptions(args.filter((arg) => arg !== "--json"), ["--cursor", "--view"]);
   const view = parsed.values.get("--view") ?? "full";
-  if (view !== "full" && view !== "status") throw usageError(usage);
+  if (!["full", "status", "result"].includes(view)) throw usageError(usage);
   const positionals = parsed.positionals;
   exactPositionals(positionals, 1, usage);
   const data = store.readTransaction((tx) => {
     const run = requireRun(tx, positionals[0], options);
-    const retirement = tx.listEvents(run.taskId)
+    const events = tx.listEventsByType(run.taskId, [TASK_RECORD_RETIRED_EVENT, "runtime.agent-error"]);
+    const retirement = events
       .map(taskRecordRetirement)
       .find((entry) => entry?.recordKind === "run" && entry.recordId === run.id) ?? null;
-    return { run: run, retirement, execution: runExecutionObservation(run,
-      tx.getTaskRoleSessionSet(run.taskId, run.roleName)?.providerBinding, tx.listEvents(run.taskId)) };
+    const binding = tx.getTaskRoleSessionSet(run.taskId, run.roleName)?.providerBinding;
+    const execution = runExecutionObservation(run, binding, events);
+    return { run, retirement, execution: view === "full" ? execution : {
+      ...execution, retry: execution.retry === null ? null : providerRetrySummary(binding,
+        `yui task role session retry ${run.taskId} ${run.roleName} show --json`)
+    } };
   });
-  if (view === "status") {
+  if (view !== "full") {
     const { run } = data;
     const status = {
       run: {
@@ -7438,16 +7524,17 @@ function showRun(
       },
       retirement: data.retirement,
       execution: data.execution,
-      result: {
+      result: view === "result" ? run.result ?? null : {
         available: run.result?.output !== undefined,
         bytes: run.result?.output === undefined ? 0 : Buffer.byteLength(run.result.output),
         completedAt: run.result?.completedAt,
         failureReason: run.result?.failureReason,
         diagnostic: run.result?.diagnostic,
-        read: `yui task run show ${run.taskId}/${run.id} --view full --json`
-      }
+        read: `yui task run show ${run.taskId}/${run.id} --view result --json`
+      },
+      reads: { full: `yui task run show ${run.taskId}/${run.id} --view full --json` }
     };
-    const bounded = boundedDocument(status, `run:${run.taskId}/${run.id}:status`, parsed.cursor);
+    const bounded = boundedDocument(status, `run:${run.taskId}/${run.id}:${view}`, parsed.cursor);
     return output(`${JSON.stringify(bounded, null, 2)}\n`, bounded);
   }
   const bounded = boundedDocument(data, `run:${data.run.taskId}/${data.run.id}`, parsed.cursor);
@@ -8977,7 +9064,7 @@ function taskWakeDispatch(
  * wake — the on-demand read the Agent uses instead of a context dump in the
  * wake envelope.
  */
-function taskWakeInspectionCommand(
+export function taskWakeInspectionCommand(
   args: string[],
   store: TaskWorkflowStore
 ): TaskCommandExecution {
@@ -9041,6 +9128,25 @@ function taskWakeInspectionCommand(
     const runs = operationalTaskRecords(allRuns, allEvents, "run").filter((run) => (
       history && inWindow(run.createdAt) || referencedRunIds.has(run.id)
     ));
+    // The focused read is an action working set, not merely another directory.
+    // Include small ordinary originals whole, with their current exact identity.
+    // Reports still require their terminal-result read; a completion notice is
+    // not the original report. Do not amplify diagnostic history into bodies.
+    let originalBytesRemaining = 8 * 1024;
+    const messageDetails = messages.map(message => {
+      const original = materialize("task-message", message.id, message);
+      const bytes = Buffer.byteLength(JSON.stringify(message));
+      const include = !history && message.resultRef === undefined
+        && bytes <= 4 * 1024 && bytes <= originalBytesRemaining;
+      if (include) originalBytesRemaining -= bytes;
+      return { id: message.id, kind: message.kind, author: message.author,
+        ...taskMessagePresentation(message, (taskId, runId) => store.getRun(taskId, runId)),
+        resultRef: message.resultRef,
+        ...(include ? { refreshRead: `task message show ${task.id}/${message.id}` }
+          : { read: `task message show ${task.id}/${message.id}` }),
+        ref: original.ref, contentOmitted: !include,
+        ...(include ? { value: original.value } : {}) };
+    });
     const lines: string[] = [
       `Wake: ${wake.id}`,
       `Task: ${task.id}`,
@@ -9090,9 +9196,7 @@ function taskWakeInspectionCommand(
       historyRead: `task wake show ${task.id} ${wake.id} --history`,
       events: events.map(event => ({ id: event.id, type: event.type, createdAt: event.createdAt,
         read: `task event show ${task.id} ${event.id}` })),
-      messages: messages.map(message => ({ id: message.id, kind: message.kind, author: message.author,
-        ...taskMessagePresentation(message, (taskId, runId) => store.getRun(taskId, runId)),
-        resultRef: message.resultRef, read: `task message show ${task.id}/${message.id}` })),
+      messages: messageDetails,
       runs: runs.map(run => ({ id: run.id, status: run.status, purpose: run.purpose, roleName: run.roleName,
         read: `task run show ${task.id}/${run.id}` }))
     });

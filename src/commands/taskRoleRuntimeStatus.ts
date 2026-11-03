@@ -173,6 +173,15 @@ export function inspectTaskRoleRuntimeStatuses(
   panes: readonly TmuxRolePaneState[],
   now = new Date()
 ): TaskRoleRuntimeStatus[] {
+  if (roles.length === 0) return [];
+  // One inspection shares the same Task history across Roles. This is local
+  // read reuse, not a cache of runtime health or provider observations.
+  const events = store.listEvents(taskId);
+  const history = {
+    events,
+    runs: operationalTaskRecords(store.listRuns(taskId), events, "run"),
+    workspaces: store.listManagedWorkspaces(taskId)
+  };
   const taskOpenInputRequestCount = store.listInputRequests(taskId)
     .filter((request) => request.status === "open").length;
   const panesByRole = new Map<string, TmuxRolePaneState>();
@@ -186,7 +195,8 @@ export function inspectTaskRoleRuntimeStatuses(
     store,
     panesByRole.get(role.name),
     role.name === "leader" ? taskOpenInputRequestCount : 0,
-    now
+    now,
+    history
   ));
 }
 
@@ -340,17 +350,18 @@ function inspectTaskRoleRuntimeStatus(
   store: TaskStore,
   pane: TmuxRolePaneState | undefined,
   openInputRequestCount: number,
-  now: Date
+  now: Date,
+  history: {
+    events: ReturnType<TaskStore["listEvents"]>;
+    runs: AgentRun[];
+    workspaces: ManagedWorkspace[];
+  }
 ): TaskRoleRuntimeStatus {
   const activeRun = store.getActiveRun(taskId, role.name);
   // The last AgentRun outcome is a separate axis from the Session lifecycle. A
   // Session that stops after its AgentRun completed must not retroactively turn
   // that AgentRun into a failure; the status display keeps both visible.
-  const lastRun = operationalTaskRecords(
-    store.listRuns(taskId),
-    store.listEvents(taskId),
-    "run"
-  )
+  const lastRun = history.runs
     .filter((candidate) => candidate.roleName === role.name)
     .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0]
     ?? null;
@@ -381,12 +392,12 @@ function inspectTaskRoleRuntimeStatus(
   // distinct from the WorkItem Develop workspace.
   const actualWorkspaceRoot = effectiveLaunch?.workspace.root ?? role.workspace;
   const managedWorkspace = activeRun?.workspace
-    ?? store.listManagedWorkspaces(taskId).find(({ root }) => root === actualWorkspaceRoot)
+    ?? history.workspaces.find(({ root }) => root === actualWorkspaceRoot)
     ?? null;
   const workspace: TaskRoleWorkspaceStatus = managedWorkspace === null
     ? { managed: false, path: actualWorkspaceRoot }
     : { ...managedWorkspace, managed: true };
-  const events = store.listEvents(taskId);
+  const { events } = history;
   const sessionTokens = projectSessionTokenMetrics(
     events,
     resolveSessionTokenIdentity(nativeSession === null

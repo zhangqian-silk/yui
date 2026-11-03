@@ -90,7 +90,11 @@ stable suite. Real-model or real-Home checks require explicit authorization.
 Current envelope checks reject arbitrary unknown fields, rather than maintaining
 a blacklist of retired field names.
 
-## Collaboration framework checks
+## Context evaluation checks
+
+Evaluation code is organized by topic under [scripts/eval](../../scripts/eval/README.md).
+Core evidence utilities and provider usage adapters are separate from the Yui
+context scenarios below and the independent review-material evaluation.
 
 The framework produces engineering measurements and objective check evidence;
 the executing Agent interprets actual trajectories, semantic quality, model
@@ -109,8 +113,8 @@ native execution and recovery fences remain. Historical exits and seals are not
 rewritten. See the framework README for exact boundaries and Agent handoff.
 
 `npm run eval:check` checks evaluation contracts without starting a Home.
-The explicit `npm run eval:wiring -- --product <absolute-checkout> --out <new-dir>`
-uses the [maintained framework](../../scripts/collaboration-eval/framework/README.md)
+The explicit `npm run eval:context:wiring -- --product <absolute-checkout> --out <new-dir>`
+uses the [maintained framework](../../scripts/eval/context/README.md)
 for multi-input CLI/Controller/Host/fake-Provider chains and bounded fault checks.
 It remains outside `npm test` and the platform matrix: package smoke continues
 to own package/OS wiring. Fake success is not a real-model, native-compaction or

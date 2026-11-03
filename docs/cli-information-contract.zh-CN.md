@@ -19,7 +19,7 @@ CLI 调用成功，不代表 Task、原生 Turn 或远端投递完成。
 | 发生了什么变化？ | `task context delta <task> --after <cursor>` | 固定上界内的不可变事件，不是可变当前状态的快照 |
 | Global 收到了什么？ | `session context <role>` | 身份、Profile 读取指针、权限、当前 Turn/retry 事实与小窗口 pending 页；历史按需读取 |
 | 读取 Global 输入 | `role message list <role> [--pending]`、`role message show <role> <id>` | 在自身范围内发现，再读完整原文；队列接受不删除历史 |
-| 本次唤醒带来什么？ | `task wake show <task> <wake>` | 固定窗口的输入/结果、标明来源的可选摘要和确切原文入口；`--history` 展开诊断历史 |
+| 本次唤醒带来什么？ | `task wake show <task> <wake>` | 固定窗口的输入/结果、有界完整普通输入和确切原文入口；`--history` 展开诊断历史 |
 | 分配了什么？ | `task run context <task>/<run>` | 冻结授权与有限 `pointers` 窗口，变化身份和活跃观察附总数；`--view refs/full` 按需扩展 |
 | 实际配置是什么？ | `task role session inspect <task> <role>` | Task/Role 身份、期望绑定、冻结 Session、当前 Provider 绑定、retry 与显式 Host 观察；不复制整个 Task/Role 或 Provider 会话历史 |
 
@@ -28,13 +28,24 @@ Task Message、事件、WorkItem、Run、决策、里程碑、publication 和 In
 Role 发现返回 `recordedHealth` 与 `hostObservation: "not-requested"`，不是实时 Host
 健康度。记录状态正常也不能排除 Host 失败或终态未确认；需沿条目的 `task role status`
 读取指针检查。
+`task role status <task> <role>` 默认 `--view current`：保留同一计算结果的
+健康度、Host、投递/重试、清理与配置漂移观察，以 Run/WorkItem 身份和准确详情命令
+替代输入、报告及历史正文。重试诊断仍通过当前 retry 详情读取；期望配置与实际配置
+仍可见，未知证据不升级为成功。这是默认嵌套 JSON 契约变化；需要原有完整记录的
+调用者使用 `--view full`，分页续读保留该选项。底层状态投影及 Web 数据不变。
 Context 列表还暴露候选、Review、Job、Project Knowledge、工作区等获授权的记录。
 `--status`、`--after`、`--work-item` 缩小发现范围；续读必须保留过滤条件。
 Run 列表接受 Task 或 `task/work` 目标。
 
 `task run show <task>/<run> --view status` 返回身份、记录状态、delivery/retry
-观察、退役与结果可用性，不复制输入、启动配置或报告正文。它与默认 `--view full`
-共用授权检查；完整视图仍保留全部审计证据和文档分页。处置前须通过 Message 或
+观察、退役与结果可用性，不复制输入、启动配置或报告正文。重试观察使用与 Task Context
+相同的当前摘要，并提供准确 Session retry 命令取回原始诊断与历史，不直接携带其正文。
+它与默认 `--view full`
+共用授权检查；完整视图仍保留全部审计证据和文档分页。
+`--view result` 返回完整原始结果（包含失败与 Provider 字段）、Run 身份/状态、
+退役与执行观察，不携带提交输入和启动配置。没有结果时为 `null`，不代表成功。
+长报告仍需按同一视图续页；`reads.full` 提供完整审计入口，默认仍为 full。
+处置前须通过 Message、result 或
 完整 Run 视图读取原始结果；status 不是报告或验收。精确原文仍在当前上下文时，
 用 status 补充执行事实，避免再读一份报告；不引入读取回执或模型记忆缓存。
 
@@ -49,6 +60,9 @@ Project policy、工作区、交付和决策记录即使很小，也只返回摘
 在依据需求或权限行动前，用 `context inspect` 读取相关原件；
 `omitted: true` 不代表原件为空。每次读取仍重新计算当前身份并校验范围，
 没有增加模型记忆缓存、推断 ACK 或陈旧状态自动复用。
+当前工作区样本优先显示获授权的准确 Run 工作区投影，再显示 Task 主工作区，
+然后才是其他工作区，避免历史集成目录挤掉主工作区。显式完整家族查询保留原有
+排序、数量和记录；显示优先级不改变工作区权限，也不授予其他 Assignment 的访问权。
 
 ## 预算与续读
 
@@ -59,7 +73,10 @@ Project policy、工作区、交付和决策记录即使很小，也只返回摘
   入口每个集合最多抽样八条。
 - Global 入口最多八条本轮/可用输入，保留效果未知项；历史缺回执单独计数，
   通过 `inbox list --view history` 显式发现，不把缺 ACK 当作未执行。
-  pending 页用 `role message list <role> --current --cursor` 续读；不重复 recent、
+  pending 页用 `role message list <role> --current --cursor` 续读。
+  托管自身读取另含 `currentOriginals`：本页中与精确当前 Turn 关联的完整记录，
+  每项至多 4 KiB、合计 8 KiB。未来队列、历史和超限记录仍只提供发现信息与
+  原有精确读取入口；检查调用不内联原文。读取不 claim、投递或 ACK。不重复 recent、
   Profile 正文、历史 Skill 包和累计 retry 详情。Profile 由 Manifest 精确指向。
 - `inbox list --view current|history|all` 优先展示精确本轮输入，与自动投递共用原始记录。
   `claim`、`ack` 接受 1–16 个精确 ID，分别返回结果。ACK 表示语义处置，
@@ -71,6 +88,13 @@ Project policy、工作区、交付和决策记录即使很小，也只返回摘
   `pointerPage.nextCursor` 发现更多引用；`--view full` 显式读取完整冻结包。
   若 `input.directiveOmitted` 为 true，行动前用 `--view input` 全文读取分配指令；
   默认入口的指令摘要不是指令正文。
+  新冻结的 Task 消息指针在原有 summary 中提供 `Excerpt:` 原文摘录，
+  最多160 UTF-8字节，保留原 revision 和 digest。摘录只辅助选择相关原文，
+  不代表完整正文或授权；后续消息修改不会改变该 Run 已冻结的摘录，
+  也不重新生成既有 Snapshot。
+  有指针时，`reads.expand` 直接展示已有的批量原文展开语法。用相关冻结
+  指针替换占位符，并非默认读全量；既有1–8项选择上限、准确Snapshot
+  校验、完整原文及分页预算不变。
 - `session skills [--cursor ...]` 只检查当前元信息和可读性，不读技能正文；
   配置元信息过大时使用相同文档分页。
 - 不超过 16 KiB 的详情保持普通 JSON。更大详情返回 `contentPage`：确切来源、
@@ -96,6 +120,17 @@ Project policy、工作区、交付和决策记录即使很小，也只返回摘
 已获取页面的元数据可用
 `.data.contentPage | {offset,len:(.text|length),complete,nextCursor}` 查看，不必重取正文。
 此示例按需查阅，不是每次通知的新必读内容。
+
+同一 Task 中已经确定的 1–8 条独立原文可一次读取：
+`task context inspect <task> --refs '<发现结果中的 ref 对象 JSON 数组>'`。
+手写命令可改用重复的 `--context-ref <store/refId@digest>`，复用 dispatch
+的精确引用写法，避免 JSON 引号。两种选择格式不能混用，也不能混入单条选择参数。
+每条必须含 `store`、`refId`、`digest`；可选 `revision` 仅为发现元数据，
+不另作新鲜度校验。返回 `{taskId, items}`，每项与单条 inspect 相同。
+整批共用原有 32 KiB 预算；出现 `contentPage` 时保留相同顺序的引用并沿
+`--cursor` 续读。任一引用过期、重复、不可用或越权都拒绝整批读取。
+各原文独立绑定 digest，不建立跨记录原子快照，不自动选材，不 claim/ACK，
+也不扩大权限。只需一条时继续使用原有单条入口。
 
 列表包含 `items`、`total`、`complete`、`nextCursor`。计数、条目和游标校验处于同一
 授权范围。游标是不透明位置，不是通行令牌：每页重新授权。集合或文档改变时明确报错，
@@ -148,7 +183,23 @@ Run 增量基于精确父 Snapshot，返回完整变更 `refs` 与 `removedRefs`
 ## 效果与例外
 
 Message send/queue/steer 回执保留身份、digest、正文字节数及原有提交/投递/control
-状态，不回显正文。Brief 更新返回 saved 引用。没有新增等待、重试、确认或审批阶段。
+状态，不回显正文。`operator submit --json`采用同一结构：
+`data.taskId`、`data.message`（有界消息回执）、`data.submission`（保存时的
+phase/planning/activation/delivery/next-step事实），不再只返回`output`字符串；
+普通文本输出不变。同key重试复现原提交反馈，不用Task后来的状态重新解释。
+回执不是原文，也不证明Leader已经完成。
+`task decision record|supersede --json`返回有界保存回执：`data.taskId`、`effect: "saved"`、
+`data.decision`（身份、状态、时间戳、整记录digest及rationale字节数）。
+完整保存记录的JSON不超过2048 UTF-8字节时，
+`decision`同时包含该记录全部字段，`contentOmitted: false`，可直接核对
+实际短值，不再附带`read`后续读取指针；更大记录设`contentOmitted: true`，
+附带准确`read`入口，省略标题、rationale及取代原因
+正文而不截断。digest始终对应完整原始记录，不包含回执额外字段；
+需要完整读取时仍用`decision show`。人类文本不变，
+JSON调用方改读`data`而非旧`output`字符串。
+这证明保存状态而非语义验收；丢失响应不授权重复record。
+Brief 更新返回 saved 引用。
+没有新增等待、重试、确认或审批阶段。
 重复读游标绝不能重放变更。
 
 激活、完成、集成和输入控制仍是完整事务业务操作，即使内部有多步工程机制。
@@ -160,6 +211,21 @@ Message send/queue/steer 回执保留身份、digest、正文字节数及原有�
 读取仍有自己的用途契约；不宣称它们全部受 32 KiB 限制。Web 全详情投影是独立消费者，
 不会被 CLI 摘要悄悄替代。大 Project Knowledge 与 Task 证据用定向 Context 发现。
 
-典型通知读取一次当前 Context、一次固定 wake，再逐条读取相关原文（或其全部文档页）。
+典型通知读取当前 Context 和固定 wake，再补取尚未完整返回的相关原文及其全部文档页。
+聚焦 wake 的 JSON 对普通 Message 直接返回完整 `value`：每条最多 4 KiB，
+合计最多 8 KiB，标记 `contentOmitted: false` 并附当前版本的精确 `ref`。
+已有完整值可直接使用；长消息与结果报告保留读取入口，完成通知不替代报告。
+完整内联值的 `refreshRead` 仅用于按需刷新当前来源，不是必需的后续读取；
+只有原文省略时才返回 `read`。原先无条件跟随 `messages[].read` 的消费者应先检查
+`contentOmitted`，完整时使用 `value`。纯文本输出只展示摘要，因此仍保留原文链接。
+当前 Leader 的 `inbox show <wake>` 在 `originalContext` 返回相同聚焦原文；
+已有完整值无需再次 `wake show`。权限、外层分页、claim/ACK 边界不变。
+对已有 `wake-*` 的变更回执，导航字段由 `originals` 改为 `refreshOriginals`：
+仅在聚焦原文缺失、不完整或需要刷新时使用，不因 claim 本身重复读取。
+对 `pending-*` 的 claim（含相同请求的幂等重试）仍返回 `originals`，
+因为初次查看尚未提供固定窗口原文。这是 JSON 导航字段变化，消费者需区分两类入口；
+不记录读取历史，也不免除完整读取相关原文的要求。
+固定窗口选择的是身份，不是可变消息正文的历史快照；后来修改由精确引用区分。
+`--history` 不附带这些正文，claim 与 ACK 语义不变。
 不要为了入口故意省略的详情重复读聚合。只有原文超过内联预算才增加原文分页调用；
 摘要不能代替完整原文。

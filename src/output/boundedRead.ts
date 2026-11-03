@@ -38,10 +38,17 @@ export function readDigest(value: unknown): string {
 
 /** A save receipt is not another read of the submitted body. Keep the exact
  * delivery/control facts and identity; body/history are read on demand.
+ * bodySha256 hashes the saved string's UTF-8 bytes, not its JSON encoding or
+ * record metadata. It permits transport comparison, not semantic read credit.
  */
 export function messageReceipt<T extends { id: string; body: string }>(message: T) {
   const { body: _body, ...facts } = message;
-  return { ...facts, digest: readDigest(message), bodyBytes: Buffer.byteLength(message.body) };
+  return {
+    ...facts,
+    digest: readDigest(message),
+    bodyBytes: Buffer.byteLength(message.body, "utf8"),
+    bodySha256: createHash("sha256").update(message.body, "utf8").digest("hex")
+  };
 }
 
 export function encodeReadCursor(cursor: Cursor): string {

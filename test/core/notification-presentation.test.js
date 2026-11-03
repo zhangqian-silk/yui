@@ -27,7 +27,9 @@ test("notification presentation is bounded, attributed and cannot turn reports i
   const store = { listMessages: () => messages, getRun: () => run };
   const notification = taskNotificationPresentation(wake, store);
   assert.match(notification, /21 more messages/);
-  assert.match(notification, /yui task wake show task-1 wake-1 --json/);
+  assert.match(notification, /yui inbox show wake-1 --json/);
+  assert.ok(!notification.includes("yui task wake show"),
+    "Start at the receiving entry; its claim returns the exact original read, avoiding two competing first-read routes.");
   assert.match(notification, /message-1 \[role:reviewer\]: Review result returned \(failed\); disposition pending/);
   assert.ok(!notification.includes(presentation.summary),
     "Delivery carries identities and failure status; the mandatory original read supplies authored summaries.");
@@ -41,7 +43,7 @@ test("notification presentation is bounded, attributed and cannot turn reports i
   assert.equal(withSessionContextPointer(notification, {}), notification);
   const global = { id: "global-message-1", author: { type: "user" }, body: text };
   const globalNotification = globalMessagePresentation("assistant", global.id, global);
-  assert.match(globalNotification, /yui role message show assistant global-message-1 --json/);
+  assert.match(globalNotification, /yui inbox show global-message-1 --json/);
   assert.ok(!globalNotification.includes(presentation.summary));
   assert.equal(global.body, text, "Presentation must not rewrite the original or its qualifications.");
   assert.equal(authoredNotificationSummary(global.body), presentation.summary);

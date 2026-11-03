@@ -11,6 +11,7 @@ import { hasRuntimeCleanupObligation, runtimeLifecycleTarget } from "../runtime/
 import { isTaskRecordRetired, retiredTaskRecordIds } from "../task/taskRecordRetirement.js";
 import { blocksInboxOrder, inboxEntryCategory, inboxSettled } from "../message/inboxTurn.js";
 import { recoveredMessageContinuation } from "../controller/taskRunRecovery.js";
+import { taskWakeInspectionCommand } from "./taskCommands.js";
 
 type Entry = GlobalRoleMessage | TaskMessage | TaskWake;
 type Address = InboxActor;
@@ -184,9 +185,15 @@ function summary(store: TaskStore, address: Address, entry: Entry) {
       ? { originals: `yui task wake show ${entry.taskId} ${entry.id} --json` } : {}) };
 }
 
-function receipt(entry: Entry) {
+function receipt(entry: Entry, requestedId: string) {
+  // Pending-window inspection has no fixed originals yet. An existing wake
+  // can already have been read completely through inbox show; offer refresh
+  // without implying that claim invalidated those bodies or proved a read.
+  const originalRead = isWake(entry)
+    ? { [requestedId.startsWith("pending-") ? "originals" : "refreshOriginals"]:
+      `yui task wake show ${entry.taskId} ${entry.id} --json` } : {};
   return { id: entry.id, inbox: entry.inbox,
-    ...(isWake(entry) ? { originals: `yui task wake show ${entry.taskId} ${entry.id} --json` } : {}) };
+    ...originalRead };
 }
 
 /** Own-address command: there is deliberately no --role, --task or --session.
@@ -237,7 +244,16 @@ export function runInboxCommand(
       `${source(address)}/${id}`, parsed.cursor);
     }
     const entry = getEntry(store, address, id);
-    const value = !isWake(entry) && address.scope === "task"
+    if (isWake(entry)) {
+      // Own-inbox authorization above remains the boundary. Reuse the existing
+      // bounded focused originals rather than reconstructing a second view or
+      // making a claim mutation depend on a subsequent read succeeding.
+      const focused = taskWakeInspectionCommand(["show", entry.taskId, entry.id], store);
+      if (focused.kind !== "output") throw new Error("Wake inspection did not return a read result.");
+      const { wake: _wake, ...originalContext } = focused.data as Record<string, unknown>;
+      return boundedDocument({ ...entry, originalContext }, `${source(address)}/${id}`, parsed.cursor);
+    }
+    const value = address.scope === "task"
       ? expandTaskMessageResult(entry as TaskMessage, (task, run) => store.getRun(task, run)) : entry;
     return boundedDocument(value, `${source(address)}/${id}`, parsed.cursor);
   }
@@ -268,7 +284,7 @@ export function runInboxCommand(
         if (existing.inboxPendingId !== id) {
           throw new Error("Inbox request id was reused for a different window.");
         }
-        return receipt(existing);
+        return receipt(existing, id);
       }
       const mailbox = tx.getWorkMailbox(target(current));
       if (!mailbox?.pending || pendingId(mailbox.pending) !== id) throw new Error("Pending window changed; list the inbox again.");
@@ -313,7 +329,7 @@ export function runInboxCommand(
           if (saved.requestId !== requestId || saved.reason !== reason || !sameSession(saved.actor, current)) {
             throw new Error("Conflicting retirement; original disposition retained.");
           }
-          return receipt(entry);
+          return receipt(entry, id);
         }
         // A retained attempt in an older conversation is still evidence of
         // submission; changing the active Session cannot erase that boundary.
@@ -336,7 +352,7 @@ export function runInboxCommand(
         if (entry.inbox !== undefined) {
           if (!sameSession(entry.inbox.claim.actor, current)) throw new Error("Claim belongs to a previous Session; read the original and prior effects, then explicitly acknowledge only after finishing its handling.");
           if (entry.inbox.claim.requestId !== requestId) throw new Error("Entry already claimed; retain the original request id.");
-          return receipt(entry);
+          return receipt(entry, id);
         }
         const blocked = blocker(tx, current, entry);
         if (blocked !== undefined) throw new Error(`Inbox entry cannot be claimed: ${blocked}.`);
@@ -380,7 +396,7 @@ export function runInboxCommand(
         if (entry.inbox.ack) {
           if (entry.inbox.ack.requestId !== requestId || entry.inbox.ack.reason !== reason
             || !sameSession(entry.inbox.ack.actor, current)) throw new Error("Conflicting acknowledgement; original disposition retained.");
-          return receipt(entry);
+          return receipt(entry, id);
         }
         const inbox: InboxReceipt = { ...entry.inbox,
           ack: { requestId, actor: current, at: now.toISOString(), reason: reason! } };
@@ -397,7 +413,7 @@ export function runInboxCommand(
       }
     }
     save(tx, current, entry);
-    return receipt(entry);
+    return receipt(entry, id);
   });
   if (ids.length === 1) return apply(ids[0]!);
   return { results: ids.map(id => {

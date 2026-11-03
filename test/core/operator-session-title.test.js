@@ -115,10 +115,11 @@ test("only a newly created global Operator Session receives the dated title", (t
   assert.equal(resumed.launch.env.YUI_SESSION_TITLE, undefined);
 });
 
-test("unsubmitted native title synchronization is explicit and keeps the new Session usable", async (t) => {
+test("intentionally skipped native title stays visible locally without a false runtime failure", async (t) => {
   let session;
   t.after(() => session?.terminate("SIGTERM"));
   const diagnostics = [];
+  const mirrored = [];
   const opened = await startStructuredProviderSession({
     schemaVersion: 1,
     command: process.execPath,
@@ -144,14 +145,14 @@ test("unsubmitted native title synchronization is explicit and keeps the new Ses
     }
   }, {
     onDiagnostic: diagnostic => diagnostics.push(diagnostic),
-    mirrorOutput: () => {}
+    mirrorOutput: (stream, text) => mirrored.push({ stream, text })
   });
   session = opened.session;
 
   assert.equal(session.nativeSessionId, "fake-thread-1");
-  assert.equal(diagnostics.length, 1);
-  assert.match(diagnostics[0].failure.detail, /title synchronization was not submitted/u);
-  assert.equal(diagnostics[0].failure.sessionDisposition, "recoverable");
+  assert.deepEqual(diagnostics, [], "An optional action not attempted is not a delivery/observer failure");
+  assert.ok(mirrored.some(item => item.stream === "stderr"
+    && /title synchronization was not submitted/u.test(item.text)));
 });
 
 test("an unanswered rename cannot stall business control on the new Session", async (t) => {
@@ -184,7 +185,5 @@ test("an unanswered rename cannot stall business control on the new Session", as
   assert.equal(opened.goal, null);
   await session.submitTurn({ attemptId: "rename-stall-business", boundedText: "business proceeds" });
   assert.equal((await terminal).status, "completed");
-  assert.equal(diagnostics.length, 1);
-  assert.match(diagnostics[0].failure.detail, /title synchronization was not submitted/u);
-  assert.equal(diagnostics[0].failure.sessionDisposition, "recoverable");
+  assert.deepEqual(diagnostics, [], "No attempted rename means no native failure or recovery notice");
 });

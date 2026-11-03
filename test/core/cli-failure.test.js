@@ -17,7 +17,10 @@ import { ManagedRuntimeDriftError } from "../../dist/runtime/managedCaller.js";
 test("one failure projection preserves contracts, causes and safe recovery in text and JSON", () => {
   const cause = Object.assign(new Error("connect refused"), { code: "ECONNREFUSED" });
   const error = classifyControllerSocketError(cause, false);
-  const failure = describeCliFailure(error);
+  const failure = describeCliFailure(error, {
+    operation: "yui task context list", home: "/owned/diagnostic-home",
+    cli: "/owned/product/bin/yui", targets: ["task-17"]
+  });
   assert.equal(failure.code, "RUNTIME_ERROR");
   assert.equal(failure.exitCode, 5);
   assert.equal(failure.details.diagnostic.controller.delivery, "not-sent");
@@ -25,8 +28,17 @@ test("one failure projection preserves contracts, causes and safe recovery in te
   assert.match(failure.message, /unverified/);
   assert.doesNotMatch(failure.message, /Run `yui start`/);
   const json = JSON.parse(renderCliFailure(failure, true));
-  assert.equal(json.message, failure.message);
-  assert.ok(renderCliFailure(failure, false).includes(json.message));
+  assert.deepEqual(json.details, failure.details);
+  assert.match(json.message, /not sent/);
+  assert.match(json.message, /unverified/);
+  assert.doesNotMatch(json.message, /Operation:|YUI_HOME:|CLI entry:|Targets:|Caused by:/);
+  assert.equal(json.details.diagnostic.home, "/owned/diagnostic-home");
+  assert.equal(json.details.diagnostic.cli, "/owned/product/bin/yui");
+  assert.deepEqual(json.details.diagnostic.targets, ["task-17"]);
+  assert.equal(json.details.diagnostic.causes.at(-1).message, "connect refused");
+  assert.equal(renderCliFailure(failure, true).split("/owned/diagnostic-home").length - 1, 1);
+  assert.ok(renderCliFailure(failure, false).includes(failure.message));
+  assert.match(failure.message, /YUI_HOME: \/owned\/diagnostic-home/);
 
   const unknown = describeCliFailure(new ControllerClientError(
     "CONTROLLER_TIMEOUT", "Timed out", undefined,
@@ -35,6 +47,7 @@ test("one failure projection preserves contracts, causes and safe recovery in te
   assert.equal(unknown.details.diagnostic.controller.requestId, "request-1");
   assert.match(unknown.message, /may have applied/);
   assert.match(unknown.message, /Do not replay/);
+  assert.match(JSON.parse(renderCliFailure(unknown, true)).message, /Do not replay/);
 
   const usage = describeCliFailure(new CliError("USAGE_ERROR", "Invalid value", "yui config --help", { field: "x" }));
   assert.equal(usage.exitCode, 2);

@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
+import Database from "../../dist/sqlite/driver.js";
 import { createConfiguredAgent } from "../../dist/agent/agent.js";
 import { createFixtureRun } from "../helpers/runFixture.mjs";
 import { createRunInput } from "../../dist/context/runInputContract.js";
@@ -187,6 +188,34 @@ function fixture(t, scope = "task", roleName = scope === "task" ? "leader" : "as
     reopen() { store.close(); store = new SqliteTaskStore(home); }
   };
 }
+
+test("retry diagnostics remain readable while another connection owns the writer", async t => {
+  for (const scope of ["task", "global"]) await t.test(scope, t => {
+    const f = fixture(t, scope);
+    f.fail();
+    const command = action => scope === "task"
+      ? runTaskCommand(["role", "session", "retry", "task-1", f.roleName, ...action],
+        f.store, { environment: {}, now: f.now })
+      : runGlobalRoleCommand(["session", "retry", f.roleName, ...action],
+        f.store, { env: {}, jsonOutput: true });
+    const before = f.loadSessions();
+    const expected = command(["show"]);
+    const writer = new Database(join(f.home, "yui.db"));
+    try {
+      writer.exec("BEGIN IMMEDIATE");
+      assert.deepEqual(command(["show"]), expected);
+      assert.deepEqual(command([]), expected, "default action is also a read");
+      assert.deepEqual(f.loadSessions(), before, "inspection must not settle or alter retry state");
+    } finally {
+      if (writer.inTransaction) writer.exec("ROLLBACK");
+      writer.close();
+    }
+    command(["disable"]);
+    assert.equal(f.read().retryDisabled, true);
+    command(["enable"]);
+    assert.equal(f.read().retryDisabled, false, "mutations still persist after a read transaction");
+  });
+});
 
 test("a failed retry admission read preserves that Session and lets another Session proceed", async t => {
   const f = fixture(t, "global");

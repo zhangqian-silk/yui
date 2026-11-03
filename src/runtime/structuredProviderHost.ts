@@ -217,7 +217,7 @@ export async function startStructuredProviderSession(
       const opened = await CodexStructuredProviderSession.open(
         proxy.child, proxy.exit, proxy.processInstanceId, payload, control, proxy.channel,
         input.onStarted, input.onTerminal, input.onGoal, input.onInput,
-        input.onActivity, input.onDiagnostic, mirror
+        input.onActivity, mirror
       );
       return Object.freeze({
         session: opened.session,
@@ -664,7 +664,6 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
     onGoal: ((goal: StructuredProviderGoal | null) => void) | undefined,
     onInput: ((input: StructuredProviderInputObserved) => void) | undefined,
     onActivity: ((activity: StructuredProviderActivity) => void) | undefined,
-    onDiagnostic: ((diagnostic: StructuredProviderDiagnostic) => void) | undefined,
     mirror: (stream: "stdout" | "stderr", text: string) => void
   ): Promise<Readonly<{
     session: CodexStructuredProviderSession;
@@ -710,15 +709,10 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
       // Goal/Turn requests, even through a separate metadata connection. Keep
       // Yui's launch title, but do not put that optional mutation on a managed
       // Session's execution path. Reconnect must not replay it either.
-      onDiagnostic?.({
-        nativeSessionId: conversationId,
-        failure: {
-          detail: "Native title synchronization was not submitted; Yui retains its Session title without blocking native Goal/Turn control.",
-          phase: "session-start",
-          inputDisposition: "not-accepted",
-          sessionDisposition: "recoverable"
-        }
-      });
+      // This is an intentional omission, not a failed delivery or unavailable
+      // observer. Keep it in the Host log without waking an Agent to recover
+      // an operation that was never attempted.
+      mirror("stderr", "Native title synchronization was not submitted; Yui retains its Session title without blocking native Goal/Turn control.\n");
     }
     const ownedTurn = control.kind === "restore" ? control.ownedTurn : undefined;
     // Keep notifications buffered during paginated recovery. Otherwise a live

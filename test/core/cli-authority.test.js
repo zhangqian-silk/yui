@@ -224,6 +224,18 @@ test("public CLI fences replaced Operators, Home configuration and cross-Task re
   assert.equal((await cli(["task", "context", "list", "task-2", "--store", "task-message"], env)).ok, false);
   assert.equal((await cli(["role", "message", "list", "operator"], env)).ok, false);
   assert.equal((await cli(["task", "context", "inspect", "task-1", "--store", "task", "--ref", "task-1"], env)).ok, true);
+  const staleRef = await cli(["task", "context", "inspect", "task-1",
+    "--store", "task", "--ref", "task-1", "--digest", "private-stale-digest"], env);
+  assert.equal(staleRef.ok, false);
+  const currentRef = JSON.parse(staleRef.error).details.currentRef;
+  assert.equal(currentRef.store, "task", "Public reference families remain usable in recovery diagnostics.");
+  assert.equal(currentRef.refId, "task-1");
+  assert.equal((await cli(["task", "context", "inspect", "task-1", "--store", currentRef.store,
+    "--ref", currentRef.refId, "--digest", currentRef.digest], env)).ok, true);
+  const invalidStore = await cli(["task", "context", "list", "task-1",
+    "--store", "private-unknown-store"], env);
+  assert.equal(invalidStore.ok, false);
+  assert.doesNotMatch(invalidStore.error, /private-unknown-store/);
   assert.equal((await cli(["task", "usage", "task-1", "--limit", "20"], env)).ok, false,
     "Reading the Task record does not authorize a Worker to read all Roles' usage evidence.");
   assert.equal((await cli(["task", "usage", "task-1"], current)).ok, true);

@@ -1,6 +1,6 @@
 # Durable working context
 
-Read when materially updating Brief, Decisions, Milestones or cross-Task
+Read when materially updating Brief, Milestones or cross-Task
 Knowledge. Routine unchanged continuation needs no update or manual reload.
 Runtime’s read-only intent boundary applies.
 
@@ -15,9 +15,7 @@ than replaying old text; Core's lifecycle diagnostics do not rewrite history.
 
 Before `task complete`, reread Brief and correct resolved blockers or obsolete
 waiting/plans. Unchanged routine steps need no update; do not duplicate the
-terminal completion summary or create a new completion gate. Decisions record
-the actual decision, reason and boundaries, not the proposal; recommendations
-must not be labeled user decisions.
+terminal completion summary or create a new completion gate.
 
 Add a Milestone only for an independently meaningful outcome, a Message only
 for a new conclusion another reader needs, and Project Knowledge only for a

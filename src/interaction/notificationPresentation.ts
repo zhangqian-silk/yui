@@ -80,7 +80,9 @@ export function taskNotificationPresentation(
     }),
     ...(messages.length > 4 ? [`${messages.length - 4} more messages in the fixed wake.`] : []),
     `Refresh: yui task context ${wake.taskId} --json`,
-    `Read inputs/results: yui task wake show ${wake.taskId} ${wake.id} --json`,
+    // Match Runtime's receiving-entry -> claim -> originals order. The claim
+    // returns the exact focused read; do not suggest reading it once beforehand.
+    `Read receiving entry: yui inbox show ${wake.id} --json`,
     `Inbox: ${wake.id}; follow Runtime claim → original → disposition → ACK.`,
     ...(wake.reasons.includes("session-replaced") ? [
       "Session replaced: yui inbox list --view history --json; follow Runtime inbox recovery before settling retained claims. Do not replay unknown effects."
@@ -93,7 +95,7 @@ export function globalMessagePresentation(roleName: string, messageId: string, m
     `Yui Global Message: role=${roleName} message=${messageId}.`,
     `Changes: ${message?.author.type ?? "Recorded"} input received.`,
     "Refresh Session Context using the current Manifest's loadCommand.",
-    `Read original: yui role message show ${roleName} ${messageId} --json`,
+    `Original: reuse the complete matching currentOriginals record from Context; if absent, yui inbox show ${messageId} --json.`,
     `Inbox: ${messageId}; follow Runtime claim → original → disposition → ACK.`
   ].join("\n");
 }

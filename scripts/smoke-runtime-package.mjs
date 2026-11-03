@@ -149,7 +149,7 @@ try {
     for (const [, href] of content.matchAll(/\[[^\]]+\]\(([^)\s]+)\)/gu)) {
       if (/^[a-z][a-z\d+.-]*:/iu.test(href)) continue;
       const target = href.split("#")[0];
-      if (!target.endsWith(".md")) continue;
+      if (!target.endsWith(".md") && !target.endsWith(".mjs")) continue;
       const resolved = resolve(dirname(path), target);
       const local = relative(skillRoot, resolved);
       if (local === ".." || local.startsWith("../") || isAbsolute(local)) {
@@ -158,6 +158,12 @@ try {
       pendingSkills.push(resolved);
     }
   }
+  // Execute the packaged local helper, not a source-checkout substitute.
+  // Its business comparison is covered in Core; here check shipped Node wiring.
+  const verifier = spawnSync(process.execPath,
+    [join(skillRoot, "yui-operator/scripts/verify-submission.mjs")], { encoding: "utf8" });
+  assert.equal(verifier.status, 1);
+  assert.match(JSON.parse(verifier.stderr).message, /^Usage: node verify-submission\.mjs /);
   if (packageJson.bin?.yui !== "./dist/cli.js") {
     throw new Error("Installed runtime package does not expose the expected yui bin.");
   }

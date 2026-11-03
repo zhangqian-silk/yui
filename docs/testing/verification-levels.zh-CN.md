@@ -66,11 +66,15 @@ CI 每个作业只显式构建一次。
 真实模型或真实 Home 检查需要显式授权。
 当前记录按声明的字段集合拒绝未知字段，不维护退役字段名称黑名单。
 
-## 协作评测框架
+## 上下文评测检查
+
+评测代码按专题组织在 [scripts/eval](../../scripts/eval/README.md)：
+通用证据工具、Provider统计适配与下述Yui上下文场景分开；代码审查材料评测
+也是独立专题，不继承上下文场景的义务判定。
 
 `npm run eval:check` 不启动 Home，只检查评测契约。
-`npm run eval:wiring -- --product <绝对路径> --out <全新目录>` 显式运行
-[维护框架](../../scripts/collaboration-eval/framework/README.md)的多输入
+`npm run eval:context:wiring -- --product <绝对路径> --out <全新目录>` 显式运行
+[维护框架](../../scripts/eval/context/README.md)的多输入
 CLI/Controller/Host/fake Provider 闭环和有限故障验证。它不加入默认 `npm test`
 或平台矩阵；安装包与 OS wiring 仍由现有 package smoke 负责。
 fake 通过不证明真实模型、原生压缩或无损观测；框架验证不重置历史性能账本，

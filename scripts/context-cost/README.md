@@ -5,6 +5,16 @@ not current B0, behavioral evaluation, a holdout, model validation or a cost-sav
 claim. No provider/network calls, Yui state writes, original-text export, or new
 runtime service. Node 24.20+ is required for native streaming Zstandard support.
 
+This retained historical-source adapter is an optional entry from the
+[evaluation tools](../eval/README.md) and
+[context analysis guide](../../docs/evaluations/context/README.md), not the
+default experiment runner or a universal online importer. Select authorized
+roots and windows explicitly; do not scan unrelated sessions. Its rollout
+usage/continuation contract below differs from app-server context-run evidence.
+It neither creates plan/preflight/seal records nor supplies semantic quality
+judgments. Keep this directory with deliveries that expose this analysis entry;
+historical experiment attachments are not required.
+
 ## Run
 
 ```sh

@@ -1,15 +1,98 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from "node:fs";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import { tmpdir } from "node:os";
-import { execFileSync } from "node:child_process";
-import { hash, treeHashes } from "../../scripts/collaboration-eval/framework/common.mjs";
-import { openEvidence, readSavedInvocation } from "../../scripts/collaboration-eval/framework/saved-evidence.mjs";
-import { quantifyEvents, frozenSources } from "../../scripts/collaboration-eval/framework/quantify.mjs";
-import { executionModules } from "../../scripts/collaboration-eval/framework/versions.mjs";
-import { exportReviewCase, exportReadableReview, validateReview, compareReviews, verifyReviewPackage, subjectRunFacts, RUBRIC, RUBRIC_DIGEST } from "../../scripts/collaboration-eval/framework/semantic-review.mjs";
-import { mergeVisibleStreams, readReviewPage, verifyViewMappings, privateReviewContent } from "../../scripts/collaboration-eval/framework/readable-review.mjs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { waitForFixtureReady } from "../../scripts/eval/context/fixture.mjs";
+import { Client, hash, treeHashes } from "../../scripts/eval/context/common.mjs";
+import { openEvidence } from "../../scripts/eval/core/evidence.mjs";
+import { usageObservations } from "../../scripts/eval/adapters/codex/usage.mjs";
+import { readSavedInvocation } from "../../scripts/eval/context/saved-evidence.mjs";
+import { quantifyEvents, frozenSources } from "../../scripts/eval/context/quantify.mjs";
+import { executionModules } from "../../scripts/eval/context/versions.mjs";
+import { exportReviewCase, exportReadableReview, validateReview, diagnoseReview, compareReviews, verifyReviewPackage, subjectRunFacts, RUBRIC, RUBRIC_DIGEST } from "../../scripts/eval/context/semantic-review.mjs";
+import { mergeVisibleStreams, readReviewPage, verifyViewMappings, privateReviewContent, directoryLines } from "../../scripts/eval/context/readable-review.mjs";
+import * as reader from "../../scripts/eval/context/review-reader.mjs";
+
+test("fixture startup reports early process exit instead of waiting for a readiness timeout", async () => {
+  const failed = new EventEmitter();
+  const rejected = assert.rejects(waitForFixtureReady(failed, "Provider owner"),
+    /Provider owner exited before ready.*code=1/);
+  failed.emit("exit", 1, null);
+  await rejected;
+  assert.equal(failed.listenerCount("message"), 0);
+  const ready = new EventEmitter();
+  const result = waitForFixtureReady(ready, "Collector");
+  ready.emit("message", { ready: true });
+  assert.deepEqual(await result, { ready: true });
+  assert.equal(ready.listenerCount("exit"), 0);
+  assert.equal(ready.listenerCount("error"), 0);
+});
+
+test("an expired evaluation phase never launches its next CLI mutation", () => {
+  const client = new Client("/nonexistent-cli", {}, [], Date.now() - 1);
+  let started = false;
+  client.onStart = () => { started = true; };
+  assert.throws(() => client.call(["operator", "submit", "must not run"]), /deadline exhausted before invocation/i);
+  assert.equal(started, false);
+  assert.equal(client.trace[0].disposition, "not-started");
+});
+
+test("bounded reading groups preserve exact text, continuation identity and independent failures", t => {
+  const directory = mkdtempSync(join(tmpdir(), "yui-read-group-"));
+  t.after(() => rmSync(directory, { recursive: true }));
+  mkdirSync(join(directory, "view"));
+  const texts = ["first complete original", "second 😀 original with continuation", "unrelated"];
+  const index = texts.map((text, i) => {
+    const id = `V00000${i + 1}`, file = `view/${id}.txt`;
+    writeFileSync(join(directory, file), text);
+    return { id, file, sha256: hash(text), utf8: Buffer.byteLength(text),
+      title: "Original", readClass: "trajectory", role: i === 2 ? "operator" : "leader",
+      at: "2026-11-01T00:00:00Z", fields: [] };
+  });
+  const view = JSON.stringify({ index });
+  writeFileSync(join(directory, "view-index.json"), view);
+  writeFileSync(join(directory, "package-seal.json"), JSON.stringify({
+    "view-index.json": hash(view), ...Object.fromEntries(index.map(e => [e.file, e.sha256])),
+  }));
+  const catalog = reader.listReviewDocuments(directory, { role: "leader", limit: 1 });
+  assert.equal(catalog.total, 2);
+  assert.equal(catalog.items.length, 1);
+  assert.equal(catalog.items[0].excerpt.text, texts[0]);
+  assert.equal(catalog.items[0].recordedAt, index[0].at);
+  assert.equal(catalog.items[0].updatedAt, null, "Transport time is not source edit time");
+  assert.equal(reader.listReviewDocuments(directory, catalog.next).items[0].id, index[1].id);
+  assert.throws(() => reader.listReviewDocuments(directory, { ...catalog.next, indexSha256: "wrong" }), /changed/);
+  const requests = index.slice(0, 2).map(e => ({ id: e.id, sha256: e.sha256 }));
+  const first = reader.readReviewBatch(directory, requests, texts[0].length + 9);
+  assert.equal(first.results[0].text, texts[0]);
+  assert.equal(first.results[0].source.recordedAt, index[0].at);
+  assert.equal(first.results[0].source.title, index[0].title, "Body reads also return selection metadata, avoiding a second directory read");
+  assert.equal(first.results[0].complete, true);
+  assert.equal(first.results[1].complete, false);
+  assert.ok(first.textUtf16 <= first.budgetUtf16);
+  const rest = reader.readReviewBatch(directory, first.next);
+  assert.equal(first.results[1].text + rest.results[0].text, texts[1]);
+  assert.equal(rest.next.length, 0);
+  const mixed = reader.readReviewBatch(directory, [
+    { id: index[0].id, sha256: "wrong" }, requests[1], { id: "missing" },
+  ]);
+  assert.equal(mixed.results[0].status, "error");
+  assert.equal(mixed.results[1].text, texts[1]);
+  assert.equal(mixed.results[2].status, "error");
+  assert.throws(() => reader.readReviewBatch(directory, requests, 24001), /budget/);
+  assert.throws(() => reader.readReviewBatch(directory, requests, 1), /budget/);
+  const tiny = reader.readReviewBatch(directory, [
+    { id: index[0].id, offset: texts[0].length - 1 }, { id: index[1].id, offset: 7 },
+  ], 2);
+  assert.equal(tiny.textUtf16, 1, "A surrogate pair must not exceed the whole batch budget");
+  assert.equal(tiny.next[0].offset, 7);
+  assert.equal(reader.readReviewBatch(directory, tiny.next, 2).results[0].text, "😀");
+  writeFileSync(join(directory, index[0].file), "changed");
+  assert.equal(reader.readReviewBatch(directory, requests).results[0].status, "error");
+});
 
 test("review stream replacement requires exact ordered successful terminal coverage, retaining every ambiguous stream", () => {
   assert.equal(privateReviewContent({ message: { result: { turn: { items: [{ type: "reasoning" }] } } } }), true);
@@ -132,13 +215,77 @@ test("supplemental counts include failed outputs, cumulative usage once and same
   assert.equal(withMetadata.totals.recognizedBodies.fullBodyContexts.reads, 2, "VERSION metadata is not Skill body loading");
   assert.equal(withMetadata.totals.observedToolOutputLowerBoundUtf8, 15, "Metadata output still costs bytes");
   const modules = executionModules();
-  assert.ok(modules["framework/worker.mjs"]);
-  assert.ok(modules["framework/completion.mjs"]);
-  assert.ok(!modules["framework/semantic-review.mjs"]);
-  assert.ok(!modules["framework/readable-review.mjs"]);
-  assert.ok(!modules["framework/quantify.mjs"]);
-  assert.ok(!modules["framework/analyze.mjs"]);
-  assert.ok(!modules["framework/dimensions.mjs"]);
+  assert.ok(modules["context/worker.mjs"]);
+  assert.ok(modules["context/completion.mjs"]);
+  assert.ok(!modules["context/semantic-review.mjs"]);
+  assert.ok(!modules["context/readable-review.mjs"]);
+  assert.ok(!modules["context/quantify.mjs"]);
+  assert.ok(!modules["context/analyze.mjs"]);
+  assert.ok(!modules["context/dimensions.mjs"]);
+  assert.ok(modules["core/io.mjs"]);
+  assert.ok(modules["adapters/codex/usage.mjs"]);
+  // Every runtime static dependency must participate in the frozen identity,
+  // including shared helpers moved outside the scenario directory.
+  for (const [path, digest] of Object.entries(modules)) {
+    const bytes = readFileSync(new URL(`../../scripts/eval/${path}`, import.meta.url));
+    assert.equal(hash(bytes), digest);
+    for (const [, dependency] of bytes.toString().matchAll(/from ["'](\.[^"']+\.mjs)["']/g)) {
+      const member = posix.normalize(posix.join(posix.dirname(path), dependency));
+      assert.ok(modules[member], `${path} has unfrozen dependency ${member}`);
+    }
+  }
+});
+test("usage totals expose missing owned Threads rather than treating partial costs as the whole chain", () => {
+  const event = (method, params) => ({ direction: "native", binding: { roleName: "operator" },
+    at: "2026-11-03T00:00:00.000Z", message: { method, params } });
+  const events = [
+    event("turn/started", { threadId: "OP", turnId: "op-1" }),
+    event("thread/tokenUsage/updated", { threadId: "OP", turnId: "op-1",
+      tokenUsage: { total: { inputTokens: 100, cachedInputTokens: 20,
+        outputTokens: 10, reasoningOutputTokens: 2, totalTokens: 110 } } }),
+  ];
+  // The ledger may know an exact terminal even when that Thread's whole native
+  // stream is missing. Do not rely only on Threads with usage notifications.
+  const stages = [{ stage: 1, terminal: { threadId: "L", turnId: "leader-1" } }];
+  const tokens = quantifyEvents(events, stages).totals.tokens;
+  assert.equal(tokens.status, "partial");
+  assert.equal(tokens.totalTokens, "unknown");
+  assert.equal(tokens.inputTokens, "unknown");
+  assert.equal(tokens.observedTotals.totalTokens, 110);
+  assert.deepEqual(tokens.coverage.missingThreadIds, ["L"]);
+  const noUsage = quantifyEvents([], stages).totals.tokens;
+  assert.equal(noUsage.status, "unknown");
+  assert.equal(noUsage.observedTotals.totalTokens, "unknown", "No observation is not zero");
+  assert.deepEqual(noUsage.coverage.missingThreadIds, ["L"]);
+  const complete = quantifyEvents([...events, event("thread/tokenUsage/updated", {
+    threadId: "L", turnId: "leader-1", tokenUsage: { total: { inputTokens: 200,
+      cachedInputTokens: 30, outputTokens: 20, reasoningOutputTokens: 3, totalTokens: 220 } },
+  })], stages).totals.tokens;
+  assert.equal(complete.status, "observed");
+  assert.equal(complete.totalTokens, 330, "Cached/reasoning subsets are not added twice");
+  assert.deepEqual(complete.coverage.missingThreadIds, []);
+  const nativeOnly = quantifyEvents([...events,
+    event("turn/started", { threadId: "L", turnId: "leader-1" })]).totals.tokens;
+  assert.deepEqual(nativeOnly.coverage.missingThreadIds, ["L"]);
+});
+test("usage observations distinguish cumulative growth, duplicates and missing request coverage", () => {
+  const sample = (input, last) => ({ at: String(input), message: { params: { tokenUsage: {
+    total: { inputTokens: input }, last: { inputTokens: last },
+  } } } });
+  const profile = usageObservations([sample(100, 100), sample(100, 100), sample(240, 140), sample(540, 160)], { inputTokens: 0 });
+  assert.equal(profile.uniqueUpdates, 3);
+  assert.equal(profile.duplicateUpdates, 1);
+  assert.deepEqual(profile.samples.map(s => s.inputDelta), [100, 140, 300]);
+  assert.deepEqual(profile.samples.map(s => s.matchesLastInput), [true, true, false]);
+  assert.equal(profile.observedLastInputSum, 400);
+  assert.equal(profile.requestCount, "unknown");
+  assert.equal(usageObservations([sample(100, 100)]).samples[0].inputDelta, "unknown");
+  assert.equal(usageObservations([sample(80, 20)], { inputTokens: 100 }).samples[0].inputDelta, "unknown");
+  const many = usageObservations(Array.from({ length: 100 }, (_, i) => sample(i + 1, 1)), { inputTokens: 0 });
+  assert.equal(many.uniqueUpdates, 100);
+  assert.equal(many.samples.length, 64);
+  assert.equal(many.omittedSamples, 36);
+  assert.equal(many.observedLastInputSum, 100);
 });
 test("independent review exports complete fragments and validates exact citations without converting declarations into proven independence", t => {
   const root = mkdtempSync(join(tmpdir(), "yui-review-check-"));
@@ -152,6 +299,31 @@ test("independent review exports complete fragments and validates exact citation
   const source = { path: "/product/skills/x/SKILL.md", body: "完整规则\n".repeat(4000), kind: "core" };
   const directory = join(root, "case");
   exportReviewCase(invocation, { files: [source], missing: [{ path: "missing" }] }, directory, "blind");
+  const larger = join(root, "large-directory");
+  const originals = Array.from({ length: 20 }, (_, i) => ({
+    path: `/product/skills/topic-${i}.md`, body: `complete source ${i}`, kind: "core",
+  }));
+  exportReviewCase(invocation, { files: originals, missing: [] }, larger, "large");
+  const largerView = verifyViewMappings(larger, verifyReviewPackage(larger).manifest);
+  const guide = readFileSync(join(larger, "READING.md"), "utf8");
+  const lastOriginal = largerView.index.find(e => readFileSync(join(larger, e.file), "utf8") === originals.at(-1).body);
+  assert.ok(lastOriginal);
+  assert.ok(guide.includes(`| ${lastOriginal.id} |`), "Compact directory must retain every source ID");
+  const entries = [
+    ...Array.from({ length: 50 }, (_, i) => ({ id: `V${i}`, role: "leader", threadId: "long-original-thread-identity", turnId: "long-original-turn-identity" })),
+    { id: "V000003", role: "leader", threadId: "T2", turnId: "t1" },
+    { id: "V000004", role: "leader", threadId: "long-original-thread-identity", turnId: "long-original-turn-identity" },
+  ];
+  const grouped = directoryLines(entries);
+  assert.deepEqual(grouped.filter(s => s.startsWith("| V")).map(s => s.split(" | ")[0].slice(2)), entries.map(e => e.id));
+  assert.equal(grouped.filter(s => s.startsWith("Source ")).length, 3, "Nonconsecutive identities cannot be reordered or merged");
+  let selection = {}, found = [];
+  do {
+    const page = reader.listReviewDocuments(larger, selection);
+    found.push(...page.items.map(e => e.id)); selection = page.next;
+  } while (selection);
+  assert.deepEqual(found, largerView.index.map(e => e.id), "Every original remains discoverable");
+  assert.equal(reader.readReviewPage(larger, lastOriginal.id).text, originals.at(-1).body);
   const manifest = JSON.parse(readFileSync(join(directory, "manifest.json")));
   const contract = manifest.index.filter(e => e.kind === "original-contract")
     .map(e => readFileSync(join(directory, e.file), "utf8")).join("");
@@ -195,6 +367,24 @@ test("independent review exports complete fragments and validates exact citation
     criteria: RUBRIC.map(c => ({ id: c.id, applicability: "applicable", verdict: "followed", rationale: "visible",
       citations: [{ evidenceId: evidence.id, quote: "original task" }] })) };
   const checked = validateReview(directory, review, ["developer-session"]);
+  const broken = structuredClone(review);
+  broken.criteria[0].citations[0].quote = "not in this source";
+  broken.criteria[1].citations[0].evidenceId = "missing-id";
+  const diagnosed = diagnoseReview(directory, broken);
+  assert.equal(diagnosed.status, "rejected");
+  assert.deepEqual(diagnosed.criteria.filter(c => c.errors.length).map(c => c.id), RUBRIC.slice(0, 2).map(c => c.id));
+  assert.equal(diagnosed.criteria.filter(c => c.status === "structurally-valid").length, RUBRIC.length - 2);
+  const brokenFile = join(root, "broken-review.json");
+  writeFileSync(brokenFile, JSON.stringify(broken));
+  const diagnosticCli = spawnSync(process.execPath, ["scripts/eval/context/history.mjs",
+    "diagnose", directory, brokenFile], { encoding: "utf8" });
+  assert.equal(diagnosticCli.status, 1);
+  assert.deepEqual(JSON.parse(diagnosticCli.stdout), diagnosed, "CLI reports all errors without writing an import");
+  assert.throws(() => validateReview(directory, broken), /Invalid evidence citation/, "Diagnostics must not accept valid siblings as a complete review");
+  const wrongCase = diagnoseReview(directory, { ...review, caseId: "other" });
+  assert.equal(wrongCase.status, "rejected");
+  assert.deepEqual(wrongCase.criteria, [], "Identity failure cannot credit criteria");
+  assert.equal(diagnoseReview(directory, review).status, "structurally-valid");
   assert.match(checked.executionIndependence, /unknown/);
   const view = verifyViewMappings(directory, manifest);
   const material = view.index.find(e => e.title === "original-contract /materials");
@@ -221,12 +411,19 @@ test("independent review exports complete fragments and validates exact citation
     tinyPages.push(page.text); tinyOffset = page.nextOffset;
   } while (tinyOffset !== null);
   assert.equal(tinyPages.join(""), fullMaterial, "No surrogate split, hidden truncation or skipped Unicode payload");
-  const cliPage = execFileSync(process.execPath, ["scripts/collaboration-eval/framework/history.mjs",
+  const cliPage = execFileSync(process.execPath, ["scripts/eval/context/history.mjs",
     "read", directory, material.id, "0,12000"], { encoding: "utf8" });
   assert.equal(cliPage.slice(cliPage.indexOf("\n") + 1), fullMaterial, "CLI paging prints literal decoded payload, not re-escaped JSON");
   const localPage = execFileSync(process.execPath, ["./read.mjs", material.id, "0,12000"],
     { cwd: directory, encoding: "utf8" });
   assert.equal(localPage, cliPage, "Sealed case-local reader needs no repository or helper discovery");
+  const localCatalog = JSON.parse(execFileSync(process.execPath, ["./read.mjs", "--catalog", '{"limit":2}'],
+    { cwd: directory, encoding: "utf8" }));
+  assert.equal(localCatalog.items.length, 2);
+  const localBatch = execFileSync(process.execPath, ["./read.mjs", "--batch",
+    JSON.stringify([{ id: material.id, sha256: material.sha256 }]), "24000"],
+  { cwd: directory, encoding: "utf8" });
+  assert.ok(localBatch.includes(fullMaterial), "Batch CLI prints literal original text too");
   assert.ok(verifyReviewPackage(directory).seal["read.mjs"]);
   review.criteria[0].citations[0].quote = "FIELD /materials";
   assert.throws(() => validateReview(directory, review), /original field|citation/);

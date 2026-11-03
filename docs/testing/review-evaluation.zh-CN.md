@@ -36,8 +36,8 @@ E03 的契约要求原样传递不透明游标并按顺序返回条目。实际�
 已累计条目不会作为成功结果返回。重试/并发修改不属于此例契约。
 索引只是定位提示，不是缺陷结论，也不声称已检查所有路径。
 
-分清证据身份：上述契约是预期；`scripts/review-eval/verify.mjs` 的 E03
-探针是可执行引用；只有实际运行 `node scripts/review-eval/evaluate.mjs verify`
+分清证据身份：上述契约是预期；`scripts/eval/review/verify.mjs` 的 E03
+探针是可执行引用；只有实际运行 `node scripts/eval/review/evaluate.mjs verify`
 并保留候选提交、环境和输出才构成结果。探针用给定的两个模块验证反例，
 提供单页正常对照，以及可控等待后拒绝的未完成/失败行为检查；
 不覆盖真实服务、崩溃恢复或 Reviewer 行为。
@@ -49,7 +49,7 @@ E03 的契约要求原样传递不透明游标并按顺序返回条目。实际�
 
 ## 小型开发集
 
-`scripts/review-eval/` 是离线文件工具，不是调度器、模型适配器或新增 Core 存储。
+`scripts/eval/review/` 是离线文件工具，不是调度器、模型适配器或新增 Core 存储。
 它不调用 Provider，不以任何历史 Task 案例或结果为输入。八个题目均由明确契约新构造。
 
 | 案例 | 能力 | 形态 |
@@ -66,8 +66,8 @@ E03 的契约要求原样传递不透明游标并按顺序返回条目。实际�
 这不证明穷尽正确性、独立出题核实或 Agent 效果。额外有效发现需要裁定。
 
 ```sh
-node scripts/review-eval/evaluate.mjs verify
-node scripts/review-eval/evaluate.mjs export E03 basic /absolute/new-participant-directory
+node scripts/eval/review/evaluate.mjs verify
+node scripts/eval/review/evaluate.mjs export E03 basic /absolute/new-participant-directory
 ```
 
 导出仅投影候选源码与要求；indexed 材料只增加导航索引。两组的必要契约与源码完全相同。
@@ -85,8 +85,8 @@ node scripts/review-eval/evaluate.mjs export E03 basic /absolute/new-participant
 ## 运行前固定比较协议
 
 ```sh
-node scripts/review-eval/evaluate.mjs plan protocol.json
-node scripts/review-eval/evaluate.mjs score plan.json records.json
+node scripts/eval/review/evaluate.mjs plan protocol.json
+node scripts/eval/review/evaluate.mjs score plan.json records.json
 ```
 
 按正常工件流程将 stdout 保存为单独文件。协议 JSON 包括非空

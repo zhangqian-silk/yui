@@ -1,4 +1,15 @@
-import { visibleCommandSections, type CommandNode } from "./commandCatalog.js";
+import { orderedImmediateTokens, visibleCommandSections, type CommandNode } from "./commandCatalog.js";
+
+/** A path error needs nearby choices, not another complete help document.
+ * The caller supplies the already-filtered discovery node. */
+export function renderCommandPathHint(node: CommandNode): string {
+  const choices = orderedImmediateTokens(node);
+  const path = node.path.slice(1).join(" ");
+  return [
+    ...(choices.length === 0 ? [] : [`Visible choices here: ${choices.join(", ")}`]),
+    `Full help: yui --json help${path ? ` ${path}` : ""}`
+  ].join("\n") + "\n";
+}
 
 export function renderCommandHelp(node: CommandNode, version: string): string {
   const title = node.path.length === 1

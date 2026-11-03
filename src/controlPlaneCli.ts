@@ -28,7 +28,7 @@ import { contextRecordReader } from "./context/taskContext.js";
 import { renderCompletion } from "./cli/completion.js";
 import { runCompletionWizard } from "./cli/completionWizard.js";
 import { resolveCompletionCandidates } from "./cli/dynamicCompletion.js";
-import { renderCommandHelp } from "./cli/helpRenderer.js";
+import { renderCommandHelp, renderCommandPathHint } from "./cli/helpRenderer.js";
 import {
   allowsInteractiveSelection,
   resolveInteractiveArguments,
@@ -393,8 +393,12 @@ export async function main(): Promise<void> {
   }
   if (invocation.kind === "path-error") {
     throw usageError(
-      `Unknown command: ${invocation.typedPath}`,
-      renderCommandHelp(invocation.helpNode, VERSION)
+      invocation.discoveryOnly
+        ? `Command not listed in the current caller's help view: ${invocation.typedPath}. `
+          + "Help is filtered discovery, not an execution or permission check. "
+          + "Follow current instructions and exact read links; execution still validates authority."
+        : `Unknown command: ${invocation.typedPath}`,
+      renderCommandPathHint(invocation.helpNode)
     );
   }
   if (invocation.kind === "incomplete") {

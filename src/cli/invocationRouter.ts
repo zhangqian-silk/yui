@@ -3,7 +3,7 @@ import { findChild, ROOT_COMMAND, type CommandNode } from "./commandCatalog.js";
 export type Invocation =
   | Readonly<{ kind: "execute"; node: CommandNode }>
   | Readonly<{ kind: "help"; node: CommandNode; recursive: boolean }>
-  | Readonly<{ kind: "path-error"; typedPath: string; helpNode: CommandNode }>
+  | Readonly<{ kind: "path-error"; typedPath: string; helpNode: CommandNode; discoveryOnly?: true }>
   | Readonly<{ kind: "incomplete"; typedPath: string; helpNode: CommandNode }>;
 
 export function routeInvocation(args: readonly string[], discoveryRoot = ROOT_COMMAND): Invocation {
@@ -29,7 +29,7 @@ function resolveHelpPath(path: readonly string[], root: CommandNode): Invocation
   for (const segment of segments) {
     const child = findChild(node, segment);
     if (child === undefined || child.hidden) {
-      return { kind: "path-error", typedPath: path.join(" "), helpNode: nearestGroup };
+      return { kind: "path-error", typedPath: path.join(" "), helpNode: nearestGroup, discoveryOnly: true };
     }
     node = child;
     if (node.kind !== "leaf") nearestGroup = node;

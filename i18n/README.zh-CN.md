@@ -392,9 +392,9 @@ Yui 默认将控制面数据保存在 `~/.yui`，通过 `YUI_HOME` 选择另一�
 状态命令前执行该 launcher 的 `setup`。开发工具不管理全局安装，
 不要用全局 `yui` 验证本地修改。真实模型、付费或共享资源测试需要用户明确请求这些资源。
 
-协作评测设施使用[维护入口](../scripts/collaboration-eval/framework/README.md)：
+按专题划分的评测及通用证据工具见[评测入口](../scripts/eval/README.md)：
 `npm run eval:check` 做快速离线契约检查；
-`npm run eval:wiring -- --product <产品绝对路径> --out <全新输出目录>`
+`npm run eval:context:wiring -- --product <产品绝对路径> --out <全新输出目录>`
 显式执行隔离 fake Provider 的 CLI/Controller/Host 完整链。它不默认加入核心测试，
 不证明真实模型效果；真实资源仍需另行精确授权，历史条件不重置。
 
