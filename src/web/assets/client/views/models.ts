@@ -304,13 +304,11 @@ export function mountModels(root, deps) {
   }
   function renderProviders() {
     const view = state.view;
-    const snapshot = view?.provenance ? h("span.access-snapshot", { title: view.provenance.label },
-      h("strong", null, t("access.snapshot")), h("time", null, view.provenance.capturedAt)) : null;
     const reread = h("button.btn.btn-sm", { type: "button", disabled: state.loading || state.pending, onclick: function () { void reconcile(); } },
       icon("refresh"), t("services.reread"));
     const children = [h("header.manage-head.access-head", null,
       h("div.manage-heading", null, h("h1", { id: "models-providers-title" }, t("models.section.providers")),
-        h("p", null, t("services.hint"))), snapshot ? h("div.access-snapshot-slot", null, snapshot) : null,
+        h("p", null, t("services.hint"))),
       h("div.access-head-actions", null, reread))];
     if (!view) {
       sections.providers.replaceChildren(...children, status);
@@ -507,7 +505,7 @@ export function mountModels(root, deps) {
       void invalidateObservations();
     }));
     if (!quota.source) children.push(h("p.models-note", null, icon("info"),
-      t(quotaReady() && !state.view?.readOnly ? "models.quotaReadHelp" : "models.quotaNeedsCpa")));
+      t(quotaReady() ? "models.quotaReadHelp" : "models.quotaNeedsCpa")));
     const body = [];
     if (quota.loading) body.push(h("p", { role: "status" }, t("models.loading")));
     if (quota.unavailable) body.push(h("p", { role: "status" }, t("models.quotaUnavailable")));

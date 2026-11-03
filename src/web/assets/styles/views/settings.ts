@@ -15,10 +15,6 @@ export const SETTINGS_STYLES = `
 .access-head .manage-heading{flex:1 1 420px}
 .access-head-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .access-head-actions .btn{min-height:34px}
-.access-snapshot-slot:empty{display:none}
-.access-snapshot{display:inline-flex;align-items:center;gap:7px;max-width:100%;padding:4px 10px;border:1px solid var(--warn-soft);border-radius:var(--r-pill);background:var(--warn-soft);color:var(--warn);font-size:var(--fs-2xs);white-space:nowrap}
-.access-snapshot strong{font-weight:650}
-.access-snapshot time{color:var(--ink-2);font-family:var(--font-mono);overflow:hidden;text-overflow:ellipsis}
 .btn-sm{height:28px;padding:0 10px;font-size:var(--fs-xs)}
 .access-host{min-width:0}
 .access-frame{container:access/inline-size;display:grid;gap:10px;min-width:0}
@@ -143,7 +139,6 @@ export const SETTINGS_STYLES = `
 .agent-inspector-form{display:grid;gap:0;padding:0;min-width:0}
 .agent-inspector-canvas{display:grid;gap:12px;padding:14px 18px 22px;min-width:0}
 .agent-notice{color:var(--ink-3)!important;font-size:var(--fs-xs)!important;line-height:1.5!important;margin:0 0 2px}
-.agent-readonly-note{padding:9px 11px;border:1px solid var(--warn-soft);border-radius:var(--r-md);background:var(--warn-soft);color:var(--ink-2);font-size:var(--fs-xs)}
 .agent-config-section{display:grid;gap:10px;min-width:0;padding:14px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface-2)}
 .agent-config-primary{background:var(--surface)}
 .agent-config-section>h3,.agent-section-heading h3{font-size:var(--fs-sm);font-weight:650;color:var(--ink);margin:0}

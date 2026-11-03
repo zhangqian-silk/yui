@@ -18,7 +18,6 @@ const dirtySections = { skills: false, server: false, agents: false, roles: fals
 let settingsReady = false;
 let settingsReadOnly = false;
 let supportedAgents = [];
-let settingsProvenance = null;
 function readSection() {
   const section = new URLSearchParams(window.location.search).get("section");
   return SECTIONS.includes(section) ? section : SECTIONS[0];
@@ -340,9 +339,6 @@ function renderAgentActions() {
   $("#agent-access-actions")?.replaceChildren(guideButton("access.guide.agents",
     () => ({ kind: "agent-new", configured: agentNames(),
       unconfigured: supportedAgents.filter(item => !(item.configuredIds || []).length).map(item => item.label) }), "btn btn-primary"));
-  const badge = () => settingsProvenance ? h("span.access-snapshot", { title: settingsProvenance.label },
-    h("strong", null, t("access.snapshot")), h("time", null, settingsProvenance.capturedAt)) : null;
-  for (const id of ["#role-access-snapshot", "#agent-access-snapshot"]) $(id)?.replaceChildren(...[badge()].filter(Boolean));
 }
 renderAgentActions();
 i18n.subscribe(renderAgentActions);
@@ -725,9 +721,6 @@ function sourceBlock(state, group) {
   const native = group.observation?.native;
   const runtime = group.id.startsWith("profile/") ? group.observation : null;
   const details = [];
-  if (provenance) details.push(h("div.agent-source-row", null,
-    h("span", null, t("settings.source.snapshot")), h("strong", null, provenance.label),
-    h("small", null, provenance.capturedAt)));
   if (group.agentId) details.push(h("div.agent-source-row", null,
     h("span", null, t("settings.assignmentAgent")), h("code", null, group.agentId)));
   if (native) {
@@ -795,7 +788,6 @@ function renderGroup(state, group) {
   const form = h("form.settings-stack.agent-inspector-form");
   const canvas = h("div.agent-inspector-canvas");
   const actionFooter = h("div.agent-action-bar");
-  if (state.readOnly) canvas.append(h("p.agent-readonly-note", null, t("settings.snapshotReadOnly")));
   renderGroupSummary(state);
   // Facts derived from other members and the model registry. They refresh in
   // place, never by rebuilding this form (which would discard drafts).
@@ -1089,7 +1081,6 @@ async function start(cursor) {
     const data = await requestJson("/api/settings?" + new URLSearchParams({ q: query, cursor: cursor || "0" }));
     if (generation !== searchGeneration) return;
     settingsReadOnly = !!data.readOnly;
-    settingsProvenance = data.provenance || null;
     supportedAgents = data.supportedAgents || [];
     renderAgentActions();
     if (!cursor) groups.forEach(state => { state.matched = false; state.root.hidden = true; });

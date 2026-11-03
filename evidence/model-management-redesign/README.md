@@ -24,13 +24,14 @@ Reproduce: `npm run build`, then `harness/start.sh full 4301` (also `readonly 43
 - **One guide.** Every page/entity has one "Ask Operator…" entry: free-text intent → context-specific
   prompt preview → copy. No questionnaire, nothing executed, IDs whitelisted, and text that looks like a
   credential blocks copying and is redacted from the preview.
-- Kept: drafts across row/section switches, per-section dirty dots, read-only snapshot mode, live-session
-  notes, conflict/readback protection, provenance and freshness labels.
+- Kept: drafts across row/section switches, per-section dirty dots, live-session notes, conflict/readback
+  protection and catalog/quota freshness labels. A read-only snapshot (e.g. a preview of live config)
+  looks exactly like the live page: no snapshot badge, timestamp or debug note; only saving is blocked.
 
 ## Files
 
 - `before-*` — previous design (1365).
-- `r1..r5-*` — role/agent detail, services, guide, 390 list/detail/services, empty, read-only, nomodels.
+- `r1..r5-*` — role/agent detail, services, guide, 390 list/detail/services, empty, nomodels.
 - `m-<width>-<page>.png` + `measurements.json` — 360/390/768/1024/1365/1920 × roles/agents/providers:
   PNG equals CSS viewport, `docW == vw`, no element past the right edge, first content row 191–324px.
 - `i1..i8-*` + `interactions.json` — scripted interactions:
@@ -40,6 +41,7 @@ Reproduce: `npm run build`, then `harness/start.sh full 4301` (also `readonly 43
   - collapsed section expands; 390px: detail replaces list, Back returns to list with focus restored;
   - guide at 390: copy disabled while empty, enabled with intent, disabled + redacted with a secret,
     close restores focus;
-  - read-only: 27 fields, only the Profile template picker (preview only) enabled, Save disabled;
+  - read-only (`ro-*`): no snapshot/provenance text anywhere on roles, agents, services or an opened
+    detail at 390 and 1365; Save stays disabled;
   - nomodels: services page shows the read error with Retry;
   - touch (`pointer:coarse`): rows ≥81px, every button/summary ≥40px.
