@@ -277,9 +277,8 @@ test("Provider facts distinguish native connections and snapshots, with one non-
       credentialPresent: true }] }) });
   const { root, page, handoff } = mount(api);
   await page.ready;
-  const snapshot = find(root, node => node.className === "access-snapshot");
-  assert.equal(snapshot.title, "Production snapshot");
-  assert.match(text(snapshot), /access.snapshot.*2026-10-26T00:00:00Z/);
+  assert.doesNotMatch(text(root), /Production snapshot|2026-10-26T00:00:00Z|access\.snapshot/,
+    "the page looks the same as the live one: no snapshot or provenance debug text");
   assert.match(text(root), /Native service.*codex/);
   assert.match(text(root), /https:\/\/native.invalid/);
   assert.equal(all(root, n => n.tagName === "FORM" || n.tagName === "TEXTAREA" || n.type === "password").length, 0);

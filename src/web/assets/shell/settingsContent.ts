@@ -33,11 +33,11 @@ export const SETTINGS_MAIN = `
         </div>
       </section>
       <section class="manage-section access-page" data-section="roles" aria-labelledby="settings-roles-title" hidden>
-        <header class="manage-head access-head"><div class="manage-heading"><h1 id="settings-roles-title" data-i18n="settings.section.roles">Execution configs</h1><p data-i18n="access.hint.roles">Which Agent, model and effort each Role starts new Sessions with, and the Profile templates you can copy from.</p></div><div id="role-access-snapshot" class="access-snapshot-slot"></div><div id="role-access-actions" class="access-head-actions"></div></header>
+        <header class="manage-head access-head"><div class="manage-heading"><h1 id="settings-roles-title" data-i18n="settings.section.roles">Execution configs</h1><p data-i18n="access.hint.roles">Which Agent, model and effort each Role starts new Sessions with, and the Profile templates you can copy from.</p></div><div id="role-access-actions" class="access-head-actions"></div></header>
         <div id="role-access-host" class="access-host"></div>
       </section>
       <section class="manage-section access-page" data-section="agents" aria-labelledby="settings-agents-title" hidden>
-        <header class="manage-head access-head"><div class="manage-heading"><h1 id="settings-agents-title" data-i18n="settings.section.agents">Agents</h1><p data-i18n="access.hint.agents">Execution tools, their own native model settings, and whether Yui routes them through a model service.</p></div><div id="agent-access-snapshot" class="access-snapshot-slot"></div><div id="agent-access-actions" class="access-head-actions"></div></header>
+        <header class="manage-head access-head"><div class="manage-heading"><h1 id="settings-agents-title" data-i18n="settings.section.agents">Agents</h1><p data-i18n="access.hint.agents">Execution tools, their own native model settings, and whether Yui routes them through a model service.</p></div><div id="agent-access-actions" class="access-head-actions"></div></header>
         <div id="agent-access-host" class="access-host"></div>
         <div id="agent-settings-groups" class="agent-settings-groups" hidden></div>
       </section>
